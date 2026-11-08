@@ -6,7 +6,7 @@ against them. Background and evidence: `research/`.
 
 ## How we work
 
-- One milestone is one commit on `master`, subject `Mx: <title>`. No tags.
+- One milestone is one commit on `main`, subject `Mx: <title>`. No tags.
   Work in progress stays on a branch and is squashed into that one commit
   when the gate passes.
 - The milestone commit ticks its boxes here, so `git log --grep '^Mx:'` finds
