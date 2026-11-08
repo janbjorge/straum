@@ -15,10 +15,30 @@ against them. Background and evidence: `research/`.
   - `cargo fmt --check`
   - `cargo clippy -p <crate> --all-targets -- -D warnings`
   - `cargo test -p <crate>`
-  - `cargo llvm-cov -p <crate> --fail-under-lines 98`, with the measured
-    number in the commit body
+  - `cargo llvm-cov -p <crate> ... --fail-under-lines 98` over the touched
+    crates and the crates whose tests exercise them (`weir-notation` tests
+    much of `weir-domain`), with the measured number in the commit body.
+    Without rustup, set `LLVM_COV` and `LLVM_PROFDATA` to the tools in
+    `$(brew --prefix llvm)/bin`.
 - Code goes in with the milestone that first uses it.
 - Add a dated line under Decisions when something is settled.
+
+Code:
+
+- rustfmt and Clippy defaults, warnings denied. Names and signatures follow
+  the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+- No macros of our own (`macro_rules!`, proc macros). std derives and std
+  macros only.
+- No `unsafe`: every crate has `#![forbid(unsafe_code)]`.
+- Plain structs, enums and functions. Traits only at ports. Named fields over
+  tuples, whole words over abbreviations.
+- Comments say why, not what.
+
+Tests:
+
+- Every behaviour gets a positive and a negative test.
+- State that changes over time gets a property test against a naive
+  reference. Planting a bug must make it fail.
 
 ## Decisions
 
@@ -39,6 +59,14 @@ against them. Background and evidence: `research/`.
   store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot; one
   time level (bucket) merged up at ask time; asks over HTTP/JSON, no pgwire;
   no WAL barrier in v1, answers carry the LSN they reflect.
+- 2026-11-08: Cell state is kept per input column and shared by measures: sum
+  and avg share sum and count, min and max share value counts. Filtered
+  measures keep none (M1). One enum of cell states, no accumulator trait.
+- 2026-11-08: Sum, avg, min and max read integers: integer columns, and
+  numeric columns as scaled `i64` (M4 checks the catalog). Sums are `i128`,
+  which can't overflow below 2^64 rows.
+- 2026-11-08: Until asks get time zones (M0), day, week and month are UTC.
+  Weeks start on Monday, as in PostgreSQL's `date_trunc`.
 
 ## M0: notation and domain model (v0.1.0)
 
@@ -82,12 +110,18 @@ Result on 2024-01, 2,964,624 trips:
 Goal: maintain a fact's rollup in memory and answer asks from it.
 Touches: `crates/weir-domain`.
 
-- [ ] Accumulator trait: add, remove, merge, finalize
-- [ ] count, sum (i128, promote on overflow), avg, min/max, count distinct
-- [ ] Rollup store keyed on `Fact::rollup_key`
-- [ ] Ask execution: filter, merge by ref id, map to attributes, merge again
-- [ ] Property tests against a naive reference, including updates and deletes
-- [ ] Gate passes
+- [x] Cell state per input column: sum and count, value counts for min and
+      max, value counts for count distinct
+- [x] Rows added and removed; a cell goes with its last row; removing a row
+      that was never added is an error
+- [x] Rollup keyed on `Fact::rollup_key`; dim rows kept apart and read at ask
+      time
+- [x] Ask execution: range, filter, group by keys, dim attributes and time
+      keys, measure filters
+- [x] Property test against a naive reference over random inserts, updates and
+      deletes of trips and zones; 9 planted bugs all caught
+- [x] Gate passes: 99.69% lines over `weir-domain` and `weir-notation`; the 3
+      missed lines are `unreachable!` arms
 
 ## M3: application layer (v0.4.0)
 
@@ -139,5 +173,7 @@ Touches: `deploy/`.
 - Low collapse: a key with two refs can be nearly as wide as the fact (taxi:
   1.3x). Should `weir plan` measure collapse with `count(distinct ...)` and
   warn?
-- A ref id with no dim row maps to null attributes (the bench assumes this).
+- A ref id with no dim row maps to null attributes. The bench and `Store` do
+  this; confirm.
+- Float columns in sum and avg: order-dependent sums, lossy removal.
 - Azure: `wal_level = logical` restart, resync after HA failover.

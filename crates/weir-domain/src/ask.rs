@@ -42,6 +42,38 @@ impl TimeKey {
             TimeKey::Day | TimeKey::Week | TimeKey::Month => Some(86_400),
         }
     }
+
+    /// Start of the period holding `t`, in Unix seconds, UTC. Weeks start on
+    /// Monday.
+    pub fn start(self, t: i64, grain: Grain) -> i64 {
+        const DAY: i64 = 86_400;
+        // 1970-01-05 was a Monday.
+        const MONDAY: i64 = 4 * DAY;
+        let floor = |t: i64, span: i64| t.div_euclid(span) * span;
+        match self {
+            TimeKey::Bucket => floor(t, i64::from(grain.0)),
+            TimeKey::Hour => floor(t, 3_600),
+            TimeKey::Day => floor(t, DAY),
+            TimeKey::Week => floor(t - MONDAY, 7 * DAY) + MONDAY,
+            TimeKey::Month => {
+                let day = t.div_euclid(DAY);
+                (day - day_of_month(day) + 1) * DAY
+            }
+        }
+    }
+}
+
+/// Day of the month, from 1, of a day count since 1970-01-01. The day part
+/// of Howard Hinnant's `civil_from_days`: it counts in 400-year eras that
+/// start on 0000-03-01, so each year ends with its leap day.
+fn day_of_month(day: i64) -> i64 {
+    let day_of_era = (day + 719_468).rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // 0 is March, 11 is February.
+    let month = (5 * day_of_year + 2) / 153;
+    day_of_year - (153 * month + 2) / 5 + 1
 }
 
 impl Spec {

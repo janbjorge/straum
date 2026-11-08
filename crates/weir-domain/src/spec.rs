@@ -173,6 +173,14 @@ impl Spec {
         }
     }
 
+    pub(crate) fn dims(&self) -> &[Dim] {
+        &self.dims
+    }
+
+    pub(crate) fn facts(&self) -> &[Fact] {
+        &self.facts
+    }
+
     pub fn dim(&self, name: &str) -> Option<&Dim> {
         self.dims.iter().find(|d| d.name.as_str() == name)
     }

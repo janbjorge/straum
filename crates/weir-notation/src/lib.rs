@@ -17,6 +17,8 @@
 //!   card count where payment_type = 1
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod lex;
 mod parse;
 

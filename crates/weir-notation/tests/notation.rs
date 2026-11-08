@@ -220,6 +220,13 @@ fn syntax_errors_point_at_the_line() {
 }
 
 #[test]
+fn comments_and_blank_lines_only() {
+    let spec = parse("# nothing declared yet\n\n   \n").unwrap();
+    assert!(spec.fact("trips").is_none());
+    assert!(spec.dim("zones").is_none());
+}
+
+#[test]
 fn literals() {
     let spec = parse(
         "fact t = public.t key id\n\
@@ -296,6 +303,7 @@ fn syntax_error_messages() {
         ("dim z public.z key id", 1, "expected =, found public"),
         ("dim z = public.z", 1, "expected key, found end of line"),
         ("dim z = public.z key id extra", 1, "unexpected extra"),
+        ("dim z = public.z key id )", 1, "unexpected )"),
         (
             "dim z = public.z key id\n  by a",
             2,
