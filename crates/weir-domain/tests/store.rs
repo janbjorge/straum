@@ -4,14 +4,17 @@
 use std::collections::{BTreeMap, HashSet};
 
 use weir_domain::{
-    Agg, Answer, Ask, AskError, AskKey, Cond, Datum, Dim, Fact, Grain, Ident, KeyPath, Literal,
-    Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
+    Agg, Answer, Ask, AskError, AskKey, Change, Cond, Datum, Dim, Fact, Grain, Ident, KeyPath,
+    Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value, Zone,
 };
 
 const GRAIN: u32 = 900;
 /// 2024-01-15 and 2024-04-15, 00:00 UTC: four months, one leap day.
 const START: i64 = 1_705_276_800;
 const END: i64 = 1_713_139_200;
+/// Europe/Oslo's 2024 summer time: 2024-03-31 and 2024-10-27, 01:00 UTC.
+const OSLO_SUMMER: i64 = 1_711_846_800;
+const OSLO_WINTER: i64 = 1_729_990_800;
 
 // Row positions; `columns` checks them.
 const AT: usize = 0;
@@ -149,6 +152,48 @@ fn spec() -> Spec {
     Spec::new(vec![zones], vec![trips]).unwrap()
 }
 
+fn oslo() -> Zone {
+    Zone::new(
+        3_600,
+        vec![
+            Change {
+                at: OSLO_SUMMER,
+                offset: 7_200,
+            },
+            Change {
+                at: OSLO_WINTER,
+                offset: 3_600,
+            },
+        ],
+    )
+    .unwrap()
+}
+
+/// A zone whose clock jumps by `jump` seconds at `at`, from `before`.
+fn jump(before: i64, at: i64, jump: i64) -> Zone {
+    Zone::new(
+        before,
+        vec![Change {
+            at,
+            offset: before + jump,
+        }],
+    )
+    .unwrap()
+}
+
+/// Zones whose offsets all fall on 15 minute edges.
+fn zones() -> [Zone; 5] {
+    [
+        Zone::utc(),
+        oslo(),
+        // India, +05:30.
+        Zone::new(19_800, Vec::new()).unwrap(),
+        // Clocks skip or repeat the hour after midnight on START.
+        jump(0, START, 3_600),
+        jump(3_600, START, -3_600),
+    ]
+}
+
 /// splitmix64; the tests need no crate for randomness.
 struct Rng(u64);
 
@@ -259,6 +304,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     if measures.is_empty() {
         measures.push(rng.pick(all).name.clone());
     }
+    let zone = rng.pick(&zones()).clone();
     let buckets = (END - START) / i64::from(GRAIN);
     let from = START + i64::from(GRAIN) * rng.int(-10, buckets);
     let to = from + i64::from(GRAIN) * rng.int(1, buckets + 20);
@@ -267,6 +313,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         measures,
         by,
         filter,
+        zone,
         from,
         to,
     }
@@ -341,7 +388,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
             .iter()
             .map(|k| match k {
                 AskKey::Key(p) => value(row, p, zones),
-                AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(GRAIN))),
+                AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(GRAIN), &ask.zone)),
             })
             .collect();
         groups.entry(key).or_default().push(row);
@@ -557,7 +604,84 @@ fn time_key_start() {
         (TimeKey::Month, START, 1_704_067_200),
     ];
     for (key, t, start) in cases {
-        assert_eq!(key.start(t, grain), start, "{key} of {t}");
+        assert_eq!(key.start(t, grain, &Zone::utc()), start, "{key} of {t}");
+    }
+}
+
+#[test]
+fn time_key_start_in_a_zone() {
+    let grain = Grain(GRAIN);
+    let oslo = oslo();
+    // Expected values from `TZ=Europe/Oslo date`.
+    let cases = [
+        // 2024-03-31 10:00 CEST, the day summer time starts.
+        (&oslo, TimeKey::Hour, 1_711_872_000, 1_711_872_000),
+        (&oslo, TimeKey::Day, 1_711_872_000, 1_711_839_600),
+        (&oslo, TimeKey::Week, 1_711_872_000, 1_711_321_200),
+        (&oslo, TimeKey::Month, 1_711_872_000, 1_709_247_600),
+        // 2024-04-15 12:00 CEST: April starts in summer time.
+        (&oslo, TimeKey::Month, 1_713_175_200, 1_711_922_400),
+        // 02:30 happens twice on 2024-10-27, first at +02:00, then at +01:00.
+        // The two hours stay apart; the day is one.
+        (&oslo, TimeKey::Hour, 1_729_989_000, 1_729_987_200),
+        (&oslo, TimeKey::Hour, 1_729_992_600, OSLO_WINTER),
+        (&oslo, TimeKey::Day, 1_729_989_000, 1_729_980_000),
+        (&oslo, TimeKey::Day, 1_729_992_600, 1_729_980_000),
+        // Buckets ignore the zone.
+        (&oslo, TimeKey::Bucket, 1_711_872_000 + 899, 1_711_872_000),
+    ];
+    for (zone, key, t, start) in cases {
+        assert_eq!(key.start(t, grain, zone), start, "{key} of {t}");
+    }
+
+    // Midnight skipped: the day starts when the clock jumps.
+    let skipped = jump(0, START, 3_600);
+    assert_eq!(TimeKey::Day.start(START + 7_200, grain, &skipped), START);
+    // Midnight repeated: the day starts at the first one.
+    let repeated = jump(3_600, START, -3_600);
+    assert_eq!(
+        TimeKey::Day.start(START + 7_200, grain, &repeated),
+        START - 3_600
+    );
+}
+
+#[test]
+fn zone_changes_must_ascend() {
+    let change = |at| Change { at, offset: 0 };
+    assert!(Zone::new(0, vec![change(1), change(2)]).is_some());
+    assert!(Zone::new(0, vec![change(2), change(1)]).is_none());
+    assert!(Zone::new(0, vec![change(1), change(1)]).is_none());
+}
+
+#[test]
+fn zone_must_fall_on_bucket_edges() {
+    let spec = spec();
+    let ask = |key, zone| Ask {
+        fact: id("trips"),
+        measures: vec![id("trips")],
+        by: vec![AskKey::Time(key)],
+        filter: Vec::new(),
+        zone,
+        from: START,
+        to: END,
+    };
+    let unaligned = [
+        // +00:10.
+        Zone::new(600, Vec::new()).unwrap(),
+        // A change at 01:10 UTC.
+        jump(0, START + 4_200, 3_600),
+    ];
+    for zone in unaligned {
+        assert_eq!(
+            spec.check(&ask(TimeKey::Day, zone.clone())),
+            Err(vec![AskError::ZoneUnaligned {
+                grain: Grain(GRAIN)
+            }])
+        );
+        assert!(spec.check(&ask(TimeKey::Bucket, zone)).is_ok());
+    }
+    for zone in zones() {
+        assert!(spec.check(&ask(TimeKey::Month, zone)).is_ok());
     }
 }
 
@@ -577,6 +701,7 @@ fn ask_without_by_answers_one_row() {
         measures,
         by: Vec::new(),
         filter: Vec::new(),
+        zone: Zone::utc(),
         from: START,
         to: END,
     };
@@ -615,6 +740,7 @@ fn unknown_names() {
         measures: vec![id("trips")],
         by: Vec::new(),
         filter: Vec::new(),
+        zone: Zone::utc(),
         from: START,
         to: END,
     };

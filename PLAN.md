@@ -6,11 +6,11 @@ against them. Background and evidence: `research/`.
 
 ## How we work
 
-- One milestone is one commit on `master`, subject `Mx: <title>`, tagged
-  `v0.x.0`. Work in progress stays on a branch and is squashed into that one
-  commit when the gate passes.
-- The milestone commit ticks its boxes here, so `git show v0.x.0` shows the
-  plan, the code and the tests for that milestone together.
+- One milestone is one commit on `master`, subject `Mx: <title>`. No tags.
+  Work in progress stays on a branch and is squashed into that one commit
+  when the gate passes.
+- The milestone commit ticks its boxes here, so `git log --grep '^Mx:'` finds
+  the plan, the code and the tests for that milestone together.
 - Gate, on the crates the milestone touches:
   - `cargo fmt --check`
   - `cargo clippy -p <crate> --all-targets -- -D warnings`
@@ -65,10 +65,15 @@ Tests:
 - 2026-11-08: Sum, avg, min and max read integers: integer columns, and
   numeric columns as scaled `i64` (M4 checks the catalog). Sums are `i128`,
   which can't overflow below 2^64 rows.
-- 2026-11-08: Until asks get time zones (M0), day, week and month are UTC.
-  Weeks start on Monday, as in PostgreSQL's `date_trunc`.
+- 2026-11-08: An ask names a time zone (e.g. `Europe/Oslo`). The HTTP
+  adapter (M5) turns the name into the zone's UTC offsets over the ask's
+  range, so the domain holds no zone data. Buckets stay UTC. Hours follow the
+  instant, so a repeated hour stays two hours. Days, weeks (from Monday) and
+  months follow the wall clock: a repeated midnight counts from the first one,
+  a skipped one from the jump. An ask with a time key is rejected when the
+  zone's offsets or changes fall inside a bucket.
 
-## M0: notation and domain model (v0.1.0)
+## M0: notation and domain model
 
 Goal: the aggregate model and its text notation, validated, no I/O.
 Touches: `crates/weir-domain`, `crates/weir-notation`, `research/`.
@@ -76,12 +81,12 @@ Touches: `crates/weir-domain`, `crates/weir-notation`, `research/`.
 - [x] Facts, dims, refs, measures, validation (`Spec::new`)
 - [x] Asks and `Spec::check`
 - [x] Parser, taxi example, tests
-- [ ] Time zones in asks
-- [ ] Rewrite `research/ARCHITECTURE.md`, `README.md` and `AKS.md` for the
-      notation design (they still describe SQL over views)
-- [ ] Gate passes
+- [x] Time zones in asks
+- [x] Rewrite `research/ARCHITECTURE.md`, `README.md` and `AKS.md` for the
+      notation design
+- [x] Gate passes: 99.71% lines over `weir-domain` and `weir-notation`
 
-## M1: taxi proof in SQL (v0.2.0)
+## M1: taxi proof in SQL
 
 Goal: show that rollup-then-map equals the raw join before writing the engine.
 Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker).
@@ -105,7 +110,7 @@ Result on 2024-01, 2,964,624 trips:
   pickup and dropoff zone together are nearly unique per trip. 1h gives 1.8x,
   1d 5.7x, and 15m without the dropoff ref 5.2x.
 
-## M2: accumulators and rollup (v0.3.0)
+## M2: accumulators and rollup
 
 Goal: maintain a fact's rollup in memory and answer asks from it.
 Touches: `crates/weir-domain`.
@@ -123,7 +128,7 @@ Touches: `crates/weir-domain`.
 - [x] Gate passes: 99.69% lines over `weir-domain` and `weir-notation`; the 3
       missed lines are `unreachable!` arms
 
-## M3: application layer (v0.4.0)
+## M3: application layer
 
 Goal: use cases behind ports, runnable end to end without PostgreSQL.
 Touches: `crates/weir-app`.
@@ -133,7 +138,7 @@ Touches: `crates/weir-app`.
 - [ ] In-memory fakes; full flow tested with them
 - [ ] Gate passes
 
-## M4: PostgreSQL adapter (v0.5.0)
+## M4: PostgreSQL adapter
 
 Goal: feed the use cases from a real PostgreSQL 18.
 Touches: `crates/weir-pg`.
@@ -145,7 +150,7 @@ Touches: `crates/weir-pg`.
 - [ ] Taxi end to end: load, replay changes, compare asks with PostgreSQL
 - [ ] Gate passes
 
-## M5: ask endpoint and binary (v0.6.0)
+## M5: ask endpoint and binary
 
 Goal: a runnable `weir` that answers asks over HTTP.
 Touches: `crates/weir-http`, `crates/weir`.
@@ -155,7 +160,7 @@ Touches: `crates/weir-http`, `crates/weir`.
 - [ ] Binary wiring config, adapters and use cases
 - [ ] Gate passes
 
-## M6: deploy (v0.7.0)
+## M6: deploy
 
 Goal: weir on AKS next to Azure Flexible Server 18.
 Touches: `deploy/`.

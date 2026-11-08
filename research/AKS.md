@@ -1,40 +1,60 @@
 # weir on AKS next to Azure Database for PostgreSQL Flexible Server
 
-jb, 2026-11-08: ship weir as Helm chart, deploy into same Kubernetes cluster as apps, answer heavy count/sum/GROUP BY queries. First target: AKS with PostgreSQL 18 on Azure Flexible Server, outside cluster. Tags as in README.md (R, U, I).
+jb, 2026-11-08: ship weir as a Helm chart into the same Kubernetes cluster as
+the apps. First target: AKS, with PostgreSQL 18 on Azure Flexible Server
+outside the cluster. Design in ARCHITECTURE.md. Tags as in README.md (R, U,
+I).
 
 ## Assumed setup
 
-- PostgreSQL on Flexible Server, not in cluster. AKS runs apps only.
-- AKS pods and server in same VNet (Azure CNI, delegated subnet, private DNS zone). Apps reach PostgreSQL today.
-- `wal_level` = Azure default `replica` (U). PostgreSQL 18 needs `wal_level = logical` + restart.
-- `pg_stat_statements` or Query Store on → heavy aggregate queries findable from data, not guessed.
-- Apps may ship as plain manifests without Helm. Secrets from Key Vault via Secrets Store CSI driver.
+- PostgreSQL runs on Flexible Server, not in the cluster. AKS runs the apps.
+- AKS pods and the server share a VNet (Azure CNI, delegated subnet, private
+  DNS zone). Apps already reach PostgreSQL.
+- `wal_level` is Azure's default, `replica` (U). PostgreSQL 18 needs
+  `wal_level = logical` and a restart.
+- `pg_stat_statements` or Query Store is on, so the heavy aggregate queries can
+  be found from data instead of guessed.
+- Apps may ship as plain manifests without Helm. Secrets come from Key Vault
+  through the Secrets Store CSI driver.
 
 ## Consequences for weir (I)
 
-- Custom-extension path closed: managed case from MANAGED-POSTGRES.md, on Azure. Ingest by logical replication works: `wal_level = logical` = one server parameter + restart.
-- weir → PostgreSQL (replication + COPY) uses same network path apps use. Nothing new except parameter.
-- PostgreSQL → weir (postgres_fdw) needs weir behind internal LoadBalancer IP, `postgres_fdw` in `azure.extensions`, VNet routing that allows it (U). Clients connecting to weir directly avoid all that.
-- Helm chart fits weir as product. Teams without Helm for apps need chart to render cleanly with `helm template`, output committable, applied by existing pipeline. Azure Pipelines also has `HelmDeploy` task (U).
+- No custom extension is needed, which Azure wouldn't allow anyway
+  (MANAGED-POSTGRES.md). Logical replication needs one server parameter and a
+  restart.
+- weir reaches PostgreSQL over the network path the apps already use. Apps
+  reach weir over HTTP inside the cluster. No new network path in either
+  direction.
+- The chart must render cleanly with `helm template`, so teams without Helm can
+  commit the output and apply it with their existing pipeline. Azure Pipelines
+  also has a `HelmDeploy` task (U).
 
 ## Chart shape (I)
 
-Partly superseded by ARCHITECTURE.md (2026-11-08): weir keeps no durable state, temporary slot per pod → chart has Deployment, no PVC. Each replica = own slot + walsender; Azure HA standby uses slots and walsenders too; default 1 replica.
+weir keeps no durable state and uses a temporary slot per pod, so the chart
+has a Deployment and no PVC. Each replica is its own slot and walsender, and
+the Azure HA standby uses slots and walsenders too, so the default is one
+replica.
 
-| Object | Purpose |
-|---|---|
-| Deployment, 1 replica, `maxSurge: 1`, `maxUnavailable: 0` | weir process; pgwire on 5432, metrics, health. New pod syncs before old stops |
-| ConfigMap | overrides: deny list, `append_only` tables. No spec: weir learns queries from app SQL (ARCHITECTURE.md §2c) |
-| Service, ClusterIP | in-cluster clients (`weir.weir.svc:5432`) |
-| Service, internal LoadBalancer (optional) | postgres_fdw from Flexible Server: `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` |
-| Secret or SecretProviderClass (`existingSecret`) | source DSN for replication role; on Azure, from Key Vault via Secrets Store CSI |
+- **Deployment**, 1 replica, `maxSurge: 1`, `maxUnavailable: 0`: the new pod
+  loads before the old one stops.
+- **ConfigMap**: the spec. A checksum annotation rolls the Deployment when it
+  changes.
+- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez`, `/readyz` and
+  `/metrics`.
+- **Secret or SecretProviderClass** (`existingSecret`): the DSN of the
+  replication role; on Azure from Key Vault through Secrets Store CSI.
 
 Probes:
-- Startup: short. Tables load per query shape after start (ARCHITECTURE.md §2c).
-- Readiness: setup check passed, stream lag under bound. Shapes still loading answer 57P03. Clients must fall back to PostgreSQL when weir not ready.
-- Liveness: process only. Never fail liveness on lag, else slow catch-up → restart loop.
+- Startup and readiness: weir loads every fact before it turns ready, so
+  readiness stays off through the load and catch-up. Clients must handle a
+  weir that isn't ready.
+- Liveness: process only. Failing liveness on lag would turn a slow catch-up
+  into a restart loop.
 
-Defaults: `runAsNonRoot`, uid 1001, drop ALL, no `imagePullSecrets` (ACR pulls by managed identity). Metrics out over OTLP to cluster's collector.
+Defaults: `runAsNonRoot`, uid 1001, drop ALL capabilities, no
+`imagePullSecrets` (ACR pulls by managed identity). Metrics go out over OTLP to
+the cluster's collector.
 
 Values sketch:
 
@@ -45,17 +65,18 @@ image:
 source:
   existingSecret: weir-source      # key: dsn (role with REPLICATION)
   publication: weir                # weir creates a TEMPORARY slot per pod
+spec: |                            # weir notation, read at start
+  dim zones = public.taxi_zones key location_id
+    attrs borough, zone
+  fact trips = public.yellow_trips key id
+    time pickup_at / 15m
+    ref pickup -> zones via pu_location_id
+    append
+    trips count
+maxRetainedWal: 4Gi                # past this, drop the connection and resync
 replicas: 1
-overrides:                         # optional; rollups come from app SQL
-  denyTables: []                   # never published, never loaded
-  appendOnlyTables: []             # skip the row store
-freshness:
-  mode: barrier                    # or max_lag
-  maxLagMs: 1000
-  maxRetainedWal: 4Gi              # past this, drop the connection and resync
 service:
-  port: 5432
-  internalLoadBalancer: false
+  port: 8080
 resources:
   requests: {cpu: 500m, memory: 1Gi}
   limits: {memory: 2Gi}
@@ -63,27 +84,56 @@ resources:
 
 ## One-time database setup on Flexible Server
 
-1. Set server parameter `wal_level = logical` (Terraform or portal), restart. Slot sync settings not needed: temporary slots can't fail over, weir resyncs after HA failover (ARCHITECTURE.md §5).
-2. Run `weir plan <tables>` (ARCHITECTURE.md §2c). Checks PK and replica identity, prints `CREATE ROLE weir LOGIN REPLICATION`, `GRANT SELECT` (COPY reads tables), `CREATE PUBLICATION weir FOR TABLE ...`: whole tables, no column lists.
-3. Table owner runs printed SQL. Often app's own role owns tables (I). `FOR ALL TABLES` needs superuser, blocked on Azure.
-4. weir creates own `TEMPORARY` slot each start; PostgreSQL drops it when session ends.
+1. Set the server parameter `wal_level = logical` (Terraform or portal) and
+   restart. Slot sync settings aren't needed: temporary slots can't fail over,
+   and weir resyncs after an HA failover (ARCHITECTURE.md §8).
+2. Run `weir plan` on the spec (ARCHITECTURE.md §4d). It checks keys and
+   replica identity and prints `CREATE ROLE weir LOGIN REPLICATION`, `GRANT
+   SELECT` on the spec's tables (the load reads them), and `CREATE PUBLICATION
+   weir FOR TABLE ...` with the fact and dim tables.
+3. The table owner runs the printed SQL. Often the app's own role owns its
+   tables (I). `FOR ALL TABLES` needs superuser, which Azure doesn't give.
+4. weir creates its own `TEMPORARY` slot on every start; PostgreSQL drops it
+   when the session ends.
 
-**Production risk (R).** Once table in publication publishing updates + deletes, PostgreSQL checks replica identity on every UPDATE and DELETE on primary:
-- Table without primary key (default replica identity) fails with `cannot update table "%s" because it does not have a replica identity and publishes updates` (`executor/execReplication.c:1149`).
-- Column list omitting replica identity column fails same writes with "Column list used by the publication does not cover the replica identity." (`execReplication.c:1107`, `:1125`).
+**Production risk (R).** Once a table is in a publication that publishes
+updates and deletes, PostgreSQL checks its replica identity on every UPDATE and
+DELETE on the primary:
+- A table without a primary key (default replica identity) fails those writes
+  with `cannot update table "%s" because it does not have a replica identity
+  and publishes updates` (`executor/execReplication.c:1149`).
+- A column list that leaves out a replica identity column fails the same
+  writes with "Column list used by the publication does not cover the replica
+  identity." (`execReplication.c:1107`, `:1125`).
 
-Wrong publication → breaks app writes, not just weir. `weir plan` checks `pg_index` / `relreplident` before printing `CREATE PUBLICATION`; weir rechecks every start.
+A wrong publication breaks the app's writes, not only weir. `weir plan` checks
+`pg_index` and `relreplident` before it prints `CREATE PUBLICATION`, and weir
+rechecks on every start.
 
-**WAL growth (R, Azure docs via MANAGED-POSTGRES.md).** `max_slot_wal_keep_size` read-only `-1` on Azure → stalled weir holds WAL until storage fills; Azure drops unused slots past unpublished storage threshold. Temporary slot limits this to time weir connected but behind: weir checks own retained WAL, resyncs past `maxRetainedWal`. Also alert on slot lag (`pg_replication_slots`).
+**WAL growth (R, Azure docs via MANAGED-POSTGRES.md).** Azure fixes
+`max_slot_wal_keep_size` at `-1`, so a stalled weir holds WAL until storage
+fills; Azure drops unused slots past an unpublished storage threshold. The
+temporary slot limits this to the time weir is connected but behind. weir
+watches its own retained WAL and resyncs past `maxRetainedWal`. Also alert on
+slot lag in `pg_replication_slots`.
 
 ## Baseline to beat
 
-Azure allows `pg_ivm` in `shared_preload_libraries` (MANAGED-POSTGRES.md, Azure section, R). Maintains GROUP BY views with count, sum, avg, min, max inside PostgreSQL, synchronously per write, no new service. For handful of fixed queries may suffice. Cost lands on write path; how bad for target write rate = U. Measure on test system against same queries before committing to weir.
+Azure allows `pg_ivm` in `shared_preload_libraries` (MANAGED-POSTGRES.md,
+Azure section, R). It maintains GROUP BY views with count, sum, avg, min and
+max inside PostgreSQL, synchronously on every write, with no new service. For a
+handful of fixed aggregates that may be enough. The cost lands on the write
+path; how much at the target write rate is unknown (U). Measure it on a test
+system against the same aggregates before committing to weir.
 
 ## Open points
 
-1. Which queries: top aggregates from `pg_stat_statements`, share of execution time weir's class covers.
-2. HA: with temporary slots, failover = weir resync.
-3. VNet routing Flexible Server → internal LB? Only matters for postgres_fdw.
-4. `helm template` output committed to deploy repo, or `HelmDeploy` step?
-5. `pg_logical_emit_message` EXECUTE for ordinary role on Azure (MANAGED-POSTGRES.md test 1).
+1. Which aggregates: the top ones from `pg_stat_statements`, and how much of
+   their execution time a spec can cover.
+2. Mutable facts with REPLICA IDENTITY FULL write the old row to WAL on every
+   UPDATE and DELETE. Measure that on the primary if FULL wins
+   (ARCHITECTURE.md §4b).
+3. `helm template` output committed to the deploy repo, or a `HelmDeploy`
+   step?
+4. HA: with temporary slots, a failover means a full resync. How long does the
+   load take on the real tables?

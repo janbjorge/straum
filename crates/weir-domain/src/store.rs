@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::iter;
 
-use crate::ask::{Ask, AskError, AskKey, TimeKey};
+use crate::ask::{Ask, AskError, AskKey, TimeKey, Zone};
 use crate::rollup::{Cell, DimTable, Rollup, State};
 use crate::spec::{Agg, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{Datum, Value};
@@ -58,7 +58,7 @@ impl Store {
             .iter()
             .map(|key| match key {
                 AskKey::Key(path) => self.source(fact, path),
-                AskKey::Time(t) => Source::Time(*t, fact.time.grain),
+                AskKey::Time(t) => Source::Time(*t, fact.time.grain, &ask.zone),
             })
             .collect();
         let filter = self.conditions(fact, &ask.filter);
@@ -162,7 +162,7 @@ enum Source<'a> {
         table: &'a DimTable,
         column: usize,
     },
-    Time(TimeKey, Grain),
+    Time(TimeKey, Grain, &'a Zone),
 }
 
 impl Source<'_> {
@@ -176,7 +176,7 @@ impl Source<'_> {
             } => table
                 .get(&key[slot])
                 .map_or(Datum::Null, |row| row[column].clone()),
-            Source::Time(t, grain) => Datum::Int(t.start(bucket, grain)),
+            Source::Time(t, grain, zone) => Datum::Int(t.start(bucket, grain, zone)),
         }
     }
 }

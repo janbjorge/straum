@@ -12,7 +12,7 @@ mod spec;
 mod store;
 mod value;
 
-pub use ask::{Ask, AskError, AskKey, TimeKey};
+pub use ask::{Ask, AskError, AskKey, Change, TimeKey, Zone};
 pub use ident::Ident;
 pub use rollup::{DimTable, Rollup, RowError};
 pub use spec::{

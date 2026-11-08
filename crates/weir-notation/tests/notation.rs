@@ -1,6 +1,6 @@
 use weir_domain::{
     Agg, Ask, AskError, AskKey, Cond, Grain, Ident, KeyPath, Literal, Slot, Spec, SpecError,
-    TimeKey,
+    TimeKey, Zone,
 };
 use weir_notation::{Error, parse};
 
@@ -57,6 +57,7 @@ fn month_ask() -> Ask {
             path: path("dropoff.borough"),
             values: vec![Literal::Text("Manhattan".into())],
         }],
+        zone: Zone::utc(),
         from: JAN,
         to: FEB,
     }
@@ -425,6 +426,10 @@ fn error_display() {
                 grain: Grain(7_200),
             },
             "hour does not split into 7200s buckets",
+        ),
+        (
+            AskError::ZoneUnaligned { grain: Grain(900) },
+            "zone offsets do not fall on 900s bucket edges",
         ),
         (
             AskError::RangeEmpty { from: 2, to: 1 },
