@@ -21,9 +21,10 @@ On managed PostgreSQL every SQL route needed an extension providers don't
 allow, a wire proxy in front of all traffic, or weir parsing SQL itself
 (POSTGRES-PLANNER.md, MANAGED-POSTGRES.md).
 
-On 2026-11-08 jb dropped SQL. Aggregates are declared in weir's own notation,
-read from a spec at start, and asked for over HTTP. ARCHITECTURE.md describes
-that design; PLAN.md at the repository root tracks the build and lists the
+On 2026-11-08 jb dropped SQL. Aggregates are declared in a spec read at
+start, and asked for over HTTP. The spec was weir's own notation at first and
+is now weir SQL, a PostgreSQL `CREATE VIEW` subset made only for weir specs
+and parsed by `sqlparser`. ARCHITECTURE.md describes that design; PLAN.md at the repository root tracks the build and lists the
 decisions.
 
 What carried over from the research:

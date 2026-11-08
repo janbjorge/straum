@@ -43,7 +43,7 @@ Tests:
 ## Decisions
 
 - 2026-11-08: Aggregates are declared in weir's own notation, not SQL. No SQL
-  query surface for now.
+  query surface for now. (The notation part is replaced by weir SQL below.)
 - 2026-11-08: A fact reaches other tables only through `ref`, an N:1 pointer to
   a dim key. Rollups are keyed on fact columns, ref ids and the time bucket.
   Dim attributes are mapped after aggregation.
@@ -63,14 +63,14 @@ Tests:
   and avg share sum and count, min and max share value counts. Filtered
   measures keep none (M1). One enum of cell states, no accumulator trait.
 - 2026-11-08: Sum, avg, min and max read integers: integer columns, and
-  numeric columns as scaled `i64` (M4 checks the catalog). Sums are `i128`,
+  numeric columns as scaled `i64` (M5 checks the catalog). Sums are `i128`,
   which can't overflow below 2^64 rows.
 - 2026-11-08: One port, `Source`. The first load reads the snapshot of the
   slot the stream comes from, on the same connection, so loading and
   streaming are not split. `Source::open` checks the setup.
 - 2026-11-08: One writer applies commits in order (`App::step`); after a
   failure weir is not ready and the next step starts over from a new stream.
-  How asks read while the writer applies is settled in M5.
+  How asks read while the writer applies is settled in M6.
 - 2026-11-08: A change weir can't apply reads that table again at LSN `at`:
   an update or delete on a fact without the old row, a row that doesn't fit,
   an altered table. Commits up to `at` skip the table, and asks on it answer
@@ -79,12 +79,37 @@ Tests:
   updates and deletes whenever the old row comes (`REPLICA IDENTITY FULL`),
   `append` or not.
 - 2026-11-08: An ask names a time zone (e.g. `Europe/Oslo`). The HTTP
-  adapter (M5) turns the name into the zone's UTC offsets over the ask's
+  adapter (M6) turns the name into the zone's UTC offsets over the ask's
   range, so the domain holds no zone data. Buckets stay UTC. Hours follow the
   instant, so a repeated hour stays two hours. Days, weeks (from Monday) and
   months follow the wall clock: a repeated midnight counts from the first one,
   a skipped one from the jump. An ask with a time key is rejected when the
   zone's offsets or changes fall inside a bucket.
+- 2026-11-08: Specs move from weir's notation to weir SQL, which replaces
+  the "own notation, not SQL" decision above. weir SQL is a small subset of
+  PostgreSQL `CREATE VIEW` syntax, made only for weir. It is not a SQL engine
+  and not a query surface: asks stay HTTP/JSON. Anything outside the subset is
+  rejected with an error that names the construct, never ignored. Every doc
+  and error that mentions weir SQL says it is a weir-only subset. Each view
+  body (the `SELECT`) runs unchanged in PostgreSQL, so it is also the initial
+  load query and the reference for tests. The fact's key and `append` are view
+  options, `WITH (key = id, append = true)`, which `sqlparser` reads as is.
+  PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
+  PostgreSQL; weir only ever sends the body.
+- 2026-11-08: weir SQL is parsed by the `sqlparser` crate with
+  `PostgreSqlDialect`, not by a parser of our own. weir's code walks the AST,
+  keeps the subset and rejects the rest. `sqlparser` is pure Rust, so the
+  static build needs no C toolchain once its default `recursive-protection`
+  feature (stacker, which compiles C) is off; its parser depth limit still
+  turns deep nesting into an error. It stays inside `weir-notation`, and
+  `weir-domain` keeps no dependencies.
+- 2026-11-08: The AST walker denies by default. Each `match` lists the
+  accepted variants, and a final arm returns an error naming the rejected
+  construct. Accepted AST structs are destructured with every field named and
+  no `..`, so a field added by a `sqlparser` upgrade fails to compile until it
+  is handled. The walker returns `Result` with every error found and never
+  panics on input. `sqlparser` is pinned to an exact version. Each rejected
+  construct gets a negative test.
 
 ## M0: notation and domain model
 
@@ -157,7 +182,28 @@ Touches: `crates/weir-app`, `crates/weir-domain`.
 - [x] Gate passes: 99.75% lines over `weir-domain`, `weir-notation` and
       `weir-app`; the 3 missed lines are `unreachable!` arms
 
-## M4: PostgreSQL adapter
+## M4: weir SQL
+
+Goal: specs in weir SQL, a PostgreSQL `CREATE VIEW` subset made only for
+weir, parsed by `sqlparser` instead of our own parser.
+Touches: `crates/weir-notation`, `crates/weir-domain` (tests), `crates/weir-app`
+(tests), `research/`, `bench/`.
+
+- [x] `sqlparser` pinned, without its C-building default feature
+- [x] AST walker, deny by default: one view per fact, `WITH (key, append)`,
+      `LEFT JOIN` refs, `date_bin` bucket, aggregates with `FILTER`, GROUP BY
+      matching the selected keys
+- [x] `taxi.sql` replaces `taxi.weir`; the old lexer and parser are gone
+- [x] A negative test for each rejected construct the PostgreSQL dialect can
+      produce; `Spec::new` errors SQL can't produce are tested in
+      `weir-domain`
+- [x] On `postgres:18`: the `taxi.sql` body runs as is, and the view options
+      are rejected (`unrecognized parameter "key"`)
+- [x] Gate passes: 99.29% lines over `weir-domain`, `weir-notation` and
+      `weir-app`; the 12 missed lines are `unreachable!` arms and reject arms
+      for syntax the PostgreSQL dialect never produces
+
+## M5: PostgreSQL adapter
 
 Goal: feed the use cases from a real PostgreSQL 18.
 Touches: `crates/weir-pg`.
@@ -173,7 +219,7 @@ Touches: `crates/weir-pg`.
 - [ ] Taxi end to end: load, replay changes, compare asks with PostgreSQL
 - [ ] Gate passes
 
-## M5: ask endpoint and binary
+## M6: ask endpoint and binary
 
 Goal: a runnable `weir` that answers asks over HTTP.
 Touches: `crates/weir-http`, `crates/weir`.
@@ -183,7 +229,7 @@ Touches: `crates/weir-http`, `crates/weir`.
 - [ ] Binary wiring config, adapters and use cases
 - [ ] Gate passes
 
-## M6: deploy
+## M7: deploy
 
 Goal: weir on AKS next to Azure Flexible Server 18.
 Touches: `deploy/`.

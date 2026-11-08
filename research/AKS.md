@@ -65,14 +65,14 @@ image:
 source:
   existingSecret: weir-source      # key: dsn (role with REPLICATION)
   publication: weir                # weir creates a TEMPORARY slot per pod
-spec: |                            # weir notation, read at start
-  dim zones = public.taxi_zones key location_id
-    attrs borough, zone
-  fact trips = public.yellow_trips key id
-    time pickup_at / 15m
-    ref pickup -> zones via pu_location_id
-    append
-    trips count
+spec: |                            # weir SQL (weir-only subset), read at start
+  CREATE VIEW trips WITH (key = id, append = true) AS
+  SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
+         f.pu_location_id, pickup.borough, pickup.zone,
+         count(*) AS trips
+  FROM public.yellow_trips f
+  LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
+  GROUP BY 1, 2, 3, 4;
 maxRetainedWal: 4Gi                # past this, drop the connection and resync
 replicas: 1
 service:

@@ -1,6 +1,6 @@
 //! weir's domain: the aggregates it maintains and the asks it answers.
 //!
-//! No I/O and no dependencies. Adapters (notation, PostgreSQL, HTTP) depend
+//! No I/O and no dependencies. Adapters (weir SQL, PostgreSQL, HTTP) depend
 //! on this crate, never the other way round.
 
 #![forbid(unsafe_code)]

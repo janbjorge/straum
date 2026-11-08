@@ -1,4 +1,4 @@
-"""Write the columns taxi.weir reads from a TLC yellow trips file as CSV.
+"""Write the columns taxi.sql reads from a TLC yellow trips file as CSV.
 
 Usage: trips_csv.py IN.parquet OUT.csv
 """

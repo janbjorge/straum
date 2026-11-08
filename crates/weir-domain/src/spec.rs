@@ -1,5 +1,5 @@
 //! Facts, the dims they point at, and their named measures. Built once from
-//! the notation, checked, then read-only.
+//! the spec, checked, then read-only.
 
 use std::collections::HashSet;
 use std::fmt;

@@ -1,7 +1,7 @@
 # weir architecture (2026-11-08)
 
-How weir works since aggregates moved out of SQL and into weir's own
-notation. PLAN.md tracks the build and holds the dated decisions this follows.
+How weir works since aggregates are declared in weir SQL, a PostgreSQL
+`CREATE VIEW` subset made only for weir specs. PLAN.md tracks the build and holds the dated decisions this follows.
 First target: AKS next to Azure Database for PostgreSQL Flexible Server 18
 (AKS.md). The constraints are the managed ones: no custom extension, no
 superuser, logical replication allowed. Tags as in README.md (R, U, I).
@@ -24,38 +24,57 @@ PostgreSQL paths are relative to `~/src/postgres`.
 
 ## 1. The spec
 
-The taxi example (`crates/weir-notation/tests/taxi.weir`):
+weir SQL is not a SQL engine and not a query surface. It is a small subset of
+PostgreSQL `CREATE VIEW` syntax, made only for weir specs. `sqlparser`
+parses it and `weir-notation` walks the AST; anything outside the subset is
+an error that names it. The taxi example (`crates/weir-notation/tests/taxi.sql`):
 
-```text
-dim zones = public.taxi_zones key location_id
-  attrs borough, zone, service_zone
-
-fact trips = public.yellow_trips key id
-  time pickup_at / 15m
-  ref pickup -> zones via pu_location_id
-  ref dropoff -> zones via do_location_id
-  by payment_type, vendor_id
-  append
-  trips count
-  fare sum fare_amount
-  tip_max max tip_amount
-  distance avg trip_distance
-  card count where payment_type = 1
-  manhattan_pickups count where pickup.borough = 'Manhattan'
+```sql
+CREATE VIEW trips WITH (key = id, append = true) AS
+SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
+       f.payment_type,
+       f.vendor_id,
+       f.pu_location_id,
+       f.do_location_id,
+       pickup.borough,
+       pickup.zone,
+       pickup.service_zone,
+       count(*) AS trips,
+       sum(f.fare_amount) AS fare,
+       max(f.tip_amount) AS tip_max,
+       avg(f.trip_distance) AS distance,
+       count(*) FILTER (WHERE f.payment_type = 1) AS card,
+       count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
+FROM public.yellow_trips f
+LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
+LEFT JOIN public.taxi_zones dropoff ON dropoff.location_id = f.do_location_id
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
-- `fact NAME = SCHEMA.TABLE key COLUMN`: a table aggregated into one rollup,
-  and its primary key.
-- `time COLUMN / GRAIN`: the time column and the bucket width. The grain
-  divides a day; units are s, m, h and d.
-- `ref NAME -> DIM via COLUMN`: an N:1 pointer from a fact column to a dim
-  key. It is the only way a fact reaches another table, so a spec can't
-  declare a fan-out.
-- `by`: fact columns in the rollup key.
-- `append`: rows are only inserted (§4b).
-- Measures: `count`, `sum`, `min`, `max`, `avg` and `count_distinct`, each with
-  an optional `where` of `=` or `in` on by columns, refs or ref attributes.
-- `dim NAME = SCHEMA.TABLE key COLUMN` with `attrs`: a lookup table.
+- `CREATE VIEW NAME`: one fact, aggregated into one rollup.
+- `WITH (key = COLUMN, append = true)`: the fact table's primary key, and
+  whether rows are only inserted (§4b). PostgreSQL rejects these options, so
+  weir only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
+  is, which makes it the initial load query and the reference for tests.
+- `FROM SCHEMA.TABLE ALIAS`: the fact table.
+- `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
+  `ALIAS`, an N:1 pointer from a fact column to a dim key. It is the only way
+  a fact reaches another table, so a spec can't declare a fan-out. LEFT,
+  because a fact row with no dim row keeps null attributes. The fact column
+  must be selected.
+- `date_bin('<n> <unit>', FACT.COLUMN, timestamptz 'epoch')`: the time column
+  and the bucket width. The width divides a day; units are seconds, minutes,
+  hours and days. The fixed origin puts buckets on UTC midnight.
+- Other fact columns are `by` columns, in the rollup key.
+- Dim columns are attributes. A dim is its table: views that join it share it
+  and must join on the same key, and its attributes are every column any
+  view reads.
+- Measures: `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max` and `avg`,
+  each `AS` a name and with an optional `FILTER (WHERE ...)` of `=` or `IN`
+  on by columns, refs or ref attributes, joined by `AND`.
+- GROUP BY names exactly the selected columns and the bucket, by expression or
+  position, so the view groups like the rollup.
+- Every column is qualified with its table alias; identifiers are unquoted.
 
 The rollup key is the by columns, then the ref ids, then the time bucket
 (`Fact::rollup_key`). Dim attributes are never part of it. weir maps a ref id
@@ -69,10 +88,10 @@ as from the raw join in PostgreSQL (PLAN.md, M1).
 problem at once: duplicate names, a grain that doesn't divide a day, a column
 used twice among time, by and ref, the fact's key in the rollup key, unknown
 dims, and filters on anything outside the rollup key. Column types and keys are
-checked against the catalog at start (M4).
+checked against the catalog at start (M5).
 
-There are no expressions, no joins and no SQL. An aggregate a spec can't
-declare stays a query against PostgreSQL.
+There are no expressions and no joins beyond refs. An aggregate weir SQL
+can't declare stays a query against PostgreSQL.
 
 ## 2. Asks
 
@@ -112,7 +131,7 @@ flowchart TD
 - sum, min and max come back in the column's scale. avg comes back as sum and
   count, so the caller picks the rounding.
 
-Time zones: the HTTP adapter (M5) turns a zone name such as `Europe/Oslo` into
+Time zones: the HTTP adapter (M6) turns a zone name such as `Europe/Oslo` into
 the zone's UTC offsets over the ask's range, so the domain carries no zone
 data. Buckets stay UTC. Hours follow the instant, so an hour the clock repeats
 stays two hours. Days, weeks (from Monday) and months follow the wall clock: a
@@ -135,7 +154,7 @@ Rows are added and removed, and a cell goes with its last row. Removing a row
 that was never added is an error; the fact then reloads.
 
 sum, avg, min and max read integers: integer columns, and numeric columns as
-scaled `i64` (checked against the catalog in M4). An `i128` sum of `i64` values
+scaled `i64` (checked against the catalog in M5). An `i128` sum of `i64` values
 can't overflow below 2^64 rows. Float columns are an open question.
 
 Dims are kept as rows by key and read at ask time.
@@ -191,7 +210,7 @@ sequenceDiagram
   (`protocol.sgml:2371-2374`, R).
 - The snapshot transaction pins xmin while the load runs and holds back vacuum
   for the whole database (POSTGRES-REPLICATION.md §4). Reading rollups keeps it
-  short; how short is measured in M4.
+  short; how short is measured in M5.
 
 ### 4b. Apply
 
@@ -225,14 +244,14 @@ doesn't fit the rollup, a changed Relation) reads that table again while the
 others keep streaming (`crates/weir-app/src/app.rs`):
 
 - The table is emptied and loaded from a new snapshot at LSN `at`. On
-  PostgreSQL that is a second connection with its own temporary slot (M4, I).
+  PostgreSQL that is a second connection with its own temporary slot (M5, I).
 - The stream is behind `at`. Commits up to `at` are already in the load, so
   they skip the table; later ones apply.
 - Asks that read the table, or a dim it refs, answer not ready until the
   stream passes `at`. Asks on other facts answer at the stream's LSN.
 
 A commit's LSN is the end of its commit record, so "up to `at`" means the
-commits that end at or before it (I, to confirm in M4).
+commits that end at or before it (I, to confirm in M5).
 
 Schema drift: pgoutput resets `schema_sent` when a table's relcache entry is
 invalidated (`src/backend/replication/pgoutput/pgoutput.c:2122-2128`, R), so it
@@ -256,7 +275,7 @@ connection and answers once the stream passes the returned LSN
 
 ### 4d. Setup
 
-`weir plan` (M4) reads the spec and prints the SQL an admin runs once:
+`weir plan` (M5) reads the spec and prints the SQL an admin runs once:
 `wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE weir LOGIN
 REPLICATION`, `GRANT SELECT` on the spec's tables, and `CREATE PUBLICATION weir
 FOR TABLE` with the fact and dim tables.
@@ -309,14 +328,14 @@ apps do, and apps reach weir in-cluster.
 Clean architecture as Cargo crates:
 
 - `weir-domain`: spec, asks, rollups and the store. No I/O, no dependencies.
-- `weir-notation`: parses spec text into a `Spec`.
+- `weir-notation`: walks the `sqlparser` AST of a weir SQL spec into a `Spec`.
 - `weir-app` (M3): the use cases behind one port, `Source`: setup check,
   snapshot loads and the commit stream. `App::step` loads every table,
   applies a commit or reads a table again; `App::ask` answers with the LSN.
   One port, because the first load reads the snapshot of the slot the stream
   comes from, on the same connection.
-- `weir-pg` (M4): catalog checks, snapshot load, pgoutput decoding.
-- `weir-http` (M5): JSON asks, zone lookup, health and metrics.
+- `weir-pg` (M5): catalog checks, snapshot load, pgoutput decoding.
+- `weir-http` (M6): JSON asks, zone lookup, health and metrics.
 - `weir`: the binary that wires them together.
 
 The per-row path stays concrete; traits only at the ports. One writer applies

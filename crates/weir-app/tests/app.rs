@@ -21,23 +21,26 @@ const DAY: i64 = 86_400;
 const RANGE: i64 = 3 * DAY;
 
 const SPEC: &str = "
-dim zones = public.zones key id
-  attrs borough
+CREATE VIEW trips WITH (key = id) AS
+SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+       t.kind,
+       t.zone_id,
+       zone.borough,
+       count(*) AS trips,
+       sum(t.fare) AS fare,
+       max(t.fare) AS fare_max,
+       count(DISTINCT t.rider) AS riders
+FROM public.trips t
+LEFT JOIN public.zones zone ON zone.id = t.zone_id
+GROUP BY 1, 2, 3, 4;
 
-fact trips = public.trips key id
-  time at / 1h
-  ref zone -> zones via zone_id
-  by kind
-  trips count
-  fare sum fare
-  fare_max max fare
-  riders count_distinct rider
-
-fact logins = public.logins key id
-  time at / 1d
-  ref zone -> zones via zone_id
-  append
-  logins count
+CREATE VIEW logins WITH (key = id, append = true) AS
+SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
+       l.zone_id,
+       count(*) AS logins
+FROM public.logins l
+LEFT JOIN public.zones zone ON zone.id = l.zone_id
+GROUP BY 1, 2;
 ";
 
 /// `audit` is published but not in the spec. Only trips has

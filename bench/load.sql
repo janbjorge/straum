@@ -1,4 +1,4 @@
--- The tables taxi.weir names: snake_case columns and a bigint key. Money and
+-- The tables taxi.sql names: snake_case columns and a bigint key. Money and
 -- distance are numeric so sums are exact on both sides of compare.sql.
 
 create table taxi_zones (

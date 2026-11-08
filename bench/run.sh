@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # M1: one month of NYC yellow trips in a throwaway PostgreSQL 18. Checks that
-# asks answered from the taxi.weir rollup, with zones mapped after
+# asks answered from the taxi.sql rollup, with zones mapped after
 # aggregation, equal the same asks over the raw join.
 #
 # Needs curl, uv and docker. Downloads go to bench/data (gitignored).
