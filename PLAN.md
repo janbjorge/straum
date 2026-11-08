@@ -56,15 +56,26 @@ Touches: `crates/weir-domain`, `crates/weir-notation`, `research/`.
 ## M1: taxi proof in SQL (v0.2.0)
 
 Goal: show that rollup-then-map equals the raw join before writing the engine.
-Touches: `bench/`.
+Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker).
 
-- [ ] Fetch one month of TLC yellow trips and `taxi_zone_lookup.csv` into
+- [x] Fetch one month of TLC yellow trips and `taxi_zone_lookup.csv` into
       `bench/data/` (gitignored)
-- [ ] Load into a local `postgres:18` container
-- [ ] Build the rollup with `GROUP BY` on the rollup key of `taxi.weir`
-- [ ] For each ask shape, compare raw join and rollup-then-map with `EXCEPT`
+- [x] Load into a local `postgres:18` container
+- [x] Build the rollup with `GROUP BY` on the rollup key of `taxi.weir`
+- [x] For each ask shape, compare raw join and rollup-then-map with `EXCEPT`
       both ways
-- [ ] Record the collapse ratio (raw rows to rollup rows)
+- [x] Record the collapse ratio (raw rows to rollup rows)
+
+Result on 2024-01, 2,964,624 trips:
+
+- 7 ask shapes, no row differs either way (`EXCEPT ALL`). They cover avg from
+  sum and count, filters on by columns and ref attributes, two refs to one dim,
+  and ranges on 15 minute edges inside an hour.
+- Filtered measures need no state of their own. Their conditions name
+  rollup-key parts only, so asks apply them to rollup rows.
+- Collapse is 1.3x for the taxi.weir key at 15m (2,322,783 rollup rows):
+  pickup and dropoff zone together are nearly unique per trip. 1h gives 1.8x,
+  1d 5.7x, and 15m without the dropoff ref 5.2x.
 
 ## M2: accumulators and rollup (v0.3.0)
 
@@ -125,4 +136,8 @@ Touches: `deploy/`.
 - Fallback when weir is not ready: weir renders SQL per ask and sends it to
   PostgreSQL?
 - Memory for count distinct on high-cardinality columns.
+- Low collapse: a key with two refs can be nearly as wide as the fact (taxi:
+  1.3x). Should `weir plan` measure collapse with `count(distinct ...)` and
+  warn?
+- A ref id with no dim row maps to null attributes (the bench assumes this).
 - Azure: `wal_level = logical` restart, resync after HA failover.
