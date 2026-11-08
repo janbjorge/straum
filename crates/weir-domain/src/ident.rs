@@ -27,3 +27,18 @@ impl fmt::Display for Ident {
         f.write_str(&self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Ident;
+
+    #[test]
+    fn unquoted_postgres_identifiers_only() {
+        assert_eq!(Ident::new("_a1").unwrap().as_str(), "_a1");
+        assert!(Ident::new(&"a".repeat(63)).is_some());
+        let long = "a".repeat(64);
+        for bad in ["", "1a", "A", "a-b", "é", long.as_str()] {
+            assert_eq!(Ident::new(bad), None, "{bad}");
+        }
+    }
+}

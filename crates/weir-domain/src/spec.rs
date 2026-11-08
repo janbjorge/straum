@@ -78,17 +78,6 @@ pub enum Agg {
     CountDistinct(Ident),
 }
 
-impl Agg {
-    pub fn column(&self) -> Option<&Ident> {
-        match self {
-            Agg::Count => None,
-            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) | Agg::CountDistinct(c) => {
-                Some(c)
-            }
-        }
-    }
-}
-
 /// `path = value`, or `path in (values)` with more than one value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cond {
@@ -182,14 +171,6 @@ impl Spec {
         } else {
             Err(errors)
         }
-    }
-
-    pub fn dims(&self) -> &[Dim] {
-        &self.dims
-    }
-
-    pub fn facts(&self) -> &[Fact] {
-        &self.facts
     }
 
     pub fn dim(&self, name: &str) -> Option<&Dim> {
@@ -389,12 +370,6 @@ impl fmt::Display for SpecError {
 }
 
 impl std::error::Error for SpecError {}
-
-impl fmt::Display for Table {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.schema, self.name)
-    }
-}
 
 impl fmt::Display for Grain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
