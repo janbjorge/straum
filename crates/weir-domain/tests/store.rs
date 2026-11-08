@@ -579,6 +579,27 @@ fn rows_collapse_into_cells() {
 }
 
 #[test]
+fn clear_drops_every_row() {
+    let mut store = Store::new(spec());
+    let trip = trip(&mut Rng(5));
+    let rollup = store.rollup("trips").unwrap();
+    rollup.add(&trip).unwrap();
+    rollup.clear();
+    assert_eq!(rollup.cells(), 0);
+    assert_eq!(rollup.remove(&trip), Err(RowError::Missing));
+    rollup.add(&trip).unwrap();
+    assert_eq!(rollup.cells(), 1);
+
+    let zone = zone(&mut Rng(5), 1);
+    let zones = store.dim("zones").unwrap();
+    zones.upsert(&zone).unwrap();
+    zones.clear();
+    assert_eq!(zones.delete(&zone[0]), Err(RowError::Missing));
+    zones.upsert(&zone).unwrap();
+    assert_eq!(zones.delete(&zone[0]), Ok(()));
+}
+
+#[test]
 fn time_key_start() {
     let grain = Grain(GRAIN);
     // Expected values from `date -u`.

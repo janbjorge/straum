@@ -173,11 +173,13 @@ impl Spec {
         }
     }
 
-    pub(crate) fn dims(&self) -> &[Dim] {
+    /// In declaration order.
+    pub fn dims(&self) -> &[Dim] {
         &self.dims
     }
 
-    pub(crate) fn facts(&self) -> &[Fact] {
+    /// In declaration order.
+    pub fn facts(&self) -> &[Fact] {
         &self.facts
     }
 

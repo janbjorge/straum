@@ -114,6 +114,11 @@ impl Rollup {
         self.cells.len()
     }
 
+    /// Drops every cell, as when the table is emptied.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let cell = self.cells.entry(self.key(row)).or_insert_with(|| Cell {
@@ -278,6 +283,10 @@ impl DimTable {
 
     pub fn delete(&mut self, key: &Datum) -> Result<(), RowError> {
         self.rows.remove(key).map(drop).ok_or(RowError::Missing)
+    }
+
+    pub fn clear(&mut self) {
+        self.rows.clear();
     }
 
     pub(crate) fn get(&self, key: &Datum) -> Option<&[Datum]> {

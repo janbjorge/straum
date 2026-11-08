@@ -201,7 +201,7 @@ flowchart TD
   k -->|Insert| i["fact: add row<br/>dim: upsert row"]
   k -->|Update| u["fact: remove old row, add new<br/>dim: upsert, delete old key if it changed"]
   k -->|Delete| d["fact: remove old row<br/>dim: delete key"]
-  k -->|Truncate| t["reload the table"]
+  k -->|Truncate| t["empty the table"]
   k -->|Relation| r["compare with the spec<br/>changed: reload the fact, or not ready"]
   k -->|Commit| c["publish: rollups and commit LSN"]
 ```
@@ -210,13 +210,29 @@ Old values: by default pgoutput sends only the key on DELETE and no old values
 on an UPDATE that leaves the key alone. Only REPLICA IDENTITY FULL sends the
 whole old row (POSTGRES-REPLICATION.md §3, R). So:
 
-- `append` facts need inserts only. An UPDATE or DELETE on one reloads the
-  fact.
+- `append` facts need inserts only, so they need no FULL. An UPDATE or
+  DELETE that comes without the old row reads the fact again.
 - Mutable facts need the old row to take it out of its cell. Either the table
   gets REPLICA IDENTITY FULL, which writes the old row to WAL on every UPDATE
   and DELETE on the primary, or weir keeps a key-to-row store of each row's
   rollup key and inputs. Open question (PLAN.md).
 - Dims need only the key: upsert on insert and update, delete by key.
+- Truncate empties the table in place. Changes before it in the transaction
+  are gone, changes after it apply.
+
+Reading one table again: a change weir can't apply (no old row, a row that
+doesn't fit the rollup, a changed Relation) reads that table again while the
+others keep streaming (`crates/weir-app/src/app.rs`):
+
+- The table is emptied and loaded from a new snapshot at LSN `at`. On
+  PostgreSQL that is a second connection with its own temporary slot (M4, I).
+- The stream is behind `at`. Commits up to `at` are already in the load, so
+  they skip the table; later ones apply.
+- Asks that read the table, or a dim it refs, answer not ready until the
+  stream passes `at`. Asks on other facts answer at the stream's LSN.
+
+A commit's LSN is the end of its commit record, so "up to `at`" means the
+commits that end at or before it (I, to confirm in M4).
 
 Schema drift: pgoutput resets `schema_sent` when a table's relcache entry is
 invalidated (`src/backend/replication/pgoutput/pgoutput.c:2122-2128`, R), so it
@@ -294,8 +310,11 @@ Clean architecture as Cargo crates:
 
 - `weir-domain`: spec, asks, rollups and the store. No I/O, no dependencies.
 - `weir-notation`: parses spec text into a `Spec`.
-- `weir-app` (M3): use cases (load fact, apply commit, answer ask, reload fact)
-  behind ports (change source, loader, catalog).
+- `weir-app` (M3): the use cases behind one port, `Source`: setup check,
+  snapshot loads and the commit stream. `App::step` loads every table,
+  applies a commit or reads a table again; `App::ask` answers with the LSN.
+  One port, because the first load reads the snapshot of the slot the stream
+  comes from, on the same connection.
 - `weir-pg` (M4): catalog checks, snapshot load, pgoutput decoding.
 - `weir-http` (M5): JSON asks, zone lookup, health and metrics.
 - `weir`: the binary that wires them together.
@@ -331,8 +350,8 @@ stateDiagram-v2
   temporary slot before the new one exists.
 - A spec change rolls the Deployment through a checksum annotation on the
   ConfigMap. The new pod loads from scratch.
-- How one fact reloads while the others keep streaming is worked out in M3 and
-  M4 (I).
+- Reload reads one table again while the others keep streaming (§4b). Any
+  other failure, a source error or a load behind the stream, means Resync.
 
 ## 8. RAM only
 

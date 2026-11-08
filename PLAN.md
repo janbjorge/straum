@@ -65,6 +65,19 @@ Tests:
 - 2026-11-08: Sum, avg, min and max read integers: integer columns, and
   numeric columns as scaled `i64` (M4 checks the catalog). Sums are `i128`,
   which can't overflow below 2^64 rows.
+- 2026-11-08: One port, `Source`. The first load reads the snapshot of the
+  slot the stream comes from, on the same connection, so loading and
+  streaming are not split. `Source::open` checks the setup.
+- 2026-11-08: One writer applies commits in order (`App::step`); after a
+  failure weir is not ready and the next step starts over from a new stream.
+  How asks read while the writer applies is settled in M5.
+- 2026-11-08: A change weir can't apply reads that table again at LSN `at`:
+  an update or delete on a fact without the old row, a row that doesn't fit,
+  an altered table. Commits up to `at` skip the table, and asks on it answer
+  not ready until the stream passes `at`. Other tables keep answering.
+- 2026-11-08: Truncate empties the table in place, no reload. A fact applies
+  updates and deletes whenever the old row comes (`REPLICA IDENTITY FULL`),
+  `append` or not.
 - 2026-11-08: An ask names a time zone (e.g. `Europe/Oslo`). The HTTP
   adapter (M5) turns the name into the zone's UTC offsets over the ask's
   range, so the domain holds no zone data. Buckets stay UTC. Hours follow the
@@ -131,12 +144,18 @@ Touches: `crates/weir-domain`.
 ## M3: application layer
 
 Goal: use cases behind ports, runnable end to end without PostgreSQL.
-Touches: `crates/weir-app`.
+Touches: `crates/weir-app`, `crates/weir-domain`.
 
-- [ ] Ports: change source, initial loader, catalog
-- [ ] Use cases: load fact, apply commit, answer ask, reload fact
-- [ ] In-memory fakes; full flow tested with them
-- [ ] Gate passes
+- [x] One port, `Source`: setup check and new stream (`open`), snapshot
+      loads (`load_fact`, `load_dim`), and the commit stream (`next_commit`)
+- [x] Use cases in `App::step`: load every table, apply a commit, read a
+      table again; and `App::ask`, which answers with the LSN it reflects
+- [x] In-memory PostgreSQL as a fake source; random writes, dropped
+      connections and reloads checked against a fresh load at the same LSN;
+      each change that can't apply tested for a reload; 22 planted bugs all
+      caught
+- [x] Gate passes: 99.75% lines over `weir-domain`, `weir-notation` and
+      `weir-app`; the 3 missed lines are `unreachable!` arms
 
 ## M4: PostgreSQL adapter
 
@@ -144,7 +163,11 @@ Goal: feed the use cases from a real PostgreSQL 18.
 Touches: `crates/weir-pg`.
 
 - [ ] Catalog check: column types, dim key unique, replica identity
-- [ ] Temporary slot, exported snapshot, initial `GROUP BY` load
+- [ ] Temporary slot, exported snapshot, initial `GROUP BY` load; the domain
+      takes grouped cells, since the load reads cells, not rows
+- [ ] Confirm that a load at the slot's consistent point holds exactly the
+      commits whose end LSN is at or before it (`Commit::lsn`)
+- [ ] Reading one table again from a second connection's snapshot
 - [ ] pgoutput decoding; Relation messages checked against the spec
 - [ ] `weir plan`: print role, grant and publication SQL
 - [ ] Taxi end to end: load, replay changes, compare asks with PostgreSQL
