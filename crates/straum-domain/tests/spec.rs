@@ -51,6 +51,22 @@ fn fact() -> Fact {
 }
 
 #[test]
+fn which_measures_read_numbers() {
+    let x = || id("x");
+    let cases = [
+        (Agg::Sum(x()), true),
+        (Agg::Min(x()), true),
+        (Agg::Max(x()), true),
+        (Agg::Avg(x()), true),
+        (Agg::CountDistinct(x()), false),
+        (Agg::Count, false),
+    ];
+    for (agg, numbers) in cases {
+        assert_eq!(agg.reads_numbers(), numbers, "{agg:?}");
+    }
+}
+
+#[test]
 fn valid() {
     assert!(Spec::new(vec![dim()], vec![fact()]).is_ok());
 }

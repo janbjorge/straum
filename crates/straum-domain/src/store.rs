@@ -2,12 +2,13 @@
 //! from them.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::iter;
 
+use crate::agg::Partial;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
-use crate::rollup::{Cells, DimTable, Rollup, State};
-use crate::spec::{Agg, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
+use crate::rollup::{Cells, DimTable, Rollup};
+use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{Datum, Value};
 
 /// Panic message for names that `Spec::new` or `Spec::check` resolved.
@@ -124,7 +125,7 @@ impl Store {
             let merge = |partials: &mut [Partial]| {
                 for (partial, m) in partials.iter_mut().zip(&measures) {
                     if all_hold(&m.filter, &at) {
-                        partial.merge(rows, states, m.state);
+                        partial.merge(rows, m.state.map(|i| &states[i]));
                     }
                 }
             };
@@ -282,72 +283,4 @@ struct Asked<'a> {
     /// See [`Rollup::state_of`].
     state: Option<usize>,
     filter: Vec<Condition<'a>>,
-}
-
-/// One measure merged over the cells of one group.
-#[derive(Clone)]
-enum Partial {
-    Count(u64),
-    Sum { sum: i128, count: u64 },
-    Avg { sum: i128, count: u64 },
-    Min(Option<i64>),
-    Max(Option<i64>),
-    Distinct(HashSet<Datum>),
-}
-
-impl Partial {
-    fn new(agg: &Agg) -> Partial {
-        match agg {
-            Agg::Count => Partial::Count(0),
-            Agg::Sum(_) => Partial::Sum { sum: 0, count: 0 },
-            Agg::Avg(_) => Partial::Avg { sum: 0, count: 0 },
-            Agg::Min(_) => Partial::Min(None),
-            Agg::Max(_) => Partial::Max(None),
-            Agg::CountDistinct(_) => Partial::Distinct(HashSet::new()),
-        }
-    }
-
-    fn merge(&mut self, rows: u64, states: &[State], state: Option<usize>) {
-        match (self, state.map(|i| &states[i])) {
-            (Partial::Count(count), None) => *count += rows,
-            (
-                Partial::Sum { sum, count } | Partial::Avg { sum, count },
-                Some(State::Sum {
-                    sum: cell_sum,
-                    count: cell_count,
-                }),
-            ) => {
-                *sum += cell_sum;
-                *count += cell_count;
-            }
-            (Partial::Min(min), Some(State::Extent { counts, min: v, .. })) => {
-                if !counts.is_empty() {
-                    *min = Some(min.map_or(*v, |m| m.min(*v)));
-                }
-            }
-            (Partial::Max(max), Some(State::Extent { counts, max: v, .. })) => {
-                if !counts.is_empty() {
-                    *max = Some(max.map_or(*v, |m| m.max(*v)));
-                }
-            }
-            (Partial::Distinct(seen), Some(State::Distinct(counts))) => {
-                seen.extend(counts.keys().cloned());
-            }
-            _ => unreachable!("Rollup::state_of gives the state the measure reads"),
-        }
-    }
-
-    fn finish(self) -> Value {
-        match self {
-            Partial::Count(count) => Value::Int(count.into()),
-            Partial::Sum { count: 0, .. }
-            | Partial::Avg { count: 0, .. }
-            | Partial::Min(None)
-            | Partial::Max(None) => Value::Null,
-            Partial::Sum { sum, .. } => Value::Int(sum),
-            Partial::Avg { sum, count } => Value::Avg { sum, count },
-            Partial::Min(Some(v)) | Partial::Max(Some(v)) => Value::Int(v.into()),
-            Partial::Distinct(seen) => Value::Int(seen.len() as i128),
-        }
-    }
 }

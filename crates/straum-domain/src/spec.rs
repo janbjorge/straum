@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::iter;
 
+use crate::agg::Agg;
 use crate::ident::Ident;
 
 /// Seconds per day. Every grain divides it, so buckets roll up to days.
@@ -68,28 +69,6 @@ pub struct Measure {
     pub agg: Agg,
     /// A row counts only when every condition holds.
     pub filter: Vec<Cond>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Agg {
-    Count,
-    Sum(Ident),
-    Min(Ident),
-    Max(Ident),
-    Avg(Ident),
-    CountDistinct(Ident),
-}
-
-impl Agg {
-    /// The column the measure reads; `None` for count.
-    pub fn input(&self) -> Option<&Ident> {
-        match self {
-            Agg::Count => None,
-            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) | Agg::CountDistinct(c) => {
-                Some(c)
-            }
-        }
-    }
 }
 
 /// `path = value`, or `path in (values)` with more than one value.

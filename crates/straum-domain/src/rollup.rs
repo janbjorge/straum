@@ -5,8 +5,9 @@ use std::fmt;
 use std::iter;
 use std::num::NonZeroU64;
 
+use crate::agg::Agg;
 use crate::ident::Ident;
-use crate::spec::{Agg, Dim, Fact};
+use crate::spec::{Dim, Fact};
 use crate::value::Datum;
 
 /// Row position of the time column.
@@ -191,21 +192,29 @@ struct Input {
     column: usize,
 }
 
+/// A form of [`State`], which [`Agg::state`] picks per measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Sum,
     Extent,
     Distinct,
 }
 
 impl Kind {
-    /// The state a measure reads, and from which column; `None` for count.
-    fn of(agg: &Agg) -> Option<(Kind, &Ident)> {
-        match agg {
-            Agg::Count => None,
-            Agg::Sum(c) | Agg::Avg(c) => Some((Kind::Sum, c)),
-            Agg::Min(c) | Agg::Max(c) => Some((Kind::Extent, c)),
-            Agg::CountDistinct(c) => Some((Kind::Distinct, c)),
+    /// Whether the state reads integers.
+    pub(crate) fn numeric(self) -> bool {
+        match self {
+            Kind::Sum | Kind::Extent => true,
+            Kind::Distinct => false,
+        }
+    }
+
+    /// Whether a load sums the input in PostgreSQL. Otherwise it groups by
+    /// the input and adds each value with its row count.
+    fn summed(self) -> bool {
+        match self {
+            Kind::Sum => true,
+            Kind::Extent | Kind::Distinct => false,
         }
     }
 }
@@ -233,7 +242,7 @@ impl Rollup {
         let key_len = fact.by.len() + fact.refs.len();
         let mut inputs = Vec::new();
         for m in &fact.measures {
-            let Some((kind, name)) = Kind::of(&m.agg) else {
+            let Some((kind, name)) = m.agg.state() else {
                 continue;
             };
             let column = columns.iter().position(|c| c == name).expect(COLUMNS);
@@ -244,13 +253,13 @@ impl Rollup {
         }
         let mut grouped: Vec<usize> = (0..=key_len).collect();
         for input in &inputs {
-            if input.kind != Kind::Sum && !grouped.contains(&input.column) {
+            if !input.kind.summed() && !grouped.contains(&input.column) {
                 grouped.push(input.column);
             }
         }
         let summed = inputs
             .iter()
-            .filter(|i| i.kind == Kind::Sum && !grouped.contains(&i.column))
+            .filter(|i| i.kind.summed() && !grouped.contains(&i.column))
             .map(|i| i.column)
             .collect();
         let levels = iter::once(fact.time.grain)
@@ -317,15 +326,12 @@ impl Rollup {
         self.scales[1 + slot]
     }
 
-    /// The scale a measure answers in: its input's, or 0 for a count.
+    /// The scale a measure answers in, from its input's.
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
-        match agg {
-            Agg::Count | Agg::CountDistinct(_) => 0,
-            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
-                let column = self.columns.iter().position(|n| n == c).expect(COLUMNS);
-                self.scales[column]
-            }
-        }
+        let input = agg.input().map_or(0, |c| {
+            self.scales[self.columns.iter().position(|n| n == c).expect(COLUMNS)]
+        });
+        agg.scale(input)
     }
 
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
@@ -422,7 +428,7 @@ impl Rollup {
     /// Where a measure reads its cell state; `None` for count, which reads
     /// the row count.
     pub(crate) fn state_of(&self, agg: &Agg) -> Option<usize> {
-        let (kind, name) = Kind::of(agg)?;
+        let (kind, name) = agg.state()?;
         let column = self.columns.iter().position(|c| c == name)?;
         self.inputs
             .iter()
@@ -490,7 +496,7 @@ impl Rollup {
         let ints = self
             .inputs
             .iter()
-            .filter(|i| i.kind != Kind::Distinct)
+            .filter(|i| i.kind.numeric())
             .map(|i| i.column);
         for column in iter::once(TIME).chain(ints) {
             if !matches!(row[column], Datum::Null | Datum::Int(_)) {

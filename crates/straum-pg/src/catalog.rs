@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::iter;
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{Agg, Dim, Fact, Ident, Key, Literal, Spec};
+use straum_domain::{Dim, Fact, Ident, Key, Literal, Spec};
 
 use crate::error::Error;
 use crate::value::Kind;
@@ -324,12 +324,14 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     roles.extend(fact.by.iter().map(|c| (c, Role::Key)));
     roles.extend(fact.refs.iter().map(|r| (&r.via, Role::Key)));
     for m in &fact.measures {
-        let role = match &m.agg {
-            Agg::Count => continue,
-            Agg::CountDistinct(_) => Role::Key,
-            Agg::Sum(_) | Agg::Min(_) | Agg::Max(_) | Agg::Avg(_) => Role::Number,
+        let Some(column) = m.agg.input() else {
+            continue;
         };
-        let column = m.agg.input().expect("only count has no input");
+        let role = if m.agg.reads_numbers() {
+            Role::Number
+        } else {
+            Role::Key
+        };
         roles.push((column, role));
     }
     roles
