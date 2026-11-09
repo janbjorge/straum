@@ -198,7 +198,7 @@ fn an_ask_stays_within_its_time_per_cell() {
     const REPS: u32 = 20;
     let store = store(CELLS);
     let hours = CELLS / (2 * ZONES);
-    for (by, budget) in [(&[][..], 30.0), (&["pickup.borough"], 120.0)] {
+    for (by, budget) in [(&[][..], 4.0), (&["pickup.borough"], 10.0)] {
         let ask = ask(by, 0, hours);
         store.ask(&ask).unwrap();
         let clock = Instant::now();

@@ -228,6 +228,15 @@ Tests:
   `GET /status`. The image has no shell or curl, so the binary is the
   client: `kubectl exec deployment/straum -- /straum status`. `App` keeps
   starts, failures and the last failure again for it.
+- 2026-11-09: An ask runs a bucket at a time and a column at a time: a
+  filter pass and a group pass over the bucket's cell keys, then one merge
+  loop per measure over its input's column. Cell states are kept as one
+  column per input, still one enum of forms and no trait. Conditions and
+  dim keys are worked out once per code an ask meets, and key values are
+  numbered without hashing: slot keys by their codes, dim keys by the dim
+  column's own codes, time keys in time order. Partials keep four copies
+  per group, so adds to one group don't wait on each other. On the taxi
+  month in process, the bench asks went from 9 to 70 ns a cell to 1 to 7.
 
 ## M0: notation and domain model
 

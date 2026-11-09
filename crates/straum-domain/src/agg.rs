@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::ident::Ident;
-use crate::rollup::{Kind, State};
+use crate::rollup::{Column, Kind};
 use crate::value::{Datum, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,73 +51,197 @@ impl Agg {
     }
 }
 
-/// One measure merged over the cells of one group.
-#[derive(Clone)]
-pub(crate) enum Partial {
-    Count(u64),
-    Sum { sum: i128, count: u64 },
-    Avg { sum: i128, count: u64 },
-    Min(Option<i64>),
-    Max(Option<i64>),
-    Distinct(HashSet<Datum>),
+/// Copies of each group's partial, cell `i` merging into copy `i % LANES`.
+/// Most cells of a bucket can fall in one group, and adds to one place in
+/// memory each wait on the last; spread over copies, they overlap.
+const LANES: usize = 4;
+
+/// Where cell `i` of group `g` merges.
+fn lane(i: usize, g: u32) -> usize {
+    g as usize * LANES + i % LANES
 }
 
-impl Partial {
-    /// The measure over no cells.
-    pub(crate) fn new(agg: &Agg) -> Partial {
+/// One measure merged over cells, per group: entries `g * LANES..` are
+/// group `g`'s. Group 0 takes the cells an ask passes over, so merging needs
+/// no test per cell; [`Partials::finish`] never reads it.
+pub(crate) enum Partials {
+    Count(Vec<u64>),
+    Sum {
+        sums: Vec<i128>,
+        counts: Vec<u64>,
+    },
+    Avg {
+        sums: Vec<i128>,
+        counts: Vec<u64>,
+    },
+    /// The least value, or `i64::MAX` while there is none, and whether
+    /// there is one.
+    Min {
+        values: Vec<i64>,
+        seen: Vec<bool>,
+    },
+    Max {
+        values: Vec<i64>,
+        seen: Vec<bool>,
+    },
+    Distinct(Vec<HashSet<Datum>>),
+}
+
+impl Partials {
+    /// The measure over no cells, for no groups.
+    pub(crate) fn new(agg: &Agg) -> Partials {
         match agg {
-            Agg::Count => Partial::Count(0),
-            Agg::Sum(_) => Partial::Sum { sum: 0, count: 0 },
-            Agg::Avg(_) => Partial::Avg { sum: 0, count: 0 },
-            Agg::Min(_) => Partial::Min(None),
-            Agg::Max(_) => Partial::Max(None),
-            Agg::CountDistinct(_) => Partial::Distinct(HashSet::new()),
+            Agg::Count => Partials::Count(Vec::new()),
+            Agg::Sum(_) => Partials::Sum {
+                sums: Vec::new(),
+                counts: Vec::new(),
+            },
+            Agg::Avg(_) => Partials::Avg {
+                sums: Vec::new(),
+                counts: Vec::new(),
+            },
+            Agg::Min(_) => Partials::Min {
+                values: Vec::new(),
+                seen: Vec::new(),
+            },
+            Agg::Max(_) => Partials::Max {
+                values: Vec::new(),
+                seen: Vec::new(),
+            },
+            Agg::CountDistinct(_) => Partials::Distinct(Vec::new()),
         }
     }
 
-    /// Merges a cell of `rows` rows, whose state `state` is the one
-    /// [`Agg::state`] names.
-    pub(crate) fn merge(&mut self, rows: u64, state: Option<&State>) {
-        match (self, state) {
-            (Partial::Count(count), None) => *count += rows,
+    /// Makes room for groups `0..groups`, the new ones over no cells.
+    pub(crate) fn grow(&mut self, groups: usize) {
+        let lanes = groups * LANES;
+        match self {
+            Partials::Count(counts) => counts.resize(lanes, 0),
+            Partials::Sum { sums, counts } | Partials::Avg { sums, counts } => {
+                sums.resize(lanes, 0);
+                counts.resize(lanes, 0);
+            }
+            Partials::Min { values, seen } => {
+                values.resize(lanes, i64::MAX);
+                seen.resize(lanes, false);
+            }
+            Partials::Max { values, seen } => {
+                values.resize(lanes, i64::MIN);
+                seen.resize(lanes, false);
+            }
+            // A set per lane would cost a merge of sets; one per group.
+            Partials::Distinct(seen) => seen.resize_with(groups, HashSet::new),
+        }
+    }
+
+    /// Merges cell `i` of a bucket into group `groups[i]`, given each
+    /// cell's row count and the column [`Agg::state`] names.
+    pub(crate) fn merge(&mut self, groups: &[u32], rows: &[u64], column: Option<&Column>) {
+        if let Some(&g) = groups.first()
+            && groups.iter().all(|&h| h == g)
+        {
+            return self.merge_into(g, rows, column);
+        }
+        let cells = groups.iter().enumerate().map(|(i, &g)| lane(i, g));
+        match (self, column) {
+            (Partials::Count(counts), None) => {
+                for (g, &n) in cells.zip(rows) {
+                    counts[g] += n;
+                }
+            }
             (
-                Partial::Sum { sum, count } | Partial::Avg { sum, count },
-                Some(State::Sum {
-                    sum: cell_sum,
-                    count: cell_count,
+                Partials::Sum { sums, counts } | Partials::Avg { sums, counts },
+                Some(Column::Sum {
+                    sums: cell_sums,
+                    counts: cell_counts,
                 }),
             ) => {
-                *sum += cell_sum;
-                *count += cell_count;
-            }
-            (Partial::Min(min), Some(State::Extent { counts, min: v, .. })) => {
-                if !counts.is_empty() {
-                    *min = Some(min.map_or(*v, |m| m.min(*v)));
+                for (g, (&sum, &count)) in cells.zip(cell_sums.iter().zip(cell_counts)) {
+                    sums[g] += sum;
+                    counts[g] += count;
                 }
             }
-            (Partial::Max(max), Some(State::Extent { counts, max: v, .. })) => {
-                if !counts.is_empty() {
-                    *max = Some(max.map_or(*v, |m| m.max(*v)));
+            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                for (g, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
+                    values[g] = values[g].min(min);
+                    seen[g] |= min <= max;
                 }
             }
-            (Partial::Distinct(seen), Some(State::Distinct(counts))) => {
-                seen.extend(counts.keys().cloned());
+            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                for (g, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
+                    values[g] = values[g].max(max);
+                    seen[g] |= min <= max;
+                }
             }
-            _ => unreachable!("Agg::state names the state the measure reads"),
+            (Partials::Distinct(seen), Some(Column::Distinct(counts))) => {
+                // Unlike a sum, a value set costs its group 0 merge.
+                for (&g, counts) in groups.iter().zip(counts).filter(|&(&g, _)| g != 0) {
+                    seen[g as usize].extend(counts.keys().cloned());
+                }
+            }
+            _ => unreachable!("Agg::state names the column the measure reads"),
         }
     }
 
-    pub(crate) fn finish(self) -> Value {
+    /// As [`Partials::merge`] when every cell goes to group `g`, as when an
+    /// ask has no `by`. Folding in registers beats adding to one place in
+    /// memory, each add waiting on the last.
+    fn merge_into(&mut self, g: u32, rows: &[u64], column: Option<&Column>) {
+        let (at, g) = (lane(0, g), g as usize);
+        match (self, column) {
+            (Partials::Count(counts), None) => counts[at] += rows.iter().sum::<u64>(),
+            (
+                Partials::Sum { sums, counts } | Partials::Avg { sums, counts },
+                Some(Column::Sum {
+                    sums: cell_sums,
+                    counts: cell_counts,
+                }),
+            ) => {
+                sums[at] += cell_sums.iter().sum::<i128>();
+                counts[at] += cell_counts.iter().sum::<u64>();
+            }
+            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                values[at] = mins.iter().fold(values[at], |a, &b| a.min(b));
+                seen[at] |= mins.iter().zip(maxs).any(|(a, b)| a <= b);
+            }
+            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                values[at] = maxs.iter().fold(values[at], |a, &b| a.max(b));
+                seen[at] |= mins.iter().zip(maxs).any(|(a, b)| a <= b);
+            }
+            (Partials::Distinct(seen), Some(Column::Distinct(counts))) if g != 0 => {
+                seen[g].extend(counts.iter().flat_map(|c| c.keys().cloned()));
+            }
+            (Partials::Distinct(_), Some(Column::Distinct(_))) => {}
+            _ => unreachable!("Agg::state names the column the measure reads"),
+        }
+    }
+
+    /// Group `g`'s answer, its lanes merged.
+    pub(crate) fn finish(&self, g: usize) -> Value {
+        let lanes = g * LANES..(g + 1) * LANES;
         match self {
-            Partial::Count(count) => Value::Int(count.into()),
-            Partial::Sum { count: 0, .. }
-            | Partial::Avg { count: 0, .. }
-            | Partial::Min(None)
-            | Partial::Max(None) => Value::Null,
-            Partial::Sum { sum, .. } => Value::Int(sum),
-            Partial::Avg { sum, count } => Value::Avg { sum, count },
-            Partial::Min(Some(v)) | Partial::Max(Some(v)) => Value::Int(v.into()),
-            Partial::Distinct(seen) => Value::Int(seen.len() as i128),
+            Partials::Count(counts) => Value::Int(counts[lanes].iter().sum::<u64>().into()),
+            Partials::Sum { sums, counts } | Partials::Avg { sums, counts } => {
+                let count: u64 = counts[lanes.clone()].iter().sum();
+                let sum: i128 = sums[lanes].iter().sum();
+                match self {
+                    _ if count == 0 => Value::Null,
+                    Partials::Avg { .. } => Value::Avg { sum, count },
+                    _ => Value::Int(sum),
+                }
+            }
+            Partials::Min { seen, .. } | Partials::Max { seen, .. }
+                if !seen[lanes.clone()].contains(&true) =>
+            {
+                Value::Null
+            }
+            Partials::Min { values, .. } => {
+                Value::Int(values[lanes].iter().fold(i64::MAX, |a, &b| a.min(b)).into())
+            }
+            Partials::Max { values, .. } => {
+                Value::Int(values[lanes].iter().fold(i64::MIN, |a, &b| a.max(b)).into())
+            }
+            Partials::Distinct(seen) => Value::Int(seen[g].len() as i128),
         }
     }
 }

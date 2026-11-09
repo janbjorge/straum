@@ -171,7 +171,9 @@ The answer:
 A rollup has one cell per rollup key. A cell holds its row count and one state
 per input column, shared by the measures that read that column
 (`crates/straum-domain/src/rollup.rs`). Cells are kept per bucket, side by
-side, so an ask reads only the buckets in its range. Each rollup-key column
+side, so an ask reads only the buckets in its range. Each input's states sit
+in flat columns of their own, so an ask merges a measure in one loop over a
+column (PLAN.md 2026-11-09). Each rollup-key column
 keeps its values once, under small codes, and a cell key is those codes.
 With `buckets`, every wider width keeps its own cells too, and each row goes
 into one cell per width. An ask reads its range from the widest buckets that
@@ -181,7 +183,7 @@ add about 15% to the hourly cells (modelled, PLAN.md 2026-11-09).
 
 - sum and avg share the column's sum (`i128`) and count of non-null values;
 - min and max share a count per value, so deleting the current extreme reveals
-  the next one;
+  the next one, and the current extremes beside it, so an ask reads no tree;
 - count distinct keeps a count per value.
 
 Rows are added and removed, and a cell goes with its last row. Removing a row
@@ -191,7 +193,9 @@ sum, avg, min and max read integers: integer columns, and numeric columns as
 scaled `i64` (checked against the catalog in M5). An `i128` sum of `i64` values
 can't overflow below 2^64 rows. Float columns are an open question.
 
-Dims are kept as rows by key and read at ask time.
+Dims are kept as rows by key and read at ask time, once per ref code an ask
+meets. Like rollup keys, each dim column keeps its values under codes, so an
+ask groups by a dim attribute without hashing its values.
 
 Memory follows cells, not rows, as long as rows collapse into far fewer cells.
 They don't always. On the taxi spec M1 measured 2,964,624 trips in 2,322,783

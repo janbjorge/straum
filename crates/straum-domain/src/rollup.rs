@@ -70,8 +70,8 @@ impl Level {
         let bucket = self.bucket(time);
         let cells = (self.buckets)
             .entry(bucket)
-            .or_insert_with(|| Cells::new(key.len(), inputs.len()));
-        let (i, new) = cells.entry(key, inputs);
+            .or_insert_with(|| Cells::new(key.len(), inputs));
+        let (i, new) = cells.entry(key);
         (cells, i, new)
     }
 }
@@ -97,30 +97,28 @@ impl Codes {
 }
 
 /// The cells of one bucket, side by side: cell `i` has key
-/// `keys[i * width..][..width]`, `rows[i]` rows and states
-/// `states[i * inputs..][..inputs]`.
+/// `keys[i * width..][..width]`, `rows[i]` rows and entry `i` of each
+/// column, so an ask reads each measure's states as one flat run.
 #[derive(Debug)]
 pub(crate) struct Cells {
     /// Codes per key.
     width: usize,
-    /// States per cell.
-    inputs: usize,
     /// Cell position by key.
     index: HashMap<Box<[u32]>, usize>,
     keys: Vec<u32>,
     rows: Vec<u64>,
-    states: Vec<State>,
+    /// One per input, in [`Rollup`] input order.
+    columns: Vec<Column>,
 }
 
 impl Cells {
-    fn new(width: usize, inputs: usize) -> Cells {
+    fn new(width: usize, inputs: &[Input]) -> Cells {
         Cells {
             width,
-            inputs,
             index: HashMap::new(),
             keys: Vec::new(),
             rows: Vec::new(),
-            states: Vec::new(),
+            columns: inputs.iter().map(|i| Column::new(i.kind)).collect(),
         }
     }
 
@@ -128,19 +126,28 @@ impl Cells {
         self.rows.len()
     }
 
-    /// Each cell's key codes, rows and states.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u32], u64, &[State])> {
-        (0..self.len()).map(|i| {
-            (
-                &self.keys[i * self.width..][..self.width],
-                self.rows[i],
-                &self.states[i * self.inputs..][..self.inputs],
-            )
-        })
+    /// Cell `i`'s key codes.
+    pub(crate) fn key(&self, i: usize) -> &[u32] {
+        &self.keys[i * self.width..][..self.width]
+    }
+
+    /// Cell `i`'s code in key position `slot`.
+    pub(crate) fn code(&self, i: usize, slot: usize) -> u32 {
+        self.keys[i * self.width + slot]
+    }
+
+    /// Each cell's row count.
+    pub(crate) fn rows(&self) -> &[u64] {
+        &self.rows
+    }
+
+    /// Each cell's state of input `input`.
+    pub(crate) fn column(&self, input: usize) -> &Column {
+        &self.columns[input]
     }
 
     /// The position of the cell with `key`, made empty if it's new.
-    fn entry(&mut self, key: &[u32], inputs: &[Input]) -> (usize, bool) {
+    fn entry(&mut self, key: &[u32]) -> (usize, bool) {
         if let Some(&i) = self.index.get(key) {
             return (i, false);
         }
@@ -148,36 +155,27 @@ impl Cells {
         self.index.insert(key.into(), i);
         self.keys.extend_from_slice(key);
         self.rows.push(0);
-        self.states
-            .extend(inputs.iter().map(|input| State::new(input.kind)));
+        self.columns.iter_mut().for_each(Column::push);
         (i, true)
-    }
-
-    fn states_mut(&mut self, i: usize) -> &mut [State] {
-        &mut self.states[i * self.inputs..][..self.inputs]
     }
 
     /// Drops cell `i`; the last cell takes its place.
     fn swap_remove(&mut self, i: usize) {
         let last = self.len() - 1;
-        let key = &self.keys[i * self.width..][..self.width];
-        self.index.remove(key);
+        self.index
+            .remove(&self.keys[i * self.width..][..self.width]);
         if i != last {
-            let moved = self.keys[last * self.width..][..self.width].to_vec();
+            let moved = self.key(last).to_vec();
             self.keys
                 .copy_within(last * self.width..(last + 1) * self.width, i * self.width);
             *self
                 .index
                 .get_mut(moved.as_slice())
                 .expect("every cell is indexed") = i;
-            for j in 0..self.inputs {
-                self.states
-                    .swap(i * self.inputs + j, last * self.inputs + j);
-            }
         }
         self.keys.truncate(last * self.width);
-        self.states.truncate(last * self.inputs);
         self.rows.swap_remove(i);
+        self.columns.iter_mut().for_each(|c| c.swap_remove(i));
     }
 }
 
@@ -192,7 +190,7 @@ struct Input {
     column: usize,
 }
 
-/// A form of [`State`], which [`Agg::state`] picks per measure.
+/// A form of [`Column`], which [`Agg::state`] picks per measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Sum,
@@ -219,20 +217,22 @@ impl Kind {
     }
 }
 
+/// One input's state per cell of a bucket, entry `i` being cell `i`'s.
 #[derive(Debug)]
-pub(crate) enum State {
+pub(crate) enum Column {
     /// Sum and count of the non-null values.
-    Sum { sum: i128, count: u64 },
+    Sum { sums: Vec<i128>, counts: Vec<u64> },
     /// Count per value, so removing the min or max reveals the next one.
-    /// `min` and `max` mirror its ends, so an ask reads them without walking
-    /// the tree; they mean nothing while it is empty.
+    /// `mins` and `maxs` mirror each tree's ends, so an ask reads them
+    /// without walking it. An empty tree's are `i64::MAX` and `i64::MIN`,
+    /// which any min or max passes over: a merge needs no test for empty.
     Extent {
-        counts: BTreeMap<i64, u64>,
-        min: i64,
-        max: i64,
+        mins: Vec<i64>,
+        maxs: Vec<i64>,
+        counts: Vec<BTreeMap<i64, u64>>,
     },
     /// Count per value.
-    Distinct(HashMap<Datum, u64>),
+    Distinct(Vec<HashMap<Datum, u64>>),
 }
 
 impl Rollup {
@@ -343,8 +343,8 @@ impl Rollup {
                 self.cells += usize::from(new);
             }
             cells.rows[i] += 1;
-            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-                state.add(&row[input.column], 1);
+            for (column, input) in cells.columns.iter_mut().zip(&self.inputs) {
+                column.add(i, &row[input.column], 1);
             }
         }
         Ok(())
@@ -381,14 +381,11 @@ impl Rollup {
             }
             cells.rows[i] += rows.get();
             let mut sums = sums.iter();
-            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-                match state {
-                    State::Sum { sum, count } if !self.grouped.contains(&input.column) => {
-                        let group = sums.next().expect("one per summed column");
-                        *sum += group.sum;
-                        *count += group.count;
-                    }
-                    _ => state.add(&row[input.column], rows.get()),
+            for (column, input) in cells.columns.iter_mut().zip(&self.inputs) {
+                if input.kind.summed() && !self.grouped.contains(&input.column) {
+                    column.add_sum(i, sums.next().expect("one per summed column"));
+                } else {
+                    column.add(i, &row[input.column], rows.get());
                 }
             }
         }
@@ -408,8 +405,8 @@ impl Rollup {
             let bucket = level.bucket(&row[TIME]);
             let cells = level.buckets.get_mut(&bucket).ok_or(RowError::Missing)?;
             let i = *cells.index.get(key.as_slice()).ok_or(RowError::Missing)?;
-            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-                state.remove(&row[input.column])?;
+            for (column, input) in cells.columns.iter_mut().zip(&self.inputs) {
+                column.remove(i, &row[input.column])?;
             }
             cells.rows[i] -= 1;
             if cells.rows[i] == 0 {
@@ -480,6 +477,11 @@ impl Rollup {
         self.runs(level - 1, last, to, runs);
     }
 
+    /// How many codes rollup-key column `slot` has given out.
+    pub(crate) fn codes(&self, slot: usize) -> usize {
+        self.codes[slot].values.len()
+    }
+
     /// The value under `code` in rollup-key column `slot`.
     pub(crate) fn value(&self, slot: usize, code: u32) -> &Datum {
         &self.codes[slot].values[code as usize]
@@ -517,64 +519,104 @@ impl Rollup {
     }
 }
 
-impl State {
-    fn new(kind: Kind) -> State {
+impl Column {
+    fn new(kind: Kind) -> Column {
         match kind {
-            Kind::Sum => State::Sum { sum: 0, count: 0 },
-            Kind::Extent => State::Extent {
-                counts: BTreeMap::new(),
-                min: 0,
-                max: 0,
+            Kind::Sum => Column::Sum {
+                sums: Vec::new(),
+                counts: Vec::new(),
             },
-            Kind::Distinct => State::Distinct(HashMap::new()),
+            Kind::Extent => Column::Extent {
+                mins: Vec::new(),
+                maxs: Vec::new(),
+                counts: Vec::new(),
+            },
+            Kind::Distinct => Column::Distinct(Vec::new()),
         }
     }
 
-    /// Adds a value that `n` rows hold. Nulls are skipped, as in SQL.
-    fn add(&mut self, value: &Datum, n: u64) {
+    /// Adds an empty cell's state.
+    fn push(&mut self) {
+        match self {
+            Column::Sum { sums, counts } => {
+                sums.push(0);
+                counts.push(0);
+            }
+            Column::Extent { mins, maxs, counts } => {
+                mins.push(i64::MAX);
+                maxs.push(i64::MIN);
+                counts.push(BTreeMap::new());
+            }
+            Column::Distinct(counts) => counts.push(HashMap::new()),
+        }
+    }
+
+    fn swap_remove(&mut self, i: usize) {
+        match self {
+            Column::Sum { sums, counts } => {
+                sums.swap_remove(i);
+                counts.swap_remove(i);
+            }
+            Column::Extent { mins, maxs, counts } => {
+                mins.swap_remove(i);
+                maxs.swap_remove(i);
+                counts.swap_remove(i);
+            }
+            Column::Distinct(counts) => drop(counts.swap_remove(i)),
+        }
+    }
+
+    /// Adds to cell `i` a value that `n` rows hold. Nulls are skipped, as
+    /// in SQL.
+    fn add(&mut self, i: usize, value: &Datum, n: u64) {
         match (self, value) {
             (_, Datum::Null) => {}
-            (State::Sum { sum, count }, Datum::Int(v)) => {
-                *sum += i128::from(*v) * i128::from(n);
-                *count += n;
+            (Column::Sum { sums, counts }, &Datum::Int(v)) => {
+                sums[i] += i128::from(v) * i128::from(n);
+                counts[i] += n;
             }
-            (State::Extent { counts, min, max }, &Datum::Int(v)) => {
-                if counts.is_empty() {
-                    (*min, *max) = (v, v);
-                } else {
-                    (*min, *max) = ((*min).min(v), (*max).max(v));
-                }
-                *counts.entry(v).or_default() += n;
+            (Column::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
+                mins[i] = mins[i].min(v);
+                maxs[i] = maxs[i].max(v);
+                *counts[i].entry(v).or_default() += n;
             }
-            (State::Distinct(counts), v) => *counts.entry(v.clone()).or_default() += n,
+            (Column::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += n,
             _ => unreachable!("Rollup::check lets only integers through"),
         }
     }
 
-    fn remove(&mut self, value: &Datum) -> Result<(), RowError> {
+    /// Adds to cell `i` the sum a load returned.
+    fn add_sum(&mut self, i: usize, sum: &Sum) {
+        let Column::Sum { sums, counts } = self else {
+            unreachable!("only sum inputs are summed");
+        };
+        sums[i] += sum.sum;
+        counts[i] += sum.count;
+    }
+
+    fn remove(&mut self, i: usize, value: &Datum) -> Result<(), RowError> {
         match (self, value) {
             (_, Datum::Null) => {}
-            (State::Sum { sum, count }, Datum::Int(v)) => {
-                *count = count.checked_sub(1).ok_or(RowError::Missing)?;
-                *sum -= i128::from(*v);
+            (Column::Sum { sums, counts }, &Datum::Int(v)) => {
+                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
+                sums[i] -= i128::from(v);
             }
-            (State::Extent { counts, min, max }, Datum::Int(v)) => {
-                let count = counts.get_mut(v).ok_or(RowError::Missing)?;
+            (Column::Extent { mins, maxs, counts }, Datum::Int(v)) => {
+                let tree = &mut counts[i];
+                let count = tree.get_mut(v).ok_or(RowError::Missing)?;
                 *count -= 1;
                 if *count == 0 {
-                    counts.remove(v);
-                    if let (Some((&first, _)), Some((&last, _))) =
-                        (counts.first_key_value(), counts.last_key_value())
-                    {
-                        (*min, *max) = (first, last);
-                    }
+                    tree.remove(v);
+                    mins[i] = tree.first_key_value().map_or(i64::MAX, |(&v, _)| v);
+                    maxs[i] = tree.last_key_value().map_or(i64::MIN, |(&v, _)| v);
                 }
             }
-            (State::Distinct(counts), v) => {
-                let count = counts.get_mut(v).ok_or(RowError::Missing)?;
+            (Column::Distinct(counts), v) => {
+                let tree = &mut counts[i];
+                let count = tree.get_mut(v).ok_or(RowError::Missing)?;
                 *count -= 1;
                 if *count == 0 {
-                    counts.remove(v);
+                    tree.remove(v);
                 }
             }
             _ => unreachable!("Rollup::check lets only integers through"),
@@ -592,11 +634,14 @@ pub struct Sum {
 }
 
 /// A dim's rows by key. A row is the key, then the attributes in
-/// [`Dim::attrs`] order.
+/// [`Dim::attrs`] order, kept as codes of each column's values: an ask
+/// numbers an attribute's values by their codes, hashing none of them.
 #[derive(Debug)]
 pub struct DimTable {
     width: usize,
-    rows: HashMap<Datum, Box<[Datum]>>,
+    rows: HashMap<Datum, Box<[u32]>>,
+    /// One per column. Codes outlive their rows until [`DimTable::clear`].
+    codes: Vec<Codes>,
     /// Per column; see [`DimTable::set_scales`].
     scales: Vec<u32>,
 }
@@ -608,6 +653,7 @@ impl DimTable {
         DimTable {
             width,
             rows: HashMap::new(),
+            codes: (0..width).map(|_| Codes::default()).collect(),
             scales: vec![0; width],
         }
     }
@@ -629,7 +675,10 @@ impl DimTable {
                 found: row.len(),
             });
         }
-        self.rows.insert(row[0].clone(), row.into());
+        let codes = (row.iter().zip(&mut self.codes))
+            .map(|(value, codes)| codes.code(value))
+            .collect();
+        self.rows.insert(row[0].clone(), codes);
         Ok(())
     }
 
@@ -644,10 +693,30 @@ impl DimTable {
     /// Drops every row. The scales stay.
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.codes.iter_mut().for_each(|c| *c = Codes::default());
     }
 
-    pub(crate) fn get(&self, key: &Datum) -> Option<&[Datum]> {
+    /// The codes of the row with `key`, one per column.
+    pub(crate) fn get(&self, key: &Datum) -> Option<&[u32]> {
         self.rows.get(key).map(|r| &**r)
+    }
+
+    /// How many codes column `column` has given out.
+    pub(crate) fn codes(&self, column: usize) -> usize {
+        self.codes[column].values.len()
+    }
+
+    /// The code of null in column `column`, as for a key with no row: its
+    /// code if a row holds null there, else the next.
+    pub(crate) fn null(&self, column: usize) -> u32 {
+        let codes = &self.codes[column];
+        (codes.codes.get(&Datum::Null).copied())
+            .unwrap_or_else(|| u32::try_from(codes.values.len()).expect("codes are u32"))
+    }
+
+    /// The value under `code` in column `column`.
+    pub(crate) fn value(&self, column: usize, code: u32) -> &Datum {
+        &self.codes[column].values[code as usize]
     }
 }
 

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::iter;
 
-use crate::agg::Partial;
+use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::rollup::{Cells, DimTable, Rollup};
 use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
@@ -71,34 +71,39 @@ impl Store {
     }
 
     /// Merges the cells in range that pass the ask's filter, one group per
-    /// `by` value. Dim attributes are read per cell, after the rollup.
+    /// `by` value. Dim attributes are read per code, after the rollup: the
+    /// cell loop only looks up what each code of a key column maps to.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
+        let buckets = cover(rollup, ask).count();
 
-        let by: Vec<Source> = ask
+        let mut by: Vec<Part> = ask
             .by
             .iter()
-            .map(|key| match key {
-                AskKey::Key(path) => self.source(fact, path),
-                AskKey::Time(t) => Source::Time(*t, fact.time.grain),
+            .map(|key| {
+                let source = match key {
+                    AskKey::Key(path) => self.source(fact, path),
+                    AskKey::Time(t) => Source::Time(*t, fact.time.grain),
+                };
+                Part::new(source, rollup, buckets)
             })
             .collect();
-        let filter = self.conditions(fact, &ask.filter);
-        let measures: Vec<Asked> = ask
+        let mut groups = Groups::new(&by);
+        let mut filter = self.tests(fact, rollup, &ask.filter);
+        let mut measures: Vec<Asked> = ask
             .measures
             .iter()
             .map(|name| {
                 let m = fact.measure(name.as_str()).expect(CHECKED);
                 Asked {
-                    empty: Partial::new(&m.agg),
+                    partials: Partials::new(&m.agg),
                     state: rollup.state_of(&m.agg),
-                    filter: self.conditions(fact, &m.filter),
+                    filter: self.tests(fact, rollup, &m.filter),
                 }
             })
             .collect();
-        let empty = || measures.iter().map(|m| m.empty.clone()).collect::<Vec<_>>();
-        let scales = (by.iter().map(|s| s.scale(rollup)))
+        let scales = (by.iter().map(|p| p.source.scale(rollup)))
             .chain(
                 ask.measures
                     .iter()
@@ -106,55 +111,47 @@ impl Store {
             )
             .collect();
 
-        // Keyed on values borrowed from the cells and dims, filled into one
-        // buffer: a cell costs no allocation, only a new group does.
-        let mut groups: HashMap<Vec<Cow<Datum>>, Vec<Partial>> = HashMap::new();
-        let mut group = Vec::with_capacity(by.len());
-        let mut total = empty();
-        let cells = cover(rollup, ask)
-            .flat_map(|(bucket, cells)| cells.iter().map(move |cell| (bucket, cell)));
-        for (bucket, (key, rows, states)) in cells {
-            let at = At {
-                rollup,
-                key,
-                bucket,
-            };
-            if !all_hold(&filter, &at) {
-                continue;
-            }
-            let merge = |partials: &mut [Partial]| {
-                for (partial, m) in partials.iter_mut().zip(&measures) {
-                    if all_hold(&m.filter, &at) {
-                        partial.merge(rows, m.state.map(|i| &states[i]));
-                    }
-                }
-            };
-            if by.is_empty() {
-                merge(&mut total);
-                continue;
-            }
-            group.clear();
-            group.extend(by.iter().map(|s| s.value(&at)));
-            match groups.get_mut(group.as_slice()) {
-                Some(partials) => merge(partials),
-                None => {
-                    let mut partials = empty();
-                    merge(&mut partials);
-                    groups.insert(group.clone(), partials);
-                }
-            }
-        }
         if by.is_empty() {
             // As in SQL without GROUP BY: one row even when nothing matches.
-            groups.insert(Vec::new(), total);
+            groups.make(&mut by, rollup, &[]);
+        }
+        // Per cell of a bucket: 1 while it may pass, then its group; 0 for
+        // cells passed over. Again per measure with a filter of its own.
+        let mut cell_groups = Vec::new();
+        let mut measure_groups = Vec::new();
+        for (bucket, cells) in cover(rollup, ask) {
+            by.iter_mut().for_each(|p| p.enter(bucket));
+            cell_groups.clear();
+            cell_groups.resize(cells.len(), 1);
+            for t in &mut filter {
+                t.pass(rollup, cells, &mut cell_groups);
+            }
+            groups.assign(&mut by, rollup, cells, &mut cell_groups);
+            for m in &mut measures {
+                m.partials.grow(groups.len());
+                let read = if m.filter.is_empty() {
+                    &cell_groups
+                } else {
+                    measure_groups.clone_from(&cell_groups);
+                    for t in &mut m.filter {
+                        t.pass(rollup, cells, &mut measure_groups);
+                    }
+                    &measure_groups
+                };
+                m.partials
+                    .merge(read, cells.rows(), m.state.map(|i| cells.column(i)));
+            }
         }
 
-        let mut rows: Vec<(Vec<Datum>, Vec<Value>)> = groups
-            .into_iter()
-            .map(|(key, partials)| {
+        measures
+            .iter_mut()
+            .for_each(|m| m.partials.grow(groups.len()));
+        let mut keys = groups.keys.into_iter().map(Cow::into_owned);
+        let mut rows: Vec<(Vec<Datum>, Vec<Value>)> = (1..=groups.made)
+            .map(|g| {
                 (
-                    key.into_iter().map(Cow::into_owned).collect(),
-                    partials.into_iter().map(Partial::finish).collect(),
+                    keys.by_ref().take(by.len()).collect(),
+                    measures.iter().map(|m| m.partials.finish(g)).collect(),
                 )
             })
             .collect();
@@ -196,12 +193,20 @@ impl Store {
         }
     }
 
-    fn conditions<'a>(&'a self, fact: &Fact, conds: &'a [Cond]) -> Vec<Condition<'a>> {
+    fn tests<'a>(&'a self, fact: &Fact, rollup: &Rollup, conds: &'a [Cond]) -> Vec<Test<'a>> {
         conds
             .iter()
-            .map(|c| Condition {
-                source: self.source(fact, &c.path),
-                values: &c.values,
+            .map(|c| {
+                let source = self.source(fact, &c.path);
+                let (Source::Slot(slot) | Source::Dim { slot, .. }) = source else {
+                    unreachable!("conditions name rollup-key parts");
+                };
+                Test {
+                    memo: vec![Memo::Unknown; rollup.codes(slot)],
+                    slot,
+                    source,
+                    values: &c.values,
+                }
             })
             .collect()
     }
@@ -212,14 +217,6 @@ impl Store {
 fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Cells)> {
     let each_bucket = ask.by.iter().any(|key| matches!(key, AskKey::Time(_)));
     rollup.cover(ask.from, ask.to, each_bucket)
-}
-
-/// A cell an ask reads: its key codes and bucket, and the rollup whose
-/// codes they are.
-struct At<'r> {
-    rollup: &'r Rollup,
-    key: &'r [u32],
-    bucket: i64,
 }
 
 /// Where the value of an ask key comes from, given a cell.
@@ -245,42 +242,336 @@ impl<'a> Source<'a> {
         }
     }
 
-    fn value<'k>(&self, at: &At<'k>) -> Cow<'k, Datum>
+    /// The value of the cell with `key`. Time keys number their periods
+    /// in [`Part`] instead.
+    fn value<'k>(&self, rollup: &'k Rollup, key: &[u32]) -> Cow<'k, Datum>
     where
         'a: 'k,
     {
         match *self {
-            Source::Slot(slot) => Cow::Borrowed(at.rollup.value(slot, at.key[slot])),
+            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, key[slot])),
             Source::Dim {
                 slot,
                 table,
                 column,
             } => table
-                .get(at.rollup.value(slot, at.key[slot]))
-                .map_or(Cow::Owned(Datum::Null), |row| Cow::Borrowed(&row[column])),
-            Source::Time(t, grain) => Cow::Owned(Datum::Int(t.start(at.bucket, grain))),
+                .get(rollup.value(slot, key[slot]))
+                .map_or(Cow::Owned(Datum::Null), |row| {
+                    Cow::Borrowed(table.value(column, row[column]))
+                }),
+            Source::Time(..) => unreachable!("time keys are numbered by period"),
         }
     }
 }
 
-/// A [`Cond`] ready to test cells.
-struct Condition<'a> {
+/// A [`Cond`] of an ask, worked out once per code of its slot as the ask
+/// meets the code.
+struct Test<'a> {
     source: Source<'a>,
     values: &'a [Literal],
+    slot: usize,
+    memo: Vec<Memo>,
 }
 
-fn all_hold(conditions: &[Condition], at: &At) -> bool {
-    conditions.iter().all(|c| {
-        let v = c.source.value(at);
-        c.values.iter().any(|lit| v.matches(lit))
-    })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Memo {
+    Unknown,
+    Holds,
+    Fails,
+}
+
+impl<'a> Test<'a> {
+    /// Sets to 0 the `groups` entry of each cell of `cells` that fails.
+    /// Whether a cell passes is as likely as not, so the loop selects
+    /// rather than branches; only a code met first branches.
+    fn pass(&mut self, rollup: &'a Rollup, cells: &'a Cells, groups: &mut [u32]) {
+        for (i, g) in groups.iter_mut().enumerate() {
+            let mut memo = self.memo[cells.code(i, self.slot) as usize];
+            if memo == Memo::Unknown && *g != 0 {
+                memo = self.resolve(rollup, cells.key(i));
+            }
+            *g = if memo == Memo::Holds { *g } else { 0 };
+        }
+    }
+
+    fn resolve(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> Memo {
+        let v = self.source.value(rollup, key);
+        let memo = if self.values.iter().any(|lit| v.matches(lit)) {
+            Memo::Holds
+        } else {
+            Memo::Fails
+        };
+        self.memo[key[self.slot] as usize] = memo;
+        memo
+    }
+}
+
+/// A by key of an ask, its values numbered without hashing any: a slot
+/// key's by their codes, a dim key's by the codes of its dim column, and a
+/// time key's in time order.
+struct Part<'a> {
+    source: Source<'a>,
+    /// For a dim key, per code of its slot: 1 + the number of the code's
+    /// value, or 0 until the ask meets the code.
+    codes: Vec<u32>,
+    /// For a time key, the start of each period met so far, the bucket at
+    /// hand's last.
+    starts: Vec<i64>,
+    /// How many numbers there can be.
+    bound: usize,
+}
+
+impl<'a> Part<'a> {
+    /// `buckets` is how many buckets the ask reads.
+    fn new(source: Source<'a>, rollup: &Rollup, buckets: usize) -> Part<'a> {
+        let (bound, codes) = match source {
+            Source::Slot(slot) => (rollup.codes(slot), 0),
+            Source::Dim {
+                slot,
+                table,
+                column,
+            } => (table.codes(column) + 1, rollup.codes(slot)),
+            Source::Time(..) => (buckets, 0),
+        };
+        Part {
+            bound,
+            codes: vec![0; codes],
+            starts: Vec::new(),
+            source,
+        }
+    }
+
+    /// Starts on the cells of the bucket starting at `bucket`. Buckets come
+    /// in time order, so a period's buckets come together.
+    fn enter(&mut self, bucket: i64) {
+        if let Source::Time(t, grain) = self.source {
+            let start = t.start(bucket, grain);
+            if self.starts.last() != Some(&start) {
+                self.starts.push(start);
+            }
+        }
+    }
+
+    /// Adds `stride` times its number to the `at` entry of each cell of
+    /// `cells` whose `groups` entry isn't 0.
+    fn offsets(
+        &mut self,
+        rollup: &'a Rollup,
+        cells: &'a Cells,
+        stride: usize,
+        groups: &[u32],
+        at: &mut [usize],
+    ) {
+        match self.source {
+            Source::Time(..) => {
+                let offset = (self.starts.len() - 1) * stride;
+                at.iter_mut().for_each(|a| *a += offset);
+            }
+            // Cells passed over too, as a branch costs more than their
+            // entries, which nothing reads.
+            Source::Slot(slot) => {
+                for (i, a) in at.iter_mut().enumerate() {
+                    *a += cells.code(i, slot) as usize * stride;
+                }
+            }
+            Source::Dim { slot, .. } => {
+                for (i, (a, &g)) in at.iter_mut().zip(groups).enumerate() {
+                    let n = match self.codes[cells.code(i, slot) as usize].checked_sub(1) {
+                        Some(n) => n,
+                        None if g == 0 => continue,
+                        None => self.number(rollup, cells.key(i)),
+                    };
+                    *a += n as usize * stride;
+                }
+            }
+        }
+    }
+
+    /// The number of the value of the cell with `key`.
+    fn number(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> u32 {
+        let code = |n: usize| u32::try_from(n).expect("codes are u32");
+        match self.source {
+            Source::Slot(slot) => key[slot],
+            Source::Time(..) => code(self.starts.len() - 1),
+            Source::Dim {
+                slot,
+                table,
+                column,
+            } => {
+                let c = key[slot] as usize;
+                if let Some(n) = self.codes[c].checked_sub(1) {
+                    return n;
+                }
+                let n = match table.get(rollup.value(slot, key[slot])) {
+                    Some(row) => row[column],
+                    None => table.null(column),
+                };
+                self.codes[c] = n + 1;
+                n
+            }
+        }
+    }
+
+    fn value(&self, rollup: &'a Rollup, number: u32) -> Cow<'a, Datum> {
+        match self.source {
+            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
+            Source::Dim { table, column, .. } if (number as usize) < table.codes(column) => {
+                Cow::Borrowed(table.value(column, number))
+            }
+            Source::Dim { .. } => Cow::Owned(Datum::Null),
+            Source::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
+        }
+    }
+}
+
+/// A cell's group while [`Groups::assign`] has yet to look it up. Groups
+/// number fewer than the cells, which fit in memory.
+const NEW: u32 = u32::MAX;
+
+/// Most entries a dense group table may have: 4 MiB of `u32`, of which an
+/// ask touches only the pages its groups fall on.
+const DENSE: usize = 1 << 20;
+
+/// The groups an ask has met, numbered from 1 in the order it met them.
+struct Groups<'a> {
+    index: Index,
+    /// Per by key, how far apart its numbers sit in a dense table.
+    strides: Vec<usize>,
+    /// Each group's values, `by.len()` a group, group 1's first.
+    keys: Vec<Cow<'a, Datum>>,
+    /// Groups so far, not counting group 0.
+    made: usize,
+    /// The by-key numbers of the cell at hand.
+    numbers: Vec<u32>,
+    /// Per cell of the bucket at hand, its entry in a dense table.
+    at: Vec<usize>,
+}
+
+enum Index {
+    /// Group per combination of by-key numbers, 0 for none yet.
+    Dense(Vec<u32>),
+    Sparse(HashMap<Box<[u32]>, u32>),
+}
+
+impl<'a> Groups<'a> {
+    fn new(by: &[Part]) -> Groups<'a> {
+        let mut strides = Vec::with_capacity(by.len());
+        let size = by.iter().try_fold(1usize, |size, p| {
+            strides.push(size);
+            size.checked_mul(p.bound)
+        });
+        let index = match size {
+            Some(size) if size <= DENSE => Index::Dense(vec![0; size]),
+            _ => Index::Sparse(HashMap::new()),
+        };
+        Groups {
+            index,
+            strides,
+            keys: Vec::new(),
+            made: 0,
+            numbers: Vec::with_capacity(by.len()),
+            at: Vec::new(),
+        }
+    }
+
+    /// Groups so far, counting group 0.
+    fn len(&self) -> usize {
+        self.made + 1
+    }
+
+    /// Sets each nonzero `groups` entry, one per cell of `cells`, to the
+    /// cell's group. Without `by` that is group 1, which it is already.
+    fn assign(
+        &mut self,
+        by: &mut [Part<'a>],
+        rollup: &'a Rollup,
+        cells: &'a Cells,
+        groups: &mut [u32],
+    ) {
+        if by.is_empty() {
+            return;
+        }
+        // Known groups in one tight pass, the rest after: few cells start
+        // a group.
+        let mut new = false;
+        match &self.index {
+            Index::Dense(table) => {
+                self.at.clear();
+                self.at.resize(groups.len(), 0);
+                for (p, &stride) in by.iter_mut().zip(&self.strides) {
+                    p.offsets(rollup, cells, stride, groups, &mut self.at);
+                }
+                // Selects, not branches: under a filter, whether a cell
+                // passed is as likely as not. `at` is in the table for
+                // every cell.
+                for (g, &at) in groups.iter_mut().zip(&self.at) {
+                    let known = table[at];
+                    new |= known == 0 && *g != 0;
+                    let group = if known == 0 { NEW } else { known };
+                    *g = if *g != 0 { group } else { 0 };
+                }
+            }
+            Index::Sparse(_) => {
+                new = true;
+                groups
+                    .iter_mut()
+                    .filter(|g| **g != 0)
+                    .for_each(|g| *g = NEW);
+            }
+        }
+        if new {
+            for (i, g) in groups.iter_mut().enumerate() {
+                if *g != NEW {
+                    continue;
+                }
+                // A cell before it in the bucket may have made its group.
+                *g = match &self.index {
+                    Index::Dense(table) if table[self.at[i]] != 0 => table[self.at[i]],
+                    _ => self.make(by, rollup, cells.key(i)),
+                };
+            }
+        }
+    }
+
+    /// The group of the cell with `key` past the dense table's: a sparse
+    /// table's, or a new one.
+    fn make(&mut self, by: &mut [Part<'a>], rollup: &'a Rollup, key: &'a [u32]) -> u32 {
+        self.numbers.clear();
+        self.numbers
+            .extend(by.iter_mut().map(|p| p.number(rollup, key)));
+        let next = u32::try_from(self.len()).expect("fewer groups than cells");
+        let group = match &mut self.index {
+            Index::Dense(table) => {
+                let at: usize = (self.numbers.iter().zip(&self.strides))
+                    .map(|(&n, stride)| n as usize * stride)
+                    .sum();
+                if table[at] == 0 {
+                    table[at] = next;
+                }
+                table[at]
+            }
+            // Looked up before inserting, so only a new group allocates.
+            Index::Sparse(map) => match map.get(self.numbers.as_slice()) {
+                Some(&g) => g,
+                None => {
+                    map.insert(self.numbers.as_slice().into(), next);
+                    next
+                }
+            },
+        };
+        if group == next {
+            let values = (self.numbers.iter().zip(&*by)).map(|(&n, p)| p.value(rollup, n));
+            self.keys.extend(values);
+            self.made += 1;
+        }
+        group
+    }
 }
 
 /// A measure of the ask, ready to merge cells.
 struct Asked<'a> {
-    /// The measure over no cells.
-    empty: Partial,
+    partials: Partials,
     /// See [`Rollup::state_of`].
     state: Option<usize>,
-    filter: Vec<Condition<'a>>,
+    filter: Vec<Test<'a>>,
 }
