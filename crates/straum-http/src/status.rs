@@ -1,0 +1,196 @@
+//! `/status`: what straum has done, in plain text for people, as
+//! `straum status` prints it.
+
+use std::time::SystemTime;
+
+use jiff::Timestamp;
+use straum_app::Status;
+
+/// Labels and values line up after this many characters.
+const LABEL: usize = 14;
+
+/// Why straum isn't ready, or `None` when it is.
+pub(crate) fn why_not(status: &Status) -> Option<String> {
+    if status.ready {
+        return None;
+    }
+    Some(match (&status.error, status.lag) {
+        (Some(error), _) => error.clone(),
+        (None, Some(lag)) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        (None, None) => "loading".to_owned(),
+    })
+}
+
+pub(crate) fn write(status: &Status) -> String {
+    const UNKNOWN: &str = "unknown until every table is loaded";
+    let ready = match why_not(status) {
+        None => "yes".to_owned(),
+        Some(why) => format!("no, {why}"),
+    };
+    let applied = match (status.lsn, status.time) {
+        (None, _) => "nothing yet".to_owned(),
+        (Some(lsn), None) => format!("{lsn}, where the stream started"),
+        (Some(lsn), Some(time)) => format!("{lsn}, committed {}", timestamp(time)),
+    };
+    let lag = match status.lag {
+        None => UNKNOWN.to_owned(),
+        Some(lag) => format!(
+            "{:.1} s, at most {} s",
+            lag.as_secs_f64(),
+            status.limits.max_lag.as_secs()
+        ),
+    };
+    let wal = match status.wal {
+        None => UNKNOWN.to_owned(),
+        Some(wal) => format!(
+            "{}, at most {}; the server is at {}",
+            mib(wal.retained()),
+            mib(status.limits.max_retained_wal),
+            wal.server
+        ),
+    };
+    let last_failure = match &status.last_failure {
+        None => "none".to_owned(),
+        Some((at, error)) => format!("{}: {error}", timestamp(*at)),
+    };
+    let mut out = String::new();
+    for (label, value) in [
+        ("ready", ready),
+        ("applied", applied),
+        ("lag", lag),
+        ("WAL held", wal),
+        ("starts", status.starts.to_string()),
+        ("failures", status.failures.to_string()),
+        ("last failure", last_failure),
+    ] {
+        let label = format!("{label}:");
+        // An error of several lines keeps them under its value.
+        let value = value.replace('\n', &format!("\n{:LABEL$}", ""));
+        out.push_str(&format!("{label:LABEL$}{value}\n"));
+    }
+    out
+}
+
+fn timestamp(time: SystemTime) -> String {
+    // Past jiff's year 9999, which only a broken clock gives.
+    Timestamp::try_from(time).map_or_else(|_| "an unreadable time".to_owned(), |at| at.to_string())
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use straum_app::{Limits, Lsn, Wal};
+
+    use super::*;
+
+    fn status() -> Status {
+        Status {
+            ready: true,
+            lsn: Some(Lsn(0x16_B374_D848)),
+            time: Some(UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456)),
+            lag: Some(Duration::from_millis(1_300)),
+            wal: Some(Wal {
+                server: Lsn(0x16_C000_0000),
+                confirmed: Lsn(0x16_B374_D848),
+                restart: Lsn(0x16_B000_0000),
+            }),
+            limits: Limits {
+                max_lag: Duration::from_secs(30),
+                max_retained_wal: 4 << 30,
+            },
+            error: None,
+            last_failure: Some((
+                UNIX_EPOCH + Duration::from_secs(1_704_067_200),
+                "a change no longer fits trips".to_owned(),
+            )),
+            starts: 2,
+            failures: 1,
+        }
+    }
+
+    #[test]
+    fn writes_a_streaming_straum() {
+        assert_eq!(
+            write(&status()),
+            "\
+ready:        yes
+applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
+lag:          1.3 s, at most 30 s
+WAL held:     256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
+starts:       2
+failures:     1
+last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
+"
+        );
+    }
+
+    #[test]
+    fn says_why_not_ready() {
+        let behind = Status {
+            ready: false,
+            lag: Some(Duration::from_secs(45)),
+            ..status()
+        };
+        assert_eq!(why_not(&behind).as_deref(), Some("45 s behind PostgreSQL"));
+        assert!(write(&behind).starts_with("ready:        no, 45 s behind PostgreSQL\n"));
+
+        let failed = Status {
+            ready: false,
+            lsn: None,
+            time: None,
+            lag: None,
+            wal: None,
+            error: Some("trips: one\ntrips: two".to_owned()),
+            last_failure: Some((UNIX_EPOCH, "trips: one\ntrips: two".to_owned())),
+            ..status()
+        };
+        assert_eq!(why_not(&failed).as_deref(), Some("trips: one\ntrips: two"));
+        assert_eq!(
+            write(&failed),
+            "\
+ready:        no, trips: one
+              trips: two
+applied:      nothing yet
+lag:          unknown until every table is loaded
+WAL held:     unknown until every table is loaded
+starts:       2
+failures:     1
+last failure: 1970-01-01T00:00:00Z: trips: one
+              trips: two
+"
+        );
+
+        let loading = Status {
+            error: None,
+            ..failed
+        };
+        assert_eq!(why_not(&loading).as_deref(), Some("loading"));
+        assert_eq!(why_not(&status()), None);
+    }
+
+    #[test]
+    fn where_the_stream_started_and_broken_clocks() {
+        let started = Status {
+            time: None,
+            last_failure: Some((
+                UNIX_EPOCH + Duration::from_secs(400_000_000_000),
+                "x".to_owned(),
+            )),
+            ..status()
+        };
+        let text = write(&started);
+        assert!(
+            text.contains("applied:      16/B374D848, where the stream started\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("last failure: an unreadable time: x\n"),
+            "{text}"
+        );
+    }
+}

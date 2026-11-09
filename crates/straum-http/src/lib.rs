@@ -8,12 +8,15 @@
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and straum is within its
 //!   lag bound, else 503 and why. Asks still answer while straum lags.
+//! - `GET /status`: what straum has done, in plain text for people; `straum
+//!   status` prints it.
 
 #![forbid(unsafe_code)]
 
 mod answer;
 mod ask;
 mod json;
+mod status;
 
 use std::convert::Infallible;
 use std::future::{Future, poll_fn};
@@ -94,8 +97,9 @@ async fn handle(
         (Method::POST, "/ask") => ask(request, &app).await,
         (Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (Method::GET, "/readyz") => readyz(&app),
+        (Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
         (_, "/ask") => not_allowed("POST"),
-        (_, "/livez" | "/readyz") => not_allowed("GET"),
+        (_, "/livez" | "/readyz" | "/status") => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(response)
@@ -139,18 +143,13 @@ async fn ask(request: Request<Incoming>, app: &App) -> Response<Full<Bytes>> {
 }
 
 fn readyz(app: &App) -> Response<Full<Bytes>> {
-    if app.ready() {
-        return text(StatusCode::OK, "ready\n".into());
+    match status::why_not(&app.status()) {
+        None => text(StatusCode::OK, "ready\n".into()),
+        Some(why) => text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("not ready: {why}\n"),
+        ),
     }
-    let why = match (app.error(), app.lag()) {
-        (Some(error), _) => error,
-        (None, Some(lag)) => format!("{} s behind PostgreSQL", lag.as_secs()),
-        (None, None) => "loading".to_owned(),
-    };
-    text(
-        StatusCode::SERVICE_UNAVAILABLE,
-        format!("not ready: {why}\n"),
-    )
 }
 
 /// `{"errors": [...]}`.

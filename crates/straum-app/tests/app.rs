@@ -11,7 +11,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Step, Wal, Writer};
+use straum_app::{
+    AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Status, Step, Wal, Writer,
+};
 use straum_domain::{
     Answer, Ask, AskError, AskKey, Cond, Datum, Ident, KeyPath, Literal, Spec, Store, TimeKey,
     Value,
@@ -520,6 +522,74 @@ fn ready_only_within_the_lag_bound() {
     db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
     writer.step().unwrap_err();
     assert_eq!(writer.app().lag(), None);
+}
+
+#[test]
+fn status_reports_what_straum_did() {
+    let (db, mut writer) = setup(&TABLES);
+    assert_eq!(
+        writer.app().status(),
+        Status {
+            ready: false,
+            lsn: None,
+            time: None,
+            lag: None,
+            wal: None,
+            limits: LIMITS,
+            error: None,
+            last_failure: None,
+            starts: 0,
+            failures: 0,
+        }
+    );
+
+    let start = db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    let status = writer.app().status();
+    assert!(status.ready);
+    assert_eq!((status.lsn, status.time), (Some(start), None));
+    assert_eq!(status.lag, Some(Duration::ZERO));
+    let caught_up = Wal {
+        server: start,
+        confirmed: start,
+        restart: start,
+    };
+    assert_eq!(status.wal, Some(caught_up));
+    assert_eq!((status.starts, status.failures), (1, 0));
+
+    // A reading while it waits for the next commit.
+    let held = Wal {
+        server: Lsn(start.0 + 50),
+        confirmed: start,
+        restart: Lsn(start.0 - 20),
+    };
+    db.borrow_mut().wal = Some(held);
+    db.borrow_mut().waits = 1;
+    let lsn = db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
+    writer.step().unwrap();
+    let status = writer.app().status();
+    assert_eq!((status.lsn, status.time), (Some(lsn), Some(time(lsn))));
+    assert_eq!(status.wal, Some(held));
+
+    db.borrow_mut().drop_connection = true;
+    db.borrow_mut().commit(vec![trip(3, 1, 1, 10)]);
+    writer.step().unwrap_err();
+    let status = writer.app().status();
+    assert!(!status.ready);
+    assert_eq!((status.lsn, status.lag, status.wal), (None, None, None));
+    assert_eq!(status.error.as_deref(), Some("connection dropped"));
+    let (_, failure) = status.last_failure.clone().unwrap();
+    assert_eq!(failure, "connection dropped");
+    assert_eq!((status.starts, status.failures), (1, 1));
+
+    // The next start clears the error but keeps the last failure.
+    db.borrow_mut().wal = None;
+    writer.step().unwrap();
+    let after = writer.app().status();
+    assert!(after.ready);
+    assert_eq!(after.error, None);
+    assert_eq!(after.last_failure, status.last_failure);
+    assert_eq!((after.starts, after.failures), (2, 1));
 }
 
 #[test]

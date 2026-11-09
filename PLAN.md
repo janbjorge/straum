@@ -208,6 +208,11 @@ Tests:
   runs `helm lint --strict`, helm-unittest and kubeconform (Kubernetes 1.33
   and 1.36); CI runs it and builds the image. The AKS test cluster is never
   used to try the chart.
+- 2026-11-09: No OTLP and no metrics for now; telemetry comes later.
+  `straum status` prints what a running straum has done instead, from
+  `GET /status`. The image has no shell or curl, so the binary is the
+  client: `kubectl exec deployment/straum -- /straum status`. `App` keeps
+  starts, failures and the last failure again for it.
 
 ## M0: notation and domain model
 
@@ -389,8 +394,11 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
       helm-unittest cases over good values and bad, which ten planted bugs
       each fail; kubeconform; the image run read-only as user 65532 with no
       capabilities against `postgres:18`, ready and answering
-- [ ] OTLP to the cluster's collector: readiness, lag, retained WAL,
-      starts and failures
+- [x] `straum status`: what a running straum has done, from its plain-text
+      `GET /status`: ready or why not, lag, WAL held against the cap, LSN
+      and commit time, starts, failures and the last failure. Tests: the
+      text for each state, the client against a stand-in server's good
+      and bad replies, and end to end against `postgres:18`
 - [ ] Run against a non-production Azure Flexible Server 18
 
 ## Open questions

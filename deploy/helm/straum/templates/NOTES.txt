@@ -4,3 +4,6 @@ It loads every table before /readyz turns 200; this waits for that:
   kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "straum.fullname" . }}
 
 Asks go to http://{{ include "straum.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/ask.
+What straum has done, its lag and the WAL PostgreSQL holds for it:
+
+  kubectl --namespace {{ .Release.Namespace }} exec deployment/{{ include "straum.fullname" . }} -- /straum status

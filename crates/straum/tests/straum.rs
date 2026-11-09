@@ -307,6 +307,17 @@ fn serves_asks_from_postgres() {
     );
     straum.wait_for("ready", |straum| straum.call("GET", "/readyz", "").0 == 200);
 
+    // What `straum status` says, as from inside the pod.
+    let url = format!("http://{}", straum.address);
+    let (code, status, _) = output(Command::new(STRAUM).args(["status", "--url", &url]));
+    assert_eq!(code, Some(0), "{status}");
+    assert!(
+        status.starts_with("ready:        yes\napplied:      "),
+        "{status}"
+    );
+    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\n";
+    assert!(status.ends_with(counts), "{status}");
+
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
     assert!(body.contains(r#""commit_time":null"#), "{body}");

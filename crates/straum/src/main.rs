@@ -8,7 +8,8 @@ use std::env;
 use std::fmt::Display;
 use std::fs;
 use std::future::poll_fn;
-use std::net::TcpListener;
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::panic;
 use std::process::{self, ExitCode};
 use std::task::Poll;
@@ -25,6 +26,7 @@ usage:
   straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
              [--max-lag SECONDS] [--max-retained-wal BYTES]
   straum plan --spec FILE [--publication NAME] [--role NAME]
+  straum status [--url URL]
   straum help
 
 straum run loads every table FILE names, follows PostgreSQL's changes to them
@@ -41,11 +43,19 @@ takes a Ki, Mi, Gi or Ti suffix. SIGTERM or SIGINT stops it.
 
 straum plan prints the SQL that sets PostgreSQL up for FILE: logical
 decoding, the role NAME (straum), its grants and the publication.
+
+straum status prints what the straum at URL (http://127.0.0.1:8080) has
+done: whether it is ready and why not, how far behind PostgreSQL it is, the
+WAL PostgreSQL holds for it, its starts and its failures. In a pod:
+kubectl exec deploy/straum -- /straum status.
 ";
 
 const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
 const ROLE: &str = "straum";
+const URL: &str = "http://127.0.0.1:8080";
+/// How long `straum status` waits for an answer.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
@@ -69,6 +79,9 @@ enum Command {
         spec: String,
         publication: String,
         role: String,
+    },
+    Status {
+        url: String,
     },
     Help,
 }
@@ -94,6 +107,7 @@ fn main() -> ExitCode {
             dsn_file,
             limits,
         }) => run(&spec, &listen, &publication, dsn_file.as_deref(), limits),
+        Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
         Err(usage) => {
             eprint!("straum: {usage}\n\n{USAGE}");
             return ExitCode::from(2);
@@ -122,6 +136,7 @@ fn command(args: &[String]) -> Result<Command, String> {
             "--max-retained-wal",
         ],
         "plan" => &["--spec", "--publication", "--role"],
+        "status" => &["--url"],
         "help" | "--help" | "-h" if rest.is_empty() => return Ok(Command::Help),
         other => return Err(format!("unknown command {other:?}")),
     };
@@ -142,6 +157,10 @@ fn command(args: &[String]) -> Result<Command, String> {
             .find(|(f, _)| *f == name)
             .map(|(_, value)| (*value).to_owned())
     };
+    if name == "status" {
+        let url = flag("--url").unwrap_or_else(|| URL.into());
+        return Ok(Command::Status { url });
+    }
     let spec = flag("--spec").ok_or_else(|| format!("straum {name} needs --spec"))?;
     let publication = flag("--publication").unwrap_or_else(|| PUBLICATION.into());
     Ok(if name == "run" {
@@ -191,6 +210,32 @@ fn bytes(text: &str) -> Option<u64> {
         .unwrap_or((text, 0));
     let count: u64 = count.parse().ok().filter(|&n| n > 0)?;
     count.checked_mul(1 << shift)
+}
+
+/// What the straum at `url` says it has done: GET /status over a plain
+/// socket, since its image holds nothing else to ask with.
+fn status(url: &str) -> Result<String, String> {
+    let address = (url.strip_prefix("http://"))
+        .map(|rest| rest.trim_end_matches('/'))
+        .filter(|address| !address.is_empty() && !address.contains('/'))
+        .ok_or_else(|| format!("--url takes http://HOST:PORT, not {url:?}"))?;
+    let failed = |e: io::Error| format!("asking {url} for its status: {e}");
+    let mut stream = TcpStream::connect(address).map_err(failed)?;
+    stream
+        .set_read_timeout(Some(STATUS_TIMEOUT))
+        .map_err(failed)?;
+    let request = format!("GET /status HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(failed)?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).map_err(failed)?;
+    match reply.split_once("\r\n\r\n") {
+        Some((head, body)) if head.starts_with("HTTP/1.1 200 ") => Ok(body.to_owned()),
+        Some((head, _)) => {
+            let first = head.lines().next().unwrap_or_default();
+            Err(format!("{url} answered {first:?}"))
+        }
+        None => Err(format!("{url} sent no HTTP reply")),
+    }
 }
 
 fn read_spec(path: &str) -> Result<Spec, String> {
@@ -339,6 +384,16 @@ mod tests {
                 role: "r".into(),
             })
         );
+        assert_eq!(
+            command(&args("status")),
+            Ok(Command::Status { url: URL.into() })
+        );
+        assert_eq!(
+            command(&args("status --url http://straum:9")),
+            Ok(Command::Status {
+                url: "http://straum:9".into()
+            })
+        );
         for help in ["help", "--help", "-h"] {
             assert_eq!(command(&args(help)), Ok(Command::Help));
         }
@@ -363,6 +418,8 @@ mod tests {
                 "plan --spec s --max-lag 5",
                 "straum plan takes no \"--max-lag\"",
             ),
+            ("status --spec s", "straum status takes no \"--spec\""),
+            ("status --url", "--url needs a value"),
         ];
         for (line, error) in cases {
             assert_eq!(command(&args(line)), Err(error.to_owned()), "{line}");
@@ -384,6 +441,55 @@ mod tests {
             );
             assert_eq!(command(&line), Err(error), "{size}");
         }
+    }
+
+    /// A server that answers one GET /status with `reply`; its URL.
+    fn answering(reply: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+                request.push(byte[0]);
+            }
+            if request.starts_with(b"GET /status HTTP/1.1\r\n") {
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn asks_for_the_status() {
+        let url = answering("HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nready: yes\n");
+        assert_eq!(status(&url), Ok("ready: yes\n".to_owned()));
+        let url = answering("HTTP/1.1 200 OK\r\n\r\n");
+        assert_eq!(status(&format!("{url}/")), Ok(String::new()));
+    }
+
+    #[test]
+    fn status_errors() {
+        let url = answering("HTTP/1.1 404 Not Found\r\n\r\nno /status here\n");
+        let answered = format!("{url} answered \"HTTP/1.1 404 Not Found\"");
+        assert_eq!(status(&url), Err(answered));
+        let url = answering("garbage");
+        assert_eq!(status(&url), Err(format!("{url} sent no HTTP reply")));
+        for bad in [
+            "https://x:1",
+            "x:1",
+            "http://",
+            "http:///",
+            "http://x:1/status",
+        ] {
+            let error = format!("--url takes http://HOST:PORT, not {bad:?}");
+            assert_eq!(status(bad), Err(error), "{bad}");
+        }
+        // Nothing listens on port 1.
+        let err = status("http://127.0.0.1:1").unwrap_err();
+        let asking = "asking http://127.0.0.1:1 for its status: ";
+        assert!(err.starts_with(asking), "{err}");
     }
 
     #[test]

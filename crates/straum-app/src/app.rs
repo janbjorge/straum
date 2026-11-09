@@ -55,9 +55,15 @@ struct State {
     time: Option<SystemTime>,
     /// How far behind the server the stream is. Set with `position`.
     lag: Option<Lag>,
+    /// The last reading of the server's WAL. Set with `position`.
+    wal: Option<Wal>,
     limits: Limits,
     /// The last failure, until the next start.
     error: Option<String>,
+    /// The last failure and when it came, kept across starts.
+    last_failure: Option<(SystemTime, String)>,
+    starts: u64,
+    failures: u64,
 }
 
 /// Reads the source and keeps an [`App`] in step with it: the loop that
@@ -91,6 +97,32 @@ pub struct Answered {
     pub time: Option<SystemTime>,
 }
 
+/// What [`App::status`] reports, read at one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    /// As [`App::ready`].
+    pub ready: bool,
+    /// Every commit up to here is applied. `None` until every table is
+    /// loaded, and again after a failure.
+    pub lsn: Option<Lsn>,
+    /// When the commit at `lsn` committed. `None` when `lsn` is where the
+    /// stream started.
+    pub time: Option<SystemTime>,
+    /// As [`App::lag`].
+    pub lag: Option<Duration>,
+    /// The last reading of the server's WAL, while a stream runs.
+    pub wal: Option<Wal>,
+    pub limits: Limits,
+    /// The last failure, until the next start.
+    pub error: Option<String>,
+    /// The last failure and when it came, kept across starts.
+    pub last_failure: Option<(SystemTime, String)>,
+    /// Streams started, each with every table loaded.
+    pub starts: u64,
+    /// Steps that failed, after which straum started over.
+    pub failures: u64,
+}
+
 /// A change that no longer fits its table, so straum starts over.
 struct Stale;
 
@@ -105,8 +137,12 @@ impl App {
                 position: None,
                 time: None,
                 lag: None,
+                wal: None,
                 limits,
                 error: None,
+                last_failure: None,
+                starts: 0,
+                failures: 0,
             })),
         }
     }
@@ -115,9 +151,7 @@ impl App {
     /// behind the server.
     pub fn ready(&self) -> bool {
         let state = self.read();
-        state
-            .behind()
-            .is_some_and(|lag| lag <= state.limits.max_lag)
+        state.ready(state.behind())
     }
 
     /// How far behind the server straum is: the time since its slot was
@@ -145,6 +179,23 @@ impl App {
         self.read().error.clone()
     }
 
+    pub fn status(&self) -> Status {
+        let state = self.read();
+        let lag = state.behind();
+        Status {
+            ready: state.ready(lag),
+            lsn: state.position,
+            time: state.time,
+            lag,
+            wal: state.wal,
+            limits: state.limits,
+            error: state.error.clone(),
+            last_failure: state.last_failure.clone(),
+            starts: state.starts,
+            failures: state.failures,
+        }
+    }
+
     fn read(&self) -> RwLockReadGuard<'_, State> {
         self.state.read().expect(POISONED)
     }
@@ -157,6 +208,10 @@ impl App {
 impl State {
     fn behind(&self) -> Option<Duration> {
         (self.lag.as_ref()).map(|lag| lag.behind(Instant::now()))
+    }
+
+    fn ready(&self, lag: Option<Duration>) -> bool {
+        lag.is_some_and(|lag| lag <= self.limits.max_lag)
     }
 
     /// Applies the commit to every table, or names the first table it no
@@ -271,7 +326,10 @@ impl<S: Source> Writer<S> {
             let mut state = self.app.write();
             state.position = None;
             state.lag = None;
+            state.wal = None;
             state.error = Some(e.to_string());
+            state.last_failure = Some((SystemTime::now(), e.to_string()));
+            state.failures += 1;
         }
         step
     }
@@ -301,7 +359,9 @@ impl<S: Source> Writer<S> {
         state.position = Some(start);
         state.time = None;
         state.lag = Some(lag);
+        state.wal = Some(wal);
         state.error = None;
+        state.starts += 1;
         Ok(start)
     }
 
@@ -311,6 +371,7 @@ impl<S: Source> Writer<S> {
                 let wal = self.measure()?;
                 let mut state = self.app.write();
                 state.lag.as_mut().expect(STARTED).read(&wal, self.measured);
+                state.wal = Some(wal);
             }
             let wait = MEASURE_EVERY.saturating_sub(self.measured.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {

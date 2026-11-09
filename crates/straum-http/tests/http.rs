@@ -316,6 +316,7 @@ fn routes() {
         ("GET", "/ask", "POST"),
         ("POST", "/livez", "GET"),
         ("DELETE", "/readyz", "GET"),
+        ("POST", "/status", "GET"),
     ] {
         let reply = call(server.addr, method, path, "");
         assert_eq!(reply.status, 405, "{method} {path}");
@@ -326,6 +327,47 @@ fn routes() {
         );
         assert_eq!(reply.body, format!("use {allow}\n"));
     }
+    server.stop();
+}
+
+#[test]
+fn status_says_what_straum_did() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "GET", "/status", "");
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.body,
+        "\
+ready:        no, loading
+applied:      nothing yet
+lag:          unknown until every table is loaded
+WAL held:     unknown until every table is loaded
+starts:       0
+failures:     0
+last failure: none
+"
+    );
+
+    writer.step().unwrap();
+    writer.step().unwrap();
+    let reply = call(server.addr, "GET", "/status", "");
+    let lines: Vec<&str> = reply.body.lines().collect();
+    assert_eq!(lines[0], "ready:        yes");
+    assert_eq!(
+        lines[1],
+        "applied:      17/0, committed 2024-01-02T00:00:00.123456Z"
+    );
+    assert!(
+        lines[2].starts_with("lag:          0.0 s, at most 30 s"),
+        "{}",
+        lines[2]
+    );
+    assert_eq!(
+        lines[3],
+        "WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 16/B374D848"
+    );
+    assert_eq!(lines[4..6], ["starts:       1", "failures:     0"]);
     server.stop();
 }
 
