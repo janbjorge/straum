@@ -1,72 +1,18 @@
 # Straum
 
-> Live, pre-aggregated answers from PostgreSQL replication.
+> In-memory PostgreSQL aggregates, kept current through logical replication.
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 
-Straum keeps declared PostgreSQL aggregates current in memory from logical
-replication. Clients ask the HTTP API instead of repeatedly grouping source
-tables. PostgreSQL remains the source of truth; Straum keeps no durable copy
-and rebuilds on start.
+Straum loads aggregates declared in a SQL spec, then applies PostgreSQL changes
+to them in memory. Clients read them through HTTP. PostgreSQL remains the
+source of truth; Straum stores no durable copy.
 
-> **Experimental.** M0–M6 are implemented and tested. Deployment hardening
-> (TLS, lag bounds, Helm, and Azure validation) is planned next. Do not use
-> this in production yet.
+> **Experimental.** Do not use Straum in production.
 
-## Why
+## Quick start
 
-Analytical endpoints often run the same `GROUP BY` over a large operational
-table. Cache misses and growing data make those queries slower over time.
-Straum collapses rows into the groups declared in a spec, then updates those
-groups as PostgreSQL changes.
-
-```text
-startup
--------
-  Straum SQL spec
-        |
-        v
-  parse and validate
-        |
-        v
-+------------------+    temporary logical slot + exported snapshot    +------------+
-| Straum           | ------------------------------------------------> | PostgreSQL |
-|                  | <------------------------------------------------ |            |
-| fact rollups     |  generated fact aggregates + dimension rows      | source     |
-| dimension tables |                                                    +------------+
-+------------------+
-
-continuous operation
---------------------
-+------------+       pgoutput changes       +------------------+       HTTP       +---------+
-| PostgreSQL | ---------------------------> | Straum           | -------------> | clients |
-| source     |  insert, update, delete,     | apply to rollups |  /ask, /readyz |         |
-+------------+  truncate, commit            | LSN + commit time|                +---------+
-                                           +------------------+
-```
-
-Every answer includes the LSN and commit time it reflects. Callers can see
-exactly how current the result is.
-
-## What it does
-
-- Reads a small PostgreSQL `CREATE VIEW` subset as a specification.
-- Maintains `count`, `count distinct`, `sum`, `min`, `max`, and `avg`.
-- Supports dimensions, N:1 joins, filters, time buckets, and time zones.
-- Loads from a snapshot consistent with its replication stream.
-- Serves JSON asks, readiness, liveness, and Prometheus metrics over HTTP.
-- Uses stock PostgreSQL logical replication; no extension or query proxy.
-
-Straum is not a general SQL engine, a PostgreSQL replica, or a durable data
-store. It only serves aggregates declared before it starts.
-
-## A spec
-
-Straum SQL borrows the shape of a PostgreSQL view, but it is a deliberately
-narrow configuration format. PostgreSQL cannot create the statement because
-`key` and `append` are Straum-only options. Straum parses the `SELECT` body,
-generates an aggregate load query for each fact and a plain load for each
-dimension, then keeps those in-memory structures current from `pgoutput`.
+Given PostgreSQL source tables, write a spec:
 
 ```sql
 CREATE VIEW trips WITH (key = id, append = true) AS
@@ -81,60 +27,90 @@ LEFT JOIN public.zones z ON z.location_id = t.pickup_location_id
 GROUP BY 1, 2, 3;
 ```
 
-This creates a rollup keyed by the bucket, payment type, and zone reference.
-The source rows do not live in Straum.
-
-## Run locally
+`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan` checks
+the spec and prints the SQL a table owner must apply:
 
 ```sh
-# Verify a spec and print the SQL required on PostgreSQL.
-cargo run -p straum -- plan --spec path/to/trips.sql
+cargo run -p straum -- plan --spec trips.sql
 
-# A table owner applies that SQL, then starts Straum.
 export STRAUM_DSN='postgres://straum:password@localhost:5432/app'
-cargo run -p straum -- run --spec path/to/trips.sql
+cargo run -p straum -- run --spec trips.sql
 ```
 
-`run` listens on `0.0.0.0:8080` by default. Its endpoints are:
+After `/readyz` returns `200`, ask for a declared aggregate:
+
+```sh
+curl --json '{
+  "fact": "trips",
+  "measures": ["trips", "fare"],
+  "by": ["payment_type", "borough"],
+  "time": "bucket",
+  "from": "2024-01-01T00:00:00Z",
+  "to": "2024-01-02T00:00:00Z"
+}' http://localhost:8080/ask
+```
+
+```json
+{
+  "lsn": "16/B374D848",
+  "commit_time": "2024-01-31T22:59:59.123456Z",
+  "columns": ["bucket", "payment_type", "borough", "trips", "fare"],
+  "rows": [["2024-01-01T00:00:00Z", "card", "Oslo", 412, 6234.50]]
+}
+```
+
+`lsn` is the last PostgreSQL commit reflected in the answer. `commit_time` is
+that commit's timestamp. It is `null` until Straum applies its first streamed
+commit.
+
+## Scope
+
+Straum:
+
+- reads a narrow PostgreSQL `CREATE VIEW` subset;
+- maintains `count`, `count distinct`, `sum`, `min`, `max`, and `avg`;
+- supports dimensions, N:1 joins, filters, time buckets, and time zones;
+- loads from a snapshot consistent with its replication stream;
+- exposes JSON, readiness, liveness, and Prometheus metrics.
+
+Straum is not a SQL engine, PostgreSQL replica, cache, or durable store. It
+only serves aggregates declared before startup.
+
+## Requirements
+
+Straum uses stock PostgreSQL logical replication. Enable it before applying
+the SQL emitted by `straum plan`:
+
+```text
+wal_level = logical
+```
+
+Restart PostgreSQL after changing `wal_level`. `run` listens on
+`0.0.0.0:8080` by default.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /ask` | Ask for a declared aggregate. |
+| `POST /ask` | Read a declared aggregate. |
 | `GET /livez` | Process liveness. |
-| `GET /readyz` | Ready only after every table is loaded and caught up. |
+| `GET /readyz` | Ready after all tables load and the stream catches up. |
 | `GET /metrics` | Prometheus metrics. |
 
-The server needs PostgreSQL logical replication enabled. On PostgreSQL 18,
-set `wal_level = logical` and restart the server before applying the SQL from
-`straum plan`.
-
-## Architecture
-
-The workspace keeps policy separate from I/O:
+## How it works
 
 ```text
-straum (composition root)
-├── straum-notation ──> straum-domain
-├── straum-pg ────────> straum-app ──> straum-domain
-└── straum-http ──────> straum-app ──> straum-domain
+Straum SQL spec ──> plan ──> PostgreSQL setup SQL
+     │
+     └──> snapshot load ──> in-memory rollups
+PostgreSQL changes ──> pgoutput ──> rollup updates ──> HTTP answers
 ```
 
-`straum-domain` has no dependencies or I/O. `straum-app` holds use cases and the
-`Source` port. PostgreSQL, HTTP, and parsing are adapters. CI checks this
-production dependency graph.
-
-## Deployment direction
-
-The first product target is AKS beside Azure Database for PostgreSQL Flexible
-Server. The planned Helm chart uses one Deployment replica, a ConfigMap for
-the spec, a Secret for the replication DSN, and no persistent volume.
-
-Before that release, Straum needs TLS to PostgreSQL, retained-WAL and lag
-handling, OTLP, and a non-production Azure validation run.
+Startup uses an exported snapshot and temporary logical slot. The snapshot and
+change stream share an LSN, so no committed change is missed between loading
+and replication.
 
 ## Development
 
-Docker is required for the PostgreSQL integration tests.
+Docker is required for PostgreSQL integration tests.
 
 ```sh
 cargo fmt --all -- --check
@@ -154,4 +130,4 @@ cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
 ## License
 
-Straum is licensed under [Apache-2.0](LICENSE-APACHE).
+[Apache-2.0](LICENSE-APACHE)
