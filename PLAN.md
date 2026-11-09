@@ -125,6 +125,15 @@ Tests:
 - 2026-11-09: TLS waits for M7 and will be `rustls`; the crypto provider
   (`ring`, which needs a C compiler, or pure-Rust `rustls-graviola`) is chosen
   then. Until then straum-pg refuses an `sslmode` that requires TLS.
+- 2026-11-09: TLS is `rustls` 0.23 on `rustls-graviola`, so the build
+  stays pure Rust; graviola needs AES, AVX, AVX2, ADX, BMI1/2 and PCLMULQDQ
+  on x86_64, or AES, NEON, PMULL and SHA2 on aarch64, and otherwise panics,
+  which aborts Straum. `sslmode=disable` is plain TCP. Every other connection
+  checks the certificate chain and the host name: `require`, `verify-ca`,
+  `verify-full` and no `sslmode` all mean that. `allow` and `prefer`, which
+  may fall back to plain TCP, are refused. The roots are Mozilla's, built
+  in (`webpki-roots`), or the PEM file `sslrootcert` names, read at each
+  connect.
 - 2026-11-09: A replication connection takes the simple query protocol only,
   so loads arrive as text. The load is one `GROUP BY` per fact on the rollup
   key plus the min, max and count distinct columns, returning the row count
@@ -330,9 +339,12 @@ every key takes 4.1 s.
 ## M7: deploy
 
 Goal: Straum on AKS next to Azure Flexible Server 18.
-Touches: `deploy/`.
+Touches: `crates/straum-pg` (TLS), `crates/straum`, `deploy/`.
 
-- [ ] TLS to PostgreSQL with `rustls`; pick the crypto provider
+- [x] TLS to PostgreSQL with `rustls` on `rustls-graviola`. Tests make a CA
+      in the `postgres:18` container: replication, a reload and keepalives
+      over TLS; an unknown CA, a wrong host name and a server with ssl off
+      fail the connect
 - [ ] Lag and retained WAL from the server's WAL position; readiness off
       past a lag bound; OTLP
 - [ ] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC

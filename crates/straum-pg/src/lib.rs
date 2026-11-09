@@ -6,7 +6,8 @@
 //! streams pgoutput from the slot's consistent point. A thread owns the
 //! stream: it decodes commits and answers PostgreSQL while straum applies
 //! them. A table read again gets a second connection with its own
-//! temporary slot. Plain TCP only for now; TLS comes with the deploy.
+//! temporary slot. Connections are TLS unless the DSN says
+//! `sslmode=disable`.
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +21,7 @@ mod source;
 mod stream;
 #[cfg(test)]
 mod tests;
+mod tls;
 mod value;
 mod wire;
 

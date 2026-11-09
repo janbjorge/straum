@@ -1,6 +1,7 @@
-//! One connection to PostgreSQL over TCP: startup and SCRAM, simple
+//! One connection to PostgreSQL over TCP or TLS: startup and SCRAM, simple
 //! queries, and the copy-both stream of a replication connection. Messages
-//! are read whole into a buffer, so a read that times out loses nothing.
+//! are read whole into a buffer, so a read that times out loses nothing;
+//! rustls keeps a TLS record it has read part of.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -13,8 +14,9 @@ use postgres_protocol::authentication::sasl::{ChannelBinding, SCRAM_SHA_256, Scr
 use postgres_protocol::message::backend::{ErrorResponseBody, Header, Message};
 use postgres_protocol::message::frontend;
 
-use crate::dsn::Dsn;
+use crate::dsn::{Dsn, Tls};
 use crate::error::Error;
+use crate::tls::{self, TlsStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
@@ -22,9 +24,49 @@ const READ_CHUNK: usize = 64 * 1024;
 const COPY_BOTH: u8 = b'W';
 
 pub(crate) struct Conn {
-    socket: TcpStream,
+    socket: Socket,
     input: BytesMut,
     output: BytesMut,
+}
+
+enum Socket {
+    Plain(TcpStream),
+    Tls(Box<TlsStream>),
+}
+
+impl Socket {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            Socket::Plain(tcp) => tcp,
+            Socket::Tls(tls) => tls.get_ref(),
+        }
+    }
+}
+
+impl Read for Socket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Socket::Plain(tcp) => tcp.read(buf),
+            Socket::Tls(tls) => tls.read(buf),
+        }
+    }
+}
+
+impl Write for Socket {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Socket::Plain(tcp) => tcp.write(buf),
+            Socket::Tls(tls) => tls.write(buf),
+        }
+    }
+
+    /// TLS learns of a failed write here.
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Socket::Plain(tcp) => tcp.flush(),
+            Socket::Tls(tls) => tls.flush(),
+        }
+    }
 }
 
 impl Conn {
@@ -33,7 +75,7 @@ impl Conn {
     /// ISO in UTC, which `value` expects.
     pub(crate) fn connect(dsn: &Dsn, replication: bool) -> Result<Conn, Error> {
         let mut failure = None;
-        let socket = (dsn.host.as_str(), dsn.port)
+        let tcp = (dsn.host.as_str(), dsn.port)
             .to_socket_addrs()?
             .find_map(|addr| {
                 TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
@@ -43,7 +85,13 @@ impl Conn {
             .ok_or_else(|| {
                 failure.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))
             })?;
-        socket.set_nodelay(true)?;
+        tcp.set_nodelay(true)?;
+        let socket = match &dsn.tls {
+            Tls::Off => Socket::Plain(tcp),
+            Tls::Verify { root_cert } => {
+                Socket::Tls(Box::new(tls::start(tcp, &dsn.host, root_cert.as_deref())?))
+            }
+        };
         let mut conn = Conn {
             socket,
             input: BytesMut::new(),
@@ -221,12 +269,12 @@ impl Conn {
     }
 
     pub(crate) fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
-        self.socket.set_read_timeout(Some(timeout))
+        self.socket.tcp().set_read_timeout(Some(timeout))
     }
 
     /// A handle that can close the socket from another thread.
     pub(crate) fn closer(&self) -> io::Result<Closer> {
-        self.socket.try_clone().map(Closer)
+        self.socket.tcp().try_clone().map(Closer)
     }
 
     pub(crate) fn read(&mut self) -> Result<Message, Error> {
@@ -268,6 +316,7 @@ impl Conn {
 
     fn flush(&mut self) -> Result<(), Error> {
         self.socket.write_all(&self.output)?;
+        self.socket.flush()?;
         self.output.clear();
         Ok(())
     }
@@ -281,6 +330,7 @@ impl Drop for Conn {
         frontend::terminate(&mut self.output);
         // The connection may already be gone.
         let _ = self.socket.write_all(&self.output);
+        let _ = self.socket.flush();
     }
 }
 

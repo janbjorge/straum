@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use rustls::pki_types::ServerName;
+
 const DEFAULT_PORT: u16 = 5432;
 
 /// A parsed connection URL. Its `Display` leaves out the password.
@@ -12,12 +14,30 @@ pub struct Dsn {
     pub(crate) user: String,
     pub(crate) password: Option<String>,
     pub(crate) database: String,
+    pub(crate) tls: Tls,
+}
+
+/// How straum reaches PostgreSQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Tls {
+    /// Plain TCP.
+    Off,
+    /// TLS, with a certificate that chains to a root straum trusts and names
+    /// the host: the roots in the PEM file `root_cert`, else the roots
+    /// built in.
+    Verify { root_cert: Option<String> },
 }
 
 impl Dsn {
-    /// `postgres://user:password@host:port/database?sslmode=disable`. The
-    /// port defaults to 5432 and the database to the user. straum has no TLS
-    /// yet, so an `sslmode` that requires it is refused.
+    /// `postgres://user:password@host:port/database?sslmode=verify-full`.
+    /// The port defaults to 5432 and the database to the user.
+    ///
+    /// `sslmode=disable` is plain TCP. Any other connection is TLS and
+    /// checks the server's certificate and name: `require`, `verify-ca`,
+    /// `verify-full` and no `sslmode` all mean that. `allow` and `prefer`,
+    /// which may fall back to plain TCP, are refused. `sslrootcert=FILE`
+    /// trusts the roots in FILE instead of the ones built in. With TLS the
+    /// host must be a DNS name or IP address, which a certificate can name.
     pub fn parse(url: &str) -> Result<Dsn, DsnError> {
         let rest = ["postgres://", "postgresql://"]
             .iter()
@@ -41,13 +61,27 @@ impl Dsn {
         if host.is_empty() {
             return Err(DsnError::Host);
         }
+        let mut plain = false;
+        let mut root_cert = None;
         for pair in query.split('&').filter(|p| !p.is_empty()) {
             match pair.split_once('=') {
-                Some(("sslmode", "disable" | "allow" | "prefer")) => {}
-                Some(("sslmode", mode)) => return Err(DsnError::Tls(mode.to_owned())),
+                Some(("sslmode", "disable")) => plain = true,
+                Some(("sslmode", "require" | "verify-ca" | "verify-full")) => plain = false,
+                Some(("sslmode", mode @ ("allow" | "prefer"))) => {
+                    return Err(DsnError::Fallback(mode.to_owned()));
+                }
+                Some(("sslrootcert", file)) if !file.is_empty() => root_cert = Some(decode(file)?),
                 _ => return Err(DsnError::Parameter(pair.to_owned())),
             }
         }
+        let tls = match (plain, root_cert) {
+            (true, Some(_)) => return Err(DsnError::RootCert),
+            (true, None) => Tls::Off,
+            (false, _) if ServerName::try_from(host).is_err() => {
+                return Err(DsnError::TlsHost(host.to_owned()));
+            }
+            (false, root_cert) => Tls::Verify { root_cert },
+        };
         let database = match decode(database)? {
             d if d.is_empty() => user.clone(),
             d => d,
@@ -58,6 +92,7 @@ impl Dsn {
             user,
             password,
             database,
+            tls,
         })
     }
 }
@@ -80,13 +115,21 @@ fn decode(s: &str) -> Result<String, DsnError> {
     String::from_utf8(bytes).map_err(|_| DsnError::Escape)
 }
 
+/// Says what straum does: `require` and `verify-ca` show as `verify-full`.
 impl fmt::Display for Dsn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "postgres://{}@{}:{}/{}",
             self.user, self.host, self.port, self.database
-        )
+        )?;
+        match &self.tls {
+            Tls::Off => f.write_str("?sslmode=disable"),
+            Tls::Verify { root_cert: None } => f.write_str("?sslmode=verify-full"),
+            Tls::Verify {
+                root_cert: Some(file),
+            } => write!(f, "?sslmode=verify-full&sslrootcert={file}"),
+        }
     }
 }
 
@@ -104,8 +147,12 @@ pub enum DsnError {
     Host,
     Port,
     Escape,
-    /// An `sslmode` that needs TLS.
-    Tls(String),
+    /// `sslmode=allow` or `prefer`, which may connect without TLS.
+    Fallback(String),
+    /// `sslrootcert` with `sslmode=disable`.
+    RootCert,
+    /// A host no certificate can name.
+    TlsHost(String),
     Parameter(String),
 }
 
@@ -117,10 +164,15 @@ impl fmt::Display for DsnError {
             DsnError::Host => f.write_str("DSN must name a host"),
             DsnError::Port => f.write_str("DSN port is not a port number"),
             DsnError::Escape => f.write_str("DSN has a bad percent escape"),
-            DsnError::Tls(mode) => write!(
+            DsnError::Fallback(mode) => write!(
                 f,
-                "sslmode={mode} needs TLS, which straum does not support yet; \
-                 use sslmode=disable on a trusted network"
+                "sslmode={mode} may connect without TLS; use sslmode=verify-full, \
+                 or sslmode=disable on a trusted network"
+            ),
+            DsnError::RootCert => f.write_str("DSN gives sslrootcert with sslmode=disable"),
+            DsnError::TlsHost(host) => write!(
+                f,
+                "TLS needs a DNS name or IP address as the DSN host, not {host:?}"
             ),
             DsnError::Parameter(p) => write!(f, "DSN parameter {p} is not supported"),
         }
@@ -142,23 +194,60 @@ mod tests {
         assert_eq!(dsn.user, "straum");
         assert_eq!(dsn.password.as_deref(), Some("s@cr:t"));
         assert_eq!(dsn.database, "taxi");
-        assert_eq!(dsn.to_string(), "postgres://straum@db.local:6543/taxi");
+        assert_eq!(dsn.tls, Tls::Off);
+        assert_eq!(
+            dsn.to_string(),
+            "postgres://straum@db.local:6543/taxi?sslmode=disable"
+        );
         assert_eq!(
             format!("{dsn:?}"),
-            "Dsn(postgres://straum@db.local:6543/taxi)"
+            "Dsn(postgres://straum@db.local:6543/taxi?sslmode=disable)"
         );
 
         let dsn = Dsn::parse("postgresql://ann@localhost").unwrap();
         assert_eq!(
+            dsn.to_string(),
+            "postgres://ann@localhost:5432/ann?sslmode=verify-full"
+        );
+        assert_eq!(dsn.tls, Tls::Verify { root_cert: None });
+        assert_eq!(
             (dsn.port, dsn.password, dsn.database),
             (5432, None, "ann".to_owned())
         );
-        for ok in ["sslmode=allow", "sslmode=prefer", ""] {
-            assert!(
-                Dsn::parse(&format!("postgres://a@h/d?{ok}")).is_ok(),
-                "{ok}"
-            );
+    }
+
+    #[test]
+    fn every_mode_but_disable_verifies() {
+        let verify = |root_cert: Option<&str>| Tls::Verify {
+            root_cert: root_cert.map(str::to_owned),
+        };
+        let cases = [
+            ("", verify(None)),
+            ("sslmode=require", verify(None)),
+            ("sslmode=verify-ca", verify(None)),
+            ("sslmode=verify-full", verify(None)),
+            ("sslmode=disable", Tls::Off),
+            ("sslmode=disable&sslmode=require", verify(None)),
+            ("sslmode=require&sslmode=disable", Tls::Off),
+            ("sslrootcert=/ca%20s/a.pem", verify(Some("/ca s/a.pem"))),
+            (
+                "sslmode=verify-ca&sslrootcert=ca.pem",
+                verify(Some("ca.pem")),
+            ),
+        ];
+        for (query, tls) in cases {
+            let dsn = Dsn::parse(&format!("postgres://a@h/d?{query}")).unwrap();
+            assert_eq!(dsn.tls, tls, "{query}");
         }
+        let dsn = Dsn::parse("postgres://a@h/d?sslmode=require&sslrootcert=ca.pem").unwrap();
+        assert_eq!(
+            dsn.to_string(),
+            "postgres://a@h:5432/d?sslmode=verify-full&sslrootcert=ca.pem"
+        );
+        assert_eq!(Dsn::parse(&dsn.to_string()), Ok(dsn));
+        // Without TLS no certificate names the host.
+        let dsn = Dsn::parse("postgres://a@-h/d?sslmode=disable").unwrap();
+        assert_eq!((dsn.host.as_str(), dsn.tls), ("-h", Tls::Off));
     }
 
     #[test]
@@ -174,12 +263,34 @@ mod tests {
             ("postgres://we%zz@h/taxi", DsnError::Escape),
             ("postgres://we%ff@h/taxi", DsnError::Escape),
             (
-                "postgres://straum@h/taxi?sslmode=require",
-                DsnError::Tls("require".into()),
+                "postgres://straum@h/taxi?sslmode=allow",
+                DsnError::Fallback("allow".into()),
             ),
             (
-                "postgres://straum@h/taxi?sslmode=verify-full",
-                DsnError::Tls("verify-full".into()),
+                "postgres://straum@h/taxi?sslmode=prefer",
+                DsnError::Fallback("prefer".into()),
+            ),
+            (
+                "postgres://straum@h/taxi?sslmode=Disable",
+                DsnError::Parameter("sslmode=Disable".into()),
+            ),
+            (
+                "postgres://straum@h/taxi?sslmode=disable&sslrootcert=ca.pem",
+                DsnError::RootCert,
+            ),
+            (
+                "postgres://straum@h/taxi?sslrootcert=",
+                DsnError::Parameter("sslrootcert=".into()),
+            ),
+            ("postgres://straum@h/taxi?sslrootcert=%g", DsnError::Escape),
+            ("postgres://straum@-h/taxi", DsnError::TlsHost("-h".into())),
+            (
+                "postgres://straum@a..b/taxi?sslmode=require",
+                DsnError::TlsHost("a..b".into()),
+            ),
+            (
+                "postgres://straum@h/taxi?sslcert=me.pem",
+                DsnError::Parameter("sslcert=me.pem".into()),
             ),
             (
                 "postgres://straum@h/taxi?connect_timeout=5",
@@ -207,9 +318,17 @@ mod tests {
             (DsnError::Port, "DSN port is not a port number"),
             (DsnError::Escape, "DSN has a bad percent escape"),
             (
-                DsnError::Tls("require".into()),
-                "sslmode=require needs TLS, which straum does not support yet; \
-                 use sslmode=disable on a trusted network",
+                DsnError::Fallback("prefer".into()),
+                "sslmode=prefer may connect without TLS; use sslmode=verify-full, \
+                 or sslmode=disable on a trusted network",
+            ),
+            (
+                DsnError::RootCert,
+                "DSN gives sslrootcert with sslmode=disable",
+            ),
+            (
+                DsnError::TlsHost("-h".into()),
+                "TLS needs a DNS name or IP address as the DSN host, not \"-h\"",
             ),
             (
                 DsnError::Parameter("x=1".into()),

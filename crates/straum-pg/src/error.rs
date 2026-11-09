@@ -23,6 +23,9 @@ pub enum Error {
     /// A loaded row that doesn't fit its table in straum.
     Row(RowError),
     Dsn(DsnError),
+    /// TLS didn't start: the server has it off, or straum doesn't trust its
+    /// certificate.
+    Tls(String),
     /// The setup doesn't fit the spec; one line per problem, saying what to
     /// fix.
     Setup(Vec<String>),
@@ -64,6 +67,7 @@ impl fmt::Display for Error {
             Error::Value(e) => write!(f, "{e}"),
             Error::Row(e) => write!(f, "loaded {e}"),
             Error::Dsn(e) => write!(f, "{e}"),
+            Error::Tls(e) => write!(f, "TLS to PostgreSQL: {e}"),
             Error::Setup(problems) => f.write_str(&problems.join("\n")),
             Error::Stopped => f.write_str("the replication stream stopped"),
         }
@@ -105,6 +109,7 @@ mod tests {
                 "loaded removed row was never added",
             ),
             (Error::from(DsnError::Host), "DSN must name a host"),
+            (Error::Tls("no".into()), "TLS to PostgreSQL: no"),
             (Error::Setup(vec!["one".into(), "two".into()]), "one\ntwo"),
             (Error::Stopped, "the replication stream stopped"),
         ];

@@ -9,6 +9,9 @@ license.workspace = true
 bytes = "1.12.1"
 fallible-iterator = "0.2"
 postgres-protocol = "0.6.12"
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
+rustls-graviola = "0.4.0"
+webpki-roots = "1.0.11"
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
 

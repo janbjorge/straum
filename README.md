@@ -154,5 +154,4 @@ cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
 ## License
 
-Straum is dual-licensed under [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+Straum is licensed under [Apache-2.0](LICENSE-APACHE).

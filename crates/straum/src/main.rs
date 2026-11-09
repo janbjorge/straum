@@ -30,7 +30,10 @@ straum run loads every table FILE names, follows PostgreSQL's changes to them
 and answers asks over HTTP on ADDRESS (0.0.0.0:8080). It reads the
 publication NAME (straum) as a replication user. The DSN,
 postgres://user:password@host:port/database, comes from --dsn-file or the
-STRAUM_DSN environment variable. SIGTERM or SIGINT stops it.
+STRAUM_DSN environment variable. straum connects with TLS and checks the
+server's certificate and name against the roots built in, or against the CA
+file given by ?sslrootcert=FILE; ?sslmode=disable connects without TLS.
+SIGTERM or SIGINT stops it.
 
 straum plan prints the SQL that sets PostgreSQL up for FILE: logical
 decoding, the role NAME (straum), its grants and the publication.

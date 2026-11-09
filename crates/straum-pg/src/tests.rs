@@ -1,9 +1,11 @@
 //! straum-pg against PostgreSQL 18 in Docker, one container per test. Every
 //! answer is checked against the view body of the spec, run in PostgreSQL.
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -13,7 +15,7 @@ use straum_app::{AnswerError, App, Lsn, Source, Step, Writer};
 use straum_domain::{
     Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value, Zone,
 };
-use testcontainers::core::{AccessMode, IntoContainerPort, Mount, WaitFor};
+use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
 
@@ -80,22 +82,106 @@ const BOROUGHS: [&str; 3] = ["Manhattan", "Queens", "Bronx"];
 const KINDS: [&str; 3] = ["cab", "pool", "van"];
 const RIDERS: [&str; 4] = ["ann", "bo", "cy", "di"];
 
-/// PostgreSQL 18 with logical decoding and a short `wal_sender_timeout`,
-/// removed when dropped.
+/// Logical decoding and a short `wal_sender_timeout`.
+const FLAGS: [&str; 4] = ["-c", "wal_level=logical", "-c", "wal_sender_timeout=4s"];
+
+/// Makes a CA and a certificate it signs for 127.0.0.1, then starts
+/// PostgreSQL with ssl on. Both are valid from 2024, whatever the clocks.
+const WITH_TLS: &str = r#"
+set -e
+cd /tmp
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -subj /CN=straum-test-ca -not_before 20240101000000Z -days 36500 \
+    -keyout ca.key -out ca.pem
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=straum \
+    -keyout server.key -out server.csr
+printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -extfile server.ext \
+    -not_before 20240101000000Z -days 36500 -out server.pem
+chown postgres server.key server.pem
+chmod 600 server.key
+exec docker-entrypoint.sh postgres -c ssl=on \
+    -c ssl_cert_file=/tmp/server.pem -c ssl_key_file=/tmp/server.key "$@"
+"#;
+
+/// PostgreSQL 18 with [`FLAGS`], removed when dropped, with its CA file if
+/// it has TLS.
 struct Postgres {
     _container: Container<GenericImage>,
     dsn: Dsn,
+    _ca: Option<TempFile>,
+}
+
+/// A file in the temp directory, removed when dropped.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(name: &str, contents: &[u8]) -> TempFile {
+        let path = std::env::temp_dir().join(format!("straum-{}-{name}", process::id()));
+        fs::write(&path, contents).unwrap();
+        TempFile(path)
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn postgres() -> Postgres {
-    let container = GenericImage::new("postgres", "18")
+    let (container, port) = start(
+        GenericImage::new("postgres", "18"),
+        FLAGS.map(str::to_owned),
+    );
+    let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
+    Postgres {
+        _container: container,
+        dsn: Dsn::parse(&dsn).unwrap(),
+        _ca: None,
+    }
+}
+
+/// As [`postgres`], with ssl on. The DSN trusts the test's CA alone.
+fn postgres_tls() -> Postgres {
+    let [c, wal_level, c2, timeout] = FLAGS.map(str::to_owned);
+    let cmd = [
+        "-c".into(),
+        WITH_TLS.into(),
+        "sh".into(),
+        c,
+        wal_level,
+        c2,
+        timeout,
+    ];
+    let image = GenericImage::new("postgres", "18").with_entrypoint("sh");
+    let (container, port) = start(image, cmd);
+    let mut cat = container
+        .exec(ExecCommand::new(["cat", "/tmp/ca.pem"]))
+        .unwrap();
+    let ca = TempFile::new(&format!("ca-{port}.pem"), &cat.stdout_to_vec().unwrap());
+    let dsn = format!(
+        "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslrootcert={}",
+        ca.0.display()
+    );
+    Postgres {
+        _container: container,
+        dsn: Dsn::parse(&dsn).unwrap(),
+        _ca: Some(ca),
+    }
+}
+
+/// Runs `image` with `cmd` and waits until PostgreSQL takes connections;
+/// returns the container and its port on the host.
+fn start<const N: usize>(image: GenericImage, cmd: [String; N]) -> (Container<GenericImage>, u16) {
+    let container = image
         .with_exposed_port(5432.tcp())
         // The init server says it on stdout, the real one on stderr.
         .with_wait_for(WaitFor::message_on_stdout(READY))
         .with_wait_for(WaitFor::message_on_stderr(READY))
         .with_env_var("POSTGRES_PASSWORD", PASSWORD)
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
-        .with_cmd(["-c", "wal_level=logical", "-c", "wal_sender_timeout=4s"])
+        .with_cmd(cmd)
         .start()
         .expect("Docker runs postgres:18");
     // Docker may publish the port a moment after the container starts.
@@ -108,11 +194,7 @@ fn postgres() -> Postgres {
             port
         })
         .expect("Docker publishes port 5432");
-    let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres");
-    Postgres {
-        _container: container,
-        dsn: Dsn::parse(&dsn).unwrap(),
-    }
+    (container, port)
 }
 
 /// A plain SQL connection, plus the test's schema and publication, both
@@ -560,6 +642,150 @@ fn reads_a_table_again_on_a_second_connection() {
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
     compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
+}
+
+#[test]
+fn follows_the_database_over_tls() {
+    let pg = postgres_tls();
+    let mut db = Db::new(&pg, "tls", TABLES);
+    let mut rng = Rng::new(11);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    for id in 0..50 {
+        db.run(&rng.trip(id));
+    }
+    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    let mut writer = db.writer();
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), 2).expect("ready after the load");
+    for id in 50..60 {
+        db.run(&rng.trip(id));
+        applied(&mut writer);
+    }
+    // Past wal_sender_timeout (4 s): reads time out and keepalives are
+    // answered, over TLS.
+    thread::sleep(Duration::from_secs(6));
+    // A table read again, on a second TLS connection.
+    db.run("UPDATE $S.logins SET zone_id = 2");
+    applied(&mut writer);
+    for id in 60..70 {
+        db.run(&rng.trip(id));
+        applied(&mut writer);
+    }
+    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
+    let tls = db.rows(
+        "SELECT DISTINCT a.backend_type, s.ssl FROM pg_stat_activity a
+         JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'straum' ORDER BY 1",
+    );
+    let row = |kind: &str| vec![Some(kind.to_owned()), Some("t".to_owned())];
+    assert_eq!(tls, [row("client backend"), row("walsender")]);
+}
+
+#[test]
+fn tls_trusts_only_its_roots() {
+    let pg = postgres_tls();
+    // Display leaves the password out.
+    let dsn = (pg.dsn.to_string()).replace("postgres@", &format!("postgres:{PASSWORD}@"));
+    let ssl = |dsn: &str| {
+        let mut conn = Conn::connect(&Dsn::parse(dsn).unwrap(), false)?;
+        let rows = conn.rows("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")?;
+        Ok::<_, Error>(rows[0][0].clone().unwrap())
+    };
+    assert_eq!(ssl(&dsn).unwrap(), "t");
+    let (plain, _) = dsn.split_once('?').unwrap();
+    assert_eq!(ssl(&format!("{plain}?sslmode=disable")).unwrap(), "f");
+
+    // The roots built in don't know the test's CA.
+    let err = ssl(&format!("{plain}?sslmode=require")).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "TLS to PostgreSQL: invalid peer certificate: UnknownIssuer"
+    );
+    // The certificate names 127.0.0.1, not localhost; verify-ca checks the
+    // name too.
+    let localhost = dsn.replace("127.0.0.1", "localhost") + "&sslmode=verify-ca";
+    let err = ssl(&localhost).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "TLS to PostgreSQL: invalid peer certificate: certificate not valid for name \"localhost\"; \
+         certificate is only valid for IpAddress(127.0.0.1)"
+    );
+}
+
+#[test]
+fn tls_start_errors() {
+    let missing = std::env::temp_dir().join("straum-no-such-ca.pem");
+    let empty = TempFile::new("empty.pem", b"");
+    let junk = TempFile::new(
+        "junk.pem",
+        b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    );
+    let open = TempFile::new("open.pem", b"-----BEGIN CERTIFICATE-----\nAAAA\n");
+    let path = |file: &Path| file.display().to_string();
+    let cases: Vec<(Vec<u8>, Option<String>, String)> = vec![
+        (
+            b"N".to_vec(),
+            None,
+            "TLS to PostgreSQL: PostgreSQL has ssl off; turn it on, \
+             or use sslmode=disable on a trusted network"
+                .into(),
+        ),
+        (
+            b"E".to_vec(),
+            None,
+            "PostgreSQL sent 0x45 as its answer to SSLRequest".into(),
+        ),
+        (
+            Vec::new(),
+            None,
+            "connection to PostgreSQL: failed to fill whole buffer".into(),
+        ),
+        (
+            b"Snot a TLS record".to_vec(),
+            None,
+            "TLS to PostgreSQL: received corrupt message of type InvalidContentType".into(),
+        ),
+        (
+            b"S".to_vec(),
+            Some(path(&missing)),
+            format!(
+                "TLS to PostgreSQL: reading {}: I/O error: No such file or directory (os error 2)",
+                path(&missing)
+            ),
+        ),
+        (
+            b"S".to_vec(),
+            Some(path(&empty.0)),
+            format!(
+                "TLS to PostgreSQL: {} holds no CA certificate",
+                path(&empty.0)
+            ),
+        ),
+        (
+            b"S".to_vec(),
+            Some(path(&junk.0)),
+            format!(
+                "TLS to PostgreSQL: {} holds no CA certificate",
+                path(&junk.0)
+            ),
+        ),
+        (
+            b"S".to_vec(),
+            Some(path(&open.0)),
+            format!(
+                "TLS to PostgreSQL: reading {}: missing section end marker",
+                path(&open.0)
+            ),
+        ),
+    ];
+    for (answer, ca, expected) in cases {
+        let (dsn, _server) = scripted(vec![now(answer)]);
+        let tls = ca.map_or("sslmode=require".to_owned(), |ca| {
+            format!("sslrootcert={ca}")
+        });
+        let dsn = Dsn::parse(&dsn.to_string().replace("sslmode=disable", &tls)).unwrap();
+        let err = Conn::connect(&dsn, false).err().unwrap().to_string();
+        assert!(err.starts_with(&expected), "{err:?} is not {expected:?}");
+    }
 }
 
 #[test]
@@ -1031,8 +1257,8 @@ fn scripted(parts: Vec<(Duration, Vec<u8>)>) -> (Dsn, thread::JoinHandle<Vec<u8>
         let _ = socket.read_to_end(&mut received);
         received
     });
-    let dsn = Dsn::parse(&format!("postgres://straum@127.0.0.1:{port}/straum")).unwrap();
-    (dsn, server)
+    let dsn = format!("postgres://straum@127.0.0.1:{port}/straum?sslmode=disable");
+    (Dsn::parse(&dsn).unwrap(), server)
 }
 
 fn now(bytes: Vec<u8>) -> (Duration, Vec<u8>) {
@@ -1295,7 +1521,7 @@ fn taxi_month() {
         })
         .unwrap();
     let dsn = Dsn::parse(&format!(
-        "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres"
+        "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable"
     ))
     .unwrap();
     let mut sql = Conn::connect(&dsn, false).unwrap();

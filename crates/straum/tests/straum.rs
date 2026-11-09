@@ -117,7 +117,10 @@ impl Postgres {
     }
 
     fn dsn(&self, user: &str) -> String {
-        format!("postgres://{user}:{user}@127.0.0.1:{}/postgres", self.port)
+        format!(
+            "postgres://{user}:{user}@127.0.0.1:{}/postgres?sslmode=disable",
+            self.port
+        )
     }
 
     fn expected_rows(&self) -> String {
