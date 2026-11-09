@@ -1,5 +1,5 @@
-//! An ask allocates per group, never per cell: the allocations it makes are
-//! the same over 1,000 cells as over 8,000.
+//! What an ask costs: it allocates per group, never per cell, and reads only
+//! the cells of the buckets in its range.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -128,16 +128,21 @@ fn store(cells: i64) -> Store {
     store
 }
 
-/// The allocations one ask makes.
-fn allocs(store: &Store, by: &[&str]) -> usize {
-    let ask = Ask {
+/// Every measure, by `by`, over the hours `from..to`.
+fn ask(by: &[&str], from: i64, to: i64) -> Ask {
+    Ask {
         fact: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: by.iter().map(|b| key(b)).collect(),
         filter: vec![],
-        from: 0,
-        to: 1000 * i64::from(HOUR),
-    };
+        from: from * i64::from(HOUR),
+        to: to * i64::from(HOUR),
+    }
+}
+
+/// The allocations one ask makes.
+fn allocs(store: &Store, by: &[&str]) -> usize {
+    let ask = ask(by, 0, 1000);
     let before = ALLOCS.with(Cell::get);
     let answer = store.ask(&ask).unwrap();
     let after = ALLOCS.with(Cell::get);
@@ -154,6 +159,24 @@ fn an_ask_allocates_per_group_not_per_cell() {
             allocs(&small, by),
             allocs(&big, by),
             "by {by:?}: allocations grow with the cells"
+        );
+    }
+}
+
+// Until rollups keep their cells per bucket, every ask reads every cell.
+#[test]
+#[should_panic(expected = "reads cells outside its range")]
+fn an_ask_reads_only_the_buckets_in_its_range() {
+    let store = store(8_000);
+    let mut unknown = ask(&[], 0, 1);
+    unknown.fact = id("nope");
+    assert!(store.cells_read(&unknown).is_err());
+    let per_hour = 2 * ZONES as usize;
+    for (from, to) in [(24, 48), (99, 100), (0, 100)] {
+        assert_eq!(
+            store.cells_read(&ask(&[], from, to)).unwrap(),
+            (to - from) as usize * per_hour,
+            "hours {from}..{to}: reads cells outside its range"
         );
     }
 }

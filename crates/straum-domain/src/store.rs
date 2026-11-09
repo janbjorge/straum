@@ -61,6 +61,14 @@ impl Store {
         Some(self.dims[self.dim_index(dim)?].rows())
     }
 
+    /// How many cells answering `ask` reads, whatever they hold: its cost.
+    /// Today that is every cell of the fact.
+    pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
+        let fact = self.spec.check(ask)?;
+        let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
+        Ok(rollup.cells())
+    }
+
     /// Merges the cells in range that pass the ask's filter, one group per
     /// `by` value. Dim attributes are read per cell, after the rollup.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
