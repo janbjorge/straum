@@ -1,7 +1,7 @@
 # image is the straum container image the Dockerfile builds.
 image:
   # image.repository is where the image lives, such as
-  # myregistry.azurecr.io/straum. Required.
+  # registry.example.com/straum. Required.
   repository: ""
   # image.tag is the image's tag; empty means the chart's appVersion.
   tag: ""
@@ -10,8 +10,8 @@ image:
   # image.pullPolicy is when the kubelet pulls the image.
   pullPolicy: "IfNotPresent"
 
-# imagePullSecrets name Secrets for a private registry. AKS pulls from ACR
-# by managed identity and needs none.
+# imagePullSecrets name Secrets for a private registry. A cluster that
+# pulls with its own identity needs none.
 imagePullSecrets: []
 
 # spec is the Straum SQL spec (a Straum-only subset of CREATE VIEW) that
@@ -36,8 +36,8 @@ maxLag: 30
 
 # maxRetainedWal is how much WAL PostgreSQL may hold for straum's slot
 # before straum drops the slot and loads again, in bytes or with a Ki, Mi,
-# Gi or Ti suffix. Azure fixes max_slot_wal_keep_size at -1, so this keeps a
-# straum that can't keep up from filling the server's disk.
+# Gi or Ti suffix. Some managed services fix max_slot_wal_keep_size at -1,
+# so this keeps a straum that can't keep up from filling the server's disk.
 maxRetainedWal: "4Gi"
 
 # replicaCount is how many pods run. Each holds its own replication slot
@@ -50,7 +50,8 @@ service:
   port: 8080
 
 # resources are the pod's CPU and memory. straum holds every rollup in
-# memory; a memory request equal to the limit makes the pod Guaranteed.
+# memory; with the memory request equal to the limit it never uses more than
+# it asked for, so a node short of memory evicts pods that do first.
 resources:
   requests:
     cpu: "250m"
@@ -66,8 +67,8 @@ serviceAccount:
   # serviceAccount.name is the ServiceAccount to use; empty means the
   # release's full name when created, else the namespace's default.
   name: ""
-  # serviceAccount.annotations go on the ServiceAccount, as for Azure
-  # workload identity.
+  # serviceAccount.annotations go on the ServiceAccount, as for workload
+  # identity.
   annotations: {}
 
 # podAnnotations go on the pod.

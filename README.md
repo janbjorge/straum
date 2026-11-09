@@ -10,6 +10,9 @@ source of truth; Straum stores no durable copy.
 
 **Not stable.** Use at your own risk.
 
+The [user guide](https://janbjorge.github.io/straum/) covers the spec,
+asks, PostgreSQL setup and running Straum on Kubernetes.
+
 ## Quick start
 
 Given PostgreSQL source tables, write a spec:
@@ -96,10 +99,11 @@ Restart PostgreSQL after changing `wal_level`. `run` listens on
 | `POST /ask` | Read a declared aggregate. |
 | `GET /livez` | Process liveness. |
 | `GET /readyz` | Ready after all tables load and the stream catches up. |
+| `GET /status` | What Straum has done, as `straum status` prints it. |
 
 ## How it works
 
-![A table owner applies the setup SQL from straum plan. Straum loads from a snapshot at LSN L, then applies every commit after L and answers asks over HTTP.](research/diagrams/overview.svg)
+![A table owner applies the setup SQL from straum plan. Straum loads from a snapshot at LSN L, then applies every commit after L and answers asks over HTTP.](docs/src/diagrams/overview.svg)
 
 Startup uses an exported snapshot and temporary logical slot. The snapshot and
 change stream share an LSN, so no committed change is missed between loading
@@ -119,6 +123,7 @@ cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
 ## Documentation
 
+- [User guide](https://janbjorge.github.io/straum/), built from `docs/`
 - [Architecture](research/ARCHITECTURE.md)
 - [Build plan](PLAN.md)
 - [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)

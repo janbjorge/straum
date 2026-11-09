@@ -3,11 +3,13 @@
 Runs straum on Kubernetes: a Deployment, the spec in a ConfigMap, a
 ClusterIP Service and a ServiceAccount. No volume claims; straum keeps
 everything in memory and loads every table again when its pod starts.
+The [user guide](https://janbjorge.github.io/straum/kubernetes.html) has
+more.
 
 ## Before you install
 
-1. PostgreSQL 18 with `wal_level = logical`. On Azure Flexible Server, set
-   the server parameter and restart.
+1. PostgreSQL 18 with `wal_level = logical`, which takes a restart. On a
+   managed service, set the provider's parameter for logical decoding.
 2. The setup SQL that `straum plan --spec spec.sql` prints, run by the
    tables' owner: the role, its grants and the publication.
 3. The image, built from the repository's `Dockerfile` and pushed to your
@@ -26,7 +28,7 @@ everything in memory and loads every table again when its pod starts.
 
 ```sh
 helm upgrade --install straum deploy/helm/straum \
-  --set image.repository=myregistry.azurecr.io/straum \
+  --set image.repository=registry.example.com/straum \
   --set image.tag=0.0.0 \
   --set dsn.existingSecret=straum-dsn \
   --set-file spec=spec.sql

@@ -57,7 +57,7 @@ The ServiceAccount the pod runs as.
 The image, by digest when one is given.
 */}}
 {{- define "straum.image" -}}
-{{- $repository := required "image.repository: set the straum image, such as myregistry.azurecr.io/straum" .Values.image.repository }}
+{{- $repository := required "image.repository: set the straum image, such as registry.example.com/straum" .Values.image.repository }}
 {{- if .Values.image.digest }}
 {{- printf "%s@%s" $repository .Values.image.digest }}
 {{- else }}

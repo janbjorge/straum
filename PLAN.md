@@ -237,6 +237,10 @@ Tests:
   column's own codes, time keys in time order. Partials keep four copies
   per group, so adds to one group don't wait on each other. On the taxi
   month in process, the bench asks went from 9 to 70 ns a cell to 1 to 7.
+- 2026-11-09: A user guide, built with mdBook from `docs/` and published
+  to GitHub Pages by CI on every push to `main`. It covers using and
+  running Straum, not `research/` or this plan, and favours no cloud.
+  Its examples come from a run of its quick start.
 
 ## M0: notation and domain model
 

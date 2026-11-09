@@ -112,7 +112,7 @@ time keys and a range end inside a bucket.
 
 `Store::ask` answers from the cells:
 
-![Store::ask walks the cells of a fact, looks up dim attributes by ref id and merges each cell into the measures whose filter holds.](diagrams/ask.svg)
+![Store::ask walks the cells of a fact, looks up dim attributes by ref id and merges each cell into the measures whose filter holds.](../docs/src/diagrams/ask.svg)
 
 - It reads only the buckets that cover the range: the widest the view keeps
   that fit, `date_bin` buckets at the ends, or only `date_bin` buckets when
@@ -213,7 +213,7 @@ over a value dictionary are the likely way to shrink it (I, not built).
 
 The spec is known at start, so one slot and one snapshot serve every table:
 
-![The writer opens a temporary slot whose snapshot is at LSN L, loads dims and facts in it, then streams from L through a stream thread.](diagrams/start.svg)
+![The writer opens a temporary slot whose snapshot is at LSN L, loads dims and facts in it, then streams from L through a stream thread.](../docs/src/diagrams/start.svg)
 
 - The load reads cells, not rows. Per fact, one `GROUP BY` on the bucket
   (`extract(epoch FROM date_bin(...))`, as `bench/rollup.sql` buckets), the
@@ -382,7 +382,7 @@ open if that lag matters.
 
 ## 7. Lifecycle
 
-![Straum states Loading, Ready, Lagging, Waiting and Stopping, with /readyz in each.](diagrams/lifecycle.svg)
+![Straum states Loading, Ready, Lagging, Waiting and Stopping, with /readyz in each.](../docs/src/diagrams/lifecycle.svg)
 
 - `/readyz` is true only in Ready; otherwise it answers 503 with the last
   failure, or that it is loading. `/livez` checks the process only; lag

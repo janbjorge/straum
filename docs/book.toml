@@ -1,0 +1,13 @@
+# The user guide, built with mdBook (https://rust-lang.github.io/mdBook/)
+# and published to GitHub Pages by the docs job in .github/workflows/ci.yml.
+# Preview with `mdbook serve docs`.
+[book]
+title = "Straum"
+description = "In-memory PostgreSQL aggregates, kept current through logical replication."
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/janbjorge/straum"
+edit-url-template = "https://github.com/janbjorge/straum/edit/main/docs/{path}"
+site-url = "/straum/"
