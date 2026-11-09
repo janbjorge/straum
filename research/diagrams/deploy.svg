@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="600" viewBox="0 0 880 600" role="img" aria-labelledby="t d">
+  <title id="t">Straum on AKS next to Azure Database for PostgreSQL</title>
+  <desc id="d">In the AKS cluster, apps keep reading and writing PostgreSQL as before and send asks to the straum Service. The straum pod reads its spec from a ConfigMap and the DSN from a Key Vault secret at start, then holds one replication connection to the Flexible Server walsender with a temporary slot, and reads the server WAL position about once a second on a plain connection. OTLP export is planned.</desc>
+  <style>
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
+  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:13px}
+  .h{font-size:14px;font-weight:600}
+  .b{font-weight:600}
+  .s{font-size:12px}
+  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .num{font-variant-numeric:tabular-nums}
+  .it{font-style:italic}
+  .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
+  .canvas,.box,.box2,.frame,.accbox,.errbox,.planbox{stroke-width:1px}
+  .planbox{stroke-dasharray:5 4}
+  .frame{stroke-dasharray:none}
+  .rule,.life{stroke-width:1px;fill:none}
+  .life{stroke-dasharray:3 4}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a-plan{stroke-dasharray:5 4}
+  .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
+  .canvas{fill:#fbfcfc;stroke:#dfe3e8}
+  text{fill:#18202a}
+  .ink2{fill:#3d4753}
+  .muted{fill:#5f6977}
+  .acc{fill:#0b5c56}
+  .err{fill:#b4472c}
+  .plantext{fill:#8a939f}
+  .halo{stroke:#fbfcfc}
+  .box{fill:#f1f3f6;stroke:#c3cad3}
+  .box2{fill:#e6eaef;stroke:#c3cad3}
+  .frame{fill:none;stroke:#c3cad3}
+  .accbox{fill:#e4f3f0;stroke:#0f766e}
+  .errbox{fill:#faece7;stroke:#b4472c}
+  .planbox{fill:none;stroke:#8a939f}
+  .rule{stroke:#c3cad3}
+  .life{stroke:#c3cad3}
+  .fillacc{fill:#0f766e}
+  .fillerr{fill:#b4472c}
+  .fillink{fill:#3d4753}
+  .fillplan{fill:#8a939f}
+  .fillcanvas{fill:#fbfcfc}
+  .a{stroke:#3d4753}
+  .a-acc{stroke:#0f766e}
+  .a-err{stroke:#b4472c}
+  .a-plan{stroke:#8a939f}
+  .a-cfg{stroke:#5f6977}
+  .band{fill:#f1f3f6}
+  .errband{fill:#faece7}
+  @media (prefers-color-scheme: dark){
+  .canvas{fill:#0f141a;stroke:#2a323c}
+  text{fill:#e6edf3}
+  .ink2{fill:#c4ccd5}
+  .muted{fill:#97a2ae}
+  .acc{fill:#7fd3c7}
+  .err{fill:#e2795c}
+  .plantext{fill:#6f7a86}
+  .halo{stroke:#0f141a}
+  .box{fill:#161d25;stroke:#3b4551}
+  .box2{fill:#1e2730;stroke:#3b4551}
+  .frame{fill:none;stroke:#3b4551}
+  .accbox{fill:#0f2724;stroke:#3cb4a4}
+  .errbox{fill:#2b1914;stroke:#e2795c}
+  .planbox{fill:none;stroke:#6f7a86}
+  .rule{stroke:#3b4551}
+  .life{stroke:#3b4551}
+  .fillacc{fill:#3cb4a4}
+  .fillerr{fill:#e2795c}
+  .fillink{fill:#c4ccd5}
+  .fillplan{fill:#6f7a86}
+  .fillcanvas{fill:#0f141a}
+  .a{stroke:#c4ccd5}
+  .a-acc{stroke:#3cb4a4}
+  .a-err{stroke:#e2795c}
+  .a-plan{stroke:#6f7a86}
+  .a-cfg{stroke:#97a2ae}
+  .band{fill:#161d25}
+  .errband{fill:#2b1914}
+  }
+  </style>
+  <defs>
+  <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillink" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillacc" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
+  </defs>
+  <rect class="canvas" x="0.5" y="0.5" width="879" height="599" rx="10"/>
+  <text x="32" y="42" class="title">Straum reaches PostgreSQL the way the apps do: no new network path</text>
+  <text x="32" y="64" class="sub muted">The Helm chart in deploy/helm/straum on AKS, next to Azure Database for PostgreSQL.</text>
+  <rect class="frame" x="32" y="92" width="516" height="432" rx="10"/>
+  <text x="48" y="116" class="lbl muted">AKS CLUSTER, SAME VNET</text>
+  <rect class="frame" x="616" y="92" width="232" height="300" rx="10"/>
+  <text x="632" y="116" class="lbl muted">FLEXIBLE SERVER, PG 18</text>
+  <rect class="box2" x="56" y="134" width="170" height="62" rx="6"/>
+  <text x="70" y="158" class="h">App pods</text>
+  <text x="70" y="177" class="s ink2">unchanged</text>
+  <rect class="box2" x="640" y="134" width="184" height="62" rx="6"/>
+  <text x="654" y="158" class="h">Primary</text>
+  <text x="654" y="177" class="s ink2">tables and WAL</text>
+  <rect class="frame" x="56" y="238" width="468" height="210" rx="8"/>
+  <text x="236" y="262" class="lbl muted">NAMESPACE straum</text>
+  <rect class="box" x="72" y="290" width="150" height="62" rx="6"/>
+  <text x="86" y="314" class="h">Service straum</text>
+  <text x="86" y="333" class="s ink2">ClusterIP, :8080</text>
+  <rect class="accbox" x="290" y="278" width="214" height="86" rx="8"/>
+  <text x="304" y="302" class="mono b acc">straum pod</text>
+  <text x="304" y="322" class="s ink2">1 replica: one slot, one walsender</text>
+  <text x="304" y="338" class="s ink2">RAM only; spec mounted read-only</text>
+  <rect class="box" x="290" y="386" width="100" height="46" rx="6"/>
+  <text x="304" y="410" class="h">ConfigMap</text>
+  <text x="304" y="426" class="s muted">the spec</text>
+  <rect class="box" x="404" y="386" width="100" height="46" rx="6"/>
+  <text x="418" y="410" class="h">Secret</text>
+  <text x="418" y="426" class="s muted">STRAUM_DSN</text>
+  <rect class="box2" x="640" y="278" width="184" height="86" rx="6"/>
+  <text x="654" y="302" class="h">walsender</text>
+  <text x="654" y="321" class="s ink2">pgoutput, temporary slot</text>
+  <text x="654" y="337" class="s ink2">dropped with the session</text>
+  <rect class="box2" x="640" y="444" width="184" height="62" rx="6"/>
+  <text x="654" y="468" class="h">Key Vault</text>
+  <text x="654" y="487" class="s ink2">optional, syncs the Secret</text>
+  <rect class="planbox" x="290" y="462" width="214" height="44" rx="6"/>
+  <text x="304" y="489" class="h plantext">OTel collector</text>
+  <text x="490" y="489" class="s plantext" text-anchor="end">planned</text>
+  <path class="a" d="M226 160 L636 160" marker-end="url(#m)"/>
+  <text x="431" y="152" class="s halo" text-anchor="middle">SQL reads and writes, as today</text>
+  <path class="a" d="M141 196 L141 286" marker-end="url(#m)"/>
+  <text x="151" y="222" xml:space="preserve" class="halo"><tspan class="mono">POST /ask</tspan><tspan class="s muted">  HTTP/JSON</tspan></text>
+  <path class="a" d="M222 321 L286 321" marker-end="url(#m)"/>
+  <path class="a-acc" d="M504 304 L636 304" marker-end="url(#m-acc)"/>
+  <text x="570" y="296" class="s halo" text-anchor="middle">TLS, role straum</text>
+  <path class="a-acc" d="M640 340 L508 340" marker-end="url(#m-acc)"/>
+  <text x="570" y="358" class="s acc halo" text-anchor="middle">commit stream</text>
+  <path class="a" d="M470 278 L470 182 L636 182" marker-end="url(#m)"/>
+  <text x="480" y="202" class="s ink2 halo">WAL position, every 1 s</text>
+  <path class="a" d="M732 196 L732 274" marker-end="url(#m)"/>
+  <text x="742" y="240" class="s muted halo">decodes WAL</text>
+  <path class="a-cfg" d="M340 386 L340 368" marker-end="url(#m)"/>
+  <path class="a-cfg" d="M454 386 L454 368" marker-end="url(#m)"/>
+  <path class="a-cfg" d="M640 475 L600 475 L600 410 L508 410" marker-end="url(#m)"/>
+  <text x="560" y="404" class="s muted halo" text-anchor="middle">synced</text>
+  <path class="a-plan" d="M397 364 L397 458" marker-end="url(#m-plan)"/>
+  <text x="407" y="452" class="s plantext halo">OTLP</text>
+  <path class="rule" d="M32 540H848"/>
+  <path class="a" d="M32 556 L64 556" marker-end="url(#m)"/>
+  <text x="72" y="560" class="s ink2">traffic</text>
+  <path class="a-acc" d="M140 556 L172 556" marker-end="url(#m-acc)"/>
+  <text x="180" y="560" class="s ink2">replication</text>
+  <path class="a-cfg" d="M270 556 L302 556" marker-end="url(#m)"/>
+  <text x="310" y="560" class="s ink2">read at start; a spec change rolls the pod</text>
+  <path class="a-plan" d="M580 556 L612 556" marker-end="url(#m-plan)"/>
+  <text x="620" y="560" class="s ink2">planned</text>
+  <text x="32" y="584" class="s muted">An Azure HA failover drops the connection and Straum starts over. A rollout (maxSurge 1) holds two slots while the new pod loads.</text>
+</svg>

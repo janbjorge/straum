@@ -364,7 +364,7 @@ open if that lag matters.
 
 ## 7. Lifecycle
 
-![Straum states Loading, Ready, Waiting and Stopping, with /readyz in each and planned M7 states.](diagrams/lifecycle.svg)
+![Straum states Loading, Ready, Lagging, Waiting and Stopping, with /readyz in each.](diagrams/lifecycle.svg)
 
 - `/readyz` is true only in Ready; otherwise it answers 503 with the last
   failure, or that it is loading. `/livez` checks the process only; lag

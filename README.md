@@ -96,12 +96,7 @@ Restart PostgreSQL after changing `wal_level`. `run` listens on
 
 ## How it works
 
-```text
-Straum SQL spec ──> plan ──> PostgreSQL setup SQL
-     │
-     └──> snapshot load ──> in-memory rollups
-PostgreSQL changes ──> pgoutput ──> rollup updates ──> HTTP answers
-```
+![A table owner applies the setup SQL from straum plan. Straum loads from a snapshot at LSN L, then applies every commit after L and answers asks over HTTP.](research/diagrams/overview.svg)
 
 Startup uses an exported snapshot and temporary logical slot. The snapshot and
 change stream share an LSN, so no committed change is missed between loading

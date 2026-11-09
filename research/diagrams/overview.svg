@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="476" viewBox="0 0 880 476" role="img" aria-labelledby="t d">
+  <title id="t">How Straum works</title>
+  <desc id="d">A table owner applies the setup SQL that straum plan prints. On every start Straum loads aggregates from a snapshot at LSN L into RAM, then applies every commit after L from a temporary logical slot. Apps ask over HTTP and each answer carries the LSN and commit time it reflects.</desc>
+  <style>
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
+  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:13px}
+  .h{font-size:14px;font-weight:600}
+  .b{font-weight:600}
+  .s{font-size:12px}
+  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .num{font-variant-numeric:tabular-nums}
+  .it{font-style:italic}
+  .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
+  .canvas,.box,.box2,.frame,.accbox,.errbox,.planbox{stroke-width:1px}
+  .planbox{stroke-dasharray:5 4}
+  .frame{stroke-dasharray:none}
+  .rule,.life{stroke-width:1px;fill:none}
+  .life{stroke-dasharray:3 4}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a-plan{stroke-dasharray:5 4}
+  .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
+  .canvas{fill:#fbfcfc;stroke:#dfe3e8}
+  text{fill:#18202a}
+  .ink2{fill:#3d4753}
+  .muted{fill:#5f6977}
+  .acc{fill:#0b5c56}
+  .err{fill:#b4472c}
+  .plantext{fill:#8a939f}
+  .halo{stroke:#fbfcfc}
+  .box{fill:#f1f3f6;stroke:#c3cad3}
+  .box2{fill:#e6eaef;stroke:#c3cad3}
+  .frame{fill:none;stroke:#c3cad3}
+  .accbox{fill:#e4f3f0;stroke:#0f766e}
+  .errbox{fill:#faece7;stroke:#b4472c}
+  .planbox{fill:none;stroke:#8a939f}
+  .rule{stroke:#c3cad3}
+  .life{stroke:#c3cad3}
+  .fillacc{fill:#0f766e}
+  .fillerr{fill:#b4472c}
+  .fillink{fill:#3d4753}
+  .fillplan{fill:#8a939f}
+  .fillcanvas{fill:#fbfcfc}
+  .a{stroke:#3d4753}
+  .a-acc{stroke:#0f766e}
+  .a-err{stroke:#b4472c}
+  .a-plan{stroke:#8a939f}
+  .a-cfg{stroke:#5f6977}
+  .band{fill:#f1f3f6}
+  .errband{fill:#faece7}
+  @media (prefers-color-scheme: dark){
+  .canvas{fill:#0f141a;stroke:#2a323c}
+  text{fill:#e6edf3}
+  .ink2{fill:#c4ccd5}
+  .muted{fill:#97a2ae}
+  .acc{fill:#7fd3c7}
+  .err{fill:#e2795c}
+  .plantext{fill:#6f7a86}
+  .halo{stroke:#0f141a}
+  .box{fill:#161d25;stroke:#3b4551}
+  .box2{fill:#1e2730;stroke:#3b4551}
+  .frame{fill:none;stroke:#3b4551}
+  .accbox{fill:#0f2724;stroke:#3cb4a4}
+  .errbox{fill:#2b1914;stroke:#e2795c}
+  .planbox{fill:none;stroke:#6f7a86}
+  .rule{stroke:#3b4551}
+  .life{stroke:#3b4551}
+  .fillacc{fill:#3cb4a4}
+  .fillerr{fill:#e2795c}
+  .fillink{fill:#c4ccd5}
+  .fillplan{fill:#6f7a86}
+  .fillcanvas{fill:#0f141a}
+  .a{stroke:#c4ccd5}
+  .a-acc{stroke:#3cb4a4}
+  .a-err{stroke:#e2795c}
+  .a-plan{stroke:#6f7a86}
+  .a-cfg{stroke:#97a2ae}
+  .band{fill:#161d25}
+  .errband{fill:#2b1914}
+  }
+  </style>
+  <defs>
+  <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillink" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillacc" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
+  </defs>
+  <rect class="canvas" x="0.5" y="0.5" width="879" height="475" rx="10"/>
+  <text x="32" y="42" class="title">PostgreSQL stays the source of truth; Straum keeps its aggregates in RAM</text>
+  <text x="32" y="64" class="sub muted">Set up once, load from a snapshot at LSN L, then apply every commit after L.</text>
+  <text x="128" y="102" class="lbl muted">POSTGRESQL</text>
+  <text x="432" y="102" class="lbl acc">STRAUM</text>
+  <text x="728" y="102" class="lbl muted">APPS</text>
+  <path class="rule" d="M32 114H848"/>
+  <text x="32" y="144" class="h muted num">1</text>
+  <text x="50" y="144" class="h">Set up</text>
+  <text x="50" y="162" class="s muted">once</text>
+  <path class="rule" d="M32 214H848"/>
+  <text x="32" y="244" class="h muted num">2</text>
+  <text x="50" y="244" class="h">Start</text>
+  <text x="50" y="262" class="s muted">every start</text>
+  <path class="rule" d="M32 314H848"/>
+  <text x="32" y="344" class="h muted num">3</text>
+  <text x="50" y="344" class="h">Follow</text>
+  <text x="50" y="362" class="s muted">until it stops</text>
+  <path class="rule" d="M32 414H848"/>
+  <rect class="box2" x="128" y="128" width="190" height="72" rx="6"/>
+  <text x="142" y="152" class="h">Catalog</text>
+  <text x="142" y="172" class="s ink2">wal_level = logical</text>
+  <text x="142" y="188" class="s ink2">role, grants, publication</text>
+  <rect class="box2" x="128" y="228" width="190" height="72" rx="6"/>
+  <text x="142" y="252" class="h">Tables</text>
+  <text x="142" y="272" class="s ink2">facts and dims</text>
+  <rect class="box2" x="128" y="328" width="190" height="72" rx="6"/>
+  <text x="142" y="352" class="h">WAL</text>
+  <text x="142" y="372" class="s ink2">temporary logical slot</text>
+  <text x="142" y="388" class="s ink2">pgoutput</text>
+  <rect class="box" x="430" y="140" width="112" height="46" rx="6"/>
+  <text x="486" y="168" class="mono" text-anchor="middle">straum plan</text>
+  <rect class="box" x="584" y="140" width="112" height="46" rx="6"/>
+  <text x="640" y="161" class="mono" text-anchor="middle">trips.sql</text>
+  <text x="640" y="177" class="s muted" text-anchor="middle">the spec</text>
+  <path class="a" d="M584 163 L546 163" marker-end="url(#m)"/>
+  <path class="a" d="M430 163 L322 163" marker-end="url(#m)"/>
+  <text x="376" y="154" class="s ink2" text-anchor="middle">setup SQL</text>
+  <text x="376" y="182" class="s muted" text-anchor="middle">a table owner</text>
+  <text x="376" y="197" class="s muted" text-anchor="middle">runs it</text>
+  <rect class="accbox" x="430" y="228" width="246" height="172" rx="8"/>
+  <text x="446" y="252" class="mono b acc">straum run</text>
+  <rect class="box" x="446" y="266" width="214" height="52" rx="5"/>
+  <text x="458" y="287" class="h">Rollup per fact</text>
+  <text x="458" y="306" class="s ink2">cells by key and time bucket</text>
+  <rect class="box" x="446" y="326" width="214" height="34" rx="5"/>
+  <text x="458" y="348" class="h">Dim rows by key</text>
+  <text x="446" y="384" class="s acc">RAM only, rebuilt on every start</text>
+  <path class="a-cfg" d="M640 186 L640 224" marker-end="url(#m)"/>
+  <text x="648" y="210" class="s muted">read at start</text>
+  <path class="a-acc" d="M318 264 L426 264" marker-end="url(#m-acc)"/>
+  <text x="372" y="256" class="s" text-anchor="middle">snapshot at L</text>
+  <text x="372" y="282" class="s muted" text-anchor="middle">GROUP BY per fact</text>
+  <path class="a-acc" d="M318 364 L426 364" marker-end="url(#m-acc)"/>
+  <text x="372" y="356" class="s" text-anchor="middle">commits after L</text>
+  <text x="372" y="382" class="s muted" text-anchor="middle">one at a time</text>
+  <text x="728" y="252" class="mono">GET /readyz</text>
+  <text x="728" y="270" class="s muted">503 while loading,</text>
+  <text x="728" y="286" class="s muted">200 once loaded</text>
+  <rect class="box2" x="776" y="328" width="72" height="72" rx="6"/>
+  <text x="812" y="360" class="h" text-anchor="middle">Apps</text>
+  <text x="812" y="378" class="s muted" text-anchor="middle">HTTP</text>
+  <path class="a" d="M776 350 L680 350" marker-end="url(#m)"/>
+  <text x="726" y="342" class="mono" text-anchor="middle">POST /ask</text>
+  <path class="a" d="M676 380 L772 380" marker-end="url(#m)"/>
+  <text x="726" y="372" class="s ink2" text-anchor="middle">rows, lsn</text>
+  <text x="726" y="398" class="s muted" text-anchor="middle">commit_time</text>
+  <rect class="fillacc" x="32" y="430" width="4" height="30" rx="1"/>
+  <text x="46" y="442" xml:space="preserve"><tspan class="b">One LSN joins load and stream. </tspan><tspan class="ink2">The snapshot holds every commit up to L; the slot streams from the first commit after L.</tspan></text>
+  <text x="46" y="460" class="muted">No commit is missed and none is applied twice. Each answer says which commit it reflects.</text>
+</svg>

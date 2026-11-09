@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="768" viewBox="0 0 880 768" role="img" aria-labelledby="t d">
+  <title id="t">How Store::ask answers from rollup cells</title>
+  <desc id="d">Worked example: an ask for trips and card by pickup.borough over 00:00 to 00:30. Store::ask walks every cell of the trips rollup once, skips cells outside the range, looks up the borough of each cell by its pickup ref id in the taxi_zones dim, and merges each cell into the measures whose filter holds. The answer is null 1 1, Manhattan 7 2, Queens 4 3.</desc>
+  <style>
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
+  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:13px}
+  .h{font-size:14px;font-weight:600}
+  .b{font-weight:600}
+  .s{font-size:12px}
+  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .num{font-variant-numeric:tabular-nums}
+  .it{font-style:italic}
+  .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
+  .canvas,.box,.box2,.frame,.accbox,.errbox,.planbox{stroke-width:1px}
+  .planbox{stroke-dasharray:5 4}
+  .frame{stroke-dasharray:none}
+  .rule,.life{stroke-width:1px;fill:none}
+  .life{stroke-dasharray:3 4}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a-plan{stroke-dasharray:5 4}
+  .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
+  .canvas{fill:#fbfcfc;stroke:#dfe3e8}
+  text{fill:#18202a}
+  .ink2{fill:#3d4753}
+  .muted{fill:#5f6977}
+  .acc{fill:#0b5c56}
+  .err{fill:#b4472c}
+  .plantext{fill:#8a939f}
+  .halo{stroke:#fbfcfc}
+  .box{fill:#f1f3f6;stroke:#c3cad3}
+  .box2{fill:#e6eaef;stroke:#c3cad3}
+  .frame{fill:none;stroke:#c3cad3}
+  .accbox{fill:#e4f3f0;stroke:#0f766e}
+  .errbox{fill:#faece7;stroke:#b4472c}
+  .planbox{fill:none;stroke:#8a939f}
+  .rule{stroke:#c3cad3}
+  .life{stroke:#c3cad3}
+  .fillacc{fill:#0f766e}
+  .fillerr{fill:#b4472c}
+  .fillink{fill:#3d4753}
+  .fillplan{fill:#8a939f}
+  .fillcanvas{fill:#fbfcfc}
+  .a{stroke:#3d4753}
+  .a-acc{stroke:#0f766e}
+  .a-err{stroke:#b4472c}
+  .a-plan{stroke:#8a939f}
+  .a-cfg{stroke:#5f6977}
+  .band{fill:#f1f3f6}
+  .errband{fill:#faece7}
+  @media (prefers-color-scheme: dark){
+  .canvas{fill:#0f141a;stroke:#2a323c}
+  text{fill:#e6edf3}
+  .ink2{fill:#c4ccd5}
+  .muted{fill:#97a2ae}
+  .acc{fill:#7fd3c7}
+  .err{fill:#e2795c}
+  .plantext{fill:#6f7a86}
+  .halo{stroke:#0f141a}
+  .box{fill:#161d25;stroke:#3b4551}
+  .box2{fill:#1e2730;stroke:#3b4551}
+  .frame{fill:none;stroke:#3b4551}
+  .accbox{fill:#0f2724;stroke:#3cb4a4}
+  .errbox{fill:#2b1914;stroke:#e2795c}
+  .planbox{fill:none;stroke:#6f7a86}
+  .rule{stroke:#3b4551}
+  .life{stroke:#3b4551}
+  .fillacc{fill:#3cb4a4}
+  .fillerr{fill:#e2795c}
+  .fillink{fill:#c4ccd5}
+  .fillplan{fill:#6f7a86}
+  .fillcanvas{fill:#0f141a}
+  .a{stroke:#c4ccd5}
+  .a-acc{stroke:#3cb4a4}
+  .a-err{stroke:#e2795c}
+  .a-plan{stroke:#6f7a86}
+  .a-cfg{stroke:#97a2ae}
+  .band{fill:#161d25}
+  .errband{fill:#2b1914}
+  }
+  </style>
+  <defs>
+  <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillink" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillacc" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
+  <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
+  </defs>
+  <rect class="canvas" x="0.5" y="0.5" width="879" height="767" rx="10"/>
+  <text x="32" y="42" class="title">An ask merges stored cells; it never reads rows</text>
+  <text x="32" y="64" class="sub muted">Store::ask walks each cell of the fact once. Example: trips by pickup.borough, 00:00 to 00:30.</text>
+  <rect class="box" x="32" y="88" width="300" height="132" rx="6"/>
+  <text x="48" y="112" class="lbl muted">ASK</text>
+  <text x="48" y="136" class="mono">{"fact": "trips",</text>
+  <text x="48" y="153" class="mono" xml:space="preserve"> "measures": ["trips", "card"],</text>
+  <text x="48" y="170" class="mono" xml:space="preserve"> "by": ["pickup.borough"],</text>
+  <text x="48" y="187" class="mono" xml:space="preserve"> "from": "2024-01-01T00:00:00Z",</text>
+  <text x="48" y="204" class="mono" xml:space="preserve"> "to":   "2024-01-01T00:30:00Z"}</text>
+  <rect class="box" x="348" y="88" width="300" height="132" rx="6"/>
+  <text x="364" y="112" class="lbl muted">SPEC, VIEW trips</text>
+  <text x="364" y="136" class="mono">count(*) AS trips,</text>
+  <text x="364" y="153" class="mono">count(*) FILTER (WHERE</text>
+  <text x="364" y="170" class="mono" xml:space="preserve">  f.payment_type = 1) AS card</text>
+  <text x="364" y="192" class="s muted">Rollup key: payment_type, pickup ref id,</text>
+  <text x="364" y="208" class="s muted">15-minute bucket</text>
+  <rect class="box" x="664" y="88" width="184" height="132" rx="6"/>
+  <text x="680" y="112" class="lbl muted">DIM taxi_zones</text>
+  <text x="680" y="134" class="s muted">location_id</text>
+  <text x="772" y="134" class="s muted">borough</text>
+  <text x="756" y="154" class="num" text-anchor="end">132</text>
+  <text x="772" y="154">Queens</text>
+  <text x="756" y="172" class="num" text-anchor="end">161</text>
+  <text x="772" y="172">Manhattan</text>
+  <text x="756" y="190" class="num" text-anchor="end">230</text>
+  <text x="772" y="190">Manhattan</text>
+  <text x="680" y="208" class="s muted it">no row for 264</text>
+  <rect class="band" x="32" y="252" width="340" height="274" rx="6"/>
+  <text x="44" y="272" class="lbl muted">STORED CELL, ROLLUP trips</text>
+  <text x="388" y="272" class="lbl acc">WHAT THE ASK DOES WITH IT</text>
+  <path class="a-acc" d="M756 220 V236 Q756 244 748 244 H612 Q604 244 604 252 V276" marker-end="url(#m-acc)"/>
+  <text x="742" y="238" class="s acc halo" text-anchor="end">looked up by ref id</text>
+  <text x="44" y="294" class="b">bucket</text>
+  <text x="44" y="311" class="s muted">UTC</text>
+  <text x="214" y="294" class="b" text-anchor="end">payment_type</text>
+  <text x="290" y="294" class="b" text-anchor="end">pickup</text>
+  <text x="290" y="311" class="s muted" text-anchor="end">ref id</text>
+  <text x="360" y="294" class="b" text-anchor="end">rows</text>
+  <text x="400" y="294" class="b">in [from, to)</text>
+  <text x="530" y="294" class="b">pickup.borough</text>
+  <text x="530" y="311" class="s muted">from taxi_zones</text>
+  <text x="716" y="294" class="b" text-anchor="end">trips</text>
+  <text x="716" y="311" class="s muted" text-anchor="end">+ rows</text>
+  <text x="836" y="294" class="b" text-anchor="end">card</text>
+  <text x="836" y="311" class="s muted" text-anchor="end">+ rows if</text>
+  <text x="836" y="325" class="s muted" text-anchor="end">payment_type = 1</text>
+  <path class="rule" d="M32 338H848"/>
+  <text x="44" y="358" class="num">00:00</text>
+  <text x="214" y="358" class="num" text-anchor="end">1</text>
+  <text x="290" y="358" class="num" text-anchor="end">132</text>
+  <text x="360" y="358" class="num" text-anchor="end">3</text>
+  <text x="400" y="358" class="ink2">yes</text>
+  <text x="530" y="358">Queens</text>
+  <text x="716" y="358" class="num" text-anchor="end">+3</text>
+  <text x="836" y="358" class="num" text-anchor="end">+3</text>
+  <path class="rule" d="M44 368H836"/>
+  <text x="44" y="388" class="num">00:00</text>
+  <text x="214" y="388" class="num" text-anchor="end">2</text>
+  <text x="290" y="388" class="num" text-anchor="end">132</text>
+  <text x="360" y="388" class="num" text-anchor="end">1</text>
+  <text x="400" y="388" class="ink2">yes</text>
+  <text x="530" y="388">Queens</text>
+  <text x="716" y="388" class="num" text-anchor="end">+1</text>
+  <text x="836" y="388" class="num muted" text-anchor="end">–</text>
+  <path class="rule" d="M44 398H836"/>
+  <text x="44" y="418" class="num">00:15</text>
+  <text x="214" y="418" class="num" text-anchor="end">1</text>
+  <text x="290" y="418" class="num" text-anchor="end">161</text>
+  <text x="360" y="418" class="num" text-anchor="end">2</text>
+  <text x="400" y="418" class="ink2">yes</text>
+  <text x="530" y="418">Manhattan</text>
+  <text x="716" y="418" class="num" text-anchor="end">+2</text>
+  <text x="836" y="418" class="num" text-anchor="end">+2</text>
+  <path class="rule" d="M44 428H836"/>
+  <text x="44" y="448" class="num">00:15</text>
+  <text x="214" y="448" class="num" text-anchor="end">2</text>
+  <text x="290" y="448" class="num" text-anchor="end">230</text>
+  <text x="360" y="448" class="num" text-anchor="end">5</text>
+  <text x="400" y="448" class="ink2">yes</text>
+  <text x="530" y="448">Manhattan</text>
+  <text x="716" y="448" class="num" text-anchor="end">+5</text>
+  <text x="836" y="448" class="num muted" text-anchor="end">–</text>
+  <path class="rule" d="M44 458H836"/>
+  <text x="44" y="478" class="num">00:15</text>
+  <text x="214" y="478" class="num" text-anchor="end">1</text>
+  <text x="290" y="478" class="num" text-anchor="end">264</text>
+  <text x="360" y="478" class="num" text-anchor="end">1</text>
+  <text x="400" y="478" class="ink2">yes</text>
+  <text x="530" y="478" xml:space="preserve"><tspan class="muted it">null</tspan><tspan class="s muted">  no dim row</tspan></text>
+  <text x="716" y="478" class="num" text-anchor="end">+1</text>
+  <text x="836" y="478" class="num" text-anchor="end">+1</text>
+  <path class="rule" d="M44 488H836"/>
+  <text x="44" y="508" class="num muted">00:30</text>
+  <text x="214" y="508" class="num muted" text-anchor="end">1</text>
+  <text x="290" y="508" class="num muted" text-anchor="end">161</text>
+  <text x="360" y="508" class="num muted" text-anchor="end">4</text>
+  <text x="400" y="508" class="err">no: bucket = to</text>
+  <text x="530" y="508" class="muted it">skipped</text>
+  <path class="a-acc" d="M676 530 L676 568" marker-end="url(#m-acc)"/>
+  <text x="686" y="552" class="s acc">group by pickup.borough</text>
+  <rect class="accbox" x="516" y="572" width="332" height="124" rx="8"/>
+  <text x="530" y="594" class="lbl acc">ANSWER, ROWS SORTED BY KEY</text>
+  <text x="530" y="616" class="b">pickup.borough</text>
+  <text x="716" y="616" class="b" text-anchor="end">trips</text>
+  <text x="836" y="616" class="b" text-anchor="end">card</text>
+  <text x="530" y="640" class="muted it">null</text>
+  <text x="716" y="640" class="num b" text-anchor="end">1</text>
+  <text x="836" y="640" class="num b" text-anchor="end">1</text>
+  <text x="530" y="660">Manhattan</text>
+  <text x="716" y="660" class="num b" text-anchor="end">7</text>
+  <text x="836" y="660" class="num b" text-anchor="end">2</text>
+  <text x="530" y="680">Queens</text>
+  <text x="716" y="680" class="num b" text-anchor="end">4</text>
+  <text x="836" y="680" class="num b" text-anchor="end">3</text>
+  <text x="32" y="594" class="b acc num">1</text>
+  <text x="50" y="594" class="s ink2">Spec::check first rejects an ask the cells can’t answer</text>
+  <text x="50" y="610" class="s ink2">exactly: an unknown name, two time keys, a range end inside</text>
+  <text x="50" y="626" class="s ink2">a bucket.</text>
+  <text x="32" y="650" class="b acc num">2</text>
+  <text x="50" y="650" class="s ink2">A measure filter names rollup-key parts only, so a cell</text>
+  <text x="50" y="666" class="s ink2">counts whole or not at all. card keeps no state of its own.</text>
+  <text x="32" y="690" class="b acc num">3</text>
+  <text x="50" y="690" class="s ink2">Dim attributes are not in the rollup key, so a change to</text>
+  <text x="50" y="706" class="s ink2">a dim row never touches a cell.</text>
+  <text x="32" y="730" class="b acc num">4</text>
+  <text x="50" y="730" class="s ink2">A ref id with no dim row groups under null, as LEFT JOIN</text>
+  <text x="50" y="746" class="s ink2">would.</text>
+</svg>
