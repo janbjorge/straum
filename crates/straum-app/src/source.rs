@@ -4,7 +4,7 @@
 
 use std::error;
 use std::fmt;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 
@@ -29,9 +29,32 @@ pub trait Source {
     /// As [`Source::load_fact`], for a dim's rows.
     fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError>;
 
-    /// The next commit, waiting for one. Asking means the last one is
-    /// applied, so PostgreSQL may recycle the WAL before it.
-    fn next_commit(&mut self) -> Result<Commit, SourceError>;
+    /// The next commit, waiting at most `wait` for one. Asking means the
+    /// last one is applied, so PostgreSQL may recycle the WAL before it.
+    fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError>;
+
+    /// Reads how far the server has written WAL and how much of it the
+    /// stream's slot holds, from [`Source::open`] on.
+    fn wal(&mut self) -> Result<Wal, SourceError>;
+}
+
+/// The server's WAL and the stream's slot, read at one moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wal {
+    /// How far the server has written WAL.
+    pub server: Lsn,
+    /// Every commit up to here is applied, as far as the server knows: the
+    /// slot's `confirmed_flush_lsn`.
+    pub confirmed: Lsn,
+    /// The server keeps WAL from here on for the slot: its `restart_lsn`.
+    pub restart: Lsn,
+}
+
+impl Wal {
+    /// Bytes of WAL the server keeps for the slot.
+    pub fn retained(&self) -> u64 {
+        self.server.0.saturating_sub(self.restart.0)
+    }
 }
 
 /// One transaction's changes to the spec's tables, in the order made.

@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{AnswerError, Answered, App, Change, Error, Lsn, Old, Step, Writer};
+use straum_app::{AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Step, Wal, Writer};
 use straum_domain::{
     Answer, Ask, AskError, AskKey, Cond, Datum, Ident, KeyPath, Literal, Spec, Store, TimeKey,
     Value,
@@ -22,6 +22,11 @@ use fake::{Database, Fake, Row, Write, id, time};
 const DAY: i64 = 86_400;
 /// Every row's time falls in `[0, RANGE)`.
 const RANGE: i64 = 3 * DAY;
+
+const LIMITS: Limits = Limits {
+    max_lag: Duration::from_secs(30),
+    max_retained_wal: 4 << 30,
+};
 
 const SPEC: &str = "
 CREATE VIEW trips WITH (key = id) AS
@@ -72,7 +77,7 @@ fn text(s: &str) -> Datum {
 
 fn setup(tables: &[(&'static str, bool)]) -> (Rc<RefCell<Database>>, Writer<Fake>) {
     let db = Database::new(tables).shared();
-    let writer = Writer::new(App::new(spec()), Fake::new(&db));
+    let writer = Writer::new(App::new(spec(), LIMITS), Fake::new(&db));
     (db, writer)
 }
 
@@ -441,7 +446,7 @@ fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
 #[test]
 fn asks_wait_while_the_tables_load() {
     let db = Database::new(&TABLES).shared();
-    let app = App::new(spec());
+    let app = App::new(spec(), LIMITS);
     let mut fake = Fake::new(&db);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let (watch, log) = (app.clone(), Rc::clone(&seen));
@@ -472,6 +477,83 @@ fn the_last_failure_is_kept_until_the_next_start() {
     assert_eq!(writer.app().error().as_deref(), Some("connection dropped"));
     writer.step().unwrap();
     assert_eq!(writer.app().error(), None);
+}
+
+#[test]
+fn ready_only_within_the_lag_bound() {
+    let db = Database::new(&TABLES).shared();
+    let limits = Limits {
+        max_lag: Duration::ZERO,
+        ..LIMITS
+    };
+    let mut fake = Fake::new(&db);
+    // Loading takes time, so WAL written meanwhile has an age.
+    fake.on_load = Some(Box::new(|_| thread::sleep(Duration::from_millis(1))));
+    let mut writer = Writer::new(App::new(spec(), limits), fake);
+    assert_eq!(writer.app().lag(), None);
+
+    // WAL written during the load that the slot hasn't confirmed.
+    let wal = |server, confirmed| Wal {
+        server: Lsn(server),
+        confirmed: Lsn(confirmed),
+        restart: Lsn(confirmed),
+    };
+    db.borrow_mut().wal = Some(wal(200, 100));
+    assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
+    assert!(writer.app().lag().unwrap() >= Duration::from_millis(3));
+    assert!(!writer.app().ready());
+    assert_eq!(writer.app().error(), None);
+    // Asks still answer, at the LSN they reflect.
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
+
+    // While it waits a second for a commit, straum reads the WAL again and
+    // finds the slot caught up.
+    db.borrow_mut().wal = Some(wal(200, 200));
+    db.borrow_mut().waits = 1;
+    let lsn = db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(writer.app().lag(), Some(Duration::ZERO));
+    assert!(writer.app().ready());
+
+    // A failure forgets the lag along with the tables.
+    db.borrow_mut().drop_connection = true;
+    db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
+    writer.step().unwrap_err();
+    assert_eq!(writer.app().lag(), None);
+}
+
+#[test]
+fn too_much_wal_starts_over() {
+    let (db, mut writer) = setup(&TABLES);
+    let limit = LIMITS.max_retained_wal;
+    let held = |bytes| Wal {
+        server: Lsn(100 + bytes),
+        confirmed: Lsn(100),
+        restart: Lsn(100),
+    };
+    let message = "PostgreSQL holds 5120.0 MiB of WAL for straum's slot, \
+                   past the limit of 4096.0 MiB";
+
+    db.borrow_mut().wal = Some(held(5 << 30));
+    let err = writer.step().unwrap_err();
+    assert!(
+        matches!(err, Error::Retained { retained, limit: 4_294_967_296 } if retained == 5 << 30)
+    );
+    assert_eq!(err.to_string(), message);
+    assert!(!writer.app().ready());
+    assert_eq!(writer.app().error().as_deref(), Some(message));
+
+    // Up to the limit is fine.
+    db.borrow_mut().wal = Some(held(limit));
+    assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
+    assert!(writer.app().ready());
+
+    // Past it while streaming, at the next reading.
+    db.borrow_mut().wal = Some(held(5 << 30));
+    db.borrow_mut().waits = 1;
+    db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    assert_eq!(writer.step().unwrap_err().to_string(), message);
+    assert!(!writer.app().ready());
 }
 
 #[test]
@@ -899,7 +981,7 @@ fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
 fn follow(seed: u64, seen: &mut Seen) {
     let mut rng = Rng(seed);
     let db = Database::new(&TABLES).shared();
-    let app = App::new(spec());
+    let app = App::new(spec(), LIMITS);
     let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));
     let (watch, count) = (app.clone(), Rc::clone(&aside));

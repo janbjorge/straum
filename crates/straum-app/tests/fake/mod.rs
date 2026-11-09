@@ -5,9 +5,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem;
 use std::rc::Rc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_app::{Change, Commit, Lsn, Old, Source, SourceError};
+use straum_app::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
 use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 
 pub type Row = Vec<Datum>;
@@ -56,6 +57,12 @@ pub struct Database {
     log: Vec<Commit>,
     /// The next call from the source fails, as if the connection dropped.
     pub drop_connection: bool,
+    /// Asks for a commit that wait the whole wait and find none, before
+    /// the next one is handed out.
+    pub waits: usize,
+    /// What reading the WAL returns instead of a slot that has confirmed
+    /// every commit applied.
+    pub wal: Option<Wal>,
     /// Every table load, in order.
     pub loads: Vec<String>,
 }
@@ -76,6 +83,8 @@ struct Stream {
     start: Lsn,
     /// Index of the next commit in the log.
     next: usize,
+    /// The last commit handed out, or the start.
+    applied: Lsn,
 }
 
 /// The fake's clock: a commit at LSN `n` commits `n` seconds after the
@@ -102,6 +111,8 @@ impl Database {
             history: BTreeMap::from([(Lsn(100), empty)]),
             log: Vec::new(),
             drop_connection: false,
+            waits: 0,
+            wal: None,
             loads: Vec::new(),
         }
     }
@@ -242,6 +253,7 @@ impl Source for Fake {
         self.stream = Some(Stream {
             start,
             next: db.log.len(),
+            applied: start,
         });
         Ok(start)
     }
@@ -260,9 +272,14 @@ impl Source for Fake {
         Ok(())
     }
 
-    fn next_commit(&mut self) -> Result<Commit, SourceError> {
+    fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
+        if db.waits > 0 {
+            db.waits -= 1;
+            thread::sleep(wait);
+            return Ok(None);
+        }
         let stream = self.stream.as_mut().expect("open first");
         let commit = db
             .log
@@ -270,6 +287,19 @@ impl Source for Fake {
             .expect("a commit is waiting")
             .clone();
         stream.next += 1;
-        Ok(commit)
+        // The writer applies it before it reads the WAL again.
+        stream.applied = commit.lsn;
+        Ok(Some(commit))
+    }
+
+    fn wal(&mut self) -> Result<Wal, SourceError> {
+        let mut db = self.db.borrow_mut();
+        db.connect()?;
+        let applied = self.stream.as_ref().expect("open first").applied;
+        Ok(db.wal.unwrap_or(Wal {
+            server: db.lsn(),
+            confirmed: applied,
+            restart: applied,
+        }))
     }
 }

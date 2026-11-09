@@ -5,11 +5,12 @@
 use std::fmt;
 use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{Answer, Ask, AskError, DimTable, Ident, Rollup, RowError, Spec, Store};
 
-use crate::source::{Change, Commit, Lsn, Old, Source, SourceError};
+use crate::lag::Lag;
+use crate::source::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
 
 /// Panic message for tables taken from the spec.
 const IN_SPEC: &str = "every loaded table is in the spec";
@@ -17,6 +18,24 @@ const IN_SPEC: &str = "every loaded table is in the spec";
 /// Panic message for a poisoned lock. The store may be half updated, so
 /// nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
+
+/// Panic message for the lag of a started stream.
+const STARTED: &str = "a started stream has a lag";
+
+/// How often the writer reads the server's WAL while it waits for commits.
+/// The lag can look up to this much longer than it is.
+const MEASURE_EVERY: Duration = Duration::from_secs(1);
+
+/// How far behind the server straum may fall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Past this, straum is not ready, though asks still answer.
+    pub max_lag: Duration,
+    /// Bytes of WAL the server may keep for straum's slot. Past this,
+    /// straum starts over, so a straum that can't keep up doesn't fill the
+    /// server's disk.
+    pub max_retained_wal: u64,
+}
 
 /// The store as the writer last left it, for asks. Clones share it.
 #[derive(Debug, Clone)]
@@ -34,6 +53,9 @@ struct State {
     /// When the commit at `position` committed. `None` when `position` is
     /// where a stream started.
     time: Option<SystemTime>,
+    /// How far behind the server the stream is. Set with `position`.
+    lag: Option<Lag>,
+    limits: Limits,
     /// The last failure, until the next start.
     error: Option<String>,
 }
@@ -43,8 +65,11 @@ struct State {
 #[derive(Debug)]
 pub struct Writer<S> {
     spec: Spec,
+    limits: Limits,
     source: S,
     app: App,
+    /// When the server's WAL was last read.
+    measured: Instant,
 }
 
 /// What [`Writer::step`] did.
@@ -72,21 +97,34 @@ struct Stale;
 impl App {
     /// An empty store that answers not ready until a [`Writer`] has loaded
     /// it.
-    pub fn new(spec: Spec) -> App {
+    pub fn new(spec: Spec, limits: Limits) -> App {
         App {
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec.clone()),
                 spec,
                 position: None,
                 time: None,
+                lag: None,
+                limits,
                 error: None,
             })),
         }
     }
 
-    /// Every table is loaded.
+    /// Every table is loaded, and straum is at most [`Limits::max_lag`]
+    /// behind the server.
     pub fn ready(&self) -> bool {
-        self.read().position.is_some()
+        let state = self.read();
+        state
+            .behind()
+            .is_some_and(|lag| lag <= state.limits.max_lag)
+    }
+
+    /// How far behind the server straum is: the time since its slot was
+    /// last known to have confirmed all the WAL there was. `None` until
+    /// every table is loaded.
+    pub fn lag(&self) -> Option<Duration> {
+        self.read().behind()
     }
 
     /// Answers once every table is loaded.
@@ -117,6 +155,10 @@ impl App {
 }
 
 impl State {
+    fn behind(&self) -> Option<Duration> {
+        (self.lag.as_ref()).map(|lag| lag.behind(Instant::now()))
+    }
+
     /// Applies the commit to every table, or names the first table it no
     /// longer fits.
     fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
@@ -197,8 +239,17 @@ enum Target<'a> {
 
 impl<S: Source> Writer<S> {
     pub fn new(app: App, source: S) -> Writer<S> {
-        let spec = app.read().spec.clone();
-        Writer { spec, source, app }
+        let (spec, limits) = {
+            let state = app.read();
+            (state.spec.clone(), state.limits)
+        };
+        Writer {
+            spec,
+            limits,
+            source,
+            app,
+            measured: Instant::now(),
+        }
     }
 
     pub fn app(&self) -> &App {
@@ -206,8 +257,9 @@ impl<S: Source> Writer<S> {
     }
 
     /// Loads every table when nothing is loaded yet, else applies the next
-    /// commit, waiting for one. After an error straum is not ready, and the
-    /// next step starts over from a new stream.
+    /// commit, waiting for one and reading the server's WAL meanwhile.
+    /// After an error straum is not ready, and the next step starts over
+    /// from a new stream.
     pub fn step(&mut self) -> Result<Step, Error> {
         let started = self.app.read().position.is_some();
         let step = if started {
@@ -218,6 +270,7 @@ impl<S: Source> Writer<S> {
         if let Err(e) = &step {
             let mut state = self.app.write();
             state.position = None;
+            state.lag = None;
             state.error = Some(e.to_string());
         }
         step
@@ -228,6 +281,8 @@ impl<S: Source> Writer<S> {
     fn start(&mut self) -> Result<Lsn, Error> {
         let empty = || Store::new(self.spec.clone());
         drop(mem::replace(&mut self.app.write().store, empty()));
+        // WAL the server writes from here on waits for the load.
+        let opened = Instant::now();
         let start = self.source.open(&self.spec)?;
         let mut store = empty();
         for dim in self.spec.dims() {
@@ -238,19 +293,44 @@ impl<S: Source> Writer<S> {
             let rollup = store.rollup(fact.name.as_str()).expect(IN_SPEC);
             self.source.load_fact(fact, rollup)?;
         }
+        let wal = self.measure()?;
+        let mut lag = Lag::new(opened);
+        lag.read(&wal, self.measured);
         let mut state = self.app.write();
         state.store = store;
         state.position = Some(start);
         state.time = None;
+        state.lag = Some(lag);
         state.error = None;
         Ok(start)
     }
 
     fn apply_next(&mut self) -> Result<Lsn, Error> {
-        let commit = self.source.next_commit()?;
-        let lsn = commit.lsn;
-        self.app.write().apply(commit).map_err(Error::Unfit)?;
-        Ok(lsn)
+        loop {
+            if self.measured.elapsed() >= MEASURE_EVERY {
+                let wal = self.measure()?;
+                let mut state = self.app.write();
+                state.lag.as_mut().expect(STARTED).read(&wal, self.measured);
+            }
+            let wait = MEASURE_EVERY.saturating_sub(self.measured.elapsed());
+            if let Some(commit) = self.source.next_commit(wait)? {
+                let lsn = commit.lsn;
+                self.app.write().apply(commit).map_err(Error::Unfit)?;
+                return Ok(lsn);
+            }
+        }
+    }
+
+    /// Reads the server's WAL, and fails once the slot holds more of it
+    /// than [`Limits::max_retained_wal`].
+    fn measure(&mut self) -> Result<Wal, Error> {
+        let wal = self.source.wal()?;
+        self.measured = Instant::now();
+        let (retained, limit) = (wal.retained(), self.limits.max_retained_wal);
+        if retained > limit {
+            return Err(Error::Retained { retained, limit });
+        }
+        Ok(wal)
     }
 }
 
@@ -266,6 +346,12 @@ pub enum Error {
     /// A change no longer fits the table: a row that doesn't fit, a fact
     /// change without the old row, an altered table.
     Unfit(Ident),
+    /// The server holds more WAL for straum's slot than
+    /// [`Limits::max_retained_wal`], in bytes.
+    Retained {
+        retained: u64,
+        limit: u64,
+    },
 }
 
 impl From<SourceError> for Error {
@@ -279,11 +365,21 @@ impl fmt::Display for Error {
         match self {
             Error::Source(e) => write!(f, "{e}"),
             Error::Unfit(table) => write!(f, "a change no longer fits {table}"),
+            Error::Retained { retained, limit } => write!(
+                f,
+                "PostgreSQL holds {} of WAL for straum's slot, past the limit of {}",
+                mib(*retained),
+                mib(*limit)
+            ),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnswerError {

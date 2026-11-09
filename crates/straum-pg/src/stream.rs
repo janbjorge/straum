@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -317,15 +317,17 @@ impl Stream {
         })
     }
 
-    pub(crate) fn next(&mut self) -> Result<Commit, Error> {
+    /// The next commit, waiting at most `wait` for one.
+    pub(crate) fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
         self.shared.applied.store(self.last.0, Ordering::Release);
-        match self.commits.recv() {
+        match self.commits.recv_timeout(wait) {
             Ok(Ok(commit)) => {
                 self.last = commit.lsn;
-                Ok(commit)
+                Ok(Some(commit))
             }
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(Error::Stopped),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(Error::Stopped),
         }
     }
 }

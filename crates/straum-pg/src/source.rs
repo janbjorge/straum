@@ -1,14 +1,14 @@
 //! [`Pg`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
 //! snapshot on the same connection, then the stream from its consistent
-//! point.
+//! point. A plain connection on the side reads the server's WAL position.
 
 use std::mem;
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_app::{Commit, Lsn, Source, SourceError};
+use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Dim, DimTable, Fact, Ident, Rollup, Spec};
 
 use crate::catalog::{self, Table};
@@ -26,6 +26,11 @@ pub struct Pg {
     dsn: Dsn,
     publication: String,
     state: State,
+    /// The slot of the last [`Source::open`].
+    slot: String,
+    /// Reads the server's WAL, since the stream's connection is busy
+    /// streaming. Connects again after an error.
+    monitor: Option<Conn>,
 }
 
 enum State {
@@ -55,6 +60,8 @@ impl Pg {
             dsn,
             publication: publication.to_owned(),
             state: State::Closed,
+            slot: String::new(),
+            monitor: None,
         }
     }
 
@@ -127,8 +134,10 @@ impl Source for Pg {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
+        self.monitor = None;
         let snapshot = snapshot(&self.dsn, spec, &self.publication)?;
         let at = snapshot.at;
+        self.slot.clone_from(&snapshot.slot);
         self.state = State::Loading(snapshot);
         Ok(at)
     }
@@ -141,15 +150,49 @@ impl Source for Pg {
         Ok(self.load(&dim.name, Target::Dim(table))?)
     }
 
-    fn next_commit(&mut self) -> Result<Commit, SourceError> {
+    fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
             State::Loading(snapshot) => State::Streaming(stream(snapshot, &self.publication)?),
             other => other,
         };
         match &mut self.state {
-            State::Streaming(stream) => Ok(stream.next()?),
+            State::Streaming(stream) => Ok(stream.next(wait)?),
             _ => Err(Error::Stopped.into()),
         }
+    }
+
+    fn wal(&mut self) -> Result<Wal, SourceError> {
+        if matches!(self.state, State::Closed) {
+            return Err(Error::Stopped.into());
+        }
+        let mut conn = match self.monitor.take() {
+            Some(conn) => conn,
+            None => Conn::connect(&self.dsn, false)?,
+        };
+        let wal = read_wal(&mut conn, &self.slot)?;
+        self.monitor = Some(conn);
+        Ok(wal)
+    }
+}
+
+/// The server's WAL position, and how far the slot has confirmed and keeps
+/// WAL.
+pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
+    let rows = conn.rows(&format!(
+        "SELECT pg_current_wal_lsn(), confirmed_flush_lsn, restart_lsn \
+         FROM pg_replication_slots WHERE slot_name = {}",
+        escape_literal(slot)
+    ))?;
+    let lsns: Vec<Lsn> = (rows.first().into_iter().flatten())
+        .filter_map(|lsn| parse_lsn(lsn.as_deref()?))
+        .collect();
+    match lsns[..] {
+        [server, confirmed, restart] => Ok(Wal {
+            server,
+            confirmed,
+            restart,
+        }),
+        _ => Err(Error::Protocol(format!("no WAL position for slot {slot}"))),
     }
 }
 

@@ -15,7 +15,7 @@ use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{App, Step, Writer};
+use straum_app::{App, Limits, Step, Writer};
 use straum_domain::Spec;
 use straum_pg::{Dsn, Pg};
 use tokio::signal::unix::{SignalKind, signal};
@@ -23,6 +23,7 @@ use tokio::signal::unix::{SignalKind, signal};
 const USAGE: &str = "\
 usage:
   straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
+             [--max-lag SECONDS] [--max-retained-wal BYTES]
   straum plan --spec FILE [--publication NAME] [--role NAME]
   straum help
 
@@ -33,7 +34,10 @@ postgres://user:password@host:port/database, comes from --dsn-file or the
 STRAUM_DSN environment variable. straum connects with TLS and checks the
 server's certificate and name against the roots built in, or against the CA
 file given by ?sslrootcert=FILE; ?sslmode=disable connects without TLS.
-SIGTERM or SIGINT stops it.
+/readyz turns off while straum is more than SECONDS (30) behind PostgreSQL.
+Once PostgreSQL holds more than BYTES (4Gi) of WAL for straum's slot, straum
+drops the slot and loads again, so it can't fill the server's disk; BYTES
+takes a Ki, Mi, Gi or Ti suffix. SIGTERM or SIGINT stops it.
 
 straum plan prints the SQL that sets PostgreSQL up for FILE: logical
 decoding, the role NAME (straum), its grants and the publication.
@@ -42,6 +46,10 @@ decoding, the role NAME (straum), its grants and the publication.
 const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
 const ROLE: &str = "straum";
+const LIMITS: Limits = Limits {
+    max_lag: Duration::from_secs(30),
+    max_retained_wal: 4 << 30,
+};
 
 /// The wait after a failure, doubled after each failure in a row up to
 /// [`MAX_BACKOFF`].
@@ -55,6 +63,7 @@ enum Command {
         listen: String,
         publication: String,
         dsn_file: Option<String>,
+        limits: Limits,
     },
     Plan {
         spec: String,
@@ -83,7 +92,8 @@ fn main() -> ExitCode {
             listen,
             publication,
             dsn_file,
-        }) => run(&spec, &listen, &publication, dsn_file.as_deref()),
+            limits,
+        }) => run(&spec, &listen, &publication, dsn_file.as_deref(), limits),
         Err(usage) => {
             eprint!("straum: {usage}\n\n{USAGE}");
             return ExitCode::from(2);
@@ -103,7 +113,14 @@ fn command(args: &[String]) -> Result<Command, String> {
         return Err("no command".into());
     };
     let allowed: &[&str] = match name.as_str() {
-        "run" => &["--spec", "--listen", "--publication", "--dsn-file"],
+        "run" => &[
+            "--spec",
+            "--listen",
+            "--publication",
+            "--dsn-file",
+            "--max-lag",
+            "--max-retained-wal",
+        ],
         "plan" => &["--spec", "--publication", "--role"],
         "help" | "--help" | "-h" if rest.is_empty() => return Ok(Command::Help),
         other => return Err(format!("unknown command {other:?}")),
@@ -128,11 +145,28 @@ fn command(args: &[String]) -> Result<Command, String> {
     let spec = flag("--spec").ok_or_else(|| format!("straum {name} needs --spec"))?;
     let publication = flag("--publication").unwrap_or_else(|| PUBLICATION.into());
     Ok(if name == "run" {
+        let max_lag = match flag("--max-lag") {
+            None => LIMITS.max_lag,
+            Some(value) => seconds(&value)
+                .ok_or_else(|| format!("--max-lag takes whole seconds above 0, not {value:?}"))?,
+        };
+        let max_retained_wal = match flag("--max-retained-wal") {
+            None => LIMITS.max_retained_wal,
+            Some(value) => bytes(&value).ok_or_else(|| {
+                format!(
+                    "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {value:?}"
+                )
+            })?,
+        };
         Command::Run {
             spec,
             listen: flag("--listen").unwrap_or_else(|| LISTEN.into()),
             publication,
             dsn_file: flag("--dsn-file"),
+            limits: Limits {
+                max_lag,
+                max_retained_wal,
+            },
         }
     } else {
         Command::Plan {
@@ -141,6 +175,22 @@ fn command(args: &[String]) -> Result<Command, String> {
             role: flag("--role").unwrap_or_else(|| ROLE.into()),
         }
     })
+}
+
+fn seconds(text: &str) -> Option<Duration> {
+    let seconds = text.parse().ok().filter(|&n| n > 0)?;
+    Some(Duration::from_secs(seconds))
+}
+
+/// A count of bytes, or of `Ki`, `Mi`, `Gi` or `Ti` as Kubernetes writes
+/// them: `4Gi`.
+fn bytes(text: &str) -> Option<u64> {
+    let (count, shift) = [("Ki", 10), ("Mi", 20), ("Gi", 30), ("Ti", 40)]
+        .into_iter()
+        .find_map(|(unit, shift)| Some((text.strip_suffix(unit)?, shift)))
+        .unwrap_or((text, 0));
+    let count: u64 = count.parse().ok().filter(|&n| n > 0)?;
+    count.checked_mul(1 << shift)
 }
 
 fn read_spec(path: &str) -> Result<Spec, String> {
@@ -163,7 +213,13 @@ fn read_dsn(file: Option<&str>) -> Result<Dsn, String> {
     Dsn::parse(text.trim()).map_err(|e| e.to_string())
 }
 
-fn run(spec: &str, listen: &str, publication: &str, dsn_file: Option<&str>) -> Result<(), String> {
+fn run(
+    spec: &str,
+    listen: &str,
+    publication: &str,
+    dsn_file: Option<&str>,
+    limits: Limits,
+) -> Result<(), String> {
     let spec = read_spec(spec)?;
     let dsn = read_dsn(dsn_file)?;
     let listener = TcpListener::bind(listen).map_err(|e| format!("listening on {listen}: {e}"))?;
@@ -179,7 +235,7 @@ fn run(spec: &str, listen: &str, publication: &str, dsn_file: Option<&str>) -> R
         process::abort();
     }));
 
-    let app = App::new(spec);
+    let app = App::new(spec, limits);
     let writer = Writer::new(app.clone(), Pg::new(dsn, publication));
     thread::Builder::new()
         .name("writer".into())
@@ -256,17 +312,23 @@ mod tests {
                 listen: LISTEN.into(),
                 publication: PUBLICATION.into(),
                 dsn_file: None,
+                limits: LIMITS,
             })
         );
         assert_eq!(
             command(&args(
-                "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s"
+                "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s \
+                 --max-lag 5 --max-retained-wal 512Mi"
             )),
             Ok(Command::Run {
                 spec: "s".into(),
                 listen: "127.0.0.1:9".into(),
                 publication: "p".into(),
                 dsn_file: Some("d".into()),
+                limits: Limits {
+                    max_lag: Duration::from_secs(5),
+                    max_retained_wal: 536_870_912,
+                },
             })
         );
         assert_eq!(
@@ -297,9 +359,46 @@ mod tests {
             ("run --spec=s", "straum run takes no \"--spec=s\""),
             ("run", "straum run needs --spec"),
             ("plan --role r", "straum plan needs --spec"),
+            (
+                "plan --spec s --max-lag 5",
+                "straum plan takes no \"--max-lag\"",
+            ),
         ];
         for (line, error) in cases {
             assert_eq!(command(&args(line)), Err(error.to_owned()), "{line}");
+        }
+        for lag in ["0", "-1", "1.5", "30s", ""] {
+            let line = args(&format!("run --spec s --max-lag {lag}"));
+            let error = format!("--max-lag takes whole seconds above 0, not {lag:?}");
+            let error = if lag.is_empty() {
+                "--max-lag needs a value".into()
+            } else {
+                error
+            };
+            assert_eq!(command(&line), Err(error), "{lag}");
+        }
+        for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
+            let line = args(&format!("run --spec s --max-retained-wal {size}"));
+            let error = format!(
+                "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {size:?}"
+            );
+            assert_eq!(command(&line), Err(error), "{size}");
+        }
+    }
+
+    #[test]
+    fn reads_sizes() {
+        let cases = [
+            ("1", 1),
+            ("4294967296", 4_294_967_296),
+            ("1Ki", 1_024),
+            ("3Mi", 3_145_728),
+            ("4Gi", 4_294_967_296),
+            ("2Ti", 2_199_023_255_552),
+            ("16777215Ti", 18_446_742_974_197_923_840),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(bytes(text), Some(expected), "{text}");
         }
     }
 }

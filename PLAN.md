@@ -184,6 +184,19 @@ Tests:
   over from a new slot instead of reading that table again on a second
   connection, which replaces the reload in the 2026-11-08 decision. Loads
   read only the snapshot `Source::open` made. Input checks stay as strict.
+- 2026-11-09: Lag is a time. About once a second the writer reads
+  `pg_current_wal_lsn()` and its slot's `confirmed_flush_lsn` and
+  `restart_lsn` from `pg_replication_slots`, on a plain connection, since
+  the replication connection is busy streaming. The lag is the time since
+  the last reading whose WAL the slot had confirmed all of: up to a second
+  longer than the truth, never shorter. WAL written during the load counts
+  from the start. `/readyz` is off past `--max-lag` (30 s); asks still
+  answer, with their LSN. Past `--max-retained-wal` (4Gi) of WAL held for
+  the slot, straum starts over, since Azure fixes `max_slot_wal_keep_size`
+  at `-1`. A load that takes longer than the cap allows starts over again
+  and again, which the log shows. OTLP gets its own box after the Helm
+  chart; until then `/readyz` says why straum isn't ready and the log says
+  why it started over.
 
 ## M0: notation and domain model
 
@@ -348,15 +361,21 @@ every key takes 4.1 s.
 ## M7: deploy
 
 Goal: Straum on AKS next to Azure Flexible Server 18.
-Touches: `crates/straum-pg` (TLS), `crates/straum`, `deploy/`.
+Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
+(lag), `crates/straum-http`, `crates/straum`, `deploy/`.
 
 - [x] TLS to PostgreSQL with `rustls` on `rustls-graviola`. Tests make a CA
       in the `postgres:18` container: replication, a reload and keepalives
       over TLS; an unknown CA, a wrong host name and a server with ssl off
       fail the connect
-- [ ] Lag and retained WAL from the server's WAL position; readiness off
-      past a lag bound; OTLP
+- [x] Lag and retained WAL from the server's WAL position; readiness off
+      past `--max-lag`; start over past `--max-retained-wal`. Tests: the
+      lag against every reading kept, over random readings; the cap at the
+      start and while streaming; `/readyz` saying how far behind; readings
+      from `postgres:18`, as the role `straum plan` makes
 - [ ] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC
+- [ ] OTLP to the cluster's collector: readiness, lag, retained WAL,
+      starts and failures
 - [ ] Run against a non-production Azure Flexible Server 18
 
 ## Open questions

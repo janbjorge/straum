@@ -7,7 +7,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
-use straum_app::{App, Change, Commit, Lsn, Source, SourceError, Step, Writer};
+use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
 use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 use tokio::sync::oneshot;
 
@@ -30,12 +30,19 @@ GROUP BY 1, 2, 3, 4;
 const JAN_1: i64 = 1_704_067_200;
 const HOUR: i64 = 3_600;
 const START: Lsn = Lsn(0x16_B374_D848);
+const LIMITS: Limits = Limits {
+    max_lag: Duration::from_secs(30),
+    max_retained_wal: 4 << 30,
+};
 
 /// Loads fixed rows at [`START`], then streams its commits.
 struct Script {
     trips: Vec<Vec<Datum>>,
     zones: Vec<Vec<Datum>>,
     commits: VecDeque<Commit>,
+    /// How long loading the fact takes.
+    pause: Duration,
+    wal: Wal,
 }
 
 impl Source for Script {
@@ -44,6 +51,7 @@ impl Source for Script {
     }
 
     fn load_fact(&mut self, _: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
+        thread::sleep(self.pause);
         // at, kind, zone_id, fare: fare is numeric(10, 2).
         rollup.set_scales(&[0, 0, 0, 2])?;
         for row in &self.trips {
@@ -59,10 +67,13 @@ impl Source for Script {
         Ok(())
     }
 
-    fn next_commit(&mut self) -> Result<Commit, SourceError> {
-        self.commits
-            .pop_front()
-            .ok_or_else(|| "connection dropped".into())
+    fn next_commit(&mut self, _: Duration) -> Result<Option<Commit>, SourceError> {
+        let commit = self.commits.pop_front();
+        commit.map(Some).ok_or_else(|| "connection dropped".into())
+    }
+
+    fn wal(&mut self) -> Result<Wal, SourceError> {
+        Ok(self.wal)
     }
 }
 
@@ -78,9 +89,10 @@ fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
     vec![int(JAN_1 + hour * HOUR), int(kind), int(zone), fare]
 }
 
-/// Four trips on 2024-01-01 UTC, one in a zone with no row.
-fn writer() -> Writer<Script> {
-    let script = Script {
+/// Four trips on 2024-01-01 UTC, one in a zone with no row, and a slot
+/// that has confirmed all there is.
+fn script() -> Script {
+    Script {
         trips: vec![
             trip(0, 1, 1, int(1_250)),
             trip(1, 1, 1, int(250)),
@@ -99,9 +111,22 @@ fn writer() -> Writer<Script> {
                 row: trip(3, 1, 1, int(100)),
             }],
         }]),
-    };
+        pause: Duration::ZERO,
+        wal: Wal {
+            server: START,
+            confirmed: START,
+            restart: START,
+        },
+    }
+}
+
+fn writer_with(limits: Limits, script: Script) -> Writer<Script> {
     let spec = straum_notation::parse(SPEC).unwrap();
-    Writer::new(App::new(spec), script)
+    Writer::new(App::new(spec, limits), script)
+}
+
+fn writer() -> Writer<Script> {
+    writer_with(LIMITS, script())
 }
 
 struct Server {
@@ -323,6 +348,31 @@ fn readiness_says_why_not() {
         (reply.status, reply.body.as_str()),
         (503, "not ready: connection dropped\n")
     );
+    server.stop();
+}
+
+#[test]
+fn readiness_says_how_far_behind() {
+    // WAL written while the load took a second, which the slot hasn't
+    // confirmed.
+    let mut script = script();
+    script.wal.server = Lsn(START.0 + 1);
+    script.pause = Duration::from_secs(1);
+    let limits = Limits {
+        max_lag: Duration::ZERO,
+        ..LIMITS
+    };
+    let mut writer = writer_with(limits, script);
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "GET", "/readyz", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, "not ready: 1 s behind PostgreSQL\n")
+    );
+    // Asks still answer.
+    let ask = r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600}"#;
+    assert_eq!(call(server.addr, "POST", "/ask", ask).status, 200);
     server.stop();
 }
 

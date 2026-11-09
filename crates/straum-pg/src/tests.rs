@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_app::{AnswerError, App, Lsn, Source, Step, Writer};
+use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value};
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -20,11 +20,17 @@ use testcontainers::{Container, GenericImage, ImageExt};
 use crate::catalog;
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::source::Pg;
+use crate::source::{Pg, read_wal};
 use crate::stream::{Decoder, Stream};
 use crate::wire::Conn;
 
 const PASSWORD: &str = "straum";
+/// Long enough for anything a test waits on to come.
+const LONG: Duration = Duration::from_secs(10);
+const LIMITS: Limits = Limits {
+    max_lag: Duration::from_secs(30),
+    max_retained_wal: 4 << 30,
+};
 const READY: &str = "database system is ready to accept connections";
 /// 2100-01-01, on every bucket edge.
 const END: i64 = 4_102_444_800;
@@ -241,7 +247,7 @@ impl Db {
     }
 
     fn writer(&self) -> Writer<Pg> {
-        Writer::new(App::new(self.spec(SPEC)), self.pg())
+        Writer::new(App::new(self.spec(SPEC), LIMITS), self.pg())
     }
 }
 
@@ -906,7 +912,8 @@ ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
-    let mut writer = Writer::new(App::new(spec), Pg::new(Dsn::parse(&dsn).unwrap(), "plan"));
+    let pg = Pg::new(Dsn::parse(&dsn).unwrap(), "plan");
+    let mut writer = Writer::new(App::new(spec, LIMITS), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
     applied(&mut writer);
@@ -1188,7 +1195,9 @@ fn connection_errors() {
     // Before open there is nothing to read or load.
     let mut idle = db.pg();
     let stopped = "the replication stream stopped";
-    assert_eq!(idle.next_commit().unwrap_err().to_string(), stopped);
+    let err = idle.next_commit(Duration::ZERO).unwrap_err();
+    assert_eq!(err.to_string(), stopped);
+    assert_eq!(idle.wal().unwrap_err().to_string(), stopped);
     let mut store = Store::new(spec.clone());
     let trips = spec.fact("trips").unwrap();
     let err = idle.load_fact(trips, store.rollup("trips").unwrap());
@@ -1203,7 +1212,7 @@ fn no_load_once_the_stream_runs() {
     let mut source = db.pg();
     let start = source.open(&spec).unwrap();
     db.run(&Rng::new(1).trip(1));
-    let commit = source.next_commit().unwrap();
+    let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);
     let mut store = Store::new(spec.clone());
     let err = source.load_fact(spec.fact("trips").unwrap(), store.rollup("trips").unwrap());
@@ -1412,11 +1421,70 @@ fn stream_errors() {
     ];
     for (reply, expected) in cases {
         let (mut stream, _server) = scripted_stream(vec![now(reply)]);
-        assert_eq!(stream.next().unwrap_err().to_string(), expected);
+        assert_eq!(stream.next(LONG).unwrap_err().to_string(), expected);
     }
 }
 
 /// A commit with no changes, as XLogData messages.
+#[test]
+fn reads_the_servers_wal() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "wal", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    let start = source.open(&spec).unwrap();
+    // A new slot has confirmed everything before its consistent point.
+    let wal = source.wal().unwrap();
+    assert_eq!(wal.confirmed, start);
+    assert!(wal.restart <= start && start <= wal.server, "{wal:?}");
+
+    db.run(&Rng::new(1).trip(1));
+    let commit = source.next_commit(LONG).unwrap().unwrap();
+    assert!(source.wal().unwrap().server >= commit.lsn);
+    // Asking for the next commit says this one is applied, and the stream
+    // tells the server within a status interval.
+    assert_eq!(
+        source.next_commit(Duration::from_millis(100)).unwrap(),
+        None
+    );
+    let deadline = Instant::now() + LONG;
+    while source.wal().unwrap().confirmed < commit.lsn {
+        assert!(
+            Instant::now() < deadline,
+            "the slot never confirmed the commit"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // The reading's connection dies; the next reading connects again.
+    db.run(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+          WHERE backend_type = 'client backend' AND application_name = 'straum'
+            AND pid <> pg_backend_pid()",
+    );
+    let err = source.wal().unwrap_err().to_string();
+    assert!(
+        err.contains("57P01") || err.starts_with("connection to PostgreSQL"),
+        "{err}"
+    );
+    assert!(source.wal().unwrap().confirmed >= commit.lsn);
+
+    // A slot the server doesn't have.
+    let mut conn = Conn::connect(&pg.dsn, false).unwrap();
+    let err = read_wal(&mut conn, "nope").unwrap_err().to_string();
+    assert_eq!(err, "PostgreSQL sent no WAL position for slot nope");
+}
+
+#[test]
+fn the_stream_waits_at_most_the_wait() {
+    // The server stays quiet past the wait.
+    let later = (Duration::from_secs(2), keepalive(0x18, false));
+    let (mut stream, _server) = scripted_stream(vec![later]);
+    let clock = Instant::now();
+    assert_eq!(stream.next(Duration::from_millis(200)).unwrap(), None);
+    assert!(clock.elapsed() >= Duration::from_millis(200));
+}
+
 fn empty_commit(end: u64) -> Vec<u8> {
     let xlog = |message: &[u8]| {
         let mut body = vec![b'w'];
@@ -1459,8 +1527,8 @@ fn the_stream_answers_and_reports() {
         (pause, keepalive(0x40, true)),
         now(empty_commit(0x50)),
     ]);
-    assert_eq!(stream.next().unwrap().lsn, Lsn(0x20));
-    assert_eq!(stream.next().unwrap().lsn, Lsn(0x50));
+    assert_eq!(stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
+    assert_eq!(stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x50));
     drop(stream);
     // The start, then once the first commit is applied, everything up to
     // the keepalive at 0x40.
@@ -1483,7 +1551,7 @@ fn a_commit_handed_out_is_not_yet_applied() {
         now(empty_commit(0x20)),
         (Duration::from_millis(500), keepalive(0x40, true)),
     ]);
-    assert_eq!(stream.next().unwrap().lsn, Lsn(0x20));
+    assert_eq!(stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
     thread::sleep(Duration::from_millis(1_500));
     drop(stream);
     let reported = reported(&server.join().unwrap());
@@ -1642,7 +1710,7 @@ fn taxi_month() {
         );
     };
 
-    let mut writer = Writer::new(App::new(spec), Pg::new(dsn, "straum"));
+    let mut writer = Writer::new(App::new(spec, LIMITS), Pg::new(dsn, "straum"));
     let clock = Instant::now();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     eprintln!("loaded in {:.1?}", clock.elapsed());

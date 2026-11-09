@@ -1,11 +1,13 @@
-//! straum over HTTP: JSON asks and health checks, on tokio and hyper. Asks run on tokio's blocking threads, since a big one reads every
-//! cell of a fact.
+//! straum over HTTP: JSON asks and health checks, on tokio and hyper. Asks
+//! run on tokio's blocking threads, since a big one reads every cell of a
+//! fact.
 //!
 //! - `POST /ask`: an ask as JSON (see `ask.rs`); the answer as JSON (see
 //!   `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
 //!   reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
-//! - `GET /readyz`: 200 when every table is loaded, else 503 and why.
+//! - `GET /readyz`: 200 when every table is loaded and straum is within its
+//!   lag bound, else 503 and why. Asks still answer while straum lags.
 
 #![forbid(unsafe_code)]
 
@@ -140,7 +142,11 @@ fn readyz(app: &App) -> Response<Full<Bytes>> {
     if app.ready() {
         return text(StatusCode::OK, "ready\n".into());
     }
-    let why = app.error().unwrap_or_else(|| "loading".to_owned());
+    let why = match (app.error(), app.lag()) {
+        (Some(error), _) => error,
+        (None, Some(lag)) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        (None, None) => "loading".to_owned(),
+    };
     text(
         StatusCode::SERVICE_UNAVAILABLE,
         format!("not ready: {why}\n"),
