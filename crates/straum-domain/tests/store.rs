@@ -705,6 +705,47 @@ fn rows_collapse_into_cells() {
 }
 
 #[test]
+fn removing_an_extreme_reveals_the_next() {
+    let mut store = Store::new(spec());
+    let ask = Ask {
+        fact: id("trips"),
+        measures: vec![id("tip_min"), id("tip_max")],
+        by: Vec::new(),
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].1.clone();
+    let mut row = trip(&mut Rng(11));
+    row[AT] = Datum::Int(START);
+    let rows: Vec<_> = [5, 9, 9, 2, 7]
+        .iter()
+        .map(|&tip| {
+            row[TIP] = Datum::Int(tip);
+            row.clone()
+        })
+        .collect();
+    let rollup = store.rollup("trips").unwrap();
+    for row in &rows {
+        rollup.add(row).unwrap();
+    }
+    assert_eq!(rollup.cells(), 1);
+    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
+
+    // One of two 9s out: the max stays.
+    store.rollup("trips").unwrap().remove(&rows[1]).unwrap();
+    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
+    store.rollup("trips").unwrap().remove(&rows[2]).unwrap();
+    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(7)]);
+    store.rollup("trips").unwrap().remove(&rows[3]).unwrap();
+    assert_eq!(extremes(&store), [Value::Int(5), Value::Int(7)]);
+    // A value past the old extremes after they went.
+    row[TIP] = Datum::Int(1);
+    store.rollup("trips").unwrap().add(&row).unwrap();
+    assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
+}
+
+#[test]
 fn clear_drops_every_row() {
     let mut store = Store::new(spec());
     let trip = trip(&mut Rng(5));

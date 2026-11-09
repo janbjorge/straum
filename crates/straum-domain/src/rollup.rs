@@ -80,7 +80,13 @@ pub(crate) enum State {
     /// Sum and count of the non-null values.
     Sum { sum: i128, count: u64 },
     /// Count per value, so removing the min or max reveals the next one.
-    Extent(BTreeMap<i64, u64>),
+    /// `min` and `max` mirror its ends, so an ask reads them without walking
+    /// the tree; they mean nothing while it is empty.
+    Extent {
+        counts: BTreeMap<i64, u64>,
+        min: i64,
+        max: i64,
+    },
     /// Count per value.
     Distinct(HashMap<Datum, u64>),
 }
@@ -306,7 +312,11 @@ impl State {
     fn new(kind: Kind) -> State {
         match kind {
             Kind::Sum => State::Sum { sum: 0, count: 0 },
-            Kind::Extent => State::Extent(BTreeMap::new()),
+            Kind::Extent => State::Extent {
+                counts: BTreeMap::new(),
+                min: 0,
+                max: 0,
+            },
             Kind::Distinct => State::Distinct(HashMap::new()),
         }
     }
@@ -319,7 +329,14 @@ impl State {
                 *sum += i128::from(*v) * i128::from(n);
                 *count += n;
             }
-            (State::Extent(counts), Datum::Int(v)) => *counts.entry(*v).or_default() += n,
+            (State::Extent { counts, min, max }, &Datum::Int(v)) => {
+                if counts.is_empty() {
+                    (*min, *max) = (v, v);
+                } else {
+                    (*min, *max) = ((*min).min(v), (*max).max(v));
+                }
+                *counts.entry(v).or_default() += n;
+            }
             (State::Distinct(counts), v) => *counts.entry(v.clone()).or_default() += n,
             _ => unreachable!("Rollup::check lets only integers through"),
         }
@@ -332,11 +349,16 @@ impl State {
                 *count = count.checked_sub(1).ok_or(RowError::Missing)?;
                 *sum -= i128::from(*v);
             }
-            (State::Extent(counts), Datum::Int(v)) => {
+            (State::Extent { counts, min, max }, Datum::Int(v)) => {
                 let count = counts.get_mut(v).ok_or(RowError::Missing)?;
                 *count -= 1;
                 if *count == 0 {
                     counts.remove(v);
+                    if let (Some((&first, _)), Some((&last, _))) =
+                        (counts.first_key_value(), counts.last_key_value())
+                    {
+                        (*min, *max) = (first, last);
+                    }
                 }
             }
             (State::Distinct(counts), v) => {

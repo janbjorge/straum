@@ -294,14 +294,14 @@ impl Partial {
                 *sum += cell_sum;
                 *count += cell_count;
             }
-            (Partial::Min(min), Some(State::Extent(counts))) => {
-                if let Some(&v) = counts.keys().next() {
-                    *min = Some(min.map_or(v, |m| m.min(v)));
+            (Partial::Min(min), Some(State::Extent { counts, min: v, .. })) => {
+                if !counts.is_empty() {
+                    *min = Some(min.map_or(*v, |m| m.min(*v)));
                 }
             }
-            (Partial::Max(max), Some(State::Extent(counts))) => {
-                if let Some(&v) = counts.keys().next_back() {
-                    *max = Some(max.map_or(v, |m| m.max(v)));
+            (Partial::Max(max), Some(State::Extent { counts, max: v, .. })) => {
+                if !counts.is_empty() {
+                    *max = Some(max.map_or(*v, |m| m.max(*v)));
                 }
             }
             (Partial::Distinct(seen), Some(State::Distinct(counts))) => {
