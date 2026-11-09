@@ -180,7 +180,8 @@ With `buckets`, every wider width keeps its own cells too, and each row goes
 into one cell per width. An ask reads its range from the widest buckets that
 fit and narrower ones at the ends, or only `date_bin` buckets when it groups
 by the bucket. Levels cost memory: on the taxi month, day and week levels
-add about 15% to the hourly cells (modelled, PLAN.md 2026-11-09).
+add 719,124 cells to the 2,322,783 at 15 minutes, 31% more (measured by
+`bench/rollup.sql`).
 
 - sum and avg share the column's sum (`i128`) and count of non-null values;
 - min and max share a count per value, so deleting the current extreme reveals

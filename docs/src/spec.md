@@ -60,8 +60,9 @@ multiple of the one before and starts at the epoch, so 7-day buckets start
 on Thursdays. Answers don't change. An ask over a long range reads its
 middle from the widest buckets that fit and its ends from narrower ones,
 so it reads far fewer cells; an ask grouped by `bucket` reads the
-`date_bin` width. Each width costs memory: on the taxi month, day and
-week buckets are modelled to add about 15% to the hourly cells.
+`date_bin` width. Each width costs memory: on the taxi month, the day and
+week buckets add 719,124 cells to the 2,322,783 at 15 minutes, 31% more
+([benchmark](benchmark.md)).
 
 ## By columns, refs and dims
 
