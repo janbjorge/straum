@@ -1,6 +1,6 @@
 # Straum
 
-> In-memory PostgreSQL aggregates, kept current through logical replication.
+**In-memory PostgreSQL aggregates, kept current through logical replication.**
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 
@@ -8,7 +8,7 @@ Straum loads aggregates declared in a SQL spec, then applies PostgreSQL changes
 to them in memory. Clients read them through HTTP. PostgreSQL remains the
 source of truth; Straum stores no durable copy.
 
-> **Experimental.** Do not use Straum in production.
+**Not stable.** Use at your own risk.
 
 ## Quick start
 
