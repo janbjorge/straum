@@ -3,6 +3,7 @@ name = "weir-notation"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }
