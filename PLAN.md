@@ -486,6 +486,10 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
 - The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
   names were free on crates.io on 2026-11-09; trademarks are unchecked.
   Check again before anything is published.
+- Releases: the crates are 0.0.0 with `publish = false`, the chart is
+  0.1.0 with appVersion 0.0.0, and the guide has users build the image
+  and `cargo install --path`. When do versions and a published image and
+  chart come, and the crates, once the name is cleared?
 - Who may ask what: access control per fact in the spec?
 - Fallback when Straum is not ready: Straum renders SQL per ask and sends it to
   PostgreSQL?
