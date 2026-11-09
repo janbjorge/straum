@@ -1,5 +1,3 @@
-//! What each aggregate is: the column it reads, the cell state it reads it
-//! from, the scale it answers in, and how it merges cells into an answer.
 //! Every match on `Agg` is here, so a new aggregate is one variant and the
 //! arms the compiler asks for.
 
@@ -20,19 +18,14 @@ pub enum Agg {
 }
 
 impl Agg {
-    /// The column the measure reads; `None` for count.
     pub fn input(&self) -> Option<&Ident> {
         self.state().map(|(_, column)| column)
     }
 
-    /// Whether the input must hold integers: integer columns, or numeric
-    /// ones as scaled integers. Other measures read values of any type.
     pub fn reads_numbers(&self) -> bool {
         self.state().is_some_and(|(kind, _)| kind.numeric())
     }
 
-    /// The cell state the measure reads, and from which column; `None` for
-    /// count, which reads the row count.
     pub(crate) fn state(&self) -> Option<(Kind, &Ident)> {
         match self {
             Agg::Count => None,
@@ -42,7 +35,6 @@ impl Agg {
         }
     }
 
-    /// The scale the measure answers in, given its input's.
     pub(crate) fn scale(&self, input: u32) -> u32 {
         match self {
             Agg::Count | Agg::CountDistinct(_) => 0,
@@ -56,7 +48,6 @@ impl Agg {
 /// memory each wait on the last; spread over copies, they overlap.
 const LANES: usize = 4;
 
-/// Where cell `i` of group `g` merges.
 fn lane(i: usize, g: u32) -> usize {
     g as usize * LANES + i % LANES
 }
@@ -88,7 +79,6 @@ pub(crate) enum Partials {
 }
 
 impl Partials {
-    /// The measure over no cells, for no groups.
     pub(crate) fn new(agg: &Agg) -> Partials {
         match agg {
             Agg::Count => Partials::Count(Vec::new()),
@@ -112,7 +102,6 @@ impl Partials {
         }
     }
 
-    /// Makes room for groups `0..groups`, the new ones over no cells.
     pub(crate) fn grow(&mut self, groups: usize) {
         let lanes = groups * LANES;
         match self {
@@ -134,8 +123,6 @@ impl Partials {
         }
     }
 
-    /// Merges cell `i` of a bucket into group `groups[i]`, given each
-    /// cell's row count and the column [`Agg::state`] names.
     pub(crate) fn merge(&mut self, groups: &[u32], rows: &[u64], column: Option<&Column>) {
         if let Some(&g) = groups.first()
             && groups.iter().all(|&h| h == g)
@@ -183,9 +170,8 @@ impl Partials {
         }
     }
 
-    /// As [`Partials::merge`] when every cell goes to group `g`, as when an
-    /// ask has no `by`. Folding in registers beats adding to one place in
-    /// memory, each add waiting on the last.
+    /// Folding in registers beats adding to one place in memory, each add
+    /// waiting on the last.
     fn merge_into(&mut self, g: u32, rows: &[u64], column: Option<&Column>) {
         let (at, g) = (lane(0, g), g as usize);
         match (self, column) {
@@ -216,7 +202,6 @@ impl Partials {
         }
     }
 
-    /// Group `g`'s answer, its lanes merged.
     pub(crate) fn finish(&self, g: usize) -> Value {
         let lanes = g * LANES..(g + 1) * LANES;
         match self {
