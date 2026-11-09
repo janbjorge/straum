@@ -4,6 +4,14 @@ weir is the working name for an aggregate server that sits next to
 PostgreSQL. A weir is a low dam across a river, built to measure its flow;
 this server sits on the replication stream and measures it.
 
+## Working name
+
+**Straum** is the current working name. It is the Nynorsk word for a stream
+or current, which captures PostgreSQL replication as the server's input. Code
+and package identifiers remain `weir` until a rename is chosen and carried
+out. Before publication, check `straum` availability on crates.io and GitHub,
+and obtain trademark clearance for database software.
+
 ## The idea (jb, 2026-11-08)
 
 - A spec names PostgreSQL tables and columns.
