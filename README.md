@@ -18,55 +18,59 @@ asks, PostgreSQL setup and running Straum on Kubernetes.
 Given PostgreSQL source tables, write a spec:
 
 ```sql
-CREATE VIEW trips WITH (key = id, buckets = '1 day') AS
-SELECT date_bin('15 minutes', t.pickup_at, timestamptz 'epoch') AS bucket,
-       t.payment_type,
-       t.pickup_location_id,
-       z.borough,
-       count(*) AS trips,
-       sum(t.fare_amount) AS fare,
-       avg(t.trip_distance) AS distance
-FROM public.trips t
-LEFT JOIN public.zones z ON z.location_id = t.pickup_location_id
+CREATE VIEW orders WITH (key = id) AS
+SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
+       o.status,
+       o.customer_id,
+       customer.country,
+       count(*) AS orders,
+       sum(o.amount) AS revenue,
+       avg(o.amount) AS avg_amount
+FROM public.orders o
+LEFT JOIN public.customers customer ON customer.id = o.customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `buckets` is
-optional: Straum also keeps day cells, so an ask over weeks reads few cells.
-`plan` checks the spec and prints the SQL a table owner must apply:
+`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan`
+checks the spec and prints the SQL a table owner must apply:
 
 ```sh
-cargo run -p straum -- plan --spec trips.sql
+cargo run -p straum -- plan --spec orders.sql
 
 export STRAUM_DSN='postgres://straum:password@localhost:5432/app'
-cargo run -p straum -- run --spec trips.sql
+cargo run -p straum -- run --spec orders.sql
 ```
 
 After `/readyz` returns `200`, ask for a declared aggregate:
 
 ```sh
 curl --json '{
-  "fact": "trips",
-  "measures": ["trips", "fare"],
-  "by": ["payment_type", "z.borough"],
-  "time": "bucket",
-  "from": "2024-01-01T00:00:00Z",
-  "to": "2024-01-02T00:00:00Z"
+  "fact": "orders",
+  "measures": ["orders", "revenue", "avg_amount"],
+  "by": ["status", "customer.country"],
+  "from": "2026-01-01T00:00:00Z",
+  "to": "2026-01-02T00:00:00Z"
 }' http://localhost:8080/ask
 ```
 
 ```json
 {
-  "lsn": "16/B374D848",
-  "commit_time": "2024-01-31T22:59:59.123456Z",
-  "columns": ["bucket", "payment_type", "z.borough", "trips", "fare"],
-  "rows": [["2024-01-01T00:00:00Z", "card", "Oslo", 412, 6234.50]]
+  "lsn": "0/17B2788",
+  "commit_time": null,
+  "columns": ["status", "customer.country", "orders", "revenue", "avg_amount"],
+  "rows": [
+    ["paid", "NO", 2, 139.99, {"sum": 139.99, "count": 2}],
+    ["paid", "SE", 1, 80.50, {"sum": 80.50, "count": 1}],
+    ["refunded", "NO", 1, 42.00, {"sum": 42.00, "count": 1}]
+  ]
 }
 ```
 
 `lsn` is the last PostgreSQL commit reflected in the answer. `commit_time` is
 that commit's timestamp. It is `null` until Straum applies its first streamed
-commit.
+commit. `avg` comes as sum and count, so you pick the rounding. The guide's
+[quick start](https://janbjorge.github.io/straum/quick-start.html) makes
+these tables in Docker and gives this answer.
 
 ## Scope
 
