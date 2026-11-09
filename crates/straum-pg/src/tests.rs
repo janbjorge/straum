@@ -56,7 +56,7 @@ FROM $S.trips f
 LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (key = id, append = true) AS
+CREATE VIEW logins WITH (key = id) AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        pickup.toll,
@@ -79,6 +79,7 @@ CREATE TABLE $S.trips (
 );
 ALTER TABLE $S.trips REPLICA IDENTITY FULL;
 CREATE TABLE $S.logins (id bigint PRIMARY KEY, at timestamptz, zone_id int);
+ALTER TABLE $S.logins REPLICA IDENTITY FULL;
 CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 ";
 
@@ -545,8 +546,7 @@ fn follows_the_database() {
             next += 1;
             sql.push(statement);
         }
-        // An append fact changed after all starts over; truncates empty a
-        // table in place, a mutable fact's included.
+        // Every login moves zone at once; truncates empty a table in place.
         match round {
             30 | 70 => sql.push("UPDATE $S.logins SET zone_id = zone_id + 1;".into()),
             50 => sql.push("TRUNCATE $S.logins;".into()),
@@ -642,8 +642,9 @@ fn an_unfit_change_starts_over() {
     writer.step().unwrap();
     compare(&mut db, writer.app(), 2).expect("ready");
 
-    // logins is append-only and has no full old rows, so an update starts
-    // over from a new slot.
+    // A fact that stops sending old rows starts over, and the setup then
+    // says what to fix.
+    db.run("ALTER TABLE $S.logins REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.logins SET zone_id = 2");
     let err = writer.step().unwrap_err().to_string();
     assert_eq!(err, "a change no longer fits logins");
@@ -651,6 +652,12 @@ fn an_unfit_change_starts_over() {
         writer.app().ask(&ask("trips", &["trips"], &[])),
         Err(AnswerError::NotReady)
     );
+    let err = writer.step().unwrap_err().to_string();
+    assert!(
+        err.contains("fact logins: straum needs the whole old row of every update and delete"),
+        "{err}"
+    );
+    db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), 2).expect("ready after the new load");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
@@ -678,8 +685,10 @@ fn follows_the_database_over_tls() {
     // Past wal_sender_timeout (4 s): reads time out and keepalives are
     // answered, over TLS.
     thread::sleep(Duration::from_secs(6));
-    // An unfit change starts over, on a new TLS connection.
-    db.run("UPDATE $S.logins SET zone_id = 2");
+    // An altered table starts over, on a new TLS connection. The new
+    // Relation comes with the next change to the table.
+    db.run("ALTER TABLE $S.logins ADD COLUMN note text");
+    db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 1)");
     applied_or_started(&mut writer);
     for id in 60..70 {
         db.run(&rng.trip(id));
@@ -901,8 +910,10 @@ CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";
 GRANT SELECT ON \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\" TO \"straum_plan\";
 CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\";
--- fact trips is not append-only: straum needs the old row of every update and delete.
+-- fact trips: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
+-- fact logins: straum needs the old row of every update and delete; inserts cost no more.
+ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
 -- dim zones: \"plan\".\"zones\" needs a primary key on id alone, or REPLICA IDENTITY FULL and a unique index on it.
 "
     );
@@ -937,9 +948,12 @@ fn setup_problems_say_what_to_fix() {
     let pg = postgres();
     let fact = |columns: &str, view: &str| -> (String, String) {
         (
-            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, {columns});"),
             format!(
-                "CREATE VIEW f WITH (key = id, append = true) AS
+                "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, {columns});
+                 ALTER TABLE $S.f REPLICA IDENTITY FULL;"
+            ),
+            format!(
+                "CREATE VIEW f WITH (key = id) AS
                  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
                  FROM $S.f t GROUP BY 1;"
             ),
@@ -1030,11 +1044,11 @@ fn setup_problems_say_what_to_fix() {
              straum needs an integer type, numeric(p, s), boolean or text there",
         ),
         (
-            "mutable",
-            format!("{table} {publish}"),
-            spec.replace("append = true", "append = false"),
-            "fact f: not append-only, so straum needs the whole old row of every update and \
-             delete: ALTER TABLE mutable.f REPLICA IDENTITY FULL",
+            "identity",
+            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, x int); {publish}"),
+            spec.clone(),
+            "fact f: straum needs the whole old row of every update and delete: \
+             ALTER TABLE identity.f REPLICA IDENTITY FULL",
         ),
         (
             "filter",
@@ -1068,13 +1082,14 @@ fn setup_problems_say_what_to_fix() {
     }
 
     let dim_spec = "
-        CREATE VIEW f WITH (key = id, append = true) AS
+        CREATE VIEW f WITH (key = id) AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id, d.name, count(*) AS n
         FROM $S.f t LEFT JOIN $S.d d ON d.k = t.d_id GROUP BY 1, 2, 3;";
     let dim = |d: &str, via: &str| {
         format!(
             "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id {via});
+             ALTER TABLE $S.f REPLICA IDENTITY FULL;
              {d}
              CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
         )
@@ -1609,6 +1624,7 @@ fn taxi_month() {
              vendor_id int, pickup_at timestamptz, pu_location_id int, do_location_id int,
              payment_type int, fare_amount numeric(12, 2), tip_amount numeric(12, 2),
              trip_distance numeric(12, 2));
+         ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
          SET timezone = 'America/New_York';
          COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
          COPY yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id, payment_type,
@@ -1739,14 +1755,12 @@ fn taxi_month() {
     eprintln!("streamed 202 commits in {:.1?}", clock.elapsed());
     check(&mut sql, writer.app(), "after the stream");
 
-    // trips is append-only: an update starts over.
+    // An update takes the old row out of its cell.
     sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
         .unwrap();
-    let clock = Instant::now();
-    applied_or_started(&mut writer);
-    eprintln!("started over in {:.1?}", clock.elapsed());
+    applied(&mut writer);
     sql.execute("UPDATE taxi_zones SET zone = zone WHERE location_id = 1")
         .unwrap();
     applied(&mut writer);
-    check(&mut sql, writer.app(), "after starting over");
+    check(&mut sql, writer.app(), "after an update");
 }

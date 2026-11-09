@@ -6,7 +6,7 @@
 //! is one fact:
 //!
 //! ```sql
-//! CREATE VIEW trips WITH (key = id, append = true) AS
+//! CREATE VIEW trips WITH (key = id) AS
 //! SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
 //!        f.payment_type,
 //!        f.pu_location_id,
@@ -18,9 +18,8 @@
 //! GROUP BY 1, 2, 3;
 //! ```
 //!
-//! - `WITH (key = column, append = true)`: the fact table's primary key, and
-//!   whether rows are only inserted. PostgreSQL rejects these options, so
-//!   straum only ever sends the `SELECT` to PostgreSQL.
+//! - `WITH (key = column)`: the fact table's primary key. PostgreSQL rejects
+//!   the option, so straum only ever sends the `SELECT` to PostgreSQL.
 //! - `FROM schema.table alias`: the fact.
 //! - `LEFT JOIN schema.table alias ON alias.key = fact.column`: a ref named
 //!   `alias` to the dim `table`. The fact column must be selected.

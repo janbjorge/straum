@@ -67,7 +67,6 @@ fn taxi_parses() {
     let spec = taxi();
     let trips = spec.fact("trips").unwrap();
     assert_eq!(trips.time.grain, Grain(900));
-    assert!(trips.append_only);
     assert_eq!(
         spec.dim("taxi_zones").unwrap().attrs,
         [id("borough"), id("zone"), id("service_zone")]
@@ -241,7 +240,6 @@ fn base_parses() {
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
     assert_eq!(t.key, id("id"));
-    assert!(!t.append_only);
     assert_eq!(t.by, [id("a")]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, id("z_id"));
@@ -292,7 +290,7 @@ fn literals_and_filters() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let src = "CREATE OR REPLACE VIEW T WITH (KEY = ID, APPEND = FALSE) AS
+    let src = "CREATE OR REPLACE VIEW T WITH (KEY = ID) AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch'),
        f.a, z.id,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
@@ -461,15 +459,15 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "key = id",
-            "key = id, append = 1",
+            "key = id, append = true",
             1,
-            "append, use true or false, `1`",
+            "view option `append = true` is not in straum SQL",
         ),
         (
             "key = id",
-            "key = id, \"append\" = true",
+            "key = id, \"key\" = id",
             1,
-            "quoted identifier `\"append\"`",
+            "quoted identifier `\"key\"`",
         ),
         (
             "key = id",

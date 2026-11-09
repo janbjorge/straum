@@ -15,7 +15,7 @@ source of truth; Straum stores no durable copy.
 Given PostgreSQL source tables, write a spec:
 
 ```sql
-CREATE VIEW trips WITH (key = id, append = true) AS
+CREATE VIEW trips WITH (key = id) AS
 SELECT date_bin('15 minutes', t.pickup_at, timestamptz 'epoch') AS bucket,
        t.payment_type,
        z.borough,

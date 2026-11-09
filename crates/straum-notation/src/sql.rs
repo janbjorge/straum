@@ -202,7 +202,7 @@ impl Walker {
         self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
 
         let fact_name = self.name(name, 1, "view").map(|mut n| n.remove(0));
-        let (key, append_only) = self.options(at, name, options);
+        let key = self.options(at, name, options);
         let body = self.query(query);
         let (Some(name), Some(key), Some(body)) = (fact_name, key, body) else {
             return;
@@ -231,7 +231,6 @@ impl Walker {
             time,
             refs,
             by,
-            append_only,
             measures,
         });
     }
@@ -274,15 +273,14 @@ impl Walker {
         }
     }
 
-    /// `WITH (key = column, append = true)`.
+    /// `WITH (key = column)`.
     fn options(
         &mut self,
         at: u64,
         view: &sql::ObjectName,
         options: &sql::CreateTableOptions,
-    ) -> (Option<Ident>, bool) {
+    ) -> Option<Ident> {
         let mut key = None;
-        let mut append = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
             sql::CreateTableOptions::None => &[],
@@ -300,21 +298,17 @@ impl Walker {
             let Some(name) = self.ident(name) else {
                 continue;
             };
-            let slot = match name.as_str() {
-                "key" => &mut key,
-                "append" => &mut append,
-                _ => {
-                    self.reject(at, "view option", option);
-                    continue;
-                }
-            };
-            if slot.is_some() {
+            if name.as_str() != "key" {
+                self.reject(at, "view option", option);
+                continue;
+            }
+            if key.is_some() {
                 self.error(at, format!("view option {name} given twice"));
                 continue;
             }
-            *slot = Some(value);
+            key = Some(value);
         }
-        let key = match key {
+        match key {
             Some(sql::Expr::Identifier(id)) => self.ident(id),
             Some(other) => {
                 self.reject(line(other), "key", other);
@@ -324,19 +318,7 @@ impl Walker {
                 self.error(at, format!("view {view} needs WITH (key = <column>)"));
                 None
             }
-        };
-        let append = match append {
-            None => false,
-            Some(sql::Expr::Value(sql::ValueWithSpan {
-                value: sql::Value::Boolean(b),
-                span: _,
-            })) => *b,
-            Some(other) => {
-                self.reject(line(other), "append, use true or false,", other);
-                false
-            }
-        };
-        (key, append)
+        }
     }
 
     fn query(&mut self, query: &sql::Query) -> Option<Body> {

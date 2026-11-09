@@ -44,7 +44,7 @@ FROM public.trips t
 LEFT JOIN public.zones zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (key = id, append = true) AS
+CREATE VIEW logins WITH (key = id) AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        count(*) AS logins
@@ -916,7 +916,7 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 key: new_key(),
                 row: random_login(rng),
             },
-            // Logins are append-only; these make straum start over.
+            // Logins send no old rows; these make straum start over.
             90..92 => match rng.pick(&existing(&keys, "logins")) {
                 Some(key) if rng.chance(50) => Write::Delete {
                     table: "logins",

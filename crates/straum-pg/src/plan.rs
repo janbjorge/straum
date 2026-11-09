@@ -7,9 +7,10 @@ use straum_domain::Spec;
 
 /// Turns on logical decoding, creates `role` with the replication
 /// attribute, lets it read the spec's tables, and publishes them as
-/// `publication`. Facts that aren't append-only get `REPLICA IDENTITY
-/// FULL`; dims need their key as replica identity, which only the schema
-/// can say, so the SQL says it in a comment.
+/// `publication`. Facts get `REPLICA IDENTITY FULL`, so an update or
+/// delete carries the old row straum takes out of its cell; dims need their
+/// key as replica identity, which only the schema can say, so the SQL says it
+/// in a comment.
 pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
     let id = |s: &str| escape_identifier(s);
     let qualified =
@@ -41,9 +42,9 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
         format!("GRANT SELECT ON {list} TO {role};"),
         format!("CREATE PUBLICATION {publication} FOR TABLE {list};"),
     ];
-    for fact in spec.facts().iter().filter(|f| !f.append_only) {
+    for fact in spec.facts() {
         sql.push(format!(
-            "-- fact {} is not append-only: straum needs the old row of every update and delete.",
+            "-- fact {}: straum needs the old row of every update and delete; inserts cost no more.",
             fact.name
         ));
         sql.push(format!(

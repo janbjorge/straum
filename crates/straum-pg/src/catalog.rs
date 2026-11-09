@@ -297,10 +297,10 @@ pub(crate) fn check(
             &mut problems,
         );
         if let Some((table, relation)) = checked {
-            if !fact.append_only && relation.identity != "f" {
+            if relation.identity != "f" {
                 problems.push(format!(
-                    "fact {}: not append-only, so straum needs the whole old row of every \
-                     update and delete: ALTER TABLE {} REPLICA IDENTITY FULL",
+                    "fact {}: straum needs the whole old row of every update and delete: \
+                     ALTER TABLE {} REPLICA IDENTITY FULL",
                     fact.name,
                     table.qualified()
                 ));

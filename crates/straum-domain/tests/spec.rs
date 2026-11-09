@@ -41,7 +41,6 @@ fn fact() -> Fact {
             via: id("z_id"),
         }],
         by: vec![id("a")],
-        append_only: false,
         measures: vec![Measure {
             name: id("n"),
             agg: Agg::Count,

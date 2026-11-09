@@ -30,7 +30,7 @@ parses it and `straum-notation` walks the AST; anything outside the subset is
 an error that names it. The taxi example (`crates/straum-notation/tests/taxi.sql`):
 
 ```sql
-CREATE VIEW trips WITH (key = id, append = true) AS
+CREATE VIEW trips WITH (key = id) AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        f.payment_type,
        f.vendor_id,
@@ -52,9 +52,8 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
-- `WITH (key = COLUMN, append = true)`: the fact table's primary key, and
-  whether rows are only inserted (§4b). PostgreSQL rejects these options, so
-  Straum only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
+- `WITH (key = COLUMN)`: the fact table's primary key. PostgreSQL rejects
+  the option, so Straum only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
   is, which makes it the initial load query and the reference for tests.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
 - `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
@@ -233,12 +232,12 @@ Old values: by default pgoutput sends only the key on DELETE and no old values
 on an UPDATE that leaves the key alone. Only REPLICA IDENTITY FULL sends the
 whole old row (POSTGRES-REPLICATION.md §3, R). So:
 
-- `append` facts need inserts only, so they need no FULL. An UPDATE or
-  DELETE that comes without the old row reads the fact again.
-- Mutable facts need the old row to take it out of its cell. Either the table
-  gets REPLICA IDENTITY FULL, which writes the old row to WAL on every UPDATE
-  and DELETE on the primary, or Straum keeps a key-to-row store of each row's
-  rollup key and inputs. Open question (PLAN.md).
+- Facts need the old row to take it out of its cell, so every fact table
+  has REPLICA IDENTITY FULL; Straum checks it at every start. FULL writes the
+  old row to WAL on UPDATE and DELETE only, so a table that only gets inserts
+  pays nothing for it. An UPDATE or DELETE that still comes without the old
+  row, as after the identity is changed back, reads the fact again, and that
+  start reports the missing FULL.
 - Dims need only the key: upsert on insert and update, delete by key.
 - Truncate empties the table in place. Changes before it in the transaction
   are gone, changes after it apply.
@@ -303,8 +302,8 @@ connection and answers once the stream passes the returned LSN
 (`straum plan --spec FILE`, from `straum_pg::plan`):
 `wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE Straum LOGIN
 REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION Straum
-FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for facts
-that aren't append-only. A dim needs its key as replica identity, which only
+FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for every
+fact. A dim needs its key as replica identity, which only
 the schema can give, so the SQL says so in a comment.
 
 - Adding a table to a publication needs ownership of it

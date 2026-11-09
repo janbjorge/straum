@@ -55,7 +55,7 @@ Tests:
   I/O), `straum-app` (use cases and ports), adapters `straum-notation`, `straum-pg`,
   `straum-http`, and the `straum` binary as composition root. The per-row path
   stays concrete; traits only at the edges.
-- 2026-11-08: Simplifications: no raw column store; `append` facts need no row
+- 2026-11-08: Simplifications: no raw column store; facts need no row
   store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot; one
   time level (bucket) merged up at ask time; asks over HTTP/JSON, no pgwire;
   no WAL barrier in v1, answers carry the LSN they reflect.
@@ -76,8 +76,7 @@ Tests:
   an altered table. Commits up to `at` skip the table, and asks on it answer
   not ready until the stream passes `at`. Other tables keep answering.
 - 2026-11-08: Truncate empties the table in place, no reload. A fact applies
-  updates and deletes whenever the old row comes (`REPLICA IDENTITY FULL`),
-  `append` or not.
+  updates and deletes whenever the old row comes (`REPLICA IDENTITY FULL`).
 - 2026-11-08: An ask names a time zone (e.g. `Europe/Oslo`). The HTTP
   adapter (M6) turns the name into the zone's UTC offsets over the ask's
   range, so the domain holds no zone data. Buckets stay UTC. Hours follow the
@@ -92,9 +91,9 @@ Tests:
   rejected with an error that names the construct, never ignored. Every doc
   and error that mentions Straum SQL says it is a straum-only subset. Each view
   body (the `SELECT`) runs unchanged in PostgreSQL, so it is also the initial
-  load query and the reference for tests. The fact's key and `append` are view
-  options, `WITH (key = id, append = true)`, which `sqlparser` reads as is.
-  PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
+  load query and the reference for tests. The fact's key is a view option,
+  `WITH (key = id)`, which `sqlparser` reads as is (`append` went on
+  2026-11-09). PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
   PostgreSQL; Straum only ever sends the body.
 - 2026-11-08: Straum SQL is parsed by the `sqlparser` crate with
   `PostgreSqlDialect`, not by a parser of our own. Straum's code walks the AST,
@@ -209,6 +208,13 @@ Tests:
   and 1.36); CI runs it and builds the image. The AKS test cluster is never
   used to try the chart.
 - 2026-11-09: No OTLP and no metrics for now; telemetry comes later.
+- 2026-11-09: No `append` view option. Every fact table needs `REPLICA
+  IDENTITY FULL`, which `straum plan` prints and every start checks. FULL adds
+  WAL on UPDATE and DELETE only, so insert-only tables pay nothing, and every
+  update and delete applies in place instead of reading the fact again. This
+  settles the mutable-facts question: no row store in Straum.
+- 2026-11-09: The client defines every view in the spec and names it in each
+  ask. Straum doesn't pick a view for an ask.
   `straum status` prints what a running straum has done instead, from
   `GET /status`. The image has no shell or curl, so the binary is the
   client: `kubectl exec deployment/straum -- /straum status`. `App` keeps
@@ -406,7 +412,6 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
 - The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
   names were free on crates.io on 2026-11-09; trademarks are unchecked.
   Check again before anything is published.
-- Mutable facts: `REPLICA IDENTITY FULL`, or a PK row store in Straum?
 - Who may ask what: access control per fact in the spec?
 - Fallback when Straum is not ready: Straum renders SQL per ask and sends it to
   PostgreSQL?

@@ -112,7 +112,6 @@ fn spec() -> Spec {
             },
         ],
         by: vec![id("pay"), id("vendor"), id("shared")],
-        append_only: false,
         measures: vec![
             m("trips", Agg::Count, vec![]),
             m("fare", Agg::Sum(id("fare")), vec![]),
