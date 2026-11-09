@@ -18,13 +18,14 @@ Given PostgreSQL source tables, write a spec:
 CREATE VIEW trips WITH (key = id) AS
 SELECT date_bin('15 minutes', t.pickup_at, timestamptz 'epoch') AS bucket,
        t.payment_type,
+       t.pickup_location_id,
        z.borough,
        count(*) AS trips,
        sum(t.fare_amount) AS fare,
        avg(t.trip_distance) AS distance
 FROM public.trips t
 LEFT JOIN public.zones z ON z.location_id = t.pickup_location_id
-GROUP BY 1, 2, 3;
+GROUP BY 1, 2, 3, 4;
 ```
 
 `CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan` checks
@@ -43,7 +44,7 @@ After `/readyz` returns `200`, ask for a declared aggregate:
 curl --json '{
   "fact": "trips",
   "measures": ["trips", "fare"],
-  "by": ["payment_type", "borough"],
+  "by": ["payment_type", "z.borough"],
   "time": "bucket",
   "from": "2024-01-01T00:00:00Z",
   "to": "2024-01-02T00:00:00Z"
@@ -54,7 +55,7 @@ curl --json '{
 {
   "lsn": "16/B374D848",
   "commit_time": "2024-01-31T22:59:59.123456Z",
-  "columns": ["bucket", "payment_type", "borough", "trips", "fare"],
+  "columns": ["bucket", "payment_type", "z.borough", "trips", "fare"],
   "rows": [["2024-01-01T00:00:00Z", "card", "Oslo", 412, 6234.50]]
 }
 ```
