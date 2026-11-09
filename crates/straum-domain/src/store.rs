@@ -1,6 +1,3 @@
-//! Every fact's rollup and every dim's rows for one spec, and asks answered
-//! from them.
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::iter;
@@ -11,7 +8,6 @@ use crate::rollup::{Cells, DimTable, Rollup};
 use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{Datum, Value};
 
-/// Panic message for names that `Spec::new` or `Spec::check` resolved.
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 
 #[derive(Debug)]
@@ -56,27 +52,22 @@ impl Store {
         Some(&mut self.dims[i])
     }
 
-    /// How many cells the fact's rollup holds.
     pub fn cells(&self, fact: &str) -> Option<usize> {
         Some(self.rollups[self.fact_index(fact)?].cells())
     }
 
-    /// How many rows the dim holds.
     pub fn rows(&self, dim: &str) -> Option<usize> {
         Some(self.dims[self.dim_index(dim)?].rows())
     }
 
-    /// How many cells answering `ask` reads, whatever they hold: its cost.
-    /// Those are the cells of the buckets that cover its range.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
         Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
     }
 
-    /// Merges the cells in range that pass the ask's filter, one group per
-    /// `by` value. Dim attributes are read per code, after the rollup: the
-    /// cell loop only looks up what each code of a key column maps to.
+    /// Dim attributes are read per code, after the rollup: the cell loop only
+    /// looks up what each code of a key column maps to.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
@@ -216,16 +207,12 @@ impl Store {
     }
 }
 
-/// The buckets `ask` reads: every `date_bin` bucket in its range when it
-/// groups by the bucket, else the widest buckets that fit.
 fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Cells)> {
     let each_bucket = ask.by.iter().any(|key| matches!(key, AskKey::Time(_)));
     rollup.cover(ask.from, ask.to, each_bucket)
 }
 
-/// Where the value of an ask key comes from, given a cell.
 enum Source<'a> {
-    /// A by column or ref id.
     Slot(usize),
     /// A column of the dim row the ref in `slot` points at: 0 for the dim
     /// key, then the attributes. Null when the dim has no such row.
@@ -246,8 +233,7 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// The value of the cell with `key`. Time keys number their periods
-    /// in [`Part`] instead.
+    /// Time keys number their periods in [`Part`] instead.
     fn value<'k>(&self, rollup: &'k Rollup, key: &[u32]) -> Cow<'k, Datum>
     where
         'a: 'k,
@@ -285,9 +271,8 @@ enum Memo {
 }
 
 impl<'a> Test<'a> {
-    /// Sets to 0 the `groups` entry of each cell of `cells` that fails.
-    /// Whether a cell passes is as likely as not, so the loop selects
-    /// rather than branches; only a code met first branches.
+    /// Whether a cell passes is as likely as not, so the loop selects rather
+    /// than branches; only a code met first branches.
     fn pass(&mut self, rollup: &'a Rollup, cells: &'a Cells, groups: &mut [u32]) {
         for (i, g) in groups.iter_mut().enumerate() {
             let mut memo = self.memo[cells.code(i, self.slot) as usize];
@@ -321,12 +306,10 @@ struct Part<'a> {
     /// For a time key, the start of each period met so far, the bucket at
     /// hand's last.
     starts: Vec<i64>,
-    /// How many numbers there can be.
     bound: usize,
 }
 
 impl<'a> Part<'a> {
-    /// `buckets` is how many buckets the ask reads.
     fn new(source: Source<'a>, rollup: &Rollup, buckets: usize) -> Part<'a> {
         let (bound, codes) = match source {
             Source::Slot(slot) => (rollup.codes(slot), 0),
@@ -345,8 +328,7 @@ impl<'a> Part<'a> {
         }
     }
 
-    /// Starts on the cells of the bucket starting at `bucket`. Buckets come
-    /// in time order, so a period's buckets come together.
+    /// Buckets come in time order, so a period's buckets come together.
     fn enter(&mut self, bucket: i64) {
         if let Source::Time(t, grain) = self.source {
             let start = t.start(bucket, grain);
@@ -356,8 +338,6 @@ impl<'a> Part<'a> {
         }
     }
 
-    /// Adds `stride` times its number to the `at` entry of each cell of
-    /// `cells` whose `groups` entry isn't 0.
     fn offsets(
         &mut self,
         rollup: &'a Rollup,
@@ -391,7 +371,6 @@ impl<'a> Part<'a> {
         }
     }
 
-    /// The number of the value of the cell with `key`.
     fn number(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> u32 {
         let code = |n: usize| u32::try_from(n).expect("codes are u32");
         match self.source {
@@ -439,15 +418,12 @@ const DENSE: usize = 1 << 20;
 /// The groups an ask has met, numbered from 1 in the order it met them.
 struct Groups<'a> {
     index: Index,
-    /// Per by key, how far apart its numbers sit in a dense table.
     strides: Vec<usize>,
     /// Each group's values, `by.len()` a group, group 1's first.
     keys: Vec<Cow<'a, Datum>>,
     /// Groups so far, not counting group 0.
     made: usize,
-    /// The by-key numbers of the cell at hand.
     numbers: Vec<u32>,
-    /// Per cell of the bucket at hand, its entry in a dense table.
     at: Vec<usize>,
 }
 
@@ -483,8 +459,7 @@ impl<'a> Groups<'a> {
         self.made + 1
     }
 
-    /// Sets each nonzero `groups` entry, one per cell of `cells`, to the
-    /// cell's group. Without `by` that is group 1, which it is already.
+    /// Without `by`, every nonzero `groups` entry is group 1 already.
     fn assign(
         &mut self,
         by: &mut [Part<'a>],
@@ -537,8 +512,6 @@ impl<'a> Groups<'a> {
         }
     }
 
-    /// The group of the cell with `key` past the dense table's: a sparse
-    /// table's, or a new one.
     fn make(&mut self, by: &mut [Part<'a>], rollup: &'a Rollup, key: &'a [u32]) -> u32 {
         self.numbers.clear();
         self.numbers
@@ -572,10 +545,8 @@ impl<'a> Groups<'a> {
     }
 }
 
-/// A measure of the ask, ready to merge cells.
 struct Asked<'a> {
     partials: Partials,
-    /// See [`Rollup::state_of`].
     state: Option<usize>,
     filter: Vec<Test<'a>>,
 }
