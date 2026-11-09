@@ -268,6 +268,10 @@ Tests:
 - 2026-11-09: Comments, doc comments included, carry only a why the code
   can't show. Most of the existing `///` restate the code, so they go,
   one crate per commit.
+- 2026-11-09: A ref id with no dim row groups under null attributes, as
+  the view's `LEFT JOIN` does. The store's property test points trips at
+  zones that never exist, and `bench/compare.sql` checks the taxi month
+  against PostgreSQL.
 
 ## M0: notation and domain model
 
@@ -497,8 +501,6 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
 - Low collapse: a key with two refs can be nearly as wide as the fact (taxi:
   1.3x). Should `straum plan` measure collapse with `count(distinct ...)` and
   warn?
-- A ref id with no dim row maps to null attributes. The bench and `Store` do
-  this; confirm.
 - Float columns in sum and avg: order-dependent sums, lossy removal.
 - Azure: `wal_level = logical` restart, resync after HA failover.
 - A CA bundle in the chart: a value naming a ConfigMap or Secret, mounted
