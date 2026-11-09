@@ -30,7 +30,7 @@ parses it and `straum-notation` walks the AST; anything outside the subset is
 an error that names it. The taxi example (`crates/straum-notation/tests/taxi.sql`):
 
 ```sql
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        f.payment_type,
        f.vendor_id,

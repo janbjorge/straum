@@ -39,7 +39,7 @@ const START: i64 = 1_705_276_800;
 
 /// The spec the taxi-shaped tests follow. `$S` is the test's schema.
 const SPEC: &str = "
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips WITH (key = id, buckets = '1 day') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.kind,
        f.zone_id,
@@ -56,7 +56,7 @@ FROM $S.trips f
 LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (key = id) AS
+CREATE VIEW logins WITH (key = id, buckets = '7 days') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        pickup.toll,
@@ -327,9 +327,21 @@ fn body(view: &str) -> String {
 }
 
 /// Asks straum what each view body answers in PostgreSQL: trips by bucket,
-/// kind, zone and borough; logins by day, zone and toll. `fare_scale`
-/// follows `fare`'s type. `None` when straum isn't ready.
+/// kind, zone and borough; logins by day, zone and toll. Then trips without
+/// the bucket from 5 hours before `START` to 29 after, which reads the day
+/// bucket `START` begins and the hours at either end, against the raw rows. `fare_scale` follows `fare`'s type.
+/// `None` when straum isn't ready.
 fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
+    const MEASURES: [&str; 8] = [
+        "trips",
+        "fare",
+        "fare_max",
+        "fare_avg",
+        "riders",
+        "tips",
+        "manhattan",
+        "near",
+    ];
     let trips = (
         format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
@@ -339,16 +351,7 @@ fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
         ),
         ask(
             "trips",
-            &[
-                "trips",
-                "fare",
-                "fare_max",
-                "fare_avg",
-                "riders",
-                "tips",
-                "manhattan",
-                "near",
-            ],
+            &MEASURES,
             &["bucket", "kind", "pickup", "pickup.borough"],
         ),
         vec![
@@ -363,7 +366,25 @@ fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
         ask("logins", &["logins"], &["bucket", "pickup", "pickup.toll"]),
         vec![0, 0, 1, 0],
     );
-    for (sql, ask, scales) in [trips, logins] {
+    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
+    let window = (
+        format!(
+            "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
+                    round(avg(f.fare), 6), count(DISTINCT f.rider), sum(f.tip),
+                    count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
+                    count(*) FILTER (WHERE f.zone_id IN (1, 2))
+               FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
+              WHERE f.at >= to_timestamp({from}) AND f.at < to_timestamp({to})
+              GROUP BY 1, 2, 3"
+        ),
+        Ask {
+            from,
+            to,
+            ..ask("trips", &MEASURES, &["kind", "pickup", "pickup.borough"])
+        },
+        vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
+    );
+    for (sql, ask, scales) in [trips, logins, window] {
         let answered = match app.ask(&ask) {
             Ok(answered) => answered,
             Err(AnswerError::NotReady) => return None,
