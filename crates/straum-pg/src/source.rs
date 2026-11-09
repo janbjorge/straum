@@ -12,10 +12,11 @@ use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Dim, DimTable, Fact, Ident, Rollup, Spec};
 
 use crate::catalog::{self, Table};
+use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
-use crate::stream::{Decoder, Stream};
+use crate::stream::Stream;
 use crate::wire::Conn;
 
 /// Slots made by this process, for unique names.

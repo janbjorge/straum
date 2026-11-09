@@ -18,10 +18,11 @@ use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
 
 use crate::catalog;
+use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Pg, read_wal};
-use crate::stream::{Decoder, Stream};
+use crate::stream::Stream;
 use crate::value::Kind;
 use crate::wire::Conn;
 

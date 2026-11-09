@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 mod catalog;
+mod decode;
 mod dsn;
 mod error;
 mod load;
