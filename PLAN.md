@@ -259,8 +259,8 @@ Tests:
   width on its own thread. The maps a row probes hash with a seeded
   folded multiply, not SipHash, and a min or max cell keeps a single
   value without a tree. Taxi month, 2.96M trips: `GROUP BY` 9.4 s, text
-  `COPY` 5.2 s, binary 3.0 s, now 1.9 s, where PostgreSQL alone copies
-  the columns to `/dev/null` in 1.4 s. The load still holds
+  `COPY` 5.2 s, binary 3.0 s, now 1.9 to 2.0 s, where PostgreSQL alone
+  copies the columns to `/dev/null` in 1.4 s. The load still holds
   `AccessShareLock` and pins xmin until the snapshot commits; ctid
   ranges on several connections in the one snapshot, or a standby, if
   that hurts. The stream never starts before the slot's consistent
