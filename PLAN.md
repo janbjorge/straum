@@ -96,7 +96,8 @@ Tests:
   load query and the reference for tests. The fact's key is a view option,
   `WITH (key = id)`, which `sqlparser` reads as is (`append` went on
   2026-11-09). PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
-  PostgreSQL; Straum only ever sends the body.
+  PostgreSQL; Straum only ever sends the body. (Since the binary `COPY`
+  load, 2026-11-09, Straum sends PostgreSQL neither.)
 - 2026-11-08: Straum SQL is parsed by the `sqlparser` crate with
   `PostgreSqlDialect`, not by a parser of our own. Straum's code walks the AST,
   keeps the subset and rejects the rest. `sqlparser` is pure Rust, so the

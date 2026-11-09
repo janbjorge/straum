@@ -53,7 +53,8 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
 - `WITH (key = COLUMN)`: the fact table's primary key. PostgreSQL rejects
-  view options, so Straum only ever sends the `SELECT` to PostgreSQL.
+  view options; Straum never sends a view to PostgreSQL, so it needn't
+  take them.
 - `buckets = '1 day, 7 days'` (optional): wider bucket widths Straum keeps
   beside the `date_bin` one, so an ask reads a long range from few cells
   (§3). Each is a wider whole multiple of the width before it and, like
