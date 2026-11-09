@@ -32,7 +32,12 @@ Code:
 - No `unsafe`: every crate has `#![forbid(unsafe_code)]`.
 - Plain structs, enums and functions. Traits only at ports. Named fields over
   tuples, whole words over abbreviations.
-- Comments say why, not what.
+- No doc comments by default. Names and types carry the what. Write
+  `///`, `//!` or `//` only for a why the code can't show: a constraint,
+  an invariant, a PostgreSQL quirk, a rejected alternative. Never restate
+  the signature or sum up the body. Don't reference callers
+  (`// used by X`) or tickets (`// fix for IMP-1234`), and don't leave
+  `// TODO`, `// removed` or commented-out code behind.
 
 Tests:
 
@@ -260,6 +265,9 @@ Tests:
   ranges on several connections in the one snapshot, or a standby, if
   that hurts. The stream never starts before the slot's consistent
   point: WAL before it is gone or never held the rows.
+- 2026-11-09: Comments, doc comments included, carry only a why the code
+  can't show. Most of the existing `///` restate the code, so they go,
+  one crate per commit.
 
 ## M0: notation and domain model
 
