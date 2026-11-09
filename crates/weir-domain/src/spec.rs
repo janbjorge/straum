@@ -78,6 +78,18 @@ pub enum Agg {
     CountDistinct(Ident),
 }
 
+impl Agg {
+    /// The column the measure reads; `None` for count.
+    pub fn input(&self) -> Option<&Ident> {
+        match self {
+            Agg::Count => None,
+            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) | Agg::CountDistinct(c) => {
+                Some(c)
+            }
+        }
+    }
+}
+
 /// `path = value`, or `path in (values)` with more than one value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cond {
@@ -127,6 +139,25 @@ impl Fact {
             .map(Slot::Column)
             .chain(self.refs.iter().map(Slot::Ref))
             .chain(iter::once(Slot::Bucket))
+    }
+
+    /// The columns a row of this fact carries, in order: the time column,
+    /// the `by` columns and ref columns in rollup-key order, then the
+    /// measure inputs not already among them.
+    pub fn columns(&self) -> Vec<Ident> {
+        let mut columns: Vec<Ident> = iter::once(&self.time.column)
+            .chain(&self.by)
+            .chain(self.refs.iter().map(|r| &r.via))
+            .cloned()
+            .collect();
+        for m in &self.measures {
+            if let Some(column) = m.agg.input()
+                && !columns.contains(column)
+            {
+                columns.push(column.clone());
+            }
+        }
+        columns
     }
 
     pub fn measure(&self, name: &str) -> Option<&Measure> {

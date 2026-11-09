@@ -110,6 +110,34 @@ Tests:
   is handled. The walker returns `Result` with every error found and never
   panics on input. `sqlparser` is pinned to an exact version. Each rejected
   construct gets a negative test.
+- 2026-11-09: weir stays synchronous; only `weir-http` runs tokio. `App`
+  becomes a core that never waits, driven by a loop that does the I/O (M6),
+  so readers never wait on PostgreSQL and no dropped future can leave a table
+  half loaded. `weir-pg` is a synchronous client with one thread that owns
+  the stream: it answers keepalives and reports the applied LSN while the
+  writer applies or reloads. Protocol code works on bytes, not sockets, so
+  going async later touches only the loop, that thread and the port.
+- 2026-11-09: weir-pg is our own replication client on `postgres-protocol`
+  (message framing, SCRAM); pgoutput v1 is decoded in weir-pg.
+  `tokio-postgres` has no replication, `supabase/etl` owns slot creation and
+  the copy, and the replication crates on crates.io build C for TLS
+  (`research/RUST.md` §4).
+- 2026-11-09: TLS waits for M7 and will be `rustls`; the crypto provider
+  (`ring`, which needs a C compiler, or pure-Rust `rustls-graviola`) is chosen
+  then. Until then weir-pg refuses an `sslmode` that requires TLS.
+- 2026-11-09: A replication connection takes the simple query protocol only,
+  so loads arrive as text. The load is one `GROUP BY` per fact on the rollup
+  key plus the min, max and count distinct columns, returning the row count
+  and sum and count per sum input. A reload reads one table on a second
+  replication connection with its own temporary slot; its consistent point is
+  the load's LSN.
+- 2026-11-09: Tests that need PostgreSQL start it themselves with
+  `testcontainers` (`blocking`, no default features, so no C), one container
+  per test, removed when the test ends. A dev-dependency only; Docker is the
+  one thing the gate needs besides Rust.
+- 2026-11-09: weir-pg commits the snapshot transaction right after the last
+  load, not at the first stream read. Held open, it pins xmin and blocks DDL
+  on the loaded tables; a test's `ALTER TABLE` waited on it.
 
 ## M0: notation and domain model
 
@@ -206,27 +234,54 @@ Touches: `crates/weir-notation`, `crates/weir-domain` (tests), `crates/weir-app`
 ## M5: PostgreSQL adapter
 
 Goal: feed the use cases from a real PostgreSQL 18.
-Touches: `crates/weir-pg`.
+Touches: `crates/weir-pg`, `crates/weir-domain`, `crates/weir-app` (docs),
+`research/`. Tests start `postgres:18` in Docker themselves; the taxi month:
+`cargo test -p weir-pg --release taxi_month -- --ignored --nocapture` after
+`bench/run.sh` has fetched the data.
 
-- [ ] Catalog check: column types, dim key unique, replica identity
-- [ ] Temporary slot, exported snapshot, initial `GROUP BY` load; the domain
-      takes grouped cells, since the load reads cells, not rows
-- [ ] Confirm that a load at the slot's consistent point holds exactly the
-      commits whose end LSN is at or before it (`Commit::lsn`)
-- [ ] Reading one table again from a second connection's snapshot
-- [ ] pgoutput decoding; Relation messages checked against the spec
-- [ ] `weir plan`: print role, grant and publication SQL
-- [ ] Taxi end to end: load, replay changes, compare asks with PostgreSQL
-- [ ] Gate passes
+- [x] Catalog check: column types, dim key unique, replica identity,
+      publication, privileges; each problem says what to fix
+- [x] Temporary slot, exported snapshot, initial `GROUP BY` load; the domain
+      takes grouped cells (`Rollup::add_group`), since the load reads cells,
+      not rows
+- [x] Confirm that a load at the slot's consistent point holds exactly the
+      commits whose end LSN is at or before it (`Commit::lsn`): 2,000
+      single-row commits racing the slot's creation, three rounds, none lost
+      or applied twice
+- [x] Reading one table again from a second connection's snapshot
+- [x] pgoutput decoding; Relation messages checked against the spec: a
+      retyped column reads the table again, a dropped one stops the stream
+- [x] A stream thread answers keepalives and reports the applied LSN while
+      the writer applies or reloads; a 9 s stall against a 4 s
+      `wal_sender_timeout` keeps the stream
+- [x] Setup SQL for `weir plan`: role, grant and publication (the command
+      comes with the binary in M6)
+- [x] Taxi end to end: load, replay changes, compare asks with PostgreSQL
+- [x] Gate passes: 99.01% lines over `weir-domain`, `weir-notation`,
+      `weir-app` and `weir-pg`; 22 planted bugs in `weir-pg` and the grouped
+      load all caught
+
+Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
+
+- The load takes 4.4 s and gives 2,322,783 cells, as M1's rollup did. The
+  snapshot transaction, which pins xmin, is open that long.
+- The whole `taxi.sql` view, every key and measure, equals PostgreSQL's
+  after the load, after 202 streamed commits (10,000 inserts, a zone renamed,
+  a zone's key changed) and after an update read the fact again (5.5 s).
+- An ask over every key returns 2.3 million groups in 5.3 to 5.7 s; the
+  view takes 4.8 s in PostgreSQL. Asks that group coarser are the use case.
 
 ## M6: ask endpoint and binary
 
 Goal: a runnable `weir` that answers asks over HTTP.
 Touches: `crates/weir-http`, `crates/weir`.
 
+- [ ] `App` as a core that never waits, driven by a loop that does the I/O;
+      readers share it with the writer
 - [ ] JSON asks; answers carry LSN and commit time
 - [ ] Health, readiness, metrics
-- [ ] Binary wiring config, adapters and use cases
+- [ ] Binary wiring config, adapters and use cases; `weir plan` prints the
+      setup SQL
 - [ ] Gate passes
 
 ## M7: deploy
@@ -234,6 +289,7 @@ Touches: `crates/weir-http`, `crates/weir`.
 Goal: weir on AKS next to Azure Flexible Server 18.
 Touches: `deploy/`.
 
+- [ ] TLS to PostgreSQL with `rustls`; pick the crypto provider
 - [ ] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC
 - [ ] Run against a non-production Azure Flexible Server 18
 

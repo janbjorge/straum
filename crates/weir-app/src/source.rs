@@ -65,7 +65,9 @@ pub enum Change {
         table: Ident,
     },
     /// The table changed shape, so rows already read may no longer read the
-    /// same; a column's type changed, for example.
+    /// same; a column's type changed, for example. Also a change the source
+    /// can't read whole, such as an update that left out an unchanged
+    /// TOASTed value with no old row to take it from.
     Altered {
         table: Ident,
     },

@@ -52,23 +52,35 @@ Use for weir:
 
 ## 4. Logical replication client
 
-- **tokio-postgres** 0.7.18 (2026-06-12) exposes no replication or copy_both API ([crates.io](https://crates.io/api/v1/crates/tokio-postgres); [Iggy discussion](https://github.com/apache/iggy/discussions/3842), August 2026). Upstream issue open since 2015 ([#116](https://github.com/sfackler/rust-postgres/issues/116)).
-- **Fork lineage**: sfackler -> MaterializeInc/rust-postgres (staging fork, no releases; consumers pin commit, [repo](https://github.com/materializeInc/rust-postgres)) -> supabase/rust-postgres ([repo](https://github.com/supabase/rust-postgres)).
-  - Fork's `postgres-replication` 0.6.7 (MIT/Apache, by Petros Angelatos of Materialize) decodes pgoutput v1 tags B/M/C/O/R/Y/I/U/D/T, tuple kinds n/u/t/b.
-  - No v2 streaming tags (Stream Start/Stop/Commit/Abort) in `protocol.rs` (I, from [the file](https://raw.githubusercontent.com/supabase/rust-postgres/master/postgres-replication/src/protocol.rs)).
-- **supabase/etl**: Apache-2.0, 2.4k stars, PostgreSQL 14–18 (16+ when replicating from physical standby) ([repo](https://github.com/supabase/etl)).
-  - Initial copy + catch-up; ordered insert/update/delete/truncate events; column + row filters via publications (PG15+); custom destinations.
-  - Destinations: ClickHouse, BigQuery, DuckLake, Snowflake in alpha; Iceberg deprecated; schema-change handling beta.
-  - Not on crates.io; git dep.
-  - pgoutput decoding ([code](https://github.com/supabase/etl/blob/main/crates/etl/src/replication/decoding_state.rs)). Depends on supabase/rust-postgres pinned rev 8086f1f, plus arrow/parquet 57.0.0, iceberg 0.8.0 ([Cargo.toml](https://raw.githubusercontent.com/supabase/etl/main/Cargo.toml)).
-  - Production user: Feldera `postgres_cdc_input` runs on Feldera's own fork. Known gaps: initial copy not resumable, blocks checkpoints ([#7172](https://github.com/feldera/feldera/issues/7172)); multi-table startup bug ([#7406](https://github.com/feldera/feldera/issues/7406)); see also [#7139](https://github.com/feldera/feldera/issues/7139).
-- **pg_walstream** 0.10.0, 2026-11-02, BSD-3-Clause, 27k recent downloads ([crates.io](https://crates.io/api/v1/crates/pg_walstream)). Protocol v1–4 incl. parallel streaming, full decoding, rustls, pgoutput encoder, typed WalRouter ([crate](https://crates.io/crates/pg_walstream), [lib.rs](https://lib.rs/crates/pg_walstream)). Single maintainer (I).
-- **pgwire-replication** 0.5.0, 2026-10-19, Apache/MIT, 248k recent downloads ([crates.io](https://crates.io/api/v1/crates/pgwire-replication)). Transport only: slot streaming, LSN feedback, TLS, SCRAM; no row decoding ([docs](https://docs.rs/pgwire-replication/latest/pgwire_replication/)). Young, single maintainer (Iggy discussion).
-- **Mooncake-Labs/pg_replicate**: hard fork, no commits since April 2025 (U, Iggy discussion).
-- **How others do it**:
-  - Materialize: pgoutput, one slot per source ([docs](https://materialize.com/docs/sql/create-source/postgres/)); code in `src/storage/src/source/postgres/{replication,snapshot}.rs` ([code](https://github.com/MaterializeInc/materialize/tree/main/src/storage/src/source/postgres)); BSL 1.1.
-  - ReadySet: `replicators/src/postgres_connector/` ([code](https://github.com/readysettech/readyset/blob/main/replicators/src/postgres_connector/connector.rs)) + own rust-postgres fork; BSL 1.1.
-  - RisingWave: not pure Rust; embedded Debezium reads slot ([docs](https://docs.risingwave.com/ingestion/cdc-with-risingwave)).
+Refreshed 2026-11-09 against the weir-pg flow: one `replication=database`
+connection runs `BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ`,
+`CREATE_REPLICATION_SLOT ... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')`, the
+`GROUP BY` loads, `COMMIT`, then `START_REPLICATION`; a reload opens a second
+connection with its own temporary slot. Decided: our own client on
+`postgres-protocol` (PLAN.md, 2026-11-09).
+
+PostgreSQL facts the choice rests on (R, `~/src/postgres`):
+
+- A walsender takes the simple query protocol only (`doc/src/sgml/protocol.sgml:2194-2195`); Parse, Bind and the rest get "extended query protocol not supported in a replication connection" (`src/backend/tcop/postgres.c:5223`). Values come back as text, except `FETCH` from a `BINARY` cursor (`protocol.sgml:866-869`). PostgreSQL's own tablesync sends `COPY (SELECT ...) TO STDOUT` on its replication connection (`src/backend/replication/logical/tablesync.c:1184-1198`).
+- `SNAPSHOT 'use'` needs a REPEATABLE READ, read-only transaction before any query (`src/backend/replication/walsender.c:1342-1373`). `START_REPLICATION` can't run inside a transaction block (`walsender.c:2299`), so the load commits first. The walsender timeout is off until `START_REPLICATION` (`walsender.c:1395-1401`, `3083-3089`), so a long load can't time out.
+- A transaction is decoded only if its commit record starts at or past the start LSN (`src/backend/replication/logical/snapbuild.c:305-311`). pgoutput's Commit carries the record's start, then its end (`src/backend/replication/logical/proto.c:89-90`). Records don't overlap, so a load at the consistent point holds exactly the commits that end at or before it, and every later one is streamed (I; to be tested in M5).
+- A reload's own temporary slot reserves WAL at the current insert LSN, so its consistent point is at or past what the main stream has sent (`src/backend/replication/slot.c:1759-1788`, I). Creating it waits for every transaction open at that moment (`snapbuild.c:98-107`).
+- After half of `wal_sender_timeout` (60 s default, user-settable) without a reply the walsender asks for one, and after all of it drops the connection (`walsender.c:3014-3034`, `4487-4505`).
+- pgoutput v1 is enough with streaming off: B, C, O, R, Y, I, U, D, T, M and tuple kinds n, u, t, b (`src/include/replication/logicalproto.h:40-45`).
+
+Candidates:
+
+- **tokio-postgres** 0.7.18 (2026-06-12): no replication. CopyBoth PR [#778](https://github.com/rust-postgres/rust-postgres/pull/778) open since 2021-05-25, issue [#116](https://github.com/sfackler/rust-postgres/issues/116) since 2015.
+- **postgres-protocol** 0.6.12 (2026-06-12, MIT OR Apache-2.0, 91M downloads): message parse and encode, SCRAM-SHA-256 client, all pure Rust ([crates.io](https://crates.io/api/v1/crates/postgres-protocol), [docs](https://docs.rs/postgres-protocol/0.6.12/postgres_protocol/)). No CopyBothResponse `W` (unknown tags error), no replication messages, no pgoutput ([backend.rs](https://raw.githubusercontent.com/rust-postgres/rust-postgres/master/postgres-protocol/src/message/backend.rs)). **Chosen.**
+- **supabase/rust-postgres fork** (tokio-postgres + `postgres-replication` 0.6.7, git only, pin `8086f1fd`, 2026-09-03): CopyBoth, `simple_query_raw`, pgoutput v1 with Commit end LSN ([protocol.rs](https://raw.githubusercontent.com/supabase/rust-postgres/8086f1fd19bd9abc0da86ba80f8b7dbdd676cb3e/postgres-replication/src/protocol.rs)). Async only, no issue tracker, kept "narrowly focused" on etl ([README](https://raw.githubusercontent.com/supabase/rust-postgres/8086f1fd19bd9abc0da86ba80f8b7dbdd676cb3e/README.md)). `postgres-replication` is not on crates.io. Runner-up.
+- **supabase/etl** (Apache-2.0, 2,351 stars, git only): owns slot creation and copies whole tables per table slot; its replication client is private (`mod replication;`, [lib.rs](https://raw.githubusercontent.com/supabase/etl/main/crates/etl/src/lib.rs)); forces aws-lc. Rejected: no `GROUP BY` load on the slot snapshot.
+- **pg_walstream** 0.10.0 (2026-11-02, BSD-3-Clause, two active maintainers): full pgoutput v1–4, 96.47% line coverage, CI on PG 15–18 ([crates.io](https://crates.io/api/v1/crates/pg_walstream), [codecov](https://codecov.io/api/v2/github/isdaniel/repos/pg-walstream/)). TLS is rustls on aws-lc-rs, hard-wired, which "requires cmake + C compiler" ([Cargo.toml](https://raw.githubusercontent.com/isdaniel/pg-walstream/main/Cargo.toml)). With `default-features = false` its parser builds alone in pure Rust (I): a fallback decoder.
+- **pgwire-replication** 0.5.0 (2026-10-19, Apache-2.0 OR MIT, one main maintainer): transport only, parses B, C, M; tokio only; its rustls feature builds ring and aws-lc and takes no caller config; `simple_query` buffers the whole result and drops RowDescription; tested on PG 16 ([docs](https://docs.rs/pgwire-replication/0.5.0/pgwire_replication/), [worker.rs](https://raw.githubusercontent.com/vnvo/pgwire-replication/main/src/client/worker.rs)).
+- **pgwire** 0.42.1: client COPY and replication unchecked in its README ([README](https://raw.githubusercontent.com/sunng87/pgwire/master/README.md)). **sqlx**: no CopyBoth ([#2923](https://github.com/launchbadge/sqlx/issues/2923), U).
+- **How others do it**: Materialize (`src/storage/src/source/postgres/`, BSL 1.1, [code](https://github.com/MaterializeInc/materialize/tree/main/src/storage/src/source/postgres)); ReadySet (own rust-postgres fork, BSL 1.1, [code](https://github.com/readysettech/readyset/blob/main/replicators/src/postgres_connector/connector.rs)); RisingWave via embedded Debezium ([docs](https://docs.risingwave.com/ingestion/cdc-with-risingwave)).
+
+TLS (M7): `rustls` with `default-features = false` plus a provider. `ring` needs a C compiler ([BUILDING.md](https://raw.githubusercontent.com/briansmith/ring/main/BUILDING.md)); `rustls-graviola` 0.4.0 needs none but says "This project is very new, so exercise due caution" and needs AES, AVX2, ADX, BMI2 on x86_64 ([graviola](https://github.com/ctz/graviola)). Azure Flexible Server serves RSA certificates over TLS 1.2 and 1.3 ([Azure](https://learn.microsoft.com/en-us/azure/postgresql/security/security-tls)).
+
 
 ## 5. Extension side
 
@@ -120,7 +132,25 @@ Use for weir:
 - **TimeFusion**: DataFusion + pgwire + Delta, direct ingest, no CDC ([repo](https://github.com/monoscope-tech/timefusion)).
 - **ReadySet**: CDC + incremental cache over wire protocol; BSL, not columnar ([repo](https://github.com/readysettech/readyset)).
 
+## 9. Async
+
+Checked 2026-11-09 for the shape of weir-app and weir-pg; local toolchain
+`rustc 1.99.1`. Decided: weir stays synchronous, tokio only in `weir-http`
+(PLAN.md, 2026-11-09).
+
+- `async fn` in traits is stable since 1.75 and not dyn-compatible ([blog](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/)). In a public trait it trips the warn-by-default `async_fn_in_trait` lint, so `-D warnings` needs `#[allow(async_fn_in_trait)]` or a hand-written `-> impl Future<Output = T> + Send` ([rustc book](https://doc.rust-lang.org/rustc/lints/listing/warn-by-default.html#async-fn-in-trait); checked locally).
+- Return type notation (`T::method(..): Send`) is not stable: PR [#138424](https://github.com/rust-lang/rust/pull/138424) closed unmerged 2025-12-27; the 2026 goal waits on the next-gen trait solver ([goal](https://goals.rust-lang.org/2026/rtn.html)). `trait-variant` 0.1.3 and `async-trait` 0.1.92 are proc macros.
+- Still unstable: async drop (soundness bugs filed October 2026, U), `AsyncIterator` ([#79024](https://github.com/rust-lang/rust/issues/79024)), `gen` blocks ([#117078](https://github.com/rust-lang/rust/issues/117078)). std has no executor; `Waker::noop` (1.85) is enough to poll a future that never waits ([docs](https://doc.rust-lang.org/std/task/struct.Waker.html#method.noop)).
+- tokio 1.54.1 (2026-10-21) is current; LTS 1.51.x to March 2027 and 1.53.x to September 2027; no 2.0 plan found ([README](https://github.com/tokio-rs/tokio/blob/master/README.md)). `LocalRuntime` is stable since 1.51.0. `select!`, `#[tokio::main]` and `#[tokio::test]` are macros.
+- Cancellation: a future may be dropped at any `.await` by `select!`, `timeout`, abort or shutdown ([select! docs](https://docs.rs/tokio/latest/tokio/macro.select.html); [Rain, 2025-10-03](https://sunshowers.io/posts/cancelling-async-rust/)). An async `App::step` would leave a cleared table marked loaded if dropped mid-reload (`crates/weir-app/src/app.rs`, I).
+- CPU work: "no more than 10 to 100 microseconds between each `.await`" ([ryhl.io](https://ryhl.io/blog/async-what-is-blocking/)); persistent work belongs on a "dedicated thread created with `thread::spawn`" ([docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)).
+- A sync wrapper over an async client needs its own runtime; `Runtime::block_on` panics inside an async context ([docs](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html)). The `postgres` crate does this over `tokio-postgres` ([docs](https://docs.rs/postgres/latest/postgres/)).
+- Sans-IO: a core of plain state machines, the I/O and the choice of runtime left to the caller ([Eizinger, 2024-07-02](https://www.firezone.dev/blog/sans-io)); quinn-proto, rustls and str0m work this way ([quinn-proto](https://docs.rs/quinn-proto/latest/quinn_proto/), [str0m](https://github.com/algesten/str0m)). weir's `App` takes this shape in M6.
+- Whatever the shape, something must answer keepalives while the writer is busy: a big commit or a reload can outlast `wal_sender_timeout` (§4). In weir-pg that is a thread that owns the stream socket.
+
 ## Recommended stack
+
+Stale: written for the extension, DataFusion and pgwire design, dropped since (PLAN.md decisions). The replication rows follow §4.
 
 | Crate | Version | Why |
 |---|---|---|
@@ -128,8 +158,8 @@ Use for weir:
 | sqlparser | 0.62.x | Whatever DataFusion pins; don't take 0.63 separately |
 | pg_query | 18.1.0 | Real parser: postgres_fdw dialect, proxy routing, fingerprints, parity tests |
 | pgwire | 0.42.1 | Wire server. With datafusion-postgres 0.19.0, accept pgwire 0.41, reuse arrow-pg + datafusion-pg-catalog |
-| supabase/etl | pinned git rev | Slot mgmt, initial copy, pgoutput decoding, ordered events, destination API; Feldera runs in prod |
-| pg_walstream | 0.10.0 | Fallback if crates.io-only deps required |
+| postgres-protocol | 0.6.12 | Framing and SCRAM for our own replication client (§4) |
+| pg_walstream | 0.10.0 | Parser-only fallback for pgoutput decoding (§4) |
 | pgrx | 0.19.3 | Extension side; PG15+ only |
 | roaring | 0.12.0 | Delete bitmaps |
 | datasketches | 0.5.0 | Approx distinct counts + quantiles |

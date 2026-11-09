@@ -180,28 +180,35 @@ sequenceDiagram
   autonumber
   participant W as weir
   participant R as PG replication conn
-  W->>R: catalog checks: wal_level, role, publication,<br/>column types, dim keys unique, replica identity
   W->>R: BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ
-  W->>R: CREATE_REPLICATION_SLOT weir_POD TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')
+  W->>R: CREATE_REPLICATION_SLOT weir_PID_... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')
   R-->>W: consistent_point L
-  W->>R: per fact: SELECT rollup key, aggregates ... GROUP BY rollup key
+  W->>R: catalog checks: wal_level, publication, privileges,<br/>column types, dim keys, replica identity
+  W->>R: per fact: SELECT bucket, rollup key, min/max/distinct columns,<br/>count(*), sum and count ... GROUP BY
   W->>R: per dim: SELECT key, attrs
-  W->>R: COMMIT
-  W->>R: START_REPLICATION SLOT weir_POD LOGICAL L (publication_names 'weir')
+  W->>R: COMMIT, right after the last load
+  W->>R: START_REPLICATION SLOT weir_PID_... LOGICAL L<br/>(proto_version '1', publication_names '"weir"')
   loop stream
     R-->>W: Begin, Relation, Insert, Update, Delete, Truncate, Commit
     W->>R: standby status update, flush = applied LSN
   end
 ```
 
-- The load reads rollups, not rows. The `GROUP BY` computes the bucket in SQL
-  (`date_bin`, as `bench/rollup.sql` does) and returns the row count, plus sum
-  and count per sum input. min, max and count distinct need a count per value,
-  so they group by the rollup key and the column; one query with `GROUPING
-  SETS` can carry all of them (I).
+- The load reads cells, not rows. Per fact, one `GROUP BY` on the bucket
+  (`extract(epoch FROM date_bin(...))`, as `bench/rollup.sql` buckets), the
+  rollup key and the min, max and count distinct columns, which need a count
+  per value. Each group returns `count(*)` and sum and count per other sum
+  input (`Rollup::grouped`, `Rollup::summed`, `crates/weir-pg/src/load.rs`) and
+  adds to its cell whole (`Rollup::add_group`). Where those value columns are
+  nearly unique, groups approach rows; a `GROUPING SETS` query per column
+  would avoid the cross product (I, not built).
 - SQL and replication commands share one connection in logical walsender mode
   (`doc/src/sgml/protocol.sgml:2186-2190`, R), simple query protocol only
-  (`:2193-2194`, R). weir needs no second connection until a barrier (§4c).
+  (`:2193-2194`, R), so values come back as text. weir sets `DateStyle = ISO`
+  and `TimeZone = UTC` at startup and reads that text
+  (`crates/weir-pg/src/value.rs`).
+- The catalog checks run after the slot exists, so they see the tables as the
+  load does. Each problem found names its fix (`crates/weir-pg/src/catalog.rs`).
 - `SNAPSHOT 'use'` must run first in a REPEATABLE READ, read-only transaction
   (`src/backend/replication/walsender.c:1342-1364`, R). The load sees the state
   at L, and the stream starts with the first commit after L.
@@ -209,8 +216,11 @@ sequenceDiagram
   dropped on error or when the session has finished"
   (`protocol.sgml:2371-2374`, R).
 - The snapshot transaction pins xmin while the load runs and holds back vacuum
-  for the whole database (POSTGRES-REPLICATION.md §4). Reading rollups keeps it
-  short; how short is measured in M5.
+  for the whole database (POSTGRES-REPLICATION.md §4). It also holds a lock on
+  every table it read, which blocks `ALTER TABLE`. weir commits it right after
+  the last load, not at the first stream read (M5; a test's `ALTER TABLE`
+  waited on it before). Reading cells keeps it short: the taxi month, 2,964,624
+  trips, loads in 4.4 s (PLAN.md, M5).
 
 ### 4b. Apply
 
@@ -244,21 +254,37 @@ doesn't fit the rollup, a changed Relation) reads that table again while the
 others keep streaming (`crates/weir-app/src/app.rs`):
 
 - The table is emptied and loaded from a new snapshot at LSN `at`. On
-  PostgreSQL that is a second connection with its own temporary slot (M5, I).
+  PostgreSQL that is a second replication connection with its own temporary
+  slot, `at` its consistent point (`crates/weir-pg/src/source.rs`). A new slot
+  reserves WAL from the current insert position, so `at` is at or past what
+  the stream has sent (`src/backend/replication/slot.c:1759-1788`, R).
+  Creating it waits for the transactions open at that moment
+  (`src/backend/replication/logical/snapbuild.c:98-107`, R).
 - The stream is behind `at`. Commits up to `at` are already in the load, so
   they skip the table; later ones apply.
 - Asks that read the table, or a dim it refs, answer not ready until the
   stream passes `at`. Asks on other facts answer at the stream's LSN.
 
 A commit's LSN is the end of its commit record, so "up to `at`" means the
-commits that end at or before it (I, to confirm in M5).
+commits that end at or before it. A transaction is decoded only if its commit
+record starts at or past the start point
+(`src/backend/replication/logical/snapbuild.c:305-311`, R), and pgoutput's
+Commit carries the record's start, then its end
+(`src/backend/replication/logical/proto.c:89-90`, R). M5 tested it: 2,000
+single-row commits racing the slot's creation, three times, and no commit
+lost or applied twice (`the_snapshot_and_the_stream_split_exactly`).
 
 Schema drift: pgoutput resets `schema_sent` when a table's relcache entry is
 invalidated (`src/backend/replication/pgoutput/pgoutput.c:2122-2128`, R), so it
 sends a Relation message before the next change to an altered table. weir
-compares it with the spec and reloads the fact, or turns not ready if the spec
-no longer fits. A table that is altered but not written to goes unnoticed until
-its next change (I).
+compares the columns it reads with those it loaded: a column that reads
+differently, such as `numeric(10, 2)` turned `numeric(12, 3)`, reads that
+table again. A column dropped, or turned to a type weir doesn't read, stops
+the stream, and the setup check on the next start names it. A table that is
+altered but not written to goes unnoticed until its next change (I).
+
+An update that leaves a TOASTed value alone doesn't send it. weir takes it
+from the old row when one came; without one, it reads the table again.
 
 `streaming` is off in v1, so changes arrive after commit. A transaction larger
 than `logical_decoding_work_mem` spills to the primary's disk
@@ -275,10 +301,13 @@ connection and answers once the stream passes the returned LSN
 
 ### 4d. Setup
 
-`weir plan` (M5) reads the spec and prints the SQL an admin runs once:
+`weir plan` reads the spec and prints the SQL an admin runs once
+(`weir_pg::plan`, M5; the command comes with the binary in M6):
 `wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE weir LOGIN
-REPLICATION`, `GRANT SELECT` on the spec's tables, and `CREATE PUBLICATION weir
-FOR TABLE` with the fact and dim tables.
+REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION weir
+FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for facts
+that aren't append-only. A dim needs its key as replica identity, which only
+the schema can give, so the SQL says so in a comment.
 
 - Adding a table to a publication needs ownership of it
   (`src/backend/commands/publicationcmds.c:2051-2054`, R); `FOR ALL TABLES`
@@ -334,7 +363,11 @@ Clean architecture as Cargo crates:
   applies a commit or reads a table again; `App::ask` answers with the LSN.
   One port, because the first load reads the snapshot of the slot the stream
   comes from, on the same connection.
-- `weir-pg` (M5): catalog checks, snapshot load, pgoutput decoding.
+- `weir-pg` (M5): our own replication client on `postgres-protocol`. Catalog
+  checks, the grouped load in the slot's snapshot, pgoutput v1 decoding,
+  reloads on a second connection, and a thread that owns the stream: it
+  answers keepalives and reports the applied LSN while the writer is busy.
+  Synchronous, plain TCP (TLS in M7).
 - `weir-http` (M6): JSON asks, zone lookup, health and metrics.
 - `weir`: the binary that wires them together.
 
@@ -419,7 +452,8 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
 - Memory: the cgroup v2 `memory.max` is the budget; weir watches
   `memory.pressure` and fails with a clear error before the kernel OOM-kills it.
   Memory request equals limit (Guaranteed QoS).
-- tokio on epoll for the few sockets; rustls to PostgreSQL.
+- weir-pg is synchronous: plain sockets and one stream thread. tokio only in
+  weir-http. TLS to PostgreSQL with rustls comes in M7.
 - Spec from a ConfigMap, DSN from an env var or a CSI-mounted secret.
 - OTLP to the cluster's collector and Prometheus `/metrics`: applied LSN, lag,
   retained WAL, cells, bytes, ask latency.

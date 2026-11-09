@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::iter;
+use std::num::NonZeroU64;
 
 use crate::ident::Ident;
 use crate::spec::{Agg, Dim, Fact};
@@ -10,6 +11,9 @@ use crate::value::Datum;
 
 /// Row position of the time column.
 const TIME: usize = 0;
+
+/// Panic message for measure inputs, which `Fact::columns` lists.
+const COLUMNS: &str = "Fact::columns lists every measure input";
 
 /// One cell per rollup key, holding what the fact's measures need.
 #[derive(Debug)]
@@ -22,6 +26,12 @@ pub struct Rollup {
     key_len: usize,
     /// What each cell keeps, one state per input.
     inputs: Vec<Input>,
+    /// Row positions a load groups by: the time column, the rollup-key
+    /// columns, then the min, max and count distinct inputs.
+    grouped: Vec<usize>,
+    /// Row positions of the sum inputs not grouped by, whose sums a load
+    /// returns.
+    summed: Vec<usize>,
     /// Keyed on the by values, the ref ids, then the bucket.
     cells: HashMap<Box<[Datum]>, Cell>,
 }
@@ -75,31 +85,37 @@ pub(crate) enum State {
 
 impl Rollup {
     pub(crate) fn new(fact: &Fact) -> Rollup {
-        let mut columns: Vec<Ident> = iter::once(&fact.time.column)
-            .chain(&fact.by)
-            .chain(fact.refs.iter().map(|r| &r.via))
-            .cloned()
-            .collect();
-        let key_len = columns.len() - 1;
+        let columns = fact.columns();
+        let key_len = fact.by.len() + fact.refs.len();
         let mut inputs = Vec::new();
         for m in &fact.measures {
             let Some((kind, name)) = Kind::of(&m.agg) else {
                 continue;
             };
-            let column = columns.iter().position(|c| c == name).unwrap_or_else(|| {
-                columns.push(name.clone());
-                columns.len() - 1
-            });
+            let column = columns.iter().position(|c| c == name).expect(COLUMNS);
             let input = Input { kind, column };
             if !inputs.contains(&input) {
                 inputs.push(input);
             }
         }
+        let mut grouped: Vec<usize> = (0..=key_len).collect();
+        for input in &inputs {
+            if input.kind != Kind::Sum && !grouped.contains(&input.column) {
+                grouped.push(input.column);
+            }
+        }
+        let summed = inputs
+            .iter()
+            .filter(|i| i.kind == Kind::Sum && !grouped.contains(&i.column))
+            .map(|i| i.column)
+            .collect();
         Rollup {
             columns,
             grain: i64::from(fact.time.grain.0),
             key_len,
             inputs,
+            grouped,
+            summed,
             cells: HashMap::new(),
         }
     }
@@ -107,6 +123,19 @@ impl Rollup {
     /// The columns a row carries, in order.
     pub fn columns(&self) -> &[Ident] {
         &self.columns
+    }
+
+    /// The columns a load groups by: the time column, whose bucket the load
+    /// returns, the rollup-key columns, then the min, max and count distinct
+    /// inputs.
+    pub fn grouped(&self) -> impl Iterator<Item = &Ident> {
+        self.grouped.iter().map(|&c| &self.columns[c])
+    }
+
+    /// The sum and avg inputs not among [`Rollup::grouped`], whose sum and
+    /// count of non-null values a load returns per group.
+    pub fn summed(&self) -> impl Iterator<Item = &Ident> {
+        self.summed.iter().map(|&c| &self.columns[c])
     }
 
     /// Number of cells; a cell goes when its last row is removed.
@@ -127,7 +156,49 @@ impl Rollup {
         });
         cell.rows += 1;
         for (state, input) in cell.state.iter_mut().zip(&self.inputs) {
-            state.add(&row[input.column]);
+            state.add(&row[input.column], 1);
+        }
+        Ok(())
+    }
+
+    /// Adds `rows` rows at once, as one row of a `GROUP BY` load: `values`
+    /// holds one value per [`Rollup::grouped`] column, `sums` one per
+    /// [`Rollup::summed`] column.
+    pub fn add_group(
+        &mut self,
+        values: &[Datum],
+        rows: NonZeroU64,
+        sums: &[Sum],
+    ) -> Result<(), RowError> {
+        let lengths = [
+            (self.grouped.len(), values.len()),
+            (self.summed.len(), sums.len()),
+        ];
+        for (expected, found) in lengths {
+            if expected != found {
+                return Err(RowError::Arity { expected, found });
+            }
+        }
+        let mut row = vec![Datum::Null; self.columns.len()];
+        for (&column, value) in self.grouped.iter().zip(values) {
+            row[column] = value.clone();
+        }
+        self.check(&row)?;
+        let cell = self.cells.entry(self.key(&row)).or_insert_with(|| Cell {
+            rows: 0,
+            state: self.inputs.iter().map(|i| State::new(i.kind)).collect(),
+        });
+        cell.rows += rows.get();
+        let mut sums = sums.iter();
+        for (state, input) in cell.state.iter_mut().zip(&self.inputs) {
+            match state {
+                State::Sum { sum, count } if !self.grouped.contains(&input.column) => {
+                    let group = sums.next().expect("one per summed column");
+                    *sum += group.sum;
+                    *count += group.count;
+                }
+                _ => state.add(&row[input.column], rows.get()),
+            }
         }
         Ok(())
     }
@@ -212,16 +283,16 @@ impl State {
         }
     }
 
-    /// Nulls are skipped, as in SQL.
-    fn add(&mut self, value: &Datum) {
+    /// Adds a value that `n` rows hold. Nulls are skipped, as in SQL.
+    fn add(&mut self, value: &Datum, n: u64) {
         match (self, value) {
             (_, Datum::Null) => {}
             (State::Sum { sum, count }, Datum::Int(v)) => {
-                *sum += i128::from(*v);
-                *count += 1;
+                *sum += i128::from(*v) * i128::from(n);
+                *count += n;
             }
-            (State::Extent(counts), Datum::Int(v)) => *counts.entry(*v).or_default() += 1,
-            (State::Distinct(counts), v) => *counts.entry(v.clone()).or_default() += 1,
+            (State::Extent(counts), Datum::Int(v)) => *counts.entry(*v).or_default() += n,
+            (State::Distinct(counts), v) => *counts.entry(v.clone()).or_default() += n,
             _ => unreachable!("Rollup::check lets only integers through"),
         }
     }
@@ -251,6 +322,14 @@ impl State {
         }
         Ok(())
     }
+}
+
+/// The sum of a column's non-null values over a group, and how many there
+/// are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sum {
+    pub sum: i128,
+    pub count: u64,
 }
 
 /// A dim's rows by key. A row is the key, then the attributes in

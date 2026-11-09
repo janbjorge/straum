@@ -2,10 +2,11 @@
 //! over random inserts, updates and deletes of trips and zones.
 
 use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroU64;
 
 use weir_domain::{
     Agg, Answer, Ask, AskError, AskKey, Change, Cond, Datum, Dim, Fact, Grain, Ident, KeyPath,
-    Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value, Zone,
+    Literal, Measure, Ref, RowError, Spec, Store, Sum, Table, Time, TimeKey, Value, Zone,
 };
 
 const GRAIN: u32 = 900;
@@ -115,6 +116,8 @@ fn spec() -> Spec {
             m("fare", Agg::Sum(id("fare")), vec![]),
             m("tip_min", Agg::Min(id("tip")), vec![]),
             m("tip_max", Agg::Max(id("tip")), vec![]),
+            // A sum over a column the load groups by.
+            m("tip_avg", Agg::Avg(id("tip")), vec![]),
             m("distance", Agg::Avg(id("dist")), vec![]),
             m("riders", Agg::CountDistinct(id("rider")), vec![]),
             m("pickups", Agg::CountDistinct(id("pu")), vec![]),
@@ -535,6 +538,140 @@ fn store_matches_naive_reference() {
     }
 }
 
+/// What a `GROUP BY` load returns for `rows`: the grouped values with the
+/// time column as its bucket, the row count, and sum and count per summed
+/// column.
+fn groups(rows: &[Vec<Datum>]) -> BTreeMap<Vec<Datum>, (u64, Vec<Sum>)> {
+    const GROUPED: [usize; 8] = [AT, PAY, VENDOR, SHARED, PU, DRO, TIP, RIDER];
+    const SUMMED: [usize; 2] = [FARE, DIST];
+    let mut groups: BTreeMap<_, (u64, Vec<Sum>)> = BTreeMap::new();
+    for row in rows {
+        let mut values: Vec<Datum> = GROUPED.iter().map(|&c| row[c].clone()).collect();
+        if let Datum::Int(at) = values[0] {
+            let grain = i64::from(GRAIN);
+            values[0] = Datum::Int(at.div_euclid(grain) * grain);
+        }
+        let (count, sums) = groups
+            .entry(values)
+            .or_insert_with(|| (0, vec![Sum { sum: 0, count: 0 }; SUMMED.len()]));
+        *count += 1;
+        for (sum, &c) in sums.iter_mut().zip(&SUMMED) {
+            if let Datum::Int(v) = row[c] {
+                sum.sum += i128::from(v);
+                sum.count += 1;
+            }
+        }
+    }
+    groups
+}
+
+#[test]
+fn grouped_load_matches_rows() {
+    let spec = spec();
+    let rollup_names = |store: &mut Store| {
+        let rollup = store.rollup("trips").unwrap();
+        let names = |it: &mut dyn Iterator<Item = &Ident>| -> Vec<String> {
+            it.map(ToString::to_string).collect()
+        };
+        (names(&mut rollup.grouped()), names(&mut rollup.summed()))
+    };
+    let (grouped, summed) = rollup_names(&mut Store::new(spec.clone()));
+    assert_eq!(
+        grouped,
+        ["at", "pay", "vendor", "shared", "pu", "dro", "tip", "rider"]
+    );
+    assert_eq!(summed, ["fare", "dist"]);
+
+    for seed in 0..8 {
+        let mut rng = Rng(seed);
+        let mut by_row = Store::new(spec.clone());
+        let mut by_group = Store::new(spec.clone());
+        for key in 1..=4 {
+            let row = zone(&mut rng, key);
+            by_row.dim("zones").unwrap().upsert(&row).unwrap();
+            by_group.dim("zones").unwrap().upsert(&row).unwrap();
+        }
+        let mut rows: Vec<Vec<Datum>> = Vec::new();
+        for _ in 0..1_000 {
+            let mut row = trip(&mut rng);
+            // Rows sharing a group, and a cell holding several groups.
+            if !rows.is_empty() && rng.chance(50) {
+                let other = &rows[rng.below(rows.len())];
+                let shared = if rng.chance(50) { RIDER } else { DRO };
+                row[..=shared].clone_from_slice(&other[..=shared]);
+            }
+            by_row.rollup("trips").unwrap().add(&row).unwrap();
+            rows.push(row);
+        }
+        let groups = groups(&rows);
+        assert!(groups.len() < rows.len(), "seed {seed}: nothing grouped");
+        let rollup = by_group.rollup("trips").unwrap();
+        for (values, (count, sums)) in &groups {
+            let count = NonZeroU64::new(*count).unwrap();
+            rollup.add_group(values, count, sums).unwrap();
+        }
+        assert_eq!(
+            by_group.rollup("trips").unwrap().cells(),
+            by_row.rollup("trips").unwrap().cells(),
+            "seed {seed}"
+        );
+        for _ in 0..50 {
+            let ask = random_ask(&mut rng, &spec);
+            assert_eq!(
+                by_group.ask(&ask).unwrap(),
+                by_row.ask(&ask).unwrap(),
+                "seed {seed}, {ask:?}"
+            );
+        }
+        // The stream takes out rows the load put in.
+        let rollup = by_group.rollup("trips").unwrap();
+        for row in &rows {
+            rollup.remove(row).unwrap();
+        }
+        assert_eq!(rollup.cells(), 0, "seed {seed}: a cell outlived its rows");
+    }
+}
+
+#[test]
+fn group_errors() {
+    let mut store = Store::new(spec());
+    let rollup = store.rollup("trips").unwrap();
+    let one = NonZeroU64::MIN;
+    let sums = [Sum { sum: 0, count: 0 }; 2];
+    let values = |at: Datum, tip: Datum| {
+        let mut values = vec![Datum::Null; 8];
+        values[0] = at;
+        values[6] = tip;
+        values
+    };
+    let ok = values(Datum::Int(START), Datum::Int(1));
+    assert_eq!(
+        rollup.add_group(&ok[1..], one, &sums),
+        Err(RowError::Arity {
+            expected: 8,
+            found: 7
+        })
+    );
+    assert_eq!(
+        rollup.add_group(&ok, one, &sums[1..]),
+        Err(RowError::Arity {
+            expected: 2,
+            found: 1
+        })
+    );
+    assert_eq!(
+        rollup.add_group(&values(text("noon"), Datum::Null), one, &sums),
+        Err(RowError::NotInt { column: id("at") })
+    );
+    assert_eq!(
+        rollup.add_group(&values(Datum::Null, text("big")), one, &sums),
+        Err(RowError::NotInt { column: id("tip") })
+    );
+    assert_eq!(rollup.cells(), 0);
+    rollup.add_group(&ok, one, &sums).unwrap();
+    assert_eq!(rollup.cells(), 1);
+}
+
 #[test]
 fn columns_put_measure_inputs_after_the_key() {
     let mut store = Store::new(spec());
@@ -734,6 +871,7 @@ fn ask_without_by_answers_one_row() {
             Vec::new(),
             vec![
                 zero.clone(),
+                null.clone(),
                 null.clone(),
                 null.clone(),
                 null.clone(),
