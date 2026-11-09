@@ -15,7 +15,7 @@ source of truth; Straum stores no durable copy.
 Given PostgreSQL source tables, write a spec:
 
 ```sql
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips WITH (key = id, buckets = '1 day') AS
 SELECT date_bin('15 minutes', t.pickup_at, timestamptz 'epoch') AS bucket,
        t.payment_type,
        t.pickup_location_id,
@@ -28,8 +28,9 @@ LEFT JOIN public.zones z ON z.location_id = t.pickup_location_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan` checks
-the spec and prints the SQL a table owner must apply:
+`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `buckets` is
+optional: Straum also keeps day cells, so an ask over weeks reads few cells.
+`plan` checks the spec and prints the SQL a table owner must apply:
 
 ```sh
 cargo run -p straum -- plan --spec trips.sql
@@ -70,7 +71,8 @@ Straum:
 
 - reads a narrow PostgreSQL `CREATE VIEW` subset;
 - maintains `count`, `count distinct`, `sum`, `min`, `max`, and `avg`;
-- supports dimensions, N:1 joins, filters, and UTC time buckets;
+- supports dimensions, N:1 joins, filters, and UTC time buckets, with wider
+  buckets for long ranges;
 - loads from a snapshot consistent with its replication stream;
 - exposes JSON asks, readiness, and liveness.
 

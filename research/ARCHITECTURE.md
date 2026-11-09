@@ -114,6 +114,9 @@ time keys and a range end inside a bucket.
 
 ![Store::ask walks the cells of a fact, looks up dim attributes by ref id and merges each cell into the measures whose filter holds.](diagrams/ask.svg)
 
+- It reads only the buckets that cover the range: the widest the view keeps
+  that fit, `date_bin` buckets at the ends, or only `date_bin` buckets when
+  the ask groups by the bucket (§3).
 - Filtered measures keep no state. Their conditions name rollup-key parts only,
   so a cell counts in whole or not at all.
 - A ref id with no dim row maps to null attributes, as a left join would. This

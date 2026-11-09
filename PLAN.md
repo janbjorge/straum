@@ -436,4 +436,6 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
   look stale by their commit time.
 - Long asks hold the read lock and delay the writer, and `/readyz` waits
   behind a writer that waits. A coarse ask on the taxi month
-  holds it 1.5 s. Cap asks, keep the status outside the lock, or both?
+  held it 1.5 s; with day and week buckets it takes 27 ms (2026-11-09).
+  An ask over every 15-minute bucket still reads every cell. Cap asks, keep
+  the status outside the lock, or both?
