@@ -30,6 +30,7 @@ PostgreSQL tests need Docker.
 - Comments say why, not what.
 - Every behaviour gets a positive and a negative test.
 - Settled decisions get a dated line under Decisions in PLAN.md.
+- Commit straight to `main`, one change per commit. No branches, no PRs.
 - Milestone commits are `Mx: <title>`, with coverage in the body. Other
   commits use a short imperative subject.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
