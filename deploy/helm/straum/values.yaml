@@ -1,0 +1,89 @@
+# image is the straum container image the Dockerfile builds.
+image:
+  # image.repository is where the image lives, such as
+  # myregistry.azurecr.io/straum. Required.
+  repository: ""
+  # image.tag is the image's tag; empty means the chart's appVersion.
+  tag: ""
+  # image.digest pins the image, as sha256:...; it wins over image.tag.
+  digest: ""
+  # image.pullPolicy is when the kubelet pulls the image.
+  pullPolicy: "IfNotPresent"
+
+# imagePullSecrets name Secrets for a private registry. AKS pulls from ACR
+# by managed identity and needs none.
+imagePullSecrets: []
+
+# spec is the Straum SQL spec (a Straum-only subset of CREATE VIEW) that
+# straum reads at start. Required; set it with --set-file spec=spec.sql. A
+# new spec rolls the pod, which loads every table again.
+spec: ""
+
+# dsn says where the DSN of the replication role comes from,
+# postgres://user:password@host:port/database. The chart never holds it.
+dsn:
+  # dsn.existingSecret names the Secret that holds the DSN. Required.
+  existingSecret: ""
+  # dsn.key is the key in that Secret that holds the DSN.
+  key: "dsn"
+
+# publication is the publication straum reads, as `straum plan` made it.
+publication: "straum"
+
+# maxLag is how many seconds straum may fall behind PostgreSQL before
+# /readyz turns off. Asks still answer meanwhile.
+maxLag: 30
+
+# maxRetainedWal is how much WAL PostgreSQL may hold for straum's slot
+# before straum drops the slot and loads again, in bytes or with a Ki, Mi,
+# Gi or Ti suffix. Azure fixes max_slot_wal_keep_size at -1, so this keeps a
+# straum that can't keep up from filling the server's disk.
+maxRetainedWal: "4Gi"
+
+# replicaCount is how many pods run. Each holds its own replication slot
+# and walsender on PostgreSQL, so keep it low.
+replicaCount: 1
+
+# service is the ClusterIP Service for asks, /livez and /readyz.
+service:
+  # service.port is the Service's port.
+  port: 8080
+
+# resources are the pod's CPU and memory. straum holds every rollup in
+# memory; a memory request equal to the limit makes the pod Guaranteed.
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    memory: "1Gi"
+
+# serviceAccount is the pod's ServiceAccount. straum never calls the
+# Kubernetes API, so no token is mounted.
+serviceAccount:
+  # serviceAccount.create makes a ServiceAccount for the release.
+  create: true
+  # serviceAccount.name is the ServiceAccount to use; empty means the
+  # release's full name when created, else the namespace's default.
+  name: ""
+  # serviceAccount.annotations go on the ServiceAccount, as for Azure
+  # workload identity.
+  annotations: {}
+
+# podAnnotations go on the pod.
+podAnnotations: {}
+
+# podLabels go on the pod, besides the chart's own.
+podLabels: {}
+
+# nodeSelector, tolerations and affinity place the pod.
+nodeSelector: {}
+# tolerations let the pod run on tainted nodes.
+tolerations: []
+# affinity is the pod's affinity and anti-affinity.
+affinity: {}
+
+# nameOverride replaces the chart's name in resource names.
+nameOverride: ""
+# fullnameOverride replaces the whole resource name.
+fullnameOverride: ""

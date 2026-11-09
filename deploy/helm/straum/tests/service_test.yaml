@@ -1,0 +1,35 @@
+suite: service
+templates:
+  - service.yaml
+release:
+  name: demo
+tests:
+  - it: serves the pods' http port inside the cluster
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - equal:
+          path: spec.ports
+          value:
+            - name: http
+              port: 8080
+              targetPort: http
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: straum
+            app.kubernetes.io/instance: demo
+
+  - it: takes another port
+    set:
+      service.port: 80
+    asserts:
+      - equal:
+          path: spec.ports[0].port
+          value: 80
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http

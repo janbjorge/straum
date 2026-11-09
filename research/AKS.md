@@ -31,9 +31,10 @@ I).
 
 ## Chart shape (I)
 
-Straum keeps no durable state and uses a temporary slot per pod, so the chart
-has a Deployment and no PVC. Each replica is its own slot and walsender, and
-the Azure HA standby uses slots and walsenders too, so the default is one
+Built in M7 as `deploy/helm/straum`; this is what it renders. Straum keeps
+no durable state and uses a temporary slot per pod, so the chart has a
+Deployment and no PVC. Each replica is its own slot and walsender, and the
+Azure HA standby uses slots and walsenders too, so the default is one
 replica.
 
 - **Deployment**, 1 replica, `maxSurge: 1`, `maxUnavailable: 0`: the new pod
@@ -41,29 +42,35 @@ replica.
 - **ConfigMap**: the spec. A checksum annotation rolls the Deployment when it
   changes.
 - **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez` and `/readyz`.
-- **Secret or SecretProviderClass** (`existingSecret`): the DSN of the
-  replication role; on Azure from Key Vault through Secrets Store CSI.
+- **Secret** (`dsn.existingSecret`): the DSN of the replication role, made
+  outside the chart and read as `STRAUM_DSN`. Key Vault through Secrets
+  Store CSI isn't wired in yet.
+- **ServiceAccount** with no token mounted, for Azure workload identity
+  later.
 
 Probes:
-- Startup and readiness: Straum loads every fact before it turns ready, so
-  readiness stays off through the load and catch-up. Clients must handle a
-  Straum that isn't ready.
+- Readiness: Straum loads every fact before it turns ready, so readiness
+  stays off through the load and catch-up, and again past `maxLag`. Clients
+  must handle a Straum that isn't ready. No startup probe: `/livez` answers
+  during the load.
 - Liveness: process only. Failing liveness on lag would turn a slow catch-up
   into a restart loop.
 
-Defaults: `runAsNonRoot`, uid 1001, drop ALL capabilities, no
-`imagePullSecrets` (ACR pulls by managed identity). Metrics go out over OTLP to
-the cluster's collector.
+Defaults: the Restricted Pod Security Standard (`runAsNonRoot`, uid 65532
+of the distroless `nonroot` image, seccomp `RuntimeDefault`, drop ALL
+capabilities), a read-only root filesystem, no `imagePullSecrets` (ACR pulls
+by managed identity). Metrics over OTLP to the cluster's collector are
+planned (PLAN.md, M7).
 
-Values sketch:
+Values (`values.yaml` documents them all):
 
 ```yaml
 image:
   repository: <acr>.azurecr.io/straum
-  tag: ""
-source:
-  existingSecret: straum-source      # key: dsn (role with REPLICATION)
-  publication: straum                # Straum creates a TEMPORARY slot per pod
+  tag: ""                            # the chart's appVersion when empty
+dsn:
+  existingSecret: straum-dsn         # key: dsn (role with REPLICATION)
+publication: straum                  # Straum creates a TEMPORARY slot per pod
 spec: |                              # Straum SQL (Straum-only subset), read at start
   CREATE VIEW trips WITH (key = id, append = true) AS
   SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
@@ -72,13 +79,14 @@ spec: |                              # Straum SQL (Straum-only subset), read at 
   FROM public.yellow_trips f
   LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
   GROUP BY 1, 2, 3, 4;
-maxRetainedWal: 4Gi                # past this, drop the connection and resync
-replicas: 1
+maxLag: 30                           # seconds behind PostgreSQL before readiness turns off
+maxRetainedWal: 4Gi                  # past this, drop the connection and resync
+replicaCount: 1
 service:
   port: 8080
 resources:
-  requests: {cpu: 500m, memory: 1Gi}
-  limits: {memory: 2Gi}
+  requests: {cpu: 250m, memory: 1Gi}
+  limits: {memory: 1Gi}
 ```
 
 ## One-time database setup on Flexible Server

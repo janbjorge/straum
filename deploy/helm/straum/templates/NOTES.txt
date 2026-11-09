@@ -1,0 +1,6 @@
+straum {{ .Chart.AppVersion }} runs as {{ include "straum.fullname" . }} in {{ .Release.Namespace }}.
+It loads every table before /readyz turns 200; this waits for that:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "straum.fullname" . }}
+
+Asks go to http://{{ include "straum.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/ask.

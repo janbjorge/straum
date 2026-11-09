@@ -1,0 +1,67 @@
+suite: values
+templates:
+  - deployment.yaml
+  - configmap.yaml
+set:
+  image.repository: registry.example/straum
+  dsn.existingSecret: straum-dsn
+  spec: "CREATE VIEW trips WITH (key = id) AS SELECT count(*) AS trips FROM public.trips t;"
+tests:
+  - it: takes the values straum takes
+    template: deployment.yaml
+    set:
+      maxLag: 1
+      maxRetainedWal: "1"
+      replicaCount: 0
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: refuses a lag bound below a second
+    set:
+      maxLag: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxLag"
+
+  - it: refuses a lag bound that isn't whole seconds
+    set:
+      maxLag: "30s"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxLag"
+
+  - it: refuses a WAL cap straum can't read
+    set:
+      maxRetainedWal: 4GB
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxRetainedWal"
+
+  - it: refuses a WAL cap of nothing
+    set:
+      maxRetainedWal: "0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxRetainedWal"
+
+  - it: refuses a digest that isn't sha256
+    set:
+      image.digest: latest
+    asserts:
+      - failedTemplate:
+          errorPattern: "digest"
+
+  - it: refuses an unknown pull policy
+    set:
+      image.pullPolicy: Sometimes
+    asserts:
+      - failedTemplate:
+          errorPattern: "pullPolicy"
+
+  - it: refuses keys it doesn't know, such as a misspelt one
+    set:
+      maxlag: 5
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxlag"

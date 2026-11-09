@@ -422,8 +422,9 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
 - One static Rust binary (musl, or glibc static-pie) in a distroless
   `static:nonroot` image, amd64 and arm64 via `docker buildx`, with SBOM and
   provenance attestations.
-- Pod: `runAsNonRoot`, uid 1001, drop ALL capabilities,
-  `readOnlyRootFilesystem`, seccomp `RuntimeDefault`, no volumes.
+- Pod: `runAsNonRoot`, uid 65532, drop ALL capabilities,
+  `readOnlyRootFilesystem`, seccomp `RuntimeDefault`; its only volume is the
+  spec's ConfigMap, read-only.
 - Memory: the cgroup v2 `memory.max` is the budget; Straum watches
   `memory.pressure` and fails with a clear error before the kernel OOM-kills it.
   Memory request equals limit (Guaranteed QoS).

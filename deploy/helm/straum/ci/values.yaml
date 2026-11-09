@@ -1,0 +1,12 @@
+# What scripts/check-chart.py lints and renders the chart with.
+image:
+  repository: "registry.example/straum"
+dsn:
+  existingSecret: "straum-dsn"
+spec: |
+  CREATE VIEW trips WITH (key = id) AS
+  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+         t.kind,
+         count(*) AS trips
+  FROM public.trips t
+  GROUP BY 1, 2;

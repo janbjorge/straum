@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "straum.fullname" . }}
+  labels:
+    {{- include "straum.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    # The new pod loads every table before the old one stops.
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "straum.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # A new spec rolls the pod.
+        checksum/spec: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "straum.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "straum.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The image's user; the Restricted Pod Security Standard.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: straum
+          image: {{ include "straum.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - --spec
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --publication
+            - {{ .Values.publication | quote }}
+            - --max-lag
+            - {{ .Values.maxLag | quote }}
+            - --max-retained-wal
+            - {{ .Values.maxRetainedWal | quote }}
+          env:
+            - name: STRAUM_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "dsn.existingSecret: name the Secret that holds the DSN of straum's replication role" .Values.dsn.existingSecret | quote }}
+                  key: {{ .Values.dsn.key | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # Off while the tables load and while straum lags past maxLag.
+          # A long ask can hold /readyz up, hence the timeout.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # The process only: a slow load or lag never restarts the pod.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: spec
+              mountPath: /etc/straum
+              readOnly: true
+      volumes:
+        - name: spec
+          configMap:
+            name: {{ include "straum.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

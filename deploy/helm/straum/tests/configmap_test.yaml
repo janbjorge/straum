@@ -1,0 +1,66 @@
+suite: configmap
+templates:
+  - configmap.yaml
+release:
+  name: demo
+tests:
+  - it: holds the spec as given
+    set:
+      spec: |
+        CREATE VIEW trips WITH (key = id) AS
+        SELECT count(*) AS "trips"
+        FROM public.trips t;
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data["spec.sql"]
+          value: |
+            CREATE VIEW trips WITH (key = id) AS
+            SELECT count(*) AS "trips"
+            FROM public.trips t;
+
+  - it: names itself after the release and the chart
+    set:
+      spec: x
+    asserts:
+      - equal:
+          path: metadata.name
+          value: demo-straum
+
+  - it: takes the release's name when it holds the chart's
+    release:
+      name: straum-prod
+    set:
+      spec: x
+    asserts:
+      - equal:
+          path: metadata.name
+          value: straum-prod
+
+  - it: takes a full name and a name override
+    set:
+      spec: x
+      fullnameOverride: aggregates
+      nameOverride: agg
+    asserts:
+      - equal:
+          path: metadata.name
+          value: aggregates
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: agg
+
+  - it: cuts names to 63 characters, without a trailing dash
+    set:
+      spec: x
+      fullnameOverride: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tail
+    asserts:
+      - equal:
+          path: metadata.name
+          value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - it: needs a spec
+    asserts:
+      - failedTemplate:
+          errorPattern: "spec: set the Straum SQL spec"

@@ -1,0 +1,5 @@
+# Only the workspace goes to the build; target/ alone is gigabytes.
+*
+!Cargo.toml
+!Cargo.lock
+!crates

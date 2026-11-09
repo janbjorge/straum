@@ -197,6 +197,17 @@ Tests:
   and again, which the log shows. OTLP gets its own box after the Helm
   chart; until then `/readyz` says why straum isn't ready and the log says
   why it started over.
+- 2026-11-09: The image is the static musl binary built in
+  `rust:1.99.1-alpine`, copied into `gcr.io/distroless/static-debian13:nonroot`,
+  both pinned by digest; it runs as user 65532. The chart,
+  `deploy/helm/straum` (Helm 4, chart API v2), follows Helm's best practices
+  and the Restricted Pod Security Standard, with a read-only root
+  filesystem. It reads the DSN only from an existing Secret and never holds
+  it. It has no PDB, HPA, Ingress or NetworkPolicy: each replica is a slot
+  and a walsender, so straum doesn't scale out. `scripts/check-chart.py`
+  runs `helm lint --strict`, helm-unittest and kubeconform (Kubernetes 1.33
+  and 1.36); CI runs it and builds the image. The AKS test cluster is never
+  used to try the chart.
 
 ## M0: notation and domain model
 
@@ -362,7 +373,7 @@ every key takes 4.1 s.
 
 Goal: Straum on AKS next to Azure Flexible Server 18.
 Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
-(lag), `crates/straum-http`, `crates/straum`, `deploy/`.
+(lag), `crates/straum-http`, `crates/straum`, `deploy/`, `Dockerfile`.
 
 - [x] TLS to PostgreSQL with `rustls` on `rustls-graviola`. Tests make a CA
       in the `postgres:18` container: replication, a reload and keepalives
@@ -373,7 +384,11 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
       lag against every reading kept, over random readings; the cap at the
       start and while streaming; `/readyz` saying how far behind; readings
       from `postgres:18`, as the role `straum plan` makes
-- [ ] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC
+- [x] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC; plus a
+      ClusterIP Service, a ServiceAccount and the `Dockerfile`. Tests: 34
+      helm-unittest cases over good values and bad, which ten planted bugs
+      each fail; kubeconform; the image run read-only as user 65532 with no
+      capabilities against `postgres:18`, ready and answering
 - [ ] OTLP to the cluster's collector: readiness, lag, retained WAL,
       starts and failures
 - [ ] Run against a non-production Azure Flexible Server 18

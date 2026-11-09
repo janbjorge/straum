@@ -1,0 +1,259 @@
+suite: deployment
+templates:
+  - deployment.yaml
+  - configmap.yaml
+release:
+  name: demo
+set:
+  image.repository: registry.example/straum
+  dsn.existingSecret: straum-dsn
+  spec: "CREATE VIEW trips WITH (key = id) AS SELECT count(*) AS trips FROM public.trips t;"
+tests:
+  - it: runs straum on the spec, with the DSN from the Secret
+    template: deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: demo-straum
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example/straum:0.0.0
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run
+            - --spec
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --publication
+            - straum
+            - --max-lag
+            - "30"
+            - --max-retained-wal
+            - 4Gi
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - name: STRAUM_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: straum-dsn
+                  key: dsn
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: spec
+              configMap:
+                name: demo-straum
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: spec
+              mountPath: /etc/straum
+              readOnly: true
+
+  - it: passes the limits, the publication and the Secret's key through
+    template: deployment.yaml
+    set:
+      maxLag: 5
+      maxRetainedWal: 512Mi
+      publication: trips
+      dsn.key: url
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run
+            - --spec
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --publication
+            - trips
+            - --max-lag
+            - "5"
+            - --max-retained-wal
+            - 512Mi
+      - equal:
+          path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
+          value: url
+
+  - it: takes the image's tag
+    template: deployment.yaml
+    set:
+      image.tag: "1.2.3"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example/straum:1.2.3
+
+  - it: pins the image by digest over the tag
+    template: deployment.yaml
+    set:
+      image.tag: "1.2.3"
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example/straum@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  - it: replaces the old pod only once the new one is ready
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy
+          value:
+            type: RollingUpdate
+            rollingUpdate:
+              maxSurge: 1
+              maxUnavailable: 0
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /livez
+
+  - it: runs under the Restricted Pod Security Standard
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: selects its pods by name and release only
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: straum
+            app.kubernetes.io/instance: demo
+      - equal:
+          path: spec.template.metadata.labels
+          value:
+            helm.sh/chart: straum-0.1.0
+            app.kubernetes.io/name: straum
+            app.kubernetes.io/instance: demo
+            app.kubernetes.io/version: "0.0.0"
+            app.kubernetes.io/managed-by: Helm
+
+  - it: carries a checksum of the spec, so a new spec rolls the pod
+    template: deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/spec"]
+          pattern: ^[0-9a-f]{64}$
+
+  - it: sets the resources, Guaranteed for memory
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 1Gi
+
+  - it: leaves out placement and pull secrets that aren't set
+    template: deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.affinity
+      - notExists:
+          path: spec.template.spec.tolerations
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+
+  - it: places the pod and labels it as asked
+    template: deployment.yaml
+    set:
+      nodeSelector:
+        agentpool: straum
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: straum
+          effect: NoSchedule
+      affinity:
+        nodeAffinity: {}
+      imagePullSecrets:
+        - name: registry
+      podAnnotations:
+        team: data
+      podLabels:
+        azure.workload.identity/use: "true"
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            agentpool: straum
+      - equal:
+          path: spec.template.spec.tolerations[0].key
+          value: dedicated
+      - exists:
+          path: spec.template.spec.affinity.nodeAffinity
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: registry
+      - equal:
+          path: spec.template.metadata.annotations.team
+          value: data
+      - equal:
+          path: spec.template.metadata.labels["azure.workload.identity/use"]
+          value: "true"
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: straum
+            app.kubernetes.io/instance: demo
+
+  - it: needs an image
+    template: deployment.yaml
+    set:
+      image.repository: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.repository: set the straum image"
+
+  - it: needs the DSN's Secret
+    template: deployment.yaml
+    set:
+      dsn.existingSecret: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "dsn.existingSecret: name the Secret that holds the DSN"
+
+  - it: needs a spec
+    template: deployment.yaml
+    set:
+      spec: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "spec: set the Straum SQL spec"
