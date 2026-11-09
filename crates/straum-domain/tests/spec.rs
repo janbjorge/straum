@@ -72,6 +72,24 @@ fn valid() {
 }
 
 #[test]
+fn tables_once_each_dims_first() {
+    let mut zones = dim();
+    zones.name = id("zones");
+    // A fact over the dim's own table, as a log of the dim's rows.
+    let mut log = fact();
+    log.name = id("log");
+    log.table = table("z");
+    let mut other = dim();
+    other.name = id("other");
+    other.table.schema = id("other");
+    let spec = Spec::new(vec![dim(), other, zones], vec![fact(), log]).unwrap();
+    let tables: Vec<String> = (spec.tables().iter())
+        .map(|t| format!("{}.{}", t.schema, t.name))
+        .collect();
+    assert_eq!(tables, ["public.z", "other.z", "public.t"]);
+}
+
+#[test]
 fn buckets_widen_by_whole_multiples() {
     let mut t = fact();
     t.time.buckets = vec![Grain(7_200), Grain(86_400), Grain(604_800)];

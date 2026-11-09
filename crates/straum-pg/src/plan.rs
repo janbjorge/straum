@@ -1,7 +1,5 @@
 //! The setup SQL an admin runs once, which `straum plan` prints.
 
-use std::collections::HashSet;
-
 use postgres_protocol::escape::escape_identifier;
 use straum_domain::Spec;
 
@@ -15,14 +13,7 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
     let id = |s: &str| escape_identifier(s);
     let qualified =
         |t: &straum_domain::Table| format!("{}.{}", id(t.schema.as_str()), id(t.name.as_str()));
-    let mut seen = HashSet::new();
-    let tables: Vec<&straum_domain::Table> = spec
-        .dims()
-        .iter()
-        .map(|d| &d.table)
-        .chain(spec.facts().iter().map(|f| &f.table))
-        .filter(|t| seen.insert((&t.schema, &t.name)))
-        .collect();
+    let tables = spec.tables();
     let mut schemas: Vec<String> = tables.iter().map(|t| id(t.schema.as_str())).collect();
     schemas.dedup();
     let list = tables

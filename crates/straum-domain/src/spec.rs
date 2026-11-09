@@ -195,6 +195,20 @@ impl Spec {
         &self.facts
     }
 
+    /// Every table the spec reads, each once, though a fact and a dim may
+    /// read the same one: the dims' first, then the facts', in
+    /// declaration order.
+    pub fn tables(&self) -> Vec<&Table> {
+        let mut tables: Vec<&Table> = Vec::new();
+        let all = (self.dims.iter().map(|d| &d.table)).chain(self.facts.iter().map(|f| &f.table));
+        for table in all {
+            if !tables.contains(&table) {
+                tables.push(table);
+            }
+        }
+        tables
+    }
+
     pub fn dim(&self, name: &str) -> Option<&Dim> {
         self.dims.iter().find(|d| d.name.as_str() == name)
     }

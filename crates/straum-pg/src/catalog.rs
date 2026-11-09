@@ -2,7 +2,6 @@
 //! can read and follow? Read from the catalog on the connection that loads,
 //! so it sees the tables as the load does.
 
-use std::collections::HashSet;
 use std::iter;
 
 use postgres_protocol::escape::escape_literal;
@@ -87,7 +86,7 @@ pub(crate) fn read(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<Ve
 
 pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<Catalog, Error> {
     let publication = escape_literal(publication);
-    let tables = tables(spec)
+    let tables = (spec.tables().iter())
         .map(|t| {
             format!(
                 "({}, {})",
@@ -200,16 +199,6 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
 
 fn shape(query: &str) -> Error {
     Error::Protocol(format!("a catalog {query} result of an unexpected shape"))
-}
-
-/// Every table the spec reads, each once.
-fn tables(spec: &Spec) -> impl Iterator<Item = &straum_domain::Table> {
-    let mut seen = HashSet::new();
-    spec.dims()
-        .iter()
-        .map(|d| &d.table)
-        .chain(spec.facts().iter().map(|f| &f.table))
-        .filter(move |t| seen.insert((&t.schema, &t.name)))
 }
 
 /// What a column is for, which decides the types it may have.
