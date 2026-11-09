@@ -281,7 +281,8 @@ Touches: `crates/straum-domain`, `crates/straum-notation`, `research/`.
 - [x] Facts, dims, refs, measures, validation (`Spec::new`)
 - [x] Asks and `Spec::check`
 - [x] Parser, taxi example, tests
-- [x] Time zones in asks
+- [x] Time zones in asks (cut with the MVP cuts, 2026-11-09; M8 plans
+      them again)
 - [x] Rewrite `research/ARCHITECTURE.md`, `README.md` and `AKS.md` for the
       notation design
 - [x] Gate passes: 99.71% lines over `straum-domain` and `straum-notation`
@@ -337,6 +338,8 @@ Touches: `crates/straum-app`, `crates/straum-domain`.
       loads (`load_fact`, `load_dim`), and the commit stream (`next_commit`)
 - [x] Use cases in `App::step`: load every table, apply a commit, read a
       table again; and `App::ask`, which answers with the LSN it reflects
+      (since the MVP cuts, 2026-11-09, a change that can't apply starts
+      over from a new slot instead of reading the table again)
 - [x] In-memory PostgreSQL as a fake source; random writes, dropped
       connections and reloads checked against a fresh load at the same LSN;
       each change that can't apply tested for a reload; 22 planted bugs all
@@ -354,7 +357,8 @@ Touches: `crates/straum-notation`, `crates/straum-domain` (tests), `crates/strau
 - [x] `sqlparser` pinned, without its C-building default feature
 - [x] AST walker, deny by default: one view per fact, `WITH (key, append)`,
       `LEFT JOIN` refs, `date_bin` bucket, aggregates with `FILTER`, GROUP BY
-      matching the selected keys
+      matching the selected keys (`append` went and `buckets` came,
+      2026-11-09)
 - [x] `taxi.sql` replaces `taxi.straum`; the old lexer and parser are gone
 - [x] A negative test for each rejected construct the PostgreSQL dialect can
       produce; `Spec::new` errors SQL can't produce are tested in
@@ -382,9 +386,11 @@ Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
       commits whose end LSN is at or before it (`Commit::lsn`): 2,000
       single-row commits racing the slot's creation, three rounds, none lost
       or applied twice
-- [x] Reading one table again from a second connection's snapshot
+- [x] Reading one table again from a second connection's snapshot (gone
+      with the MVP cuts, 2026-11-09: straum starts over instead)
 - [x] pgoutput decoding; Relation messages checked against the spec: a
       retyped column reads the table again, a dropped one stops the stream
+      (a retyped one starts over since the MVP cuts)
 - [x] A stream thread answers keepalives and reports the applied LSN while
       the writer applies or reloads; a 9 s stall against a 4 s
       `wal_sender_timeout` keeps the stream
@@ -420,7 +426,8 @@ Touches: `crates/straum-http`, `crates/straum`, `crates/straum-app`,
       load of the random run
 - [x] JSON asks; answers carry LSN and commit time, numeric values in their
       column's scale
-- [x] Health, readiness, metrics
+- [x] Health, readiness, metrics (`/metrics` went with the MVP cuts,
+      2026-11-09)
 - [x] Binary wiring config, adapters and use cases; `straum plan` prints the
       setup SQL; SIGTERM finishes the asks in flight
 - [x] End to end: `straum plan`'s SQL sets up PostgreSQL, `straum run` follows
