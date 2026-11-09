@@ -21,10 +21,28 @@ Straum collapses rows into the groups declared in a spec, then updates those
 groups as PostgreSQL changes.
 
 ```text
-+------------+    logical replication    +-------------------+    HTTP     +--------------+
-| PostgreSQL | ------------------------> | Straum            | ---------> | applications |
-| source     |                           | in-memory rollups |    /ask    |              |
-+------------+                           +-------------------+             +--------------+
+startup
+-------
+  Straum SQL spec
+        |
+        v
+  parse and validate
+        |
+        v
++------------------+    temporary logical slot + exported snapshot    +------------+
+| Straum           | ------------------------------------------------> | PostgreSQL |
+|                  | <------------------------------------------------ |            |
+| fact rollups     |  generated fact aggregates + dimension rows      | source     |
+| dimension tables |                                                    +------------+
++------------------+
+
+continuous operation
+--------------------
++------------+       pgoutput changes       +------------------+       HTTP       +---------+
+| PostgreSQL | ---------------------------> | Straum           | -------------> | clients |
+| source     |  insert, update, delete,     | apply to rollups |  /ask, /readyz |         |
++------------+  truncate, commit            | LSN + commit time|                +---------+
+                                           +------------------+
 ```
 
 Every answer includes the LSN and commit time it reflects. Callers can see
@@ -44,9 +62,11 @@ store. It only serves aggregates declared before it starts.
 
 ## A spec
 
-Straum SQL looks like a PostgreSQL view, but it is a deliberately narrow
-configuration format. Straum sends only the `SELECT` body to PostgreSQL for
-the initial load.
+Straum SQL borrows the shape of a PostgreSQL view, but it is a deliberately
+narrow configuration format. PostgreSQL cannot create the statement because
+`key` and `append` are Straum-only options. Straum parses the `SELECT` body,
+generates an aggregate load query for each fact and a plain load for each
+dimension, then keeps those in-memory structures current from `pgoutput`.
 
 ```sql
 CREATE VIEW trips WITH (key = id, append = true) AS
