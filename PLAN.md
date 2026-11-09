@@ -297,7 +297,7 @@ Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker).
 
 Result on 2024-01, 2,964,624 trips:
 
-- 7 ask shapes, no row differs either way (`EXCEPT ALL`). They cover avg from
+- 8 ask shapes, no row differs either way (`EXCEPT ALL`). They cover avg from
   sum and count, filters on by columns and ref attributes, two refs to one dim,
   and ranges on 15 minute edges inside an hour.
 - Filtered measures need no state of their own. Their conditions name
@@ -393,13 +393,15 @@ Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
 
 Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
 
-- The load takes 4.4 s and gives 2,322,783 cells, as M1's rollup did. The
-  snapshot transaction, which pins xmin, is open that long.
+- The load takes 2.0 s (rerun 2026-11-09; 4.4 s at M5) and gives
+  2,322,783 cells, as M1's rollup did. The snapshot transaction, which
+  pins xmin, is open that long.
 - The whole `taxi.sql` view, every key and measure, equals PostgreSQL's
   after the load, after 202 streamed commits (10,000 inserts, a zone renamed,
-  a zone's key changed) and after an update read the fact again (5.5 s).
-- An ask over every key returns 2.3 million groups in 5.3 to 5.7 s; the
-  view takes 4.8 s in PostgreSQL. Asks that group coarser are the use case.
+  a zone's key changed, 4.9 s) and after an update read the fact again.
+- An ask over every key returns 2.3 million groups in 2.4 to 3.0 s; the
+  view takes 6.2 to 6.4 s in PostgreSQL (rerun 2026-11-09; 5.3 to 5.7 s
+  against 4.8 s at M5). Asks that group coarser are the use case.
 
 ## M6: ask endpoint and binary
 
@@ -427,7 +429,10 @@ Touches: `crates/straum-http`, `crates/straum`, `crates/straum-app`,
 Result on the taxi month (release build, laptop Docker): an ask by day and
 borough reads every cell and answers 256 groups in 1.4 to 1.5 s, holding the
 read lock that long; PostgreSQL takes 3.7 to 4.1 s on the view. The ask over
-every key takes 4.1 s.
+every key takes 4.1 s. Rerun 2026-11-09, after wider buckets and the
+column-at-a-time ask: `taxi_month` asks by borough alone, 8 groups, in 6.6
+to 8.8 ms against 3.8 to 4.0 s in PostgreSQL, and every key in 2.4 to
+3.0 s.
 
 ## M7: deploy
 
@@ -476,6 +481,7 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
   look stale by their commit time.
 - Long asks hold the read lock and delay the writer, and `/readyz` waits
   behind a writer that waits. A coarse ask on the taxi month
-  held it 1.5 s; with day and week buckets it takes 27 ms (2026-11-09).
-  An ask over every 15-minute bucket still reads every cell. Cap asks, keep
+  held it 1.5 s; with day and week buckets and the column-at-a-time ask
+  it takes 6.6 to 8.8 ms (2026-11-09). An ask over every 15-minute bucket
+  still reads every cell, 2.4 to 3.0 s. Cap asks, keep
   the status outside the lock, or both?

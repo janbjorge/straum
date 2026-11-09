@@ -120,3 +120,27 @@ How to read the table:
   payment type, is the slowest kind. A view without the pickup zone
   would answer it from about 120 cells, one per answer row, instead of
   5,254.
+
+## The whole view, end to end
+
+```sh
+cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
+```
+
+It needs the data from `bench/run.sh`. It loads the month into
+`postgres:18` with the full taxi.sql view, has Straum load and follow it,
+and compares asks with the view body in PostgreSQL after the load, after
+202 streamed commits and after an update. One run on 2026-11-09, release
+build, Docker on the same laptop:
+
+| Step or ask | Groups | Straum | PostgreSQL |
+| --- | ---: | ---: | ---: |
+| Load | | 2.0 s | |
+| 202 streamed commits | | 4.9 s | |
+| Every key | 2,322,783 to 2,329,715 | 2.4 to 3.0 s | 6.2 to 6.4 s |
+| By pickup borough | 8 | 6.6 to 8.8 ms | 3.8 to 4.0 s |
+
+The ask by borough has no time key, so it reads mostly week and day
+buckets and it is 432 to 606
+times faster. The ask over every key reads every 15 minute cell and
+answers nearly as many groups, so it is only 2.1 to 2.6 times faster.
