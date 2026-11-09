@@ -59,7 +59,7 @@ connection runs `BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ`,
 connection with its own temporary slot. Decided: our own client on
 `postgres-protocol` (PLAN.md, 2026-11-09).
 
-PostgreSQL facts the choice rests on (R, `~/src/postgres`):
+PostgreSQL facts the choice rests on (R, upstream master `0f3b42ce806`; see README.md):
 
 - A walsender takes the simple query protocol only (`doc/src/sgml/protocol.sgml:2194-2195`); Parse, Bind and the rest get "extended query protocol not supported in a replication connection" (`src/backend/tcop/postgres.c:5223`). Values come back as text, except `FETCH` from a `BINARY` cursor (`protocol.sgml:866-869`). PostgreSQL's own tablesync sends `COPY (SELECT ...) TO STDOUT` on its replication connection (`src/backend/replication/logical/tablesync.c:1184-1198`).
 - `SNAPSHOT 'use'` needs a REPEATABLE READ, read-only transaction before any query (`src/backend/replication/walsender.c:1342-1373`). `START_REPLICATION` can't run inside a transaction block (`walsender.c:2299`), so the load commits first. The walsender timeout is off until `START_REPLICATION` (`walsender.c:1395-1401`, `3083-3089`), so a long load can't time out.

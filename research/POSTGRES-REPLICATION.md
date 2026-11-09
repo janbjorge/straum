@@ -1,6 +1,6 @@
 # Logical replication, as Straum would consume it
 
-Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md). `git diff --stat 0f3b42ce806 HEAD` over `src/backend/replication`, `access/transam`, `storage/ipc`, `heapam.c`, `publicationcmds.c` and `protocol.sgml` empty → all citations upstream code.
+Read in the PostgreSQL tree on 2026-11-08 (tree and tags: README.md). `git diff --stat 0f3b42ce806 HEAD` over `src/backend/replication`, `access/transam`, `storage/ipc`, `heapam.c`, `publicationcmds.c` and `protocol.sgml` empty → all citations upstream code.
 
 ## 1. Protocol
 

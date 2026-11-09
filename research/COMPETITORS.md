@@ -1,6 +1,6 @@
 # Competitors and prior art
 
-Web research, 2026-11-08. Every claim has source URL; **U** = claim seen only in search snippet, third party, or memory. Arithmetic via python3 (`/tmp/cbcalc/calc.py`, not kept).
+Web research, 2026-11-08. Every claim has source URL; **U** = claim seen only in search snippet, third party, or memory. Arithmetic via python3.
 
 ## 1. Bottom line
 

@@ -5,7 +5,7 @@ How Straum works since aggregates are declared in Straum SQL, a PostgreSQL
 First target: AKS next to Azure Database for PostgreSQL Flexible Server 18
 (AKS.md). The constraints are the managed ones: no custom extension, no
 superuser, logical replication allowed. Tags as in README.md (R, U, I).
-PostgreSQL paths are relative to `~/src/postgres`.
+PostgreSQL paths are relative to the root of [upstream PostgreSQL](https://github.com/postgres/postgres/tree/0f3b42ce806).
 
 ## In short
 
@@ -108,17 +108,7 @@ time keys and a range end inside a bucket.
 
 `Store::ask` answers from the cells:
 
-```mermaid
-flowchart TD
-  a["ask"] --> c["Spec::check"]
-  c --> s["next cell of the fact"]
-  s --> r{"bucket in range and<br/>ask filter holds?"}
-  r -->|no| s
-  r -->|yes| g["group key: by values and ref ids,<br/>dim attributes looked up by ref id,<br/>bucket start"]
-  g --> m["merge the cell into every measure<br/>whose own filter holds"]
-  m --> s
-  s -->|no cells left| f["finish: count, sum, min, max,<br/>avg as sum and count, distinct count"]
-```
+![Store::ask walks the cells of a fact, looks up dim attributes by ref id and merges each cell into the measures whose filter holds.](diagrams/ask.svg)
 
 - Filtered measures keep no state. Their conditions name rollup-key parts only,
   so a cell counts in whole or not at all.
@@ -205,24 +195,7 @@ over a value dictionary are the likely way to shrink it (I, not built).
 
 The spec is known at start, so one slot and one snapshot serve every table:
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant W as straum
-  participant R as PG replication conn
-  W->>R: BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ
-  W->>R: CREATE_REPLICATION_SLOT straum_PID_... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')
-  R-->>W: consistent_point L
-  W->>R: catalog checks: wal_level, publication, privileges,<br/>column types, dim keys, replica identity
-  W->>R: per fact: SELECT bucket, rollup key, min/max/distinct columns,<br/>count(*), sum and count ... GROUP BY
-  W->>R: per dim: SELECT key, attrs
-  W->>R: COMMIT, right after the last load
-  W->>R: START_REPLICATION SLOT straum_PID_... LOGICAL L<br/>(proto_version '1', publication_names '"straum"')
-  loop stream
-    R-->>W: Begin, Relation, Insert, Update, Delete, Truncate, Commit
-    W->>R: standby status update, flush = applied LSN
-  end
-```
+![The writer opens a temporary slot whose snapshot is at LSN L, loads dims and facts in it, then streams from L through a stream thread.](diagrams/start.svg)
 
 - The load reads cells, not rows. Per fact, one `GROUP BY` on the bucket
   (`extract(epoch FROM date_bin(...))`, as `bench/rollup.sql` buckets), the
@@ -254,16 +227,7 @@ sequenceDiagram
 
 ### 4b. Apply
 
-```mermaid
-flowchart TD
-  m["pgoutput message"] --> k{"type"}
-  k -->|Insert| i["fact: add row<br/>dim: upsert row"]
-  k -->|Update| u["fact: remove old row, add new<br/>dim: upsert, delete old key if it changed"]
-  k -->|Delete| d["fact: remove old row<br/>dim: delete key"]
-  k -->|Truncate| t["empty the table"]
-  k -->|Relation| r["compare with the spec<br/>changed: start over"]
-  k -->|Commit| c["publish: rollups and commit LSN"]
-```
+![What each pgoutput message does to facts with REPLICA IDENTITY FULL, facts with the default identity and dims, and how Straum starts over.](diagrams/apply.svg)
 
 Old values: by default pgoutput sends only the key on DELETE and no old values
 on an UPDATE that leaves the key alone. Only REPLICA IDENTITY FULL sends the
@@ -357,31 +321,7 @@ the schema can give, so the SQL says so in a comment.
 
 ## 5. Wire diagram
 
-```mermaid
-flowchart LR
-  subgraph AKS["AKS, same VNet"]
-    app["App pods"]
-    subgraph ns["namespace straum"]
-      svc["Service straum<br/>ClusterIP, HTTP"]
-      straum["straum pod<br/>Deployment, RAM only"]
-      cm["ConfigMap<br/>spec"]
-    end
-    otel["OTel collector"]
-  end
-  subgraph AZ["Flexible Server PG18"]
-    pg[("primary<br/>tables and WAL")]
-    ws["walsender<br/>pgoutput, temporary slot"]
-  end
-  kv["Key Vault<br/>Secrets Store CSI"]
-
-  app -- "writes and reads, unchanged" --> pg
-  app -- "asks, HTTP/JSON" --> svc --> straum
-  cm -. "spec, read at start" .-> straum
-  straum -- "replication=database<br/>checks, slot, load, stream" --> ws
-  ws -- "change stream" --> straum
-  straum -- "OTLP" --> otel
-  kv -. "DSN of role straum" .-> straum
-```
+![Straum in AKS next to the apps, with one replication connection to Flexible Server.](diagrams/deploy.svg)
 
 Every path already exists in the cluster: Straum reaches PostgreSQL the way the
 apps do, and apps reach Straum in-cluster.
@@ -424,23 +364,7 @@ open if that lag matters.
 
 ## 7. Lifecycle
 
-```mermaid
-stateDiagram-v2
-  [*] --> Check
-  Check --> Check: setup missing, not ready, logs fix SQL, retries
-  Check --> Load: ok, temporary slot, snapshot
-  Load --> CatchUp: rollups and dims loaded, stream started
-  CatchUp --> Ready: lag under bound
-  Ready --> Lagging: lag over bound
-  Lagging --> Ready: caught up
-  Ready --> Resync: drift, or a change that doesn't fit
-  Lagging --> Resync: retained WAL over cap
-  Ready --> Resync: connection lost, failover
-  Resync --> Check: new connection, new temporary slot
-  Ready --> Failed: memory over budget
-  Ready --> [*]: SIGTERM, readiness off, drain, close
-  Failed --> [*]
-```
+![Straum states Loading, Ready, Waiting and Stopping, with /readyz in each and planned M7 states.](diagrams/lifecycle.svg)
 
 - `/readyz` is true only in Ready; otherwise it answers 503 with the last
   failure, or that it is loading. `/livez` checks the process only; lag

@@ -75,9 +75,9 @@ background in case a SQL door comes back.
 - **U**: unverified; from a search snippet, a third party, or memory.
 - **I**: inference.
 
-PostgreSQL tree `/Users/janbjorge/src/postgres`, version `20devel`
-(`meson.build:11`), upstream master `0f3b42ce806` (2026-10-19). The checkout
-has a few unrelated local commits; none touch planner, FDW, table AM,
+PostgreSQL tree: [upstream PostgreSQL](https://github.com/postgres/postgres/tree/0f3b42ce806),
+version `20devel` (`meson.build:11`), master `0f3b42ce806` (2026-10-19). The
+checkout read had a few unrelated local commits on top; none touch planner, FDW, table AM,
 replication, transam or procarray code, so all citations here are upstream
 code. Line numbers are from master, not the REL_18 or REL_19 branches. Paths
 are relative to `src/backend` unless stated. Four agents did the research on
