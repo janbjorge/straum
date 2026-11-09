@@ -105,13 +105,19 @@ after a wait. The checks:
 wal_level is replica; straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
 publication straum must publish insert, update, delete and truncate
+orders: table public.orders does not exist
+orders: public.orders is not a plain table
 orders: publication straum leaves out public.orders: ALTER PUBLICATION straum ADD TABLE public.orders
 orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
 orders: publication straum filters the rows of public.orders; straum needs every row
 orders: public.orders has no column placed_at
+orders: publication straum leaves out column amount of public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: public.customers needs a primary key or unique index on id alone
+dim customers: the replica identity of public.customers must be id alone, so a delete names the row straum holds: a primary key on id, REPLICA IDENTITY USING INDEX on a unique index of id, or REPLICA IDENTITY FULL
+fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
+fact orders: measure paid compares status (text) with 1
 ```
 
 ## What Straum costs the server
