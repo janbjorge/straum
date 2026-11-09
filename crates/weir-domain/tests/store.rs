@@ -29,6 +29,11 @@ const TIP: usize = 7;
 const DIST: usize = 8;
 const RIDER: usize = 9;
 
+/// Column scales `run` sets, from these up, one per column. Each differs,
+/// so an answer that takes a scale from the wrong column shows.
+const TRIP_SCALES: u32 = 20;
+const ZONE_SCALES: u32 = 30;
+
 const KEYS: [&str; 9] = [
     "pay",
     "vendor",
@@ -353,6 +358,24 @@ fn value(row: &[Datum], path: &KeyPath, zones: &Zones) -> Datum {
     }
 }
 
+fn scale(path: &KeyPath) -> u32 {
+    match &path.attr {
+        None => TRIP_SCALES + column(path.head.as_str()) as u32,
+        Some(attr) => {
+            ZONE_SCALES
+                + match attr.as_str() {
+                    "id" => 0,
+                    "borough" => 1,
+                    _ => 2,
+                }
+        }
+    }
+}
+
+fn scales(from: u32, n: usize) -> Vec<u32> {
+    (from..).take(n).collect()
+}
+
 fn column(name: &str) -> usize {
     match name {
         "pay" => PAY,
@@ -407,7 +430,22 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
             (key, values)
         })
         .collect();
-    Answer { rows }
+    let scales = (ask.by.iter().map(|k| match k {
+        AskKey::Key(p) => scale(p),
+        AskKey::Time(_) => 0,
+    }))
+    .chain(
+        ask.measures
+            .iter()
+            .map(|name| match &fact.measure(name.as_str()).unwrap().agg {
+                Agg::Count | Agg::CountDistinct(_) => 0,
+                Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
+                    TRIP_SCALES + column(c.as_str()) as u32
+                }
+            }),
+    )
+    .collect();
+    Answer { rows, scales }
 }
 
 fn measure(m: &Measure, rows: &[&[Datum]], zones: &Zones) -> Value {
@@ -460,6 +498,12 @@ fn run(seed: u64) {
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     let mut zones = Zones::new();
+    (store.rollup("trips").unwrap())
+        .set_scales(&scales(TRIP_SCALES, 10))
+        .unwrap();
+    (store.dim("zones").unwrap())
+        .set_scales(&scales(ZONE_SCALES, 3))
+        .unwrap();
     for key in 1..=4 {
         let row = zone(&mut rng, key);
         store.dim("zones").unwrap().upsert(&row).unwrap();
@@ -737,6 +781,28 @@ fn clear_drops_every_row() {
 }
 
 #[test]
+fn scales_stay_through_clear() {
+    let mut store = Store::new(spec());
+    let ask = Ask {
+        fact: id("trips"),
+        measures: vec![id("trips"), id("fare"), id("tip_max")],
+        by: vec![AskKey::Key(path("pay")), AskKey::Key(path("pickup.zone"))],
+        filter: Vec::new(),
+        zone: Zone::utc(),
+        from: START,
+        to: END,
+    };
+    assert_eq!(store.ask(&ask).unwrap().scales, [0, 0, 0, 0, 0]);
+    let rollup = store.rollup("trips").unwrap();
+    rollup.set_scales(&[0, 3, 0, 0, 0, 0, 2, 1, 0, 0]).unwrap();
+    rollup.clear();
+    let zones = store.dim("zones").unwrap();
+    zones.set_scales(&[0, 0, 4]).unwrap();
+    zones.clear();
+    assert_eq!(store.ask(&ask).unwrap().scales, [3, 4, 0, 2, 1]);
+}
+
+#[test]
 fn time_key_start() {
     let grain = Grain(GRAIN);
     // Expected values from `date -u`.
@@ -965,6 +1031,24 @@ fn row_errors() {
         })
     );
     assert_eq!(zones.delete(&Datum::Int(1)), Err(RowError::Missing));
+
+    let mut store = fresh();
+    let rollup = store.rollup("trips").unwrap();
+    assert_eq!(
+        rollup.set_scales(&[9; 11]),
+        Err(RowError::Arity {
+            expected: 10,
+            found: 11
+        })
+    );
+    let zones = store.dim("zones").unwrap();
+    assert_eq!(
+        zones.set_scales(&[2, 2]),
+        Err(RowError::Arity {
+            expected: 3,
+            found: 2
+        })
+    );
 }
 
 #[test]

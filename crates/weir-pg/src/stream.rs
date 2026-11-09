@@ -77,11 +77,12 @@ impl Decoder {
     pub(crate) fn feed(&mut self, message: Message) -> Result<Option<Commit>, Error> {
         match message {
             Message::Begin => self.in_transaction = true,
-            Message::Commit { end_lsn } => {
+            Message::Commit { end_lsn, time } => {
                 self.in_transaction = false;
                 let changes = mem::take(&mut self.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(end_lsn),
+                    time,
                     changes,
                 }));
             }
@@ -524,8 +525,9 @@ mod tests {
         for m in messages {
             decoder.feed(m)?;
         }
-        let commit = decoder.feed(Message::Commit { end_lsn: 9 })?.unwrap();
-        assert_eq!(commit.lsn, Lsn(9));
+        let time = UNIX_EPOCH + Duration::from_secs(9);
+        let commit = (decoder.feed(Message::Commit { end_lsn: 9, time }))?.unwrap();
+        assert_eq!((commit.lsn, commit.time), (Lsn(9), time));
         Ok(commit.changes)
     }
 

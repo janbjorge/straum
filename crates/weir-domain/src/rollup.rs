@@ -34,6 +34,8 @@ pub struct Rollup {
     summed: Vec<usize>,
     /// Keyed on the by values, the ref ids, then the bucket.
     cells: HashMap<Box<[Datum]>, Cell>,
+    /// Per column; see [`Rollup::set_scales`].
+    scales: Vec<u32>,
 }
 
 /// A column whose values a cell keeps, and in what form. Measures share
@@ -84,7 +86,8 @@ pub(crate) enum State {
 }
 
 impl Rollup {
-    pub(crate) fn new(fact: &Fact) -> Rollup {
+    /// An empty rollup for the fact.
+    pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
         let key_len = fact.by.len() + fact.refs.len();
         let mut inputs = Vec::new();
@@ -110,13 +113,14 @@ impl Rollup {
             .map(|i| i.column)
             .collect();
         Rollup {
-            columns,
             grain: i64::from(fact.time.grain.0),
             key_len,
             inputs,
             grouped,
             summed,
             cells: HashMap::new(),
+            scales: vec![0; columns.len()],
+            columns,
         }
     }
 
@@ -143,9 +147,33 @@ impl Rollup {
         self.cells.len()
     }
 
-    /// Drops every cell, as when the table is emptied.
+    /// Drops every cell, as when the table is emptied. The scales stay.
     pub fn clear(&mut self) {
         self.cells.clear();
+    }
+
+    /// Sets the scale of each of [`Rollup::columns`]: a numeric column's
+    /// values are integers in units of `10^-scale`. Only the source knows
+    /// the column types, so a load sets them; they are 0 until then.
+    /// Answers carry them.
+    pub fn set_scales(&mut self, scales: &[u32]) -> Result<(), RowError> {
+        set_scales(&mut self.scales, scales)
+    }
+
+    /// The scale of the rollup-key column in cell key position `slot`.
+    pub(crate) fn key_scale(&self, slot: usize) -> u32 {
+        self.scales[1 + slot]
+    }
+
+    /// The scale a measure answers in: its input's, or 0 for a count.
+    pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
+        match agg {
+            Agg::Count | Agg::CountDistinct(_) => 0,
+            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
+                let column = self.columns.iter().position(|n| n == c).expect(COLUMNS);
+                self.scales[column]
+            }
+        }
     }
 
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
@@ -338,14 +366,28 @@ pub struct Sum {
 pub struct DimTable {
     width: usize,
     rows: HashMap<Datum, Box<[Datum]>>,
+    /// Per column; see [`DimTable::set_scales`].
+    scales: Vec<u32>,
 }
 
 impl DimTable {
-    pub(crate) fn new(dim: &Dim) -> DimTable {
+    /// An empty table for the dim.
+    pub fn new(dim: &Dim) -> DimTable {
+        let width = 1 + dim.attrs.len();
         DimTable {
-            width: 1 + dim.attrs.len(),
+            width,
             rows: HashMap::new(),
+            scales: vec![0; width],
         }
+    }
+
+    /// As [`Rollup::set_scales`], one per column of a row.
+    pub fn set_scales(&mut self, scales: &[u32]) -> Result<(), RowError> {
+        set_scales(&mut self.scales, scales)
+    }
+
+    pub(crate) fn scale(&self, column: usize) -> u32 {
+        self.scales[column]
     }
 
     /// Inserts the row, or replaces the one with the same key.
@@ -364,6 +406,11 @@ impl DimTable {
         self.rows.remove(key).map(drop).ok_or(RowError::Missing)
     }
 
+    pub fn rows(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Drops every row. The scales stay.
     pub fn clear(&mut self) {
         self.rows.clear();
     }
@@ -371,6 +418,17 @@ impl DimTable {
     pub(crate) fn get(&self, key: &Datum) -> Option<&[Datum]> {
         self.rows.get(key).map(|r| &**r)
     }
+}
+
+fn set_scales(to: &mut [u32], scales: &[u32]) -> Result<(), RowError> {
+    if scales.len() != to.len() {
+        return Err(RowError::Arity {
+            expected: to.len(),
+            found: scales.len(),
+        });
+    }
+    to.copy_from_slice(scales);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

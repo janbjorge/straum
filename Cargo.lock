@@ -1004,6 +1004,7 @@ checksum = "fcefdcefac59ac8f8401852e3427d55610481fc41e6625c39bac62d2d771623a"
 dependencies = [
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",
@@ -2238,6 +2239,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "weir"
+version = "0.0.0"
+dependencies = [
+ "testcontainers",
+ "tokio",
+ "weir-app",
+ "weir-domain",
+ "weir-http",
+ "weir-notation",
+ "weir-pg",
+]
+
+[[package]]
 name = "weir-app"
 version = "0.0.0"
 dependencies = [
@@ -2248,6 +2262,23 @@ dependencies = [
 [[package]]
 name = "weir-domain"
 version = "0.0.0"
+
+[[package]]
+name = "weir-http"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tokio",
+ "weir-app",
+ "weir-domain",
+ "weir-notation",
+]
 
 [[package]]
 name = "weir-notation"

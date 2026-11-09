@@ -138,6 +138,31 @@ Tests:
 - 2026-11-09: weir-pg commits the snapshot transaction right after the last
   load, not at the first stream read. Held open, it pins xmin and blocks DDL
   on the loaded tables; a test's `ALTER TABLE` waited on it.
+- 2026-11-09: Asks and the writer share one store behind an `RwLock`.
+  `App` is the store and how far it has followed the source, cheap to clone;
+  `Writer` is the loop that reads the source. The writer takes the write lock
+  only to apply a commit it has read or to swap a table in or out: a load
+  takes the table out of the store and fills it outside the lock. So asks
+  never wait on PostgreSQL, and asks on the other tables go on during a
+  reload. A long ask delays the writer, which shows as lag; copy-on-write
+  shards or `left-right` if that matters.
+- 2026-11-09: Answers carry the scale of each column (`Answer::scales`). Only
+  the source knows column types, so a load sets them (`Rollup::set_scales`,
+  `DimTable::set_scales`), and JSON answers print exact decimals.
+- 2026-11-09: weir-http is hyper 1 on tokio, no framework, no macros. JSON
+  asks are walked like weir SQL, deny by default, over `serde_json` without
+  derive: unknown fields, keys given twice and wrong types are errors that
+  name the field. The time key is a field of its own (`time`), so it can't
+  clash with a column. Zones come from jiff with the tz database built in,
+  for the distroless image.
+- 2026-11-09: The commit time in answers is pgoutput's Commit timestamp; it
+  is null when the LSN is where the stream started. Metrics are Prometheus
+  text written by hand. Lag, retained WAL and OTLP move to M7, since they
+  need the server's WAL position or a collector.
+- 2026-11-09: The binary reads its arguments by hand. The DSN comes from
+  `WEIR_DSN` or `--dsn-file`, never the command line. A failed step starts
+  over after 1 s, doubling to 60 s; a panic aborts the process, since the
+  store may be half written.
 
 ## M0: notation and domain model
 
@@ -274,15 +299,30 @@ Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
 ## M6: ask endpoint and binary
 
 Goal: a runnable `weir` that answers asks over HTTP.
-Touches: `crates/weir-http`, `crates/weir`.
+Touches: `crates/weir-http`, `crates/weir`, `crates/weir-app`,
+`crates/weir-domain` (scales), `crates/weir-pg` (commit time, scales),
+`research/`. The binary's tests start `postgres:18` in Docker.
 
-- [ ] `App` as a core that never waits, driven by a loop that does the I/O;
-      readers share it with the writer
-- [ ] JSON asks; answers carry LSN and commit time
-- [ ] Health, readiness, metrics
-- [ ] Binary wiring config, adapters and use cases; `weir plan` prints the
-      setup SQL
-- [ ] Gate passes
+- [x] `App` as a core that never waits, driven by a loop that does the I/O
+      (`Writer`); asks read while it writes, and go on for the other tables
+      while one loads. Checked from another thread in the middle of every
+      load of the random run
+- [x] JSON asks; answers carry LSN and commit time, numeric values in their
+      column's scale
+- [x] Health, readiness, metrics
+- [x] Binary wiring config, adapters and use cases; `weir plan` prints the
+      setup SQL; SIGTERM finishes the asks in flight
+- [x] End to end: `weir plan`'s SQL sets up PostgreSQL, `weir run` follows
+      it as the role the plan made, asks over HTTP equal the view body in
+      PostgreSQL before and after changes, and the slot goes when weir stops
+- [x] Gate passes: 98.95% lines over `weir-domain`, `weir-notation`,
+      `weir-app`, `weir-pg`, `weir-http` and `weir`; 35 planted bugs all
+      caught
+
+Result on the taxi month (release build, laptop Docker): an ask by day and
+borough reads every cell and answers 256 groups in 1.4 to 1.5 s, holding the
+read lock that long; PostgreSQL takes 3.7 to 4.1 s on the view. The ask over
+every key takes 4.1 s.
 
 ## M7: deploy
 
@@ -290,11 +330,16 @@ Goal: weir on AKS next to Azure Flexible Server 18.
 Touches: `deploy/`.
 
 - [ ] TLS to PostgreSQL with `rustls`; pick the crypto provider
+- [ ] Lag and retained WAL from the server's WAL position; readiness off
+      past a lag bound; OTLP
 - [ ] Helm chart: Deployment, spec ConfigMap, DSN Secret, no PVC
 - [ ] Run against a non-production Azure Flexible Server 18
 
 ## Open questions
 
+- The name: weir is a working name (`research/README.md`: a low dam that
+  measures a river's flow, as weir measures the replication stream). Check
+  clashes (crates.io, GitHub, trademarks) before anything is published.
 - Mutable facts: `REPLICA IDENTITY FULL`, or a PK row store in weir?
 - Who may ask what: access control per fact in the spec?
 - Fallback when weir is not ready: weir renders SQL per ask and sends it to
@@ -307,3 +352,8 @@ Touches: `deploy/`.
   this; confirm.
 - Float columns in sum and avg: order-dependent sums, lossy removal.
 - Azure: `wal_level = logical` restart, resync after HA failover.
+- An "as of" time from keepalives, so answers on a quiet database don't
+  look stale by their commit time.
+- Long asks hold the read lock and delay the writer, and `/readyz` and
+  `/metrics` wait behind a writer that waits. A coarse ask on the taxi month
+  holds it 1.5 s. Cap asks, keep the status outside the lock, or both?

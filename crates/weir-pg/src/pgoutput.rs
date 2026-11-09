@@ -4,6 +4,10 @@
 
 use std::fmt;
 use std::str;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// PostgreSQL's epoch, 2000-01-01 UTC, in Unix seconds.
+const POSTGRES_EPOCH: u64 = 946_684_800;
 
 /// One pgoutput message, borrowing its text from the received bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +16,7 @@ pub(crate) enum Message<'a> {
     Commit {
         /// The end of the commit record.
         end_lsn: u64,
+        time: SystemTime,
     },
     Relation(Relation),
     Insert {
@@ -82,8 +87,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
             // commit time.
             r.skip(1 + 8)?;
             let end_lsn = r.u64()?;
-            r.skip(8)?;
-            Message::Commit { end_lsn }
+            let time = r.time()?;
+            Message::Commit { end_lsn, time }
         }
         b'R' => {
             let id = r.u32()?;
@@ -201,6 +206,18 @@ impl<'a> Reader<'a> {
         self.array().map(u64::from_be_bytes)
     }
 
+    /// Microseconds since [`POSTGRES_EPOCH`].
+    fn time(&mut self) -> Result<SystemTime, DecodeError> {
+        let micros = self.array().map(i64::from_be_bytes)?;
+        let epoch = UNIX_EPOCH + Duration::from_secs(POSTGRES_EPOCH);
+        let offset = Duration::from_micros(micros.unsigned_abs());
+        Ok(if micros < 0 {
+            epoch - offset
+        } else {
+            epoch + offset
+        })
+    }
+
     fn expect(&mut self, tag: u8) -> Result<(), DecodeError> {
         match self.u8()? {
             t if t == tag => Ok(()),
@@ -303,6 +320,11 @@ mod tests {
             self
         }
 
+        fn i64(mut self, v: i64) -> Bytes {
+            self.0.extend(v.to_be_bytes());
+            self
+        }
+
         fn cstr(mut self, s: &str) -> Bytes {
             self.0.extend(s.as_bytes());
             self.0.push(0);
@@ -350,7 +372,23 @@ mod tests {
             ),
             (
                 Bytes::default().tag(b'C').tag(0).u64(10).u64(20).u64(30),
-                Message::Commit { end_lsn: 20 },
+                Message::Commit {
+                    end_lsn: 20,
+                    time: UNIX_EPOCH + Duration::from_micros(946_684_800_000_030),
+                },
+            ),
+            (
+                // 1999-12-31 23:59:59 UTC.
+                Bytes::default()
+                    .tag(b'C')
+                    .tag(0)
+                    .u64(10)
+                    .u64(20)
+                    .i64(-1_000_000),
+                Message::Commit {
+                    end_lsn: 20,
+                    time: UNIX_EPOCH + Duration::from_secs(946_684_799),
+                },
             ),
             (
                 relation,

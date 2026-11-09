@@ -4,6 +4,7 @@
 
 use std::error;
 use std::fmt;
+use std::time::SystemTime;
 
 use weir_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 
@@ -40,6 +41,8 @@ pub struct Commit {
     /// The end of the commit record, which pgoutput reports as the
     /// transaction's end. Loads and the stream are ordered by it.
     pub lsn: Lsn,
+    /// When the transaction committed, by the server's clock.
+    pub time: SystemTime,
     pub changes: Vec<Change>,
 }
 

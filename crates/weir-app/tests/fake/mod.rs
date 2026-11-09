@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem;
 use std::rc::Rc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use weir_app::{Change, Commit, Lsn, Old, Source, SourceError};
 use weir_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
@@ -61,11 +62,14 @@ pub struct Database {
 
 /// A source over a shared [`Database`], so a test can write while the app
 /// reads.
-#[derive(Debug)]
 pub struct Fake {
     db: Rc<RefCell<Database>>,
     stream: Option<Stream>,
+    pub on_load: Option<OnLoad>,
 }
+
+/// Called with the table's name in the middle of each load.
+pub type OnLoad = Box<dyn FnMut(&str)>;
 
 #[derive(Debug)]
 struct Stream {
@@ -76,6 +80,12 @@ struct Stream {
     /// stream starts from. After, they read a new one, as a second
     /// connection would.
     streaming: bool,
+}
+
+/// The fake's clock: a commit at LSN `n` commits `n` seconds after the
+/// epoch.
+pub fn time(lsn: Lsn) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(lsn.0)
 }
 
 pub fn id(s: &str) -> Ident {
@@ -135,7 +145,11 @@ impl Database {
 
     fn push(&mut self, changes: Vec<Change>, tables: Tables) -> Lsn {
         let lsn = Lsn(self.lsn().0 + 10);
-        self.log.push(Commit { lsn, changes });
+        self.log.push(Commit {
+            lsn,
+            time: time(lsn),
+            changes,
+        });
         self.history.insert(lsn, tables);
         lsn
     }
@@ -205,6 +219,7 @@ impl Fake {
         Fake {
             db: Rc::clone(db),
             stream: None,
+            on_load: None,
         }
     }
 
@@ -218,7 +233,12 @@ impl Fake {
         } else {
             stream.start
         };
-        Ok((at, db.rows_at(at, table.as_str())))
+        let rows = db.rows_at(at, table.as_str());
+        drop(db);
+        if let Some(on_load) = &mut self.on_load {
+            on_load(table.as_str());
+        }
+        Ok((at, rows))
     }
 }
 

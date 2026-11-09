@@ -26,6 +26,9 @@ pub struct Store {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
     pub rows: Vec<(Vec<Datum>, Vec<Value>)>,
+    /// The scale of each column of a row, the `by` keys then the measures:
+    /// numeric values are integers in units of `10^-scale`.
+    pub scales: Vec<u32>,
 }
 
 impl Store {
@@ -45,6 +48,16 @@ impl Store {
     pub fn dim(&mut self, dim: &str) -> Option<&mut DimTable> {
         let i = self.dim_index(dim)?;
         Some(&mut self.dims[i])
+    }
+
+    /// How many cells the fact's rollup holds.
+    pub fn cells(&self, fact: &str) -> Option<usize> {
+        Some(self.rollups[self.fact_index(fact)?].cells())
+    }
+
+    /// How many rows the dim holds.
+    pub fn rows(&self, dim: &str) -> Option<usize> {
+        Some(self.dims[self.dim_index(dim)?].rows())
     }
 
     /// Merges the cells in range that pass the ask's filter, one group per
@@ -75,6 +88,13 @@ impl Store {
             })
             .collect();
         let empty = || measures.iter().map(|m| m.empty.clone()).collect::<Vec<_>>();
+        let scales = (by.iter().map(|s| s.scale(rollup)))
+            .chain(
+                ask.measures
+                    .iter()
+                    .map(|name| rollup.scale_of(&fact.measure(name.as_str()).expect(CHECKED).agg)),
+            )
+            .collect();
 
         let mut groups = HashMap::new();
         if by.is_empty() {
@@ -103,7 +123,7 @@ impl Store {
             .map(|(key, partials)| (key, partials.into_iter().map(Partial::finish).collect()))
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(Answer { rows })
+        Ok(Answer { rows, scales })
     }
 
     fn fact_index(&self, name: &str) -> Option<usize> {
@@ -166,6 +186,14 @@ enum Source<'a> {
 }
 
 impl Source<'_> {
+    fn scale(&self, rollup: &Rollup) -> u32 {
+        match *self {
+            Source::Slot(slot) => rollup.key_scale(slot),
+            Source::Dim { table, column, .. } => table.scale(column),
+            Source::Time(..) => 0,
+        }
+    }
+
     fn value(&self, key: &[Datum], bucket: i64) -> Datum {
         match *self {
             Source::Slot(slot) => key[slot].clone(),

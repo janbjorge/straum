@@ -7,13 +7,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use testcontainers::core::{AccessMode, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
-use weir_app::{AnswerError, App, Lsn, Source, Step};
-use weir_domain::{Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value, Zone};
+use weir_app::{AnswerError, App, Lsn, Source, Step, Writer};
+use weir_domain::{Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value, Zone};
 
 use crate::catalog;
 use crate::dsn::Dsn;
@@ -51,14 +51,15 @@ GROUP BY 1, 2, 3, 4;
 CREATE VIEW logins WITH (key = id, append = true) AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
+       pickup.toll,
        count(*) AS logins
 FROM $S.logins l
 LEFT JOIN $S.zones pickup ON pickup.id = l.zone_id
-GROUP BY 1, 2;
+GROUP BY 1, 2, 3;
 ";
 
 const TABLES: &str = "
-CREATE TABLE $S.zones (id int PRIMARY KEY, borough text);
+CREATE TABLE $S.zones (id int PRIMARY KEY, borough text, toll numeric(4, 1));
 CREATE TABLE $S.trips (
     id bigint PRIMARY KEY,
     at timestamptz,
@@ -157,8 +158,8 @@ impl Db {
         Pg::new(self.dsn.clone(), &self.name)
     }
 
-    fn app(&self) -> App<Pg> {
-        App::new(self.spec(SPEC), self.pg())
+    fn writer(&self) -> Writer<Pg> {
+        Writer::new(App::new(self.spec(SPEC)), self.pg())
     }
 }
 
@@ -174,6 +175,7 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
+                "day" => AskKey::Time(TimeKey::Day),
                 k => AskKey::Key(match k.split_once('.') {
                     Some((head, attr)) => KeyPath {
                         head: id(head),
@@ -218,10 +220,11 @@ fn decimal(n: i128, scale: u32) -> String {
     format!("{sign}{whole}.{fraction:0width$}", width = scale as usize)
 }
 
-fn datum(d: &Datum) -> Option<String> {
+/// A key as PostgreSQL prints it; `scale` for numeric keys.
+fn datum(d: &Datum, scale: u32) -> Option<String> {
     match d {
         Datum::Null => None,
-        Datum::Int(n) => Some(n.to_string()),
+        Datum::Int(n) => Some(decimal(i128::from(*n), scale)),
         Datum::Text(s) => Some(s.to_string()),
         Datum::Bool(b) => Some(if *b { "t" } else { "f" }.to_owned()),
     }
@@ -237,9 +240,9 @@ fn body(view: &str) -> String {
 }
 
 /// Asks weir what each view body answers in PostgreSQL: trips by bucket,
-/// kind, zone and borough; logins by day and zone. `fare_scale` follows
-/// `fare`'s type. `None` when weir isn't ready.
-fn compare(db: &mut Db, app: &App<Pg>, fare_scale: u32) -> Option<()> {
+/// kind, zone and borough; logins by day, zone and toll. `fare_scale`
+/// follows `fare`'s type. `None` when weir isn't ready.
+fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
     let trips = (
         format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
@@ -261,15 +264,17 @@ fn compare(db: &mut Db, app: &App<Pg>, fare_scale: u32) -> Option<()> {
             ],
             &["bucket", "kind", "pickup", "pickup.borough"],
         ),
-        vec![0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
+        vec![
+            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
+        ],
     );
     let logins = (
         format!(
-            "SELECT extract(epoch FROM bucket)::int8, zone_id, logins FROM ({}) v",
+            "SELECT extract(epoch FROM bucket)::int8, zone_id, toll, logins FROM ({}) v",
             body("logins")
         ),
-        ask("logins", &["logins"], &["bucket", "pickup"]),
-        vec![0],
+        ask("logins", &["logins"], &["bucket", "pickup", "pickup.toll"]),
+        vec![0, 0, 1, 0],
     );
     for (sql, ask, scales) in [trips, logins] {
         let answered = match app.ask(&ask) {
@@ -277,17 +282,8 @@ fn compare(db: &mut Db, app: &App<Pg>, fare_scale: u32) -> Option<()> {
             Err(AnswerError::NotReady) => return None,
             Err(e) => panic!("{e}"),
         };
-        let mut got: Vec<Vec<Option<String>>> = answered
-            .answer
-            .rows
-            .iter()
-            .map(|(key, values)| {
-                key.iter()
-                    .map(datum)
-                    .chain(values.iter().zip(&scales).map(|(v, s)| text(v, *s)))
-                    .collect()
-            })
-            .collect();
+        assert_eq!(answered.answer.scales, scales, "{}", ask.fact);
+        let mut got = printed(&answered.answer, &scales);
         let mut expected = db.rows(&sql);
         got.sort();
         expected.sort();
@@ -296,8 +292,20 @@ fn compare(db: &mut Db, app: &App<Pg>, fare_scale: u32) -> Option<()> {
     Some(())
 }
 
-fn applied(app: &mut App<Pg>) {
-    match app.step() {
+/// An answer's rows as PostgreSQL prints them, at `scales`.
+fn printed(answer: &Answer, scales: &[u32]) -> Vec<Vec<Option<String>>> {
+    (answer.rows.iter())
+        .map(|(key, values)| {
+            let (key_scales, value_scales) = scales.split_at(key.len());
+            (key.iter().zip(key_scales).map(|(k, s)| datum(k, *s)))
+                .chain(values.iter().zip(value_scales).map(|(v, s)| text(v, *s)))
+                .collect()
+        })
+        .collect()
+}
+
+fn applied(writer: &mut Writer<Pg>) {
+    match writer.step() {
         Ok(Step::Applied(_)) => {}
         other => panic!("expected a commit, got {other:?}"),
     }
@@ -346,6 +354,12 @@ impl Rng {
         }
     }
 
+    /// A `numeric(4, 1)` literal, or `NULL`.
+    fn toll(&mut self) -> String {
+        let toll = format!("{}.{}", self.below(20), self.below(10));
+        self.or_null(toll)
+    }
+
     fn trip(&mut self, id: u64) -> String {
         let at = START + self.below(self.hours * 3_600) as i64;
         let kind = format!("'{}'", self.pick(&KINDS));
@@ -377,8 +391,9 @@ fn follows_the_database() {
     let mut next = 1;
     for zone in 1..=4 {
         db.run(&format!(
-            "INSERT INTO $S.zones VALUES ({zone}, '{}')",
-            rng.pick(&BOROUGHS)
+            "INSERT INTO $S.zones VALUES ({zone}, '{}', {})",
+            rng.pick(&BOROUGHS),
+            rng.toll()
         ));
     }
     for _ in 0..400 {
@@ -387,9 +402,9 @@ fn follows_the_database() {
         next += 1;
     }
 
-    let mut app = db.app();
-    assert!(matches!(app.step(), Ok(Step::Started(_))));
-    compare(&mut db, &app, 2).expect("ready after the load");
+    let mut writer = db.writer();
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), 2).expect("ready after the load");
 
     let mut compared = 0;
     for round in 0..120 {
@@ -410,10 +425,11 @@ fn follows_the_database() {
                     format!("DELETE FROM $S.trips WHERE id = {pick};")
                 }
                 4 => format!(
-                    "INSERT INTO $S.zones VALUES ({}, '{}') ON CONFLICT (id)
-                     DO UPDATE SET borough = excluded.borough;",
+                    "INSERT INTO $S.zones VALUES ({}, '{}', {}) ON CONFLICT (id)
+                     DO UPDATE SET borough = excluded.borough, toll = excluded.toll;",
                     1 + rng.below(6),
-                    rng.pick(&BOROUGHS)
+                    rng.pick(&BOROUGHS),
+                    rng.toll()
                 ),
                 5 => format!("DELETE FROM $S.zones WHERE id = {};", 1 + rng.below(6)),
                 6 => format!(
@@ -448,8 +464,8 @@ fn follows_the_database() {
         }
         sql.push("COMMIT;".into());
         db.run(&sql.join("\n"));
-        applied(&mut app);
-        if compare(&mut db, &app, 2).is_some() {
+        applied(&mut writer);
+        if compare(&mut db, writer.app(), 2).is_some() {
             compared += 1;
         }
     }
@@ -464,7 +480,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
         db.run("TRUNCATE $S.trips");
         let written = Arc::new(AtomicUsize::new(0));
         let done = Arc::new(AtomicBool::new(false));
-        let writer = {
+        let inserter = {
             let (dsn, name) = (db.dsn.clone(), db.name.clone());
             let (written, done) = (Arc::clone(&written), Arc::clone(&done));
             thread::spawn(move || {
@@ -483,22 +499,22 @@ fn the_snapshot_and_the_stream_split_exactly() {
         while written.load(Ordering::Acquire) < 50 {
             thread::sleep(Duration::from_millis(1));
         }
-        let mut app = db.app();
-        assert!(matches!(app.step(), Ok(Step::Started(_))));
+        let mut writer = db.writer();
+        assert!(matches!(writer.step(), Ok(Step::Started(_))));
         assert!(
             !done.load(Ordering::Acquire),
             "round {round}: the writer finished before the load"
         );
-        let loaded = app.ask(&ask("trips", &["trips"], &[])).unwrap();
+        let loaded = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
         assert_ne!(loaded.answer.rows[0].1[0], Value::Int(0), "round {round}");
-        writer.join().unwrap();
+        inserter.join().unwrap();
         db.run("INSERT INTO $S.trips VALUES (-1, now(), 'marker', 1, 1.00, 'ann', 2)");
         let marker = ask("trips", &["trips"], &["kind"]);
         let mut streamed = 0;
         loop {
-            applied(&mut app);
+            applied(&mut writer);
             streamed += 1;
-            let answered = app.ask(&marker).unwrap();
+            let answered = writer.app().ask(&marker).unwrap();
             if answered
                 .answer
                 .rows
@@ -509,7 +525,14 @@ fn the_snapshot_and_the_stream_split_exactly() {
             }
         }
         assert!(streamed > 1, "round {round}: nothing was streamed");
-        compare(&mut db, &app, 2).expect("ready");
+        // The marker's commit time, by the server's clock, is now.
+        let time = writer.app().ask(&marker).unwrap().time.unwrap();
+        let apart = match SystemTime::now().duration_since(time) {
+            Ok(behind) => behind,
+            Err(ahead) => ahead.duration(),
+        };
+        assert!(apart < Duration::from_secs(60), "round {round}: {apart:?}");
+        compare(&mut db, writer.app(), 2).expect("ready");
     }
 }
 
@@ -518,23 +541,23 @@ fn reads_a_table_again_on_a_second_connection() {
     let pg = postgres();
     let mut db = Db::new(&pg, "reload", TABLES);
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
-    let mut app = db.app();
-    app.step().unwrap();
-    compare(&mut db, &app, 2).expect("ready");
+    let mut writer = db.writer();
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), 2).expect("ready");
 
     // logins is append-only and has no full old rows, so an update reads
     // it again, at a new slot's consistent point past this commit.
     db.run("UPDATE $S.logins SET zone_id = 2");
-    applied(&mut app);
+    applied(&mut writer);
     assert_eq!(
-        app.ask(&ask("logins", &["logins"], &[])),
+        writer.app().ask(&ask("logins", &["logins"], &[])),
         Err(AnswerError::NotReady)
     );
     // Trips didn't change, so they keep answering.
-    assert!(app.ask(&ask("trips", &["trips"], &[])).is_ok());
+    assert!(writer.app().ask(&ask("trips", &["trips"], &[])).is_ok());
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
-    applied(&mut app);
-    compare(&mut db, &app, 2).expect("ready once the stream passes the reload");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
 }
 
 #[test]
@@ -542,16 +565,16 @@ fn a_changed_column_type_reads_the_table_again() {
     let pg = postgres();
     let mut db = Db::new(&pg, "altered", TABLES);
     db.run(&Rng::new(1).trip(1));
-    let mut app = db.app();
-    app.step().unwrap();
-    compare(&mut db, &app, 2).expect("ready");
+    let mut writer = db.writer();
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), 2).expect("ready");
 
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
     db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
-    applied(&mut app);
+    applied(&mut writer);
     db.run(&Rng::new(2).trip(3));
-    applied(&mut app);
-    compare(&mut db, &app, 3).expect("ready once the stream passes the reload");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), 3).expect("ready once the stream passes the reload");
 
     // A column weir reads is gone: weir stops and the setup check says why.
     db.run("ALTER TABLE $S.trips DROP COLUMN rider");
@@ -559,9 +582,9 @@ fn a_changed_column_type_reads_the_table_again() {
         "INSERT INTO $S.trips (id, at, kind, zone_id, fare, tip)
          VALUES (4, to_timestamp(1705276800), 'cab', 1, 1.000, 1)",
     );
-    let err = app.step().unwrap_err().to_string();
+    let err = writer.step().unwrap_err().to_string();
     assert!(err.contains("column rider of"), "{err}");
-    let err = app.step().unwrap_err().to_string();
+    let err = writer.step().unwrap_err().to_string();
     assert!(err.contains("has no column rider"), "{err}");
 }
 
@@ -577,30 +600,33 @@ fn a_value_left_out_reads_the_table_again() {
     );
     db.run("ALTER TABLE $S.zones ADD COLUMN note text");
     db.run(&Rng::new(1).trip(1));
-    let mut app = db.app();
-    app.step().unwrap();
-    compare(&mut db, &app, 2).expect("ready");
+    let mut writer = db.writer();
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), 2).expect("ready");
 
     db.run("UPDATE $S.zones SET note = 'x' WHERE id = 1");
-    applied(&mut app);
-    assert!(compare(&mut db, &app, 2).is_none(), "zones is read again");
+    applied(&mut writer);
+    assert!(
+        compare(&mut db, writer.app(), 2).is_none(),
+        "zones is read again"
+    );
     // The reload's consistent point is past every commit so far; the next
     // one passes it.
     db.run(&Rng::new(2).trip(2));
-    applied(&mut app);
-    compare(&mut db, &app, 2).expect("ready once the stream passes the reload");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
 }
 
 #[test]
 fn the_stream_outlasts_a_busy_writer() {
     let pg = postgres();
     let mut db = Db::new(&pg, "busy", TABLES);
-    let mut app = db.app();
-    app.step().unwrap();
+    let mut writer = db.writer();
+    writer.step().unwrap();
     // The stream starts with the first commit asked for.
     let mut rng = Rng::new(5);
     db.run(&rng.trip(0));
-    applied(&mut app);
+    applied(&mut writer);
     // More commits than the queue holds, then a pause past
     // wal_sender_timeout (4 s): the thread keeps answering.
     for i in 1..101 {
@@ -608,14 +634,14 @@ fn the_stream_outlasts_a_busy_writer() {
     }
     thread::sleep(Duration::from_secs(9));
     for _ in 0..100 {
-        applied(&mut app);
+        applied(&mut writer);
     }
     // Commits made after the pause still arrive: the stream survived.
     for i in 101..111 {
         db.run(&rng.trip(i));
-        applied(&mut app);
+        applied(&mut writer);
     }
-    compare(&mut db, &app, 2).expect("ready");
+    compare(&mut db, writer.app(), 2).expect("ready");
 }
 
 #[test]
@@ -646,11 +672,11 @@ ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
     }
     db.run("ALTER ROLE weir_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "weir_plan:plan@");
-    let mut app = App::new(spec, Pg::new(Dsn::parse(&dsn).unwrap(), "plan"));
-    app.step().unwrap();
+    let mut writer = Writer::new(App::new(spec), Pg::new(Dsn::parse(&dsn).unwrap(), "plan"));
+    writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
-    applied(&mut app);
-    compare(&mut db, &app, 2).expect("ready");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), 2).expect("ready");
 }
 
 /// Opens with `spec` against `tables` and returns the setup problems.
@@ -1327,47 +1353,63 @@ fn taxi_month() {
             "pickup.service_zone",
         ],
     );
-    let scales = [0, 2, 2, 2, 0, 0];
-    let check = |sql: &mut Conn, app: &App<Pg>, when: &str| {
-        let clock = Instant::now();
-        let answered = app.ask(&all).unwrap();
-        let mut got: Vec<Vec<Option<String>>> = answered
-            .answer
-            .rows
-            .iter()
-            .map(|(key, values)| {
-                key.iter()
-                    .map(datum)
-                    .chain(values.iter().zip(scales).map(|(v, s)| text(v, s)))
-                    .collect()
-            })
-            .collect();
-        let asked = clock.elapsed();
-        let clock = Instant::now();
-        let mut expected = sql.rows(&reference).unwrap();
-        let queried = clock.elapsed();
-        got.sort();
-        expected.sort();
-        let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
-        assert!(
-            got.len() == expected.len() && differ.is_none(),
-            "{when}: {} rows from weir, {} from PostgreSQL; first difference: {:?} vs {:?}",
-            got.len(),
-            expected.len(),
-            differ.map(|i| &got[i]),
-            differ.map(|i| &expected[i])
-        );
-        eprintln!(
-            "{when}: {} groups equal; weir asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
-            got.len()
+    let all_scales = [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0];
+    // A coarse ask, the use case: it reads every cell, as the one above
+    // does, but answers few groups.
+    let coarse = ask(
+        "trips",
+        &["trips", "fare", "tip_max", "card", "manhattan_pickups"],
+        &["day", "pickup.borough"],
+    );
+    let coarse_reference = format!(
+        "SELECT extract(epoch FROM date_trunc('day', bucket, 'UTC'))::int8, borough,
+                sum(trips), sum(fare), max(tip_max), sum(card), sum(manhattan_pickups)
+           FROM ({body}) v
+          GROUP BY 1, 2"
+    );
+    let coarse_scales = [0, 0, 0, 2, 2, 0, 0];
+    // weir's time is the time `ask` holds the read lock.
+    let compare =
+        |sql: &mut Conn, app: &App, (ask, reference, scales): (&Ask, &str, &[u32]), when: &str| {
+            let clock = Instant::now();
+            let answered = app.ask(ask).unwrap();
+            let asked = clock.elapsed();
+            let mut got = printed(&answered.answer, scales);
+            let clock = Instant::now();
+            let mut expected = sql.rows(reference).unwrap();
+            let queried = clock.elapsed();
+            got.sort();
+            expected.sort();
+            let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
+            assert!(
+                got.len() == expected.len() && differ.is_none(),
+                "{when}: {} rows from weir, {} from PostgreSQL; first difference: {:?} vs {:?}",
+                got.len(),
+                expected.len(),
+                differ.map(|i| &got[i]),
+                differ.map(|i| &expected[i])
+            );
+            eprintln!(
+                "{when}: {} groups equal; weir asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
+                got.len()
+            );
+        };
+    let check = |sql: &mut Conn, app: &App, when: &str| {
+        compare(sql, app, (&all, &reference, &all_scales), when);
+        let when = format!("{when}, by day and borough");
+        compare(
+            sql,
+            app,
+            (&coarse, &coarse_reference, &coarse_scales),
+            &when,
         );
     };
 
-    let mut app = App::new(spec, Pg::new(dsn, "weir"));
+    let mut writer = Writer::new(App::new(spec), Pg::new(dsn, "weir"));
     let clock = Instant::now();
-    assert!(matches!(app.step(), Ok(Step::Started(_))));
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
     eprintln!("loaded in {:.1?}", clock.elapsed());
-    check(&mut sql, &app, "after the load");
+    check(&mut sql, writer.app(), "after the load");
 
     // Inserts in 200 transactions of 50, a day later than rows already there.
     let clock = Instant::now();
@@ -1387,19 +1429,19 @@ fn taxi_month() {
     sql.execute("UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264")
         .unwrap();
     for _ in 0..202 {
-        applied(&mut app);
+        applied(&mut writer);
     }
     eprintln!("streamed 202 commits in {:.1?}", clock.elapsed());
-    check(&mut sql, &app, "after the stream");
+    check(&mut sql, writer.app(), "after the stream");
 
     // trips is append-only: an update reads it all again.
     sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
         .unwrap();
     let clock = Instant::now();
-    applied(&mut app);
+    applied(&mut writer);
     eprintln!("read trips again in {:.1?}", clock.elapsed());
     sql.execute("UPDATE taxi_zones SET zone = zone WHERE location_id = 1")
         .unwrap();
-    applied(&mut app);
-    check(&mut sql, &app, "after the reload");
+    applied(&mut writer);
+    check(&mut sql, writer.app(), "after the reload");
 }

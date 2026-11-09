@@ -67,6 +67,10 @@ pub(crate) fn fact(
     rollup: &mut Rollup,
 ) -> Result<(), Error> {
     let sql = fact_sql(fact, table, rollup);
+    let column_scales: Vec<u32> = (rollup.columns().iter())
+        .map(|c| table.kind(c).scale())
+        .collect();
+    rollup.set_scales(&column_scales).map_err(Error::Row)?;
     // The bucket comes back as an integer.
     let kinds: Vec<Kind> = iter::once(Kind::Int)
         .chain(rollup.grouped().skip(1).map(|c| table.kind(c)))
@@ -100,6 +104,8 @@ pub(crate) fn fact(
 }
 
 pub(crate) fn dim(conn: &mut Conn, table: &Table, rows: &mut DimTable) -> Result<(), Error> {
+    let scales: Vec<u32> = table.kinds.iter().map(|k| k.scale()).collect();
+    rows.set_scales(&scales).map_err(Error::Row)?;
     conn.query(&dim_sql(table), |fields| {
         let row = read_row(&table.kinds, fields)?;
         rows.upsert(&row).map_err(Error::Row)

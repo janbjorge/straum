@@ -1,0 +1,16 @@
+[package]
+name = "weir"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
+weir-app = { path = "../weir-app" }
+weir-domain = { path = "../weir-domain" }
+weir-http = { path = "../weir-http" }
+weir-notation = { path = "../weir-notation" }
+weir-pg = { path = "../weir-pg" }
+
+[dev-dependencies]
+testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }

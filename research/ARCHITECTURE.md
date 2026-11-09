@@ -15,7 +15,7 @@ PostgreSQL paths are relative to `~/src/postgres`.
   rollup per fact in RAM.
 - Clients send asks over HTTP/JSON: measures, keys to group by, filters, a time
   zone and a time range. weir answers from the rollup, and every answer carries
-  the LSN it reflects.
+  the LSN and commit time it reflects.
 - PostgreSQL stays the source of truth. weir keeps nothing on disk and rebuilds
   from PostgreSQL on every start.
 - Everything weir needs ships in stock PostgreSQL 18 and works on Azure:
@@ -131,13 +131,55 @@ flowchart TD
 - sum, min and max come back in the column's scale. avg comes back as sum and
   count, so the caller picks the rounding.
 
-Time zones: the HTTP adapter (M6) turns a zone name such as `Europe/Oslo` into
-the zone's UTC offsets over the ask's range, so the domain carries no zone
+Time zones: the HTTP adapter turns a zone name such as `Europe/Oslo` into the
+zone's UTC offsets from a month before the ask's range to its end, with jiff
+and the tz database built into the binary, so the domain carries no zone
 data. Buckets stay UTC. Hours follow the instant, so an hour the clock repeats
 stays two hours. Days, weeks (from Monday) and months follow the wall clock: a
 repeated midnight counts from the first one, a skipped one from the jump. For
 any time key but bucket, a zone whose offsets or changes fall inside a bucket
 is rejected.
+
+Over HTTP (`crates/weir-http`), `POST /ask` takes the ask as JSON:
+
+```json
+{
+  "fact": "trips",
+  "measures": ["trips", "fare", "distance"],
+  "by": ["payment_type", "pickup.borough"],
+  "time": "day",
+  "filter": {"pickup.borough": ["Manhattan", "Queens"], "vendor_id": 2},
+  "zone": "Europe/Oslo",
+  "from": "2024-01-01T00:00:00+01:00",
+  "to": 1706742000
+}
+```
+
+- `fact`, `measures`, `from` and `to` are required; `zone` defaults to UTC.
+- The time key is a field of its own, so it can't clash with a column named
+  `day`, and it groups before `by`.
+- `from` and `to` are RFC 3339 or Unix seconds, in whole seconds.
+- A field weir doesn't know, a key given twice and a value of the wrong type
+  are errors that name the field, never ignored. All of them come back at
+  once, as `{"errors": [...]}` with status 400.
+
+The answer:
+
+```json
+{
+  "lsn": "16/B374D848",
+  "commit_time": "2024-01-31T22:59:59.123456Z",
+  "columns": ["day", "payment_type", "pickup.borough", "trips", "fare", "distance"],
+  "rows": [["2024-01-01T00:00:00+01:00", 1, "Bronx", 412, 6234.50,
+            {"sum": 1203.11, "count": 412}]]
+}
+```
+
+- Time keys are RFC 3339 at the zone's offset.
+- Numeric values are exact decimals in their column's scale. The load sets
+  each column's scale from the catalog (`Rollup::set_scales`), and answers
+  carry them (`Answer::scales`).
+- Status 503 while a table the ask reads isn't ready.
 
 ## 3. Rollups in memory
 
@@ -294,7 +336,11 @@ half a transaction.
 ### 4c. Freshness
 
 v1 has no barrier. Every answer carries the LSN and commit time it reflects,
-and the client decides whether that is fresh enough. A per-ask barrier stays
+and the client decides whether that is fresh enough. The commit time is the
+timestamp of pgoutput's Commit message, by the server's clock. It is null when
+the LSN is where the stream started and no commit has come since. On a quiet
+database it ages while the answer stays current; keepalives could give an
+"as of" time instead (open point). A per-ask barrier stays
 possible: weir calls `pg_logical_emit_message(..., flush => true)` on a SQL
 connection and answers once the stream passes the returned LSN
 (POSTGRES-REPLICATION.md §8, R).
@@ -302,7 +348,7 @@ connection and answers once the stream passes the returned LSN
 ### 4d. Setup
 
 `weir plan` reads the spec and prints the SQL an admin runs once
-(`weir_pg::plan`, M5; the command comes with the binary in M6):
+(`weir plan --spec FILE`, from `weir_pg::plan`):
 `wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE weir LOGIN
 REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION weir
 FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for facts
@@ -358,22 +404,35 @@ Clean architecture as Cargo crates:
 
 - `weir-domain`: spec, asks, rollups and the store. No I/O, no dependencies.
 - `weir-notation`: walks the `sqlparser` AST of a weir SQL spec into a `Spec`.
-- `weir-app` (M3): the use cases behind one port, `Source`: setup check,
-  snapshot loads and the commit stream. `App::step` loads every table,
-  applies a commit or reads a table again; `App::ask` answers with the LSN.
-  One port, because the first load reads the snapshot of the slot the stream
-  comes from, on the same connection.
+- `weir-app` (M3, M6): the use cases behind one port, `Source`: setup
+  check, snapshot loads and the commit stream. One port, because the first
+  load reads the snapshot of the slot the stream comes from, on the same
+  connection. `App` is the store and how far it has followed the source;
+  clones share it. `Writer::step` is the loop that does the I/O: it loads
+  every table, applies a commit or reads a table again. `App::ask` answers
+  with the LSN and commit time, `App::status` feeds health and metrics.
 - `weir-pg` (M5): our own replication client on `postgres-protocol`. Catalog
   checks, the grouped load in the slot's snapshot, pgoutput v1 decoding,
   reloads on a second connection, and a thread that owns the stream: it
   answers keepalives and reports the applied LSN while the writer is busy.
   Synchronous, plain TCP (TLS in M7).
-- `weir-http` (M6): JSON asks, zone lookup, health and metrics.
-- `weir`: the binary that wires them together.
+- `weir-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
+  walker over `serde_json` values, without derive macros; zones from jiff;
+  `/livez`, `/readyz` and Prometheus `/metrics`. Asks run on tokio's
+  blocking threads, since a big one reads every cell of a fact.
+- `weir` (M6): the binary. `weir run` and `weir plan`, arguments read by
+  hand. One thread runs the writer and starts over after a failure, waiting
+  1 s, then twice as long each time up to 60 s. A panic aborts the process,
+  since the store may be half written.
 
 The per-row path stays concrete; traits only at the ports. One writer applies
-the stream and asks read published state. How readers and the writer share it
-(`left-right`, or `arc-swap` over copy-on-write shards) is not chosen yet (U).
+the stream while asks read. They share one store behind an `RwLock`
+(PLAN.md, 2026-11-09). The writer takes the write lock only to apply a commit
+it has read or to swap a table in or out. A load or reload takes the table out
+of the store and fills it outside the lock, so asks never wait on PostgreSQL
+and asks on the other tables go on meanwhile. A long ask delays the writer,
+which shows as lag. Copy-on-write shards (`arc-swap`) or `left-right` stay
+open if that lag matters.
 
 ## 7. Lifecycle
 
@@ -396,14 +455,21 @@ stateDiagram-v2
   Failed --> [*]
 ```
 
-- `/readyz` is true only in Ready. `/livez` checks the process only; lag never
-  fails liveness.
+- `/readyz` is true only in Ready; otherwise it answers 503 with the last
+  failure or the tables it waits for. `/livez` checks the process only; lag
+  never fails liveness. Until M7 measures lag, Ready means every table is
+  loaded and the stream has passed each load; Lagging needs the server's WAL
+  position.
 - Resync closes the replication connection first, so PostgreSQL drops the old
   temporary slot before the new one exists.
 - A spec change rolls the Deployment through a checksum annotation on the
   ConfigMap. The new pod loads from scratch.
-- Reload reads one table again while the others keep streaming (§4b). Any
-  other failure, a source error or a load behind the stream, means Resync.
+- Reload reads one table again while asks on the others keep answering at
+  the LSN before it. The writer applies no commit meanwhile; the stream
+  thread keeps the connection alive (§4b). Any other failure, a source error
+  or a load behind the stream, means Resync.
+- SIGTERM or SIGINT: weir stops accepting, finishes the asks in flight and
+  exits. PostgreSQL drops the temporary slots as the connections close.
 
 ## 8. RAM only
 
@@ -454,9 +520,13 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
   Memory request equals limit (Guaranteed QoS).
 - weir-pg is synchronous: plain sockets and one stream thread. tokio only in
   weir-http. TLS to PostgreSQL with rustls comes in M7.
-- Spec from a ConfigMap, DSN from an env var or a CSI-mounted secret.
-- OTLP to the cluster's collector and Prometheus `/metrics`: applied LSN, lag,
-  retained WAL, cells, bytes, ask latency.
+- Spec from a ConfigMap, DSN from `WEIR_DSN` or a CSI-mounted secret
+  (`--dsn-file`), never from the command line.
+- Prometheus `/metrics` since M6: readiness, applied LSN, commit time,
+  starts, commits, reloads, failures, cells per fact, rows per dim, asks by
+  outcome and an ask latency histogram. M7 adds OTLP to the cluster's
+  collector, lag and retained WAL, which need the server's WAL position, and
+  memory in bytes.
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: `docker compose` with `postgres:18` and `wal_level =
@@ -470,3 +540,6 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
 4. How long the load pins xmin on real tables (§4a).
 5. Low collapse: warn in `weir plan`, or leave it to the spec author (§3).
 6. What clients do while weir is not ready: retry, or ask PostgreSQL.
+7. An "as of" time from keepalives, so answers on a quiet database don't
+   look stale (§4c).
+8. Long asks delay the writer while they hold the read lock (§6).
