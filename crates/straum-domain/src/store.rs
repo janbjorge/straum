@@ -1,6 +1,7 @@
 //! Every fact's rollup and every dim's rows for one spec, and asks answered
 //! from them.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::iter;
 
@@ -96,11 +97,11 @@ impl Store {
             )
             .collect();
 
-        let mut groups = HashMap::new();
-        if by.is_empty() {
-            // As in SQL without GROUP BY: one row even when nothing matches.
-            groups.insert(Vec::new(), empty());
-        }
+        // Keyed on values borrowed from the cells and dims, filled into one
+        // buffer: a cell costs no allocation, only a new group does.
+        let mut groups: HashMap<Vec<Cow<Datum>>, Vec<Partial>> = HashMap::new();
+        let mut group = Vec::with_capacity(by.len());
+        let mut total = empty();
         let bucket_slot = rollup.bucket_slot();
         for (key, cell) in rollup.iter() {
             let Datum::Int(bucket) = key[bucket_slot] else {
@@ -109,18 +110,41 @@ impl Store {
             if bucket < ask.from || bucket >= ask.to || !all_hold(&filter, key, bucket) {
                 continue;
             }
-            let group = by.iter().map(|s| s.value(key, bucket)).collect();
-            let partials = groups.entry(group).or_insert_with(empty);
-            for (partial, m) in partials.iter_mut().zip(&measures) {
-                if all_hold(&m.filter, key, bucket) {
-                    partial.merge(cell, m.state);
+            let merge = |partials: &mut [Partial]| {
+                for (partial, m) in partials.iter_mut().zip(&measures) {
+                    if all_hold(&m.filter, key, bucket) {
+                        partial.merge(cell, m.state);
+                    }
+                }
+            };
+            if by.is_empty() {
+                merge(&mut total);
+                continue;
+            }
+            group.clear();
+            group.extend(by.iter().map(|s| s.value(key, bucket)));
+            match groups.get_mut(group.as_slice()) {
+                Some(partials) => merge(partials),
+                None => {
+                    let mut partials = empty();
+                    merge(&mut partials);
+                    groups.insert(group.clone(), partials);
                 }
             }
         }
+        if by.is_empty() {
+            // As in SQL without GROUP BY: one row even when nothing matches.
+            groups.insert(Vec::new(), total);
+        }
 
-        let mut rows: Vec<_> = groups
+        let mut rows: Vec<(Vec<Datum>, Vec<Value>)> = groups
             .into_iter()
-            .map(|(key, partials)| (key, partials.into_iter().map(Partial::finish).collect()))
+            .map(|(key, partials)| {
+                (
+                    key.into_iter().map(Cow::into_owned).collect(),
+                    partials.into_iter().map(Partial::finish).collect(),
+                )
+            })
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Answer { rows, scales })
@@ -185,7 +209,7 @@ enum Source<'a> {
     Time(TimeKey, Grain),
 }
 
-impl Source<'_> {
+impl<'a> Source<'a> {
     fn scale(&self, rollup: &Rollup) -> u32 {
         match *self {
             Source::Slot(slot) => rollup.key_scale(slot),
@@ -194,17 +218,20 @@ impl Source<'_> {
         }
     }
 
-    fn value(&self, key: &[Datum], bucket: i64) -> Datum {
+    fn value<'k>(&self, key: &'k [Datum], bucket: i64) -> Cow<'k, Datum>
+    where
+        'a: 'k,
+    {
         match *self {
-            Source::Slot(slot) => key[slot].clone(),
+            Source::Slot(slot) => Cow::Borrowed(&key[slot]),
             Source::Dim {
                 slot,
                 table,
                 column,
             } => table
                 .get(&key[slot])
-                .map_or(Datum::Null, |row| row[column].clone()),
-            Source::Time(t, grain) => Datum::Int(t.start(bucket, grain)),
+                .map_or(Cow::Owned(Datum::Null), |row| Cow::Borrowed(&row[column])),
+            Source::Time(t, grain) => Cow::Owned(Datum::Int(t.start(bucket, grain))),
         }
     }
 }
