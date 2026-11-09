@@ -461,6 +461,26 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
       and bad replies, and end to end against `postgres:18`
 - [ ] Run against a non-production Azure Flexible Server 18
 
+## M8: telemetry, zones and the speed harness
+
+Goal: bring back what the MVP cuts deferred, and speed numbers anyone can
+rerun.
+Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
+`deploy/`, `bench/`, `docs/`.
+
+- [ ] Telemetry: what `GET /status` shows (ready or why not, lag, WAL held
+      against the cap, LSN and commit time, starts, failures) as OTLP to a
+      collector, the plan before the cuts, or as metrics to scrape; the
+      chart wires it
+- [ ] Ask-time zones and the time keys `hour`, `day`, `week` and `month`,
+      as the 2026-11-08 zone decision describes, through an optional
+      `zone` field and new `time` values; the tz database comes back into
+      the binary
+- [ ] The harness behind the Speed table in `docs/src/benchmark.md`,
+      committed so it can be rerun: the hourly view, the index on
+      `pickup_at` and the `roll` table, the four asks, the `pgbench` runs,
+      and the in-process and HTTP timings
+
 ## Open questions
 
 - The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
@@ -477,6 +497,9 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
   this; confirm.
 - Float columns in sum and avg: order-dependent sums, lossy removal.
 - Azure: `wal_level = logical` restart, resync after HA failover.
+- A CA bundle in the chart: a value naming a ConfigMap or Secret, mounted
+  read-only, for the DSN's `sslrootcert`. Until then a server whose
+  certificate needs `sslrootcert` can't be reached through the chart.
 - An "as of" time from keepalives, so answers on a quiet database don't
   look stale by their commit time.
 - Long asks hold the read lock and delay the writer, and `/readyz` waits
