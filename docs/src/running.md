@@ -1,6 +1,6 @@
 # Running Straum
 
-`straum` is one static binary with four commands:
+`straum` is one static binary:
 
 ```text
 straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
@@ -10,19 +10,21 @@ straum status [--url URL]
 straum help
 ```
 
+`straum plan` prints the [setup SQL](postgresql.md#2-run-the-setup-sql).
+
 ## straum run
 
-Loads every table the spec names, follows PostgreSQL's changes to them,
-and answers asks over HTTP.
+Loads every table the spec names, follows their changes and answers asks
+over HTTP.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--spec FILE` | required | The [spec](spec.md). |
 | `--listen ADDRESS` | `0.0.0.0:8080` | Where to serve HTTP. |
-| `--publication NAME` | `straum` | The publication to read, as `straum plan` made it. |
-| `--dsn-file FILE` | `STRAUM_DSN` | A file holding the [DSN](postgresql.md#3-connect). Without it, Straum reads the `STRAUM_DSN` environment variable. |
-| `--max-lag SECONDS` | `30` | How far behind PostgreSQL Straum may fall before `/readyz` turns off. |
-| `--max-retained-wal BYTES` | `4Gi` | How much WAL PostgreSQL may hold for Straum's slot before Straum starts over. Takes a `Ki`, `Mi`, `Gi` or `Ti` suffix. |
+| `--publication NAME` | `straum` | The publication `straum plan` made. |
+| `--dsn-file FILE` | `STRAUM_DSN` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
+| `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
+| `--max-retained-wal BYTES` | `4Gi` | WAL held for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 
 It logs to stderr, one line per event:
 
@@ -31,18 +33,47 @@ straum: listening on 0.0.0.0:8080
 straum: loaded every table; streaming from 0/17B2788
 ```
 
-SIGTERM or SIGINT stops it. It stops accepting, finishes the asks in
-flight and exits, and PostgreSQL drops its slot as the connection closes.
+SIGTERM or SIGINT stops it: it stops accepting, finishes the asks in
+flight and exits, and PostgreSQL drops the slot as the connection closes.
 
-## straum plan
+| Endpoint | Answers |
+| --- | --- |
+| `POST /ask` | An [ask](asks.md). |
+| `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why. |
+| `GET /livez` | 200 while the process serves. Lag never fails it. |
+| `GET /status` | What `straum status` prints, in plain text. |
 
-Checks the spec and prints the setup SQL for it. `--role` and
-`--publication` name the role and the publication it makes. See
-[Setting up PostgreSQL](postgresql.md#2-run-the-setup-sql).
+## States
+
+![Straum moves from Loading to Ready once every table is loaded. Ready turns Lagging past --max-lag and back once it catches up. Any failure leads to Waiting, then Loading from a new slot. SIGTERM leads to Stopping.](diagrams/lifecycle.svg)
+
+| State | `/readyz` | Asks |
+| --- | --- | --- |
+| Loading | 503 `not ready: loading`, or the failure that led here | 503 |
+| Ready | 200 `ready` | Answered |
+| Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `lsn` |
+| Waiting | 503 `not ready: ` and the failure | 503 |
+
+Straum reads the server's WAL position every second. Lag is how long ago
+Straum last caught up with a position the server had reached, so it can
+overstate how far behind Straum is but never understate it.
+
+Any failure leads to Waiting: a lost connection, a change Straum can't
+apply, a table altered under it, or too much WAL held for its slot.
+Straum closes the connection, so PostgreSQL drops the slot, and waits 1
+second, twice as long after each failure in a row, up to 60 seconds. Then
+it loads every table again from a new slot. A load that finishes resets
+the wait.
+
+```text
+straum: PostgreSQL holds 5120.0 MiB of WAL for straum's slot, past the limit of 4096.0 MiB
+starting over in 1 s
+```
 
 ## straum status
 
-Asks a running Straum what it has done and prints the answer:
+Prints what a running Straum has done, from `GET /status`. `--url`
+defaults to `http://127.0.0.1:8080`.
 
 ```text
 $ straum status
@@ -55,65 +86,11 @@ failures:     0
 last failure: none
 ```
 
-- `ready`: `yes`, or `no` and why.
+- `ready`: `yes`, or `no` and why, as `/readyz` says.
 - `applied`: the last commit applied and when it committed.
-- `lag`: how far behind PostgreSQL Straum is, against `--max-lag`.
-- `WAL held`: the WAL PostgreSQL keeps for Straum's slot, against
+- `lag`: against `--max-lag`.
+- `WAL held`: what PostgreSQL keeps for the slot, against
   `--max-retained-wal`, and the server's current WAL position.
-- `starts` and `failures`: loads that finished, and failures since the
+- `starts` and `failures`: loads that finished, and failures, since the
   process started.
 - `last failure`: when, and the error.
-
-`--url` points it at another Straum; it defaults to
-`http://127.0.0.1:8080`. It reads the plain-text `GET /status`, so `curl`
-works too.
-
-## Endpoints
-
-| Endpoint | Answers |
-| --- | --- |
-| `POST /ask` | An [ask](asks.md). |
-| `GET /livez` | 200 while the process serves. Lag never fails it. |
-| `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why. |
-| `GET /status` | What `straum status` prints. |
-
-## Readiness and lag
-
-`/readyz` turns on once every table is loaded and Straum is at most
-`--max-lag` seconds behind PostgreSQL. It turns off again while Straum
-lags, while it loads, and after a failure:
-
-```text
-not ready: 45 s behind PostgreSQL
-not ready: loading
-```
-
-Asks keep answering while Straum lags, each with the `lsn` it reflects.
-Only a load makes them wait, with 503.
-
-Straum reads the server's WAL position every second. Lag is how long ago
-Straum was last caught up with a position the server had reached, so it
-can overstate how far behind Straum is, but never understate it.
-
-## Failures and starting over
-
-Straum starts over after any failure: a lost connection, a change it can't
-apply, a table altered under it, or too much WAL held for its slot. It
-turns not ready, closes the connection, so PostgreSQL drops the slot, and
-waits: 1 second, then twice as long after each failure in a row, up to 60
-seconds. Then it loads every table again from a new slot. A load that
-finishes resets the wait.
-
-```text
-straum: PostgreSQL holds 5120.0 MiB of WAL for straum's slot, past the limit of 4096.0 MiB
-starting over in 1 s
-```
-
-While it waits and loads, asks answer 503 and `straum status` shows the
-last failure.
-
-## Memory
-
-Straum keeps every rollup in memory and nothing on disk. Every start loads
-every table again, so give it the memory its rollups take, and a little
-more for asks. [Writing a spec](spec.md#memory) says what that depends on.

@@ -1,12 +1,15 @@
 # Summary
 
-[Introduction](introduction.md)
+[Straum](introduction.md)
 
-# Guide
+# Using
 
 - [Quick start](quick-start.md)
 - [Writing a spec](spec.md)
 - [Asking](asks.md)
+
+# Deploying
+
 - [Setting up PostgreSQL](postgresql.md)
 - [Running Straum](running.md)
 - [Kubernetes](kubernetes.md)
