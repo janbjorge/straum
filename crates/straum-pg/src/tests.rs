@@ -1987,7 +1987,7 @@ fn taxi_month() {
         };
     let check = |sql: &mut Conn, app: &App, when: &str| {
         compare(sql, app, (&all, &reference, &all_scales), when);
-        let when = format!("{when}, by day and borough");
+        let when = format!("{when}, by borough");
         compare(
             sql,
             app,
