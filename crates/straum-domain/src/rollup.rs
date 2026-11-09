@@ -1,5 +1,3 @@
-//! A fact's rollup and a dim's rows, kept in step with their tables.
-
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::{iter, mem, panic, thread};
@@ -10,10 +8,8 @@ use crate::ident::Ident;
 use crate::spec::{Dim, Fact};
 use crate::value::Datum;
 
-/// Row position of the time column.
 const TIME: usize = 0;
 
-/// Panic message for measure inputs, which `Fact::columns` lists.
 const COLUMNS: &str = "Fact::columns lists every measure input";
 
 /// One cell per rollup key, holding what the fact's measures need. Cells
@@ -22,12 +18,9 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 /// reads few cells.
 #[derive(Debug)]
 pub struct Rollup {
-    /// The time column, the by columns and ref columns in rollup-key order,
-    /// then the measure columns not already among them.
     columns: Vec<Ident>,
     /// By columns plus refs; they sit at row positions `1..=key_len`.
     key_len: usize,
-    /// What each cell keeps, one state per input.
     inputs: Vec<Input>,
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
@@ -39,17 +32,14 @@ pub struct Rollup {
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
-    /// Per column; see [`Rollup::set_scales`].
     scales: Vec<u32>,
 }
 
-/// The cells of every bucket of one width.
 #[derive(Debug)]
 struct Level {
     /// Bucket width in seconds.
     width: i64,
-    /// Cells by bucket start, oldest first. `None` holds the rows without a
-    /// time, which no ask reads.
+    /// Oldest first. `None` holds the rows without a time, which no ask reads.
     buckets: BTreeMap<Option<i64>, Cells>,
 }
 
@@ -108,9 +98,7 @@ impl Codes {
 /// column, so an ask reads each measure's states as one flat run.
 #[derive(Debug)]
 pub(crate) struct Cells {
-    /// Codes per key.
     width: usize,
-    /// Cell position by key.
     index: FastMap<Box<[u32]>, usize>,
     keys: Vec<u32>,
     rows: Vec<u64>,
@@ -133,22 +121,18 @@ impl Cells {
         self.rows.len()
     }
 
-    /// Cell `i`'s key codes.
     pub(crate) fn key(&self, i: usize) -> &[u32] {
         &self.keys[i * self.width..][..self.width]
     }
 
-    /// Cell `i`'s code in key position `slot`.
     pub(crate) fn code(&self, i: usize, slot: usize) -> u32 {
         self.keys[i * self.width + slot]
     }
 
-    /// Each cell's row count.
     pub(crate) fn rows(&self) -> &[u64] {
         &self.rows
     }
 
-    /// Each cell's state of input `input`.
     pub(crate) fn column(&self, input: usize) -> &Column {
         &self.columns[input]
     }
@@ -166,7 +150,6 @@ impl Cells {
         (i, true)
     }
 
-    /// Drops cell `i`; the last cell takes its place.
     fn swap_remove(&mut self, i: usize) {
         let last = self.len() - 1;
         self.index
@@ -193,7 +176,6 @@ impl Cells {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Input {
     kind: Kind,
-    /// Row position.
     column: usize,
 }
 
@@ -206,7 +188,6 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// Whether the state reads integers.
     pub(crate) fn numeric(self) -> bool {
         match self {
             Kind::Sum | Kind::Extent => true,
@@ -215,7 +196,6 @@ impl Kind {
     }
 }
 
-/// One input's state per cell of a bucket, entry `i` being cell `i`'s.
 #[derive(Debug)]
 pub(crate) enum Column {
     /// Sum and count of the non-null values.
@@ -235,7 +215,6 @@ pub(crate) enum Column {
 }
 
 impl Rollup {
-    /// An empty rollup for the fact.
     pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
         let key_len = fact.by.len() + fact.refs.len();
@@ -269,18 +248,16 @@ impl Rollup {
         }
     }
 
-    /// The columns a row carries, in order.
     pub fn columns(&self) -> &[Ident] {
         &self.columns
     }
 
-    /// Number of cells at the `date_bin` width; a cell goes when its last
-    /// row is removed.
+    /// At the `date_bin` width; a cell goes when its last row is removed.
     pub fn cells(&self) -> usize {
         self.cells
     }
 
-    /// Drops every cell, as when the table is emptied. The scales stay.
+    /// The scales stay.
     pub fn clear(&mut self) {
         self.levels.iter_mut().for_each(|l| l.buckets.clear());
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
@@ -295,12 +272,10 @@ impl Rollup {
         set_scales(&mut self.scales, scales)
     }
 
-    /// The scale of the rollup-key column in cell key position `slot`.
     pub(crate) fn key_scale(&self, slot: usize) -> u32 {
         self.scales[1 + slot]
     }
 
-    /// The scale a measure answers in, from its input's.
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
         let input = agg.input().map_or(0, |c| {
             self.scales[self.columns.iter().position(|n| n == c).expect(COLUMNS)]
@@ -370,8 +345,8 @@ impl Rollup {
         Ok(())
     }
 
-    /// Takes back a row given to [`Rollup::add`]. After [`RowError::Missing`]
-    /// the rollup no longer matches the table; start over.
+    /// After [`RowError::Missing`] the rollup no longer matches the table;
+    /// start over.
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let key: Vec<u32> = (row[1..=self.key_len].iter())
@@ -400,8 +375,6 @@ impl Rollup {
         Ok(())
     }
 
-    /// Where a measure reads its cell state; `None` for count, which reads
-    /// the row count.
     pub(crate) fn state_of(&self, agg: &Agg) -> Option<usize> {
         let (kind, name) = agg.state()?;
         let column = self.columns.iter().position(|c| c == name)?;
@@ -455,12 +428,10 @@ impl Rollup {
         self.runs(level - 1, last, to, runs);
     }
 
-    /// How many codes rollup-key column `slot` has given out.
     pub(crate) fn codes(&self, slot: usize) -> usize {
         self.codes[slot].values.len()
     }
 
-    /// The value under `code` in rollup-key column `slot`.
     pub(crate) fn value(&self, slot: usize, code: u32) -> &Datum {
         &self.codes[slot].values[code as usize]
     }
@@ -488,8 +459,6 @@ impl Rollup {
         Ok(())
     }
 
-    /// Appends the key codes of a checked row to `key`, new values getting
-    /// new codes.
     fn code(&mut self, row: &[Datum], key: &mut Vec<u32>) {
         key.extend(
             (row[1..=self.key_len].iter())
@@ -515,7 +484,6 @@ impl Column {
         }
     }
 
-    /// Adds an empty cell's state.
     fn push(&mut self) {
         match self {
             Column::Sum { sums, counts } => {
@@ -546,7 +514,7 @@ impl Column {
         }
     }
 
-    /// Adds a value to cell `i`. Nulls are skipped, as in SQL.
+    /// Nulls are skipped, as in SQL.
     fn add(&mut self, i: usize, value: &Datum) {
         match (self, value) {
             (_, Datum::Null) => {}
@@ -650,12 +618,10 @@ pub struct DimTable {
     rows: HashMap<Datum, Box<[u32]>>,
     /// One per column. Codes outlive their rows until [`DimTable::clear`].
     codes: Vec<Codes>,
-    /// Per column; see [`DimTable::set_scales`].
     scales: Vec<u32>,
 }
 
 impl DimTable {
-    /// An empty table for the dim.
     pub fn new(dim: &Dim) -> DimTable {
         let width = 1 + dim.attrs.len();
         DimTable {
@@ -666,7 +632,6 @@ impl DimTable {
         }
     }
 
-    /// As [`Rollup::set_scales`], one per column of a row.
     pub fn set_scales(&mut self, scales: &[u32]) -> Result<(), RowError> {
         set_scales(&mut self.scales, scales)
     }
@@ -675,7 +640,6 @@ impl DimTable {
         self.scales[column]
     }
 
-    /// Inserts the row, or replaces the one with the same key.
     pub fn upsert(&mut self, row: &[Datum]) -> Result<(), RowError> {
         if row.len() != self.width {
             return Err(RowError::Arity {
@@ -698,18 +662,16 @@ impl DimTable {
         self.rows.len()
     }
 
-    /// Drops every row. The scales stay.
+    /// The scales stay.
     pub fn clear(&mut self) {
         self.rows.clear();
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
     }
 
-    /// The codes of the row with `key`, one per column.
     pub(crate) fn get(&self, key: &Datum) -> Option<&[u32]> {
         self.rows.get(key).map(|r| &**r)
     }
 
-    /// How many codes column `column` has given out.
     pub(crate) fn codes(&self, column: usize) -> usize {
         self.codes[column].values.len()
     }
@@ -722,7 +684,6 @@ impl DimTable {
             .unwrap_or_else(|| u32::try_from(codes.values.len()).expect("codes are u32"))
     }
 
-    /// The value under `code` in column `column`.
     pub(crate) fn value(&self, column: usize, code: u32) -> &Datum {
         &self.codes[column].values[code as usize]
     }

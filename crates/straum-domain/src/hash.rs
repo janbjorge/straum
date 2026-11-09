@@ -11,7 +11,6 @@ const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 
 pub(crate) type FastMap<K, V> = HashMap<K, V, Seeded>;
 
-/// A seed per map.
 #[derive(Debug, Clone)]
 pub(crate) struct Seeded(u64);
 
@@ -31,7 +30,6 @@ impl BuildHasher for Seeded {
 
 pub(crate) struct Folded(u64);
 
-/// The high and low halves of the full product, xored.
 fn fold(a: u64, b: u64) -> u64 {
     let product = u128::from(a) * u128::from(b);
     (product as u64) ^ ((product >> 64) as u64)
