@@ -45,7 +45,6 @@ pub struct App {
 
 #[derive(Debug)]
 struct State {
-    spec: Spec,
     store: Store,
     /// Every commit up to here is applied. `None` until every table is
     /// loaded, and again after a failure.
@@ -132,8 +131,7 @@ impl App {
     pub fn new(spec: Spec, limits: Limits) -> App {
         App {
             state: Arc::new(RwLock::new(State {
-                store: Store::new(spec.clone()),
-                spec,
+                store: Store::new(spec),
                 position: None,
                 time: None,
                 lag: None,
@@ -164,7 +162,11 @@ impl App {
     /// Answers once every table is loaded.
     pub fn ask(&self, ask: &Ask) -> Result<Answered, AnswerError> {
         let state = self.read();
-        state.spec.check(ask).map_err(AnswerError::Invalid)?;
+        state
+            .store
+            .spec()
+            .check(ask)
+            .map_err(AnswerError::Invalid)?;
         let lsn = state.position.ok_or(AnswerError::NotReady)?;
         let answer = state.store.ask(ask).expect("checked by Spec::check");
         Ok(Answered {
@@ -222,7 +224,8 @@ impl State {
             let table = change.table().clone();
             // The publication may carry tables the spec doesn't name.
             let name = table.as_str();
-            if self.spec.fact(name).is_none() && self.spec.dim(name).is_none() {
+            let spec = self.store.spec();
+            if spec.fact(name).is_none() && spec.dim(name).is_none() {
                 continue;
             }
             if self.apply_change(change).is_err() {
@@ -279,7 +282,7 @@ impl State {
 
     fn target(&mut self, table: &Ident) -> Target<'_> {
         let name = table.as_str();
-        if self.spec.fact(name).is_some() {
+        if self.store.spec().fact(name).is_some() {
             Target::Fact(self.store.rollup(name).expect(IN_SPEC))
         } else {
             Target::Dim(self.store.dim(name).expect(IN_SPEC))
@@ -296,7 +299,7 @@ impl<S: Source> Writer<S> {
     pub fn new(app: App, source: S) -> Writer<S> {
         let (spec, limits) = {
             let state = app.read();
-            (state.spec.clone(), state.limits)
+            (state.store.spec().clone(), state.limits)
         };
         Writer {
             spec,

@@ -42,6 +42,10 @@ impl Store {
         }
     }
 
+    pub fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
     pub fn rollup(&mut self, fact: &str) -> Option<&mut Rollup> {
         let i = self.fact_index(fact)?;
         Some(&mut self.rollups[i])
