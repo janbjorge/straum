@@ -1,5 +1,3 @@
-//! Values in rows, rollup keys and answers.
-
 use std::sync::Arc;
 
 use crate::spec::Literal;
@@ -26,13 +24,14 @@ impl Datum {
     }
 }
 
-/// One measure of one answer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    /// sum, min, max or avg over no values.
     Null,
-    /// count, count distinct, sum, min or max. Sums keep the column's scale.
+    /// Sums keep the column's scale.
     Int(i128),
     /// avg, left as sum and count so the caller picks the rounding.
-    Avg { sum: i128, count: u64 },
+    Avg {
+        sum: i128,
+        count: u64,
+    },
 }

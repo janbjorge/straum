@@ -1,6 +1,3 @@
-//! Facts, the dims they point at, and their named measures. Built once from
-//! the spec, checked, then read-only.
-
 use std::collections::HashSet;
 use std::fmt;
 use std::iter;
@@ -17,8 +14,8 @@ pub struct Table {
     pub name: Ident,
 }
 
-/// A lookup table facts point at. Its attributes are read after aggregation,
-/// so a change to a dim row never touches a rollup.
+/// A dim's attributes are read after aggregation, so a change to a dim
+/// row never touches a rollup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dim {
     pub name: Ident,
@@ -27,7 +24,6 @@ pub struct Dim {
     pub attrs: Vec<Ident>,
 }
 
-/// A table whose rows are aggregated into one rollup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
     pub name: Ident,
@@ -35,7 +31,6 @@ pub struct Fact {
     pub key: Ident,
     pub time: Time,
     pub refs: Vec<Ref>,
-    /// Fact columns that are part of the rollup key.
     pub by: Vec<Ident>,
     pub measures: Vec<Measure>,
 }
@@ -92,18 +87,14 @@ pub enum Literal {
     Bool(bool),
 }
 
-/// What a [`KeyPath`] names on a fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key<'a> {
-    /// A `by` column.
     Column(&'a Ident),
-    /// The dim row a ref points at.
     Ref(&'a Ref),
-    /// An attribute of that dim row, mapped after aggregation.
+    /// Mapped after aggregation.
     Attr(&'a Ref, &'a Ident),
 }
 
-/// One component of a rollup key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
@@ -153,8 +144,7 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Checks the declarations against each other and returns every problem
-    /// found. Column types and keys are checked against PostgreSQL elsewhere.
+    /// Column types and keys are checked against PostgreSQL elsewhere.
     pub fn new(dims: Vec<Dim>, facts: Vec<Fact>) -> Result<Spec, Vec<SpecError>> {
         let mut errors = Vec::new();
 

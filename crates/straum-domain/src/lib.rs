@@ -1,5 +1,3 @@
-//! straum's domain: the aggregates it maintains and the asks it answers.
-//!
 //! No I/O and no dependencies. Adapters (straum SQL, PostgreSQL, HTTP) depend
 //! on this crate, never the other way round.
 

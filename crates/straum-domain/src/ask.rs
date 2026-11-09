@@ -1,6 +1,3 @@
-//! A request against one fact: named measures, grouped by keys, over a
-//! time range.
-
 use std::fmt;
 
 use crate::ident::Ident;
@@ -24,14 +21,13 @@ pub enum AskKey {
     Time(TimeKey),
 }
 
-/// The time a row is grouped by. Buckets are UTC.
+/// Buckets are UTC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeKey {
     Bucket,
 }
 
 impl TimeKey {
-    /// Start of the period holding `t`, in Unix seconds.
     pub fn start(self, t: i64, grain: Grain) -> i64 {
         match self {
             TimeKey::Bucket => t.div_euclid(i64::from(grain.0)) * i64::from(grain.0),
@@ -40,7 +36,6 @@ impl TimeKey {
 }
 
 impl Spec {
-    /// Checks an ask against the spec and returns the fact it reads.
     pub fn check(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
         let Some(fact) = self.fact(ask.fact.as_str()) else {
             return Err(vec![AskError::UnknownFact(ask.fact.clone())]);
