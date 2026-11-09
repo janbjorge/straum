@@ -87,7 +87,9 @@ are relative to `src/backend` unless stated. Four agents did the research on
 
 ## Target versions
 
-PostgreSQL 18, 19 and newer (jb, 2026-11-08). The tree has no release tags,
+PostgreSQL 17 and newer (jb, 2026-11-09; 18 and newer on 2026-11-08). CI
+tests 17, 18 and 19rc1. PG17 lacks the two PG18 items below, which Straum
+doesn't use. The tree has no release tags,
 so versions are placed by ancestry against the stamp commits: `2652835d3ef`
 "Stamp HEAD as 19devel" (2025-06-29, the PG18 branch point) and `a281a3e6dbb`
 "Stamp HEAD as 20devel" (2026-06-29, the PG19 branch point). Backpatches are

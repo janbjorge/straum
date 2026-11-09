@@ -93,6 +93,10 @@ const RIDERS: [&str; 4] = ["ann", "bo", "cy", "di"];
 /// Logical decoding and a short `wal_sender_timeout`.
 const FLAGS: [&str; 4] = ["-c", "wal_level=logical", "-c", "wal_sender_timeout=4s"];
 
+/// The first major where `wal_level = replica` is enough; `19rc1` until 19
+/// ships.
+const NINETEEN: &str = "19rc1";
+
 /// Makes a CA and a certificate it signs for 127.0.0.1, then starts
 /// PostgreSQL with ssl on. Both are valid from 2024, whatever the clocks.
 const WITH_TLS: &str = r#"
@@ -112,8 +116,7 @@ exec docker-entrypoint.sh postgres -c ssl=on \
     -c ssl_cert_file=/tmp/server.pem -c ssl_key_file=/tmp/server.key "$@"
 "#;
 
-/// PostgreSQL 18 with [`FLAGS`], removed when dropped, with its CA file if
-/// it has TLS.
+/// PostgreSQL, removed when dropped, with its CA file if it has TLS.
 struct Postgres {
     _container: Container<GenericImage>,
     dsn: Dsn,
@@ -137,9 +140,14 @@ impl Drop for TempFile {
     }
 }
 
+/// CI sets `STRAUM_TEST_POSTGRES` to each major straum supports.
+fn tag() -> String {
+    std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
+}
+
 fn postgres() -> Postgres {
     plain(
-        GenericImage::new("postgres", "18"),
+        GenericImage::new("postgres", tag().as_str()),
         FLAGS.map(str::to_owned),
     )
 }
@@ -173,7 +181,7 @@ fn postgres_tls() -> Postgres {
         c2,
         timeout,
     ];
-    let image = GenericImage::new("postgres", "18").with_entrypoint("sh");
+    let image = GenericImage::new("postgres", tag().as_str()).with_entrypoint("sh");
     let (container, port) = start(image, cmd);
     let mut cat = container
         .exec(ExecCommand::new(["cat", "/tmp/ca.pem"]))
@@ -202,7 +210,7 @@ fn start<const N: usize>(image: GenericImage, cmd: [String; N]) -> (Container<Ge
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
         .with_cmd(cmd)
         .start()
-        .expect("Docker runs postgres:18");
+        .expect("Docker runs postgres");
     // Docker may publish the port a moment after the container starts.
     let port = (0..50)
         .find_map(|_| {
@@ -739,14 +747,37 @@ fn follows_the_database_over_tls() {
 }
 
 #[test]
+fn follows_at_replica_from_19() {
+    let pg = postgres_at_replica(NINETEEN);
+    let mut db = Db::new(&pg, "replica", TABLES);
+    let mut rng = Rng::new(13);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = db.writer();
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), 2).expect("ready after the load");
+    for id in 20..30 {
+        db.run(&rng.trip(id));
+        applied(&mut writer);
+    }
+    db.run("UPDATE $S.zones SET borough = 'Manhattan' WHERE id = 2");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), 2).expect("ready");
+}
+
+#[test]
 fn says_to_set_wal_level_logical() {
-    let pg = postgres_at_replica("18");
-    let db = Db::new(&pg, "replica", TABLES);
-    let err = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
-    assert!(
-        err.contains("wal_level is replica; straum needs logical, which takes a restart"),
-        "{err}"
-    );
+    for tag in ["17", "18"] {
+        let pg = postgres_at_replica(tag);
+        let db = Db::new(&pg, "replica", TABLES);
+        let err = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
+        assert!(
+            err.contains("wal_level is replica; straum needs logical, which takes a restart"),
+            "{tag}: {err}"
+        );
+    }
 }
 
 #[test]
@@ -1246,13 +1277,33 @@ fn reports_wal_level_and_read_access() {
     let spec = db.spec(SPEC);
     let mut catalog = catalog::query(&mut db.conn, &spec, "access").unwrap();
     assert!(catalog::check(&spec, &catalog, "access").is_ok());
-    catalog.wal_level = "replica".into();
+    let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
     assert_eq!(
-        catalog::check(&spec, &catalog, "access"),
-        Err(vec![
-            "wal_level is replica; straum needs logical, which takes a restart".to_owned()
-        ])
+        catalog.server_version / 10_000,
+        major.parse::<u32>().unwrap()
     );
+    for (version, wal_level, needs) in [
+        (170_000, "replica", Some("logical")),
+        (180_000, "replica", Some("logical")),
+        (180_000, "logical", None),
+        (190_000, "replica", None),
+        (190_000, "logical", None),
+        (190_000, "minimal", Some("replica or logical")),
+        (200_000, "replica", None),
+    ] {
+        catalog.server_version = version;
+        catalog.wal_level = wal_level.into();
+        let expected = needs.map(|needs| {
+            vec![format!(
+                "wal_level is {wal_level}; straum needs {needs}, which takes a restart"
+            )]
+        });
+        assert_eq!(
+            catalog::check(&spec, &catalog, "access").err(),
+            expected,
+            "{version} {wal_level}"
+        );
+    }
 
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");

@@ -70,8 +70,13 @@ struct Postgres {
     port: u16,
 }
 
+/// CI sets `STRAUM_TEST_POSTGRES` to each major straum supports.
+fn tag() -> String {
+    std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
+}
+
 fn postgres() -> Postgres {
-    let container = GenericImage::new("postgres", "18")
+    let container = GenericImage::new("postgres", tag().as_str())
         .with_exposed_port(5432.tcp())
         // The init server says it on stdout, the real one on stderr.
         .with_wait_for(WaitFor::message_on_stdout(READY))
@@ -80,7 +85,7 @@ fn postgres() -> Postgres {
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
         .with_cmd(["-c", "wal_level=logical"])
         .start()
-        .expect("Docker runs postgres:18");
+        .expect("Docker runs postgres");
     // Docker may publish the port a moment after the container starts.
     let port = (0..50)
         .find_map(|_| {

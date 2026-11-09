@@ -30,8 +30,8 @@ PostgreSQL, so an ask costs in proportion to the cells it reads.
 Straum maintains `count`, `count(DISTINCT)`, `sum`, `min`, `max` and
 `avg`, grouped by fact columns, dim columns and UTC time buckets. A
 transaction shows up whole, as soon as Straum applies its commit. It needs
-PostgreSQL 18 as shipped, with no extension and no superuser, so managed
-services work.
+PostgreSQL 17 or newer as shipped, with no extension and no superuser, so
+managed services work.
 
 ## What it is not
 

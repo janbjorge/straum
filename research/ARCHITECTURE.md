@@ -18,9 +18,9 @@ PostgreSQL paths are relative to the root of [upstream PostgreSQL](https://githu
   the LSN and commit time it reflects.
 - PostgreSQL stays the source of truth. Straum keeps nothing on disk and rebuilds
   from PostgreSQL on every start.
-- Everything Straum needs ships in stock PostgreSQL 18 and works on Azure:
-  pgoutput, temporary logical slots, exported snapshots, SQL on a replication
-  connection.
+- Everything Straum needs ships in stock PostgreSQL 17 and newer and works on
+  Azure: pgoutput, temporary logical slots, exported snapshots, SQL on a
+  replication connection.
 
 ## 1. The spec
 
@@ -320,8 +320,8 @@ connection and answers once the stream passes the returned LSN
 ### 4d. Setup
 
 `straum plan` reads the spec and prints the SQL an admin runs once
-(`straum plan --spec FILE`, from `straum_pg::plan`):
-`wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE Straum LOGIN
+(`straum plan --spec FILE`, from `straum_pg::plan`): `wal_level = logical`
+(needs a restart; 19 can stay at `replica`), `CREATE ROLE Straum LOGIN
 REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION Straum
 FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for every
 fact. A dim needs its key as replica identity, which only
@@ -423,19 +423,24 @@ resume from, which brings the WAL risk back.
 
 ## 9. Source modes: `wal_level`
 
-PostgreSQL 18 is the floor; nothing older.
+PostgreSQL 17 is the floor (jb, 2026-11-09). CI tests 17, 18 and 19rc1.
 
-- PostgreSQL 18 with `wal_level = logical`: pgoutput and a temporary slot.
-- PostgreSQL 18 with `replica`: Straum refuses to start and says to set
-  `wal_level = logical` and restart. A logical slot fails with "logical decoding
-  requires \"wal_level\" >= \"logical\""
-  (`src/backend/replication/logical/logical.c:121-123` as of `67c20979ce7^`, R).
+- PostgreSQL 17 and 18 with `wal_level = logical`: pgoutput and a temporary
+  slot.
+- PostgreSQL 17 and 18 with `replica`: Straum refuses to start and says to set
+  `wal_level = logical` and restart. It checks before it makes the slot,
+  since a logical slot fails with "logical decoding requires \"wal_level\" >=
+  \"logical\"" (`src/backend/replication/logical/logical.c:121-123` as of
+  `67c20979ce7^`, R), which names no fix.
 - PostgreSQL 19 and later, `logical` or `replica`: under `replica`, PostgreSQL
   turns logical decoding on while a logical slot exists and off lazily after the
-  last one goes (`67c20979ce7`, `logical/logicalctl.c:5-38`, R).
+  last one goes (`67c20979ce7`, `logical/logicalctl.c:5-38`, R). The start check
+  reads `server_version_num` to tell. On 19rc1 a temporary slot with an exported
+  snapshot works under `replica`, and `effective_wal_level` reads `logical`
+  while it exists.
 
-One code path covers all three. Azure Flexible Server 18 defaults to `replica`
-(U), so it needs one restart with `wal_level = logical`.
+One code path covers all of them. Azure Flexible Server 18 defaults to
+`replica` (U), so it needs one restart with `wal_level = logical`.
 
 ## 10. Building blocks
 

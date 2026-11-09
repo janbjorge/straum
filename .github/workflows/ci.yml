@@ -45,6 +45,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 19rc1 until PostgreSQL 19 ships.
+        postgres: ["17", "18", "19rc1"]
+    env:
+      STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

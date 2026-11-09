@@ -88,14 +88,15 @@ only serves aggregates declared before startup.
 
 ## Requirements
 
-Straum uses stock PostgreSQL logical replication. Enable it before applying
-the SQL emitted by `straum plan`:
+Straum needs PostgreSQL 17 or newer and uses its stock logical replication.
+On 17 and 18, enable it before applying the SQL emitted by `straum plan`:
 
 ```text
 wal_level = logical
 ```
 
-Restart PostgreSQL after changing `wal_level`. `run` listens on
+Restart PostgreSQL after changing `wal_level`. From 19, `replica`, the
+default, is enough. `run` listens on
 `0.0.0.0:8080` by default.
 
 | Endpoint | Purpose |

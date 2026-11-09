@@ -272,6 +272,13 @@ Tests:
   the view's `LEFT JOIN` does. The store's property test points trips at
   zones that never exist, and `bench/compare.sql` checks the taxi month
   against PostgreSQL.
+- 2026-11-09: Straum runs on PostgreSQL 17 and newer, with no upper bound.
+  CI runs the tests on 17, 18 and 19rc1 (19 once it ships), picked by
+  `STRAUM_TEST_POSTGRES`; locally they run on 18. From 19 a logical slot
+  turns logical decoding on under `wal_level = replica` (PostgreSQL
+  `67c20979ce7`), so the start check reads `server_version_num` and takes
+  `replica` there. Below 19 the slot can't be made under `replica`, and
+  PostgreSQL's error names no fix, so the check also runs before the slot.
 
 ## M0: notation and domain model
 

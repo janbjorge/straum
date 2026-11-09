@@ -1,14 +1,17 @@
 # Setting up PostgreSQL
 
-Straum needs PostgreSQL 18, self-hosted or managed. It uses logical
-replication with `pgoutput`, a temporary slot and an exported snapshot,
-with no extension and no superuser. Setup is three steps, done once.
+Straum needs PostgreSQL 17 or newer, self-hosted or managed; its tests
+run on 17, 18 and the 19 release candidate. It uses logical replication
+with `pgoutput`, a temporary slot and an exported snapshot, with no
+extension and no superuser. Setup is three steps, done once.
 
 ## 1. Turn on logical decoding
 
-PostgreSQL needs `wal_level = logical`, which takes a restart. On your own
-server, run `ALTER SYSTEM SET wal_level = logical;` and restart. On a
-managed service, set the provider's parameter and restart there:
+PostgreSQL 17 and 18 need `wal_level = logical`, which takes a restart.
+On your own server, run `ALTER SYSTEM SET wal_level = logical;` and
+restart. From PostgreSQL 19, `replica`, the default, is enough: a logical
+slot turns logical decoding on while it exists. On a managed service, set
+the provider's parameter and restart there:
 
 | Service | Setting |
 | --- | --- |
@@ -103,6 +106,7 @@ after a wait. The checks:
 
 ```text
 wal_level is replica; straum needs logical, which takes a restart
+wal_level is minimal; straum needs replica or logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
 publication straum must publish insert, update, delete and truncate
 orders: table public.orders does not exist

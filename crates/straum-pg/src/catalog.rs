@@ -42,6 +42,7 @@ impl Table {
 /// What straum reads from the catalog; `check` holds every rule.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Catalog {
+    pub(crate) server_version: u32,
     pub(crate) wal_level: String,
     /// Whether the publication publishes inserts, updates, deletes and
     /// truncates; `None` when it doesn't exist.
@@ -99,14 +100,17 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
     let mut catalog = Catalog::default();
 
     let settings = conn.rows(&format!(
-        "SELECT current_setting('wal_level'),
+        "SELECT current_setting('server_version_num'), current_setting('wal_level'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
     ))?;
-    let [wal_level, published] = settings
+    let [version, wal_level, published] = settings
         .into_iter()
         .next()
         .and_then(|r| r.try_into().ok())
+        .ok_or_else(|| shape("settings"))?;
+    catalog.server_version = version
+        .and_then(|v| v.parse().ok())
         .ok_or_else(|| shape("settings"))?;
     catalog.wal_level = wal_level.unwrap_or_default();
     catalog.publication = published.map(|p| p == "t");
@@ -238,10 +242,17 @@ pub(crate) fn check(
     publication: &str,
 ) -> Result<Vec<Table>, Vec<String>> {
     let mut problems = Vec::new();
-    if catalog.wal_level != "logical" {
+    // From 19, a logical slot turns logical decoding on under replica.
+    let enough: &[&str] = if catalog.server_version >= 190_000 {
+        &["replica", "logical"]
+    } else {
+        &["logical"]
+    };
+    if !enough.contains(&catalog.wal_level.as_str()) {
         problems.push(format!(
-            "wal_level is {}; straum needs logical, which takes a restart",
-            catalog.wal_level
+            "wal_level is {}; straum needs {}, which takes a restart",
+            catalog.wal_level,
+            enough.join(" or ")
         ));
     }
     match catalog.publication {
