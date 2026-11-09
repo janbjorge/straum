@@ -148,7 +148,6 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
     }
 }
 
-/// The allocations one ask makes.
 fn allocs(store: &Store, by: &[&str]) -> usize {
     let ask = ask(by, 0, 1000);
     let before = ALLOCS.with(Cell::get);

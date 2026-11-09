@@ -24,7 +24,6 @@ const FARE: usize = 6;
 const TIP: usize = 7;
 const DIST: usize = 8;
 const RIDER: usize = 9;
-/// Columns in a trip row.
 const WIDTH: usize = 10;
 
 /// Column scales `run` sets, from these up, one per column. Each differs,
