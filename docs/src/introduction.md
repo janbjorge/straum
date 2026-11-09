@@ -6,6 +6,10 @@ of PostgreSQL's `CREATE VIEW`. Straum loads them from a snapshot, then
 follows every commit through logical replication. Each answer names the
 commit it reflects.
 
+The name is Norwegian. In Nynorsk, one of the two written standards of
+Norwegian, *straum* means a stream or current, and Straum's input is
+PostgreSQL's replication stream.
+
 ![PostgreSQL holds the tables and the WAL. A table owner runs the setup SQL that straum plan prints, once. On every start, straum run loads a snapshot at LSN L, then applies every commit after L. Apps ask over HTTP.](diagrams/overview.svg)
 
 > [!WARNING]
