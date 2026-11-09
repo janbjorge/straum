@@ -12,8 +12,9 @@ the load and the stream, and none is applied twice.
    slot with `pgoutput`. PostgreSQL exports a snapshot at the slot's
    consistent point, L.
 2. In that snapshot, Straum checks the catalog against the spec and loads
-   every dim and fact. Each fact loads with one `GROUP BY` over the rollup
-   key and the bucket.
+   every dim and fact. Each table loads with one binary `COPY` of the
+   columns the spec reads. Straum groups the rows into cells as they
+   come, a batch at a time, so it never holds the table.
 3. Straum ends the snapshot, swaps the loaded store in and turns ready.
 4. It starts the stream at L. A stream thread reads it, answers the
    server's keepalives and confirms what the writer has applied, so the

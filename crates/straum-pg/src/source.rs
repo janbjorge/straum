@@ -76,7 +76,7 @@ impl Pg {
             .find(|t| t.name == *name)
             .expect("the spec's tables are checked");
         match target {
-            Target::Fact(fact, rollup) => load::fact(&mut snapshot.conn, fact, table, rollup)?,
+            Target::Fact(rollup) => load::fact(&mut snapshot.conn, table, rollup)?,
             Target::Dim(rows) => load::dim(&mut snapshot.conn, table, rows)?,
         }
         snapshot.unloaded.retain(|t| t != name);
@@ -126,7 +126,7 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
 }
 
 enum Target<'a> {
-    Fact(&'a Fact, &'a mut Rollup),
+    Fact(&'a mut Rollup),
     Dim(&'a mut DimTable),
 }
 
@@ -143,7 +143,7 @@ impl Source for Pg {
     }
 
     fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
-        Ok(self.load(&fact.name, Target::Fact(fact, rollup))?)
+        Ok(self.load(&fact.name, Target::Fact(rollup))?)
     }
 
     fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {

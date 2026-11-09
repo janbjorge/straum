@@ -1,7 +1,8 @@
-//! Column types straum reads, and their text form as PostgreSQL prints it
-//! under `DateStyle = ISO` and `TimeZone = UTC`, which straum sets on connect.
+//! Column types straum reads: their text form as PostgreSQL prints it
+//! under `DateStyle = ISO` and `TimeZone = UTC`, which straum sets on
+//! connect, and their binary form, which loads read.
 
-use std::fmt;
+use std::{fmt, str};
 
 use straum_domain::Datum;
 
@@ -23,6 +24,12 @@ const SECONDS_PER_DAY: i64 = 86_400;
 /// Days from 0000-03-01 to 1970-01-01 in the proleptic Gregorian calendar.
 const UNIX_EPOCH_DAYS: i64 = 719_468;
 const DAYS_PER_ERA: i64 = 146_097;
+/// Seconds from 1970-01-01 to 2000-01-01, PostgreSQL's epoch.
+const PG_EPOCH: i64 = 946_684_800;
+const MICROS_PER_SECOND: i64 = 1_000_000;
+/// The sign words of a binary numeric; NaN and the infinities have others.
+const NUMERIC_POS: u16 = 0x0000;
+const NUMERIC_NEG: u16 = 0x4000;
 
 /// How straum reads a column, from its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,11 +93,72 @@ impl Kind {
         };
         datum.ok_or_else(|| ValueError::new(self, text))
     }
+
+    /// Reads the binary form `COPY ... (FORMAT binary)` sends.
+    pub(crate) fn read_binary(self, bytes: &[u8]) -> Result<Datum, ValueError> {
+        let datum = match self {
+            Kind::Int => int(bytes).map(Datum::Int),
+            Kind::Numeric { scale } => binary_decimal(bytes, scale)
+                .and_then(|v| i64::try_from(v).ok())
+                .map(Datum::Int),
+            Kind::Bool => match bytes {
+                [0] => Some(Datum::Bool(false)),
+                [1] => Some(Datum::Bool(true)),
+                _ => None,
+            },
+            Kind::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
+            Kind::Time => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
+                // `infinity` and `-infinity`.
+                Ok(i64::MIN | i64::MAX) | Err(_) => None,
+                Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
+            },
+        };
+        datum.ok_or_else(|| ValueError::binary(self, bytes))
+    }
 }
 
-/// A sum as PostgreSQL prints it, scaled like the column it sums.
-pub(crate) fn read_sum(text: &str, scale: u32) -> Result<i128, ValueError> {
-    decimal(text, scale).ok_or_else(|| ValueError::new(Kind::Numeric { scale }, text))
+/// `int2`, `int4` or `int8`, big-endian, told apart by length.
+fn int(bytes: &[u8]) -> Option<i64> {
+    match *bytes {
+        [a, b] => Some(i16::from_be_bytes([a, b]).into()),
+        [a, b, c, d] => Some(i32::from_be_bytes([a, b, c, d]).into()),
+        _ => Some(i64::from_be_bytes(bytes.try_into().ok()?)),
+    }
+}
+
+/// A binary numeric: digit count, weight, sign and display scale, then
+/// base-10000 digits, the first worth `10000^weight`. Scaled as
+/// [`decimal`] does, with the same `None`s.
+fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i128> {
+    let word = |i: usize| Some([*bytes.get(i)?, *bytes.get(i + 1)?]);
+    let count = u16::from_be_bytes(word(0)?);
+    let weight = i16::from_be_bytes(word(2)?);
+    let sign = u16::from_be_bytes(word(4)?);
+    let (digits, odd) = bytes.get(8..)?.as_chunks::<2>();
+    if !odd.is_empty() || digits.len() != usize::from(count) {
+        return None;
+    }
+    let scale = i32::try_from(scale).ok()?;
+    let mut value: i128 = 0;
+    for (i, &pair) in digits.iter().enumerate() {
+        let digit = u16::from_be_bytes(pair);
+        let exponent = 4 * (i32::from(weight) - i32::try_from(i).ok()?) + scale;
+        let scaled = match u32::try_from(exponent) {
+            Ok(exponent) => i128::from(digit).checked_mul(10_i128.checked_pow(exponent)?)?,
+            // Below the scale a digit must be zero; a digit is below 10^4.
+            Err(_) => match 10_u16.checked_pow(exponent.unsigned_abs()) {
+                Some(unit) if digit % unit == 0 => (digit / unit).into(),
+                _ if digit == 0 => 0,
+                _ => return None,
+            },
+        };
+        value = value.checked_add(scaled)?;
+    }
+    match sign {
+        NUMERIC_POS => Some(value),
+        NUMERIC_NEG => Some(-value),
+        _ => None,
+    }
 }
 
 /// `-123.45` at scale 2 is -12345. More fraction digits than the scale, or
@@ -184,6 +252,15 @@ impl ValueError {
         ValueError {
             kind,
             text: text.to_owned(),
+        }
+    }
+
+    /// Shows the bytes in hex, as `bytea` prints.
+    fn binary(kind: Kind, bytes: &[u8]) -> ValueError {
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        ValueError {
+            kind,
+            text: format!("\\x{hex}"),
         }
     }
 }
@@ -350,23 +427,120 @@ mod tests {
         }
     }
 
+    /// A binary numeric of base-10000 `digits`, the first worth
+    /// `10000^weight`.
+    fn numeric_bytes(weight: i16, sign: u16, digits: &[u16]) -> Vec<u8> {
+        let count = u16::try_from(digits.len()).unwrap();
+        let mut bytes = count.to_be_bytes().to_vec();
+        bytes.extend(weight.to_be_bytes());
+        bytes.extend(sign.to_be_bytes());
+        bytes.extend(0_u16.to_be_bytes());
+        bytes.extend(digits.iter().flat_map(|d| d.to_be_bytes()));
+        bytes
+    }
+
+    fn micros(unix: i64, micros: i64) -> Vec<u8> {
+        ((unix - PG_EPOCH) * MICROS_PER_SECOND + micros)
+            .to_be_bytes()
+            .to_vec()
+    }
+
     #[test]
-    fn reads_sums() {
+    fn reads_binary_values() {
+        let cents = Kind::Numeric { scale: 2 };
+        let whole = Kind::Numeric { scale: 0 };
+        let cases = [
+            (Kind::Int, 7_i16.to_be_bytes().to_vec(), Datum::Int(7)),
+            (Kind::Int, (-2_i32).to_be_bytes().to_vec(), Datum::Int(-2)),
+            (
+                Kind::Int,
+                i64::MAX.to_be_bytes().to_vec(),
+                Datum::Int(i64::MAX),
+            ),
+            (
+                cents,
+                numeric_bytes(0, NUMERIC_POS, &[12, 5000]),
+                Datum::Int(1250),
+            ),
+            (
+                cents,
+                numeric_bytes(-1, NUMERIC_NEG, &[500]),
+                Datum::Int(-5),
+            ),
+            (cents, numeric_bytes(0, NUMERIC_POS, &[7]), Datum::Int(700)),
+            (cents, numeric_bytes(0, NUMERIC_POS, &[]), Datum::Int(0)),
+            (
+                cents,
+                numeric_bytes(2, NUMERIC_POS, &[1, 2345, 6789, 100]),
+                Datum::Int(12_345_678_901),
+            ),
+            (whole, numeric_bytes(0, NUMERIC_POS, &[7]), Datum::Int(7)),
+            (
+                whole,
+                numeric_bytes(4, NUMERIC_POS, &[1]),
+                Datum::Int(10_000_000_000_000_000),
+            ),
+            (Kind::Bool, vec![1], Datum::Bool(true)),
+            (Kind::Bool, vec![0], Datum::Bool(false)),
+            (
+                Kind::Text,
+                "Bø".as_bytes().to_vec(),
+                Datum::Text("Bø".into()),
+            ),
+            (Kind::Text, vec![], Datum::Text("".into())),
+            (Kind::Time, micros(PG_EPOCH, 0), Datum::Int(PG_EPOCH)),
+            (Kind::Time, micros(PG_EPOCH, -1), Datum::Int(PG_EPOCH - 1)),
+            (
+                Kind::Time,
+                micros(1_705_314_600, 500_000),
+                Datum::Int(1_705_314_600),
+            ),
+            (Kind::Time, micros(-1, 500_000), Datum::Int(-1)),
+        ];
+        for (kind, bytes, datum) in cases {
+            assert_eq!(kind.read_binary(&bytes), Ok(datum), "{kind} {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn binary_value_errors() {
+        let cents = Kind::Numeric { scale: 2 };
+        let whole = Kind::Numeric { scale: 0 };
+        let mut short = numeric_bytes(0, NUMERIC_POS, &[1, 2]);
+        short.pop();
+        let cases = [
+            (Kind::Int, vec![0; 3]),
+            (Kind::Int, vec![]),
+            (Kind::Int, vec![0; 9]),
+            (cents, numeric_bytes(0, NUMERIC_POS, &[1, 2340])),
+            (cents, numeric_bytes(-2, NUMERIC_POS, &[1])),
+            (cents, numeric_bytes(0, 0xc000, &[])),
+            (cents, numeric_bytes(0, 0xd000, &[])),
+            (cents, numeric_bytes(0, 0xf000, &[])),
+            (cents, short),
+            (cents, numeric_bytes(0, NUMERIC_POS, &[1])[..5].to_vec()),
+            (whole, numeric_bytes(10, NUMERIC_POS, &[9999])),
+            (
+                whole,
+                numeric_bytes(4, NUMERIC_POS, &[922, 3372, 368, 5477, 5808]),
+            ),
+            (Kind::Bool, vec![2]),
+            (Kind::Bool, vec![]),
+            (Kind::Text, vec![0xff]),
+            (Kind::Time, i64::MAX.to_be_bytes().to_vec()),
+            (Kind::Time, i64::MIN.to_be_bytes().to_vec()),
+            (Kind::Time, vec![0; 4]),
+        ];
+        for (kind, bytes) in cases {
+            assert_eq!(
+                kind.read_binary(&bytes),
+                Err(ValueError::binary(kind, &bytes)),
+                "{kind} {bytes:?}"
+            );
+        }
         assert_eq!(
-            read_sum("170141183460469231731687303715884105727", 0),
-            Ok(i128::MAX)
-        );
-        assert_eq!(read_sum("-12.5", 2), Ok(-1250));
-        assert_eq!(
-            read_sum("12.345", 2),
-            Err(ValueError::new(Kind::Numeric { scale: 2 }, "12.345"))
-        );
-        assert_eq!(
-            read_sum("170141183460469231731687303715884105727", 1),
-            Err(ValueError::new(
-                Kind::Numeric { scale: 1 },
-                "170141183460469231731687303715884105727"
-            ))
+            ValueError::binary(Kind::Int, &[1, 0xab]).to_string(),
+            r#"can't read "\\x01ab" as an integer"#
         );
     }
 

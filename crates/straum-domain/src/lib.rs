@@ -7,6 +7,7 @@
 
 mod agg;
 mod ask;
+mod hash;
 mod ident;
 mod rollup;
 mod spec;
@@ -16,7 +17,7 @@ mod value;
 pub use agg::Agg;
 pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Ident;
-pub use rollup::{DimTable, Rollup, RowError, Sum};
+pub use rollup::{DimTable, Rollup, RowError};
 pub use spec::{
     Cond, Dim, Fact, Grain, Key, KeyPath, Literal, Measure, Ref, Slot, Spec, SpecError, Table, Time,
 };

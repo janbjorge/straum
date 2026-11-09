@@ -22,6 +22,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Pg, read_wal};
 use crate::stream::{Decoder, Stream};
+use crate::value::Kind;
 use crate::wire::Conn;
 
 const PASSWORD: &str = "straum";
@@ -83,8 +84,9 @@ ALTER TABLE $S.logins REPLICA IDENTITY FULL;
 CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 ";
 
-const BOROUGHS: [&str; 3] = ["Manhattan", "Queens", "Bronx"];
-const KINDS: [&str; 3] = ["cab", "pool", "van"];
+/// The last of each holds what `COPY` escapes, so loads read escapes back.
+const BOROUGHS: [&str; 4] = ["Manhattan", "Queens", "Bronx", "Bø\tro\\ugh\n"];
+const KINDS: [&str; 4] = ["cab", "pool", "van", "e\\bike\r\x08\x0b\x0c"];
 const RIDERS: [&str; 4] = ["ann", "bo", "cy", "di"];
 
 /// Logical decoding and a short `wal_sender_timeout`.
@@ -501,7 +503,7 @@ impl Rng {
 fn follows_the_database() {
     let pg = postgres();
     let mut db = Db::new(&pg, "follows", TABLES);
-    // Six hours of trips, so a cell holds several load groups.
+    // Six hours of trips, so a cell holds several rows.
     let mut rng = Rng {
         hours: 6,
         ..Rng::new(7)
@@ -1161,6 +1163,60 @@ fn setup_problems_say_what_to_fix() {
 }
 
 #[test]
+fn binary_copies_read_as_text_does() {
+    let pg = postgres();
+    let mut conn = Conn::connect(&pg.dsn, false).unwrap();
+    let kinds = [
+        Kind::Int,
+        Kind::Int,
+        Kind::Int,
+        Kind::Numeric { scale: 2 },
+        Kind::Numeric { scale: 0 },
+        Kind::Numeric { scale: 4 },
+        Kind::Bool,
+        Kind::Text,
+        Kind::Text,
+        Kind::Text,
+        Kind::Time,
+    ];
+    conn.execute(
+        "CREATE TABLE every (a int2, b int4, c int8, d numeric(10, 2), e numeric(18, 0),
+                             f numeric(18, 4), g boolean, h text, i varchar(5), j char(4),
+                             k timestamptz);
+         INSERT INTO every VALUES
+           (-32768, 2147483647, -9223372036854775808, -12345678.9, 999999999999999999,
+            0.0001, true, E'tab\\there\\\\ ø', 'abc', 'ab', '2024-02-29 13:47:05.999999+00'),
+           (0, 0, 0, 0, 0, 12345678901234.5678, false, '', '', '', '1969-12-31 23:59:59.5+00'),
+           (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+           (1, 1, 1, 0.01, -1, -0.5, true, 'x', 'xxxxx', 'xxxx', '0001-01-01 00:00:00+00'),
+           (2, 2, 2, 99999999.99, 10000, 100000000, false, 'y', 'y', 'y',
+            '294276-12-31 23:59:59+00');",
+    )
+    .unwrap();
+    let columns = "a, b, c, d, e, f, g, h, i, j, k";
+    let mut texts = Vec::new();
+    conn.query(&format!("SELECT {columns} FROM every"), |fields| {
+        let row = kinds.iter().zip(fields).map(|(kind, field)| {
+            field.map_or(Ok(Datum::Null), |text| {
+                kind.read(text).map_err(Error::Value)
+            })
+        });
+        texts.push(row.collect::<Result<Vec<_>, _>>()?);
+        Ok(())
+    })
+    .unwrap();
+    let mut binaries = Vec::new();
+    let sql = format!("COPY (SELECT {columns} FROM every) TO STDOUT (FORMAT binary)");
+    crate::load::copy(&mut conn, &sql, &kinds, |batch| {
+        binaries.extend(batch.chunks(kinds.len()).map(<[Datum]>::to_vec));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(texts.len(), 5);
+    assert_eq!(binaries, texts);
+}
+
+#[test]
 fn reports_wal_level_and_read_access() {
     let pg = postgres();
     let mut db = Db::new(&pg, "access", TABLES);
@@ -1398,6 +1454,198 @@ fn query_errors() {
         err,
         "connection to PostgreSQL: PostgreSQL closed the connection"
     );
+}
+
+/// CopyOutResponse for `columns` binary columns.
+fn copy_out(columns: i16) -> Vec<u8> {
+    let mut body = vec![1];
+    body.extend(columns.to_be_bytes());
+    body.extend((0..columns).flat_map(|_| 1_i16.to_be_bytes()));
+    message(b'H', &body)
+}
+
+/// The signature, no flags and a header extension of `extension`.
+fn copy_header(extension: &[u8]) -> Vec<u8> {
+    let mut header = b"PGCOPY\n\xff\r\n\0".to_vec();
+    header.extend(0_i32.to_be_bytes());
+    header.extend(u32::try_from(extension.len()).unwrap().to_be_bytes());
+    header.extend(extension);
+    header
+}
+
+/// A binary copy row of `int4` fields, `None` for null.
+fn copy_tuple(fields: &[Option<i32>]) -> Vec<u8> {
+    let mut row = i16::try_from(fields.len()).unwrap().to_be_bytes().to_vec();
+    for field in fields {
+        match field {
+            None => row.extend((-1_i32).to_be_bytes()),
+            Some(v) => {
+                row.extend(4_i32.to_be_bytes());
+                row.extend(v.to_be_bytes());
+            }
+        }
+    }
+    row
+}
+
+const COPY_END: [u8; 2] = (-1_i16).to_be_bytes();
+
+/// The rows a stand-in server's copy of two `int4` columns gives, sent as
+/// `messages` CopyData bodies, then `after`.
+fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> {
+    let mut reply = copy_out(2);
+    for m in messages {
+        reply.extend(copy_data(m));
+    }
+    reply.extend(after);
+    let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
+    let mut rows = Vec::new();
+    crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |batch| {
+        rows.extend(batch.chunks(2).map(<[Datum]>::to_vec));
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+fn copy_done() -> Vec<u8> {
+    let mut m = message(b'c', b"");
+    m.extend(message(b'C', b"COPY 2\0"));
+    m.extend(message(b'Z', b"I"));
+    m
+}
+
+#[test]
+fn reads_binary_copies() {
+    let rows = [
+        vec![Datum::Int(1), Datum::Null],
+        vec![Datum::Int(-3), Datum::Int(4)],
+    ];
+    // As PostgreSQL sends it: the header with the first row, then a
+    // message per row and one for the end.
+    let mut first = copy_header(b"");
+    first.extend(copy_tuple(&[Some(1), None]));
+    let sent = [first, copy_tuple(&[Some(-3), Some(4)]), COPY_END.to_vec()];
+    assert_eq!(copied(&sent, &copy_done()).unwrap(), rows);
+    // Header, rows and end in one message, with a header extension.
+    let mut one = copy_header(b"ext");
+    one.extend(copy_tuple(&[Some(1), None]));
+    one.extend(copy_tuple(&[Some(-3), Some(4)]));
+    one.extend(COPY_END);
+    assert_eq!(copied(&[one], &copy_done()).unwrap(), rows);
+    // An empty table.
+    let mut empty = copy_header(b"");
+    empty.extend(COPY_END);
+    assert_eq!(
+        copied(&[empty], &copy_done()).unwrap(),
+        Vec::<Vec<Datum>>::new()
+    );
+}
+
+#[test]
+fn copies_hand_over_bounded_batches() {
+    let count = 2 * crate::load::BATCH + 7;
+    let mut sent = vec![copy_header(b"")];
+    sent.extend((0..count).map(|i| copy_tuple(&[Some(i32::try_from(i).unwrap()), None])));
+    sent.push(COPY_END.to_vec());
+    let mut reply = copy_out(2);
+    for m in &sent {
+        reply.extend(copy_data(m));
+    }
+    reply.extend(copy_done());
+    let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
+    let mut batches = Vec::new();
+    let mut next = 0;
+    crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |batch| {
+        batches.push(batch.len() / 2);
+        for row in batch.chunks(2) {
+            assert_eq!(row, [Datum::Int(next), Datum::Null]);
+            next += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let full = crate::load::BATCH;
+    assert_eq!(batches, [full, full, 7]);
+
+    // A failed batch stops the copy, and its error is the one returned.
+    let mut conn = connect(vec![now(signed_in()), now(reply)], false).unwrap();
+    let mut calls = 0;
+    let err = crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |_| {
+        calls += 1;
+        Err(Error::Protocol("a row Straum refused".into()))
+    })
+    .unwrap_err();
+    assert_eq!(err.to_string(), "PostgreSQL sent a row Straum refused");
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn binary_copy_errors() {
+    let header = copy_header(b"");
+    let row = copy_tuple(&[Some(1), Some(2)]);
+    let with = |parts: &[&[u8]]| parts.concat();
+    let mut cut = with(&[&header, &row]);
+    cut.pop();
+    let mut cut_header = copy_header(b"ext");
+    cut_header.pop();
+    let cases = [
+        (
+            vec![b"1\t2\n".to_vec()],
+            "PostgreSQL sent a copy that isn't binary",
+        ),
+        (
+            vec![header[..13].to_vec()],
+            "PostgreSQL sent a copy row cut short",
+        ),
+        (vec![cut_header], "PostgreSQL sent a copy header cut short"),
+        (
+            vec![with(&[&header, &copy_tuple(&[Some(1)])])],
+            "PostgreSQL sent a copy row of 1 columns, not 2",
+        ),
+        (
+            vec![with(&[&header, &row[..3]])],
+            "PostgreSQL sent a copy row cut short",
+        ),
+        (vec![cut], "PostgreSQL sent a copy value cut short"),
+        (
+            vec![with(&[&header, &row, &COPY_END, &row])],
+            "PostgreSQL sent data after the end of a copy",
+        ),
+        (
+            vec![with(&[&header, &row])],
+            "PostgreSQL sent a copy without its end",
+        ),
+        (
+            vec![with(&[
+                &header,
+                &2_i16.to_be_bytes(),
+                &4_i32.to_be_bytes(),
+                &1_i32.to_be_bytes(),
+                &3_i32.to_be_bytes(),
+                &[0, 0, 1],
+                &COPY_END,
+            ])],
+            "can't read \"\\\\x000001\" as an integer",
+        ),
+    ];
+    for (sent, expected) in cases {
+        let err = copied(&sent, &copy_done()).unwrap_err().to_string();
+        assert!(err.starts_with(expected), "{err}");
+    }
+    // The server fails mid-copy, or sends what a copy doesn't.
+    let mut failed = error_response("57014", "canceling statement");
+    failed.extend(message(b'Z', b"I"));
+    let err = copied(&[with(&[&header, &row])], &failed).unwrap_err();
+    assert_eq!(err.to_string(), "PostgreSQL: canceling statement (57014)");
+    let err = copied(&[header], &message(b'D', &0_i16.to_be_bytes())).unwrap_err();
+    assert_eq!(err.to_string(), "PostgreSQL sent a message during a copy");
+    // Notices and parameters along the way are fine.
+    let mut chatty = message(b'N', b"SNOTICE\0Mhello\0\0");
+    chatty.extend(message(b'S', b"TimeZone\0UTC\0"));
+    chatty.extend(copy_done());
+    let mut empty = copy_header(b"");
+    empty.extend(COPY_END);
+    assert!(copied(&[empty], &chatty).unwrap().is_empty());
 }
 
 #[test]

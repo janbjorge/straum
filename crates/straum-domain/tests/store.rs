@@ -2,11 +2,10 @@
 //! over random inserts, updates and deletes of trips and zones.
 
 use std::collections::{BTreeMap, HashSet};
-use std::num::NonZeroU64;
 
 use straum_domain::{
     Agg, Answer, Ask, AskError, AskKey, Cond, Datum, Dim, Fact, Grain, Ident, KeyPath, Literal,
-    Measure, Ref, RowError, Spec, Store, Sum, Table, Time, TimeKey, Value,
+    Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
 };
 
 const GRAIN: u32 = 900;
@@ -25,6 +24,8 @@ const FARE: usize = 6;
 const TIP: usize = 7;
 const DIST: usize = 8;
 const RIDER: usize = 9;
+/// Columns in a trip row.
+const WIDTH: usize = 10;
 
 /// Column scales `run` sets, from these up, one per column. Each differs,
 /// so an answer that takes a scale from the wrong column shows.
@@ -529,93 +530,44 @@ fn store_matches_naive_reference() {
     }
 }
 
-/// What a `GROUP BY` load returns for `rows`: the grouped values with the
-/// time column as its bucket, the row count, and sum and count per summed
-/// column.
-fn groups(rows: &[Vec<Datum>]) -> BTreeMap<Vec<Datum>, (u64, Vec<Sum>)> {
-    const GROUPED: [usize; 8] = [AT, PAY, VENDOR, SHARED, PU, DRO, TIP, RIDER];
-    const SUMMED: [usize; 2] = [FARE, DIST];
-    let mut groups: BTreeMap<_, (u64, Vec<Sum>)> = BTreeMap::new();
-    for row in rows {
-        let mut values: Vec<Datum> = GROUPED.iter().map(|&c| row[c].clone()).collect();
-        if let Datum::Int(at) = values[0] {
-            let grain = i64::from(GRAIN);
-            values[0] = Datum::Int(at.div_euclid(grain) * grain);
-        }
-        let (count, sums) = groups
-            .entry(values)
-            .or_insert_with(|| (0, vec![Sum { sum: 0, count: 0 }; SUMMED.len()]));
-        *count += 1;
-        for (sum, &c) in sums.iter_mut().zip(&SUMMED) {
-            if let Datum::Int(v) = row[c] {
-                sum.sum += i128::from(v);
-                sum.count += 1;
-            }
-        }
-    }
-    groups
-}
-
 #[test]
-fn grouped_load_matches_rows() {
+fn rows_added_together_match_rows_added_one_by_one() {
     let spec = spec();
-    let rollup_names = |store: &mut Store| {
-        let rollup = store.rollup("trips").unwrap();
-        let names = |it: &mut dyn Iterator<Item = &Ident>| -> Vec<String> {
-            it.map(ToString::to_string).collect()
-        };
-        (names(&mut rollup.grouped()), names(&mut rollup.summed()))
-    };
-    let (grouped, summed) = rollup_names(&mut Store::new(spec.clone()));
-    assert_eq!(
-        grouped,
-        ["at", "pay", "vendor", "shared", "pu", "dro", "tip", "rider"]
-    );
-    assert_eq!(summed, ["fare", "dist"]);
-
-    for seed in 0..8 {
+    for seed in 0..4 {
         let mut rng = Rng(seed);
         let mut by_row = Store::new(spec.clone());
-        let mut by_group = Store::new(spec.clone());
+        let mut together = Store::new(spec.clone());
         for key in 1..=4 {
             let row = zone(&mut rng, key);
             by_row.dim("zones").unwrap().upsert(&row).unwrap();
-            by_group.dim("zones").unwrap().upsert(&row).unwrap();
+            together.dim("zones").unwrap().upsert(&row).unwrap();
         }
-        let mut rows: Vec<Vec<Datum>> = Vec::new();
-        for _ in 0..1_000 {
-            let mut row = trip(&mut rng);
-            // Rows sharing a group, and a cell holding several groups.
-            if !rows.is_empty() && rng.chance(50) {
-                let other = &rows[rng.below(rows.len())];
-                let shared = if rng.chance(50) { RIDER } else { DRO };
-                row[..=shared].clone_from_slice(&other[..=shared]);
-            }
-            by_row.rollup("trips").unwrap().add(&row).unwrap();
-            rows.push(row);
+        let rows: Vec<Vec<Datum>> = (0..2_000).map(|_| trip(&mut rng)).collect();
+        for row in &rows {
+            by_row.rollup("trips").unwrap().add(row).unwrap();
         }
-        let groups = groups(&rows);
-        assert!(groups.len() < rows.len(), "seed {seed}: nothing grouped");
-        let rollup = by_group.rollup("trips").unwrap();
-        for (values, (count, sums)) in &groups {
-            let count = NonZeroU64::new(*count).unwrap();
-            rollup.add_group(values, count, sums).unwrap();
+        let flat: Vec<Datum> = rows.concat();
+        let mut rest = &flat[..];
+        while !rest.is_empty() {
+            let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * WIDTH));
+            together.rollup("trips").unwrap().add_rows(batch).unwrap();
+            rest = after;
         }
         assert_eq!(
-            by_group.rollup("trips").unwrap().cells(),
+            together.rollup("trips").unwrap().cells(),
             by_row.rollup("trips").unwrap().cells(),
             "seed {seed}"
         );
         for _ in 0..50 {
             let ask = random_ask(&mut rng, &spec);
             assert_eq!(
-                by_group.ask(&ask).unwrap(),
+                together.ask(&ask).unwrap(),
                 by_row.ask(&ask).unwrap(),
                 "seed {seed}, {ask:?}"
             );
         }
         // The stream takes out rows the load put in.
-        let rollup = by_group.rollup("trips").unwrap();
+        let rollup = together.rollup("trips").unwrap();
         for row in &rows {
             rollup.remove(row).unwrap();
         }
@@ -624,43 +576,28 @@ fn grouped_load_matches_rows() {
 }
 
 #[test]
-fn group_errors() {
+fn rows_added_together_add_none_on_error() {
+    let mut rng = Rng(5);
     let mut store = Store::new(spec());
     let rollup = store.rollup("trips").unwrap();
-    let one = NonZeroU64::MIN;
-    let sums = [Sum { sum: 0, count: 0 }; 2];
-    let values = |at: Datum, tip: Datum| {
-        let mut values = vec![Datum::Null; 8];
-        values[0] = at;
-        values[6] = tip;
-        values
-    };
-    let ok = values(Datum::Int(START), Datum::Int(1));
+    let good = [trip(&mut rng), trip(&mut rng)].concat();
     assert_eq!(
-        rollup.add_group(&ok[1..], one, &sums),
+        rollup.add_rows(&good[1..]),
         Err(RowError::Arity {
-            expected: 8,
-            found: 7
+            expected: WIDTH,
+            found: WIDTH - 1
         })
     );
+    let mut bad = good.clone();
+    bad[WIDTH + AT] = text("noon");
     assert_eq!(
-        rollup.add_group(&ok, one, &sums[1..]),
-        Err(RowError::Arity {
-            expected: 2,
-            found: 1
-        })
-    );
-    assert_eq!(
-        rollup.add_group(&values(text("noon"), Datum::Null), one, &sums),
+        rollup.add_rows(&bad),
         Err(RowError::NotInt { column: id("at") })
     );
-    assert_eq!(
-        rollup.add_group(&values(Datum::Null, text("big")), one, &sums),
-        Err(RowError::NotInt { column: id("tip") })
-    );
     assert_eq!(rollup.cells(), 0);
-    rollup.add_group(&ok, one, &sums).unwrap();
-    assert_eq!(rollup.cells(), 1);
+    rollup.add_rows(&[]).unwrap();
+    rollup.add_rows(&good).unwrap();
+    assert!(rollup.cells() > 0);
 }
 
 #[test]

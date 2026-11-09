@@ -127,8 +127,8 @@ dim customers: public.customers needs a primary key or unique index on id alone
   Temporary slots don't move to a standby either, so after a failover
   Straum loads again from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
-  database and makes `ALTER TABLE` on its tables wait. Each fact loads
-  with one `GROUP BY`, so PostgreSQL sends one row per group, and Straum
-  ends the snapshot right after the last table.
+  database and makes `ALTER TABLE` on its tables wait. Each table loads
+  with one binary `COPY`, a plain scan with no sort or hash to spill to
+  disk, and Straum ends the snapshot right after the last table.
 - WAL decoding per replication connection, so run one Straum per database
   unless you need more.

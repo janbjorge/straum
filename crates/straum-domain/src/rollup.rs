@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::iter;
-use std::num::NonZeroU64;
+use std::{iter, mem, panic, thread};
 
 use crate::agg::Agg;
+use crate::hash::FastMap;
 use crate::ident::Ident;
 use crate::spec::{Dim, Fact};
 use crate::value::Datum;
@@ -29,12 +29,6 @@ pub struct Rollup {
     key_len: usize,
     /// What each cell keeps, one state per input.
     inputs: Vec<Input>,
-    /// Row positions a load groups by: the time column, the rollup-key
-    /// columns, then the min, max and count distinct inputs.
-    grouped: Vec<usize>,
-    /// Row positions of the sum inputs not grouped by, whose sums a load
-    /// returns.
-    summed: Vec<usize>,
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
     codes: Vec<Codes>,
@@ -42,6 +36,9 @@ pub struct Rollup {
     levels: Vec<Level>,
     /// Cells at the `date_bin` width.
     cells: usize,
+    /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
+    /// allocation per row.
+    key: Vec<u32>,
     /// Per column; see [`Rollup::set_scales`].
     scales: Vec<u32>,
 }
@@ -64,6 +61,16 @@ impl Level {
         }
     }
 
+    /// Adds a checked row under its key codes; whether its cell is new.
+    fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> bool {
+        let (cells, i, new) = self.cell(&row[TIME], key, inputs);
+        cells.rows[i] += 1;
+        for (column, input) in cells.columns.iter_mut().zip(inputs) {
+            column.add(i, &row[input.column]);
+        }
+        new
+    }
+
     /// The cell `key` names in the bucket `time` falls in, made empty if
     /// it's new, and whether it is.
     fn cell(&mut self, time: &Datum, key: &[u32], inputs: &[Input]) -> (&mut Cells, usize, bool) {
@@ -80,7 +87,7 @@ impl Level {
 /// Codes outlive their cells until [`Rollup::clear`].
 #[derive(Debug, Default)]
 struct Codes {
-    codes: HashMap<Datum, u32>,
+    codes: FastMap<Datum, u32>,
     values: Vec<Datum>,
 }
 
@@ -104,7 +111,7 @@ pub(crate) struct Cells {
     /// Codes per key.
     width: usize,
     /// Cell position by key.
-    index: HashMap<Box<[u32]>, usize>,
+    index: FastMap<Box<[u32]>, usize>,
     keys: Vec<u32>,
     rows: Vec<u64>,
     /// One per input, in [`Rollup`] input order.
@@ -115,7 +122,7 @@ impl Cells {
     fn new(width: usize, inputs: &[Input]) -> Cells {
         Cells {
             width,
-            index: HashMap::new(),
+            index: FastMap::default(),
             keys: Vec::new(),
             rows: Vec::new(),
             columns: inputs.iter().map(|i| Column::new(i.kind)).collect(),
@@ -206,15 +213,6 @@ impl Kind {
             Kind::Distinct => false,
         }
     }
-
-    /// Whether a load sums the input in PostgreSQL. Otherwise it groups by
-    /// the input and adds each value with its row count.
-    fn summed(self) -> bool {
-        match self {
-            Kind::Sum => true,
-            Kind::Extent | Kind::Distinct => false,
-        }
-    }
 }
 
 /// One input's state per cell of a bucket, entry `i` being cell `i`'s.
@@ -223,13 +221,14 @@ pub(crate) enum Column {
     /// Sum and count of the non-null values.
     Sum { sums: Vec<i128>, counts: Vec<u64> },
     /// Count per value, so removing the min or max reveals the next one.
-    /// `mins` and `maxs` mirror each tree's ends, so an ask reads them
-    /// without walking it. An empty tree's are `i64::MAX` and `i64::MIN`,
-    /// which any min or max passes over: a merge needs no test for empty.
+    /// `mins` and `maxs` mirror each cell's ends, so an ask reads them
+    /// without walking a tree. An empty cell's are `i64::MAX` and
+    /// `i64::MIN`, which any min or max passes over: a merge needs no test
+    /// for empty.
     Extent {
         mins: Vec<i64>,
         maxs: Vec<i64>,
-        counts: Vec<BTreeMap<i64, u64>>,
+        counts: Vec<Values>,
     },
     /// Count per value.
     Distinct(Vec<HashMap<Datum, u64>>),
@@ -251,17 +250,6 @@ impl Rollup {
                 inputs.push(input);
             }
         }
-        let mut grouped: Vec<usize> = (0..=key_len).collect();
-        for input in &inputs {
-            if !input.kind.summed() && !grouped.contains(&input.column) {
-                grouped.push(input.column);
-            }
-        }
-        let summed = inputs
-            .iter()
-            .filter(|i| i.kind.summed() && !grouped.contains(&i.column))
-            .map(|i| i.column)
-            .collect();
         let levels = iter::once(fact.time.grain)
             .chain(fact.time.buckets.iter().copied())
             .map(|grain| Level {
@@ -273,10 +261,9 @@ impl Rollup {
             levels,
             key_len,
             inputs,
-            grouped,
-            summed,
             codes: (0..key_len).map(|_| Codes::default()).collect(),
             cells: 0,
+            key: Vec::new(),
             scales: vec![0; columns.len()],
             columns,
         }
@@ -285,19 +272,6 @@ impl Rollup {
     /// The columns a row carries, in order.
     pub fn columns(&self) -> &[Ident] {
         &self.columns
-    }
-
-    /// The columns a load groups by: the time column, whose bucket the load
-    /// returns, the rollup-key columns, then the min, max and count distinct
-    /// inputs.
-    pub fn grouped(&self) -> impl Iterator<Item = &Ident> {
-        self.grouped.iter().map(|&c| &self.columns[c])
-    }
-
-    /// The sum and avg inputs not among [`Rollup::grouped`], whose sum and
-    /// count of non-null values a load returns per group.
-    pub fn summed(&self) -> impl Iterator<Item = &Ident> {
-        self.summed.iter().map(|&c| &self.columns[c])
     }
 
     /// Number of cells at the `date_bin` width; a cell goes when its last
@@ -336,59 +310,63 @@ impl Rollup {
 
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let key = self.code(row);
+        let mut key = mem::take(&mut self.key);
+        key.clear();
+        self.code(row, &mut key);
         for (n, level) in self.levels.iter_mut().enumerate() {
-            let (cells, i, new) = level.cell(&row[TIME], &key, &self.inputs);
+            let new = level.add(row, &key, &self.inputs);
             if n == 0 {
                 self.cells += usize::from(new);
             }
-            cells.rows[i] += 1;
-            for (column, input) in cells.columns.iter_mut().zip(&self.inputs) {
-                column.add(i, &row[input.column], 1);
-            }
         }
+        self.key = key;
         Ok(())
     }
 
-    /// Adds `rows` rows at once, as one row of a `GROUP BY` load: `values`
-    /// holds one value per [`Rollup::grouped`] column, `sums` one per
-    /// [`Rollup::summed`] column.
-    pub fn add_group(
-        &mut self,
-        values: &[Datum],
-        rows: NonZeroU64,
-        sums: &[Sum],
-    ) -> Result<(), RowError> {
-        let lengths = [
-            (self.grouped.len(), values.len()),
-            (self.summed.len(), sums.len()),
-        ];
-        for (expected, found) in lengths {
-            if expected != found {
-                return Err(RowError::Arity { expected, found });
-            }
+    /// Adds rows of [`Rollup::columns`] laid end to end, as a load reads
+    /// them: each width of cells on its own thread, since they share
+    /// nothing but the rows. If a row fails [`Rollup::add`]'s checks, none
+    /// is added.
+    pub fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
+        let width = self.columns.len();
+        if !rows.len().is_multiple_of(width) {
+            return Err(RowError::Arity {
+                expected: width,
+                found: rows.len() % width,
+            });
         }
-        let mut row = vec![Datum::Null; self.columns.len()];
-        for (&column, value) in self.grouped.iter().zip(values) {
-            row[column] = value.clone();
+        let rows: Vec<&[Datum]> = rows.chunks_exact(width).collect();
+        for row in &rows {
+            self.check(row)?;
         }
-        self.check(&row)?;
-        let key = self.code(&row);
-        for (n, level) in self.levels.iter_mut().enumerate() {
-            let (cells, i, new) = level.cell(&row[TIME], &key, &self.inputs);
-            if n == 0 {
-                self.cells += usize::from(new);
-            }
-            cells.rows[i] += rows.get();
-            let mut sums = sums.iter();
-            for (column, input) in cells.columns.iter_mut().zip(&self.inputs) {
-                if input.kind.summed() && !self.grouped.contains(&input.column) {
-                    column.add_sum(i, sums.next().expect("one per summed column"));
-                } else {
-                    column.add(i, &row[input.column], rows.get());
-                }
-            }
+        let mut keys = mem::take(&mut self.key);
+        keys.clear();
+        for row in &rows {
+            self.code(row, &mut keys);
         }
+        let (key_len, inputs) = (self.key_len, &self.inputs);
+        let add = |level: &mut Level| {
+            (rows.iter().enumerate())
+                .map(|(r, row)| {
+                    let key = &keys[r * key_len..][..key_len];
+                    usize::from(level.add(row, key, inputs))
+                })
+                .sum::<usize>()
+        };
+        let new = thread::scope(|scope| {
+            let (first, wider) = self
+                .levels
+                .split_first_mut()
+                .expect("a rollup has its grain");
+            let threads: Vec<_> = wider.iter_mut().map(|l| scope.spawn(|| add(l))).collect();
+            let new = add(first);
+            for thread in threads {
+                thread.join().unwrap_or_else(|e| panic::resume_unwind(e));
+            }
+            new
+        });
+        self.cells += new;
+        self.key = keys;
         Ok(())
     }
 
@@ -510,12 +488,14 @@ impl Rollup {
         Ok(())
     }
 
-    /// The key codes of a checked row, new values getting new codes.
-    fn code(&mut self, row: &[Datum]) -> Vec<u32> {
-        (row[1..=self.key_len].iter())
-            .zip(&mut self.codes)
-            .map(|(value, codes)| codes.code(value))
-            .collect()
+    /// Appends the key codes of a checked row to `key`, new values getting
+    /// new codes.
+    fn code(&mut self, row: &[Datum], key: &mut Vec<u32>) {
+        key.extend(
+            (row[1..=self.key_len].iter())
+                .zip(&mut self.codes)
+                .map(|(value, codes)| codes.code(value)),
+        );
     }
 }
 
@@ -545,7 +525,7 @@ impl Column {
             Column::Extent { mins, maxs, counts } => {
                 mins.push(i64::MAX);
                 maxs.push(i64::MIN);
-                counts.push(BTreeMap::new());
+                counts.push(Values::EMPTY);
             }
             Column::Distinct(counts) => counts.push(HashMap::new()),
         }
@@ -566,32 +546,22 @@ impl Column {
         }
     }
 
-    /// Adds to cell `i` a value that `n` rows hold. Nulls are skipped, as
-    /// in SQL.
-    fn add(&mut self, i: usize, value: &Datum, n: u64) {
+    /// Adds a value to cell `i`. Nulls are skipped, as in SQL.
+    fn add(&mut self, i: usize, value: &Datum) {
         match (self, value) {
             (_, Datum::Null) => {}
             (Column::Sum { sums, counts }, &Datum::Int(v)) => {
-                sums[i] += i128::from(v) * i128::from(n);
-                counts[i] += n;
+                sums[i] += i128::from(v);
+                counts[i] += 1;
             }
             (Column::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
                 mins[i] = mins[i].min(v);
                 maxs[i] = maxs[i].max(v);
-                *counts[i].entry(v).or_default() += n;
+                counts[i].add(v);
             }
-            (Column::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += n,
+            (Column::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += 1,
             _ => unreachable!("Rollup::check lets only integers through"),
         }
-    }
-
-    /// Adds to cell `i` the sum a load returned.
-    fn add_sum(&mut self, i: usize, sum: &Sum) {
-        let Column::Sum { sums, counts } = self else {
-            unreachable!("only sum inputs are summed");
-        };
-        sums[i] += sum.sum;
-        counts[i] += sum.count;
     }
 
     fn remove(&mut self, i: usize, value: &Datum) -> Result<(), RowError> {
@@ -601,15 +571,9 @@ impl Column {
                 counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
                 sums[i] -= i128::from(v);
             }
-            (Column::Extent { mins, maxs, counts }, Datum::Int(v)) => {
-                let tree = &mut counts[i];
-                let count = tree.get_mut(v).ok_or(RowError::Missing)?;
-                *count -= 1;
-                if *count == 0 {
-                    tree.remove(v);
-                    mins[i] = tree.first_key_value().map_or(i64::MAX, |(&v, _)| v);
-                    maxs[i] = tree.last_key_value().map_or(i64::MIN, |(&v, _)| v);
-                }
+            (Column::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
+                counts[i].remove(v)?;
+                (mins[i], maxs[i]) = counts[i].ends();
             }
             (Column::Distinct(counts), v) => {
                 let tree = &mut counts[i];
@@ -625,12 +589,56 @@ impl Column {
     }
 }
 
-/// The sum of a column's non-null values over a group, and how many there
-/// are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sum {
-    pub sum: i128,
-    pub count: u64,
+/// One cell's count per value. Most cells hold a single value, kept here
+/// without allocating: a tree per cell was half of a load.
+#[derive(Debug)]
+pub(crate) enum Values {
+    One(i64, u64),
+    Many(BTreeMap<i64, u64>),
+}
+
+impl Values {
+    const EMPTY: Values = Values::Many(BTreeMap::new());
+
+    fn add(&mut self, v: i64) {
+        match self {
+            Values::One(w, n) if *w == v => *n += 1,
+            Values::One(w, n) => *self = Values::Many(BTreeMap::from([(*w, *n), (v, 1)])),
+            Values::Many(tree) if tree.is_empty() => *self = Values::One(v, 1),
+            Values::Many(tree) => *tree.entry(v).or_default() += 1,
+        }
+    }
+
+    fn remove(&mut self, v: i64) -> Result<(), RowError> {
+        match self {
+            Values::One(w, n) if *w == v => {
+                *n -= 1;
+                if *n == 0 {
+                    *self = Values::EMPTY;
+                }
+            }
+            Values::One(..) => return Err(RowError::Missing),
+            Values::Many(tree) => {
+                let count = tree.get_mut(&v).ok_or(RowError::Missing)?;
+                *count -= 1;
+                if *count == 0 {
+                    tree.remove(&v);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The least and greatest value, `i64::MAX` and `i64::MIN` if none.
+    fn ends(&self) -> (i64, i64) {
+        match self {
+            Values::One(v, _) => (*v, *v),
+            Values::Many(tree) => (
+                tree.first_key_value().map_or(i64::MAX, |(&v, _)| v),
+                tree.last_key_value().map_or(i64::MIN, |(&v, _)| v),
+            ),
+        }
+    }
 }
 
 /// A dim's rows by key. A row is the key, then the attributes in

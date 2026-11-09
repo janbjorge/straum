@@ -209,6 +209,31 @@ impl Conn {
         }
     }
 
+    /// Runs a `COPY ... TO STDOUT`, calling `each` with every CopyData as
+    /// it comes, so a load holds one message of the table at a time. After
+    /// an error the connection is mid-copy; drop it.
+    pub(crate) fn copy_out(
+        &mut self,
+        sql: &str,
+        mut each: impl FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        frontend::query(sql, &mut self.output)?;
+        self.flush()?;
+        loop {
+            match self.read()? {
+                Message::CopyData(body) => each(body.data())?,
+                Message::CopyOutResponse(_)
+                | Message::CopyDone
+                | Message::CommandComplete(_)
+                | Message::NoticeResponse(_)
+                | Message::ParameterStatus(_) => {}
+                Message::ErrorResponse(body) => return Err(server_error(&body)),
+                Message::ReadyForQuery(_) => return Ok(()),
+                _ => return Err(unexpected("a message during a copy")),
+            }
+        }
+    }
+
     pub(crate) fn execute(&mut self, sql: &str) -> Result<(), Error> {
         self.query(sql, |_| Ok(()))
     }

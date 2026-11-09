@@ -56,7 +56,8 @@ Tests:
   `straum-http`, and the `straum` binary as composition root. The per-row path
   stays concrete; traits only at the edges.
 - 2026-11-08: Simplifications: no raw column store; facts need no row
-  store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot; one
+  store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot
+  (replaced by binary `COPY`, 2026-11-09); one
   time level (bucket) merged up at ask time (replaced by `buckets`,
   2026-11-09); asks over HTTP/JSON, no pgwire;
   no WAL barrier in v1, answers carry the LSN they reflect.
@@ -137,9 +138,9 @@ Tests:
 - 2026-11-09: A replication connection takes the simple query protocol only,
   so loads arrive as text. The load is one `GROUP BY` per fact on the rollup
   key plus the min, max and count distinct columns, returning the row count
-  and sum and count per sum input. A reload reads one table on a second
-  replication connection with its own temporary slot; its consistent point is
-  the load's LSN.
+  and sum and count per sum input (replaced by binary `COPY`, 2026-11-09).
+  A reload reads one table on a second replication connection with its own
+  temporary slot; its consistent point is the load's LSN.
 - 2026-11-09: Tests that need PostgreSQL start it themselves with
   `testcontainers` (`blocking`, no default features, so no C), one container
   per test, removed when the test ends. A dev-dependency only; Docker is the
@@ -241,6 +242,23 @@ Tests:
   to GitHub Pages by CI on every push to `main`. It covers using and
   running Straum, not `research/` or this plan, and favours no cloud.
   Its examples come from a run of its quick start.
+- 2026-11-09: Loads are `COPY (SELECT <columns> FROM <table>) TO STDOUT
+  (FORMAT binary)`, one per fact and dim, and Straum groups the rows
+  itself. PostgreSQL only scans: no sort or hash that can spill to disk,
+  no output functions, and nothing from the spec runs there. A reader
+  thread decodes into batches of 8192 rows, four in flight, so a load
+  holds about 1.2 MB per column besides the store, however big the
+  table.
+  `Rollup::add_rows` checks and codes a batch, then fills each bucket
+  width on its own thread. The maps a row probes hash with a seeded
+  folded multiply, not SipHash, and a min or max cell keeps a single
+  value without a tree. Taxi month, 2.96M trips: `GROUP BY` 9.4 s, text
+  `COPY` 5.2 s, binary 3.0 s, now 1.9 s, where PostgreSQL alone copies
+  the columns to `/dev/null` in 1.4 s. The load still holds
+  `AccessShareLock` and pins xmin until the snapshot commits; ctid
+  ranges on several connections in the one snapshot, or a standby, if
+  that hurts. The stream never starts before the slot's consistent
+  point: WAL before it is gone or never held the rows.
 
 ## M0: notation and domain model
 
@@ -346,7 +364,7 @@ Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
       publication, privileges; each problem says what to fix
 - [x] Temporary slot, exported snapshot, initial `GROUP BY` load; the domain
       takes grouped cells (`Rollup::add_group`), since the load reads cells,
-      not rows
+      not rows (now a binary `COPY` of rows, 2026-11-09)
 - [x] Confirm that a load at the slot's consistent point holds exactly the
       commits whose end LSN is at or before it (`Commit::lsn`): 2,000
       single-row commits racing the slot's creation, three rounds, none lost

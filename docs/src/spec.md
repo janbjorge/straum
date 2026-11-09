@@ -1,8 +1,9 @@
 # Writing a spec
 
 A spec is a file of `CREATE VIEW` statements, one per fact, in a small
-subset of PostgreSQL's syntax. Straum keeps one rollup per view. It never
-creates the view in PostgreSQL; it sends only the `SELECT`, to load.
+subset of PostgreSQL's syntax. Straum keeps one rollup per view and
+builds it itself. Nothing in the spec runs in PostgreSQL: Straum never
+creates the view, and to load it copies only the columns the view reads.
 Anything outside the subset is an error that names the construct.
 
 This spec, from the [benchmark](benchmark.md), uses all of the subset:
