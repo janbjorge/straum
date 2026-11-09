@@ -1,7 +1,9 @@
-# Straum architecture (2026-11-08)
+# Straum architecture (2026-11-09)
 
 How Straum works since aggregates are declared in Straum SQL, a PostgreSQL
-`CREATE VIEW` subset made only for Straum specs. PLAN.md tracks the build and holds the dated decisions this follows.
+`CREATE VIEW` subset made only for Straum specs. PLAN.md tracks the build
+and holds the dated decisions this follows; the user guide (`docs/`) says
+how to use and run it.
 First target: AKS next to Azure Database for PostgreSQL Flexible Server 18
 (AKS.md). The constraints are the managed ones: no custom extension, no
 superuser, logical replication allowed. Tags as in README.md (R, U, I).
@@ -13,8 +15,8 @@ PostgreSQL paths are relative to the root of [upstream PostgreSQL](https://githu
   Straum reads it at start.
 - Straum follows the fact and dim tables over logical replication and keeps one
   rollup per fact in RAM.
-- Clients send asks over HTTP/JSON: measures, keys to group by, filters, a time
-  zone and a time range. Straum answers from the rollup, and every answer carries
+- Clients send asks over HTTP/JSON: measures, keys to group by, filters and a
+  time range, in UTC. Straum answers from the rollup, and every answer carries
   the LSN and commit time it reflects.
 - PostgreSQL stays the source of truth. Straum keeps nothing on disk and rebuilds
   from PostgreSQL on every start.
@@ -53,14 +55,14 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
 - `WITH (key = COLUMN)`: the fact table's primary key. PostgreSQL rejects
-  view options; Straum never sends a view to PostgreSQL, so it needn't
-  take them.
+  view options, but Straum sends PostgreSQL neither the view nor its body.
+  The `SELECT` alone runs in PostgreSQL as is, which makes it the reference
+  for tests.
 - `buckets = '1 day, 7 days'` (optional): wider bucket widths Straum keeps
   beside the `date_bin` one, so an ask reads a long range from few cells
   (§3). Each is a wider whole multiple of the width before it and, like
   `date_bin`'s, starts at the epoch, so 7-day buckets start on Thursdays.
-  Answers don't change. The `SELECT` runs there as
-  is, which makes it the initial load query and the reference for tests.
+  Answers don't change.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
 - `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
   `ALIAS`, an N:1 pointer from a fact column to a dim key. It is the only way
@@ -86,7 +88,7 @@ The rollup key is the by columns, then the ref ids, then the time bucket
 to its attributes after aggregation, as Kylin does with derived dimensions
 ([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)).
 A change to a dim row therefore never touches a rollup. M1 checked this on one
-month of NYC taxi trips: seven ask shapes gave the same rows from the rollup
+month of NYC taxi trips: eight ask shapes gave the same rows from the rollup
 as from the raw join in PostgreSQL (PLAN.md, M1).
 
 `Spec::new` checks the declarations against each other and reports every
@@ -120,8 +122,8 @@ time keys and a range end inside a bucket.
   the ask groups by the bucket (§3).
 - Filtered measures keep no state. Their conditions name rollup-key parts only,
   so a cell counts in whole or not at all.
-- A ref id with no dim row maps to null attributes, as a left join would. This
-  is an open question in PLAN.md.
+- A ref id with no dim row maps to null attributes, as a left join would
+  (PLAN.md, 2026-11-09).
 - An ask without keys answers one row even when nothing matches, as SQL does
   without GROUP BY.
 - sum, min and max come back in the column's scale. avg comes back as sum and
@@ -136,8 +138,8 @@ Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
   "by": ["payment_type", "pickup.borough"],
   "time": "bucket",
   "filter": {"pickup.borough": ["Manhattan", "Queens"], "vendor_id": 2},
-  "from": "2024-01-01T00:00:00+01:00",
-  "to": 1706742000
+  "from": "2024-01-01T00:00:00Z",
+  "to": 1706745600
 }
 ```
 
@@ -149,19 +151,19 @@ Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
   are errors that name the field, never ignored. All of them come back at
   once, as `{"errors": [...]}` with status 400.
 
-The answer:
+The answer, with made-up values:
 
 ```json
 {
   "lsn": "16/B374D848",
   "commit_time": "2024-01-31T22:59:59.123456Z",
-  "columns": ["day", "payment_type", "pickup.borough", "trips", "fare", "distance"],
-  "rows": [["2024-01-01T00:00:00+01:00", 1, "Bronx", 412, 6234.50,
+  "columns": ["bucket", "payment_type", "pickup.borough", "trips", "fare", "distance"],
+  "rows": [["2024-01-01T00:00:00Z", 1, "Bronx", 412, 6234.50,
             {"sum": 1203.11, "count": 412}]]
 }
 ```
 
-- Time keys are RFC 3339 at the zone's offset.
+- A bucket prints as its start, RFC 3339 in UTC.
 - Numeric values are exact decimals in their column's scale. The load sets
   each column's scale from the catalog (`Rollup::set_scales`), and answers
   carry them (`Answer::scales`).
@@ -217,21 +219,22 @@ The spec is known at start, so one slot and one snapshot serve every table:
 
 ![The writer opens a temporary slot whose snapshot is at LSN L, loads dims and facts in it, then streams from L through a stream thread.](../docs/src/diagrams/start.svg)
 
-- The load reads cells, not rows. Per fact, one `GROUP BY` on the bucket
-  (`extract(epoch FROM date_bin(...))`, as `bench/rollup.sql` buckets), the
-  rollup key and the min, max and count distinct columns, which need a count
-  per value. Each group returns `count(*)` and sum and count per other sum
-  input (`Rollup::grouped`, `Rollup::summed`, `crates/straum-pg/src/load.rs`) and
-  adds to its cell whole (`Rollup::add_group`). Where those value columns are
-  nearly unique, groups approach rows; a `GROUPING SETS` query per column
-  would avoid the cross product (I, not built).
+- Each fact and dim loads with one `COPY (SELECT <columns> FROM <table>) TO
+  STDOUT (FORMAT binary)`, and Straum groups the rows itself
+  (`crates/straum-pg/src/load.rs`, `Rollup::add_rows`). PostgreSQL only
+  scans: no sort or hash that can spill to disk, no output functions, and
+  nothing from the spec runs there. A reader thread decodes batches of 8192
+  rows, four in flight, so a load holds about 1.2 MB per column besides the
+  store (PLAN.md, 2026-11-09).
 - SQL and replication commands share one connection in logical walsender mode
   (`doc/src/sgml/protocol.sgml:2186-2190`, R), simple query protocol only
-  (`:2193-2194`, R), so values come back as text. Straum sets `DateStyle = ISO`
-  and `TimeZone = UTC` at startup and reads that text
-  (`crates/straum-pg/src/value.rs`).
-- The catalog checks run after the slot exists, so they see the tables as the
-  load does. Each problem found names its fix (`crates/straum-pg/src/catalog.rs`).
+  (`:2193-2194`, R). Loads come back as binary `COPY`; pgoutput v1 sends the
+  stream's values as text, which Straum reads under the `DateStyle = ISO` and
+  `TimeZone = UTC` it sets at startup (`crates/straum-pg/src/value.rs`).
+- The catalog checks run before the slot, since below PostgreSQL 19 a server
+  at `wal_level = replica` can't make one and PostgreSQL's error names no
+  fix, and again in the slot's snapshot, so they see the tables as the load
+  does. Each problem found names its fix (`crates/straum-pg/src/catalog.rs`).
 - `SNAPSHOT 'use'` must run first in a REPEATABLE READ, read-only transaction
   (`src/backend/replication/walsender.c:1342-1364`, R). The load sees the state
   at L, and the stream starts with the first commit after L.
@@ -242,8 +245,8 @@ The spec is known at start, so one slot and one snapshot serve every table:
   for the whole database (POSTGRES-REPLICATION.md §4). It also holds a lock on
   every table it read, which blocks `ALTER TABLE`. Straum commits it right after
   the last load, not at the first stream read (M5; a test's `ALTER TABLE`
-  waited on it before). Reading cells keeps it short: the taxi month, 2,964,624
-  trips, loads in 4.4 s (PLAN.md, M5).
+  waited on it before). Reading only the spec's columns, in binary, keeps it
+  short: the taxi month, 2,964,624 trips, loads in 2.0 s (PLAN.md, M5).
 
 ### 4b. Apply
 
@@ -257,27 +260,24 @@ whole old row (POSTGRES-REPLICATION.md §3, R). So:
   has REPLICA IDENTITY FULL; Straum checks it at every start. FULL writes the
   old row to WAL on UPDATE and DELETE only, so a table that only gets inserts
   pays nothing for it. An UPDATE or DELETE that still comes without the old
-  row, as after the identity is changed back, reads the fact again, and that
+  row, as after the identity is changed back, starts Straum over, and that
   start reports the missing FULL.
 - Dims need only the key: upsert on insert and update, delete by key.
 - Truncate empties the table in place. Changes before it in the transaction
   are gone, changes after it apply.
 
-Reading one table again: a change Straum can't apply (no old row, a row that
-doesn't fit the rollup, a changed Relation) reads that table again while the
-others keep streaming (`crates/straum-app/src/app.rs`):
+Starting over: a change Straum can't apply (no old row, a row that doesn't
+fit the rollup, a changed Relation) is a failure like a lost connection
+(`Writer::step`, `crates/straum-app/src/app.rs`; PLAN.md, MVP cuts,
+2026-11-09). Reading one table again on a second connection was cut:
 
-- The table is emptied and loaded from a new snapshot at LSN `at`. On
-  PostgreSQL that is a second replication connection with its own temporary
-  slot, `at` its consistent point (`crates/straum-pg/src/source.rs`). A new slot
-  reserves WAL from the current insert position, so `at` is at or past what
-  the stream has sent (`src/backend/replication/slot.c:1759-1788`, R).
-  Creating it waits for the transactions open at that moment
+- Straum closes the stream, so PostgreSQL drops its temporary slot, waits,
+  and loads every table from a new slot and its snapshot. A new slot
+  reserves WAL from the current insert position
+  (`src/backend/replication/slot.c:1759-1788`, R), and creating it waits for
+  the transactions open at that moment
   (`src/backend/replication/logical/snapbuild.c:98-107`, R).
-- The stream is behind `at`. Commits up to `at` are already in the load, so
-  they skip the table; later ones apply.
-- Asks that read the table, or a dim it refs, answer not ready until the
-  stream passes `at`. Asks on other facts answer at the stream's LSN.
+- Asks answer not ready until the new store is swapped in.
 
 A commit's LSN is the end of its commit record, so "up to `at`" means the
 commits that end at or before it. A transaction is decoded only if its commit
@@ -292,13 +292,13 @@ Schema drift: pgoutput resets `schema_sent` when a table's relcache entry is
 invalidated (`src/backend/replication/pgoutput/pgoutput.c:2122-2128`, R), so it
 sends a Relation message before the next change to an altered table. Straum
 compares the columns it reads with those it loaded: a column that reads
-differently, such as `numeric(10, 2)` turned `numeric(12, 3)`, reads that
-table again. A column dropped, or turned to a type Straum doesn't read, stops
+differently, such as `numeric(10, 2)` turned `numeric(12, 3)`, starts Straum
+over. A column dropped, or turned to a type Straum doesn't read, stops
 the stream, and the setup check on the next start names it. A table that is
 altered but not written to goes unnoticed until its next change (I).
 
 An update that leaves a TOASTed value alone doesn't send it. Straum takes it
-from the old row when one came; without one, it reads the table again.
+from the old row when one came; without one, it starts over.
 
 `streaming` is off in v1, so changes arrive after commit. A transaction larger
 than `logical_decoding_work_mem` spills to the primary's disk
@@ -321,8 +321,8 @@ connection and answers once the stream passes the returned LSN
 
 `straum plan` reads the spec and prints the SQL an admin runs once
 (`straum plan --spec FILE`, from `straum_pg::plan`): `wal_level = logical`
-(needs a restart; 19 can stay at `replica`), `CREATE ROLE Straum LOGIN
-REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION Straum
+(needs a restart; 19 can stay at `replica`), `CREATE ROLE straum LOGIN
+REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION straum
 FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for every
 fact. A dim needs its key as replica identity, which only
 the schema can give, so the SQL says so in a comment.
@@ -332,7 +332,8 @@ the schema can give, so the SQL says so in a comment.
   needs superuser (`publicationcmds.c:1508-1516`, R).
 - Setup lives in the catalog and survives Straum restarts, PostgreSQL restarts
   and failover. Straum rechecks it on every start; if something is missing it
-  stays not ready and logs the SQL `straum plan` would print.
+  stays not ready and names each fix in its log, `/readyz` and
+  `straum status`.
 - The spec names every column Straum reads, so the publication could list only
   those columns. A column list must cover the replica identity, and REPLICA
   IDENTITY FULL allows none (`publicationcmds.c:404`, R). Without a list every
@@ -358,19 +359,23 @@ Clean architecture as Cargo crates:
   connection. `App` is the store and how far it has followed the source;
   clones share it. `Writer::step` is the loop that does the I/O: it loads
   every table or applies a commit, and starts over when a change no longer
-  fits. `App::ask` answers with the LSN and commit time.
-- `straum-pg` (M5): our own replication client on `postgres-protocol`. Catalog
-  checks, the grouped load in the slot's snapshot, pgoutput v1 decoding,
-  and a thread that owns the stream: it
-  answers keepalives and reports the applied LSN while the writer is busy.
-  Synchronous, plain TCP (TLS in M7).
+  fits. `App::ask` answers with the LSN and commit time. About once a
+  second the writer reads the server's WAL position for the lag and the
+  WAL held for its slot (`crates/straum-app/src/lag.rs`, M7).
+- `straum-pg` (M5, M7): our own replication client on `postgres-protocol`.
+  Catalog checks, binary `COPY` loads in the slot's snapshot, pgoutput v1
+  decoding, WAL readings on a plain connection, and a thread that owns the
+  stream: it answers keepalives and reports the applied LSN while the
+  writer is busy. Synchronous; TLS is `rustls` on `rustls-graviola`
+  (`crates/straum-pg/src/tls.rs`).
 - `straum-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
-  walker over `serde_json` values, without derive macros; `/livez` and
-  `/readyz`. Asks run on tokio's
-  blocking threads, since a big one reads every cell of a fact.
-- `straum` (M6): the binary. `straum run` and `straum plan`, arguments read by
-  hand. One thread runs the writer and starts over after a failure, waiting
-  1 s, then twice as long each time up to 60 s. A panic aborts the process,
+  walker over `serde_json` values, without derive macros; `/livez`,
+  `/readyz` and `/status`. Asks run on tokio's blocking threads, since a
+  big one reads every cell of a fact.
+- `straum` (M6, M7): the binary. `straum run`, `straum plan` and
+  `straum status`, arguments read by hand. One thread runs the writer and
+  starts over after a failure, waiting 1 s, then twice as long each time up
+  to 60 s. A panic aborts the process,
   since the store may be half written.
 
 The per-row path stays concrete; traits only at the ports. One writer applies
@@ -387,16 +392,18 @@ open if that lag matters.
 ![Straum states Loading, Ready, Lagging, Waiting and Stopping, with /readyz in each.](../docs/src/diagrams/lifecycle.svg)
 
 - `/readyz` is true only in Ready; otherwise it answers 503 with the last
-  failure, or that it is loading. `/livez` checks the process only; lag
-  never fails liveness. Until M7 measures lag, Ready means every table is
-  loaded; Lagging needs the server's WAL
-  position.
-- Resync closes the replication connection first, so PostgreSQL drops the old
-  temporary slot before the new one exists.
+  failure, that it is loading, or how far behind it is. Ready means every
+  table is loaded and the lag is within `--max-lag`; past it Straum is
+  Lagging, and asks still answer, each with its LSN. `/livez` checks the
+  process only; lag never fails liveness.
+- Starting over closes the replication connection first, so PostgreSQL drops
+  the old temporary slot before the new one exists.
 - A spec change rolls the Deployment through a checksum annotation on the
   ConfigMap. The new pod loads from scratch.
-- Any failure means Resync: a source error, an altered table, or a change
-  that doesn't fit. Truncate empties a table in place.
+- Any failure leads to Waiting, then Loading from a new slot: a source
+  error, an altered table, a change that doesn't fit, or more than
+  `--max-retained-wal` held for the slot. The wait starts at 1 s and doubles
+  up to 60 s. Truncate empties a table in place.
 - SIGTERM or SIGINT: Straum stops accepting, finishes the asks in flight and
   exits. PostgreSQL drops the temporary slots as the connections close.
 
@@ -406,15 +413,16 @@ Nothing to persist, and the temporary slot is what makes that safe: a crashed,
 OOM-killed or deleted pod leaves no slot behind, so it can't fill the server's
 disk. The costs:
 
-- **Every start is a full load**, one `GROUP BY` per fact under one snapshot.
+- **Every start is a full load**, one binary `COPY` per table under one
+  snapshot.
 - **The load pins xmin** for the whole database while it runs (§4a).
 - **No slot failover.** "cannot enable failover for a temporary replication
   slot" (`src/backend/replication/slot.c:411-420`, R). Azure HA failover drops
-  the connection and Straum resyncs. In exchange, `sync_replication_slots` and
-  `hot_standby_feedback` aren't needed.
+  the connection and Straum starts over. In exchange,
+  `sync_replication_slots` and `hot_standby_feedback` aren't needed.
 - **Lag still holds WAL while connected.** Azure fixes `max_slot_wal_keep_size`
-  at `-1` (MANAGED-POSTGRES.md). Straum watches its retained WAL and resyncs past
-  a cap.
+  at `-1` (MANAGED-POSTGRES.md). Straum reads the WAL held for its slot every
+  second and starts over past `--max-retained-wal` (4Gi).
 - **Each replica is a slot plus a walsender**, and each walsender decodes all
   WAL (POSTGRES-REPLICATION.md §9). Default is one replica.
 
@@ -444,34 +452,39 @@ One code path covers all of them. Azure Flexible Server 18 defaults to
 
 ## 10. Building blocks
 
-- One static Rust binary (musl, or glibc static-pie) in a distroless
-  `static:nonroot` image, amd64 and arm64 via `docker buildx`, with SBOM and
-  provenance attestations.
+- One static musl binary, built in `rust:1.99.1-alpine` and copied into
+  `gcr.io/distroless/static-debian13:nonroot`, both pinned by digest
+  (`Dockerfile`). CI builds it with one `docker build`; a multi-arch build,
+  SBOM and provenance are not set up.
 - Pod: `runAsNonRoot`, uid 65532, drop ALL capabilities,
   `readOnlyRootFilesystem`, seccomp `RuntimeDefault`; its only volume is the
   spec's ConfigMap, read-only.
-- Memory: the cgroup v2 `memory.max` is the budget; Straum watches
-  `memory.pressure` and fails with a clear error before the kernel OOM-kills it.
-  Memory request equals limit (Guaranteed QoS).
-- straum-pg is synchronous: plain sockets and one stream thread. tokio only in
-  straum-http. TLS to PostgreSQL with rustls comes in M7.
-- Spec from a ConfigMap, DSN from `STRAUM_DSN` or a CSI-mounted secret
-  (`--dsn-file`), never from the command line.
-- Metrics: none yet. M7 adds OTLP to the cluster's collector, with lag and
-  retained WAL, which need the server's WAL position, and memory in bytes.
+- Memory: the pod's limit is the budget, and the chart sets the request
+  equal to it (Guaranteed QoS). Straum doesn't watch it; a store that
+  outgrows it is OOM-killed, and the next pod loads again.
+- straum-pg is synchronous: sockets and one stream thread. tokio only in
+  straum-http. TLS to PostgreSQL is `rustls` 0.23 on `rustls-graviola`, with
+  Mozilla's roots or the PEM file `sslrootcert` names.
+- Spec from a ConfigMap; DSN from `STRAUM_DSN`, which the chart reads from an
+  existing Secret, or a file (`--dsn-file`), never from the command line.
+- Telemetry: none yet; `GET /status` and `straum status` show lag, WAL held,
+  starts and failures. Telemetry is an M8 box (PLAN.md).
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
-- Local development: `docker compose` with `postgres:18` and `wal_level =
-  logical`, plus straum. `bench/run.sh` already runs `postgres:18` in Docker.
+- Local development: the guide's quick start runs `postgres:18` in Docker.
+  Tests start their own PostgreSQL with `testcontainers`, and
+  `bench/run.sh` runs `postgres:18`.
 
 ## Open points
 
 1. Which aggregates the apps need, and whether a spec can declare them.
-2. Mutable facts: REPLICA IDENTITY FULL or a row store in Straum (§4b).
-3. Publication column lists from the spec (§4d).
-4. How long the load pins xmin on real tables (§4a).
-5. Low collapse: warn in `straum plan`, or leave it to the spec author (§3).
-6. What clients do while Straum is not ready: retry, or ask PostgreSQL.
-7. An "as of" time from keepalives, so answers on a quiet database don't
+2. Publication column lists from the spec (§4d).
+3. How long the load pins xmin on real tables (§4a).
+4. Low collapse: warn in `straum plan`, or leave it to the spec author (§3).
+5. What clients do while Straum is not ready: retry, or ask PostgreSQL.
+6. An "as of" time from keepalives, so answers on a quiet database don't
    look stale (§4c).
-8. Long asks delay the writer while they hold the read lock (§6).
+7. Long asks delay the writer while they hold the read lock (§6).
+
+Settled: mutable facts take REPLICA IDENTITY FULL, with no row store in
+Straum (PLAN.md, 2026-11-09).
