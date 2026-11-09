@@ -41,7 +41,8 @@ replica.
   loads before the old one stops.
 - **ConfigMap**: the spec. A checksum annotation rolls the Deployment when it
   changes.
-- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez` and `/readyz`.
+- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez`, `/readyz` and
+  `/status`.
 - **Secret** (`dsn.existingSecret`): the DSN of the replication role, made
   outside the chart and read as `STRAUM_DSN`. Key Vault through Secrets
   Store CSI isn't wired in yet.
@@ -59,8 +60,9 @@ Probes:
 Defaults: the Restricted Pod Security Standard (`runAsNonRoot`, uid 65532
 of the distroless `nonroot` image, seccomp `RuntimeDefault`, drop ALL
 capabilities), a read-only root filesystem, no `imagePullSecrets` (ACR pulls
-by managed identity). Metrics over OTLP to the cluster's collector are
-planned (PLAN.md, M7).
+by managed identity). Telemetry is planned for M8 (PLAN.md); until then
+`kubectl exec deployment/straum -- /straum status` shows what Straum has
+done.
 
 Values (`values.yaml` documents them all):
 
@@ -72,7 +74,7 @@ dsn:
   existingSecret: straum-dsn         # key: dsn (role with REPLICATION)
 publication: straum                  # Straum creates a TEMPORARY slot per pod
 spec: |                              # Straum SQL (Straum-only subset), read at start
-  CREATE VIEW trips WITH (key = id, append = true) AS
+  CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
   SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
          f.pu_location_id, pickup.borough, pickup.zone,
          count(*) AS trips
@@ -94,10 +96,12 @@ resources:
 1. Set the server parameter `wal_level = logical` (Terraform or portal) and
    restart. Slot sync settings aren't needed: temporary slots can't fail over,
    and Straum resyncs after an HA failover (ARCHITECTURE.md §8).
-2. Run `straum plan` on the spec (ARCHITECTURE.md §4d). It checks keys and
-   replica identity and prints `CREATE ROLE straum LOGIN REPLICATION`, `GRANT
-   SELECT` on the spec's tables (the load reads them), and `CREATE PUBLICATION
-   Straum FOR TABLE ...` with the fact and dim tables.
+2. Run `straum plan` on the spec (ARCHITECTURE.md §4d). It reads only the
+   spec, never the server, and prints `CREATE ROLE straum LOGIN REPLICATION`,
+   `GRANT SELECT` on the spec's tables (the load reads them), `CREATE
+   PUBLICATION straum FOR TABLE ...` with the fact and dim tables, and
+   `REPLICA IDENTITY FULL` for each fact. A comment names the key each dim
+   needs.
 3. The table owner runs the printed SQL. Often the app's own role owns its
    tables (I). `FOR ALL TABLES` needs superuser, which Azure doesn't give.
 4. Straum creates its own `TEMPORARY` slot on every start; PostgreSQL drops it
@@ -113,9 +117,10 @@ DELETE on the primary:
   writes with "Column list used by the publication does not cover the replica
   identity." (`execReplication.c:1107`, `:1125`).
 
-A wrong publication breaks the app's writes, not only Straum. `straum plan` checks
-`pg_index` and `relreplident` before it prints `CREATE PUBLICATION`, and Straum
-rechecks on every start.
+A wrong publication breaks the app's writes, not only Straum. `straum plan`
+can't see the schema, so check each dim's key before running its SQL.
+`straum run` checks `pg_index` and `relreplident` on every start and names
+what is missing.
 
 **WAL growth (R, Azure docs via MANAGED-POSTGRES.md).** Azure fixes
 `max_slot_wal_keep_size` at `-1`, so a stalled Straum holds WAL until storage
@@ -137,9 +142,9 @@ system against the same aggregates before committing to Straum.
 
 1. Which aggregates: the top ones from `pg_stat_statements`, and how much of
    their execution time a spec can cover.
-2. Mutable facts with REPLICA IDENTITY FULL write the old row to WAL on every
-   UPDATE and DELETE. Measure that on the primary if FULL wins
-   (ARCHITECTURE.md §4b).
+2. Every fact has REPLICA IDENTITY FULL (PLAN.md, 2026-11-09), which writes
+   the old row to WAL on every UPDATE and DELETE. Measure that on the
+   primary at the real write rate (ARCHITECTURE.md §4b).
 3. `helm template` output committed to the deploy repo, or a `HelmDeploy`
    step?
 4. HA: with temporary slots, a failover means a full resync. How long does the
