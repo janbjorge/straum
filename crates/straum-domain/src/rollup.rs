@@ -15,17 +15,15 @@ const TIME: usize = 0;
 /// Panic message for measure inputs, which `Fact::columns` lists.
 const COLUMNS: &str = "Fact::columns lists every measure input";
 
-/// Panic message for a cell `Rollup::cell` just made or found.
-const MADE: &str = "Rollup::cell makes the bucket";
-
 /// One cell per rollup key, holding what the fact's measures need. Cells
-/// are kept per bucket, so an ask reads only the buckets in its range.
+/// are kept per bucket, so an ask reads only the buckets in its range, and
+/// once more per wider bucket width the fact declares, so a long range
+/// reads few cells.
 #[derive(Debug)]
 pub struct Rollup {
     /// The time column, the by columns and ref columns in rollup-key order,
     /// then the measure columns not already among them.
     columns: Vec<Ident>,
-    grain: i64,
     /// By columns plus refs; they sit at row positions `1..=key_len`.
     key_len: usize,
     /// What each cell keeps, one state per input.
@@ -39,13 +37,42 @@ pub struct Rollup {
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
     codes: Vec<Codes>,
-    /// Cells by bucket start, oldest first. `None` holds the rows without a
-    /// time, which no ask reads.
-    buckets: BTreeMap<Option<i64>, Cells>,
-    /// Cells over every bucket.
+    /// The `date_bin` width first, then the wider ones.
+    levels: Vec<Level>,
+    /// Cells at the `date_bin` width.
     cells: usize,
     /// Per column; see [`Rollup::set_scales`].
     scales: Vec<u32>,
+}
+
+/// The cells of every bucket of one width.
+#[derive(Debug)]
+struct Level {
+    /// Bucket width in seconds.
+    width: i64,
+    /// Cells by bucket start, oldest first. `None` holds the rows without a
+    /// time, which no ask reads.
+    buckets: BTreeMap<Option<i64>, Cells>,
+}
+
+impl Level {
+    fn bucket(&self, time: &Datum) -> Option<i64> {
+        match *time {
+            Datum::Int(t) => Some(t.div_euclid(self.width) * self.width),
+            _ => None,
+        }
+    }
+
+    /// The cell `key` names in the bucket `time` falls in, made empty if
+    /// it's new, and whether it is.
+    fn cell(&mut self, time: &Datum, key: &[u32], inputs: &[Input]) -> (&mut Cells, usize, bool) {
+        let bucket = self.bucket(time);
+        let cells = (self.buckets)
+            .entry(bucket)
+            .or_insert_with(|| Cells::new(key.len(), inputs.len()));
+        let (i, new) = cells.entry(key, inputs);
+        (cells, i, new)
+    }
 }
 
 /// A rollup-key column's values, each under the code of its first add.
@@ -226,14 +253,20 @@ impl Rollup {
             .filter(|i| i.kind == Kind::Sum && !grouped.contains(&i.column))
             .map(|i| i.column)
             .collect();
+        let levels = iter::once(fact.time.grain)
+            .chain(fact.time.buckets.iter().copied())
+            .map(|grain| Level {
+                width: i64::from(grain.0),
+                buckets: BTreeMap::new(),
+            })
+            .collect();
         Rollup {
-            grain: i64::from(fact.time.grain.0),
+            levels,
             key_len,
             inputs,
             grouped,
             summed,
             codes: (0..key_len).map(|_| Codes::default()).collect(),
-            buckets: BTreeMap::new(),
             cells: 0,
             scales: vec![0; columns.len()],
             columns,
@@ -258,14 +291,15 @@ impl Rollup {
         self.summed.iter().map(|&c| &self.columns[c])
     }
 
-    /// Number of cells; a cell goes when its last row is removed.
+    /// Number of cells at the `date_bin` width; a cell goes when its last
+    /// row is removed.
     pub fn cells(&self) -> usize {
         self.cells
     }
 
     /// Drops every cell, as when the table is emptied. The scales stay.
     pub fn clear(&mut self) {
-        self.buckets.clear();
+        self.levels.iter_mut().for_each(|l| l.buckets.clear());
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
         self.cells = 0;
     }
@@ -296,11 +330,16 @@ impl Rollup {
 
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let (bucket, i) = self.cell(row);
-        let cells = self.buckets.get_mut(&bucket).expect(MADE);
-        cells.rows[i] += 1;
-        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-            state.add(&row[input.column], 1);
+        let key = self.code(row);
+        for (n, level) in self.levels.iter_mut().enumerate() {
+            let (cells, i, new) = level.cell(&row[TIME], &key, &self.inputs);
+            if n == 0 {
+                self.cells += usize::from(new);
+            }
+            cells.rows[i] += 1;
+            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
+                state.add(&row[input.column], 1);
+            }
         }
         Ok(())
     }
@@ -328,18 +367,23 @@ impl Rollup {
             row[column] = value.clone();
         }
         self.check(&row)?;
-        let (bucket, i) = self.cell(&row);
-        let cells = self.buckets.get_mut(&bucket).expect(MADE);
-        cells.rows[i] += rows.get();
-        let mut sums = sums.iter();
-        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-            match state {
-                State::Sum { sum, count } if !self.grouped.contains(&input.column) => {
-                    let group = sums.next().expect("one per summed column");
-                    *sum += group.sum;
-                    *count += group.count;
+        let key = self.code(&row);
+        for (n, level) in self.levels.iter_mut().enumerate() {
+            let (cells, i, new) = level.cell(&row[TIME], &key, &self.inputs);
+            if n == 0 {
+                self.cells += usize::from(new);
+            }
+            cells.rows[i] += rows.get();
+            let mut sums = sums.iter();
+            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
+                match state {
+                    State::Sum { sum, count } if !self.grouped.contains(&input.column) => {
+                        let group = sums.next().expect("one per summed column");
+                        *sum += group.sum;
+                        *count += group.count;
+                    }
+                    _ => state.add(&row[input.column], rows.get()),
                 }
-                _ => state.add(&row[input.column], rows.get()),
             }
         }
         Ok(())
@@ -349,25 +393,27 @@ impl Rollup {
     /// the rollup no longer matches the table; start over.
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let bucket = self.bucket(row);
-        let key: Option<Vec<u32>> = (row[1..=self.key_len].iter())
+        let key: Vec<u32> = (row[1..=self.key_len].iter())
             .zip(&self.codes)
             .map(|(value, codes)| codes.codes.get(value).copied())
-            .collect();
-        let cells = self.buckets.get_mut(&bucket).ok_or(RowError::Missing)?;
-        let i = *cells
-            .index
-            .get(key.ok_or(RowError::Missing)?.as_slice())
+            .collect::<Option<_>>()
             .ok_or(RowError::Missing)?;
-        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
-            state.remove(&row[input.column])?;
-        }
-        cells.rows[i] -= 1;
-        if cells.rows[i] == 0 {
-            cells.swap_remove(i);
-            self.cells -= 1;
-            if cells.len() == 0 {
-                self.buckets.remove(&bucket);
+        for (n, level) in self.levels.iter_mut().enumerate() {
+            let bucket = level.bucket(&row[TIME]);
+            let cells = level.buckets.get_mut(&bucket).ok_or(RowError::Missing)?;
+            let i = *cells.index.get(key.as_slice()).ok_or(RowError::Missing)?;
+            for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
+                state.remove(&row[input.column])?;
+            }
+            cells.rows[i] -= 1;
+            if cells.rows[i] == 0 {
+                cells.swap_remove(i);
+                if n == 0 {
+                    self.cells -= 1;
+                }
+                if cells.len() == 0 {
+                    level.buckets.remove(&bucket);
+                }
             }
         }
         Ok(())
@@ -383,10 +429,49 @@ impl Rollup {
             .position(|i| *i == Input { kind, column })
     }
 
-    /// The buckets that start in `from..to`, each with its cells.
-    pub(crate) fn range(&self, from: i64, to: i64) -> impl Iterator<Item = (i64, &Cells)> {
-        (self.buckets.range(Some(from)..Some(to)))
-            .filter_map(|(&bucket, cells)| Some((bucket?, cells)))
+    /// Buckets that cover `from..to` once, in time order, each with its
+    /// start and cells: the widest that fit, narrower ones at the ends. With
+    /// `each_bucket`, as an ask grouped by the bucket needs, only `date_bin`
+    /// buckets. `from` and `to` are on `date_bin` edges.
+    pub(crate) fn cover(
+        &self,
+        from: i64,
+        to: i64,
+        each_bucket: bool,
+    ) -> impl Iterator<Item = (i64, &Cells)> {
+        let widest = if each_bucket {
+            0
+        } else {
+            self.levels.len() - 1
+        };
+        let mut runs = Vec::new();
+        self.runs(widest, from, to, &mut runs);
+        runs.into_iter().flat_map(move |(level, from, to)| {
+            (self.levels[level].buckets.range(Some(from)..Some(to)))
+                .filter_map(|(&bucket, cells)| Some((bucket?, cells)))
+        })
+    }
+
+    /// Splits `from..to` into runs of whole buckets of `level` and narrower,
+    /// in time order: the run of `level` buckets inside it, then the ends.
+    fn runs(&self, level: usize, from: i64, to: i64, runs: &mut Vec<(usize, i64, i64)>) {
+        if from >= to {
+            return;
+        }
+        if level == 0 {
+            runs.push((0, from, to));
+            return;
+        }
+        let width = self.levels[level].width;
+        let first = -(-from).div_euclid(width) * width;
+        let last = to.div_euclid(width) * width;
+        if first >= last {
+            self.runs(level - 1, from, to, runs);
+            return;
+        }
+        self.runs(level - 1, from, first, runs);
+        runs.push((level, first, last));
+        self.runs(level - 1, last, to, runs);
     }
 
     /// The value under `code` in rollup-key column `slot`.
@@ -417,28 +502,12 @@ impl Rollup {
         Ok(())
     }
 
-    fn bucket(&self, row: &[Datum]) -> Option<i64> {
-        match row[TIME] {
-            Datum::Int(t) => Some(t.div_euclid(self.grain) * self.grain),
-            _ => None,
-        }
-    }
-
-    /// The bucket and position of the cell a checked row falls in, made
-    /// empty if it's new.
-    fn cell(&mut self, row: &[Datum]) -> (Option<i64>, usize) {
-        let bucket = self.bucket(row);
-        let key: Vec<u32> = (row[1..=self.key_len].iter())
+    /// The key codes of a checked row, new values getting new codes.
+    fn code(&mut self, row: &[Datum]) -> Vec<u32> {
+        (row[1..=self.key_len].iter())
             .zip(&mut self.codes)
             .map(|(value, codes)| codes.code(value))
-            .collect();
-        let (width, inputs) = (self.key_len, self.inputs.len());
-        let cells = (self.buckets)
-            .entry(bucket)
-            .or_insert_with(|| Cells::new(width, inputs));
-        let (i, new) = cells.entry(&key, &self.inputs);
-        self.cells += usize::from(new);
-        (bucket, i)
+            .collect()
     }
 }
 

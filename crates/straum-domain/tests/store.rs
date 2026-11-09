@@ -98,7 +98,8 @@ fn spec() -> Spec {
         time: Time {
             column: id("at"),
             grain: Grain(GRAIN),
-            buckets: vec![],
+            // Hours, days and weeks, so random ranges read every width.
+            buckets: vec![Grain(3_600), Grain(86_400), Grain(604_800)],
         },
         refs: vec![
             Ref {

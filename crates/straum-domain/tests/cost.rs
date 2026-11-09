@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Agg, Ask, AskKey, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Ref, Spec, Store, Table,
-    Time,
+    Time, TimeKey,
 };
 
 thread_local! {
@@ -61,7 +61,8 @@ fn key(s: &str) -> AskKey {
     AskKey::Key(path)
 }
 
-fn spec() -> Spec {
+/// The fact, with `buckets` (in hours) beside its one-hour grain.
+fn spec(buckets: &[u32]) -> Spec {
     let table = |name| Table {
         schema: id("public"),
         name: id(name),
@@ -84,7 +85,7 @@ fn spec() -> Spec {
         time: Time {
             column: id("at"),
             grain: Grain(HOUR),
-            buckets: vec![],
+            buckets: buckets.iter().map(|h| Grain(h * HOUR)).collect(),
         },
         refs: vec![Ref {
             name: id("pickup"),
@@ -103,7 +104,12 @@ fn spec() -> Spec {
 
 /// A store whose rollup holds `cells` cells: one row per pay, zone and hour.
 fn store(cells: i64) -> Store {
-    let mut store = Store::new(spec());
+    store_with(cells, &[])
+}
+
+/// As [`store`], with `buckets` (in hours).
+fn store_with(cells: i64, buckets: &[u32]) -> Store {
+    let mut store = Store::new(spec(buckets));
     let dim = store.dim("zones").unwrap();
     for zone in 0..ZONES {
         let borough = BOROUGHS[zone as usize % BOROUGHS.len()];
@@ -206,4 +212,21 @@ fn an_ask_stays_within_its_time_per_cell() {
             "by {by:?}: {per_cell:.1} ns a cell, over the {budget} ns budget"
         );
     }
+}
+
+/// Hours 5 to 700 over 30 days with day and week buckets: 19 hours, 6 days,
+/// 3 weeks, 1 day and 4 hours, each piece 80 cells. Weeks start at the
+/// epoch, so hour 168 starts one. An ask grouped by the bucket reads the
+/// hours.
+#[test]
+fn wider_buckets_cut_the_cells_a_range_reads() {
+    let per_hour = 2 * ZONES as usize;
+    let store = store_with(720 * per_hour as i64, &[24, 168]);
+    assert_eq!(
+        store.cells_read(&ask(&[], 5, 700)).unwrap(),
+        (19 + 6 + 3 + 1 + 4) * per_hour
+    );
+    let mut by_bucket = ask(&[], 5, 700);
+    by_bucket.by = vec![AskKey::Time(TimeKey::Bucket)];
+    assert_eq!(store.cells_read(&by_bucket).unwrap(), 695 * per_hour);
 }

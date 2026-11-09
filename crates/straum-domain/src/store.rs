@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::iter;
 
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
-use crate::rollup::{DimTable, Rollup, State};
+use crate::rollup::{Cells, DimTable, Rollup, State};
 use crate::spec::{Agg, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{Datum, Value};
 
@@ -62,14 +62,11 @@ impl Store {
     }
 
     /// How many cells answering `ask` reads, whatever they hold: its cost.
-    /// Those are the cells of the buckets in its range.
+    /// Those are the cells of the buckets that cover its range.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
-        Ok(rollup
-            .range(ask.from, ask.to)
-            .map(|(_, cells)| cells.len())
-            .sum())
+        Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
     }
 
     /// Merges the cells in range that pass the ask's filter, one group per
@@ -113,8 +110,7 @@ impl Store {
         let mut groups: HashMap<Vec<Cow<Datum>>, Vec<Partial>> = HashMap::new();
         let mut group = Vec::with_capacity(by.len());
         let mut total = empty();
-        let cells = rollup
-            .range(ask.from, ask.to)
+        let cells = cover(rollup, ask)
             .flat_map(|(bucket, cells)| cells.iter().map(move |cell| (bucket, cell)));
         for (bucket, (key, rows, states)) in cells {
             let at = At {
@@ -208,6 +204,13 @@ impl Store {
             })
             .collect()
     }
+}
+
+/// The buckets `ask` reads: every `date_bin` bucket in its range when it
+/// groups by the bucket, else the widest buckets that fit.
+fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Cells)> {
+    let each_bucket = ask.by.iter().any(|key| matches!(key, AskKey::Time(_)));
+    rollup.cover(ask.from, ask.to, each_bucket)
 }
 
 /// A cell an ask reads: its key codes and bucket, and the rollup whose
