@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use postgres_protocol::message::backend::Message as Backend;
 use straum_app::{Change, Commit, Lsn, Old};
@@ -18,7 +18,7 @@ use straum_domain::{Datum, Ident};
 use crate::catalog::Table;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, Tuple};
-use crate::value::Kind;
+use crate::value::{self, Kind};
 use crate::wire::{Closer, Conn, server_error};
 
 /// How long a read waits before the thread checks whether a status update
@@ -32,8 +32,6 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 const QUEUE: usize = 64;
 /// How long the thread waits for room in a full queue before trying again.
 const WAIT: Duration = Duration::from_millis(10);
-/// PostgreSQL counts time from 2000-01-01, 946684800 s after the Unix epoch.
-const POSTGRES_EPOCH: Duration = Duration::from_secs(946_684_800);
 
 /// Turns pgoutput messages into commits of spec rows.
 pub(crate) struct Decoder {
@@ -443,9 +441,7 @@ impl Reader {
         } else {
             applied
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH + POSTGRES_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
+        let now = value::timestamp_micros(SystemTime::now());
         let mut message = Vec::with_capacity(34);
         message.push(b'r');
         // Written, flushed and applied are one point for straum.
@@ -462,6 +458,8 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
     use crate::pgoutput::Column;
 

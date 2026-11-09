@@ -4,10 +4,9 @@
 
 use std::fmt;
 use std::str;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-/// PostgreSQL's epoch, 2000-01-01 UTC, in Unix seconds.
-const POSTGRES_EPOCH: u64 = 946_684_800;
+use crate::value;
 
 /// One pgoutput message, borrowing its text from the received bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,16 +205,9 @@ impl<'a> Reader<'a> {
         self.array().map(u64::from_be_bytes)
     }
 
-    /// Microseconds since [`POSTGRES_EPOCH`].
+    /// Microseconds since PostgreSQL's epoch.
     fn time(&mut self) -> Result<SystemTime, DecodeError> {
-        let micros = self.array().map(i64::from_be_bytes)?;
-        let epoch = UNIX_EPOCH + Duration::from_secs(POSTGRES_EPOCH);
-        let offset = Duration::from_micros(micros.unsigned_abs());
-        Ok(if micros < 0 {
-            epoch - offset
-        } else {
-            epoch + offset
-        })
+        self.array().map(i64::from_be_bytes).map(value::system_time)
     }
 
     fn expect(&mut self, tag: u8) -> Result<(), DecodeError> {
@@ -288,6 +280,8 @@ impl std::error::Error for DecodeError {}
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
 
     /// Builds messages the way pgoutput writes them.

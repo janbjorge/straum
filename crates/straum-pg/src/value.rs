@@ -1,7 +1,9 @@
 //! Column types straum reads: their text form as PostgreSQL prints it
 //! under `DateStyle = ISO` and `TimeZone = UTC`, which straum sets on
-//! connect, and their binary form, which loads read.
+//! connect, and their binary form, which loads read. Also PostgreSQL's
+//! timestamps as clock times, as the stream reads and writes them.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, str};
 
 use straum_domain::Datum;
@@ -27,6 +29,8 @@ const DAYS_PER_ERA: i64 = 146_097;
 /// Seconds from 1970-01-01 to 2000-01-01, PostgreSQL's epoch.
 const PG_EPOCH: i64 = 946_684_800;
 const MICROS_PER_SECOND: i64 = 1_000_000;
+/// [`PG_EPOCH`] as a clock time, less [`UNIX_EPOCH`].
+const PG_EPOCH_AFTER_UNIX: Duration = Duration::from_secs(PG_EPOCH.unsigned_abs());
 /// The sign words of a binary numeric; NaN and the infinities have others.
 const NUMERIC_POS: u16 = 0x0000;
 const NUMERIC_NEG: u16 = 0x4000;
@@ -115,6 +119,23 @@ impl Kind {
         };
         datum.ok_or_else(|| ValueError::binary(self, bytes))
     }
+}
+
+/// A PostgreSQL timestamp, microseconds since its epoch, as a clock time.
+pub(crate) fn system_time(micros: i64) -> SystemTime {
+    let epoch = UNIX_EPOCH + PG_EPOCH_AFTER_UNIX;
+    let offset = Duration::from_micros(micros.unsigned_abs());
+    if micros < 0 {
+        epoch - offset
+    } else {
+        epoch + offset
+    }
+}
+
+/// A clock time as a PostgreSQL timestamp; 0 for one before its epoch.
+pub(crate) fn timestamp_micros(time: SystemTime) -> i64 {
+    time.duration_since(UNIX_EPOCH + PG_EPOCH_AFTER_UNIX)
+        .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
 }
 
 /// `int2`, `int4` or `int8`, big-endian, told apart by length.
@@ -291,6 +312,19 @@ mod tests {
 
     fn numeric(precision: i32, scale: i32) -> i32 {
         ((precision << 16) | (scale & 0x7ff)) + TYPMOD_HEADER
+    }
+
+    #[test]
+    fn timestamps_as_clock_times() {
+        let epoch = UNIX_EPOCH + Duration::from_secs(946_684_800);
+        assert_eq!(system_time(0), epoch);
+        assert_eq!(system_time(-1), epoch - Duration::from_micros(1));
+        for micros in [0, 1, 1_000_000, 758_629_800_500_000] {
+            assert_eq!(timestamp_micros(system_time(micros)), micros);
+        }
+        // Before PostgreSQL's epoch, which only a broken clock gives.
+        assert_eq!(timestamp_micros(system_time(-1)), 0);
+        assert_eq!(timestamp_micros(UNIX_EPOCH), 0);
     }
 
     #[test]
