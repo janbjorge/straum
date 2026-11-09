@@ -15,7 +15,10 @@ cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
 python3 scripts/check-layers.py
 ```
 
-PostgreSQL tests need Docker.
+PostgreSQL tests need Docker. For a change under `deploy/`, also run
+`python3 scripts/check-chart.py`, which needs helm, the helm-unittest
+plugin and kubeconform. For a change under `docs/`, also run
+`mdbook build docs`; CI builds the book with mdBook 0.5.4.
 
 ## Rules
 

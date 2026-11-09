@@ -6,21 +6,21 @@ against them. Background and evidence: `research/`.
 
 ## How we work
 
-- One milestone is one commit on `main`, subject `Mx: <title>`. No tags.
-  Work in progress stays on a branch and is squashed into that one commit
-  when the gate passes.
-- The milestone commit ticks its boxes here, so `git log --grep '^Mx:'` finds
-  the plan, the code and the tests for that milestone together.
-- Gate, on the crates the milestone touches:
+- Commits go straight to `main`, one change each, with a short imperative
+  subject. No branches, no PRs, no tags.
+- A milestone closes with a commit `Mx: <title>` that ticks its last box,
+  with the measured coverage in its body, so `git log --grep '^Mx:'` finds
+  where the plan, the code and the tests met. The commits that do its
+  other boxes tick them. (M0 to M6 were one squashed commit each.)
+- Gate, on the crates a commit touches:
   - `cargo fmt --check`
   - `cargo clippy -p <crate> --all-targets -- -D warnings`
   - `cargo test -p <crate>`
   - `cargo llvm-cov -p <crate> ... --fail-under-lines 98` over the touched
     crates and the crates whose tests exercise them (`straum-notation` tests
-    much of `straum-domain`), with the measured number in the commit body.
-    Without rustup, set `LLVM_COV` and `LLVM_PROFDATA` to the tools in
-    `$(brew --prefix llvm)/bin`.
-- Code goes in with the milestone that first uses it.
+    much of `straum-domain`). Without rustup, set `LLVM_COV` and
+    `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
+- Code goes in with the commit that first uses it.
 - Add a dated line under Decisions when something is settled.
 
 Code:
