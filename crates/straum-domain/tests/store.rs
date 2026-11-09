@@ -98,6 +98,7 @@ fn spec() -> Spec {
         time: Time {
             column: id("at"),
             grain: Grain(GRAIN),
+            buckets: vec![],
         },
         refs: vec![
             Ref {

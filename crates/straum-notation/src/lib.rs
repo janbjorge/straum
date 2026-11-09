@@ -19,7 +19,9 @@
 //! ```
 //!
 //! - `WITH (key = column)`: the fact table's primary key. PostgreSQL rejects
-//!   the option, so straum only ever sends the `SELECT` to PostgreSQL.
+//!   view options, so straum only ever sends the `SELECT` to PostgreSQL.
+//! - `buckets = '1 day, 7 days'`: optional wider bucket widths, each a wider
+//!   whole multiple of the width before it.
 //! - `FROM schema.table alias`: the fact.
 //! - `LEFT JOIN schema.table alias ON alias.key = fact.column`: a ref named
 //!   `alias` to the dim `table`. The fact column must be selected.

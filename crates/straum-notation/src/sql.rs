@@ -59,6 +59,12 @@ struct Walker {
     attrs: Vec<(Table, Ident)>,
 }
 
+/// What a view's `WITH` declares.
+struct ViewOptions {
+    key: Option<Ident>,
+    buckets: Vec<Grain>,
+}
+
 /// What a view's `SELECT` declares.
 struct Body {
     table: Table,
@@ -202,7 +208,7 @@ impl Walker {
         self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
 
         let fact_name = self.name(name, 1, "view").map(|mut n| n.remove(0));
-        let key = self.options(at, name, options);
+        let ViewOptions { key, buckets } = self.options(at, name, options);
         let body = self.query(query);
         let (Some(name), Some(key), Some(body)) = (fact_name, key, body) else {
             return;
@@ -212,11 +218,12 @@ impl Walker {
         }
         let Body {
             table,
-            time,
+            mut time,
             refs,
             by,
             measures,
         } = body;
+        time.buckets = buckets;
         let refs = refs
             .into_iter()
             .map(|j| {
@@ -273,14 +280,15 @@ impl Walker {
         }
     }
 
-    /// `WITH (key = column)`.
+    /// `WITH (key = column, buckets = '1 day, 7 days')`.
     fn options(
         &mut self,
         at: u64,
         view: &sql::ObjectName,
         options: &sql::CreateTableOptions,
-    ) -> Option<Ident> {
+    ) -> ViewOptions {
         let mut key = None;
+        let mut buckets = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
             sql::CreateTableOptions::None => &[],
@@ -298,17 +306,21 @@ impl Walker {
             let Some(name) = self.ident(name) else {
                 continue;
             };
-            if name.as_str() != "key" {
-                self.reject(at, "view option", option);
-                continue;
-            }
-            if key.is_some() {
+            let slot = match name.as_str() {
+                "key" => &mut key,
+                "buckets" => &mut buckets,
+                _ => {
+                    self.reject(at, "view option", option);
+                    continue;
+                }
+            };
+            if slot.is_some() {
                 self.error(at, format!("view option {name} given twice"));
                 continue;
             }
-            key = Some(value);
+            *slot = Some(value);
         }
-        match key {
+        let key = match key {
             Some(sql::Expr::Identifier(id)) => self.ident(id),
             Some(other) => {
                 self.reject(line(other), "key", other);
@@ -318,7 +330,33 @@ impl Walker {
                 self.error(at, format!("view {view} needs WITH (key = <column>)"));
                 None
             }
-        }
+        };
+        let buckets = match buckets {
+            None => Vec::new(),
+            Some(
+                value @ sql::Expr::Value(sql::ValueWithSpan {
+                    value: sql::Value::SingleQuotedString(s),
+                    span: _,
+                }),
+            ) => {
+                let mut buckets = Vec::new();
+                for width in s.split(',').map(str::trim) {
+                    match grain(width) {
+                        Some(g) => buckets.push(g),
+                        None => self.error(
+                            line(value),
+                            format!("bucket width '{width}': use '<n> seconds|minutes|hours|days'"),
+                        ),
+                    }
+                }
+                buckets
+            }
+            Some(other) => {
+                self.reject(line(other), "buckets, use '<n> <unit>, ...',", other);
+                Vec::new()
+            }
+        };
+        ViewOptions { key, buckets }
     }
 
     fn query(&mut self, query: &sql::Query) -> Option<Body> {
@@ -830,6 +868,7 @@ impl Walker {
         Some(Time {
             column,
             grain: grain?,
+            buckets: Vec::new(),
         })
     }
 

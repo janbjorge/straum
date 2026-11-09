@@ -43,6 +43,10 @@ pub struct Fact {
 pub struct Time {
     pub column: Ident,
     pub grain: Grain,
+    /// Wider bucket widths kept beside `grain`, narrowest first. Each is a
+    /// whole multiple of the width before it, so one of its buckets is made
+    /// of whole buckets of every narrower width.
+    pub buckets: Vec<Grain>,
 }
 
 /// Bucket width in seconds.
@@ -264,6 +268,17 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             seconds,
         });
     }
+    let mut below = fact.time.grain;
+    for &bucket in &fact.time.buckets {
+        if bucket.0 <= below.0 || !bucket.0.is_multiple_of(below.0) {
+            errors.push(SpecError::BadBucket {
+                fact: name.clone(),
+                seconds: bucket.0,
+                below: below.0,
+            });
+        }
+        below = bucket;
+    }
 
     // Each fact column plays at most one role in the rollup key.
     let mut columns = HashSet::new();
@@ -336,6 +351,13 @@ pub enum SpecError {
         fact: Ident,
         seconds: u32,
     },
+    /// A bucket width that isn't a wider whole multiple of the width
+    /// before it.
+    BadBucket {
+        fact: Ident,
+        seconds: u32,
+        below: u32,
+    },
     /// The fact's own key would be a rollup key, so nothing aggregates.
     KeyInRollup {
         fact: Ident,
@@ -375,6 +397,14 @@ impl fmt::Display for SpecError {
             SpecError::BadGrain { fact, seconds } => {
                 write!(f, "fact {fact}: grain of {seconds}s does not divide a day")
             }
+            SpecError::BadBucket {
+                fact,
+                seconds,
+                below,
+            } => write!(
+                f,
+                "fact {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
+            ),
             SpecError::KeyInRollup { fact, column } => {
                 write!(
                     f,

@@ -34,6 +34,7 @@ fn fact() -> Fact {
         time: Time {
             column: id("at"),
             grain: Grain(3_600),
+            buckets: vec![],
         },
         refs: vec![Ref {
             name: id("r"),
@@ -52,6 +53,25 @@ fn fact() -> Fact {
 #[test]
 fn valid() {
     assert!(Spec::new(vec![dim()], vec![fact()]).is_ok());
+}
+
+#[test]
+fn buckets_widen_by_whole_multiples() {
+    let mut t = fact();
+    t.time.buckets = vec![Grain(7_200), Grain(86_400), Grain(604_800)];
+    assert!(Spec::new(vec![dim()], vec![t.clone()]).is_ok());
+
+    // 1.5 hours over an hour, then a day that doesn't widen the day.
+    t.time.buckets = vec![Grain(5_400), Grain(86_400), Grain(86_400)];
+    let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
+    let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown,
+        [
+            "fact t: bucket of 5400s is not a wider multiple of 3600s",
+            "fact t: bucket of 86400s is not a wider multiple of 86400s",
+        ]
+    );
 }
 
 #[test]

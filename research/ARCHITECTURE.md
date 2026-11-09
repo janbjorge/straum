@@ -53,7 +53,12 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
 - `WITH (key = COLUMN)`: the fact table's primary key. PostgreSQL rejects
-  the option, so Straum only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
+  view options, so Straum only ever sends the `SELECT` to PostgreSQL.
+- `buckets = '1 day, 7 days'` (optional): wider bucket widths Straum keeps
+  beside the `date_bin` one, so an ask reads a long range from few cells
+  (§3). Each is a wider whole multiple of the width before it and, like
+  `date_bin`'s, starts at the epoch, so 7-day buckets start on Thursdays.
+  Answers don't change. The `SELECT` runs there as
   is, which makes it the initial load query and the reference for tests.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
 - `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named

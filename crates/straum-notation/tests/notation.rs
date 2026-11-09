@@ -243,8 +243,29 @@ fn base_parses() {
     assert_eq!(t.by, [id("a")]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, id("z_id"));
+    assert!(t.time.buckets.is_empty());
     let z = spec.dim("z").unwrap();
     assert_eq!((&z.key, &z.attrs[..]), (&id("id"), &[id("name")][..]));
+}
+
+#[test]
+fn buckets_parse() {
+    let src = base("key = id", "key = id, buckets = '1 day,7 days'");
+    let spec = parse(&src).unwrap();
+    assert_eq!(
+        spec.fact("t").unwrap().time.buckets,
+        [Grain(86_400), Grain(604_800)]
+    );
+
+    let src = base("key = id", "key = id, buckets = '90 minutes, 1 day'");
+    assert_eq!(
+        spec_errors(&src),
+        [SpecError::BadBucket {
+            fact: id("t"),
+            seconds: 5_400,
+            below: 3_600
+        }]
+    );
 }
 
 #[test]
@@ -462,6 +483,30 @@ fn rejects_everything_outside_the_subset() {
             "key = id, append = true",
             1,
             "view option `append = true` is not in straum SQL",
+        ),
+        (
+            "key = id",
+            "key = id, buckets = 1",
+            1,
+            "buckets, use '<n> <unit>, ...', `1`",
+        ),
+        (
+            "key = id",
+            "key = id, buckets = '1 day, 2 weeks'",
+            1,
+            "bucket width '2 weeks': use '<n> seconds|minutes|hours|days'",
+        ),
+        (
+            "key = id",
+            "key = id, buckets = ''",
+            1,
+            "bucket width '': use",
+        ),
+        (
+            "key = id",
+            "key = id, buckets = '1 day', buckets = '2 days'",
+            1,
+            "view option buckets given twice",
         ),
         (
             "key = id",

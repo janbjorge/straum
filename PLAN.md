@@ -57,7 +57,8 @@ Tests:
   stays concrete; traits only at the edges.
 - 2026-11-08: Simplifications: no raw column store; facts need no row
   store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot; one
-  time level (bucket) merged up at ask time; asks over HTTP/JSON, no pgwire;
+  time level (bucket) merged up at ask time (replaced by `buckets`,
+  2026-11-09); asks over HTTP/JSON, no pgwire;
   no WAL barrier in v1, answers carry the LSN they reflect.
 - 2026-11-08: Cell state is kept per input column and shared by measures: sum
   and avg share sum and count, min and max share value counts. Filtered
@@ -215,6 +216,14 @@ Tests:
   settles the mutable-facts question: no row store in Straum.
 - 2026-11-09: The client defines every view in the spec and names it in each
   ask. Straum doesn't pick a view for an ask.
+- 2026-11-09: A view may declare wider buckets, `WITH (key = id, buckets =
+  '1 day, 7 days')`. Each is a wider whole multiple of the width before it
+  and starts at the epoch, as `date_bin` does. Straum keeps one level of
+  cells per width, updated in the same commit, so there is no `delay` as in
+  grain. An ask reads its range from the widest buckets that fit and the
+  `date_bin` buckets at its ends; an ask grouped by the bucket reads the
+  `date_bin` level. Levels are an index: answers don't change. The load stays
+  one `GROUP BY` at the `date_bin` width.
   `straum status` prints what a running straum has done instead, from
   `GET /status`. The image has no shell or curl, so the binary is the
   client: `kubectl exec deployment/straum -- /straum status`. `App` keeps
