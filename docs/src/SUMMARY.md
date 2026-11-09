@@ -14,3 +14,4 @@
 # Background
 
 - [How Straum works](how-it-works.md)
+- [Benchmark](benchmark.md)
