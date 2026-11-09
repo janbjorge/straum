@@ -20,15 +20,11 @@ table. Cache misses and growing data make those queries slower over time.
 Straum collapses rows into the groups declared in a spec, then updates those
 groups as PostgreSQL changes.
 
-```mermaid
-flowchart LR
-    postgres[(PostgreSQL)]
-    stream["Logical replication"]
-    straum["Straum\nin-memory rollups"]
-    api["HTTP /ask"]
-    clients["Applications"]
-
-    postgres --> stream --> straum --> api --> clients
+```text
++------------+    logical replication    +-------------------+    HTTP     +--------------+
+| PostgreSQL | ------------------------> | Straum            | ---------> | applications |
+| source     |                           | in-memory rollups |    /ask    |              |
++------------+                           +-------------------+             +--------------+
 ```
 
 Every answer includes the LSN and commit time it reflects. Callers can see
