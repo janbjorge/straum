@@ -92,6 +92,9 @@ impl Pg {
 /// the database as of the slot's consistent point.
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
     let mut conn = Conn::connect(dsn, true)?;
+    // Without the wal_level logical decoding needs, the slot can't be made
+    // and PostgreSQL's error names no fix, so the setup is checked first too.
+    catalog::read(&mut conn, spec, publication)?;
     conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = format!(
         "straum_{}_{}_{}",

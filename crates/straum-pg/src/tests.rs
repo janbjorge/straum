@@ -138,10 +138,21 @@ impl Drop for TempFile {
 }
 
 fn postgres() -> Postgres {
-    let (container, port) = start(
+    plain(
         GenericImage::new("postgres", "18"),
         FLAGS.map(str::to_owned),
-    );
+    )
+}
+
+fn postgres_at_replica(tag: &str) -> Postgres {
+    plain(
+        GenericImage::new("postgres", tag),
+        ["-c", "wal_level=replica"].map(str::to_owned),
+    )
+}
+
+fn plain<const N: usize>(image: GenericImage, cmd: [String; N]) -> Postgres {
+    let (container, port) = start(image, cmd);
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     Postgres {
         _container: container,
@@ -725,6 +736,17 @@ fn follows_the_database_over_tls() {
     );
     let row = |kind: &str| vec![Some(kind.to_owned()), Some("t".to_owned())];
     assert_eq!(tls, [row("client backend"), row("walsender")]);
+}
+
+#[test]
+fn says_to_set_wal_level_logical() {
+    let pg = postgres_at_replica("18");
+    let db = Db::new(&pg, "replica", TABLES);
+    let err = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
+    assert!(
+        err.contains("wal_level is replica; straum needs logical, which takes a restart"),
+        "{err}"
+    );
 }
 
 #[test]
