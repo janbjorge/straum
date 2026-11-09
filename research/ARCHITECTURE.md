@@ -99,14 +99,12 @@ An ask names one fact and gives:
 
 - measures, by name;
 - keys to group by: by columns, refs, ref attributes such as `pickup.borough`,
-  and at most one time key out of bucket, hour, day, week and month;
+  and at most one time key, the UTC bucket;
 - filters, `=` or `in` on the same keys;
-- a time zone;
 - a half-open range `[from, to)` in Unix seconds, both ends on bucket edges.
 
 `Spec::check` rejects asks the rollup can't answer exactly: unknown names, two
-time keys, a time key the grain doesn't split (hour on a 2h grain), a range end
-inside a bucket, and a zone whose offsets fall inside a bucket.
+time keys and a range end inside a bucket.
 
 `Store::ask` answers from the cells:
 
@@ -116,7 +114,7 @@ flowchart TD
   c --> s["next cell of the fact"]
   s --> r{"bucket in range and<br/>ask filter holds?"}
   r -->|no| s
-  r -->|yes| g["group key: by values and ref ids,<br/>dim attributes looked up by ref id,<br/>start of the bucket's period in the zone"]
+  r -->|yes| g["group key: by values and ref ids,<br/>dim attributes looked up by ref id,<br/>bucket start"]
   g --> m["merge the cell into every measure<br/>whose own filter holds"]
   m --> s
   s -->|no cells left| f["finish: count, sum, min, max,<br/>avg as sum and count, distinct count"]
@@ -131,15 +129,6 @@ flowchart TD
 - sum, min and max come back in the column's scale. avg comes back as sum and
   count, so the caller picks the rounding.
 
-Time zones: the HTTP adapter turns a zone name such as `Europe/Oslo` into the
-zone's UTC offsets from a month before the ask's range to its end, with jiff
-and the tz database built into the binary, so the domain carries no zone
-data. Buckets stay UTC. Hours follow the instant, so an hour the clock repeats
-stays two hours. Days, weeks (from Monday) and months follow the wall clock: a
-repeated midnight counts from the first one, a skipped one from the jump. For
-any time key but bucket, a zone whose offsets or changes fall inside a bucket
-is rejected.
-
 Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
 
 ```json
@@ -147,17 +136,16 @@ Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
   "fact": "trips",
   "measures": ["trips", "fare", "distance"],
   "by": ["payment_type", "pickup.borough"],
-  "time": "day",
+  "time": "bucket",
   "filter": {"pickup.borough": ["Manhattan", "Queens"], "vendor_id": 2},
-  "zone": "Europe/Oslo",
   "from": "2024-01-01T00:00:00+01:00",
   "to": 1706742000
 }
 ```
 
-- `fact`, `measures`, `from` and `to` are required; `zone` defaults to UTC.
+- `fact`, `measures`, `from` and `to` are required.
 - The time key is a field of its own, so it can't clash with a column named
-  `day`, and it groups before `by`.
+  `bucket`, and it groups before `by`. Time keys print as UTC RFC 3339.
 - `from` and `to` are RFC 3339 or Unix seconds, in whole seconds.
 - A field Straum doesn't know, a key given twice and a value of the wrong type
   are errors that name the field, never ignored. All of them come back at
@@ -193,7 +181,7 @@ per input column, shared by the measures that read that column
 - count distinct keeps a count per value.
 
 Rows are added and removed, and a cell goes with its last row. Removing a row
-that was never added is an error; the fact then reloads.
+that was never added is an error; Straum then starts over.
 
 sum, avg, min and max read integers: integer columns, and numeric columns as
 scaled `i64` (checked against the catalog in M5). An `i128` sum of `i64` values
@@ -273,7 +261,7 @@ flowchart TD
   k -->|Update| u["fact: remove old row, add new<br/>dim: upsert, delete old key if it changed"]
   k -->|Delete| d["fact: remove old row<br/>dim: delete key"]
   k -->|Truncate| t["empty the table"]
-  k -->|Relation| r["compare with the spec<br/>changed: reload the fact, or not ready"]
+  k -->|Relation| r["compare with the spec<br/>changed: start over"]
   k -->|Commit| c["publish: rollups and commit LSN"]
 ```
 
@@ -409,16 +397,16 @@ Clean architecture as Cargo crates:
   load reads the snapshot of the slot the stream comes from, on the same
   connection. `App` is the store and how far it has followed the source;
   clones share it. `Writer::step` is the loop that does the I/O: it loads
-  every table, applies a commit or reads a table again. `App::ask` answers
-  with the LSN and commit time, `App::status` feeds health and metrics.
+  every table or applies a commit, and starts over when a change no longer
+  fits. `App::ask` answers with the LSN and commit time.
 - `straum-pg` (M5): our own replication client on `postgres-protocol`. Catalog
   checks, the grouped load in the slot's snapshot, pgoutput v1 decoding,
-  reloads on a second connection, and a thread that owns the stream: it
+  and a thread that owns the stream: it
   answers keepalives and reports the applied LSN while the writer is busy.
   Synchronous, plain TCP (TLS in M7).
 - `straum-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
-  walker over `serde_json` values, without derive macros; zones from jiff;
-  `/livez`, `/readyz` and Prometheus `/metrics`. Asks run on tokio's
+  walker over `serde_json` values, without derive macros; `/livez` and
+  `/readyz`. Asks run on tokio's
   blocking threads, since a big one reads every cell of a fact.
 - `straum` (M6): the binary. `straum run` and `straum plan`, arguments read by
   hand. One thread runs the writer and starts over after a failure, waiting
@@ -428,9 +416,9 @@ Clean architecture as Cargo crates:
 The per-row path stays concrete; traits only at the ports. One writer applies
 the stream while asks read. They share one store behind an `RwLock`
 (PLAN.md, 2026-11-09). The writer takes the write lock only to apply a commit
-it has read or to swap a table in or out. A load or reload takes the table out
-of the store and fills it outside the lock, so asks never wait on PostgreSQL
-and asks on the other tables go on meanwhile. A long ask delays the writer,
+it has read or to swap a loaded store in. A start fills a new store outside
+the lock, so asks never wait on PostgreSQL; they answer not ready until it
+is swapped in. A long ask delays the writer,
 which shows as lag. Copy-on-write shards (`arc-swap`) or `left-right` stay
 open if that lag matters.
 
@@ -445,8 +433,7 @@ stateDiagram-v2
   CatchUp --> Ready: lag under bound
   Ready --> Lagging: lag over bound
   Lagging --> Ready: caught up
-  Ready --> Reload: drift, truncate, or a row that doesn't fit
-  Reload --> Ready: fact loaded again
+  Ready --> Resync: drift, or a change that doesn't fit
   Lagging --> Resync: retained WAL over cap
   Ready --> Resync: connection lost, failover
   Resync --> Check: new connection, new temporary slot
@@ -456,18 +443,16 @@ stateDiagram-v2
 ```
 
 - `/readyz` is true only in Ready; otherwise it answers 503 with the last
-  failure or the tables it waits for. `/livez` checks the process only; lag
+  failure, or that it is loading. `/livez` checks the process only; lag
   never fails liveness. Until M7 measures lag, Ready means every table is
-  loaded and the stream has passed each load; Lagging needs the server's WAL
+  loaded; Lagging needs the server's WAL
   position.
 - Resync closes the replication connection first, so PostgreSQL drops the old
   temporary slot before the new one exists.
 - A spec change rolls the Deployment through a checksum annotation on the
   ConfigMap. The new pod loads from scratch.
-- Reload reads one table again while asks on the others keep answering at
-  the LSN before it. The writer applies no commit meanwhile; the stream
-  thread keeps the connection alive (§4b). Any other failure, a source error
-  or a load behind the stream, means Resync.
+- Any failure means Resync: a source error, an altered table, or a change
+  that doesn't fit. Truncate empties a table in place.
 - SIGTERM or SIGINT: Straum stops accepting, finishes the asks in flight and
   exits. PostgreSQL drops the temporary slots as the connections close.
 
@@ -522,11 +507,8 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
   straum-http. TLS to PostgreSQL with rustls comes in M7.
 - Spec from a ConfigMap, DSN from `STRAUM_DSN` or a CSI-mounted secret
   (`--dsn-file`), never from the command line.
-- Prometheus `/metrics` since M6: readiness, applied LSN, commit time,
-  starts, commits, reloads, failures, cells per fact, rows per dim, asks by
-  outcome and an ask latency histogram. M7 adds OTLP to the cluster's
-  collector, lag and retained WAL, which need the server's WAL position, and
-  memory in bytes.
+- Metrics: none yet. M7 adds OTLP to the cluster's collector, with lag and
+  retained WAL, which need the server's WAL position, and memory in bytes.
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: `docker compose` with `postgres:18` and `wal_level =

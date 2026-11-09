@@ -232,7 +232,7 @@ impl Rollup {
     }
 
     /// Takes back a row given to [`Rollup::add`]. After [`RowError::Missing`]
-    /// the rollup no longer matches the table; reload the fact.
+    /// the rollup no longer matches the table; start over.
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let key = self.key(row);

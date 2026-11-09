@@ -1,6 +1,6 @@
 use straum_domain::{
     Agg, Ask, AskError, AskKey, Cond, Grain, Ident, KeyPath, Literal, Slot, Spec, SpecError,
-    TimeKey, Zone,
+    TimeKey,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -51,13 +51,12 @@ fn month_ask() -> Ask {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: vec![
             AskKey::Key(path("pickup.borough")),
-            AskKey::Time(TimeKey::Day),
+            AskKey::Time(TimeKey::Bucket),
         ],
         filter: vec![Cond {
             path: path("dropoff.borough"),
             values: vec![Literal::Text("Manhattan".into())],
         }],
-        zone: Zone::utc(),
         from: JAN,
         to: FEB,
     }
@@ -118,8 +117,8 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
         by: vec![
             AskKey::Key(path("fare_amount")),
             AskKey::Key(path("pickup.colour")),
-            AskKey::Time(TimeKey::Day),
-            AskKey::Time(TimeKey::Hour),
+            AskKey::Time(TimeKey::Bucket),
+            AskKey::Time(TimeKey::Bucket),
         ],
         from: JAN + 60,
         ..month_ask()
@@ -140,22 +139,6 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
 }
 
 #[test]
-fn ask_hour_needs_grain_that_splits_an_hour() {
-    let spec = parse(&TAXI.replace("15 minutes", "2 hours")).unwrap();
-    let ask = Ask {
-        by: vec![AskKey::Time(TimeKey::Hour)],
-        ..month_ask()
-    };
-    assert_eq!(
-        spec.check(&ask).unwrap_err(),
-        [AskError::TimeKeyUnaligned {
-            key: TimeKey::Hour,
-            grain: Grain(7_200)
-        }]
-    );
-}
-
-#[test]
 fn ask_errors_display() {
     let ask_errors = [
         (AskError::UnknownFact(id("nope")), "unknown fact nope"),
@@ -166,17 +149,6 @@ fn ask_errors_display() {
         ),
         (AskError::NoMeasures, "no measures asked"),
         (AskError::TimeKeyTwice, "more than one time key"),
-        (
-            AskError::TimeKeyUnaligned {
-                key: TimeKey::Hour,
-                grain: Grain(7_200),
-            },
-            "hour does not split into 7200s buckets",
-        ),
-        (
-            AskError::ZoneUnaligned { grain: Grain(900) },
-            "zone offsets do not fall on 900s bucket edges",
-        ),
         (
             AskError::RangeEmpty { from: 2, to: 1 },
             "empty range [2, 1)",
@@ -193,40 +165,22 @@ fn ask_errors_display() {
         assert_eq!(e.to_string(), msg);
     }
 
-    let keys = [
-        TimeKey::Bucket,
-        TimeKey::Hour,
-        TimeKey::Day,
-        TimeKey::Week,
-        TimeKey::Month,
-    ];
-    assert_eq!(
-        keys.map(|k| k.to_string()),
-        ["bucket", "hour", "day", "week", "month"]
-    );
+    assert_eq!(TimeKey::Bucket.to_string(), "bucket");
 }
 
 #[test]
-fn ask_every_time_key_and_key_form() {
+fn ask_every_key_form() {
     let spec = taxi();
-    for key in [
-        TimeKey::Bucket,
-        TimeKey::Hour,
-        TimeKey::Day,
-        TimeKey::Week,
-        TimeKey::Month,
-    ] {
-        let ask = Ask {
-            by: vec![
-                AskKey::Key(path("pickup")),
-                AskKey::Key(path("dropoff.location_id")),
-                AskKey::Key(path("payment_type")),
-                AskKey::Time(key),
-            ],
-            ..month_ask()
-        };
-        assert!(spec.check(&ask).is_ok(), "{key}");
-    }
+    let ask = Ask {
+        by: vec![
+            AskKey::Key(path("pickup")),
+            AskKey::Key(path("dropoff.location_id")),
+            AskKey::Key(path("payment_type")),
+            AskKey::Time(TimeKey::Bucket),
+        ],
+        ..month_ask()
+    };
+    assert!(spec.check(&ask).is_ok());
 }
 
 #[test]

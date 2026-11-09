@@ -69,9 +69,9 @@ Straum:
 
 - reads a narrow PostgreSQL `CREATE VIEW` subset;
 - maintains `count`, `count distinct`, `sum`, `min`, `max`, and `avg`;
-- supports dimensions, N:1 joins, filters, time buckets, and time zones;
+- supports dimensions, N:1 joins, filters, and UTC time buckets;
 - loads from a snapshot consistent with its replication stream;
-- exposes JSON, readiness, liveness, and Prometheus metrics.
+- exposes JSON asks, readiness, and liveness.
 
 Straum is not a SQL engine, PostgreSQL replica, cache, or durable store. It
 only serves aggregates declared before startup.
@@ -93,7 +93,6 @@ Restart PostgreSQL after changing `wal_level`. `run` listens on
 | `POST /ask` | Read a declared aggregate. |
 | `GET /livez` | Process liveness. |
 | `GET /readyz` | Ready after all tables load and the stream catches up. |
-| `GET /metrics` | Prometheus metrics. |
 
 ## How it works
 

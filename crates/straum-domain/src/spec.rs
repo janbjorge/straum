@@ -36,7 +36,7 @@ pub struct Fact {
     pub refs: Vec<Ref>,
     /// Fact columns that are part of the rollup key.
     pub by: Vec<Ident>,
-    /// Rows are only inserted; an update or delete forces a reload.
+    /// Rows are only inserted; an update or delete makes straum start over.
     pub append_only: bool,
     pub measures: Vec<Measure>,
 }

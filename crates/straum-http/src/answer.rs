@@ -4,8 +4,8 @@
 //! {
 //!   "lsn": "16/B374D848",
 //!   "commit_time": "2024-01-31T22:59:59.123456Z",
-//!   "columns": ["day", "pickup.borough", "trips", "fare", "fare_avg"],
-//!   "rows": [["2024-01-01T00:00:00+01:00", "Bronx", 412, 6234.50,
+//!   "columns": ["bucket", "pickup.borough", "trips", "fare", "fare_avg"],
+//!   "rows": [["2024-01-01T00:00:00Z", "Bronx", 412, 6234.50,
 //!             {"sum": 6234.50, "count": 412}]]
 //! }
 //! ```
@@ -13,7 +13,7 @@
 //! - `lsn`: the answer reflects every commit up to here and none after.
 //! - `commit_time`: when the commit at `lsn` committed, by the server's
 //!   clock; null when `lsn` is where the stream started.
-//! - Time keys are RFC 3339 in the ask's zone. Numeric values are exact
+//! - Time keys are RFC 3339 in UTC. Numeric values are exact
 //!   decimals in their column's scale. avg is its sum and count, so the
 //!   caller picks the rounding.
 
@@ -21,14 +21,12 @@ use std::mem;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{AskKey, Datum, Value};
+use straum_domain::{Ask, AskKey, Datum, Value};
 
-use crate::ask::Request;
 use crate::json::{decimal, string};
 
-pub(crate) fn write(request: &Request, answered: &Answered) -> Vec<u8> {
+pub(crate) fn write(ask: &Ask, answered: &Answered) -> Vec<u8> {
     let Answered { answer, lsn, time } = answered;
-    let ask = &request.ask;
     let mut out = Vec::new();
     out.extend_from_slice(b"{\"lsn\":");
     string(&mut out, &lsn.to_string());
@@ -69,8 +67,7 @@ pub(crate) fn write(request: &Request, answered: &Answered) -> Vec<u8> {
                 (AskKey::Time(_), &Datum::Int(seconds)) => {
                     let at =
                         Timestamp::from_second(seconds).expect("ask::read keeps periods in range");
-                    let offset = request.zone.to_offset(at);
-                    string(&mut out, &at.display_with_offset(offset).to_string());
+                    string(&mut out, &at.to_string());
                 }
                 (_, datum) => write_datum(&mut out, datum, scale),
             }

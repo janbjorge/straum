@@ -25,8 +25,6 @@ static SLOTS: AtomicU64 = AtomicU64::new(0);
 pub struct Pg {
     dsn: Dsn,
     publication: String,
-    /// The spec of the last [`Source::open`]; reloads check it again.
-    spec: Option<Spec>,
     state: State,
 }
 
@@ -56,22 +54,14 @@ impl Pg {
         Pg {
             dsn,
             publication: publication.to_owned(),
-            spec: None,
             state: State::Closed,
         }
     }
 
-    /// Loads into `target` from the first snapshot, or from a new one once
-    /// the stream runs, and returns the snapshot's LSN.
-    fn load(&mut self, name: &Ident, target: Target) -> Result<Lsn, Error> {
-        let mut fresh = None;
-        let snapshot = match &mut self.state {
-            State::Loading(snapshot) => snapshot,
-            State::Streaming(_) => {
-                let spec = self.spec.as_ref().expect("open sets the spec");
-                fresh.insert(snapshot(&self.dsn, spec, &self.publication)?)
-            }
-            State::Closed => return Err(Error::Stopped),
+    /// Loads into `target` from the snapshot the stream starts from.
+    fn load(&mut self, name: &Ident, target: Target) -> Result<(), Error> {
+        let State::Loading(snapshot) = &mut self.state else {
+            return Err(Error::Stopped);
         };
         let table = snapshot
             .tables
@@ -86,7 +76,7 @@ impl Pg {
         if snapshot.unloaded.is_empty() {
             snapshot.conn.execute("COMMIT")?;
         }
-        Ok(snapshot.at)
+        Ok(())
     }
 }
 
@@ -137,18 +127,17 @@ impl Source for Pg {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
-        self.spec = Some(spec.clone());
         let snapshot = snapshot(&self.dsn, spec, &self.publication)?;
         let at = snapshot.at;
         self.state = State::Loading(snapshot);
         Ok(at)
     }
 
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<Lsn, SourceError> {
+    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
         Ok(self.load(&fact.name, Target::Fact(fact, rollup))?)
     }
 
-    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<Lsn, SourceError> {
+    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
         Ok(self.load(&dim.name, Target::Dim(table))?)
     }
 
@@ -165,7 +154,7 @@ impl Source for Pg {
 }
 
 /// Streams from the snapshot's consistent point. Tables not loaded yet
-/// load later from snapshots of their own.
+/// can't load any more.
 fn stream(mut snapshot: Snapshot, publication: &str) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;

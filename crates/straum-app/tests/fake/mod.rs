@@ -76,10 +76,6 @@ struct Stream {
     start: Lsn,
     /// Index of the next commit in the log.
     next: usize,
-    /// Until the first commit is asked for, loads read the snapshot the
-    /// stream starts from. After, they read a new one, as a second
-    /// connection would.
-    streaming: bool,
 }
 
 /// The fake's clock: a commit at LSN `n` commits `n` seconds after the
@@ -223,22 +219,18 @@ impl Fake {
         }
     }
 
-    fn read(&mut self, table: &Ident) -> Result<(Lsn, Vec<Row>), SourceError> {
+    /// The table's rows in the snapshot the stream starts from.
+    fn read(&mut self, table: &Ident) -> Result<Vec<Row>, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
         db.loads.push(table.to_string());
-        let stream = self.stream.as_ref().expect("open first");
-        let at = if stream.streaming {
-            db.lsn()
-        } else {
-            stream.start
-        };
-        let rows = db.rows_at(at, table.as_str());
+        let start = self.stream.as_ref().expect("open first").start;
+        let rows = db.rows_at(start, table.as_str());
         drop(db);
         if let Some(on_load) = &mut self.on_load {
             on_load(table.as_str());
         }
-        Ok((at, rows))
+        Ok(rows)
     }
 }
 
@@ -250,32 +242,28 @@ impl Source for Fake {
         self.stream = Some(Stream {
             start,
             next: db.log.len(),
-            streaming: false,
         });
         Ok(start)
     }
 
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<Lsn, SourceError> {
-        let (at, rows) = self.read(&fact.name)?;
-        for row in rows {
+    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
+        for row in self.read(&fact.name)? {
             rollup.add(&row)?;
         }
-        Ok(at)
+        Ok(())
     }
 
-    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<Lsn, SourceError> {
-        let (at, rows) = self.read(&dim.name)?;
-        for row in rows {
+    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
+        for row in self.read(&dim.name)? {
             table.upsert(&row)?;
         }
-        Ok(at)
+        Ok(())
     }
 
     fn next_commit(&mut self) -> Result<Commit, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
         let stream = self.stream.as_mut().expect("open first");
-        stream.streaming = true;
         let commit = db
             .log
             .get(stream.next)

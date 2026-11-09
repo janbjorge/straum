@@ -22,13 +22,12 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
-    /// Adds the fact's rows to an empty rollup and returns the LSN they
-    /// reflect: every commit up to it and none after. That is at or past
-    /// every commit streamed so far.
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<Lsn, SourceError>;
+    /// Adds the fact's rows to an empty rollup, as of the LSN
+    /// [`Source::open`] returned: every commit up to it and none after.
+    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError>;
 
     /// As [`Source::load_fact`], for a dim's rows.
-    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<Lsn, SourceError>;
+    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError>;
 
     /// The next commit, waiting for one. Asking means the last one is
     /// applied, so PostgreSQL may recycle the WAL before it.

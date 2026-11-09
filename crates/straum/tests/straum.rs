@@ -325,12 +325,6 @@ fn serves_asks_from_postgres() {
     let (_, body) = straum.call("POST", "/ask", ASK);
     assert!(!body.contains(r#""commit_time":null"#), "{body}");
 
-    let (status, metrics) = straum.call("GET", "/metrics", "");
-    assert_eq!(status, 200);
-    for line in ["straum_ready 1", "straum_rows{dim=\"zones\"} 2"] {
-        assert!(metrics.lines().any(|l| l == line), "{line} in\n{metrics}");
-    }
-
     let (code, log) = straum.stop("-TERM");
     assert_eq!(code, Some(0), "{log}");
     assert!(

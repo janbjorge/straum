@@ -1,7 +1,7 @@
 //! The commit stream: pgoutput messages turned into commits of spec rows,
 //! read by a thread that owns the replication socket. The thread answers
-//! keepalives and reports the applied LSN while the writer applies or
-//! reloads, so PostgreSQL never times straum out for being busy.
+//! keepalives and reports the applied LSN while the writer applies, so
+//! PostgreSQL never times straum out for being busy.
 
 use std::collections::HashMap;
 use std::mem;
@@ -42,7 +42,7 @@ pub(crate) struct Decoder {
     /// to both.
     relations: HashMap<u32, Vec<Mapping>>,
     /// Each spec table's kinds as last loaded or announced. A Relation that
-    /// changes them changes what rows read as, so the table is read again.
+    /// changes them changes what rows read as, so straum starts over.
     kinds: HashMap<Ident, Vec<Kind>>,
     changes: Vec<Change>,
     in_transaction: bool,

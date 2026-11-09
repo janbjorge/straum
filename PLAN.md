@@ -175,6 +175,15 @@ Tests:
 - 2026-11-09: The project is Straum everywhere: crates `straum-*`, the
   binary `straum`, `STRAUM_DSN`, metrics `straum_*`, and `straum` as the
   default role and publication, the slot prefix and the `application_name`.
+- 2026-11-09: MVP cuts, each able to come back without breaking a client.
+  `/metrics` is gone; telemetry waits for OTLP in M7. Asks take no `zone`,
+  and `time` takes `bucket` only, printed in UTC; zones and hour, day, week
+  and month can return as an optional field and new values, so the tz
+  database leaves the binary. A change that doesn't fit a table (a row that
+  doesn't fit, a fact change without the old row, an altered table) starts
+  over from a new slot instead of reading that table again on a second
+  connection, which replaces the reload in the 2026-11-08 decision. Loads
+  read only the snapshot `Source::open` made. Input checks stay as strict.
 
 ## M0: notation and domain model
 
@@ -369,6 +378,6 @@ Touches: `crates/straum-pg` (TLS), `crates/straum`, `deploy/`.
 - Azure: `wal_level = logical` restart, resync after HA failover.
 - An "as of" time from keepalives, so answers on a quiet database don't
   look stale by their commit time.
-- Long asks hold the read lock and delay the writer, and `/readyz` and
-  `/metrics` wait behind a writer that waits. A coarse ask on the taxi month
+- Long asks hold the read lock and delay the writer, and `/readyz` waits
+  behind a writer that waits. A coarse ask on the taxi month
   holds it 1.5 s. Cap asks, keep the status outside the lock, or both?

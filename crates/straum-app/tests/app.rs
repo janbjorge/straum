@@ -1,5 +1,5 @@
 //! `App` against an in-memory PostgreSQL: hand-made cases, then random
-//! writes, dropped connections and reloads checked against a fresh load of
+//! writes, dropped connections and restarts checked against a fresh load of
 //! the database at the same LSN.
 
 mod fake;
@@ -9,15 +9,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
-use straum_app::{
-    AnswerError, Answered, App, Change, Commit, Lsn, Old, Source, SourceError, Status, Step,
-    TableStatus, Writer,
-};
+use straum_app::{AnswerError, Answered, App, Change, Error, Lsn, Old, Step, Writer};
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, Cond, Datum, Dim, DimTable, Fact, Ident, KeyPath, Literal,
-    Rollup, Spec, Store, TimeKey, Value, Zone,
+    Answer, Ask, AskError, AskKey, Cond, Datum, Ident, KeyPath, Literal, Spec, Store, TimeKey,
+    Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -111,7 +108,6 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by.iter().map(|k| ask_key(k)).collect(),
         filter: Vec::new(),
-        zone: Zone::utc(),
         from: 0,
         to: RANGE,
     }
@@ -120,8 +116,6 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
 fn ask_key(s: &str) -> AskKey {
     match s {
         "bucket" => AskKey::Time(TimeKey::Bucket),
-        "hour" => AskKey::Time(TimeKey::Hour),
-        "day" => AskKey::Time(TimeKey::Day),
         _ => AskKey::Key(path(s)),
     }
 }
@@ -240,7 +234,7 @@ fn a_dropped_stream_starts_over() {
     assert!(!writer.app().ready());
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
 
-    // The new stream starts after the second commit, and the reload counts
+    // The new stream starts after the second commit, and the new load counts
     // the first trip once.
     assert_eq!(writer.step().unwrap(), Step::Started(second));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
@@ -281,7 +275,7 @@ fn fact_rows_change_through_the_old_row() {
 }
 
 #[test]
-fn fact_change_without_the_old_row_reads_the_fact_again() {
+fn fact_change_without_the_old_row_starts_over() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().commit(vec![login(1, 1), login(2, 1)]);
     writer.step().unwrap();
@@ -290,8 +284,14 @@ fn fact_change_without_the_old_row_reads_the_fact_again() {
         table: "logins",
         key: int(1),
     }]);
-    writer.step().unwrap();
-    assert_eq!(db.borrow().loads[3..], ["logins"]);
+    assert_eq!(
+        writer.step().unwrap_err().to_string(),
+        "a change no longer fits logins"
+    );
+    assert!(!writer.app().ready());
+    let lsn = db.borrow().lsn();
+    assert_eq!(writer.step().unwrap(), Step::Started(lsn));
+    assert_eq!(db.borrow().loads[3..], ["zones", "trips", "logins"]);
     assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
 
     db.borrow_mut().commit(vec![Write::Update {
@@ -300,12 +300,12 @@ fn fact_change_without_the_old_row_reads_the_fact_again() {
         new_key: int(2),
         row: vec![int(DAY), int(2)],
     }]);
+    assert!(writer.step().is_err());
     writer.step().unwrap();
-    assert_eq!(db.borrow().loads[3..], ["logins", "logins"]);
-    let by_day = ask("logins", &["logins"], &["day", "zone"]);
+    let by_bucket = ask("logins", &["logins"], &["bucket", "zone"]);
     assert_eq!(
-        writer.app().ask(&by_day).unwrap().answer,
-        expected(&db.borrow(), &by_day)
+        writer.app().ask(&by_bucket).unwrap().answer,
+        expected(&db.borrow(), &by_bucket)
     );
 }
 
@@ -370,13 +370,13 @@ fn dim_delete_drops_the_key() {
     );
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
 
-    // A delete that doesn't say which key: read the dim again.
+    // A delete that doesn't say which key: start over.
     db.borrow_mut().send(vec![Change::Delete {
         table: id("zones"),
         old: Old::SameKey,
     }]);
+    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("zones")));
     writer.step().unwrap();
-    assert_eq!(db.borrow().loads[3..], ["zones"]);
     assert!(writer.app().ready());
 }
 
@@ -401,18 +401,18 @@ fn truncate_empties_the_table() {
 }
 
 #[test]
-fn altered_table_is_read_again() {
+fn altered_table_starts_over() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     writer.step().unwrap();
-    // Read once, however often the commit touches trips after the Alter.
     db.borrow_mut().commit(vec![
         Write::Alter { table: "trips" },
         trip(2, 1, 1, 10),
         Write::Alter { table: "trips" },
     ]);
+    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
     writer.step().unwrap();
-    assert_eq!(db.borrow().loads[3..], ["trips"]);
+    assert_eq!(db.borrow().loads.len(), 6);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
 }
 
@@ -428,34 +428,6 @@ fn tables_outside_the_spec_are_skipped() {
     assert!(writer.app().ready());
 }
 
-#[test]
-fn a_table_read_again_waits_for_the_stream() {
-    let (db, mut writer) = setup(&TABLES);
-    db.borrow_mut().commit(vec![login(1, 1)]);
-    writer.step().unwrap();
-
-    // The delete makes logins load again; by then the database is past the
-    // second commit.
-    let first = db.borrow_mut().commit(vec![Write::Delete {
-        table: "logins",
-        key: int(1),
-    }]);
-    let second = db.borrow_mut().commit(vec![login(2, 1), trip(1, 1, 1, 10)]);
-
-    assert_eq!(writer.step().unwrap(), Step::Applied(first));
-    assert!(!writer.app().ready());
-    assert_eq!(count(writer.app(), "logins"), Err(AnswerError::NotReady));
-    let trips = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
-    assert_eq!(trips.lsn, first);
-    assert_eq!(trips.answer.rows[0].1, [Value::Int(0)]);
-
-    // The second commit is already in the logins load and only reaches trips.
-    assert_eq!(writer.step().unwrap(), Step::Applied(second));
-    assert!(writer.app().ready());
-    assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
-    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
-}
-
 /// Asks the app from another thread, so a writer that holds the lock while
 /// it loads fails the test instead of hanging it.
 fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
@@ -467,7 +439,7 @@ fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
 }
 
 #[test]
-fn asks_go_on_while_a_table_loads() {
+fn asks_wait_while_the_tables_load() {
     let db = Database::new(&TABLES).shared();
     let app = App::new(spec());
     let mut fake = Fake::new(&db);
@@ -489,101 +461,17 @@ fn asks_go_on_while_a_table_loads() {
         *seen.borrow(),
         [starting("zones"), starting("trips"), starting("logins")]
     );
-
-    // Without the old row, the delete reads logins again; trips answers
-    // meanwhile, at the delete.
-    seen.borrow_mut().clear();
-    db.borrow_mut().commit(vec![Write::Delete {
-        table: "logins",
-        key: int(1),
-    }]);
-    writer.step().unwrap();
-    assert_eq!(
-        *seen.borrow(),
-        [("logins".to_owned(), Ok(Value::Int(1)), not_ready)]
-    );
-    assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
 }
 
 #[test]
-fn status_reports_tables_and_counts() {
+fn the_last_failure_is_kept_until_the_next_start() {
     let (db, mut writer) = setup(&TABLES);
-    let table = |name: &str, size, ready| TableStatus {
-        name: id(name),
-        size,
-        ready,
-    };
-    assert_eq!(
-        writer.app().status(),
-        Status {
-            ready: false,
-            lsn: None,
-            time: None,
-            facts: vec![table("trips", 0, false), table("logins", 0, false)],
-            dims: vec![table("zones", 0, false)],
-            starts: 0,
-            commits: 0,
-            reloads: 0,
-            failures: 0,
-            error: None,
-        }
-    );
-
-    let start = db.borrow_mut().commit(vec![
-        zone(1, "Bronx"),
-        zone(2, "Queens"),
-        trip(1, 1, 1, 10),
-        trip(2, 1, 1, 10),
-        trip(3, 2, 1, 10),
-        login(1, 1),
-    ]);
-    writer.step().unwrap();
-    let status = writer.app().status();
-    assert!(status.ready);
-    assert_eq!((status.lsn, status.time), (Some(start), None));
-    assert_eq!(
-        (status.facts, status.dims),
-        (
-            vec![table("trips", 2, true), table("logins", 1, true)],
-            vec![table("zones", 2, true)]
-        )
-    );
-
-    let delete = db.borrow_mut().commit(vec![Write::Delete {
-        table: "logins",
-        key: int(1),
-    }]);
-    let later = db.borrow_mut().commit(vec![login(2, 1)]);
-    writer.step().unwrap();
-    let status = writer.app().status();
-    assert!(!status.ready, "logins waits for the stream");
-    assert_eq!(status.facts[1], table("logins", 1, false));
-    assert_eq!(
-        (status.lsn, status.time),
-        (Some(delete), Some(time(delete)))
-    );
-    assert_eq!((status.commits, status.reloads), (1, 1));
-    writer.step().unwrap();
-    let status = writer.app().status();
-    assert!(status.ready);
-    assert_eq!(status.lsn, Some(later));
-    assert_eq!((status.commits, status.reloads), (2, 1));
-
+    assert_eq!(writer.app().error(), None);
     db.borrow_mut().drop_connection = true;
-    db.borrow_mut().commit(vec![login(3, 1)]);
     writer.step().unwrap_err();
-    let status = writer.app().status();
-    assert!(!status.ready);
-    assert_eq!(status.lsn, None);
-    assert_eq!(status.facts[0], table("trips", 2, false));
-    assert_eq!((status.failures, status.starts), (1, 1));
-    assert_eq!(status.error.as_deref(), Some("connection dropped"));
-
+    assert_eq!(writer.app().error().as_deref(), Some("connection dropped"));
     writer.step().unwrap();
-    let status = writer.app().status();
-    assert!(status.ready);
-    assert_eq!((status.failures, status.starts), (1, 2));
-    assert_eq!(status.error, None);
+    assert_eq!(writer.app().error(), None);
 }
 
 #[test]
@@ -594,11 +482,11 @@ fn a_row_that_does_not_fit_stops_straum() {
     db.borrow_mut()
         .commit(vec![insert("trips", 1, row.clone())]);
 
-    // The insert fails, and so does reading trips again.
+    // The insert fails, and so does loading trips again.
+    let err = writer.step().unwrap_err();
+    assert_eq!(err.to_string(), "a change no longer fits trips");
     let err = writer.step().unwrap_err();
     assert_eq!(err.to_string(), "column fare is not an integer");
-    assert!(!writer.app().ready());
-    assert!(writer.step().is_err());
     assert!(!writer.app().ready());
 
     // Once the row is fixed, straum starts again.
@@ -620,14 +508,16 @@ fn a_dim_row_that_does_not_fit_stops_straum() {
     db.borrow_mut()
         .commit(vec![insert("zones", 3, vec![int(3)])]);
 
-    // The upsert fails, and so does reading zones again.
+    // The upsert fails, and so does loading zones again.
+    let err = writer.step().unwrap_err();
+    assert_eq!(err.to_string(), "a change no longer fits zones");
     let err = writer.step().unwrap_err();
     assert_eq!(err.to_string(), "row has 1 columns, expected 2");
     assert!(!writer.app().ready());
 }
 
 #[test]
-fn a_change_that_does_not_fit_reads_the_table_again() {
+fn a_change_that_does_not_fit_starts_over() {
     let trip_row = || vec![int(0), int(1), int(1), int(10), text("ann")];
     let never_added = || vec![int(0), int(9), int(9), int(9), text("zed")];
     let cases = [
@@ -701,63 +591,16 @@ fn a_change_that_does_not_fit_reads_the_table_again() {
         writer.step().unwrap();
         let lsn = db.borrow_mut().send(vec![change]);
 
-        assert_eq!(writer.step().unwrap(), Step::Applied(lsn), "{name}");
-        assert_eq!(db.borrow().loads[3..], [table], "{name}");
-        assert!(writer.app().ready(), "{name}");
+        let err = writer.step().unwrap_err();
+        assert!(matches!(&err, Error::Unfit(t) if *t == id(table)), "{name}");
+        assert!(!writer.app().ready(), "{name}");
+        assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
         assert_eq!(
             writer.app().ask(&by_borough).unwrap().answer,
             expected(&db.borrow(), &by_borough),
             "{name}"
         );
     }
-}
-
-/// Opens at 20, loads every table at `at`, then streams one commit at 30
-/// that alters zones.
-struct Behind {
-    at: Lsn,
-}
-
-impl Source for Behind {
-    fn open(&mut self, _: &Spec) -> Result<Lsn, SourceError> {
-        Ok(Lsn(20))
-    }
-
-    fn load_fact(&mut self, _: &Fact, _: &mut Rollup) -> Result<Lsn, SourceError> {
-        Ok(self.at)
-    }
-
-    fn load_dim(&mut self, _: &Dim, _: &mut DimTable) -> Result<Lsn, SourceError> {
-        Ok(self.at)
-    }
-
-    fn next_commit(&mut self) -> Result<Commit, SourceError> {
-        Ok(Commit {
-            lsn: Lsn(30),
-            time: UNIX_EPOCH,
-            changes: vec![Change::Altered { table: id("zones") }],
-        })
-    }
-}
-
-#[test]
-fn a_load_behind_the_stream_is_an_error() {
-    let mut writer = Writer::new(App::new(spec()), Behind { at: Lsn(19) });
-    let err = writer.step().unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "zones was read at 0/13, behind the stream at 0/14"
-    );
-    assert!(!writer.app().ready());
-
-    // A load at the stream's start is fine, but not once the stream is past.
-    let mut writer = Writer::new(App::new(spec()), Behind { at: Lsn(20) });
-    assert_eq!(writer.step().unwrap(), Step::Started(Lsn(20)));
-    let err = writer.step().unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "zones was read at 0/14, behind the stream at 0/1E"
-    );
 }
 
 #[test]
@@ -780,7 +623,7 @@ fn answer_error_display() {
     );
 }
 
-// Random writes, dropped connections and reloads.
+// Random writes, dropped connections and restarts.
 
 struct Rng(u64);
 
@@ -921,7 +764,7 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 key: new_key(),
                 row: random_login(rng),
             },
-            // Logins are append-only; these make straum read them again.
+            // Logins are append-only; these make straum start over.
             90..92 => match rng.pick(&existing(&keys, "logins")) {
                 Some(key) if rng.chance(50) => Write::Delete {
                     table: "logins",
@@ -976,20 +819,14 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
 }
 
 fn random_ask(rng: &mut Rng) -> Ask {
-    let (fact, measures, keys, times): (_, &[&str], &[&str], &[&str]) = if rng.chance(70) {
+    let (fact, measures, keys): (_, &[&str], &[&str]) = if rng.chance(70) {
         (
             "trips",
             &["trips", "fare", "fare_max", "riders"],
             &["kind", "zone", "zone.borough", "zone.id"],
-            &["bucket", "hour", "day"],
         )
     } else {
-        (
-            "logins",
-            &["logins"],
-            &["zone", "zone.borough"],
-            &["bucket", "day"],
-        )
+        ("logins", &["logins"], &["zone", "zone.borough"])
     };
     let mut chosen: Vec<&str> = measures
         .iter()
@@ -1001,7 +838,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
     }
     let mut by: Vec<&str> = keys.iter().copied().filter(|_| rng.chance(40)).collect();
     if rng.chance(30) {
-        by.push(rng.pick(times).unwrap());
+        by.push("bucket");
     }
     let mut ask = ask(fact, &chosen, &by);
     if rng.chance(30) {
@@ -1028,65 +865,35 @@ fn random_ask(rng: &mut Rng) -> Ask {
 #[derive(Debug, Default)]
 struct Seen {
     answered: usize,
-    waited: usize,
     failed: usize,
-    reloads: usize,
-    /// Asks answered while a table loaded.
+    /// Failures from a change that no longer fit.
+    unfit: usize,
+    /// Asks made while a table loaded.
     aside: usize,
 }
 
-/// Checks, in the middle of a load, that the table loading doesn't answer
-/// and every table that is ready answers as a fresh load at the app's
-/// position would.
-fn check_aside(app: &App, db: &Database, loading: &str) -> usize {
-    let status = app.status();
-    let ready = |name: &str| {
-        (status.facts.iter().chain(&status.dims)).any(|t| t.name.as_str() == name && t.ready)
-    };
-    assert!(!ready(loading), "{loading} is loading");
-    let mut answered = 0;
+/// Checks, in the middle of a load, that asks answer not ready instead of
+/// waiting on the writer.
+fn check_aside(app: &App) -> usize {
     for fact in ["trips", "logins"] {
         let ask = ask(fact, &[fact], &["zone"]);
-        match aside(app, ask.clone()) {
-            Ok(got) => {
-                assert!(
-                    ready(fact) && ready("zones"),
-                    "{fact} while {loading} loads"
-                );
-                let lsn = status.lsn.unwrap();
-                assert_eq!(got.lsn, lsn);
-                assert_eq!(got.answer, reference(db, lsn).ask(&ask).unwrap());
-                answered += 1;
-            }
-            Err(AnswerError::NotReady) => {
-                assert!(
-                    !(ready(fact) && ready("zones")),
-                    "{fact} while {loading} loads"
-                )
-            }
-            Err(e) => panic!("{e}"),
-        }
+        assert_eq!(aside(app, ask), Err(AnswerError::NotReady), "{fact}");
     }
-    answered
+    2
 }
 
-/// Asks against a fresh load of the database at `lsn`. Once the app has
-/// applied the latest commit, every table must be ready.
+/// Asks against a fresh load of the database at `lsn`.
 fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
     let reference = reference(db, lsn);
     for _ in 0..4 {
         let ask = random_ask(rng);
-        match app.ask(&ask) {
-            Ok(answered) => {
-                assert_eq!(answered.lsn, lsn);
-                assert_eq!(answered.answer, reference.ask(&ask).unwrap(), "{ask:?}");
-                seen.answered += 1;
-            }
-            Err(AnswerError::NotReady) if lsn < db.lsn() => seen.waited += 1,
-            Err(e) => panic!("{e} at {lsn} for {ask:?}"),
-        }
+        let answered = app
+            .ask(&ask)
+            .unwrap_or_else(|e| panic!("{e} at {lsn} for {ask:?}"));
+        assert_eq!(answered.lsn, lsn);
+        assert_eq!(answered.answer, reference.ask(&ask).unwrap(), "{ask:?}");
+        seen.answered += 1;
     }
-    assert!(lsn < db.lsn() || app.ready());
 }
 
 fn follow(seed: u64, seen: &mut Seen) {
@@ -1095,9 +902,9 @@ fn follow(seed: u64, seen: &mut Seen) {
     let app = App::new(spec());
     let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));
-    let (watch, shared, count) = (app.clone(), Rc::clone(&db), Rc::clone(&aside));
-    fake.on_load = Some(Box::new(move |table| {
-        *count.borrow_mut() += check_aside(&watch, &shared.borrow(), table);
+    let (watch, count) = (app.clone(), Rc::clone(&aside));
+    fake.on_load = Some(Box::new(move |_| {
+        *count.borrow_mut() += check_aside(&watch);
     }));
     let mut writer = Writer::new(app, fake);
     let mut next_key = 0;
@@ -1115,17 +922,11 @@ fn follow(seed: u64, seen: &mut Seen) {
         while position != Some(latest) {
             steps += 1;
             assert!(steps < 100, "seed {seed}: stuck");
-            let loads = db.borrow().loads.len();
             position = match writer.step() {
-                Ok(Step::Started(lsn)) => Some(lsn),
-                Ok(Step::Applied(lsn)) => {
-                    if db.borrow().loads.len() > loads {
-                        seen.reloads += 1;
-                    }
-                    Some(lsn)
-                }
-                Err(_) => {
+                Ok(Step::Started(lsn) | Step::Applied(lsn)) => Some(lsn),
+                Err(e) => {
                     seen.failed += 1;
+                    seen.unfit += usize::from(matches!(e, Error::Unfit(_)));
                     None
                 }
             };
@@ -1146,8 +947,7 @@ fn follows_the_database() {
     }
     // The run went through every path it claims to test.
     assert!(seen.answered > 1_000, "{seen:?}");
-    assert!(seen.waited > 0, "{seen:?}");
-    assert!(seen.failed > 0, "{seen:?}");
-    assert!(seen.reloads > 0, "{seen:?}");
+    assert!(seen.failed > seen.unfit, "{seen:?}");
+    assert!(seen.unfit > 0, "{seen:?}");
     assert!(seen.aside > 0, "{seen:?}");
 }

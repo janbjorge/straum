@@ -5,9 +5,7 @@
 //! loads every table in the slot's snapshot (one `GROUP BY` per fact), then
 //! streams pgoutput from the slot's consistent point. A thread owns the
 //! stream: it decodes commits and answers PostgreSQL while straum applies
-//! them. A table read again gets a second connection with its own
-//! temporary slot. Connections are TLS unless the DSN says
-//! `sslmode=disable`.
+//! them. Connections are TLS unless the DSN says `sslmode=disable`.
 
 #![forbid(unsafe_code)]
 

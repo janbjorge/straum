@@ -12,9 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_app::{AnswerError, App, Lsn, Source, Step, Writer};
-use straum_domain::{
-    Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value, Zone,
-};
+use straum_domain::{Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value};
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
@@ -259,7 +257,6 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
-                "day" => AskKey::Time(TimeKey::Day),
                 k => AskKey::Key(match k.split_once('.') {
                     Some((head, attr)) => KeyPath {
                         head: id(head),
@@ -273,7 +270,6 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             })
             .collect(),
         filter: Vec::new(),
-        zone: Zone::utc(),
         from: 0,
         to: END,
     }
@@ -391,6 +387,17 @@ fn printed(answer: &Answer, scales: &[u32]) -> Vec<Vec<Option<String>>> {
 fn applied(writer: &mut Writer<Pg>) {
     match writer.step() {
         Ok(Step::Applied(_)) => {}
+        other => panic!("expected a commit, got {other:?}"),
+    }
+}
+
+/// Applies the next commit, or starts over when it doesn't fit a table.
+fn applied_or_started(writer: &mut Writer<Pg>) {
+    match writer.step() {
+        Ok(Step::Applied(_)) => {}
+        Err(straum_app::Error::Unfit(_)) => {
+            assert!(matches!(writer.step(), Ok(Step::Started(_))));
+        }
         other => panic!("expected a commit, got {other:?}"),
     }
 }
@@ -532,8 +539,8 @@ fn follows_the_database() {
             next += 1;
             sql.push(statement);
         }
-        // An append fact changed after all reads it again; truncates empty
-        // a table in place, a mutable fact's included.
+        // An append fact changed after all starts over; truncates empty a
+        // table in place, a mutable fact's included.
         match round {
             30 | 70 => sql.push("UPDATE $S.logins SET zone_id = zone_id + 1;".into()),
             50 => sql.push("TRUNCATE $S.logins;".into()),
@@ -548,7 +555,7 @@ fn follows_the_database() {
         }
         sql.push("COMMIT;".into());
         db.run(&sql.join("\n"));
-        applied(&mut writer);
+        applied_or_started(&mut writer);
         if compare(&mut db, writer.app(), 2).is_some() {
             compared += 1;
         }
@@ -621,27 +628,28 @@ fn the_snapshot_and_the_stream_split_exactly() {
 }
 
 #[test]
-fn reads_a_table_again_on_a_second_connection() {
+fn an_unfit_change_starts_over() {
     let pg = postgres();
-    let mut db = Db::new(&pg, "reload", TABLES);
+    let mut db = Db::new(&pg, "unfit", TABLES);
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
     let mut writer = db.writer();
     writer.step().unwrap();
     compare(&mut db, writer.app(), 2).expect("ready");
 
-    // logins is append-only and has no full old rows, so an update reads
-    // it again, at a new slot's consistent point past this commit.
+    // logins is append-only and has no full old rows, so an update starts
+    // over from a new slot.
     db.run("UPDATE $S.logins SET zone_id = 2");
-    applied(&mut writer);
+    let err = writer.step().unwrap_err().to_string();
+    assert_eq!(err, "a change no longer fits logins");
     assert_eq!(
-        writer.app().ask(&ask("logins", &["logins"], &[])),
+        writer.app().ask(&ask("trips", &["trips"], &[])),
         Err(AnswerError::NotReady)
     );
-    // Trips didn't change, so they keep answering.
-    assert!(writer.app().ask(&ask("trips", &["trips"], &[])).is_ok());
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), 2).expect("ready after the new load");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
+    compare(&mut db, writer.app(), 2).expect("ready");
 }
 
 #[test]
@@ -664,14 +672,14 @@ fn follows_the_database_over_tls() {
     // Past wal_sender_timeout (4 s): reads time out and keepalives are
     // answered, over TLS.
     thread::sleep(Duration::from_secs(6));
-    // A table read again, on a second TLS connection.
+    // An unfit change starts over, on a new TLS connection.
     db.run("UPDATE $S.logins SET zone_id = 2");
-    applied(&mut writer);
+    applied_or_started(&mut writer);
     for id in 60..70 {
         db.run(&rng.trip(id));
         applied(&mut writer);
     }
-    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
+    compare(&mut db, writer.app(), 2).expect("ready");
     let tls = db.rows(
         "SELECT DISTINCT a.backend_type, s.ssl FROM pg_stat_activity a
          JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'straum' ORDER BY 1",
@@ -789,7 +797,7 @@ fn tls_start_errors() {
 }
 
 #[test]
-fn a_changed_column_type_reads_the_table_again() {
+fn a_changed_column_type_starts_over() {
     let pg = postgres();
     let mut db = Db::new(&pg, "altered", TABLES);
     db.run(&Rng::new(1).trip(1));
@@ -799,10 +807,12 @@ fn a_changed_column_type_reads_the_table_again() {
 
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
     db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
-    applied(&mut writer);
+    let err = writer.step().unwrap_err().to_string();
+    assert_eq!(err, "a change no longer fits trips");
+    writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
     applied(&mut writer);
-    compare(&mut db, writer.app(), 3).expect("ready once the stream passes the reload");
+    compare(&mut db, writer.app(), 3).expect("ready");
 
     // A column straum reads is gone: straum stops and the setup check says why.
     db.run("ALTER TABLE $S.trips DROP COLUMN rider");
@@ -817,7 +827,7 @@ fn a_changed_column_type_reads_the_table_again() {
 }
 
 #[test]
-fn a_value_left_out_reads_the_table_again() {
+fn a_value_left_out_starts_over() {
     let pg = postgres();
     let mut db = Db::new(&pg, "toast", TABLES);
     // Too big and too random to stay inline: PostgreSQL TOASTs it, and an
@@ -833,16 +843,12 @@ fn a_value_left_out_reads_the_table_again() {
     compare(&mut db, writer.app(), 2).expect("ready");
 
     db.run("UPDATE $S.zones SET note = 'x' WHERE id = 1");
-    applied(&mut writer);
-    assert!(
-        compare(&mut db, writer.app(), 2).is_none(),
-        "zones is read again"
-    );
-    // The reload's consistent point is past every commit so far; the next
-    // one passes it.
+    let err = writer.step().unwrap_err().to_string();
+    assert_eq!(err, "a change no longer fits zones");
+    writer.step().unwrap();
     db.run(&Rng::new(2).trip(2));
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready once the stream passes the reload");
+    compare(&mut db, writer.app(), 2).expect("ready");
 }
 
 #[test]
@@ -1190,7 +1196,7 @@ fn connection_errors() {
 }
 
 #[test]
-fn streams_before_every_table_is_loaded() {
+fn no_load_once_the_stream_runs() {
     let pg = postgres();
     let mut db = Db::new(&pg, "early", TABLES);
     let spec = db.spec(SPEC);
@@ -1199,10 +1205,12 @@ fn streams_before_every_table_is_loaded() {
     db.run(&Rng::new(1).trip(1));
     let commit = source.next_commit().unwrap();
     assert!(commit.lsn > start);
-    // A table loaded now reads a snapshot of its own, past the commit.
     let mut store = Store::new(spec.clone());
-    let at = source.load_fact(spec.fact("trips").unwrap(), store.rollup("trips").unwrap());
-    assert!(at.unwrap() >= commit.lsn);
+    let err = source.load_fact(spec.fact("trips").unwrap(), store.rollup("trips").unwrap());
+    assert_eq!(
+        err.unwrap_err().to_string(),
+        "the replication stream stopped"
+    );
 }
 
 /// A message as PostgreSQL frames it: tag, length counting itself, body.
@@ -1588,15 +1596,15 @@ fn taxi_month() {
     let coarse = ask(
         "trips",
         &["trips", "fare", "tip_max", "card", "manhattan_pickups"],
-        &["day", "pickup.borough"],
+        &["pickup.borough"],
     );
     let coarse_reference = format!(
-        "SELECT extract(epoch FROM date_trunc('day', bucket, 'UTC'))::int8, borough,
+        "SELECT borough,
                 sum(trips), sum(fare), max(tip_max), sum(card), sum(manhattan_pickups)
            FROM ({body}) v
-          GROUP BY 1, 2"
+          GROUP BY 1"
     );
-    let coarse_scales = [0, 0, 0, 2, 2, 0, 0];
+    let coarse_scales = [0, 0, 2, 2, 0, 0];
     // straum's time is the time `ask` holds the read lock.
     let compare =
         |sql: &mut Conn, app: &App, (ask, reference, scales): (&Ask, &str, &[u32]), when: &str| {
@@ -1663,14 +1671,14 @@ fn taxi_month() {
     eprintln!("streamed 202 commits in {:.1?}", clock.elapsed());
     check(&mut sql, writer.app(), "after the stream");
 
-    // trips is append-only: an update reads it all again.
+    // trips is append-only: an update starts over.
     sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
         .unwrap();
     let clock = Instant::now();
-    applied(&mut writer);
-    eprintln!("read trips again in {:.1?}", clock.elapsed());
+    applied_or_started(&mut writer);
+    eprintln!("started over in {:.1?}", clock.elapsed());
     sql.execute("UPDATE taxi_zones SET zone = zone WHERE location_id = 1")
         .unwrap();
     applied(&mut writer);
-    check(&mut sql, writer.app(), "after the reload");
+    check(&mut sql, writer.app(), "after starting over");
 }

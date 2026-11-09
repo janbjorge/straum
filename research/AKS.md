@@ -40,8 +40,7 @@ replica.
   loads before the old one stops.
 - **ConfigMap**: the spec. A checksum annotation rolls the Deployment when it
   changes.
-- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez`, `/readyz` and
-  `/metrics`.
+- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez` and `/readyz`.
 - **Secret or SecretProviderClass** (`existingSecret`): the DSN of the
   replication role; on Azure from Key Vault through Secrets Store CSI.
 

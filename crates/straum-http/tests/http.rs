@@ -43,20 +43,20 @@ impl Source for Script {
         Ok(START)
     }
 
-    fn load_fact(&mut self, _: &Fact, rollup: &mut Rollup) -> Result<Lsn, SourceError> {
+    fn load_fact(&mut self, _: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
         // at, kind, zone_id, fare: fare is numeric(10, 2).
         rollup.set_scales(&[0, 0, 0, 2])?;
         for row in &self.trips {
             rollup.add(row)?;
         }
-        Ok(START)
+        Ok(())
     }
 
-    fn load_dim(&mut self, _: &Dim, table: &mut DimTable) -> Result<Lsn, SourceError> {
+    fn load_dim(&mut self, _: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
         for row in &self.zones {
             table.upsert(row)?;
         }
-        Ok(START)
+        Ok(())
     }
 
     fn next_commit(&mut self) -> Result<Commit, SourceError> {
@@ -78,8 +78,7 @@ fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
     vec![int(JAN_1 + hour * HOUR), int(kind), int(zone), fare]
 }
 
-/// Three trips on 2024-01-01 UTC, one at 23:00, which is the next day in
-/// Oslo, and one in a zone with no row.
+/// Four trips on 2024-01-01 UTC, one in a zone with no row.
 fn writer() -> Writer<Script> {
     let script = Script {
         trips: vec![
@@ -167,13 +166,12 @@ fn call(addr: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
     )
 }
 
-const BY_DAY: &str = r#"{
+const BY_BUCKET: &str = r#"{
     "fact": "trips",
     "measures": ["trips", "fare", "fare_avg", "fare_max"],
     "by": ["kind", "zone.borough"],
-    "time": "day",
-    "zone": "Europe/Oslo",
-    "from": "2024-01-01T00:00:00+01:00",
+    "time": "bucket",
+    "from": "2024-01-01T01:00:00+01:00",
     "to": "2024-01-03T00:00:00Z"
 }"#;
 
@@ -183,7 +181,7 @@ fn answers_asks_as_json() {
     assert_eq!(writer.step().unwrap(), Step::Started(START));
     let server = serve(writer.app().clone());
 
-    let reply = call(server.addr, "POST", "/ask", BY_DAY);
+    let reply = call(server.addr, "POST", "/ask", BY_BUCKET);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(
         reply.head.contains("content-type: application/json"),
@@ -191,11 +189,12 @@ fn answers_asks_as_json() {
         reply.head
     );
     let rows = concat!(
-        r#"["2024-01-01T00:00:00+01:00",1,"Bronx",2,15.00,{"sum":15.00,"count":2},12.50],"#,
-        r#"["2024-01-01T00:00:00+01:00",2,null,1,null,null,null],"#,
-        r#"["2024-01-02T00:00:00+01:00",2,"Queens \"Q\"",1,-0.05,{"sum":-0.05,"count":1},-0.05]"#,
+        r#"["2024-01-01T00:00:00Z",1,"Bronx",1,12.50,{"sum":12.50,"count":1},12.50],"#,
+        r#"["2024-01-01T01:00:00Z",1,"Bronx",1,2.50,{"sum":2.50,"count":1},2.50],"#,
+        r#"["2024-01-01T02:00:00Z",2,null,1,null,null,null],"#,
+        r#"["2024-01-01T23:00:00Z",2,"Queens \"Q\"",1,-0.05,{"sum":-0.05,"count":1},-0.05]"#,
     );
-    let columns = r#"["day","kind","zone.borough","trips","fare","fare_avg","fare_max"]"#;
+    let columns = r#"["bucket","kind","zone.borough","trips","fare","fare_avg","fare_max"]"#;
     assert_eq!(
         reply.body,
         format!(
@@ -204,8 +203,8 @@ fn answers_asks_as_json() {
     );
 
     // The same range in Unix seconds.
-    let seconds = BY_DAY
-        .replace(r#""2024-01-01T00:00:00+01:00""#, "1704063600")
+    let seconds = BY_BUCKET
+        .replace(r#""2024-01-01T01:00:00+01:00""#, "1704067200")
         .replace(r#""2024-01-03T00:00:00Z""#, "1704240000");
     assert_eq!(call(server.addr, "POST", "/ask", &seconds).body, reply.body);
 
@@ -292,7 +291,6 @@ fn routes() {
         ("GET", "/ask", "POST"),
         ("POST", "/livez", "GET"),
         ("DELETE", "/readyz", "GET"),
-        ("PUT", "/metrics", "GET"),
     ] {
         let reply = call(server.addr, method, path, "");
         assert_eq!(reply.status, 405, "{method} {path}");
@@ -313,7 +311,7 @@ fn readiness_says_why_not() {
     let reply = call(server.addr, "GET", "/readyz", "");
     assert_eq!(
         (reply.status, reply.body.as_str()),
-        (503, "not ready: waiting for zones, trips\n")
+        (503, "not ready: loading\n")
     );
     writer.step().unwrap();
     let reply = call(server.addr, "GET", "/readyz", "");
@@ -325,95 +323,6 @@ fn readiness_says_why_not() {
         (reply.status, reply.body.as_str()),
         (503, "not ready: connection dropped\n")
     );
-    server.stop();
-}
-
-#[test]
-fn metrics() {
-    let mut writer = writer();
-    let server = serve(writer.app().clone());
-    let ask = r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600}"#;
-    call(server.addr, "POST", "/ask", ask);
-    let before = call(server.addr, "GET", "/metrics", "");
-    assert_eq!(before.status, 200);
-    assert!(
-        before
-            .head
-            .contains("content-type: text/plain; version=0.0.4")
-    );
-    for line in [
-        "straum_ready 0",
-        "straum_asks_total{outcome=\"not_ready\"} 1",
-        "straum_cells{fact=\"trips\"} 0",
-        "straum_table_ready{table=\"zones\"} 0",
-        "straum_ask_seconds_count 0",
-    ] {
-        assert!(
-            before.body.lines().any(|l| l == line),
-            "{line} in\n{}",
-            before.body
-        );
-    }
-    assert!(
-        !before.body.lines().any(|l| l.starts_with("straum_lsn ")),
-        "{}",
-        before.body
-    );
-
-    writer.step().unwrap();
-    writer.step().unwrap();
-    call(server.addr, "POST", "/ask", ask);
-    call(server.addr, "POST", "/ask", "{}");
-    let after = call(server.addr, "GET", "/metrics", "").body;
-    let expected = [
-        "# HELP straum_ready 1 when every table is loaded and the stream has passed each load.",
-        "# TYPE straum_ready gauge",
-        "straum_ready 1",
-        "straum_lsn 98784247808",
-        "straum_commit_time_seconds 1704153600.123456",
-        "straum_starts_total 1",
-        "straum_commits_total 1",
-        "straum_reloads_total 0",
-        "straum_failures_total 0",
-        "straum_cells{fact=\"trips\"} 5",
-        "straum_rows{dim=\"zones\"} 2",
-        "straum_table_ready{table=\"zones\"} 1",
-        "straum_table_ready{table=\"trips\"} 1",
-        "straum_asks_total{outcome=\"answered\"} 1",
-        "straum_asks_total{outcome=\"not_ready\"} 1",
-        "straum_asks_total{outcome=\"invalid\"} 1",
-        "straum_asks_total{outcome=\"failed\"} 0",
-        "straum_ask_seconds_bucket{le=\"+Inf\"} 1",
-        "straum_ask_seconds_count 1",
-    ];
-    for line in expected {
-        assert!(after.lines().any(|l| l == line), "{line} in\n{after}");
-    }
-    // One cumulative bucket per bound, ending at the count.
-    let buckets: Vec<u64> = (after.lines())
-        .filter(|l| l.starts_with("straum_ask_seconds_bucket"))
-        .map(|l| l.rsplit(' ').next().unwrap().parse().unwrap())
-        .collect();
-    assert_eq!(buckets.len(), 10);
-    assert!(buckets.is_sorted() && buckets[9] == 1, "{buckets:?}");
-    // Each family is one group: its help and type, then its samples.
-    let mut families = Vec::new();
-    for line in after.lines() {
-        let name = match line.strip_prefix("# HELP ") {
-            Some(help) => help.split(' ').next().unwrap(),
-            None if line.starts_with('#') => continue,
-            None => line.split(['{', ' ']).next().unwrap(),
-        };
-        let family = ["_bucket", "_sum", "_count"]
-            .iter()
-            .find_map(|s| name.strip_suffix(s))
-            .unwrap_or(name);
-        if families.last() != Some(&family) {
-            assert!(!families.contains(&family), "{family} split in\n{after}");
-            families.push(family);
-        }
-    }
-    assert_eq!(families.len(), 12, "{families:?}");
     server.stop();
 }
 
