@@ -1,8 +1,10 @@
-//! What an ask costs: it allocates per group, never per cell, and reads only
-//! the cells of the buckets in its range.
+//! What an ask costs: it allocates per group, never per cell, reads only
+//! the cells of the buckets in its range, and stays within a time per cell.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::hint::black_box;
+use std::time::Instant;
 
 use straum_domain::{
     Agg, Ask, AskKey, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Ref, Spec, Store, Table,
@@ -175,6 +177,33 @@ fn an_ask_reads_only_the_buckets_in_its_range() {
             store.cells_read(&ask(&[], from, to)).unwrap(),
             (to - from) as usize * per_hour,
             "hours {from}..{to}: reads cells outside its range"
+        );
+    }
+}
+
+/// Every cell of a rollup the size of the taxi month at one hour, against a
+/// time budget per cell. Timing depends on the machine and the build, so it
+/// runs on request:
+/// `cargo test -p straum-domain --release --test cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn an_ask_stays_within_its_time_per_cell() {
+    const CELLS: i64 = 173_600;
+    const REPS: u32 = 20;
+    let store = store(CELLS);
+    let hours = CELLS / (2 * ZONES);
+    for (by, budget) in [(&[][..], 30.0), (&["pickup.borough"], 120.0)] {
+        let ask = ask(by, 0, hours);
+        store.ask(&ask).unwrap();
+        let clock = Instant::now();
+        for _ in 0..REPS {
+            black_box(store.ask(&ask).unwrap());
+        }
+        let per_cell = clock.elapsed().as_nanos() as f64 / f64::from(REPS) / CELLS as f64;
+        eprintln!("by {by:?}: {per_cell:.1} ns a cell");
+        assert!(
+            per_cell <= budget,
+            "by {by:?}: {per_cell:.1} ns a cell, over the {budget} ns budget"
         );
     }
 }
