@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::iter;
 
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
-use crate::rollup::{Cell, DimTable, Rollup, State};
+use crate::rollup::{DimTable, Rollup, State};
 use crate::spec::{Agg, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{Datum, Value};
 
@@ -62,11 +62,14 @@ impl Store {
     }
 
     /// How many cells answering `ask` reads, whatever they hold: its cost.
-    /// Today that is every cell of the fact.
+    /// Those are the cells of the buckets in its range.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
-        Ok(rollup.cells())
+        Ok(rollup
+            .range(ask.from, ask.to)
+            .map(|(_, cells)| cells.len())
+            .sum())
     }
 
     /// Merges the cells in range that pass the ask's filter, one group per
@@ -110,18 +113,22 @@ impl Store {
         let mut groups: HashMap<Vec<Cow<Datum>>, Vec<Partial>> = HashMap::new();
         let mut group = Vec::with_capacity(by.len());
         let mut total = empty();
-        let bucket_slot = rollup.bucket_slot();
-        for (key, cell) in rollup.iter() {
-            let Datum::Int(bucket) = key[bucket_slot] else {
-                continue;
+        let cells = rollup
+            .range(ask.from, ask.to)
+            .flat_map(|(bucket, cells)| cells.iter().map(move |cell| (bucket, cell)));
+        for (bucket, (key, rows, states)) in cells {
+            let at = At {
+                rollup,
+                key,
+                bucket,
             };
-            if bucket < ask.from || bucket >= ask.to || !all_hold(&filter, key, bucket) {
+            if !all_hold(&filter, &at) {
                 continue;
             }
             let merge = |partials: &mut [Partial]| {
                 for (partial, m) in partials.iter_mut().zip(&measures) {
-                    if all_hold(&m.filter, key, bucket) {
-                        partial.merge(cell, m.state);
+                    if all_hold(&m.filter, &at) {
+                        partial.merge(rows, states, m.state);
                     }
                 }
             };
@@ -130,7 +137,7 @@ impl Store {
                 continue;
             }
             group.clear();
-            group.extend(by.iter().map(|s| s.value(key, bucket)));
+            group.extend(by.iter().map(|s| s.value(&at)));
             match groups.get_mut(group.as_slice()) {
                 Some(partials) => merge(partials),
                 None => {
@@ -203,7 +210,15 @@ impl Store {
     }
 }
 
-/// Where the value of an ask key comes from, given a cell key.
+/// A cell an ask reads: its key codes and bucket, and the rollup whose
+/// codes they are.
+struct At<'r> {
+    rollup: &'r Rollup,
+    key: &'r [u32],
+    bucket: i64,
+}
+
+/// Where the value of an ask key comes from, given a cell.
 enum Source<'a> {
     /// A by column or ref id.
     Slot(usize),
@@ -226,20 +241,20 @@ impl<'a> Source<'a> {
         }
     }
 
-    fn value<'k>(&self, key: &'k [Datum], bucket: i64) -> Cow<'k, Datum>
+    fn value<'k>(&self, at: &At<'k>) -> Cow<'k, Datum>
     where
         'a: 'k,
     {
         match *self {
-            Source::Slot(slot) => Cow::Borrowed(&key[slot]),
+            Source::Slot(slot) => Cow::Borrowed(at.rollup.value(slot, at.key[slot])),
             Source::Dim {
                 slot,
                 table,
                 column,
             } => table
-                .get(&key[slot])
+                .get(at.rollup.value(slot, at.key[slot]))
                 .map_or(Cow::Owned(Datum::Null), |row| Cow::Borrowed(&row[column])),
-            Source::Time(t, grain) => Cow::Owned(Datum::Int(t.start(bucket, grain))),
+            Source::Time(t, grain) => Cow::Owned(Datum::Int(t.start(at.bucket, grain))),
         }
     }
 }
@@ -250,9 +265,9 @@ struct Condition<'a> {
     values: &'a [Literal],
 }
 
-fn all_hold(conditions: &[Condition], key: &[Datum], bucket: i64) -> bool {
+fn all_hold(conditions: &[Condition], at: &At) -> bool {
     conditions.iter().all(|c| {
-        let v = c.source.value(key, bucket);
+        let v = c.source.value(at);
         c.values.iter().any(|lit| v.matches(lit))
     })
 }
@@ -289,9 +304,9 @@ impl Partial {
         }
     }
 
-    fn merge(&mut self, cell: &Cell, state: Option<usize>) {
-        match (self, state.map(|i| &cell.state[i])) {
-            (Partial::Count(count), None) => *count += cell.rows,
+    fn merge(&mut self, rows: u64, states: &[State], state: Option<usize>) {
+        match (self, state.map(|i| &states[i])) {
+            (Partial::Count(count), None) => *count += rows,
             (
                 Partial::Sum { sum, count } | Partial::Avg { sum, count },
                 Some(State::Sum {

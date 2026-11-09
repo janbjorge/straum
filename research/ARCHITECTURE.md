@@ -167,7 +167,9 @@ The answer:
 
 A rollup has one cell per rollup key. A cell holds its row count and one state
 per input column, shared by the measures that read that column
-(`crates/straum-domain/src/rollup.rs`):
+(`crates/straum-domain/src/rollup.rs`). Cells are kept per bucket, side by
+side, so an ask reads only the buckets in its range. Each rollup-key column
+keeps its values once, under small codes, and a cell key is those codes.
 
 - sum and avg share the column's sum (`i128`) and count of non-null values;
 - min and max share a count per value, so deleting the current extreme reveals

@@ -163,9 +163,7 @@ fn an_ask_allocates_per_group_not_per_cell() {
     }
 }
 
-// Until rollups keep their cells per bucket, every ask reads every cell.
 #[test]
-#[should_panic(expected = "reads cells outside its range")]
 fn an_ask_reads_only_the_buckets_in_its_range() {
     let store = store(8_000);
     let mut unknown = ask(&[], 0, 1);

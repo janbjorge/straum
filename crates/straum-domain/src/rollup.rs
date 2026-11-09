@@ -15,7 +15,11 @@ const TIME: usize = 0;
 /// Panic message for measure inputs, which `Fact::columns` lists.
 const COLUMNS: &str = "Fact::columns lists every measure input";
 
-/// One cell per rollup key, holding what the fact's measures need.
+/// Panic message for a cell `Rollup::cell` just made or found.
+const MADE: &str = "Rollup::cell makes the bucket";
+
+/// One cell per rollup key, holding what the fact's measures need. Cells
+/// are kept per bucket, so an ask reads only the buckets in its range.
 #[derive(Debug)]
 pub struct Rollup {
     /// The time column, the by columns and ref columns in rollup-key order,
@@ -32,10 +36,121 @@ pub struct Rollup {
     /// Row positions of the sum inputs not grouped by, whose sums a load
     /// returns.
     summed: Vec<usize>,
-    /// Keyed on the by values, the ref ids, then the bucket.
-    cells: HashMap<Box<[Datum]>, Cell>,
+    /// One per rollup-key column: its values under small codes, so a cell
+    /// key is a few integers.
+    codes: Vec<Codes>,
+    /// Cells by bucket start, oldest first. `None` holds the rows without a
+    /// time, which no ask reads.
+    buckets: BTreeMap<Option<i64>, Cells>,
+    /// Cells over every bucket.
+    cells: usize,
     /// Per column; see [`Rollup::set_scales`].
     scales: Vec<u32>,
+}
+
+/// A rollup-key column's values, each under the code of its first add.
+/// Codes outlive their cells until [`Rollup::clear`].
+#[derive(Debug, Default)]
+struct Codes {
+    codes: HashMap<Datum, u32>,
+    values: Vec<Datum>,
+}
+
+impl Codes {
+    fn code(&mut self, value: &Datum) -> u32 {
+        if let Some(&code) = self.codes.get(value) {
+            return code;
+        }
+        let code = u32::try_from(self.values.len()).expect("fewer than 2^32 values fit in memory");
+        self.values.push(value.clone());
+        self.codes.insert(value.clone(), code);
+        code
+    }
+}
+
+/// The cells of one bucket, side by side: cell `i` has key
+/// `keys[i * width..][..width]`, `rows[i]` rows and states
+/// `states[i * inputs..][..inputs]`.
+#[derive(Debug)]
+pub(crate) struct Cells {
+    /// Codes per key.
+    width: usize,
+    /// States per cell.
+    inputs: usize,
+    /// Cell position by key.
+    index: HashMap<Box<[u32]>, usize>,
+    keys: Vec<u32>,
+    rows: Vec<u64>,
+    states: Vec<State>,
+}
+
+impl Cells {
+    fn new(width: usize, inputs: usize) -> Cells {
+        Cells {
+            width,
+            inputs,
+            index: HashMap::new(),
+            keys: Vec::new(),
+            rows: Vec::new(),
+            states: Vec::new(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Each cell's key codes, rows and states.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u32], u64, &[State])> {
+        (0..self.len()).map(|i| {
+            (
+                &self.keys[i * self.width..][..self.width],
+                self.rows[i],
+                &self.states[i * self.inputs..][..self.inputs],
+            )
+        })
+    }
+
+    /// The position of the cell with `key`, made empty if it's new.
+    fn entry(&mut self, key: &[u32], inputs: &[Input]) -> (usize, bool) {
+        if let Some(&i) = self.index.get(key) {
+            return (i, false);
+        }
+        let i = self.len();
+        self.index.insert(key.into(), i);
+        self.keys.extend_from_slice(key);
+        self.rows.push(0);
+        self.states
+            .extend(inputs.iter().map(|input| State::new(input.kind)));
+        (i, true)
+    }
+
+    fn states_mut(&mut self, i: usize) -> &mut [State] {
+        &mut self.states[i * self.inputs..][..self.inputs]
+    }
+
+    /// Drops cell `i`; the last cell takes its place.
+    fn swap_remove(&mut self, i: usize) {
+        let last = self.len() - 1;
+        let key = &self.keys[i * self.width..][..self.width];
+        self.index.remove(key);
+        if i != last {
+            let moved = self.keys[last * self.width..][..self.width].to_vec();
+            self.keys
+                .copy_within(last * self.width..(last + 1) * self.width, i * self.width);
+            *self
+                .index
+                .get_mut(moved.as_slice())
+                .expect("every cell is indexed") = i;
+            for j in 0..self.inputs {
+                self.states
+                    .swap(i * self.inputs + j, last * self.inputs + j);
+            }
+        }
+        self.keys.truncate(last * self.width);
+        self.states.truncate(last * self.inputs);
+        self.rows.swap_remove(i);
+    }
 }
 
 /// A column whose values a cell keeps, and in what form. Measures share
@@ -66,13 +181,6 @@ impl Kind {
             Agg::CountDistinct(c) => Some((Kind::Distinct, c)),
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct Cell {
-    pub(crate) rows: u64,
-    /// One per `Rollup::inputs`.
-    pub(crate) state: Box<[State]>,
 }
 
 #[derive(Debug)]
@@ -124,7 +232,9 @@ impl Rollup {
             inputs,
             grouped,
             summed,
-            cells: HashMap::new(),
+            codes: (0..key_len).map(|_| Codes::default()).collect(),
+            buckets: BTreeMap::new(),
+            cells: 0,
             scales: vec![0; columns.len()],
             columns,
         }
@@ -150,12 +260,14 @@ impl Rollup {
 
     /// Number of cells; a cell goes when its last row is removed.
     pub fn cells(&self) -> usize {
-        self.cells.len()
+        self.cells
     }
 
     /// Drops every cell, as when the table is emptied. The scales stay.
     pub fn clear(&mut self) {
-        self.cells.clear();
+        self.buckets.clear();
+        self.codes.iter_mut().for_each(|c| *c = Codes::default());
+        self.cells = 0;
     }
 
     /// Sets the scale of each of [`Rollup::columns`]: a numeric column's
@@ -184,12 +296,10 @@ impl Rollup {
 
     pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let cell = self.cells.entry(self.key(row)).or_insert_with(|| Cell {
-            rows: 0,
-            state: self.inputs.iter().map(|i| State::new(i.kind)).collect(),
-        });
-        cell.rows += 1;
-        for (state, input) in cell.state.iter_mut().zip(&self.inputs) {
+        let (bucket, i) = self.cell(row);
+        let cells = self.buckets.get_mut(&bucket).expect(MADE);
+        cells.rows[i] += 1;
+        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
             state.add(&row[input.column], 1);
         }
         Ok(())
@@ -218,13 +328,11 @@ impl Rollup {
             row[column] = value.clone();
         }
         self.check(&row)?;
-        let cell = self.cells.entry(self.key(&row)).or_insert_with(|| Cell {
-            rows: 0,
-            state: self.inputs.iter().map(|i| State::new(i.kind)).collect(),
-        });
-        cell.rows += rows.get();
+        let (bucket, i) = self.cell(&row);
+        let cells = self.buckets.get_mut(&bucket).expect(MADE);
+        cells.rows[i] += rows.get();
         let mut sums = sums.iter();
-        for (state, input) in cell.state.iter_mut().zip(&self.inputs) {
+        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
             match state {
                 State::Sum { sum, count } if !self.grouped.contains(&input.column) => {
                     let group = sums.next().expect("one per summed column");
@@ -241,14 +349,26 @@ impl Rollup {
     /// the rollup no longer matches the table; start over.
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let key = self.key(row);
-        let cell = self.cells.get_mut(&key).ok_or(RowError::Missing)?;
-        for (state, input) in cell.state.iter_mut().zip(&self.inputs) {
+        let bucket = self.bucket(row);
+        let key: Option<Vec<u32>> = (row[1..=self.key_len].iter())
+            .zip(&self.codes)
+            .map(|(value, codes)| codes.codes.get(value).copied())
+            .collect();
+        let cells = self.buckets.get_mut(&bucket).ok_or(RowError::Missing)?;
+        let i = *cells
+            .index
+            .get(key.ok_or(RowError::Missing)?.as_slice())
+            .ok_or(RowError::Missing)?;
+        for (state, input) in cells.states_mut(i).iter_mut().zip(&self.inputs) {
             state.remove(&row[input.column])?;
         }
-        cell.rows -= 1;
-        if cell.rows == 0 {
-            self.cells.remove(&key);
+        cells.rows[i] -= 1;
+        if cells.rows[i] == 0 {
+            cells.swap_remove(i);
+            self.cells -= 1;
+            if cells.len() == 0 {
+                self.buckets.remove(&bucket);
+            }
         }
         Ok(())
     }
@@ -263,13 +383,15 @@ impl Rollup {
             .position(|i| *i == Input { kind, column })
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[Datum], &Cell)> {
-        self.cells.iter().map(|(k, c)| (&**k, c))
+    /// The buckets that start in `from..to`, each with its cells.
+    pub(crate) fn range(&self, from: i64, to: i64) -> impl Iterator<Item = (i64, &Cells)> {
+        (self.buckets.range(Some(from)..Some(to)))
+            .filter_map(|(&bucket, cells)| Some((bucket?, cells)))
     }
 
-    /// Position of the bucket in a cell key.
-    pub(crate) fn bucket_slot(&self) -> usize {
-        self.key_len
+    /// The value under `code` in rollup-key column `slot`.
+    pub(crate) fn value(&self, slot: usize, code: u32) -> &Datum {
+        &self.codes[slot].values[code as usize]
     }
 
     /// Rejects rows that would leave the rollup half updated.
@@ -295,16 +417,28 @@ impl Rollup {
         Ok(())
     }
 
-    fn key(&self, row: &[Datum]) -> Box<[Datum]> {
-        let bucket = match row[TIME] {
-            Datum::Int(t) => Datum::Int(t.div_euclid(self.grain) * self.grain),
-            _ => Datum::Null,
-        };
-        row[1..=self.key_len]
-            .iter()
-            .cloned()
-            .chain(iter::once(bucket))
-            .collect()
+    fn bucket(&self, row: &[Datum]) -> Option<i64> {
+        match row[TIME] {
+            Datum::Int(t) => Some(t.div_euclid(self.grain) * self.grain),
+            _ => None,
+        }
+    }
+
+    /// The bucket and position of the cell a checked row falls in, made
+    /// empty if it's new.
+    fn cell(&mut self, row: &[Datum]) -> (Option<i64>, usize) {
+        let bucket = self.bucket(row);
+        let key: Vec<u32> = (row[1..=self.key_len].iter())
+            .zip(&mut self.codes)
+            .map(|(value, codes)| codes.code(value))
+            .collect();
+        let (width, inputs) = (self.key_len, self.inputs.len());
+        let cells = (self.buckets)
+            .entry(bucket)
+            .or_insert_with(|| Cells::new(width, inputs));
+        let (i, new) = cells.entry(&key, &self.inputs);
+        self.cells += usize::from(new);
+        (bucket, i)
     }
 }
 
