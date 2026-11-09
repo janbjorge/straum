@@ -1750,6 +1750,69 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "straum"
+version = "0.0.0"
+dependencies = [
+ "straum-app",
+ "straum-domain",
+ "straum-http",
+ "straum-notation",
+ "straum-pg",
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
+name = "straum-app"
+version = "0.0.0"
+dependencies = [
+ "straum-domain",
+ "straum-notation",
+]
+
+[[package]]
+name = "straum-domain"
+version = "0.0.0"
+
+[[package]]
+name = "straum-http"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "serde",
+ "serde_json",
+ "straum-app",
+ "straum-domain",
+ "straum-notation",
+ "tokio",
+]
+
+[[package]]
+name = "straum-notation"
+version = "0.0.0"
+dependencies = [
+ "sqlparser",
+ "straum-domain",
+]
+
+[[package]]
+name = "straum-pg"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "fallible-iterator",
+ "postgres-protocol",
+ "straum-app",
+ "straum-domain",
+ "straum-notation",
+ "testcontainers",
+]
+
+[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2236,69 +2299,6 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "weir"
-version = "0.0.0"
-dependencies = [
- "testcontainers",
- "tokio",
- "weir-app",
- "weir-domain",
- "weir-http",
- "weir-notation",
- "weir-pg",
-]
-
-[[package]]
-name = "weir-app"
-version = "0.0.0"
-dependencies = [
- "weir-domain",
- "weir-notation",
-]
-
-[[package]]
-name = "weir-domain"
-version = "0.0.0"
-
-[[package]]
-name = "weir-http"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jiff",
- "serde",
- "serde_json",
- "tokio",
- "weir-app",
- "weir-domain",
- "weir-notation",
-]
-
-[[package]]
-name = "weir-notation"
-version = "0.0.0"
-dependencies = [
- "sqlparser",
- "weir-domain",
-]
-
-[[package]]
-name = "weir-pg"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "fallible-iterator",
- "postgres-protocol",
- "testcontainers",
- "weir-app",
- "weir-domain",
- "weir-notation",
 ]
 
 [[package]]

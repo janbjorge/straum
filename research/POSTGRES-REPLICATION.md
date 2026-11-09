@@ -1,4 +1,4 @@
-# Logical replication, as weir would consume it
+# Logical replication, as Straum would consume it
 
 Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md). `git diff --stat 0f3b42ce806 HEAD` over `src/backend/replication`, `access/transam`, `storage/ipc`, `heapam.c`, `publicationcmds.c` and `protocol.sgml` empty → all citations upstream code.
 
@@ -46,7 +46,7 @@ Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md)
   - "Replica identity must not contain unpublished generated columns."
   - no RI while publishing updates: "cannot update table \"%s\" because it does not have a replica identity and publishes updates".
   - RI FULL skips row-filter column check (`publicationcmds.c:290-295`).
-  - **I** Bad weir spec breaks app writes. Validate spec against replica identities before creating publication.
+  - **I** Bad Straum spec breaks app writes. Validate spec against replica identities before creating publication.
 - **R** UPDATE transformed by row filter (`pgoutput.c:1268-1271`, 1441-1469):
   - old no, new no: dropped;
   - old no, new yes: sent as INSERT;
@@ -144,7 +144,7 @@ Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md)
 - **R** `snapbuild.c:478-484`: transactions "appear in snap->xip as soon as their commit WAL records are decoded, but that doesn't imply they can be considered committed in a regular MVCC snapshot: that happens only when they remove themselves from procarray." Also `snapbuild.c:1384-1387`: txns listed running "might already have inserted their commit record". `access/transam/README:246-257` only guarantees consistency within a snapshot.
 - **I** Stream prefix up to LSN L not always equal to some primary snapshot: snapshot can see T2 (commit LSN 200) but not T1 (commit LSN 100). Usable bound holds: any txn visible to snapshot has commit record inserted before any WAL record inserted after snapshot taken.
 
-### 8b. Asking "has weir applied up to LSN X?"
+### 8b. Asking "has Straum applied up to LSN X?"
 
 - **R** `pg_current_wal_lsn` returns write pointer, `pg_current_wal_insert_lsn` insert pointer, `pg_current_wal_flush_lsn` flush pointer (`access/transam/xlogfuncs.c:304-356`).
 - **R** `XactLastCommitEnd` backend-local C variable (`xact.c:1612`; `src/include/access/xlog.h:35`), not exposed to SQL.
@@ -155,11 +155,11 @@ Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md)
 
 - **R** Signature (transactional, prefix, message, flush default false), returns pg_lsn (`src/include/catalog/pg_proc.dat:11827-11836`). Non-transactional message delivered as soon as decoder reads it (`logical/message.c:17-23`). `flush=true` forces `XLogFlush` (`message.c:78-79`, re-read by hand).
 - **R** Sent only if `messages` option on; not filtered by publication, only by database and origin (`pgoutput.c:1732-1733`; `decode.c:628-638`).
-- **I** Barrier protocol: querying backend (or weir over own connection) runs `SELECT pg_logical_emit_message(false, 'weir-barrier', nonce, true)`, gets L. weir waits until applied up to marker, then answers. Commits arrive in commit-LSN order → everything visible to backend's snapshot applied. weir may also hold txns in WAL but not yet visible on primary.
+- **I** Barrier protocol: querying backend (or Straum over own connection) runs `SELECT pg_logical_emit_message(false, 'straum-barrier', nonce, true)`, gets L. Straum waits until applied up to marker, then answers. Commits arrive in commit-LSN order → everything visible to backend's snapshot applied. Straum may also hold txns in WAL but not yet visible on primary.
 - **I** Not covered by barrier → fall back to native plan: txn's own uncommitted writes; REPEATABLE READ and SERIALIZABLE txns (snapshot older than barrier).
 - Prior art: Materialize real-time recency, TiFlash read index (COMPETITORS.md).
 
-### 8d. weir as a synchronous standby
+### 8d. Straum as a synchronous standby
 
 - **R** Supported. Docs: "A logical replication subscription can be a standby for synchronous replication" (`logical-replication.sgml:242-246`); clients must send standby status updates (`logicaldecoding.sgml:1443-1453`).
 - **R** `StartLogicalReplication` calls `SyncRepInitConfig` (`walsender.c:1604`, re-read by hand). Priority from matching application_name (`replication/syncrep.c:886-887`). Candidate must be streaming with valid flush position (796-810).
@@ -169,10 +169,10 @@ Read in `/Users/janbjorge/src/postgres` on 2026-11-08 (tree and tags: README.md)
   - cancelled wait leaves txn committed locally: "The transaction has already committed locally, but might not have been replicated to the standby." (`syncrep.c:331-332`);
   - docs: works properly only with single database (`logicaldecoding.sgml:1457-1461`);
   - deadlock possible if txn locks catalog tables exclusively (1470-1476).
-- **I** `synchronous_commit=remote_apply` + weir reporting apply only once queryable → every txn visible on primary already queryable in weir. Costs: commit latency + decode + network + apply; no streaming → big txn stalls own commit; weir outage blocks all writes unless `synchronous_standby_names` uses ANY quorum with other standbys; unrelated txns also wait for walsender round trip.
+- **I** `synchronous_commit=remote_apply` + Straum reporting apply only once queryable → every txn visible on primary already queryable in Straum. Costs: commit latency + decode + network + apply; no streaming → big txn stalls own commit; Straum outage blocks all writes unless `synchronous_standby_names` uses ANY quorum with other standbys; unrelated txns also wait for walsender round trip.
 - **R** `synchronized_standby_slots` doesn't affect commit waits; only gates failover-slot walsenders (§5).
 
-**Design implication:** default async + emit_message(flush=true) barrier for read-your-writes reads, one round trip per consistent read. Sync rep with `remote_apply` = opt-in strict mode, ANY quorum so weir outage doesn't stop writes.
+**Design implication:** default async + emit_message(flush=true) barrier for read-your-writes reads, one round trip per consistent read. Sync rep with `remote_apply` = opt-in strict mode, ANY quorum so Straum outage doesn't stop writes.
 
 ## 9. Overhead on the primary
 

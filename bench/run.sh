@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 month=2024-01
 tlc=https://d37ci6vzurychx.cloudfront.net
-container=weir-bench
+container=straum-bench
 
 mkdir -p data
 fetch() {

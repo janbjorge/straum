@@ -1,7 +1,7 @@
-# weir architecture (2026-11-08)
+# Straum architecture (2026-11-08)
 
-How weir works since aggregates are declared in weir SQL, a PostgreSQL
-`CREATE VIEW` subset made only for weir specs. PLAN.md tracks the build and holds the dated decisions this follows.
+How Straum works since aggregates are declared in Straum SQL, a PostgreSQL
+`CREATE VIEW` subset made only for Straum specs. PLAN.md tracks the build and holds the dated decisions this follows.
 First target: AKS next to Azure Database for PostgreSQL Flexible Server 18
 (AKS.md). The constraints are the managed ones: no custom extension, no
 superuser, logical replication allowed. Tags as in README.md (R, U, I).
@@ -10,24 +10,24 @@ PostgreSQL paths are relative to `~/src/postgres`.
 ## In short
 
 - A spec file declares facts, the dims they point at, and named measures.
-  weir reads it at start.
-- weir follows the fact and dim tables over logical replication and keeps one
+  Straum reads it at start.
+- Straum follows the fact and dim tables over logical replication and keeps one
   rollup per fact in RAM.
 - Clients send asks over HTTP/JSON: measures, keys to group by, filters, a time
-  zone and a time range. weir answers from the rollup, and every answer carries
+  zone and a time range. Straum answers from the rollup, and every answer carries
   the LSN and commit time it reflects.
-- PostgreSQL stays the source of truth. weir keeps nothing on disk and rebuilds
+- PostgreSQL stays the source of truth. Straum keeps nothing on disk and rebuilds
   from PostgreSQL on every start.
-- Everything weir needs ships in stock PostgreSQL 18 and works on Azure:
+- Everything Straum needs ships in stock PostgreSQL 18 and works on Azure:
   pgoutput, temporary logical slots, exported snapshots, SQL on a replication
   connection.
 
 ## 1. The spec
 
-weir SQL is not a SQL engine and not a query surface. It is a small subset of
-PostgreSQL `CREATE VIEW` syntax, made only for weir specs. `sqlparser`
-parses it and `weir-notation` walks the AST; anything outside the subset is
-an error that names it. The taxi example (`crates/weir-notation/tests/taxi.sql`):
+Straum SQL is not a SQL engine and not a query surface. It is a small subset of
+PostgreSQL `CREATE VIEW` syntax, made only for Straum specs. `sqlparser`
+parses it and `straum-notation` walks the AST; anything outside the subset is
+an error that names it. The taxi example (`crates/straum-notation/tests/taxi.sql`):
 
 ```sql
 CREATE VIEW trips WITH (key = id, append = true) AS
@@ -54,7 +54,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
 - `WITH (key = COLUMN, append = true)`: the fact table's primary key, and
   whether rows are only inserted (§4b). PostgreSQL rejects these options, so
-  weir only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
+  Straum only ever sends the `SELECT` to PostgreSQL. The `SELECT` runs there as
   is, which makes it the initial load query and the reference for tests.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
 - `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
@@ -77,7 +77,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 - Every column is qualified with its table alias; identifiers are unquoted.
 
 The rollup key is the by columns, then the ref ids, then the time bucket
-(`Fact::rollup_key`). Dim attributes are never part of it. weir maps a ref id
+(`Fact::rollup_key`). Dim attributes are never part of it. Straum maps a ref id
 to its attributes after aggregation, as Kylin does with derived dimensions
 ([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)).
 A change to a dim row therefore never touches a rollup. M1 checked this on one
@@ -90,7 +90,7 @@ used twice among time, by and ref, the fact's key in the rollup key, unknown
 dims, and filters on anything outside the rollup key. Column types and keys are
 checked against the catalog at start (M5).
 
-There are no expressions and no joins beyond refs. An aggregate weir SQL
+There are no expressions and no joins beyond refs. An aggregate Straum SQL
 can't declare stays a query against PostgreSQL.
 
 ## 2. Asks
@@ -140,7 +140,7 @@ repeated midnight counts from the first one, a skipped one from the jump. For
 any time key but bucket, a zone whose offsets or changes fall inside a bucket
 is rejected.
 
-Over HTTP (`crates/weir-http`), `POST /ask` takes the ask as JSON:
+Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
 
 ```json
 {
@@ -159,7 +159,7 @@ Over HTTP (`crates/weir-http`), `POST /ask` takes the ask as JSON:
 - The time key is a field of its own, so it can't clash with a column named
   `day`, and it groups before `by`.
 - `from` and `to` are RFC 3339 or Unix seconds, in whole seconds.
-- A field weir doesn't know, a key given twice and a value of the wrong type
+- A field Straum doesn't know, a key given twice and a value of the wrong type
   are errors that name the field, never ignored. All of them come back at
   once, as `{"errors": [...]}` with status 400.
 
@@ -185,7 +185,7 @@ The answer:
 
 A rollup has one cell per rollup key. A cell holds its row count and one state
 per input column, shared by the measures that read that column
-(`crates/weir-domain/src/rollup.rs`):
+(`crates/straum-domain/src/rollup.rs`):
 
 - sum and avg share the column's sum (`i128`) and count of non-null values;
 - min and max share a count per value, so deleting the current extreme reveals
@@ -205,13 +205,13 @@ Memory follows cells, not rows, as long as rows collapse into far fewer cells.
 They don't always. On the taxi spec M1 measured 2,964,624 trips in 2,322,783
 cells at 15m, 1.3x, because pickup and dropoff zone together are nearly unique
 per trip. 1h gave 1.8x, 1d 5.7x, and 15m without the dropoff ref 5.2x. Whether
-`weir plan` should measure collapse before a load is open (PLAN.md).
+`straum plan` should measure collapse before a load is open (PLAN.md).
 
 count distinct costs one entry per distinct (cell, value) pair, so a column
 that is nearly unique per row costs about as much as the rows. Roaring bitmaps
 over a value dictionary are the likely way to shrink it (I, not built).
 
-## 4. How weir uses PostgreSQL
+## 4. How Straum uses PostgreSQL
 
 ### 4a. Start and initial load
 
@@ -220,16 +220,16 @@ The spec is known at start, so one slot and one snapshot serve every table:
 ```mermaid
 sequenceDiagram
   autonumber
-  participant W as weir
+  participant W as straum
   participant R as PG replication conn
   W->>R: BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ
-  W->>R: CREATE_REPLICATION_SLOT weir_PID_... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')
+  W->>R: CREATE_REPLICATION_SLOT straum_PID_... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')
   R-->>W: consistent_point L
   W->>R: catalog checks: wal_level, publication, privileges,<br/>column types, dim keys, replica identity
   W->>R: per fact: SELECT bucket, rollup key, min/max/distinct columns,<br/>count(*), sum and count ... GROUP BY
   W->>R: per dim: SELECT key, attrs
   W->>R: COMMIT, right after the last load
-  W->>R: START_REPLICATION SLOT weir_PID_... LOGICAL L<br/>(proto_version '1', publication_names '"weir"')
+  W->>R: START_REPLICATION SLOT straum_PID_... LOGICAL L<br/>(proto_version '1', publication_names '"straum"')
   loop stream
     R-->>W: Begin, Relation, Insert, Update, Delete, Truncate, Commit
     W->>R: standby status update, flush = applied LSN
@@ -240,17 +240,17 @@ sequenceDiagram
   (`extract(epoch FROM date_bin(...))`, as `bench/rollup.sql` buckets), the
   rollup key and the min, max and count distinct columns, which need a count
   per value. Each group returns `count(*)` and sum and count per other sum
-  input (`Rollup::grouped`, `Rollup::summed`, `crates/weir-pg/src/load.rs`) and
+  input (`Rollup::grouped`, `Rollup::summed`, `crates/straum-pg/src/load.rs`) and
   adds to its cell whole (`Rollup::add_group`). Where those value columns are
   nearly unique, groups approach rows; a `GROUPING SETS` query per column
   would avoid the cross product (I, not built).
 - SQL and replication commands share one connection in logical walsender mode
   (`doc/src/sgml/protocol.sgml:2186-2190`, R), simple query protocol only
-  (`:2193-2194`, R), so values come back as text. weir sets `DateStyle = ISO`
+  (`:2193-2194`, R), so values come back as text. Straum sets `DateStyle = ISO`
   and `TimeZone = UTC` at startup and reads that text
-  (`crates/weir-pg/src/value.rs`).
+  (`crates/straum-pg/src/value.rs`).
 - The catalog checks run after the slot exists, so they see the tables as the
-  load does. Each problem found names its fix (`crates/weir-pg/src/catalog.rs`).
+  load does. Each problem found names its fix (`crates/straum-pg/src/catalog.rs`).
 - `SNAPSHOT 'use'` must run first in a REPEATABLE READ, read-only transaction
   (`src/backend/replication/walsender.c:1342-1364`, R). The load sees the state
   at L, and the stream starts with the first commit after L.
@@ -259,7 +259,7 @@ sequenceDiagram
   (`protocol.sgml:2371-2374`, R).
 - The snapshot transaction pins xmin while the load runs and holds back vacuum
   for the whole database (POSTGRES-REPLICATION.md §4). It also holds a lock on
-  every table it read, which blocks `ALTER TABLE`. weir commits it right after
+  every table it read, which blocks `ALTER TABLE`. Straum commits it right after
   the last load, not at the first stream read (M5; a test's `ALTER TABLE`
   waited on it before). Reading cells keeps it short: the taxi month, 2,964,624
   trips, loads in 4.4 s (PLAN.md, M5).
@@ -285,19 +285,19 @@ whole old row (POSTGRES-REPLICATION.md §3, R). So:
   DELETE that comes without the old row reads the fact again.
 - Mutable facts need the old row to take it out of its cell. Either the table
   gets REPLICA IDENTITY FULL, which writes the old row to WAL on every UPDATE
-  and DELETE on the primary, or weir keeps a key-to-row store of each row's
+  and DELETE on the primary, or Straum keeps a key-to-row store of each row's
   rollup key and inputs. Open question (PLAN.md).
 - Dims need only the key: upsert on insert and update, delete by key.
 - Truncate empties the table in place. Changes before it in the transaction
   are gone, changes after it apply.
 
-Reading one table again: a change weir can't apply (no old row, a row that
+Reading one table again: a change Straum can't apply (no old row, a row that
 doesn't fit the rollup, a changed Relation) reads that table again while the
-others keep streaming (`crates/weir-app/src/app.rs`):
+others keep streaming (`crates/straum-app/src/app.rs`):
 
 - The table is emptied and loaded from a new snapshot at LSN `at`. On
   PostgreSQL that is a second replication connection with its own temporary
-  slot, `at` its consistent point (`crates/weir-pg/src/source.rs`). A new slot
+  slot, `at` its consistent point (`crates/straum-pg/src/source.rs`). A new slot
   reserves WAL from the current insert position, so `at` is at or past what
   the stream has sent (`src/backend/replication/slot.c:1759-1788`, R).
   Creating it waits for the transactions open at that moment
@@ -318,14 +318,14 @@ lost or applied twice (`the_snapshot_and_the_stream_split_exactly`).
 
 Schema drift: pgoutput resets `schema_sent` when a table's relcache entry is
 invalidated (`src/backend/replication/pgoutput/pgoutput.c:2122-2128`, R), so it
-sends a Relation message before the next change to an altered table. weir
+sends a Relation message before the next change to an altered table. Straum
 compares the columns it reads with those it loaded: a column that reads
 differently, such as `numeric(10, 2)` turned `numeric(12, 3)`, reads that
-table again. A column dropped, or turned to a type weir doesn't read, stops
+table again. A column dropped, or turned to a type Straum doesn't read, stops
 the stream, and the setup check on the next start names it. A table that is
 altered but not written to goes unnoticed until its next change (I).
 
-An update that leaves a TOASTed value alone doesn't send it. weir takes it
+An update that leaves a TOASTed value alone doesn't send it. Straum takes it
 from the old row when one came; without one, it reads the table again.
 
 `streaming` is off in v1, so changes arrive after commit. A transaction larger
@@ -341,16 +341,16 @@ timestamp of pgoutput's Commit message, by the server's clock. It is null when
 the LSN is where the stream started and no commit has come since. On a quiet
 database it ages while the answer stays current; keepalives could give an
 "as of" time instead (open point). A per-ask barrier stays
-possible: weir calls `pg_logical_emit_message(..., flush => true)` on a SQL
+possible: Straum calls `pg_logical_emit_message(..., flush => true)` on a SQL
 connection and answers once the stream passes the returned LSN
 (POSTGRES-REPLICATION.md §8, R).
 
 ### 4d. Setup
 
-`weir plan` reads the spec and prints the SQL an admin runs once
-(`weir plan --spec FILE`, from `weir_pg::plan`):
-`wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE weir LOGIN
-REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION weir
+`straum plan` reads the spec and prints the SQL an admin runs once
+(`straum plan --spec FILE`, from `straum_pg::plan`):
+`wal_level = logical` (PostgreSQL 18, needs a restart), `CREATE ROLE Straum LOGIN
+REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION Straum
 FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for facts
 that aren't append-only. A dim needs its key as replica identity, which only
 the schema can give, so the SQL says so in a comment.
@@ -358,10 +358,10 @@ the schema can give, so the SQL says so in a comment.
 - Adding a table to a publication needs ownership of it
   (`src/backend/commands/publicationcmds.c:2051-2054`, R); `FOR ALL TABLES`
   needs superuser (`publicationcmds.c:1508-1516`, R).
-- Setup lives in the catalog and survives weir restarts, PostgreSQL restarts
-  and failover. weir rechecks it on every start; if something is missing it
-  stays not ready and logs the SQL `weir plan` would print.
-- The spec names every column weir reads, so the publication could list only
+- Setup lives in the catalog and survives Straum restarts, PostgreSQL restarts
+  and failover. Straum rechecks it on every start; if something is missing it
+  stays not ready and logs the SQL `straum plan` would print.
+- The spec names every column Straum reads, so the publication could list only
   those columns. A column list must cover the replica identity, and REPLICA
   IDENTITY FULL allows none (`publicationcmds.c:404`, R). Without a list every
   column leaves the database, and column privileges and RLS don't apply to the
@@ -373,9 +373,9 @@ the schema can give, so the SQL says so in a comment.
 flowchart LR
   subgraph AKS["AKS, same VNet"]
     app["App pods"]
-    subgraph ns["namespace weir"]
-      svc["Service weir<br/>ClusterIP, HTTP"]
-      weir["weir pod<br/>Deployment, RAM only"]
+    subgraph ns["namespace straum"]
+      svc["Service straum<br/>ClusterIP, HTTP"]
+      straum["straum pod<br/>Deployment, RAM only"]
       cm["ConfigMap<br/>spec"]
     end
     otel["OTel collector"]
@@ -387,40 +387,40 @@ flowchart LR
   kv["Key Vault<br/>Secrets Store CSI"]
 
   app -- "writes and reads, unchanged" --> pg
-  app -- "asks, HTTP/JSON" --> svc --> weir
-  cm -. "spec, read at start" .-> weir
-  weir -- "replication=database<br/>checks, slot, load, stream" --> ws
-  ws -- "change stream" --> weir
-  weir -- "OTLP" --> otel
-  kv -. "DSN of role weir" .-> weir
+  app -- "asks, HTTP/JSON" --> svc --> straum
+  cm -. "spec, read at start" .-> straum
+  straum -- "replication=database<br/>checks, slot, load, stream" --> ws
+  ws -- "change stream" --> straum
+  straum -- "OTLP" --> otel
+  kv -. "DSN of role straum" .-> straum
 ```
 
-Every path already exists in the cluster: weir reaches PostgreSQL the way the
-apps do, and apps reach weir in-cluster.
+Every path already exists in the cluster: Straum reaches PostgreSQL the way the
+apps do, and apps reach Straum in-cluster.
 
 ## 6. Code
 
 Clean architecture as Cargo crates:
 
-- `weir-domain`: spec, asks, rollups and the store. No I/O, no dependencies.
-- `weir-notation`: walks the `sqlparser` AST of a weir SQL spec into a `Spec`.
-- `weir-app` (M3, M6): the use cases behind one port, `Source`: setup
+- `straum-domain`: spec, asks, rollups and the store. No I/O, no dependencies.
+- `straum-notation`: walks the `sqlparser` AST of a Straum SQL spec into a `Spec`.
+- `straum-app` (M3, M6): the use cases behind one port, `Source`: setup
   check, snapshot loads and the commit stream. One port, because the first
   load reads the snapshot of the slot the stream comes from, on the same
   connection. `App` is the store and how far it has followed the source;
   clones share it. `Writer::step` is the loop that does the I/O: it loads
   every table, applies a commit or reads a table again. `App::ask` answers
   with the LSN and commit time, `App::status` feeds health and metrics.
-- `weir-pg` (M5): our own replication client on `postgres-protocol`. Catalog
+- `straum-pg` (M5): our own replication client on `postgres-protocol`. Catalog
   checks, the grouped load in the slot's snapshot, pgoutput v1 decoding,
   reloads on a second connection, and a thread that owns the stream: it
   answers keepalives and reports the applied LSN while the writer is busy.
   Synchronous, plain TCP (TLS in M7).
-- `weir-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
+- `straum-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
   walker over `serde_json` values, without derive macros; zones from jiff;
   `/livez`, `/readyz` and Prometheus `/metrics`. Asks run on tokio's
   blocking threads, since a big one reads every cell of a fact.
-- `weir` (M6): the binary. `weir run` and `weir plan`, arguments read by
+- `straum` (M6): the binary. `straum run` and `straum plan`, arguments read by
   hand. One thread runs the writer and starts over after a failure, waiting
   1 s, then twice as long each time up to 60 s. A panic aborts the process,
   since the store may be half written.
@@ -468,7 +468,7 @@ stateDiagram-v2
   the LSN before it. The writer applies no commit meanwhile; the stream
   thread keeps the connection alive (§4b). Any other failure, a source error
   or a load behind the stream, means Resync.
-- SIGTERM or SIGINT: weir stops accepting, finishes the asks in flight and
+- SIGTERM or SIGINT: Straum stops accepting, finishes the asks in flight and
   exits. PostgreSQL drops the temporary slots as the connections close.
 
 ## 8. RAM only
@@ -481,10 +481,10 @@ disk. The costs:
 - **The load pins xmin** for the whole database while it runs (§4a).
 - **No slot failover.** "cannot enable failover for a temporary replication
   slot" (`src/backend/replication/slot.c:411-420`, R). Azure HA failover drops
-  the connection and weir resyncs. In exchange, `sync_replication_slots` and
+  the connection and Straum resyncs. In exchange, `sync_replication_slots` and
   `hot_standby_feedback` aren't needed.
 - **Lag still holds WAL while connected.** Azure fixes `max_slot_wal_keep_size`
-  at `-1` (MANAGED-POSTGRES.md). weir watches its retained WAL and resyncs past
+  at `-1` (MANAGED-POSTGRES.md). Straum watches its retained WAL and resyncs past
   a cap.
 - **Each replica is a slot plus a walsender**, and each walsender decodes all
   WAL (POSTGRES-REPLICATION.md §9). Default is one replica.
@@ -497,7 +497,7 @@ resume from, which brings the WAL risk back.
 PostgreSQL 18 is the floor; nothing older.
 
 - PostgreSQL 18 with `wal_level = logical`: pgoutput and a temporary slot.
-- PostgreSQL 18 with `replica`: weir refuses to start and says to set
+- PostgreSQL 18 with `replica`: Straum refuses to start and says to set
   `wal_level = logical` and restart. A logical slot fails with "logical decoding
   requires \"wal_level\" >= \"logical\""
   (`src/backend/replication/logical/logical.c:121-123` as of `67c20979ce7^`, R).
@@ -515,12 +515,12 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
   provenance attestations.
 - Pod: `runAsNonRoot`, uid 1001, drop ALL capabilities,
   `readOnlyRootFilesystem`, seccomp `RuntimeDefault`, no volumes.
-- Memory: the cgroup v2 `memory.max` is the budget; weir watches
+- Memory: the cgroup v2 `memory.max` is the budget; Straum watches
   `memory.pressure` and fails with a clear error before the kernel OOM-kills it.
   Memory request equals limit (Guaranteed QoS).
-- weir-pg is synchronous: plain sockets and one stream thread. tokio only in
-  weir-http. TLS to PostgreSQL with rustls comes in M7.
-- Spec from a ConfigMap, DSN from `WEIR_DSN` or a CSI-mounted secret
+- straum-pg is synchronous: plain sockets and one stream thread. tokio only in
+  straum-http. TLS to PostgreSQL with rustls comes in M7.
+- Spec from a ConfigMap, DSN from `STRAUM_DSN` or a CSI-mounted secret
   (`--dsn-file`), never from the command line.
 - Prometheus `/metrics` since M6: readiness, applied LSN, commit time,
   starts, commits, reloads, failures, cells per fact, rows per dim, asks by
@@ -530,16 +530,16 @@ One code path covers all three. Azure Flexible Server 18 defaults to `replica`
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: `docker compose` with `postgres:18` and `wal_level =
-  logical`, plus weir. `bench/run.sh` already runs `postgres:18` in Docker.
+  logical`, plus straum. `bench/run.sh` already runs `postgres:18` in Docker.
 
 ## Open points
 
 1. Which aggregates the apps need, and whether a spec can declare them.
-2. Mutable facts: REPLICA IDENTITY FULL or a row store in weir (§4b).
+2. Mutable facts: REPLICA IDENTITY FULL or a row store in Straum (§4b).
 3. Publication column lists from the spec (§4d).
 4. How long the load pins xmin on real tables (§4a).
-5. Low collapse: warn in `weir plan`, or leave it to the spec author (§3).
-6. What clients do while weir is not ready: retry, or ask PostgreSQL.
+5. Low collapse: warn in `straum plan`, or leave it to the spec author (§3).
+6. What clients do while Straum is not ready: retry, or ask PostgreSQL.
 7. An "as of" time from keepalives, so answers on a quiet database don't
    look stale (§4c).
 8. Long asks delay the writer while they hold the read lock (§6).

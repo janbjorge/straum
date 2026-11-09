@@ -86,16 +86,13 @@ The source rows do not live in Straum.
 
 ## Run locally
 
-Straum currently builds a binary named `weir`; the package rename follows the
-working-name decision.
-
 ```sh
 # Verify a spec and print the SQL required on PostgreSQL.
-cargo run -p weir -- plan --spec path/to/trips.sql
+cargo run -p straum -- plan --spec path/to/trips.sql
 
 # A table owner applies that SQL, then starts Straum.
-export WEIR_DSN='postgres://weir:password@localhost:5432/app'
-cargo run -p weir -- run --spec path/to/trips.sql
+export STRAUM_DSN='postgres://straum:password@localhost:5432/app'
+cargo run -p straum -- run --spec path/to/trips.sql
 ```
 
 `run` listens on `0.0.0.0:8080` by default. Its endpoints are:
@@ -109,20 +106,20 @@ cargo run -p weir -- run --spec path/to/trips.sql
 
 The server needs PostgreSQL logical replication enabled. On PostgreSQL 18,
 set `wal_level = logical` and restart the server before applying the SQL from
-`weir plan`.
+`straum plan`.
 
 ## Architecture
 
 The workspace keeps policy separate from I/O:
 
 ```text
-weir (composition root)
-├── weir-notation ──> weir-domain
-├── weir-pg ────────> weir-app ──> weir-domain
-└── weir-http ──────> weir-app ──> weir-domain
+straum (composition root)
+├── straum-notation ──> straum-domain
+├── straum-pg ────────> straum-app ──> straum-domain
+└── straum-http ──────> straum-app ──> straum-domain
 ```
 
-`weir-domain` has no dependencies or I/O. `weir-app` holds use cases and the
+`straum-domain` has no dependencies or I/O. `straum-app` holds use cases and the
 `Source` port. PostgreSQL, HTTP, and parsing are adapters. CI checks this
 production dependency graph.
 

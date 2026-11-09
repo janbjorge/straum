@@ -1,0 +1,12 @@
+[package]
+name = "straum-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+straum-domain = { path = "../straum-domain" }
+
+[dev-dependencies]
+straum-notation = { path = "../straum-notation" }

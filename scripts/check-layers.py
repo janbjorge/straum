@@ -9,17 +9,17 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED = {
-    "weir-domain": set(),
-    "weir-app": {"weir-domain"},
-    "weir-notation": {"weir-domain"},
-    "weir-pg": {"weir-app", "weir-domain"},
-    "weir-http": {"weir-app", "weir-domain"},
-    "weir": {
-        "weir-app",
-        "weir-domain",
-        "weir-http",
-        "weir-notation",
-        "weir-pg",
+    "straum-domain": set(),
+    "straum-app": {"straum-domain"},
+    "straum-notation": {"straum-domain"},
+    "straum-pg": {"straum-app", "straum-domain"},
+    "straum-http": {"straum-app", "straum-domain"},
+    "straum": {
+        "straum-app",
+        "straum-domain",
+        "straum-http",
+        "straum-notation",
+        "straum-pg",
     },
 }
 

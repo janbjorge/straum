@@ -5,7 +5,7 @@ Web research, 2026-11-08. Every claim has source URL; **U** = claim seen only in
 ## 1. Bottom line
 
 - Nothing on market combines all five properties for stock PostgreSQL: planner hook sending GROUP BY on original heap tables to external, change-capture-fed, pre-aggregated store, gated on LSN catch-up. Closest: TimescaleDB 2.27+ automatic cagg rewrites (experimental, hypertables only), AlloyDB columnar engine (proprietary, raw columnar, no rollups), Materialize real-time recency (separate endpoint, private preview).
-- "A poor man's TimescaleDB" = wrong analogy. Timescale continuous aggregates run inside PostgreSQL, hypertables only, `time_bucket` groupings only, TSL license. weir closer to MySQL HeatWave or TiDB TiFlash (optimizer offloads to change-stream-fed secondary engine, checks freshness), plus StarRocks/Doris-style automatic rewrite onto rollups.
+- "A poor man's TimescaleDB" = wrong analogy. Timescale continuous aggregates run inside PostgreSQL, hypertables only, `time_bucket` groupings only, TSL license. Straum closer to MySQL HeatWave or TiDB TiFlash (optimizer offloads to change-stream-fed secondary engine, checks freshness), plus StarRocks/Doris-style automatic rewrite onto rollups.
 - Logical-replication ingest = commodity: PeerDB, supabase/etl, moonlink, Materialize, RisingWave, Feldera, Epsio, Readyset, Aurora zero-ETL all do it. Not differentiator.
 - Transparent planner delegation on original PostgreSQL tables barely exists: AlloyDB (proprietary), TimescaleDB 2.27 `timescaledb.enable_cagg_rewrites` (experimental), ParadeDB pg_search aggregate custom scan (needs BM25 index and `@@@`). Everything else needs different table name, foreign table, schema or endpoint.
 - LSN-consistent reads against external engine: only Materialize real-time recency. TiFlash read index = pattern to copy. No PostgreSQL-side product does it.
@@ -106,7 +106,7 @@ Format: architecture | routing | freshness and consistency | UPDATE/DELETE | mod
 - **Apache Pinot**: star-tree pre-aggregation at segment build + primary-key upsert ([paper](https://arxiv.org/pdf/2104.00087), [comparison](https://www.jusdb.com/compare/druid-vs-pinot)).
 - **Apache Kylin**: cubes; v5.0.5 (2026-07-13), status "Ongoing" ([release notes](https://kylin.apache.org/docs/release_notes/), [board minutes](https://whimsy.apache.org/board/minutes/Kylin.html)).
 
-Patterns for weir: TiFlash read index (wait until replicated LSN >= LSN at query start); HeatWave query-triggered propagation + "never offload stale tables"; StarRocks/Doris partition UNION (fresh rollup partitions + base-table delta).
+Patterns for Straum: TiFlash read index (wait until replicated LSN >= LSN at query start); HeatWave query-triggered propagation + "never offload stale tables"; StarRocks/Doris partition UNION (fresh rollup partitions + base-table delta).
 
 ## 6. Dead, pivoted, acquired
 

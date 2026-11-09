@@ -1,6 +1,6 @@
-# weir plan
+# Straum plan
 
-weir keeps declared aggregates (count, sum, min, max, avg, count distinct) over
+Straum keeps declared aggregates (count, sum, min, max, avg, count distinct) over
 PostgreSQL tables in memory, fed by logical replication, and answers asks
 against them. Background and evidence: `research/`.
 
@@ -16,8 +16,8 @@ against them. Background and evidence: `research/`.
   - `cargo clippy -p <crate> --all-targets -- -D warnings`
   - `cargo test -p <crate>`
   - `cargo llvm-cov -p <crate> ... --fail-under-lines 98` over the touched
-    crates and the crates whose tests exercise them (`weir-notation` tests
-    much of `weir-domain`), with the measured number in the commit body.
+    crates and the crates whose tests exercise them (`straum-notation` tests
+    much of `straum-domain`), with the measured number in the commit body.
     Without rustup, set `LLVM_COV` and `LLVM_PROFDATA` to the tools in
     `$(brew --prefix llvm)/bin`.
 - Code goes in with the milestone that first uses it.
@@ -42,18 +42,18 @@ Tests:
 
 ## Decisions
 
-- 2026-11-08: Aggregates are declared in weir's own notation, not SQL. No SQL
-  query surface for now. (The notation part is replaced by weir SQL below.)
+- 2026-11-08: Aggregates are declared in Straum's own notation, not SQL. No SQL
+  query surface for now. (The notation part is replaced by Straum SQL below.)
 - 2026-11-08: A fact reaches other tables only through `ref`, an N:1 pointer to
   a dim key. Rollups are keyed on fact columns, ref ids and the time bucket.
   Dim attributes are mapped after aggregation.
 - 2026-11-08: No expressions. Filters are `=` / `in` on rollup-key columns or ref
   attributes. Ask ranges start and end on bucket edges, so asks never read raw
   rows.
-- 2026-11-08: weir reads the spec at start. No build step, no codegen.
-- 2026-11-08: Clean architecture as Cargo crates: `weir-domain` (no deps, no
-  I/O), `weir-app` (use cases and ports), adapters `weir-notation`, `weir-pg`,
-  `weir-http`, and the `weir` binary as composition root. The per-row path
+- 2026-11-08: Straum reads the spec at start. No build step, no codegen.
+- 2026-11-08: Clean architecture as Cargo crates: `straum-domain` (no deps, no
+  I/O), `straum-app` (use cases and ports), adapters `straum-notation`, `straum-pg`,
+  `straum-http`, and the `straum` binary as composition root. The per-row path
   stays concrete; traits only at the edges.
 - 2026-11-08: Simplifications: no raw column store; `append` facts need no row
   store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot; one
@@ -69,9 +69,9 @@ Tests:
   slot the stream comes from, on the same connection, so loading and
   streaming are not split. `Source::open` checks the setup.
 - 2026-11-08: One writer applies commits in order (`App::step`); after a
-  failure weir is not ready and the next step starts over from a new stream.
+  failure Straum is not ready and the next step starts over from a new stream.
   How asks read while the writer applies is settled in M6.
-- 2026-11-08: A change weir can't apply reads that table again at LSN `at`:
+- 2026-11-08: A change Straum can't apply reads that table again at LSN `at`:
   an update or delete on a fact without the old row, a row that doesn't fit,
   an altered table. Commits up to `at` skip the table, and asks on it answer
   not ready until the stream passes `at`. Other tables keep answering.
@@ -85,24 +85,24 @@ Tests:
   months follow the wall clock: a repeated midnight counts from the first one,
   a skipped one from the jump. An ask with a time key is rejected when the
   zone's offsets or changes fall inside a bucket.
-- 2026-11-08: Specs move from weir's notation to weir SQL, which replaces
-  the "own notation, not SQL" decision above. weir SQL is a small subset of
-  PostgreSQL `CREATE VIEW` syntax, made only for weir. It is not a SQL engine
+- 2026-11-08: Specs move from Straum's notation to Straum SQL, which replaces
+  the "own notation, not SQL" decision above. Straum SQL is a small subset of
+  PostgreSQL `CREATE VIEW` syntax, made only for Straum. It is not a SQL engine
   and not a query surface: asks stay HTTP/JSON. Anything outside the subset is
   rejected with an error that names the construct, never ignored. Every doc
-  and error that mentions weir SQL says it is a weir-only subset. Each view
+  and error that mentions Straum SQL says it is a straum-only subset. Each view
   body (the `SELECT`) runs unchanged in PostgreSQL, so it is also the initial
   load query and the reference for tests. The fact's key and `append` are view
   options, `WITH (key = id, append = true)`, which `sqlparser` reads as is.
   PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
-  PostgreSQL; weir only ever sends the body.
-- 2026-11-08: weir SQL is parsed by the `sqlparser` crate with
-  `PostgreSqlDialect`, not by a parser of our own. weir's code walks the AST,
+  PostgreSQL; Straum only ever sends the body.
+- 2026-11-08: Straum SQL is parsed by the `sqlparser` crate with
+  `PostgreSqlDialect`, not by a parser of our own. Straum's code walks the AST,
   keeps the subset and rejects the rest. `sqlparser` is pure Rust, so the
   static build needs no C toolchain once its default `recursive-protection`
   feature (stacker, which compiles C) is off; its parser depth limit still
-  turns deep nesting into an error. It stays inside `weir-notation`, and
-  `weir-domain` keeps no dependencies.
+  turns deep nesting into an error. It stays inside `straum-notation`, and
+  `straum-domain` keeps no dependencies.
 - 2026-11-08: The AST walker denies by default. Each `match` lists the
   accepted variants, and a final arm returns an error naming the rejected
   construct. Accepted AST structs are destructured with every field named and
@@ -110,21 +110,21 @@ Tests:
   is handled. The walker returns `Result` with every error found and never
   panics on input. `sqlparser` is pinned to an exact version. Each rejected
   construct gets a negative test.
-- 2026-11-09: weir stays synchronous; only `weir-http` runs tokio. `App`
+- 2026-11-09: Straum stays synchronous; only `straum-http` runs tokio. `App`
   becomes a core that never waits, driven by a loop that does the I/O (M6),
   so readers never wait on PostgreSQL and no dropped future can leave a table
-  half loaded. `weir-pg` is a synchronous client with one thread that owns
+  half loaded. `straum-pg` is a synchronous client with one thread that owns
   the stream: it answers keepalives and reports the applied LSN while the
   writer applies or reloads. Protocol code works on bytes, not sockets, so
   going async later touches only the loop, that thread and the port.
-- 2026-11-09: weir-pg is our own replication client on `postgres-protocol`
-  (message framing, SCRAM); pgoutput v1 is decoded in weir-pg.
+- 2026-11-09: straum-pg is our own replication client on `postgres-protocol`
+  (message framing, SCRAM); pgoutput v1 is decoded in straum-pg.
   `tokio-postgres` has no replication, `supabase/etl` owns slot creation and
   the copy, and the replication crates on crates.io build C for TLS
   (`research/RUST.md` §4).
 - 2026-11-09: TLS waits for M7 and will be `rustls`; the crypto provider
   (`ring`, which needs a C compiler, or pure-Rust `rustls-graviola`) is chosen
-  then. Until then weir-pg refuses an `sslmode` that requires TLS.
+  then. Until then straum-pg refuses an `sslmode` that requires TLS.
 - 2026-11-09: A replication connection takes the simple query protocol only,
   so loads arrive as text. The load is one `GROUP BY` per fact on the rollup
   key plus the min, max and count distinct columns, returning the row count
@@ -135,7 +135,7 @@ Tests:
   `testcontainers` (`blocking`, no default features, so no C), one container
   per test, removed when the test ends. A dev-dependency only; Docker is the
   one thing the gate needs besides Rust.
-- 2026-11-09: weir-pg commits the snapshot transaction right after the last
+- 2026-11-09: straum-pg commits the snapshot transaction right after the last
   load, not at the first stream read. Held open, it pins xmin and blocks DDL
   on the loaded tables; a test's `ALTER TABLE` waited on it.
 - 2026-11-09: Asks and the writer share one store behind an `RwLock`.
@@ -149,8 +149,8 @@ Tests:
 - 2026-11-09: Answers carry the scale of each column (`Answer::scales`). Only
   the source knows column types, so a load sets them (`Rollup::set_scales`,
   `DimTable::set_scales`), and JSON answers print exact decimals.
-- 2026-11-09: weir-http is hyper 1 on tokio, no framework, no macros. JSON
-  asks are walked like weir SQL, deny by default, over `serde_json` without
+- 2026-11-09: straum-http is hyper 1 on tokio, no framework, no macros. JSON
+  asks are walked like Straum SQL, deny by default, over `serde_json` without
   derive: unknown fields, keys given twice and wrong types are errors that
   name the field. The time key is a field of its own (`time`), so it can't
   clash with a column. Zones come from jiff with the tz database built in,
@@ -160,14 +160,17 @@ Tests:
   text written by hand. Lag, retained WAL and OTLP move to M7, since they
   need the server's WAL position or a collector.
 - 2026-11-09: The binary reads its arguments by hand. The DSN comes from
-  `WEIR_DSN` or `--dsn-file`, never the command line. A failed step starts
+  `STRAUM_DSN` or `--dsn-file`, never the command line. A failed step starts
   over after 1 s, doubling to 60 s; a panic aborts the process, since the
   store may be half written.
+- 2026-11-09: The project is Straum everywhere: crates `straum-*`, the
+  binary `straum`, `STRAUM_DSN`, metrics `straum_*`, and `straum` as the
+  default role and publication, the slot prefix and the `application_name`.
 
 ## M0: notation and domain model
 
 Goal: the aggregate model and its text notation, validated, no I/O.
-Touches: `crates/weir-domain`, `crates/weir-notation`, `research/`.
+Touches: `crates/straum-domain`, `crates/straum-notation`, `research/`.
 
 - [x] Facts, dims, refs, measures, validation (`Spec::new`)
 - [x] Asks and `Spec::check`
@@ -175,7 +178,7 @@ Touches: `crates/weir-domain`, `crates/weir-notation`, `research/`.
 - [x] Time zones in asks
 - [x] Rewrite `research/ARCHITECTURE.md`, `README.md` and `AKS.md` for the
       notation design
-- [x] Gate passes: 99.71% lines over `weir-domain` and `weir-notation`
+- [x] Gate passes: 99.71% lines over `straum-domain` and `straum-notation`
 
 ## M1: taxi proof in SQL
 
@@ -185,7 +188,7 @@ Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker).
 - [x] Fetch one month of TLC yellow trips and `taxi_zone_lookup.csv` into
       `bench/data/` (gitignored)
 - [x] Load into a local `postgres:18` container
-- [x] Build the rollup with `GROUP BY` on the rollup key of `taxi.weir`
+- [x] Build the rollup with `GROUP BY` on the rollup key of `taxi.straum`
 - [x] For each ask shape, compare raw join and rollup-then-map with `EXCEPT`
       both ways
 - [x] Record the collapse ratio (raw rows to rollup rows)
@@ -197,14 +200,14 @@ Result on 2024-01, 2,964,624 trips:
   and ranges on 15 minute edges inside an hour.
 - Filtered measures need no state of their own. Their conditions name
   rollup-key parts only, so asks apply them to rollup rows.
-- Collapse is 1.3x for the taxi.weir key at 15m (2,322,783 rollup rows):
+- Collapse is 1.3x for the taxi.straum key at 15m (2,322,783 rollup rows):
   pickup and dropoff zone together are nearly unique per trip. 1h gives 1.8x,
   1d 5.7x, and 15m without the dropoff ref 5.2x.
 
 ## M2: accumulators and rollup
 
 Goal: maintain a fact's rollup in memory and answer asks from it.
-Touches: `crates/weir-domain`.
+Touches: `crates/straum-domain`.
 
 - [x] Cell state per input column: sum and count, value counts for min and
       max, value counts for count distinct
@@ -216,13 +219,13 @@ Touches: `crates/weir-domain`.
       keys, measure filters
 - [x] Property test against a naive reference over random inserts, updates and
       deletes of trips and zones; 9 planted bugs all caught
-- [x] Gate passes: 99.69% lines over `weir-domain` and `weir-notation`; the 3
+- [x] Gate passes: 99.69% lines over `straum-domain` and `straum-notation`; the 3
       missed lines are `unreachable!` arms
 
 ## M3: application layer
 
 Goal: use cases behind ports, runnable end to end without PostgreSQL.
-Touches: `crates/weir-app`, `crates/weir-domain`.
+Touches: `crates/straum-app`, `crates/straum-domain`.
 
 - [x] One port, `Source`: setup check and new stream (`open`), snapshot
       loads (`load_fact`, `load_dim`), and the commit stream (`next_commit`)
@@ -232,36 +235,36 @@ Touches: `crates/weir-app`, `crates/weir-domain`.
       connections and reloads checked against a fresh load at the same LSN;
       each change that can't apply tested for a reload; 22 planted bugs all
       caught
-- [x] Gate passes: 99.75% lines over `weir-domain`, `weir-notation` and
-      `weir-app`; the 3 missed lines are `unreachable!` arms
+- [x] Gate passes: 99.75% lines over `straum-domain`, `straum-notation` and
+      `straum-app`; the 3 missed lines are `unreachable!` arms
 
-## M4: weir SQL
+## M4: Straum SQL
 
-Goal: specs in weir SQL, a PostgreSQL `CREATE VIEW` subset made only for
-weir, parsed by `sqlparser` instead of our own parser.
-Touches: `crates/weir-notation`, `crates/weir-domain` (tests), `crates/weir-app`
+Goal: specs in Straum SQL, a PostgreSQL `CREATE VIEW` subset made only for
+Straum, parsed by `sqlparser` instead of our own parser.
+Touches: `crates/straum-notation`, `crates/straum-domain` (tests), `crates/straum-app`
 (tests), `research/`, `bench/`.
 
 - [x] `sqlparser` pinned, without its C-building default feature
 - [x] AST walker, deny by default: one view per fact, `WITH (key, append)`,
       `LEFT JOIN` refs, `date_bin` bucket, aggregates with `FILTER`, GROUP BY
       matching the selected keys
-- [x] `taxi.sql` replaces `taxi.weir`; the old lexer and parser are gone
+- [x] `taxi.sql` replaces `taxi.straum`; the old lexer and parser are gone
 - [x] A negative test for each rejected construct the PostgreSQL dialect can
       produce; `Spec::new` errors SQL can't produce are tested in
-      `weir-domain`
+      `straum-domain`
 - [x] On `postgres:18`: the `taxi.sql` body runs as is, and the view options
       are rejected (`unrecognized parameter "key"`)
-- [x] Gate passes: 99.29% lines over `weir-domain`, `weir-notation` and
-      `weir-app`; the 12 missed lines are `unreachable!` arms and reject arms
+- [x] Gate passes: 99.29% lines over `straum-domain`, `straum-notation` and
+      `straum-app`; the 12 missed lines are `unreachable!` arms and reject arms
       for syntax the PostgreSQL dialect never produces
 
 ## M5: PostgreSQL adapter
 
 Goal: feed the use cases from a real PostgreSQL 18.
-Touches: `crates/weir-pg`, `crates/weir-domain`, `crates/weir-app` (docs),
+Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
 `research/`. Tests start `postgres:18` in Docker themselves; the taxi month:
-`cargo test -p weir-pg --release taxi_month -- --ignored --nocapture` after
+`cargo test -p straum-pg --release taxi_month -- --ignored --nocapture` after
 `bench/run.sh` has fetched the data.
 
 - [x] Catalog check: column types, dim key unique, replica identity,
@@ -279,11 +282,11 @@ Touches: `crates/weir-pg`, `crates/weir-domain`, `crates/weir-app` (docs),
 - [x] A stream thread answers keepalives and reports the applied LSN while
       the writer applies or reloads; a 9 s stall against a 4 s
       `wal_sender_timeout` keeps the stream
-- [x] Setup SQL for `weir plan`: role, grant and publication (the command
+- [x] Setup SQL for `straum plan`: role, grant and publication (the command
       comes with the binary in M6)
 - [x] Taxi end to end: load, replay changes, compare asks with PostgreSQL
-- [x] Gate passes: 99.01% lines over `weir-domain`, `weir-notation`,
-      `weir-app` and `weir-pg`; 22 planted bugs in `weir-pg` and the grouped
+- [x] Gate passes: 99.01% lines over `straum-domain`, `straum-notation`,
+      `straum-app` and `straum-pg`; 22 planted bugs in `straum-pg` and the grouped
       load all caught
 
 Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
@@ -298,9 +301,9 @@ Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
 
 ## M6: ask endpoint and binary
 
-Goal: a runnable `weir` that answers asks over HTTP.
-Touches: `crates/weir-http`, `crates/weir`, `crates/weir-app`,
-`crates/weir-domain` (scales), `crates/weir-pg` (commit time, scales),
+Goal: a runnable `straum` that answers asks over HTTP.
+Touches: `crates/straum-http`, `crates/straum`, `crates/straum-app`,
+`crates/straum-domain` (scales), `crates/straum-pg` (commit time, scales),
 `research/`. The binary's tests start `postgres:18` in Docker.
 
 - [x] `App` as a core that never waits, driven by a loop that does the I/O
@@ -310,13 +313,13 @@ Touches: `crates/weir-http`, `crates/weir`, `crates/weir-app`,
 - [x] JSON asks; answers carry LSN and commit time, numeric values in their
       column's scale
 - [x] Health, readiness, metrics
-- [x] Binary wiring config, adapters and use cases; `weir plan` prints the
+- [x] Binary wiring config, adapters and use cases; `straum plan` prints the
       setup SQL; SIGTERM finishes the asks in flight
-- [x] End to end: `weir plan`'s SQL sets up PostgreSQL, `weir run` follows
+- [x] End to end: `straum plan`'s SQL sets up PostgreSQL, `straum run` follows
       it as the role the plan made, asks over HTTP equal the view body in
-      PostgreSQL before and after changes, and the slot goes when weir stops
-- [x] Gate passes: 98.95% lines over `weir-domain`, `weir-notation`,
-      `weir-app`, `weir-pg`, `weir-http` and `weir`; 35 planted bugs all
+      PostgreSQL before and after changes, and the slot goes when Straum stops
+- [x] Gate passes: 98.95% lines over `straum-domain`, `straum-notation`,
+      `straum-app`, `straum-pg`, `straum-http` and `straum`; 35 planted bugs all
       caught
 
 Result on the taxi month (release build, laptop Docker): an ask by day and
@@ -326,7 +329,7 @@ every key takes 4.1 s.
 
 ## M7: deploy
 
-Goal: weir on AKS next to Azure Flexible Server 18.
+Goal: Straum on AKS next to Azure Flexible Server 18.
 Touches: `deploy/`.
 
 - [ ] TLS to PostgreSQL with `rustls`; pick the crypto provider
@@ -337,16 +340,16 @@ Touches: `deploy/`.
 
 ## Open questions
 
-- The name: weir is a working name (`research/README.md`: a low dam that
-  measures a river's flow, as weir measures the replication stream). Check
-  clashes (crates.io, GitHub, trademarks) before anything is published.
-- Mutable facts: `REPLICA IDENTITY FULL`, or a PK row store in weir?
+- The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
+  names were free on crates.io on 2026-11-09; trademarks are unchecked.
+  Check again before anything is published.
+- Mutable facts: `REPLICA IDENTITY FULL`, or a PK row store in Straum?
 - Who may ask what: access control per fact in the spec?
-- Fallback when weir is not ready: weir renders SQL per ask and sends it to
+- Fallback when Straum is not ready: Straum renders SQL per ask and sends it to
   PostgreSQL?
 - Memory for count distinct on high-cardinality columns.
 - Low collapse: a key with two refs can be nearly as wide as the fact (taxi:
-  1.3x). Should `weir plan` measure collapse with `count(distinct ...)` and
+  1.3x). Should `straum plan` measure collapse with `count(distinct ...)` and
   warn?
 - A ref id with no dim row maps to null attributes. The bench and `Store` do
   this; confirm.

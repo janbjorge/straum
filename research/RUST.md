@@ -16,7 +16,7 @@ Pipeline: PostgreSQL change capture -> columnar store + rollups -> query path ba
   - PgDog forked to drop protobuf, reports 5.5x faster parse, 9.6x faster deparse (U, [post](https://medium.com/@trivajay259/we-made-postgresql-query-parsing-5-10-faster-by-ditching-protobuf-heres-how-2163d63b9363)).
 - **pg_parse** (paupino) 0.15.0, June 2026: libpg_query via JSON interface, serde only ([lib.rs](https://lib.rs/crates/pg_parse)).
 
-Use for weir:
+Use for Straum:
 - Route A (planner hook): no parser; extension sends compact request.
 - Route B (postgres_fdw): `pg_query` for deparsed dialect, fidelity.
 - Route C (proxy): `pg_query`.
@@ -52,7 +52,7 @@ Use for weir:
 
 ## 4. Logical replication client
 
-Refreshed 2026-11-09 against the weir-pg flow: one `replication=database`
+Refreshed 2026-11-09 against the straum-pg flow: one `replication=database`
 connection runs `BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ`,
 `CREATE_REPLICATION_SLOT ... TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')`, the
 `GROUP BY` loads, `COMMIT`, then `START_REPLICATION`; a reload opens a second
@@ -95,7 +95,7 @@ TLS (M7): `rustls` with `default-features = false` plus a provider. `ring` needs
 - **pg_mooncake**: MIT, Rust/pgrx + DuckDB via pg_duckdb, PG 14–18 ([repo](https://github.com/Mooncake-Labs/pg_mooncake)).
 - **pg_duckdb**: MIT, PG 14–18, C++ (I) ([repo](https://github.com/duckdb/pg_duckdb)).
 - **supabase/wrappers**: Rust FDW framework on pgrx, WHERE/ORDER BY/LIMIT pushdown; aggregate pushdown not mentioned ([repo](https://github.com/supabase/wrappers)).
-- **I** Network I/O from backend: CustomScan must talk to weir synchronously from backend thread, stay interruptible (latch/socket waits with interrupt checks), since pgrx forbids PostgreSQL calls from other threads.
+- **I** Network I/O from backend: CustomScan must talk to Straum synchronously from backend thread, stay interruptible (latch/socket waits with interrupt checks), since pgrx forbids PostgreSQL calls from other threads.
 
 ## 6. Storage
 
@@ -134,19 +134,19 @@ TLS (M7): `rustls` with `default-features = false` plus a provider. `ring` needs
 
 ## 9. Async
 
-Checked 2026-11-09 for the shape of weir-app and weir-pg; local toolchain
-`rustc 1.99.1`. Decided: weir stays synchronous, tokio only in `weir-http`
+Checked 2026-11-09 for the shape of straum-app and straum-pg; local toolchain
+`rustc 1.99.1`. Decided: Straum stays synchronous, tokio only in `straum-http`
 (PLAN.md, 2026-11-09).
 
 - `async fn` in traits is stable since 1.75 and not dyn-compatible ([blog](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/)). In a public trait it trips the warn-by-default `async_fn_in_trait` lint, so `-D warnings` needs `#[allow(async_fn_in_trait)]` or a hand-written `-> impl Future<Output = T> + Send` ([rustc book](https://doc.rust-lang.org/rustc/lints/listing/warn-by-default.html#async-fn-in-trait); checked locally).
 - Return type notation (`T::method(..): Send`) is not stable: PR [#138424](https://github.com/rust-lang/rust/pull/138424) closed unmerged 2025-12-27; the 2026 goal waits on the next-gen trait solver ([goal](https://goals.rust-lang.org/2026/rtn.html)). `trait-variant` 0.1.3 and `async-trait` 0.1.92 are proc macros.
 - Still unstable: async drop (soundness bugs filed October 2026, U), `AsyncIterator` ([#79024](https://github.com/rust-lang/rust/issues/79024)), `gen` blocks ([#117078](https://github.com/rust-lang/rust/issues/117078)). std has no executor; `Waker::noop` (1.85) is enough to poll a future that never waits ([docs](https://doc.rust-lang.org/std/task/struct.Waker.html#method.noop)).
 - tokio 1.54.1 (2026-10-21) is current; LTS 1.51.x to March 2027 and 1.53.x to September 2027; no 2.0 plan found ([README](https://github.com/tokio-rs/tokio/blob/master/README.md)). `LocalRuntime` is stable since 1.51.0. `select!`, `#[tokio::main]` and `#[tokio::test]` are macros.
-- Cancellation: a future may be dropped at any `.await` by `select!`, `timeout`, abort or shutdown ([select! docs](https://docs.rs/tokio/latest/tokio/macro.select.html); [Rain, 2025-10-03](https://sunshowers.io/posts/cancelling-async-rust/)). An async `App::step` would leave a cleared table marked loaded if dropped mid-reload (`crates/weir-app/src/app.rs`, I).
+- Cancellation: a future may be dropped at any `.await` by `select!`, `timeout`, abort or shutdown ([select! docs](https://docs.rs/tokio/latest/tokio/macro.select.html); [Rain, 2025-10-03](https://sunshowers.io/posts/cancelling-async-rust/)). An async `App::step` would leave a cleared table marked loaded if dropped mid-reload (`crates/straum-app/src/app.rs`, I).
 - CPU work: "no more than 10 to 100 microseconds between each `.await`" ([ryhl.io](https://ryhl.io/blog/async-what-is-blocking/)); persistent work belongs on a "dedicated thread created with `thread::spawn`" ([docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)).
 - A sync wrapper over an async client needs its own runtime; `Runtime::block_on` panics inside an async context ([docs](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html)). The `postgres` crate does this over `tokio-postgres` ([docs](https://docs.rs/postgres/latest/postgres/)).
-- Sans-IO: a core of plain state machines, the I/O and the choice of runtime left to the caller ([Eizinger, 2024-07-02](https://www.firezone.dev/blog/sans-io)); quinn-proto, rustls and str0m work this way ([quinn-proto](https://docs.rs/quinn-proto/latest/quinn_proto/), [str0m](https://github.com/algesten/str0m)). In M6 weir-app split into `App`, the store, which never waits, and `Writer`, the loop that does the I/O.
-- Whatever the shape, something must answer keepalives while the writer is busy: a big commit or a reload can outlast `wal_sender_timeout` (§4). In weir-pg that is a thread that owns the stream socket.
+- Sans-IO: a core of plain state machines, the I/O and the choice of runtime left to the caller ([Eizinger, 2024-07-02](https://www.firezone.dev/blog/sans-io)); quinn-proto, rustls and str0m work this way ([quinn-proto](https://docs.rs/quinn-proto/latest/quinn_proto/), [str0m](https://github.com/algesten/str0m)). In M6 straum-app split into `App`, the store, which never waits, and `Writer`, the loop that does the I/O.
+- Whatever the shape, something must answer keepalives while the writer is busy: a big commit or a reload can outlast `wal_sender_timeout` (§4). In straum-pg that is a thread that owns the stream socket.
 
 ## Recommended stack
 
@@ -174,6 +174,6 @@ Stale: written for the extension, DataFusion and pgwire design, dropped since (P
 4. **Rollup-aware rewrite**: answer GROUP BY from rollup when keys ⊆ rollup keys, then re-aggregate (sum of sums, sum of counts).
 5. **Freshness protocol**: expose applied LSN; implement barrier wait (POSTGRES-REPLICATION.md §8c).
 6. **Wire session layer for postgres_fdw**: SETs, `START TRANSACTION ISOLATION LEVEL`, DECLARE/FETCH/CLOSE cursors, COMMIT, minimal pg_catalog.
-7. **Extension**: `create_upper_paths_hook` + CustomScan on raw pg_sys; spec matching; compact request to weir; tuple conversion; fallback to heap when ineligible or stale.
+7. **Extension**: `create_upper_paths_hook` + CustomScan on raw pg_sys; spec matching; compact request to Straum; tuple conversion; fallback to heap when ineligible or stale.
 8. **Slot + WAL safety**: retained-WAL monitoring, slot cleanup, resumable initial copy (missing in etl per Feldera #7172).
 9. **PostgreSQL semantics parity**: numeric exactness, `avg(int)` returns numeric, float summation order, `date_trunc` on timestamptz depends on session TimeZone, collations for text group keys (let PostgreSQL sort above scan).

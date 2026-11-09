@@ -1,6 +1,6 @@
-# weir on AKS next to Azure Database for PostgreSQL Flexible Server
+# Straum on AKS next to Azure Database for PostgreSQL Flexible Server
 
-jb, 2026-11-08: ship weir as a Helm chart into the same Kubernetes cluster as
+jb, 2026-11-08: ship Straum as a Helm chart into the same Kubernetes cluster as
 the apps. First target: AKS, with PostgreSQL 18 on Azure Flexible Server
 outside the cluster. Design in ARCHITECTURE.md. Tags as in README.md (R, U,
 I).
@@ -17,13 +17,13 @@ I).
 - Apps may ship as plain manifests without Helm. Secrets come from Key Vault
   through the Secrets Store CSI driver.
 
-## Consequences for weir (I)
+## Consequences for Straum (I)
 
 - No custom extension is needed, which Azure wouldn't allow anyway
   (MANAGED-POSTGRES.md). Logical replication needs one server parameter and a
   restart.
-- weir reaches PostgreSQL over the network path the apps already use. Apps
-  reach weir over HTTP inside the cluster. No new network path in either
+- Straum reaches PostgreSQL over the network path the apps already use. Apps
+  reach Straum over HTTP inside the cluster. No new network path in either
   direction.
 - The chart must render cleanly with `helm template`, so teams without Helm can
   commit the output and apply it with their existing pipeline. Azure Pipelines
@@ -31,7 +31,7 @@ I).
 
 ## Chart shape (I)
 
-weir keeps no durable state and uses a temporary slot per pod, so the chart
+Straum keeps no durable state and uses a temporary slot per pod, so the chart
 has a Deployment and no PVC. Each replica is its own slot and walsender, and
 the Azure HA standby uses slots and walsenders too, so the default is one
 replica.
@@ -46,9 +46,9 @@ replica.
   replication role; on Azure from Key Vault through Secrets Store CSI.
 
 Probes:
-- Startup and readiness: weir loads every fact before it turns ready, so
+- Startup and readiness: Straum loads every fact before it turns ready, so
   readiness stays off through the load and catch-up. Clients must handle a
-  weir that isn't ready.
+  Straum that isn't ready.
 - Liveness: process only. Failing liveness on lag would turn a slow catch-up
   into a restart loop.
 
@@ -60,12 +60,12 @@ Values sketch:
 
 ```yaml
 image:
-  repository: <acr>.azurecr.io/weir
+  repository: <acr>.azurecr.io/straum
   tag: ""
 source:
-  existingSecret: weir-source      # key: dsn (role with REPLICATION)
-  publication: weir                # weir creates a TEMPORARY slot per pod
-spec: |                            # weir SQL (weir-only subset), read at start
+  existingSecret: straum-source      # key: dsn (role with REPLICATION)
+  publication: straum                # Straum creates a TEMPORARY slot per pod
+spec: |                              # Straum SQL (Straum-only subset), read at start
   CREATE VIEW trips WITH (key = id, append = true) AS
   SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
          f.pu_location_id, pickup.borough, pickup.zone,
@@ -86,14 +86,14 @@ resources:
 
 1. Set the server parameter `wal_level = logical` (Terraform or portal) and
    restart. Slot sync settings aren't needed: temporary slots can't fail over,
-   and weir resyncs after an HA failover (ARCHITECTURE.md §8).
-2. Run `weir plan` on the spec (ARCHITECTURE.md §4d). It checks keys and
-   replica identity and prints `CREATE ROLE weir LOGIN REPLICATION`, `GRANT
+   and Straum resyncs after an HA failover (ARCHITECTURE.md §8).
+2. Run `straum plan` on the spec (ARCHITECTURE.md §4d). It checks keys and
+   replica identity and prints `CREATE ROLE straum LOGIN REPLICATION`, `GRANT
    SELECT` on the spec's tables (the load reads them), and `CREATE PUBLICATION
-   weir FOR TABLE ...` with the fact and dim tables.
+   Straum FOR TABLE ...` with the fact and dim tables.
 3. The table owner runs the printed SQL. Often the app's own role owns its
    tables (I). `FOR ALL TABLES` needs superuser, which Azure doesn't give.
-4. weir creates its own `TEMPORARY` slot on every start; PostgreSQL drops it
+4. Straum creates its own `TEMPORARY` slot on every start; PostgreSQL drops it
    when the session ends.
 
 **Production risk (R).** Once a table is in a publication that publishes
@@ -106,14 +106,14 @@ DELETE on the primary:
   writes with "Column list used by the publication does not cover the replica
   identity." (`execReplication.c:1107`, `:1125`).
 
-A wrong publication breaks the app's writes, not only weir. `weir plan` checks
-`pg_index` and `relreplident` before it prints `CREATE PUBLICATION`, and weir
+A wrong publication breaks the app's writes, not only Straum. `straum plan` checks
+`pg_index` and `relreplident` before it prints `CREATE PUBLICATION`, and Straum
 rechecks on every start.
 
 **WAL growth (R, Azure docs via MANAGED-POSTGRES.md).** Azure fixes
-`max_slot_wal_keep_size` at `-1`, so a stalled weir holds WAL until storage
+`max_slot_wal_keep_size` at `-1`, so a stalled Straum holds WAL until storage
 fills; Azure drops unused slots past an unpublished storage threshold. The
-temporary slot limits this to the time weir is connected but behind. weir
+temporary slot limits this to the time Straum is connected but behind. Straum
 watches its own retained WAL and resyncs past `maxRetainedWal`. Also alert on
 slot lag in `pg_replication_slots`.
 
@@ -124,7 +124,7 @@ Azure section, R). It maintains GROUP BY views with count, sum, avg, min and
 max inside PostgreSQL, synchronously on every write, with no new service. For a
 handful of fixed aggregates that may be enough. The cost lands on the write
 path; how much at the target write rate is unknown (U). Measure it on a test
-system against the same aggregates before committing to weir.
+system against the same aggregates before committing to Straum.
 
 ## Open points
 

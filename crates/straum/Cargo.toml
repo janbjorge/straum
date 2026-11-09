@@ -1,0 +1,17 @@
+[package]
+name = "straum"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
+straum-app = { path = "../straum-app" }
+straum-domain = { path = "../straum-domain" }
+straum-http = { path = "../straum-http" }
+straum-notation = { path = "../straum-notation" }
+straum-pg = { path = "../straum-pg" }
+
+[dev-dependencies]
+testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }

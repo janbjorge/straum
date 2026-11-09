@@ -1,21 +1,21 @@
-# weir: research notes
+# Straum: research notes
 
-weir is the working name for an aggregate server that sits next to
-PostgreSQL. A weir is a low dam across a river, built to measure its flow;
-this server sits on the replication stream and measures it.
+Straum is an aggregate server that sits next to PostgreSQL. The name is the
+Nynorsk word for a stream or current: its input is PostgreSQL's replication
+stream.
 
-## Working name
+## Name
 
-**Straum** is the current working name. It is the Nynorsk word for a stream
-or current, which captures PostgreSQL replication as the server's input. Code
-and package identifiers remain `weir` until a rename is chosen and carried
-out. Before publication, check `straum` availability on crates.io and GitHub,
-and obtain trademark clearance for database software.
+Before anything is published, check the name for clashes. On 2026-11-09 the
+crates `straum`, `straum-domain`, `straum-notation`, `straum-app`,
+`straum-pg` and `straum-http` were free on crates.io, and the repository is
+`github.com/janbjorge/straum`. Trademark clearance for database software is
+still open.
 
 ## The idea (jb, 2026-11-08)
 
 - A spec names PostgreSQL tables and columns.
-- weir subscribes to them over logical replication and ingests only that
+- Straum subscribes to them over logical replication and ingests only that
   subset.
 - It keeps the data so that counts, sums, averages, minimums and maximums come
   back about 1000x faster than from PostgreSQL, with near-zero drift.
@@ -24,14 +24,14 @@ and obtain trademark clearance for database software.
 ## Where the design went
 
 The research started from SQL. Could PostgreSQL hand an aggregate query to
-weir by itself? Would that need an extension? Would weir need a SQL parser?
+Straum by itself? Would that need an extension? Would Straum need a SQL parser?
 On managed PostgreSQL every SQL route needed an extension providers don't
-allow, a wire proxy in front of all traffic, or weir parsing SQL itself
+allow, a wire proxy in front of all traffic, or Straum parsing SQL itself
 (POSTGRES-PLANNER.md, MANAGED-POSTGRES.md).
 
 On 2026-11-08 jb dropped SQL. Aggregates are declared in a spec read at
-start, and asked for over HTTP. The spec was weir's own notation at first and
-is now weir SQL, a PostgreSQL `CREATE VIEW` subset made only for weir specs
+start, and asked for over HTTP. The spec was Straum's own notation at first and
+is now Straum SQL, a PostgreSQL `CREATE VIEW` subset made only for Straum specs
 and parsed by `sqlparser`. ARCHITECTURE.md describes that design; PLAN.md at the repository root tracks the build and lists the
 decisions.
 
@@ -110,7 +110,7 @@ PG19 only (not PG18):
 - `join_path_setup_hook` / `joinrel_setup_hook` (`4020b370f21`).
 - Eager aggregation, `enable_eager_aggregate` (`8e11859102f`).
 - `WAIT FOR` (`447aae13b03`) and its write/flush modes (`7a39f43d885`). Not
-  usable by weir either way (POSTGRES-REPLICATION.md §8b).
+  usable by Straum either way (POSTGRES-REPLICATION.md §8b).
 - postgres_fdw `import_stats` / `ImportForeignStatistics` (`28972b6fc3d`).
 - Publications `FOR ALL SEQUENCES` (`96b37849734`) with sequence sync
   (`5509055d695`), and `EXCEPT TABLE` (`fd366065e06`).

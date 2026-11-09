@@ -1,16 +1,16 @@
-# weir on managed PostgreSQL
+# Straum on managed PostgreSQL
 
-Web research 2026-11-08, four agents (AWS, Google Cloud, Azure, other providers). jb constraint: weir must work on managed PostgreSQL using only customer self-serve (console, parameters, SQL). No vendor tickets, no allowlisting requests. Tags as README.md: **U** = unverified (no fetched doc confirms), **I** = inference.
+Web research 2026-11-08, four agents (AWS, Google Cloud, Azure, other providers). jb constraint: Straum must work on managed PostgreSQL using only customer self-serve (console, parameters, SQL). No vendor tickets, no allowlisting requests. Tags as README.md: **U** = unverified (no fetched doc confirms), **I** = inference.
 
-## What weir needs from the database
+## What Straum needs from the database
 
 | Need | What it means |
 |---|---|
 | Ingest | Logical replication w/ pgoutput; role with REPLICATION; `CREATE PUBLICATION ... FOR TABLE` |
 | Transparent queries | Custom planner hook or CustomScan in PostgreSQL (route A) |
-| In-database queries | postgres_fdw (or other FDW pushing down aggregates) reaching weir over network |
-| Freshness barrier | `pg_logical_emit_message(..., flush => true)` callable by weir role |
-| Zero drift | weir in `synchronous_standby_names` |
+| In-database queries | postgres_fdw (or other FDW pushing down aggregates) reaching Straum over network |
+| Freshness barrier | `pg_logical_emit_message(..., flush => true)` callable by Straum role |
+| Zero drift | Straum in `synchronous_standby_names` |
 | Bounded WAL | `max_slot_wal_keep_size` settable |
 | Slot survival | Logical slots survive HA failover, switchover, major-version upgrades |
 
@@ -24,11 +24,11 @@ PostgreSQL source facts behind privileges (master `0f3b42ce806`):
 
 - **Ingest: covered** on AWS (RDS, Aurora), Google Cloud (Cloud SQL, AlloyDB), Azure Flexible Server, Supabase, Neon, Crunchy Bridge, Snowflake Postgres, DigitalOcean Standard, Aiven, PlanetScale. Usually static parameter + one restart. Not on Heroku Essential/Standard/Premium; unclear on Tiger Cloud, DigitalOcean Advanced, ClickHouse Managed Postgres, Databricks Lakebase.
 - **Transparent queries: blocked everywhere.** No provider lets customer load own C code. pg_tle (AWS, Supabase) exposes only `passcheck` and `clientauth` hooks ([pg_tle hooks](https://github.com/aws/pg_tle/blob/main/docs/04_hooks.md)). PL/Rust removed from RDS from PostgreSQL 18. Route A impossible without vendor.
-- **In-database queries: mostly covered by postgres_fdw**, shipped by almost every provider. Caveat: network reach to weir; Cloud SQL weakest (only Cloud SQL private-IP targets documented).
+- **In-database queries: mostly covered by postgres_fdw**, shipped by almost every provider. Caveat: network reach to Straum; Cloud SQL weakest (only Cloud SQL private-IP targets documented).
 - **Freshness barrier: likely covered** (upstream grants to PUBLIC); no provider documents revoking. Test per provider.
 - **Zero drift: blocked.** `synchronous_standby_names` read-only on Azure, absent from Cloud SQL and AlloyDB flag lists, not documented modifiable on AWS.
 - **Bounded WAL: partial.** Settable on RDS, Aurora; read-only `-1` on Azure; conflicting docs on Cloud SQL; absent on AlloyDB.
-- **Slot survival: weak.** Major upgrades drop slots on Cloud SQL, Aurora, AlloyDB, Aiven, Supabase; several services drop idle/stalled slots. weir must treat "slot gone, resync" as normal path.
+- **Slot survival: weak.** Major upgrades drop slots on Cloud SQL, Aurora, AlloyDB, Aiven, Supabase; several services drop idle/stalled slots. Straum must treat "slot gone, resync" as normal path.
 - **Versions:** PostgreSQL 18 GA on RDS, Aurora, Cloud SQL, AlloyDB, Azure, Neon, Crunchy Bridge, Snowflake Postgres, DigitalOcean, Aiven, Heroku, PlanetScale, Tiger Cloud; Supabase hosted not on 18 yet (U). PostgreSQL 19 GA nowhere managed: community RC1 2026-10-15, GA planned 2026-11-19 ([news](https://www.postgresql.org/about/news/postgresql-19-rc-1-released-3409/)); RDS has 19 RC1 only in Database Preview Environment.
 
 ## Hyperscalers
@@ -62,7 +62,7 @@ PostgreSQL source facts behind privileges (master `0f3b42ce806`):
   - AlloyDB HA failover: U; AlloyDB Omni docs say slot recreated, stream position lost ([Omni](https://docs.cloud.google.com/alloydb/omni/containers/15.7.0/docs/create-replication-slots)). Major upgrade requires dropping all slots ([doc](https://docs.cloud.google.com/alloydb/docs/upgrade-db-inplace-major-version)). `idle_replication_slot_timeout` settable.
   - `max_slot_wal_keep_size`: Cloud SQL flags list it w/ min 102400 MB, but Datastream docs say Cloud SQL and AlloyDB don't support it ([Datastream](https://docs.cloud.google.com/datastream/docs/work-with-postgresql-database-wal-log-files)). Not in AlloyDB flag list.
 - **FDWs:**
-  - Cloud SQL postgres_fdw 1.1 (PG14+): "works for two Cloud SQL private IP instances within the same VPC network", or across databases in one instance; only `cloudsqlsuperuser` can own FDW; PSC instances need PSC outbound connectivity ([extensions](https://docs.cloud.google.com/sql/docs/postgres/extensions)). PSC outbound reaches only RFC 1918 addresses, not public IPs, `100.64.0.0/10` or IPv6; enabling costs ~3 min downtime ([PSC](https://docs.cloud.google.com/sql/docs/postgres/about-private-service-connect)). **Reaching non-Cloud SQL host like weir: U. Test before relying.**
+  - Cloud SQL postgres_fdw 1.1 (PG14+): "works for two Cloud SQL private IP instances within the same VPC network", or across databases in one instance; only `cloudsqlsuperuser` can own FDW; PSC instances need PSC outbound connectivity ([extensions](https://docs.cloud.google.com/sql/docs/postgres/extensions)). PSC outbound reaches only RFC 1918 addresses, not public IPs, `100.64.0.0/10` or IPv6; enabling costs ~3 min downtime ([PSC](https://docs.cloud.google.com/sql/docs/postgres/about-private-service-connect)). **Reaching non-Cloud SQL host like Straum: U. Test before relying.**
   - AlloyDB postgres_fdw 1.1: documented outbound public IP (pair of static IPs) for postgres_fdw and oracle_fdw ([connections](https://docs.cloud.google.com/alloydb/docs/connection-overview)); PSC outbound exists, documented for migrations ([PSC](https://docs.cloud.google.com/alloydb/docs/configure-private-service-connect)).
   - Others: oracle_fdw, tds_fdw on both; AlloyDB lakehouse federation (`bigquery_fdw`) pushes SUM/COUNT/AVG/MIN/MAX ([doc](https://docs.cloud.google.com/alloydb/docs/access-real-time-data-overview)). No mysql_fdw, ClickHouse FDW, pg_duckdb.
 - **Custom code:** "You cannot create your own extensions in Cloud SQL"; anything needing SUPERUSER and custom background workers unsupported ([features](https://docs.cloud.google.com/sql/docs/postgres/features)). `shared_preload_libraries` system-managed on both. plv8 only. No pg_tle, no PL/Rust, no planner hook.
@@ -77,7 +77,7 @@ PostgreSQL source facts behind privileges (master `0f3b42ce806`):
   - PG17+: native slot sync w/ `sync_replication_slots=on` and `hot_standby_feedback=on`, only for slots created with `failover`; PG≤16 uses `pg_failover_slots` ([HA](https://learn.microsoft.com/en-us/azure/postgresql/high-availability/concepts-high-availability), [standby params](https://learn.microsoft.com/en-us/azure/postgresql/parameters/parameters-replication-standby-servers)).
   - Unused slots auto-dropped when storage passes unpublished threshold ([logical](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-logical), [limits](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-limits)). Major upgrades check for slots; survival not stated ([MVU](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-major-version-upgrade)).
   - `max_slot_wal_keep_size` read-only `-1`; `max_replication_slots` and `max_wal_senders` static; HA uses 4 of each ([sending params](https://learn.microsoft.com/en-us/azure/postgresql/parameters/parameters-replication-sending-servers)). `logical_decoding_work_mem` dynamic.
-- **FDWs:** postgres_fdw (1.2 on PG18) and dblink, self-serve via `azure.extensions` ([versions](https://learn.microsoft.com/en-us/azure/postgresql/extensions/concepts-extensions-versions), [allowlist](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-allow-extensions)). Public-access servers have unrestricted outbound; VNet servers need NSG rules or peering to reach weir ([considerations](https://learn.microsoft.com/en-us/azure/postgresql/extensions/concepts-extensions-considerations), [limits](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-limits)). oracle_fdw, tds_fdw document no aggregate pushdown; no mysql_fdw or ClickHouse FDW.
+- **FDWs:** postgres_fdw (1.2 on PG18) and dblink, self-serve via `azure.extensions` ([versions](https://learn.microsoft.com/en-us/azure/postgresql/extensions/concepts-extensions-versions), [allowlist](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-allow-extensions)). Public-access servers have unrestricted outbound; VNet servers need NSG rules or peering to reach Straum ([considerations](https://learn.microsoft.com/en-us/azure/postgresql/extensions/concepts-extensions-considerations), [limits](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-limits)). oracle_fdw, tds_fdw document no aggregate pushdown; no mysql_fdw or ClickHouse FDW.
 - **Custom code:** no uploads; fixed `shared_preload_libraries` list (age, anon, auto_explain, azure_storage, credcheck, pg_cron, pg_hint_plan, pg_ivm, pg_partman_bgw, pg_prewarm, pg_squeeze, pg_stat_statements, pgaudit, pglogical, plpgsql_check, timescaledb, wal2json) ([preload](https://learn.microsoft.com/en-us/azure/postgresql/parameters/parameters-client-connection-defaults-shared-library-preloading)). plv8 only. No planner hook.
 - **Barrier / sync standby:** barrier U. `synchronous_standby_names` read-only ([params](https://learn.microsoft.com/en-us/azure/postgresql/parameters/parameters-replication-master-server)).
 - **Microsoft's own offload:** Fabric mirroring GA (proprietary `azure_cdc` over pgoutput into OneLake Delta) ([doc](https://learn.microsoft.com/en-us/azure/postgresql/integration/concepts-fabric-mirroring)); pg_duckdb preview ([blog](https://techcommunity.microsoft.com/blog/adforpostgresql/whats-new-with-postgres-at-microsoft-2026-edition/4526963)); HorizonDB public preview, PG17 only ([extensions](https://learn.microsoft.com/en-us/azure/horizondb/extensions/concepts-extensions-versions)).
@@ -115,12 +115,12 @@ Notes:
 
 ## Options without talking to a vendor
 
-1. **weir as postgres_fdw remote.** Works wherever postgres_fdw reaches weir: AWS, AlloyDB, Azure, Supabase, Neon, Crunchy, Snowflake (egress rule), Aiven, DigitalOcean Standard, PlanetScale. Queries name foreign tables (e.g. `weir.orders`), so not transparent. Cloud SQL needs live test (PSC outbound to RFC 1918 address).
-2. **Direct endpoint.** BI tools, dashboards, services connect to weir over wire protocol. Needs nothing from DB beyond ingest, avoids DB-to-weir network path. Same pgwire server as option 1.
-3. **Wire proxy.** Transparent to apps; DB untouched. Apps change connection string. All traffic flows through; weir must parse and route every statement.
-4. **Client-side routing (I).** Small library or ORM hook in app sends eligible aggregate queries to weir, rest to PostgreSQL. App change, no proxy in hot path.
-5. **Second FDW protocols (I).** Emulating MySQL protocol lets RDS/Aurora `mysql_fdw` push aggregates to weir; emulating ClickHouse reaches Supabase Wrappers, Crunchy `clickhouse_fdw`, ClickHouse Managed Postgres `pg_clickhouse`. Wider reach, not needed first.
-6. **Write Iceberg/Parquet for vendor's engine (I).** Aurora `aurora_analytics`, AlloyDB lakehouse federation, pg_lake read lake files. weir feeds them; freshness drops to lake table commit interval. Not weir core.
+1. **Straum as postgres_fdw remote.** Works wherever postgres_fdw reaches Straum: AWS, AlloyDB, Azure, Supabase, Neon, Crunchy, Snowflake (egress rule), Aiven, DigitalOcean Standard, PlanetScale. Queries name foreign tables (e.g. `straum.orders`), so not transparent. Cloud SQL needs live test (PSC outbound to RFC 1918 address).
+2. **Direct endpoint.** BI tools, dashboards, services connect to Straum over wire protocol. Needs nothing from DB beyond ingest, avoids DB-to-straum network path. Same pgwire server as option 1.
+3. **Wire proxy.** Transparent to apps; DB untouched. Apps change connection string. All traffic flows through; Straum must parse and route every statement.
+4. **Client-side routing (I).** Small library or ORM hook in app sends eligible aggregate queries to Straum, rest to PostgreSQL. App change, no proxy in hot path.
+5. **Second FDW protocols (I).** Emulating MySQL protocol lets RDS/Aurora `mysql_fdw` push aggregates to Straum; emulating ClickHouse reaches Supabase Wrappers, Crunchy `clickhouse_fdw`, ClickHouse Managed Postgres `pg_clickhouse`. Wider reach, not needed first.
+6. **Write Iceberg/Parquet for vendor's engine (I).** Aurora `aurora_analytics`, AlloyDB lakehouse federation, pg_lake read lake files. Straum feeds them; freshness drops to lake table commit interval. Not Straum core.
 
 ## Design implications (I)
 

@@ -1,4 +1,4 @@
-# How the PostgreSQL planner could hand aggregates to weir
+# How the PostgreSQL planner could hand aggregates to Straum
 
 Read in `/Users/janbjorge/src/postgres` 2026-11-08 (see README.md for tree, tags). `git diff --stat 0f3b42ce806 HEAD` over `src/backend/optimizer`, `contrib/postgres_fdw`, `src/include/optimizer`, `src/include/foreign`, `src/include/access/tableam.h`, `executor/nodeAgg.c` empty → stock upstream behaviour.
 
