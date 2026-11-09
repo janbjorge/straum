@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # M1: one month of NYC yellow trips in a throwaway PostgreSQL 18. Checks that
 # asks answered from the taxi.sql rollup, with zones mapped after
-# aggregation, equal the same asks over the raw join.
+# aggregation, equal the same asks over the raw join, at the 15 minute width
+# and, for asks without a time key, from the wider buckets taxi.sql declares.
 #
 # Needs curl, uv and docker. Downloads go to bench/data (gitignored).
 set -euo pipefail
