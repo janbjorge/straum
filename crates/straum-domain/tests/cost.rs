@@ -16,7 +16,9 @@ thread_local! {
 }
 
 /// Counts the allocations of the thread that makes them, so tests running
-/// beside each other don't add to each other's counts.
+/// beside each other don't add to each other's counts. The one `unsafe`
+/// in straum, settled in PLAN.md: `GlobalAlloc` is an unsafe trait, so no
+/// safe allocator can count.
 struct Counting;
 
 // SAFETY: hands every call to `System` unchanged.

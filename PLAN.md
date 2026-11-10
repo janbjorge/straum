@@ -318,6 +318,13 @@ Tests:
   rounding stays in `straum-http`. `Answer` names its own columns, so the
   writer doesn't need the ask, and `Spec::check` rejects a key or measure
   asked twice, since row fields go by name.
+- 2026-11-10: One `unsafe` stays: the counting allocator in
+  `crates/straum-domain/tests/cost.rs`, which proves an ask allocates per
+  group and never per cell. `GlobalAlloc` is an unsafe trait, so no safe
+  allocator can count, and a crate would hold the same lines. The
+  per-cell time budget would catch it too, but as a noisy bound. The lib
+  and binary crates keep `#![forbid(unsafe_code)]`; this test is outside
+  them and is the only exception. Don't revisit.
 
 ## M0: notation and domain model
 

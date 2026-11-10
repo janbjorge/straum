@@ -24,7 +24,9 @@ plugin and kubeconform. For a change under `docs/`, also run
 
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
-- No `unsafe`, no macros of our own, traits only at ports.
+- No `unsafe`, no macros of our own, traits only at ports. The one
+  exception is the counting allocator in `straum-domain/tests/cost.rs`,
+  settled in PLAN.md.
 - Errors are hand-written enums with `Display` and `From` impls, no
   `thiserror` or `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the
