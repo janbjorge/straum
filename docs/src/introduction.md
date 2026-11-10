@@ -1,27 +1,62 @@
 # Straum
 
-Straum keeps aggregates of PostgreSQL tables in memory and answers asks
-about them over HTTP. A spec, a small subset of PostgreSQL's `CREATE
-VIEW`, declares `count`, `count(DISTINCT)`, `sum`, `min`, `max` and
-`avg`, grouped by columns of the fact table, columns of the tables it
-joins N:1, and UTC time buckets. Straum loads the cells from a snapshot,
-then follows every commit through logical replication.
+Straum keeps aggregates of PostgreSQL tables in memory, current to the
+last commit, and answers questions about them over HTTP in microseconds.
 
-An ask is a `SELECT` over one view with every value as a parameter. It
-costs in proportion to the cells it reads, never touches PostgreSQL, and
-its answer says how fresh it is: every commit made before its `as_of` is
-in it.
+A dashboard runs the same `GROUP BY` over the same tables all day, and
+PostgreSQL reads the rows again each time. Straum reads them once, from
+a snapshot, keeps each group as a cell in memory, and follows every
+commit through logical replication, so the cells are always the current
+answer. You declare what to keep as a view, in a small subset of
+PostgreSQL's `CREATE VIEW`:
 
-The name is Nynorsk for a stream or current: Straum's input is
-PostgreSQL's replication stream.
+```sql
+CREATE VIEW orders AS
+SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
+       status,
+       customer_id,
+       customers.country,
+       count(*) AS orders,
+       sum(amount) AS revenue,
+       avg(amount) AS avg_amount
+FROM orders
+LEFT JOIN customers ON customers.id = customer_id
+GROUP BY 1, 2, 3, 4;
+```
+
+An ask is a `SELECT` over that view, with every value as a parameter:
+
+```sh
+curl --json '{
+  "query": "SELECT customers.country, orders, revenue FROM orders WHERE status = $1 GROUP BY customers.country",
+  "parameters": ["paid"]
+}' http://localhost:8080/ask
+```
+
+```json
+{
+  "as_of": "2026-11-09T17:12:41.902318Z",
+  "rows": [
+    {"customers.country": "NO", "orders": 2, "revenue": 139.99},
+    {"customers.country": "SE", "orders": 1, "revenue": 80.50}
+  ]
+}
+```
+
+Every commit made before `as_of` is in the answer. An ask costs in
+proportion to the cells it reads and never touches PostgreSQL: on a
+month of New York taxi trips, the [benchmark](benchmark.md) answers in
+150 to 190 µs where PostgreSQL takes 22 to 171 ms, from 40 MiB of
+memory.
 
 ![PostgreSQL holds the tables and the WAL. A table owner runs the setup SQL that straum plan prints, once. On every start, straum run loads a snapshot at LSN L, then applies every commit after L. Apps ask over HTTP.](diagrams/overview.svg)
 
+Straum needs PostgreSQL 17 or newer as shipped, with no extension and no
+superuser, so managed services work. The name is Nynorsk for a stream
+or current: Straum's input is PostgreSQL's replication stream.
+
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
-
-Straum needs PostgreSQL 17 or newer as shipped, with no extension and no
-superuser, so managed services work.
 
 ## What it is not
 
