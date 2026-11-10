@@ -23,12 +23,16 @@ pub(crate) struct Decoder {
     /// Each fact's types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
     types: HashMap<Ident, Vec<ColumnType>>,
-    /// The transaction so far, held until its Commit; `max_rows` bounds it,
-    /// since every change here is applied under the write lock.
+    transaction: Transaction,
+}
+
+/// The transaction so far, held until its Commit; `max_rows` bounds it,
+/// since every change here is applied under the write lock.
+struct Transaction {
     changes: Vec<Change>,
     max_rows: usize,
     /// The transaction being read, by the LSN of its commit record.
-    in_transaction: Option<Lsn>,
+    lsn: Option<Lsn>,
 }
 
 /// Where a fact's columns sit in a relation's tuples.
@@ -54,19 +58,21 @@ impl Decoder {
             facts,
             relations: HashMap::new(),
             types,
-            changes: Vec::new(),
-            max_rows,
-            in_transaction: None,
+            transaction: Transaction {
+                changes: Vec::new(),
+                max_rows,
+                lsn: None,
+            },
         }
     }
 
     /// A commit once its Commit message comes.
     pub(crate) fn feed(&mut self, message: Message) -> Result<Option<Commit>, Error> {
         match message {
-            Message::Begin { final_lsn } => self.in_transaction = Some(Lsn(final_lsn)),
+            Message::Begin { final_lsn } => self.transaction.lsn = Some(Lsn(final_lsn)),
             Message::Commit { end_lsn, time } => {
-                self.in_transaction = None;
-                let changes = mem::take(&mut self.changes);
+                self.transaction.lsn = None;
+                let changes = mem::take(&mut self.transaction.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(end_lsn),
                     time,
@@ -83,12 +89,7 @@ impl Decoder {
                         },
                         None => altered(m),
                     };
-                    hold(
-                        &mut self.changes,
-                        self.max_rows,
-                        self.in_transaction,
-                        change,
-                    )?;
+                    self.transaction.hold(change)?;
                 }
             }
             Message::Update { relation, old, new } => {
@@ -105,12 +106,7 @@ impl Decoder {
                         },
                         _ => altered(m),
                     };
-                    hold(
-                        &mut self.changes,
-                        self.max_rows,
-                        self.in_transaction,
-                        change,
-                    )?;
+                    self.transaction.hold(change)?;
                 }
             }
             Message::Delete { relation, old } => {
@@ -122,12 +118,7 @@ impl Decoder {
                         },
                         None => altered(m),
                     };
-                    hold(
-                        &mut self.changes,
-                        self.max_rows,
-                        self.in_transaction,
-                        change,
-                    )?;
+                    self.transaction.hold(change)?;
                 }
             }
             Message::Truncate { relations } => {
@@ -136,12 +127,7 @@ impl Decoder {
                         let change = Change::Truncate {
                             table: m.table.clone(),
                         };
-                        hold(
-                            &mut self.changes,
-                            self.max_rows,
-                            self.in_transaction,
-                            change,
-                        )?;
+                        self.transaction.hold(change)?;
                     }
                 }
             }
@@ -152,7 +138,7 @@ impl Decoder {
 
     /// Between a Begin and its Commit.
     pub(crate) fn in_transaction(&self) -> bool {
-        self.in_transaction.is_some()
+        self.transaction.lsn.is_some()
     }
 
     /// Maps the relation's columns for each fact it holds. A fact whose
@@ -183,7 +169,7 @@ impl Decoder {
             }
             let known = self.types.insert(table.name.clone(), types.clone());
             if known.as_ref() != Some(&types) {
-                self.changes.push(Change::Altered {
+                self.transaction.changes.push(Change::Altered {
                     table: table.name.clone(),
                 });
             }
@@ -201,23 +187,19 @@ impl Decoder {
     }
 }
 
-/// Holds a change for the transaction's commit, or stops at the cap. The
-/// count is per transaction, not per table: the lock is held for all of it
-/// at once.
-fn hold(
-    changes: &mut Vec<Change>,
-    max_rows: usize,
-    transaction: Option<Lsn>,
-    change: Change,
-) -> Result<(), Error> {
-    if changes.len() >= max_rows {
-        return Err(Error::Transaction {
-            lsn: transaction.unwrap_or(Lsn(0)),
-            limit: max_rows,
-        });
+impl Transaction {
+    /// Holds a change for the commit, or stops at the cap. The count is per
+    /// transaction, not per table: the lock is held for all of it at once.
+    fn hold(&mut self, change: Change) -> Result<(), Error> {
+        if self.changes.len() >= self.max_rows {
+            return Err(Error::Transaction {
+                lsn: self.lsn.unwrap_or(Lsn(0)),
+                limit: self.max_rows,
+            });
+        }
+        self.changes.push(change);
+        Ok(())
     }
-    changes.push(change);
-    Ok(())
 }
 
 /// The facts a relation holds; none for a relation straum doesn't follow.

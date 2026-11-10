@@ -109,7 +109,7 @@ python3 scripts/check-layers.py
   (`catalog.rs:273-281`) and the allow go, and the `relreplident` check
   at `catalog.rs:347-354` moves under `Member::Fact`. `check()` becomes
   two plain loops.
-- [ ] **`Decoder` holds changes through a `Transaction`**.
+- [x] **`Decoder` holds changes through a `Transaction`**.
   `crates/straum-pg/src/decode.rs:207-221` `hold()` is a free function
   taking three `self` fields, called at `decode.rs:86`, `108`, `125`,
   `139` to split borrows. `Transaction { changes, max_rows, lsn }` with
