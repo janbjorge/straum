@@ -27,14 +27,17 @@ These are the providers' documented settings as of November 2026.
 ## 2. Run the setup SQL
 
 `straum plan --spec FILE` prints the SQL that lets Straum read the spec's
-tables. For the [quick start](quick-start.md) spec:
+tables. With `STRAUM_DSN` set, or `--dsn-file`, the role is the DSN's
+user and gets the DSN's password as a SCRAM-SHA-256 verifier, so the
+password itself is in neither the SQL nor the server's log. Without a
+DSN the role is `straum` and the SQL says how to give it a password. For
+the [quick start](quick-start.md):
 
 ```sql
 -- straum setup: run once, as an owner of the tables.
 -- wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
-CREATE ROLE "straum" LOGIN REPLICATION;
--- Then give "straum" a password: \password "straum"
+CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
 CREATE PUBLICATION "straum" FOR TABLE "public"."orders";
@@ -45,25 +48,19 @@ ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
 
 Run it as an owner of the tables, since only an owner can add a table to a
 publication. Straum never asks for `FOR ALL TABLES`, which needs a
-superuser.
+superuser. The setup lives in the catalog and survives restarts.
 
-- `REPLICATION` lets the role open a replication connection. Some managed
-  services grant their own role for it instead, such as
+- Some managed services grant replication through a role of their own,
+  such as
   [`rds_replication`](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.FeatureSupport.LogicalReplication.html)
-  on Amazon RDS. `--role NAME` renames the role.
-- The grants let it read the tables: the facts for the load, the dims for
-  the load's join and the lookups after it.
-- The publication names the fact tables only; dims are read by key, never
-  followed. `--publication NAME` renames it; give `straum run` the same
+  on Amazon RDS. `--role NAME` names the role.
+- `--publication NAME` names the publication; give `straum run` the same
   name.
-- `REPLICA IDENTITY FULL` makes PostgreSQL write the old row of every
-  update and delete to the WAL, so Straum can take the row out of its
-  cell.
 - Dims need a primary key or unique index on exactly their key columns,
   in any order. Only the schema can give that, so the SQL says it in a
   comment.
 
-The setup lives in the catalog and survives restarts.
+[How Straum works](how-it-works.md) says what each line is for.
 
 ## 3. Connect
 

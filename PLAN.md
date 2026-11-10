@@ -431,6 +431,16 @@ Tests:
   prints the error and `try: straum <command> --help`, never a manual,
   and a bare `straum` prints the command list on stderr with exit 2.
   The prose lives in the guide; help text names flags, not stories.
+- 2026-11-10: A spec reads like PostgreSQL would: a bare column is the
+  fact's, a table without a schema is in `public`, and a table without
+  an alias goes by its name. A dim's columns go through its alias. GROUP
+  BY stays, so every spec is a view PostgreSQL would accept.
+- 2026-11-10: Either bucket bound of an ask may be left out; the ask
+  then reads from the first bucket held, or to the last. `Ask::from` and
+  `to` are `Option<i64>`.
+- 2026-11-10: `straum plan` reads the DSN when there is one, and makes
+  the role the DSN's user with its password as a SCRAM-SHA-256 verifier,
+  so the role, the password and the setup are said once.
 - 2026-11-10: Decisions are recorded as ADRs in `docs/adr/`, one file
   per decision (ADR-0001). This list moves there and then goes.
 
@@ -776,5 +786,5 @@ showed once a task of it changed and Straum started over.
   Floats remain rejected because their reversible sums are
   order-dependent. Specs allow one fact and N:1 `LEFT JOIN` refs, not
   arbitrary joins or expressions. Time grains divide a UTC day and use
-  an epoch-origin `date_bin`; calendar grains, custom origins,
-  sub-second grains and unbounded asks are unsupported.
+  an epoch-origin `date_bin`; calendar grains, custom origins and
+  sub-second grains are unsupported.

@@ -11,18 +11,18 @@ measures.
 
 ```sql
 CREATE VIEW orders WITH (buckets = '1 day') AS
-SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
-       o.status,
-       o.customer_id,
-       customer.country,
-       (o.shipped_at IS NOT NULL) AS shipped,
+SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
+       status,
+       customer_id,
+       customers.country,
+       (shipped_at IS NOT NULL) AS shipped,
        count(*) AS orders,
-       sum(o.amount) AS revenue,
-       avg(o.amount) AS avg_amount,
-       count(*) FILTER (WHERE o.status = 'paid') AS paid,
-       count(*) FILTER (WHERE o.shipped_at IS NOT NULL) AS shipped_orders
-FROM public.orders o
-LEFT JOIN public.customers customer ON customer.id = o.customer_id
+       sum(amount) AS revenue,
+       avg(amount) AS avg_amount,
+       count(*) FILTER (WHERE status = 'paid') AS paid,
+       count(*) FILTER (WHERE shipped_at IS NOT NULL) AS shipped_orders
+FROM orders
+LEFT JOIN customers ON customers.id = customer_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
@@ -33,21 +33,24 @@ reads a row.
 
 ## The view and its fact table
 
-The view's name, `orders`, is what asks read `FROM`. `FROM public.orders
-o` is the fact table. It needs no primary key: Straum takes the old row
-of an update or delete from `REPLICA IDENTITY FULL`, which the [setup
+The view's name, `orders`, is what asks read `FROM`. `FROM orders` is the
+fact table, `public.orders`: a table without a schema is in `public`. It
+needs no primary key: Straum takes the old row of an update or delete
+from `REPLICA IDENTITY FULL`, which the [setup
 SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
 
-Every column is qualified with its table's alias. Identifiers are
-unquoted: lowercase letters, digits and `_`, at most 63 bytes. `GROUP
-BY` names exactly the selected keys, by position or by expression.
+A bare column is the fact's. A joined table's columns go through its
+alias, which is its name unless the join gives one, as `customers.country`
+does. Identifiers are unquoted: lowercase letters, digits and `_`, at most
+63 bytes. `GROUP BY` names exactly the selected keys, by position or by
+expression.
 
 ## Time
 
 Every view has exactly one bucket:
 
 ```sql
-date_bin('1 hour', o.placed_at, timestamptz 'epoch')
+date_bin('1 hour', placed_at, timestamptz 'epoch')
 ```
 
 - The column is a `timestamptz` or a `timestamp`. The origin is `'epoch'`
@@ -78,15 +81,15 @@ ones, so it reads far fewer cells. Each width costs memory, under
 
 ## Dims: refs and attributes
 
-Other fact columns, such as `o.status`, are by columns. A join declares
-a ref:
+Other fact columns, such as `status`, are by columns. A join declares a
+ref:
 
 ```sql
-LEFT JOIN public.customers customer ON customer.id = o.customer_id
+LEFT JOIN customers ON customers.id = customer_id
 ```
 
-`customer` is an N:1 pointer from a fact column to the key of a dim
-table. The dim columns the view selects, here `customer.country`, are
+`customers` is an N:1 pointer from a fact column to the key of a dim
+table. The dim columns the view selects, here `customers.country`, are
 the ref's attributes. As each order comes in, Straum reads them from the
 customer row the join names, in PostgreSQL, and keys the cell by them
 like any by column. Straum keeps no customer row of its own.
@@ -99,11 +102,11 @@ like any by column. Straum keeps no customer row of its own.
   equality per key column, joined by `AND`:
 
   ```sql
-  LEFT JOIN public.prices price ON price.sku = o.sku AND price.currency = o.currency
+  LEFT JOIN prices ON prices.sku = sku AND prices.currency = currency
   ```
 
 - A join must select at least one dim column. The fact column joined on,
-  `o.customer_id`, may be selected too or left out. Left out, cells are
+  `customer_id`, may be selected too or left out. Left out, cells are
   keyed by the attribute's few values instead of the column's many, and
   there are far fewer of them. A fact column may be both selected and
   joined on.
@@ -111,7 +114,7 @@ like any by column. Straum keeps no customer row of its own.
   dim table is one dim however many views join it, and all must join it
   on the same key columns.
 - The ref itself has no value: asks group and filter by
-  `customer.country`, or by `customer_id`, never by `customer`.
+  `customers.country`, or by `customer_id`, never by `customers`.
 
 Attributes are as of ingest. Straum never follows a dim: the setup
 publishes the fact tables only. A customer who moves from NO to SE keeps
@@ -124,7 +127,7 @@ select the fact column too and keep the mapping in your client.
 ## Null-ness keys
 
 ```sql
-(o.shipped_at IS NOT NULL) AS shipped
+(shipped_at IS NOT NULL) AS shipped
 ```
 
 A null-ness key is a boolean, true for the rows with a `shipped_at`,
@@ -149,8 +152,8 @@ numeric values scaled by their column's scale.
 `FILTER` makes a measure count only some rows:
 
 ```sql
-count(*) FILTER (WHERE o.status = 'paid') AS paid
-count(*) FILTER (WHERE o.shipped_at IS NOT NULL) AS shipped_orders
+count(*) FILTER (WHERE status = 'paid') AS paid
+count(*) FILTER (WHERE shipped_at IS NOT NULL) AS shipped_orders
 ```
 
 The condition is `=` or `IN (...)` on by columns or attributes the view

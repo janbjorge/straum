@@ -19,25 +19,25 @@ Given PostgreSQL source tables, write a spec:
 
 ```sql
 CREATE VIEW orders AS
-SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
-       o.status,
-       o.customer_id,
-       customer.country,
+SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
+       status,
+       customer_id,
+       customers.country,
        count(*) AS orders,
-       sum(o.amount) AS revenue,
-       avg(o.amount) AS avg_amount
-FROM public.orders o
-LEFT JOIN public.customers customer ON customer.id = o.customer_id
+       sum(amount) AS revenue,
+       avg(amount) AS avg_amount
+FROM orders
+LEFT JOIN customers ON customers.id = customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
 `CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan`
-checks the spec and prints the SQL a table owner must apply:
+checks the spec and prints the SQL a table owner must apply, with the
+role and password of the DSN Straum will connect with:
 
 ```sh
-cargo run -p straum -- plan --spec orders.sql
-
 export STRAUM_DSN='postgres://straum:password@localhost:5432/app'
+cargo run -p straum -- plan --spec orders.sql | psql -U postgres app
 cargo run -p straum -- run --spec orders.sql
 ```
 
@@ -45,8 +45,7 @@ After `/readyz` returns `200`, ask for a declared aggregate:
 
 ```sh
 curl --json '{
-  "query": "SELECT status, customer.country, orders, revenue, avg_amount FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status, customer.country",
-  "parameters": ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
+  "query": "SELECT status, customers.country, orders, revenue, avg_amount FROM orders GROUP BY status, customers.country"
 }' http://localhost:8080/ask
 ```
 
@@ -54,9 +53,9 @@ curl --json '{
 {
   "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    {"status": "paid", "customer.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
-    {"status": "paid", "customer.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
-    {"status": "refunded", "customer.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
+    {"status": "paid", "customers.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
+    {"status": "paid", "customers.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
+    {"status": "refunded", "customers.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
   ]
 }
 ```

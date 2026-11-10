@@ -5,7 +5,7 @@ The examples use the [quick start](quick-start.md) after step 7.
 
 ```sh
 curl --json '{
-  "query": "SELECT bucket, customer.country, orders, revenue FROM orders WHERE status = $1 AND customer.country IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, customer.country",
+  "query": "SELECT bucket, customers.country, orders, revenue FROM orders WHERE status = $1 AND customers.country IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, customers.country",
   "parameters": ["paid", "NO", "SE", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
@@ -24,17 +24,24 @@ WHERE <conditions> AND bucket >= $n AND bucket < $m
 GROUP BY <keys>
 ```
 
+Every clause but `SELECT` and `FROM` may be left out:
+
+```sql
+SELECT orders, revenue FROM orders
+```
+
 - `FROM` names one view, with no schema, alias or join.
 - A key is a by column (`status`), a null-ness key by its name
-  (`shipped`), a ref's attribute (`customer.country`), or `bucket`, the
+  (`shipped`), a ref's attribute (`customers.country`), or `bucket`, the
   view's time bucket. A ref has no value of its own: ask for the fact
   column it joins on (`customer_id`) or its attributes.
 - Keys come first in `SELECT`, then measures, by name, each once, since
   they name the fields of each answer row. `GROUP BY` names exactly the
   selected keys. Without keys there is no `GROUP BY`.
 - `WHERE` joins conditions with `AND`. A condition is `key = $n` or
-  `key IN ($n, $m)`. `bucket >= $n` and `bucket < $m` are required, once
-  each.
+  `key IN ($n, $m)`. `bucket >= $n` and `bucket < $m` bound the range,
+  once each; a bound left out is open, so an ask with neither reads
+  every bucket the view holds.
 - No `ORDER BY`, `LIMIT`, `HAVING`, `OR`, `NOT`, expressions or aliases.
   Anything outside the subset is an error that names the construct.
 
@@ -61,9 +68,9 @@ buckets: Straum never answers for part of a bucket.
 {
   "as_of": "2026-11-09T17:12:57.861204Z",
   "rows": [
-    {"bucket": "2026-01-01T09:00:00Z", "customer.country": "NO", "orders": 1, "revenue": 120.00},
-    {"bucket": "2026-01-01T09:00:00Z", "customer.country": "SE", "orders": 1, "revenue": 80.50},
-    {"bucket": "2026-01-01T11:00:00Z", "customer.country": "SE", "orders": 1, "revenue": 300.00}
+    {"bucket": "2026-01-01T09:00:00Z", "customers.country": "NO", "orders": 1, "revenue": 120.00},
+    {"bucket": "2026-01-01T09:00:00Z", "customers.country": "SE", "orders": 1, "revenue": 80.50},
+    {"bucket": "2026-01-01T11:00:00Z", "customers.country": "SE", "orders": 1, "revenue": 300.00}
   ]
 }
 ```
@@ -103,8 +110,8 @@ measures beyond `total` is the network and the client itself.
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Ask again later. |
 
 ```json
-{"errors": ["unknown measure x", "customer.zip is not read by the view, which reads customer.country"]}
-{"errors": ["customer is a join and has no value of its own; ask for customer.country"]}
+{"errors": ["unknown measure x", "customers.zip is not read by the view, which reads customers.country"]}
+{"errors": ["customers is a join and has no value of its own; ask for customers.country"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in straum SQL, the PostgreSQL subset made only for straum"]}
 {"errors": ["range end 1767227400 is not on a 3600s bucket edge"]}

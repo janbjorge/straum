@@ -16,8 +16,6 @@ cargo install --locked --path crates/straum
 
 ## 2. Start PostgreSQL
 
-`wal_level=logical` turns on the logical replication Straum follows:
-
 ```sh
 docker run -d --name straum-pg -e POSTGRES_PASSWORD=postgres \
   -p 5432:5432 postgres:18 -c wal_level=logical
@@ -51,15 +49,15 @@ Save as `orders.sql`:
 
 ```sql
 CREATE VIEW orders AS
-SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
-       o.status,
-       o.customer_id,
-       customer.country,
+SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
+       status,
+       customer_id,
+       customers.country,
        count(*) AS orders,
-       sum(o.amount) AS revenue,
-       avg(o.amount) AS avg_amount
-FROM public.orders o
-LEFT JOIN public.customers customer ON customer.id = o.customer_id
+       sum(amount) AS revenue,
+       avg(amount) AS avg_amount
+FROM orders
+LEFT JOIN customers ON customers.id = customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
@@ -69,19 +67,21 @@ it; it keeps one cell per hour, status, customer and country in memory.
 
 ## 4. Set up PostgreSQL
 
-`straum plan` prints the SQL Straum needs: a role, grants, a publication
-and replica identity. Run it as the tables' owner and give the role a
-password:
+Straum connects as the user in `STRAUM_DSN`. `straum plan` reads it too,
+and prints the SQL that makes that role with that password, lets it read
+the tables and publishes `orders`. Run the SQL as the tables' owner:
 
 ```sh
+export STRAUM_DSN='postgres://straum:straum@localhost:5432/postgres?sslmode=disable'
 straum plan --spec orders.sql | docker exec -i straum-pg psql -U postgres
-docker exec straum-pg psql -U postgres -c "ALTER ROLE straum PASSWORD 'straum'"
 ```
+
+This container has no TLS, hence `sslmode=disable`. Otherwise Straum
+always connects with TLS.
 
 ## 5. Run straum
 
 ```sh
-export STRAUM_DSN='postgres://straum:straum@localhost:5432/postgres?sslmode=disable'
 straum run --spec orders.sql
 ```
 
@@ -90,18 +90,13 @@ straum: listening on 0.0.0.0:8080
 straum: loaded every table; streaming from 0/17B2788
 ```
 
-This container has no TLS, hence `sslmode=disable`. Otherwise Straum
-always connects with TLS.
-
 ## 6. Ask
 
 In another terminal:
 
 ```sh
-curl http://localhost:8080/readyz
 curl --json '{
-  "query": "SELECT status, customer.country, orders, revenue, avg_amount FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status, customer.country",
-  "parameters": ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
+  "query": "SELECT status, customers.country, orders, revenue, avg_amount FROM orders GROUP BY status, customers.country"
 }' http://localhost:8080/ask
 ```
 
@@ -109,9 +104,9 @@ curl --json '{
 {
   "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    {"status": "paid", "customer.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
-    {"status": "paid", "customer.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
-    {"status": "refunded", "customer.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
+    {"status": "paid", "customers.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
+    {"status": "paid", "customers.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
+    {"status": "refunded", "customers.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
   ]
 }
 ```
@@ -121,7 +116,8 @@ explains the query, the parameters and the answer.
 
 ## 7. Change the data
 
-Insert an order, refund another, and ask for paid orders per hour:
+Insert an order, refund another, and ask for paid orders per hour on
+that day. Every value in an ask is a parameter:
 
 ```sh
 docker exec straum-pg psql -U postgres -c "
@@ -148,9 +144,8 @@ added 11:00, both in one answer: Straum applies a transaction whole.
 
 ## 8. Clean up
 
-`straum status` shows what Straum has done. Stop straum with Ctrl-C;
-PostgreSQL drops its slot as the connection closes. Then remove the
-container:
+`straum status` shows what Straum has done. Stop straum with Ctrl-C and
+remove the container:
 
 ```sh
 docker rm -f straum-pg
