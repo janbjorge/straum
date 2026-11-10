@@ -134,7 +134,7 @@ python3 scripts/check-layers.py
 
 - [x] `crates/straum-domain/src/spec.rs:454`: `named.into_iter()` on an
   iterator; drop it.
-- [ ] `crates/straum-pg/src/plan.rs:18` and `:25`: `dedup()` drops only
+- [x] `crates/straum-pg/src/plan.rs:18` and `:25`: `dedup()` drops only
   neighbours, so `a, b, a` stays. Harmless today, since PostgreSQL skips a
   repeated table or schema, but say what is meant: `contains`, as
   `Spec::tables` does (`straum-domain/src/spec.rs:286-295`).

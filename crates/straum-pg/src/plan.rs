@@ -14,15 +14,13 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
     let qualified =
         |t: &straum_domain::Table| format!("{}.{}", id(t.schema.as_str()), id(t.name.as_str()));
     let tables = spec.tables();
-    let mut schemas: Vec<String> = tables.iter().map(|t| id(t.schema.as_str())).collect();
-    schemas.dedup();
+    let schemas = once(tables.iter().map(|t| id(t.schema.as_str())));
     let list = tables
         .iter()
         .map(|t| qualified(t))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut facts: Vec<String> = spec.facts().iter().map(|f| qualified(&f.table)).collect();
-    facts.dedup();
+    let facts = once(spec.facts().iter().map(|f| qualified(&f.table)));
     let (publication, role) = (id(publication), id(role));
 
     let mut sql = vec![
@@ -58,4 +56,43 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
         ));
     }
     sql.join("\n") + "\n"
+}
+
+/// Each item at its first place only.
+fn once(items: impl Iterator<Item = String>) -> Vec<String> {
+    let mut kept = Vec::new();
+    for item in items {
+        if !kept.contains(&item) {
+            kept.push(item);
+        }
+    }
+    kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A schema or a fact table named again apart from its first place
+    /// still comes once.
+    #[test]
+    fn schemas_and_fact_tables_come_once() {
+        let view = |name: &str, table: &str| {
+            format!(
+                "CREATE VIEW {name} AS
+                 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+                 FROM {table} f GROUP BY 1;"
+            )
+        };
+        let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
+        let sql = plan(&straum_notation::parse(&views).unwrap(), "p", "r");
+        assert!(
+            sql.contains("GRANT USAGE ON SCHEMA \"a\", \"b\" TO \"r\";\n"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("CREATE PUBLICATION \"p\" FOR TABLE \"a\".\"t\", \"b\".\"u\";\n"),
+            "{sql}"
+        );
+    }
 }
