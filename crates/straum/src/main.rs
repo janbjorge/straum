@@ -30,28 +30,9 @@ usage:
   straum status [--url URL]
   straum help
 
-straum run loads every table FILE names, follows PostgreSQL's changes to them
-and answers asks over HTTP on ADDRESS (0.0.0.0:8080). It reads the
-publication NAME (straum) as a replication user. The DSN,
-postgres://user:password@host:port/database, comes from --dsn-file or the
-STRAUM_DSN environment variable. straum connects with TLS and checks the
-server's certificate and name against the roots built in, or against the CA
-file given by ?sslrootcert=FILE; ?sslmode=disable connects without TLS.
-/readyz turns off while straum is more than SECONDS (30) behind PostgreSQL.
-Once PostgreSQL holds more than BYTES (4Gi) of WAL for straum's slot, straum
-drops the slot and loads again, so it can't fill the server's disk; BYTES
-takes a Ki, Mi, Gi or Ti suffix. A transaction that changes more than ROWS
-(100000) rows of the spec's tables makes straum load again too, from a
-snapshot after it, instead of holding and applying it all at once. SIGTERM
-or SIGINT stops it.
-
-straum plan prints the SQL that sets PostgreSQL up for FILE: logical
-decoding, the role NAME (straum), its grants and the publication.
-
-straum status prints what the straum at URL (http://127.0.0.1:8080) has
-done: whether it is ready and why not, how far behind PostgreSQL it is, the
-WAL PostgreSQL holds for it, its starts and its failures. In a pod:
-kubectl exec deploy/straum -- /straum status.
+Defaults: ADDRESS 0.0.0.0:8080, NAME straum, URL http://127.0.0.1:8080,
+SECONDS 30, BYTES 4Gi, ROWS 100000. The DSN comes from --dsn-file or
+STRAUM_DSN. Full guide: https://janbjorge.github.io/straum/running.html
 ";
 
 const LISTEN: &str = "0.0.0.0:8080";
@@ -115,7 +96,7 @@ fn main() -> ExitCode {
         Ok(Command::Run(args)) => run(args),
         Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
         Err(usage) => {
-            eprint!("straum: {usage}\n\n{USAGE}");
+            eprintln!("straum: {usage}\ntry: straum help");
             return ExitCode::from(2);
         }
     };

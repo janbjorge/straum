@@ -444,7 +444,7 @@ fn says_what_is_wrong() {
     let (code, _, stderr) = output(&mut straum(&[]));
     assert_eq!(code, Some(2));
     assert!(
-        stderr.starts_with("straum: no command\n\nusage:\n"),
+        stderr == "straum: no command\ntry: straum help\n",
         "{stderr}"
     );
     let (code, _, stderr) = output(&mut straum(&["run", "--port", "1"]));
