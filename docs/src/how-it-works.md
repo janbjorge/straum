@@ -57,7 +57,8 @@ rollup, or a table whose columns now read differently.
 ![An ask for trips by pickup.borough from 00:00 to 00:30 walks the cells of the trips rollup. It keeps the cells whose bucket is in the range, looks up each ref id's borough in the dim, and adds each cell's rows to the measures whose filter holds. A ref id with no dim row groups under null.](diagrams/ask.svg)
 
 1. Straum checks the ask against the spec and refuses any ask it can't
-   answer exactly.
+   answer exactly. Once a load has read the column types, it also refuses
+   a filter value of another type than its column.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
 3. It looks up the attributes the ask needs by ref id, once per ref id it

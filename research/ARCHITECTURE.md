@@ -146,10 +146,11 @@ and its parameters as JSON:
 - Every value is a `$n` parameter; a value written into the query is an
   error, so values never become query text. The bucket bounds are RFC 3339
   or Unix seconds, in whole seconds.
-- A field Straum doesn't know, a key given twice, a parameter of the wrong
-  type and a construct outside the subset are errors that name it, never
-  ignored. All of them come back at once, as `{"errors": [...]}` with
-  status 400.
+- A field Straum doesn't know, a key given twice, a parameter that isn't
+  an integer, string or boolean, a parameter of another type than its
+  column, and a construct outside the subset are errors that name it, never
+  ignored. They come back together, as `{"errors": [...]}` with status
+  400; type errors only once the rest pass, since they need the column.
 
 The answer, with made-up values:
 

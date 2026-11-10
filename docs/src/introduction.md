@@ -3,8 +3,8 @@
 Straum keeps aggregates of PostgreSQL tables in memory and answers asks
 about them over HTTP. You declare the aggregates in a spec, a small subset
 of PostgreSQL's `CREATE VIEW`. Straum loads them from a snapshot, then
-follows every commit through logical replication. Each answer names the
-commit it reflects.
+follows every commit through logical replication. Each answer says how
+fresh it is: every commit made before its `as_of` is in it.
 
 The name is Norwegian. In Nynorsk, one of the two written standards of
 Norwegian, *straum* means a stream or current, and Straum's input is
