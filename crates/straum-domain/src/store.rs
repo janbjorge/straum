@@ -122,11 +122,11 @@ impl Store {
             .by
             .iter()
             .map(|key| {
-                let source = match key {
-                    AskKey::Key(path) => Source::Slot(self.slot(fact, path)),
-                    AskKey::Time(t) => Source::Time(*t, fact.time.grain),
+                let of = match key {
+                    AskKey::Key(path) => KeyOf::Slot(self.slot(fact, path)),
+                    AskKey::Time(t) => KeyOf::Time(*t, fact.time.grain),
                 };
-                Part::new(source, rollup, buckets)
+                Part::new(of, rollup, buckets)
             })
             .collect();
         let mut groups = Groups::new(&by);
@@ -148,7 +148,7 @@ impl Store {
                 AskKey::Time(t) => t.to_string(),
                 AskKey::Key(path) => path.to_string(),
             },
-            scale: p.source.column_type(rollup).scale(),
+            scale: p.of.column_type(rollup).scale(),
             time: matches!(key, AskKey::Time(_)),
         });
         let columns = keys
@@ -252,17 +252,19 @@ fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Ce
     rollup.cover(ask.from, ask.to, each_bucket)
 }
 
+/// What a by key's values are: a slot of the rollup key, or the period of
+/// a time key.
 #[derive(Debug, Clone, Copy)]
-enum Source {
+enum KeyOf {
     Slot(usize),
     Time(TimeKey, Grain),
 }
 
-impl Source {
+impl KeyOf {
     fn column_type(self, rollup: &Rollup) -> ColumnType {
         match self {
-            Source::Slot(slot) => rollup.key_type(slot),
-            Source::Time(..) => rollup.time_type(),
+            KeyOf::Slot(slot) => rollup.key_type(slot),
+            KeyOf::Time(..) => rollup.time_type(),
         }
     }
 }
@@ -313,7 +315,7 @@ impl Test<'_> {
 /// A by key of an ask, its values numbered without hashing any: a slot
 /// key's by their codes, a time key's in time order.
 struct Part {
-    source: Source,
+    of: KeyOf,
     /// For a time key, the start of each period met so far, the bucket at
     /// hand's last.
     starts: Vec<i64>,
@@ -321,13 +323,13 @@ struct Part {
 }
 
 impl Part {
-    fn new(source: Source, rollup: &Rollup, buckets: usize) -> Part {
-        let bound = match source {
-            Source::Slot(slot) => rollup.codes(slot),
-            Source::Time(..) => buckets,
+    fn new(of: KeyOf, rollup: &Rollup, buckets: usize) -> Part {
+        let bound = match of {
+            KeyOf::Slot(slot) => rollup.codes(slot),
+            KeyOf::Time(..) => buckets,
         };
         Part {
-            source,
+            of,
             starts: Vec::new(),
             bound,
         }
@@ -335,7 +337,7 @@ impl Part {
 
     /// Buckets come in time order, so a period's buckets come together.
     fn enter(&mut self, bucket: i64) {
-        if let Source::Time(t, grain) = self.source {
+        if let KeyOf::Time(t, grain) = self.of {
             let start = t.start(bucket, grain);
             if self.starts.last() != Some(&start) {
                 self.starts.push(start);
@@ -344,14 +346,14 @@ impl Part {
     }
 
     fn offsets(&self, cells: &Cells, stride: usize, at: &mut [usize]) {
-        match self.source {
-            Source::Time(..) => {
+        match self.of {
+            KeyOf::Time(..) => {
                 let offset = (self.starts.len() - 1) * stride;
                 at.iter_mut().for_each(|a| *a += offset);
             }
             // Cells passed over too, as a branch costs more than their
             // entries, which nothing reads.
-            Source::Slot(slot) => {
+            KeyOf::Slot(slot) => {
                 for (i, a) in at.iter_mut().enumerate() {
                     *a += cells.code(i, slot) as usize * stride;
                 }
@@ -360,16 +362,16 @@ impl Part {
     }
 
     fn number(&self, key: &[u32]) -> u32 {
-        match self.source {
-            Source::Slot(slot) => key[slot],
-            Source::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
+        match self.of {
+            KeyOf::Slot(slot) => key[slot],
+            KeyOf::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
         }
     }
 
     fn value<'r>(&self, rollup: &'r Rollup, number: u32) -> Cow<'r, Datum> {
-        match self.source {
-            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
-            Source::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
+        match self.of {
+            KeyOf::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
+            KeyOf::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
         }
     }
 }

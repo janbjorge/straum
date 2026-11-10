@@ -147,7 +147,7 @@ python3 scripts/check-layers.py
 - [ ] `crates/straum-app/src/app.rs:412` and
   `crates/straum-http/src/status.rs:84` both define `mib`; expose it from
   straum-app or accept the copy.
-- [ ] `crates/straum-domain/src/store.rs:247`: `enum Source` shares a name
+- [x] `crates/straum-domain/src/store.rs:247`: `enum Source` shares a name
   with `straum_app::Source`; rename, e.g. `KeyOf`.
 - [ ] `crates/straum-pg/src/catalog.rs:164-171`: `lists` calls
   `list(Some(l.to_owned()))`; let `list` take `&str`.
