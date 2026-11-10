@@ -342,21 +342,29 @@ fn datum(d: &Datum, scale: u32) -> Option<String> {
     }
 }
 
-/// The `SELECT` of a view in the spec.
-fn body(view: &str) -> String {
-    let start = SPEC.find(&format!("CREATE VIEW {view} ")).unwrap();
-    let rest = &SPEC[start..];
+/// The `SELECT` of a view in `spec`.
+fn body(spec: &str, view: &str) -> String {
+    let start = spec.find(&format!("CREATE VIEW {view} ")).unwrap();
+    let rest = &spec[start..];
     let select = rest.find("SELECT").unwrap();
     let end = rest.find(';').unwrap();
     rest[select..end].to_owned()
 }
 
-/// Asks straum what each view body answers in PostgreSQL: trips by bucket,
-/// kind, zone and borough; logins by day, zone and toll. Then trips without
-/// the bucket from 5 hours before `START` to 29 after, which reads the day
-/// bucket `START` begins and the hours at either end, against the raw rows. `fare_scale` follows `fare`'s type.
-/// `None` when straum isn't ready.
-fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
+/// What an ask must equal in PostgreSQL: the SQL, the ask, and the scale
+/// each printed column is compared at.
+struct Oracle {
+    sql: String,
+    ask: Ask,
+    scales: Vec<u32>,
+}
+
+/// The taxi spec's oracles: trips by bucket, kind, zone and borough; logins
+/// by day, zone and toll; then trips without the bucket from 5 hours before
+/// `START` to 29 after, which reads the day bucket `START` begins and the
+/// hours at either end, against the raw rows. `fare_scale` follows `fare`'s
+/// type.
+fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
     const MEASURES: [&str; 8] = [
         "trips",
         "fare",
@@ -367,33 +375,33 @@ fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
         "manhattan",
         "near",
     ];
-    let trips = (
-        format!(
+    let trips = Oracle {
+        sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
                     fare_max, round(fare_avg, 6), riders, tips, manhattan, near
                FROM ({}) v",
-            body("trips")
+            body(SPEC, "trips")
         ),
-        ask(
+        ask: ask(
             "trips",
             &MEASURES,
             &["bucket", "kind", "pickup", "pickup.borough"],
         ),
-        vec![
+        scales: vec![
             0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
         ],
-    );
-    let logins = (
-        format!(
+    };
+    let logins = Oracle {
+        sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, zone_id, toll, logins FROM ({}) v",
-            body("logins")
+            body(SPEC, "logins")
         ),
-        ask("logins", &["logins"], &["bucket", "pickup", "pickup.toll"]),
-        vec![0, 0, 1, 0],
-    );
+        ask: ask("logins", &["logins"], &["bucket", "pickup", "pickup.toll"]),
+        scales: vec![0, 0, 1, 0],
+    };
     let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
-    let window = (
-        format!(
+    let window = Oracle {
+        sql: format!(
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
                     round(avg(f.fare), 6), count(DISTINCT f.rider), sum(f.tip),
                     count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
@@ -402,23 +410,29 @@ fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
               WHERE f.at >= to_timestamp({from}) AND f.at < to_timestamp({to})
               GROUP BY 1, 2, 3"
         ),
-        Ask {
+        ask: Ask {
             from,
             to,
             ..ask("trips", &MEASURES, &["kind", "pickup", "pickup.borough"])
         },
-        vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
-    );
-    for (sql, ask, scales) in [trips, logins, window] {
-        let answered = match app.ask(&ask) {
+        scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
+    };
+    vec![trips, logins, window]
+}
+
+/// Asks straum what each oracle's SQL answers in PostgreSQL and compares the
+/// rows. `None` when straum isn't ready.
+fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
+    for Oracle { sql, ask, scales } in oracles {
+        let answered = match app.ask(ask) {
             Ok(answered) => answered,
             Err(AnswerError::NotReady) => return None,
             Err(e) => panic!("{e}"),
         };
         let got_scales: Vec<u32> = answered.answer.columns.iter().map(|c| c.scale).collect();
-        assert_eq!(got_scales, scales, "{}", ask.fact);
-        let mut got = printed(&answered.answer, &scales);
-        let mut expected = db.rows(&sql);
+        assert_eq!(got_scales, *scales, "{}", ask.fact);
+        let mut got = printed(&answered.answer, scales);
+        let mut expected = db.rows(sql);
         got.sort();
         expected.sort();
         assert_eq!(got, expected, "{}", ask.fact);
@@ -549,7 +563,7 @@ fn follows_the_database() {
 
     let mut writer = db.writer();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    compare(&mut db, writer.app(), 2).expect("ready after the load");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
 
     let mut compared = 0;
     for round in 0..120 {
@@ -609,7 +623,7 @@ fn follows_the_database() {
         sql.push("COMMIT;".into());
         db.run(&sql.join("\n"));
         applied_or_started(&mut writer);
-        if compare(&mut db, writer.app(), 2).is_some() {
+        if compare(&mut db, writer.app(), &taxi_oracles(2)).is_some() {
             compared += 1;
         }
     }
@@ -676,7 +690,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
             Err(ahead) => ahead.duration(),
         };
         assert!(apart < Duration::from_secs(60), "round {round}: {apart:?}");
-        compare(&mut db, writer.app(), 2).expect("ready");
+        compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
     }
 }
 
@@ -687,7 +701,7 @@ fn an_unfit_change_starts_over() {
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
     let mut writer = db.writer();
     writer.step().unwrap();
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
     // A fact that stops sending old rows starts over, and the setup then
     // says what to fix.
@@ -706,10 +720,10 @@ fn an_unfit_change_starts_over() {
     );
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    compare(&mut db, writer.app(), 2).expect("ready after the new load");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
 #[test]
@@ -790,7 +804,7 @@ fn follows_the_database_over_tls() {
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
     let mut writer = db.writer();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    compare(&mut db, writer.app(), 2).expect("ready after the load");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
     for id in 50..60 {
         db.run(&rng.trip(id));
         applied(&mut writer);
@@ -807,7 +821,7 @@ fn follows_the_database_over_tls() {
         db.run(&rng.trip(id));
         applied(&mut writer);
     }
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
     let tls = db.rows(
         "SELECT DISTINCT a.backend_type, s.ssl FROM pg_stat_activity a
          JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'straum' ORDER BY 1",
@@ -827,14 +841,14 @@ fn follows_at_replica_from_19() {
     }
     let mut writer = db.writer();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    compare(&mut db, writer.app(), 2).expect("ready after the load");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
     for id in 20..30 {
         db.run(&rng.trip(id));
         applied(&mut writer);
     }
     db.run("UPDATE $S.zones SET borough = 'Manhattan' WHERE id = 2");
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
 #[test]
@@ -965,7 +979,7 @@ fn a_changed_column_type_starts_over() {
     db.run(&Rng::new(1).trip(1));
     let mut writer = db.writer();
     writer.step().unwrap();
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
     db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
@@ -974,7 +988,7 @@ fn a_changed_column_type_starts_over() {
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
     applied(&mut writer);
-    compare(&mut db, writer.app(), 3).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(3)).expect("ready");
 
     // A column straum reads is gone: straum stops and the setup check says why.
     db.run("ALTER TABLE $S.trips DROP COLUMN rider");
@@ -1002,7 +1016,7 @@ fn a_value_left_out_starts_over() {
     db.run(&Rng::new(1).trip(1));
     let mut writer = db.writer();
     writer.step().unwrap();
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
     db.run("UPDATE $S.zones SET note = 'x' WHERE id = 1");
     let err = writer.step().unwrap_err().to_string();
@@ -1010,7 +1024,7 @@ fn a_value_left_out_starts_over() {
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(2));
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
 #[test]
@@ -1037,7 +1051,7 @@ fn the_stream_outlasts_a_busy_writer() {
         db.run(&rng.trip(i));
         applied(&mut writer);
     }
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
 #[test]
@@ -1075,7 +1089,7 @@ ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
     applied(&mut writer);
-    compare(&mut db, writer.app(), 2).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
 /// Opens with `spec` against `tables` and returns the setup problems.
