@@ -142,18 +142,10 @@ python3 scripts/check-layers.py
   allocates `moved` to re-index. Update the index entry through
   `self.index.get_mut(&self.keys[last * w..][..w])` before
   `copy_within`; the fields are disjoint.
-- [ ] `crates/straum-pg/src/load.rs:32`, `:75`, `:89`: `fact.columns()` is
-  built three times per load; build it once in `fact()`.
-- [ ] `crates/straum-app/src/app.rs:412` and
-  `crates/straum-http/src/status.rs:84` both define `mib`; expose it from
-  straum-app or accept the copy.
 - [x] `crates/straum-domain/src/store.rs:247`: `enum Source` shares a name
   with `straum_app::Source`; rename, e.g. `KeyOf`.
 - [x] `crates/straum-pg/src/catalog.rs:164-171`: `lists` calls
   `list(Some(l.to_owned()))`; let `list` take `&str`.
-- [ ] `crates/straum-pg/src/source.rs:87` and `:105`: the full catalog is
-  read twice per open, on purpose (f8378e1 checks before the slot). The
-  first call could check `wal_level` and the publication alone.
 - [x] `crates/straum/src/main.rs:112-126`: six `Command::Run` fields are
   unpacked into six `run()` parameters; a `RunArgs` struct would cut it.
   Low value.
@@ -168,3 +160,15 @@ python3 scripts/check-layers.py
 - The test `Rng` (four copies) and `id()` (eight copies): crate-local
   test helpers. A shared test crate would break the dependency rule in
   AGENTS.md.
+- `fact.columns()` built three times per load
+  (`crates/straum-pg/src/load.rs`): once would mean passing the list
+  through `copy_sql`, `fact_types` and their tests to save three small
+  allocations a load.
+- `mib` in both `straum-app/src/app.rs` and `straum-http/src/status.rs`:
+  two lines; exporting a formatter from straum-app costs more than the
+  copy.
+- The full catalog read twice per open
+  (`crates/straum-pg/src/source.rs`): the first read, before the slot
+  (f8378e1), reports every setup problem at once. Checking only
+  `wal_level` and the publication there would have an admin fix the
+  setup in rounds.
