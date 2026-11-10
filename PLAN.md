@@ -1,8 +1,8 @@
 # Straum plan
 
-Straum keeps declared aggregates (count, sum, min, max, avg, count distinct) over
-PostgreSQL tables in memory, fed by logical replication, and answers asks
-against them. Background and evidence: `research/`.
+Straum keeps declared aggregates (count, sum, min, max, avg, count distinct)
+over PostgreSQL tables in memory, fed by logical replication, and answers
+asks against them. Background and evidence: `research/`.
 
 ## How we work
 
@@ -52,14 +52,14 @@ Tests:
 - 2026-11-08: A fact reaches other tables only through `ref`, an N:1 pointer to
   a dim key. Rollups are keyed on fact columns, ref ids and the time bucket.
   Dim attributes are mapped after aggregation.
-- 2026-11-08: No expressions. Filters are `=` / `in` on rollup-key columns or ref
-  attributes. Ask ranges start and end on bucket edges, so asks never read raw
-  rows.
+- 2026-11-08: No expressions. Filters are `=` / `in` on rollup-key columns or
+  ref attributes. Ask ranges start and end on bucket edges, so asks never read
+  raw rows.
 - 2026-11-08: Straum reads the spec at start. No build step, no codegen.
 - 2026-11-08: Clean architecture as Cargo crates: `straum-domain` (no deps, no
-  I/O), `straum-app` (use cases and ports), adapters `straum-notation`, `straum-pg`,
-  `straum-http`, and the `straum` binary as composition root. The per-row path
-  stays concrete; traits only at the edges.
+  I/O), `straum-app` (use cases and ports), adapters `straum-notation`,
+  `straum-pg`, `straum-http`, and the `straum` binary as composition root. The
+  per-row path stays concrete; traits only at the edges.
 - 2026-11-08: Simplifications: no raw column store; facts need no row
   store; initial load is one `GROUP BY` in PostgreSQL on the slot snapshot
   (replaced by binary `COPY`, 2026-11-09); one
@@ -96,15 +96,15 @@ Tests:
   the "own notation, not SQL" decision above. Straum SQL is a small subset of
   PostgreSQL `CREATE VIEW` syntax, made only for Straum. It is not a SQL engine
   and not a query surface: asks stay HTTP/JSON (asks became Straum SQL on
-  2026-11-10). Anything outside the subset is
-  rejected with an error that names the construct, never ignored. Every doc
-  and error that mentions Straum SQL says it is a straum-only subset. Each view
-  body (the `SELECT`) runs unchanged in PostgreSQL, so it is also the initial
-  load query and the reference for tests. The fact's key is a view option,
-  `WITH (key = id)`, which `sqlparser` reads as is (`append` went on
-  2026-11-09). PostgreSQL rejects these options, so the `CREATE VIEW` itself is not valid
-  PostgreSQL; Straum only ever sends the body. (Since the binary `COPY`
-  load, 2026-11-09, Straum sends PostgreSQL neither.)
+  2026-11-10). Anything outside the subset is rejected with an error that
+  names the construct, never ignored. Every doc and error that mentions Straum
+  SQL says it is a straum-only subset. Each view body (the `SELECT`) runs
+  unchanged in PostgreSQL, so it is also the initial load query and the
+  reference for tests. The fact's key is a view option, `WITH (key = id)`,
+  which `sqlparser` reads as is (`append` went on 2026-11-09). PostgreSQL
+  rejects these options, so the `CREATE VIEW` itself is not valid PostgreSQL;
+  Straum only ever sends the body. (Since the binary `COPY` load, 2026-11-09,
+  Straum sends PostgreSQL neither.)
 - 2026-11-08: Straum SQL is parsed by the `sqlparser` crate with
   `PostgreSqlDialect`, not by a parser of our own. Straum's code walks the AST,
   keeps the subset and rejects the rest. `sqlparser` is pure Rust, so the
@@ -373,8 +373,8 @@ Touches: `crates/straum-domain`.
       keys, measure filters
 - [x] Property test against a naive reference over random inserts, updates and
       deletes of trips and zones; 9 planted bugs all caught
-- [x] Gate passes: 99.69% lines over `straum-domain` and `straum-notation`; the 3
-      missed lines are `unreachable!` arms
+- [x] Gate passes: 99.69% lines over `straum-domain` and `straum-notation`;
+      the 3 missed lines are `unreachable!` arms
 
 ## M3: application layer
 
@@ -398,8 +398,8 @@ Touches: `crates/straum-app`, `crates/straum-domain`.
 
 Goal: specs in Straum SQL, a PostgreSQL `CREATE VIEW` subset made only for
 Straum, parsed by `sqlparser` instead of our own parser.
-Touches: `crates/straum-notation`, `crates/straum-domain` (tests), `crates/straum-app`
-(tests), `research/`, `bench/`.
+Touches: `crates/straum-notation`, `crates/straum-domain` (tests),
+`crates/straum-app` (tests), `research/`, `bench/`.
 
 - [x] `sqlparser` pinned, without its C-building default feature
 - [x] AST walker, deny by default: one view per fact, `WITH (key, append)`,
@@ -445,8 +445,8 @@ Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
       comes with the binary in M6)
 - [x] Taxi end to end: load, replay changes, compare asks with PostgreSQL
 - [x] Gate passes: 99.01% lines over `straum-domain`, `straum-notation`,
-      `straum-app` and `straum-pg`; 22 planted bugs in `straum-pg` and the grouped
-      load all caught
+      `straum-app` and `straum-pg`; 22 planted bugs in `straum-pg` and the
+      grouped load all caught
 
 Result on the taxi month, 2,964,624 trips (release build, laptop Docker):
 
