@@ -49,7 +49,14 @@ Every value is a parameter: a value written into the query, such as
 value can't change what the query says.
 
 Parameters are integers, strings or booleans, `$1` first. Each must be
-used, and one can be used more than once. The `bucket` bounds are
+used, and one can be used more than once.
+
+A condition's parameters must have the column's type, with no
+conversion: an integer for an integer column or a `numeric(p, 0)`, a
+string for text, a boolean for a boolean. `status = $1` with `1`, or
+`customer = $1` with `"7"`, is an error, not an answer with no rows. A
+`numeric` with a scale above 0 takes no parameter at all: at scale 2,
+`1` would read as 0.01. The `bucket` bounds are
 RFC 3339 times, such as `"2026-01-01T00:00:00Z"`, or Unix seconds. Both
 are whole seconds on an edge of the view's `date_bin` buckets: Straum
 never answers for part of a bucket.
@@ -102,4 +109,5 @@ how a client judges whether an answer is fresh enough.
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in straum SQL, the PostgreSQL subset made only for straum"]}
 {"errors": ["range end 1767227400 is not on a 3600s bucket edge"]}
+{"errors": ["customer is an integer, so it can't be the text \"7\""]}
 ```

@@ -9,9 +9,32 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
-use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{ColumnType, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 
 pub type Row = Vec<Datum>;
+
+/// A column's type, as the catalog gives it: every table here names its
+/// columns alike.
+pub fn type_of(column: &Ident) -> ColumnType {
+    match column.as_str() {
+        "at" => ColumnType::Time,
+        "borough" | "rider" => ColumnType::Text,
+        _ => ColumnType::Int,
+    }
+}
+
+/// Sets the types a load sets.
+pub fn set_types(rollup: &mut Rollup) {
+    let types: Vec<ColumnType> = rollup.columns().iter().map(type_of).collect();
+    rollup.set_types(&types).expect("one type per column");
+}
+
+/// As [`set_types`], for a dim.
+pub fn set_dim_types(dim: &Dim, table: &mut DimTable) {
+    let columns = std::iter::once(&dim.key).chain(&dim.attrs);
+    let types: Vec<ColumnType> = columns.map(type_of).collect();
+    table.set_types(&types).expect("one type per column");
+}
 
 #[derive(Debug, Clone)]
 struct Table {
@@ -259,6 +282,7 @@ impl Source for Fake {
     }
 
     fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
+        set_types(rollup);
         for row in self.read(&fact.name)? {
             rollup.add(&row)?;
         }
@@ -266,6 +290,7 @@ impl Source for Fake {
     }
 
     fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
+        set_dim_types(dim, table);
         for row in self.read(&dim.name)? {
             table.upsert(&row)?;
         }

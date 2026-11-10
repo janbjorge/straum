@@ -6,7 +6,7 @@ use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::rollup::{Cells, DimTable, Rollup};
 use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
-use crate::value::{Datum, Value};
+use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 
@@ -80,6 +80,22 @@ impl Store {
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
+        // Only the load knows the types, so this check comes after Spec::check.
+        let wrong: Vec<AskError> = (ask.filter.iter())
+            .flat_map(|cond| {
+                let column = self.source(fact, &cond.path).column_type(rollup);
+                (cond.values.iter())
+                    .filter(move |value| !column.fits(value))
+                    .map(move |value| AskError::WrongType {
+                        path: cond.path.clone(),
+                        column,
+                        value: value.clone(),
+                    })
+            })
+            .collect();
+        if !wrong.is_empty() {
+            return Err(wrong);
+        }
         let buckets = cover(rollup, ask).count();
 
         let mut by: Vec<Part> = ask
@@ -112,7 +128,7 @@ impl Store {
                 AskKey::Time(t) => t.to_string(),
                 AskKey::Key(path) => path.to_string(),
             },
-            scale: p.source.scale(rollup),
+            scale: p.source.column_type(rollup).scale(),
             time: matches!(key, AskKey::Time(_)),
         });
         let columns = keys
@@ -242,11 +258,11 @@ enum Source<'a> {
 }
 
 impl<'a> Source<'a> {
-    fn scale(&self, rollup: &Rollup) -> u32 {
+    fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match *self {
-            Source::Slot(slot) => rollup.key_scale(slot),
-            Source::Dim { table, column, .. } => table.scale(column),
-            Source::Time(..) => 0,
+            Source::Slot(slot) => rollup.key_type(slot),
+            Source::Dim { table, column, .. } => table.column_type(column),
+            Source::Time(..) => ColumnType::Time,
         }
     }
 

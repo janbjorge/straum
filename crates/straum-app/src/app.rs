@@ -171,7 +171,7 @@ impl App {
             .map_err(AnswerError::Invalid)?;
         let lsn = state.position.ok_or(AnswerError::NotReady)?;
         let caught_up = state.lag.as_ref().expect(STARTED).caught_up();
-        let answer = state.store.ask(ask).expect("checked by Spec::check");
+        let answer = state.store.ask(ask).map_err(AnswerError::Invalid)?;
         let since = Instant::now().saturating_duration_since(caught_up);
         Ok(Answered {
             answer,

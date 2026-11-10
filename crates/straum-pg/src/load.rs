@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{Datum, DimTable, Ident, Rollup};
+use straum_domain::{ColumnType, Datum, DimTable, Ident, Rollup};
 
 use crate::catalog::Table;
 use crate::error::Error;
@@ -32,8 +32,8 @@ pub(crate) fn copy_sql(table: &Table, columns: &[Ident]) -> String {
 
 pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Result<(), Error> {
     let kinds: Vec<Kind> = rollup.columns().iter().map(|c| table.kind(c)).collect();
-    let scales: Vec<u32> = kinds.iter().map(|k| k.scale()).collect();
-    rollup.set_scales(&scales).map_err(Error::Row)?;
+    let types: Vec<ColumnType> = kinds.iter().map(|&k| k.into()).collect();
+    rollup.set_types(&types).map_err(Error::Row)?;
     let sql = copy_sql(table, rollup.columns());
     copy(conn, &sql, &kinds, |rows| {
         rollup.add_rows(rows).map_err(Error::Row)
@@ -41,8 +41,8 @@ pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Resul
 }
 
 pub(crate) fn dim(conn: &mut Conn, table: &Table, rows: &mut DimTable) -> Result<(), Error> {
-    let scales: Vec<u32> = table.kinds.iter().map(|k| k.scale()).collect();
-    rows.set_scales(&scales).map_err(Error::Row)?;
+    let types: Vec<ColumnType> = table.kinds.iter().map(|&k| k.into()).collect();
+    rows.set_types(&types).map_err(Error::Row)?;
     let sql = copy_sql(table, &table.columns);
     copy(conn, &sql, &table.kinds, |batch| {
         for row in batch.chunks_exact(table.kinds.len()) {

@@ -12,7 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
-use straum_domain::{Answer, Ask, AskKey, Datum, Ident, KeyPath, Spec, Store, TimeKey, Value};
+use straum_domain::{
+    Answer, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal, Spec, Store,
+    TimeKey, Value,
+};
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
@@ -707,6 +710,72 @@ fn an_unfit_change_starts_over() {
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
     compare(&mut db, writer.app(), 2).expect("ready");
+}
+
+#[test]
+fn asks_take_values_of_the_types_the_load_read() {
+    let pg = postgres();
+    let db = Db::new(&pg, "types", TABLES);
+    let mut writer = db.writer();
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let filtered = |fact, measure, key: &str, value| Ask {
+        filter: vec![Cond {
+            path: match ask(fact, &[], &[key]).by.remove(0) {
+                AskKey::Key(path) => path,
+                AskKey::Time(_) => unreachable!("cases filter on keys"),
+            },
+            values: vec![value],
+        }],
+        ..ask(fact, &[measure], &[])
+    };
+    let text = |s: &str| Literal::Text(s.into());
+    // text, a ref id (int), a dim's text; then numeric(4, 1).
+    let cases = [
+        (
+            "trips",
+            "trips",
+            "kind",
+            text("cab"),
+            Literal::Int(1),
+            ColumnType::Text,
+        ),
+        (
+            "trips",
+            "trips",
+            "pickup",
+            Literal::Int(1),
+            text("1"),
+            ColumnType::Int,
+        ),
+        (
+            "trips",
+            "trips",
+            "pickup.borough",
+            text("Bronx"),
+            Literal::Bool(true),
+            ColumnType::Text,
+        ),
+    ];
+    for (fact, measure, key, right, wrong, column) in cases {
+        let app = writer.app();
+        let answered = app.ask(&filtered(fact, measure, key, right));
+        assert!(answered.is_ok(), "{key}: {answered:?}");
+        let refused = app.ask(&filtered(fact, measure, key, wrong.clone()));
+        let Err(AnswerError::Invalid(errors)) = refused else {
+            panic!("{key}: {refused:?}");
+        };
+        assert_eq!(errors.len(), 1, "{key}");
+        assert!(
+            matches!(&errors[0], AskError::WrongType { column: c, value, .. } if *c == column && *value == wrong),
+            "{key}: {errors:?}"
+        );
+    }
+    // A numeric of scale 1 takes no integer: 1 would read as 0.1.
+    let toll = filtered("logins", "logins", "pickup.toll", Literal::Int(1));
+    assert_eq!(
+        writer.app().ask(&toll).unwrap_err().to_string(),
+        "pickup.toll is a numeric of scale 1, so it can't be the integer 1"
+    );
 }
 
 #[test]

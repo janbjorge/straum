@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Ask, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{Ask, ColumnType, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -54,8 +54,13 @@ impl Source for Script {
 
     fn load_fact(&mut self, _: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
         thread::sleep(self.pause);
-        // at, kind, zone_id, fare: fare is numeric(10, 2).
-        rollup.set_scales(&[0, 0, 0, 2])?;
+        // at, kind, zone_id, fare.
+        rollup.set_types(&[
+            ColumnType::Time,
+            ColumnType::Int,
+            ColumnType::Int,
+            ColumnType::Numeric { scale: 2 },
+        ])?;
         for row in &self.trips {
             rollup.add(row)?;
         }
@@ -63,6 +68,8 @@ impl Source for Script {
     }
 
     fn load_dim(&mut self, _: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
+        // id, borough.
+        table.set_types(&[ColumnType::Int, ColumnType::Text])?;
         for row in &self.zones {
             table.upsert(row)?;
         }
@@ -316,6 +323,17 @@ fn asks_straum_cant_answer() {
                 "[0, 3600]",
             ),
             r#"{"errors":["kind asked twice","trips asked twice"]}"#,
+        ),
+        (
+            ask(
+                "SELECT trips FROM trips WHERE kind = $1 AND zone.borough = $2 \
+                 AND bucket >= $3 AND bucket < $4",
+                r#"["1", 2, 0, 3600]"#,
+            ),
+            concat!(
+                r#"{"errors":["kind is an integer, so it can't be the text \"1\"","#,
+                r#""zone.borough is text, so it can't be the integer 2"]}"#
+            ),
         ),
         (
             first_hour().replace('}', r#", "limit": 1}"#),

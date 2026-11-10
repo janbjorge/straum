@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::ident::Ident;
-use crate::spec::{Cond, Fact, Grain, KeyPath, Spec};
+use crate::spec::{Cond, Fact, Grain, KeyPath, Literal, Spec};
+use crate::value::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
@@ -114,6 +115,12 @@ pub enum AskError {
     TimeKeyTwice,
     /// A key or measure named twice, or a key and a measure of one name.
     AskedTwice(String),
+    /// A filter value not of its column's type, which would match nothing.
+    WrongType {
+        path: KeyPath,
+        column: ColumnType,
+        value: Literal,
+    },
     RangeEmpty {
         from: i64,
         to: i64,
@@ -136,6 +143,18 @@ impl fmt::Display for AskError {
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
+            AskError::WrongType {
+                path,
+                column,
+                value,
+            } => {
+                let value = match value {
+                    Literal::Int(n) => format!("the integer {n}"),
+                    Literal::Text(s) => format!("the text {s:?}"),
+                    Literal::Bool(b) => format!("the boolean {b}"),
+                };
+                write!(f, "{path} is {column}, so it can't be {value}")
+            }
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, grain } => {
                 write!(f, "range end {at} is not on a {grain} bucket edge")

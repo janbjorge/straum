@@ -166,8 +166,9 @@ The LSN goes in a `Straum-LSN` header.
 
 - A bucket prints as its start, RFC 3339 in UTC.
 - Numeric values are exact decimals in their column's scale. The load sets
-  each column's scale from the catalog (`Rollup::set_scales`), and answers
-  carry them (`Answer::columns`).
+  each column's type from the catalog (`Rollup::set_types`), answers carry
+  the scales (`Answer::columns`), and a filter value of another type is an
+  error (`AskError::WrongType`).
 - Status 503 while a table the ask reads isn't ready.
 
 ## 3. Rollups in memory

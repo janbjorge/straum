@@ -6,7 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, str};
 
-use straum_domain::Datum;
+use straum_domain::{ColumnType, Datum};
 
 const BOOL: u32 = 16;
 const INT8: u32 = 20;
@@ -70,14 +70,6 @@ impl Kind {
             TEXT | VARCHAR | BPCHAR => Some(Kind::Text),
             TIMESTAMPTZ => Some(Kind::Time),
             _ => None,
-        }
-    }
-
-    /// The scale of sums over a column of this kind.
-    pub(crate) fn scale(self) -> u32 {
-        match self {
-            Kind::Numeric { scale } => scale,
-            _ => 0,
         }
     }
 
@@ -286,6 +278,20 @@ impl ValueError {
     }
 }
 
+/// The domain's own copy, since how a type is read from PostgreSQL stays
+/// here.
+impl From<Kind> for ColumnType {
+    fn from(kind: Kind) -> ColumnType {
+        match kind {
+            Kind::Int => ColumnType::Int,
+            Kind::Numeric { scale } => ColumnType::Numeric { scale },
+            Kind::Bool => ColumnType::Bool,
+            Kind::Text => ColumnType::Text,
+            Kind::Time => ColumnType::Time,
+        }
+    }
+}
+
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -352,8 +358,24 @@ mod tests {
         for (oid, typmod, kind) in cases {
             assert_eq!(Kind::of(oid, typmod), kind, "{oid} {typmod}");
         }
-        assert_eq!(Kind::Numeric { scale: 3 }.scale(), 3);
-        assert_eq!(Kind::Int.scale(), 0);
+        let types = [
+            Kind::Int,
+            Kind::Numeric { scale: 3 },
+            Kind::Bool,
+            Kind::Text,
+            Kind::Time,
+        ]
+        .map(ColumnType::from);
+        assert_eq!(
+            types,
+            [
+                ColumnType::Int,
+                ColumnType::Numeric { scale: 3 },
+                ColumnType::Bool,
+                ColumnType::Text,
+                ColumnType::Time,
+            ]
+        );
     }
 
     #[test]

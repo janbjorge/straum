@@ -15,8 +15,8 @@ use straum_app::{
     AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Status, Step, Wal, Writer,
 };
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, Cond, Datum, Ident, KeyPath, Literal, Spec, Store, TimeKey,
-    Value,
+    Answer, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal, Spec, Store,
+    TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -148,7 +148,12 @@ fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
 
 /// A store loaded from the database as it was at `lsn`.
 fn reference(db: &Database, lsn: Lsn) -> Store {
-    let mut store = Store::new(spec());
+    let spec = spec();
+    let mut store = Store::new(spec.clone());
+    fake::set_dim_types(&spec.dims()[0], store.dim("zones").unwrap());
+    for fact in ["trips", "logins"] {
+        fake::set_types(store.rollup(fact).unwrap());
+    }
     for row in db.rows_at(lsn, "zones") {
         store.dim("zones").unwrap().upsert(&row).unwrap();
     }
@@ -203,6 +208,33 @@ fn starts_from_one_snapshot() {
         answered.answer.rows,
         [(vec![text("Bronx")], vec![Value::Int(1), Value::Int(10)])]
     );
+}
+
+#[test]
+fn a_value_of_another_type_is_refused_once_loaded() {
+    let (_db, mut writer) = setup(&TABLES);
+    let by_kind = |value| Ask {
+        filter: vec![Cond {
+            path: path("kind"),
+            values: vec![value],
+        }],
+        ..ask("trips", &["trips"], &[])
+    };
+    // Only a load knows the types.
+    assert_eq!(
+        writer.app().ask(&by_kind(Literal::Text("1".into()))),
+        Err(AnswerError::NotReady)
+    );
+    writer.step().unwrap();
+    assert_eq!(
+        writer.app().ask(&by_kind(Literal::Text("1".into()))),
+        Err(AnswerError::Invalid(vec![AskError::WrongType {
+            path: path("kind"),
+            column: ColumnType::Int,
+            value: Literal::Text("1".into()),
+        }]))
+    );
+    assert!(writer.app().ask(&by_kind(Literal::Int(1))).is_ok());
 }
 
 #[test]

@@ -6,7 +6,7 @@ use crate::agg::Agg;
 use crate::hash::FastMap;
 use crate::ident::Ident;
 use crate::spec::{Dim, Fact};
-use crate::value::Datum;
+use crate::value::{ColumnType, Datum};
 
 const TIME: usize = 0;
 
@@ -32,7 +32,7 @@ pub struct Rollup {
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
-    scales: Vec<u32>,
+    types: Vec<ColumnType>,
 }
 
 #[derive(Debug)]
@@ -243,7 +243,7 @@ impl Rollup {
             codes: (0..key_len).map(|_| Codes::default()).collect(),
             cells: 0,
             key: Vec::new(),
-            scales: vec![0; columns.len()],
+            types: vec![ColumnType::Int; columns.len()],
             columns,
         }
     }
@@ -257,28 +257,26 @@ impl Rollup {
         self.cells
     }
 
-    /// The scales stay.
+    /// The types stay.
     pub fn clear(&mut self) {
         self.levels.iter_mut().for_each(|l| l.buckets.clear());
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
         self.cells = 0;
     }
 
-    /// Sets the scale of each of [`Rollup::columns`]: a numeric column's
-    /// values are integers in units of `10^-scale`. Only the source knows
-    /// the column types, so a load sets them; they are 0 until then.
-    /// Answers carry them.
-    pub fn set_scales(&mut self, scales: &[u32]) -> Result<(), RowError> {
-        set_scales(&mut self.scales, scales)
+    /// Sets the type of each of [`Rollup::columns`]. Only the source knows
+    /// them, so a load sets them; they are integers until then.
+    pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
+        set_types(&mut self.types, types)
     }
 
-    pub(crate) fn key_scale(&self, slot: usize) -> u32 {
-        self.scales[1 + slot]
+    pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
+        self.types[1 + slot]
     }
 
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
         let input = agg.input().map_or(0, |c| {
-            self.scales[self.columns.iter().position(|n| n == c).expect(COLUMNS)]
+            self.types[self.columns.iter().position(|n| n == c).expect(COLUMNS)].scale()
         });
         agg.scale(input)
     }
@@ -618,7 +616,7 @@ pub struct DimTable {
     rows: HashMap<Datum, Box<[u32]>>,
     /// One per column. Codes outlive their rows until [`DimTable::clear`].
     codes: Vec<Codes>,
-    scales: Vec<u32>,
+    types: Vec<ColumnType>,
 }
 
 impl DimTable {
@@ -628,16 +626,17 @@ impl DimTable {
             width,
             rows: HashMap::new(),
             codes: (0..width).map(|_| Codes::default()).collect(),
-            scales: vec![0; width],
+            types: vec![ColumnType::Int; width],
         }
     }
 
-    pub fn set_scales(&mut self, scales: &[u32]) -> Result<(), RowError> {
-        set_scales(&mut self.scales, scales)
+    /// As [`Rollup::set_types`], for the key then the attributes.
+    pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
+        set_types(&mut self.types, types)
     }
 
-    pub(crate) fn scale(&self, column: usize) -> u32 {
-        self.scales[column]
+    pub(crate) fn column_type(&self, column: usize) -> ColumnType {
+        self.types[column]
     }
 
     pub fn upsert(&mut self, row: &[Datum]) -> Result<(), RowError> {
@@ -662,7 +661,7 @@ impl DimTable {
         self.rows.len()
     }
 
-    /// The scales stay.
+    /// The types stay.
     pub fn clear(&mut self) {
         self.rows.clear();
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
@@ -689,14 +688,14 @@ impl DimTable {
     }
 }
 
-fn set_scales(to: &mut [u32], scales: &[u32]) -> Result<(), RowError> {
-    if scales.len() != to.len() {
+fn set_types(to: &mut [ColumnType], types: &[ColumnType]) -> Result<(), RowError> {
+    if types.len() != to.len() {
         return Err(RowError::Arity {
             expected: to.len(),
-            found: scales.len(),
+            found: types.len(),
         });
     }
-    to.copy_from_slice(scales);
+    to.copy_from_slice(types);
     Ok(())
 }
 

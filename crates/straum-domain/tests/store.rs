@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, Cond, Datum, Dim, Fact, Grain, Ident,
-    KeyPath, Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
+    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, ColumnType, Cond, Datum, Dim, Fact, Grain,
+    Ident, KeyPath, Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
 };
 
 const GRAIN: u32 = 900;
@@ -26,10 +26,9 @@ const DIST: usize = 8;
 const RIDER: usize = 9;
 const WIDTH: usize = 10;
 
-/// Column scales `run` sets, from these up, one per column. Each differs,
-/// so an answer that takes a scale from the wrong column shows.
+/// The scales of the numeric columns `run` sets, from this up. Each
+/// differs, so an answer that takes a scale from the wrong column shows.
 const TRIP_SCALES: u32 = 20;
-const ZONE_SCALES: u32 = 30;
 
 const KEYS: [&str; 9] = [
     "pay",
@@ -305,22 +304,57 @@ fn value(row: &[Datum], path: &KeyPath, zones: &Zones) -> Datum {
     }
 }
 
-fn scale(path: &KeyPath) -> u32 {
-    match &path.attr {
-        None => TRIP_SCALES + column(path.head.as_str()) as u32,
-        Some(attr) => {
-            ZONE_SCALES
-                + match attr.as_str() {
-                    "id" => 0,
-                    "borough" => 1,
-                    _ => 2,
-                }
-        }
-    }
+/// The column types `run` sets.
+fn trip_types() -> Vec<ColumnType> {
+    let numeric = |column: usize| ColumnType::Numeric {
+        scale: TRIP_SCALES + column as u32,
+    };
+    vec![
+        ColumnType::Time,
+        ColumnType::Int,
+        ColumnType::Int,
+        ColumnType::Bool,
+        ColumnType::Int,
+        ColumnType::Int,
+        numeric(FARE),
+        numeric(TIP),
+        numeric(DIST),
+        ColumnType::Text,
+    ]
 }
 
-fn scales(from: u32, n: usize) -> Vec<u32> {
-    (from..).take(n).collect()
+fn zone_types() -> Vec<ColumnType> {
+    vec![ColumnType::Int, ColumnType::Text, ColumnType::Text]
+}
+
+/// A store with the types a load would set.
+fn typed(spec: &Spec) -> Store {
+    let mut store = Store::new(spec.clone());
+    store
+        .rollup("trips")
+        .unwrap()
+        .set_types(&trip_types())
+        .unwrap();
+    store
+        .dim("zones")
+        .unwrap()
+        .set_types(&zone_types())
+        .unwrap();
+    store
+}
+
+fn scale(path: &KeyPath) -> u32 {
+    match &path.attr {
+        None => trip_types()[column(path.head.as_str())].scale(),
+        Some(attr) => {
+            let column = match attr.as_str() {
+                "id" => 0,
+                "borough" => 1,
+                _ => 2,
+            };
+            zone_types()[column].scale()
+        }
+    }
 }
 
 fn column(name: &str) -> usize {
@@ -394,7 +428,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
         scale: match &fact.measure(name.as_str()).unwrap().agg {
             Agg::Count | Agg::CountDistinct(_) => 0,
             Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
-                TRIP_SCALES + column(c.as_str()) as u32
+                trip_types()[column(c.as_str())].scale()
             }
         },
         time: false,
@@ -449,16 +483,10 @@ fn measure(m: &Measure, rows: &[&[Datum]], zones: &Zones) -> Value {
 
 fn run(seed: u64) {
     let spec = spec();
-    let mut store = Store::new(spec.clone());
+    let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     let mut zones = Zones::new();
-    (store.rollup("trips").unwrap())
-        .set_scales(&scales(TRIP_SCALES, 10))
-        .unwrap();
-    (store.dim("zones").unwrap())
-        .set_scales(&scales(ZONE_SCALES, 3))
-        .unwrap();
     for key in 1..=4 {
         let row = zone(&mut rng, key);
         store.dim("zones").unwrap().upsert(&row).unwrap();
@@ -542,8 +570,8 @@ fn rows_added_together_match_rows_added_one_by_one() {
     let spec = spec();
     for seed in 0..4 {
         let mut rng = Rng(seed);
-        let mut by_row = Store::new(spec.clone());
-        let mut together = Store::new(spec.clone());
+        let mut by_row = typed(&spec);
+        let mut together = typed(&spec);
         for key in 1..=4 {
             let row = zone(&mut rng, key);
             by_row.dim("zones").unwrap().upsert(&row).unwrap();
@@ -713,7 +741,57 @@ fn clear_drops_every_row() {
 }
 
 #[test]
-fn scales_stay_through_clear() {
+fn filter_values_are_of_their_column_type() {
+    let mut store = typed(&spec());
+    let ask = |filter| Ask {
+        fact: id("trips"),
+        measures: vec![id("trips")],
+        by: Vec::new(),
+        filter,
+        from: START,
+        to: END,
+    };
+    let fits = vec![
+        cond("pay", vec![Literal::Int(1)]),
+        cond("shared", vec![Literal::Bool(true)]),
+        cond("pickup", vec![Literal::Int(2)]),
+        cond("pickup.borough", vec![lit("m")]),
+    ];
+    assert!(store.ask(&ask(fits)).is_ok());
+
+    let wrong = vec![
+        cond("pay", vec![lit("1"), Literal::Int(1)]),
+        cond("shared", vec![Literal::Int(1)]),
+        cond("pickup.borough", vec![Literal::Bool(true)]),
+    ];
+    let errors: Vec<String> = (store.ask(&ask(wrong)).unwrap_err().iter())
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        errors,
+        [
+            r#"pay is an integer, so it can't be the text "1""#,
+            "shared is a boolean, so it can't be the integer 1",
+            "pickup.borough is text, so it can't be the boolean true",
+        ]
+    );
+
+    // An integer reads as one only at scale 0.
+    let pay = || ask(vec![cond("pay", vec![Literal::Int(1)])]);
+    let mut types = trip_types();
+    types[PAY] = ColumnType::Numeric { scale: 0 };
+    store.rollup("trips").unwrap().set_types(&types).unwrap();
+    assert!(store.ask(&pay()).is_ok());
+    types[PAY] = ColumnType::Numeric { scale: 2 };
+    store.rollup("trips").unwrap().set_types(&types).unwrap();
+    assert_eq!(
+        store.ask(&pay()).unwrap_err()[0].to_string(),
+        "pay is a numeric of scale 2, so it can't be the integer 1"
+    );
+}
+
+#[test]
+fn types_stay_through_clear() {
     let mut store = Store::new(spec());
     let ask = Ask {
         fact: id("trips"),
@@ -729,10 +807,16 @@ fn scales_stay_through_clear() {
     };
     assert_eq!(scales(&store), [0, 0, 0, 0, 0]);
     let rollup = store.rollup("trips").unwrap();
-    rollup.set_scales(&[0, 3, 0, 0, 0, 0, 2, 1, 0, 0]).unwrap();
+    let mut types = vec![ColumnType::Int; 10];
+    types[PAY] = ColumnType::Numeric { scale: 3 };
+    types[FARE] = ColumnType::Numeric { scale: 2 };
+    types[TIP] = ColumnType::Numeric { scale: 1 };
+    rollup.set_types(&types).unwrap();
     rollup.clear();
     let zones = store.dim("zones").unwrap();
-    zones.set_scales(&[0, 0, 4]).unwrap();
+    let zone = ColumnType::Numeric { scale: 4 };
+    let types = [ColumnType::Int, ColumnType::Text, zone];
+    zones.set_types(&types).unwrap();
     zones.clear();
     assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
 }
@@ -903,7 +987,7 @@ fn row_errors() {
     let mut store = fresh();
     let rollup = store.rollup("trips").unwrap();
     assert_eq!(
-        rollup.set_scales(&[9; 11]),
+        rollup.set_types(&[ColumnType::Int; 11]),
         Err(RowError::Arity {
             expected: 10,
             found: 11
@@ -911,7 +995,7 @@ fn row_errors() {
     );
     let zones = store.dim("zones").unwrap();
     assert_eq!(
-        zones.set_scales(&[2, 2]),
+        zones.set_types(&[ColumnType::Text; 2]),
         Err(RowError::Arity {
             expected: 3,
             found: 2

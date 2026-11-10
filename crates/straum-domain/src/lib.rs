@@ -20,4 +20,4 @@ pub use spec::{
     Cond, Dim, Fact, Grain, Key, KeyPath, Literal, Measure, Ref, Slot, Spec, SpecError, Table, Time,
 };
 pub use store::{Answer, AnswerColumn, Store};
-pub use value::{Datum, Value};
+pub use value::{ColumnType, Datum, Value};
