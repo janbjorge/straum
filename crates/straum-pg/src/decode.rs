@@ -33,6 +33,9 @@ pub(crate) struct Decoder {
 /// Where a spec table's columns sit in a relation's tuples.
 struct Mapping {
     table: Ident,
+    /// `schema.table`, for the error a value that doesn't read gives.
+    qualified: String,
+    columns: Vec<Ident>,
     positions: Vec<usize>,
     types: Vec<ColumnType>,
     /// As `Table::key_width`.
@@ -191,6 +194,8 @@ impl Decoder {
             }
             mappings.push(Mapping {
                 table: table.name.clone(),
+                qualified: table.qualified(),
+                columns: table.columns.clone(),
                 positions,
                 types,
                 key_width: table.key_width,
@@ -250,7 +255,9 @@ impl Mapping {
         for (i, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate() {
             let datum = match (tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
-                (Field::Text(text), _) => read(*column_type, text)?,
+                (Field::Text(text), _) => {
+                    read(*column_type, text).map_err(|e| e.at(&self.qualified, &self.columns[i]))?
+                }
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };
@@ -275,15 +282,18 @@ impl Mapping {
     /// replica identity index that holds them.
     fn key(&self, tuple: &Tuple) -> Result<Vec<Datum>, Error> {
         self.fits(tuple)?;
-        let columns = self.positions[..self.key_width].iter().zip(&self.types);
-        columns
-            .map(|(&position, column_type)| match tuple[position] {
-                Field::Text(text) => Ok(read(*column_type, text)?),
-                Field::Null | Field::Unchanged => {
-                    Err(Error::Protocol("an old key without a value".into()))
-                }
-            })
-            .collect()
+        let key = (self.positions[..self.key_width].iter())
+            .zip(&self.types)
+            .zip(&self.columns);
+        key.map(|((&position, column_type), column)| match tuple[position] {
+            Field::Text(text) => {
+                Ok(read(*column_type, text).map_err(|e| e.at(&self.qualified, column))?)
+            }
+            Field::Null | Field::Unchanged => {
+                Err(Error::Protocol("an old key without a value".into()))
+            }
+        })
+        .collect()
     }
 
     fn fits(&self, tuple: &Tuple) -> Result<(), Error> {
@@ -637,7 +647,7 @@ mod tests {
                     relation: 7,
                     new: row(Field::Text("x"), Field::Null),
                 },
-                r#"can't read "x" as an integer"#,
+                r#"can't read "x" as an integer in column id of public.zones"#,
             ),
         ];
         for (message, expected) in cases {

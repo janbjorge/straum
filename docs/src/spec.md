@@ -69,6 +69,12 @@ means nothing. Straum refuses a view whose origin type is not the
 column's, since PostgreSQL would cast the column through the session zone
 and the view would not mean what Straum computes.
 
+A row whose time is null, `infinity` or `-infinity` is kept but never
+answered: it falls in no bucket an ask can name. Any other value Straum
+can't read, such as a `NaN` in a `numeric` column, stops the load or the
+stream with the table and column named, and Straum
+[starts over](running.md#states) until the row is fixed.
+
 `buckets = '1 day, 7 days'` keeps wider widths too. Each is a whole
 multiple of the one before and starts at the epoch, so 7-day buckets start
 on Thursdays. Answers don't change. An ask over a long range reads its

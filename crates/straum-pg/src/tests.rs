@@ -24,6 +24,7 @@ use crate::catalog;
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
+use crate::load::Columns;
 use crate::source::{Pg, read_wal};
 use crate::stream::Stream;
 use crate::value::read;
@@ -476,11 +477,15 @@ fn task_oracles() -> Vec<Oracle> {
         "pick_tasks",
         "completed_tasks",
     ];
+    // The ask covers every finite bucket; a row at an infinite time is in
+    // none, and the view in PostgreSQL would answer it on its own.
     let by_bucket = Oracle {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, done,
                     category, tasks, picks, picks_max, pick_tasks, completed_tasks
-               FROM ({}) v",
+               FROM ({}) v
+              WHERE bucket >= to_timestamp(0) AT TIME ZONE 'UTC'
+                AND bucket < to_timestamp({END}) AT TIME ZONE 'UTC'",
             body(TASKS_SPEC, "tasks")
         ),
         ask: ask(
@@ -795,11 +800,14 @@ fn follows_the_task_tables() {
     for id in 0..200 {
         db.run(&rng.task(id));
     }
-    // On a bucket edge, and a microsecond before it.
+    // On a bucket edge, a microsecond before it, and at the infinities,
+    // which no bucket holds.
     db.run(&format!(
         "INSERT INTO $S.tasks VALUES
            (1000, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1),
-           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', NULL, 1)"
+           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', NULL, 1),
+           (1002, 1, 1, 'infinity', NULL, 1),
+           (1003, 2, 2, '-infinity', NULL, 2)"
     ));
     let spec = db.spec(TASKS_SPEC);
     assert!(
@@ -833,18 +841,29 @@ fn follows_the_task_tables() {
     // gone, times moved, rows gone.
     let changes = [
         // Null-ness flips both ways.
-        "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0",
-        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0",
-        "UPDATE $S.taskgroups SET category = 'pack' WHERE organization_id = 1",
-        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1",
-        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0",
-        "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0",
-        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2",
-        "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0",
-        "DELETE FROM $S.tasks WHERE task_id % 11 = 0",
+        "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0"
+            .to_owned(),
+        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0".to_owned(),
+        "UPDATE $S.taskgroups SET category = 'pack' WHERE organization_id = 1".to_owned(),
+        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1"
+            .to_owned(),
+        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
+        "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0".to_owned(),
+        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2".to_owned(),
+        "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0"
+            .to_owned(),
+        // An infinite time becomes a real one and lands in its bucket; a
+        // real one becomes infinite and leaves its bucket; one goes.
+        format!(
+            "UPDATE $S.tasks SET created = to_timestamp({START}) AT TIME ZONE 'UTC' \
+             + interval '2 hours' WHERE task_id = 1002"
+        ),
+        "UPDATE $S.tasks SET created = 'infinity' WHERE task_id = 1000".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id = 1003".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
     ];
     for change in changes {
-        db.run(change);
+        db.run(&change);
         applied(&mut writer);
         compare(&mut db, writer.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
     }
@@ -927,6 +946,37 @@ fn a_transaction_past_the_cap_starts_over() {
         let (high, low) = lsn.split_once('/').unwrap();
         u64::from_str_radix(high, 16).unwrap() << 32 | u64::from_str_radix(low, 16).unwrap()
     }
+}
+
+/// A value straum can't read stops the load, or the stream, naming the
+/// table and column it was in, so the row can be found and fixed.
+#[test]
+fn a_poison_value_names_its_column() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "poison", TABLES);
+    db.run("INSERT INTO $S.trips VALUES (1, to_timestamp(1705276800), 'cab', 1, 'NaN', 'ann', 2)");
+    let mut writer = db.writer();
+    let err = writer.step().unwrap_err().to_string();
+    assert!(
+        err.starts_with("can't read \"\\\\x")
+            && err.ends_with("as a numeric of scale 2 in column fare of poison.trips"),
+        "{err}"
+    );
+    assert_eq!(writer.app().status().error.as_deref(), Some(err.as_str()));
+    db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    // Streamed, the value comes as text.
+    db.run("UPDATE $S.trips SET fare = 'NaN' WHERE id = 1");
+    let err = writer.step().unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "can't read \"NaN\" as a numeric of scale 2 in column fare of poison.trips"
+    );
+    db.run("UPDATE $S.trips SET fare = 2.50 WHERE id = 1");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the fix");
 }
 
 #[test]
@@ -1774,7 +1824,8 @@ fn binary_copies_read_as_text_does() {
            (1, 1, 1, 0.01, -1, -0.5, true, 'x', 'xxxxx', 'xxxx', '0001-01-01 00:00:00+00',
             '0001-01-01 00:00:00'),
            (2, 2, 2, 99999999.99, 10000, 100000000, false, 'y', 'y', 'y',
-            '294276-12-31 23:59:59+00', '294276-12-31 23:59:59');
+            '294276-12-31 23:59:59+00', '294276-12-31 23:59:59'),
+           (3, 3, 3, 1, 1, 1, true, 'z', 'z', 'z', 'infinity', '-infinity');
          SET TIME ZONE 'UTC';",
     )
     .unwrap();
@@ -1792,13 +1843,20 @@ fn binary_copies_read_as_text_does() {
     .unwrap();
     let mut binaries = Vec::new();
     let sql = format!("COPY (SELECT {columns} FROM every) TO STDOUT (FORMAT binary)");
-    crate::load::copy(&mut conn, &sql, &types, |batch| {
+    let every = Columns {
+        table: "public.every".into(),
+        names: columns.split(", ").map(id).collect(),
+        types: types.to_vec(),
+    };
+    crate::load::copy(&mut conn, &sql, &every, |batch| {
         binaries.extend(batch.chunks(types.len()).map(<[Datum]>::to_vec));
         Ok(())
     })
     .unwrap();
-    assert_eq!(texts.len(), 5);
+    assert_eq!(texts.len(), 6);
     assert_eq!(binaries, texts);
+    // The infinities read as a null time, both ways.
+    assert_eq!(&texts[5][10..], [Datum::Null, Datum::Null]);
 }
 
 #[test]
@@ -2111,11 +2169,20 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
     reply.extend(after);
     let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
     let mut rows = Vec::new();
-    crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |batch| {
+    crate::load::copy(&mut conn, "COPY", &two_ints(), |batch| {
         rows.extend(batch.chunks(2).map(<[Datum]>::to_vec));
         Ok(())
     })?;
     Ok(rows)
+}
+
+/// Two `int4` columns, `a` and `b` of `t`, as a stand-in copy sends.
+fn two_ints() -> Columns {
+    Columns {
+        table: "public.t".into(),
+        names: vec![id("a"), id("b")],
+        types: vec![ColumnType::Int; 2],
+    }
 }
 
 fn copy_done() -> Vec<u8> {
@@ -2166,7 +2233,7 @@ fn copies_hand_over_bounded_batches() {
     let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
     let mut batches = Vec::new();
     let mut next = 0;
-    crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |batch| {
+    crate::load::copy(&mut conn, "COPY", &two_ints(), |batch| {
         batches.push(batch.len() / 2);
         for row in batch.chunks(2) {
             assert_eq!(row, [Datum::Int(next), Datum::Null]);
@@ -2181,7 +2248,7 @@ fn copies_hand_over_bounded_batches() {
     // A failed batch stops the copy, and its error is the one returned.
     let mut conn = connect(vec![now(signed_in()), now(reply)], false).unwrap();
     let mut calls = 0;
-    let err = crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |_| {
+    let err = crate::load::copy(&mut conn, "COPY", &two_ints(), |_| {
         calls += 1;
         Err(Error::Protocol("a row Straum refused".into()))
     })
@@ -2236,7 +2303,7 @@ fn binary_copy_errors() {
                 &[0, 0, 1],
                 &COPY_END,
             ])],
-            "can't read \"\\\\x000001\" as an integer",
+            "can't read \"\\\\x000001\" as an integer in column b of public.t",
         ),
     ];
     for (sent, expected) in cases {

@@ -379,6 +379,12 @@ Tests:
   write lock. The default comes from `bench/transaction.py`, which
   measures how long a transaction of that size holds the lock on the taxi
   month.
+- 2026-11-10: `infinity` and `-infinity` times read as a null time, in
+  binary `COPY` and in pgoutput text, so the row lands in the bucket no
+  ask reads instead of failing the load. Other values Straum can't read
+  (`NaN`, an overflowing numeric, non-UTF-8 text) still fail it, and the
+  error names the table and column (`ValueError::at`), so the poison row
+  can be found; the row itself is not named.
 
 ## M0: notation and domain model
 

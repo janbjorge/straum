@@ -6,7 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, str};
 
-use straum_domain::{ColumnType, Datum};
+use straum_domain::{ColumnType, Datum, Ident};
 
 const BOOL: u32 = 16;
 const INT8: u32 = 20;
@@ -73,6 +73,9 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
             _ => None,
         },
         ColumnType::Text => Some(Datum::Text(text.into())),
+        // An infinite time is kept as a null one: the row counts in no
+        // bucket an ask reads, and the load goes on.
+        ColumnType::Time { .. } if text == "infinity" || text == "-infinity" => Some(Datum::Null),
         ColumnType::Time { zoned } => timestamp(text, zoned).map(Datum::Int),
     };
     datum.ok_or_else(|| ValueError::new(column_type, text))
@@ -94,8 +97,10 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
         // Both types are microseconds since 2000-01-01, a `timestamp`'s
         // read as if UTC.
         ColumnType::Time { .. } => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
-            // `infinity` and `-infinity`.
-            Ok(i64::MIN | i64::MAX) | Err(_) => None,
+            // `infinity` and `-infinity`, a null time as the text reader
+            // has them.
+            Ok(i64::MIN | i64::MAX) => Some(Datum::Null),
+            Err(_) => None,
             Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
         },
     };
@@ -183,7 +188,7 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
 
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
 /// read, though straum always asks for UTC. A `timestamp` has no offset,
-/// and its text must have none. `BC` dates and `infinity` are `None`.
+/// and its text must have none. `BC` dates are `None`.
 fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     let (date, rest) = text.split_once(' ')?;
     let (year, date) = date.rsplit_once('-').and_then(|(ym, day)| {
@@ -251,6 +256,8 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 pub struct ValueError {
     column_type: ColumnType,
     text: String,
+    /// The table and column, once the reader that knows them adds them.
+    place: Option<(String, Ident)>,
 }
 
 impl ValueError {
@@ -258,6 +265,7 @@ impl ValueError {
         ValueError {
             column_type,
             text: text.to_owned(),
+            place: None,
         }
     }
 
@@ -267,13 +275,24 @@ impl ValueError {
         ValueError {
             column_type,
             text: format!("\\x{hex}"),
+            place: None,
         }
+    }
+
+    /// Names where the value came from, so a poison row can be found.
+    pub(crate) fn at(mut self, table: &str, column: &Ident) -> ValueError {
+        self.place = Some((table.to_owned(), column.clone()));
+        self
     }
 }
 
 impl fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "can't read {:?} as {}", self.text, self.column_type)
+        write!(f, "can't read {:?} as {}", self.text, self.column_type)?;
+        if let Some((table, column)) = &self.place {
+            write!(f, " in column {column} of {table}")?;
+        }
+        Ok(())
     }
 }
 
@@ -383,6 +402,11 @@ mod tests {
             (naive, "2024-02-29 13:47:05.999", Datum::Int(1_709_214_425)),
             (naive, "1969-12-31 23:59:59.5", Datum::Int(-1)),
             (naive, "0001-01-01 00:00:00", Datum::Int(-62_135_596_800)),
+            // The infinities are times no bucket holds.
+            (zoned, "infinity", Datum::Null),
+            (zoned, "-infinity", Datum::Null),
+            (naive, "infinity", Datum::Null),
+            (naive, "-infinity", Datum::Null),
         ];
         for (column_type, text, datum) in cases {
             assert_eq!(read(column_type, text), Ok(datum), "{column_type} {text}");
@@ -407,8 +431,8 @@ mod tests {
             (ColumnType::Numeric { scale: 0 }, "92233720368547758070"),
             (ColumnType::Numeric { scale: 0 }, "9223372036854775808"),
             (ColumnType::Bool, "true"),
-            (zoned, "infinity"),
-            (zoned, "-infinity"),
+            (zoned, "Infinity"),
+            (zoned, "+infinity"),
             (zoned, "0044-03-15 12:00:00+00 BC"),
             (zoned, "2024-13-01 00:00:00+00"),
             (zoned, "2024-00-01 00:00:00+00"),
@@ -432,7 +456,6 @@ mod tests {
             // under the wrong type.
             (naive, "2024-01-01 00:00:00+00"),
             (naive, "2024-01-01 00:00:00-05"),
-            (naive, "infinity"),
             (naive, "0044-03-15 12:00:00 BC"),
             (naive, "2024-01-01 00:00"),
             (naive, "2024-01-01"),
@@ -527,6 +550,9 @@ mod tests {
                 Datum::Int(1_705_314_600),
             ),
             (naive, micros(-1, 500_000), Datum::Int(-1)),
+            (zoned, i64::MAX.to_be_bytes().to_vec(), Datum::Null),
+            (zoned, i64::MIN.to_be_bytes().to_vec(), Datum::Null),
+            (naive, i64::MIN.to_be_bytes().to_vec(), Datum::Null),
         ];
         for (column_type, bytes, datum) in cases {
             assert_eq!(
@@ -562,19 +588,8 @@ mod tests {
             (ColumnType::Bool, vec![2]),
             (ColumnType::Bool, vec![]),
             (ColumnType::Text, vec![0xff]),
-            (
-                ColumnType::Time { zoned: true },
-                i64::MAX.to_be_bytes().to_vec(),
-            ),
-            (
-                ColumnType::Time { zoned: true },
-                i64::MIN.to_be_bytes().to_vec(),
-            ),
-            (
-                ColumnType::Time { zoned: false },
-                i64::MAX.to_be_bytes().to_vec(),
-            ),
             (ColumnType::Time { zoned: true }, vec![0; 4]),
+            (ColumnType::Time { zoned: false }, vec![0; 9]),
         ];
         for (column_type, bytes) in cases {
             assert_eq!(
@@ -614,5 +629,11 @@ mod tests {
         for (column_type, text, msg) in cases {
             assert_eq!(ValueError::new(column_type, text).to_string(), msg);
         }
+        let placed =
+            ValueError::new(ColumnType::Int, "x").at("public.trips", &Ident::new("fare").unwrap());
+        assert_eq!(
+            placed.to_string(),
+            r#"can't read "x" as an integer in column fare of public.trips"#
+        );
     }
 }
