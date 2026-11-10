@@ -277,9 +277,12 @@ impl Drop for Running {
 
 /// Runs the statements of `straum plan` one at a time, since ALTER SYSTEM
 /// can't run in a transaction, but those that start with `hold`, which it
-/// returns. Gives the role `straum` a password.
+/// returns. The role `straum` gets its password from the DSN the plan
+/// reads, the one `straum run` connects with after.
 fn set_up(pg: &Postgres, spec: &str, hold: &str) -> Vec<String> {
-    let (code, plan, _) = output(&mut straum(&["plan", "--spec", spec]));
+    let mut plan = straum(&["plan", "--spec", spec]);
+    plan.env("STRAUM_DSN", pg.dsn("straum"));
+    let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));
     let mut held = Vec::new();
     for statement in plan.lines().filter(|l| !l.starts_with("--")) {
@@ -289,7 +292,6 @@ fn set_up(pg: &Postgres, spec: &str, hold: &str) -> Vec<String> {
             pg.psql(statement);
         }
     }
-    pg.psql("ALTER ROLE straum PASSWORD 'straum'");
     held
 }
 
@@ -419,10 +421,38 @@ fn plan_prints_the_setup_sql() {
     let parsed = straum_notation::parse(SPEC).unwrap();
     let (code, stdout, stderr) = output(&mut straum(&["plan", "--spec", &spec]));
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
-    assert_eq!(stdout, straum_pg::plan(&parsed, "straum", "straum"));
+    assert_eq!(stdout, straum_pg::plan(&parsed, "straum", "straum", None));
     let mut custom = straum(&["plan", "--publication", "p", "--spec", &spec, "--role", "r"]);
     let (_, stdout, _) = output(&mut custom);
-    assert_eq!(stdout, straum_pg::plan(&parsed, "p", "r"));
+    assert_eq!(stdout, straum_pg::plan(&parsed, "p", "r", None));
+
+    // With a DSN the role is its user, with its password as a verifier;
+    // --role still names the role.
+    let dsn = scratch.file("dsn", "postgres://reader:pw@db/app\n");
+    let mut with_dsn = straum(&["plan", "--spec", &spec, "--dsn-file", &dsn]);
+    let (code, stdout, stderr) = output(&mut with_dsn);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let role = "CREATE ROLE \"reader\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:";
+    assert!(stdout.contains(role), "{stdout}");
+    assert!(
+        !stdout.contains("pw") && !stdout.contains("\\password"),
+        "{stdout}"
+    );
+    let mut named = straum(&["plan", "--spec", &spec, "--role", "r"]);
+    named.env("STRAUM_DSN", "postgres://reader@db/app");
+    let (_, stdout, _) = output(&mut named);
+    assert!(
+        stdout.contains("CREATE ROLE \"r\" LOGIN REPLICATION;\n"),
+        "{stdout}"
+    );
+    let mut bad = straum(&["plan", "--spec", &spec]);
+    bad.env("STRAUM_DSN", "mysql://reader@db/app");
+    let (code, _, stderr) = output(&mut bad);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        "straum: DSN must start with postgres:// or postgresql://\n"
+    );
 }
 
 #[test]

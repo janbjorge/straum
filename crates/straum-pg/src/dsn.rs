@@ -29,6 +29,14 @@ pub(crate) enum Tls {
 }
 
 impl Dsn {
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
     /// `postgres://user:password@host:port/database?sslmode=verify-full`.
     /// The port defaults to 5432 and the database to the user.
     ///
@@ -193,6 +201,7 @@ mod tests {
         assert_eq!(dsn.port, 6543);
         assert_eq!(dsn.user, "straum");
         assert_eq!(dsn.password.as_deref(), Some("s@cr:t"));
+        assert_eq!((dsn.user(), dsn.password()), ("straum", Some("s@cr:t")));
         assert_eq!(dsn.database, "taxi");
         assert_eq!(dsn.tls, Tls::Off);
         assert_eq!(

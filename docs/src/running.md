@@ -6,7 +6,7 @@
 straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
            [--max-lag SECONDS] [--max-retained-wal BYTES]
            [--max-transaction-rows ROWS]
-straum plan --spec FILE [--publication NAME] [--role NAME]
+straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
 straum help
 ```

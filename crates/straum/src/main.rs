@@ -59,11 +59,14 @@ const PLAN_HELP: &str = "\
 usage: straum plan --spec FILE [flags]
 
 Prints the SQL that sets PostgreSQL up for FILE: logical decoding, the
-role, its grants and the publication.
+role, its grants and the publication. With a DSN the role is its user and
+gets its password, as a SCRAM-SHA-256 verifier.
 
   --spec FILE         the spec; required
   --publication NAME  the publication to make (straum)
-  --role NAME         the role straum run connects as (straum)
+  --role NAME         the role straum run connects as (the DSN's user,
+                      else straum)
+  --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, if set
 
 Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 ";
@@ -106,7 +109,8 @@ enum Command {
     Plan {
         spec: String,
         publication: String,
-        role: String,
+        role: Option<String>,
+        dsn_file: Option<String>,
     },
     Status {
         url: String,
@@ -136,9 +140,8 @@ fn main() -> ExitCode {
             spec,
             publication,
             role,
-        }) => {
-            read_spec(&spec).map(|spec| print!("{}", straum_pg::plan(&spec, &publication, &role)))
-        }
+            dsn_file,
+        }) => plan(&spec, &publication, role.as_deref(), dsn_file.as_deref()),
         Ok(Command::Run(args)) => run(args),
         Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
         Err(_) if args.is_empty() => {
@@ -189,7 +192,7 @@ fn flags(name: &str) -> &'static [&'static str] {
             "--max-retained-wal",
             "--max-transaction-rows",
         ],
-        "plan" => &["--spec", "--publication", "--role"],
+        "plan" => &["--spec", "--publication", "--role", "--dsn-file"],
         _ => &["--url"],
     }
 }
@@ -269,7 +272,8 @@ fn command(args: &[String]) -> Result<Command, String> {
         Command::Plan {
             spec,
             publication,
-            role: flag("--role").unwrap_or_else(|| ROLE.into()),
+            role: flag("--role"),
+            dsn_file: flag("--dsn-file"),
         }
     })
 }
@@ -328,6 +332,25 @@ fn read_spec(path: &str) -> Result<Spec, String> {
             .collect();
         lines.join("\n")
     })
+}
+
+/// The role and its password come from the DSN when there is one, so the
+/// setup and `straum run` agree on them without being told twice.
+fn plan(
+    spec: &str,
+    publication: &str,
+    role: Option<&str>,
+    dsn_file: Option<&str>,
+) -> Result<(), String> {
+    let spec = read_spec(spec)?;
+    let dsn = match (dsn_file, env::var("STRAUM_DSN").is_ok()) {
+        (None, false) => None,
+        _ => Some(read_dsn(dsn_file)?),
+    };
+    let role = role.or_else(|| dsn.as_ref().map(Dsn::user)).unwrap_or(ROLE);
+    let password = dsn.as_ref().and_then(Dsn::password);
+    print!("{}", straum_pg::plan(&spec, publication, role, password));
+    Ok(())
 }
 
 fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
@@ -471,11 +494,21 @@ mod tests {
             }))
         );
         assert_eq!(
-            command(&args("plan --role r --spec s")),
+            command(&args("plan --spec s")),
             Ok(Command::Plan {
                 spec: "s".into(),
                 publication: PUBLICATION.into(),
-                role: "r".into(),
+                role: None,
+                dsn_file: None,
+            })
+        );
+        assert_eq!(
+            command(&args("plan --role r --spec s --dsn-file d")),
+            Ok(Command::Plan {
+                spec: "s".into(),
+                publication: PUBLICATION.into(),
+                role: Some("r".into()),
+                dsn_file: Some("d".into()),
             })
         );
         assert_eq!(

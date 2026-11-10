@@ -1,6 +1,7 @@
 //! The setup SQL an admin runs once, which `straum plan` prints.
 
-use postgres_protocol::escape::escape_identifier;
+use postgres_protocol::escape::{escape_identifier, escape_literal};
+use postgres_protocol::password::scram_sha_256;
 use straum_domain::Spec;
 
 /// Turns on logical decoding, creates `role` with the replication
@@ -9,7 +10,11 @@ use straum_domain::Spec;
 /// delete carries the old row straum takes out of its cell. Dims are only
 /// read, by key, so they need a unique key and nothing else, which only
 /// the schema can give; the SQL says it in a comment.
-pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
+///
+/// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so
+/// neither the SQL nor the server's statement log holds the password
+/// itself. Without one, the SQL says how to set it.
+pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) -> String {
     let id = |s: &str| escape_identifier(s);
     let qualified =
         |t: &straum_domain::Table| format!("{}.{}", id(t.schema.as_str()), id(t.name.as_str()));
@@ -27,15 +32,25 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
         "-- straum setup: run once, as an owner of the tables.".to_owned(),
         "-- wal_level takes a restart. On Azure, set the server parameter instead.".to_owned(),
         "ALTER SYSTEM SET wal_level = logical;".to_owned(),
-        format!("CREATE ROLE {role} LOGIN REPLICATION;"),
-        format!("-- Then give {role} a password: \\password {role}"),
+    ];
+    match password {
+        Some(password) => sql.push(format!(
+            "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",
+            escape_literal(&scram_sha_256(password.as_bytes()))
+        )),
+        None => {
+            sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
+            sql.push(format!("-- Then give {role} a password: \\password {role}"));
+        }
+    }
+    sql.extend([
         format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
         format!("GRANT SELECT ON {list} TO {role};"),
         format!(
             "CREATE PUBLICATION {publication} FOR TABLE {};",
             facts.join(", ")
         ),
-    ];
+    ]);
     for fact in spec.facts() {
         sql.push(format!(
             "-- fact {}: straum needs the old row of every update and delete; inserts cost no more.",
@@ -85,7 +100,7 @@ mod tests {
             )
         };
         let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
-        let sql = plan(&straum_notation::parse(&views).unwrap(), "p", "r");
+        let sql = plan(&straum_notation::parse(&views).unwrap(), "p", "r", None);
         assert!(
             sql.contains("GRANT USAGE ON SCHEMA \"a\", \"b\" TO \"r\";\n"),
             "{sql}"
@@ -94,5 +109,34 @@ mod tests {
             sql.contains("CREATE PUBLICATION \"p\" FOR TABLE \"a\".\"t\", \"b\".\"u\";\n"),
             "{sql}"
         );
+        assert!(
+            sql.contains("CREATE ROLE \"r\" LOGIN REPLICATION;\n-- Then give \"r\" a password: \\password \"r\"\n"),
+            "{sql}"
+        );
+    }
+
+    /// The password goes in as its verifier, never as itself, and the
+    /// quoting is PostgreSQL's.
+    #[test]
+    fn a_password_becomes_a_scram_verifier() {
+        let spec = straum_notation::parse(
+            "CREATE VIEW x AS
+             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+             FROM a.t f GROUP BY 1;",
+        )
+        .unwrap();
+        let sql = plan(&spec, "p", "r", Some("s'cret"));
+        let line = sql.lines().find(|l| l.starts_with("CREATE ROLE")).unwrap();
+        assert!(
+            line.starts_with("CREATE ROLE \"r\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:"),
+            "{line}"
+        );
+        assert!(line.ends_with("';"), "{line}");
+        assert!(
+            !sql.contains("s'cret") && !sql.contains("\\password"),
+            "{sql}"
+        );
+        // A fresh salt each time, so two plans never share a verifier.
+        assert_ne!(sql, plan(&spec, "p", "r", Some("s'cret")));
     }
 }
