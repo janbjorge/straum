@@ -20,7 +20,7 @@ const STRAUM: &str = env!("CARGO_BIN_EXE_straum");
 const READY: &str = "database system is ready to accept connections";
 
 const SPEC: &str = "
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
        t.kind,
        t.zone_id,

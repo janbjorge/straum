@@ -10,7 +10,7 @@ This spec, which the [benchmark](benchmark.md#the-whole-view-end-to-end)
 follows end to end, uses all of the subset:
 
 ```sql
-CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
+CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        f.payment_type,
        f.vendor_id,
@@ -33,12 +33,13 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 
 ## View and fact table
 
-The view's name, `trips`, is the fact's name, which asks give in
-`"fact"`. `FROM public.yellow_trips f` is the fact table.
+The view's name, `trips`, is the fact's name, which asks read `FROM`.
+`FROM public.yellow_trips f` is the fact table. It needs no primary key:
+Straum takes the old row of an update or delete from `REPLICA IDENTITY
+FULL`, which the [setup SQL](postgresql.md) gives every fact table.
 
-- `key` is required: the fact table's primary key. It is never part of
-  the rollup, so it can't be grouped by.
-- `buckets` is optional: wider bucket widths, under [Time](#time).
+`WITH (buckets = ...)` is the only view option, and optional: wider
+bucket widths, under [Time](#time).
 
 Every column is qualified with its table's alias. Identifiers are
 unquoted: lowercase letters, digits and `_`, at most 63 bytes.
@@ -114,7 +115,7 @@ must fit their column.
 
 By columns, refs, dim keys and attributes are an integer type,
 `numeric(p, s)`, `boolean` or `text`. A ref's column and its dim's key
-must be of the same kind. The key can be any type.
+must be of the same kind.
 
 `GROUP BY` names exactly the selected columns and the bucket, by position
 or by expression, so the view groups the way the rollup does.

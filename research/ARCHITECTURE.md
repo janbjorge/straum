@@ -32,7 +32,7 @@ parses it and `straum-notation` walks the AST; anything outside the subset is
 an error that names it. The taxi example (`crates/straum-notation/tests/taxi.sql`):
 
 ```sql
-CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
+CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        f.payment_type,
        f.vendor_id,
@@ -54,15 +54,15 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
-- `WITH (key = COLUMN)`: the fact table's primary key. PostgreSQL rejects
-  view options, but Straum sends PostgreSQL neither the view nor its body.
-  The `SELECT` alone runs in PostgreSQL as is, which makes it the reference
-  for tests.
-- `buckets = '1 day, 7 days'` (optional): wider bucket widths Straum keeps
-  beside the `date_bin` one, so an ask reads a long range from few cells
-  (§3). Each is a wider whole multiple of the width before it and, like
-  `date_bin`'s, starts at the epoch, so 7-day buckets start on Thursdays.
-  Answers don't change.
+- `WITH (buckets = '1 day, 7 days')` (optional): wider bucket widths Straum
+  keeps beside the `date_bin` one, so an ask reads a long range from few
+  cells (§3). Each is a wider whole multiple of the width before it and,
+  like `date_bin`'s, starts at the epoch, so 7-day buckets start on
+  Thursdays. Answers don't change. PostgreSQL rejects view options, but
+  Straum sends PostgreSQL neither the view nor its body. The `SELECT` alone
+  runs in PostgreSQL as is, which makes it the reference for tests. The
+  fact table needs no primary key: `REPLICA IDENTITY FULL` gives Straum the
+  old row of every update and delete.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
 - `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
   `ALIAS`, an N:1 pointer from a fact column to a dim key. It is the only way
@@ -93,8 +93,8 @@ as from the raw join in PostgreSQL (PLAN.md, M1).
 
 `Spec::new` checks the declarations against each other and reports every
 problem at once: duplicate names, a grain that doesn't divide a day, a column
-used twice among time, by and ref, the fact's key in the rollup key, unknown
-dims, and filters on anything outside the rollup key. Column types and keys are
+used twice among time, by and ref, unknown dims, and filters on anything
+outside the rollup key. Column types and keys are
 checked against the catalog at start (M5).
 
 There are no expressions and no joins beyond refs. An aggregate Straum SQL

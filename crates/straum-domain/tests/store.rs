@@ -93,7 +93,6 @@ fn spec() -> Spec {
     let trips = Fact {
         name: id("trips"),
         table: table("trips"),
-        key: id("id"),
         time: Time {
             column: id("at"),
             grain: Grain(GRAIN),

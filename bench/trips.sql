@@ -2,7 +2,7 @@
 -- pickup zone, the keys its asks group and filter by.
 -- straum SQL: a PostgreSQL subset made only for straum specs.
 
-CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
+CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
 SELECT date_bin('1 hour', f.pickup_at, timestamptz 'epoch') AS hour,
        f.payment_type,
        f.pu_location_id,

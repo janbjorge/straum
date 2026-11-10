@@ -30,7 +30,6 @@ fn fact() -> Fact {
     Fact {
         name: id("t"),
         table: table("t"),
-        key: id("id"),
         time: Time {
             column: id("at"),
             grain: Grain(3_600),
@@ -147,7 +146,6 @@ fn every_error_is_reported_and_displayed() {
             "z declared twice",
             "z: name declared twice",
             "fact z: grain of 420s does not divide a day",
-            "fact z: key column id can't be part of the rollup key",
             "fact z: column at used twice among time, by and ref",
             "z: r declared twice",
             "fact z: ref r points at unknown dim nope",
@@ -156,5 +154,5 @@ fn every_error_is_reported_and_displayed() {
             "fact u: no measures",
         ]
     );
-    assert!(matches!(errors[6], SpecError::UnknownDim { .. }));
+    assert!(matches!(errors[5], SpecError::UnknownDim { .. }));
 }

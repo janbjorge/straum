@@ -7,7 +7,7 @@
 //! is one fact:
 //!
 //! ```sql
-//! CREATE VIEW trips WITH (key = id) AS
+//! CREATE VIEW trips AS
 //! SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
 //!        f.payment_type,
 //!        f.pu_location_id,
@@ -19,11 +19,10 @@
 //! GROUP BY 1, 2, 3;
 //! ```
 //!
-//! - `WITH (key = column)`: the fact table's primary key. PostgreSQL rejects
-//!   view options; straum never sends a view to PostgreSQL, so it needn't
-//!   take them.
-//! - `buckets = '1 day, 7 days'`: optional wider bucket widths, each a wider
-//!   whole multiple of the width before it.
+//! - `WITH (buckets = '1 day, 7 days')`: optional wider bucket widths, each
+//!   a wider whole multiple of the width before it. PostgreSQL rejects view
+//!   options; straum never sends a view to PostgreSQL, so it needn't take
+//!   them.
 //! - `FROM schema.table alias`: the fact.
 //! - `LEFT JOIN schema.table alias ON alias.key = fact.column`: a ref named
 //!   `alias` to the dim `table`. The fact column must be selected.

@@ -31,7 +31,7 @@ const LIMITS: Limits = Limits {
 };
 
 const SPEC: &str = "
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
        t.kind,
        t.zone_id,
@@ -44,7 +44,7 @@ FROM public.trips t
 LEFT JOIN public.zones zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (key = id) AS
+CREATE VIEW logins AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        count(*) AS logins

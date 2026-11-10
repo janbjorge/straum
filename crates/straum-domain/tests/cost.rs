@@ -83,7 +83,6 @@ fn spec(buckets: &[u32]) -> Spec {
     let trips = Fact {
         name: id("trips"),
         table: table("trips"),
-        key: id("id"),
         time: Time {
             column: id("at"),
             grain: Grain(HOUR),

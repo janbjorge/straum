@@ -31,8 +31,8 @@ struct Mapping {
     table: Ident,
     positions: Vec<usize>,
     types: Vec<ColumnType>,
-    key: usize,
-    key_type: ColumnType,
+    /// As `Table::key_width`.
+    key_width: usize,
     width: usize,
 }
 
@@ -80,8 +80,7 @@ impl Decoder {
             Message::Update { relation, old, new } => {
                 for m in mappings(&self.relations, relation) {
                     let old = match &old {
-                        Some(pgoutput::Old::Row(tuple)) => m.row(tuple, None)?.map(Old::Row),
-                        Some(pgoutput::Old::Key(tuple)) => Some(Old::Key(m.key(tuple)?)),
+                        Some(old) => m.old(old)?,
                         None => Some(Old::SameKey),
                     };
                     let fallback = match &old {
@@ -101,11 +100,7 @@ impl Decoder {
             }
             Message::Delete { relation, old } => {
                 for m in mappings(&self.relations, relation) {
-                    let old = match &old {
-                        pgoutput::Old::Row(tuple) => m.row(tuple, None)?.map(Old::Row),
-                        pgoutput::Old::Key(tuple) => Some(Old::Key(m.key(tuple)?)),
-                    };
-                    let change = match old {
+                    let change = match m.old(&old)? {
                         Some(old) => Change::Delete {
                             table: m.table.clone(),
                             old,
@@ -160,14 +155,6 @@ impl Decoder {
                 positions.push(i);
                 types.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
             }
-            let key = position(&table.key)?;
-            let key_type = match table.columns.iter().position(|c| *c == table.key) {
-                Some(i) => types[i],
-                None => {
-                    let c = &relation.columns[key];
-                    type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)
-                }
-            };
             let known = self.types.insert(table.name.clone(), types.clone());
             if known.as_ref() != Some(&types) {
                 self.changes.push(Change::Altered {
@@ -178,8 +165,7 @@ impl Decoder {
                 table: table.name.clone(),
                 positions,
                 types,
-                key,
-                key_type,
+                key_width: table.key_width,
                 width: relation.columns.len(),
             });
         }
@@ -226,10 +212,22 @@ impl Mapping {
         Ok(Some(row))
     }
 
+    /// The old row of an update or delete as straum needs it; `None` when
+    /// the change can't be read whole. A key-only old row of a fact is one:
+    /// the fact no longer has `REPLICA IDENTITY FULL`, so straum starts
+    /// over and the setup check says so.
+    fn old(&self, old: &pgoutput::Old) -> Result<Option<Old>, Error> {
+        match old {
+            pgoutput::Old::Row(tuple) => Ok(self.row(tuple, None)?.map(Old::Row)),
+            pgoutput::Old::Key(_) if self.key_width == 0 => Ok(None),
+            pgoutput::Old::Key(tuple) => Ok(Some(Old::Key(self.key(tuple)?))),
+        }
+    }
+
     fn key(&self, tuple: &Tuple) -> Result<Datum, Error> {
         self.fits(tuple)?;
-        match tuple[self.key] {
-            Field::Text(text) => Ok(read(self.key_type, text)?),
+        match tuple[self.positions[0]] {
+            Field::Text(text) => Ok(read(self.types[0], text)?),
             Field::Null | Field::Unchanged => {
                 Err(Error::Protocol("an old key without a value".into()))
             }
@@ -265,33 +263,24 @@ mod tests {
     }
 
     /// The spec reads `public.zones` twice: as dim `zones`, keyed on `id`,
-    /// and as fact `visits`, keyed on `ref`.
+    /// and as fact `visits`.
     fn decoder() -> Decoder {
-        let table =
-            |name: &str, columns: &[&str], types: Vec<ColumnType>, key: &str, key_type| Table {
-                name: id(name),
-                schema: id("public"),
-                table: id("zones"),
-                columns: columns.iter().map(|c| id(c)).collect(),
-                types,
-                key: id(key),
-                key_type,
-            };
+        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>, key_width| Table {
+            name: id(name),
+            schema: id("public"),
+            table: id("zones"),
+            columns: columns.iter().map(|c| id(c)).collect(),
+            types,
+            key_width,
+        };
         Decoder::new(vec![
             table(
                 "zones",
                 &["id", "name"],
                 vec![ColumnType::Int, ColumnType::Text],
-                "id",
-                ColumnType::Int,
+                1,
             ),
-            table(
-                "visits",
-                &["name"],
-                vec![ColumnType::Text],
-                "ref",
-                ColumnType::Text,
-            ),
+            table("visits", &["name"], vec![ColumnType::Text], 0),
         ])
     }
 
@@ -410,11 +399,9 @@ mod tests {
                     table: z.clone(),
                     old: Old::Key(int(1))
                 },
-                // A fact's key of a type straum doesn't read comes as text.
-                Change::Delete {
-                    table: v.clone(),
-                    old: Old::Key(text("r-1"))
-                },
+                // A fact sends its key alone only once it has lost REPLICA
+                // IDENTITY FULL, which straum can't follow.
+                Change::Altered { table: v.clone() },
                 Change::Truncate { table: z },
                 Change::Truncate { table: v },
             ]
@@ -516,7 +503,6 @@ mod tests {
 
         let lost = relation(7, &[("ref", UUID), ("name", TEXT)]);
         let unreadable = relation(7, &[("ref", UUID), ("id", FLOAT8), ("name", TEXT)]);
-        let no_key = relation(7, &[("id", INT4), ("name", TEXT)]);
         for (message, expected) in [
             (
                 lost,
@@ -525,10 +511,6 @@ mod tests {
             (
                 unreadable,
                 "zones: column id of public.zones was dropped or changed type",
-            ),
-            (
-                no_key,
-                "visits: column ref of public.zones was dropped or changed type",
             ),
         ] {
             let err = decoder().feed(message).unwrap_err().to_string();

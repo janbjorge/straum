@@ -20,10 +20,9 @@ pub(crate) struct Table {
     /// its attributes.
     pub(crate) columns: Vec<Ident>,
     pub(crate) types: Vec<ColumnType>,
-    /// The fact's or dim's key. A fact's key may be of any type; straum only
-    /// needs to see that a change carries it instead of the whole row.
-    pub(crate) key: Ident,
-    pub(crate) key_type: ColumnType,
+    /// How many of `columns`, from the first, a change names a row by: a
+    /// dim's key. 0 for a fact, whose changes carry the whole old row.
+    pub(crate) key_width: usize,
 }
 
 impl Table {
@@ -269,7 +268,7 @@ pub(crate) fn check(
         let checked = check_table(
             &dim.table,
             &dim.name,
-            None,
+            1,
             roles,
             catalog,
             publication,
@@ -285,7 +284,7 @@ pub(crate) fn check(
         let checked = check_table(
             &fact.table,
             &fact.name,
-            Some(&fact.key),
+            0,
             roles,
             catalog,
             publication,
@@ -333,12 +332,12 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
 }
 
 /// The checks every table gets. `roles` names each column the spec reads,
-/// with what for; a column may come twice. A dim's key comes first in
-/// `roles`; a fact's `key` is apart, since it may be of any type.
+/// with what for; a column may come twice. A dim's key columns come first
+/// in `roles`, `key_width` of them.
 fn check_table<'a>(
     table: &straum_domain::Table,
     name: &Ident,
-    key: Option<&Ident>,
+    key_width: usize,
     roles: Vec<(&Ident, Role)>,
     catalog: &'a Catalog,
     publication: &str,
@@ -413,17 +412,6 @@ fn check_table<'a>(
             }
         }
     }
-    // A fact's key reads as text when straum doesn't read its type.
-    let key_type = match key {
-        None => types.first().copied(),
-        Some(key) => match column(key) {
-            Ok(c) => Some(type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)),
-            Err(problem) => {
-                problems.push(problem);
-                None
-            }
-        },
-    };
     if problems.len() > before {
         return None;
     }
@@ -431,10 +419,9 @@ fn check_table<'a>(
         name: name.clone(),
         schema: table.schema.clone(),
         table: table.name.clone(),
-        key: key.unwrap_or(&columns[0]).clone(),
         columns,
         types,
-        key_type: key_type.expect("no problem, so the key was found"),
+        key_width,
     };
     Some((table, relation))
 }
@@ -470,7 +457,7 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
             if via != key {
                 problems.push(format!(
                     "fact {}: ref {} joins {} ({via}) to {} ({key}); they must read alike",
-                    fact.name, r.name, r.via, dim.key
+                    fact.name, r.name, r.via, dim.columns[0]
                 ));
             }
         }

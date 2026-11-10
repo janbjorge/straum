@@ -336,6 +336,11 @@ Tests:
   per-cell time budget would catch it too, but as a noisy bound. The lib
   and binary crates keep `#![forbid(unsafe_code)]`; this test is outside
   them and is the only exception. Don't revisit.
+- 2026-11-10: No `key` view option. A fact's identity comes from `REPLICA
+  IDENTITY FULL`, which every fact table needs anyway (2026-11-09), so the
+  option was only ever checked for existence and the fact table needs no
+  primary key. `buckets` is the only view option. A spec that still says
+  `WITH (key = ...)` is refused by name, with the reason.
 
 ## M0: notation and domain model
 

@@ -232,7 +232,7 @@ fn ask_rejects_bad_shape() {
 }
 
 /// One fact `t` with a ref `z`, valid as written. Tests swap one piece.
-const BASE: &str = "CREATE VIEW t WITH (key = id) AS
+const BASE: &str = "CREATE VIEW t AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a, f.z_id, z.name, count(*) AS n
 FROM public.t f
@@ -249,7 +249,6 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.key, id("id"));
     assert_eq!(t.by, [id("a")]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, id("z_id"));
@@ -260,14 +259,17 @@ fn base_parses() {
 
 #[test]
 fn buckets_parse() {
-    let src = base("key = id", "key = id, buckets = '1 day,7 days'");
+    let src = base("VIEW t AS", "VIEW t WITH (buckets = '1 day,7 days') AS");
     let spec = parse(&src).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.buckets,
         [Grain(86_400), Grain(604_800)]
     );
 
-    let src = base("key = id", "key = id, buckets = '90 minutes, 1 day'");
+    let src = base(
+        "VIEW t AS",
+        "VIEW t WITH (buckets = '90 minutes, 1 day') AS",
+    );
     assert_eq!(
         spec_errors(&src),
         [SpecError::BadBucket {
@@ -321,7 +323,7 @@ fn literals_and_filters() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let src = "CREATE OR REPLACE VIEW T WITH (KEY = ID) AS
+    let src = "CREATE OR REPLACE VIEW T AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch'),
        f.a, z.id,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
@@ -390,19 +392,14 @@ fn spec_errors_pass_through() {
     let src = base("'1 hour'", "'7 minutes'").replace("f.a,", "f.id, f.z_id AS z,");
     assert!(matches!(parse(&src), Err(Error::Sql(_))));
 
-    let src = base("'1 hour'", "'7 minutes'")
-        .replace("f.a, f.z_id", "f.id, f.z_id")
-        .replace("count(*) AS n", "count(*) AS n, count(*) AS n");
+    let src =
+        base("'1 hour'", "'7 minutes'").replace("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(
         spec_errors(&src),
         [
             SpecError::BadGrain {
                 fact: id("t"),
                 seconds: 420
-            },
-            SpecError::KeyInRollup {
-                fact: id("t"),
-                column: id("id")
             },
             SpecError::Duplicate {
                 scope: Some(id("t")),
@@ -478,93 +475,82 @@ fn rejects_everything_outside_the_subset() {
             "SECURE is not in straum SQL",
         ),
         (
-            "VIEW t WITH",
-            "VIEW t COPY GRANTS WITH",
+            "VIEW t AS",
+            "VIEW t COPY GRANTS AS",
             1,
             "COPY GRANTS is not in straum SQL",
         ),
         (
-            "VIEW t WITH",
-            "VIEW t (a, b) WITH",
+            "VIEW t AS",
+            "VIEW t (a, b) AS",
             1,
             "a view column list is not in straum SQL",
         ),
         (
-            "VIEW t WITH",
-            "VIEW s.t WITH",
+            "VIEW t AS",
+            "VIEW s.t AS",
             1,
             "view s.t must be a bare name",
         ),
         (
-            "VIEW t WITH",
-            "VIEW \"t\" WITH",
+            "VIEW t AS",
+            "VIEW \"t\" AS",
             1,
             "quoted identifier `\"t\"` is not in straum SQL",
         ),
-        // Options.
+        // Options. `key` was required once; a spec that still has it says so.
         (
-            " WITH (key = id)",
-            "",
+            "VIEW t AS",
+            "VIEW t WITH (key = id) AS",
             1,
-            "view t needs WITH (key = <column>)",
+            "view option key = id is gone: straum reads the whole old row \
+             under REPLICA IDENTITY FULL, so drop it",
         ),
         (
-            "key = id",
-            "key = id, colour = 1",
+            "VIEW t AS",
+            "VIEW t WITH (colour = 1) AS",
             1,
             "view option `colour = 1` is not in straum SQL",
         ),
         (
-            "key = id",
-            "key = id, key = id",
-            1,
-            "view option key given twice",
-        ),
-        (
-            "key = id",
-            "key = 'id'",
-            1,
-            "key `'id'` is not in straum SQL",
-        ),
-        (
-            "key = id",
-            "key = id, append = true",
+            "VIEW t AS",
+            "VIEW t WITH (append = true) AS",
             1,
             "view option `append = true` is not in straum SQL",
         ),
         (
-            "key = id",
-            "key = id, buckets = 1",
+            "VIEW t AS",
+            "VIEW t WITH (buckets = 1) AS",
             1,
             "buckets, use '<n> <unit>, ...', `1`",
         ),
         (
-            "key = id",
-            "key = id, buckets = '1 day, 2 weeks'",
+            "VIEW t AS",
+            "VIEW t WITH (buckets = '1 day, 2 weeks') AS",
             1,
             "bucket width '2 weeks': use '<n> seconds|minutes|hours|days'",
         ),
         (
-            "key = id",
-            "key = id, buckets = ''",
+            "VIEW t AS",
+            "VIEW t WITH (buckets = '') AS",
             1,
             "bucket width '': use",
         ),
         (
-            "key = id",
-            "key = id, buckets = '1 day', buckets = '2 days'",
+            "VIEW t AS",
+            "VIEW t WITH (buckets = '1 day', buckets = '2 days') AS",
             1,
             "view option buckets given twice",
         ),
         (
-            "key = id",
-            "key = id, \"key\" = id",
+            "VIEW t AS",
+            "VIEW t WITH (\"buckets\" = '1 day') AS",
             1,
-            "quoted identifier `\"key\"`",
+            "quoted identifier `\"buckets\"`",
         ),
         (
-            "key = id",
-            &format!("key = {}", "k".repeat(64)),
+            "VIEW t AS",
+            &format!("VIEW t WITH ({} = 1) AS", "k".repeat(64)),
             1,
             "bad identifier kkkk",
         ),
@@ -1143,10 +1129,14 @@ fn parser_errors_and_deep_nesting_are_errors() {
 
 #[test]
 fn error_display() {
-    let src = base("key = id", "key = id, key = id").replace("f.a,", "a,");
+    let src = base(
+        "VIEW t AS",
+        "VIEW t WITH (buckets = '1 day', buckets = '2 days') AS",
+    )
+    .replace("f.a,", "a,");
     assert_eq!(
         parse(&src).unwrap_err().to_string(),
-        "line 1: view option key given twice\n\
+        "line 1: view option buckets given twice\n\
          line 3: qualify column a with its table alias"
     );
     let src = base("count(*) AS n", "count(*) AS n, count(*) AS n");

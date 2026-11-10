@@ -44,7 +44,7 @@ const START: i64 = 1_705_276_800;
 
 /// The spec the taxi-shaped tests follow. `$S` is the test's schema.
 const SPEC: &str = "
-CREATE VIEW trips WITH (key = id, buckets = '1 day') AS
+CREATE VIEW trips WITH (buckets = '1 day') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.kind,
        f.zone_id,
@@ -61,7 +61,7 @@ FROM $S.trips f
 LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (key = id, buckets = '7 days') AS
+CREATE VIEW logins WITH (buckets = '7 days') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        pickup.toll,
@@ -1114,7 +1114,7 @@ fn setup_problems_say_what_to_fix() {
                  ALTER TABLE $S.f REPLICA IDENTITY FULL;"
             ),
             format!(
-                "CREATE VIEW f WITH (key = id) AS
+                "CREATE VIEW f AS
                  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
                  FROM $S.f t GROUP BY 1;"
             ),
@@ -1178,9 +1178,11 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "nokey",
-            format!("CREATE TABLE $S.f (at timestamptz, x int); {publish}"),
+            format!(
+                "CREATE TABLE $S.f (at timestamptz, x int); ALTER TABLE $S.f REPLICA IDENTITY FULL; {publish}"
+            ),
             spec.clone(),
-            "f: nokey.f has no column id",
+            "",
         ),
         (
             "float",
@@ -1259,7 +1261,7 @@ fn setup_problems_say_what_to_fix() {
     }
 
     let dim_spec = "
-        CREATE VIEW f WITH (key = id) AS
+        CREATE VIEW f AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id, d.name, count(*) AS n
         FROM $S.f t LEFT JOIN $S.d d ON d.k = t.d_id GROUP BY 1, 2, 3;";

@@ -14,7 +14,7 @@ use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
 const SPEC: &str = "
-CREATE VIEW trips WITH (key = id) AS
+CREATE VIEW trips AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
        t.kind,
        t.zone_id,

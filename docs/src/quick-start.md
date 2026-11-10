@@ -48,7 +48,7 @@ SQL
 Save as `orders.sql`:
 
 ```sql
-CREATE VIEW orders WITH (key = id) AS
+CREATE VIEW orders AS
 SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
        o.status,
        o.customer_id,

@@ -36,7 +36,6 @@ impl Dim {
 pub struct Fact {
     pub name: Ident,
     pub table: Table,
-    pub key: Ident,
     pub time: Time,
     pub refs: Vec<Ref>,
     pub by: Vec<Ident>,
@@ -276,12 +275,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         .chain(&fact.by)
         .chain(fact.refs.iter().map(|r| &r.via));
     for column in roles {
-        if *column == fact.key {
-            errors.push(SpecError::KeyInRollup {
-                fact: name.clone(),
-                column: column.clone(),
-            });
-        } else if !columns.insert(column) {
+        if !columns.insert(column) {
             errors.push(SpecError::ColumnReused {
                 fact: name.clone(),
                 column: column.clone(),
@@ -354,11 +348,6 @@ pub enum SpecError {
         seconds: u32,
         below: u32,
     },
-    /// The fact's own key would be a rollup key, so nothing aggregates.
-    KeyInRollup {
-        fact: Ident,
-        column: Ident,
-    },
     /// A column is used twice among `time`, `by` and ref `via`.
     ColumnReused {
         fact: Ident,
@@ -405,12 +394,6 @@ impl fmt::Display for SpecError {
                 f,
                 "fact {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
             ),
-            SpecError::KeyInRollup { fact, column } => {
-                write!(
-                    f,
-                    "fact {fact}: key column {column} can't be part of the rollup key"
-                )
-            }
             SpecError::ColumnReused { fact, column } => {
                 write!(
                     f,

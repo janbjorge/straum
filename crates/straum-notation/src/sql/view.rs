@@ -5,7 +5,6 @@ use super::{SqlError, Walker, function_name, line};
 
 /// What a view's `WITH` declares.
 struct ViewOptions {
-    key: Option<Ident>,
     buckets: Vec<Grain>,
 }
 
@@ -86,9 +85,9 @@ impl Walker {
         self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
 
         let fact_name = self.name(name, 1, "view").map(|mut n| n.remove(0));
-        let ViewOptions { key, buckets } = self.options(at, name, options);
+        let ViewOptions { buckets } = self.options(at, options);
         let body = self.query(query);
-        let (Some(name), Some(key), Some(body)) = (fact_name, key, body) else {
+        let (Some(name), Some(body)) = (fact_name, body) else {
             return;
         };
         if self.errors.len() > before {
@@ -112,7 +111,6 @@ impl Walker {
         self.facts.push(Fact {
             name,
             table,
-            key,
             time,
             refs,
             by,
@@ -158,14 +156,10 @@ impl Walker {
         }
     }
 
-    /// `WITH (key = column, buckets = '1 day, 7 days')`.
-    fn options(
-        &mut self,
-        at: u64,
-        view: &sql::ObjectName,
-        options: &sql::CreateTableOptions,
-    ) -> ViewOptions {
-        let mut key = None;
+    /// `WITH (buckets = '1 day, 7 days')`. The `key` option of earlier specs
+    /// is refused by name, since a spec that still has it was written for a
+    /// straum that needed it.
+    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> ViewOptions {
         let mut buckets = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
@@ -184,31 +178,29 @@ impl Walker {
             let Some(name) = self.ident(name) else {
                 continue;
             };
-            let slot = match name.as_str() {
-                "key" => &mut key,
-                "buckets" => &mut buckets,
+            match name.as_str() {
+                "buckets" => {}
+                "key" => {
+                    self.error(
+                        at,
+                        format!(
+                            "view option {option} is gone: straum reads the whole old row \
+                             under REPLICA IDENTITY FULL, so drop it"
+                        ),
+                    );
+                    continue;
+                }
                 _ => {
                     self.reject(at, "view option", option);
                     continue;
                 }
-            };
-            if slot.is_some() {
+            }
+            if buckets.is_some() {
                 self.error(at, format!("view option {name} given twice"));
                 continue;
             }
-            *slot = Some(value);
+            buckets = Some(value);
         }
-        let key = match key {
-            Some(sql::Expr::Identifier(id)) => self.ident(id),
-            Some(other) => {
-                self.reject(line(other), "key", other);
-                None
-            }
-            None => {
-                self.error(at, format!("view {view} needs WITH (key = <column>)"));
-                None
-            }
-        };
         let buckets = match buckets {
             None => Vec::new(),
             Some(
@@ -234,7 +226,7 @@ impl Walker {
                 Vec::new()
             }
         };
-        ViewOptions { key, buckets }
+        ViewOptions { buckets }
     }
 
     fn query(&mut self, query: &sql::Query) -> Option<Body> {
