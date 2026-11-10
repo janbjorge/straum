@@ -48,7 +48,11 @@ flight and exits, and PostgreSQL drops the slot as the connection closes.
 
 ## States
 
-![Straum moves from Loading to Ready once every table is loaded. Ready turns Lagging past --max-lag and back once it catches up. Any failure leads to Waiting, then Loading from a new slot. SIGTERM leads to Stopping.](diagrams/lifecycle.svg)
+![The states of a running straum](diagrams/lifecycle.svg)
+
+*Loading turns Ready once every table is in. Ready turns Lagging past
+`--max-lag` and back when it catches up. Any failure leads to Waiting,
+then Loading from a new slot. SIGTERM leads to Stopping.*
 
 | State | `/readyz` | Asks |
 | --- | --- | --- |

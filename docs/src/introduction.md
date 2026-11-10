@@ -49,7 +49,11 @@ month of New York taxi trips, the [benchmark](benchmark.md) answers in
 150 to 190 µs where PostgreSQL takes 22 to 171 ms, from 40 MiB of
 memory.
 
-![PostgreSQL holds the tables and the WAL. A table owner runs the setup SQL that straum plan prints, once. On every start, straum run loads a snapshot at LSN L, then applies every commit after L. Apps ask over HTTP.](diagrams/overview.svg)
+![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
+
+*A table owner runs the SQL `straum plan` prints, once. Every start of
+`straum run` loads a snapshot at LSN L and applies every commit after L.
+Apps ask over HTTP.*
 
 Straum needs PostgreSQL 17 or newer as shipped, with no extension and no
 superuser, so managed services work. The name is Nynorsk for a stream

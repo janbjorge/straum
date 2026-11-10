@@ -6,7 +6,11 @@ between the load and the stream, and none is applied twice.
 
 ## Start
 
-![The writer thread connects for replication and opens a temporary logical slot whose snapshot is at L. In that snapshot it checks the catalog and loads each fact joined to its dims, then swaps the loaded store in. The stream starts at L, and a stream thread hands each commit to the writer, which applies it under the write lock.](diagrams/start.svg)
+![How a start goes from connect to streaming](diagrams/start.svg)
+
+*The writer opens a temporary slot whose snapshot is at L, checks the
+catalog and loads every fact table in that snapshot, then streams from
+L. A stream thread hands each commit to the writer.*
 
 1. Straum opens a replication connection and creates a temporary logical
    slot with `pgoutput`. PostgreSQL exports a snapshot at the slot's
