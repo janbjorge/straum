@@ -1,8 +1,8 @@
 # Straum architecture (2026-11-10)
 
 How Straum works since aggregates are declared in Straum SQL, a PostgreSQL
-`CREATE VIEW` subset made only for Straum specs. PLAN.md tracks the build
-and holds the dated decisions this follows; the user guide (`docs/`) says
+`CREATE VIEW` subset made only for Straum specs. `docs/adr/` holds the
+decisions this follows; the user guide (`docs/`) says
 how to use and run it.
 First target: AKS next to Azure Database for PostgreSQL Flexible Server 18
 (AKS.md). The constraints are the managed ones: no custom extension, no
@@ -501,7 +501,7 @@ One code path covers all of them. Azure Flexible Server 18 defaults to
 - Spec from a ConfigMap; DSN from `STRAUM_DSN`, which the chart reads from an
   existing Secret, or a file (`--dsn-file`), never from the command line.
 - Telemetry: none yet; `GET /status` and `straum status` show `as of`, lag,
-  WAL held, starts and failures. Telemetry is an M8 box (PLAN.md).
+  WAL held, starts and failures. Telemetry is planned (ADR-0023).
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: the guide's quick start runs `postgres:18` in Docker.

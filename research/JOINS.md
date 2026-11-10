@@ -149,7 +149,7 @@ when the row was processed, not as of the commit, and not as of the ask.
   for it.
 - Between a commit and its apply, the dims may have moved on; the lookup
   reads them as they are at apply time. A snapshot at the commit's LSN
-  would need a slot per commit. Open in PLAN.md.
+  would need a slot per commit.
 - PostgreSQL's view regroups on a dim change; Straum's answer catches up
   on the next start over. For a dim that must move history, select the
   join column too and map in the client, or ask PostgreSQL.

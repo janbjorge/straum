@@ -32,8 +32,8 @@ allow, a wire proxy in front of all traffic, or Straum parsing SQL itself
 On 2026-11-08 jb dropped SQL. Aggregates are declared in a spec read at
 start, and asked for over HTTP. The spec was Straum's own notation at first and
 is now Straum SQL, a PostgreSQL `CREATE VIEW` subset made only for Straum specs
-and parsed by `sqlparser`. ARCHITECTURE.md describes that design; PLAN.md at the repository root tracks the build and lists the
-decisions.
+and parsed by `sqlparser`. ARCHITECTURE.md describes that design; `docs/adr/` holds
+the decisions.
 
 What carried over from the research:
 

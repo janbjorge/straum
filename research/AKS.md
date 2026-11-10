@@ -60,7 +60,7 @@ Probes:
 Defaults: the Restricted Pod Security Standard (`runAsNonRoot`, uid 65532
 of the distroless `nonroot` image, seccomp `RuntimeDefault`, drop ALL
 capabilities), a read-only root filesystem, no `imagePullSecrets` (ACR pulls
-by managed identity). Telemetry is planned for M8 (PLAN.md); until then
+by managed identity). Telemetry is planned (ADR-0023); until then
 `kubectl exec deployment/straum -- /straum status` shows what Straum has
 done.
 
