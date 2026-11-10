@@ -54,7 +54,7 @@ dims are at that moment. Then it applies the transaction whole:
 
 Dims are not in the stream. A change to a dim row shows in the fact rows
 that come after it and leaves the cells before it as they were, as
-[Writing a spec](spec.md#dims-refs-and-attributes) describes.
+[Writing a spec](spec.md#joining-a-lookup-table) describes.
 
 A change Straum can't apply makes it [start over](running.md#states)
 from a new slot: an update without its old row, a row that doesn't fit
