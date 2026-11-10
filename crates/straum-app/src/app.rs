@@ -12,9 +12,6 @@ use straum_domain::{Answer, Ask, AskError, Ident, RowError, Spec, Store};
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
 
-/// Panic message for facts taken from the spec.
-const IN_SPEC: &str = "every applied fact is in the spec";
-
 /// Panic message for a poisoned lock. The store may be half updated, so
 /// nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
@@ -257,9 +254,7 @@ impl State {
                 self.store.add_fact_row(table.as_str(), &new)?;
             }
             Change::Delete { table, old } => self.store.remove_fact_row(table.as_str(), &old)?,
-            Change::Truncate { table } => {
-                self.store.clear_fact(table.as_str()).expect(IN_SPEC);
-            }
+            Change::Truncate { table } => self.store.clear_fact(table.as_str()),
             Change::Altered { .. } => return Err(Stale),
         }
         Ok(())

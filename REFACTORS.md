@@ -40,7 +40,7 @@ python3 scripts/check-layers.py
   `ask.rs:61`, `ask.rs:84`, `store.rs:219`,
   `crates/straum-pg/src/catalog.rs:540`, tests `spec.rs:94-101`.
   `Store::slot` then needs no `self.spec`.
-- [ ] **`Store` lookup helpers and one convention for unknown facts**
+- [x] **`Store` lookup helpers and one convention for unknown facts**
   (straum-domain, straum-app). The fact lookup repeats at
   `crates/straum-domain/src/store.rs:52`, `59`, `65`, `73`, `94`, `102`.
   Add `fn rollup_mut(&mut self, fact) -> &mut Rollup` and

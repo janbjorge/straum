@@ -49,29 +49,25 @@ impl Store {
     /// Sets the types of a row of `fact`: [`Fact::columns`], then
     /// [`Fact::attrs`]. Only the source knows them, so a load sets them.
     pub fn set_fact_types(&mut self, fact: &str, types: &[ColumnType]) -> Result<(), RowError> {
-        let f = self.fact_index(fact).expect(IN_SPEC);
-        self.rollups[f].set_types(types)
+        self.rollup_mut(fact).set_types(types)
     }
 
     /// Adds rows laid end to end, as a load reads them: [`Fact::columns`]
     /// then [`Fact::attrs`], each resolved by the source.
     pub fn add_fact_rows(&mut self, fact: &str, rows: &[Datum]) -> Result<(), RowError> {
-        let f = self.fact_index(fact).expect(IN_SPEC);
-        self.rollups[f].add_rows(rows)
+        self.rollup_mut(fact).add_rows(rows)
     }
 
     /// Adds one row, as the stream brings it.
     pub fn add_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
-        let f = self.fact_index(fact).expect(IN_SPEC);
-        self.rollups[f].add(row)
+        self.rollup_mut(fact).add(row)
     }
 
     /// Removes one row. A row whose attributes the source now resolves
     /// otherwise than when it came in is not found, so the caller starts
     /// over, which resolves everything again.
     pub fn remove_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
-        let f = self.fact_index(fact).expect(IN_SPEC);
-        self.rollups[f].remove(row)
+        self.rollup_mut(fact).remove(row)
     }
 
     pub fn spec(&self) -> &Spec {
@@ -79,10 +75,8 @@ impl Store {
     }
 
     /// Drops every row of a fact after a truncate.
-    pub fn clear_fact(&mut self, fact: &str) -> Option<()> {
-        let i = self.fact_index(fact)?;
-        self.rollups[i].clear();
-        Some(())
+    pub fn clear_fact(&mut self, fact: &str) {
+        self.rollup_mut(fact).clear();
     }
 
     pub fn cells(&self, fact: &str) -> Option<usize> {
@@ -90,16 +84,14 @@ impl Store {
     }
 
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
-        let fact = self.spec.check(ask)?;
-        let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
+        let (_, rollup) = self.checked(ask)?;
         Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
     }
 
     /// Every key is a slot of the rollup key, so the cell loop only looks
     /// up what each code of a slot maps to.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
-        let fact = self.spec.check(ask)?;
-        let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
+        let (fact, rollup) = self.checked(ask)?;
         // Only the load knows the types, so this check comes after Spec::check.
         let wrong: Vec<AskError> = (ask.filter.iter())
             .flat_map(|cond| {
@@ -212,6 +204,17 @@ impl Store {
             .facts()
             .iter()
             .position(|f| f.name.as_str() == name)
+    }
+
+    fn rollup_mut(&mut self, fact: &str) -> &mut Rollup {
+        let i = self.fact_index(fact).expect(IN_SPEC);
+        &mut self.rollups[i]
+    }
+
+    fn checked(&self, ask: &Ask) -> Result<(&Fact, &Rollup), Vec<AskError>> {
+        let fact = self.spec.check(ask)?;
+        let i = self.fact_index(fact.name.as_str()).expect(CHECKED);
+        Ok((fact, &self.rollups[i]))
     }
 
     /// The rollup-key slot a key path names.

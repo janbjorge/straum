@@ -817,7 +817,7 @@ fn clear_drops_every_row() {
     let mut store = Store::new(spec());
     let trip = trip(&mut Rng(5));
     store.add_fact_row("trips", &trip).unwrap();
-    store.clear_fact("trips").unwrap();
+    store.clear_fact("trips");
     assert_eq!(store.cells("trips"), Some(0));
     assert_eq!(
         store.remove_fact_row("trips", &trip),
@@ -900,7 +900,7 @@ fn types_stay_through_clear() {
     // An attribute has the type its dim column has.
     types[PICKUP_ZONE] = ColumnType::Numeric { scale: 4 };
     store.set_fact_types("trips", &types).unwrap();
-    store.clear_fact("trips").unwrap();
+    store.clear_fact("trips");
     assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
 }
 
