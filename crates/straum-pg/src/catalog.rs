@@ -161,12 +161,9 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             published,
             row_filter,
         ] = row.try_into().map_err(|_| shape("relations"))?;
-        let list = |s: Option<String>| -> Vec<String> {
-            s.map(|s| s.split(',').map(str::to_owned).collect())
-                .unwrap_or_default()
-        };
+        let list = |s: &str| -> Vec<String> { s.split(',').map(str::to_owned).collect() };
         let lists = |s: Option<String>| -> Vec<Vec<String>> {
-            s.map(|s| s.split(';').map(|l| list(Some(l.to_owned()))).collect())
+            s.map(|s| s.split(';').map(list).collect())
                 .unwrap_or_default()
         };
         catalog.relations.push(Relation {
@@ -176,7 +173,7 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
             unique_indexes: lists(unique_indexes),
-            published: published.map(|p| list(Some(p))),
+            published: published.as_deref().map(list),
             row_filter: row_filter.as_deref() == Some("t"),
             columns: Vec::new(),
         });

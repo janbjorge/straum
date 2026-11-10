@@ -149,7 +149,7 @@ python3 scripts/check-layers.py
   straum-app or accept the copy.
 - [x] `crates/straum-domain/src/store.rs:247`: `enum Source` shares a name
   with `straum_app::Source`; rename, e.g. `KeyOf`.
-- [ ] `crates/straum-pg/src/catalog.rs:164-171`: `lists` calls
+- [x] `crates/straum-pg/src/catalog.rs:164-171`: `lists` calls
   `list(Some(l.to_owned()))`; let `list` take `&str`.
 - [ ] `crates/straum-pg/src/source.rs:87` and `:105`: the full catalog is
   read twice per open, on purpose (f8378e1 checks before the slot). The
