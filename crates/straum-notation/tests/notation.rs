@@ -264,6 +264,38 @@ fn base_parses() {
     );
 }
 
+/// Without an alias a table goes by its name, without a schema it is in
+/// `public`, and a bare column is the fact's, as PostgreSQL would read
+/// the same view.
+#[test]
+fn alias_schema_and_qualification_default() {
+    let src = "CREATE VIEW t AS
+SELECT date_bin('1 hour', at, timestamptz 'epoch') AS bucket,
+       a, z_id, z.name, count(*) AS n
+FROM t
+LEFT JOIN z ON z.id = z_id
+GROUP BY 1, 2, 3, 4";
+    let spec = parse(src).unwrap();
+    let t = spec.fact("t").unwrap();
+    assert_eq!((&t.table.schema, &t.table.name), (&id("public"), &id("t")));
+    assert_eq!(t.time.column, id("at"));
+    assert_eq!(t.by, [By::Column(id("a")), By::Column(id("z_id"))]);
+    assert_eq!(
+        (&t.refs[0].name, &t.refs[0].via[..]),
+        (&id("z"), &[id("z_id")][..])
+    );
+    assert_eq!(spec.dim("z").unwrap().table.schema, id("public"));
+    assert_eq!(parse(src).unwrap(), parse(BASE).unwrap());
+
+    // A bare column is never a dim's: the dim is reached through its alias.
+    let errors = sql_errors(&base("z.name", "name"));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(
+        errors[0].msg,
+        "LEFT JOIN z selects no column of it; select one or drop the join"
+    );
+}
+
 #[test]
 fn buckets_parse() {
     let src = base("VIEW t AS", "VIEW t WITH (buckets = '1 day,7 days') AS");
@@ -1108,14 +1140,14 @@ fn rejects_everything_outside_the_subset() {
         (
             "FROM public.t f",
             "FROM public.t",
-            4,
-            "table public.t needs an alias",
+            3,
+            "unknown table alias f",
         ),
         (
             "FROM public.t f",
-            "FROM t f",
+            "FROM db.public.t f",
             4,
-            "table t must be schema.table",
+            "table db.public.t must be schema.table",
         ),
         (
             "FROM public.t f",
@@ -1182,12 +1214,6 @@ fn rejects_everything_outside_the_subset() {
             "f.a AS b, f.z_id",
             3,
             "alias on a key column `b` is not",
-        ),
-        (
-            "f.a, f.z_id",
-            "a, f.z_id",
-            3,
-            "qualify column a with its table alias",
         ),
         (
             "f.a, f.z_id",
@@ -1529,11 +1555,11 @@ fn error_display() {
         "VIEW t AS",
         "VIEW t WITH (buckets = '1 day', buckets = '2 days') AS",
     )
-    .replace("f.a,", "a,");
+    .replace("f.a,", "q.a,");
     assert_eq!(
         parse(&src).unwrap_err().to_string(),
         "line 1: view option buckets given twice\n\
-         line 3: qualify column a with its table alias"
+         line 3: unknown table alias q"
     );
     let src = base("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(parse(&src).unwrap_err().to_string(), "t: n declared twice");

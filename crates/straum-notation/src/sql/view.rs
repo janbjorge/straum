@@ -409,7 +409,8 @@ impl Walker {
         Some((table, scope))
     }
 
-    /// `schema.table alias`.
+    /// `schema.table alias`. The schema defaults to `public` and the alias
+    /// to the table's name, as PostgreSQL resolves them.
     fn table(&mut self, factor: &sql::TableFactor) -> Option<(Table, Ident)> {
         let sql::TableFactor::Table {
             name,
@@ -436,24 +437,39 @@ impl Walker {
         self.absent(at, json_path.is_some(), "a JSON path");
         self.absent(at, sample.is_some(), "TABLESAMPLE");
         self.absent(at, !index_hints.is_empty(), "an index hint");
-        let parts = self.name(name, 2, "table");
-        let Some(sql::TableAlias {
-            explicit: _,
-            name: alias,
-            columns,
-            at: at_time,
-        }) = alias
-        else {
-            self.error(at, format!("table {name} needs an alias"));
-            return None;
+        let parts = self.table_name(name);
+        let alias = match alias {
+            Some(sql::TableAlias {
+                explicit: _,
+                name: alias,
+                columns,
+                at: at_time,
+            }) => {
+                self.absent(at, !columns.is_empty(), "an alias column list");
+                self.absent(at, at_time.is_some(), "AT");
+                Some(self.ident(alias)?)
+            }
+            None => None,
         };
-        self.absent(at, !columns.is_empty(), "an alias column list");
-        self.absent(at, at_time.is_some(), "AT");
-        let alias = self.ident(alias)?;
-        let mut parts = parts?;
-        let name = parts.pop()?;
-        let schema = parts.pop()?;
+        let (schema, name) = parts?;
+        let alias = alias.unwrap_or_else(|| name.clone());
         Some((Table { schema, name }, alias))
+    }
+
+    /// `schema.table` or `table`, which is `public.table`.
+    fn table_name(&mut self, name: &sql::ObjectName) -> Option<(Ident, Ident)> {
+        let sql::ObjectName(list) = name;
+        if list.len() > 2 {
+            self.error(line(name), format!("table {name} must be schema.table"));
+            return None;
+        }
+        let mut parts = self.name(name, list.len(), "table")?;
+        let name = parts.pop()?;
+        let schema = match parts.pop() {
+            Some(schema) => schema,
+            None => Ident::new("public")?,
+        };
+        Some((schema, name))
     }
 
     /// `LEFT JOIN schema.dim alias ON alias.key = fact.column`, with more
@@ -493,8 +509,8 @@ impl Walker {
                     op: sql::BinaryOperator::Eq,
                     right,
                 } => self
-                    .qualified(left)
-                    .zip(self.qualified(right))
+                    .qualified(&scope.alias, left)
+                    .zip(self.qualified(&scope.alias, right))
                     .and_then(|(l, r)| {
                         if l.0 == alias && r.0 == scope.alias {
                             Some((l.1, r.1))
@@ -532,8 +548,9 @@ impl Walker {
         })
     }
 
-    /// `alias.column`.
-    fn qualified(&mut self, expr: &sql::Expr) -> Option<(Ident, Ident)> {
+    /// `alias.column`, or `column` of the fact, since every other table is
+    /// reached through its alias.
+    fn qualified(&mut self, fact: &Ident, expr: &sql::Expr) -> Option<(Ident, Ident)> {
         match expr {
             sql::Expr::CompoundIdentifier(ids) => {
                 let [alias, column] = ids.as_slice() else {
@@ -542,13 +559,7 @@ impl Walker {
                 };
                 Some((self.ident(alias)?, self.ident(column)?))
             }
-            sql::Expr::Identifier(id) => {
-                self.error(
-                    line(expr),
-                    format!("qualify column {id} with its table alias"),
-                );
-                None
-            }
+            sql::Expr::Identifier(id) => Some((fact.clone(), self.ident(id)?)),
             other => {
                 self.reject(line(other), "column", other);
                 None
@@ -557,7 +568,7 @@ impl Walker {
     }
 
     fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Column> {
-        let (alias, column) = self.qualified(expr)?;
+        let (alias, column) = self.qualified(&scope.alias, expr)?;
         if alias == scope.alias {
             return Some(Column::Fact(column));
         }
