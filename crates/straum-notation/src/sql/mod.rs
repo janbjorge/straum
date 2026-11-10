@@ -71,20 +71,23 @@ impl Walker {
             Some((end, _)) => format!("{}...", &text[..end]),
             None => text,
         };
-        self.error(
-            line,
-            format!("{what} `{text}` is not in straum SQL, the PostgreSQL subset straum specs use"),
-        );
+        self.not_in_subset(line, &format!("{what} `{text}`"));
     }
 
     /// Rejects a clause straum SQL has no use for when it is present.
     fn absent(&mut self, line: u64, present: bool, clause: &str) {
         if present {
-            self.error(
-                line,
-                format!("{clause} is not in straum SQL, the PostgreSQL subset straum specs use"),
-            );
+            self.not_in_subset(line, clause);
         }
+    }
+
+    /// Every rejection says straum SQL is straum's own subset, so no one
+    /// takes it for PostgreSQL's error.
+    fn not_in_subset(&mut self, line: u64, what: &str) {
+        self.error(
+            line,
+            format!("{what} is not in straum SQL, the PostgreSQL subset straum specs use"),
+        );
     }
 
     /// An unquoted name, folded to lower case as PostgreSQL does.
