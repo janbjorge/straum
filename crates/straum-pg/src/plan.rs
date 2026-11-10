@@ -94,7 +94,7 @@ mod tests {
     fn schemas_and_fact_tables_come_once() {
         let view = |name: &str, table: &str| {
             format!(
-                "CREATE VIEW {name} AS
+                "CREATE VIEW {name} WITH (buckets = '1 hour') AS
                  SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
                  FROM {table} f GROUP BY 1;"
             )
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn a_password_becomes_a_scram_verifier() {
         let spec = straum_notation::parse(
-            "CREATE VIEW x AS
+            "CREATE VIEW x WITH (buckets = '1 hour') AS
              SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
              FROM a.t f GROUP BY 1;",
         )

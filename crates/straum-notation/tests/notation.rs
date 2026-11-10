@@ -234,7 +234,7 @@ fn ask_rejects_bad_shape() {
 }
 
 /// One fact `t` with a ref `z`, valid as written. Tests swap one piece.
-const BASE: &str = "CREATE VIEW t AS
+const BASE: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a, f.z_id, z.name, count(*) AS n
 FROM public.t f
@@ -269,7 +269,7 @@ fn base_parses() {
 /// the same view.
 #[test]
 fn alias_schema_and_qualification_default() {
-    let src = "CREATE VIEW t AS
+    let src = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', at, timestamptz 'epoch') AS bucket,
        a, z_id, z.name, count(*) AS n
 FROM t
@@ -298,7 +298,7 @@ GROUP BY 1, 2, 3, 4";
 
 #[test]
 fn buckets_parse() {
-    let src = base("VIEW t AS", "VIEW t WITH (buckets = '1 day,7 days') AS");
+    let src = base("buckets = '1 hour'", "buckets = '1 hour, 1 day,7 days'");
     let spec = parse(&src).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.buckets,
@@ -306,8 +306,8 @@ fn buckets_parse() {
     );
 
     let src = base(
-        "VIEW t AS",
-        "VIEW t WITH (buckets = '90 minutes, 1 day') AS",
+        "buckets = '1 hour'",
+        "buckets = '1 hour, 90 minutes, 1 day'",
     );
     assert_eq!(
         spec_errors(&src),
@@ -316,6 +316,35 @@ fn buckets_parse() {
             seconds: 5_400,
             below: 3_600
         }]
+    );
+}
+
+/// Every width is said in the view's `WITH`, the `date_bin` width first:
+/// a view without it, or one whose list starts elsewhere, is refused.
+#[test]
+fn buckets_are_required_and_start_at_the_grain() {
+    let errors = sql_errors(&base("VIEW t WITH (buckets = '1 hour') AS", "VIEW t AS"));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(
+        errors[0].msg,
+        "view t needs WITH (buckets = '<n> <unit>, ...'): every width straum keeps, \
+         the date_bin width first"
+    );
+
+    for wrong in ["1 day", "30 minutes, 1 hour", "1 day, 1 hour"] {
+        let errors = sql_errors(&base("buckets = '1 hour'", &format!("buckets = '{wrong}'")));
+        assert_eq!(errors.len(), 1, "{wrong}: {errors:?}");
+        assert!(
+            errors[0]
+                .msg
+                .ends_with("but date_bin is 3600s: list every width, the date_bin width first"),
+            "{wrong}: {errors:?}"
+        );
+    }
+    assert!(
+        sql_errors(&base("buckets = '1 hour'", "buckets = '1 day, 1 hour'"))[0]
+            .msg
+            .starts_with("view t: buckets starts with 86400s but")
     );
 }
 
@@ -373,7 +402,7 @@ fn literals_and_filters() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let src = "CREATE OR REPLACE VIEW T AS
+    let src = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch'),
        f.a, z.id, z.name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
@@ -408,7 +437,7 @@ GROUP BY f.a, date_bin('30 seconds', f.at, timestamptz 'epoch'), 3, 4";
 }
 
 /// One dim keyed by two columns, joined by two views in either order.
-const GROUPED: &str = "CREATE VIEW t AS
+const GROUPED: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.org, f.grp, g.label, count(*) AS n
 FROM public.t f
@@ -518,7 +547,7 @@ fn a_ref_on_two_columns_rejected() {
 
 /// A ref whose via column is not selected: its attribute alone keys the
 /// cells.
-const ATTR_ONLY: &str = "CREATE VIEW t AS
+const ATTR_ONLY: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a, z.name, count(*) AS n,
        count(*) FILTER (WHERE z.name = 'x') AS named
@@ -602,7 +631,7 @@ fn a_ref_reads_what_the_view_selects() {
 
 /// Null-ness keys: whether a column is null, grouped like a column, and
 /// what a FILTER's `IS NULL` counts through.
-const NULLS: &str = "CREATE VIEW t AS
+const NULLS: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a,
        (f.done_at IS NOT NULL) AS done,
@@ -799,11 +828,14 @@ fn views_share_a_dim() {
 
 #[test]
 fn spec_errors_pass_through() {
-    let src = base("'1 hour'", "'7 minutes'").replace("f.a,", "f.id, f.z_id AS z,");
+    let src = base("'1 hour'", "'7 minutes'")
+        .replace("date_bin('1 hour'", "date_bin('7 minutes'")
+        .replace("f.a,", "f.id, f.z_id AS z,");
     assert!(matches!(parse(&src), Err(Error::Sql(_))));
 
-    let src =
-        base("'1 hour'", "'7 minutes'").replace("count(*) AS n", "count(*) AS n, count(*) AS n");
+    let src = base("'1 hour'", "'7 minutes'")
+        .replace("date_bin('1 hour'", "date_bin('7 minutes'")
+        .replace("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(
         spec_errors(&src),
         [
@@ -885,82 +917,82 @@ fn rejects_everything_outside_the_subset() {
             "SECURE is not in straum SQL",
         ),
         (
-            "VIEW t AS",
-            "VIEW t COPY GRANTS AS",
+            "WITH (buckets = '1 hour') AS",
+            "COPY GRANTS AS",
             1,
             "COPY GRANTS is not in straum SQL",
         ),
         (
-            "VIEW t AS",
-            "VIEW t (a, b) AS",
+            "VIEW t WITH",
+            "VIEW t (a, b) WITH",
             1,
             "a view column list is not in straum SQL",
         ),
         (
-            "VIEW t AS",
-            "VIEW s.t AS",
+            "VIEW t WITH",
+            "VIEW s.t WITH",
             1,
             "view s.t must be a bare name",
         ),
         (
-            "VIEW t AS",
-            "VIEW \"t\" AS",
+            "VIEW t WITH",
+            "VIEW \"t\" WITH",
             1,
             "quoted identifier `\"t\"` is not in straum SQL",
         ),
         // Options. `key` was required once; a spec that still has it says so.
         (
-            "VIEW t AS",
-            "VIEW t WITH (key = id) AS",
+            "WITH (buckets = '1 hour')",
+            "WITH (key = id)",
             1,
             "view option key = id is gone: straum reads the whole old row \
              under REPLICA IDENTITY FULL, so drop it",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (colour = 1) AS",
+            "WITH (buckets = '1 hour')",
+            "WITH (colour = 1)",
             1,
             "view option `colour = 1` is not in straum SQL",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (append = true) AS",
+            "WITH (buckets = '1 hour')",
+            "WITH (append = true)",
             1,
             "view option `append = true` is not in straum SQL",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (buckets = 1) AS",
+            "WITH (buckets = '1 hour')",
+            "WITH (buckets = 1)",
             1,
             "buckets, use '<n> <unit>, ...', `1`",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (buckets = '1 day, 2 weeks') AS",
+            "buckets = '1 hour'",
+            "buckets = '1 hour, 2 weeks'",
             1,
             "bucket width '2 weeks': use '<n> seconds|minutes|hours|days'",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (buckets = '') AS",
+            "buckets = '1 hour'",
+            "buckets = ''",
             1,
             "bucket width '': use",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (buckets = '1 day', buckets = '2 days') AS",
+            "buckets = '1 hour'",
+            "buckets = '1 hour', buckets = '2 days'",
             1,
             "view option buckets given twice",
         ),
         (
-            "VIEW t AS",
-            "VIEW t WITH (\"buckets\" = '1 day') AS",
+            "WITH (buckets = '1 hour')",
+            "WITH (\"buckets\" = '1 hour')",
             1,
             "quoted identifier `\"buckets\"`",
         ),
         (
-            "VIEW t AS",
-            &format!("VIEW t WITH ({} = 1) AS", "k".repeat(64)),
+            "WITH (buckets = '1 hour')",
+            &format!("WITH ({} = 1)", "k".repeat(64)),
             1,
             "bad identifier kkkk",
         ),
@@ -1376,14 +1408,29 @@ fn rejects_everything_outside_the_subset() {
         ),
         // The bucket.
         (
-            "'1 hour'",
-            "'15x'",
+            "date_bin('1 hour'",
+            "date_bin('15x'",
             2,
             "date_bin width '15x': use '<n> seconds|minutes|hours|days'",
         ),
-        ("'1 hour'", "'1 week'", 2, "date_bin width"),
-        ("'1 hour'", "'99999999 days'", 2, "date_bin width"),
-        ("'1 hour'", "interval '1 hour'", 2, "date_bin width"),
+        (
+            "date_bin('1 hour'",
+            "date_bin('1 week'",
+            2,
+            "date_bin width",
+        ),
+        (
+            "date_bin('1 hour'",
+            "date_bin('99999999 days'",
+            2,
+            "date_bin width",
+        ),
+        (
+            "date_bin('1 hour'",
+            "date_bin(interval '1 hour'",
+            2,
+            "date_bin width",
+        ),
         (
             "timestamptz 'epoch'",
             "'epoch'",
@@ -1552,8 +1599,8 @@ fn parser_errors_and_deep_nesting_are_errors() {
 #[test]
 fn error_display() {
     let src = base(
-        "VIEW t AS",
-        "VIEW t WITH (buckets = '1 day', buckets = '2 days') AS",
+        "buckets = '1 hour'",
+        "buckets = '1 hour', buckets = '2 days'",
     )
     .replace("f.a,", "q.a,");
     assert_eq!(

@@ -35,7 +35,7 @@ use crate::wire::Conn;
 /// build SQL without a server.
 pub(crate) fn tasks_tables() -> (Spec, Tables) {
     let spec = straum_notation::parse(
-        "CREATE VIEW tasks AS
+        "CREATE VIEW tasks WITH (buckets = '1 hour') AS
          SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
                 f.organization_id, g.category, l.location_type, count(*) AS tasks
          FROM public.tasks f
@@ -131,7 +131,7 @@ const START: i64 = 1_705_276_800;
 
 /// The spec the taxi-shaped tests follow. `$S` is the test's schema.
 const SPEC: &str = "
-CREATE VIEW trips WITH (buckets = '1 day') AS
+CREATE VIEW trips WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.kind,
        f.zone_id,
@@ -148,7 +148,7 @@ FROM $S.trips f
 LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (buckets = '7 days') AS
+CREATE VIEW logins WITH (buckets = '1 day, 7 days') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
        pickup.toll,
@@ -180,7 +180,7 @@ CREATE PUBLICATION $S FOR TABLE $S.trips, $S.logins;
 /// dim keyed by two columns, one of them grouped by too. `$S` is the
 /// test's schema.
 const TASKS_SPEC: &str = "
-CREATE VIEW tasks WITH (buckets = '1 day') AS
+CREATE VIEW tasks WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id,
        f.taskgroup_id,
@@ -200,7 +200,7 @@ GROUP BY 1, 2, 3, 4, 5;
 /// The task tables keyed by the group's category alone: the group itself
 /// is not selected, so the cells are keyed by the category's few values.
 const PICKS_SPEC: &str = "
-CREATE VIEW picks WITH (buckets = '1 day') AS
+CREATE VIEW picks WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id,
        g.category,
@@ -1732,7 +1732,7 @@ fn setup_problems_say_what_to_fix() {
                  ALTER TABLE $S.f REPLICA IDENTITY FULL;"
             ),
             format!(
-                "CREATE VIEW f AS
+                "CREATE VIEW f WITH (buckets = '1 hour') AS
                  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
                  FROM $S.f t GROUP BY 1;"
             ),
@@ -1927,7 +1927,7 @@ fn setup_problems_say_what_to_fix() {
     }
 
     let dim_spec = "
-        CREATE VIEW f AS
+        CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id, d.name, count(*) AS n
         FROM $S.f t LEFT JOIN $S.d d ON d.k = t.d_id GROUP BY 1, 2, 3;";
@@ -2013,7 +2013,7 @@ fn setup_problems_say_what_to_fix() {
     // A dim keyed by two columns: a primary key or unique index on exactly
     // those columns, in any order.
     let pair_spec = "
-        CREATE VIEW f AS
+        CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.a, t.b, d.name, count(*) AS n
         FROM $S.f t LEFT JOIN $S.d d ON d.x = t.a AND d.y = t.b GROUP BY 1, 2, 3, 4;";

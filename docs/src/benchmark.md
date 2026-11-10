@@ -68,7 +68,7 @@ trips, fares and the average fare per hour, payment type and pickup
 zone, with day and week buckets for long ranges.
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
+CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
 SELECT date_bin('1 hour', f.pickup_at, timestamptz 'epoch') AS hour,
        f.payment_type,
        f.pu_location_id,

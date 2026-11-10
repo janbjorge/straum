@@ -7,7 +7,7 @@
 //! is one fact:
 //!
 //! ```sql
-//! CREATE VIEW trips AS
+//! CREATE VIEW trips WITH (buckets = '15 minutes') AS
 //! SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
 //!        f.payment_type,
 //!        f.pu_location_id,

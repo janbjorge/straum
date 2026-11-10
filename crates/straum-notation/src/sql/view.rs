@@ -5,9 +5,10 @@ use straum_domain::{
 
 use super::{SqlError, Walker, and_parts, function_name, line};
 
-/// What a view's `WITH` declares.
+/// What a view's `WITH` declares: every bucket width the view keeps, the
+/// `date_bin` width first, or nothing when the `WITH` is missing.
 struct ViewOptions {
-    buckets: Vec<Grain>,
+    buckets: Option<Vec<Grain>>,
 }
 
 /// What a view's `SELECT` declares.
@@ -98,6 +99,15 @@ impl Walker {
 
         let fact_name = self.name(name, 1, "view").map(|mut n| n.remove(0));
         let ViewOptions { buckets } = self.options(at, options);
+        if let (Some(name), None) = (&fact_name, &buckets) {
+            self.error(
+                at,
+                format!(
+                    "view {name} needs WITH (buckets = '<n> <unit>, ...'): every width \
+                     straum keeps, the date_bin width first"
+                ),
+            );
+        }
         let body = self.query(query);
         let (Some(name), Some(body)) = (fact_name, body) else {
             return;
@@ -112,7 +122,24 @@ impl Walker {
             by,
             measures,
         } = body;
-        time.buckets = buckets;
+        // Every width is said once, in the view's `WITH`; the body's `date_bin`
+        // must agree with the first, so a reader finds the whole list in one
+        // place and the body still runs in PostgreSQL.
+        match buckets.unwrap_or_default().split_first() {
+            Some((first, wider)) if *first == time.grain => time.buckets = wider.to_vec(),
+            Some((first, _)) => {
+                self.error(
+                    at,
+                    format!(
+                        "view {name}: buckets starts with {first} but date_bin is {}: list \
+                         every width, the date_bin width first",
+                        time.grain
+                    ),
+                );
+                return;
+            }
+            None => return,
+        }
         let refs = refs
             .into_iter()
             .map(|mut j| {
@@ -180,9 +207,9 @@ impl Walker {
         }
     }
 
-    /// `WITH (buckets = '1 day, 7 days')`. The `key` option of earlier specs
-    /// is refused by name, since a spec that still has it was written for a
-    /// straum that needed it.
+    /// `WITH (buckets = '1 hour, 1 day, 7 days')`. The `key` option of
+    /// earlier specs is refused by name, since a spec that still has it was
+    /// written for a straum that needed it.
     fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> ViewOptions {
         let mut buckets = None;
         let list = match options {
@@ -226,7 +253,7 @@ impl Walker {
             buckets = Some(value);
         }
         let buckets = match buckets {
-            None => Vec::new(),
+            None => None,
             Some(
                 value @ sql::Expr::Value(sql::ValueWithSpan {
                     value: sql::Value::SingleQuotedString(s),
@@ -243,11 +270,11 @@ impl Walker {
                         ),
                     }
                 }
-                buckets
+                Some(buckets)
             }
             Some(other) => {
                 self.reject(line(other), "buckets, use '<n> <unit>, ...',", other);
-                Vec::new()
+                Some(Vec::new())
             }
         };
         ViewOptions { buckets }

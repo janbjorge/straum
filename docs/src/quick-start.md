@@ -48,7 +48,7 @@ SQL
 Save as `orders.sql`:
 
 ```sql
-CREATE VIEW orders AS
+CREATE VIEW orders WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
        status,
        customer_id,
@@ -63,7 +63,9 @@ GROUP BY 1, 2, 3, 4;
 
 PostgreSQL would give the same rows for this view. Straum never creates
 it; it keeps one cell per hour, status, customer and country in memory.
-[Writing a spec](spec.md) explains each line.
+`WITH (buckets = '1 hour')` lists every bucket width it keeps, here the
+hour of the `date_bin` alone. [Writing a spec](spec.md) explains each
+line.
 
 ## 4. Set up PostgreSQL
 

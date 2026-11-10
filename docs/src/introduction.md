@@ -11,7 +11,7 @@ answer. You declare what to keep as a view, in a small subset of
 PostgreSQL's `CREATE VIEW`:
 
 ```sql
-CREATE VIEW orders AS
+CREATE VIEW orders WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
        status,
        customer_id,

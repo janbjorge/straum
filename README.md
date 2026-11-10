@@ -19,7 +19,7 @@ A spec is a view in a small subset of PostgreSQL's `CREATE VIEW`. Straum
 never creates it; PostgreSQL would give the same rows.
 
 ```sql
-CREATE VIEW orders AS
+CREATE VIEW orders WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
        status,
        customer_id,

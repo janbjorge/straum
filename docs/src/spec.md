@@ -11,7 +11,7 @@ This is the [quick start](quick-start.md) view with everything the
 subset adds: a wider bucket, a null-ness key and two filtered measures.
 
 ```sql
-CREATE VIEW orders WITH (buckets = '1 day') AS
+CREATE VIEW orders WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
        status,
        customer_id,
@@ -30,7 +30,7 @@ GROUP BY 1, 2, 3, 4, 5;
 | Line | What it declares | Where |
 | --- | --- | --- |
 | `CREATE VIEW orders` | The name asks read `FROM`. | [The tables](#the-tables) |
-| `WITH (buckets = '1 day')` | Day buckets kept beside the hours. | [Time](#time) |
+| `WITH (buckets = '1 hour, 1 day')` | Every bucket width kept: hours, and days beside them. | [Time](#time) |
 | `date_bin('1 hour', placed_at, ...)` | The time bucket, one per view. | [Time](#time) |
 | `status, customer_id` | Keys: columns of the fact table. | [Keys](#keys) |
 | `customers.country` | A key from the joined table. | [Joining a lookup table](#joining-a-lookup-table) |
@@ -98,13 +98,15 @@ date_bin('1 hour', placed_at, timestamptz 'epoch')
   answered. Any other value Straum can't read, such as a `NaN`, stops
   the load or the stream with the table and column named.
 
-`WITH (buckets = '1 day')` is the only view option. It keeps wider
-buckets beside the `date_bin` width: each listed width is a whole
-multiple of the one before and starts at the epoch, so `7 days` buckets
-start on Thursdays. Answers don't change. An ask over a long range reads
-its middle from the widest buckets that fit and its ends from narrower
-ones, so it reads far fewer cells. Each width costs memory, under
-[Memory](#memory).
+`WITH (buckets = '1 hour, 1 day')` is required and is the only view
+option. It lists every bucket width Straum keeps, narrowest first, and
+the first must be the `date_bin` width, so the whole list is in one
+place while the body stays what PostgreSQL runs. Each wider width is a
+whole multiple of the one before and starts at the epoch, so `7 days`
+buckets start on Thursdays. Answers don't change. An ask over a long
+range reads its middle from the widest buckets that fit and its ends
+from narrower ones, so it reads far fewer cells. Each width costs
+memory, under [Memory](#memory).
 
 ## Joining a lookup table
 
