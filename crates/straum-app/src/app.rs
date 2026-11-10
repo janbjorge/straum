@@ -16,8 +16,8 @@ use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
 /// nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
 
-/// Panic message for the lag of a started stream.
-const STARTED: &str = "a started stream has a lag";
+/// Panic message for a commit applied before the stream started.
+const STARTED: &str = "the writer applies commits only to a started stream";
 
 /// How often the writer reads the server's WAL while it waits for commits.
 /// The lag can look up to this much longer than it is.
@@ -43,16 +43,8 @@ pub struct App {
 #[derive(Debug)]
 struct State {
     store: Store,
-    /// Every commit up to here is applied. `None` until every table is
-    /// loaded, and again after a failure.
-    position: Option<Lsn>,
-    /// When the commit at `position` committed. `None` when `position` is
-    /// where a stream started.
-    time: Option<SystemTime>,
-    /// How far behind the server the stream is. Set with `position`.
-    lag: Option<Lag>,
-    /// The last reading of the server's WAL. Set with `position`.
-    wal: Option<Wal>,
+    /// `None` until every table is loaded, and again after a failure.
+    following: Option<Following>,
     limits: Limits,
     /// The last failure, until the next start.
     error: Option<String>,
@@ -60,6 +52,20 @@ struct State {
     last_failure: Option<(SystemTime, String)>,
     starts: u64,
     failures: u64,
+}
+
+/// Where a stream with every table loaded stands.
+#[derive(Debug)]
+struct Following {
+    /// Every commit up to here is applied.
+    position: Lsn,
+    /// When the commit at `position` committed. `None` when `position` is
+    /// where the stream started.
+    time: Option<SystemTime>,
+    /// How far behind the server the stream is.
+    lag: Lag,
+    /// The last reading of the server's WAL.
+    wal: Wal,
 }
 
 /// Reads the source and keeps an [`App`] in step with it: the loop that
@@ -133,10 +139,7 @@ impl App {
         App {
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec),
-                position: None,
-                time: None,
-                lag: None,
-                wal: None,
+                following: None,
                 limits,
                 error: None,
                 last_failure: None,
@@ -168,12 +171,12 @@ impl App {
             .spec()
             .check(ask)
             .map_err(AnswerError::Invalid)?;
-        let lsn = state.position.ok_or(AnswerError::NotReady)?;
+        let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
         let answer = state.store.ask(ask).map_err(AnswerError::Invalid)?;
         Ok(Answered {
             answer,
-            lsn,
-            as_of: state.as_of().expect(STARTED),
+            lsn: following.position,
+            as_of: following.as_of(),
         })
     }
 
@@ -184,14 +187,15 @@ impl App {
 
     pub fn status(&self) -> Status {
         let state = self.read();
+        let following = state.following.as_ref();
         let lag = state.behind();
         Status {
             ready: state.ready(lag),
-            lsn: state.position,
-            time: state.time,
-            as_of: state.as_of(),
+            lsn: following.map(|f| f.position),
+            time: following.and_then(|f| f.time),
+            as_of: following.map(Following::as_of),
             lag,
-            wal: state.wal,
+            wal: following.map(|f| f.wal),
             limits: state.limits,
             error: state.error.clone(),
             last_failure: state.last_failure.clone(),
@@ -209,17 +213,27 @@ impl App {
     }
 }
 
-impl State {
-    fn behind(&self) -> Option<Duration> {
-        (self.lag.as_ref()).map(|lag| lag.behind(Instant::now()))
+impl Following {
+    fn behind(&self) -> Duration {
+        self.lag.behind(Instant::now())
     }
 
     /// As [`Answered::as_of`].
-    fn as_of(&self) -> Option<SystemTime> {
-        let since = Instant::now().saturating_duration_since(self.lag.as_ref()?.caught_up());
+    fn as_of(&self) -> SystemTime {
+        let since = Instant::now().saturating_duration_since(self.lag.caught_up());
         // A clock set before 1970 gets the earliest time there is, which is
         // still true.
-        Some((SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH))
+        (SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH)
+    }
+}
+
+impl State {
+    fn behind(&self) -> Option<Duration> {
+        self.following.as_ref().map(Following::behind)
+    }
+
+    fn following(&mut self) -> &mut Following {
+        self.following.as_mut().expect(STARTED)
     }
 
     fn ready(&self, lag: Option<Duration>) -> bool {
@@ -240,8 +254,9 @@ impl State {
                 return Err(table);
             }
         }
-        self.position = Some(lsn);
-        self.time = Some(time);
+        let following = self.following();
+        following.position = lsn;
+        following.time = Some(time);
         Ok(())
     }
 
@@ -285,7 +300,7 @@ impl<S: Source> Writer<S> {
     /// After an error straum is not ready, and the next step starts over
     /// from a new stream.
     pub fn step(&mut self) -> Result<Step, Error> {
-        let started = self.app.read().position.is_some();
+        let started = self.app.read().following.is_some();
         let step = if started {
             self.apply_next().map(Step::Applied)
         } else {
@@ -293,9 +308,7 @@ impl<S: Source> Writer<S> {
         };
         if let Err(e) = &step {
             let mut state = self.app.write();
-            state.position = None;
-            state.lag = None;
-            state.wal = None;
+            state.following = None;
             state.error = Some(e.to_string());
             state.last_failure = Some((SystemTime::now(), e.to_string()));
             state.failures += 1;
@@ -320,10 +333,12 @@ impl<S: Source> Writer<S> {
         lag.read(&wal, self.measured);
         let mut state = self.app.write();
         state.store = store;
-        state.position = Some(start);
-        state.time = None;
-        state.lag = Some(lag);
-        state.wal = Some(wal);
+        state.following = Some(Following {
+            position: start,
+            time: None,
+            lag,
+            wal,
+        });
         state.error = None;
         state.starts += 1;
         Ok(start)
@@ -334,8 +349,9 @@ impl<S: Source> Writer<S> {
             if self.measured.elapsed() >= MEASURE_EVERY {
                 let wal = self.measure()?;
                 let mut state = self.app.write();
-                state.lag.as_mut().expect(STARTED).read(&wal, self.measured);
-                state.wal = Some(wal);
+                let following = state.following();
+                following.lag.read(&wal, self.measured);
+                following.wal = wal;
             }
             let wait = MEASURE_EVERY.saturating_sub(self.measured.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {

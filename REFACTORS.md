@@ -72,7 +72,7 @@ python3 scripts/check-layers.py
 
 ## Public shapes
 
-- [ ] **One `Option<Following>` in `State`** (straum-app).
+- [x] **One `Option<Following>` in `State`** (straum-app).
   `crates/straum-app/src/app.rs:47-66` keeps `position`, `time`, `lag`
   and `wal` as four `Option`s set together (`app.rs:326-331`) and cleared
   together (`app.rs:300-303`). `Following { position, time, lag, wal }`
