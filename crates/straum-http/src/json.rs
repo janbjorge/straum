@@ -105,20 +105,7 @@ pub(crate) fn string(out: &mut Vec<u8>, s: &str) {
 /// Appends `n` in units of `10^-scale` as a JSON number, exactly: `1250`
 /// at scale 2 is `12.50`.
 pub(crate) fn decimal(out: &mut Vec<u8>, n: i128, scale: u32) {
-    let digits = n.unsigned_abs().to_string();
-    let scale = scale as usize;
-    if n < 0 {
-        out.push(b'-');
-    }
-    if scale == 0 {
-        out.extend_from_slice(digits.as_bytes());
-        return;
-    }
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - scale);
-    out.extend_from_slice(whole.as_bytes());
-    out.push(b'.');
-    out.extend_from_slice(fraction.as_bytes());
+    out.extend_from_slice(straum_domain::decimal(n, scale).as_bytes());
 }
 
 #[cfg(test)]

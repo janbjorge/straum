@@ -121,7 +121,7 @@ python3 scripts/check-layers.py
   (`resolve.rs:153-196`) branches on `i < width`. Replace with
   `columns: Vec<(Ident, ColumnType)>` plus `key_width`; `fetch` zips the
   fields with `columns` and `split_at(key_width)`.
-- [ ] **One decimal formatter** (straum-domain, straum-http, straum-pg).
+- [x] **One decimal formatter** (straum-domain, straum-http, straum-pg).
   `crates/straum-http/src/json.rs:107`,
   `crates/straum-pg/src/resolve.rs:214` and
   `crates/straum-pg/src/tests.rs:470` each print an integer in units of

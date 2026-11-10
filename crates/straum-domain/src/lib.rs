@@ -21,4 +21,4 @@ pub use spec::{
     Table, Time,
 };
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
-pub use value::{ColumnType, Datum, Value};
+pub use value::{ColumnType, Datum, Value, decimal};

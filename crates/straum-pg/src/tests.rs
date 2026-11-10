@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal,
-    Spec, Store, TimeKey, Value,
+    Spec, Store, TimeKey, Value, decimal,
 };
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -456,16 +456,6 @@ fn text(value: &Value, scale: u32) -> Option<String> {
             Some(decimal((numerator + half) / denominator, 6))
         }
     }
-}
-
-fn decimal(n: i128, scale: u32) -> String {
-    if scale == 0 {
-        return n.to_string();
-    }
-    let unit = 10_i128.pow(scale);
-    let sign = if n < 0 { "-" } else { "" };
-    let (whole, fraction) = (n.abs() / unit, n.abs() % unit);
-    format!("{sign}{whole}.{fraction:0width$}", width = scale as usize)
 }
 
 /// A key as PostgreSQL prints it; `scale` for numeric keys.

@@ -10,7 +10,7 @@ use std::iter;
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Change, Commit};
-use straum_domain::{ColumnType, Datum, Ident, Spec};
+use straum_domain::{ColumnType, Datum, Ident, Spec, decimal};
 
 use crate::catalog::Tables;
 use crate::error::Error;
@@ -195,23 +195,12 @@ impl Lookup {
 /// matches nothing, all the same.
 fn literal(datum: &Datum, column_type: ColumnType) -> String {
     match (datum, column_type) {
-        (Datum::Int(n), ColumnType::Numeric { scale }) => decimal(*n, scale),
+        (Datum::Int(n), ColumnType::Numeric { scale }) => decimal(i128::from(*n), scale),
         (Datum::Int(n), _) => n.to_string(),
         (Datum::Bool(b), _) => b.to_string(),
         (Datum::Text(s), _) => escape_literal(s),
         (Datum::Null, _) => "NULL".to_owned(),
     }
-}
-
-/// `-12345` at scale 2 is `-123.45`.
-fn decimal(n: i64, scale: u32) -> String {
-    if scale == 0 {
-        return n.to_string();
-    }
-    let unit = 10_u64.pow(scale);
-    let sign = if n < 0 { "-" } else { "" };
-    let (whole, fraction) = (n.unsigned_abs() / unit, n.unsigned_abs() % unit);
-    format!("{sign}{whole}.{fraction:0width$}", width = scale as usize)
 }
 
 #[cfg(test)]

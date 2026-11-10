@@ -90,9 +90,41 @@ pub enum Value {
     },
 }
 
+/// `units` in units of `10^-scale`, exactly, as PostgreSQL prints a
+/// numeric: `1250` at scale 2 is `12.50`.
+pub fn decimal(units: i128, scale: u32) -> String {
+    let digits = units.unsigned_abs().to_string();
+    let sign = if units < 0 { "-" } else { "" };
+    let scale = scale as usize;
+    if scale == 0 {
+        return format!("{sign}{digits}");
+    }
+    let padded = format!("{digits:0>width$}", width = scale + 1);
+    let (whole, fraction) = padded.split_at(padded.len() - scale);
+    format!("{sign}{whole}.{fraction}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimals_print_every_digit() {
+        let cases = [
+            (0, 0, "0"),
+            (-7, 0, "-7"),
+            (-1, 2, "-0.01"),
+            (1250, 2, "12.50"),
+            (5, 2, "0.05"),
+            (-1250, 3, "-1.250"),
+            (0, 3, "0.000"),
+            (i128::MIN, 0, "-170141183460469231731687303715884105728"),
+            (i128::MAX, 38, "1.70141183460469231731687303715884105727"),
+        ];
+        for (units, scale, text) in cases {
+            assert_eq!(decimal(units, scale), text, "{units} at {scale}");
+        }
+    }
 
     /// Every column type against every kind of value: only the matches
     /// listed fit.
