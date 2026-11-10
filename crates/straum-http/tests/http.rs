@@ -310,6 +310,14 @@ fn asks_straum_cant_answer() {
             ),
         ),
         (
+            ask(
+                "SELECT kind, kind, trips, trips FROM trips \
+                 WHERE bucket >= $1 AND bucket < $2 GROUP BY kind",
+                "[0, 3600]",
+            ),
+            r#"{"errors":["kind asked twice","trips asked twice"]}"#,
+        ),
+        (
             first_hour().replace('}', r#", "limit": 1}"#),
             r#"{"errors":["unknown field \"limit\""]}"#,
         ),

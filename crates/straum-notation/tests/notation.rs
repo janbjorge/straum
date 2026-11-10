@@ -112,10 +112,12 @@ fn ask_by_dim_attribute() {
 fn ask_rejects_what_the_rollup_does_not_hold() {
     let spec = taxi();
     let ask = Ask {
-        measures: vec![id("trips"), id("tips")],
+        measures: vec![id("trips"), id("tips"), id("trips")],
         by: vec![
             AskKey::Key(path("fare_amount")),
             AskKey::Key(path("pickup.colour")),
+            AskKey::Key(path("pickup.borough")),
+            AskKey::Key(path("pickup.borough")),
             AskKey::Time(TimeKey::Bucket),
             AskKey::Time(TimeKey::Bucket),
         ],
@@ -129,6 +131,8 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
             AskError::UnknownKey(path("fare_amount")),
             AskError::UnknownKey(path("pickup.colour")),
             AskError::TimeKeyTwice,
+            AskError::AskedTwice("pickup.borough".into()),
+            AskError::AskedTwice("trips".into()),
             AskError::RangeUnaligned {
                 at: JAN + 60,
                 grain: Grain(900)
@@ -148,6 +152,7 @@ fn ask_errors_display() {
         ),
         (AskError::NoMeasures, "no measures asked"),
         (AskError::TimeKeyTwice, "more than one time key"),
+        (AskError::AskedTwice("trips".into()), "trips asked twice"),
         (
             AskError::RangeEmpty { from: 2, to: 1 },
             "empty range [2, 1)",

@@ -316,7 +316,8 @@ Tests:
   even at four places past its column's scale, trailing zeros dropped,
   instead of `{"sum", "count"}`; the domain keeps sum and count, so
   rounding stays in `straum-http`. `Answer` names its own columns, so the
-  writer doesn't need the ask.
+  writer doesn't need the ask, and `Spec::check` rejects a key or measure
+  asked twice, since row fields go by name.
 
 ## M0: notation and domain model
 

@@ -34,8 +34,9 @@ GROUP BY <keys>
   joins on (`customer`), a ref's attribute (`customer.country`), or
   `bucket`, the view's time bucket. A spec can't name anything else
   `bucket`.
-- Keys come first in `SELECT`, then measures, by name. `GROUP BY` names
-  exactly the selected keys. Without keys there is no `GROUP BY`.
+- Keys come first in `SELECT`, then measures, by name, each once, since
+  they name the fields of each answer row. `GROUP BY` names exactly the
+  selected keys. Without keys there is no `GROUP BY`.
 - `WHERE` joins conditions with `AND`. A condition is `key = $n` or
   `key IN ($n, $m)`, and every one must hold. `bucket >= $n` and
   `bucket < $m` are required, once each.

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::ident::Ident;
@@ -67,6 +68,17 @@ impl Spec {
                 }
             }
         }
+        // An answer's columns go by name, so two can't share one.
+        let mut names = HashSet::new();
+        let keys = (ask.by.iter()).filter_map(|key| match key {
+            AskKey::Key(path) => Some(path.to_string()),
+            AskKey::Time(_) => None,
+        });
+        for name in keys.chain(ask.measures.iter().map(ToString::to_string)) {
+            if !names.insert(name.clone()) {
+                errors.push(AskError::AskedTwice(name));
+            }
+        }
         for cond in &ask.filter {
             if self.resolve(fact, &cond.path).is_none() {
                 errors.push(AskError::UnknownKey(cond.path.clone()));
@@ -100,6 +112,8 @@ pub enum AskError {
     UnknownKey(KeyPath),
     NoMeasures,
     TimeKeyTwice,
+    /// A key or measure named twice, or a key and a measure of one name.
+    AskedTwice(String),
     RangeEmpty {
         from: i64,
         to: i64,
@@ -121,6 +135,7 @@ impl fmt::Display for AskError {
             }
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
+            AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, grain } => {
                 write!(f, "range end {at} is not on a {grain} bucket edge")
