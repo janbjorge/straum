@@ -615,9 +615,9 @@ impl Values {
     }
 }
 
-/// A dim's rows by key. A row is the key, then the attributes in
-/// [`Dim::attrs`] order, kept as codes of each column's values: an ask
-/// numbers an attribute's values by their codes, hashing none of them.
+/// A dim's rows by key. A row holds [`Dim::columns`], kept as codes of
+/// each column's values: an ask numbers an attribute's values by their
+/// codes, hashing none of them.
 #[derive(Debug)]
 pub struct DimTable {
     width: usize,
@@ -629,7 +629,7 @@ pub struct DimTable {
 
 impl DimTable {
     pub fn new(dim: &Dim) -> DimTable {
-        let width = 1 + dim.attrs.len();
+        let width = dim.columns().count();
         DimTable {
             width,
             rows: HashMap::new(),
@@ -647,6 +647,12 @@ impl DimTable {
         self.types[column]
     }
 
+    /// The key of a row of this dim. The table says which part of a row
+    /// that is, so callers that hold rows don't have to know.
+    pub fn key_of<'r>(&self, row: &'r [Datum]) -> &'r Datum {
+        &row[0]
+    }
+
     pub fn upsert(&mut self, row: &[Datum]) -> Result<(), RowError> {
         if row.len() != self.width {
             return Err(RowError::Arity {
@@ -657,7 +663,7 @@ impl DimTable {
         let codes = (row.iter().zip(&mut self.codes))
             .map(|(value, codes)| codes.code(value))
             .collect();
-        self.rows.insert(row[0].clone(), codes);
+        self.rows.insert(self.key_of(row).clone(), codes);
         Ok(())
     }
 

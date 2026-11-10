@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::iter;
 
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
@@ -212,10 +211,7 @@ impl Store {
                 Source::Dim {
                     slot: slot(Slot::Column(&r.via)),
                     table: &self.dims[d],
-                    column: iter::once(&dim.key)
-                        .chain(&dim.attrs)
-                        .position(|a| a == attr)
-                        .expect(CHECKED),
+                    column: dim.columns().position(|a| a == attr).expect(CHECKED),
                 }
             }
         }

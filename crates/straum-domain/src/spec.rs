@@ -24,6 +24,14 @@ pub struct Dim {
     pub attrs: Vec<Ident>,
 }
 
+impl Dim {
+    /// The columns a row of this dim carries, in order: the key, then the
+    /// attributes.
+    pub fn columns(&self) -> impl Iterator<Item = &Ident> {
+        iter::once(&self.key).chain(&self.attrs)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
     pub name: Ident,
@@ -224,15 +232,13 @@ fn resolve<'a>(dims: &'a [Dim], fact: &'a Fact, path: &KeyPath) -> Option<Key<'a
     };
     let r = fact.refs.iter().find(|r| r.name == path.head)?;
     let dim = dims.iter().find(|d| d.name == r.dim)?;
-    let attr = iter::once(&dim.key)
-        .chain(&dim.attrs)
-        .find(|a| *a == attr)?;
+    let attr = dim.columns().find(|a| *a == attr)?;
     Some(Key::Attr(r, attr))
 }
 
 fn check_dim(dim: &Dim, errors: &mut Vec<SpecError>) {
     let mut columns = HashSet::new();
-    for column in iter::once(&dim.key).chain(&dim.attrs) {
+    for column in dim.columns() {
         if !columns.insert(column) {
             errors.push(SpecError::Duplicate {
                 scope: Some(dim.name.clone()),

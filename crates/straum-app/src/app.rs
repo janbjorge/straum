@@ -7,7 +7,7 @@ use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, DimTable, Ident, Rollup, RowError, Spec, Store};
+use straum_domain::{Answer, Ask, AskError, Datum, DimTable, Ident, Rollup, RowError, Spec, Store};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
@@ -267,9 +267,10 @@ impl State {
                     rollup.add(&new)?;
                 }
                 Target::Dim(rows) => {
+                    let old = dim_key(rows, old);
                     rows.upsert(&new)?;
-                    if let Some(key) = old.dim_key()
-                        && key != new[0]
+                    if let Some(key) = old
+                        && key != *rows.key_of(&new)
                     {
                         rows.delete(&key)?;
                     }
@@ -282,7 +283,10 @@ impl State {
                     };
                     rollup.remove(&old)?;
                 }
-                Target::Dim(rows) => rows.delete(&old.dim_key().ok_or(Stale)?)?,
+                Target::Dim(rows) => {
+                    let key = dim_key(rows, old).ok_or(Stale)?;
+                    rows.delete(&key)?;
+                }
             },
             Change::Truncate { table } => match self.target(&table) {
                 Target::Fact(rollup) => rollup.clear(),
@@ -306,6 +310,15 @@ impl State {
 enum Target<'a> {
     Fact(&'a mut Rollup),
     Dim(&'a mut DimTable),
+}
+
+/// The key a dim row had; `None` for an update that kept it.
+fn dim_key(rows: &DimTable, old: Old) -> Option<Datum> {
+    match old {
+        Old::Row(row) => Some(rows.key_of(&row).clone()),
+        Old::Key(key) => Some(key),
+        Old::SameKey => None,
+    }
 }
 
 impl<S: Source> Writer<S> {

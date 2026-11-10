@@ -2,8 +2,6 @@
 //! can read and follow? Read from the catalog on the connection that loads,
 //! so it sees the tables as the load does.
 
-use std::iter;
-
 use postgres_protocol::escape::escape_literal;
 use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Spec};
 
@@ -267,10 +265,7 @@ pub(crate) fn check(
 
     let mut tables = Vec::new();
     for dim in spec.dims() {
-        let roles = iter::once(&dim.key)
-            .chain(&dim.attrs)
-            .map(|c| (c, Role::Key))
-            .collect();
+        let roles = dim.columns().map(|c| (c, Role::Key)).collect();
         let checked = check_table(
             &dim.table,
             &dim.name,

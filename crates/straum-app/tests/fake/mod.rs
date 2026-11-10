@@ -31,8 +31,7 @@ pub fn set_types(rollup: &mut Rollup) {
 
 /// As [`set_types`], for a dim.
 pub fn set_dim_types(dim: &Dim, table: &mut DimTable) {
-    let columns = std::iter::once(&dim.key).chain(&dim.attrs);
-    let types: Vec<ColumnType> = columns.map(type_of).collect();
+    let types: Vec<ColumnType> = dim.columns().map(type_of).collect();
     table.set_types(&types).expect("one type per column");
 }
 

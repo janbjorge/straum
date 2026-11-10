@@ -121,17 +121,6 @@ impl Change {
     }
 }
 
-impl Old {
-    /// The key a dim row had; a dim row starts with its key.
-    pub(crate) fn dim_key(self) -> Option<Datum> {
-        match self {
-            Old::Row(row) => row.into_iter().next(),
-            Old::Key(key) => Some(key),
-            Old::SameKey => None,
-        }
-    }
-}
-
 /// As PostgreSQL prints it: the high and low 32 bits in hex.
 impl fmt::Display for Lsn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
