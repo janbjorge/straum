@@ -76,14 +76,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    Run {
-        spec: String,
-        listen: String,
-        publication: String,
-        dsn_file: Option<String>,
-        limits: Limits,
-        max_transaction_rows: usize,
-    },
+    Run(Run),
     Plan {
         spec: String,
         publication: String,
@@ -93,6 +86,16 @@ enum Command {
         url: String,
     },
     Help,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Run {
+    spec: String,
+    listen: String,
+    publication: String,
+    dsn_file: Option<String>,
+    limits: Limits,
+    max_transaction_rows: usize,
 }
 
 fn main() -> ExitCode {
@@ -109,21 +112,7 @@ fn main() -> ExitCode {
         }) => {
             read_spec(&spec).map(|spec| print!("{}", straum_pg::plan(&spec, &publication, &role)))
         }
-        Ok(Command::Run {
-            spec,
-            listen,
-            publication,
-            dsn_file,
-            limits,
-            max_transaction_rows,
-        }) => run(
-            &spec,
-            &listen,
-            &publication,
-            dsn_file.as_deref(),
-            limits,
-            max_transaction_rows,
-        ),
+        Ok(Command::Run(args)) => run(args),
         Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
         Err(usage) => {
             eprint!("straum: {usage}\n\n{USAGE}");
@@ -201,7 +190,7 @@ fn command(args: &[String]) -> Result<Command, String> {
                 format!("--max-transaction-rows takes a count of rows above 0, not {value:?}")
             })?,
         };
-        Command::Run {
+        Command::Run(Run {
             spec,
             listen: flag("--listen").unwrap_or_else(|| LISTEN.into()),
             publication,
@@ -211,7 +200,7 @@ fn command(args: &[String]) -> Result<Command, String> {
                 max_retained_wal,
             },
             max_transaction_rows,
-        }
+        })
     } else {
         Command::Plan {
             spec,
@@ -292,17 +281,18 @@ fn read_dsn(file: Option<&str>) -> Result<Dsn, String> {
     Dsn::parse(text.trim()).map_err(|e| e.to_string())
 }
 
-fn run(
-    spec: &str,
-    listen: &str,
-    publication: &str,
-    dsn_file: Option<&str>,
-    limits: Limits,
-    max_transaction_rows: usize,
-) -> Result<(), String> {
-    let spec = read_spec(spec)?;
-    let dsn = read_dsn(dsn_file)?;
-    let listener = TcpListener::bind(listen).map_err(|e| format!("listening on {listen}: {e}"))?;
+fn run(args: Run) -> Result<(), String> {
+    let Run {
+        spec,
+        listen,
+        publication,
+        dsn_file,
+        limits,
+        max_transaction_rows,
+    } = args;
+    let spec = read_spec(&spec)?;
+    let dsn = read_dsn(dsn_file.as_deref())?;
+    let listener = TcpListener::bind(&listen).map_err(|e| format!("listening on {listen}: {e}"))?;
     let address = listener
         .local_addr()
         .map_err(|e| format!("listening on {listen}: {e}"))?;
@@ -316,7 +306,10 @@ fn run(
     }));
 
     let app = App::new(spec, limits);
-    let writer = Writer::new(app.clone(), Pg::new(dsn, publication, max_transaction_rows));
+    let writer = Writer::new(
+        app.clone(),
+        Pg::new(dsn, &publication, max_transaction_rows),
+    );
     thread::Builder::new()
         .name("writer".into())
         .spawn(move || write(writer))
@@ -387,21 +380,21 @@ mod tests {
     fn reads_commands() {
         assert_eq!(
             command(&args("run --spec s.sql")),
-            Ok(Command::Run {
+            Ok(Command::Run(Run {
                 spec: "s.sql".into(),
                 listen: LISTEN.into(),
                 publication: PUBLICATION.into(),
                 dsn_file: None,
                 limits: LIMITS,
                 max_transaction_rows: MAX_TRANSACTION_ROWS,
-            })
+            }))
         );
         assert_eq!(
             command(&args(
                 "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s \
                  --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500"
             )),
-            Ok(Command::Run {
+            Ok(Command::Run(Run {
                 spec: "s".into(),
                 listen: "127.0.0.1:9".into(),
                 publication: "p".into(),
@@ -411,7 +404,7 @@ mod tests {
                     max_retained_wal: 536_870_912,
                 },
                 max_transaction_rows: 2500,
-            })
+            }))
         );
         assert_eq!(
             command(&args("plan --role r --spec s")),

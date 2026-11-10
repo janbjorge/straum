@@ -154,7 +154,7 @@ python3 scripts/check-layers.py
 - [ ] `crates/straum-pg/src/source.rs:87` and `:105`: the full catalog is
   read twice per open, on purpose (f8378e1 checks before the slot). The
   first call could check `wal_level` and the publication alone.
-- [ ] `crates/straum/src/main.rs:112-126`: six `Command::Run` fields are
+- [x] `crates/straum/src/main.rs:112-126`: six `Command::Run` fields are
   unpacked into six `run()` parameters; a `RunArgs` struct would cut it.
   Low value.
 
