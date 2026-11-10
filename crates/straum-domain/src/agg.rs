@@ -50,13 +50,11 @@ fn lane(i: usize, g: u32) -> usize {
 /// no test per cell; [`Partials::finish`] never reads it.
 pub(crate) enum Partials {
     Count(Vec<u64>),
+    /// A sum and an average merge alike and part only when finished.
     Sum {
         sums: Vec<i128>,
         counts: Vec<u64>,
-    },
-    Avg {
-        sums: Vec<i128>,
-        counts: Vec<u64>,
+        average: bool,
     },
     /// The least value, or `i64::MAX` while there is none, and whether
     /// there is one.
@@ -75,13 +73,10 @@ impl Partials {
     pub(crate) fn new(agg: &Agg) -> Partials {
         match agg {
             Agg::Count => Partials::Count(Vec::new()),
-            Agg::Sum(_) => Partials::Sum {
+            Agg::Sum(_) | Agg::Avg(_) => Partials::Sum {
                 sums: Vec::new(),
                 counts: Vec::new(),
-            },
-            Agg::Avg(_) => Partials::Avg {
-                sums: Vec::new(),
-                counts: Vec::new(),
+                average: matches!(agg, Agg::Avg(_)),
             },
             Agg::Min(_) => Partials::Min {
                 values: Vec::new(),
@@ -99,7 +94,7 @@ impl Partials {
         let lanes = groups * LANES;
         match self {
             Partials::Count(counts) => counts.resize(lanes, 0),
-            Partials::Sum { sums, counts } | Partials::Avg { sums, counts } => {
+            Partials::Sum { sums, counts, .. } => {
                 sums.resize(lanes, 0);
                 counts.resize(lanes, 0);
             }
@@ -130,7 +125,7 @@ impl Partials {
                 }
             }
             (
-                Partials::Sum { sums, counts } | Partials::Avg { sums, counts },
+                Partials::Sum { sums, counts, .. },
                 Some(Column::Sum {
                     sums: cell_sums,
                     counts: cell_counts,
@@ -170,7 +165,7 @@ impl Partials {
         match (self, column) {
             (Partials::Count(counts), None) => counts[at] += rows.iter().sum::<u64>(),
             (
-                Partials::Sum { sums, counts } | Partials::Avg { sums, counts },
+                Partials::Sum { sums, counts, .. },
                 Some(Column::Sum {
                     sums: cell_sums,
                     counts: cell_counts,
@@ -199,13 +194,19 @@ impl Partials {
         let lanes = g * LANES..(g + 1) * LANES;
         match self {
             Partials::Count(counts) => Value::Int(counts[lanes].iter().sum::<u64>().into()),
-            Partials::Sum { sums, counts } | Partials::Avg { sums, counts } => {
+            Partials::Sum {
+                sums,
+                counts,
+                average,
+            } => {
                 let count: u64 = counts[lanes.clone()].iter().sum();
                 let sum: i128 = sums[lanes].iter().sum();
-                match self {
-                    _ if count == 0 => Value::Null,
-                    Partials::Avg { .. } => Value::Avg { sum, count },
-                    _ => Value::Int(sum),
+                if count == 0 {
+                    Value::Null
+                } else if *average {
+                    Value::Avg { sum, count }
+                } else {
+                    Value::Int(sum)
                 }
             }
             Partials::Min { seen, .. } | Partials::Max { seen, .. }

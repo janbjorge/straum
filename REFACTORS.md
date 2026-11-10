@@ -49,7 +49,7 @@ python3 scripts/check-layers.py
   (`store.rs:82`) while its siblings panic with `IN_SPEC`, and App then
   calls `.expect(IN_SPEC)` on it (`crates/straum-app/src/app.rs:261`):
   make it panic like the others.
-- [ ] **Merge `Partials::Sum` and `Partials::Avg`** (straum-domain).
+- [x] **Merge `Partials::Sum` and `Partials::Avg`** (straum-domain).
   `crates/straum-domain/src/agg.rs:60-67` have one shape and are told
   apart only in `finish` (`agg.rs:209-217`) by arm order.
   `Sum { sums, counts, average: bool }`; `finish` reads
