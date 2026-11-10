@@ -19,10 +19,10 @@
 //! GROUP BY 1, 2, 3;
 //! ```
 //!
-//! - `WITH (buckets = '1 day, 7 days')`: optional wider bucket widths, each
-//!   a wider whole multiple of the width before it. PostgreSQL rejects view
-//!   options; straum never sends a view to PostgreSQL, so it needn't take
-//!   them.
+//! - `WITH (buckets = '15 minutes, 1 day, 7 days')`: every bucket width
+//!   straum keeps, the `date_bin` width first, each wider one a whole
+//!   multiple of the width before it. PostgreSQL rejects view options;
+//!   straum never sends a view to PostgreSQL, so it needn't take them.
 //! - `FROM schema.table alias`: the fact.
 //! - `LEFT JOIN schema.table alias ON alias.key = fact.column`, with more
 //!   equalities joined by `AND` for a key of several columns: a ref named

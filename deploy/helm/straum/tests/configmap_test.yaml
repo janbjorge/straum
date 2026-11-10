@@ -7,7 +7,7 @@ tests:
   - it: holds the spec as given
     set:
       spec: |
-        CREATE VIEW trips AS
+        CREATE VIEW trips WITH (buckets = '1 hour') AS
         SELECT count(*) AS "trips"
         FROM public.trips t;
     asserts:
@@ -16,7 +16,7 @@ tests:
       - equal:
           path: data["spec.sql"]
           value: |
-            CREATE VIEW trips AS
+            CREATE VIEW trips WITH (buckets = '1 hour') AS
             SELECT count(*) AS "trips"
             FROM public.trips t;
 

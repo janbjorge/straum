@@ -74,7 +74,7 @@ dsn:
   existingSecret: straum-dsn         # key: dsn (role with REPLICATION)
 publication: straum                  # Straum creates a TEMPORARY slot per pod
 spec: |                              # Straum SQL (Straum-only subset), read at start
-  CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
+  CREATE VIEW trips WITH (buckets = '15 minutes, 1 day, 7 days') AS
   SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
          f.pu_location_id, pickup.borough, pickup.zone,
          count(*) AS trips

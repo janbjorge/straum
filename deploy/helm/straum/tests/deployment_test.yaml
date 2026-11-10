@@ -7,7 +7,7 @@ release:
 set:
   image.repository: registry.example/straum
   dsn.existingSecret: straum-dsn
-  spec: "CREATE VIEW trips AS SELECT count(*) AS trips FROM public.trips t;"
+  spec: "CREATE VIEW trips WITH (buckets = '1 hour') AS SELECT count(*) AS trips FROM public.trips t;"
 tests:
   - it: runs straum on the spec, with the DSN from the Secret
     template: deployment.yaml

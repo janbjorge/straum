@@ -33,7 +33,7 @@ parses it and `straum-notation` walks the AST; anything outside the subset is
 an error that names it. The taxi example (`crates/straum-notation/tests/taxi.sql`):
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
+CREATE VIEW trips WITH (buckets = '15 minutes, 1 day, 7 days') AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        f.payment_type,
        f.vendor_id,
@@ -54,11 +54,11 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
 - `CREATE VIEW NAME`: one fact, aggregated into one rollup.
-- `WITH (buckets = '1 day, 7 days')` (optional): wider bucket widths Straum
-  keeps beside the `date_bin` one, so an ask reads a long range from few
-  cells (§3). Each is a wider whole multiple of the width before it and,
-  like `date_bin`'s, starts at the epoch, so 7-day buckets start on
-  Thursdays. Answers don't change. PostgreSQL rejects view options, but
+- `WITH (buckets = '15 minutes, 1 day, 7 days')` (required, ADR-0028):
+  every bucket width Straum keeps, the `date_bin` width first, so an ask
+  reads a long range from few cells (§3). Each wider width is a whole
+  multiple of the width before it and, like `date_bin`'s, starts at the
+  epoch, so 7-day buckets start on Thursdays. Answers don't change. PostgreSQL rejects view options, but
   Straum sends PostgreSQL neither the view nor its body. The `SELECT` alone
   runs in PostgreSQL as is, which makes it the reference for tests. The
   fact table needs no primary key: `REPLICA IDENTITY FULL` gives Straum the

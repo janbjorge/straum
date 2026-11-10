@@ -4,7 +4,7 @@ image:
 dsn:
   existingSecret: "straum-dsn"
 spec: |
-  CREATE VIEW trips AS
+  CREATE VIEW trips WITH (buckets = '1 hour') AS
   SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
          t.kind,
          count(*) AS trips
