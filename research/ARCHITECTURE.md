@@ -64,38 +64,47 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
   fact table needs no primary key: `REPLICA IDENTITY FULL` gives Straum the
   old row of every update and delete.
 - `FROM SCHEMA.TABLE ALIAS`: the fact table.
-- `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`: a ref named
-  `ALIAS`, an N:1 pointer from a fact column to a dim key. It is the only way
+- `LEFT JOIN SCHEMA.TABLE ALIAS ON ALIAS.KEY = FACT.COLUMN`, with more
+  equalities joined by `AND` for a key of several columns: a ref named
+  `ALIAS`, an N:1 pointer from fact columns to a dim key. It is the only way
   a fact reaches another table, so a spec can't declare a fan-out. LEFT,
-  because a fact row with no dim row keeps null attributes. The fact column
-  must be selected.
+  because a fact row with no dim row keeps null attributes. Every fact
+  column joined on must be selected: it is a `by` column, and the ref only
+  says which dim row its value names, so a column can be grouped by and
+  joined on at once (M9).
 - `date_bin('<n> <unit>', FACT.COLUMN, timestamptz 'epoch')`: the time column
   and the bucket width. The width divides a day; units are seconds, minutes,
-  hours and days. The fixed origin puts buckets on UTC midnight.
-- Other fact columns are `by` columns, in the rollup key.
+  hours and days. The fixed origin puts buckets on midnight. A `timestamp`
+  column, which has no zone, takes `timestamp 'epoch'` and is read as wall
+  clock (M9).
+- Other fact columns are `by` columns, in the rollup key. `(FACT.COLUMN IS
+  NULL) AS NAME`, or `IS NOT NULL`, is a boolean `by` key: whether the
+  column is null, which a nullable `completed` means something by (M9).
 - Dim columns are attributes. A dim is its table: views that join it share it
   and must join on the same key, and its attributes are every column any
   view reads.
 - Measures: `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max` and `avg`,
   each `AS` a name and with an optional `FILTER (WHERE ...)` of `=` or `IN`
-  on by columns, refs or ref attributes, joined by `AND`.
-- GROUP BY names exactly the selected columns and the bucket, by expression or
-  position, so the view groups like the rollup.
+  on by columns, refs or ref attributes, or `IS NULL` and `IS NOT NULL` on
+  a column with a null-ness key, joined by `AND`.
+- GROUP BY names exactly the selected columns, null-ness keys and the bucket,
+  by expression or position, so the view groups like the rollup.
 - Every column is qualified with its table alias; identifiers are unquoted.
 
-The rollup key is the by columns, then the ref ids, then the time bucket
-(`Fact::rollup_key`). Dim attributes are never part of it. Straum maps a ref id
-to its attributes after aggregation, as Kylin does with derived dimensions
+The rollup key is the by keys, then the time bucket (`Fact::rollup_key`); a
+ref's columns are by columns, so a ref adds nothing to it. Dim attributes are
+never part of it. Straum maps the values a ref joins on to its attributes
+after aggregation, as Kylin does with derived dimensions
 ([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)).
 A change to a dim row therefore never touches a rollup. M1 checked this on one
 month of NYC taxi trips: eight ask shapes gave the same rows from the rollup
 as from the raw join in PostgreSQL (PLAN.md, M1).
 
 `Spec::new` checks the declarations against each other and reports every
-problem at once: duplicate names, a grain that doesn't divide a day, a column
-used twice among time, by and ref, unknown dims, and filters on anything
-outside the rollup key. Column types and keys are
-checked against the catalog at start (M5).
+problem at once: duplicate names, a grain that doesn't divide a day, the time
+column as a key, a ref whose columns are not by columns or don't match its
+dim's key in number, unknown dims, and filters on anything outside the rollup
+key. Column types and keys are checked against the catalog at start (M5).
 
 There are no expressions and no joins beyond refs. An aggregate Straum SQL
 can't declare stays a query against PostgreSQL.

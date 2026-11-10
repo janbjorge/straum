@@ -57,10 +57,10 @@ superuser.
 - `REPLICA IDENTITY FULL` makes PostgreSQL write the old row of every
   update and delete to the WAL, so Straum can take the row out of its
   cell. Inserts cost no more.
-- Dims need their key as replica identity: a primary key on the key
-  alone, `REPLICA IDENTITY USING INDEX` on a unique index of it, or
-  `REPLICA IDENTITY FULL` with a unique index on it. Only the schema can
-  give that, so the SQL says it in a comment.
+- Dims need their key columns as replica identity: a primary key on
+  exactly those columns, `REPLICA IDENTITY USING INDEX` on a unique index
+  of them, or `REPLICA IDENTITY FULL` with a unique index on them, in any
+  order. Only the schema can give that, so the SQL says it in a comment.
 
 The setup lives in the catalog and survives restarts. Straum checks it on
 every start.
@@ -117,12 +117,16 @@ orders: publication straum filters the rows of public.orders; straum needs every
 orders: public.orders has no column placed_at
 orders: publication straum leaves out column amount of public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
+orders: column placed_at of public.orders is timestamp without time zone; the date_bin origin timestamptz 'epoch' needs a timestamptz there; for a timestamp column, write timestamp 'epoch'
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: public.customers needs a primary key or unique index on id alone
 dim customers: the replica identity of public.customers must be id alone, so a delete names the row straum holds: a primary key on id, REPLICA IDENTITY USING INDEX on a unique index of id, or REPLICA IDENTITY FULL
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
 fact orders: measure paid compares status (text) with 1
 ```
+
+A dim keyed by several columns is named with them all, `organization_id,
+taskgroup_id alone`.
 
 ## What Straum costs the server
 

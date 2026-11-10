@@ -7,7 +7,9 @@ creates the view, and to load it copies only the columns the view reads.
 Anything outside the subset is an error that names the construct.
 
 This spec, which the [benchmark](benchmark.md#the-whole-view-end-to-end)
-follows end to end, uses all of the subset:
+follows end to end, uses most of the subset; a [second
+example](#keys-of-several-columns-and-null-ness-keys) below uses the
+rest:
 
 ```sql
 CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
@@ -88,17 +90,57 @@ This declares the ref `pickup`: an N:1 pointer from a fact column to the
 key of a dim table. The dim's columns, such as `pickup.borough`, are the
 ref's attributes.
 
-- The fact column, `f.pu_location_id`, must be selected.
+- The fact column, `f.pu_location_id`, must be selected: it is a by
+  column like any other, and the ref only says which dim row its value
+  names.
 - Joins go from the fact to a dim only, so a spec can't fan out.
 - Two refs can share a dim table, like `pickup` and `dropoff`. A dim table
   is one dim however many views join it, and all must join it on the same
-  key.
+  key columns, in any order.
 - The join is `LEFT` because a fact row with no dim row still counts. Its
   attributes are null.
 
 Asks group and filter by all three: `payment_type`, `pickup` and
 `pickup.borough`. Straum looks attributes up when it answers, so a change
 to a dim row never touches a rollup.
+
+## Keys of several columns, and null-ness keys
+
+A dim's key may be several columns, and a fact column may be both grouped
+by and joined on. A nullable column may be a key by whether it is null.
+This view has both:
+
+```sql
+CREATE VIEW tasks WITH (buckets = '1 day') AS
+SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+       f.organization_id,
+       f.taskgroup_id,
+       (f.completed IS NOT NULL) AS done,
+       g.category,
+       count(*) AS tasks,
+       count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed
+FROM public.tasks f
+LEFT JOIN public.taskgroups g
+       ON g.organization_id = f.organization_id
+      AND g.taskgroup_id = f.taskgroup_id
+GROUP BY 1, 2, 3, 4, 5;
+```
+
+- The join names one equality per key column, joined by `AND`. Every
+  fact column joined on is selected; `organization_id` is a by column
+  and part of the ref's key at once. A ref on one column is a key asks
+  can group by, like `pickup`; a ref on several is not: ask for its
+  columns, or for its attributes such as `g.category`.
+- `(f.completed IS NOT NULL) AS done` is a null-ness key: a boolean, true
+  for the rows with a `completed` time, grouped and filtered like a
+  column under its name. `IS NULL` makes the opposite key. The column may
+  be of any type Straum reads, a time included, but not the view's time
+  column: a row with no time is never answered, so the key could never be
+  true.
+- `FILTER (WHERE f.completed IS NOT NULL)` counts through the null-ness
+  key over `completed`, which is why the view needs one: Straum keeps
+  nothing else about the column. The view body stays what PostgreSQL
+  runs, since the key's name is no column there.
 
 ## Measures
 
@@ -119,15 +161,19 @@ count(*) FILTER (WHERE f.payment_type = 1) AS card
 ```
 
 The condition is `=` or `IN (...)` on by columns, refs or attributes,
-joined by `AND`. Literals are integers, `'text'`, `true` or `false`, and
-must fit their column.
+or `IS NULL` or `IS NOT NULL` on a column with a [null-ness
+key](#keys-of-several-columns-and-null-ness-keys), joined by `AND`.
+Literals are integers, `'text'`, `true` or `false`, and must fit their
+column.
 
 By columns, refs, dim keys and attributes are an integer type,
-`numeric(p, s)`, `boolean` or `text`. A ref's column and its dim's key
-must be of the same kind.
+`numeric(p, s)`, `boolean` or `text`. A ref's columns and its dim's key
+columns must be of the same kinds, column for column. The column of a
+null-ness key may be any type Straum reads.
 
-`GROUP BY` names exactly the selected columns and the bucket, by position
-or by expression, so the view groups the way the rollup does.
+`GROUP BY` names exactly the selected columns, null-ness keys and the
+bucket, by position or by expression, so the view groups the way the
+rollup does.
 
 ## What a spec can't say
 
@@ -156,7 +202,8 @@ wrong type, when it starts.
 ## Memory
 
 Memory follows cells. Each bucket width keeps one cell per distinct
-combination of by columns, ref ids and bucket, so per width:
+combination of by keys and bucket, the columns refs join on among them,
+so per width:
 
 ```text
 cells <= min(rows, distinct key combinations x buckets)

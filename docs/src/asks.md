@@ -30,10 +30,11 @@ GROUP BY <keys>
 ```
 
 - `FROM` names one view, with no schema, alias or join.
-- A key is a by column (`status`), a ref, which reads the fact column it
-  joins on (`customer`), a ref's attribute (`customer.country`), or
-  `bucket`, the view's time bucket. A spec can't name anything else
-  `bucket`.
+- A key is a by column (`status`), a null-ness key by its name, a ref on
+  one column, which reads the fact column it joins on (`customer`), a
+  ref's attribute (`customer.country`), or `bucket`, the view's time
+  bucket. A ref on several columns has no value of its own: ask for its
+  columns or its attributes. A spec can't name anything else `bucket`.
 - Keys come first in `SELECT`, then measures, by name, each once, since
   they name the fields of each answer row. `GROUP BY` names exactly the
   selected keys. Without keys there is no `GROUP BY`.
@@ -53,7 +54,8 @@ used, and one can be used more than once.
 
 A condition's parameters must have the column's type, with no
 conversion: an integer for an integer column or a `numeric(p, 0)`, a
-string for text, a boolean for a boolean. `status = $1` with `1`, or
+string for text, a boolean for a boolean or a null-ness key. `status = $1`
+with `1`, or
 `customer = $1` with `"7"`, is an error, not an answer with no rows. A
 `numeric` with a scale above 0 takes no parameter at all: at scale 2,
 `1` would read as 0.01. The `bucket` bounds are

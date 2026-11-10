@@ -33,7 +33,10 @@ A cell holds its row count and what each measure needs:
   reveals the next one.
 - `count(DISTINCT c)` keeps a count per value.
 
-Each bucket width keeps cells of its own. Dims are kept as rows by key.
+A null-ness key is kept as the boolean it is: whether the column was
+null. Each bucket width keeps cells of its own. A fact row with no time
+goes to a bucket no ask reads. Dims are kept as rows by key, one column
+or more.
 
 ## Applying a commit
 
@@ -61,9 +64,10 @@ rollup, or a table whose columns now read differently.
    a filter value of another type than its column.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
-3. It looks up the attributes the ask needs by ref id, once per ref id it
-   meets. Attributes are not part of the rollup key, so a change to a dim
-   row changes answers without touching a cell.
+3. It looks up the attributes the ask needs by the values of the columns
+   the ref joins on, once per combination it meets. Attributes are not
+   part of the rollup key, so a change to a dim row changes answers
+   without touching a cell.
 4. It adds each cell to its group, and to each measure whose filter holds.
    Filters name only parts of the rollup key, so a cell counts whole or
    not at all.

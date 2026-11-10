@@ -24,15 +24,22 @@
 //!   options; straum never sends a view to PostgreSQL, so it needn't take
 //!   them.
 //! - `FROM schema.table alias`: the fact.
-//! - `LEFT JOIN schema.table alias ON alias.key = fact.column`: a ref named
-//!   `alias` to the dim `table`. The fact column must be selected.
-//! - `date_bin('<n> <unit>', fact.column, timestamptz 'epoch')`: the bucket.
-//! - Other fact columns are `by` columns; dim columns are attributes, read
-//!   after aggregation.
+//! - `LEFT JOIN schema.table alias ON alias.key = fact.column`, with more
+//!   equalities joined by `AND` for a key of several columns: a ref named
+//!   `alias` to the dim `table`. Every fact column joined on must be
+//!   selected; it is a `by` column, and the ref says which dim row its
+//!   value names.
+//! - `date_bin('<n> <unit>', fact.column, timestamptz 'epoch')`: the bucket;
+//!   `timestamp 'epoch'` for a column without a zone.
+//! - Other fact columns are `by` columns; `(fact.column IS NULL) AS name`
+//!   or `IS NOT NULL` is a boolean `by` key; dim columns are attributes,
+//!   read after aggregation.
 //! - `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max`, `avg`, each `AS`
-//!   a name and with an optional `FILTER (WHERE ...)` of `=` and `IN` joined
+//!   a name and with an optional `FILTER (WHERE ...)` of `=` and `IN`, or
+//!   `IS NULL` and `IS NOT NULL` over a column with a null-ness key, joined
 //!   by `AND`.
-//! - GROUP BY names exactly the selected columns and the bucket.
+//! - GROUP BY names exactly the selected columns, null-ness keys and the
+//!   bucket.
 //! - Every column is qualified with its table alias.
 
 #![forbid(unsafe_code)]
