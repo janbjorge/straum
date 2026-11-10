@@ -1,7 +1,5 @@
 use sqlparser::ast as sql;
-use straum_domain::{
-    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Ref, Table, Time,
-};
+use straum_domain::{Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Measure, Ref, Table, Time};
 
 use super::{SqlError, Walker, function_name, line};
 
@@ -734,56 +732,12 @@ impl Walker {
         let mut conds = Vec::new();
         if let Some(expr) = &f.filter {
             let before = self.errors.len();
-            self.conds(scope, expr, &mut conds);
+            self.conds(expr, &mut conds, &mut |w, e| w.path(scope, e));
             if self.errors.len() > before {
                 return None;
             }
         }
         Some(conds)
-    }
-
-    fn conds(&mut self, scope: &Scope, expr: &sql::Expr, conds: &mut Vec<Cond>) {
-        match expr {
-            sql::Expr::Nested(inner) => self.conds(scope, inner, conds),
-            sql::Expr::BinaryOp {
-                left,
-                op: sql::BinaryOperator::And,
-                right,
-            } => {
-                self.conds(scope, left, conds);
-                self.conds(scope, right, conds);
-            }
-            sql::Expr::BinaryOp {
-                left,
-                op: sql::BinaryOperator::Eq,
-                right,
-            } => {
-                let path = self.path(scope, left);
-                let value = self.literal(right);
-                if let (Some(path), Some(value)) = (path, value) {
-                    conds.push(Cond {
-                        path,
-                        values: vec![value],
-                    });
-                }
-            }
-            sql::Expr::InList {
-                expr: inner,
-                list,
-                negated: false,
-            } => {
-                let path = self.path(scope, inner);
-                let values: Vec<Literal> = list.iter().filter_map(|v| self.literal(v)).collect();
-                if let Some(path) = path.filter(|_| values.len() == list.len()) {
-                    conds.push(Cond { path, values });
-                }
-            }
-            other => self.reject(
-                line(other),
-                "filter condition, use = or IN joined by AND,",
-                other,
-            ),
-        }
     }
 
     fn path(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<KeyPath> {

@@ -11,7 +11,7 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Dim, Fact, Ident, Literal, Table};
+use straum_domain::{Cond, Dim, Fact, Ident, KeyPath, Literal, Table};
 
 mod view;
 
@@ -182,6 +182,55 @@ impl Walker {
                 self.reject(line(f), "arguments", f);
                 None
             }
+        }
+    }
+
+    fn conds(
+        &mut self,
+        expr: &sql::Expr,
+        conds: &mut Vec<Cond>,
+        path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<KeyPath>,
+    ) {
+        match expr {
+            sql::Expr::Nested(inner) => self.conds(inner, conds, path),
+            sql::Expr::BinaryOp {
+                left,
+                op: sql::BinaryOperator::And,
+                right,
+            } => {
+                self.conds(left, conds, path);
+                self.conds(right, conds, path);
+            }
+            sql::Expr::BinaryOp {
+                left,
+                op: sql::BinaryOperator::Eq,
+                right,
+            } => {
+                let key = path(self, left);
+                let value = self.literal(right);
+                if let (Some(path), Some(value)) = (key, value) {
+                    conds.push(Cond {
+                        path,
+                        values: vec![value],
+                    });
+                }
+            }
+            sql::Expr::InList {
+                expr: inner,
+                list,
+                negated: false,
+            } => {
+                let key = path(self, inner);
+                let values: Vec<Literal> = list.iter().filter_map(|v| self.literal(v)).collect();
+                if let Some(path) = key.filter(|_| values.len() == list.len()) {
+                    conds.push(Cond { path, values });
+                }
+            }
+            other => self.reject(
+                line(other),
+                "filter condition, use = or IN joined by AND,",
+                other,
+            ),
         }
     }
 
