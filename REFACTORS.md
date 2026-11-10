@@ -115,7 +115,7 @@ python3 scripts/check-layers.py
   `139` to split borrows. `Transaction { changes, max_rows, lsn }` with
   `fn hold(&mut self, change)`: `self.transaction.hold(change)?` inside
   the `mappings(&self.relations, ..)` loop borrows disjoint fields.
-- [ ] **`Lookup` keeps one column list**.
+- [x] **`Lookup` keeps one column list**.
   `crates/straum-pg/src/resolve.rs:36-49` has `key`, `key_types`,
   `attrs`, `attr_types` as parallel Vecs and `fetch`
   (`resolve.rs:153-196`) branches on `i < width`. Replace with

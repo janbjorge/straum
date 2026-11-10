@@ -42,10 +42,10 @@ struct Lookup {
     /// Where the via columns sit in a fact row.
     via: Vec<usize>,
     via_types: Vec<ColumnType>,
-    key: Vec<Ident>,
-    key_types: Vec<ColumnType>,
-    attrs: Vec<Ident>,
-    attr_types: Vec<ColumnType>,
+    /// The dim columns the statement selects: its key, `key_width` of
+    /// them, then the attributes.
+    columns: Vec<(Ident, ColumnType)>,
+    key_width: usize,
 }
 
 impl Resolver {
@@ -58,8 +58,11 @@ impl Resolver {
                     .map(|r| {
                         let dim = tables.dim(&r.dim);
                         let key = &dim.columns[..dim.key_width];
-                        let selected: Vec<String> = (key.iter().chain(&r.attrs))
-                            .map(|c| escape_identifier(c.as_str()))
+                        let dim_columns: Vec<(Ident, ColumnType)> = (key.iter().chain(&r.attrs))
+                            .map(|c| (c.clone(), dim.column_type(c)))
+                            .collect();
+                        let selected: Vec<String> = (dim_columns.iter())
+                            .map(|(c, _)| escape_identifier(c.as_str()))
                             .collect();
                         let keys: Vec<String> =
                             key.iter().map(|c| escape_identifier(c.as_str())).collect();
@@ -79,10 +82,8 @@ impl Resolver {
                                 })
                                 .collect(),
                             via_types: r.via.iter().map(|v| table.column_type(v)).collect(),
-                            key: key.to_vec(),
-                            key_types: key.iter().map(|k| dim.column_type(k)).collect(),
-                            attrs: r.attrs.clone(),
-                            attr_types: r.attrs.iter().map(|a| dim.column_type(a)).collect(),
+                            columns: dim_columns,
+                            key_width: key.len(),
                         }
                     })
                     .collect();
@@ -128,7 +129,10 @@ impl Resolver {
                 for row in &mut rows {
                     match lookup.key(row).and_then(|key| found.get(&key)) {
                         Some(attrs) => row.extend_from_slice(attrs),
-                        None => row.extend(iter::repeat_n(Datum::Null, lookup.attrs.len())),
+                        None => row.extend(iter::repeat_n(
+                            Datum::Null,
+                            lookup.columns.len() - lookup.key_width,
+                        )),
                     }
                 }
             }
@@ -168,27 +172,16 @@ impl Lookup {
                 .collect();
             let sql = format!("{}({})", self.sql, list.join(", "));
             conn.query(&sql, |fields| {
-                let width = self.key.len();
-                let mut key = Vec::with_capacity(width);
-                let mut attrs = Vec::with_capacity(self.attrs.len());
-                for (i, field) in fields.iter().enumerate() {
-                    let (column_type, name) = if i < width {
-                        (self.key_types[i], &self.key[i])
-                    } else {
-                        (self.attr_types[i - width], &self.attrs[i - width])
-                    };
-                    let datum = match field {
+                let mut key = Vec::with_capacity(fields.len());
+                for (field, (name, column_type)) in fields.iter().zip(&self.columns) {
+                    key.push(match field {
                         None => Datum::Null,
                         Some(text) => {
-                            read(column_type, text).map_err(|e| e.at(&self.qualified, name))?
+                            read(*column_type, text).map_err(|e| e.at(&self.qualified, name))?
                         }
-                    };
-                    if i < width {
-                        key.push(datum);
-                    } else {
-                        attrs.push(datum);
-                    }
+                    });
                 }
+                let attrs = key.split_off(self.key_width);
                 found.insert(key, attrs);
                 Ok(())
             })?;
