@@ -1,4 +1,4 @@
-# Straum architecture (2026-11-09)
+# Straum architecture (2026-11-10)
 
 How Straum works since aggregates are declared in Straum SQL, a PostgreSQL
 `CREATE VIEW` subset made only for Straum specs. PLAN.md tracks the build
@@ -13,8 +13,9 @@ PostgreSQL paths are relative to the root of [upstream PostgreSQL](https://githu
 
 - A spec file declares facts, the dims they point at, and named measures.
   Straum reads it at start.
-- Straum follows the fact and dim tables over logical replication and keeps one
-  rollup per fact in RAM.
+- Straum follows the fact tables over logical replication, reads the dims
+  they join by key as each row comes in, and keeps one rollup per fact in
+  RAM and nothing else (JOINS.md).
 - Clients send asks over HTTP/JSON: measures, keys to group by, filters and a
   time range, in UTC. Straum answers from the rollup, and every answer says
   how fresh it is.
@@ -49,7 +50,6 @@ SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
 FROM public.yellow_trips f
 LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-LEFT JOIN public.taxi_zones dropoff ON dropoff.location_id = f.do_location_id
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
@@ -68,10 +68,8 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
   equalities joined by `AND` for a key of several columns: a ref named
   `ALIAS`, an N:1 pointer from fact columns to a dim key. It is the only way
   a fact reaches another table, so a spec can't declare a fan-out. LEFT,
-  because a fact row with no dim row keeps null attributes. Every fact
-  column joined on must be selected: it is a `by` column, and the ref only
-  says which dim row its value names, so a column can be grouped by and
-  joined on at once (M9).
+  because a fact row with no dim row keeps null attributes. A fact column
+  joined on may be selected as a `by` column or left out (M9, M12).
 - `date_bin('<n> <unit>', FACT.COLUMN, timestamptz 'epoch')`: the time column
   and the bucket width. The width divides a day; units are seconds, minutes,
   hours and days. The fixed origin puts buckets on midnight. A `timestamp`
@@ -80,38 +78,42 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 - Other fact columns are `by` columns, in the rollup key. `(FACT.COLUMN IS
   NULL) AS NAME`, or `IS NOT NULL`, is a boolean `by` key: whether the
   column is null, which a nullable `completed` means something by (M9).
-- Dim columns are attributes. A dim is its table: views that join it share it
+- The dim columns a view selects are the ref's attributes: keys like by
+  columns, read from the dim row as each fact row comes in (M12, JOINS.md).
+  A join must select one. A dim is its table: views that join it share it
   and must join on the same key, and its attributes are every column any
   view reads.
 - Measures: `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max` and `avg`,
   each `AS` a name and with an optional `FILTER (WHERE ...)` of `=` or `IN`
-  on by columns, refs or ref attributes, or `IS NULL` and `IS NOT NULL` on
-  a column with a null-ness key, joined by `AND`.
+  on by columns or attributes the view selects, or `IS NULL` and `IS NOT
+  NULL` on a column with a null-ness key, joined by `AND`.
 - GROUP BY names exactly the selected columns, null-ness keys and the bucket,
   by expression or position, so the view groups like the rollup.
 - Every column is qualified with its table alias; identifiers are unquoted.
 
-The rollup key is the by keys, then the attributes bound at ingest, then the
-time bucket (`Fact::rollup_key`). A ref whose via columns are selected binds
-late: the columns are by columns, the ref adds nothing, and Straum maps their
-values to the attributes after aggregation, as Kylin does with derived
-dimensions
-([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)).
-A change to a dim row therefore never touches a rollup. M1 checked this on one
-month of NYC taxi trips: eight ask shapes gave the same rows from the rollup
-as from the raw join in PostgreSQL (PLAN.md, M1). A ref whose via columns are
-not selected binds the attributes it selects at ingest (M11): the store reads
-them from the dim row as each fact row comes in and they are keys, so the
-rollup is keyed by an attribute's few values instead of the ref's many. The
-trade is time: a dim row changed later leaves the cells made before as they
-were, and a row bound to the old value that is updated or deleted makes Straum
-start over and bind everything again.
+The rollup key is the by keys, then every ref's attributes, then the time
+bucket (`Fact::rollup_key`). The attributes come with each fact row,
+resolved in PostgreSQL by the source: the load joins the fact to its dims
+in one `COPY`, and each commit's fact rows get theirs from one keyed
+`SELECT` per ref (§4a, §4b; JOINS.md). So the rollup is keyed by an
+attribute's few values instead of the join column's many when the view
+leaves the column out, and Straum holds no dim rows. The trade is time: a
+dim row changed later leaves the cells made before as they were, and a
+row that came in under the old value and is updated or deleted makes
+Straum start over and read everything again. M1 checked the rollup against
+the raw join on one month of NYC taxi trips: eight ask shapes gave the
+same rows (PLAN.md, M1); M12 checks it on every change in the tests. The
+first design mapped attributes after aggregation, as Kylin does with
+derived dimensions
+([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)),
+and held the dims for it; JOINS.md §4 says why that went.
 
 `Spec::new` checks the declarations against each other and reports every
 problem at once: duplicate names, a grain that doesn't divide a day, the time
-column as a key, a ref whose columns are not by columns or don't match its
-dim's key in number, unknown dims, and filters on anything outside the rollup
-key. Column types and keys are checked against the catalog at start (M5).
+column as a key, a ref that reads nothing or a column its dim lacks, or
+whose columns don't match its dim's key in number, unknown dims, and
+filters on anything outside the rollup key. Column types and keys are
+checked against the catalog at start (M5).
 
 There are no expressions and no joins beyond refs. An aggregate Straum SQL
 can't declare stays a query against PostgreSQL.
@@ -121,8 +123,8 @@ can't declare stays a query against PostgreSQL.
 An ask names one fact and gives:
 
 - measures, by name;
-- keys to group by: by columns, refs, ref attributes such as `pickup.borough`,
-  and at most one time key, the UTC bucket;
+- keys to group by: by columns, null-ness keys, attributes such as
+  `pickup.borough`, and at most one time key, the UTC bucket;
 - filters, `=` or `in` on the same keys;
 - a half-open range `[from, to)` in Unix seconds, both ends on bucket edges.
 
@@ -131,15 +133,15 @@ time keys and a range end inside a bucket.
 
 `Store::ask` answers from the cells:
 
-![Store::ask walks the cells of a fact, looks up dim attributes by ref id and merges each cell into the measures whose filter holds.](../docs/src/diagrams/ask.svg)
+![Store::ask walks the cells of a fact, reads each cell's attributes from its key and merges each cell into the measures whose filter holds.](../docs/src/diagrams/ask.svg)
 
 - It reads only the buckets that cover the range: the widest the view keeps
   that fit, `date_bin` buckets at the ends, or only `date_bin` buckets when
   the ask groups by the bucket (§3).
 - Filtered measures keep no state. Their conditions name rollup-key parts only,
   so a cell counts in whole or not at all.
-- A ref id with no dim row maps to null attributes, as a left join would
-  (PLAN.md, 2026-11-09).
+- A row whose dim row did not exist when it came in has null attributes,
+  as a left join would (PLAN.md, 2026-11-09).
 - An ask without keys answers one row even when nothing matches, as SQL does
   without GROUP BY.
 - sum, min and max come back in the column's scale. avg keeps sum and count;
@@ -216,9 +218,9 @@ sum, avg, min and max read integers: integer columns, and numeric columns as
 scaled `i64` (checked against the catalog in M5). An `i128` sum of `i64` values
 can't overflow below 2^64 rows. Float columns are an open question.
 
-Dims are kept as rows by key and read at ask time, once per ref code an ask
-meets. Like rollup keys, each dim column keeps its values under codes, so an
-ask groups by a dim attribute without hashing its values.
+No dim rows are kept. A ref's attributes are rollup-key columns like any
+other, their values coded once, so an ask groups by an attribute without
+hashing its values and looks nothing up (M12, JOINS.md).
 
 Memory follows cells, not rows, as long as rows collapse into far fewer cells.
 They don't always. On the taxi spec M1 measured 2,964,624 trips in 2,322,783
@@ -236,15 +238,16 @@ over a value dictionary are the likely way to shrink it (I, not built).
 
 The spec is known at start, so one slot and one snapshot serve every table:
 
-![The writer opens a temporary slot whose snapshot is at LSN L, loads dims and facts in it, then streams from L through a stream thread.](../docs/src/diagrams/start.svg)
+![The writer opens a temporary slot whose snapshot is at LSN L, loads each fact joined to its dims in it, then streams from L through a stream thread.](../docs/src/diagrams/start.svg)
 
-- Each fact and dim loads with one `COPY (SELECT <columns> FROM <table>) TO
-  STDOUT (FORMAT binary)`, and Straum groups the rows itself
-  (`crates/straum-pg/src/load.rs`, `Rollup::add_rows`). PostgreSQL only
-  scans: no sort or hash that can spill to disk, no output functions, and
-  nothing from the spec runs there. A reader thread decodes batches of 8192
-  rows, four in flight, so a load holds about 1.2 MB per column besides the
-  store (PLAN.md, 2026-11-09).
+- Each fact loads with one `COPY (SELECT <columns> FROM <fact> LEFT JOIN
+  <dim> ON ...) TO STDOUT (FORMAT binary)`, its refs joined in PostgreSQL
+  (`load::copy_sql`), and Straum groups the rows itself
+  (`crates/straum-pg/src/load.rs`, `Rollup::add_rows`). No output
+  functions run, and nothing from the spec runs there; PostgreSQL plans
+  the join as it would for the view, which may hash a dim (M12). A reader
+  thread decodes batches of 8192 rows, four in flight, so a load holds
+  about 1.2 MB per column besides the store (PLAN.md, 2026-11-09).
 - SQL and replication commands share one connection in logical walsender mode
   (`doc/src/sgml/protocol.sgml:2186-2190`, R), simple query protocol only
   (`:2193-2194`, R). Loads come back as binary `COPY`; pgoutput v1 sends the
@@ -269,7 +272,7 @@ The spec is known at start, so one slot and one snapshot serve every table:
 
 ### 4b. Apply
 
-![What each pgoutput message does to facts with REPLICA IDENTITY FULL, facts with the default identity and dims, and how Straum starts over.](diagrams/apply.svg)
+![What each pgoutput message does to facts with REPLICA IDENTITY FULL, facts with the default identity and dims, and how Straum starts over. Drawn before M12: dims are no longer in the stream.](diagrams/apply.svg)
 
 Old values: by default pgoutput sends only the key on DELETE and no old values
 on an UPDATE that leaves the key alone. Only REPLICA IDENTITY FULL sends the
@@ -281,7 +284,12 @@ whole old row (POSTGRES-REPLICATION.md §3, R). So:
   pays nothing for it. An UPDATE or DELETE that still comes without the old
   row, as after the identity is changed back, starts Straum over, and that
   start reports the missing FULL.
-- Dims need only the key: upsert on insert and update, delete by key.
+- Dims are not in the stream. Before a commit is applied, each fact row in
+  it gets its attributes from one `SELECT ... WHERE (key) IN (...)` per
+  ref on the side connection, as the dims are then
+  (`crates/straum-pg/src/resolve.rs`; JOINS.md §3b). An old row that
+  resolves to another cell than it came in under is not found, and Straum
+  starts over.
 - Truncate empties the table in place. Changes before it in the transaction
   are gone, changes after it apply.
 
@@ -342,9 +350,10 @@ connection and answers once the stream passes the returned LSN
 (`straum plan --spec FILE`, from `straum_pg::plan`): `wal_level = logical`
 (needs a restart; 19 can stay at `replica`), `CREATE ROLE straum LOGIN
 REPLICATION`, `GRANT SELECT` on the spec's tables, `CREATE PUBLICATION straum
-FOR TABLE` with the fact and dim tables, and `REPLICA IDENTITY FULL` for every
-fact. A dim needs its key as replica identity, which only
-the schema can give, so the SQL says so in a comment.
+FOR TABLE` with the fact tables, and `REPLICA IDENTITY FULL` for every
+fact. A dim is read, not published; it needs a primary key or unique index
+on its key, which only the schema can give, so the SQL says so in a
+comment.
 
 - Adding a table to a publication needs ownership of it
   (`src/backend/commands/publicationcmds.c:2051-2054`, R); `FOR ALL TABLES`
@@ -377,15 +386,17 @@ Clean architecture as Cargo crates:
   load reads the snapshot of the slot the stream comes from, on the same
   connection. `App` is the store and how far it has followed the source;
   clones share it. `Writer::step` is the loop that does the I/O: it loads
-  every table or applies a commit, and starts over when a change no longer
+  every fact or applies a commit, and starts over when a change no longer
   fits. `App::ask` answers with the LSN and `as_of`. About once a
   second the writer reads the server's WAL position for the lag and the
   WAL held for its slot (`crates/straum-app/src/lag.rs`, M7).
-- `straum-pg` (M5, M7): our own replication client on `postgres-protocol`.
-  Catalog checks, binary `COPY` loads in the slot's snapshot, pgoutput v1
-  decoding, WAL readings on a plain connection, and a thread that owns the
-  stream: it answers keepalives and reports the applied LSN while the
-  writer is busy. Synchronous; TLS is `rustls` on `rustls-graviola`
+- `straum-pg` (M5, M7, M12): our own replication client on
+  `postgres-protocol`. Catalog checks, binary `COPY` loads of each fact
+  joined to its dims in the slot's snapshot, pgoutput v1 decoding of the
+  facts, the dim lookups of each commit and the WAL readings on a plain
+  side connection, and a thread that owns the stream: it answers
+  keepalives and reports the applied LSN while the writer is busy.
+  Synchronous; TLS is `rustls` on `rustls-graviola`
   (`crates/straum-pg/src/tls.rs`).
 - `straum-http` (M6): hyper 1 on tokio, no framework; `/ask`, `/livez`,
   `/readyz` and `/status`. It reads the JSON around an ask, its query and
@@ -509,4 +520,5 @@ One code path covers all of them. Azure Flexible Server 18 defaults to
 7. Long asks delay the writer while they hold the read lock (§6).
 
 Settled: mutable facts take REPLICA IDENTITY FULL, with no row store in
-Straum (PLAN.md, 2026-11-09).
+Straum (PLAN.md, 2026-11-09). Joins are resolved in PostgreSQL at ingest,
+with no dim rows in Straum (PLAN.md, 2026-11-10; JOINS.md).

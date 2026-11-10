@@ -125,6 +125,7 @@ cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`
 - [Architecture](research/ARCHITECTURE.md)
+- [Joins: data model, code and sources](research/JOINS.md)
 - [Build plan](PLAN.md)
 - [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)
 - [Managed PostgreSQL constraints](research/MANAGED-POSTGRES.md)
