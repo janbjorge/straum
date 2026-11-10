@@ -91,11 +91,11 @@
   <text x="32" y="64" class="sub muted">Store::ask walks each cell of the fact once. Example: trips by pickup.borough, 00:00 to 00:30.</text>
   <rect class="box" x="32" y="88" width="300" height="132" rx="6"/>
   <text x="48" y="112" class="lbl muted">ASK</text>
-  <text x="48" y="136" class="mono">{"fact": "trips",</text>
-  <text x="48" y="153" class="mono" xml:space="preserve"> "measures": ["trips", "card"],</text>
-  <text x="48" y="170" class="mono" xml:space="preserve"> "by": ["pickup.borough"],</text>
-  <text x="48" y="187" class="mono" xml:space="preserve"> "from": "2024-01-01T00:00:00Z",</text>
-  <text x="48" y="204" class="mono" xml:space="preserve"> "to":   "2024-01-01T00:30:00Z"}</text>
+  <text x="48" y="136" class="mono">SELECT pickup.borough,</text>
+  <text x="48" y="153" class="mono" xml:space="preserve">  trips, card FROM trips</text>
+  <text x="48" y="170" class="mono" xml:space="preserve">WHERE bucket &gt;= $1</text>
+  <text x="48" y="187" class="mono" xml:space="preserve">  AND bucket &lt; $2</text>
+  <text x="48" y="204" class="mono" xml:space="preserve">GROUP BY pickup.borough</text>
   <rect class="box" x="348" y="88" width="300" height="132" rx="6"/>
   <text x="364" y="112" class="lbl muted">SPEC, VIEW trips</text>
   <text x="364" y="136" class="mono">count(*) AS trips,</text>

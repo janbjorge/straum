@@ -369,9 +369,10 @@ Clean architecture as Cargo crates:
   writer is busy. Synchronous; TLS is `rustls` on `rustls-graviola`
   (`crates/straum-pg/src/tls.rs`).
 - `straum-http` (M6): hyper 1 on tokio, no framework; `/ask`, `/livez`,
-  `/readyz` and `/status`. The binary hands `serve` the ask reader: for
-  now JSON asks, read by a walker over `serde_json` values without derive
-  macros. `serve` itself checks that a range is one jiff can print, so no
+  `/readyz` and `/status`. It reads the JSON around an ask, its query and
+  parameters, by a walker over `serde_json` values without derive macros;
+  the binary hands `serve` the query reader, `straum_notation::parse_ask`.
+  `serve` itself checks that a range is one jiff can print, so no
   reader can make writing an answer panic. Asks run on tokio's blocking
   threads, since a big one reads every cell of a fact.
 - `straum` (M6, M7): the binary. `straum run`, `straum plan` and
