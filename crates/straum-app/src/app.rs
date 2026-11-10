@@ -49,7 +49,7 @@ struct State {
     /// The last failure, until the next start.
     error: Option<String>,
     /// The last failure and when it came, kept across starts.
-    last_failure: Option<(SystemTime, String)>,
+    last_failure: Option<Failure>,
     starts: u64,
     failures: u64,
 }
@@ -122,11 +122,18 @@ pub struct Status {
     /// The last failure, until the next start.
     pub error: Option<String>,
     /// The last failure and when it came, kept across starts.
-    pub last_failure: Option<(SystemTime, String)>,
+    pub last_failure: Option<Failure>,
     /// Streams started, each with every table loaded.
     pub starts: u64,
     /// Steps that failed, after which straum started over.
     pub failures: u64,
+}
+
+/// A step that failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub at: SystemTime,
+    pub error: String,
 }
 
 /// A change that no longer fits its table, so straum starts over.
@@ -310,7 +317,10 @@ impl<S: Source> Writer<S> {
             let mut state = self.app.write();
             state.following = None;
             state.error = Some(e.to_string());
-            state.last_failure = Some((SystemTime::now(), e.to_string()));
+            state.last_failure = Some(Failure {
+                at: SystemTime::now(),
+                error: e.to_string(),
+            });
             state.failures += 1;
         }
         step

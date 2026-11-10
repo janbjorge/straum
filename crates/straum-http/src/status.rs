@@ -4,7 +4,7 @@
 use std::time::SystemTime;
 
 use jiff::Timestamp;
-use straum_app::Status;
+use straum_app::{Failure, Status};
 
 /// Labels and values line up after this many characters.
 const LABEL: usize = 14;
@@ -55,7 +55,7 @@ pub(crate) fn write(status: &Status) -> String {
     };
     let last_failure = match &status.last_failure {
         None => "none".to_owned(),
-        Some((at, error)) => format!("{}: {error}", timestamp(*at)),
+        Some(Failure { at, error }) => format!("{}: {error}", timestamp(*at)),
     };
     let mut out = String::new();
     for (label, value) in [
@@ -110,10 +110,10 @@ mod tests {
                 max_retained_wal: 4 << 30,
             },
             error: None,
-            last_failure: Some((
-                UNIX_EPOCH + Duration::from_secs(1_704_067_200),
-                "a change no longer fits trips".to_owned(),
-            )),
+            last_failure: Some(Failure {
+                at: UNIX_EPOCH + Duration::from_secs(1_704_067_200),
+                error: "a change no longer fits trips".to_owned(),
+            }),
             starts: 2,
             failures: 1,
         }
@@ -154,7 +154,10 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
             lag: None,
             wal: None,
             error: Some("trips: one\ntrips: two".to_owned()),
-            last_failure: Some((UNIX_EPOCH, "trips: one\ntrips: two".to_owned())),
+            last_failure: Some(Failure {
+                at: UNIX_EPOCH,
+                error: "trips: one\ntrips: two".to_owned(),
+            }),
             ..status()
         };
         assert_eq!(why_not(&failed).as_deref(), Some("trips: one\ntrips: two"));
@@ -186,10 +189,10 @@ last failure: 1970-01-01T00:00:00Z: trips: one
     fn where_the_stream_started_and_broken_clocks() {
         let started = Status {
             time: None,
-            last_failure: Some((
-                UNIX_EPOCH + Duration::from_secs(400_000_000_000),
-                "x".to_owned(),
-            )),
+            last_failure: Some(Failure {
+                at: UNIX_EPOCH + Duration::from_secs(400_000_000_000),
+                error: "x".to_owned(),
+            }),
             ..status()
         };
         let text = write(&started);

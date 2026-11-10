@@ -671,8 +671,8 @@ fn status_reports_what_straum_did() {
     assert_eq!((status.lsn, status.lag, status.wal), (None, None, None));
     assert_eq!(status.as_of, None);
     assert_eq!(status.error.as_deref(), Some("connection dropped"));
-    let (_, failure) = status.last_failure.clone().unwrap();
-    assert_eq!(failure, "connection dropped");
+    let failure = status.last_failure.clone().unwrap();
+    assert_eq!(failure.error, "connection dropped");
     assert_eq!((status.starts, status.failures), (1, 1));
 
     // The next start clears the error but keeps the last failure.

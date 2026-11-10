@@ -86,7 +86,7 @@ python3 scripts/check-layers.py
   like `AnswerColumn`. `.0` / `.1`
   hits: `straum-domain/tests/store.rs`, `straum-app/tests/app.rs`,
   `straum-pg/src/tests.rs`, `straum-http/src/answer.rs:60`.
-- [ ] **`last_failure` as a struct** (straum-app, straum-http).
+- [x] **`last_failure` as a struct** (straum-app, straum-http).
   `crates/straum-app/src/app.rs:63` and `app.rs:122` hold
   `Option<(SystemTime, String)>`; `Failure { at, error }`. Readers:
   `straum-http/src/status.rs:56-59` and the tests beside each.
