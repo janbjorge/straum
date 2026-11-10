@@ -13,6 +13,7 @@
 - [Setting up PostgreSQL](postgresql.md)
 - [Running Straum](running.md)
 - [Kubernetes](kubernetes.md)
+- [Sizing memory](sizing.md)
 
 # Background
 

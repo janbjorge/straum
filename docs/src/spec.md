@@ -212,16 +212,7 @@ wrong type, [when it starts](postgresql.md#what-straum-checks-at-start).
 
 ## Memory
 
-Memory follows cells, and only cells: Straum holds no dim rows. Each
-bucket width keeps one cell per distinct combination of keys and bucket,
-so per width:
-
-```text
-cells <= min(rows, distinct key combinations x buckets)
-```
-
-Keys that are nearly unique per row keep nearly a cell per row; fewer
-key columns or wider buckets collapse more rows into each cell, and
-selecting a dim's column instead of the fact column joined on collapses
-most. `count(DISTINCT c)` adds an entry per distinct value in each cell.
-The [benchmark](benchmark.md#cells) measures the lever on real tables.
+Memory follows cells: one per distinct combination of keys and bucket,
+per width. Fewer keys, keys with fewer values and wider buckets mean
+fewer cells. [Sizing memory](sizing.md) has the formula and what real
+tables measured.
