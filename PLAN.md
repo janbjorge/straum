@@ -350,6 +350,17 @@ Tests:
   `timestamp`), which the catalog checks: with the other origin PostgreSQL
   would cast through the session zone and the view body would not mean
   what Straum computes. No `AT TIME ZONE` in views.
+- 2026-11-10: A dim key is one column or more, and a ref joins on as many
+  fact columns, `ON g.a = f.x AND g.b = f.y`. A ref's via columns are
+  `by` columns of the fact: a ref adds no slot to the rollup key, it only
+  says which dim row a cell's values name, so a column can be grouped by
+  and joined on at once, as pio's `organization_id` is. A ref on one
+  column is still a key (its via value); one on several is not, and asks
+  name its columns or its attributes, `CompositeRef` by name otherwise.
+  The dim's key must be its replica identity, or under `REPLICA IDENTITY
+  FULL` the columns of a unique index, in any order. Dim rows are kept by
+  key tuple, and an ask remembers dim lookups per code combination of the
+  via slots. No `key` option, no `(a, b)` tuple syntax.
 
 ## M0: notation and domain model
 

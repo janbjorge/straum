@@ -373,6 +373,22 @@ impl Walker {
     }
 }
 
+/// The parts of a condition joined by AND.
+fn and_parts<'a>(expr: &'a sql::Expr, parts: &mut Vec<&'a sql::Expr>) {
+    match expr {
+        sql::Expr::Nested(inner) => and_parts(inner, parts),
+        sql::Expr::BinaryOp {
+            left,
+            op: sql::BinaryOperator::And,
+            right,
+        } => {
+            and_parts(left, parts);
+            and_parts(right, parts);
+        }
+        other => parts.push(other),
+    }
+}
+
 fn function_name(f: &sql::Function) -> Option<String> {
     match f.name.0.as_slice() {
         [sql::ObjectNamePart::Identifier(id)] if id.quote_style.is_none() => {

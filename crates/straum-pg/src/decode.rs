@@ -224,14 +224,19 @@ impl Mapping {
         }
     }
 
-    fn key(&self, tuple: &Tuple) -> Result<Datum, Error> {
+    /// The key columns of a key-only old row, which PostgreSQL sends under a
+    /// replica identity index that holds them.
+    fn key(&self, tuple: &Tuple) -> Result<Vec<Datum>, Error> {
         self.fits(tuple)?;
-        match tuple[self.positions[0]] {
-            Field::Text(text) => Ok(read(self.types[0], text)?),
-            Field::Null | Field::Unchanged => {
-                Err(Error::Protocol("an old key without a value".into()))
-            }
-        }
+        let columns = self.positions[..self.key_width].iter().zip(&self.types);
+        columns
+            .map(|(&position, column_type)| match tuple[position] {
+                Field::Text(text) => Ok(read(*column_type, text)?),
+                Field::Null | Field::Unchanged => {
+                    Err(Error::Protocol("an old key without a value".into()))
+                }
+            })
+            .collect()
     }
 
     fn fits(&self, tuple: &Tuple) -> Result<(), Error> {
@@ -397,7 +402,7 @@ mod tests {
                 },
                 Change::Delete {
                     table: z.clone(),
-                    old: Old::Key(int(1))
+                    old: Old::Key(vec![int(1)])
                 },
                 // A fact sends its key alone only once it has lost REPLICA
                 // IDENTITY FULL, which straum can't follow.

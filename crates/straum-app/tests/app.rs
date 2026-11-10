@@ -742,7 +742,7 @@ fn a_change_that_does_not_fit_starts_over() {
             "zones",
             Change::Update {
                 table: id("zones"),
-                old: Old::Key(int(7)),
+                old: Old::Key(vec![int(7)]),
                 new: vec![int(1), text("Bronx")],
             },
         ),
@@ -751,7 +751,7 @@ fn a_change_that_does_not_fit_starts_over() {
             "zones",
             Change::Delete {
                 table: id("zones"),
-                old: Old::Key(int(7)),
+                old: Old::Key(vec![int(7)]),
             },
         ),
         (

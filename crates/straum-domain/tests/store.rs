@@ -1,5 +1,6 @@
 //! `Store` against a naive reference that aggregates the live rows directly,
-//! over random inserts, updates and deletes of trips and zones.
+//! over random inserts, updates and deletes of trips, zones and combos, a
+//! dim keyed by two columns.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -31,7 +32,7 @@ const WIDTH: usize = 10;
 /// differs, so an answer that takes a scale from the wrong column shows.
 const TRIP_SCALES: u32 = 20;
 
-const KEYS: [&str; 9] = [
+const KEYS: [&str; 11] = [
     "pay",
     "vendor",
     "shared",
@@ -41,6 +42,8 @@ const KEYS: [&str; 9] = [
     "pickup.borough",
     "dropoff.borough",
     "dropoff.zone",
+    "combo.label",
+    "combo.vendor_id",
 ];
 
 fn id(s: &str) -> Ident {
@@ -88,8 +91,15 @@ fn spec() -> Spec {
     let zones = Dim {
         name: id("zones"),
         table: table("zones"),
-        key: id("id"),
+        key: vec![id("id")],
         attrs: vec![id("borough"), id("zone")],
+    };
+    // Keyed by two fact columns, one of them a by column asks group by.
+    let combos = Dim {
+        name: id("combos"),
+        table: table("combos"),
+        key: vec![id("pu_id"), id("vendor_id")],
+        attrs: vec![id("label")],
     };
     let trips = Fact {
         name: id("trips"),
@@ -105,15 +115,20 @@ fn spec() -> Spec {
             Ref {
                 name: id("pickup"),
                 dim: id("zones"),
-                via: id("pu"),
+                via: vec![id("pu")],
             },
             Ref {
                 name: id("dropoff"),
                 dim: id("zones"),
-                via: id("dro"),
+                via: vec![id("dro")],
+            },
+            Ref {
+                name: id("combo"),
+                dim: id("combos"),
+                via: vec![id("pu"), id("vendor")],
             },
         ],
-        by: vec![id("pay"), id("vendor"), id("shared")],
+        by: vec![id("pay"), id("vendor"), id("shared"), id("pu"), id("dro")],
         measures: vec![
             m("trips", Agg::Count, vec![]),
             m("fare", Agg::Sum(id("fare")), vec![]),
@@ -155,7 +170,7 @@ fn spec() -> Spec {
             ),
         ],
     };
-    Spec::new(vec![zones], vec![trips]).unwrap()
+    Spec::new(vec![zones, combos], vec![trips]).unwrap()
 }
 
 /// splitmix64; the tests need no crate for randomness.
@@ -232,6 +247,15 @@ fn zone(rng: &mut Rng, key: i64) -> Vec<Datum> {
     vec![Datum::Int(key), borough, text(rng.pick(&["a", "b", "c"]))]
 }
 
+fn combo(rng: &mut Rng, key: (i64, i64)) -> Vec<Datum> {
+    let label = if rng.chance(20) {
+        Datum::Null
+    } else {
+        text(rng.pick(&["x", "y"]))
+    };
+    vec![Datum::Int(key.0), Datum::Int(key.1), label]
+}
+
 fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let mut by: Vec<AskKey> = KEYS
         .iter()
@@ -250,6 +274,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         cond("dropoff", vec![Literal::Int(5)]),
         cond("dropoff.zone", vec![lit("a"), lit("c")]),
         cond("pickup.id", vec![Literal::Int(1), Literal::Int(3)]),
+        cond("combo.label", vec![lit("x")]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -275,6 +300,14 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
 }
 
 type Zones = BTreeMap<i64, Vec<Datum>>;
+type Combos = BTreeMap<(i64, i64), Vec<Datum>>;
+
+/// The dim rows as the reference sees them.
+#[derive(Default)]
+struct Dims {
+    zones: Zones,
+    combos: Combos,
+}
 
 /// SQL `=`: null matches nothing.
 fn holds(value: &Datum, values: &[Literal]) -> bool {
@@ -286,7 +319,22 @@ fn holds(value: &Datum, values: &[Literal]) -> bool {
     })
 }
 
-fn value(row: &[Datum], path: &KeyPath, zones: &Zones) -> Datum {
+fn value(row: &[Datum], path: &KeyPath, dims: &Dims) -> Datum {
+    if path.head.as_str() == "combo" {
+        let attr = path.attr.as_ref().expect("combo has no value of its own");
+        let (Datum::Int(pu), Datum::Int(vendor)) = (&row[PU], &row[VENDOR]) else {
+            return Datum::Null;
+        };
+        let Some(combo) = dims.combos.get(&(*pu, *vendor)) else {
+            return Datum::Null;
+        };
+        return match attr.as_str() {
+            "pu_id" => combo[0].clone(),
+            "vendor_id" => combo[1].clone(),
+            "label" => combo[2].clone(),
+            other => panic!("no combo attribute {other}"),
+        };
+    }
     let v = row[column(path.head.as_str())].clone();
     let Some(attr) = &path.attr else {
         return v;
@@ -294,7 +342,7 @@ fn value(row: &[Datum], path: &KeyPath, zones: &Zones) -> Datum {
     let Datum::Int(key) = v else {
         return Datum::Null;
     };
-    let Some(zone) = zones.get(&key) else {
+    let Some(zone) = dims.zones.get(&key) else {
         return Datum::Null;
     };
     match attr.as_str() {
@@ -328,6 +376,10 @@ fn zone_types() -> Vec<ColumnType> {
     vec![ColumnType::Int, ColumnType::Text, ColumnType::Text]
 }
 
+fn combo_types() -> Vec<ColumnType> {
+    vec![ColumnType::Int, ColumnType::Int, ColumnType::Text]
+}
+
 /// A store with the types a load would set.
 fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
@@ -342,11 +394,17 @@ fn typed(spec: &Spec) -> Store {
         .set_types(&zone_types())
         .unwrap();
     store
+        .dim("combos")
+        .unwrap()
+        .set_types(&combo_types())
+        .unwrap();
+    store
 }
 
 fn scale(path: &KeyPath) -> u32 {
     match &path.attr {
         None => trip_types()[column(path.head.as_str())].scale(),
+        Some(_) if path.head.as_str() == "combo" => 0,
         Some(attr) => {
             let column = match attr.as_str() {
                 "id" => 0,
@@ -373,14 +431,14 @@ fn column(name: &str) -> usize {
     }
 }
 
-fn passes(row: &[Datum], conds: &[Cond], zones: &Zones) -> bool {
+fn passes(row: &[Datum], conds: &[Cond], dims: &Dims) -> bool {
     conds
         .iter()
-        .all(|c| holds(&value(row, &c.path, zones), &c.values))
+        .all(|c| holds(&value(row, &c.path, dims), &c.values))
 }
 
 /// The ask over the raw rows: no rollup, no buckets.
-fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
+fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
     let fact = spec.fact("trips").unwrap();
     let mut groups: BTreeMap<Vec<Datum>, Vec<&[Datum]>> = BTreeMap::new();
     if ask.by.is_empty() {
@@ -388,14 +446,14 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
     }
     for row in rows {
         let Datum::Int(t) = row[AT] else { continue };
-        if t < ask.from || t >= ask.to || !passes(row, &ask.filter, zones) {
+        if t < ask.from || t >= ask.to || !passes(row, &ask.filter, dims) {
             continue;
         }
         let key = ask
             .by
             .iter()
             .map(|k| match k {
-                AskKey::Key(p) => value(row, p, zones),
+                AskKey::Key(p) => value(row, p, dims),
                 AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(GRAIN))),
             })
             .collect();
@@ -407,7 +465,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
             let values = ask
                 .measures
                 .iter()
-                .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows, zones))
+                .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows, dims))
                 .collect();
             (key, values)
         })
@@ -438,11 +496,8 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
     Answer { columns, rows }
 }
 
-fn measure(m: &Measure, rows: &[&[Datum]], zones: &Zones) -> Value {
-    let rows: Vec<_> = rows
-        .iter()
-        .filter(|r| passes(r, &m.filter, zones))
-        .collect();
+fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
+    let rows: Vec<_> = rows.iter().filter(|r| passes(r, &m.filter, dims)).collect();
     let ints = |c: &Ident| -> Vec<i128> {
         rows.iter()
             .filter_map(|r| match r[column(c.as_str())] {
@@ -487,11 +542,17 @@ fn run(seed: u64) {
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
-    let mut zones = Zones::new();
+    let mut dims = Dims::default();
     for key in 1..=4 {
         let row = zone(&mut rng, key);
         store.dim("zones").unwrap().upsert(&row).unwrap();
-        zones.insert(key, row);
+        dims.zones.insert(key, row);
+    }
+    // Half the (pu, vendor) pairs a trip can have.
+    for key in [(1, 0), (1, 2), (2, 1), (2, 3)] {
+        let row = combo(&mut rng, key);
+        store.dim("combos").unwrap().upsert(&row).unwrap();
+        dims.combos.insert(key, row);
     }
 
     for step in 0..2_000 {
@@ -500,16 +561,35 @@ fn run(seed: u64) {
                 let key = rng.int(1, 5);
                 let row = zone(&mut rng, key);
                 store.dim("zones").unwrap().upsert(&row).unwrap();
-                zones.insert(key, row);
+                dims.zones.insert(key, row);
             }
-            1 if !zones.is_empty() => {
-                let key = *zones.keys().nth(rng.below(zones.len())).unwrap();
+            1 if !dims.zones.is_empty() => {
+                let key = *dims.zones.keys().nth(rng.below(dims.zones.len())).unwrap();
                 store
                     .dim("zones")
                     .unwrap()
-                    .delete(&Datum::Int(key))
+                    .delete(&[Datum::Int(key)])
                     .unwrap();
-                zones.remove(&key);
+                dims.zones.remove(&key);
+            }
+            14 => {
+                let key = (rng.int(1, 3), rng.int(0, 4));
+                let row = combo(&mut rng, key);
+                store.dim("combos").unwrap().upsert(&row).unwrap();
+                dims.combos.insert(key, row);
+            }
+            15 if !dims.combos.is_empty() => {
+                let key = *dims
+                    .combos
+                    .keys()
+                    .nth(rng.below(dims.combos.len()))
+                    .unwrap();
+                store
+                    .dim("combos")
+                    .unwrap()
+                    .delete(&[Datum::Int(key.0), Datum::Int(key.1)])
+                    .unwrap();
+                dims.combos.remove(&key);
             }
             2..=7 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
@@ -544,7 +624,7 @@ fn run(seed: u64) {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
                     store.ask(&ask).unwrap(),
-                    naive(&spec, &ask, &rows, &zones),
+                    naive(&spec, &ask, &rows, &dims),
                     "seed {seed}, step {step}, {ask:?}"
                 );
             }
@@ -736,9 +816,9 @@ fn clear_drops_every_row() {
     let zones = store.dim("zones").unwrap();
     zones.upsert(&zone).unwrap();
     zones.clear();
-    assert_eq!(zones.delete(&zone[0]), Err(RowError::Missing));
+    assert_eq!(zones.delete(&zone[..1]), Err(RowError::Missing));
     zones.upsert(&zone).unwrap();
-    assert_eq!(zones.delete(&zone[0]), Ok(()));
+    assert_eq!(zones.delete(&zone[..1]), Ok(()));
 }
 
 #[test]
@@ -983,7 +1063,7 @@ fn row_errors() {
             found: 1
         })
     );
-    assert_eq!(zones.delete(&Datum::Int(1)), Err(RowError::Missing));
+    assert_eq!(zones.delete(&[Datum::Int(1)]), Err(RowError::Missing));
 
     let mut store = fresh();
     let rollup = store.rollup("trips").unwrap();

@@ -16,8 +16,8 @@ pub(crate) struct Table {
     pub(crate) name: Ident,
     pub(crate) schema: Ident,
     pub(crate) table: Ident,
-    /// What a row holds, in order: `Fact::columns`, or the dim key and then
-    /// its attributes.
+    /// What a row holds, in order: `Fact::columns`, or the dim's key columns
+    /// and then its attributes.
     pub(crate) columns: Vec<Ident>,
     pub(crate) types: Vec<ColumnType>,
     /// How many of `columns`, from the first, a change names a row by: a
@@ -58,8 +58,9 @@ pub(crate) struct Relation {
     pub(crate) select: bool,
     /// The columns of the replica identity index, if there is one.
     pub(crate) identity_columns: Vec<String>,
-    /// Columns with a single-column unique index of their own.
-    pub(crate) unique_columns: Vec<String>,
+    /// The columns of each valid unique index without a predicate or an
+    /// expression.
+    pub(crate) unique_indexes: Vec<Vec<String>>,
     /// The columns the publication sends; `None` when it leaves the table
     /// out.
     pub(crate) published: Option<Vec<String>>,
@@ -123,11 +124,15 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
                     AND CASE c.relreplident WHEN 'd' THEN i.indisprimary
                                             WHEN 'i' THEN i.indisreplident
                                             ELSE false END),
-                (SELECT string_agg(a.attname, ',')
-                   FROM pg_index i
-                   JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
-                  WHERE i.indrelid = c.oid AND i.indisunique AND i.indisvalid
-                    AND i.indnkeyatts = 1 AND i.indpred IS NULL AND i.indexprs IS NULL),
+                (SELECT string_agg(u.columns, ';')
+                   FROM (SELECT string_agg(a.attname, ',' ORDER BY k.ord) AS columns
+                           FROM pg_index i
+                          CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+                           JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+                          WHERE i.indrelid = c.oid AND k.ord <= i.indnkeyatts
+                            AND i.indisunique AND i.indisvalid
+                            AND i.indpred IS NULL AND i.indexprs IS NULL
+                          GROUP BY i.indexrelid) u),
                 (SELECT array_to_string(p.attnames, ',') FROM pg_publication_tables p
                   WHERE p.pubname = {publication}
                     AND p.schemaname = n.nspname AND p.tablename = c.relname),
@@ -145,12 +150,16 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             identity,
             select,
             identity_columns,
-            unique_columns,
+            unique_indexes,
             published,
             row_filter,
         ] = row.try_into().map_err(|_| shape("relations"))?;
         let list = |s: Option<String>| -> Vec<String> {
             s.map(|s| s.split(',').map(str::to_owned).collect())
+                .unwrap_or_default()
+        };
+        let lists = |s: Option<String>| -> Vec<Vec<String>> {
+            s.map(|s| s.split(';').map(|l| list(Some(l.to_owned()))).collect())
                 .unwrap_or_default()
         };
         catalog.relations.push(Relation {
@@ -160,7 +169,7 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
             identity_columns: list(identity_columns),
-            unique_columns: list(unique_columns),
+            unique_indexes: lists(unique_indexes),
             published: published.map(|p| list(Some(p))),
             row_filter: row_filter.as_deref() == Some("t"),
             columns: Vec::new(),
@@ -283,7 +292,7 @@ pub(crate) fn check(
         let checked = check_table(
             &dim.table,
             &dim.name,
-            1,
+            dim.key.len(),
             roles,
             catalog,
             publication,
@@ -331,7 +340,6 @@ pub(crate) fn check(
 fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     let mut roles = vec![(&fact.time.column, Role::Time(fact.time.origin))];
     roles.extend(fact.by.iter().map(|c| (c, Role::Key)));
-    roles.extend(fact.refs.iter().map(|r| (&r.via, Role::Key)));
     for m in &fact.measures {
         let Some(column) = m.agg.input() else {
             continue;
@@ -441,16 +449,28 @@ fn check_table<'a>(
     Some((table, relation))
 }
 
+/// A delete or key change names the row by the replica identity, so the
+/// dim's key must be exactly that, or under `REPLICA IDENTITY FULL` the
+/// columns of a unique index, which is what makes it a key at all.
 fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<String>) {
     let qualified = table.qualified();
-    let key = dim.key.as_str();
+    let same = |columns: &[String]| {
+        columns.len() == dim.key.len()
+            && dim
+                .key
+                .iter()
+                .all(|k| columns.iter().any(|c| c == k.as_str()))
+    };
+    let key = (dim.key.iter().map(Ident::as_str))
+        .collect::<Vec<_>>()
+        .join(", ");
     match relation.identity.as_str() {
-        "f" if !relation.unique_columns.iter().any(|c| c == key) => problems.push(format!(
+        "f" if !relation.unique_indexes.iter().any(|i| same(i)) => problems.push(format!(
             "dim {}: {qualified} needs a primary key or unique index on {key} alone",
             dim.name
         )),
         "f" => {}
-        _ if relation.identity_columns != [key] => problems.push(format!(
+        _ if !same(&relation.identity_columns) => problems.push(format!(
             "dim {}: the replica identity of {qualified} must be {key} alone, \
              so a delete names the row straum holds: a primary key on {key}, \
              REPLICA IDENTITY USING INDEX on a unique index of {key}, or REPLICA IDENTITY FULL",
@@ -468,12 +488,15 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
         let facts = table(&fact.name);
         for r in &fact.refs {
             let dim = table(&r.dim);
-            let (via, key) = (facts.column_type(&r.via), dim.types[0]);
-            if via != key {
-                problems.push(format!(
-                    "fact {}: ref {} joins {} ({via}) to {} ({key}); they must read alike",
-                    fact.name, r.name, r.via, dim.columns[0]
-                ));
+            for (via, key) in r.via.iter().zip(&dim.columns) {
+                let (via_type, key_type) = (facts.column_type(via), dim.column_type(key));
+                if via_type != key_type {
+                    problems.push(format!(
+                        "fact {}: ref {} joins {via} ({via_type}) to {key} ({key_type}); \
+                         they must read alike",
+                        fact.name, r.name
+                    ));
+                }
             }
         }
         for m in &fact.measures {
@@ -483,7 +506,7 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
                     .expect("checked by Spec::new")
                 {
                     Key::Column(c) => facts.column_type(c),
-                    Key::Ref(r) => facts.column_type(&r.via),
+                    Key::Ref(r) => facts.column_type(&r.via[0]),
                     Key::Attr(r, attr) => table(&r.dim).column_type(attr),
                 };
                 for value in &cond.values {

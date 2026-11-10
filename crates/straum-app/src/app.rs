@@ -270,7 +270,7 @@ impl State {
                     let old = dim_key(rows, old);
                     rows.upsert(&new)?;
                     if let Some(key) = old
-                        && key != *rows.key_of(&new)
+                        && key.as_slice() != rows.key_of(&new)
                     {
                         rows.delete(&key)?;
                     }
@@ -313,9 +313,9 @@ enum Target<'a> {
 }
 
 /// The key a dim row had; `None` for an update that kept it.
-fn dim_key(rows: &DimTable, old: Old) -> Option<Datum> {
+fn dim_key(rows: &DimTable, old: Old) -> Option<Vec<Datum>> {
     match old {
-        Old::Row(row) => Some(rows.key_of(&row).clone()),
+        Old::Row(row) => Some(rows.key_of(&row).to_vec()),
         Old::Key(key) => Some(key),
         Old::SameKey => None,
     }

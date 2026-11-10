@@ -625,7 +625,9 @@ impl Values {
 #[derive(Debug)]
 pub struct DimTable {
     width: usize,
-    rows: HashMap<Datum, Box<[u32]>>,
+    /// How many columns, from the first, make the key.
+    key_width: usize,
+    rows: HashMap<Box<[Datum]>, Box<[u32]>>,
     /// One per column. Codes outlive their rows until [`DimTable::clear`].
     codes: Vec<Codes>,
     types: Vec<ColumnType>,
@@ -636,6 +638,7 @@ impl DimTable {
         let width = dim.columns().count();
         DimTable {
             width,
+            key_width: dim.key.len(),
             rows: HashMap::new(),
             codes: (0..width).map(|_| Codes::default()).collect(),
             types: vec![ColumnType::Int; width],
@@ -653,8 +656,8 @@ impl DimTable {
 
     /// The key of a row of this dim. The table says which part of a row
     /// that is, so callers that hold rows don't have to know.
-    pub fn key_of<'r>(&self, row: &'r [Datum]) -> &'r Datum {
-        &row[0]
+    pub fn key_of<'r>(&self, row: &'r [Datum]) -> &'r [Datum] {
+        &row[..self.key_width]
     }
 
     pub fn upsert(&mut self, row: &[Datum]) -> Result<(), RowError> {
@@ -667,11 +670,11 @@ impl DimTable {
         let codes = (row.iter().zip(&mut self.codes))
             .map(|(value, codes)| codes.code(value))
             .collect();
-        self.rows.insert(self.key_of(row).clone(), codes);
+        self.rows.insert(self.key_of(row).into(), codes);
         Ok(())
     }
 
-    pub fn delete(&mut self, key: &Datum) -> Result<(), RowError> {
+    pub fn delete(&mut self, key: &[Datum]) -> Result<(), RowError> {
         self.rows.remove(key).map(drop).ok_or(RowError::Missing)
     }
 
@@ -685,7 +688,7 @@ impl DimTable {
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
     }
 
-    pub(crate) fn get(&self, key: &Datum) -> Option<&[u32]> {
+    pub(crate) fn get(&self, key: &[Datum]) -> Option<&[u32]> {
         self.rows.get(key).map(|r| &**r)
     }
 

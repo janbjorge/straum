@@ -1,8 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::slice;
 
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
+use crate::hash::FastMap;
+use crate::ident::Ident;
 use crate::rollup::{Cells, DimTable, Rollup};
 use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
@@ -201,15 +204,16 @@ impl Store {
     }
 
     fn source(&self, fact: &Fact, path: &KeyPath) -> Source<'_> {
-        let slot = |s: Slot| fact.rollup_key().position(|k| k == s).expect(CHECKED);
+        let slot =
+            |s: &Ident| (fact.rollup_key().position(|k| k == Slot::Column(s))).expect(CHECKED);
         match self.spec.resolve(fact, path).expect(CHECKED) {
-            Key::Column(c) => Source::Slot(slot(Slot::Column(c))),
-            Key::Ref(r) => Source::Slot(slot(Slot::Column(&r.via))),
+            Key::Column(c) => Source::Slot(slot(c)),
+            Key::Ref(r) => Source::Slot(slot(&r.via[0])),
             Key::Attr(r, attr) => {
                 let d = self.dim_index(r.dim.as_str()).expect(CHECKED);
                 let dim = &self.spec.dims()[d];
                 Source::Dim {
-                    slot: slot(Slot::Column(&r.via)),
+                    slots: r.via.iter().map(slot).collect(),
                     table: &self.dims[d],
                     column: dim.columns().position(|a| a == attr).expect(CHECKED),
                 }
@@ -222,12 +226,8 @@ impl Store {
             .iter()
             .map(|c| {
                 let source = self.source(fact, &c.path);
-                let (Source::Slot(slot) | Source::Dim { slot, .. }) = source else {
-                    unreachable!("conditions name rollup-key parts");
-                };
                 Test {
-                    memo: vec![Memo::Unknown; rollup.codes(slot)],
-                    slot,
+                    memo: Memo::new(source.slots(), rollup),
                     source,
                     values: &c.values,
                 }
@@ -243,10 +243,11 @@ fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Ce
 
 enum Source<'a> {
     Slot(usize),
-    /// A column of the dim row the ref in `slot` points at: 0 for the dim
-    /// key, then the attributes. Null when the dim has no such row.
+    /// A column of the dim row the ref's via slots point at: the key
+    /// columns first, then the attributes, as [`Dim::columns`]. Null when
+    /// the dim has no such row.
     Dim {
-        slot: usize,
+        slots: Vec<usize>,
         table: &'a DimTable,
         column: usize,
     },
@@ -255,10 +256,19 @@ enum Source<'a> {
 
 impl<'a> Source<'a> {
     fn column_type(&self, rollup: &Rollup) -> ColumnType {
-        match *self {
-            Source::Slot(slot) => rollup.key_type(slot),
-            Source::Dim { table, column, .. } => table.column_type(column),
+        match self {
+            Source::Slot(slot) => rollup.key_type(*slot),
+            Source::Dim { table, column, .. } => table.column_type(*column),
             Source::Time(..) => rollup.time_type(),
+        }
+    }
+
+    /// The slots whose codes decide the value, which a memo goes by.
+    fn slots(&self) -> &[usize] {
+        match self {
+            Source::Slot(slot) => slice::from_ref(slot),
+            Source::Dim { slots, .. } => slots,
+            Source::Time(..) => &[],
         }
     }
 
@@ -267,33 +277,113 @@ impl<'a> Source<'a> {
     where
         'a: 'k,
     {
-        match *self {
-            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, key[slot])),
+        match self {
+            Source::Slot(slot) => Cow::Borrowed(rollup.value(*slot, key[*slot])),
             Source::Dim {
-                slot,
+                slots,
                 table,
                 column,
-            } => table
-                .get(rollup.value(slot, key[slot]))
-                .map_or(Cow::Owned(Datum::Null), |row| {
-                    Cow::Borrowed(table.value(column, row[column]))
-                }),
+            } => dim_row(table, slots, rollup, key).map_or(Cow::Owned(Datum::Null), |row| {
+                Cow::Borrowed(table.value(*column, row[*column]))
+            }),
             Source::Time(..) => unreachable!("time keys are numbered by period"),
         }
     }
 }
 
-/// A [`Cond`] of an ask, worked out once per code of its slot as the ask
+/// The dim row the via slots of a cell key point at, if the dim has it. A
+/// ref on one column looks up without allocating; one on several builds
+/// the tuple, which the memos make rare.
+fn dim_row<'a>(
+    table: &'a DimTable,
+    slots: &[usize],
+    rollup: &Rollup,
+    key: &[u32],
+) -> Option<&'a [u32]> {
+    match *slots {
+        [slot] => table.get(slice::from_ref(rollup.value(slot, key[slot]))),
+        _ => {
+            let tuple: Vec<Datum> = (slots.iter())
+                .map(|&slot| rollup.value(slot, key[slot]).clone())
+                .collect();
+            table.get(&tuple)
+        }
+    }
+}
+
+/// What an ask remembers per rollup-key code it has met: by the code of
+/// one slot, or by the codes of several together, since a ref on several
+/// columns has no code of its own.
+enum Memo<T> {
+    One {
+        slot: usize,
+        values: Vec<T>,
+    },
+    Many {
+        slots: Vec<usize>,
+        values: FastMap<Box<[u32]>, T>,
+        scratch: Vec<u32>,
+    },
+}
+
+impl<T: Copy + Default> Memo<T> {
+    /// Nothing is remembered for no slots.
+    fn new(slots: &[usize], rollup: &Rollup) -> Memo<T> {
+        match *slots {
+            [] => Memo::One {
+                slot: 0,
+                values: Vec::new(),
+            },
+            [slot] => Memo::One {
+                slot,
+                values: vec![T::default(); rollup.codes(slot)],
+            },
+            _ => Memo::Many {
+                slots: slots.to_vec(),
+                values: FastMap::default(),
+                scratch: Vec::with_capacity(slots.len()),
+            },
+        }
+    }
+
+    /// `T::default()` until set.
+    fn get(&mut self, key: &[u32]) -> T {
+        match self {
+            Memo::One { slot, values } => values[key[*slot] as usize],
+            Memo::Many {
+                slots,
+                values,
+                scratch,
+            } => {
+                scratch.clear();
+                scratch.extend(slots.iter().map(|&slot| key[slot]));
+                values.get(scratch.as_slice()).copied().unwrap_or_default()
+            }
+        }
+    }
+
+    fn set(&mut self, key: &[u32], value: T) {
+        match self {
+            Memo::One { slot, values } => values[key[*slot] as usize] = value,
+            Memo::Many { slots, values, .. } => {
+                let codes: Box<[u32]> = slots.iter().map(|&slot| key[slot]).collect();
+                values.insert(codes, value);
+            }
+        }
+    }
+}
+
+/// A [`Cond`] of an ask, worked out once per code of its slots as the ask
 /// meets the code.
 struct Test<'a> {
     source: Source<'a>,
     values: &'a [Literal],
-    slot: usize,
-    memo: Vec<Memo>,
+    memo: Memo<Known>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Memo {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Known {
+    #[default]
     Unknown,
     Holds,
     Fails,
@@ -304,23 +394,24 @@ impl<'a> Test<'a> {
     /// than branches; only a code met first branches.
     fn pass(&mut self, rollup: &'a Rollup, cells: &'a Cells, groups: &mut [u32]) {
         for (i, g) in groups.iter_mut().enumerate() {
-            let mut memo = self.memo[cells.code(i, self.slot) as usize];
-            if memo == Memo::Unknown && *g != 0 {
-                memo = self.resolve(rollup, cells.key(i));
+            let key = cells.key(i);
+            let mut known = self.memo.get(key);
+            if known == Known::Unknown && *g != 0 {
+                known = self.resolve(rollup, key);
             }
-            *g = if memo == Memo::Holds { *g } else { 0 };
+            *g = if known == Known::Holds { *g } else { 0 };
         }
     }
 
-    fn resolve(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> Memo {
+    fn resolve(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> Known {
         let v = self.source.value(rollup, key);
-        let memo = if self.values.iter().any(|lit| v.matches(lit)) {
-            Memo::Holds
+        let known = if self.values.iter().any(|lit| v.matches(lit)) {
+            Known::Holds
         } else {
-            Memo::Fails
+            Known::Fails
         };
-        self.memo[key[self.slot] as usize] = memo;
-        memo
+        self.memo.set(key, known);
+        known
     }
 }
 
@@ -329,9 +420,9 @@ impl<'a> Test<'a> {
 /// time key's in time order.
 struct Part<'a> {
     source: Source<'a>,
-    /// For a dim key, per code of its slot: 1 + the number of the code's
-    /// value, or 0 until the ask meets the code.
-    codes: Vec<u32>,
+    /// For a dim key, per code combination of its slots: 1 + the number of
+    /// the value, or 0 until the ask meets it.
+    numbers: Memo<u32>,
     /// For a time key, the start of each period met so far, the bucket at
     /// hand's last.
     starts: Vec<i64>,
@@ -340,18 +431,18 @@ struct Part<'a> {
 
 impl<'a> Part<'a> {
     fn new(source: Source<'a>, rollup: &Rollup, buckets: usize) -> Part<'a> {
-        let (bound, codes) = match source {
-            Source::Slot(slot) => (rollup.codes(slot), 0),
+        let (bound, numbers) = match &source {
+            Source::Slot(slot) => (rollup.codes(*slot), Memo::new(&[], rollup)),
             Source::Dim {
-                slot,
+                slots,
                 table,
                 column,
-            } => (table.codes(column) + 1, rollup.codes(slot)),
-            Source::Time(..) => (buckets, 0),
+            } => (table.codes(*column) + 1, Memo::new(slots, rollup)),
+            Source::Time(..) => (buckets, Memo::new(&[], rollup)),
         };
         Part {
             bound,
-            codes: vec![0; codes],
+            numbers,
             starts: Vec::new(),
             source,
         }
@@ -375,7 +466,7 @@ impl<'a> Part<'a> {
         groups: &[u32],
         at: &mut [usize],
     ) {
-        match self.source {
+        match &self.source {
             Source::Time(..) => {
                 let offset = (self.starts.len() - 1) * stride;
                 at.iter_mut().for_each(|a| *a += offset);
@@ -384,15 +475,20 @@ impl<'a> Part<'a> {
             // entries, which nothing reads.
             Source::Slot(slot) => {
                 for (i, a) in at.iter_mut().enumerate() {
-                    *a += cells.code(i, slot) as usize * stride;
+                    *a += cells.code(i, *slot) as usize * stride;
                 }
             }
-            Source::Dim { slot, .. } => {
+            Source::Dim {
+                slots,
+                table,
+                column,
+            } => {
                 for (i, (a, &g)) in at.iter_mut().zip(groups).enumerate() {
-                    let n = match self.codes[cells.code(i, slot) as usize].checked_sub(1) {
+                    let key = cells.key(i);
+                    let n = match self.numbers.get(key).checked_sub(1) {
                         Some(n) => n,
                         None if g == 0 => continue,
-                        None => self.number(rollup, cells.key(i)),
+                        None => dim_number(table, slots, *column, &mut self.numbers, rollup, key),
                     };
                     *a += n as usize * stride;
                 }
@@ -401,39 +497,49 @@ impl<'a> Part<'a> {
     }
 
     fn number(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> u32 {
-        let code = |n: usize| u32::try_from(n).expect("codes are u32");
-        match self.source {
-            Source::Slot(slot) => key[slot],
-            Source::Time(..) => code(self.starts.len() - 1),
+        match &self.source {
+            Source::Slot(slot) => key[*slot],
+            Source::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
             Source::Dim {
-                slot,
+                slots,
                 table,
                 column,
-            } => {
-                let c = key[slot] as usize;
-                if let Some(n) = self.codes[c].checked_sub(1) {
-                    return n;
-                }
-                let n = match table.get(rollup.value(slot, key[slot])) {
-                    Some(row) => row[column],
-                    None => table.null(column),
-                };
-                self.codes[c] = n + 1;
-                n
-            }
+            } => dim_number(table, slots, *column, &mut self.numbers, rollup, key),
         }
     }
 
     fn value(&self, rollup: &'a Rollup, number: u32) -> Cow<'a, Datum> {
-        match self.source {
-            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
-            Source::Dim { table, column, .. } if (number as usize) < table.codes(column) => {
-                Cow::Borrowed(table.value(column, number))
+        match &self.source {
+            Source::Slot(slot) => Cow::Borrowed(rollup.value(*slot, number)),
+            Source::Dim { table, column, .. } if (number as usize) < table.codes(*column) => {
+                Cow::Borrowed(table.value(*column, number))
             }
             Source::Dim { .. } => Cow::Owned(Datum::Null),
             Source::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
         }
     }
+}
+
+/// The number of the dim value a cell key points at: its code in the dim
+/// column, or the code of null when the dim has no such row. Remembered
+/// per code combination, so each is looked up once.
+fn dim_number(
+    table: &DimTable,
+    slots: &[usize],
+    column: usize,
+    numbers: &mut Memo<u32>,
+    rollup: &Rollup,
+    key: &[u32],
+) -> u32 {
+    if let Some(n) = numbers.get(key).checked_sub(1) {
+        return n;
+    }
+    let n = match dim_row(table, slots, rollup, key) {
+        Some(row) => row[column],
+        None => table.null(column),
+    };
+    numbers.set(key, n + 1);
+    n
 }
 
 /// A cell's group while [`Groups::assign`] has yet to look it up. Groups

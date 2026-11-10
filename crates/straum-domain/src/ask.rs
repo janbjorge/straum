@@ -59,7 +59,7 @@ impl Spec {
             match key {
                 AskKey::Key(path) => {
                     if self.resolve(fact, path).is_none() {
-                        errors.push(AskError::UnknownKey(path.clone()));
+                        errors.push(unknown(fact, path));
                     }
                 }
                 AskKey::Time(t) => {
@@ -82,7 +82,7 @@ impl Spec {
         }
         for cond in &ask.filter {
             if self.resolve(fact, &cond.path).is_none() {
-                errors.push(AskError::UnknownKey(cond.path.clone()));
+                errors.push(unknown(fact, &cond.path));
             }
         }
 
@@ -106,11 +106,29 @@ impl Spec {
     }
 }
 
+/// Why a path resolved to nothing: a ref on several columns has no value
+/// of its own, so it is named by what it has.
+fn unknown(fact: &Fact, path: &KeyPath) -> AskError {
+    let composite = (fact.refs.iter()).find(|r| r.name == path.head && r.via.len() > 1);
+    match composite {
+        Some(r) if path.attr.is_none() => AskError::CompositeRef {
+            name: r.name.clone(),
+            columns: r.via.clone(),
+        },
+        _ => AskError::UnknownKey(path.clone()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskError {
     UnknownFact(Ident),
     UnknownMeasure(Ident),
     UnknownKey(KeyPath),
+    /// A ref on several columns asked for as a key.
+    CompositeRef {
+        name: Ident,
+        columns: Vec<Ident>,
+    },
     NoMeasures,
     TimeKeyTwice,
     /// A key or measure named twice, or a key and a measure of one name.
@@ -139,6 +157,14 @@ impl fmt::Display for AskError {
             AskError::UnknownMeasure(name) => write!(f, "unknown measure {name}"),
             AskError::UnknownKey(path) => {
                 write!(f, "{path} is not a by column, ref or ref attribute")
+            }
+            AskError::CompositeRef { name, columns } => {
+                let columns: Vec<String> = columns.iter().map(ToString::to_string).collect();
+                write!(
+                    f,
+                    "{name} joins on {}; ask for those columns or for {name}.<attribute>",
+                    columns.join(", ")
+                )
             }
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),

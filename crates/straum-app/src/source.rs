@@ -103,8 +103,8 @@ pub enum Change {
 pub enum Old {
     /// The whole row, under `REPLICA IDENTITY FULL`.
     Row(Vec<Datum>),
-    /// The key only: a delete, or an update that changed the key.
-    Key(Datum),
+    /// The key columns only: a delete, or an update that changed the key.
+    Key(Vec<Datum>),
     /// Nothing: an update that kept the key.
     SameKey,
 }

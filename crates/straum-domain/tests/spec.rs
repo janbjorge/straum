@@ -21,7 +21,7 @@ fn dim() -> Dim {
     Dim {
         name: id("z"),
         table: table("z"),
-        key: id("id"),
+        key: vec![id("id")],
         attrs: vec![id("name")],
     }
 }
@@ -39,9 +39,9 @@ fn fact() -> Fact {
         refs: vec![Ref {
             name: id("r"),
             dim: id("z"),
-            via: id("z_id"),
+            via: vec![id("z_id")],
         }],
-        by: vec![id("a")],
+        by: vec![id("a"), id("z_id")],
         measures: vec![Measure {
             name: id("n"),
             agg: Agg::Count,
@@ -112,10 +112,13 @@ fn buckets_widen_by_whole_multiples() {
 fn every_error_is_reported_and_displayed() {
     let mut z = dim();
     z.attrs = vec![id("name"), id("name")];
+    let mut w = dim();
+    w.name = id("w");
+    w.key = vec![];
     let mut t = fact();
     t.name = id("z");
     t.time.grain = Grain(420);
-    t.by = vec![id("id"), id("at"), id("r")];
+    t.by = vec![id("id"), id("at"), id("r"), id("id")];
     t.refs[0].dim = id("nope");
     t.measures = vec![
         Measure {
@@ -135,25 +138,46 @@ fn every_error_is_reported_and_displayed() {
             filter: vec![],
         },
     ];
+    // A ref on two columns to a key of one, and one joining on a column
+    // twice.
     let mut u = fact();
     u.name = id("u");
+    u.by = vec![id("a"), id("z_id"), id("b")];
+    u.refs = vec![
+        Ref {
+            name: id("r"),
+            dim: id("z"),
+            via: vec![id("z_id"), id("b")],
+        },
+        Ref {
+            name: id("s"),
+            dim: id("z"),
+            via: vec![id("a"), id("a")],
+        },
+    ];
     u.measures = vec![];
 
-    let errors = Spec::new(vec![z], vec![t, u]).unwrap_err();
+    let errors = Spec::new(vec![z, w], vec![t, u]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
         shown,
         [
             "z declared twice",
             "z: name declared twice",
+            "dim w: no key columns",
             "fact z: grain of 420s does not divide a day",
-            "fact z: column at used twice among time, by and ref",
+            "fact z: at is the time column, so it can't be a by column too",
+            "z: id declared twice",
             "z: r declared twice",
+            "fact z: ref r joins on z_id, which is not a by column",
             "fact z: ref r points at unknown dim nope",
             "fact z: measure m filters on c, which is not a by column, ref or ref attribute",
             "z: m declared twice",
+            "fact u: ref r joins on 2 columns, but the key of dim z has 1",
+            "fact u: ref s joins on a twice",
+            "fact u: ref s joins on 2 columns, but the key of dim z has 1",
             "fact u: no measures",
         ]
     );
-    assert!(matches!(errors[5], SpecError::UnknownDim { .. }));
+    assert!(matches!(errors[8], SpecError::UnknownDim { .. }));
 }

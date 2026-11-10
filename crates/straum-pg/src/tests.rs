@@ -88,28 +88,42 @@ ALTER TABLE $S.logins REPLICA IDENTITY FULL;
 CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 ";
 
-/// A warehouse-shaped spec: tasks per hour and organization over a
-/// `timestamp` column, which has no zone. `$S` is the test's schema.
+/// A warehouse-shaped spec: tasks per hour, organization and task group
+/// over a `timestamp` column, which has no zone, with the task groups a
+/// dim keyed by two columns, one of them grouped by too. `$S` is the
+/// test's schema.
 const TASKS_SPEC: &str = "
 CREATE VIEW tasks WITH (buckets = '1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id,
+       f.taskgroup_id,
+       g.category,
        count(*) AS tasks,
        sum(f.picks) AS picks,
-       max(f.picks) AS picks_max
+       max(f.picks) AS picks_max,
+       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks
 FROM $S.tasks f
-GROUP BY 1, 2;
+LEFT JOIN $S.taskgroups g
+       ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
+GROUP BY 1, 2, 3, 4;
 ";
 
 const TASKS: &str = "
+CREATE TABLE $S.taskgroups (
+    organization_id int,
+    taskgroup_id int,
+    category text,
+    PRIMARY KEY (organization_id, taskgroup_id)
+);
 CREATE TABLE $S.tasks (
     task_id int PRIMARY KEY,
     organization_id int,
+    taskgroup_id int,
     created timestamp NOT NULL,
     picks int
 );
 ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
-CREATE PUBLICATION $S FOR TABLE $S.tasks;
+CREATE PUBLICATION $S FOR TABLE $S.taskgroups, $S.tasks;
 ";
 
 /// The last of each holds what `COPY` escapes, so loads read escapes back.
@@ -444,35 +458,45 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
     vec![trips, logins, window]
 }
 
-/// The tasks spec's oracles: by bucket and organization, then without the
-/// bucket over a window that cuts the day bucket `START` begins. A
-/// `timestamp` has no zone, so the window's bounds are wall clock in UTC.
+/// The tasks spec's oracles: by bucket, organization, task group and
+/// category, then by organization and category without the bucket over a
+/// window that cuts the day bucket `START` begins. A `timestamp` has no
+/// zone, so the window's bounds are wall clock in UTC.
 fn task_oracles() -> Vec<Oracle> {
-    const MEASURES: [&str; 3] = ["tasks", "picks", "picks_max"];
+    const MEASURES: [&str; 4] = ["tasks", "picks", "picks_max", "pick_tasks"];
     let by_bucket = Oracle {
         sql: format!(
-            "SELECT extract(epoch FROM bucket)::int8, organization_id, tasks, picks, picks_max
+            "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, category,
+                    tasks, picks, picks_max, pick_tasks
                FROM ({}) v",
             body(TASKS_SPEC, "tasks")
         ),
-        ask: ask("tasks", &MEASURES, &["bucket", "organization_id"]),
-        scales: vec![0, 0, 0, 0, 0],
+        ask: ask(
+            "tasks",
+            &MEASURES,
+            &["bucket", "organization_id", "taskgroup_id", "g.category"],
+        ),
+        scales: vec![0; 8],
     };
     let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
-            "SELECT f.organization_id, count(*), sum(f.picks), max(f.picks)
+            "SELECT f.organization_id, g.category, count(*), sum(f.picks), max(f.picks),
+                    count(*) FILTER (WHERE g.category = 'pick')
                FROM $S.tasks f
+               LEFT JOIN $S.taskgroups g
+                      ON g.organization_id = f.organization_id
+                     AND g.taskgroup_id = f.taskgroup_id
               WHERE f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
                 AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
-              GROUP BY 1"
+              GROUP BY 1, 2"
         ),
         ask: Ask {
             from,
             to,
-            ..ask("tasks", &MEASURES, &["organization_id"])
+            ..ask("tasks", &MEASURES, &["organization_id", "g.category"])
         },
-        scales: vec![0, 0, 0, 0],
+        scales: vec![0; 6],
     };
     vec![by_bucket, window]
 }
@@ -577,14 +601,17 @@ impl Rng {
     }
 
     /// A task row over a `timestamp` column: the literal is the UTC wall
-    /// clock of `at`, whatever zone the session has.
+    /// clock of `at`, whatever zone the session has. Task groups 3 and 4
+    /// have no row, so their category is null.
     fn task(&mut self, id: u64) -> String {
         let at = START + self.below(self.hours * 3_600) as i64;
         let organization = 1 + self.below(3);
+        let taskgroup = (1 + self.below(4)).to_string();
         let picks = self.below(50).to_string();
         format!(
-            "INSERT INTO $S.tasks VALUES ({id}, {organization}, \
+            "INSERT INTO $S.tasks VALUES ({id}, {organization}, {}, \
              to_timestamp({at}) AT TIME ZONE 'UTC', {});",
+            self.or_null(taskgroup),
             self.or_null(picks)
         )
     }
@@ -700,24 +727,40 @@ fn follows_the_database() {
     assert!(compared > 100, "compared only {compared} times");
 }
 
+/// Naive times and a dim keyed by two columns, one of them a by column.
 #[test]
-fn follows_a_table_with_naive_times() {
+fn follows_the_task_tables() {
     let pg = postgres();
-    let mut db = Db::new(&pg, "naive_time", TASKS);
+    let mut db = Db::new(&pg, "task_tables", TASKS);
     // The comparison session is far from UTC, so a value that went through
     // a zone on either side would show.
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(17);
+    for organization in 1..=3 {
+        for taskgroup in 1..=2 {
+            db.run(&format!(
+                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
+                rng.pick(&["pick", "pack", "count"])
+            ));
+        }
+    }
     for id in 0..200 {
         db.run(&rng.task(id));
     }
     // On a bucket edge, and a microsecond before it.
     db.run(&format!(
         "INSERT INTO $S.tasks VALUES
-           (1000, 1, to_timestamp({START}) AT TIME ZONE 'UTC', 1),
-           (1001, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', 1)"
+           (1000, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', 1),
+           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', 1)"
     ));
-    let mut writer = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
+    let spec = db.spec(TASKS_SPEC);
+    assert!(
+        crate::plan(&spec, "p", "r").contains(
+            "-- dim taskgroups: \"task_tables\".\"taskgroups\" needs a primary key on \
+             organization_id, taskgroup_id alone, or REPLICA IDENTITY FULL and a unique index on it."
+        )
+    );
+    let mut writer = Writer::new(App::new(spec, LIMITS), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
     let edges = Ask {
@@ -737,11 +780,23 @@ fn follows_a_table_with_naive_times() {
         db.run(&rng.task(id));
         applied(&mut writer);
     }
-    db.run("UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0");
-    applied(&mut writer);
-    db.run("DELETE FROM $S.tasks WHERE task_id % 11 = 0");
-    applied(&mut writer);
-    compare(&mut db, writer.app(), &task_oracles()).expect("ready");
+    // Each change is one commit, compared after it: a dim attribute, a dim
+    // key (the old key goes), a fact moving to another dim row, a dim row
+    // gone, times moved, rows gone.
+    let changes = [
+        "UPDATE $S.taskgroups SET category = 'pack' WHERE organization_id = 1",
+        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1",
+        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0",
+        "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0",
+        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2",
+        "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0",
+        "DELETE FROM $S.tasks WHERE task_id % 11 = 0",
+    ];
+    for change in changes {
+        db.run(change);
+        applied(&mut writer);
+        compare(&mut db, writer.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
+    }
 }
 
 #[test]
@@ -1453,6 +1508,81 @@ fn setup_problems_say_what_to_fix() {
     ];
     for (name, tables, expected) in cases {
         let found = problems(&pg, name, &tables, dim_spec);
+        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
+        assert_eq!(found, expected, "{name}");
+    }
+
+    // A dim keyed by two columns: its key must be exactly the replica
+    // identity, or under FULL the columns of a unique index.
+    let pair_spec = "
+        CREATE VIEW f AS
+        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+               t.a, t.b, d.name, count(*) AS n
+        FROM $S.f t LEFT JOIN $S.d d ON d.x = t.a AND d.y = t.b GROUP BY 1, 2, 3, 4;";
+    let pair = |d: &str, b: &str| {
+        format!(
+            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, a int, b {b});
+             ALTER TABLE $S.f REPLICA IDENTITY FULL;
+             {d}
+             CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
+        )
+    };
+    let cases = [
+        (
+            "pairok",
+            pair(
+                "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (x, y));",
+                "int",
+            ),
+            "",
+        ),
+        (
+            "pairorder",
+            pair(
+                "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (y, x));",
+                "int",
+            ),
+            "",
+        ),
+        (
+            "pairfull",
+            pair(
+                "CREATE TABLE $S.d (x int, y int, name text, UNIQUE (x, y));
+                 ALTER TABLE $S.d REPLICA IDENTITY FULL;",
+                "int",
+            ),
+            "",
+        ),
+        (
+            "pairsuper",
+            pair(
+                "CREATE TABLE $S.d (x int, y int, name text, UNIQUE (x, y, name));
+                 ALTER TABLE $S.d REPLICA IDENTITY FULL;",
+                "int",
+            ),
+            "dim d: pairsuper.d needs a primary key or unique index on x, y alone",
+        ),
+        (
+            "pairpk",
+            pair(
+                "CREATE TABLE $S.d (x int PRIMARY KEY, y int, name text);",
+                "int",
+            ),
+            "dim d: the replica identity of pairpk.d must be x, y alone, so a delete names the row \
+             straum holds: a primary key on x, y, REPLICA IDENTITY USING INDEX on a unique index of \
+             x, y, or REPLICA IDENTITY FULL",
+        ),
+        (
+            "pairtype",
+            pair(
+                "CREATE TABLE $S.d (x int, y text, name text, PRIMARY KEY (x, y));",
+                "int",
+            ),
+            "fact f: ref d joins b (an integer) to y (text); they must read alike",
+        ),
+    ];
+    for (name, tables, expected) in cases {
+        let found = problems(&pg, name, &tables, pair_spec);
         let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
         assert_eq!(found, expected, "{name}");
     }

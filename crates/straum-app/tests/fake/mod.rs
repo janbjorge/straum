@@ -212,7 +212,7 @@ fn write(tables: &mut Tables, write: Write) -> Change {
             let old = if t.full {
                 Old::Row(before)
             } else if new_key != key {
-                Old::Key(key)
+                Old::Key(vec![key])
             } else {
                 Old::SameKey
             };
@@ -228,7 +228,7 @@ fn write(tables: &mut Tables, write: Write) -> Change {
             let old = if t.full {
                 Old::Row(before)
             } else {
-                Old::Key(key)
+                Old::Key(vec![key])
             };
             Change::Delete {
                 table: id(table),

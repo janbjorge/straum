@@ -249,13 +249,16 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.by, [id("a")]);
+    assert_eq!(t.by, [id("a"), id("z_id")]);
     assert_eq!(t.refs[0].name, id("z"));
-    assert_eq!(t.refs[0].via, id("z_id"));
+    assert_eq!(t.refs[0].via, [id("z_id")]);
     assert!(t.time.buckets.is_empty());
     assert_eq!(t.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
-    assert_eq!((&z.key, &z.attrs[..]), (&id("id"), &[id("name")][..]));
+    assert_eq!(
+        (&z.key[..], &z.attrs[..]),
+        (&[id("id")][..], &[id("name")][..])
+    );
 }
 
 #[test]
@@ -318,11 +321,11 @@ fn literals_and_filters() {
                 values: vec![Literal::Text("it's".into())]
             },
             Cond {
-                path: path("z"),
+                path: path("z_id"),
                 values: vec![Literal::Int(3)]
             },
             Cond {
-                path: path("z"),
+                path: path("z_id"),
                 values: vec![Literal::Int(4)]
             },
             Cond {
@@ -364,6 +367,99 @@ GROUP BY f.a, date_bin('30 seconds', f.at, timestamptz 'epoch'), 3";
     for (width, seconds) in [("1 second", 1), ("5 minute", 300), ("1 day", 86_400)] {
         let spec = parse(&base("1 hour", width).replace("1 hour", width)).unwrap();
         assert_eq!(spec.fact("t").unwrap().time.grain, Grain(seconds));
+    }
+}
+
+/// One dim keyed by two columns, joined by two views in either order.
+const GROUPED: &str = "CREATE VIEW t AS
+SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+       f.org, f.grp, g.label, count(*) AS n
+FROM public.t f
+LEFT JOIN public.g g ON g.org_id = f.org AND f.grp = g.grp_id
+GROUP BY 1, 2, 3, 4";
+
+#[test]
+fn a_ref_on_two_columns() {
+    let spec = parse(GROUPED).unwrap();
+    let t = spec.fact("t").unwrap();
+    assert_eq!(t.by, [id("org"), id("grp")]);
+    assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
+    let g = spec.dim("g").unwrap();
+    assert_eq!(g.key, [id("org_id"), id("grp_id")]);
+    assert_eq!(g.attrs, [id("label")]);
+    // A dim key column names the fact column joined to it.
+    let through = GROUPED.replace("f.org, f.grp, g.label", "g.org_id, f.grp, g.label");
+    assert_eq!(parse(&through).unwrap(), spec);
+
+    // Another view joins the same key in the other order: its via follows
+    // the dim's key order.
+    let other = GROUPED.replace("VIEW t", "VIEW u").replace(
+        "ON g.org_id = f.org AND f.grp = g.grp_id",
+        "ON g.grp_id = f.grp AND g.org_id = f.org",
+    );
+    let spec = parse(&format!(
+        "{GROUPED};
+{other}"
+    ))
+    .unwrap();
+    assert_eq!(spec.fact("u").unwrap().refs[0].via, [id("org"), id("grp")]);
+    assert_eq!(spec.dim("g").unwrap().key, [id("org_id"), id("grp_id")]);
+
+    // The ref has no value of its own, so asks name its columns or its
+    // attributes.
+    let ask = |by: &[&str]| Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
+        filter: vec![],
+        from: JAN,
+        to: FEB,
+    };
+    assert!(
+        spec.check(&ask(&["org", "grp", "g.label", "g.org_id"]))
+            .is_ok()
+    );
+    let errors = spec.check(&ask(&["g"])).unwrap_err();
+    assert_eq!(
+        errors,
+        [AskError::CompositeRef {
+            name: id("g"),
+            columns: vec![id("org"), id("grp")]
+        }]
+    );
+    assert_eq!(
+        errors[0].to_string(),
+        "g joins on org, grp; ask for those columns or for g.<attribute>"
+    );
+}
+
+#[test]
+fn a_ref_on_two_columns_rejected() {
+    // Both via columns must be selected.
+    let errors = sql_errors(
+        &GROUPED
+            .replace("f.org, f.grp,", "f.org,")
+            .replace(", 4", ""),
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].msg, "select f.grp so the view groups by ref g");
+    // Another view joins the dim on another key list: fewer columns, or
+    // as many but not the same.
+    for (edit, found) in [
+        ("", "org_id"),
+        ("AND f.grp = g.other_id", "org_id, other_id"),
+    ] {
+        let other = GROUPED
+            .replace("VIEW t", "VIEW u")
+            .replace("AND f.grp = g.grp_id", edit);
+        let errors = sql_errors(&format!("{GROUPED};\n{other}"));
+        assert_eq!(
+            errors,
+            [SqlError {
+                line: 7,
+                msg: format!("public.g is joined on {found} here and on org_id, grp_id elsewhere")
+            }]
+        );
     }
 }
 
@@ -782,7 +878,13 @@ fn rejects_everything_outside_the_subset() {
             "ON z.id = f.z_id",
             "ON z.id = 1",
             5,
-            "join on z.<key> = f.<column>, found z.id = 1",
+            "join on z.<key> = f.<column>, one or more joined by AND; found z.id = 1",
+        ),
+        (
+            "ON z.id = f.z_id",
+            "ON z.id = f.z_id OR z.id = f.a",
+            5,
+            "join on z.<key> = f.<column>, one or more joined by AND; found",
         ),
         (
             "ON z.id = f.z_id",

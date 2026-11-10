@@ -77,7 +77,7 @@ fn spec(buckets: &[u32]) -> Spec {
     let zones = Dim {
         name: id("zones"),
         table: table("zones"),
-        key: id("id"),
+        key: vec![id("id")],
         attrs: vec![id("borough")],
     };
     let trips = Fact {
@@ -92,9 +92,9 @@ fn spec(buckets: &[u32]) -> Spec {
         refs: vec![Ref {
             name: id("pickup"),
             dim: id("zones"),
-            via: id("pu"),
+            via: vec![id("pu")],
         }],
-        by: vec![id("pay")],
+        by: vec![id("pay"), id("pu")],
         measures: vec![
             m("trips", Agg::Count),
             m("fare", Agg::Sum(id("fare"))),

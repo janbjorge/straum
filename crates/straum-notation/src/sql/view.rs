@@ -3,7 +3,7 @@ use straum_domain::{
     Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Table, Time,
 };
 
-use super::{SqlError, Walker, function_name, line};
+use super::{SqlError, Walker, and_parts, function_name, line};
 
 /// What a view's `WITH` declares.
 struct ViewOptions {
@@ -25,17 +25,17 @@ struct Scope {
     refs: Vec<JoinedRef>,
 }
 
+/// A join: `r.via[i]` of the fact meets `key[i]` of the dim.
 struct JoinedRef {
     r: Ref,
     table: Table,
-    key: Ident,
+    key: Vec<Ident>,
 }
 
-/// What a column reference names.
+/// What a column reference names. A dim's key column names the fact
+/// column joined to it, since that is where its value is.
 enum Column {
     Fact(Ident),
-    /// A ref's id: its via column, or the dim key it joins on.
-    Ref(usize),
     Attr(usize, Ident),
 }
 
@@ -43,7 +43,6 @@ enum Column {
 enum Item {
     Bucket(Time),
     Column(Ident),
-    Ref(usize),
     Attr,
     Measure(Measure),
 }
@@ -105,8 +104,8 @@ impl Walker {
         time.buckets = buckets;
         let refs = refs
             .into_iter()
-            .map(|j| {
-                self.add_dim(at, &j);
+            .map(|mut j| {
+                self.add_dim(at, &mut j);
                 j.r
             })
             .collect();
@@ -121,8 +120,10 @@ impl Walker {
     }
 
     /// A dim is its table. Every view that joins it must join on the same
-    /// key, and its attributes are every column any view reads.
-    fn add_dim(&mut self, at: u64, j: &JoinedRef) {
+    /// key columns, in any order, and its attributes are every column any
+    /// view reads. The join's via columns are put in the dim's key order,
+    /// so a ref's via and its dim's key pair up by position.
+    fn add_dim(&mut self, at: u64, j: &mut JoinedRef) {
         let attrs = self
             .attrs
             .iter()
@@ -143,14 +144,35 @@ impl Walker {
             self.dims.push(dim);
             return;
         };
-        if dim.key != j.key {
+        let same = dim.key.len() == j.key.len() && dim.key.iter().all(|k| j.key.contains(k));
+        if !same {
+            let list = |key: &[Ident]| {
+                (key.iter().map(ToString::to_string))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             let msg = format!(
                 "{}.{} is joined on {} here and on {} elsewhere",
-                j.table.schema, j.table.name, j.key, dim.key
+                j.table.schema,
+                j.table.name,
+                list(&j.key),
+                list(&dim.key)
             );
             self.errors.push(SqlError { line: at, msg });
             return;
         }
+        let via: Vec<Ident> = (dim.key.iter())
+            .map(|k| {
+                let i = j
+                    .key
+                    .iter()
+                    .position(|c| c == k)
+                    .expect("the key sets are equal");
+                j.r.via[i].clone()
+            })
+            .collect();
+        j.r.via = via;
+        j.key.clone_from(&dim.key);
         for attr in attrs {
             if !dim.attrs.contains(&attr) {
                 dim.attrs.push(attr);
@@ -281,9 +303,8 @@ impl Walker {
         self.group_by(at, group_by, projection, &keys);
 
         let mut time = None;
-        let mut by = Vec::new();
+        let mut by: Vec<Ident> = Vec::new();
         let mut measures = Vec::new();
-        let mut selected = vec![false; scope.refs.len()];
         for it in items {
             match it {
                 Item::Bucket(t) => {
@@ -292,20 +313,23 @@ impl Walker {
                     }
                 }
                 Item::Column(c) => by.push(c),
-                Item::Ref(i) => selected[i] = true,
                 Item::Attr => {}
                 Item::Measure(m) => measures.push(m),
             }
         }
-        for (j, selected) in scope.refs.iter().zip(selected) {
-            if !selected {
-                self.error(
-                    at,
-                    format!(
-                        "select {}.{} so the view groups by ref {}",
-                        scope.alias, j.r.via, j.r.name
-                    ),
-                );
+        // A ref's via columns are by columns: cells hold them, and the ask
+        // reads the dim row they name.
+        for j in &scope.refs {
+            for via in &j.r.via {
+                if !by.contains(via) {
+                    self.error(
+                        at,
+                        format!(
+                            "select {}.{via} so the view groups by ref {}",
+                            scope.alias, j.r.name
+                        ),
+                    );
+                }
             }
         }
         let Some(time) = time else {
@@ -392,8 +416,9 @@ impl Walker {
         Some((Table { schema, name }, alias))
     }
 
-    /// `LEFT JOIN schema.dim alias ON alias.key = fact.column`. LEFT, so a
-    /// fact row with no dim row keeps null attributes, as in straum.
+    /// `LEFT JOIN schema.dim alias ON alias.key = fact.column`, with more
+    /// such equalities joined by `AND` for a key of several columns. LEFT,
+    /// so a fact row with no dim row keeps null attributes, as in straum.
     fn join(&mut self, scope: &Scope, join: &sql::Join) -> Option<JoinedRef> {
         let sql::Join {
             relation,
@@ -417,35 +442,43 @@ impl Walker {
                 return None;
             }
         };
-        let pair = match on {
-            sql::Expr::BinaryOp {
-                left,
-                op: sql::BinaryOperator::Eq,
-                right,
-            } => self
-                .qualified(left)
-                .zip(self.qualified(right))
-                .and_then(|(l, r)| {
-                    if l.0 == alias && r.0 == scope.alias {
-                        Some((l.1, r.1))
-                    } else if r.0 == alias && l.0 == scope.alias {
-                        Some((r.1, l.1))
-                    } else {
-                        None
-                    }
-                }),
-            _ => None,
-        };
-        let Some((key, via)) = pair else {
-            self.error(
-                line(on),
-                format!(
-                    "join on {alias}.<key> = {}.<column>, found {on}",
-                    scope.alias
-                ),
-            );
-            return None;
-        };
+        let mut equalities = Vec::new();
+        and_parts(on, &mut equalities);
+        let mut key = Vec::new();
+        let mut via = Vec::new();
+        for equality in equalities {
+            let pair = match equality {
+                sql::Expr::BinaryOp {
+                    left,
+                    op: sql::BinaryOperator::Eq,
+                    right,
+                } => self
+                    .qualified(left)
+                    .zip(self.qualified(right))
+                    .and_then(|(l, r)| {
+                        if l.0 == alias && r.0 == scope.alias {
+                            Some((l.1, r.1))
+                        } else if r.0 == alias && l.0 == scope.alias {
+                            Some((r.1, l.1))
+                        } else {
+                            None
+                        }
+                    }),
+                _ => None,
+            };
+            let Some((k, v)) = pair else {
+                self.error(
+                    line(on),
+                    format!(
+                        "join on {alias}.<key> = {}.<column>, one or more joined by AND; found {on}",
+                        scope.alias
+                    ),
+                );
+                return None;
+            };
+            key.push(k);
+            via.push(v);
+        }
         let dim = table.name.clone();
         Some(JoinedRef {
             r: Ref {
@@ -485,26 +518,22 @@ impl Walker {
     fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Column> {
         let (alias, column) = self.qualified(expr)?;
         if alias == scope.alias {
-            return Some(match scope.refs.iter().position(|j| j.r.via == column) {
-                Some(i) => Column::Ref(i),
-                None => Column::Fact(column),
-            });
+            return Some(Column::Fact(column));
         }
         let Some(i) = scope.refs.iter().position(|j| j.r.name == alias) else {
             self.error(line(expr), format!("unknown table alias {alias}"));
             return None;
         };
-        if scope.refs[i].key == column {
-            Some(Column::Ref(i))
-        } else {
-            Some(Column::Attr(i, column))
-        }
+        let j = &scope.refs[i];
+        Some(match j.key.iter().position(|k| *k == column) {
+            Some(k) => Column::Fact(j.r.via[k].clone()),
+            None => Column::Attr(i, column),
+        })
     }
 
     fn fact_column(&mut self, scope: &Scope, expr: &sql::Expr, what: &str) -> Option<Ident> {
         match self.column(scope, expr)? {
             Column::Fact(c) => Some(c),
-            Column::Ref(i) => Some(scope.refs[i].r.via.clone()),
             Column::Attr(..) => {
                 self.error(
                     line(expr),
@@ -543,7 +572,6 @@ impl Walker {
         }
         Some(match self.column(scope, expr)? {
             Column::Fact(c) => Item::Column(c),
-            Column::Ref(i) => Item::Ref(i),
             Column::Attr(i, attr) => {
                 self.attr(scope, i, attr);
                 Item::Attr
@@ -676,10 +704,6 @@ impl Walker {
     fn path(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<KeyPath> {
         Some(match self.column(scope, expr)? {
             Column::Fact(head) => KeyPath { head, attr: None },
-            Column::Ref(i) => KeyPath {
-                head: scope.refs[i].r.name.clone(),
-                attr: None,
-            },
             Column::Attr(i, attr) => {
                 self.attr(scope, i, attr.clone());
                 KeyPath {

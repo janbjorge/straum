@@ -15,7 +15,7 @@ use jiff::Timestamp;
 use sqlparser::ast as sql;
 use straum_domain::{Ask, AskKey, Cond, KeyPath, Literal, TimeKey};
 
-use super::{SqlError, Walker, line, statements};
+use super::{SqlError, Walker, and_parts, line, statements};
 
 pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
     let statements = statements(query)?;
@@ -290,22 +290,6 @@ impl Walker {
             );
         })
         .ok()
-    }
-}
-
-/// The parts of a WHERE joined by AND.
-fn and_parts<'a>(expr: &'a sql::Expr, parts: &mut Vec<&'a sql::Expr>) {
-    match expr {
-        sql::Expr::Nested(inner) => and_parts(inner, parts),
-        sql::Expr::BinaryOp {
-            left,
-            op: sql::BinaryOperator::And,
-            right,
-        } => {
-            and_parts(left, parts);
-            and_parts(right, parts);
-        }
-        other => parts.push(other),
     }
 }
 

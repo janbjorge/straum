@@ -21,15 +21,16 @@ pub struct Table {
 pub struct Dim {
     pub name: Ident,
     pub table: Table,
-    pub key: Ident,
+    /// One column or more; a row is named by their values together.
+    pub key: Vec<Ident>,
     pub attrs: Vec<Ident>,
 }
 
 impl Dim {
-    /// The columns a row of this dim carries, in order: the key, then the
-    /// attributes.
+    /// The columns a row of this dim carries, in order: the key columns,
+    /// then the attributes.
     pub fn columns(&self) -> impl Iterator<Item = &Ident> {
-        iter::once(&self.key).chain(&self.attrs)
+        self.key.iter().chain(&self.attrs)
     }
 }
 
@@ -87,13 +88,15 @@ impl fmt::Display for Origin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grain(pub u32);
 
-/// N:1 pointer from a fact column to a dim key. The only way a fact reaches
-/// another table, so fan-out can't be declared.
+/// N:1 pointer from fact columns to a dim key, column for column. The only
+/// way a fact reaches another table, so fan-out can't be declared. The via
+/// columns are `by` columns of the fact: a ref adds nothing to the rollup
+/// key, it only says which dim row a cell's values name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     pub name: Ident,
     pub dim: Ident,
-    pub via: Ident,
+    pub via: Vec<Ident>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,13 +131,14 @@ pub enum Literal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key<'a> {
     Column(&'a Ident),
+    /// A ref on one column, whose value is the ref's id. A ref on several
+    /// has no id: asks name its columns or its attributes.
     Ref(&'a Ref),
     /// Mapped after aggregation.
     Attr(&'a Ref, &'a Ident),
 }
 
-/// One part of the rollup key: a fact column, or the time bucket. A ref is
-/// keyed by its via column, since a ref id is that column's value.
+/// One part of the rollup key: a fact column, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
@@ -142,23 +146,19 @@ pub enum Slot<'a> {
 }
 
 impl Fact {
-    /// `by` columns, then the refs' via columns, then the time bucket. Dim
-    /// attributes are never part of it.
+    /// The `by` columns, then the time bucket. A ref's via columns are
+    /// `by` columns, so a ref adds nothing; dim attributes are never part
+    /// of it.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
-        self.by
-            .iter()
-            .chain(self.refs.iter().map(|r| &r.via))
-            .map(Slot::Column)
-            .chain(iter::once(Slot::Bucket))
+        (self.by.iter().map(Slot::Column)).chain(iter::once(Slot::Bucket))
     }
 
     /// The columns a row of this fact carries, in order: the time column,
-    /// the `by` columns and ref columns in rollup-key order, then the
-    /// measure inputs not already among them.
+    /// the `by` columns in rollup-key order, then the measure inputs not
+    /// already among them.
     pub fn columns(&self) -> Vec<Ident> {
         let mut columns: Vec<Ident> = iter::once(&self.time.column)
             .chain(&self.by)
-            .chain(self.refs.iter().map(|r| &r.via))
             .cloned()
             .collect();
         for m in &self.measures {
@@ -246,8 +246,8 @@ impl Spec {
         self.facts.iter().find(|f| f.name.as_str() == name)
     }
 
-    /// A bare name is a `by` column or a ref; `ref.attr` is the dim's key or
-    /// one of its attributes.
+    /// A bare name is a `by` column or a ref on one column; `ref.attr` is
+    /// one of the dim's key columns or attributes.
     pub fn resolve<'a>(&'a self, fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
         resolve(&self.dims, fact, path)
     }
@@ -258,7 +258,8 @@ fn resolve<'a>(dims: &'a [Dim], fact: &'a Fact, path: &KeyPath) -> Option<Key<'a
         if let Some(column) = fact.by.iter().find(|c| **c == path.head) {
             return Some(Key::Column(column));
         }
-        return fact.refs.iter().find(|r| r.name == path.head).map(Key::Ref);
+        let r = fact.refs.iter().find(|r| r.name == path.head)?;
+        return (r.via.len() == 1).then_some(Key::Ref(r));
     };
     let r = fact.refs.iter().find(|r| r.name == path.head)?;
     let dim = dims.iter().find(|d| d.name == r.dim)?;
@@ -267,6 +268,11 @@ fn resolve<'a>(dims: &'a [Dim], fact: &'a Fact, path: &KeyPath) -> Option<Key<'a
 }
 
 fn check_dim(dim: &Dim, errors: &mut Vec<SpecError>) {
+    if dim.key.is_empty() {
+        errors.push(SpecError::NoKey {
+            dim: dim.name.clone(),
+        });
+    }
     let mut columns = HashSet::new();
     for column in dim.columns() {
         if !columns.insert(column) {
@@ -300,22 +306,21 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         below = bucket;
     }
 
-    // Each fact column plays at most one role in the rollup key.
-    let mut columns = HashSet::new();
-    let roles = iter::once(&fact.time.column)
-        .chain(&fact.by)
-        .chain(fact.refs.iter().map(|r| &r.via));
-    for column in roles {
-        if !columns.insert(column) {
-            errors.push(SpecError::ColumnReused {
+    // `by` columns and ref names share one namespace in key paths.
+    let mut keys: HashSet<&Ident> = HashSet::new();
+    for column in &fact.by {
+        if *column == fact.time.column {
+            errors.push(SpecError::TimeAsKey {
                 fact: name.clone(),
                 column: column.clone(),
             });
+        } else if !keys.insert(column) {
+            errors.push(SpecError::Duplicate {
+                scope: Some(name.clone()),
+                name: column.clone(),
+            });
         }
     }
-
-    // `by` columns and ref names share one namespace in key paths.
-    let mut keys: HashSet<&Ident> = fact.by.iter().collect();
     for r in &fact.refs {
         if !keys.insert(&r.name) {
             errors.push(SpecError::Duplicate {
@@ -323,12 +328,36 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                 name: r.name.clone(),
             });
         }
-        if !dims.iter().any(|d| d.name == r.dim) {
-            errors.push(SpecError::UnknownDim {
+        let mut via = HashSet::new();
+        for column in &r.via {
+            if !via.insert(column) {
+                errors.push(SpecError::ViaReused {
+                    fact: name.clone(),
+                    ref_name: r.name.clone(),
+                    column: column.clone(),
+                });
+            } else if !fact.by.contains(column) {
+                errors.push(SpecError::ViaNotKey {
+                    fact: name.clone(),
+                    ref_name: r.name.clone(),
+                    column: column.clone(),
+                });
+            }
+        }
+        match dims.iter().find(|d| d.name == r.dim) {
+            None => errors.push(SpecError::UnknownDim {
                 fact: name.clone(),
                 ref_name: r.name.clone(),
                 dim: r.dim.clone(),
-            });
+            }),
+            Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyWidth {
+                fact: name.clone(),
+                ref_name: r.name.clone(),
+                via: r.via.len(),
+                dim: dim.name.clone(),
+                key: dim.key.len(),
+            }),
+            Some(_) => {}
         }
     }
 
@@ -379,14 +408,38 @@ pub enum SpecError {
         seconds: u32,
         below: u32,
     },
-    /// A column is used twice among `time`, `by` and ref `via`.
-    ColumnReused {
+    /// The time column is a `by` column too, which the catalog would refuse
+    /// anyway: a time never groups.
+    TimeAsKey {
         fact: Ident,
         column: Ident,
+    },
+    /// A ref's via column is not a `by` column, so cells don't hold it.
+    ViaNotKey {
+        fact: Ident,
+        ref_name: Ident,
+        column: Ident,
+    },
+    /// A ref joins on one column twice.
+    ViaReused {
+        fact: Ident,
+        ref_name: Ident,
+        column: Ident,
+    },
+    /// A ref joins on another number of columns than its dim's key has.
+    KeyWidth {
+        fact: Ident,
+        ref_name: Ident,
+        via: usize,
+        dim: Ident,
+        key: usize,
     },
     UnknownDim {
         fact: Ident,
         ref_name: Ident,
+        dim: Ident,
+    },
+    NoKey {
         dim: Ident,
     },
     /// A measure filter names something that is not in the rollup key.
@@ -425,12 +478,36 @@ impl fmt::Display for SpecError {
                 f,
                 "fact {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
             ),
-            SpecError::ColumnReused { fact, column } => {
+            SpecError::TimeAsKey { fact, column } => {
                 write!(
                     f,
-                    "fact {fact}: column {column} used twice among time, by and ref"
+                    "fact {fact}: {column} is the time column, so it can't be a by column too"
                 )
             }
+            SpecError::ViaNotKey {
+                fact,
+                ref_name,
+                column,
+            } => write!(
+                f,
+                "fact {fact}: ref {ref_name} joins on {column}, which is not a by column"
+            ),
+            SpecError::ViaReused {
+                fact,
+                ref_name,
+                column,
+            } => write!(f, "fact {fact}: ref {ref_name} joins on {column} twice"),
+            SpecError::KeyWidth {
+                fact,
+                ref_name,
+                via,
+                dim,
+                key,
+            } => write!(
+                f,
+                "fact {fact}: ref {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
+            ),
+            SpecError::NoKey { dim } => write!(f, "dim {dim}: no key columns"),
             SpecError::UnknownDim {
                 fact,
                 ref_name,

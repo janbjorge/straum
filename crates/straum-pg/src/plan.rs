@@ -44,11 +44,12 @@ pub fn plan(spec: &Spec, publication: &str, role: &str) -> String {
         ));
     }
     for dim in spec.dims() {
+        let key: Vec<&str> = dim.key.iter().map(|k| k.as_str()).collect();
         sql.push(format!(
             "-- dim {}: {} needs a primary key on {} alone, or REPLICA IDENTITY FULL and a unique index on it.",
             dim.name,
             qualified(&dim.table),
-            dim.key
+            key.join(", ")
         ));
     }
     sql.join("\n") + "\n"
