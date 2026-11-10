@@ -113,9 +113,9 @@ fn store(cells: i64) -> Store {
 /// As [`store`], with `buckets` (in hours). Each row carries the borough of
 /// its zone, as the source resolves it.
 fn store_with(cells: i64, buckets: &[u32]) -> Store {
-    let mut store = Store::new(spec(buckets));
-    let rollup = store.rollup("trips").unwrap();
-    let columns = rollup.columns().to_vec();
+    let spec = spec(buckets);
+    let columns = spec.fact("trips").unwrap().columns().to_vec();
+    let mut store = Store::new(spec);
     for n in 0..cells {
         let zone = n / 2 % ZONES;
         let mut row: Vec<_> = columns
@@ -130,7 +130,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
             })
             .collect();
         row.push(Datum::Text(BOROUGHS[zone as usize % BOROUGHS.len()].into()));
-        rollup.add(&row).unwrap();
+        store.add_fact_row("trips", &row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(cells as usize));
     store

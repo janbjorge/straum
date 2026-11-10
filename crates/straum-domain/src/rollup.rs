@@ -18,7 +18,7 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 /// once more per wider bucket width the fact declares, so a long range
 /// reads few cells.
 #[derive(Debug)]
-pub struct Rollup {
+pub(crate) struct Rollup {
     /// The columns a row is read from, as [`Fact::columns`].
     columns: Vec<Ident>,
     /// How many ref attributes a row holds after `columns`, in
@@ -248,7 +248,7 @@ pub(crate) enum Column {
 }
 
 impl Rollup {
-    pub fn new(fact: &Fact) -> Rollup {
+    pub(crate) fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
         let attrs = fact.attrs().count();
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
@@ -302,33 +302,26 @@ impl Rollup {
         }
     }
 
-    /// The columns a row is read from, as [`Fact::columns`]. A row of this
-    /// rollup holds them and then the fact's ref attributes.
-    pub fn columns(&self) -> &[Ident] {
-        &self.columns
-    }
-
     /// Columns a row holds: those read, then the ref attributes.
     fn width(&self) -> usize {
         self.columns.len() + self.attrs
     }
 
     /// At the `date_bin` width; a cell goes when its last row is removed.
-    pub fn cells(&self) -> usize {
+    pub(crate) fn cells(&self) -> usize {
         self.cells
     }
 
     /// The types stay.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.levels.iter_mut().for_each(|l| l.buckets.clear());
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
         self.cells = 0;
     }
 
-    /// Sets the type of each column a row holds: [`Rollup::columns`], then
-    /// the ref attributes. Only the source knows them, so a load sets them;
-    /// they are integers until then.
-    pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
+    /// Only the source knows the row's types, so a load sets them; they are
+    /// integers until then.
+    pub(crate) fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
         if types.len() != self.types.len() {
             return Err(RowError::Arity {
                 expected: self.types.len(),
@@ -354,7 +347,7 @@ impl Rollup {
         agg.scale(input)
     }
 
-    pub fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
+    pub(crate) fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let mut key = mem::take(&mut self.key);
         key.clear();
@@ -372,7 +365,7 @@ impl Rollup {
     /// Adds whole rows laid end to end, as a load reads them: each width
     /// of cells on its own thread, since they share nothing but the rows.
     /// If a row fails [`Rollup::add`]'s checks, none is added.
-    pub fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
+    pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
         let width = self.width();
         if !rows.len().is_multiple_of(width) {
             return Err(RowError::Arity {
@@ -417,7 +410,7 @@ impl Rollup {
 
     /// After [`RowError::Missing`] the rollup no longer matches the table;
     /// start over.
-    pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
+    pub(crate) fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let key: Vec<u32> = (self.key_columns.iter().zip(&self.codes))
             .map(|(&coded, codes)| codes.codes.get(&*coded.datum(row)).copied())

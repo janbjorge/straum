@@ -258,7 +258,7 @@ impl State {
             }
             Change::Delete { table, old } => self.store.remove_fact_row(table.as_str(), &old)?,
             Change::Truncate { table } => {
-                self.store.rollup(table.as_str()).expect(IN_SPEC).clear();
+                self.store.clear_fact(table.as_str()).expect(IN_SPEC);
             }
             Change::Altered { .. } => return Err(Stale),
         }

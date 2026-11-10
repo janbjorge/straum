@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Fact, Ident, Rollup, Spec, Store};
+use straum_domain::{ColumnType, Datum, Fact, Ident, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
@@ -25,12 +25,14 @@ pub fn type_of(column: &Ident) -> ColumnType {
 }
 
 /// Sets the types a load sets: the fact's columns, then its attributes.
-pub fn set_types(fact: &Fact, rollup: &mut Rollup) {
+pub fn set_types(fact: &Fact, store: &mut Store) {
     let types: Vec<ColumnType> = (fact.columns().iter())
         .chain(fact.attrs().map(|(_, attr)| attr))
         .map(type_of)
         .collect();
-    rollup.set_types(&types).expect("one type per column");
+    store
+        .set_fact_types(fact.name.as_str(), &types)
+        .expect("one type per column");
 }
 
 #[derive(Debug, Clone)]
@@ -353,7 +355,7 @@ impl Source for Fake {
     }
 
     fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
-        set_types(fact, store.rollup(fact.name.as_str()).expect("in the spec"));
+        set_types(fact, store);
         for row in self.read(fact)? {
             store.add_fact_row(fact.name.as_str(), &row)?;
         }

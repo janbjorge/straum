@@ -15,7 +15,7 @@ mod value;
 pub use agg::Agg;
 pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Ident;
-pub use rollup::{Rollup, RowError};
+pub use rollup::RowError;
 pub use spec::{
     By, Cond, Dim, Fact, Grain, Key, KeyPath, Literal, Measure, Origin, Ref, Slot, Spec, SpecError,
     Table, Time,

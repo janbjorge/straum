@@ -598,8 +598,8 @@ fn rows_added_together_match_rows_added_one_by_one() {
             rest = after;
         }
         assert_eq!(
-            together.rollup("trips").unwrap().cells(),
-            by_row.rollup("trips").unwrap().cells(),
+            together.cells("trips"),
+            by_row.cells("trips"),
             "seed {seed}"
         );
         for _ in 0..50 {
@@ -692,13 +692,13 @@ fn rows_added_together_add_none_on_error() {
 
 #[test]
 fn columns_put_measure_inputs_after_the_key() {
-    let mut store = Store::new(spec());
-    let columns: Vec<_> = store
-        .rollup("trips")
+    let spec = spec();
+    let columns: Vec<_> = spec
+        .fact("trips")
         .unwrap()
         .columns()
         .iter()
-        .map(Ident::as_str)
+        .map(Ident::to_string)
         .collect();
     let expected = [
         (AT, "at"),
@@ -712,7 +712,7 @@ fn columns_put_measure_inputs_after_the_key() {
         (DIST, "dist"),
         (RIDER, "rider"),
     ];
-    assert_eq!(columns, expected.map(|(_, c)| c));
+    assert_eq!(columns, expected.map(|(_, c)| c.to_owned()));
     for (pos, name) in expected {
         assert_eq!(columns[pos], name);
     }
@@ -817,7 +817,7 @@ fn clear_drops_every_row() {
     let mut store = Store::new(spec());
     let trip = trip(&mut Rng(5));
     store.add_fact_row("trips", &trip).unwrap();
-    store.rollup("trips").unwrap().clear();
+    store.clear_fact("trips").unwrap();
     assert_eq!(store.cells("trips"), Some(0));
     assert_eq!(
         store.remove_fact_row("trips", &trip),
@@ -900,7 +900,7 @@ fn types_stay_through_clear() {
     // An attribute has the type its dim column has.
     types[PICKUP_ZONE] = ColumnType::Numeric { scale: 4 };
     store.set_fact_types("trips", &types).unwrap();
-    store.rollup("trips").unwrap().clear();
+    store.clear_fact("trips").unwrap();
     assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
 }
 
@@ -993,8 +993,7 @@ fn ask_without_by_answers_one_row() {
 
 #[test]
 fn unknown_names() {
-    let mut store = Store::new(spec());
-    assert!(store.rollup("zones").is_none());
+    let store = Store::new(spec());
     assert!(store.cells("zones").is_none());
     let ask = Ask {
         fact: id("zones"),

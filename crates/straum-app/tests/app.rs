@@ -152,10 +152,9 @@ fn reference(db: &Database, lsn: Lsn) -> Store {
     let spec = spec();
     let mut store = Store::new(spec.clone());
     for fact in spec.facts() {
-        let rollup = store.rollup(fact.name.as_str()).unwrap();
-        fake::set_types(fact, rollup);
+        fake::set_types(fact, &mut store);
         for row in db.rows_at(&spec, lsn, fact) {
-            rollup.add(&row).unwrap();
+            store.add_fact_row(fact.name.as_str(), &row).unwrap();
         }
     }
     store
@@ -173,10 +172,10 @@ fn by_borough(app: &App, fact: &str) -> Vec<(Vec<Datum>, Vec<Value>)> {
 
 #[test]
 fn fake_rows_hold_the_rollup_columns() {
-    let mut store = Store::new(spec());
-    let mut columns = |fact| {
-        let rollup = store.rollup(fact).unwrap();
-        rollup
+    let spec = spec();
+    let columns = |fact| {
+        spec.fact(fact)
+            .unwrap()
             .columns()
             .iter()
             .map(Ident::to_string)

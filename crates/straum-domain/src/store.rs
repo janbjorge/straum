@@ -78,9 +78,11 @@ impl Store {
         &self.spec
     }
 
-    pub fn rollup(&mut self, fact: &str) -> Option<&mut Rollup> {
+    /// Drops every row of a fact after a truncate.
+    pub fn clear_fact(&mut self, fact: &str) -> Option<()> {
         let i = self.fact_index(fact)?;
-        Some(&mut self.rollups[i])
+        self.rollups[i].clear();
+        Some(())
     }
 
     pub fn cells(&self, fact: &str) -> Option<usize> {
