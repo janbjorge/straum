@@ -325,7 +325,8 @@ Tests:
   Anything else is `AskError::WrongType`, not an empty answer. The load
   sets each column's `ColumnType` (replacing `set_scales`), and
   `Store::ask` checks after `Spec::check`, since only a load knows the
-  types. `straum-pg` keeps its own `Kind`, as reading a type stays there.
+  types. `straum-pg` reads into `ColumnType` too (`type_of`, `read`,
+  `read_binary`), so there is one type enum (its own `Kind` went, same day).
 - 2026-11-10: `/status` shows `as of`, from the same `State::as_of` that
   answers use, so both report freshness alike.
 - 2026-11-10: One `unsafe` stays: the counting allocator in

@@ -11,7 +11,7 @@ use straum_domain::{ColumnType, Datum, DimTable, Ident, Rollup};
 
 use crate::catalog::Table;
 use crate::error::Error;
-use crate::value::Kind;
+use crate::value::read_binary;
 use crate::wire::Conn;
 
 /// What starts a binary copy, before its flags and header extension.
@@ -31,18 +31,16 @@ pub(crate) fn copy_sql(table: &Table, columns: &[Ident]) -> String {
 }
 
 pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Result<(), Error> {
-    let kinds: Vec<Kind> = rollup.columns().iter().map(|c| table.kind(c)).collect();
-    let types: Vec<ColumnType> = kinds.iter().map(|&k| k.into()).collect();
+    let types: Vec<ColumnType> = rollup.columns().iter().map(|c| table.kind(c)).collect();
     rollup.set_types(&types).map_err(Error::Row)?;
     let sql = copy_sql(table, rollup.columns());
-    copy(conn, &sql, &kinds, |rows| {
+    copy(conn, &sql, &types, |rows| {
         rollup.add_rows(rows).map_err(Error::Row)
     })
 }
 
 pub(crate) fn dim(conn: &mut Conn, table: &Table, rows: &mut DimTable) -> Result<(), Error> {
-    let types: Vec<ColumnType> = table.kinds.iter().map(|&k| k.into()).collect();
-    rows.set_types(&types).map_err(Error::Row)?;
+    rows.set_types(&table.kinds).map_err(Error::Row)?;
     let sql = copy_sql(table, &table.columns);
     copy(conn, &sql, &table.kinds, |batch| {
         for row in batch.chunks_exact(table.kinds.len()) {
@@ -66,7 +64,7 @@ const IN_FLIGHT: usize = 4;
 pub(crate) fn copy(
     conn: &mut Conn,
     sql: &str,
-    kinds: &[Kind],
+    kinds: &[ColumnType],
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A fact has its time column, a dim its key.
@@ -105,7 +103,7 @@ pub(crate) fn copy(
 fn read(
     conn: &mut Conn,
     sql: &str,
-    kinds: &[Kind],
+    kinds: &[ColumnType],
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let mut batch = Vec::with_capacity(BATCH * kinds.len());
@@ -142,7 +140,7 @@ fn read(
                             .split_at_checked(len)
                             .ok_or_else(|| copy_error("a copy value cut short"))?;
                         data = rest;
-                        kind.read_binary(value)?
+                        read_binary(*kind, value)?
                     }
                 });
             }

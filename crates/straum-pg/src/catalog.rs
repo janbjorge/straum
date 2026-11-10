@@ -8,7 +8,7 @@ use postgres_protocol::escape::escape_literal;
 use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Spec};
 
 use crate::error::Error;
-use crate::value::Kind;
+use crate::value::type_of;
 use crate::wire::Conn;
 
 /// A spec table as PostgreSQL has it, ready to load and stream.
@@ -21,15 +21,15 @@ pub(crate) struct Table {
     /// What a row holds, in order: `Fact::columns`, or the dim key and then
     /// its attributes.
     pub(crate) columns: Vec<Ident>,
-    pub(crate) kinds: Vec<Kind>,
+    pub(crate) kinds: Vec<ColumnType>,
     /// The fact's or dim's key. A fact's key may be of any type; straum only
     /// needs to see that a change carries it instead of the whole row.
     pub(crate) key: Ident,
-    pub(crate) key_kind: Kind,
+    pub(crate) key_kind: ColumnType,
 }
 
 impl Table {
-    pub(crate) fn kind(&self, column: &Ident) -> Kind {
+    pub(crate) fn kind(&self, column: &Ident) -> ColumnType {
         let i = self.columns.iter().position(|c| c == column);
         self.kinds[i.expect("the column is in the table's row")]
     }
@@ -217,11 +217,11 @@ enum Role {
 }
 
 impl Role {
-    fn allows(self, kind: Kind) -> bool {
+    fn allows(self, kind: ColumnType) -> bool {
         match self {
-            Role::Time => kind == Kind::Time,
-            Role::Number => matches!(kind, Kind::Int | Kind::Numeric { .. }),
-            Role::Key => kind != Kind::Time,
+            Role::Time => kind == ColumnType::Time,
+            Role::Number => matches!(kind, ColumnType::Int | ColumnType::Numeric { .. }),
+            Role::Key => kind != ColumnType::Time,
         }
     }
 
@@ -399,7 +399,7 @@ fn check_table<'a>(
                     "{name}: publication {publication} leaves out column {name_of} of {qualified}"
                 ));
             }
-            Kind::of(c.type_oid, c.typmod)
+            type_of(c.type_oid, c.typmod)
                 .filter(|k| role.allows(*k))
                 .ok_or_else(|| {
                     format!(
@@ -422,7 +422,7 @@ fn check_table<'a>(
     let key_kind = match key {
         None => kinds.first().copied(),
         Some(key) => match column(key) {
-            Ok(c) => Some(Kind::of(c.type_oid, c.typmod).unwrap_or(Kind::Text)),
+            Ok(c) => Some(type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)),
             Err(problem) => {
                 problems.push(problem);
                 None
@@ -491,7 +491,7 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
                 };
                 for value in &cond.values {
                     // The rule asks follow too.
-                    if !ColumnType::from(kind).fits(value) {
+                    if !kind.fits(value) {
                         problems.push(format!(
                             "fact {}: measure {} compares {} ({kind}) with {}",
                             fact.name,

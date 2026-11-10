@@ -35,82 +35,66 @@ const PG_EPOCH_AFTER_UNIX: Duration = Duration::from_secs(PG_EPOCH.unsigned_abs(
 const NUMERIC_POS: u16 = 0x0000;
 const NUMERIC_NEG: u16 = 0x4000;
 
-/// How straum reads a column, from its type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Kind {
-    /// `int2`, `int4`, `int8`.
-    Int,
-    /// `numeric(p, s)` with `p` at most 18, as an integer in units of
-    /// `10^-s`.
-    Numeric {
-        scale: u32,
-    },
-    Bool,
-    /// `text`, `varchar`, `bpchar`.
-    Text,
-    /// `timestamptz` as Unix seconds, rounded down.
-    Time,
+/// How straum reads a column of this type: `int2`, `int4` and `int8` as
+/// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
+/// `10^-s`, `text`, `varchar` and `bpchar` as text, and `timestamptz` as
+/// Unix seconds, rounded down. `None` for a type straum doesn't read.
+pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
+    match type_oid {
+        INT2 | INT4 | INT8 => Some(ColumnType::Int),
+        NUMERIC => {
+            // An unconstrained numeric (typmod -1) has no fixed scale.
+            let packed = typmod.checked_sub(TYPMOD_HEADER).filter(|p| *p >= 0)?;
+            let precision = packed >> 16;
+            // The low 11 bits hold the scale, signed since PostgreSQL 15.
+            let scale = ((packed & 0x7ff) ^ 1024) - 1024;
+            let scale = u32::try_from(scale).ok()?;
+            (precision <= MAX_PRECISION).then_some(ColumnType::Numeric { scale })
+        }
+        BOOL => Some(ColumnType::Bool),
+        TEXT | VARCHAR | BPCHAR => Some(ColumnType::Text),
+        TIMESTAMPTZ => Some(ColumnType::Time),
+        _ => None,
+    }
 }
 
-impl Kind {
-    /// `None` for a type straum doesn't read.
-    pub(crate) fn of(type_oid: u32, typmod: i32) -> Option<Kind> {
-        match type_oid {
-            INT2 | INT4 | INT8 => Some(Kind::Int),
-            NUMERIC => {
-                // An unconstrained numeric (typmod -1) has no fixed scale.
-                let packed = typmod.checked_sub(TYPMOD_HEADER).filter(|p| *p >= 0)?;
-                let precision = packed >> 16;
-                // The low 11 bits hold the scale, signed since PostgreSQL 15.
-                let scale = ((packed & 0x7ff) ^ 1024) - 1024;
-                let scale = u32::try_from(scale).ok()?;
-                (precision <= MAX_PRECISION).then_some(Kind::Numeric { scale })
-            }
-            BOOL => Some(Kind::Bool),
-            TEXT | VARCHAR | BPCHAR => Some(Kind::Text),
-            TIMESTAMPTZ => Some(Kind::Time),
+pub(crate) fn read(kind: ColumnType, text: &str) -> Result<Datum, ValueError> {
+    let datum = match kind {
+        ColumnType::Int => text.parse().ok().map(Datum::Int),
+        ColumnType::Numeric { scale } => decimal(text, scale)
+            .and_then(|v| i64::try_from(v).ok())
+            .map(Datum::Int),
+        ColumnType::Bool => match text {
+            "t" => Some(Datum::Bool(true)),
+            "f" => Some(Datum::Bool(false)),
             _ => None,
-        }
-    }
+        },
+        ColumnType::Text => Some(Datum::Text(text.into())),
+        ColumnType::Time => timestamptz(text).map(Datum::Int),
+    };
+    datum.ok_or_else(|| ValueError::new(kind, text))
+}
 
-    pub(crate) fn read(self, text: &str) -> Result<Datum, ValueError> {
-        let datum = match self {
-            Kind::Int => text.parse().ok().map(Datum::Int),
-            Kind::Numeric { scale } => decimal(text, scale)
-                .and_then(|v| i64::try_from(v).ok())
-                .map(Datum::Int),
-            Kind::Bool => match text {
-                "t" => Some(Datum::Bool(true)),
-                "f" => Some(Datum::Bool(false)),
-                _ => None,
-            },
-            Kind::Text => Some(Datum::Text(text.into())),
-            Kind::Time => timestamptz(text).map(Datum::Int),
-        };
-        datum.ok_or_else(|| ValueError::new(self, text))
-    }
-
-    /// Reads the binary form `COPY ... (FORMAT binary)` sends.
-    pub(crate) fn read_binary(self, bytes: &[u8]) -> Result<Datum, ValueError> {
-        let datum = match self {
-            Kind::Int => int(bytes).map(Datum::Int),
-            Kind::Numeric { scale } => binary_decimal(bytes, scale)
-                .and_then(|v| i64::try_from(v).ok())
-                .map(Datum::Int),
-            Kind::Bool => match bytes {
-                [0] => Some(Datum::Bool(false)),
-                [1] => Some(Datum::Bool(true)),
-                _ => None,
-            },
-            Kind::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
-            Kind::Time => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
-                // `infinity` and `-infinity`.
-                Ok(i64::MIN | i64::MAX) | Err(_) => None,
-                Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
-            },
-        };
-        datum.ok_or_else(|| ValueError::binary(self, bytes))
-    }
+/// Reads the binary form `COPY ... (FORMAT binary)` sends.
+pub(crate) fn read_binary(kind: ColumnType, bytes: &[u8]) -> Result<Datum, ValueError> {
+    let datum = match kind {
+        ColumnType::Int => int(bytes).map(Datum::Int),
+        ColumnType::Numeric { scale } => binary_decimal(bytes, scale)
+            .and_then(|v| i64::try_from(v).ok())
+            .map(Datum::Int),
+        ColumnType::Bool => match bytes {
+            [0] => Some(Datum::Bool(false)),
+            [1] => Some(Datum::Bool(true)),
+            _ => None,
+        },
+        ColumnType::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
+        ColumnType::Time => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
+            // `infinity` and `-infinity`.
+            Ok(i64::MIN | i64::MAX) | Err(_) => None,
+            Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
+        },
+    };
+    datum.ok_or_else(|| ValueError::binary(kind, bytes))
 }
 
 /// A PostgreSQL timestamp, microseconds since its epoch, as a clock time.
@@ -253,15 +237,15 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
     Some(era * DAYS_PER_ERA + day_of_era - UNIX_EPOCH_DAYS)
 }
 
-/// A value PostgreSQL sent that doesn't read as its column's kind.
+/// A value PostgreSQL sent that doesn't read as its column's type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueError {
-    kind: Kind,
+    kind: ColumnType,
     text: String,
 }
 
 impl ValueError {
-    fn new(kind: Kind, text: &str) -> ValueError {
+    fn new(kind: ColumnType, text: &str) -> ValueError {
         ValueError {
             kind,
             text: text.to_owned(),
@@ -269,37 +253,11 @@ impl ValueError {
     }
 
     /// Shows the bytes in hex, as `bytea` prints.
-    fn binary(kind: Kind, bytes: &[u8]) -> ValueError {
+    fn binary(kind: ColumnType, bytes: &[u8]) -> ValueError {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         ValueError {
             kind,
             text: format!("\\x{hex}"),
-        }
-    }
-}
-
-/// The domain's own copy, since how a type is read from PostgreSQL stays
-/// here.
-impl From<Kind> for ColumnType {
-    fn from(kind: Kind) -> ColumnType {
-        match kind {
-            Kind::Int => ColumnType::Int,
-            Kind::Numeric { scale } => ColumnType::Numeric { scale },
-            Kind::Bool => ColumnType::Bool,
-            Kind::Text => ColumnType::Text,
-            Kind::Time => ColumnType::Time,
-        }
-    }
-}
-
-impl fmt::Display for Kind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Kind::Int => f.write_str("an integer"),
-            Kind::Numeric { scale } => write!(f, "a numeric of scale {scale}"),
-            Kind::Bool => f.write_str("a boolean"),
-            Kind::Text => f.write_str("text"),
-            Kind::Time => f.write_str("a timestamptz"),
         }
     }
 }
@@ -336,19 +294,27 @@ mod tests {
     #[test]
     fn kinds_from_types() {
         let cases = [
-            (INT2, -1, Some(Kind::Int)),
-            (INT4, -1, Some(Kind::Int)),
-            (INT8, -1, Some(Kind::Int)),
-            (NUMERIC, numeric(12, 2), Some(Kind::Numeric { scale: 2 })),
-            (NUMERIC, numeric(18, 0), Some(Kind::Numeric { scale: 0 })),
+            (INT2, -1, Some(ColumnType::Int)),
+            (INT4, -1, Some(ColumnType::Int)),
+            (INT8, -1, Some(ColumnType::Int)),
+            (
+                NUMERIC,
+                numeric(12, 2),
+                Some(ColumnType::Numeric { scale: 2 }),
+            ),
+            (
+                NUMERIC,
+                numeric(18, 0),
+                Some(ColumnType::Numeric { scale: 0 }),
+            ),
             (NUMERIC, numeric(19, 2), None),
             (NUMERIC, numeric(5, -2), None),
             (NUMERIC, -1, None),
-            (BOOL, -1, Some(Kind::Bool)),
-            (TEXT, -1, Some(Kind::Text)),
-            (VARCHAR, 14, Some(Kind::Text)),
-            (BPCHAR, 7, Some(Kind::Text)),
-            (TIMESTAMPTZ, -1, Some(Kind::Time)),
+            (BOOL, -1, Some(ColumnType::Bool)),
+            (TEXT, -1, Some(ColumnType::Text)),
+            (VARCHAR, 14, Some(ColumnType::Text)),
+            (BPCHAR, 7, Some(ColumnType::Text)),
+            (TIMESTAMPTZ, -1, Some(ColumnType::Time)),
             // float8, uuid, timestamp, date
             (701, -1, None),
             (2950, -1, None),
@@ -356,127 +322,109 @@ mod tests {
             (1082, -1, None),
         ];
         for (oid, typmod, kind) in cases {
-            assert_eq!(Kind::of(oid, typmod), kind, "{oid} {typmod}");
+            assert_eq!(type_of(oid, typmod), kind, "{oid} {typmod}");
         }
-        let types = [
-            Kind::Int,
-            Kind::Numeric { scale: 3 },
-            Kind::Bool,
-            Kind::Text,
-            Kind::Time,
-        ]
-        .map(ColumnType::from);
-        assert_eq!(
-            types,
-            [
-                ColumnType::Int,
-                ColumnType::Numeric { scale: 3 },
-                ColumnType::Bool,
-                ColumnType::Text,
-                ColumnType::Time,
-            ]
-        );
     }
 
     #[test]
     fn reads_values() {
         let text = |s: &str| Datum::Text(s.into());
         let cases = [
-            (Kind::Int, "-42", Datum::Int(-42)),
-            (Kind::Int, "9223372036854775807", Datum::Int(i64::MAX)),
-            (Kind::Numeric { scale: 2 }, "12.50", Datum::Int(1250)),
-            (Kind::Numeric { scale: 2 }, "-0.05", Datum::Int(-5)),
-            (Kind::Numeric { scale: 2 }, "7", Datum::Int(700)),
-            (Kind::Numeric { scale: 0 }, "7", Datum::Int(7)),
-            (Kind::Bool, "t", Datum::Bool(true)),
-            (Kind::Bool, "f", Datum::Bool(false)),
-            (Kind::Text, "Upper East Side", text("Upper East Side")),
-            (Kind::Text, "", text("")),
+            (ColumnType::Int, "-42", Datum::Int(-42)),
+            (ColumnType::Int, "9223372036854775807", Datum::Int(i64::MAX)),
+            (ColumnType::Numeric { scale: 2 }, "12.50", Datum::Int(1250)),
+            (ColumnType::Numeric { scale: 2 }, "-0.05", Datum::Int(-5)),
+            (ColumnType::Numeric { scale: 2 }, "7", Datum::Int(700)),
+            (ColumnType::Numeric { scale: 0 }, "7", Datum::Int(7)),
+            (ColumnType::Bool, "t", Datum::Bool(true)),
+            (ColumnType::Bool, "f", Datum::Bool(false)),
+            (ColumnType::Text, "Upper East Side", text("Upper East Side")),
+            (ColumnType::Text, "", text("")),
             // Expected values from `date -u -d ... +%s`.
             (
-                Kind::Time,
+                ColumnType::Time,
                 "2024-01-15 10:30:00+00",
                 Datum::Int(1_705_314_600),
             ),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "2024-02-29 13:47:05.999+00",
                 Datum::Int(1_709_214_425),
             ),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "2024-01-15 16:00:00+05:30",
                 Datum::Int(1_705_314_600),
             ),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "2024-01-15 05:30:00-05",
                 Datum::Int(1_705_314_600),
             ),
-            (Kind::Time, "1970-01-01 00:00:00+00", Datum::Int(0)),
-            (Kind::Time, "1969-12-31 23:59:59.5+00", Datum::Int(-1)),
+            (ColumnType::Time, "1970-01-01 00:00:00+00", Datum::Int(0)),
+            (ColumnType::Time, "1969-12-31 23:59:59.5+00", Datum::Int(-1)),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "1900-03-01 00:00:00+00",
                 Datum::Int(-2_203_891_200),
             ),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "12345-06-07 00:00:00+00",
                 Datum::Int(327_416_947_200),
             ),
             (
-                Kind::Time,
+                ColumnType::Time,
                 "1901-12-13 20:45:52+00:00:08",
                 Datum::Int(-2_147_483_656),
             ),
         ];
         for (kind, text, datum) in cases {
-            assert_eq!(kind.read(text), Ok(datum), "{kind} {text}");
+            assert_eq!(read(kind, text), Ok(datum), "{kind} {text}");
         }
     }
 
     #[test]
     fn rejects_values() {
         let cases = [
-            (Kind::Int, "1.5"),
-            (Kind::Int, "9223372036854775808"),
-            (Kind::Int, ""),
-            (Kind::Numeric { scale: 2 }, "1.234"),
-            (Kind::Numeric { scale: 2 }, "NaN"),
-            (Kind::Numeric { scale: 2 }, "Infinity"),
-            (Kind::Numeric { scale: 2 }, "-Infinity"),
-            (Kind::Numeric { scale: 2 }, "1e5"),
-            (Kind::Numeric { scale: 2 }, ".5"),
-            (Kind::Numeric { scale: 2 }, "1.-5"),
-            (Kind::Numeric { scale: 0 }, "92233720368547758070"),
-            (Kind::Numeric { scale: 0 }, "9223372036854775808"),
-            (Kind::Bool, "true"),
-            (Kind::Time, "infinity"),
-            (Kind::Time, "-infinity"),
-            (Kind::Time, "0044-03-15 12:00:00+00 BC"),
-            (Kind::Time, "2024-13-01 00:00:00+00"),
-            (Kind::Time, "2024-00-01 00:00:00+00"),
-            (Kind::Time, "2024-01-32 00:00:00+00"),
-            (Kind::Time, "2024-01-00 00:00:00+00"),
-            (Kind::Time, "2024-01-01 24:00:00+00"),
-            (Kind::Time, "2024-01-01 00:60:00+00"),
-            (Kind::Time, "2024-01-01 00:00:61+00"),
-            (Kind::Time, "2024-01-01 00:00+00"),
-            (Kind::Time, "2024-01-01 00:00:00:00+00"),
-            (Kind::Time, "2024-01-01 00:00:00"),
-            (Kind::Time, "2024-01-01T00:00:00+00"),
-            (Kind::Time, "2024-01 00:00:00+00"),
-            (Kind::Time, "2024-01-01 0a:00:00+00"),
-            (Kind::Time, "2024-01-01 00:00:00+0a"),
-            (Kind::Time, "2024-01-01 00:00:00+00:0a"),
-            (Kind::Time, "2024-01-01 00:00:00+00:00:0a"),
-            (Kind::Time, "2024-01-01 00:00:00+00:00:00:00"),
-            (Kind::Time, "2024-01-01 00:00:00+"),
+            (ColumnType::Int, "1.5"),
+            (ColumnType::Int, "9223372036854775808"),
+            (ColumnType::Int, ""),
+            (ColumnType::Numeric { scale: 2 }, "1.234"),
+            (ColumnType::Numeric { scale: 2 }, "NaN"),
+            (ColumnType::Numeric { scale: 2 }, "Infinity"),
+            (ColumnType::Numeric { scale: 2 }, "-Infinity"),
+            (ColumnType::Numeric { scale: 2 }, "1e5"),
+            (ColumnType::Numeric { scale: 2 }, ".5"),
+            (ColumnType::Numeric { scale: 2 }, "1.-5"),
+            (ColumnType::Numeric { scale: 0 }, "92233720368547758070"),
+            (ColumnType::Numeric { scale: 0 }, "9223372036854775808"),
+            (ColumnType::Bool, "true"),
+            (ColumnType::Time, "infinity"),
+            (ColumnType::Time, "-infinity"),
+            (ColumnType::Time, "0044-03-15 12:00:00+00 BC"),
+            (ColumnType::Time, "2024-13-01 00:00:00+00"),
+            (ColumnType::Time, "2024-00-01 00:00:00+00"),
+            (ColumnType::Time, "2024-01-32 00:00:00+00"),
+            (ColumnType::Time, "2024-01-00 00:00:00+00"),
+            (ColumnType::Time, "2024-01-01 24:00:00+00"),
+            (ColumnType::Time, "2024-01-01 00:60:00+00"),
+            (ColumnType::Time, "2024-01-01 00:00:61+00"),
+            (ColumnType::Time, "2024-01-01 00:00+00"),
+            (ColumnType::Time, "2024-01-01 00:00:00:00+00"),
+            (ColumnType::Time, "2024-01-01 00:00:00"),
+            (ColumnType::Time, "2024-01-01T00:00:00+00"),
+            (ColumnType::Time, "2024-01 00:00:00+00"),
+            (ColumnType::Time, "2024-01-01 0a:00:00+00"),
+            (ColumnType::Time, "2024-01-01 00:00:00+0a"),
+            (ColumnType::Time, "2024-01-01 00:00:00+00:0a"),
+            (ColumnType::Time, "2024-01-01 00:00:00+00:00:0a"),
+            (ColumnType::Time, "2024-01-01 00:00:00+00:00:00:00"),
+            (ColumnType::Time, "2024-01-01 00:00:00+"),
         ];
         for (kind, text) in cases {
             assert_eq!(
-                kind.read(text),
+                read(kind, text),
                 Err(ValueError::new(kind, text)),
                 "{kind} {text}"
             );
@@ -503,13 +451,17 @@ mod tests {
 
     #[test]
     fn reads_binary_values() {
-        let cents = Kind::Numeric { scale: 2 };
-        let whole = Kind::Numeric { scale: 0 };
+        let cents = ColumnType::Numeric { scale: 2 };
+        let whole = ColumnType::Numeric { scale: 0 };
         let cases = [
-            (Kind::Int, 7_i16.to_be_bytes().to_vec(), Datum::Int(7)),
-            (Kind::Int, (-2_i32).to_be_bytes().to_vec(), Datum::Int(-2)),
+            (ColumnType::Int, 7_i16.to_be_bytes().to_vec(), Datum::Int(7)),
             (
-                Kind::Int,
+                ColumnType::Int,
+                (-2_i32).to_be_bytes().to_vec(),
+                Datum::Int(-2),
+            ),
+            (
+                ColumnType::Int,
                 i64::MAX.to_be_bytes().to_vec(),
                 Datum::Int(i64::MAX),
             ),
@@ -536,38 +488,42 @@ mod tests {
                 numeric_bytes(4, NUMERIC_POS, &[1]),
                 Datum::Int(10_000_000_000_000_000),
             ),
-            (Kind::Bool, vec![1], Datum::Bool(true)),
-            (Kind::Bool, vec![0], Datum::Bool(false)),
+            (ColumnType::Bool, vec![1], Datum::Bool(true)),
+            (ColumnType::Bool, vec![0], Datum::Bool(false)),
             (
-                Kind::Text,
+                ColumnType::Text,
                 "Bø".as_bytes().to_vec(),
                 Datum::Text("Bø".into()),
             ),
-            (Kind::Text, vec![], Datum::Text("".into())),
-            (Kind::Time, micros(PG_EPOCH, 0), Datum::Int(PG_EPOCH)),
-            (Kind::Time, micros(PG_EPOCH, -1), Datum::Int(PG_EPOCH - 1)),
+            (ColumnType::Text, vec![], Datum::Text("".into())),
+            (ColumnType::Time, micros(PG_EPOCH, 0), Datum::Int(PG_EPOCH)),
             (
-                Kind::Time,
+                ColumnType::Time,
+                micros(PG_EPOCH, -1),
+                Datum::Int(PG_EPOCH - 1),
+            ),
+            (
+                ColumnType::Time,
                 micros(1_705_314_600, 500_000),
                 Datum::Int(1_705_314_600),
             ),
-            (Kind::Time, micros(-1, 500_000), Datum::Int(-1)),
+            (ColumnType::Time, micros(-1, 500_000), Datum::Int(-1)),
         ];
         for (kind, bytes, datum) in cases {
-            assert_eq!(kind.read_binary(&bytes), Ok(datum), "{kind} {bytes:?}");
+            assert_eq!(read_binary(kind, &bytes), Ok(datum), "{kind} {bytes:?}");
         }
     }
 
     #[test]
     fn binary_value_errors() {
-        let cents = Kind::Numeric { scale: 2 };
-        let whole = Kind::Numeric { scale: 0 };
+        let cents = ColumnType::Numeric { scale: 2 };
+        let whole = ColumnType::Numeric { scale: 0 };
         let mut short = numeric_bytes(0, NUMERIC_POS, &[1, 2]);
         short.pop();
         let cases = [
-            (Kind::Int, vec![0; 3]),
-            (Kind::Int, vec![]),
-            (Kind::Int, vec![0; 9]),
+            (ColumnType::Int, vec![0; 3]),
+            (ColumnType::Int, vec![]),
+            (ColumnType::Int, vec![0; 9]),
             (cents, numeric_bytes(0, NUMERIC_POS, &[1, 2340])),
             (cents, numeric_bytes(-2, NUMERIC_POS, &[1])),
             (cents, numeric_bytes(0, 0xc000, &[])),
@@ -580,22 +536,22 @@ mod tests {
                 whole,
                 numeric_bytes(4, NUMERIC_POS, &[922, 3372, 368, 5477, 5808]),
             ),
-            (Kind::Bool, vec![2]),
-            (Kind::Bool, vec![]),
-            (Kind::Text, vec![0xff]),
-            (Kind::Time, i64::MAX.to_be_bytes().to_vec()),
-            (Kind::Time, i64::MIN.to_be_bytes().to_vec()),
-            (Kind::Time, vec![0; 4]),
+            (ColumnType::Bool, vec![2]),
+            (ColumnType::Bool, vec![]),
+            (ColumnType::Text, vec![0xff]),
+            (ColumnType::Time, i64::MAX.to_be_bytes().to_vec()),
+            (ColumnType::Time, i64::MIN.to_be_bytes().to_vec()),
+            (ColumnType::Time, vec![0; 4]),
         ];
         for (kind, bytes) in cases {
             assert_eq!(
-                kind.read_binary(&bytes),
+                read_binary(kind, &bytes),
                 Err(ValueError::binary(kind, &bytes)),
                 "{kind} {bytes:?}"
             );
         }
         assert_eq!(
-            ValueError::binary(Kind::Int, &[1, 0xab]).to_string(),
+            ValueError::binary(ColumnType::Int, &[1, 0xab]).to_string(),
             r#"can't read "\\x01ab" as an integer"#
         );
     }
@@ -603,15 +559,15 @@ mod tests {
     #[test]
     fn error_display() {
         let cases = [
-            (Kind::Int, "x", r#"can't read "x" as an integer"#),
+            (ColumnType::Int, "x", r#"can't read "x" as an integer"#),
             (
-                Kind::Numeric { scale: 2 },
+                ColumnType::Numeric { scale: 2 },
                 "x",
                 r#"can't read "x" as a numeric of scale 2"#,
             ),
-            (Kind::Bool, "x", r#"can't read "x" as a boolean"#),
-            (Kind::Text, "x", r#"can't read "x" as text"#),
-            (Kind::Time, "x", r#"can't read "x" as a timestamptz"#),
+            (ColumnType::Bool, "x", r#"can't read "x" as a boolean"#),
+            (ColumnType::Text, "x", r#"can't read "x" as text"#),
+            (ColumnType::Time, "x", r#"can't read "x" as a timestamptz"#),
         ];
         for (kind, text, msg) in cases {
             assert_eq!(ValueError::new(kind, text).to_string(), msg);

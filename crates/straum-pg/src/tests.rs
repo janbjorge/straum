@@ -26,7 +26,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Pg, read_wal};
 use crate::stream::Stream;
-use crate::value::Kind;
+use crate::value::read;
 use crate::wire::Conn;
 
 const PASSWORD: &str = "straum";
@@ -1307,17 +1307,17 @@ fn binary_copies_read_as_text_does() {
     let pg = postgres();
     let mut conn = Conn::connect(&pg.dsn, false).unwrap();
     let kinds = [
-        Kind::Int,
-        Kind::Int,
-        Kind::Int,
-        Kind::Numeric { scale: 2 },
-        Kind::Numeric { scale: 0 },
-        Kind::Numeric { scale: 4 },
-        Kind::Bool,
-        Kind::Text,
-        Kind::Text,
-        Kind::Text,
-        Kind::Time,
+        ColumnType::Int,
+        ColumnType::Int,
+        ColumnType::Int,
+        ColumnType::Numeric { scale: 2 },
+        ColumnType::Numeric { scale: 0 },
+        ColumnType::Numeric { scale: 4 },
+        ColumnType::Bool,
+        ColumnType::Text,
+        ColumnType::Text,
+        ColumnType::Text,
+        ColumnType::Time,
     ];
     conn.execute(
         "CREATE TABLE every (a int2, b int4, c int8, d numeric(10, 2), e numeric(18, 0),
@@ -1338,7 +1338,7 @@ fn binary_copies_read_as_text_does() {
     conn.query(&format!("SELECT {columns} FROM every"), |fields| {
         let row = kinds.iter().zip(fields).map(|(kind, field)| {
             field.map_or(Ok(Datum::Null), |text| {
-                kind.read(text).map_err(Error::Value)
+                read(*kind, text).map_err(Error::Value)
             })
         });
         texts.push(row.collect::<Result<Vec<_>, _>>()?);
@@ -1660,7 +1660,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
     reply.extend(after);
     let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
     let mut rows = Vec::new();
-    crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |batch| {
+    crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |batch| {
         rows.extend(batch.chunks(2).map(<[Datum]>::to_vec));
         Ok(())
     })?;
@@ -1715,7 +1715,7 @@ fn copies_hand_over_bounded_batches() {
     let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
     let mut batches = Vec::new();
     let mut next = 0;
-    crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |batch| {
+    crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |batch| {
         batches.push(batch.len() / 2);
         for row in batch.chunks(2) {
             assert_eq!(row, [Datum::Int(next), Datum::Null]);
@@ -1730,7 +1730,7 @@ fn copies_hand_over_bounded_batches() {
     // A failed batch stops the copy, and its error is the one returned.
     let mut conn = connect(vec![now(signed_in()), now(reply)], false).unwrap();
     let mut calls = 0;
-    let err = crate::load::copy(&mut conn, "COPY", &[Kind::Int; 2], |_| {
+    let err = crate::load::copy(&mut conn, "COPY", &[ColumnType::Int; 2], |_| {
         calls += 1;
         Err(Error::Protocol("a row Straum refused".into()))
     })

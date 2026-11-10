@@ -79,7 +79,7 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::Kind;
+    use straum_domain::ColumnType;
 
     #[test]
     fn display() {
@@ -101,7 +101,7 @@ mod tests {
                 "pgoutput message ends early",
             ),
             (
-                Error::from(Kind::Bool.read("x").unwrap_err()),
+                Error::from(crate::value::read(ColumnType::Bool, "x").unwrap_err()),
                 r#"can't read "x" as a boolean"#,
             ),
             (

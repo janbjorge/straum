@@ -10,7 +10,8 @@ use straum_domain::{Datum, Ident};
 use crate::catalog::Table;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, Tuple};
-use crate::value::Kind;
+use crate::value::{read, type_of};
+use straum_domain::ColumnType;
 
 /// Turns pgoutput messages into commits of spec rows.
 pub(crate) struct Decoder {
@@ -20,7 +21,7 @@ pub(crate) struct Decoder {
     relations: HashMap<u32, Vec<Mapping>>,
     /// Each spec table's kinds as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
-    kinds: HashMap<Ident, Vec<Kind>>,
+    kinds: HashMap<Ident, Vec<ColumnType>>,
     changes: Vec<Change>,
     in_transaction: bool,
 }
@@ -29,9 +30,9 @@ pub(crate) struct Decoder {
 struct Mapping {
     table: Ident,
     positions: Vec<usize>,
-    kinds: Vec<Kind>,
+    kinds: Vec<ColumnType>,
     key: usize,
-    key_kind: Kind,
+    key_kind: ColumnType,
     width: usize,
 }
 
@@ -157,14 +158,14 @@ impl Decoder {
                 let i = position(column)?;
                 let c = &relation.columns[i];
                 positions.push(i);
-                kinds.push(Kind::of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
+                kinds.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
             }
             let key = position(&table.key)?;
             let key_kind = match table.columns.iter().position(|c| *c == table.key) {
                 Some(i) => kinds[i],
                 None => {
                     let c = &relation.columns[key];
-                    Kind::of(c.type_oid, c.typmod).unwrap_or(Kind::Text)
+                    type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)
                 }
             };
             let known = self.kinds.insert(table.name.clone(), kinds.clone());
@@ -216,7 +217,7 @@ impl Mapping {
         for (i, (&position, kind)) in self.positions.iter().zip(&self.kinds).enumerate() {
             let datum = match (tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
-                (Field::Text(text), _) => kind.read(text)?,
+                (Field::Text(text), _) => read(*kind, text)?,
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };
@@ -228,7 +229,7 @@ impl Mapping {
     fn key(&self, tuple: &Tuple) -> Result<Datum, Error> {
         self.fits(tuple)?;
         match tuple[self.key] {
-            Field::Text(text) => Ok(self.key_kind.read(text)?),
+            Field::Text(text) => Ok(read(self.key_kind, text)?),
             Field::Null | Field::Unchanged => {
                 Err(Error::Protocol("an old key without a value".into()))
             }
@@ -266,24 +267,31 @@ mod tests {
     /// The spec reads `public.zones` twice: as dim `zones`, keyed on `id`,
     /// and as fact `visits`, keyed on `ref`.
     fn decoder() -> Decoder {
-        let table = |name: &str, columns: &[&str], kinds: Vec<Kind>, key: &str, key_kind| Table {
-            name: id(name),
-            schema: id("public"),
-            table: id("zones"),
-            columns: columns.iter().map(|c| id(c)).collect(),
-            kinds,
-            key: id(key),
-            key_kind,
-        };
+        let table =
+            |name: &str, columns: &[&str], kinds: Vec<ColumnType>, key: &str, key_kind| Table {
+                name: id(name),
+                schema: id("public"),
+                table: id("zones"),
+                columns: columns.iter().map(|c| id(c)).collect(),
+                kinds,
+                key: id(key),
+                key_kind,
+            };
         Decoder::new(vec![
             table(
                 "zones",
                 &["id", "name"],
-                vec![Kind::Int, Kind::Text],
+                vec![ColumnType::Int, ColumnType::Text],
                 "id",
-                Kind::Int,
+                ColumnType::Int,
             ),
-            table("visits", &["name"], vec![Kind::Text], "ref", Kind::Text),
+            table(
+                "visits",
+                &["name"],
+                vec![ColumnType::Text],
+                "ref",
+                ColumnType::Text,
+            ),
         ])
     }
 
