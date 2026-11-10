@@ -15,20 +15,15 @@ bench/bench.py
 
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
-month into `bench/data/`, which git ignores, and turns the Parquet file
-into CSV. Then it builds Straum, starts a throwaway `postgres:18` with
-testcontainers, loads the tables, runs the SQL `straum plan` prints and
-starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
-tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
-the first answer that differs. A run takes under half a minute once the
-data is there.
+month into `bench/data/`, which git ignores. Then it builds Straum,
+starts a throwaway `postgres:18`, loads the tables, runs the SQL `straum
+plan` prints and starts `straum run`. Each ask goes to PostgreSQL as SQL
+over the raw tables and to Straum as an [ask](asks.md) over HTTP, and a
+run stops at the first answer that differs. A run takes under half a
+minute once the data is there.
 
-```sh
-bench/transaction.py
-```
-
-The same setup, then one transaction of 1,000 to 1,000,000 changed rows
-while a client asks Straum back to back: what a transaction costs Straum,
+`bench/transaction.py` does the same setup, then one transaction of
+1,000 to 1,000,000 changed rows while a client asks Straum back to back,
 under [Transactions](#transactions).
 
 ## The view
@@ -92,7 +87,8 @@ SELECT date_trunc('hour', pickup_at), count(*)
 ```
 
 Straum gets the same questions over the view, with every value a
-parameter:
+parameter. Where the SQL has no range, the ask's is 2000 to 2030, which
+holds every trip:
 
 ```sql
 -- Trips
@@ -122,14 +118,6 @@ SELECT bucket, trips FROM trips
  GROUP BY bucket
 ```
 
-An ask always names its range. Where the SQL has none, the range is
-2000 to 2030, which holds every trip. Trips by pickup borough goes as:
-
-```json
-{"query": "SELECT pickup.borough, trips FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY pickup.borough",
- "parameters": ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]}
-```
-
 ## Results
 
 One run on an Apple M2 Pro with 16 GB, on 2026-11-10: PostgreSQL 18.6 in
@@ -151,20 +139,14 @@ Straum was ready 1.4 s after it started and held 40 MiB. In PostgreSQL
 the table and its indexes take 363 MiB. A run right before stayed
 within 7% of these times.
 
-How to read the table:
-
-- Both sides answer the same client over their own protocol, with a
-  warm cache. PostgreSQL runs with its defaults, two parallel workers
-  per query, except `shared_buffers`: 2 GB, so the table stays in its
-  cache. `yellow_trips` has an index on `pickup_at`, which the week and
-  day asks use. More parallel workers would shorten its scans of the
-  whole table.
+- PostgreSQL runs with its defaults, two parallel workers per query,
+  except `shared_buffers`: 2 GB, so the table stays in its cache.
+  `yellow_trips` has an index on `pickup_at`, which the week and day
+  asks use, and the gap is smallest there, where PostgreSQL reads least.
 - PostgreSQL's time follows the rows it reads: every trip for the first
   four asks, a week's or a day's for the last two. Straum's hardly
   changes from ask to ask: most of it is the HTTP round trip, reading
-  the query and JSON.
-- The gap is smallest where PostgreSQL reads least: one day, through
-  the index.
+  the query and writing JSON.
 - Straum answers only what the view keeps: these keys, on hour edges.
   PostgreSQL answers any query over the raw rows. Straum keeps its
   rollup current as trips change; a rollup table in PostgreSQL would
@@ -199,20 +181,27 @@ holds the lock for 20 ms and 29 MiB, and anything larger is cheaper as
 a [reload](how-it-works.md#applying-a-commit), which takes the rows in
 through the bulk `COPY` instead.
 
-## The whole view, end to end
+## Cells
+
+Memory follows cells, and the key decides how many cells there are.
+Measured on the taxi month under a wide key, and on a warehouse's
+tables under a narrow one.
+
+### The taxi month under a wide key
 
 ```sh
 cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It needs the data `bench/bench.py` fetches. It loads the month into
-`postgres:18` with the full view of
-`crates/straum-notation/tests/taxi.sql`, which the [spec](spec.md) page
-walks through, has Straum load and follow it, and compares asks with the
-view body in PostgreSQL after the load, after 200 streamed commits, after
-an update, and after two zones change and a trip in one of them makes
-Straum start over. One run on 2026-11-10, release build, Docker on the
-same laptop:
+It needs the data `bench/bench.py` fetches. It loads the month with
+`crates/straum-notation/tests/taxi.sql`, a wider view than the
+benchmark's: 15 minute buckets with day and week widths, keyed by payment
+type, vendor, pickup zone, dropoff zone and the pickup zone's borough,
+zone and service zone, with two filtered counts. It has Straum load and
+follow it, and compares asks with the view body in PostgreSQL after the
+load, after 200 streamed commits, after an update, and after two zones
+change and a trip in one of them makes Straum start over. One run on
+2026-11-10, release build, Docker on the same laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
 | --- | ---: | ---: | ---: |
@@ -224,13 +213,8 @@ same laptop:
 
 The ask over every key reads every 15 minute cell and answers nearly as
 many groups, so it is only 2.6 to 2.8 times faster than the view in
-PostgreSQL. The test's reference for the ask by borough groups that
-whole view again, which nobody would write, so the table leaves its time
-out; the asks above time a query by borough.
-
-taxi.sql keys trips by payment type, vendor, pickup zone and dropoff
-zone. Cells per width, each a `count(DISTINCT ...)` of that key and the
-bucket over the month:
+PostgreSQL. Cells per width, each a `count(DISTINCT ...)` of that key
+and the bucket over the month:
 
 | Rollup | Cells | Trips a cell |
 | --- | ---: | ---: |
@@ -243,10 +227,9 @@ bucket over the month:
 
 Pickup and dropoff zone together are nearly unique per trip, so this
 spec collapses little at 15 minutes. Without the dropoff zone it
-collapses 5.2 times. Memory follows cells, so the key is the lever on
-memory.
+collapses 5.2 times.
 
-## Cells on a warehouse's tables
+### A warehouse's tables
 
 The same lever on a warehouse shape: tasks keyed by organization,
 whether the task is live, its group's category and its storage

@@ -1,169 +1,138 @@
 # Writing a spec
 
 A spec is a file of `CREATE VIEW` statements, one per fact, in a small
-subset of PostgreSQL's syntax. Straum keeps one rollup per view and
-builds it itself. Nothing in the spec runs in PostgreSQL: Straum never
-creates the view, and to load it copies only the columns the view reads.
-Anything outside the subset is an error that names the construct.
+subset of PostgreSQL's syntax. Nothing in it runs in PostgreSQL: Straum
+never creates the view, and to load it copies only the columns the view
+reads. Anything outside the subset is an error that names the construct.
 
-This spec, which the [benchmark](benchmark.md#the-whole-view-end-to-end)
-follows end to end, uses most of the subset; a [second
-example](#keys-of-several-columns-and-null-ness-keys) below uses the
-rest:
+This is the [quick start](quick-start.md) view with everything the subset
+has added to it: a wider bucket, a null-ness key and two filtered
+measures.
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 day, 7 days') AS
-SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
-       f.payment_type,
-       f.vendor_id,
-       f.pu_location_id,
-       f.do_location_id,
-       pickup.borough,
-       pickup.zone,
-       pickup.service_zone,
-       count(*) AS trips,
-       sum(f.fare_amount) AS fare,
-       max(f.tip_amount) AS tip_max,
-       avg(f.trip_distance) AS distance,
-       count(*) FILTER (WHERE f.payment_type = 1) AS card,
-       count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
-FROM public.yellow_trips f
-LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+CREATE VIEW orders WITH (buckets = '1 day') AS
+SELECT date_bin('1 hour', o.placed_at, timestamptz 'epoch') AS hour,
+       o.status,
+       o.customer_id,
+       customer.country,
+       (o.shipped_at IS NOT NULL) AS shipped,
+       count(*) AS orders,
+       sum(o.amount) AS revenue,
+       avg(o.amount) AS avg_amount,
+       count(*) FILTER (WHERE o.status = 'paid') AS paid,
+       count(*) FILTER (WHERE o.shipped_at IS NOT NULL) AS shipped_orders
+FROM public.orders o
+LEFT JOIN public.customers customer ON customer.id = o.customer_id
+GROUP BY 1, 2, 3, 4, 5;
 ```
 
-## View and fact table
+Straum keeps one cell per distinct hour, status, customer, country and
+shipped-ness, and each cell holds what the measures need: a count, a
+sum, and the filtered counts. An ask merges those cells and never
+reads a row.
 
-The view's name, `trips`, is the fact's name, which asks read `FROM`.
-`FROM public.yellow_trips f` is the fact table. It needs no primary key:
-Straum takes the old row of an update or delete from `REPLICA IDENTITY
-FULL`, which the [setup SQL](postgresql.md) gives every fact table.
+## The view and its fact table
 
-`WITH (buckets = ...)` is the only view option, and optional: wider
-bucket widths, under [Time](#time).
+The view's name, `orders`, is what asks read `FROM`. `FROM public.orders
+o` is the fact table. It needs no primary key: Straum takes the old row
+of an update or delete from `REPLICA IDENTITY FULL`, which the [setup
+SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
 
 Every column is qualified with its table's alias. Identifiers are
-unquoted: lowercase letters, digits and `_`, at most 63 bytes.
+unquoted: lowercase letters, digits and `_`, at most 63 bytes. `GROUP
+BY` names exactly the selected keys, by position or by expression.
 
 ## Time
 
 Every view has exactly one bucket:
 
 ```sql
-date_bin('15 minutes', f.pickup_at, timestamptz 'epoch')
+date_bin('1 hour', o.placed_at, timestamptz 'epoch')
 ```
 
-The column is a `timestamptz` or a `timestamp`. The width is `<n>
-seconds`, `minutes`, `hours` or `days`, at most `1 day`, and divides a
-day: `15 minutes` does, `7 minutes` doesn't. The origin is `'epoch'` of
-the column's type, so buckets start on midnight: `timestamptz 'epoch'`
-for a `timestamptz`, `timestamp 'epoch'` for a `timestamp`. The alias is
-free; asks call it `bucket`, so no column, ref or measure may be named
-`bucket`.
+- The column is a `timestamptz` or a `timestamp`. The origin is `'epoch'`
+  of the column's type, so buckets start on midnight. Straum refuses an
+  origin of the other type, since PostgreSQL would then cast the column
+  through the session zone and the view would not mean what Straum
+  computes.
+- The width is `<n> seconds`, `minutes`, `hours` or `days`, at most
+  `1 day`, and divides a day: `15 minutes` does, `7 minutes` doesn't.
+- The alias is free; asks call it `bucket`, so nothing else in the view
+  may be named `bucket`.
+- A `timestamp` has no zone, and Straum never gives it one. Its buckets
+  and ask bounds are wall clock, and answers print them with a `Z` that
+  means nothing.
+- A row whose time is null, `infinity` or `-infinity` is kept but never
+  answered: it falls in no bucket an ask can name. Any other value Straum
+  can't read, such as a `NaN` in a `numeric` column, stops the load or
+  the stream with the table and column named, and Straum [starts
+  over](running.md#states) until the row is fixed.
 
-A `timestamp` has no zone, and Straum never gives it one: its buckets are
-wall clock, as `date_bin` makes them in PostgreSQL. Ask bounds over such a
-view are wall clock too, and answers print its buckets with a `Z` that
-means nothing. Straum refuses a view whose origin type is not the
-column's, since PostgreSQL would cast the column through the session zone
-and the view would not mean what Straum computes.
+`WITH (buckets = '1 day')` is the only view option. It keeps wider
+buckets beside the `date_bin` width: each listed width is a whole
+multiple of the one before and starts at the epoch, so `7 days` buckets
+start on Thursdays. Answers don't change. An ask over a long range reads
+its middle from the widest buckets that fit and its ends from narrower
+ones, so it reads far fewer cells. Each width costs memory, under
+[Memory](#memory).
 
-A row whose time is null, `infinity` or `-infinity` is kept but never
-answered: it falls in no bucket an ask can name. Any other value Straum
-can't read, such as a `NaN` in a `numeric` column, stops the load or the
-stream with the table and column named, and Straum
-[starts over](running.md#states) until the row is fixed.
+## Dims: refs and attributes
 
-`buckets = '1 day, 7 days'` keeps wider widths too. Each is a whole
-multiple of the one before and starts at the epoch, so 7-day buckets start
-on Thursdays. Answers don't change. An ask over a long range reads its
-middle from the widest buckets that fit and its ends from narrower ones,
-so it reads far fewer cells; an ask grouped by `bucket` reads the
-`date_bin` width. Each width costs memory: on the taxi month, the day and
-week buckets add 719,124 cells to the 2,322,783 at 15 minutes, 31% more
-([benchmark](benchmark.md)).
-
-## By columns, refs and attributes
-
-Other fact columns, such as `f.payment_type`, are by columns.
+Other fact columns, such as `o.status`, are by columns. A join declares
+a ref:
 
 ```sql
-LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
+LEFT JOIN public.customers customer ON customer.id = o.customer_id
 ```
 
-This declares the ref `pickup`: an N:1 pointer from a fact column to the
-key of a dim table. The dim columns the view selects, `pickup.borough`,
-`pickup.zone` and `pickup.service_zone`, are the ref's attributes. As each
-trip comes in, Straum reads them from the zone row the join names, in
-PostgreSQL, and the cell is keyed by them like any by column. Straum keeps
-no zone row of its own.
+`customer` is an N:1 pointer from a fact column to the key of a dim
+table. The dim columns the view selects, here `customer.country`, are
+the ref's attributes. As each order comes in, Straum reads them from the
+customer row the join names, in PostgreSQL, and keys the cell by them
+like any by column. Straum keeps no customer row of its own.
 
-- A join must select at least one dim column, or it would do nothing.
-- The fact column joined on, `f.pu_location_id`, may be selected as a by
-  column or left out. Left out, the cells are keyed by the attribute's
-  few values instead of the column's many: on a copy of a warehouse's
-  tables, 312 thousand hour cells against 12 million
-  ([benchmark](benchmark.md#cells-on-a-warehouses-tables)).
+- The join is `LEFT` because a fact row with no dim row still counts;
+  its attributes are null.
 - Joins go from the fact to a dim only, so a spec can't fan out. The dim
-  table needs a primary key or unique index on the key columns, so a key
-  names one row.
-- Two refs can join one dim table, a pickup and a dropoff zone, each
-  reading its own attributes. A dim table is one dim however many views
-  join it, and all must join it on the same key columns, in any order.
-- The join is `LEFT` because a fact row with no dim row still counts. Its
-  attributes are null.
+  needs a primary key or unique index on exactly its key columns, so a
+  key names one row. A dim keyed by several columns joins on one
+  equality per key column, joined by `AND`:
 
-Asks group and filter by `payment_type`, `pu_location_id` and
-`pickup.borough`. The ref itself has no value: `pickup` alone is not a
-key.
+  ```sql
+  LEFT JOIN public.prices price ON price.sku = o.sku AND price.currency = o.currency
+  ```
 
-## Attributes are as of ingest
+- A join must select at least one dim column. The fact column joined on,
+  `o.customer_id`, may be selected too or left out. Left out, cells are
+  keyed by the attribute's few values instead of the column's many, and
+  there are far fewer of them. A fact column may be both selected and
+  joined on.
+- Two refs can join one dim table, each reading its own attributes. A
+  dim table is one dim however many views join it, and all must join it
+  on the same key columns.
+- The ref itself has no value: asks group and filter by
+  `customer.country`, or by `customer_id`, never by `customer`.
 
-A row's attributes are what the dim said when the row came in, and Straum
-never follows a dim: the setup publishes the fact tables only. A zone
-renamed later keeps its old trips where they were, while PostgreSQL's view
-would move them; new trips read the new name. When a trip that came in
-under the old name is updated or deleted, Straum can't find its cell and
-[starts over](running.md#states), reading every row as the dims are then.
-For dims that change often, select the fact column too and keep the
-mapping in your client, or ask PostgreSQL.
+Attributes are as of ingest. Straum never follows a dim: the setup
+publishes the fact tables only. A customer who moves from NO to SE keeps
+their old orders under NO, while PostgreSQL's view would move them; new
+orders read SE. When an order that came in under NO is updated or
+deleted, Straum can't find its cell and [starts over](running.md#states),
+reading every row as the dims are then. For dims that change often,
+select the fact column too and keep the mapping in your client.
 
-## Keys of several columns, and null-ness keys
-
-A dim's key may be several columns, and a fact column may be both grouped
-by and joined on. A nullable column may be a key by whether it is null.
-This view has both:
+## Null-ness keys
 
 ```sql
-CREATE VIEW tasks WITH (buckets = '1 day') AS
-SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
-       f.organization_id,
-       f.taskgroup_id,
-       (f.completed IS NOT NULL) AS done,
-       g.category,
-       count(*) AS tasks,
-       count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed
-FROM public.tasks f
-LEFT JOIN public.taskgroups g
-       ON g.organization_id = f.organization_id
-      AND g.taskgroup_id = f.taskgroup_id
-GROUP BY 1, 2, 3, 4, 5;
+(o.shipped_at IS NOT NULL) AS shipped
 ```
 
-- The join names one equality per key column, joined by `AND`.
-  `organization_id` is a by column and part of the ref's key at once. A
-  dim key column selected through the ref, `g.organization_id`, is the
-  fact column joined to it.
-- `(f.completed IS NOT NULL) AS done` is a null-ness key: a boolean, true
-  for the rows with a `completed` time, grouped and filtered like a
-  column under its name. `IS NULL` makes the opposite key. The column may
-  be of any type Straum reads, a time included, but not the view's time
-  column: a row with no time is never answered, so the key could never be
-  true.
-- `FILTER (WHERE f.completed IS NOT NULL)` counts through the null-ness
-  key over `completed`, which is why the view needs one: Straum keeps
-  nothing else about the column. The view body stays what PostgreSQL
-  runs, since the key's name is no column there.
+A null-ness key is a boolean, true for the rows with a `shipped_at`,
+grouped and filtered like a column under its name. `IS NULL` makes the
+opposite key. The column may be of any type Straum reads, a time
+included, but not the view's time column: a row with no time is never
+answered, so the key could never be true. The view body stays what
+PostgreSQL runs, since the key's name is no column there.
 
 ## Measures
 
@@ -172,7 +141,7 @@ GROUP BY 1, 2, 3, 4, 5;
 | `count(*)` | | an integer |
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean` or `text` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
-| `avg(c)` | the same | a decimal rounded to four places past `c`'s scale |
+| `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
 numeric values scaled by their column's scale.
@@ -180,23 +149,22 @@ numeric values scaled by their column's scale.
 `FILTER` makes a measure count only some rows:
 
 ```sql
-count(*) FILTER (WHERE f.payment_type = 1) AS card
+count(*) FILTER (WHERE o.status = 'paid') AS paid
+count(*) FILTER (WHERE o.shipped_at IS NOT NULL) AS shipped_orders
 ```
 
 The condition is `=` or `IN (...)` on by columns or attributes the view
-selects, or `IS NULL` or `IS NOT NULL` on a column with a [null-ness
-key](#keys-of-several-columns-and-null-ness-keys), joined by `AND`.
-Literals are integers, `'text'`, `true` or `false`, and must fit their
-column.
+selects, or `IS NULL` or `IS NOT NULL` on a column with a null-ness key,
+joined by `AND`. The second filter is why the view needs the `shipped`
+key: Straum keeps nothing else about `shipped_at`. Literals are
+integers, `'text'`, `true` or `false`, and must fit their column.
 
-By columns, dim keys and attributes are an integer type, `numeric(p, s)`,
-`boolean` or `text`. A ref's columns and its dim's key columns must be of
-the same kinds, column for column. The column of a null-ness key may be
-any type Straum reads.
+## Types
 
-`GROUP BY` names exactly the selected columns, attributes, null-ness keys
-and the bucket, by position or by expression, so the view groups the way
-the rollup does.
+By columns, dim keys and attributes are an integer type, `numeric(p,
+s)`, `boolean` or `text`. A ref's columns and its dim's key columns must
+be of the same kinds, column for column. The column of a null-ness key
+may be any type Straum reads.
 
 ## What a spec can't say
 
@@ -211,29 +179,30 @@ or `GROUPING SETS`. Ask PostgreSQL for those.
 problem between declarations at once:
 
 ```text
-straum: orders.sql: line 2: WHERE, filter measures instead, is not in straum SQL, the PostgreSQL subset made only for straum
+straum: orders.sql: line 5: WHERE, filter measures instead, is not in straum SQL, the PostgreSQL subset made only for straum
 ```
 
 ```text
-straum: orders.sql: orders: orders declared twice
-orders.sql: fact refunds: grain of 420s does not divide a day
+straum: orders.sql: orders declared twice
+orders.sql: fact orders: grain of 420s does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a
-wrong type, when it starts.
+wrong type, [when it starts](postgresql.md#what-straum-checks-at-start).
 
 ## Memory
 
 Memory follows cells, and only cells: Straum holds no dim rows. Each
-bucket width keeps one cell per distinct combination of by keys,
-attributes and bucket, so per width:
+bucket width keeps one cell per distinct combination of keys and bucket,
+so per width:
 
 ```text
 cells <= min(rows, distinct key combinations x buckets)
 ```
 
-Keys that are nearly unique per row keep nearly a cell per row. In the
-benchmark, pickup and dropoff zone at 15 minutes keep 2,322,783 cells for
-2,964,624 trips; without the dropoff zone, 568,612. Fewer key columns or
-wider buckets collapse more rows into each cell. `count(DISTINCT c)` adds
-an entry per distinct value in each cell.
+Keys that are nearly unique per row keep nearly a cell per row; fewer
+key columns or wider buckets collapse more rows into each cell, and
+selecting a dim's attribute instead of the fact column joined on
+collapses most. `count(DISTINCT c)` adds an entry per distinct value in
+each cell. The [benchmark](benchmark.md#cells) measures the lever on
+real tables.

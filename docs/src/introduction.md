@@ -15,25 +15,12 @@ PostgreSQL's replication stream.
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
 
-## The model
-
-A spec declares facts, one view per fact table, such as `orders`. Each
-fact row lands in a cell for its time bucket and its combination of by
-columns, and the cell keeps what the measures need, such as a count and a
-sum. Dims are tables a fact joins N:1, such as `customers`. Straum reads
-the dim columns a view selects from PostgreSQL as each fact row comes in,
-keys the cell by them too, and keeps no dim row of its own.
-
-An ask is a `SELECT` over one view: its measures, groups, filters and
-a time range, with every value passed as a parameter. Straum merges the
-cells in the range. It never reads rows and never queries
-PostgreSQL, so an ask costs in proportion to the cells it reads.
-
 Straum maintains `count`, `count(DISTINCT)`, `sum`, `min`, `max` and
-`avg`, grouped by fact columns, dim columns and UTC time buckets. A
-transaction shows up whole, as soon as Straum applies its commit. It needs
-PostgreSQL 17 or newer as shipped, with no extension and no superuser, so
-managed services work.
+`avg`, grouped by columns of the fact table, columns of the tables it
+joins N:1, and UTC time buckets. An ask is a `SELECT` over one view with
+every value as a parameter; it costs in proportion to the cells it reads
+and never touches PostgreSQL. Straum needs PostgreSQL 17 or newer as
+shipped, with no extension and no superuser, so managed services work.
 
 ## What it is not
 

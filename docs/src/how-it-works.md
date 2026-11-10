@@ -11,11 +11,12 @@ the load and the stream, and none is applied twice.
 1. Straum opens a replication connection and creates a temporary logical
    slot with `pgoutput`. PostgreSQL exports a snapshot at the slot's
    consistent point, L.
-2. In that snapshot, Straum checks the catalog against the spec and loads
-   every fact. Each loads with one binary `COPY` of a `SELECT` that joins
-   the fact to its dims and reads only the columns the spec names, so a
-   row comes with its attributes. Straum groups the rows into cells as
-   they come, a batch at a time, so it never holds the table.
+2. In that snapshot, Straum [checks the
+   catalog](postgresql.md#what-straum-checks-at-start) against the spec
+   and loads every fact. Each loads with one binary `COPY` of a `SELECT`
+   that joins the fact to its dims and reads only the columns the spec
+   names. Straum groups the rows into cells as they come, a batch at a
+   time, so it never holds the table.
 3. Straum ends the snapshot, swaps the loaded store in and turns ready.
 4. It starts the stream at L. A stream thread reads it, answers the
    server's keepalives and confirms what the writer has applied, so the
@@ -27,18 +28,16 @@ store before it loads again, so the two never take memory at once.
 
 ## Cells
 
-A cell holds its row count and what each measure needs:
+A cell is keyed by its bucket, by columns, null-ness keys and
+attributes, and holds its row count and what each measure needs:
 
 - `sum` and `avg` share the column's sum and count of non-null values.
 - `min` and `max` keep a count per value, so deleting the smallest value
   reveals the next one.
 - `count(DISTINCT c)` keeps a count per value.
 
-A null-ness key is kept as the boolean it is: whether the column was
-null. A ref's attribute is kept as its value, read from the dim row as
-the fact row came in. Each bucket width keeps cells of its own. A fact
-row with no time goes to a bucket no ask reads. Nothing else is kept:
-Straum holds no dim row.
+Each bucket width keeps cells of its own. A fact row with no time goes
+to a bucket no ask reads.
 
 ## Applying a commit
 
@@ -48,15 +47,15 @@ on a plain second connection, with the keys of every changed row, as the
 dims are at that moment. Then it applies the transaction whole:
 
 - An insert into a fact adds the row to its cell.
-- An update takes the old row out of its cell and adds the new one. Facts
-  need `REPLICA IDENTITY FULL` for this: without the old row, Straum can't
-  know which cell to take it from.
+- An update takes the old row out of its cell and adds the new one. This
+  is why facts need `REPLICA IDENTITY FULL`: without the old row, Straum
+  can't know which cell to take it from.
 - A delete takes the old row out. A cell goes with its last row.
 - A truncate empties the rollup.
 
 Dims are not in the stream. A change to a dim row shows in the fact rows
-that come after it and leaves the cells before it as they were; see
-[Attributes are as of ingest](spec.md#attributes-are-as-of-ingest).
+that come after it and leaves the cells before it as they were, as
+[Writing a spec](spec.md#dims-refs-and-attributes) describes.
 
 A change Straum can't apply makes it [start over](running.md#states) from
 a new slot: an update without its old row, a row that doesn't fit its
@@ -66,11 +65,12 @@ its cell is no longer where the dim says.
 
 A transaction that changes more than `--max-transaction-rows` rows of the
 spec's facts makes it start over too, on purpose. Straum holds a
-transaction until its commit and applies it whole under the write lock,
-so a bulk update of millions of rows would hold the memory for them and
-block asks for as long as they take. The new slot's snapshot is after the
-big commit, so its rows come in through the bulk `COPY` load instead, and
-the failure names the transaction's LSN and the cap.
+transaction's rows until its commit and applies them under the write
+lock, so a bulk update of millions of rows would hold the memory for them
+and block asks for as long as it takes. The new slot's snapshot is after
+the big commit, so its rows come in through the bulk `COPY` load
+instead. The [benchmark](benchmark.md#transactions) measures where the
+default comes from.
 
 ## Answering an ask
 
@@ -81,10 +81,10 @@ the failure names the transaction's LSN and the cap.
    a filter value of another type than its column.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
-3. Every key the ask names is part of the cell key: a column, a null-ness
-   key, an attribute or the bucket. Nothing is looked up.
+3. Every key the ask names is part of the cell key, so nothing is looked
+   up.
 4. It adds each cell to its group, and to each measure whose filter holds.
-   Filters name only parts of the rollup key, so a cell counts whole or
+   Filters name only parts of the cell key, so a cell counts whole or
    not at all.
 
 One writer applies the stream while asks read. They share the store

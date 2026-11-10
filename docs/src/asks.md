@@ -1,8 +1,7 @@
 # Asking
 
 An ask is a JSON object sent to `POST /ask`: a query and its parameters.
-The examples use the spec and data from the
-[quick start](quick-start.md), after step 7.
+The examples use the [quick start](quick-start.md) after step 7.
 
 ```sh
 curl --json '{
@@ -13,14 +12,10 @@ curl --json '{
 
 | Field | Required | Value |
 | --- | --- | --- |
-| `query` | yes | One `SELECT` over a view, in Straum SQL. |
+| `query` | yes | One `SELECT` over a view, in the subset below. |
 | `parameters` | no | The values for `$1`, `$2` and on, in order. |
 
 ## The query
-
-The query is Straum SQL, the same PostgreSQL subset made only for Straum
-that [specs](spec.md) are written in. Straum never runs it, and anything
-outside the subset is an error that names the construct.
 
 ```sql
 SELECT <keys>, <measures>
@@ -30,38 +25,35 @@ GROUP BY <keys>
 ```
 
 - `FROM` names one view, with no schema, alias or join.
-- A key is a by column (`status`), a null-ness key by its name, a ref's
-  attribute the view selects (`customer.country`), or `bucket`, the
+- A key is a by column (`status`), a null-ness key by its name
+  (`shipped`), a ref's attribute (`customer.country`), or `bucket`, the
   view's time bucket. A ref has no value of its own: ask for the fact
-  column it joins on (`customer_id`) or its attributes. A spec can't name
-  anything else `bucket`.
+  column it joins on (`customer_id`) or its attributes.
 - Keys come first in `SELECT`, then measures, by name, each once, since
   they name the fields of each answer row. `GROUP BY` names exactly the
   selected keys. Without keys there is no `GROUP BY`.
 - `WHERE` joins conditions with `AND`. A condition is `key = $n` or
-  `key IN ($n, $m)`, and every one must hold. `bucket >= $n` and
-  `bucket < $m` are required, once each.
+  `key IN ($n, $m)`. `bucket >= $n` and `bucket < $m` are required, once
+  each.
 - No `ORDER BY`, `LIMIT`, `HAVING`, `OR`, `NOT`, expressions or aliases.
+  Anything outside the subset is an error that names the construct.
 
 ## Parameters
 
 Every value is a parameter: a value written into the query, such as
-`status = 'paid'`, is an error. Values never become query text, so a
-value can't change what the query says.
+`status = 'paid'`, is an error, so a value can never change what the
+query says. Parameters are integers, strings or booleans, `$1` first.
+Each must be used, and one can be used more than once.
 
-Parameters are integers, strings or booleans, `$1` first. Each must be
-used, and one can be used more than once.
+A parameter must have its column's type, with no conversion: an integer
+for an integer column or a `numeric(p, 0)`, a string for text, a boolean
+for a boolean or a null-ness key. `customer_id = $1` with `"7"` is an
+error, not an answer with no rows. A `numeric` with a scale above 0 takes
+no parameter at all: at scale 2, `1` would read as 0.01.
 
-A condition's parameters must have the column's type, with no
-conversion: an integer for an integer column or a `numeric(p, 0)`, a
-string for text, a boolean for a boolean or a null-ness key. `status = $1`
-with `1`, or
-`customer_id = $1` with `"7"`, is an error, not an answer with no rows. A
-`numeric` with a scale above 0 takes no parameter at all: at scale 2,
-`1` would read as 0.01. The `bucket` bounds are
-RFC 3339 times, such as `"2026-01-01T00:00:00Z"`, or Unix seconds. Both
-are whole seconds on an edge of the view's `date_bin` buckets: Straum
-never answers for part of a bucket.
+The `bucket` bounds are RFC 3339 times, such as `"2026-01-01T00:00:00Z"`,
+or Unix seconds. Both must fall on an edge of the view's `date_bin`
+buckets: Straum never answers for part of a bucket.
 
 ## The answer
 
@@ -78,28 +70,26 @@ never answers for part of a bucket.
 
 - `as_of`: every commit made before this time, by Straum's clock, is in
   the answer. It is the last time Straum knew it had applied all the WAL
-  PostgreSQL had written, so it keeps moving on a quiet database. Straum
-  applies a transaction whole, so an answer never sees half of one.
+  PostgreSQL had written, so it keeps moving on a quiet database. A
+  transaction is applied whole, so an answer never sees half of one.
+  Straum has no "read your writes" barrier, so `as_of` is how a client
+  judges whether an answer is fresh enough.
 - `rows`: one object per group, keyed by the names in `SELECT`, sorted by
-  key, nulls first.
+  key, nulls first. An ask without keys answers one row even when
+  nothing matches, as SQL does without `GROUP BY`: counts are 0, the
+  rest null.
 
 Buckets are their start, in UTC. Counts are integers. `sum`, `min` and
 `max` are exact decimals in their column's scale: `120.00` for a
 `numeric(10, 2)`. `avg` is rounded half to even at four places past that
 scale, with trailing zeros dropped: `69.995` for 139.99 over 2. A row
 whose dim row did not exist when it came in has null attributes, as a
-`LEFT JOIN` gives. An ask without keys answers one row even when nothing
-matches, as SQL does without `GROUP BY`: counts are 0, the rest null.
+`LEFT JOIN` gives.
 
-The `Straum-LSN` header names the last commit the answer reflects, for
-debugging. Straum has no "read your writes" barrier yet, so `as_of` is
-how a client judges whether an answer is fresh enough.
-
-The `Server-Timing` header says where an answer's time went in Straum, in
-milliseconds: `parse` reads the ask, `answer` reads the cells, `json`
-writes the rows, and `total` runs from the request to the reply. What a
-client measures beyond `total` is the network and the client itself.
-Errors carry no timing.
+Two headers help debugging. `Straum-LSN` names the last commit the
+answer reflects. `Server-Timing` says where the time went in Straum, in
+milliseconds: `parse`, `answer`, `json` and `total`; what a client
+measures beyond `total` is the network and the client itself.
 
 ## Errors
 

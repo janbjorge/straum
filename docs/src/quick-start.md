@@ -1,7 +1,8 @@
 # Quick start
 
 Straum against PostgreSQL 18 in Docker, with two small tables. You need
-Docker, `curl` and a Rust toolchain ([rustup](https://rustup.rs)).
+Docker, `curl` and a Rust toolchain ([rustup](https://rustup.rs)). Every
+other page uses these tables and this spec.
 
 ## 1. Install straum
 
@@ -30,16 +31,17 @@ CREATE TABLE customers (id int PRIMARY KEY, country text);
 CREATE TABLE orders (
   id bigint PRIMARY KEY,
   placed_at timestamptz NOT NULL,
+  shipped_at timestamptz,
   status text NOT NULL,
   customer_id int REFERENCES customers,
   amount numeric(10, 2) NOT NULL
 );
 INSERT INTO customers VALUES (1, 'NO'), (2, 'SE'), (3, 'NO');
 INSERT INTO orders VALUES
-  (1, '2026-01-01 09:12+00', 'paid', 1, 120.00),
-  (2, '2026-01-01 09:40+00', 'paid', 2, 80.50),
-  (3, '2026-01-01 10:05+00', 'refunded', 3, 42.00),
-  (4, '2026-01-01 10:30+00', 'paid', 3, 19.99);
+  (1, '2026-01-01 09:12+00', '2026-01-02 08:00+00', 'paid', 1, 120.00),
+  (2, '2026-01-01 09:40+00', NULL, 'paid', 2, 80.50),
+  (3, '2026-01-01 10:05+00', NULL, 'refunded', 3, 42.00),
+  (4, '2026-01-01 10:30+00', NULL, 'paid', 3, 19.99);
 SQL
 ```
 
@@ -61,9 +63,9 @@ LEFT JOIN public.customers customer ON customer.id = o.customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-PostgreSQL would give the same rows for this view. Straum keeps one cell
-per hour, status, customer and country, reading `customer.country` from
-`customers` as each order comes in.
+PostgreSQL would give the same rows for this view. Straum never creates
+it; it keeps one cell per hour, status, customer and country in memory.
+[Writing a spec](spec.md) explains each line.
 
 ## 4. Set up PostgreSQL
 
@@ -114,8 +116,8 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer. `avg` is rounded to
-four places past the column's scale.
+Every commit made before `as_of` is in the answer. [Asking](asks.md)
+explains the query, the parameters and the answer.
 
 ## 7. Change the data
 
@@ -123,7 +125,7 @@ Insert an order, refund another, and ask for paid orders per hour:
 
 ```sh
 docker exec straum-pg psql -U postgres -c "
-  INSERT INTO orders VALUES (5, '2026-01-01 11:00+00', 'paid', 2, 300.00);
+  INSERT INTO orders VALUES (5, '2026-01-01 11:00+00', NULL, 'paid', 2, 300.00);
   UPDATE orders SET status = 'refunded' WHERE id = 4;"
 curl --json '{
   "query": "SELECT bucket, orders, revenue FROM orders WHERE status = $1 AND bucket >= $2 AND bucket < $3 GROUP BY bucket",
@@ -142,13 +144,11 @@ curl --json '{
 ```
 
 The refund took the 10:00 order out of the paid rows and the new order
-added 11:00, both in one answer, since Straum applies a transaction
-whole.
+added 11:00, both in one answer: Straum applies a transaction whole.
 
 ## 8. Clean up
 
-`straum status` shows what Straum has done; [Running
-Straum](running.md#straum-status) explains it. Stop straum with Ctrl-C;
+`straum status` shows what Straum has done. Stop straum with Ctrl-C;
 PostgreSQL drops its slot as the connection closes. Then remove the
 container:
 

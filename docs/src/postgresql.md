@@ -53,19 +53,17 @@ superuser.
   on Amazon RDS. `--role NAME` renames the role.
 - The grants let it read the tables: the facts for the load, the dims for
   the load's join and the lookups after it.
-- The publication names the fact tables, whose changes Straum receives.
-  Dims are not published: Straum reads their rows by key and never
-  follows them. `--publication NAME` renames it; give `straum run` the
-  same name.
+- The publication names the fact tables only; dims are read by key, never
+  followed. `--publication NAME` renames it; give `straum run` the same
+  name.
 - `REPLICA IDENTITY FULL` makes PostgreSQL write the old row of every
   update and delete to the WAL, so Straum can take the row out of its
-  cell. Inserts cost no more.
+  cell.
 - Dims need a primary key or unique index on exactly their key columns,
-  in any order, so a key names one row. Only the schema can give that, so
-  the SQL says it in a comment.
+  in any order. Only the schema can give that, so the SQL says it in a
+  comment.
 
-The setup lives in the catalog and survives restarts. Straum checks it on
-every start.
+The setup lives in the catalog and survives restarts.
 
 ## 3. Connect
 
@@ -104,30 +102,18 @@ postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum/ca.pem
 Before it loads, Straum compares the server with the spec and reports
 every problem at once, each with its fix, in its log, `/readyz` and
 `straum status`. It stays not ready and [tries again](running.md#states)
-after a wait. The checks:
+after a wait. Some of the checks:
 
 ```text
 wal_level is replica; straum needs logical, which takes a restart
-wal_level is minimal; straum needs replica or logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
-publication straum must publish insert, update, delete and truncate
-orders: table public.orders does not exist
-orders: public.orders is not a plain table
 orders: publication straum leaves out public.orders: ALTER PUBLICATION straum ADD TABLE public.orders
 orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
-orders: publication straum filters the rows of public.orders; straum needs every row
-orders: public.orders has no column placed_at
-orders: publication straum leaves out column amount of public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
-orders: column placed_at of public.orders is timestamp without time zone; the date_bin origin timestamptz 'epoch' needs a timestamptz there; for a timestamp column, write timestamp 'epoch'
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: public.customers needs a primary key or unique index on id alone
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
-fact orders: measure paid compares status (text) with 1
 ```
-
-A dim keyed by several columns is named with them all, `organization_id,
-taskgroup_id alone`.
 
 ## What Straum costs the server
 
@@ -143,9 +129,8 @@ taskgroup_id alone`.
   Straum loads again from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
   database and makes `ALTER TABLE` on its tables wait. Each fact loads
-  with one binary `COPY` of the fact joined to its dims, planned as
-  PostgreSQL would plan the view, and Straum ends the snapshot right
-  after the last fact.
+  with one binary `COPY` of the fact joined to its dims, and Straum ends
+  the snapshot right after the last fact.
 - One plain connection beside the replication connection, which reads
   the WAL position every second and looks up the dim rows of each
   transaction's fact rows: one keyed `SELECT` per ref and transaction,
