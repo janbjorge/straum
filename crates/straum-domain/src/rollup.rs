@@ -188,13 +188,12 @@ impl Cells {
         self.index
             .remove(&self.keys[i * self.width..][..self.width]);
         if i != last {
-            let moved = self.key(last).to_vec();
-            self.keys
-                .copy_within(last * self.width..(last + 1) * self.width, i * self.width);
             *self
                 .index
-                .get_mut(moved.as_slice())
+                .get_mut(&self.keys[last * self.width..][..self.width])
                 .expect("every cell is indexed") = i;
+            self.keys
+                .copy_within(last * self.width..(last + 1) * self.width, i * self.width);
         }
         self.keys.truncate(last * self.width);
         self.rows.swap_remove(i);

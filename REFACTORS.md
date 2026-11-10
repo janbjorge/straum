@@ -138,7 +138,7 @@ python3 scripts/check-layers.py
   neighbours, so `a, b, a` stays. Harmless today, since PostgreSQL skips a
   repeated table or schema, but say what is meant: `contains`, as
   `Spec::tables` does (`straum-domain/src/spec.rs:286-295`).
-- [ ] `crates/straum-domain/src/rollup.rs:191`: `Cells::swap_remove`
+- [x] `crates/straum-domain/src/rollup.rs:191`: `Cells::swap_remove`
   allocates `moved` to re-index. Update the index entry through
   `self.index.get_mut(&self.keys[last * w..][..w])` before
   `copy_within`; the fields are disjoint.
