@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal, Spec, Store,
-    TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal,
+    Spec, Store, TimeKey, Value,
 };
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -715,9 +715,9 @@ fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
 /// An answer's rows as PostgreSQL prints them, at `scales`.
 fn printed(answer: &Answer, scales: &[u32]) -> Vec<Vec<Option<String>>> {
     (answer.rows.iter())
-        .map(|(key, values)| {
-            let (key_scales, value_scales) = scales.split_at(key.len());
-            (key.iter().zip(key_scales).map(|(k, s)| datum(k, *s)))
+        .map(|AnswerRow { keys, values }| {
+            let (key_scales, value_scales) = scales.split_at(keys.len());
+            (keys.iter().zip(key_scales).map(|(k, s)| datum(k, *s)))
                 .chain(values.iter().zip(value_scales).map(|(v, s)| text(v, *s)))
                 .collect()
         })
@@ -963,9 +963,12 @@ fn follows_the_task_tables() {
     assert_eq!(answered.answer.rows.len(), 2);
     assert_eq!(
         answered.answer.rows[0],
-        (vec![Datum::Int(START - 3_600)], vec![Value::Int(1)])
+        AnswerRow {
+            keys: vec![Datum::Int(START - 3_600)],
+            values: vec![Value::Int(1)]
+        }
     );
-    assert_eq!(answered.answer.rows[1].0, [Datum::Int(START)]);
+    assert_eq!(answered.answer.rows[1].keys, [Datum::Int(START)]);
 
     for id in 200..230 {
         db.run(&rng.task(id));
@@ -1202,8 +1205,8 @@ fn attributes_are_as_of_ingest() {
         };
         let answered = app.ask(&ask).unwrap();
         (answered.answer.rows.iter())
-            .find(|(key, _)| key[0] == Datum::Null)
-            .map_or(Value::Int(0), |(_, values)| values[0].clone())
+            .find(|row| row.keys[0] == Datum::Null)
+            .map_or(Value::Int(0), |row| row.values[0].clone())
     };
     let before = null_tasks(picks.app());
     for (task, change) in [
@@ -1294,7 +1297,11 @@ fn the_snapshot_and_the_stream_split_exactly() {
             "round {round}: the writer finished before the load"
         );
         let loaded = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
-        assert_ne!(loaded.answer.rows[0].1[0], Value::Int(0), "round {round}");
+        assert_ne!(
+            loaded.answer.rows[0].values[0],
+            Value::Int(0),
+            "round {round}"
+        );
         inserter.join().unwrap();
         db.run("INSERT INTO $S.trips VALUES (-1, now(), 'marker', 1, 1.00, 'ann', 2)");
         let marker = ask("trips", &["trips"], &["kind"]);
@@ -1307,7 +1314,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
                 .answer
                 .rows
                 .iter()
-                .any(|(k, _)| k[0] == Datum::Text("marker".into()))
+                .any(|row| row.keys[0] == Datum::Text("marker".into()))
             {
                 break;
             }

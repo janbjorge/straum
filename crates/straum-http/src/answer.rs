@@ -24,7 +24,7 @@
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{Ask, Datum, Value};
+use straum_domain::{AnswerRow, Ask, Datum, Value};
 
 use crate::json::{decimal, string};
 
@@ -57,7 +57,7 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let as_of = Timestamp::try_from(*as_of).unwrap_or(Timestamp::UNIX_EPOCH);
     string(&mut out, &as_of.to_string());
     out.extend_from_slice(b",\"rows\":[");
-    for (i, (keys, values)) in answer.rows.iter().enumerate() {
+    for (i, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
         if i > 0 {
             out.push(b',');
         }

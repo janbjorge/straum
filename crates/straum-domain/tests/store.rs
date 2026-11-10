@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, By, ColumnType, Cond, Datum, Dim, Fact,
-    Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Slot, Spec, Store, Table, Time,
-    TimeKey, Value,
+    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, By, ColumnType, Cond, Datum, Dim,
+    Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Slot, Spec, Store, Table,
+    Time, TimeKey, Value,
 };
 
 const GRAIN: u32 = 900;
@@ -436,13 +436,13 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
     }
     let rows = groups
         .into_iter()
-        .map(|(key, rows)| {
+        .map(|(keys, rows)| {
             let values = ask
                 .measures
                 .iter()
                 .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows))
                 .collect();
-            (key, values)
+            AnswerRow { keys, values }
         })
         .collect();
     let columns = (ask.by.iter().map(|k| match k {
@@ -644,7 +644,7 @@ fn a_row_is_found_only_under_the_attributes_it_came_with() {
     };
     let labels = |store: &Store| -> Vec<Datum> {
         (store.ask(&by_label).unwrap().rows.into_iter())
-            .map(|(key, _)| key[0].clone())
+            .map(|row| row.keys[0].clone())
             .collect()
     };
     assert_eq!(labels(&store), [text("v1")]);
@@ -783,7 +783,7 @@ fn removing_an_extreme_reveals_the_next() {
         from: START,
         to: END,
     };
-    let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].1.clone();
+    let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].values.clone();
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
     let rows: Vec<_> = [5, 9, 9, 2, 7]
@@ -969,9 +969,9 @@ fn ask_without_by_answers_one_row() {
     let null = Value::Null;
     assert_eq!(
         store.ask(&ask).unwrap().rows,
-        [(
-            Vec::new(),
-            vec![
+        [AnswerRow {
+            keys: Vec::new(),
+            values: vec![
                 zero.clone(),
                 null.clone(),
                 null.clone(),
@@ -987,7 +987,7 @@ fn ask_without_by_answers_one_row() {
                 null.clone(),
                 null,
             ]
-        )]
+        }]
     );
 }
 

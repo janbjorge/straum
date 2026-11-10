@@ -25,7 +25,15 @@ pub struct Store {
 pub struct Answer {
     /// One per value of a row, the `by` keys then the measures.
     pub columns: Vec<AnswerColumn>,
-    pub rows: Vec<(Vec<Datum>, Vec<Value>)>,
+    pub rows: Vec<AnswerRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerRow {
+    /// The values of the ask's `by`.
+    pub keys: Vec<Datum>,
+    /// One per measure the ask names.
+    pub values: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,15 +195,13 @@ impl Store {
             .iter_mut()
             .for_each(|m| m.partials.grow(groups.len()));
         let mut keys = groups.keys.into_iter().map(Cow::into_owned);
-        let mut rows: Vec<(Vec<Datum>, Vec<Value>)> = (1..=groups.made)
-            .map(|g| {
-                (
-                    keys.by_ref().take(by.len()).collect(),
-                    measures.iter().map(|m| m.partials.finish(g)).collect(),
-                )
+        let mut rows: Vec<AnswerRow> = (1..=groups.made)
+            .map(|g| AnswerRow {
+                keys: keys.by_ref().take(by.len()).collect(),
+                values: measures.iter().map(|m| m.partials.finish(g)).collect(),
             })
             .collect();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows.sort_by(|a, b| a.keys.cmp(&b.keys));
         Ok(Answer { columns, rows })
     }
 

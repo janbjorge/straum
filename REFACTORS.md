@@ -79,10 +79,11 @@ python3 scripts/check-layers.py
   makes "set with position" true by construction; `behind()` and
   `as_of()` move onto it, and the `STARTED` expects at `app.rs:179` and
   `app.rs:342` go (one may stay in `apply_next`). `Status` stays flat.
-- [ ] **`Answer::rows` as a struct, not a tuple** (straum-domain and
+- [x] **`Answer::rows` as a struct, not a tuple** (straum-domain and
   every crate that reads answers). `crates/straum-domain/src/store.rs:28`
   is `Vec<(Vec<Datum>, Vec<Value>)>`; PLAN.md asks for named fields over
-  tuples. `Row { keys: Vec<Datum>, measures: Vec<Value> }`. `.0` / `.1`
+  tuples. `AnswerRow { keys: Vec<Datum>, values: Vec<Value> }`, named
+  like `AnswerColumn`. `.0` / `.1`
   hits: `straum-domain/tests/store.rs`, `straum-app/tests/app.rs`,
   `straum-pg/src/tests.rs`, `straum-http/src/answer.rs:60`.
 - [ ] **`last_failure` as a struct** (straum-app, straum-http).

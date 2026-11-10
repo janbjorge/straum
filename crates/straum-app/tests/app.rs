@@ -15,8 +15,8 @@ use straum_app::{
     AnswerError, Answered, App, Change, Error, Limits, Lsn, Status, Step, Wal, Writer,
 };
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal, Spec, Store,
-    TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal,
+    Spec, Store, TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -144,7 +144,7 @@ fn path(s: &str) -> KeyPath {
 /// The fact's row count over the whole range.
 fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
     let answered = app.ask(&ask(fact, &[fact], &[]))?;
-    Ok(answered.answer.rows[0].1[0].clone())
+    Ok(answered.answer.rows[0].values[0].clone())
 }
 
 /// A store loaded from the database as it was at `lsn`.
@@ -165,7 +165,7 @@ fn expected(db: &Database, ask: &Ask) -> Answer {
 }
 
 /// The rows an ask by borough answers.
-fn by_borough(app: &App, fact: &str) -> Vec<(Vec<Datum>, Vec<Value>)> {
+fn by_borough(app: &App, fact: &str) -> Vec<AnswerRow> {
     let by_borough = ask(fact, &[fact], &["zone.borough"]);
     app.ask(&by_borough).unwrap().answer.rows
 }
@@ -208,7 +208,10 @@ fn starts_from_one_snapshot() {
     assert!(answered.as_of <= SystemTime::now(), "{:?}", answered.as_of);
     assert_eq!(
         answered.answer.rows,
-        [(vec![text("Bronx")], vec![Value::Int(1), Value::Int(10)])]
+        [AnswerRow {
+            keys: vec![text("Bronx")],
+            values: vec![Value::Int(1), Value::Int(10)]
+        }]
     );
 }
 
@@ -308,10 +311,10 @@ fn fact_rows_change_through_the_old_row() {
     let answered = writer.app().ask(&by_kind).unwrap();
     assert_eq!(
         answered.answer.rows,
-        [(
-            vec![int(2)],
-            vec![Value::Int(1), Value::Int(30), Value::Int(1)]
-        )]
+        [AnswerRow {
+            keys: vec![int(2)],
+            values: vec![Value::Int(1), Value::Int(30), Value::Int(1)]
+        }]
     );
     assert_eq!(answered.answer, expected(&db.borrow(), &by_kind));
 }
@@ -362,8 +365,14 @@ fn dim_changes_show_once_straum_starts_over() {
     db.borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
     writer.step().unwrap();
-    let bronx = |n| (vec![text("Bronx")], vec![Value::Int(n)]);
-    let queens = |n| (vec![text("Queens")], vec![Value::Int(n)]);
+    let bronx = |n| AnswerRow {
+        keys: vec![text("Bronx")],
+        values: vec![Value::Int(n)],
+    };
+    let queens = |n| AnswerRow {
+        keys: vec![text("Queens")],
+        values: vec![Value::Int(n)],
+    };
     assert_eq!(by_borough(writer.app(), "trips"), [bronx(2)]);
 
     // The dim changes: nothing to apply, and the cells stay as they were.
@@ -419,8 +428,14 @@ fn a_missing_dim_row_resolves_to_null() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().commit(vec![trip(1, 1, 2, 10)]);
     writer.step().unwrap();
-    let null = |n| (vec![Datum::Null], vec![Value::Int(n)]);
-    let queens = |n| (vec![text("Queens")], vec![Value::Int(n)]);
+    let null = |n| AnswerRow {
+        keys: vec![Datum::Null],
+        values: vec![Value::Int(n)],
+    };
+    let queens = |n| AnswerRow {
+        keys: vec![text("Queens")],
+        values: vec![Value::Int(n)],
+    };
     assert_eq!(by_borough(writer.app(), "trips"), [null(1)]);
 
     db.borrow_mut()
@@ -456,7 +471,13 @@ fn truncate_empties_the_table() {
     assert_eq!(db.borrow().loads.len(), 2, "no reload");
     let by_borough = ask("trips", &["trips"], &["zone.borough"]);
     let answer = writer.app().ask(&by_borough).unwrap().answer;
-    assert_eq!(answer.rows, [(vec![Datum::Null], vec![Value::Int(1)])]);
+    assert_eq!(
+        answer.rows,
+        [AnswerRow {
+            keys: vec![Datum::Null],
+            values: vec![Value::Int(1)]
+        }]
+    );
     assert_eq!(answer, expected(&db.borrow(), &by_borough));
 }
 
@@ -513,8 +534,9 @@ fn asks_wait_while_the_tables_load() {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let (watch, log) = (app.clone(), Rc::clone(&seen));
     fake.on_load = Some(Box::new(move |table| {
-        let count =
-            |fact| aside(&watch, ask(fact, &[fact], &[])).map(|a| a.answer.rows[0].1[0].clone());
+        let count = |fact| {
+            aside(&watch, ask(fact, &[fact], &[])).map(|a| a.answer.rows[0].values[0].clone())
+        };
         log.borrow_mut()
             .push((table.to_owned(), count("trips"), count("logins")));
     }));
