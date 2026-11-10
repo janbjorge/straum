@@ -276,40 +276,38 @@ impl Walker {
         };
         let (table, mut scope) = self.from(from)?;
 
-        // Keys first, then measures, so a FILTER can name a null-ness key
-        // selected after it.
-        let mut items = Vec::new();
-        let mut keys = Vec::new();
-        for measures in [false, true] {
-            for item in projection {
-                let (expr, alias) = match item {
-                    sql::SelectItem::UnnamedExpr(expr) => (expr, None),
-                    sql::SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
-                    other => {
-                        if !measures {
-                            self.reject(line(other), "SELECT item", other);
-                        }
-                        continue;
-                    }
-                };
-                // Decided before walking the item, so a bad key column is
-                // reported once and not again by GROUP BY.
-                let is_key = match expr {
-                    sql::Expr::Function(f) => function_name(f).as_deref() == Some("date_bin"),
-                    _ => true,
-                };
-                if is_key == measures {
+        let mut selected = Vec::new();
+        for item in projection {
+            let (expr, alias) = match item {
+                sql::SelectItem::UnnamedExpr(expr) => (expr, None),
+                sql::SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
+                other => {
+                    self.reject(line(other), "SELECT item", other);
                     continue;
                 }
-                if is_key {
-                    keys.push(key_text(expr));
+            };
+            // Decided before walking the item, so a bad key column is
+            // reported once and not again by GROUP BY.
+            let is_key = match expr {
+                sql::Expr::Function(f) => function_name(f).as_deref() == Some("date_bin"),
+                _ => true,
+            };
+            selected.push((is_key, expr, alias));
+        }
+        // Keys first, then measures, so a FILTER can name a null-ness key
+        // selected after it.
+        selected.sort_by_key(|&(is_key, ..)| !is_key);
+        let mut items = Vec::new();
+        let mut keys = Vec::new();
+        for (is_key, expr, alias) in selected {
+            if is_key {
+                keys.push(key_text(expr));
+            }
+            if let Some(it) = self.item(&scope, expr, alias) {
+                if let Item::IsNull(key) = &it {
+                    scope.nulls.push(key.clone());
                 }
-                if let Some(it) = self.item(&scope, expr, alias) {
-                    if let Item::IsNull(key) = &it {
-                        scope.nulls.push(key.clone());
-                    }
-                    items.push(it);
-                }
+                items.push(it);
             }
         }
         self.group_by(at, group_by, projection, &keys);

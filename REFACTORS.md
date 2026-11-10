@@ -59,12 +59,13 @@ python3 scripts/check-layers.py
   `sql/ask.rs:143-152` hold the same `Expressions` / `All` match. One
   `Walker::group_by_exprs(&mut self, at, group_by) -> Option<&[Expr]>`
   in `sql/mod.rs`.
-- [ ] **Partition `select()` instead of two passes** (straum-notation).
+- [x] **Partition `select()` instead of two passes** (straum-notation).
   `crates/straum-notation/src/sql/view.rs:293-326` loops
   `for measures in [false, true]` with `if is_key == measures { continue }`
   and `if !measures { reject }`. Partition the projection into keys and
-  measures first (rejecting other items once), then two plain loops. Keys
-  still go first so a FILTER can name a null-ness key selected after it.
+  measures first (rejecting other items once), then one loop over the
+  items sorted keys first, so a FILTER can name a null-ness key selected
+  after it.
 - [ ] **`Change::table()` goes `pub`** (straum-app).
   `crates/straum-app/src/source.rs:108` is `pub(crate)`, so the fake
   copies it as `table_of` (`crates/straum-app/tests/fake/mod.rs:238`).
