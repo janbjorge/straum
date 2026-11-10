@@ -40,7 +40,7 @@ dim tables   --SELECT ... WHERE key IN-->        [c1 .. cn]  ++  [a1 .. am]
 
 Invariants:
 
-- Every key an ask can name is a slot of the cell key (`Spec::resolve`
+- Every key an ask can name is a slot of the cell key (`Fact::resolve`
   gives `Key::By` or `Key::Attr`), so an ask looks nothing up. The ref
   itself is not a key (`AskError::RefAsKey`), and an attribute the view
   does not select is not either (`AskError::AttrNotRead`).

@@ -162,7 +162,7 @@ pub struct Cond {
     pub values: Vec<Literal>,
 }
 
-/// `column` or `ref.attr`; see [`Spec::resolve`].
+/// `column` or `ref.attr`; see [`Fact::resolve`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPath {
     pub head: Ident,
