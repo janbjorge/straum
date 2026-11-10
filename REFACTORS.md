@@ -101,7 +101,7 @@ python3 scripts/check-layers.py
 
 ## straum-pg
 
-- [ ] **`check_table` takes a `Member`, not eight arguments**.
+- [x] **`check_table` takes a `Member`, not eight arguments**.
   `crates/straum-pg/src/catalog.rs:396-406` carries
   `#[allow(clippy::too_many_arguments)]`.
   `enum Member<'a> { Dim(&Dim), Fact(&Fact) }` yields the name, table,

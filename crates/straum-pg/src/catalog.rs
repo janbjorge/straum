@@ -269,14 +269,46 @@ impl Role {
     }
 }
 
-/// How straum uses a table, which decides what the setup owes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Access {
-    /// A fact: loaded whole and followed through the publication.
-    Streamed,
-    /// A dim: rows looked up by key, in the load and per commit. Never
-    /// followed, so the publication owes it nothing.
-    LookedUp,
+/// A table of the spec. How straum uses it decides what the setup owes it.
+#[derive(Debug, Clone, Copy)]
+enum Member<'s> {
+    /// Rows looked up by key, in the load and per commit. Never followed,
+    /// so the publication owes it nothing.
+    Dim(&'s Dim),
+    /// Loaded whole and followed through the publication.
+    Fact(&'s Fact),
+}
+
+impl<'s> Member<'s> {
+    fn name(self) -> &'s Ident {
+        match self {
+            Member::Dim(dim) => &dim.name,
+            Member::Fact(fact) => &fact.name,
+        }
+    }
+
+    fn table(self) -> &'s straum_domain::Table {
+        match self {
+            Member::Dim(dim) => &dim.table,
+            Member::Fact(fact) => &fact.table,
+        }
+    }
+
+    /// Every column the member reads, with what it is for; a column may
+    /// come twice. A dim's key columns come first.
+    fn roles(self) -> Vec<(&'s Ident, Role)> {
+        match self {
+            Member::Dim(dim) => dim.columns().map(|c| (c, Role::Key)).collect(),
+            Member::Fact(fact) => fact_roles(fact),
+        }
+    }
+
+    fn key_width(self) -> usize {
+        match self {
+            Member::Dim(dim) => dim.key.len(),
+            Member::Fact(_) => 0,
+        }
+    }
 }
 
 /// Checks the catalog against the spec and returns every problem found,
@@ -315,45 +347,12 @@ pub(crate) fn check(
         dims: Vec::new(),
     };
     for dim in spec.dims() {
-        let roles = dim.columns().map(|c| (c, Role::Key)).collect();
-        let checked = check_table(
-            &dim.table,
-            &dim.name,
-            dim.key.len(),
-            Access::LookedUp,
-            roles,
-            catalog,
-            publication,
-            &mut problems,
-        );
-        if let Some((table, relation)) = checked {
-            check_dim(dim, &table, relation, &mut problems);
-            tables.dims.push(table);
-        }
+        let checked = check_table(Member::Dim(dim), catalog, publication, &mut problems);
+        tables.dims.extend(checked);
     }
     for fact in spec.facts() {
-        let roles = fact_roles(fact);
-        let checked = check_table(
-            &fact.table,
-            &fact.name,
-            0,
-            Access::Streamed,
-            roles,
-            catalog,
-            publication,
-            &mut problems,
-        );
-        if let Some((table, relation)) = checked {
-            if relation.identity != "f" {
-                problems.push(format!(
-                    "fact {}: straum needs the whole old row of every update and delete: \
-                     ALTER TABLE {} REPLICA IDENTITY FULL",
-                    fact.name,
-                    table.qualified()
-                ));
-            }
-            tables.facts.push(table);
-        }
+        let checked = check_table(Member::Fact(fact), catalog, publication, &mut problems);
+        tables.facts.extend(checked);
     }
     if problems.is_empty() {
         check_refs(spec, &tables, &mut problems);
@@ -390,20 +389,14 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     roles
 }
 
-/// The checks every table gets. `roles` names each column the spec reads,
-/// with what for; a column may come twice. A dim's key columns come first
-/// in `roles`, `key_width` of them.
-#[allow(clippy::too_many_arguments)]
-fn check_table<'a>(
-    table: &straum_domain::Table,
-    name: &Ident,
-    key_width: usize,
-    access: Access,
-    roles: Vec<(&Ident, Role)>,
-    catalog: &'a Catalog,
+/// The checks every table gets, then those its kind of member owes.
+fn check_table(
+    member: Member<'_>,
+    catalog: &Catalog,
     publication: &str,
     problems: &mut Vec<String>,
-) -> Option<(Table, &'a Relation)> {
+) -> Option<Table> {
+    let (name, table) = (member.name(), member.table());
     let qualified = format!("{}.{}", table.schema, table.name);
     let Some(relation) = catalog
         .relations
@@ -423,9 +416,9 @@ fn check_table<'a>(
             "{name}: straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
         ));
     }
-    let published = match access {
-        Access::LookedUp => None,
-        Access::Streamed => {
+    let published = match member {
+        Member::Dim(_) => None,
+        Member::Fact(_) => {
             if relation.row_filter {
                 problems.push(format!(
                     "{name}: publication {publication} filters the rows of {qualified}; \
@@ -453,7 +446,7 @@ fn check_table<'a>(
     };
     let mut columns: Vec<Ident> = Vec::new();
     let mut types = Vec::new();
-    for (name_of, role) in roles {
+    for (name_of, role) in member.roles() {
         let found = column(name_of).and_then(|c| {
             if published.is_some_and(|p| !p.contains(&c.name)) {
                 return Err(format!(
@@ -488,9 +481,22 @@ fn check_table<'a>(
         table: table.name.clone(),
         columns,
         types,
-        key_width,
+        key_width: member.key_width(),
     };
-    Some((table, relation))
+    match member {
+        Member::Dim(dim) => check_dim(dim, &table, relation, problems),
+        Member::Fact(fact) => {
+            if relation.identity != "f" {
+                problems.push(format!(
+                    "fact {}: straum needs the whole old row of every update and delete: \
+                     ALTER TABLE {} REPLICA IDENTITY FULL",
+                    fact.name,
+                    table.qualified()
+                ));
+            }
+        }
+    }
+    Some(table)
 }
 
 /// A lookup by key finds one row or none only if the key is unique: a
