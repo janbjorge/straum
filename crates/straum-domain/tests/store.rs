@@ -315,6 +315,9 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let buckets = (END - START) / i64::from(GRAIN);
     let from = START + i64::from(GRAIN) * rng.int(-10, buckets);
     let to = from + i64::from(GRAIN) * rng.int(1, buckets + 20);
+    // Sometimes open on one side or both, which reads every bucket there.
+    let from = (!rng.chance(15)).then_some(from);
+    let to = (!rng.chance(15)).then_some(to);
     Ask {
         fact: id("trips"),
         measures,
@@ -412,7 +415,10 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
     }
     for row in rows {
         let Datum::Int(t) = row[AT] else { continue };
-        if t < ask.from || t >= ask.to || !passes(row, &ask.filter) {
+        if ask.from.is_some_and(|from| t < from)
+            || ask.to.is_some_and(|to| t >= to)
+            || !passes(row, &ask.filter)
+        {
             continue;
         }
         let key = ask
@@ -613,6 +619,42 @@ fn rows_added_together_match_rows_added_one_by_one() {
     }
 }
 
+/// A bound left out reads every bucket on that side; one that is given
+/// still cuts, even past everything held.
+#[test]
+fn an_open_range_reads_every_bucket() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    let mut rng = Rng(5);
+    let mut rows = Vec::new();
+    for i in 0..4 {
+        let mut row = trip(&mut rng);
+        row[AT] = Datum::Int(START + i64::from(GRAIN) * i);
+        store.add_fact_row("trips", &row).unwrap();
+        rows.push(row);
+    }
+    let ask = |from, to| Ask {
+        fact: id("trips"),
+        measures: vec![id("trips")],
+        by: Vec::new(),
+        filter: Vec::new(),
+        from,
+        to,
+    };
+    let trips = |ask: &Ask| store.ask(ask).unwrap().rows[0].values[0].clone();
+    let count = |n: i128| Value::Int(n);
+    assert_eq!(trips(&ask(None, None)), count(4));
+    assert_eq!(trips(&ask(Some(START + i64::from(GRAIN)), None)), count(3));
+    assert_eq!(trips(&ask(None, Some(START + i64::from(GRAIN)))), count(1));
+    assert_eq!(trips(&ask(None, Some(START))), count(0));
+    assert_eq!(trips(&ask(Some(END), None)), count(0));
+    let empty = typed(&spec);
+    assert_eq!(
+        empty.ask(&ask(None, None)).unwrap().rows[0].values[0],
+        count(0)
+    );
+}
+
 /// An attribute is part of the cell key as it was resolved when the row
 /// came in. A row that comes back out with the attribute resolved
 /// otherwise, because the dim row changed meanwhile, is not found, which
@@ -630,8 +672,8 @@ fn a_row_is_found_only_under_the_attributes_it_came_with() {
         measures: vec![id("trips")],
         by: vec![AskKey::Key(path("vend.label"))],
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let labels = |store: &Store| -> Vec<Datum> {
         (store.ask(&by_label).unwrap().rows.into_iter())
@@ -771,8 +813,8 @@ fn removing_an_extreme_reveals_the_next() {
         measures: vec![id("tip_min"), id("tip_max")],
         by: Vec::new(),
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].values.clone();
     let mut row = trip(&mut Rng(11));
@@ -826,8 +868,8 @@ fn filter_values_are_of_their_column_type() {
         measures: vec![id("trips")],
         by: Vec::new(),
         filter,
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let fits = vec![
         cond("pay", vec![Literal::Int(1)]),
@@ -876,8 +918,8 @@ fn types_stay_through_clear() {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: vec![AskKey::Key(path("pay")), AskKey::Key(path("pickup.zone"))],
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let scales = |store: &Store| -> Vec<u32> {
         let answer = store.ask(&ask).unwrap();
@@ -906,8 +948,8 @@ fn columns_name_keys_and_measures_as_asked() {
             AskKey::Time(TimeKey::Bucket),
         ],
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let columns: Vec<(String, bool)> = (store.ask(&ask).unwrap().columns.into_iter())
         .map(|c| (c.name, c.time))
@@ -953,8 +995,8 @@ fn ask_without_by_answers_one_row() {
         measures,
         by: Vec::new(),
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let zero = Value::Int(0);
     let null = Value::Null;
@@ -991,8 +1033,8 @@ fn unknown_names() {
         measures: vec![id("trips")],
         by: Vec::new(),
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(
         store.ask(&ask),

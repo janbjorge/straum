@@ -133,8 +133,8 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: by.iter().map(|b| key(b)).collect(),
         filter: vec![],
-        from: from * i64::from(HOUR),
-        to: to * i64::from(HOUR),
+        from: Some(from * i64::from(HOUR)),
+        to: Some(to * i64::from(HOUR)),
     }
 }
 

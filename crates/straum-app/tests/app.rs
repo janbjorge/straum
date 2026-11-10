@@ -116,8 +116,8 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by.iter().map(|k| ask_key(k)).collect(),
         filter: Vec::new(),
-        from: 0,
-        to: RANGE,
+        from: Some(0),
+        to: Some(RANGE),
     }
 }
 
@@ -1020,8 +1020,9 @@ fn random_ask(rng: &mut Rng) -> Ask {
     }
     // Sometimes one day of the range.
     if rng.chance(30) {
-        ask.from = DAY * rng.int(0, 3);
-        ask.to = ask.from + DAY;
+        let from = DAY * rng.int(0, 3);
+        ask.from = Some(from);
+        ask.to = Some(from + DAY);
     }
     ask
 }

@@ -438,8 +438,8 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             })
             .collect(),
         filter: Vec::new(),
-        from: 0,
-        to: END,
+        from: Some(0),
+        to: Some(END),
     }
 }
 
@@ -537,8 +537,8 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
               GROUP BY 1, 2, 3"
         ),
         ask: Ask {
-            from,
-            to,
+            from: Some(from),
+            to: Some(to),
             ..ask("trips", &MEASURES, &["kind", "zone_id", "pickup.borough"])
         },
         scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
@@ -597,8 +597,8 @@ fn task_oracles() -> Vec<Oracle> {
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from,
-            to,
+            from: Some(from),
+            to: Some(to),
             ..ask("tasks", &MEASURES, &["organization_id", "g.category"])
         },
         scales: vec![0; 7],
@@ -614,8 +614,8 @@ fn task_oracles() -> Vec<Oracle> {
               GROUP BY 1"
         ),
         ask: Ask {
-            from,
-            to,
+            from: Some(from),
+            to: Some(to),
             filter: vec![Cond {
                 path: KeyPath {
                     head: id("done"),
@@ -664,8 +664,8 @@ fn picks_oracles() -> Vec<Oracle> {
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from,
-            to,
+            from: Some(from),
+            to: Some(to),
             ..ask("picks", &MEASURES, &["organization_id", "g.category"])
         },
         scales: vec![0; 5],
@@ -936,8 +936,8 @@ fn follows_the_task_tables() {
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
     let edges = Ask {
-        from: START - 3_600,
-        to: START + 3_600,
+        from: Some(START - 3_600),
+        to: Some(START + 3_600),
         ..ask("tasks", &["tasks"], &["bucket"])
     };
     let answered = writer.app().ask(&edges).unwrap();
@@ -1180,8 +1180,8 @@ fn attributes_are_as_of_ingest() {
                 },
                 values: vec![Literal::Int(2)],
             }],
-            from: START,
-            to: START + 3_600,
+            from: Some(START),
+            to: Some(START + 3_600),
             ..ask("picks", &["tasks"], &["g.category"])
         };
         let answered = app.ask(&ask).unwrap();

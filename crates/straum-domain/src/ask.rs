@@ -12,9 +12,10 @@ pub struct Ask {
     pub by: Vec<AskKey>,
     /// Every condition must hold.
     pub filter: Vec<Cond>,
-    /// Start of the half-open range `[from, to)`, Unix seconds.
-    pub from: i64,
-    pub to: i64,
+    /// The half-open range `[from, to)`, Unix seconds. An end not given
+    /// is open: the ask reads every bucket on that side.
+    pub from: Option<i64>,
+    pub to: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,13 +87,12 @@ impl Spec {
             }
         }
 
-        if ask.from >= ask.to {
-            errors.push(AskError::RangeEmpty {
-                from: ask.from,
-                to: ask.to,
-            });
+        if let (Some(from), Some(to)) = (ask.from, ask.to)
+            && from >= to
+        {
+            errors.push(AskError::RangeEmpty { from, to });
         }
-        for at in [ask.from, ask.to] {
+        for at in [ask.from, ask.to].into_iter().flatten() {
             if at.rem_euclid(i64::from(grain.0)) != 0 {
                 errors.push(AskError::RangeUnaligned { at, grain });
             }

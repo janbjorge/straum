@@ -9,7 +9,8 @@
 //!
 //! Every value is a `$n` parameter, so no value is ever spliced into the
 //! query text. `bucket` is the view's time bucket; a spec can't name a
-//! column or ref `bucket`, so it never clashes.
+//! column or ref `bucket`, so it never clashes. Either bound may be left
+//! out, and the ask then reads every bucket on that side.
 
 use jiff::Timestamp;
 use sqlparser::ast as sql;
@@ -128,14 +129,14 @@ impl Walker {
             }
         }
 
-        let (filter, from, to) = self.ask_where(at, select.selection.as_ref(), params);
+        let (filter, from, to) = self.ask_where(select.selection.as_ref(), params);
         Some(Ask {
             fact: fact?,
             measures,
             by,
             filter,
-            from: from?,
-            to: to?,
+            from: from.flatten(),
+            to: to.flatten(),
         })
     }
 
@@ -191,13 +192,13 @@ impl Walker {
         }
     }
 
-    /// The conditions, and the range from `bucket >= $n AND bucket < $m`.
+    /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
+    /// each bound `None` when not given.
     fn ask_where(
         &mut self,
-        at: u64,
         selection: Option<&sql::Expr>,
         params: &mut Params,
-    ) -> (Vec<Cond>, Option<i64>, Option<i64>) {
+    ) -> (Vec<Cond>, Option<Option<i64>>, Option<Option<i64>>) {
         let mut parts = Vec::new();
         if let Some(expr) = selection {
             and_parts(expr, &mut parts);
@@ -234,10 +235,7 @@ impl Walker {
                 },
             );
         }
-        if from.is_none() || to.is_none() {
-            self.error(at, "an ask needs WHERE bucket >= $n AND bucket < $m".into());
-        }
-        (conds, from.flatten(), to.flatten())
+        (conds, from, to)
     }
 
     fn ask_path(&mut self, expr: &sql::Expr) -> Option<KeyPath> {

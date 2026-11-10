@@ -89,10 +89,30 @@ fn reads_every_part() {
                     values: vec![Literal::Int(1)],
                 },
             ],
-            from: JAN,
-            to: FEB,
+            from: Some(JAN),
+            to: Some(FEB),
         }
     );
+}
+
+/// A bound left out is open on that side.
+#[test]
+fn range_bounds_are_optional() {
+    let ask = parse_ask("SELECT trips FROM t", &[]).unwrap();
+    assert_eq!((ask.from, ask.to), (None, None));
+    let ask = parse_ask(
+        "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
+        &[Literal::Int(1), Literal::Int(JAN)],
+    )
+    .unwrap();
+    assert_eq!((ask.from, ask.to), (Some(JAN), None));
+    assert_eq!(ask.filter.len(), 1);
+    let ask = parse_ask(
+        "SELECT trips FROM t WHERE bucket < $1",
+        &[Literal::Int(FEB)],
+    )
+    .unwrap();
+    assert_eq!((ask.from, ask.to), (None, Some(FEB)));
 }
 
 #[test]
@@ -104,7 +124,13 @@ fn measures_alone_and_keys_in_select_order() {
     .unwrap();
     assert_eq!(
         (ask.fact, ask.measures, ask.by, ask.from, ask.to),
-        (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
+        (
+            id("trips"),
+            vec![id("trips")],
+            Vec::new(),
+            Some(JAN),
+            Some(FEB)
+        )
     );
 
     let ask = parse_ask(
@@ -154,16 +180,6 @@ fn every_error_names_what_is_wrong() {
             "SELECT trips FROM t WHERE kind = $x AND bucket >= $1 AND bucket < $2",
             &range(),
             "$x is not a parameter",
-        ),
-        (
-            "SELECT trips FROM t",
-            &[],
-            "an ask needs WHERE bucket >= $n AND bucket < $m",
-        ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1",
-            &[Literal::Int(JAN)],
-            "an ask needs WHERE bucket >= $n AND bucket < $m",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket >= $1 AND bucket < $2",

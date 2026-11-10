@@ -48,8 +48,8 @@ fn month_ask() -> Ask {
             path: path("pickup.borough"),
             values: vec![Literal::Text("Manhattan".into())],
         }],
-        from: JAN,
-        to: FEB,
+        from: Some(JAN),
+        to: Some(FEB),
     }
 }
 
@@ -124,7 +124,7 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
             AskKey::Time(TimeKey::Bucket),
             AskKey::Time(TimeKey::Bucket),
         ],
-        from: JAN + 60,
+        from: Some(JAN + 60),
         ..month_ask()
     };
     assert_eq!(
@@ -212,8 +212,8 @@ fn ask_rejects_bad_shape() {
             path: path("fare_amount"),
             values: vec![Literal::Int(1)],
         }],
-        from: FEB,
-        to: JAN + 60,
+        from: Some(FEB),
+        to: Some(JAN + 60),
         ..month_ask()
     };
     assert_eq!(
@@ -450,8 +450,8 @@ fn a_ref_on_two_columns() {
         measures: vec![id("n")],
         by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
         filter: vec![],
-        from: JAN,
-        to: FEB,
+        from: Some(JAN),
+        to: Some(FEB),
     };
     assert!(spec.check(&ask(&["org", "grp", "g.label"])).is_ok());
     let errors = spec.check(&ask(&["g"])).unwrap_err();
@@ -559,8 +559,8 @@ fn a_ref_reads_what_the_view_selects() {
         measures: vec![id("n")],
         by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
         filter: vec![],
-        from: JAN,
-        to: FEB,
+        from: Some(JAN),
+        to: Some(FEB),
     };
     assert!(spec.check(&ask(&["a", "z.name"])).is_ok());
     let shown = |by: &[&str]| -> Vec<String> {
@@ -716,8 +716,8 @@ fn null_ness_keys() {
             path: path("open"),
             values: vec![Literal::Bool(true)],
         }],
-        from: JAN,
-        to: FEB,
+        from: Some(JAN),
+        to: Some(FEB),
     };
     assert!(spec.check(&ask).is_ok());
 }
