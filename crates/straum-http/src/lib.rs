@@ -4,8 +4,9 @@
 //!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
-//!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN`. 400 for
-//!   an ask straum can't answer, 503 while a table it reads isn't ready.
+//!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
+//!   the time went in `Server-Timing`. 400 for an ask straum can't answer,
+//!   503 while a table it reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and straum is within its
 //!   lag bound, else 503 and why. Asks still answer while straum lags.
@@ -26,7 +27,7 @@ use std::net;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
@@ -43,6 +44,10 @@ use tokio::net::TcpListener;
 
 /// The LSN an answer reflects.
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
+
+/// Where an answer's time went in straum, so a client can tell it from the
+/// network's.
+const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 /// The largest ask body straum reads.
 const MAX_ASK: usize = 1 << 20;
@@ -118,6 +123,7 @@ async fn handle(
 }
 
 async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Response<Full<Bytes>> {
+    let start = Instant::now();
     let body = match Limited::new(request.into_body(), MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) if e.is::<LengthLimitError>() => {
@@ -128,6 +134,7 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
             return errors(StatusCode::BAD_REQUEST, &[format!("reading the ask: {e}")]);
         }
     };
+    let parsing = Instant::now();
     let request =
         match ask::read(&body).and_then(|(query, parameters)| read_ask(&query, &parameters)) {
             Ok(ask) => ask,
@@ -137,17 +144,30 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
     if !range.is_empty() {
         return errors(StatusCode::BAD_REQUEST, &range);
     }
+    let parse = parsing.elapsed();
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
+        let answering = Instant::now();
         let answered = app.ask(&request)?;
-        Ok((answered.lsn, answer::write(&answered)))
+        let writing = Instant::now();
+        let json = answer::write(&answered);
+        Ok((answered.lsn, json, writing - answering, writing.elapsed()))
     })
     .await;
     match answered {
-        Ok(Ok((lsn, json))) => {
+        Ok(Ok((lsn, json, answer, write))) => {
             let mut response = respond(StatusCode::OK, "application/json", json);
             let lsn = HeaderValue::try_from(lsn.to_string()).expect("an LSN is ASCII");
             response.headers_mut().insert(LSN, lsn);
+            // total also holds reading the body and the hops to and from the
+            // blocking thread, which no phase covers.
+            let phases = [
+                ("parse", parse),
+                ("answer", answer),
+                ("json", write),
+                ("total", start.elapsed()),
+            ];
+            (response.headers_mut()).insert(SERVER_TIMING, server_timing(&phases));
             response
         }
         Ok(Err(AnswerError::NotReady)) => {
@@ -162,6 +182,16 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
             errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
         }
     }
+}
+
+/// `name;dur=ms, ...`: the spec counts in milliseconds, and asks take
+/// microseconds.
+fn server_timing(phases: &[(&str, Duration)]) -> HeaderValue {
+    let phases: Vec<String> = phases
+        .iter()
+        .map(|(name, took)| format!("{name};dur={:.3}", took.as_secs_f64() * 1e3))
+        .collect();
+    HeaderValue::try_from(phases.join(", ")).expect("names and numbers are ASCII")
 }
 
 fn readyz(app: &App) -> Response<Full<Bytes>> {

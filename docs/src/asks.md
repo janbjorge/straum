@@ -95,6 +95,12 @@ The `Straum-LSN` header names the last commit the answer reflects, for
 debugging. Straum has no "read your writes" barrier yet, so `as_of` is
 how a client judges whether an answer is fresh enough.
 
+The `Server-Timing` header says where an answer's time went in Straum, in
+milliseconds: `parse` reads the ask, `answer` reads the cells, `json`
+writes the rows, and `total` runs from the request to the reply. What a
+client measures beyond `total` is the network and the client itself.
+Errors carry no timing.
+
 ## Errors
 
 | Status | When |

@@ -367,6 +367,43 @@ fn asks_straum_cant_answer() {
     server.stop();
 }
 
+/// The phases of `Server-Timing`, if the reply has one.
+fn server_timing(head: &str) -> Option<Vec<(String, f64)>> {
+    let value = head
+        .lines()
+        .find_map(|l| l.strip_prefix("server-timing: "))?;
+    let phases = value.split(", ").map(|phase| {
+        let (name, dur) = phase.split_once(";dur=").unwrap();
+        (name.to_owned(), dur.parse().unwrap())
+    });
+    Some(phases.collect())
+}
+
+#[test]
+fn says_where_the_time_went() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "POST", "/ask", &first_hour());
+    assert_eq!(reply.status, 503);
+    assert_eq!(server_timing(&reply.head), None, "{}", reply.head);
+
+    writer.step().unwrap();
+    let reply = call(server.addr, "POST", "/ask", &first_hour());
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let phases = server_timing(&reply.head).expect("a Server-Timing header");
+    let names: Vec<&str> = phases.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["parse", "answer", "json", "total"]);
+    let total = phases[3].1;
+    for (name, ms) in &phases {
+        assert!((0.0..=total).contains(ms), "{name} took {ms} ms of {total}");
+    }
+
+    let reply = call(server.addr, "POST", "/ask", &ask("SELECT", "[]"));
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert_eq!(server_timing(&reply.head), None, "{}", reply.head);
+    server.stop();
+}
+
 #[test]
 fn routes() {
     let server = serve(writer().app().clone());
