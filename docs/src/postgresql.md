@@ -127,6 +127,6 @@ fact orders: ref customer joins customer_id (an integer) to id (text); they must
   right after the last fact loads.
 - One plain connection beside the replication connection, for the WAL
   position every second and the dim lookups of each transaction: one
-  keyed `SELECT` per ref, at most 1,000 keys a statement.
+  keyed `SELECT` per join, at most 1,000 keys a statement.
 - WAL decoding per replication connection, so run one Straum per database
   unless you need more.

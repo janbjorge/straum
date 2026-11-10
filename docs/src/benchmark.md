@@ -46,7 +46,7 @@ LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-Its rollup keeps 173,660 hour cells for the 2,964,624 trips, 17.1 trips
+The view keeps 173,660 hour cells for the 2,964,624 trips, 17.1 trips
 a cell, and 25,739 day and week cells.
 
 ## The asks
@@ -149,7 +149,7 @@ within 7% of these times.
   the query and writing JSON.
 - Straum answers only what the view keeps: these keys, on hour edges.
   PostgreSQL answers any query over the raw rows. Straum keeps its
-  rollup current as trips change; a rollup table in PostgreSQL would
+  cells current as trips change; a summary table in PostgreSQL would
   have to be rebuilt or maintained.
 
 ## Transactions
@@ -175,7 +175,7 @@ Most of the time goes to PostgreSQL decoding the transaction and Straum
 reading it, outside the lock; the lock itself is held for about 0.2 ms
 per 1,000 rows. Memory is what grows: the rows of a transaction wait in
 Straum until its commit, about 270 bytes each, so a million-row
-transaction holds seven times the whole taxi rollup. That sets the
+transaction holds seven times the whole taxi view. That sets the
 default of `--max-transaction-rows` at 100,000: a transaction at the cap
 holds the lock for 20 ms and 29 MiB, and anything larger is cheaper as
 a [reload](how-it-works.md#applying-a-commit), which takes the rows in
@@ -234,7 +234,7 @@ collapses 5.2 times.
 The same lever on a warehouse shape: tasks keyed by organization,
 whether the task is live, its group's category and its storage
 location's type, over hour buckets with a day width beside them. The
-category and the type are attributes of two refs, read from the group
+category and the type are columns of two dims, read from the group
 and location tables as each task comes in. The tables are a copy of a
 production database and are not in the repository: 13,116,878 tasks,
 5,690,651 task groups and 851,964 storage locations, 2,645 MiB of tasks
@@ -248,7 +248,7 @@ in PostgreSQL. One run on 2026-11-10, the machine and build of the
 
 Keyed by task group and storage location instead, the view would hold
 about a cell a task, 12 million a width: a group holds one task or two,
-and every task has its own hour. The attributes' few values collapse the
+and every task has its own hour. The dim columns' few values collapse the
 day width to 66 thousand cells.
 
 Straum was ready 19 s after it started and held 84 MiB: the cells, and
@@ -257,7 +257,7 @@ lookups of its own, as it did before joins moved to PostgreSQL, it held
 897 MiB and was ready in 8 s.
 
 Every ask equalled PostgreSQL after the load and after each streamed
-change. Each change is one transaction, applied once its attributes are
+change. Each change is one transaction, applied once its dim columns are
 looked up; the time runs from the commit until Straum had applied it:
 
 | Change | Rows | Applied |

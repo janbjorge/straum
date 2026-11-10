@@ -31,10 +31,10 @@ SELECT orders, revenue FROM orders
 ```
 
 - `FROM` names one view, with no schema, alias or join.
-- A key is a by column (`status`), a null-ness key by its name
-  (`shipped`), a ref's attribute (`customers.country`), or `bucket`, the
-  view's time bucket. A ref has no value of its own: ask for the fact
-  column it joins on (`customer_id`) or its attributes.
+- A key is a fact column (`status`), a null-ness key by its name
+  (`shipped`), a dim column (`customers.country`), or `bucket`, the
+  view's time bucket. A join has no value of its own: ask for the fact
+  column it joins on (`customer_id`) or the dim's columns.
 - Keys come first in `SELECT`, then measures, by name, each once, since
   they name the fields of each answer row. `GROUP BY` names exactly the
   selected keys. Without keys there is no `GROUP BY`.
@@ -89,7 +89,7 @@ buckets: Straum never answers for part of a bucket.
 Buckets are their start, in UTC. Measures print as the
 [measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
 sum, `69.995` for its avg of 139.99 over 2. A row whose dim row did not
-exist when it came in has null attributes, as a `LEFT JOIN` gives.
+exist when it came in has null dim columns, as a `LEFT JOIN` gives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in
