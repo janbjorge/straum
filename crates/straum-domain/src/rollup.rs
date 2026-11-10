@@ -5,7 +5,7 @@ use std::{iter, mem, panic, thread};
 use crate::agg::Agg;
 use crate::hash::FastMap;
 use crate::ident::Ident;
-use crate::spec::{Dim, Fact};
+use crate::spec::{Dim, Fact, Slot};
 use crate::value::{ColumnType, Datum};
 
 const TIME: usize = 0;
@@ -19,8 +19,9 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 #[derive(Debug)]
 pub struct Rollup {
     columns: Vec<Ident>,
-    /// By columns plus refs; they sit at row positions `1..=key_len`.
-    key_len: usize,
+    /// The row column each rollup-key slot codes, in [`Fact::rollup_key`]
+    /// order without the bucket.
+    key_columns: Vec<usize>,
     inputs: Vec<Input>,
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
@@ -217,14 +218,23 @@ pub(crate) enum Column {
 impl Rollup {
     pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
-        let key_len = fact.by.len() + fact.refs.len();
+        let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
+        let key_columns: Vec<usize> = fact
+            .rollup_key()
+            .filter_map(|slot| match slot {
+                Slot::Column(c) => Some(position(c)),
+                Slot::Bucket => None,
+            })
+            .collect();
         let mut inputs = Vec::new();
         for m in &fact.measures {
             let Some((kind, name)) = m.agg.state() else {
                 continue;
             };
-            let column = columns.iter().position(|c| c == name).expect(COLUMNS);
-            let input = Input { kind, column };
+            let input = Input {
+                kind,
+                column: position(name),
+            };
             if !inputs.contains(&input) {
                 inputs.push(input);
             }
@@ -238,9 +248,9 @@ impl Rollup {
             .collect();
         Rollup {
             levels,
-            key_len,
+            codes: key_columns.iter().map(|_| Codes::default()).collect(),
+            key_columns,
             inputs,
-            codes: (0..key_len).map(|_| Codes::default()).collect(),
             cells: 0,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
@@ -271,7 +281,7 @@ impl Rollup {
     }
 
     pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
-        self.types[1 + slot]
+        self.types[self.key_columns[slot]]
     }
 
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
@@ -317,7 +327,7 @@ impl Rollup {
         for row in &rows {
             self.code(row, &mut keys);
         }
-        let (key_len, inputs) = (self.key_len, &self.inputs);
+        let (key_len, inputs) = (self.key_columns.len(), &self.inputs);
         let add = |level: &mut Level| {
             (rows.iter().enumerate())
                 .map(|(r, row)| {
@@ -347,9 +357,8 @@ impl Rollup {
     /// start over.
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let key: Vec<u32> = (row[1..=self.key_len].iter())
-            .zip(&self.codes)
-            .map(|(value, codes)| codes.codes.get(value).copied())
+        let key: Vec<u32> = (self.key_columns.iter().zip(&self.codes))
+            .map(|(&column, codes)| codes.codes.get(&row[column]).copied())
             .collect::<Option<_>>()
             .ok_or(RowError::Missing)?;
         for (n, level) in self.levels.iter_mut().enumerate() {
@@ -459,9 +468,8 @@ impl Rollup {
 
     fn code(&mut self, row: &[Datum], key: &mut Vec<u32>) {
         key.extend(
-            (row[1..=self.key_len].iter())
-                .zip(&mut self.codes)
-                .map(|(value, codes)| codes.code(value)),
+            (self.key_columns.iter().zip(&mut self.codes))
+                .map(|(&column, codes)| codes.code(&row[column])),
         );
     }
 }
