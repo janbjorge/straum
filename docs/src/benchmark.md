@@ -272,3 +272,33 @@ cells by the category's three values and the location type's four
 instead, so the day width collapses 29 times and memory falls to a
 third; what remains is the hour cells and the dim rows Straum keeps for
 the lookups.
+
+The same view over a copy of the production tables themselves, bound at
+ingest only, the same day and machine: 13,116,878 tasks, 5,690,651 task
+groups, 851,964 storage locations, 2,645 MiB of tasks in PostgreSQL.
+Straum loaded in 8 s and held 897 MiB; every ask equalled PostgreSQL
+before and after the streamed changes.
+
+| Rollup | Cells |
+| --- | ---: |
+| 1 hour | 311,969 |
+| 1 day | 66,107 |
+
+The generated tables spread each organization's picks evenly over the
+hours and so held ten times the hour cells the real ones do: picks
+cluster in working hours. Memory did not fall with the cells, since most
+of it is the 6.5 million dim rows Straum keeps for the lookups. The
+asks, PostgreSQL run twice on the loaded tables and Straum the better
+of two:
+
+| Ask | Rows | PostgreSQL, first | PostgreSQL, second | Straum |
+| --- | ---: | ---: | ---: | ---: |
+| Picks by organization, one day | 44 | 24 ms | 12 ms | 0.3 ms |
+| Picks by organization and category, one week | 110 | 657 ms | 551 ms | 1.1 ms |
+| Live picks by location type, one day | 3 | 93 ms | 85 ms | 1.0 ms |
+| Picks per hour for one organization, one day | 16 | 7 ms | 4 ms | 0.3 ms |
+
+PostgreSQL has an index on `completed` here, and these are the plain
+queries the asks mirror, not the dashboard's own. Straum reads the
+cells of one width in the range whatever the question, so its time
+barely moves between them.

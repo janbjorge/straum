@@ -666,4 +666,5 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
   today; a `straum estimate` for cell counts, which `bench/pio` counts
   in SQL instead; per-table reload, and a chunked apply of one
   transaction. Dim rows kept for the lookups of attributes bound at
-  ingest are most of what memory an early-bound view still holds.
+  ingest are most of what memory an early-bound view still holds: 897
+  MiB on a copy of pio's tables, against the chart's 1Gi default.
