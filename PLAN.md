@@ -21,7 +21,8 @@ asks against them. Background and evidence: `research/`.
     much of `straum-domain`). Without rustup, set `LLVM_COV` and
     `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 - Code goes in with the commit that first uses it.
-- Add a dated line under Decisions when something is settled.
+- A settled decision gets a record in `docs/adr/` (ADR-0001). The
+  Decisions list below is being moved there.
 
 Code:
 
@@ -430,6 +431,8 @@ Tests:
   prints the error and `try: straum <command> --help`, never a manual,
   and a bare `straum` prints the command list on stderr with exit 2.
   The prose lives in the guide; help text names flags, not stories.
+- 2026-11-10: Decisions are recorded as ADRs in `docs/adr/`, one file
+  per decision (ADR-0001). This list moves there and then goes.
 
 ## M0: notation and domain model
 

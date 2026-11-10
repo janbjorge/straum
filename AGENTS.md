@@ -1,7 +1,7 @@
 # Straum: guide for AI coding agents
 
-[PLAN.md](PLAN.md) holds how we work and the dated decisions. It wins over
-this file.
+[PLAN.md](PLAN.md) holds how we work and the milestones; `docs/adr/`
+holds the settled decisions. They win over this file.
 
 ## Commands
 
@@ -39,7 +39,7 @@ plugin and kubeconform. For a change under `docs/`, also run
   dependency changes with `cargo tree --workspace -e normal`.
 - Comments say why, not what.
 - Every behaviour gets a positive and a negative test.
-- Settled decisions get a dated line under Decisions in PLAN.md.
+- A settled decision gets a record in `docs/adr/`; ADR-0001 says how.
 - Commit straight to `main`, one change per commit. No branches, no PRs.
 - Milestone commits are `Mx: <title>`, with coverage in the body. Other
   commits use a short imperative subject.
