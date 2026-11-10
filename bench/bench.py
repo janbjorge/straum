@@ -272,9 +272,9 @@ def build() -> str:
 
 
 @contextlib.asynccontextmanager
-async def serve(straum: str, dsn: str):
-    """`straum run`, once ready: a session to ask it, how long it took to
-    load, and its resident set in bytes."""
+async def serve(straum: str, dsn: str, *flags: str):
+    """`straum run` with `flags`, once ready: a session to ask it, how long
+    it took to load, and its resident set in bytes."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -286,6 +286,7 @@ async def serve(straum: str, dsn: str):
         SPEC,
         "--listen",
         f"127.0.0.1:{port}",
+        *flags,
         env=os.environ | {"STRAUM_DSN": dsn},
     )
     try:

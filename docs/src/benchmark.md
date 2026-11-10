@@ -23,6 +23,14 @@ tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
 the first answer that differs. A run takes under half a minute once the
 data is there.
 
+```sh
+bench/transaction.py
+```
+
+The same setup, then one transaction of 1,000 to 1,000,000 changed rows
+while a client asks Straum back to back: what a transaction costs Straum,
+under [Transactions](#transactions).
+
 ## The view
 
 `bench/trips.sql` is what a dashboard over these trips would declare:
@@ -162,6 +170,35 @@ How to read the table:
   PostgreSQL answers any query over the raw rows. Straum keeps its
   rollup current as trips change; a rollup table in PostgreSQL would
   have to be rebuilt or maintained.
+
+## Transactions
+
+Straum holds a transaction until its commit and applies it whole under
+its write lock, so its rows wait in memory and every ask waits for the
+apply. `bench/transaction.py` updates the fare of the first N trips in
+one transaction while asking for one day of hour buckets as fast as the
+answers come, and measures the time from the commit until Straum has
+applied it, the longest ask seen meanwhile, which is the lock hold as a
+client feels it, and how much Straum's resident set grew. One run on
+2026-11-10, the machine, build and PostgreSQL of the [Results](#results);
+Straum held 38 MiB after the load and an idle ask took 136 µs:
+
+| Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 5.1 ms | 331 µs | 1 MiB |
+| 10,000 | 43.3 ms | 2.4 ms | 3 MiB |
+| 100,000 | 356 ms | 22.5 ms | 29 MiB |
+| 1,000,000 | 3.9 s | 231 ms | 262 MiB |
+
+Most of the time goes to PostgreSQL decoding the transaction and Straum
+reading it, outside the lock; the lock itself is held for about 0.2 ms
+per 1,000 rows. Memory is what grows: the rows of a transaction wait in
+Straum until its commit, about 270 bytes each, so a million-row
+transaction holds seven times the whole taxi rollup. That sets the
+default of `--max-transaction-rows` at 100,000: a transaction at the cap
+holds the lock for 20 ms and 29 MiB, and anything larger is cheaper as
+a [reload](how-it-works.md#applying-a-commit), which takes the rows in
+through the bulk `COPY` instead.
 
 ## The whole view, end to end
 
