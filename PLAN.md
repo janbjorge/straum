@@ -341,6 +341,15 @@ Tests:
   option was only ever checked for existence and the fact table needs no
   primary key. `buckets` is the only view option. A spec that still says
   `WITH (key = ...)` is refused by name, with the reason.
+- 2026-11-10: A `timestamp` column, which has no zone, is a time column
+  too. Straum reads it as the Unix seconds its wall clock reading would be
+  in UTC, in binary `COPY` and in pgoutput text, so buckets, ask bounds
+  and printed buckets over it are wall clock, as `date_bin` makes them in
+  PostgreSQL. `ColumnType::Time { zoned }` tells the two apart, and the
+  `date_bin` origin must be the column's type (`timestamp 'epoch'` for a
+  `timestamp`), which the catalog checks: with the other origin PostgreSQL
+  would cast through the session zone and the view body would not mean
+  what Straum computes. No `AT TIME ZONE` in views.
 
 ## M0: notation and domain model
 
@@ -562,7 +571,8 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
 - [ ] Ask-time zones and the time keys `hour`, `day`, `week` and `month`,
       as the 2026-11-08 zone decision describes, through a zone parameter
       and new time keys beside `bucket`; the tz database comes back into
-      the binary
+      the binary. Over a `timestamp` column, which has no zone (M9), a
+      zone parameter is rejected by name: there is no instant to move
 - [x] The harness behind the Speed table in `docs/src/benchmark.md`,
       committed so it can be rerun: the hourly view, the index on
       `pickup_at` and the `roll` table, the four asks, the `pgbench` runs,

@@ -3,7 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Spec};
+use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -205,8 +205,8 @@ fn shape(query: &str) -> Error {
 /// What a column is for, which decides the types it may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
-    /// The fact's time column.
-    Time,
+    /// The fact's time column, of the type its `date_bin` origin has.
+    Time(Origin),
     /// A value straum sums, or keeps the least and greatest of.
     Number,
     /// A value straum groups, joins or counts distinct.
@@ -216,17 +216,32 @@ enum Role {
 impl Role {
     fn allows(self, column_type: ColumnType) -> bool {
         match self {
-            Role::Time => column_type == ColumnType::Time,
+            Role::Time(origin) => column_type == origin.column_type(),
             Role::Number => matches!(column_type, ColumnType::Int | ColumnType::Numeric { .. }),
-            Role::Key => column_type != ColumnType::Time,
+            Role::Key => !matches!(column_type, ColumnType::Time { .. }),
         }
     }
 
-    fn needs(self) -> &'static str {
+    /// What to change, after what the column is.
+    fn needs(self) -> String {
         match self {
-            Role::Time => "timestamptz",
-            Role::Number => "an integer type or numeric(p, s) with p at most 18",
-            Role::Key => "an integer type, numeric(p, s), boolean or text",
+            Role::Time(origin) => {
+                let other = match origin {
+                    Origin::Timestamptz => Origin::Timestamp,
+                    Origin::Timestamp => Origin::Timestamptz,
+                };
+                format!(
+                    "the date_bin origin {origin} needs {} there; for {} column, write {other}",
+                    origin.column_type(),
+                    other.column_type()
+                )
+            }
+            Role::Number => {
+                "straum needs an integer type or numeric(p, s) with p at most 18 there".into()
+            }
+            Role::Key => {
+                "straum needs an integer type, numeric(p, s), boolean or text there".into()
+            }
         }
     }
 }
@@ -314,7 +329,7 @@ pub(crate) fn check(
 
 /// Every column the fact reads, with what it is for.
 fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
-    let mut roles = vec![(&fact.time.column, Role::Time)];
+    let mut roles = vec![(&fact.time.column, Role::Time(fact.time.origin))];
     roles.extend(fact.by.iter().map(|c| (c, Role::Key)));
     roles.extend(fact.refs.iter().map(|r| (&r.via, Role::Key)));
     for m in &fact.measures {
@@ -397,7 +412,7 @@ fn check_table<'a>(
                 .filter(|k| role.allows(*k))
                 .ok_or_else(|| {
                     format!(
-                        "{name}: column {name_of} of {qualified} is {}; straum needs {} there",
+                        "{name}: column {name_of} of {qualified} is {}; {}",
                         c.type_name,
                         role.needs()
                     )

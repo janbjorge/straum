@@ -1,5 +1,7 @@
 use sqlparser::ast as sql;
-use straum_domain::{Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Measure, Ref, Table, Time};
+use straum_domain::{
+    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Table, Time,
+};
 
 use super::{SqlError, Walker, function_name, line};
 
@@ -309,7 +311,8 @@ impl Walker {
         let Some(time) = time else {
             self.error(
                 at,
-                "SELECT needs a bucket: date_bin('<n> <unit>', <column>, timestamptz 'epoch')"
+                "SELECT needs a bucket: date_bin('<n> <unit>', <column>, timestamptz 'epoch'), \
+                 or timestamp 'epoch' for a column without a zone"
                     .into(),
             );
             return None;
@@ -554,8 +557,10 @@ impl Walker {
         self.attrs.push((scope.refs[i].table.clone(), attr));
     }
 
-    /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`. The origin is
-    /// fixed so buckets start on UTC midnight, as straum's do.
+    /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`, or
+    /// `timestamp 'epoch'` for a column without a zone. The origin is fixed
+    /// so buckets start on midnight, as straum's do; which type it has, the
+    /// catalog checks against the column.
     fn bucket(&mut self, scope: &Scope, f: &sql::Function) -> Option<Time> {
         let at = line(f);
         self.absent(at, f.filter.is_some(), "FILTER on date_bin");
@@ -583,31 +588,34 @@ impl Walker {
                 format!("date_bin width {width}: use '<n> seconds|minutes|hours|days'"),
             );
         }
-        let epoch = matches!(
-            origin,
+        let epoch = match origin {
             sql::Expr::TypedString(sql::TypedString {
-                data_type: sql::DataType::Timestamp(None, sql::TimezoneInfo::Tz),
-                value: sql::ValueWithSpan {
-                    value: sql::Value::SingleQuotedString(s),
-                    span: _,
-                },
+                data_type: sql::DataType::Timestamp(None, zone),
+                value:
+                    sql::ValueWithSpan {
+                        value: sql::Value::SingleQuotedString(s),
+                        span: _,
+                    },
                 uses_odbc_syntax: false,
-            }) if s == "epoch"
-        );
-        if !epoch {
+            }) if s == "epoch" => match zone {
+                sql::TimezoneInfo::Tz => Some(Origin::Timestamptz),
+                sql::TimezoneInfo::None => Some(Origin::Timestamp),
+                sql::TimezoneInfo::WithTimeZone | sql::TimezoneInfo::WithoutTimeZone => None,
+            },
+            _ => None,
+        };
+        if epoch.is_none() {
             self.error(
                 line(origin),
-                format!("date_bin origin {origin}: use timestamptz 'epoch'"),
+                format!("date_bin origin {origin}: use timestamptz 'epoch' or timestamp 'epoch'"),
             );
         }
         let column = self.fact_column(scope, column, "the date_bin column")?;
-        if !epoch {
-            return None;
-        }
         Some(Time {
             column,
             grain: grain?,
             buckets: Vec::new(),
+            origin: epoch?,
         })
     }
 

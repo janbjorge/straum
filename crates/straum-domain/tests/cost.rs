@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Ref, Spec, Store, Table,
-    Time, TimeKey,
+    Agg, Ask, AskKey, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Spec, Store,
+    Table, Time, TimeKey,
 };
 
 thread_local! {
@@ -87,6 +87,7 @@ fn spec(buckets: &[u32]) -> Spec {
             column: id("at"),
             grain: Grain(HOUR),
             buckets: buckets.iter().map(|h| Grain(h * HOUR)).collect(),
+            origin: Origin::Timestamptz,
         },
         refs: vec![Ref {
             name: id("pickup"),

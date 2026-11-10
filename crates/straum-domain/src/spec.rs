@@ -4,6 +4,7 @@ use std::iter;
 
 use crate::agg::Agg;
 use crate::ident::Ident;
+use crate::value::ColumnType;
 
 /// Seconds per day. Every grain divides it, so buckets roll up to days.
 const DAY: u32 = 86_400;
@@ -50,6 +51,36 @@ pub struct Time {
     /// whole multiple of the width before it, so one of its buckets is made
     /// of whole buckets of every narrower width.
     pub buckets: Vec<Grain>,
+    pub origin: Origin,
+}
+
+/// The `date_bin` origin, which must be of the time column's type: with a
+/// `timestamp` column, PostgreSQL would cast a `timestamptz 'epoch'`
+/// through the session zone, and the view body would not mean what straum
+/// computes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Timestamptz,
+    Timestamp,
+}
+
+impl Origin {
+    /// The column type that goes with this origin.
+    pub fn column_type(self) -> ColumnType {
+        match self {
+            Origin::Timestamptz => ColumnType::Time { zoned: true },
+            Origin::Timestamp => ColumnType::Time { zoned: false },
+        }
+    }
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Origin::Timestamptz => "timestamptz 'epoch'",
+            Origin::Timestamp => "timestamp 'epoch'",
+        })
+    }
 }
 
 /// Bucket width in seconds.

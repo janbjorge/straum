@@ -88,6 +88,30 @@ ALTER TABLE $S.logins REPLICA IDENTITY FULL;
 CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 ";
 
+/// A warehouse-shaped spec: tasks per hour and organization over a
+/// `timestamp` column, which has no zone. `$S` is the test's schema.
+const TASKS_SPEC: &str = "
+CREATE VIEW tasks WITH (buckets = '1 day') AS
+SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+       f.organization_id,
+       count(*) AS tasks,
+       sum(f.picks) AS picks,
+       max(f.picks) AS picks_max
+FROM $S.tasks f
+GROUP BY 1, 2;
+";
+
+const TASKS: &str = "
+CREATE TABLE $S.tasks (
+    task_id int PRIMARY KEY,
+    organization_id int,
+    created timestamp NOT NULL,
+    picks int
+);
+ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
+CREATE PUBLICATION $S FOR TABLE $S.tasks;
+";
+
 /// The last of each holds what `COPY` escapes, so loads read escapes back.
 const BOROUGHS: [&str; 4] = ["Manhattan", "Queens", "Bronx", "Bø\tro\\ugh\n"];
 const KINDS: [&str; 4] = ["cab", "pool", "van", "e\\bike\r\x08\x0b\x0c"];
@@ -420,6 +444,39 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
     vec![trips, logins, window]
 }
 
+/// The tasks spec's oracles: by bucket and organization, then without the
+/// bucket over a window that cuts the day bucket `START` begins. A
+/// `timestamp` has no zone, so the window's bounds are wall clock in UTC.
+fn task_oracles() -> Vec<Oracle> {
+    const MEASURES: [&str; 3] = ["tasks", "picks", "picks_max"];
+    let by_bucket = Oracle {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, organization_id, tasks, picks, picks_max
+               FROM ({}) v",
+            body(TASKS_SPEC, "tasks")
+        ),
+        ask: ask("tasks", &MEASURES, &["bucket", "organization_id"]),
+        scales: vec![0, 0, 0, 0, 0],
+    };
+    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
+    let window = Oracle {
+        sql: format!(
+            "SELECT f.organization_id, count(*), sum(f.picks), max(f.picks)
+               FROM $S.tasks f
+              WHERE f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+              GROUP BY 1"
+        ),
+        ask: Ask {
+            from,
+            to,
+            ..ask("tasks", &MEASURES, &["organization_id"])
+        },
+        scales: vec![0, 0, 0, 0],
+    };
+    vec![by_bucket, window]
+}
+
 /// Asks straum what each oracle's SQL answers in PostgreSQL and compares the
 /// rows. `None` when straum isn't ready.
 fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
@@ -517,6 +574,19 @@ impl Rng {
     fn toll(&mut self) -> String {
         let toll = format!("{}.{}", self.below(20), self.below(10));
         self.or_null(toll)
+    }
+
+    /// A task row over a `timestamp` column: the literal is the UTC wall
+    /// clock of `at`, whatever zone the session has.
+    fn task(&mut self, id: u64) -> String {
+        let at = START + self.below(self.hours * 3_600) as i64;
+        let organization = 1 + self.below(3);
+        let picks = self.below(50).to_string();
+        format!(
+            "INSERT INTO $S.tasks VALUES ({id}, {organization}, \
+             to_timestamp({at}) AT TIME ZONE 'UTC', {});",
+            self.or_null(picks)
+        )
     }
 
     fn trip(&mut self, id: u64) -> String {
@@ -628,6 +698,50 @@ fn follows_the_database() {
         }
     }
     assert!(compared > 100, "compared only {compared} times");
+}
+
+#[test]
+fn follows_a_table_with_naive_times() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "naive_time", TASKS);
+    // The comparison session is far from UTC, so a value that went through
+    // a zone on either side would show.
+    db.run("SET TIME ZONE 'Europe/Oslo'");
+    let mut rng = Rng::new(17);
+    for id in 0..200 {
+        db.run(&rng.task(id));
+    }
+    // On a bucket edge, and a microsecond before it.
+    db.run(&format!(
+        "INSERT INTO $S.tasks VALUES
+           (1000, 1, to_timestamp({START}) AT TIME ZONE 'UTC', 1),
+           (1001, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', 1)"
+    ));
+    let mut writer = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
+    let edges = Ask {
+        from: START - 3_600,
+        to: START + 3_600,
+        ..ask("tasks", &["tasks"], &["bucket"])
+    };
+    let answered = writer.app().ask(&edges).unwrap();
+    assert_eq!(answered.answer.rows.len(), 2);
+    assert_eq!(
+        answered.answer.rows[0],
+        (vec![Datum::Int(START - 3_600)], vec![Value::Int(1)])
+    );
+    assert_eq!(answered.answer.rows[1].0, [Datum::Int(START)]);
+
+    for id in 200..230 {
+        db.run(&rng.task(id));
+        applied(&mut writer);
+    }
+    db.run("UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0");
+    applied(&mut writer);
+    db.run("DELETE FROM $S.tasks WHERE task_id % 11 = 0");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &task_oracles()).expect("ready");
 }
 
 #[test]
@@ -1195,7 +1309,24 @@ fn setup_problems_say_what_to_fix() {
             "naive",
             format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamp, x int); {publish}"),
             spec.clone(),
-            "f: column at of naive.f is timestamp without time zone; straum needs timestamptz there",
+            "f: column at of naive.f is timestamp without time zone; the date_bin origin \
+             timestamptz 'epoch' needs a timestamptz there; for a timestamp column, \
+             write timestamp 'epoch'",
+        ),
+        (
+            "zoned",
+            format!("{table} {publish}"),
+            spec.replace("timestamptz 'epoch'", "timestamp 'epoch'"),
+            "f: column at of zoned.f is timestamp with time zone; the date_bin origin \
+             timestamp 'epoch' needs a timestamp there; for a timestamptz column, \
+             write timestamptz 'epoch'",
+        ),
+        (
+            "notime",
+            format!("{} {publish}", fact("x int, k timestamptz", "").0),
+            spec.replace("t.at", "t.x"),
+            "f: column x of notime.f is integer; the date_bin origin timestamptz 'epoch' \
+             needs a timestamptz there; for a timestamp column, write timestamp 'epoch'",
         ),
         (
             "timekey",
@@ -1204,6 +1335,15 @@ fn setup_problems_say_what_to_fix() {
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "f: column k of timekey.f is timestamp with time zone; \
+             straum needs an integer type, numeric(p, s), boolean or text there",
+        ),
+        (
+            "naivekey",
+            format!("{} {publish}", fact("x int, k timestamp", "").0),
+            fact("", "t.k, count(*) AS n")
+                .1
+                .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            "f: column k of naivekey.f is timestamp without time zone; \
              straum needs an integer type, numeric(p, s), boolean or text there",
         ),
         (
@@ -1333,23 +1473,30 @@ fn binary_copies_read_as_text_does() {
         ColumnType::Text,
         ColumnType::Text,
         ColumnType::Text,
-        ColumnType::Time,
+        ColumnType::Time { zoned: true },
+        ColumnType::Time { zoned: false },
     ];
+    // The session zone must not reach a timestamp's value in either form.
     conn.execute(
-        "CREATE TABLE every (a int2, b int4, c int8, d numeric(10, 2), e numeric(18, 0),
+        "SET TIME ZONE 'Europe/Oslo';
+         CREATE TABLE every (a int2, b int4, c int8, d numeric(10, 2), e numeric(18, 0),
                              f numeric(18, 4), g boolean, h text, i varchar(5), j char(4),
-                             k timestamptz);
+                             k timestamptz, l timestamp);
          INSERT INTO every VALUES
            (-32768, 2147483647, -9223372036854775808, -12345678.9, 999999999999999999,
-            0.0001, true, E'tab\\there\\\\ ø', 'abc', 'ab', '2024-02-29 13:47:05.999999+00'),
-           (0, 0, 0, 0, 0, 12345678901234.5678, false, '', '', '', '1969-12-31 23:59:59.5+00'),
-           (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
-           (1, 1, 1, 0.01, -1, -0.5, true, 'x', 'xxxxx', 'xxxx', '0001-01-01 00:00:00+00'),
+            0.0001, true, E'tab\\there\\\\ ø', 'abc', 'ab', '2024-02-29 13:47:05.999999+00',
+            '2024-02-29 13:47:05.999999'),
+           (0, 0, 0, 0, 0, 12345678901234.5678, false, '', '', '', '1969-12-31 23:59:59.5+00',
+            '1969-12-31 23:59:59.5'),
+           (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+           (1, 1, 1, 0.01, -1, -0.5, true, 'x', 'xxxxx', 'xxxx', '0001-01-01 00:00:00+00',
+            '0001-01-01 00:00:00'),
            (2, 2, 2, 99999999.99, 10000, 100000000, false, 'y', 'y', 'y',
-            '294276-12-31 23:59:59+00');",
+            '294276-12-31 23:59:59+00', '294276-12-31 23:59:59');
+         SET TIME ZONE 'UTC';",
     )
     .unwrap();
-    let columns = "a, b, c, d, e, f, g, h, i, j, k";
+    let columns = "a, b, c, d, e, f, g, h, i, j, k, l";
     let mut texts = Vec::new();
     conn.query(&format!("SELECT {columns} FROM every"), |fields| {
         let row = types.iter().zip(fields).map(|(column_type, field)| {

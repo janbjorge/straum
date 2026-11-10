@@ -284,6 +284,10 @@ impl Rollup {
         self.types[self.key_columns[slot]]
     }
 
+    pub(crate) fn time_type(&self) -> ColumnType {
+        self.types[TIME]
+    }
+
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
         let input = agg.input().map_or(0, |c| {
             self.types[self.columns.iter().position(|n| n == c).expect(COLUMNS)].scale()

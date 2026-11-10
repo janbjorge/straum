@@ -258,7 +258,7 @@ impl<'a> Source<'a> {
         match *self {
             Source::Slot(slot) => rollup.key_type(slot),
             Source::Dim { table, column, .. } => table.column_type(column),
-            Source::Time(..) => ColumnType::Time,
+            Source::Time(..) => rollup.time_type(),
         }
     }
 

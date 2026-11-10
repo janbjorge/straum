@@ -17,7 +17,7 @@ pub type Row = Vec<Datum>;
 /// columns alike.
 pub fn type_of(column: &Ident) -> ColumnType {
     match column.as_str() {
-        "at" => ColumnType::Time,
+        "at" => ColumnType::Time { zoned: true },
         "borough" | "rider" => ColumnType::Text,
         _ => ColumnType::Int,
     }

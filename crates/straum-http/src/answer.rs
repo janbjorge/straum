@@ -13,7 +13,9 @@
 //! - `as_of`: every commit made before it, by straum's clock, is in the
 //!   answer.
 //! - `rows`: one object per group, keyed by the names the ask selected.
-//! - Time keys are RFC 3339 in UTC. Numeric values are exact decimals in
+//! - Time keys are RFC 3339 in UTC; over a `timestamp` column, which has no
+//!   zone, they are the wall clock reading with a `Z`. Numeric values are
+//!   exact decimals in
 //!   their column's scale; avg is rounded half to even at four places
 //!   past it, with trailing zeros dropped.
 //!

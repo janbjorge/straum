@@ -15,6 +15,7 @@ const INT4: u32 = 23;
 const TEXT: u32 = 25;
 const BPCHAR: u32 = 1042;
 const VARCHAR: u32 = 1043;
+const TIMESTAMP: u32 = 1114;
 const TIMESTAMPTZ: u32 = 1184;
 const NUMERIC: u32 = 1700;
 
@@ -37,8 +38,9 @@ const NUMERIC_NEG: u16 = 0x4000;
 
 /// How straum reads a column of this type: `int2`, `int4` and `int8` as
 /// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
-/// `10^-s`, `text`, `varchar` and `bpchar` as text, and `timestamptz` as
-/// Unix seconds, rounded down. `None` for a type straum doesn't read.
+/// `10^-s`, `text`, `varchar` and `bpchar` as text, `timestamptz` as Unix
+/// seconds, rounded down, and `timestamp` as the Unix seconds its wall
+/// clock reading would be in UTC. `None` for a type straum doesn't read.
 pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
     match type_oid {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
@@ -53,7 +55,8 @@ pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
         }
         BOOL => Some(ColumnType::Bool),
         TEXT | VARCHAR | BPCHAR => Some(ColumnType::Text),
-        TIMESTAMPTZ => Some(ColumnType::Time),
+        TIMESTAMPTZ => Some(ColumnType::Time { zoned: true }),
+        TIMESTAMP => Some(ColumnType::Time { zoned: false }),
         _ => None,
     }
 }
@@ -70,7 +73,7 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
             _ => None,
         },
         ColumnType::Text => Some(Datum::Text(text.into())),
-        ColumnType::Time => timestamptz(text).map(Datum::Int),
+        ColumnType::Time { zoned } => timestamp(text, zoned).map(Datum::Int),
     };
     datum.ok_or_else(|| ValueError::new(column_type, text))
 }
@@ -88,7 +91,9 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
             _ => None,
         },
         ColumnType::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
-        ColumnType::Time => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
+        // Both types are microseconds since 2000-01-01, a `timestamp`'s
+        // read as if UTC.
+        ColumnType::Time { .. } => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
             // `infinity` and `-infinity`.
             Ok(i64::MIN | i64::MAX) | Err(_) => None,
             Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
@@ -177,17 +182,20 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
 }
 
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
-/// read, though straum always asks for UTC. `BC` dates and `infinity` are
-/// `None`.
-fn timestamptz(text: &str) -> Option<i64> {
+/// read, though straum always asks for UTC. A `timestamp` has no offset,
+/// and its text must have none. `BC` dates and `infinity` are `None`.
+fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     let (date, rest) = text.split_once(' ')?;
     let (year, date) = date.rsplit_once('-').and_then(|(ym, day)| {
         let (year, month) = ym.rsplit_once('-')?;
         Some((year, (month, day)))
     })?;
     let (month, day) = date;
-    let offset_at = rest.find(['+', '-'])?;
-    let (clock, offset) = rest.split_at(offset_at);
+    let (clock, offset) = match rest.find(['+', '-']) {
+        Some(at) if zoned => rest.split_at(at),
+        None if !zoned => (rest, ""),
+        _ => return None,
+    };
     let (clock, _fraction) = clock.split_once('.').unwrap_or((clock, ""));
     let mut clock = clock.split(':');
     let mut field = |max: i64| {
@@ -200,7 +208,8 @@ fn timestamptz(text: &str) -> Option<i64> {
     }
     let days = days_from_civil(number(year)?, number(month)?, number(day)?)?;
     let seconds = days * SECONDS_PER_DAY + hour * 3_600 + minute * 60 + second;
-    Some(seconds - offset_seconds(offset)?)
+    let offset = if zoned { offset_seconds(offset)? } else { 0 };
+    Some(seconds - offset)
 }
 
 /// `+05:30` is 19800 seconds.
@@ -314,11 +323,11 @@ mod tests {
             (TEXT, -1, Some(ColumnType::Text)),
             (VARCHAR, 14, Some(ColumnType::Text)),
             (BPCHAR, 7, Some(ColumnType::Text)),
-            (TIMESTAMPTZ, -1, Some(ColumnType::Time)),
-            // float8, uuid, timestamp, date
+            (TIMESTAMPTZ, -1, Some(ColumnType::Time { zoned: true })),
+            (TIMESTAMP, -1, Some(ColumnType::Time { zoned: false })),
+            // float8, uuid, date
             (701, -1, None),
             (2950, -1, None),
-            (1114, -1, None),
             (1082, -1, None),
         ];
         for (oid, typmod, column_type) in cases {
@@ -329,6 +338,8 @@ mod tests {
     #[test]
     fn reads_values() {
         let text = |s: &str| Datum::Text(s.into());
+        let zoned = ColumnType::Time { zoned: true };
+        let naive = ColumnType::Time { zoned: false };
         let cases = [
             (ColumnType::Int, "-42", Datum::Int(-42)),
             (ColumnType::Int, "9223372036854775807", Datum::Int(i64::MAX)),
@@ -341,43 +352,37 @@ mod tests {
             (ColumnType::Text, "Upper East Side", text("Upper East Side")),
             (ColumnType::Text, "", text("")),
             // Expected values from `date -u -d ... +%s`.
+            (zoned, "2024-01-15 10:30:00+00", Datum::Int(1_705_314_600)),
             (
-                ColumnType::Time,
-                "2024-01-15 10:30:00+00",
-                Datum::Int(1_705_314_600),
-            ),
-            (
-                ColumnType::Time,
+                zoned,
                 "2024-02-29 13:47:05.999+00",
                 Datum::Int(1_709_214_425),
             ),
             (
-                ColumnType::Time,
+                zoned,
                 "2024-01-15 16:00:00+05:30",
                 Datum::Int(1_705_314_600),
             ),
+            (zoned, "2024-01-15 05:30:00-05", Datum::Int(1_705_314_600)),
+            (zoned, "1970-01-01 00:00:00+00", Datum::Int(0)),
+            (zoned, "1969-12-31 23:59:59.5+00", Datum::Int(-1)),
+            (zoned, "1900-03-01 00:00:00+00", Datum::Int(-2_203_891_200)),
             (
-                ColumnType::Time,
-                "2024-01-15 05:30:00-05",
-                Datum::Int(1_705_314_600),
-            ),
-            (ColumnType::Time, "1970-01-01 00:00:00+00", Datum::Int(0)),
-            (ColumnType::Time, "1969-12-31 23:59:59.5+00", Datum::Int(-1)),
-            (
-                ColumnType::Time,
-                "1900-03-01 00:00:00+00",
-                Datum::Int(-2_203_891_200),
-            ),
-            (
-                ColumnType::Time,
+                zoned,
                 "12345-06-07 00:00:00+00",
                 Datum::Int(327_416_947_200),
             ),
             (
-                ColumnType::Time,
+                zoned,
                 "1901-12-13 20:45:52+00:00:08",
                 Datum::Int(-2_147_483_656),
             ),
+            // A timestamp reads as the wall clock in UTC, whatever zone the
+            // session has.
+            (naive, "2024-01-15 10:30:00", Datum::Int(1_705_314_600)),
+            (naive, "2024-02-29 13:47:05.999", Datum::Int(1_709_214_425)),
+            (naive, "1969-12-31 23:59:59.5", Datum::Int(-1)),
+            (naive, "0001-01-01 00:00:00", Datum::Int(-62_135_596_800)),
         ];
         for (column_type, text, datum) in cases {
             assert_eq!(read(column_type, text), Ok(datum), "{column_type} {text}");
@@ -386,6 +391,8 @@ mod tests {
 
     #[test]
     fn rejects_values() {
+        let zoned = ColumnType::Time { zoned: true };
+        let naive = ColumnType::Time { zoned: false };
         let cases = [
             (ColumnType::Int, "1.5"),
             (ColumnType::Int, "9223372036854775808"),
@@ -400,27 +407,35 @@ mod tests {
             (ColumnType::Numeric { scale: 0 }, "92233720368547758070"),
             (ColumnType::Numeric { scale: 0 }, "9223372036854775808"),
             (ColumnType::Bool, "true"),
-            (ColumnType::Time, "infinity"),
-            (ColumnType::Time, "-infinity"),
-            (ColumnType::Time, "0044-03-15 12:00:00+00 BC"),
-            (ColumnType::Time, "2024-13-01 00:00:00+00"),
-            (ColumnType::Time, "2024-00-01 00:00:00+00"),
-            (ColumnType::Time, "2024-01-32 00:00:00+00"),
-            (ColumnType::Time, "2024-01-00 00:00:00+00"),
-            (ColumnType::Time, "2024-01-01 24:00:00+00"),
-            (ColumnType::Time, "2024-01-01 00:60:00+00"),
-            (ColumnType::Time, "2024-01-01 00:00:61+00"),
-            (ColumnType::Time, "2024-01-01 00:00+00"),
-            (ColumnType::Time, "2024-01-01 00:00:00:00+00"),
-            (ColumnType::Time, "2024-01-01 00:00:00"),
-            (ColumnType::Time, "2024-01-01T00:00:00+00"),
-            (ColumnType::Time, "2024-01 00:00:00+00"),
-            (ColumnType::Time, "2024-01-01 0a:00:00+00"),
-            (ColumnType::Time, "2024-01-01 00:00:00+0a"),
-            (ColumnType::Time, "2024-01-01 00:00:00+00:0a"),
-            (ColumnType::Time, "2024-01-01 00:00:00+00:00:0a"),
-            (ColumnType::Time, "2024-01-01 00:00:00+00:00:00:00"),
-            (ColumnType::Time, "2024-01-01 00:00:00+"),
+            (zoned, "infinity"),
+            (zoned, "-infinity"),
+            (zoned, "0044-03-15 12:00:00+00 BC"),
+            (zoned, "2024-13-01 00:00:00+00"),
+            (zoned, "2024-00-01 00:00:00+00"),
+            (zoned, "2024-01-32 00:00:00+00"),
+            (zoned, "2024-01-00 00:00:00+00"),
+            (zoned, "2024-01-01 24:00:00+00"),
+            (zoned, "2024-01-01 00:60:00+00"),
+            (zoned, "2024-01-01 00:00:61+00"),
+            (zoned, "2024-01-01 00:00+00"),
+            (zoned, "2024-01-01 00:00:00:00+00"),
+            (zoned, "2024-01-01 00:00:00"),
+            (zoned, "2024-01-01T00:00:00+00"),
+            (zoned, "2024-01 00:00:00+00"),
+            (zoned, "2024-01-01 0a:00:00+00"),
+            (zoned, "2024-01-01 00:00:00+0a"),
+            (zoned, "2024-01-01 00:00:00+00:0a"),
+            (zoned, "2024-01-01 00:00:00+00:00:0a"),
+            (zoned, "2024-01-01 00:00:00+00:00:00:00"),
+            (zoned, "2024-01-01 00:00:00+"),
+            // A timestamp never carries an offset; one that does was read
+            // under the wrong type.
+            (naive, "2024-01-01 00:00:00+00"),
+            (naive, "2024-01-01 00:00:00-05"),
+            (naive, "infinity"),
+            (naive, "0044-03-15 12:00:00 BC"),
+            (naive, "2024-01-01 00:00"),
+            (naive, "2024-01-01"),
         ];
         for (column_type, text) in cases {
             assert_eq!(
@@ -453,6 +468,8 @@ mod tests {
     fn reads_binary_values() {
         let cents = ColumnType::Numeric { scale: 2 };
         let whole = ColumnType::Numeric { scale: 0 };
+        let zoned = ColumnType::Time { zoned: true };
+        let naive = ColumnType::Time { zoned: false };
         let cases = [
             (ColumnType::Int, 7_i16.to_be_bytes().to_vec(), Datum::Int(7)),
             (
@@ -496,18 +513,20 @@ mod tests {
                 Datum::Text("Bø".into()),
             ),
             (ColumnType::Text, vec![], Datum::Text("".into())),
-            (ColumnType::Time, micros(PG_EPOCH, 0), Datum::Int(PG_EPOCH)),
+            (zoned, micros(PG_EPOCH, 0), Datum::Int(PG_EPOCH)),
+            (zoned, micros(PG_EPOCH, -1), Datum::Int(PG_EPOCH - 1)),
             (
-                ColumnType::Time,
-                micros(PG_EPOCH, -1),
-                Datum::Int(PG_EPOCH - 1),
-            ),
-            (
-                ColumnType::Time,
+                zoned,
                 micros(1_705_314_600, 500_000),
                 Datum::Int(1_705_314_600),
             ),
-            (ColumnType::Time, micros(-1, 500_000), Datum::Int(-1)),
+            (zoned, micros(-1, 500_000), Datum::Int(-1)),
+            (
+                naive,
+                micros(1_705_314_600, 999_999),
+                Datum::Int(1_705_314_600),
+            ),
+            (naive, micros(-1, 500_000), Datum::Int(-1)),
         ];
         for (column_type, bytes, datum) in cases {
             assert_eq!(
@@ -543,9 +562,19 @@ mod tests {
             (ColumnType::Bool, vec![2]),
             (ColumnType::Bool, vec![]),
             (ColumnType::Text, vec![0xff]),
-            (ColumnType::Time, i64::MAX.to_be_bytes().to_vec()),
-            (ColumnType::Time, i64::MIN.to_be_bytes().to_vec()),
-            (ColumnType::Time, vec![0; 4]),
+            (
+                ColumnType::Time { zoned: true },
+                i64::MAX.to_be_bytes().to_vec(),
+            ),
+            (
+                ColumnType::Time { zoned: true },
+                i64::MIN.to_be_bytes().to_vec(),
+            ),
+            (
+                ColumnType::Time { zoned: false },
+                i64::MAX.to_be_bytes().to_vec(),
+            ),
+            (ColumnType::Time { zoned: true }, vec![0; 4]),
         ];
         for (column_type, bytes) in cases {
             assert_eq!(
@@ -571,7 +600,16 @@ mod tests {
             ),
             (ColumnType::Bool, "x", r#"can't read "x" as a boolean"#),
             (ColumnType::Text, "x", r#"can't read "x" as text"#),
-            (ColumnType::Time, "x", r#"can't read "x" as a timestamptz"#),
+            (
+                ColumnType::Time { zoned: true },
+                "x",
+                r#"can't read "x" as a timestamptz"#,
+            ),
+            (
+                ColumnType::Time { zoned: false },
+                "x",
+                r#"can't read "x" as a timestamp"#,
+            ),
         ];
         for (column_type, text, msg) in cases {
             assert_eq!(ValueError::new(column_type, text).to_string(), msg);

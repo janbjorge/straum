@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
     Agg, Answer, AnswerColumn, Ask, AskError, AskKey, ColumnType, Cond, Datum, Dim, Fact, Grain,
-    Ident, KeyPath, Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
+    Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Spec, Store, Table, Time, TimeKey,
+    Value,
 };
 
 const GRAIN: u32 = 900;
@@ -98,6 +99,7 @@ fn spec() -> Spec {
             grain: Grain(GRAIN),
             // Hours, days and weeks, so random ranges read every width.
             buckets: vec![Grain(3_600), Grain(86_400), Grain(604_800)],
+            origin: Origin::Timestamptz,
         },
         refs: vec![
             Ref {
@@ -309,7 +311,7 @@ fn trip_types() -> Vec<ColumnType> {
         scale: TRIP_SCALES + column as u32,
     };
     vec![
-        ColumnType::Time,
+        ColumnType::Time { zoned: true },
         ColumnType::Int,
         ColumnType::Int,
         ColumnType::Bool,

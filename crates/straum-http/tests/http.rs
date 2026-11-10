@@ -56,7 +56,7 @@ impl Source for Script {
         thread::sleep(self.pause);
         // at, kind, zone_id, fare.
         rollup.set_types(&[
-            ColumnType::Time,
+            ColumnType::Time { zoned: true },
             ColumnType::Int,
             ColumnType::Int,
             ColumnType::Numeric { scale: 2 },

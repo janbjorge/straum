@@ -14,7 +14,12 @@ pub enum ColumnType {
     },
     Bool,
     Text,
-    Time,
+    /// Unix seconds. A `timestamptz` is an instant. A `timestamp` has no
+    /// zone, so it is kept as the seconds its wall-clock reading would be
+    /// in UTC, and buckets and asks over it are wall clock too.
+    Time {
+        zoned: bool,
+    },
 }
 
 impl ColumnType {
@@ -45,7 +50,8 @@ impl fmt::Display for ColumnType {
             ColumnType::Numeric { scale } => write!(f, "a numeric of scale {scale}"),
             ColumnType::Bool => f.write_str("a boolean"),
             ColumnType::Text => f.write_str("text"),
-            ColumnType::Time => f.write_str("a timestamptz"),
+            ColumnType::Time { zoned: true } => f.write_str("a timestamptz"),
+            ColumnType::Time { zoned: false } => f.write_str("a timestamp"),
         }
     }
 }
@@ -98,7 +104,8 @@ mod tests {
             ColumnType::Numeric { scale: 2 },
             ColumnType::Bool,
             ColumnType::Text,
-            ColumnType::Time,
+            ColumnType::Time { zoned: true },
+            ColumnType::Time { zoned: false },
         ];
         let values = [
             Literal::Int(1),
@@ -131,7 +138,8 @@ mod tests {
             ColumnType::Numeric { scale: 2 },
             ColumnType::Bool,
             ColumnType::Text,
-            ColumnType::Time,
+            ColumnType::Time { zoned: true },
+            ColumnType::Time { zoned: false },
         ]
         .map(|t| t.to_string());
         assert_eq!(
@@ -141,7 +149,8 @@ mod tests {
                 "a numeric of scale 2",
                 "a boolean",
                 "text",
-                "a timestamptz"
+                "a timestamptz",
+                "a timestamp"
             ]
         );
         let scales = [ColumnType::Numeric { scale: 3 }, ColumnType::Int].map(ColumnType::scale);

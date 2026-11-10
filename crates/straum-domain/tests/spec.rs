@@ -2,8 +2,8 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Ref, Spec, SpecError, Table,
-    Time,
+    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec, SpecError,
+    Table, Time,
 };
 
 fn id(s: &str) -> Ident {
@@ -34,6 +34,7 @@ fn fact() -> Fact {
             column: id("at"),
             grain: Grain(3_600),
             buckets: vec![],
+            origin: Origin::Timestamptz,
         },
         refs: vec![Ref {
             name: id("r"),

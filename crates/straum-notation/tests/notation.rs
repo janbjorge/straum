@@ -1,6 +1,6 @@
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Cond, Grain, Ident, KeyPath, Literal, Slot, Spec, SpecError,
-    TimeKey,
+    Agg, Ask, AskError, AskKey, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot, Spec,
+    SpecError, TimeKey,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -253,6 +253,7 @@ fn base_parses() {
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, id("z_id"));
     assert!(t.time.buckets.is_empty());
+    assert_eq!(t.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
     assert_eq!((&z.key, &z.attrs[..]), (&id("id"), &[id("name")][..]));
 }
@@ -278,6 +279,17 @@ fn buckets_parse() {
             below: 3_600
         }]
     );
+}
+
+/// A column without a zone takes `timestamp 'epoch'`; which one the column
+/// is, the catalog checks.
+#[test]
+fn naive_origin_parses() {
+    let spec = parse(&base("timestamptz 'epoch'", "timestamp 'epoch'")).unwrap();
+    let time = &spec.fact("t").unwrap().time;
+    assert_eq!(time.origin, Origin::Timestamp);
+    assert_eq!(time.origin.to_string(), "timestamp 'epoch'");
+    assert_eq!(Origin::Timestamptz.to_string(), "timestamptz 'epoch'");
 }
 
 #[test]
@@ -972,11 +984,17 @@ fn rejects_everything_outside_the_subset() {
             "timestamptz 'epoch'",
             "'epoch'",
             2,
-            "date_bin origin 'epoch': use timestamptz 'epoch'",
+            "date_bin origin 'epoch': use timestamptz 'epoch' or timestamp 'epoch'",
         ),
         (
             "timestamptz 'epoch'",
-            "timestamp 'epoch'",
+            "timestamp with time zone 'epoch'",
+            2,
+            "date_bin origin",
+        ),
+        (
+            "timestamptz 'epoch'",
+            "timestamp 'origin'",
             2,
             "date_bin origin",
         ),

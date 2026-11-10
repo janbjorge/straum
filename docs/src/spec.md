@@ -52,11 +52,20 @@ Every view has exactly one bucket:
 date_bin('15 minutes', f.pickup_at, timestamptz 'epoch')
 ```
 
-The column is a `timestamptz`. The width is `<n> seconds`, `minutes`,
-`hours` or `days`, at most `1 day`, and divides a day: `15 minutes` does,
-`7 minutes` doesn't. The origin is always `timestamptz 'epoch'`, so
-buckets start on UTC midnight. The alias is free; asks call it `bucket`,
-so no column, ref or measure may be named `bucket`.
+The column is a `timestamptz` or a `timestamp`. The width is `<n>
+seconds`, `minutes`, `hours` or `days`, at most `1 day`, and divides a
+day: `15 minutes` does, `7 minutes` doesn't. The origin is `'epoch'` of
+the column's type, so buckets start on midnight: `timestamptz 'epoch'`
+for a `timestamptz`, `timestamp 'epoch'` for a `timestamp`. The alias is
+free; asks call it `bucket`, so no column, ref or measure may be named
+`bucket`.
+
+A `timestamp` has no zone, and Straum never gives it one: its buckets are
+wall clock, as `date_bin` makes them in PostgreSQL. Ask bounds over such a
+view are wall clock too, and answers print its buckets with a `Z` that
+means nothing. Straum refuses a view whose origin type is not the
+column's, since PostgreSQL would cast the column through the session zone
+and the view would not mean what Straum computes.
 
 `buckets = '1 day, 7 days'` keeps wider widths too. Each is a whole
 multiple of the one before and starts at the epoch, so 7-day buckets start
