@@ -32,6 +32,11 @@ plugin and kubeconform. For a change under `docs/`, also run
 - The Straum SQL walker rejects anything it doesn't list, naming the
   construct.
 - Only `straum-http` runs tokio.
+- Before adding a direct dependency, check `std` first. Add a crate only
+  for a capability `std` lacks or a measured material gain. State why
+  beside the dependency in `Cargo.toml`, or in PLAN.md for an architectural
+  decision. Do not add convenience crates for small helpers. Review
+  dependency changes with `cargo tree --workspace -e normal`.
 - Comments say why, not what.
 - Every behaviour gets a positive and a negative test.
 - Settled decisions get a dated line under Decisions in PLAN.md.
