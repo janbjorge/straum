@@ -477,7 +477,13 @@ Touches: `crates/straum-pg` (TLS, WAL readings), `crates/straum-app`
       and commit time, starts, failures and the last failure. Tests: the
       text for each state, the client against a stand-in server's good
       and bad replies, and end to end against `postgres:18`
-- [ ] Run against a non-production Azure Flexible Server 18
+- [ ] Run against a non-production Azure Flexible Server 18, with
+      `straum run` from a machine that reaches the server, not the chart.
+      Check that the server's certificate chain verifies against the
+      built-in Mozilla roots, or needs `sslrootcert`, which the chart
+      can't mount yet; that the 4Gi `--max-retained-wal` default suits a
+      server whose `max_slot_wal_keep_size` is fixed at `-1`; and settle
+      the Azure open question and `research/AKS.md` open points 2 and 4
 
 ## M8: telemetry, zones and the speed harness
 
