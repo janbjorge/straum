@@ -629,6 +629,37 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
       six asks, timed over HTTP and PostgreSQL's protocol from one
       client; no `roll` table, `pgbench` or in-process timings)
 
+## M9: real schemas
+
+Completed 2026-11-10 (`28730ea` and its preparatory commits).
+
+- [x] Facts no longer declare a `key`: `REPLICA IDENTITY FULL` supplies
+      their old rows.
+- [x] `timestamp` columns are wall-clock times. Their view uses
+      `timestamp 'epoch'`, while `timestamptz` uses `timestamptz 'epoch'`.
+- [x] Dims and refs can use several columns. A fact column may be both a
+      by key and a ref's via column.
+- [x] Null-ness keys make a nullable fact column groupable and filterable.
+- [x] `bench/pio/run.py` checks the pio-shaped tasks views against
+      PostgreSQL before and after streamed changes.
+
+## M10: start over cheaply
+
+Completed 2026-11-10 (`bc9fb3b` and its preparatory commits).
+
+- [x] `--max-transaction-rows` bounds transaction buffering. A transaction
+      above the cap starts from a new snapshot after its commit.
+- [x] Infinite times are null times. Other unreadable values name their
+      table and column before the restart.
+
+## M11: attributes bound at ingest
+
+Completed 2026-11-10 (`af6c406`).
+
+- [x] A selected dim attribute whose ref id is absent is bound at ingest.
+      This trades current dim values for fewer cells. `bench/pio` measures
+      the late and early forms.
+
 ## Open questions
 
 - The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
@@ -656,7 +687,7 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
   it takes 6.6 to 8.8 ms (2026-11-09). An ask over every 15-minute bucket
   still reads every cell, 2.4 to 3.0 s. Cap asks, keep
   the status outside the lock, or both?
-- Deferred from M9 to M11 (2026-11-10): `AT TIME ZONE` in views, since a
+- Deferred after M11 (2026-11-10): `AT TIME ZONE` in views, since a
   `timestamp` is wall clock; keeping the old store answering during a
   reload (pio's Redis cache is the stale fallback); naming a poison row by
   `ctid` or key in the failure text; `uuid` and `date` kinds, enums and
@@ -668,3 +699,13 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
   transaction. Dim rows kept for the lookups of attributes bound at
   ingest are most of what memory an early-bound view still holds: 897
   MiB on a copy of pio's tables, against the chart's 1Gi default.
+- Product limits, not M9 regressions: facts must be plain, unpartitioned
+  tables; a fact needs `REPLICA IDENTITY FULL`; column-list publications
+  must include every column Straum reads and publications cannot filter a
+  tracked table's rows. The readable type set is integer, fixed
+  `numeric(p <= 18)`, boolean, text, `timestamp` and `timestamptz`.
+  Floats remain rejected because their reversible sums are
+  order-dependent. Specs allow one fact and N:1 `LEFT JOIN` refs, not
+  arbitrary joins or expressions. Time grains divide a UTC day and use
+  an epoch-origin `date_bin`; calendar grains, custom origins,
+  sub-second grains and unbounded asks are unsupported.
