@@ -87,6 +87,24 @@ impl Walker {
         }
     }
 
+    /// The plain GROUP BY list, the only form a view or an ask uses.
+    fn group_by_exprs<'a>(
+        &mut self,
+        at: u64,
+        group_by: &'a sql::GroupByExpr,
+    ) -> Option<&'a [sql::Expr]> {
+        match group_by {
+            sql::GroupByExpr::Expressions(exprs, modifiers) => {
+                self.absent(at, !modifiers.is_empty(), "ROLLUP, CUBE or GROUPING SETS");
+                Some(exprs)
+            }
+            sql::GroupByExpr::All(_) => {
+                self.absent(at, true, "GROUP BY ALL");
+                None
+            }
+        }
+    }
+
     /// Every rejection says straum SQL is straum's own subset, so no one
     /// takes it for PostgreSQL's error.
     fn not_in_subset(&mut self, line: u64, what: &str) {

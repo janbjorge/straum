@@ -799,15 +799,8 @@ impl Walker {
         projection: &[sql::SelectItem],
         keys: &[String],
     ) {
-        let exprs = match group_by {
-            sql::GroupByExpr::Expressions(exprs, modifiers) => {
-                self.absent(at, !modifiers.is_empty(), "ROLLUP, CUBE or GROUPING SETS");
-                exprs
-            }
-            sql::GroupByExpr::All(_) => {
-                self.absent(at, true, "GROUP BY ALL");
-                return;
-            }
+        let Some(exprs) = self.group_by_exprs(at, group_by) else {
+            return;
         };
         let mut grouped = Vec::new();
         for expr in exprs {

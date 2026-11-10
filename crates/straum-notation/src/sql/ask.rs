@@ -140,15 +140,8 @@ impl Walker {
     }
 
     fn ask_group_by(&mut self, at: u64, group_by: &sql::GroupByExpr) -> Vec<AskKey> {
-        let exprs = match group_by {
-            sql::GroupByExpr::Expressions(exprs, modifiers) => {
-                self.absent(at, !modifiers.is_empty(), "ROLLUP, CUBE or GROUPING SETS");
-                exprs
-            }
-            sql::GroupByExpr::All(_) => {
-                self.absent(at, true, "GROUP BY ALL");
-                return Vec::new();
-            }
+        let Some(exprs) = self.group_by_exprs(at, group_by) else {
+            return Vec::new();
         };
         let mut keys = Vec::new();
         for expr in exprs {

@@ -54,7 +54,7 @@ python3 scripts/check-layers.py
   apart only in `finish` (`agg.rs:209-217`) by arm order.
   `Sum { sums, counts, average: bool }`; `finish` reads
   `if count == 0 { Null } else if average { Avg } else { Int }`.
-- [ ] **Shared GROUP BY prologue** (straum-notation).
+- [x] **Shared GROUP BY prologue** (straum-notation).
   `crates/straum-notation/src/sql/view.rs:826-835` and
   `sql/ask.rs:143-152` hold the same `Expressions` / `All` match. One
   `Walker::group_by_exprs(&mut self, at, group_by) -> Option<&[Expr]>`
