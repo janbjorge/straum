@@ -66,7 +66,7 @@ python3 scripts/check-layers.py
   measures first (rejecting other items once), then one loop over the
   items sorted keys first, so a FILTER can name a null-ness key selected
   after it.
-- [ ] **`Change::table()` goes `pub`** (straum-app).
+- [x] **`Change::table()` goes `pub`** (straum-app).
   `crates/straum-app/src/source.rs:108` is `pub(crate)`, so the fake
   copies it as `table_of` (`crates/straum-app/tests/fake/mod.rs:238`).
 

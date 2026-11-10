@@ -105,7 +105,7 @@ pub enum Change {
 }
 
 impl Change {
-    pub(crate) fn table(&self) -> &Ident {
+    pub fn table(&self) -> &Ident {
         match self {
             Change::Insert { table, .. }
             | Change::Update { table, .. }

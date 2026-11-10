@@ -209,10 +209,10 @@ impl Database {
     fn delivered(&self, spec: &Spec, commit: &Commit) -> Commit {
         let tables = self.tables_at(commit.lsn);
         let changes = (commit.changes.iter())
-            .filter(|change| spec.dim(table_of(change).as_str()).is_none())
+            .filter(|change| spec.dim(change.table().as_str()).is_none())
             .cloned()
             .map(|mut change| {
-                if let Some(fact) = spec.fact(table_of(&change).as_str()) {
+                if let Some(fact) = spec.fact(change.table().as_str()) {
                     match &mut change {
                         Change::Insert { row, .. } | Change::Delete { old: row, .. } => {
                             resolve(tables, spec, fact, row);
@@ -232,16 +232,6 @@ impl Database {
             time: commit.time,
             changes,
         }
-    }
-}
-
-fn table_of(change: &Change) -> &Ident {
-    match change {
-        Change::Insert { table, .. }
-        | Change::Update { table, .. }
-        | Change::Delete { table, .. }
-        | Change::Truncate { table }
-        | Change::Altered { table } => table,
     }
 }
 
