@@ -12,7 +12,7 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Cond, Dim, Fact, Ident, KeyPath, Literal, Table};
+use straum_domain::{Cond, Dim, Fact, Ident, KeyPath, Literal};
 
 mod ask;
 mod view;
@@ -63,8 +63,6 @@ struct Walker {
     dims: Vec<Dim>,
     facts: Vec<Fact>,
     errors: Vec<SqlError>,
-    /// Dim attributes the current view reads.
-    attrs: Vec<(Table, Ident)>,
 }
 
 impl Walker {

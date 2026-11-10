@@ -83,7 +83,6 @@ impl Walker {
         } = view;
         let at = line(name);
         let before = self.errors.len();
-        self.attrs.clear();
         self.absent(at, *or_alter, "OR ALTER");
         self.absent(at, *materialized, "MATERIALIZED");
         self.absent(at, *secure, "SECURE");
@@ -136,24 +135,13 @@ impl Walker {
     /// view reads. The join's via columns are put in the dim's key order,
     /// so a ref's via and its dim's key pair up by position.
     fn add_dim(&mut self, at: u64, j: &mut JoinedRef) {
-        let attrs = self
-            .attrs
-            .iter()
-            .filter(|(table, _)| *table == j.table)
-            .map(|(_, attr)| attr.clone());
         let Some(dim) = self.dims.iter_mut().find(|d| d.table == j.table) else {
-            let mut dim = Dim {
+            self.dims.push(Dim {
                 name: j.r.dim.clone(),
                 table: j.table.clone(),
                 key: j.key.clone(),
-                attrs: Vec::new(),
-            };
-            for attr in attrs {
-                if !dim.attrs.contains(&attr) {
-                    dim.attrs.push(attr);
-                }
-            }
-            self.dims.push(dim);
+                attrs: j.r.attrs.clone(),
+            });
             return;
         };
         let same = dim.key.len() == j.key.len() && dim.key.iter().all(|k| j.key.contains(k));
@@ -185,9 +173,9 @@ impl Walker {
             .collect();
         j.r.via = via;
         j.key.clone_from(&dim.key);
-        for attr in attrs {
-            if !dim.attrs.contains(&attr) {
-                dim.attrs.push(attr);
+        for attr in &j.r.attrs {
+            if !dim.attrs.contains(attr) {
+                dim.attrs.push(attr.clone());
             }
         }
     }
@@ -640,10 +628,7 @@ impl Walker {
         }
         Some(match self.column(scope, expr)? {
             Column::Fact(c) => Item::Column(c),
-            Column::Attr(i, attr) => {
-                self.attr(scope, i, attr.clone());
-                Item::Attr(i, attr)
-            }
+            Column::Attr(i, attr) => Item::Attr(i, attr),
         })
     }
 
@@ -676,12 +661,6 @@ impl Walker {
             },
             values: vec![Literal::Bool(is_null != key.negated)],
         })
-    }
-
-    /// Records a dim attribute the view reads. Attributes live on the dim,
-    /// shared by every ref that points at it.
-    fn attr(&mut self, scope: &Scope, i: usize, attr: Ident) {
-        self.attrs.push((scope.refs[i].table.clone(), attr));
     }
 
     /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`, or
@@ -804,13 +783,10 @@ impl Walker {
     fn path(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<KeyPath> {
         Some(match self.column(scope, expr)? {
             Column::Fact(head) => KeyPath { head, attr: None },
-            Column::Attr(i, attr) => {
-                self.attr(scope, i, attr.clone());
-                KeyPath {
-                    head: scope.refs[i].r.name.clone(),
-                    attr: Some(attr),
-                }
-            }
+            Column::Attr(i, attr) => KeyPath {
+                head: scope.refs[i].r.name.clone(),
+                attr: Some(attr),
+            },
         })
     }
 

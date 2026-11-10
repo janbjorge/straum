@@ -21,7 +21,7 @@ python3 scripts/check-layers.py
 
 ## Small, low churn
 
-- [ ] **Drop `Walker.attrs`** (straum-notation).
+- [x] **Drop `Walker.attrs`** (straum-notation).
   `crates/straum-notation/src/sql/mod.rs:67`, `sql/view.rs:138-193`,
   `sql/view.rs:681-685`. `select()` already puts every selected attribute
   on `j.r.attrs` (`view.rs:361-372`), and a FILTER attribute that is not
