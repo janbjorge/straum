@@ -8,7 +8,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{Ask, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
 const SPEC: &str = "
@@ -136,6 +137,10 @@ struct Server {
 }
 
 fn serve(app: App) -> Server {
+    serve_with(app, straum_http::read_json_ask)
+}
+
+fn serve_with(app: App, read_ask: ReadAsk) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, stopped) = oneshot::channel::<()>();
@@ -143,7 +148,7 @@ fn serve(app: App) -> Server {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(straum_http::serve(listener, app, async {
+        runtime.block_on(straum_http::serve(listener, app, read_ask, async {
             stopped.await.ok();
         }))
     });
@@ -446,4 +451,57 @@ fn shutdown_finishes_requests_in_flight() {
     stopping.join().unwrap();
     drop(idle);
     assert!(TcpStream::connect(addr).is_err(), "still listening");
+}
+
+fn trips_from(from: i64) -> Ask {
+    Ask {
+        fact: Ident::new("trips").unwrap(),
+        measures: vec![Ident::new("trips").unwrap()],
+        by: Vec::new(),
+        filter: Vec::new(),
+        from,
+        to: JAN_1 + 24 * HOUR,
+    }
+}
+
+#[test]
+fn reads_asks_with_the_reader_it_is_given() {
+    let mut writer = writer();
+    writer.step().unwrap();
+    let ask = "not an ask in any syntax";
+
+    let server = serve_with(writer.app().clone(), |_| Ok(trips_from(JAN_1)));
+    let reply = call(server.addr, "POST", "/ask", ask);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            200,
+            r#"{"lsn":"16/B374D848","commit_time":null,"columns":["trips"],"rows":[[4]]}"#
+        )
+    );
+    server.stop();
+
+    let server = serve_with(writer.app().clone(), |_| {
+        Err(vec!["no".to_owned(), "never".to_owned()])
+    });
+    let reply = call(server.addr, "POST", "/ask", ask);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (400, r#"{"errors":["no","never"]}"#)
+    );
+    server.stop();
+
+    // A reader that lets through a range jiff can't print gets a 400, not
+    // a panic while the answer is written.
+    let server = serve_with(writer.app().clone(), |_| Ok(trips_from(i64::MIN)));
+    let reply = call(server.addr, "POST", "/ask", ask);
+    assert_eq!(reply.status, 400, "{}", reply.body);
+    assert!(
+        reply
+            .body
+            .starts_with(r#"{"errors":["range start -9223372036854775808 is not between"#),
+        "{}",
+        reply.body
+    );
+    server.stop();
 }

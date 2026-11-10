@@ -368,10 +368,12 @@ Clean architecture as Cargo crates:
   stream: it answers keepalives and reports the applied LSN while the
   writer is busy. Synchronous; TLS is `rustls` on `rustls-graviola`
   (`crates/straum-pg/src/tls.rs`).
-- `straum-http` (M6): hyper 1 on tokio, no framework. JSON asks read by a
-  walker over `serde_json` values, without derive macros; `/livez`,
-  `/readyz` and `/status`. Asks run on tokio's blocking threads, since a
-  big one reads every cell of a fact.
+- `straum-http` (M6): hyper 1 on tokio, no framework; `/ask`, `/livez`,
+  `/readyz` and `/status`. The binary hands `serve` the ask reader: for
+  now JSON asks, read by a walker over `serde_json` values without derive
+  macros. `serve` itself checks that a range is one jiff can print, so no
+  reader can make writing an answer panic. Asks run on tokio's blocking
+  threads, since a big one reads every cell of a fact.
 - `straum` (M6, M7): the binary. `straum run`, `straum plan` and
   `straum status`, arguments read by hand. One thread runs the writer and
   starts over after a failure, waiting 1 s, then twice as long each time up

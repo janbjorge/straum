@@ -2,8 +2,8 @@
 //! run on tokio's blocking threads, since a big one reads every cell of a
 //! fact.
 //!
-//! - `POST /ask`: an ask as JSON (see `ask.rs`); the answer as JSON (see
-//!   `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
+//! - `POST /ask`: an ask, read by the `ReadAsk` that `serve` is given; the
+//!   answer as JSON (see `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
 //!   reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and straum is within its
@@ -37,6 +37,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::{AnswerError, App};
+use straum_domain::Ask;
 use tokio::net::TcpListener;
 
 /// The largest ask body straum reads.
@@ -46,12 +47,19 @@ const MAX_ASK: usize = 1 << 20;
 /// the process is out of file descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+pub use ask::read as read_json_ask;
+
+/// Reads an ask's body, or says everything wrong with it. The binary picks
+/// the syntax, so HTTP stays apart from how asks are written.
+pub type ReadAsk = fn(&[u8]) -> Result<Ask, Vec<String>>;
+
 /// Serves `app` on `listener` until `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
 /// time enabled.
 pub async fn serve(
     listener: net::TcpListener,
     app: App,
+    read_ask: ReadAsk,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
@@ -74,7 +82,7 @@ pub async fn serve(
             }
         };
         let app = Arc::clone(&app);
-        let service = service_fn(move |request| handle(request, Arc::clone(&app)));
+        let service = service_fn(move |request| handle(request, Arc::clone(&app), read_ask));
         let connection = http1::Builder::new()
             .timer(TokioTimer::new())
             .serve_connection(TokioIo::new(stream), service);
@@ -90,11 +98,12 @@ pub async fn serve(
 async fn handle(
     request: Request<Incoming>,
     app: Arc<App>,
+    read_ask: ReadAsk,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let response = match (method, path.as_str()) {
-        (Method::POST, "/ask") => ask(request, &app).await,
+        (Method::POST, "/ask") => ask(request, &app, read_ask).await,
         (Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (Method::GET, "/readyz") => readyz(&app),
         (Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
@@ -105,7 +114,7 @@ async fn handle(
     Ok(response)
 }
 
-async fn ask(request: Request<Incoming>, app: &App) -> Response<Full<Bytes>> {
+async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Response<Full<Bytes>> {
     let body = match Limited::new(request.into_body(), MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) if e.is::<LengthLimitError>() => {
@@ -116,10 +125,14 @@ async fn ask(request: Request<Incoming>, app: &App) -> Response<Full<Bytes>> {
             return errors(StatusCode::BAD_REQUEST, &[format!("reading the ask: {e}")]);
         }
     };
-    let request = match ask::read(&body) {
+    let request = match read_ask(&body) {
         Ok(ask) => ask,
         Err(e) => return errors(StatusCode::BAD_REQUEST, &e),
     };
+    let range = answer::range_errors(&request);
+    if !range.is_empty() {
+        return errors(StatusCode::BAD_REQUEST, &range);
+    }
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let answered = app.ask(&request)?;

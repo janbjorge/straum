@@ -25,16 +25,11 @@ use std::str::FromStr;
 use jiff::Timestamp;
 use straum_domain::{Ask, AskKey, Cond, Ident, KeyPath, Literal, TimeKey};
 
+use crate::answer;
 use crate::json::Json;
 
-const DAY: i64 = 86_400;
-
-/// How far `from` stays clear of the earliest time jiff can write, so a
-/// time key that starts up to a month before it still prints.
-const LOOK_BACK: i64 = 32 * DAY;
-
 /// Every error found, each naming its field.
-pub(crate) fn read(body: &[u8]) -> Result<Ask, Vec<String>> {
+pub fn read(body: &[u8]) -> Result<Ask, Vec<String>> {
     let json = Json::parse(body).map_err(|e| vec![e])?;
     let Json::Object(fields) = json else {
         return Err(vec![format!("an ask is an object, not {}", json.kind())]);
@@ -171,7 +166,7 @@ fn instant(field: &str, value: &Json, errors: &mut Vec<String>) -> Option<i64> {
             other.kind()
         )),
     };
-    let earliest = Timestamp::MIN.as_second() + LOOK_BACK;
+    let earliest = answer::earliest();
     let at = at.and_then(|at| match at.subsec_nanosecond() {
         0 if at.as_second() < earliest => Err(format!("{at} is too early")),
         0 => Ok(at.as_second()),

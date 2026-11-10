@@ -25,6 +25,25 @@ use straum_domain::{Ask, AskKey, Datum, Value};
 
 use crate::json::{decimal, string};
 
+/// How far an ask's range stays clear of the earliest time jiff can write,
+/// so a time key that starts up to a month before it still prints.
+const LOOK_BACK: i64 = 32 * 86_400;
+
+pub(crate) fn earliest() -> i64 {
+    Timestamp::MIN.as_second() + LOOK_BACK
+}
+
+/// A time key starts in its ask's range or at most `LOOK_BACK` before it,
+/// so an ask that passes here never fails `write`, whoever read it.
+pub(crate) fn range_errors(ask: &Ask) -> Vec<String> {
+    let (earliest, latest) = (earliest(), Timestamp::MAX.as_second());
+    [("start", ask.from), ("end", ask.to)]
+        .into_iter()
+        .filter(|(_, at)| !(earliest..=latest).contains(at))
+        .map(|(end, at)| format!("range {end} {at} is not between {earliest} and {latest}"))
+        .collect()
+}
+
 pub(crate) fn write(ask: &Ask, answered: &Answered) -> Vec<u8> {
     let Answered { answer, lsn, time } = answered;
     let mut out = Vec::new();
@@ -65,8 +84,8 @@ pub(crate) fn write(ask: &Ask, answered: &Answered) -> Vec<u8> {
             comma(&mut out);
             match (key, datum) {
                 (AskKey::Time(_), &Datum::Int(seconds)) => {
-                    let at =
-                        Timestamp::from_second(seconds).expect("ask::read keeps periods in range");
+                    let at = Timestamp::from_second(seconds)
+                        .expect("range_errors keeps time keys in range");
                     string(&mut out, &at.to_string());
                 }
                 (_, datum) => write_datum(&mut out, datum, scale),

@@ -308,7 +308,7 @@ fn run(
                 log("stopping: finishing the asks in flight");
             };
             log(format!("listening on {address}"));
-            straum_http::serve(listener, app, stop).await
+            straum_http::serve(listener, app, straum_http::read_json_ask, stop).await
         })
         .map_err(|e| format!("serving HTTP: {e}"))?;
     log("stopped");
