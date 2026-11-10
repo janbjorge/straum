@@ -216,7 +216,7 @@ impl Store {
 
     /// The rollup-key slot a key path names.
     fn slot(&self, fact: &Fact, path: &KeyPath) -> usize {
-        let slot = match self.spec.resolve(fact, path).expect(CHECKED) {
+        let slot = match fact.resolve(path).expect(CHECKED) {
             Key::By(by) => by.slot(),
             Key::Attr(r, attr) => Slot::Attr(r, attr),
         };

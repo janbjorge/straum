@@ -536,10 +536,7 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
         }
         for m in &fact.measures {
             for cond in &m.filter {
-                let column_type = match spec
-                    .resolve(fact, &cond.path)
-                    .expect("checked by Spec::new")
-                {
+                let column_type = match fact.resolve(&cond.path).expect("checked by Spec::new") {
                     Key::By(By::Column(c)) => facts.column_type(c),
                     Key::By(By::IsNull { .. }) => ColumnType::Bool,
                     Key::Attr(r, attr) => tables.dim(&r.dim).column_type(attr),

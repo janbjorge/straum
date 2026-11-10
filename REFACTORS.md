@@ -35,7 +35,7 @@ python3 scripts/check-layers.py
   reads numbers, else 0. In `rollup.rs:343-348` match `agg.state()`:
   `Some((kind, c)) if kind.numeric()` gives the column's scale, anything
   else 0. Delete `Agg::scale`.
-- [ ] **`Spec::resolve` becomes `Fact::resolve`** (straum-domain, straum-pg).
+- [x] **`Spec::resolve` becomes `Fact::resolve`** (straum-domain, straum-pg).
   `crates/straum-domain/src/spec.rs:307-320` ignores `self`. Callers:
   `ask.rs:61`, `ask.rs:84`, `store.rs:219`,
   `crates/straum-pg/src/catalog.rs:540`, tests `spec.rs:94-101`.

@@ -230,6 +230,18 @@ impl Fact {
     pub fn measure(&self, name: &str) -> Option<&Measure> {
         self.measures.iter().find(|m| m.name.as_str() == name)
     }
+
+    /// A bare name is a `by` key; `ref.attr` is an attribute the ref
+    /// reads.
+    pub fn resolve(&self, path: &KeyPath) -> Option<Key<'_>> {
+        let Some(attr) = &path.attr else {
+            let by = self.by.iter().find(|b| *b.name() == path.head)?;
+            return Some(Key::By(by));
+        };
+        let r = self.refs.iter().find(|r| r.name == path.head)?;
+        let attr = r.attrs.iter().find(|a| *a == attr)?;
+        Some(Key::Attr(r, attr))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,22 +313,6 @@ impl Spec {
     pub fn fact(&self, name: &str) -> Option<&Fact> {
         self.facts.iter().find(|f| f.name.as_str() == name)
     }
-
-    /// A bare name is a `by` key; `ref.attr` is an attribute the ref
-    /// reads.
-    pub fn resolve<'a>(&'a self, fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
-        resolve(fact, path)
-    }
-}
-
-fn resolve<'a>(fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
-    let Some(attr) = &path.attr else {
-        let by = fact.by.iter().find(|b| *b.name() == path.head)?;
-        return Some(Key::By(by));
-    };
-    let r = fact.refs.iter().find(|r| r.name == path.head)?;
-    let attr = r.attrs.iter().find(|a| *a == attr)?;
-    Some(Key::Attr(r, attr))
 }
 
 fn check_dim(dim: &Dim, errors: &mut Vec<SpecError>) {
@@ -463,7 +459,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             });
         }
         for cond in &m.filter {
-            if resolve(fact, &cond.path).is_none() {
+            if fact.resolve(&cond.path).is_none() {
                 errors.push(SpecError::UnknownKey {
                     fact: name.clone(),
                     measure: m.name.clone(),

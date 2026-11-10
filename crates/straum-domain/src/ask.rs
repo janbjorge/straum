@@ -58,7 +58,7 @@ impl Spec {
         for key in &ask.by {
             match key {
                 AskKey::Key(path) => {
-                    if self.resolve(fact, path).is_none() {
+                    if fact.resolve(path).is_none() {
                         errors.push(unknown(fact, path));
                     }
                 }
@@ -81,7 +81,7 @@ impl Spec {
             }
         }
         for cond in &ask.filter {
-            if self.resolve(fact, &cond.path).is_none() {
+            if fact.resolve(&cond.path).is_none() {
                 errors.push(unknown(fact, &cond.path));
             }
         }

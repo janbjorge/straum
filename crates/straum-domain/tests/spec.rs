@@ -91,14 +91,14 @@ fn valid() {
 fn key_paths_resolve_to_by_keys_and_attributes() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(spec.resolve(t, &path("a")), Some(Key::By(&t.by[0])));
-    assert_eq!(spec.resolve(t, &path("z_id")), Some(Key::By(&t.by[1])));
+    assert_eq!(t.resolve(&path("a")), Some(Key::By(&t.by[0])));
+    assert_eq!(t.resolve(&path("z_id")), Some(Key::By(&t.by[1])));
     assert_eq!(
-        spec.resolve(t, &path("r.name")),
+        t.resolve(&path("r.name")),
         Some(Key::Attr(&t.refs[0], &t.refs[0].attrs[0]))
     );
     for missing in ["r", "r.id", "r.nope", "q.name", "b"] {
-        assert_eq!(spec.resolve(t, &path(missing)), None, "{missing}");
+        assert_eq!(t.resolve(&path(missing)), None, "{missing}");
     }
 }
 
