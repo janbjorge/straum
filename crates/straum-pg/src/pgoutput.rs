@@ -11,7 +11,10 @@ use crate::value;
 /// One pgoutput message, borrowing its text from the received bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Message<'a> {
-    Begin,
+    Begin {
+        /// The LSN of the transaction's commit record, which names it.
+        final_lsn: u64,
+    },
     Commit {
         /// The end of the commit record.
         end_lsn: u64,
@@ -77,9 +80,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
     let mut r = Reader { bytes };
     let message = match r.u8()? {
         b'B' => {
-            // Final LSN, commit time, xid.
-            r.skip(8 + 8 + 4)?;
-            Message::Begin
+            let final_lsn = r.u64()?;
+            // Commit time, xid.
+            r.skip(8 + 4)?;
+            Message::Begin { final_lsn }
         }
         b'C' => {
             // Flags and the commit record's start, then its end, then the
@@ -362,7 +366,7 @@ mod tests {
         let cases = [
             (
                 Bytes::default().tag(b'B').u64(1).u64(2).u32(3),
-                Message::Begin,
+                Message::Begin { final_lsn: 1 },
             ),
             (
                 Bytes::default().tag(b'C').tag(0).u64(10).u64(20).u64(30),

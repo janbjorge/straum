@@ -55,6 +55,14 @@ A change Straum can't apply makes it [start over](running.md#states) from
 a new slot: an update without its old row, a row that doesn't fit its
 rollup, or a table whose columns now read differently.
 
+A transaction that changes more than `--max-transaction-rows` rows of the
+spec's tables makes it start over too, on purpose. Straum holds a
+transaction until its commit and applies it whole under the write lock,
+so a bulk update of millions of rows would hold the memory for them and
+block asks for as long as they take. The new slot's snapshot is after the
+big commit, so its rows come in through the bulk `COPY` load instead, and
+the failure names the transaction's LSN and the cap.
+
 ## Answering an ask
 
 ![An ask for trips by pickup.borough from 00:00 to 00:30 walks the cells of the trips rollup. It keeps the cells whose bucket is in the range, looks up each ref id's borough in the dim, and adds each cell's rows to the measures whose filter holds. A ref id with no dim row groups under null.](diagrams/ask.svg)

@@ -22,8 +22,12 @@ pub(crate) struct Decoder {
     /// Each spec table's types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
     types: HashMap<Ident, Vec<ColumnType>>,
+    /// The transaction so far, held until its Commit; `max_rows` bounds it,
+    /// since every change here is applied under the write lock.
     changes: Vec<Change>,
-    in_transaction: bool,
+    max_rows: usize,
+    /// The transaction being read, by the LSN of its commit record.
+    in_transaction: Option<Lsn>,
 }
 
 /// Where a spec table's columns sit in a relation's tuples.
@@ -37,7 +41,9 @@ struct Mapping {
 }
 
 impl Decoder {
-    pub(crate) fn new(tables: Vec<Table>) -> Decoder {
+    /// `max_rows` is the most changes to the spec's tables one transaction
+    /// may hold.
+    pub(crate) fn new(tables: Vec<Table>, max_rows: usize) -> Decoder {
         let types = tables
             .iter()
             .map(|t| (t.name.clone(), t.types.clone()))
@@ -47,16 +53,17 @@ impl Decoder {
             relations: HashMap::new(),
             types,
             changes: Vec::new(),
-            in_transaction: false,
+            max_rows,
+            in_transaction: None,
         }
     }
 
     /// A commit once its Commit message comes.
     pub(crate) fn feed(&mut self, message: Message) -> Result<Option<Commit>, Error> {
         match message {
-            Message::Begin => self.in_transaction = true,
+            Message::Begin { final_lsn } => self.in_transaction = Some(Lsn(final_lsn)),
             Message::Commit { end_lsn, time } => {
-                self.in_transaction = false;
+                self.in_transaction = None;
                 let changes = mem::take(&mut self.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(end_lsn),
@@ -74,7 +81,12 @@ impl Decoder {
                         },
                         None => altered(m),
                     };
-                    self.changes.push(change);
+                    hold(
+                        &mut self.changes,
+                        self.max_rows,
+                        self.in_transaction,
+                        change,
+                    )?;
                 }
             }
             Message::Update { relation, old, new } => {
@@ -95,7 +107,12 @@ impl Decoder {
                         },
                         _ => altered(m),
                     };
-                    self.changes.push(change);
+                    hold(
+                        &mut self.changes,
+                        self.max_rows,
+                        self.in_transaction,
+                        change,
+                    )?;
                 }
             }
             Message::Delete { relation, old } => {
@@ -107,15 +124,26 @@ impl Decoder {
                         },
                         None => altered(m),
                     };
-                    self.changes.push(change);
+                    hold(
+                        &mut self.changes,
+                        self.max_rows,
+                        self.in_transaction,
+                        change,
+                    )?;
                 }
             }
             Message::Truncate { relations } => {
                 for relation in relations {
                     for m in mappings(&self.relations, relation) {
-                        self.changes.push(Change::Truncate {
+                        let change = Change::Truncate {
                             table: m.table.clone(),
-                        });
+                        };
+                        hold(
+                            &mut self.changes,
+                            self.max_rows,
+                            self.in_transaction,
+                            change,
+                        )?;
                     }
                 }
             }
@@ -126,7 +154,7 @@ impl Decoder {
 
     /// Between a Begin and its Commit.
     pub(crate) fn in_transaction(&self) -> bool {
-        self.in_transaction
+        self.in_transaction.is_some()
     }
 
     /// Maps the relation's columns for each spec table it holds. A table
@@ -172,6 +200,25 @@ impl Decoder {
         self.relations.insert(relation.id, mappings);
         Ok(())
     }
+}
+
+/// Holds a change for the transaction's commit, or stops at the cap. The
+/// count is per transaction, not per table: the lock is held for all of it
+/// at once.
+fn hold(
+    changes: &mut Vec<Change>,
+    max_rows: usize,
+    transaction: Option<Lsn>,
+    change: Change,
+) -> Result<(), Error> {
+    if changes.len() >= max_rows {
+        return Err(Error::Transaction {
+            lsn: transaction.unwrap_or(Lsn(0)),
+            limit: max_rows,
+        });
+    }
+    changes.push(change);
+    Ok(())
 }
 
 /// The spec tables a relation holds; none for a relation straum doesn't read.
@@ -262,6 +309,8 @@ mod tests {
     const TEXT: u32 = 25;
     const UUID: u32 = 2950;
     const FLOAT8: u32 = 701;
+    /// Changes a transaction may hold in these tests; the longest feeds ten.
+    const CAP: usize = 16;
 
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
@@ -278,15 +327,18 @@ mod tests {
             types,
             key_width,
         };
-        Decoder::new(vec![
-            table(
-                "zones",
-                &["id", "name"],
-                vec![ColumnType::Int, ColumnType::Text],
-                1,
-            ),
-            table("visits", &["name"], vec![ColumnType::Text], 0),
-        ])
+        Decoder::new(
+            vec![
+                table(
+                    "zones",
+                    &["id", "name"],
+                    vec![ColumnType::Int, ColumnType::Text],
+                    1,
+                ),
+                table("visits", &["name"], vec![ColumnType::Text], 0),
+            ],
+            CAP,
+        )
     }
 
     fn relation(id: u32, columns: &[(&str, u32)]) -> Message<'static> {
@@ -314,7 +366,7 @@ mod tests {
     }
 
     fn feed(decoder: &mut Decoder, messages: Vec<Message>) -> Result<Vec<Change>, Error> {
-        decoder.feed(Message::Begin)?;
+        decoder.feed(Message::Begin { final_lsn: 9 })?;
         for m in messages {
             decoder.feed(m)?;
         }
@@ -521,6 +573,39 @@ mod tests {
             let err = decoder().feed(message).unwrap_err().to_string();
             assert_eq!(err, expected);
         }
+    }
+
+    /// The cap counts a transaction's changes to every spec table together:
+    /// each insert here is a change to both tables.
+    #[test]
+    fn a_transaction_past_the_cap_stops_the_stream() {
+        let insert = |_: usize| Message::Insert {
+            relation: 7,
+            new: row(Field::Text("1"), Field::Text("Bronx")),
+        };
+        // CAP / 2 inserts make CAP changes: fine, twice over.
+        let mut d = decoder();
+        for _ in 0..2 {
+            let messages = [zones()].into_iter().chain((0..CAP / 2).map(insert));
+            let changes = feed(&mut d, messages.collect()).unwrap();
+            assert_eq!(changes.len(), CAP);
+        }
+        // One more insert is one change past the cap, in the transaction
+        // that commits at 9.
+        let mut d = decoder();
+        let messages = [zones()].into_iter().chain((0..CAP / 2 + 1).map(insert));
+        let err = feed(&mut d, messages.collect()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Transaction {
+                    lsn: Lsn(9),
+                    limit: CAP
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(d.in_transaction());
     }
 
     #[test]

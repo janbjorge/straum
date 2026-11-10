@@ -40,6 +40,11 @@ maxLag: 30
 # so this keeps a straum that can't keep up from filling the server's disk.
 maxRetainedWal: "4Gi"
 
+# maxTransactionRows is how many rows one transaction may change in the
+# spec's tables before straum loads again from a snapshot after it, instead
+# of holding the whole transaction and applying it under its write lock.
+maxTransactionRows: 100000
+
 # replicaCount is how many pods run. Each holds its own replication slot
 # and walsender on PostgreSQL, so keep it low.
 replicaCount: 1

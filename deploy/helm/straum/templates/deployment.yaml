@@ -58,6 +58,8 @@ spec:
             - {{ .Values.maxLag | quote }}
             - --max-retained-wal
             - {{ .Values.maxRetainedWal | quote }}
+            - --max-transaction-rows
+            - {{ .Values.maxTransactionRows | quote }}
           env:
             - name: STRAUM_DSN
               valueFrom:

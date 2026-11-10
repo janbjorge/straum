@@ -49,6 +49,7 @@ apps in the cluster ask at `http://straum:8080/ask`.
 | `publication` | `straum` | The publication Straum reads. |
 | `maxLag` | `30` | Seconds behind PostgreSQL before `/readyz` turns off. |
 | `maxRetainedWal` | `4Gi` | WAL held for the slot before Straum starts over. |
+| `maxTransactionRows` | `100000` | Rows one transaction may change before Straum starts over instead of applying it. |
 | `replicaCount` | `1` | Pods. Each holds its own slot and loads every table. |
 | `service.port` | `8080` | The Service's port. |
 | `resources` | 1 GiB memory, request equal to limit | Size it to the [rollups](spec.md#memory). |

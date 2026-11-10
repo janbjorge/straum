@@ -26,6 +26,10 @@ static SLOTS: AtomicU64 = AtomicU64::new(0);
 pub struct Pg {
     dsn: Dsn,
     publication: String,
+    /// The most rows one transaction may change in the spec's tables; past
+    /// it straum starts over, so a bulk update costs a load and not the
+    /// write lock for all of it.
+    max_transaction_rows: usize,
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
@@ -56,10 +60,11 @@ struct Snapshot {
 
 impl Pg {
     /// Nothing connects until [`Source::open`].
-    pub fn new(dsn: Dsn, publication: &str) -> Pg {
+    pub fn new(dsn: Dsn, publication: &str, max_transaction_rows: usize) -> Pg {
         Pg {
             dsn,
             publication: publication.to_owned(),
+            max_transaction_rows,
             state: State::Closed,
             slot: String::new(),
             monitor: None,
@@ -156,7 +161,11 @@ impl Source for Pg {
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
-            State::Loading(snapshot) => State::Streaming(stream(snapshot, &self.publication)?),
+            State::Loading(snapshot) => State::Streaming(stream(
+                snapshot,
+                &self.publication,
+                self.max_transaction_rows,
+            )?),
             other => other,
         };
         match &mut self.state {
@@ -202,7 +211,7 @@ pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
 
 /// Streams from the snapshot's consistent point. Tables not loaded yet
 /// can't load any more.
-fn stream(mut snapshot: Snapshot, publication: &str) -> Result<Stream, Error> {
+fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;
     }
@@ -211,7 +220,11 @@ fn stream(mut snapshot: Snapshot, publication: &str) -> Result<Stream, Error> {
         "START_REPLICATION SLOT {} LOGICAL {} (proto_version '1', publication_names {names})",
         snapshot.slot, snapshot.at
     ))?;
-    Stream::start(snapshot.conn, Decoder::new(snapshot.tables), snapshot.at)
+    Stream::start(
+        snapshot.conn,
+        Decoder::new(snapshot.tables, max_rows),
+        snapshot.at,
+    )
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.

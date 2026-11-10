@@ -369,6 +369,16 @@ Tests:
   so the view body stays what PostgreSQL runs; asks filter the key by
   name, `done = $n`, with a boolean. Over the time column it is refused:
   a row with no time is never answered. No `IS NULL` elsewhere.
+- 2026-11-10: `--max-transaction-rows` (chart `maxTransactionRows`, default
+  100000) caps the changes to the spec's tables one transaction may hold.
+  The decoder counts them per transaction as it buffers them, and past the
+  cap the stream fails with the transaction's commit LSN and the cap, so
+  Straum starts over. Starting over is the cheap path on purpose: the new
+  slot's snapshot is after the big commit, so its rows arrive through the
+  bulk `COPY` load instead of being held in memory and applied under the
+  write lock. The default comes from `bench/transaction.py`, which
+  measures how long a transaction of that size holds the lock on the taxi
+  month.
 
 ## M0: notation and domain model
 

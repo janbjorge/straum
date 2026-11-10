@@ -34,6 +34,7 @@
     "publication": { "type": "string", "minLength": 1 },
     "maxLag": { "type": "integer", "minimum": 1 },
     "maxRetainedWal": { "type": "string", "pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti)?$" },
+    "maxTransactionRows": { "type": "integer", "minimum": 1 },
     "replicaCount": { "type": "integer", "minimum": 0 },
     "service": {
       "type": "object",

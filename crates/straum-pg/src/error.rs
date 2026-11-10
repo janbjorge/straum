@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io;
 
+use straum_app::Lsn;
 use straum_domain::RowError;
 
 use crate::dsn::DsnError;
@@ -29,6 +30,15 @@ pub enum Error {
     /// The setup doesn't fit the spec; one line per problem, saying what to
     /// fix.
     Setup(Vec<String>),
+    /// A transaction changed more rows straum reads than
+    /// `--max-transaction-rows` allows. Starting over is the cheap way
+    /// through it: the new slot's snapshot is after the commit, so its rows
+    /// come in the bulk load instead of being held and applied under the
+    /// write lock.
+    Transaction {
+        lsn: Lsn,
+        limit: usize,
+    },
     /// The thread reading the stream has stopped.
     Stopped,
 }
@@ -69,6 +79,11 @@ impl fmt::Display for Error {
             Error::Dsn(e) => write!(f, "{e}"),
             Error::Tls(e) => write!(f, "TLS to PostgreSQL: {e}"),
             Error::Setup(problems) => f.write_str(&problems.join("\n")),
+            Error::Transaction { lsn, limit } => write!(
+                f,
+                "transaction {lsn} changes more than {limit} rows straum reads, \
+                 the --max-transaction-rows cap; straum loads again from a snapshot after it"
+            ),
             Error::Stopped => f.write_str("the replication stream stopped"),
         }
     }
@@ -111,6 +126,14 @@ mod tests {
             (Error::from(DsnError::Host), "DSN must name a host"),
             (Error::Tls("no".into()), "TLS to PostgreSQL: no"),
             (Error::Setup(vec!["one".into(), "two".into()]), "one\ntwo"),
+            (
+                Error::Transaction {
+                    lsn: Lsn(0x16_B374_D848),
+                    limit: 100_000,
+                },
+                "transaction 16/B374D848 changes more than 100000 rows straum reads, \
+                 the --max-transaction-rows cap; straum loads again from a snapshot after it",
+            ),
             (Error::Stopped, "the replication stream stopped"),
         ];
         for (err, msg) in cases {

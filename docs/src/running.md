@@ -5,6 +5,7 @@
 ```text
 straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
            [--max-lag SECONDS] [--max-retained-wal BYTES]
+           [--max-transaction-rows ROWS]
 straum plan --spec FILE [--publication NAME] [--role NAME]
 straum status [--url URL]
 straum help
@@ -25,6 +26,7 @@ over HTTP.
 | `--dsn-file FILE` | `STRAUM_DSN` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL held for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#applying-a-commit) instead of applying it. |
 
 It logs to stderr, one line per event:
 

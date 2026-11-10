@@ -36,6 +36,9 @@ const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
 };
+/// Rows a transaction may change before straum starts over; no test but
+/// the one for it comes near.
+const MAX_ROWS: usize = 10_000;
 const READY: &str = "database system is ready to accept connections";
 /// 2100-01-01, on every bucket edge.
 const END: i64 = 4_102_444_800;
@@ -310,7 +313,7 @@ impl Db {
     }
 
     fn pg(&self) -> Pg {
-        Pg::new(self.dsn.clone(), &self.name)
+        Pg::new(self.dsn.clone(), &self.name, MAX_ROWS)
     }
 
     fn writer(&self) -> Writer<Pg> {
@@ -867,6 +870,65 @@ fn follows_the_task_tables() {
     );
 }
 
+/// A transaction at the cap applies; one past it starts straum over, and
+/// the new load holds its rows.
+#[test]
+fn a_transaction_past_the_cap_starts_over() {
+    const CAP: usize = 50;
+    let pg = postgres();
+    let mut db = Db::new(&pg, "cap", TABLES);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    let mut rng = Rng::new(23);
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = Writer::new(
+        App::new(db.spec(SPEC), LIMITS),
+        Pg::new(db.dsn.clone(), &db.name, CAP),
+    );
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let batch = |rng: &mut Rng, from: u64, rows: usize| {
+        let inserts: Vec<String> = (from..from + rows as u64).map(|id| rng.trip(id)).collect();
+        format!("BEGIN;\n{}\nCOMMIT;", inserts.join("\n"))
+    };
+    db.run(&batch(&mut rng, 100, CAP));
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    db.run(&batch(&mut rng, 200, CAP + 1));
+    let err = writer.step().unwrap_err().to_string();
+    let lsn = db.rows("SELECT pg_current_wal_lsn()")[0][0]
+        .clone()
+        .unwrap();
+    assert_eq!(
+        err,
+        format!(
+            "transaction {} changes more than {CAP} rows straum reads, the --max-transaction-rows \
+             cap; straum loads again from a snapshot after it",
+            err.split(' ').nth(1).unwrap_or_default()
+        ),
+        "{err}"
+    );
+    // The transaction's commit record ends at or before the server's
+    // position now, and the failure is what /status shows.
+    let named = err.split(' ').nth(1).unwrap();
+    assert!(
+        parse(named) <= parse(&lsn),
+        "transaction {named} is past the server at {lsn}"
+    );
+    assert_eq!(writer.app().status().error.as_deref(), Some(err.as_str()));
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
+    db.run(&rng.trip(300));
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    fn parse(lsn: &str) -> u64 {
+        let (high, low) = lsn.split_once('/').unwrap();
+        u64::from_str_radix(high, 16).unwrap() << 32 | u64::from_str_radix(low, 16).unwrap()
+    }
+}
+
 #[test]
 fn the_snapshot_and_the_stream_split_exactly() {
     let pg = postgres();
@@ -1321,7 +1383,7 @@ ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
-    let pg = Pg::new(Dsn::parse(&dsn).unwrap(), "plan");
+    let pg = Pg::new(Dsn::parse(&dsn).unwrap(), "plan", MAX_ROWS);
     let mut writer = Writer::new(App::new(spec, LIMITS), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
@@ -1776,7 +1838,7 @@ fn reports_wal_level_and_read_access() {
 
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
-    let mut reader = Pg::new(Dsn::parse(&dsn).unwrap(), "access");
+    let mut reader = Pg::new(Dsn::parse(&dsn).unwrap(), "access", MAX_ROWS);
     let err = reader.open(&spec).unwrap_err().to_string();
     for table in ["zones", "trips", "logins"] {
         let line =
@@ -1789,7 +1851,7 @@ fn reports_wal_level_and_read_access() {
 fn connection_errors() {
     let pg = postgres();
     let wrong = pg.dsn.to_string().replace("postgres@", "postgres:wrong@");
-    let mut source = Pg::new(Dsn::parse(&wrong).unwrap(), "p");
+    let mut source = Pg::new(Dsn::parse(&wrong).unwrap(), "p", MAX_ROWS);
     let spec = straum_notation::parse(&SPEC.replace("$S", "p")).unwrap();
     let err = source.open(&spec).unwrap_err().to_string();
     assert!(
@@ -1798,7 +1860,10 @@ fn connection_errors() {
     );
 
     let bare = Dsn::parse(&pg.dsn.to_string()).unwrap();
-    let err = Pg::new(bare, "p").open(&spec).unwrap_err().to_string();
+    let err = Pg::new(bare, "p", MAX_ROWS)
+        .open(&spec)
+        .unwrap_err()
+        .to_string();
     assert_eq!(err, "PostgreSQL sent a password request; the DSN has none");
 
     let mut db = Db::new(&pg, "errors", "");
@@ -1812,7 +1877,10 @@ fn connection_errors() {
 
     // Nothing listens on port 1.
     let closed = Dsn::parse("postgres://straum@127.0.0.1:1/straum").unwrap();
-    let err = Pg::new(closed, "p").open(&spec).unwrap_err().to_string();
+    let err = Pg::new(closed, "p", MAX_ROWS)
+        .open(&spec)
+        .unwrap_err()
+        .to_string();
     assert!(err.starts_with("connection to PostgreSQL: "), "{err}");
 
     // An error's detail comes with its message.
@@ -2218,7 +2286,7 @@ fn scripted_stream(parts: Vec<(Duration, Vec<u8>)>) -> (Stream, thread::JoinHand
     let (dsn, server) = scripted([vec![now(start)], parts].concat());
     let mut conn = Conn::connect(&dsn, true).unwrap();
     conn.copy_both("START_REPLICATION").unwrap();
-    let stream = Stream::start(conn, Decoder::new(Vec::new()), Lsn(0x10)).unwrap();
+    let stream = Stream::start(conn, Decoder::new(Vec::new(), MAX_ROWS), Lsn(0x10)).unwrap();
     (stream, server)
 }
 
@@ -2538,7 +2606,7 @@ fn taxi_month() {
         );
     };
 
-    let mut writer = Writer::new(App::new(spec, LIMITS), Pg::new(dsn, "straum"));
+    let mut writer = Writer::new(App::new(spec, LIMITS), Pg::new(dsn, "straum", MAX_ROWS));
     let clock = Instant::now();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     eprintln!("loaded in {:.1?}", clock.elapsed());

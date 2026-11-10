@@ -25,6 +25,7 @@ const USAGE: &str = "\
 usage:
   straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
              [--max-lag SECONDS] [--max-retained-wal BYTES]
+             [--max-transaction-rows ROWS]
   straum plan --spec FILE [--publication NAME] [--role NAME]
   straum status [--url URL]
   straum help
@@ -39,7 +40,10 @@ file given by ?sslrootcert=FILE; ?sslmode=disable connects without TLS.
 /readyz turns off while straum is more than SECONDS (30) behind PostgreSQL.
 Once PostgreSQL holds more than BYTES (4Gi) of WAL for straum's slot, straum
 drops the slot and loads again, so it can't fill the server's disk; BYTES
-takes a Ki, Mi, Gi or Ti suffix. SIGTERM or SIGINT stops it.
+takes a Ki, Mi, Gi or Ti suffix. A transaction that changes more than ROWS
+(100000) rows of the spec's tables makes straum load again too, from a
+snapshot after it, instead of holding and applying it all at once. SIGTERM
+or SIGINT stops it.
 
 straum plan prints the SQL that sets PostgreSQL up for FILE: logical
 decoding, the role NAME (straum), its grants and the publication.
@@ -60,6 +64,10 @@ const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
 };
+/// Rows one transaction may change before straum loads again instead of
+/// applying it; `bench/transaction.py` measures what a transaction this
+/// size holds the write lock for.
+const MAX_TRANSACTION_ROWS: usize = 100_000;
 
 /// The wait after a failure, doubled after each failure in a row up to
 /// [`MAX_BACKOFF`].
@@ -74,6 +82,7 @@ enum Command {
         publication: String,
         dsn_file: Option<String>,
         limits: Limits,
+        max_transaction_rows: usize,
     },
     Plan {
         spec: String,
@@ -106,7 +115,15 @@ fn main() -> ExitCode {
             publication,
             dsn_file,
             limits,
-        }) => run(&spec, &listen, &publication, dsn_file.as_deref(), limits),
+            max_transaction_rows,
+        }) => run(
+            &spec,
+            &listen,
+            &publication,
+            dsn_file.as_deref(),
+            limits,
+            max_transaction_rows,
+        ),
         Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
         Err(usage) => {
             eprint!("straum: {usage}\n\n{USAGE}");
@@ -134,6 +151,7 @@ fn command(args: &[String]) -> Result<Command, String> {
             "--dsn-file",
             "--max-lag",
             "--max-retained-wal",
+            "--max-transaction-rows",
         ],
         "plan" => &["--spec", "--publication", "--role"],
         "status" => &["--url"],
@@ -177,6 +195,12 @@ fn command(args: &[String]) -> Result<Command, String> {
                 )
             })?,
         };
+        let max_transaction_rows = match flag("--max-transaction-rows") {
+            None => MAX_TRANSACTION_ROWS,
+            Some(value) => count(&value).ok_or_else(|| {
+                format!("--max-transaction-rows takes a count of rows above 0, not {value:?}")
+            })?,
+        };
         Command::Run {
             spec,
             listen: flag("--listen").unwrap_or_else(|| LISTEN.into()),
@@ -186,6 +210,7 @@ fn command(args: &[String]) -> Result<Command, String> {
                 max_lag,
                 max_retained_wal,
             },
+            max_transaction_rows,
         }
     } else {
         Command::Plan {
@@ -199,6 +224,10 @@ fn command(args: &[String]) -> Result<Command, String> {
 fn seconds(text: &str) -> Option<Duration> {
     let seconds = text.parse().ok().filter(|&n| n > 0)?;
     Some(Duration::from_secs(seconds))
+}
+
+fn count(text: &str) -> Option<usize> {
+    text.parse().ok().filter(|&n| n > 0)
 }
 
 /// A count of bytes, or of `Ki`, `Mi`, `Gi` or `Ti` as Kubernetes writes
@@ -269,6 +298,7 @@ fn run(
     publication: &str,
     dsn_file: Option<&str>,
     limits: Limits,
+    max_transaction_rows: usize,
 ) -> Result<(), String> {
     let spec = read_spec(spec)?;
     let dsn = read_dsn(dsn_file)?;
@@ -286,7 +316,7 @@ fn run(
     }));
 
     let app = App::new(spec, limits);
-    let writer = Writer::new(app.clone(), Pg::new(dsn, publication));
+    let writer = Writer::new(app.clone(), Pg::new(dsn, publication, max_transaction_rows));
     thread::Builder::new()
         .name("writer".into())
         .spawn(move || write(writer))
@@ -363,12 +393,13 @@ mod tests {
                 publication: PUBLICATION.into(),
                 dsn_file: None,
                 limits: LIMITS,
+                max_transaction_rows: MAX_TRANSACTION_ROWS,
             })
         );
         assert_eq!(
             command(&args(
                 "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s \
-                 --max-lag 5 --max-retained-wal 512Mi"
+                 --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500"
             )),
             Ok(Command::Run {
                 spec: "s".into(),
@@ -379,6 +410,7 @@ mod tests {
                     max_lag: Duration::from_secs(5),
                     max_retained_wal: 536_870_912,
                 },
+                max_transaction_rows: 2500,
             })
         );
         assert_eq!(
@@ -445,6 +477,12 @@ mod tests {
                 "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {size:?}"
             );
             assert_eq!(command(&line), Err(error), "{size}");
+        }
+        for rows in ["0", "-1", "1.5", "10k", "1Ki"] {
+            let line = args(&format!("run --spec s --max-transaction-rows {rows}"));
+            let error =
+                format!("--max-transaction-rows takes a count of rows above 0, not {rows:?}");
+            assert_eq!(command(&line), Err(error), "{rows}");
         }
     }
 

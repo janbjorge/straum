@@ -12,6 +12,7 @@ tests:
     set:
       maxLag: 1
       maxRetainedWal: "1"
+      maxTransactionRows: 1
       replicaCount: 0
     asserts:
       - isKind:
@@ -44,6 +45,20 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "maxRetainedWal"
+
+  - it: refuses a transaction cap of nothing
+    set:
+      maxTransactionRows: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxTransactionRows"
+
+  - it: refuses a transaction cap that isn't a count
+    set:
+      maxTransactionRows: "many"
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxTransactionRows"
 
   - it: refuses a digest that isn't sha256
     set:
