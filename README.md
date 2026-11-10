@@ -4,18 +4,19 @@
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 
-Straum loads aggregates declared in a SQL spec, then applies PostgreSQL changes
-to them in memory. Clients read them through HTTP. PostgreSQL remains the
-source of truth; Straum stores no durable copy.
+Straum keeps the aggregates a spec declares as cells in memory, loaded
+from a snapshot and kept current by every commit after it, and answers
+asks about them over HTTP. On a month of New York taxi trips its asks
+answer in 150 to 190 µs where PostgreSQL takes 22 to 171 ms, from 40 MiB
+([benchmark](https://janbjorge.github.io/straum/benchmark.html)).
+PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 
-**Not stable.** Use at your own risk.
+**Not stable.** The spec, the asks and the flags may change.
 
-The [user guide](https://janbjorge.github.io/straum/) covers the spec,
-asks, PostgreSQL setup and running Straum on Kubernetes.
+## What it looks like
 
-## Quick start
-
-Given PostgreSQL source tables, write a spec:
+A spec is a view in a small subset of PostgreSQL's `CREATE VIEW`. Straum
+never creates it; PostgreSQL would give the same rows.
 
 ```sql
 CREATE VIEW orders AS
@@ -31,21 +32,14 @@ LEFT JOIN customers ON customers.id = customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
-`CREATE VIEW` here is Straum configuration, not PostgreSQL DDL. `plan`
-checks the spec and prints the SQL a table owner must apply, with the
-role and password of the DSN Straum will connect with:
-
-```sh
-export STRAUM_DSN='postgres://straum:password@localhost:5432/app'
-cargo run -p straum -- plan --spec orders.sql | psql -U postgres app
-cargo run -p straum -- run --spec orders.sql
-```
-
-After `/readyz` returns `200`, ask for a declared aggregate:
+`straum plan` prints the SQL a table owner runs once; `straum run` loads
+the view and follows it. An ask is a `SELECT` over the view, every value
+a parameter:
 
 ```sh
 curl --json '{
-  "query": "SELECT status, customers.country, orders, revenue, avg_amount FROM orders GROUP BY status, customers.country"
+  "query": "SELECT customers.country, orders, revenue FROM orders WHERE status = $1 GROUP BY customers.country",
+  "parameters": ["paid"]
 }' http://localhost:8080/ask
 ```
 
@@ -53,79 +47,40 @@ curl --json '{
 {
   "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    {"status": "paid", "customers.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
-    {"status": "paid", "customers.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
-    {"status": "refunded", "customers.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
+    {"customers.country": "NO", "orders": 2, "revenue": 139.99},
+    {"customers.country": "SE", "orders": 1, "revenue": 80.50}
   ]
 }
 ```
 
-Every commit made before `as_of` is in the answer. Sums keep their column's
-scale; `avg` is rounded to four more places. The guide's
-[quick start](https://janbjorge.github.io/straum/quick-start.html) makes
-these tables in Docker and gives this answer.
+Every commit made before `as_of` is in the answer. The guide's [quick
+start](https://janbjorge.github.io/straum/quick-start.html) runs this
+against PostgreSQL in Docker in eight steps.
 
-## Scope
-
-Straum:
-
-- reads a narrow PostgreSQL `CREATE VIEW` subset;
-- maintains `count`, `count distinct`, `sum`, `min`, `max`, and `avg`;
-- supports dimensions, N:1 joins, filters, and UTC time buckets, with wider
-  buckets for long ranges;
-- loads from a snapshot consistent with its replication stream;
-- answers asks, a `SELECT` over a view with its values as parameters;
-- exposes readiness and liveness.
-
-Straum is not a SQL engine, PostgreSQL replica, cache, or durable store. It
-only serves aggregates declared before startup.
-
-## Requirements
-
-Straum needs PostgreSQL 17 or newer and uses its stock logical replication.
-On 17 and 18, enable it before applying the SQL emitted by `straum plan`:
-
-```text
-wal_level = logical
-```
-
-Restart PostgreSQL after changing `wal_level`. From 19, `replica`, the
-default, is enough. `run` listens on
-`0.0.0.0:8080` by default.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /ask` | Read a declared aggregate. |
-| `GET /livez` | Process liveness. |
-| `GET /readyz` | Ready after all tables load and the stream catches up. |
-| `GET /status` | What Straum has done, as `straum status` prints it. |
+Straum is not a SQL engine, a replica, a cache or a durable store. It
+answers only what its spec declares. It needs PostgreSQL 17 or newer as
+shipped, with stock logical replication, no extension and no superuser
+([setup](https://janbjorge.github.io/straum/postgresql.html)).
 
 ## How it works
 
-![A table owner applies the setup SQL from straum plan. Straum loads from a snapshot at LSN L, then applies every commit after L and answers asks over HTTP.](docs/src/diagrams/overview.svg)
+![Straum between PostgreSQL and the apps that ask it](docs/src/diagrams/overview.svg)
 
-Startup uses an exported snapshot and temporary logical slot. The snapshot and
-change stream share an LSN, so no committed change is missed between loading
-and replication.
+Every start opens a temporary logical slot, loads each view from the
+slot's snapshot at LSN L, then applies every commit after L. No commit is
+missed between the load and the stream, and none is applied twice.
 
 ## Development
 
-Docker is required for PostgreSQL integration tests.
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-python3 scripts/check-layers.py
-cargo test --workspace
-cargo llvm-cov --workspace --all-targets --fail-under-lines 98
-```
+[AGENTS.md](AGENTS.md) has the commands and the rules. PostgreSQL tests
+need Docker.
 
 ## Documentation
 
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`
+- [Decisions](docs/adr/)
 - [Architecture](research/ARCHITECTURE.md)
 - [Joins: data model, code and sources](research/JOINS.md)
-- [Decisions](docs/adr/)
 - [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)
 - [Managed PostgreSQL constraints](research/MANAGED-POSTGRES.md)
 - [AKS deployment design](research/AKS.md)
