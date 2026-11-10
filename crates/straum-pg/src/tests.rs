@@ -412,7 +412,8 @@ fn compare(db: &mut Db, app: &App, fare_scale: u32) -> Option<()> {
             Err(AnswerError::NotReady) => return None,
             Err(e) => panic!("{e}"),
         };
-        assert_eq!(answered.answer.scales, scales, "{}", ask.fact);
+        let got_scales: Vec<u32> = answered.answer.columns.iter().map(|c| c.scale).collect();
+        assert_eq!(got_scales, scales, "{}", ask.fact);
         let mut got = printed(&answered.answer, &scales);
         let mut expected = db.rows(&sql);
         got.sort();

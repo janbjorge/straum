@@ -21,7 +21,7 @@ use std::mem;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{Ask, AskKey, Datum, Value};
+use straum_domain::{Ask, Datum, Value};
 
 use crate::json::{decimal, string};
 
@@ -41,7 +41,7 @@ pub(crate) fn range_errors(ask: &Ask) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn write(ask: &Ask, answered: &Answered) -> Vec<u8> {
+pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, lsn, time } = answered;
     let mut out = Vec::new();
     out.extend_from_slice(b"{\"lsn\":");
@@ -53,44 +53,39 @@ pub(crate) fn write(ask: &Ask, answered: &Answered) -> Vec<u8> {
         Some(Err(_)) | None => out.extend_from_slice(b"null"),
     }
     out.extend_from_slice(b",\"columns\":[");
-    let columns = (ask.by.iter().map(|key| match key {
-        AskKey::Time(t) => t.to_string(),
-        AskKey::Key(path) => path.to_string(),
-    }))
-    .chain(ask.measures.iter().map(ToString::to_string));
-    for (i, column) in columns.enumerate() {
+    for (i, column) in answer.columns.iter().enumerate() {
         if i > 0 {
             out.push(b',');
         }
-        string(&mut out, &column);
+        string(&mut out, &column.name);
     }
     out.extend_from_slice(b"],\"rows\":[");
-    let (key_scales, measure_scales) = answer.scales.split_at(ask.by.len());
     for (i, (keys, values)) in answer.rows.iter().enumerate() {
         if i > 0 {
             out.push(b',');
         }
         out.push(b'[');
+        let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
         let mut first = true;
         let mut comma = |out: &mut Vec<u8>| {
             if !mem::take(&mut first) {
                 out.push(b',');
             }
         };
-        for ((datum, key), &scale) in keys.iter().zip(&ask.by).zip(key_scales) {
+        for (datum, column) in keys.iter().zip(key_columns) {
             comma(&mut out);
-            match (key, datum) {
-                (AskKey::Time(_), &Datum::Int(seconds)) => {
+            match datum {
+                &Datum::Int(seconds) if column.time => {
                     let at = Timestamp::from_second(seconds)
                         .expect("range_errors keeps time keys in range");
                     string(&mut out, &at.to_string());
                 }
-                (_, datum) => write_datum(&mut out, datum, scale),
+                datum => write_datum(&mut out, datum, column.scale),
             }
         }
-        for (value, &scale) in values.iter().zip(measure_scales) {
+        for (value, column) in values.iter().zip(measure_columns) {
             comma(&mut out);
-            write_value(&mut out, value, scale);
+            write_value(&mut out, value, column.scale);
         }
         out.push(b']');
     }

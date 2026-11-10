@@ -23,10 +23,19 @@ pub struct Store {
 /// measures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
+    /// One per value of a row, the `by` keys then the measures.
+    pub columns: Vec<AnswerColumn>,
     pub rows: Vec<(Vec<Datum>, Vec<Value>)>,
-    /// The scale of each column of a row, the `by` keys then the measures:
-    /// numeric values are integers in units of `10^-scale`.
-    pub scales: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerColumn {
+    /// As the ask names it.
+    pub name: String,
+    /// Numeric values are integers in units of `10^-scale`.
+    pub scale: u32,
+    /// A time key, whose values are the second its period starts.
+    pub time: bool,
 }
 
 impl Store {
@@ -98,12 +107,20 @@ impl Store {
                 }
             })
             .collect();
-        let scales = (by.iter().map(|p| p.source.scale(rollup)))
-            .chain(
-                ask.measures
-                    .iter()
-                    .map(|name| rollup.scale_of(&fact.measure(name.as_str()).expect(CHECKED).agg)),
-            )
+        let keys = (ask.by.iter().zip(&by)).map(|(key, p)| AnswerColumn {
+            name: match key {
+                AskKey::Time(t) => t.to_string(),
+                AskKey::Key(path) => path.to_string(),
+            },
+            scale: p.source.scale(rollup),
+            time: matches!(key, AskKey::Time(_)),
+        });
+        let columns = keys
+            .chain(ask.measures.iter().map(|name| AnswerColumn {
+                name: name.to_string(),
+                scale: rollup.scale_of(&fact.measure(name.as_str()).expect(CHECKED).agg),
+                time: false,
+            }))
             .collect();
 
         if by.is_empty() {
@@ -151,7 +168,7 @@ impl Store {
             })
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(Answer { rows, scales })
+        Ok(Answer { columns, rows })
     }
 
     fn fact_index(&self, name: &str) -> Option<usize> {

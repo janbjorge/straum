@@ -137,7 +137,7 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let answered = app.ask(&request)?;
-        Ok(answer::write(&request, &answered))
+        Ok(answer::write(&answered))
     })
     .await;
     match answered {

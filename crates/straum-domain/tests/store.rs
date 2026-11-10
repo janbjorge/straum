@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, Ask, AskError, AskKey, Cond, Datum, Dim, Fact, Grain, Ident, KeyPath, Literal,
-    Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
+    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, Cond, Datum, Dim, Fact, Grain, Ident,
+    KeyPath, Literal, Measure, Ref, RowError, Spec, Store, Table, Time, TimeKey, Value,
 };
 
 const GRAIN: u32 = 900;
@@ -377,22 +377,30 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], zones: &Zones) -> Answer {
             (key, values)
         })
         .collect();
-    let scales = (ask.by.iter().map(|k| match k {
-        AskKey::Key(p) => scale(p),
-        AskKey::Time(_) => 0,
+    let columns = (ask.by.iter().map(|k| match k {
+        AskKey::Key(p) => AnswerColumn {
+            name: p.to_string(),
+            scale: scale(p),
+            time: false,
+        },
+        AskKey::Time(t) => AnswerColumn {
+            name: t.to_string(),
+            scale: 0,
+            time: true,
+        },
     }))
-    .chain(
-        ask.measures
-            .iter()
-            .map(|name| match &fact.measure(name.as_str()).unwrap().agg {
-                Agg::Count | Agg::CountDistinct(_) => 0,
-                Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
-                    TRIP_SCALES + column(c.as_str()) as u32
-                }
-            }),
-    )
+    .chain(ask.measures.iter().map(|name| AnswerColumn {
+        name: name.to_string(),
+        scale: match &fact.measure(name.as_str()).unwrap().agg {
+            Agg::Count | Agg::CountDistinct(_) => 0,
+            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
+                TRIP_SCALES + column(c.as_str()) as u32
+            }
+        },
+        time: false,
+    }))
     .collect();
-    Answer { rows, scales }
+    Answer { columns, rows }
 }
 
 fn measure(m: &Measure, rows: &[&[Datum]], zones: &Zones) -> Value {
@@ -715,14 +723,46 @@ fn scales_stay_through_clear() {
         from: START,
         to: END,
     };
-    assert_eq!(store.ask(&ask).unwrap().scales, [0, 0, 0, 0, 0]);
+    let scales = |store: &Store| -> Vec<u32> {
+        let answer = store.ask(&ask).unwrap();
+        answer.columns.iter().map(|c| c.scale).collect()
+    };
+    assert_eq!(scales(&store), [0, 0, 0, 0, 0]);
     let rollup = store.rollup("trips").unwrap();
     rollup.set_scales(&[0, 3, 0, 0, 0, 0, 2, 1, 0, 0]).unwrap();
     rollup.clear();
     let zones = store.dim("zones").unwrap();
     zones.set_scales(&[0, 0, 4]).unwrap();
     zones.clear();
-    assert_eq!(store.ask(&ask).unwrap().scales, [3, 4, 0, 2, 1]);
+    assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
+}
+
+#[test]
+fn columns_name_keys_and_measures_as_asked() {
+    let store = Store::new(spec());
+    let ask = Ask {
+        fact: id("trips"),
+        measures: vec![id("fare"), id("trips")],
+        by: vec![
+            AskKey::Key(path("pickup.zone")),
+            AskKey::Time(TimeKey::Bucket),
+        ],
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let columns: Vec<(String, bool)> = (store.ask(&ask).unwrap().columns.into_iter())
+        .map(|c| (c.name, c.time))
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            ("pickup.zone".to_owned(), false),
+            ("bucket".to_owned(), true),
+            ("fare".to_owned(), false),
+            ("trips".to_owned(), false),
+        ]
+    );
 }
 
 #[test]
