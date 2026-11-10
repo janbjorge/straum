@@ -409,6 +409,7 @@ fn status_says_what_straum_did() {
         "\
 ready:        no, loading
 applied:      nothing yet
+as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL held:     unknown until every table is loaded
 starts:       0
@@ -427,15 +428,20 @@ last failure: none
         "applied:      17/0, committed 2024-01-02T00:00:00.123456Z"
     );
     assert!(
-        lines[2].starts_with("lag:          0.0 s, at most 30 s"),
+        lines[2].ends_with("Z, every commit before it applied"),
         "{}",
         lines[2]
     );
+    assert!(
+        lines[3].starts_with("lag:          0.0 s, at most 30 s"),
+        "{}",
+        lines[3]
+    );
     assert_eq!(
-        lines[3],
+        lines[4],
         "WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 16/B374D848"
     );
-    assert_eq!(lines[4..6], ["starts:       1", "failures:     0"]);
+    assert_eq!(lines[5..7], ["starts:       1", "failures:     0"]);
     server.stop();
 }
 

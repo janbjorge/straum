@@ -326,6 +326,8 @@ Tests:
   sets each column's `ColumnType` (replacing `set_scales`), and
   `Store::ask` checks after `Spec::check`, since only a load knows the
   types. `straum-pg` keeps its own `Kind`, as reading a type stays there.
+- 2026-11-10: `/status` shows `as of`, from the same `State::as_of` that
+  answers use, so both report freshness alike.
 - 2026-11-10: One `unsafe` stays: the counting allocator in
   `crates/straum-domain/tests/cost.rs`, which proves an ask allocates per
   group and never per cell. `GlobalAlloc` is an unsafe trait, so no safe

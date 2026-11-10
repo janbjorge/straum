@@ -79,6 +79,7 @@ defaults to `http://127.0.0.1:8080`.
 $ straum status
 ready:        yes
 applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
+as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
 lag:          0.0 s, at most 30 s
 WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
 starts:       1
@@ -88,6 +89,8 @@ last failure: none
 
 - `ready`: `yes`, or `no` and why, as `/readyz` says.
 - `applied`: the last commit applied and when it committed.
+- `as of`: every commit made before this time is applied, the same
+  `as_of` answers carry. It keeps moving while the database is quiet.
 - `lag`: against `--max-lag`.
 - `WAL held`: what PostgreSQL keeps for the slot, against
   `--max-retained-wal`, and the server's current WAL position.

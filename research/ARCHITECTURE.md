@@ -473,8 +473,8 @@ One code path covers all of them. Azure Flexible Server 18 defaults to
   Mozilla's roots or the PEM file `sslrootcert` names.
 - Spec from a ConfigMap; DSN from `STRAUM_DSN`, which the chart reads from an
   existing Secret, or a file (`--dsn-file`), never from the command line.
-- Telemetry: none yet; `GET /status` and `straum status` show lag, WAL held,
-  starts and failures. Telemetry is an M8 box (PLAN.md).
+- Telemetry: none yet; `GET /status` and `straum status` show `as of`, lag,
+  WAL held, starts and failures. Telemetry is an M8 box (PLAN.md).
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: the guide's quick start runs `postgres:18` in Docker.

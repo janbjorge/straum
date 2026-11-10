@@ -571,6 +571,7 @@ fn status_reports_what_straum_did() {
             ready: false,
             lsn: None,
             time: None,
+            as_of: None,
             lag: None,
             wal: None,
             limits: LIMITS,
@@ -586,6 +587,13 @@ fn status_reports_what_straum_did() {
     let status = writer.app().status();
     assert!(status.ready);
     assert_eq!((status.lsn, status.time), (Some(start), None));
+    // Answers say the same.
+    let answered = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
+    let apart = match answered.as_of.duration_since(status.as_of.unwrap()) {
+        Ok(d) => d,
+        Err(e) => e.duration(),
+    };
+    assert!(apart < Duration::from_millis(1), "{apart:?}");
     assert_eq!(status.lag, Some(Duration::ZERO));
     let caught_up = Wal {
         server: start,
@@ -615,6 +623,7 @@ fn status_reports_what_straum_did() {
     let status = writer.app().status();
     assert!(!status.ready);
     assert_eq!((status.lsn, status.lag, status.wal), (None, None, None));
+    assert_eq!(status.as_of, None);
     assert_eq!(status.error.as_deref(), Some("connection dropped"));
     let (_, failure) = status.last_failure.clone().unwrap();
     assert_eq!(failure, "connection dropped");

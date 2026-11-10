@@ -32,6 +32,10 @@ pub(crate) fn write(status: &Status) -> String {
         (Some(lsn), None) => format!("{lsn}, where the stream started"),
         (Some(lsn), Some(time)) => format!("{lsn}, committed {}", timestamp(time)),
     };
+    let as_of = match status.as_of {
+        None => UNKNOWN.to_owned(),
+        Some(at) => format!("{}, every commit before it applied", timestamp(at)),
+    };
     let lag = match status.lag {
         None => UNKNOWN.to_owned(),
         Some(lag) => format!(
@@ -57,6 +61,7 @@ pub(crate) fn write(status: &Status) -> String {
     for (label, value) in [
         ("ready", ready),
         ("applied", applied),
+        ("as of", as_of),
         ("lag", lag),
         ("WAL held", wal),
         ("starts", status.starts.to_string()),
@@ -93,6 +98,7 @@ mod tests {
             ready: true,
             lsn: Some(Lsn(0x16_B374_D848)),
             time: Some(UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456)),
+            as_of: Some(UNIX_EPOCH + Duration::from_secs(1_704_153_660)),
             lag: Some(Duration::from_millis(1_300)),
             wal: Some(Wal {
                 server: Lsn(0x16_C000_0000),
@@ -120,6 +126,7 @@ mod tests {
             "\
 ready:        yes
 applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
+as of:        2024-01-02T00:01:00Z, every commit before it applied
 lag:          1.3 s, at most 30 s
 WAL held:     256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
 starts:       2
@@ -143,6 +150,7 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
             ready: false,
             lsn: None,
             time: None,
+            as_of: None,
             lag: None,
             wal: None,
             error: Some("trips: one\ntrips: two".to_owned()),
@@ -156,6 +164,7 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
 ready:        no, trips: one
               trips: two
 applied:      nothing yet
+as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL held:     unknown until every table is loaded
 starts:       2

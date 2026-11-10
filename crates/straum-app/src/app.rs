@@ -109,6 +109,8 @@ pub struct Status {
     /// When the commit at `lsn` committed. `None` when `lsn` is where the
     /// stream started.
     pub time: Option<SystemTime>,
+    /// As [`Answered::as_of`]. `None` until every table is loaded.
+    pub as_of: Option<SystemTime>,
     /// As [`App::lag`].
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
@@ -170,15 +172,11 @@ impl App {
             .check(ask)
             .map_err(AnswerError::Invalid)?;
         let lsn = state.position.ok_or(AnswerError::NotReady)?;
-        let caught_up = state.lag.as_ref().expect(STARTED).caught_up();
         let answer = state.store.ask(ask).map_err(AnswerError::Invalid)?;
-        let since = Instant::now().saturating_duration_since(caught_up);
         Ok(Answered {
             answer,
             lsn,
-            // A clock set before 1970 gets the earliest time there is,
-            // which is still true.
-            as_of: (SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH),
+            as_of: state.as_of().expect(STARTED),
         })
     }
 
@@ -194,6 +192,7 @@ impl App {
             ready: state.ready(lag),
             lsn: state.position,
             time: state.time,
+            as_of: state.as_of(),
             lag,
             wal: state.wal,
             limits: state.limits,
@@ -216,6 +215,14 @@ impl App {
 impl State {
     fn behind(&self) -> Option<Duration> {
         (self.lag.as_ref()).map(|lag| lag.behind(Instant::now()))
+    }
+
+    /// As [`Answered::as_of`].
+    fn as_of(&self) -> Option<SystemTime> {
+        let since = Instant::now().saturating_duration_since(self.lag.as_ref()?.caught_up());
+        // A clock set before 1970 gets the earliest time there is, which is
+        // still true.
+        Some((SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH))
     }
 
     fn ready(&self, lag: Option<Duration>) -> bool {
