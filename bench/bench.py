@@ -2,7 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "aiohttp", "asyncpg", "orjson", "psutil", "pyarrow", "testcontainers",
+#     "aiohttp", "asyncpg", "orjson", "psutil", "pyarrow", "tabulate",
+#     "testcontainers",
 # ]
 #
 # [tool.uv]
@@ -39,6 +40,7 @@ import orjson
 import psutil
 import pyarrow.csv
 import pyarrow.parquet
+import tabulate
 from testcontainers.community.postgres import PostgresContainer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -207,13 +209,26 @@ async def bench(
     print(f"PostgreSQL {version}: {trips:,} trips, {size / 2**20:,.0f} MiB.")
     print(f"Straum: ready in {loaded:.1f} s, {rss / 2**20:,.0f} MiB resident.")
     print()
-    print("| Ask | Rows | PostgreSQL | Straum | Faster |")
-    print("| --- | ---: | ---: | ---: | ---: |")
-    for name, rows, pg_time, straum_time in results:
-        print(
-            f"| {name} | {rows} | {duration(pg_time)} | {duration(straum_time)}"
-            f" | {pg_time / straum_time:,.0f}x |"
+    table = [
+        (
+            name,
+            rows,
+            duration(pg_time),
+            duration(straum_time),
+            f"{pg_time / straum_time:,.0f}x",
         )
+        for name, rows, pg_time, straum_time in results
+    ]
+    # Pipe keeps the alignment colons that GitHub's format drops.
+    print(
+        tabulate.tabulate(
+            table,
+            headers=["Ask", "Rows", "PostgreSQL", "Straum", "Faster"],
+            tablefmt="pipe",
+            colalign=["left", "right", "right", "right", "right"],
+            disable_numparse=True,
+        )
+    )
     return 0
 
 
