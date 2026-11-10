@@ -205,12 +205,12 @@ impl Store {
         let slot = |s: Slot| fact.rollup_key().position(|k| k == s).expect(CHECKED);
         match self.spec.resolve(fact, path).expect(CHECKED) {
             Key::Column(c) => Source::Slot(slot(Slot::Column(c))),
-            Key::Ref(r) => Source::Slot(slot(Slot::Ref(r))),
+            Key::Ref(r) => Source::Slot(slot(Slot::Column(&r.via))),
             Key::Attr(r, attr) => {
                 let d = self.dim_index(r.dim.as_str()).expect(CHECKED);
                 let dim = &self.spec.dims()[d];
                 Source::Dim {
-                    slot: slot(Slot::Ref(r)),
+                    slot: slot(Slot::Column(&r.via)),
                     table: &self.dims[d],
                     column: iter::once(&dim.key)
                         .chain(&dim.attrs)

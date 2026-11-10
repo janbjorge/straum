@@ -95,21 +95,22 @@ pub enum Key<'a> {
     Attr(&'a Ref, &'a Ident),
 }
 
+/// One part of the rollup key: a fact column, or the time bucket. A ref is
+/// keyed by its via column, since a ref id is that column's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
-    Ref(&'a Ref),
     Bucket,
 }
 
 impl Fact {
-    /// `by` columns, then ref ids, then the time bucket. Dim attributes are
-    /// never part of it.
+    /// `by` columns, then the refs' via columns, then the time bucket. Dim
+    /// attributes are never part of it.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
         self.by
             .iter()
+            .chain(self.refs.iter().map(|r| &r.via))
             .map(Slot::Column)
-            .chain(self.refs.iter().map(Slot::Ref))
             .chain(iter::once(Slot::Bucket))
     }
 

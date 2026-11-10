@@ -76,13 +76,18 @@ fn taxi_parses() {
         .rollup_key()
         .map(|slot| match slot {
             Slot::Column(c) => c.to_string(),
-            Slot::Ref(r) => r.name.to_string(),
             Slot::Bucket => "bucket".into(),
         })
         .collect();
     assert_eq!(
         key,
-        ["payment_type", "vendor_id", "pickup", "dropoff", "bucket"]
+        [
+            "payment_type",
+            "vendor_id",
+            "pu_location_id",
+            "do_location_id",
+            "bucket"
+        ]
     );
 
     assert_eq!(
