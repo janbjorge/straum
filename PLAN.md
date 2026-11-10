@@ -167,7 +167,8 @@ Tests:
 - 2026-11-09: Answers carry the scale of each column (`Answer::scales`, now
   `Answer::columns`, 2026-11-10). Only
   the source knows column types, so a load sets them (`Rollup::set_scales`,
-  `DimTable::set_scales`), and JSON answers print exact decimals.
+  `DimTable::set_scales`, now `set_types`, 2026-11-10), and JSON answers
+  print exact decimals.
 - 2026-11-09: straum-http is hyper 1 on tokio, no framework, no macros. JSON
   asks are walked like Straum SQL, deny by default, over `serde_json` without
   derive: unknown fields, keys given twice and wrong types are errors that
@@ -318,6 +319,13 @@ Tests:
   rounding stays in `straum-http`. `Answer` names its own columns, so the
   writer doesn't need the ask, and `Spec::check` rejects a key or measure
   asked twice, since row fields go by name.
+- 2026-11-10: Ask filter values must have their column's type, with no
+  conversion: an integer for an integer or `numeric(p, 0)`, a string for
+  text, a boolean for a boolean; a numeric with a scale above 0 takes none.
+  Anything else is `AskError::WrongType`, not an empty answer. The load
+  sets each column's `ColumnType` (replacing `set_scales`), and
+  `Store::ask` checks after `Spec::check`, since only a load knows the
+  types. `straum-pg` keeps its own `Kind`, as reading a type stays there.
 - 2026-11-10: One `unsafe` stays: the counting allocator in
   `crates/straum-domain/tests/cost.rs`, which proves an ask allocates per
   group and never per cell. `GlobalAlloc` is an unsafe trait, so no safe
