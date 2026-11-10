@@ -21,18 +21,63 @@ use straum_domain::{Ask, Literal, Spec};
 use straum_pg::{Dsn, Pg};
 use tokio::signal::unix::{SignalKind, signal};
 
-const USAGE: &str = "\
-usage:
-  straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
-             [--max-lag SECONDS] [--max-retained-wal BYTES]
-             [--max-transaction-rows ROWS]
-  straum plan --spec FILE [--publication NAME] [--role NAME]
-  straum status [--url URL]
-  straum help
+const COMMANDS: [&str; 3] = ["run", "plan", "status"];
 
-Defaults: ADDRESS 0.0.0.0:8080, NAME straum, URL http://127.0.0.1:8080,
-SECONDS 30, BYTES 4Gi, ROWS 100000. The DSN comes from --dsn-file or
-STRAUM_DSN. Full guide: https://janbjorge.github.io/straum/running.html
+const HELP: &str = "\
+straum follows tables in PostgreSQL and answers asks over HTTP.
+
+usage: straum <command> [flags]
+
+  run     load the spec's tables, follow their changes, answer asks
+  plan    print the SQL that sets PostgreSQL up for the spec
+  status  print what a running straum has done
+  help    print this; straum help <command> prints its flags
+
+Guide: https://janbjorge.github.io/straum/
+";
+
+const RUN_HELP: &str = "\
+usage: straum run --spec FILE [flags]
+
+Loads every table FILE names, follows their changes and answers asks over
+HTTP. SIGTERM or SIGINT stops it.
+
+  --spec FILE                  the spec; required
+  --listen ADDRESS             where to serve HTTP (0.0.0.0:8080)
+  --publication NAME           the publication straum plan made (straum)
+  --dsn-file FILE              a file holding the DSN; else STRAUM_DSN
+  --max-lag SECONDS            lag before /readyz turns off (30)
+  --max-retained-wal BYTES     WAL held for the slot before straum starts
+                               over (4Gi; takes Ki, Mi, Gi or Ti)
+  --max-transaction-rows ROWS  rows one transaction may change before
+                               straum starts over (100000)
+
+Guide: https://janbjorge.github.io/straum/running.html#straum-run
+";
+
+const PLAN_HELP: &str = "\
+usage: straum plan --spec FILE [flags]
+
+Prints the SQL that sets PostgreSQL up for FILE: logical decoding, the
+role, its grants and the publication.
+
+  --spec FILE         the spec; required
+  --publication NAME  the publication to make (straum)
+  --role NAME         the role straum run connects as (straum)
+
+Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
+";
+
+const STATUS_HELP: &str = "\
+usage: straum status [flags]
+
+Prints what the straum at URL has done: ready or why not, how far behind
+PostgreSQL, the WAL held for it, its starts and its failures. In a pod:
+kubectl exec deploy/straum -- /straum status
+
+  --url URL  where straum serves HTTP (http://127.0.0.1:8080)
+
+Guide: https://janbjorge.github.io/straum/running.html#straum-status
 ";
 
 const LISTEN: &str = "0.0.0.0:8080";
@@ -66,7 +111,8 @@ enum Command {
     Status {
         url: String,
     },
-    Help,
+    /// The help of one command, or of straum.
+    Help(Option<&'static str>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -82,8 +128,8 @@ struct Run {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let done = match command(&args) {
-        Ok(Command::Help) => {
-            print!("{USAGE}");
+        Ok(Command::Help(topic)) => {
+            print!("{}", help(topic));
             Ok(())
         }
         Ok(Command::Plan {
@@ -95,8 +141,16 @@ fn main() -> ExitCode {
         }
         Ok(Command::Run(args)) => run(args),
         Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
+        Err(_) if args.is_empty() => {
+            eprint!("{HELP}");
+            return ExitCode::from(2);
+        }
         Err(usage) => {
-            eprintln!("straum: {usage}\ntry: straum help");
+            let hint = match known(&args[0]) {
+                Ok(name) => format!("straum {name} --help"),
+                Err(_) => "straum help".into(),
+            };
+            eprintln!("straum: {usage}\ntry: {hint}");
             return ExitCode::from(2);
         }
     };
@@ -109,11 +163,23 @@ fn main() -> ExitCode {
     }
 }
 
-fn command(args: &[String]) -> Result<Command, String> {
-    let Some((name, rest)) = args.split_first() else {
-        return Err("no command".into());
-    };
-    let allowed: &[&str] = match name.as_str() {
+fn help(topic: Option<&str>) -> &'static str {
+    match topic {
+        None => HELP,
+        Some("run") => RUN_HELP,
+        Some("plan") => PLAN_HELP,
+        Some(_) => STATUS_HELP,
+    }
+}
+
+fn known(name: &str) -> Result<&'static str, String> {
+    (COMMANDS.into_iter())
+        .find(|&command| command == name)
+        .ok_or_else(|| format!("unknown command {name:?}"))
+}
+
+fn flags(name: &str) -> &'static [&'static str] {
+    match name {
         "run" => &[
             "--spec",
             "--listen",
@@ -124,10 +190,27 @@ fn command(args: &[String]) -> Result<Command, String> {
             "--max-transaction-rows",
         ],
         "plan" => &["--spec", "--publication", "--role"],
-        "status" => &["--url"],
-        "help" | "--help" | "-h" if rest.is_empty() => return Ok(Command::Help),
-        other => return Err(format!("unknown command {other:?}")),
+        _ => &["--url"],
+    }
+}
+
+fn command(args: &[String]) -> Result<Command, String> {
+    let Some((name, rest)) = args.split_first() else {
+        return Err("no command".into());
     };
+    if ["help", "--help", "-h"].contains(&name.as_str()) {
+        return match rest {
+            [] => Ok(Command::Help(None)),
+            [topic] => known(topic).map(|name| Command::Help(Some(name))),
+            _ => Err("straum help takes one command".into()),
+        };
+    }
+    let name = known(name)?;
+    // -h anywhere asks for help, whatever else is on the line.
+    if rest.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(Command::Help(Some(name)));
+    }
+    let allowed = flags(name);
     let mut flags: Vec<(&str, &str)> = Vec::new();
     let mut rest = rest.iter();
     while let Some(flag) = rest.next() {
@@ -406,7 +489,37 @@ mod tests {
             })
         );
         for help in ["help", "--help", "-h"] {
-            assert_eq!(command(&args(help)), Ok(Command::Help));
+            assert_eq!(command(&args(help)), Ok(Command::Help(None)));
+        }
+        for (line, name) in [
+            ("help run", "run"),
+            ("run --spec s -h", "run"),
+            ("plan --help", "plan"),
+            ("status -h --url", "status"),
+        ] {
+            assert_eq!(
+                command(&args(line)),
+                Ok(Command::Help(Some(name))),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_names_every_flag() {
+        assert!(help(None).contains("usage: straum <command>"));
+        for name in COMMANDS {
+            let text = help(Some(name));
+            assert!(text.starts_with(&format!("usage: straum {name}")), "{name}");
+            assert!(help(None).contains(&format!("\n  {name} ")), "{name}");
+            for flag in flags(name) {
+                assert!(text.contains(&format!("  {flag} ")), "{name} {flag}");
+            }
+            for other in COMMANDS.into_iter().filter(|&other| other != name) {
+                for flag in flags(other).iter().filter(|f| !flags(name).contains(f)) {
+                    assert!(!text.contains(flag), "{name} {flag}");
+                }
+            }
         }
     }
 
@@ -415,7 +528,10 @@ mod tests {
         let cases = [
             ("", "no command"),
             ("serve", "unknown command \"serve\""),
-            ("help --spec s", "unknown command \"help\""),
+            ("help --spec s", "straum help takes one command"),
+            ("help --spec", "unknown command \"--spec\""),
+            ("help serve", "unknown command \"serve\""),
+            ("help run plan", "straum help takes one command"),
             ("run --spec", "--spec needs a value"),
             ("run --spec a --spec b", "--spec given twice"),
             (

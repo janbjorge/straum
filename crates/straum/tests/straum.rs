@@ -436,22 +436,28 @@ fn says_what_is_wrong() {
 
     let (code, stdout, _) = output(&mut straum(&["help"]));
     assert_eq!(code, Some(0));
+    assert!(stdout.contains("usage: straum <command>"), "{stdout}");
+    let (code, stdout, _) = output(&mut straum(&["plan", "--help"]));
+    assert_eq!(code, Some(0));
     assert!(
-        stdout.starts_with("usage:\n  straum run --spec FILE"),
+        stdout.starts_with("usage: straum plan --spec FILE"),
         "{stdout}"
     );
 
     let (code, _, stderr) = output(&mut straum(&[]));
     assert_eq!(code, Some(2));
-    assert!(
-        stderr == "straum: no command\ntry: straum help\n",
-        "{stderr}"
-    );
+    assert!(stderr.contains("usage: straum <command>"), "{stderr}");
     let (code, _, stderr) = output(&mut straum(&["run", "--port", "1"]));
     assert_eq!(code, Some(2));
-    assert!(
-        stderr.starts_with("straum: straum run takes no \"--port\"\n"),
-        "{stderr}"
+    assert_eq!(
+        stderr,
+        "straum: straum run takes no \"--port\"\ntry: straum run --help\n"
+    );
+    let (code, _, stderr) = output(&mut straum(&["serve"]));
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        stderr,
+        "straum: unknown command \"serve\"\ntry: straum help\n"
     );
 
     let cases: [(Vec<&str>, Option<&str>, String); 7] = [

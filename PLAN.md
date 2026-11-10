@@ -423,6 +423,13 @@ Tests:
   dictionaries, Flink lookup joins, RisingWave temporal joins) says the
   held mapping is the floor for anyone who joins outside the database,
   so reading it from the database is the only way to hold nothing.
+- 2026-11-10: The CLI's help follows clig.dev: `straum help` lists the
+  commands in a line each; `straum <command> --help`, `-h` anywhere on
+  the line, or `straum help <command>` prints that command's usage, its
+  flags with defaults and a link to its guide page. An argument error
+  prints the error and `try: straum <command> --help`, never a manual,
+  and a bare `straum` prints the command list on stderr with exit 2.
+  The prose lives in the guide; help text names flags, not stories.
 
 ## M0: notation and domain model
 

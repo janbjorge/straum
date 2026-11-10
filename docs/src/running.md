@@ -11,6 +11,7 @@ straum status [--url URL]
 straum help
 ```
 
+`straum <command> --help` lists the command's flags and their defaults.
 `straum plan` prints the [setup SQL](postgresql.md#2-run-the-setup-sql).
 
 ## straum run
