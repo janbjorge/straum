@@ -34,13 +34,6 @@ impl Agg {
             Agg::CountDistinct(c) => Some((Kind::Distinct, c)),
         }
     }
-
-    pub(crate) fn scale(&self, input: u32) -> u32 {
-        match self {
-            Agg::Count | Agg::CountDistinct(_) => 0,
-            Agg::Sum(_) | Agg::Min(_) | Agg::Max(_) | Agg::Avg(_) => input,
-        }
-    }
 }
 
 /// Copies of each group's partial, cell `i` merging into copy `i % LANES`.

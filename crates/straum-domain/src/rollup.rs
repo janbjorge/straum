@@ -340,11 +340,14 @@ impl Rollup {
         self.types[TIME]
     }
 
+    /// A measure over numbers keeps its column's scale; a count has none.
     pub(crate) fn scale_of(&self, agg: &Agg) -> u32 {
-        let input = agg.input().map_or(0, |c| {
-            self.types[self.columns.iter().position(|n| n == c).expect(COLUMNS)].scale()
-        });
-        agg.scale(input)
+        match agg.state() {
+            Some((kind, c)) if kind.numeric() => {
+                self.types[self.columns.iter().position(|n| n == c).expect(COLUMNS)].scale()
+            }
+            _ => 0,
+        }
     }
 
     pub(crate) fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {

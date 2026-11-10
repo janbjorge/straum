@@ -30,7 +30,7 @@ python3 scripts/check-layers.py
   field, the `attr()` method and `self.attrs.clear()` go. With two refs to
   one dim in one view the dim's attrs come in ref order instead of SELECT
   order; nothing reads dim attrs by position.
-- [ ] **Fold `Agg::scale` into `Rollup::scale_of`** (straum-domain).
+- [x] **Fold `Agg::scale` into `Rollup::scale_of`** (straum-domain).
   `crates/straum-domain/src/agg.rs:38-43` is `input` when the aggregate
   reads numbers, else 0. In `rollup.rs:343-348` match `agg.state()`:
   `Some((kind, c)) if kind.numeric()` gives the column's scale, anything
