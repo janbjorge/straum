@@ -1,54 +1,200 @@
 # Benchmark
 
-Straum's benchmark asks two questions of one month of New York taxi
-trips: do answers from a rollup equal the same query over the raw rows,
-and how much faster are they than PostgreSQL?
+Straum's benchmark asks Straum and PostgreSQL the same questions about
+one month of New York taxi trips, checks that the answers are equal, and
+times both.
 
 The data is the TLC yellow trips of January 2024, 2,964,624 trips, and
-the 265 rows of `taxi_zone_lookup.csv`. The spec is
-`crates/straum-notation/tests/taxi.sql`:
+the 265 rows of `taxi_zone_lookup.csv`.
+
+## Running it
+
+```sh
+bench/bench.py
+```
+
+It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
+which fetches the script's Python packages. The first run downloads the
+month into `bench/data/`, which git ignores, and turns the Parquet file
+into CSV. Then it builds Straum, starts a throwaway `postgres:18` with
+testcontainers, loads the tables, runs the SQL `straum plan` prints and
+starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
+tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
+the first answer that differs. A run takes under half a minute once the
+data is there.
+
+## The view
+
+`bench/trips.sql` is what a dashboard over these trips would declare:
+trips, fares and the average fare per hour, payment type and pickup
+zone, with day and week buckets for long ranges.
 
 ```sql
 CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS
-SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
+SELECT date_bin('1 hour', f.pickup_at, timestamptz 'epoch') AS hour,
        f.payment_type,
-       f.vendor_id,
        f.pu_location_id,
-       f.do_location_id,
        pickup.borough,
-       pickup.zone,
-       pickup.service_zone,
        count(*) AS trips,
        sum(f.fare_amount) AS fare,
-       max(f.tip_amount) AS tip_max,
-       avg(f.trip_distance) AS distance,
-       count(*) FILTER (WHERE f.payment_type = 1) AS card,
-       count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
+       avg(f.fare_amount) AS avg_fare
 FROM public.yellow_trips f
 LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-LEFT JOIN public.taxi_zones dropoff ON dropoff.location_id = f.do_location_id
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+GROUP BY 1, 2, 3, 4;
 ```
 
-## Answers equal the raw join
+Its rollup keeps 173,660 hour cells for the 2,964,624 trips, 17.1 trips
+a cell, and 25,739 day and week cells.
+
+## The asks
+
+PostgreSQL gets the query anyone would write over the raw tables. The
+session's time zone is New York's, as the TLC's times are.
+
+```sql
+-- Trips
+SELECT count(*) FROM yellow_trips;
+
+-- Card trips
+SELECT count(*) FROM yellow_trips WHERE payment_type = 1;
+
+-- Trips by pickup borough
+SELECT z.borough, count(*)
+  FROM yellow_trips t
+  LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
+ GROUP BY z.borough;
+
+-- Fares by payment type
+SELECT payment_type, count(*), sum(fare_amount), avg(fare_amount)
+  FROM yellow_trips
+ GROUP BY payment_type;
+
+-- Manhattan pickups, one week
+SELECT count(*)
+  FROM yellow_trips t
+  JOIN taxi_zones z ON z.location_id = t.pu_location_id
+ WHERE z.borough = 'Manhattan'
+   AND t.pickup_at >= '2024-01-08' AND t.pickup_at < '2024-01-15';
+
+-- Trips per hour, one day
+SELECT date_trunc('hour', pickup_at), count(*)
+  FROM yellow_trips
+ WHERE pickup_at >= '2024-01-17' AND pickup_at < '2024-01-18'
+ GROUP BY 1;
+```
+
+Straum gets the same questions over the view, with every value a
+parameter:
+
+```sql
+-- Trips
+SELECT trips FROM trips WHERE bucket >= $1 AND bucket < $2
+
+-- Card trips
+SELECT trips FROM trips
+ WHERE payment_type = $1 AND bucket >= $2 AND bucket < $3
+
+-- Trips by pickup borough
+SELECT pickup.borough, trips FROM trips
+ WHERE bucket >= $1 AND bucket < $2
+ GROUP BY pickup.borough
+
+-- Fares by payment type
+SELECT payment_type, trips, fare, avg_fare FROM trips
+ WHERE bucket >= $1 AND bucket < $2
+ GROUP BY payment_type
+
+-- Manhattan pickups, one week
+SELECT trips FROM trips
+ WHERE pickup.borough = $1 AND bucket >= $2 AND bucket < $3
+
+-- Trips per hour, one day
+SELECT bucket, trips FROM trips
+ WHERE bucket >= $1 AND bucket < $2
+ GROUP BY bucket
+```
+
+An ask always names its range. Where the SQL has none, the range is
+2000 to 2030, which holds every trip. Trips by pickup borough goes as:
+
+```json
+{"query": "SELECT pickup.borough, trips FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY pickup.borough",
+ "parameters": ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]}
+```
+
+## Results
+
+One run on an Apple M2 Pro with 16 GB, on 2026-11-10: PostgreSQL 18.6 in
+Docker Desktop with 10 CPUs, and Straum's release build on the same
+machine. Each time is the median over at least a second, from one Python
+client: asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are
+the answer's.
+
+| Ask | Rows | PostgreSQL | Straum | Faster |
+| --- | ---: | ---: | ---: | ---: |
+| Trips | 1 | 25.8 ms | 114 µs | 227x |
+| Card trips | 1 | 46.8 ms | 122 µs | 385x |
+| Trips by pickup borough | 8 | 122.5 ms | 139 µs | 883x |
+| Fares by payment type | 5 | 98.5 ms | 147 µs | 672x |
+| Manhattan pickups, one week | 1 | 58.9 ms | 140 µs | 422x |
+| Trips per hour, one day | 24 | 15.7 ms | 137 µs | 115x |
+
+Straum was ready 0.8 s after it started and held 38 MiB. In PostgreSQL
+the table and its indexes take 363 MiB. Two more runs right before
+stayed within 11% of these times, but for PostgreSQL's week ask, which
+took 72.0 ms once.
+
+How to read the table:
+
+- Both sides answer the same client over their own protocol, with a
+  warm cache. PostgreSQL runs with its defaults, two parallel workers
+  per query, except `shared_buffers`: 2 GB, so the table stays in its
+  cache. `yellow_trips` has an index on `pickup_at`, which the week and
+  day asks use. More parallel workers would shorten its scans of the
+  whole table.
+- PostgreSQL's time follows the rows it reads: every trip for the first
+  four asks, a week's or a day's for the last two. Straum's hardly
+  changes from ask to ask: most of it is the HTTP round trip, reading
+  the query and JSON.
+- The gap is smallest where PostgreSQL reads least: one day, through
+  the index.
+- Straum answers only what the view keeps: these keys, on hour edges.
+  PostgreSQL answers any query over the raw rows. Straum keeps its
+  rollup current as trips change; a rollup table in PostgreSQL would
+  have to be rebuilt or maintained.
+
+## The whole view, end to end
 
 ```sh
-bench/run.sh
+cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It needs Docker, `curl` and [uv](https://docs.astral.sh/uv/). The first
-run downloads the month into `bench/data/`, which git ignores, and turns
-the Parquet file into CSV. Then it starts a throwaway `postgres:18`,
-loads the tables (`bench/load.sql`) and runs two scripts. A run takes
-under a minute once the data is there.
+It needs the data `bench/bench.py` fetches. It loads the month into
+`postgres:18` with the full view of
+`crates/straum-notation/tests/taxi.sql`, which the [spec](spec.md) page
+walks through, has Straum load and follow it, and compares asks with the
+view body in PostgreSQL after the load, after 202 streamed commits and
+after an update. One run on 2026-11-09, release build, Docker on the
+same laptop:
 
-`bench/rollup.sql` builds the rollup Straum keeps, in SQL: one row per
-payment type, vendor, pickup zone, dropoff zone and bucket, at each width
-the spec names, 15 minutes, 1 day and 7 days. Zones are not part of the
-key; they are mapped after aggregation, as Straum does. It prints how far
-rows collapse into cells:
+| Step or ask | Groups | Straum | PostgreSQL |
+| --- | ---: | ---: | ---: |
+| Load | | 2.0 s | |
+| 202 streamed commits | | 4.9 s | |
+| Every key | 2,322,783 to 2,329,715 | 2.4 to 3.0 s | 6.2 to 6.4 s |
+| By pickup borough | 8 | 6.6 to 8.8 ms | |
 
-| Rollup | Rows | Trips a row |
+The ask over every key reads every 15 minute cell and answers nearly as
+many groups, so it is only 2.1 to 2.6 times faster than the view in
+PostgreSQL. The test's reference for the ask by borough groups that
+whole view again, which nobody would write, so the table leaves its time
+out; the asks above time a query by borough.
+
+taxi.sql keys trips by payment type, vendor, pickup zone and dropoff
+zone. Cells per width, each a `count(DISTINCT ...)` of that key and the
+bucket over the month:
+
+| Rollup | Cells | Trips a cell |
 | --- | ---: | ---: |
 | Raw trips | 2,964,624 | 1.0 |
 | 15 minutes | 2,322,783 | 1.3 |
@@ -57,90 +203,7 @@ rows collapse into cells:
 | 1 day | 519,726 | 5.7 |
 | 7 days | 199,398 | 14.9 |
 
-Pickup and dropoff zone together are nearly unique per trip, so this spec
-collapses little at 15 minutes. Without the dropoff zone it collapses 5.2
-times. Memory follows cells, so the key is the lever on memory.
-
-`bench/compare.sql` runs eight asks twice, over the raw join and from the
-15 minute rollup, and compares the two with `EXCEPT ALL` both ways. An
-ask without a time key runs a third time from the buckets Straum reads
-for it: the widest that fit its range, narrower ones at the ends. For
-2024-01-03 05:15 to 2024-01-27 13:30 that is 15 minute buckets to
-midnight, three weeks (weeks start on a Thursday, at the epoch), two days
-and 15 minute buckets again. The asks cover:
-
-- avg from sum and count, and both filtered counts;
-- filters on by columns and on zone attributes;
-- both refs to the zones table, pickup and dropoff;
-- ranges on 15 minute edges inside an hour.
-
-A ref id with no zone row groups under null on both sides, as a left join
-does. Every row matches. A run that finds a difference fails with
-`rollup-then-map differs from the raw join`.
-
-## Speed
-
-These numbers come from one run on an Apple M2 Pro with 16 GB, on
-2026-11-09, with PostgreSQL 18 and Straum on the same machine. The
-harness that produced them is not in `bench/` yet.
-
-The view for this run is taxi.sql with an hourly bucket and fewer keys,
-payment type and pickup zone, keeping count, sum of fares and max tip,
-with `buckets = '1 day, 7 days'`. Its hourly rollup has 173,660 cells.
-
-PostgreSQL ran each query alone (`pgbench`, one client, 10 s) with a warm
-cache. To give it the best plan, `yellow_trips` has an index on
-`pickup_at` that includes every column the queries read, and a second
-table, `roll`, holds the same hourly rollup as Straum, with its own
-index. Straum's time is `Store::ask` on the loaded rollup, in process, the
-median of 15 runs of 200 asks.
-
-| Ask | Cells read | PostgreSQL, raw | PostgreSQL, `roll` | Straum | vs raw | vs `roll` |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| All fares, total | 4,938 | 66.8 ms | | 5.4 µs | 12,455x | |
-| A month by pickup borough | 5,749 | 198.0 ms | 19.2 ms | 32.9 µs | 6,022x | 584x |
-| One day by payment type and hour | 5,254 | 11.2 ms | 0.79 ms | 34.9 µs | 320x | 23x |
-| One week of Manhattan by pickup zone | 4,565 | 37.8 ms | 5.1 ms | 31.5 µs | 1,198x | 161x |
-
-Over HTTP, one client at a time, the same asks took 0.04 to 0.10 ms at
-the median, between 9,722 and 20,293 asks a second. HTTP and JSON cost
-more than the ask itself.
-
-How to read the table:
-
-- Straum's cost follows the cells an ask reads, a few nanoseconds each.
-  Wider buckets keep that number small for long ranges: a month reads
-  four weeks and three days of cells, not 744 hours.
-- PostgreSQL's cost follows the rows it reads. Straum is furthest ahead
-  where PostgreSQL reads the most rows for the fewest groups.
-- Against a rollup table in PostgreSQL the gap is smaller, 23 to 584
-  times, since both read rows that are summed already. Straum keeps that rollup current
-  as trips change; PostgreSQL would have to rebuild or maintain it.
-- An ask that reads many cells for a small answer, such as one day by
-  payment type, is the slowest kind. A view without the pickup zone
-  would answer it from about 120 cells, one per answer row, instead of
-  5,254.
-
-## The whole view, end to end
-
-```sh
-cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
-```
-
-It needs the data from `bench/run.sh`. It loads the month into
-`postgres:18` with the full taxi.sql view, has Straum load and follow it,
-and compares asks with the view body in PostgreSQL after the load, after
-202 streamed commits and after an update. One run on 2026-11-09, release
-build, Docker on the same laptop:
-
-| Step or ask | Groups | Straum | PostgreSQL |
-| --- | ---: | ---: | ---: |
-| Load | | 2.0 s | |
-| 202 streamed commits | | 4.9 s | |
-| Every key | 2,322,783 to 2,329,715 | 2.4 to 3.0 s | 6.2 to 6.4 s |
-| By pickup borough | 8 | 6.6 to 8.8 ms | 3.8 to 4.0 s |
-
-The ask by borough has no time key, so it reads mostly week and day
-buckets and it is 432 to 606
-times faster. The ask over every key reads every 15 minute cell and
-answers nearly as many groups, so it is only 2.1 to 2.6 times faster.
+Pickup and dropoff zone together are nearly unique per trip, so this
+spec collapses little at 15 minutes. Without the dropoff zone it
+collapses 5.2 times. Memory follows cells, so the key is the lever on
+memory.

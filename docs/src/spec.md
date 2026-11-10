@@ -6,7 +6,8 @@ builds it itself. Nothing in the spec runs in PostgreSQL: Straum never
 creates the view, and to load it copies only the columns the view reads.
 Anything outside the subset is an error that names the construct.
 
-This spec, from the [benchmark](benchmark.md), uses all of the subset:
+This spec, which the [benchmark](benchmark.md#the-whole-view-end-to-end)
+follows end to end, uses all of the subset:
 
 ```sql
 CREATE VIEW trips WITH (key = id, buckets = '1 day, 7 days') AS

@@ -1920,7 +1920,7 @@ fn a_commit_handed_out_is_not_yet_applied() {
 /// The taxi month of `bench/data` through straum: load, stream inserts and
 /// dim changes, read the fact again after an update, and every time compare
 /// the whole `taxi.sql` view with PostgreSQL. Slow, so ignored; fetch the
-/// data with `bench/run.sh`, then run
+/// data with `bench/bench.py`, then run
 /// `cargo test -p straum-pg --release taxi_month -- --ignored --nocapture`.
 #[test]
 #[ignore]
@@ -1929,7 +1929,7 @@ fn taxi_month() {
     let data = root
         .join("bench/data")
         .canonicalize()
-        .expect("bench/data, from bench/run.sh");
+        .expect("bench/data, from bench/bench.py");
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
     let container = GenericImage::new("postgres", "18")

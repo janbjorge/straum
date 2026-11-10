@@ -271,8 +271,8 @@ Tests:
   one crate per commit.
 - 2026-11-09: A ref id with no dim row groups under null attributes, as
   the view's `LEFT JOIN` does. The store's property test points trips at
-  zones that never exist, and `bench/compare.sql` checks the taxi month
-  against PostgreSQL.
+  zones that never exist, and `bench/compare.sql` (`bench/bench.py` since
+  2026-11-10) checks the taxi month against PostgreSQL.
 - 2026-11-09: Straum runs on PostgreSQL 17 and newer, with no upper bound.
   CI runs the tests on 17, 18 and 19rc1 (19 once it ships), picked by
   `STRAUM_TEST_POSTGRES`; locally they run on 18. From 19 a logical slot
@@ -280,6 +280,15 @@ Tests:
   `67c20979ce7`), so the start check reads `server_version_num` and takes
   `replica` there. Below 19 the slot can't be made under `replica`, and
   PostgreSQL's error names no fix, so the check also runs before the slot.
+- 2026-11-10: The benchmark is `bench/bench.py`, a uv script. It starts
+  `postgres:18` with testcontainers and `straum run` on `bench/trips.sql`,
+  an hourly view by payment type and pickup zone, then sends each ask to
+  both from one Python client (asyncpg; aiohttp and orjson), checks the
+  answers are equal and times both. PostgreSQL keeps its defaults but
+  `shared_buffers`, sized to hold the table, and gets an index on
+  `pickup_at`. It replaces `run.sh` and the SQL rollup and comparison,
+  since Straum's own answers are now what gets checked, and the speed
+  table's in-process and `pgbench` timings, which no client sees.
 - 2026-11-10: Asks are Straum SQL, which replaces the JSON fields (`fact`,
   `measures`, `by`, `time`, `filter`, `from`, `to`) and the "not a query
   surface" part of the 2026-11-08 decision. `POST /ask` takes
@@ -312,7 +321,8 @@ Touches: `crates/straum-domain`, `crates/straum-notation`, `research/`.
 ## M1: taxi proof in SQL
 
 Goal: show that rollup-then-map equals the raw join before writing the engine.
-Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker).
+Touches: `bench/`. Run: `bench/run.sh` (needs curl, uv and docker;
+`bench/bench.py` replaced it, 2026-11-10).
 
 - [x] Fetch one month of TLC yellow trips and `taxi_zone_lookup.csv` into
       `bench/data/` (gitignored)
@@ -397,7 +407,7 @@ Goal: feed the use cases from a real PostgreSQL 18.
 Touches: `crates/straum-pg`, `crates/straum-domain`, `crates/straum-app` (docs),
 `research/`. Tests start `postgres:18` in Docker themselves; the taxi month:
 `cargo test -p straum-pg --release taxi_month -- --ignored --nocapture` after
-`bench/run.sh` has fetched the data.
+`bench/bench.py` has fetched the data.
 
 - [x] Catalog check: column types, dim key unique, replica identity,
       publication, privileges; each problem says what to fix
@@ -464,8 +474,8 @@ borough reads every cell and answers 256 groups in 1.4 to 1.5 s, holding the
 read lock that long; PostgreSQL takes 3.7 to 4.1 s on the view. The ask over
 every key takes 4.1 s. Rerun 2026-11-09, after wider buckets and the
 column-at-a-time ask: `taxi_month` asks by borough alone, 8 groups, in 6.6
-to 8.8 ms against 3.8 to 4.0 s in PostgreSQL, and every key in 2.4 to
-3.0 s.
+to 8.8 ms against 3.8 to 4.0 s in PostgreSQL on the view, and every key
+in 2.4 to 3.0 s.
 
 ## M7: deploy
 
@@ -515,10 +525,12 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
       as the 2026-11-08 zone decision describes, through a zone parameter
       and new time keys beside `bucket`; the tz database comes back into
       the binary
-- [ ] The harness behind the Speed table in `docs/src/benchmark.md`,
+- [x] The harness behind the Speed table in `docs/src/benchmark.md`,
       committed so it can be rerun: the hourly view, the index on
       `pickup_at` and the `roll` table, the four asks, the `pgbench` runs,
-      and the in-process and HTTP timings
+      and the in-process and HTTP timings (`bench/bench.py`, 2026-11-10:
+      six asks, timed over HTTP and PostgreSQL's protocol from one
+      client; no `roll` table, `pgbench` or in-process timings)
 
 ## Open questions
 

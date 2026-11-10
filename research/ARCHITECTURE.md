@@ -182,8 +182,8 @@ With `buckets`, every wider width keeps its own cells too, and each row goes
 into one cell per width. An ask reads its range from the widest buckets that
 fit and narrower ones at the ends, or only `date_bin` buckets when it groups
 by the bucket. Levels cost memory: on the taxi month, day and week levels
-add 719,124 cells to the 2,322,783 at 15 minutes, 31% more (measured by
-`bench/rollup.sql`).
+add 719,124 cells to the 2,322,783 at 15 minutes, 31% more
+(`docs/src/benchmark.md`).
 
 - sum and avg share the column's sum (`i128`) and count of non-null values;
 - min and max share a count per value, so deleting the current extreme reveals
@@ -475,8 +475,8 @@ One code path covers all of them. Azure Flexible Server 18 defaults to
 - SIGTERM: readiness off, drain asks, close connections; PostgreSQL drops the
   temporary slot when the session ends.
 - Local development: the guide's quick start runs `postgres:18` in Docker.
-  Tests start their own PostgreSQL with `testcontainers`, and
-  `bench/run.sh` runs `postgres:18`.
+  Tests and `bench/bench.py` start their own PostgreSQL with
+  testcontainers.
 
 ## Open points
 
