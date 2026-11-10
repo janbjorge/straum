@@ -262,7 +262,13 @@ impl Walker {
         } = select;
         let at = select_token.0.span.start.line;
         self.absent(at, !optimizer_hints.is_empty(), "an optimizer hint");
-        self.absent(at, distinct.is_some(), "SELECT DISTINCT");
+        match distinct {
+            None => {}
+            Some(sql::Distinct::All) => self.absent(at, true, "SELECT ALL"),
+            Some(sql::Distinct::Distinct | sql::Distinct::On(_)) => {
+                self.absent(at, true, "SELECT DISTINCT");
+            }
+        }
         self.absent(at, select_modifiers.is_some(), "a SELECT modifier");
         self.absent(at, top.is_some(), "TOP");
         self.absent(at, exclude.is_some(), "EXCLUDE");
