@@ -52,16 +52,7 @@ fn fact() -> Fact {
 }
 
 fn path(s: &str) -> KeyPath {
-    match s.split_once('.') {
-        Some((head, attr)) => KeyPath {
-            head: id(head),
-            attr: Some(id(attr)),
-        },
-        None => KeyPath {
-            head: id(s),
-            attr: None,
-        },
-    }
+    KeyPath::parse(s).unwrap()
 }
 
 #[test]
@@ -83,6 +74,16 @@ fn which_measures_read_numbers() {
 #[test]
 fn valid() {
     assert!(Spec::new(vec![dim()], vec![fact()]).is_ok());
+}
+
+#[test]
+fn key_paths_parse_as_they_print() {
+    for text in ["a", "r.name", "_x1.y_2"] {
+        assert_eq!(KeyPath::parse(text).unwrap().to_string(), text);
+    }
+    for bad in ["", ".", "a.", ".b", "a.b.c", "A", "r.Name", "1a", "a b"] {
+        assert_eq!(KeyPath::parse(bad), None, "{bad:?}");
+    }
 }
 
 /// A bare name is a by key; `ref.attr` is an attribute the ref reads. A

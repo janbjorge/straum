@@ -90,10 +90,11 @@ python3 scripts/check-layers.py
   `crates/straum-app/src/app.rs:63` and `app.rs:122` hold
   `Option<(SystemTime, String)>`; `Failure { at, error }`. Readers:
   `straum-http/src/status.rs:56-59` and the tests beside each.
-- [ ] **`KeyPath: FromStr`** (straum-domain, tests everywhere).
+- [x] **`KeyPath::parse`** (straum-domain, tests everywhere).
   `crates/straum-domain/src/spec.rs:167`; `Display` at `spec.rs:652`
-  already round-trips. The `path("a.b")` helper is copied in
-  `straum-domain/tests/store.rs:61`, `tests/spec.rs:54`,
+  already round-trips. An `Option`, like `Ident::new`, since `FromStr`
+  would need an error type only tests read. The `path("a.b")` helper is
+  copied in `straum-domain/tests/store.rs:61`, `tests/spec.rs:54`,
   `tests/cost.rs:52`, `straum-app/tests/app.rs:131`,
   `straum-notation/tests/notation.rs:17` and inline in
   `straum-pg/src/tests.rs:437`.

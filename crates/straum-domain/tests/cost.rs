@@ -50,17 +50,7 @@ fn id(s: &str) -> Ident {
 }
 
 fn key(s: &str) -> AskKey {
-    let path = match s.split_once('.') {
-        Some((head, attr)) => KeyPath {
-            head: id(head),
-            attr: Some(id(attr)),
-        },
-        None => KeyPath {
-            head: id(s),
-            attr: None,
-        },
-    };
-    AskKey::Key(path)
+    AskKey::Key(KeyPath::parse(s).unwrap())
 }
 
 /// The fact, with `buckets` (in hours) beside its one-hour grain.

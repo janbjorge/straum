@@ -59,16 +59,7 @@ fn id(s: &str) -> Ident {
 }
 
 fn path(s: &str) -> KeyPath {
-    match s.split_once('.') {
-        Some((head, attr)) => KeyPath {
-            head: id(head),
-            attr: Some(id(attr)),
-        },
-        None => KeyPath {
-            head: id(s),
-            attr: None,
-        },
-    }
+    KeyPath::parse(s).unwrap()
 }
 
 fn text(s: &str) -> Datum {

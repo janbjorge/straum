@@ -129,16 +129,7 @@ fn ask_key(s: &str) -> AskKey {
 }
 
 fn path(s: &str) -> KeyPath {
-    match s.split_once('.') {
-        Some((head, attr)) => KeyPath {
-            head: id(head),
-            attr: Some(id(attr)),
-        },
-        None => KeyPath {
-            head: id(s),
-            attr: None,
-        },
-    }
+    KeyPath::parse(s).unwrap()
 }
 
 /// The fact's row count over the whole range.

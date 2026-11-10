@@ -169,6 +169,22 @@ pub struct KeyPath {
     pub attr: Option<Ident>,
 }
 
+impl KeyPath {
+    /// A path as [`fmt::Display`] writes it.
+    pub fn parse(s: &str) -> Option<KeyPath> {
+        Some(match s.split_once('.') {
+            Some((head, attr)) => KeyPath {
+                head: Ident::new(head)?,
+                attr: Some(Ident::new(attr)?),
+            },
+            None => KeyPath {
+                head: Ident::new(s)?,
+                attr: None,
+            },
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     Int(i64),

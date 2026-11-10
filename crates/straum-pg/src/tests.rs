@@ -434,16 +434,7 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
-                k => AskKey::Key(match k.split_once('.') {
-                    Some((head, attr)) => KeyPath {
-                        head: id(head),
-                        attr: Some(id(attr)),
-                    },
-                    None => KeyPath {
-                        head: id(k),
-                        attr: None,
-                    },
-                }),
+                k => AskKey::Key(KeyPath::parse(k).unwrap()),
             })
             .collect(),
         filter: Vec::new(),
