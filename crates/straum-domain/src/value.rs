@@ -27,7 +27,7 @@ impl ColumnType {
 
     /// Whether `literal` is of the column's type. An integer fits a numeric
     /// column only at scale 0: at scale 2, `1` would read as 0.01.
-    pub(crate) fn fits(self, literal: &Literal) -> bool {
+    pub fn fits(self, literal: &Literal) -> bool {
         match literal {
             Literal::Int(_) => {
                 matches!(self, ColumnType::Int | ColumnType::Numeric { scale: 0 })

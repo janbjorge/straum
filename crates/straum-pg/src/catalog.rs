@@ -5,7 +5,7 @@
 use std::iter;
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{Dim, Fact, Ident, Key, Literal, Spec};
+use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Spec};
 
 use crate::error::Error;
 use crate::value::Kind;
@@ -490,12 +490,8 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
                     Key::Attr(r, attr) => table(&r.dim).kind(attr),
                 };
                 for value in &cond.values {
-                    let fits = match value {
-                        Literal::Int(_) => matches!(kind, Kind::Int | Kind::Numeric { scale: 0 }),
-                        Literal::Text(_) => kind == Kind::Text,
-                        Literal::Bool(_) => kind == Kind::Bool,
-                    };
-                    if !fits {
+                    // The rule asks follow too.
+                    if !ColumnType::from(kind).fits(value) {
                         problems.push(format!(
                             "fact {}: measure {} compares {} ({kind}) with {}",
                             fact.name,

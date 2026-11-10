@@ -1221,6 +1221,22 @@ fn setup_problems_say_what_to_fix() {
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "fact f: measure n compares k (text) with true",
         ),
+        (
+            "filterscale",
+            format!("{} {publish}", fact("k numeric(6, 2)", "").0),
+            fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
+                .1
+                .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            "fact f: measure n compares k (a numeric of scale 2) with 1",
+        ),
+        (
+            "filterwhole",
+            format!("{} {publish}", fact("k numeric(6, 0)", "").0),
+            fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
+                .1
+                .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            "",
+        ),
     ];
     for (name, tables, spec, expected) in cases {
         let found = problems(&pg, name, &tables, &spec);
