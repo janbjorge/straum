@@ -137,7 +137,10 @@ struct Server {
 }
 
 fn serve(app: App) -> Server {
-    serve_with(app, straum_http::read_json_ask)
+    serve_with(app, |query, parameters| {
+        straum_notation::parse_ask(query, parameters)
+            .map_err(|errors| errors.iter().map(ToString::to_string).collect())
+    })
 }
 
 fn serve_with(app: App, read_ask: ReadAsk) -> Server {
@@ -196,14 +199,21 @@ fn call(addr: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
     )
 }
 
-const BY_BUCKET: &str = r#"{
-    "fact": "trips",
-    "measures": ["trips", "fare", "fare_avg", "fare_max"],
-    "by": ["kind", "zone.borough"],
-    "time": "bucket",
-    "from": "2024-01-01T01:00:00+01:00",
-    "to": "2024-01-03T00:00:00Z"
-}"#;
+/// An ask as straum-http reads it: a query and its parameters.
+fn ask(query: &str, parameters: &str) -> String {
+    format!(r#"{{"query": "{query}", "parameters": {parameters}}}"#)
+}
+
+/// Every trip in the first hour.
+fn first_hour() -> String {
+    ask(
+        "SELECT trips FROM trips WHERE bucket >= $1 AND bucket < $2",
+        "[0, 3600]",
+    )
+}
+
+const BY_BUCKET: &str = "SELECT bucket, kind, zone.borough, trips, fare, fare_avg, fare_max \
+    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket, kind, zone.borough";
 
 #[test]
 fn answers_asks_as_json() {
@@ -211,7 +221,8 @@ fn answers_asks_as_json() {
     assert_eq!(writer.step().unwrap(), Step::Started(START));
     let server = serve(writer.app().clone());
 
-    let reply = call(server.addr, "POST", "/ask", BY_BUCKET);
+    let range = r#"["2024-01-01T01:00:00+01:00", "2024-01-03T00:00:00Z"]"#;
+    let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(
         reply.head.contains("content-type: application/json"),
@@ -233,16 +244,17 @@ fn answers_asks_as_json() {
     );
 
     // The same range in Unix seconds.
-    let seconds = BY_BUCKET
-        .replace(r#""2024-01-01T01:00:00+01:00""#, "1704067200")
-        .replace(r#""2024-01-03T00:00:00Z""#, "1704240000");
+    let seconds = ask(BY_BUCKET, "[1704067200, 1704240000]");
     assert_eq!(call(server.addr, "POST", "/ask", &seconds).body, reply.body);
 
     // After a commit, answers carry its LSN and time.
     assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(0x17_0000_0000)));
-    let ask = r#"{"fact": "trips", "measures": ["trips", "fare"], "from": 0, "to": 1704240000}"#;
+    let totals = ask(
+        "SELECT trips, fare FROM trips WHERE bucket >= $1 AND bucket < $2",
+        "[0, 1704240000]",
+    );
     assert_eq!(
-        call(server.addr, "POST", "/ask", ask).body,
+        call(server.addr, "POST", "/ask", &totals).body,
         concat!(
             r#"{"lsn":"17/0","commit_time":"2024-01-02T00:00:00.123456Z","#,
             r#""columns":["trips","fare"],"rows":[[5,15.95]]}"#
@@ -255,8 +267,7 @@ fn answers_asks_as_json() {
 fn asks_straum_cant_answer() {
     let mut writer = writer();
     let server = serve(writer.app().clone());
-    let ask = r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600}"#;
-    let reply = call(server.addr, "POST", "/ask", ask);
+    let reply = call(server.addr, "POST", "/ask", &first_hour());
     assert_eq!(
         (reply.status, reply.body.as_str()),
         (503, r#"{"errors":["not ready"]}"#)
@@ -265,7 +276,11 @@ fn asks_straum_cant_answer() {
     writer.step().unwrap();
     let cases = [
         (
-            r#"{"fact": "trips", "measures": ["nope"], "by": ["zone.nope"], "from": 0, "to": 1}"#,
+            ask(
+                "SELECT zone.nope, nope FROM trips \
+                 WHERE bucket >= $1 AND bucket < $2 GROUP BY zone.nope",
+                "[0, 1]",
+            ),
             concat!(
                 r#"{"errors":["unknown measure nope","#,
                 r#""zone.nope is not a by column, ref or ref attribute","#,
@@ -273,20 +288,30 @@ fn asks_straum_cant_answer() {
             ),
         ),
         (
-            r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600, "limit": 1}"#,
+            ask(
+                "SELECT trips FROM trips WHERE kind = 1 AND bucket >= $1 AND bucket < $2",
+                "[0, 3600]",
+            ),
+            concat!(
+                r#"{"errors":["line 1: value, use a parameter such as $1, `1` is not in "#,
+                r#"straum SQL, the PostgreSQL subset made only for straum"]}"#
+            ),
+        ),
+        (
+            first_hour().replace('}', r#", "limit": 1}"#),
             r#"{"errors":["unknown field \"limit\""]}"#,
         ),
         (
-            "{\"fact\": \"trips\", \"fact\": \"trips\"}",
-            r#"{"errors":["key \"fact\" given twice at line 1 column 24"]}"#,
+            r#"{"query": "SELECT", "query": "SELECT"}"#.to_owned(),
+            r#"{"errors":["key \"query\" given twice at line 1 column 27"]}"#,
         ),
     ];
-    for (ask, errors) in cases {
-        let reply = call(server.addr, "POST", "/ask", ask);
-        assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{ask}");
+    for (body, errors) in cases {
+        let reply = call(server.addr, "POST", "/ask", &body);
+        assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{body}");
     }
 
-    let big = format!("{{\"fact\": \"{}\"}}", "a".repeat(1 << 20));
+    let big = format!("{{\"query\": \"{}\"}}", "a".repeat(1 << 20));
     let reply = call(server.addr, "POST", "/ask", &big);
     assert_eq!(
         (reply.status, reply.body.as_str()),
@@ -418,8 +443,7 @@ fn readiness_says_how_far_behind() {
         (503, "not ready: 1 s behind PostgreSQL\n")
     );
     // Asks still answer.
-    let ask = r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600}"#;
-    assert_eq!(call(server.addr, "POST", "/ask", ask).status, 200);
+    assert_eq!(call(server.addr, "POST", "/ask", &first_hour()).status, 200);
     server.stop();
 }
 
@@ -428,7 +452,7 @@ fn shutdown_finishes_requests_in_flight() {
     let mut writer = writer();
     writer.step().unwrap();
     let server = serve(writer.app().clone());
-    let ask = r#"{"fact": "trips", "measures": ["trips"], "from": 0, "to": 3600}"#;
+    let ask = first_hour();
 
     // An idle keep-alive connection doesn't hold the shutdown up, and a
     // request whose body is still coming finishes.
@@ -468,10 +492,10 @@ fn trips_from(from: i64) -> Ask {
 fn reads_asks_with_the_reader_it_is_given() {
     let mut writer = writer();
     writer.step().unwrap();
-    let ask = "not an ask in any syntax";
+    let body = r#"{"query": "not an ask in any syntax"}"#;
 
-    let server = serve_with(writer.app().clone(), |_| Ok(trips_from(JAN_1)));
-    let reply = call(server.addr, "POST", "/ask", ask);
+    let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(JAN_1)));
+    let reply = call(server.addr, "POST", "/ask", body);
     assert_eq!(
         (reply.status, reply.body.as_str()),
         (
@@ -481,10 +505,10 @@ fn reads_asks_with_the_reader_it_is_given() {
     );
     server.stop();
 
-    let server = serve_with(writer.app().clone(), |_| {
+    let server = serve_with(writer.app().clone(), |_, _| {
         Err(vec!["no".to_owned(), "never".to_owned()])
     });
-    let reply = call(server.addr, "POST", "/ask", ask);
+    let reply = call(server.addr, "POST", "/ask", body);
     assert_eq!(
         (reply.status, reply.body.as_str()),
         (400, r#"{"errors":["no","never"]}"#)
@@ -493,8 +517,8 @@ fn reads_asks_with_the_reader_it_is_given() {
 
     // A reader that lets through a range jiff can't print gets a 400, not
     // a panic while the answer is written.
-    let server = serve_with(writer.app().clone(), |_| Ok(trips_from(i64::MIN)));
-    let reply = call(server.addr, "POST", "/ask", ask);
+    let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(i64::MIN)));
+    let reply = call(server.addr, "POST", "/ask", body);
     assert_eq!(reply.status, 400, "{}", reply.body);
     assert!(
         reply

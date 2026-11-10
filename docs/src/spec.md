@@ -53,7 +53,8 @@ date_bin('15 minutes', f.pickup_at, timestamptz 'epoch')
 The column is a `timestamptz`. The width is `<n> seconds`, `minutes`,
 `hours` or `days`, at most `1 day`, and divides a day: `15 minutes` does,
 `7 minutes` doesn't. The origin is always `timestamptz 'epoch'`, so
-buckets start on UTC midnight. The alias is free; asks call it `bucket`.
+buckets start on UTC midnight. The alias is free; asks call it `bucket`,
+so no column, ref or measure may be named `bucket`.
 
 `buckets = '1 day, 7 days'` keeps wider widths too. Each is a whole
 multiple of the one before and starts at the epoch, so 7-day buckets start
@@ -130,7 +131,7 @@ or `GROUPING SETS`. Ask PostgreSQL for those.
 problem between declarations at once:
 
 ```text
-straum: orders.sql: line 2: WHERE, filter measures instead, is not in straum SQL, the PostgreSQL subset straum specs use
+straum: orders.sql: line 2: WHERE, filter measures instead, is not in straum SQL, the PostgreSQL subset made only for straum
 ```
 
 ```text

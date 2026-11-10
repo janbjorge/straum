@@ -23,8 +23,9 @@ columns, and the cell keeps what the measures need, such as a count and a
 sum. Dims are tables a fact joins N:1, such as `customers`. Straum keeps
 their rows by key and looks up their columns when it answers.
 
-An ask names a fact, measures, groups, filters and a time range. Straum
-merges the cells in the range. It never reads rows and never queries
+An ask is a `SELECT` over one view: its measures, groups, filters and
+a time range, with every value passed as a parameter. Straum merges the
+cells in the range. It never reads rows and never queries
 PostgreSQL, so an ask costs in proportion to the cells it reads.
 
 Straum maintains `count`, `count(DISTINCT)`, `sum`, `min`, `max` and

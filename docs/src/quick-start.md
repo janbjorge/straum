@@ -98,11 +98,8 @@ In another terminal:
 ```sh
 curl http://localhost:8080/readyz
 curl --json '{
-  "fact": "orders",
-  "measures": ["orders", "revenue", "avg_amount"],
-  "by": ["status", "customer.country"],
-  "from": "2026-01-01T00:00:00Z",
-  "to": "2026-01-02T00:00:00Z"
+  "query": "SELECT status, customer.country, orders, revenue, avg_amount FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status, customer.country",
+  "parameters": ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
 
@@ -132,12 +129,8 @@ docker exec straum-pg psql -U postgres -c "
   INSERT INTO orders VALUES (5, '2026-01-01 11:00+00', 'paid', 2, 300.00);
   UPDATE orders SET status = 'refunded' WHERE id = 4;"
 curl --json '{
-  "fact": "orders",
-  "measures": ["orders", "revenue"],
-  "time": "bucket",
-  "filter": {"status": "paid"},
-  "from": "2026-01-01T00:00:00Z",
-  "to": "2026-01-02T00:00:00Z"
+  "query": "SELECT bucket, orders, revenue FROM orders WHERE status = $1 AND bucket >= $2 AND bucket < $3 GROUP BY bucket",
+  "parameters": ["paid", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
 

@@ -29,14 +29,11 @@ use crate::json::{decimal, string};
 /// so a time key that starts up to a month before it still prints.
 const LOOK_BACK: i64 = 32 * 86_400;
 
-pub(crate) fn earliest() -> i64 {
-    Timestamp::MIN.as_second() + LOOK_BACK
-}
-
 /// A time key starts in its ask's range or at most `LOOK_BACK` before it,
 /// so an ask that passes here never fails `write`, whoever read it.
 pub(crate) fn range_errors(ask: &Ask) -> Vec<String> {
-    let (earliest, latest) = (earliest(), Timestamp::MAX.as_second());
+    let earliest = Timestamp::MIN.as_second() + LOOK_BACK;
+    let latest = Timestamp::MAX.as_second();
     [("start", ask.from), ("end", ask.to)]
         .into_iter()
         .filter(|(_, at)| !(earliest..=latest).contains(at))

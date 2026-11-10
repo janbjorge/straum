@@ -1,8 +1,9 @@
-//! straum SQL: the spec format straum reads at start.
+//! straum SQL: the spec format straum reads at start, and the asks it
+//! answers.
 //!
-//! straum SQL is not SQL straum runs. It is a small subset of PostgreSQL
-//! `CREATE VIEW` syntax, made only for straum specs; anything outside it is an
-//! error. `sqlparser` parses the text and this crate walks the AST. Each view
+//! straum SQL is not SQL straum runs. It is a small subset of PostgreSQL,
+//! made only for straum: `CREATE VIEW` for specs, `SELECT` over a view for
+//! asks (see `sql/ask.rs`); anything outside it is an error. `sqlparser` parses the text and this crate walks the AST. Each view
 //! is one fact:
 //!
 //! ```sql
@@ -41,7 +42,7 @@ mod sql;
 
 use std::fmt;
 
-use straum_domain::{Spec, SpecError};
+use straum_domain::{Ask, Literal, Spec, SpecError};
 
 pub use sql::SqlError;
 
@@ -54,6 +55,11 @@ pub enum Error {
 pub fn parse(src: &str) -> Result<Spec, Error> {
     let (dims, facts) = sql::parse(src).map_err(Error::Sql)?;
     Spec::new(dims, facts).map_err(Error::Spec)
+}
+
+/// An ask, its values taken from `parameters` by `$n`.
+pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
+    sql::parse_ask(query, parameters)
 }
 
 impl fmt::Display for SqlError {

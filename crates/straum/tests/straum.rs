@@ -62,8 +62,11 @@ SELECT coalesce(string_agg(row, ',' ORDER BY kind COLLATE "C" NULLS FIRST,
          GROUP BY 1, 2) v
 "#;
 
-const ASK: &str = r#"{"fact": "trips", "measures": ["trips", "fare"],
-    "by": ["kind", "zone.borough"], "from": 0, "to": "2100-01-01T00:00:00Z"}"#;
+const ASK: &str = concat!(
+    r#"{"query": "SELECT kind, zone.borough, trips, fare FROM trips "#,
+    r#"WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, zone.borough", "#,
+    r#""parameters": [0, "2100-01-01T00:00:00Z"]}"#
+);
 
 struct Postgres {
     container: Container<GenericImage>,

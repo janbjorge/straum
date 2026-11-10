@@ -1,4 +1,5 @@
-//! Walks the `sqlparser` AST of a straum SQL file into dims and facts.
+//! Walks the `sqlparser` AST of a straum SQL spec into dims and facts, and
+//! of an ask into an `Ask`.
 //!
 //! Deny by default: every `match` lists what straum SQL accepts and rejects the
 //! rest by name, and accepted structs are destructured without `..`, so a
@@ -13,7 +14,10 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use straum_domain::{Cond, Dim, Fact, Ident, KeyPath, Literal, Table};
 
+mod ask;
 mod view;
+
+pub(crate) use ask::parse_ask;
 
 /// Longest SQL text quoted in an error.
 const QUOTE_LEN: usize = 60;
@@ -25,13 +29,17 @@ pub struct SqlError {
     pub msg: String,
 }
 
-pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
-    let statements = Parser::parse_sql(&PostgreSqlDialect {}, src).map_err(|e| {
+fn statements(src: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
+    Parser::parse_sql(&PostgreSqlDialect {}, src).map_err(|e| {
         vec![SqlError {
             line: 0,
             msg: e.to_string(),
         }]
-    })?;
+    })
+}
+
+pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
+    let statements = statements(src)?;
     let mut walker = Walker::default();
     for statement in &statements {
         match statement {
@@ -86,7 +94,7 @@ impl Walker {
     fn not_in_subset(&mut self, line: u64, what: &str) {
         self.error(
             line,
-            format!("{what} is not in straum SQL, the PostgreSQL subset straum specs use"),
+            format!("{what} is not in straum SQL, the PostgreSQL subset made only for straum"),
         );
     }
 
@@ -188,21 +196,112 @@ impl Walker {
         }
     }
 
+    /// The one `SELECT` of a query, after rejecting every clause around it.
+    fn one_select<'a>(&mut self, query: &'a sql::Query, what: &str) -> Option<&'a sql::Select> {
+        let sql::Query {
+            with,
+            body,
+            order_by,
+            limit_clause,
+            fetch,
+            locks,
+            for_clause,
+            settings,
+            format_clause,
+            pipe_operators,
+        } = query;
+        let at = line(query);
+        self.absent(at, with.is_some(), "WITH (a CTE)");
+        self.absent(at, order_by.is_some(), "ORDER BY");
+        self.absent(at, limit_clause.is_some(), "LIMIT or OFFSET");
+        self.absent(at, fetch.is_some(), "FETCH");
+        self.absent(at, !locks.is_empty(), "FOR UPDATE or FOR SHARE");
+        self.absent(at, for_clause.is_some(), "FOR");
+        self.absent(at, settings.is_some(), "SETTINGS");
+        self.absent(at, format_clause.is_some(), "FORMAT");
+        self.absent(at, !pipe_operators.is_empty(), "a pipe operator");
+        match body.as_ref() {
+            sql::SetExpr::Select(select) => Some(select),
+            other => {
+                self.reject(at, &format!("{what}, use one SELECT,"), other);
+                None
+            }
+        }
+    }
+
+    /// Rejects every `SELECT` clause but the list, FROM, WHERE and GROUP
+    /// BY, which each caller reads its own way. Returns its line.
+    fn select_clauses(&mut self, select: &sql::Select) -> u64 {
+        let sql::Select {
+            select_token,
+            optimizer_hints,
+            distinct,
+            select_modifiers,
+            top,
+            // Only says where TOP was written, which is rejected.
+            top_before_distinct: _,
+            projection: _,
+            exclude,
+            into,
+            from: _,
+            lateral_views,
+            prewhere,
+            selection: _,
+            connect_by,
+            group_by: _,
+            cluster_by,
+            distribute_by,
+            sort_by,
+            having,
+            named_window,
+            qualify,
+            // Only says where QUALIFY was written, which is rejected.
+            window_before_qualify: _,
+            value_table_mode,
+            flavor,
+        } = select;
+        let at = select_token.0.span.start.line;
+        self.absent(at, !optimizer_hints.is_empty(), "an optimizer hint");
+        self.absent(at, distinct.is_some(), "SELECT DISTINCT");
+        self.absent(at, select_modifiers.is_some(), "a SELECT modifier");
+        self.absent(at, top.is_some(), "TOP");
+        self.absent(at, exclude.is_some(), "EXCLUDE");
+        self.absent(at, into.is_some(), "SELECT INTO");
+        self.absent(at, !lateral_views.is_empty(), "LATERAL VIEW");
+        self.absent(at, prewhere.is_some(), "PREWHERE");
+        self.absent(at, !connect_by.is_empty(), "CONNECT BY");
+        self.absent(at, !cluster_by.is_empty(), "CLUSTER BY");
+        self.absent(at, !distribute_by.is_empty(), "DISTRIBUTE BY");
+        self.absent(at, !sort_by.is_empty(), "SORT BY");
+        self.absent(at, having.is_some(), "HAVING");
+        self.absent(at, !named_window.is_empty(), "WINDOW");
+        self.absent(at, qualify.is_some(), "QUALIFY");
+        self.absent(at, value_table_mode.is_some(), "SELECT AS VALUE or STRUCT");
+        match flavor {
+            sql::SelectFlavor::Standard => {}
+            sql::SelectFlavor::FromFirst | sql::SelectFlavor::FromFirstNoSelect => {
+                self.absent(at, true, "FROM before SELECT");
+            }
+        }
+        at
+    }
+
     fn conds(
         &mut self,
         expr: &sql::Expr,
         conds: &mut Vec<Cond>,
         path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<KeyPath>,
+        value: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Literal>,
     ) {
         match expr {
-            sql::Expr::Nested(inner) => self.conds(inner, conds, path),
+            sql::Expr::Nested(inner) => self.conds(inner, conds, path, value),
             sql::Expr::BinaryOp {
                 left,
                 op: sql::BinaryOperator::And,
                 right,
             } => {
-                self.conds(left, conds, path);
-                self.conds(right, conds, path);
+                self.conds(left, conds, path, value);
+                self.conds(right, conds, path, value);
             }
             sql::Expr::BinaryOp {
                 left,
@@ -210,11 +309,11 @@ impl Walker {
                 right,
             } => {
                 let key = path(self, left);
-                let value = self.literal(right);
-                if let (Some(path), Some(value)) = (key, value) {
+                let literal = value(self, right);
+                if let (Some(path), Some(literal)) = (key, literal) {
                     conds.push(Cond {
                         path,
-                        values: vec![value],
+                        values: vec![literal],
                     });
                 }
             }
@@ -224,7 +323,7 @@ impl Walker {
                 negated: false,
             } => {
                 let key = path(self, inner);
-                let values: Vec<Literal> = list.iter().filter_map(|v| self.literal(v)).collect();
+                let values: Vec<Literal> = list.iter().filter_map(|v| value(self, v)).collect();
                 if let Some(path) = key.filter(|_| values.len() == list.len()) {
                     conds.push(Cond { path, values });
                 }

@@ -238,90 +238,18 @@ impl Walker {
     }
 
     fn query(&mut self, query: &sql::Query) -> Option<Body> {
-        let sql::Query {
-            with,
-            body,
-            order_by,
-            limit_clause,
-            fetch,
-            locks,
-            for_clause,
-            settings,
-            format_clause,
-            pipe_operators,
-        } = query;
-        let at = line(query);
-        self.absent(at, with.is_some(), "WITH (a CTE)");
-        self.absent(at, order_by.is_some(), "ORDER BY");
-        self.absent(at, limit_clause.is_some(), "LIMIT or OFFSET");
-        self.absent(at, fetch.is_some(), "FETCH");
-        self.absent(at, !locks.is_empty(), "FOR UPDATE or FOR SHARE");
-        self.absent(at, for_clause.is_some(), "FOR");
-        self.absent(at, settings.is_some(), "SETTINGS");
-        self.absent(at, format_clause.is_some(), "FORMAT");
-        self.absent(at, !pipe_operators.is_empty(), "a pipe operator");
-        match body.as_ref() {
-            sql::SetExpr::Select(select) => self.select(select),
-            other => {
-                self.reject(at, "view body, use one SELECT,", other);
-                None
-            }
-        }
+        let select = self.one_select(query, "view body")?;
+        self.select(select)
     }
 
     fn select(&mut self, select: &sql::Select) -> Option<Body> {
-        let sql::Select {
-            select_token,
-            optimizer_hints,
-            distinct,
-            select_modifiers,
-            top,
-            // Only says where TOP was written, which is rejected.
-            top_before_distinct: _,
-            projection,
-            exclude,
-            into,
-            from,
-            lateral_views,
-            prewhere,
-            selection,
-            connect_by,
-            group_by,
-            cluster_by,
-            distribute_by,
-            sort_by,
-            having,
-            named_window,
-            qualify,
-            // Only says where QUALIFY was written, which is rejected.
-            window_before_qualify: _,
-            value_table_mode,
-            flavor,
-        } = select;
-        let at = select_token.0.span.start.line;
-        self.absent(at, !optimizer_hints.is_empty(), "an optimizer hint");
-        self.absent(at, distinct.is_some(), "SELECT DISTINCT");
-        self.absent(at, select_modifiers.is_some(), "a SELECT modifier");
-        self.absent(at, top.is_some(), "TOP");
-        self.absent(at, exclude.is_some(), "EXCLUDE");
-        self.absent(at, into.is_some(), "SELECT INTO");
-        self.absent(at, !lateral_views.is_empty(), "LATERAL VIEW");
-        self.absent(at, prewhere.is_some(), "PREWHERE");
-        self.absent(at, selection.is_some(), "WHERE, filter measures instead,");
-        self.absent(at, !connect_by.is_empty(), "CONNECT BY");
-        self.absent(at, !cluster_by.is_empty(), "CLUSTER BY");
-        self.absent(at, !distribute_by.is_empty(), "DISTRIBUTE BY");
-        self.absent(at, !sort_by.is_empty(), "SORT BY");
-        self.absent(at, having.is_some(), "HAVING");
-        self.absent(at, !named_window.is_empty(), "WINDOW");
-        self.absent(at, qualify.is_some(), "QUALIFY");
-        self.absent(at, value_table_mode.is_some(), "SELECT AS VALUE or STRUCT");
-        match flavor {
-            sql::SelectFlavor::Standard => {}
-            sql::SelectFlavor::FromFirst | sql::SelectFlavor::FromFirstNoSelect => {
-                self.absent(at, true, "FROM before SELECT");
-            }
-        }
+        let at = self.select_clauses(select);
+        let (projection, from, group_by) = (&select.projection, &select.from, &select.group_by);
+        self.absent(
+            at,
+            select.selection.is_some(),
+            "WHERE, filter measures instead,",
+        );
 
         let [from] = from.as_slice() else {
             self.error(
@@ -732,7 +660,12 @@ impl Walker {
         let mut conds = Vec::new();
         if let Some(expr) = &f.filter {
             let before = self.errors.len();
-            self.conds(expr, &mut conds, &mut |w, e| w.path(scope, e));
+            self.conds(
+                expr,
+                &mut conds,
+                &mut |w, e| w.path(scope, e),
+                &mut |w, e| w.literal(e),
+            );
             if self.errors.len() > before {
                 return None;
             }

@@ -303,6 +303,12 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
+    let named = (fact.by.iter())
+        .chain(fact.refs.iter().map(|r| &r.name))
+        .chain(fact.measures.iter().map(|m| &m.name));
+    if named.into_iter().any(|n| n.as_str() == "bucket") {
+        errors.push(SpecError::NamedBucket { fact: name.clone() });
+    }
     let mut measures = HashSet::new();
     for m in &fact.measures {
         if !measures.insert(&m.name) {
@@ -365,6 +371,10 @@ pub enum SpecError {
     NoMeasures {
         fact: Ident,
     },
+    /// Asks call the time bucket `bucket`, so nothing else may be.
+    NamedBucket {
+        fact: Ident,
+    },
 }
 
 impl fmt::Display for SpecError {
@@ -417,6 +427,11 @@ impl fmt::Display for SpecError {
                  which is not a by column, ref or ref attribute"
             ),
             SpecError::NoMeasures { fact } => write!(f, "fact {fact}: no measures"),
+            SpecError::NamedBucket { fact } => write!(
+                f,
+                "fact {fact}: bucket is what asks call the time bucket; \
+                 name the column, ref or measure otherwise"
+            ),
         }
     }
 }

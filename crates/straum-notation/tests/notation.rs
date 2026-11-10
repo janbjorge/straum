@@ -409,6 +409,26 @@ fn spec_errors_pass_through() {
             name: id("z")
         }]
     );
+
+    let named_ref = BASE
+        .replace("z.name", "bucket.name")
+        .replace("public.z z ON z.id", "public.z bucket ON bucket.id");
+    for src in [
+        base("f.a,", "f.bucket,"),
+        base("count(*) AS n", "count(*) AS bucket"),
+        named_ref,
+    ] {
+        assert_eq!(
+            spec_errors(&src),
+            [SpecError::NamedBucket { fact: id("t") }],
+            "{src}"
+        );
+    }
+    assert_eq!(
+        SpecError::NamedBucket { fact: id("t") }.to_string(),
+        "fact t: bucket is what asks call the time bucket; \
+         name the column, ref or measure otherwise"
+    );
 }
 
 /// Every construct outside straum SQL is an error that names it; none is
@@ -964,13 +984,13 @@ fn other_statements_are_rejected() {
             SqlError {
                 line: 1,
                 msg:
-                    "statement `SELECT 1` is not in straum SQL, the PostgreSQL subset straum specs use"
+                    "statement `SELECT 1` is not in straum SQL, the PostgreSQL subset made only for straum"
                         .into()
             },
             SqlError {
                 line: 2,
                 msg: "statement `CREATE TABLE t (a INT)` is not in straum SQL, \
-                      the PostgreSQL subset straum specs use"
+                      the PostgreSQL subset made only for straum"
                     .into()
             },
         ]

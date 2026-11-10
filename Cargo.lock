@@ -1814,6 +1814,7 @@ dependencies = [
 name = "straum-notation"
 version = "0.0.0"
 dependencies = [
+ "jiff",
  "sqlparser",
  "straum-domain",
 ]

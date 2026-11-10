@@ -94,7 +94,8 @@ Tests:
 - 2026-11-08: Specs move from Straum's notation to Straum SQL, which replaces
   the "own notation, not SQL" decision above. Straum SQL is a small subset of
   PostgreSQL `CREATE VIEW` syntax, made only for Straum. It is not a SQL engine
-  and not a query surface: asks stay HTTP/JSON. Anything outside the subset is
+  and not a query surface: asks stay HTTP/JSON (asks became Straum SQL on
+  2026-11-10). Anything outside the subset is
   rejected with an error that names the construct, never ignored. Every doc
   and error that mentions Straum SQL says it is a straum-only subset. Each view
   body (the `SELECT`) runs unchanged in PostgreSQL, so it is also the initial
@@ -279,6 +280,20 @@ Tests:
   `67c20979ce7`), so the start check reads `server_version_num` and takes
   `replica` there. Below 19 the slot can't be made under `replica`, and
   PostgreSQL's error names no fix, so the check also runs before the slot.
+- 2026-11-10: Asks are Straum SQL, which replaces the JSON fields (`fact`,
+  `measures`, `by`, `time`, `filter`, `from`, `to`) and the "not a query
+  surface" part of the 2026-11-08 decision. `POST /ask` takes
+  `{"query", "parameters"}`: one `SELECT` over a view, keys then measures
+  by name, `=` and `IN` joined by `AND`, and `bucket >= $n AND bucket <
+  $m`; `GROUP BY` names exactly the selected keys. Every value is a `$n`
+  parameter and a value written into the query is an error, so values
+  never become query text. `bucket` is the time bucket, so a spec can't
+  name a column, ref or measure `bucket`. Like the view options, the query
+  isn't valid PostgreSQL: measures go by bare name and refs are in scope
+  without a join. `straum-notation` walks it like a spec; `straum-http`
+  reads only the JSON around it and gets the reader from the binary, so it
+  stays off `straum-notation`. No backward compatibility, since Straum
+  isn't live.
 
 ## M0: notation and domain model
 
@@ -497,8 +512,8 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
       collector, the plan before the cuts, or as metrics to scrape; the
       chart wires it
 - [ ] Ask-time zones and the time keys `hour`, `day`, `week` and `month`,
-      as the 2026-11-08 zone decision describes, through an optional
-      `zone` field and new `time` values; the tz database comes back into
+      as the 2026-11-08 zone decision describes, through a zone parameter
+      and new time keys beside `bucket`; the tz database comes back into
       the binary
 - [ ] The harness behind the Speed table in `docs/src/benchmark.md`,
       committed so it can be rerun: the hourly view, the index on

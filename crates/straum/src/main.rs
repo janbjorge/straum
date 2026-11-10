@@ -17,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use straum_app::{App, Limits, Step, Writer};
-use straum_domain::Spec;
+use straum_domain::{Ask, Literal, Spec};
 use straum_pg::{Dsn, Pg};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -248,6 +248,11 @@ fn read_spec(path: &str) -> Result<Spec, String> {
     })
 }
 
+fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
+    straum_notation::parse_ask(query, parameters)
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect())
+}
+
 /// From the file, else from `STRAUM_DSN`. Never from the command line, where
 /// other users of the machine can read it.
 fn read_dsn(file: Option<&str>) -> Result<Dsn, String> {
@@ -308,7 +313,7 @@ fn run(
                 log("stopping: finishing the asks in flight");
             };
             log(format!("listening on {address}"));
-            straum_http::serve(listener, app, straum_http::read_json_ask, stop).await
+            straum_http::serve(listener, app, read_ask, stop).await
         })
         .map_err(|e| format!("serving HTTP: {e}"))?;
     log("stopped");

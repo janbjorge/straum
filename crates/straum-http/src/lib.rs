@@ -1,9 +1,10 @@
-//! straum over HTTP: JSON asks and health checks, on tokio and hyper. Asks
+//! straum over HTTP: asks and health checks, on tokio and hyper. Asks
 //! run on tokio's blocking threads, since a big one reads every cell of a
 //! fact.
 //!
-//! - `POST /ask`: an ask, read by the `ReadAsk` that `serve` is given; the
-//!   answer as JSON (see `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
+//! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
+//!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
+//!   (see `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
 //!   reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and straum is within its
@@ -37,7 +38,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::{AnswerError, App};
-use straum_domain::Ask;
+use straum_domain::{Ask, Literal};
 use tokio::net::TcpListener;
 
 /// The largest ask body straum reads.
@@ -47,11 +48,10 @@ const MAX_ASK: usize = 1 << 20;
 /// the process is out of file descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
-pub use ask::read as read_json_ask;
-
-/// Reads an ask's body, or says everything wrong with it. The binary picks
-/// the syntax, so HTTP stays apart from how asks are written.
-pub type ReadAsk = fn(&[u8]) -> Result<Ask, Vec<String>>;
+/// Reads an ask's query with its parameters, or says everything wrong with
+/// it. The binary picks the syntax, so HTTP stays apart from how asks are
+/// written.
+pub type ReadAsk = fn(&str, &[Literal]) -> Result<Ask, Vec<String>>;
 
 /// Serves `app` on `listener` until `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
@@ -125,10 +125,11 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
             return errors(StatusCode::BAD_REQUEST, &[format!("reading the ask: {e}")]);
         }
     };
-    let request = match read_ask(&body) {
-        Ok(ask) => ask,
-        Err(e) => return errors(StatusCode::BAD_REQUEST, &e),
-    };
+    let request =
+        match ask::read(&body).and_then(|(query, parameters)| read_ask(&query, &parameters)) {
+            Ok(ask) => ask,
+            Err(e) => return errors(StatusCode::BAD_REQUEST, &e),
+        };
     let range = answer::range_errors(&request);
     if !range.is_empty() {
         return errors(StatusCode::BAD_REQUEST, &range);

@@ -129,27 +129,27 @@ time keys and a range end inside a bucket.
 - sum, min and max come back in the column's scale. avg comes back as sum and
   count, so the caller picks the rounding.
 
-Over HTTP (`crates/straum-http`), `POST /ask` takes the ask as JSON:
+Over HTTP (`crates/straum-http`), `POST /ask` takes a query in Straum SQL
+and its parameters as JSON:
 
 ```json
 {
-  "fact": "trips",
-  "measures": ["trips", "fare", "distance"],
-  "by": ["payment_type", "pickup.borough"],
-  "time": "bucket",
-  "filter": {"pickup.borough": ["Manhattan", "Queens"], "vendor_id": 2},
-  "from": "2024-01-01T00:00:00Z",
-  "to": 1706745600
+  "query": "SELECT bucket, payment_type, pickup.borough, trips, fare, distance FROM trips WHERE pickup.borough IN ($1, $2) AND vendor_id = $3 AND bucket >= $4 AND bucket < $5 GROUP BY bucket, payment_type, pickup.borough",
+  "parameters": ["Manhattan", "Queens", 2, "2024-01-01T00:00:00Z", 1706745600]
 }
 ```
 
-- `fact`, `measures`, `from` and `to` are required.
-- The time key is a field of its own, so it can't clash with a column named
-  `bucket`, and it groups before `by`. Time keys print as UTC RFC 3339.
-- `from` and `to` are RFC 3339 or Unix seconds, in whole seconds.
-- A field Straum doesn't know, a key given twice and a value of the wrong type
-  are errors that name the field, never ignored. All of them come back at
-  once, as `{"errors": [...]}` with status 400.
+- The query is one `SELECT` over a view (`crates/straum-notation/src/sql/ask.rs`):
+  keys then measures, `=` and `IN` joined by `AND`, and `bucket >= $n AND
+  bucket < $m`. `bucket` is the time bucket, and a spec can't name anything
+  else `bucket`. Time keys print as UTC RFC 3339.
+- Every value is a `$n` parameter; a value written into the query is an
+  error, so values never become query text. The bucket bounds are RFC 3339
+  or Unix seconds, in whole seconds.
+- A field Straum doesn't know, a key given twice, a parameter of the wrong
+  type and a construct outside the subset are errors that name it, never
+  ignored. All of them come back at once, as `{"errors": [...]}` with
+  status 400.
 
 The answer, with made-up values:
 
