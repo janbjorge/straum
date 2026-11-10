@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Binding, By, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref,
-    Spec, Store, Table, Time, TimeKey,
+    Agg, Ask, AskKey, By, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Spec,
+    Store, Table, Time, TimeKey,
 };
 
 thread_local! {
@@ -93,7 +93,7 @@ fn spec(buckets: &[u32]) -> Spec {
             name: id("pickup"),
             dim: id("zones"),
             via: vec![id("pu")],
-            binding: Binding::Late,
+            attrs: vec![id("borough")],
         }],
         by: vec![By::Column(id("pay")), By::Column(id("pu"))],
         measures: vec![
@@ -110,29 +110,26 @@ fn store(cells: i64) -> Store {
     store_with(cells, &[])
 }
 
-/// As [`store`], with `buckets` (in hours).
+/// As [`store`], with `buckets` (in hours). Each row carries the borough of
+/// its zone, as the source resolves it.
 fn store_with(cells: i64, buckets: &[u32]) -> Store {
     let mut store = Store::new(spec(buckets));
-    let dim = store.dim("zones").unwrap();
-    for zone in 0..ZONES {
-        let borough = BOROUGHS[zone as usize % BOROUGHS.len()];
-        dim.upsert(&[Datum::Int(zone), Datum::Text(borough.into())])
-            .unwrap();
-    }
     let rollup = store.rollup("trips").unwrap();
     let columns = rollup.columns().to_vec();
     for n in 0..cells {
-        let row: Vec<_> = columns
+        let zone = n / 2 % ZONES;
+        let mut row: Vec<_> = columns
             .iter()
             .map(|c| match c.as_str() {
                 "at" => Datum::Int(n / (2 * ZONES) * i64::from(HOUR)),
                 "pay" => Datum::Int(n % 2),
-                "pu" => Datum::Int(n / 2 % ZONES),
+                "pu" => Datum::Int(zone),
                 "fare" => Datum::Int(n),
                 "tip" => Datum::Int(n % 7),
                 other => panic!("no value for {other}"),
             })
             .collect();
+        row.push(Datum::Text(BOROUGHS[zone as usize % BOROUGHS.len()].into()));
         rollup.add(&row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(cells as usize));
@@ -164,7 +161,7 @@ fn allocs(store: &Store, by: &[&str]) -> usize {
 fn an_ask_allocates_per_group_not_per_cell() {
     let small = store(1_000);
     let big = store(8_000);
-    for by in [&[][..], &["pay"], &["pickup"], &["pickup.borough"]] {
+    for by in [&[][..], &["pay"], &["pu"], &["pickup.borough"]] {
         assert_eq!(
             allocs(&small, by),
             allocs(&big, by),

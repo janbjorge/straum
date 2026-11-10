@@ -18,5 +18,4 @@ SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
 FROM public.yellow_trips f
 LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-LEFT JOIN public.taxi_zones dropoff ON dropoff.location_id = f.do_location_id
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;

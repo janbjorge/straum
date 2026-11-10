@@ -1,6 +1,7 @@
 //! [`Pg`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
 //! snapshot on the same connection, then the stream from its consistent
-//! point. A plain connection on the side reads the server's WAL position.
+//! point. A plain connection on the side reads the server's WAL position
+//! and resolves the refs of each commit's fact rows.
 
 use std::mem;
 use std::process;
@@ -9,13 +10,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{Dim, DimTable, Fact, Ident, Spec, Store};
+use straum_domain::{Fact, Ident, Spec, Store};
 
-use crate::catalog::{self, Table};
+use crate::catalog::{self, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
+use crate::resolve::Resolver;
 use crate::stream::Stream;
 use crate::wire::Conn;
 
@@ -33,17 +35,20 @@ pub struct Pg {
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
-    /// Reads the server's WAL, since the stream's connection is busy
-    /// streaming. Connects again after an error.
-    monitor: Option<Conn>,
+    /// Reads the server's WAL and looks dim rows up, since the stream's
+    /// connection is busy streaming. Connects again after an error.
+    side: Option<Conn>,
 }
 
 enum State {
     Closed,
-    /// Every table loads in the snapshot of the slot the stream starts
+    /// Every fact loads in the snapshot of the slot the stream starts
     /// from.
     Loading(Snapshot),
-    Streaming(Stream),
+    Streaming {
+        stream: Stream,
+        resolver: Resolver,
+    },
 }
 
 /// A replication connection in a read-only, repeatable-read transaction
@@ -52,8 +57,9 @@ struct Snapshot {
     conn: Conn,
     slot: String,
     at: Lsn,
-    tables: Vec<Table>,
-    /// Tables not loaded yet. The transaction ends with the last load, so
+    spec: Spec,
+    tables: Tables,
+    /// Facts not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Ident>,
 }
@@ -67,29 +73,8 @@ impl Pg {
             max_transaction_rows,
             state: State::Closed,
             slot: String::new(),
-            monitor: None,
+            side: None,
         }
-    }
-
-    /// Loads into `target` from the snapshot the stream starts from.
-    fn load(&mut self, name: &Ident, target: Target) -> Result<(), Error> {
-        let State::Loading(snapshot) = &mut self.state else {
-            return Err(Error::Stopped);
-        };
-        let table = snapshot
-            .tables
-            .iter()
-            .find(|t| t.name == *name)
-            .expect("the spec's tables are checked");
-        match target {
-            Target::Fact(fact, store) => load::fact(&mut snapshot.conn, table, fact, store)?,
-            Target::Dim(rows) => load::dim(&mut snapshot.conn, table, rows)?,
-        }
-        snapshot.unloaded.retain(|t| t != name);
-        if snapshot.unloaded.is_empty() {
-            snapshot.conn.execute("COMMIT")?;
-        }
-        Ok(())
     }
 }
 
@@ -118,32 +103,30 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
         .and_then(|point| parse_lsn(point.as_deref()?))
         .ok_or_else(|| Error::Protocol("a slot without a consistent point".into()))?;
     let tables = catalog::read(&mut conn, spec, publication)?;
-    let unloaded = spec
-        .dims()
-        .iter()
-        .map(|d| &d.name)
-        .chain(spec.facts().iter().map(|f| &f.name))
-        .cloned()
-        .collect();
+    let unloaded = spec.facts().iter().map(|f| f.name.clone()).collect();
     Ok(Snapshot {
         conn,
         slot,
         at,
+        spec: spec.clone(),
         tables,
         unloaded,
     })
 }
 
-enum Target<'a> {
-    Fact(&'a Fact, &'a mut Store),
-    Dim(&'a mut DimTable),
+/// The side connection, made on first use and after a failure.
+fn side<'c>(side: &'c mut Option<Conn>, dsn: &Dsn) -> Result<&'c mut Conn, Error> {
+    if side.is_none() {
+        *side = Some(Conn::connect(dsn, false)?);
+    }
+    Ok(side.as_mut().expect("connected just now"))
 }
 
 impl Source for Pg {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
-        self.monitor = None;
+        self.side = None;
         let snapshot = snapshot(&self.dsn, spec, &self.publication)?;
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
@@ -152,39 +135,51 @@ impl Source for Pg {
     }
 
     fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
-        Ok(self.load(&fact.name, Target::Fact(fact, store))?)
-    }
-
-    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
-        Ok(self.load(&dim.name, Target::Dim(table))?)
+        let State::Loading(snapshot) = &mut self.state else {
+            return Err(Error::Stopped.into());
+        };
+        load::fact(&mut snapshot.conn, &snapshot.tables, fact, store)?;
+        snapshot.unloaded.retain(|t| *t != fact.name);
+        if snapshot.unloaded.is_empty() {
+            snapshot.conn.execute("COMMIT")?;
+        }
+        Ok(())
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
-            State::Loading(snapshot) => State::Streaming(stream(
-                snapshot,
-                &self.publication,
-                self.max_transaction_rows,
-            )?),
+            State::Loading(snapshot) => {
+                let resolver = Resolver::new(&snapshot.spec, &snapshot.tables);
+                let stream = stream(snapshot, &self.publication, self.max_transaction_rows)?;
+                State::Streaming { stream, resolver }
+            }
             other => other,
         };
-        match &mut self.state {
-            State::Streaming(stream) => Ok(stream.next(wait)?),
-            _ => Err(Error::Stopped.into()),
+        let State::Streaming { stream, resolver } = &mut self.state else {
+            return Err(Error::Stopped.into());
+        };
+        let Some(mut commit) = stream.next(wait)? else {
+            return Ok(None);
+        };
+        // A failed lookup leaves the connection mid-query, so it goes.
+        let resolved =
+            side(&mut self.side, &self.dsn).and_then(|conn| resolver.resolve(conn, &mut commit));
+        if let Err(e) = resolved {
+            self.side = None;
+            return Err(e.into());
         }
+        Ok(Some(commit))
     }
 
     fn wal(&mut self) -> Result<Wal, SourceError> {
         if matches!(self.state, State::Closed) {
             return Err(Error::Stopped.into());
         }
-        let mut conn = match self.monitor.take() {
-            Some(conn) => conn,
-            None => Conn::connect(&self.dsn, false)?,
-        };
-        let wal = read_wal(&mut conn, &self.slot)?;
-        self.monitor = Some(conn);
-        Ok(wal)
+        let wal = side(&mut self.side, &self.dsn).and_then(|conn| read_wal(conn, &self.slot));
+        if wal.is_err() {
+            self.side = None;
+        }
+        Ok(wal?)
     }
 }
 
@@ -209,7 +204,7 @@ pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
     }
 }
 
-/// Streams from the snapshot's consistent point. Tables not loaded yet
+/// Streams from the snapshot's consistent point. Facts not loaded yet
 /// can't load any more.
 fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
@@ -222,7 +217,7 @@ fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<
     ))?;
     Stream::start(
         snapshot.conn,
-        Decoder::new(snapshot.tables, max_rows),
+        Decoder::new(snapshot.tables.facts, max_rows),
         snapshot.at,
     )
 }

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="768" viewBox="0 0 880 768" role="img" aria-labelledby="t d">
   <title id="t">How Store::ask answers from rollup cells</title>
-  <desc id="d">Worked example: an ask for trips and card by pickup.borough over 00:00 to 00:30. Store::ask walks every cell of the trips rollup once, skips cells outside the range, looks up the borough of each cell by its pickup ref id in the taxi_zones dim, and merges each cell into the measures whose filter holds. The answer is null 1 1, Manhattan 7 2, Queens 4 3.</desc>
+  <desc id="d">Worked example: an ask for trips and card by pickup.borough over 00:00 to 00:30. Store::ask walks every cell of the trips rollup once, skips cells outside the range, reads the borough from each cell's key, where it has sat since the row came in, and merges each cell into the measures whose filter holds. The answer is null 1 1, Manhattan 7 2, Queens 4 3.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -101,7 +101,7 @@
   <text x="364" y="136" class="mono">count(*) AS trips,</text>
   <text x="364" y="153" class="mono">count(*) FILTER (WHERE</text>
   <text x="364" y="170" class="mono" xml:space="preserve">  f.payment_type = 1) AS card</text>
-  <text x="364" y="192" class="s muted">Rollup key: payment_type, pickup ref id,</text>
+  <text x="364" y="192" class="s muted">Rollup key: payment_type, pickup zone id,</text>
   <text x="364" y="208" class="s muted">15-minute bucket</text>
   <rect class="box" x="664" y="88" width="184" height="132" rx="6"/>
   <text x="680" y="112" class="lbl muted">DIM taxi_zones</text>
@@ -118,12 +118,12 @@
   <text x="44" y="272" class="lbl muted">STORED CELL, ROLLUP trips</text>
   <text x="388" y="272" class="lbl acc">WHAT THE ASK DOES WITH IT</text>
   <path class="a-acc" d="M756 220 V236 Q756 244 748 244 H612 Q604 244 604 252 V276" marker-end="url(#m-acc)"/>
-  <text x="742" y="238" class="s acc halo" text-anchor="end">looked up by ref id</text>
+  <text x="742" y="238" class="s acc halo" text-anchor="end">read as the row came in</text>
   <text x="44" y="294" class="b">bucket</text>
   <text x="44" y="311" class="s muted">UTC</text>
   <text x="214" y="294" class="b" text-anchor="end">payment_type</text>
   <text x="290" y="294" class="b" text-anchor="end">pickup</text>
-  <text x="290" y="311" class="s muted" text-anchor="end">ref id</text>
+  <text x="290" y="311" class="s muted" text-anchor="end">zone id</text>
   <text x="360" y="294" class="b" text-anchor="end">rows</text>
   <text x="400" y="294" class="b">in [from, to)</text>
   <text x="530" y="294" class="b">pickup.borough</text>
@@ -209,9 +209,9 @@
   <text x="50" y="650" class="s ink2">A measure filter names rollup-key parts only, so a cell</text>
   <text x="50" y="666" class="s ink2">counts whole or not at all. card keeps no state of its own.</text>
   <text x="32" y="690" class="b acc num">3</text>
-  <text x="50" y="690" class="s ink2">Dim attributes are not in the rollup key, so a change to</text>
-  <text x="50" y="706" class="s ink2">a dim row never touches a cell.</text>
+  <text x="50" y="690" class="s ink2">Dim attributes are in the rollup key as the row came in,</text>
+  <text x="50" y="706" class="s ink2">so a change to a dim row never touches a cell.</text>
   <text x="32" y="730" class="b acc num">4</text>
-  <text x="50" y="730" class="s ink2">A ref id with no dim row groups under null, as LEFT JOIN</text>
+  <text x="50" y="730" class="s ink2">A row with no dim row when it came groups under null, as LEFT JOIN</text>
   <text x="50" y="746" class="s ink2">would.</text>
 </svg>

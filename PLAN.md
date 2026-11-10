@@ -399,6 +399,30 @@ Tests:
   fact rows to the `Store` (`Store::add_fact_rows`), which binds before
   the rollup codes. Asks name the attribute; the ref has no id, and only
   the attributes the view selects are bound.
+- 2026-11-10: Joins are resolved in PostgreSQL, not in Straum (M12), which
+  replaces the 2026-11-08 "mapped after aggregation" decision and the
+  M11 binding at ingest, and settles the memory question of the copy of
+  pio's tables: a ref's attributes are rollup keys read as each fact row
+  comes in, every ref alike, so `Binding` and the late path go. The
+  source resolves them: the load is one binary `COPY` of the fact `LEFT
+  JOIN`ed to its dims, and each commit's fact rows get their attributes
+  from one `SELECT ... WHERE (key) IN (...)` per ref, at most 1,000 keys
+  a statement, on the plain connection that reads the WAL position. The
+  lookup reads the dims as they are then, as a stream engine's lookup
+  join does. Straum holds cells and nothing else: no dim rows, no
+  `DimTable`, and dims leave the publication and the decoder; they need
+  SELECT and a primary key or unique index on the key columns. A fact
+  column joined on may be selected or not; a join must select a dim
+  column, and a FILTER attribute must be selected, since every key is a
+  cell-key slot. Asks name `ref.attr`, never the ref. A dim change
+  rewrites nothing and is not in the stream; a row that came in under an
+  old value and changes is not found, so Straum starts over, as in M11.
+  The load's join is PostgreSQL's to plan, which may hash a dim: the
+  2026-11-09 "no sort or hash" wording held for the dim copies M12
+  removes. The research behind it (Quass et al. 1996; ClickHouse
+  dictionaries, Flink lookup joins, RisingWave temporal joins) says the
+  held mapping is the floor for anyone who joins outside the database,
+  so reading it from the database is the only way to hold nothing.
 
 ## M0: notation and domain model
 
@@ -660,6 +684,36 @@ Completed 2026-11-10 (`af6c406`).
       This trades current dim values for fewer cells. `bench/pio` measures
       the late and early forms.
 
+## M12: joins resolved in PostgreSQL
+
+Goal: Straum holds cells and nothing else. A ref's attributes come with
+each fact row, resolved where the dims live, so the join machinery of M9
+to M11 goes: no dim rows in memory, no late binding, no two bindings.
+Touches: every crate, `docs/`, `bench/pio`. Completed 2026-11-10.
+
+- [x] Spec: a ref reads the dim columns the view selects, which key the
+      cells like by columns; a join must select one; a FILTER attribute
+      must be selected. `Binding`, `Key::Ref`, `ViaNotKey`, `CompositeRef`,
+      `EarlyRef` and `Unbound` are gone, and a ref is no key
+- [x] Source: fact rows come whole. The load is one binary `COPY` of the
+      fact joined to its dims; each commit's fact rows get their attributes
+      from one keyed `SELECT` per ref on the side connection. Dims leave
+      the publication, the stream, the decoder and the store
+- [x] Dims as of ingest: a dim change is no change to Straum; new rows read
+      the new value; a row that came in under the old value and changes
+      starts Straum over. Checked in the fake, against PostgreSQL and end
+      to end
+- [x] `bench/pio` on the copy of pio's tables, and the docs say what the
+      store holds now
+- [x] Gate passes: 98.97% lines over every crate
+
+Result on the copy of pio's tables (release build, laptop Docker): ready
+in 19 s and 84 MiB resident, against 897 MiB and 8 s with the dim rows
+held in M11; 311,969 hour cells and 66,107 day cells; every ask equal to
+PostgreSQL after the load and after four streamed transactions of 1,000
+to 19,024 rows, applied in 74 ms to 3.4 s; a task group recategorised
+showed once a task of it changed and Straum started over.
+
 ## Open questions
 
 - The name: Straum, Nynorsk for a stream (`research/README.md`). Its crate
@@ -696,9 +750,14 @@ Completed 2026-11-10 (`af6c406`).
   columns, which need `publish_generated_columns = stored` and are silent
   today; a `straum estimate` for cell counts, which `bench/pio` counts
   in SQL instead; per-table reload, and a chunked apply of one
-  transaction. Dim rows kept for the lookups of attributes bound at
-  ingest are most of what memory an early-bound view still holds: 897
-  MiB on a copy of pio's tables, against the chart's 1Gi default.
+  transaction.
+- Since M12 a dim lookup reads PostgreSQL as it is when the commit is
+  applied, not as it was at the commit, so a dim row changed between the
+  two binds the newer value. A snapshot at the commit's LSN would need a
+  second slot per commit. Is the window ever wide enough to matter?
+- Since M12 a stream of fact changes costs PostgreSQL one keyed `SELECT`
+  per ref and transaction. `bench/pio` shows what pio's rate costs; a
+  bounded cache of recent keys is the lever if a source writes faster.
 - Product limits, not M9 regressions: facts must be plain, unpartitioned
   tables; a fact needs `REPLICA IDENTITY FULL`; column-list publications
   must include every column Straum reads and publications cannot filter a

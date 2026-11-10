@@ -1,10 +1,11 @@
-//! pgoutput messages turned into commits of spec rows: which spec tables a
-//! relation holds, where their columns sit, and how its values read.
+//! pgoutput messages turned into commits of fact rows: which facts a
+//! relation holds, where their columns sit, and how its values read. Dims
+//! are not followed, so their relations map to nothing.
 
 use std::collections::HashMap;
 use std::mem;
 
-use straum_app::{Change, Commit, Lsn, Old};
+use straum_app::{Change, Commit, Lsn};
 use straum_domain::{Datum, Ident};
 
 use crate::catalog::Table;
@@ -13,13 +14,13 @@ use crate::pgoutput::{self, Field, Message, Relation, Tuple};
 use crate::value::{read, type_of};
 use straum_domain::ColumnType;
 
-/// Turns pgoutput messages into commits of spec rows.
+/// Turns pgoutput messages into commits of fact rows, each as the stream
+/// brings it: `Fact::columns`, its attributes resolved later.
 pub(crate) struct Decoder {
-    tables: Vec<Table>,
-    /// By relation id. A table read by two facts, or a fact and a dim, maps
-    /// to both.
+    facts: Vec<Table>,
+    /// By relation id. A table read by two facts maps to both.
     relations: HashMap<u32, Vec<Mapping>>,
-    /// Each spec table's types as last loaded or announced. A Relation that
+    /// Each fact's types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
     types: HashMap<Ident, Vec<ColumnType>>,
     /// The transaction so far, held until its Commit; `max_rows` bounds it,
@@ -30,7 +31,7 @@ pub(crate) struct Decoder {
     in_transaction: Option<Lsn>,
 }
 
-/// Where a spec table's columns sit in a relation's tuples.
+/// Where a fact's columns sit in a relation's tuples.
 struct Mapping {
     table: Ident,
     /// `schema.table`, for the error a value that doesn't read gives.
@@ -38,21 +39,19 @@ struct Mapping {
     columns: Vec<Ident>,
     positions: Vec<usize>,
     types: Vec<ColumnType>,
-    /// As `Table::key_width`.
-    key_width: usize,
     width: usize,
 }
 
 impl Decoder {
-    /// `max_rows` is the most changes to the spec's tables one transaction
-    /// may hold.
-    pub(crate) fn new(tables: Vec<Table>, max_rows: usize) -> Decoder {
-        let types = tables
+    /// `facts` are the fact tables; `max_rows` is the most changes to them
+    /// one transaction may hold.
+    pub(crate) fn new(facts: Vec<Table>, max_rows: usize) -> Decoder {
+        let types = facts
             .iter()
             .map(|t| (t.name.clone(), t.types.clone()))
             .collect();
         Decoder {
-            tables,
+            facts,
             relations: HashMap::new(),
             types,
             changes: Vec::new(),
@@ -96,13 +95,9 @@ impl Decoder {
                 for m in mappings(&self.relations, relation) {
                     let old = match &old {
                         Some(old) => m.old(old)?,
-                        None => Some(Old::SameKey),
+                        None => None,
                     };
-                    let fallback = match &old {
-                        Some(Old::Row(row)) => Some(row.as_slice()),
-                        _ => None,
-                    };
-                    let change = match (m.row(&new, fallback)?, old) {
+                    let change = match (m.row(&new, old.as_deref())?, old) {
                         (Some(new), Some(old)) => Change::Update {
                             table: m.table.clone(),
                             old,
@@ -160,17 +155,17 @@ impl Decoder {
         self.in_transaction.is_some()
     }
 
-    /// Maps the relation's columns for each spec table it holds. A table
-    /// whose columns now read differently is read again; one that lost a
-    /// column, or whose column turned to a type straum doesn't read, stops the
+    /// Maps the relation's columns for each fact it holds. A fact whose
+    /// columns now read differently is read again; one that lost a column,
+    /// or whose column turned to a type straum doesn't read, stops the
     /// stream, and the setup check on the next start says what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
-        let tables = self
-            .tables
+        let facts = self
+            .facts
             .iter()
             .filter(|t| t.schema.as_str() == relation.schema && t.table.as_str() == relation.name);
-        for table in tables {
+        for table in facts {
             let position = |column: &Ident| {
                 relation
                     .columns
@@ -198,7 +193,6 @@ impl Decoder {
                 columns: table.columns.clone(),
                 positions,
                 types,
-                key_width: table.key_width,
                 width: relation.columns.len(),
             });
         }
@@ -226,7 +220,7 @@ fn hold(
     Ok(())
 }
 
-/// The spec tables a relation holds; none for a relation straum doesn't read.
+/// The facts a relation holds; none for a relation straum doesn't follow.
 fn mappings(relations: &HashMap<u32, Vec<Mapping>>, relation: u32) -> &[Mapping] {
     relations.get(&relation).map_or(&[], Vec::as_slice)
 }
@@ -246,7 +240,7 @@ fn altered(m: &Mapping) -> Change {
 }
 
 impl Mapping {
-    /// The spec row a tuple holds. A value PostgreSQL left out because the
+    /// The fact row a tuple holds. A value PostgreSQL left out because the
     /// change kept it comes from `old`; `None` when there is no old row to
     /// take it from.
     fn row(&self, tuple: &Tuple, old: Option<&[Datum]>) -> Result<Option<Vec<Datum>>, Error> {
@@ -267,33 +261,17 @@ impl Mapping {
     }
 
     /// The old row of an update or delete as straum needs it; `None` when
-    /// the change can't be read whole. A key-only old row of a fact is one:
-    /// the fact no longer has `REPLICA IDENTITY FULL`, so straum starts
-    /// over and the setup check says so.
-    fn old(&self, old: &pgoutput::Old) -> Result<Option<Old>, Error> {
+    /// the change can't be read whole. A key-only old row is one: the fact
+    /// no longer has `REPLICA IDENTITY FULL`, so straum starts over and the
+    /// setup check says so.
+    fn old(&self, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
         match old {
-            pgoutput::Old::Row(tuple) => Ok(self.row(tuple, None)?.map(Old::Row)),
-            pgoutput::Old::Key(_) if self.key_width == 0 => Ok(None),
-            pgoutput::Old::Key(tuple) => Ok(Some(Old::Key(self.key(tuple)?))),
+            pgoutput::Old::Row(tuple) => self.row(tuple, None),
+            pgoutput::Old::Key(tuple) => {
+                self.fits(tuple)?;
+                Ok(None)
+            }
         }
-    }
-
-    /// The key columns of a key-only old row, which PostgreSQL sends under a
-    /// replica identity index that holds them.
-    fn key(&self, tuple: &Tuple) -> Result<Vec<Datum>, Error> {
-        self.fits(tuple)?;
-        let key = (self.positions[..self.key_width].iter())
-            .zip(&self.types)
-            .zip(&self.columns);
-        key.map(|((&position, column_type), column)| match tuple[position] {
-            Field::Text(text) => {
-                Ok(read(*column_type, text).map_err(|e| e.at(&self.qualified, column))?)
-            }
-            Field::Null | Field::Unchanged => {
-                Err(Error::Protocol("an old key without a value".into()))
-            }
-        })
-        .collect()
     }
 
     fn fits(&self, tuple: &Tuple) -> Result<(), Error> {
@@ -326,16 +304,16 @@ mod tests {
         Ident::new(s).unwrap()
     }
 
-    /// The spec reads `public.zones` twice: as dim `zones`, keyed on `id`,
-    /// and as fact `visits`.
+    /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
+    /// `visits`, reading `name` alone.
     fn decoder() -> Decoder {
-        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>, key_width| Table {
+        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Table {
             name: id(name),
             schema: id("public"),
             table: id("zones"),
             columns: columns.iter().map(|c| id(c)).collect(),
             types,
-            key_width,
+            key_width: 0,
         };
         Decoder::new(
             vec![
@@ -343,9 +321,8 @@ mod tests {
                     "zones",
                     &["id", "name"],
                     vec![ColumnType::Int, ColumnType::Text],
-                    1,
                 ),
-                table("visits", &["name"], vec![ColumnType::Text], 0),
+                table("visits", &["name"], vec![ColumnType::Text]),
             ],
             CAP,
         )
@@ -395,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_for_each_spec_table() {
+    fn rows_for_each_fact() {
         let mut d = decoder();
         let (z, v) = (id("zones"), id("visits"));
         let changes = feed(
@@ -406,6 +383,7 @@ mod tests {
                     relation: 7,
                     new: row(Field::Text("1"), Field::Text("Bronx")),
                 },
+                // An unchanged TOASTed value comes from the old row.
                 Message::Update {
                     relation: 7,
                     old: Some(pgoutput::Old::Row(row(
@@ -414,14 +392,9 @@ mod tests {
                     ))),
                     new: row(Field::Text("1"), Field::Unchanged),
                 },
-                Message::Update {
-                    relation: 7,
-                    old: None,
-                    new: row(Field::Text("1"), Field::Null),
-                },
                 Message::Delete {
                     relation: 7,
-                    old: pgoutput::Old::Key(row(Field::Text("1"), Field::Null)),
+                    old: pgoutput::Old::Row(row(Field::Text("1"), Field::Null)),
                 },
                 Message::Truncate {
                     relations: vec![7, 8],
@@ -444,39 +417,33 @@ mod tests {
                 },
                 Change::Update {
                     table: z.clone(),
-                    old: Old::Row(bronx.clone()),
+                    old: bronx.clone(),
                     new: bronx
                 },
                 Change::Update {
                     table: v.clone(),
-                    old: Old::Row(vec![text("Bronx")]),
+                    old: vec![text("Bronx")],
                     new: vec![text("Bronx")]
-                },
-                Change::Update {
-                    table: z.clone(),
-                    old: Old::SameKey,
-                    new: vec![int(1), Datum::Null]
-                },
-                Change::Update {
-                    table: v.clone(),
-                    old: Old::SameKey,
-                    new: vec![Datum::Null]
                 },
                 Change::Delete {
                     table: z.clone(),
-                    old: Old::Key(vec![int(1)])
+                    old: vec![int(1), Datum::Null]
                 },
-                // A fact sends its key alone only once it has lost REPLICA
-                // IDENTITY FULL, which straum can't follow.
-                Change::Altered { table: v.clone() },
+                Change::Delete {
+                    table: v.clone(),
+                    old: vec![Datum::Null]
+                },
                 Change::Truncate { table: z },
                 Change::Truncate { table: v },
             ]
         );
     }
 
+    /// Without the whole old row, an update or delete can't take the row
+    /// out of its cell: the fact has lost `REPLICA IDENTITY FULL`, or a
+    /// value it kept was left out with no old row to take it from.
     #[test]
-    fn values_left_out_read_the_table_again() {
+    fn changes_without_the_old_row_start_over() {
         let mut d = decoder();
         let unchanged = || row(Field::Text("1"), Field::Unchanged);
         let changes = feed(
@@ -489,13 +456,22 @@ mod tests {
                 },
                 Message::Update {
                     relation: 7,
-                    old: Some(pgoutput::Old::Row(unchanged())),
-                    new: unchanged(),
+                    old: None,
+                    new: row(Field::Text("1"), Field::Text("Bronx")),
                 },
                 Message::Update {
                     relation: 7,
-                    old: Some(pgoutput::Old::Key(row(Field::Text("2"), Field::Null))),
+                    old: Some(pgoutput::Old::Key(row(Field::Text("1"), Field::Null))),
+                    new: row(Field::Text("1"), Field::Text("Bronx")),
+                },
+                Message::Update {
+                    relation: 7,
+                    old: Some(pgoutput::Old::Row(unchanged())),
                     new: unchanged(),
+                },
+                Message::Delete {
+                    relation: 7,
+                    old: pgoutput::Old::Key(row(Field::Text("1"), Field::Null)),
                 },
                 Message::Delete {
                     relation: 7,
@@ -506,14 +482,14 @@ mod tests {
         .unwrap();
         let altered = |t: &str| Change::Altered { table: id(t) };
         let pair = [altered("zones"), altered("visits")];
-        let expected: Vec<Change> = (0..4).flat_map(|_| pair.clone()).collect();
+        let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
         assert_eq!(changes, expected);
     }
 
     #[test]
     fn relations_that_change() {
         let mut d = decoder();
-        // Not a spec table: its changes are skipped.
+        // Not a fact: its changes are skipped.
         let mut other = relation(8, &[("x", INT4)]);
         if let Message::Relation(r) = &mut other {
             r.name = "other".into();
@@ -585,8 +561,8 @@ mod tests {
         }
     }
 
-    /// The cap counts a transaction's changes to every spec table together:
-    /// each insert here is a change to both tables.
+    /// The cap counts a transaction's changes to every fact together: each
+    /// insert here is a change to both facts.
     #[test]
     fn a_transaction_past_the_cap_stops_the_stream() {
         let insert = |_: usize| Message::Insert {
@@ -634,13 +610,6 @@ mod tests {
                     old: pgoutput::Old::Key(vec![Field::Null; 1]),
                 },
                 "PostgreSQL sent a tuple of 1 columns for a relation of 3",
-            ),
-            (
-                Message::Delete {
-                    relation: 7,
-                    old: pgoutput::Old::Key(vec![Field::Null, Field::Null, Field::Null]),
-                },
-                "PostgreSQL sent an old key without a value",
             ),
             (
                 Message::Insert {

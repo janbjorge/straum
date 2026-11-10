@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::ident::Ident;
-use crate::spec::{Binding, Cond, Fact, Grain, KeyPath, Literal, Spec};
+use crate::spec::{Cond, Fact, Grain, KeyPath, Literal, Spec};
 use crate::value::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,28 +106,23 @@ impl Spec {
     }
 }
 
-/// Why a path resolved to nothing: a ref on several columns or one bound
-/// at ingest has no value of its own, and a ref bound at ingest has only
-/// the attributes it bound, so each is named by what it has.
+/// Why a path resolved to nothing: a ref has no value of its own, and
+/// reads only the attributes the view selects, so each is named by what
+/// the ref has.
 fn unknown(fact: &Fact, path: &KeyPath) -> AskError {
     let Some(r) = fact.refs.iter().find(|r| r.name == path.head) else {
         return AskError::UnknownKey(path.clone());
     };
-    match (&r.binding, &path.attr) {
-        (Binding::Early(attrs), None) => AskError::EarlyRef {
+    match &path.attr {
+        None => AskError::RefAsKey {
             name: r.name.clone(),
-            attrs: attrs.clone(),
+            attrs: r.attrs.clone(),
         },
-        (Binding::Early(attrs), Some(attr)) => AskError::Unbound {
+        Some(attr) => AskError::AttrNotRead {
             name: r.name.clone(),
             attr: attr.clone(),
-            attrs: attrs.clone(),
+            attrs: r.attrs.clone(),
         },
-        (Binding::Late, None) if r.via.len() > 1 => AskError::CompositeRef {
-            name: r.name.clone(),
-            columns: r.via.clone(),
-        },
-        _ => AskError::UnknownKey(path.clone()),
     }
 }
 
@@ -136,18 +131,13 @@ pub enum AskError {
     UnknownFact(Ident),
     UnknownMeasure(Ident),
     UnknownKey(KeyPath),
-    /// A ref on several columns asked for as a key.
-    CompositeRef {
-        name: Ident,
-        columns: Vec<Ident>,
-    },
-    /// A ref bound at ingest asked for as a key.
-    EarlyRef {
+    /// A ref asked for as a key.
+    RefAsKey {
         name: Ident,
         attrs: Vec<Ident>,
     },
-    /// An attribute of a ref bound at ingest that the view did not bind.
-    Unbound {
+    /// An attribute of a ref that the view does not read.
+    AttrNotRead {
         name: Ident,
         attr: Ident,
         attrs: Vec<Ident>,
@@ -173,38 +163,33 @@ pub enum AskError {
     },
 }
 
+fn attrs(name: &Ident, attrs: &[Ident]) -> String {
+    let attrs: Vec<String> = attrs.iter().map(|a| format!("{name}.{a}")).collect();
+    attrs.join(", ")
+}
+
 impl fmt::Display for AskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AskError::UnknownFact(name) => write!(f, "unknown fact {name}"),
             AskError::UnknownMeasure(name) => write!(f, "unknown measure {name}"),
             AskError::UnknownKey(path) => {
-                write!(f, "{path} is not a by column, ref or ref attribute")
+                write!(f, "{path} is not a by column or ref attribute")
             }
-            AskError::CompositeRef { name, columns } => {
-                let columns: Vec<String> = columns.iter().map(ToString::to_string).collect();
-                write!(
-                    f,
-                    "{name} joins on {}; ask for those columns or for {name}.<attribute>",
-                    columns.join(", ")
-                )
-            }
-            AskError::EarlyRef { name, attrs } => {
-                let attrs: Vec<String> = attrs.iter().map(|a| format!("{name}.{a}")).collect();
-                write!(
-                    f,
-                    "{name} binds its attributes at ingest and has no id; ask for {}",
-                    attrs.join(", ")
-                )
-            }
-            AskError::Unbound { name, attr, attrs } => {
-                let attrs: Vec<String> = attrs.iter().map(|a| format!("{name}.{a}")).collect();
-                write!(
-                    f,
-                    "{name}.{attr} is not bound at ingest; the view binds {}",
-                    attrs.join(", ")
-                )
-            }
+            AskError::RefAsKey { name, attrs: read } => write!(
+                f,
+                "{name} is a join and has no value of its own; ask for {}",
+                attrs(name, read)
+            ),
+            AskError::AttrNotRead {
+                name,
+                attr,
+                attrs: read,
+            } => write!(
+                f,
+                "{name}.{attr} is not read by the view, which reads {}",
+                attrs(name, read)
+            ),
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),

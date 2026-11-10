@@ -11,4 +11,4 @@ mod lag;
 mod source;
 
 pub use app::{AnswerError, Answered, App, Error, Limits, Status, Step, Writer};
-pub use source::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
+pub use source::{Change, Commit, Lsn, Source, SourceError, Wal};

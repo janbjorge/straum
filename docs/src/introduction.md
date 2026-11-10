@@ -20,8 +20,9 @@ PostgreSQL's replication stream.
 A spec declares facts, one view per fact table, such as `orders`. Each
 fact row lands in a cell for its time bucket and its combination of by
 columns, and the cell keeps what the measures need, such as a count and a
-sum. Dims are tables a fact joins N:1, such as `customers`. Straum keeps
-their rows by key and looks up their columns when it answers.
+sum. Dims are tables a fact joins N:1, such as `customers`. Straum reads
+the dim columns a view selects from PostgreSQL as each fact row comes in,
+keys the cell by them too, and keeps no dim row of its own.
 
 An ask is a `SELECT` over one view: its measures, groups, filters and
 a time range, with every value passed as a parameter. Straum merges the

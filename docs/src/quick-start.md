@@ -62,8 +62,8 @@ GROUP BY 1, 2, 3, 4;
 ```
 
 PostgreSQL would give the same rows for this view. Straum keeps one cell
-per hour, status and customer, and looks up `customer.country` when it
-answers.
+per hour, status, customer and country, reading `customer.country` from
+`customers` as each order comes in.
 
 ## 4. Set up PostgreSQL
 

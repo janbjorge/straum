@@ -37,10 +37,10 @@ CREATE ROLE "straum" LOGIN REPLICATION;
 -- Then give "straum" a password: \password "straum"
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
-CREATE PUBLICATION "straum" FOR TABLE "public"."customers", "public"."orders";
+CREATE PUBLICATION "straum" FOR TABLE "public"."orders";
 -- fact orders: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
--- dim customers: "public"."customers" needs a primary key on id alone, or REPLICA IDENTITY FULL and a unique index on it.
+-- dim customers: "public"."customers" needs a primary key or unique index on id alone; straum reads it and does not follow it.
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
@@ -51,16 +51,18 @@ superuser.
   services grant their own role for it instead, such as
   [`rds_replication`](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.FeatureSupport.LogicalReplication.html)
   on Amazon RDS. `--role NAME` renames the role.
-- The grants let it read the tables, for the load.
-- The publication names the tables whose changes Straum receives.
-  `--publication NAME` renames it; give `straum run` the same name.
+- The grants let it read the tables: the facts for the load, the dims for
+  the load's join and the lookups after it.
+- The publication names the fact tables, whose changes Straum receives.
+  Dims are not published: Straum reads their rows by key and never
+  follows them. `--publication NAME` renames it; give `straum run` the
+  same name.
 - `REPLICA IDENTITY FULL` makes PostgreSQL write the old row of every
   update and delete to the WAL, so Straum can take the row out of its
   cell. Inserts cost no more.
-- Dims need their key columns as replica identity: a primary key on
-  exactly those columns, `REPLICA IDENTITY USING INDEX` on a unique index
-  of them, or `REPLICA IDENTITY FULL` with a unique index on them, in any
-  order. Only the schema can give that, so the SQL says it in a comment.
+- Dims need a primary key or unique index on exactly their key columns,
+  in any order, so a key names one row. Only the schema can give that, so
+  the SQL says it in a comment.
 
 The setup lives in the catalog and survives restarts. Straum checks it on
 every start.
@@ -120,7 +122,6 @@ orders: column amount of public.orders is double precision; straum needs an inte
 orders: column placed_at of public.orders is timestamp without time zone; the date_bin origin timestamptz 'epoch' needs a timestamptz there; for a timestamp column, write timestamp 'epoch'
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: public.customers needs a primary key or unique index on id alone
-dim customers: the replica identity of public.customers must be id alone, so a delete names the row straum holds: a primary key on id, REPLICA IDENTITY USING INDEX on a unique index of id, or REPLICA IDENTITY FULL
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
 fact orders: measure paid compares status (text) with 1
 ```
@@ -141,8 +142,13 @@ taskgroup_id alone`.
   Temporary slots don't move to a standby either, so after a failover
   Straum loads again from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
-  database and makes `ALTER TABLE` on its tables wait. Each table loads
-  with one binary `COPY`, a plain scan with no sort or hash to spill to
-  disk, and Straum ends the snapshot right after the last table.
+  database and makes `ALTER TABLE` on its tables wait. Each fact loads
+  with one binary `COPY` of the fact joined to its dims, planned as
+  PostgreSQL would plan the view, and Straum ends the snapshot right
+  after the last fact.
+- One plain connection beside the replication connection, which reads
+  the WAL position every second and looks up the dim rows of each
+  transaction's fact rows: one keyed `SELECT` per ref and transaction,
+  at most 1,000 keys a statement.
 - WAL decoding per replication connection, so run one Straum per database
   unless you need more.

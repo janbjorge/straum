@@ -20,15 +20,98 @@ use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, Wa
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
 
-use crate::catalog;
+use crate::catalog::{self, Table, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::load::Columns;
+use crate::load::{self, Columns};
 use crate::source::{Pg, read_wal};
 use crate::stream::Stream;
 use crate::value::read;
 use crate::wire::Conn;
+
+/// The tasks spec as checked: a fact on two refs, one keyed by two
+/// columns, with the tables the catalog would give. For the tests that
+/// build SQL without a server.
+pub(crate) fn tasks_tables() -> (Spec, Tables) {
+    let spec = straum_notation::parse(
+        "CREATE VIEW tasks AS
+         SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+                f.organization_id, g.category, l.location_type, count(*) AS tasks
+         FROM public.tasks f
+         LEFT JOIN public.taskgroups g
+                ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
+         LEFT JOIN public.locations l ON l.id = f.location_id
+         GROUP BY 1, 2, 3, 4",
+    )
+    .unwrap();
+    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>, key_width| Table {
+        name: id(name),
+        schema: id("public"),
+        table: id(name),
+        columns: columns.iter().map(|c| id(c)).collect(),
+        types,
+        key_width,
+    };
+    let tables = Tables {
+        facts: vec![table(
+            "tasks",
+            &["created", "organization_id", "taskgroup_id", "location_id"],
+            vec![
+                ColumnType::Time { zoned: false },
+                ColumnType::Int,
+                ColumnType::Int,
+                ColumnType::Numeric { scale: 1 },
+            ],
+            0,
+        )],
+        dims: vec![
+            table(
+                "taskgroups",
+                &["organization_id", "taskgroup_id", "category"],
+                vec![ColumnType::Int, ColumnType::Int, ColumnType::Text],
+                2,
+            ),
+            table(
+                "locations",
+                &["id", "location_type"],
+                vec![ColumnType::Numeric { scale: 1 }, ColumnType::Text],
+                1,
+            ),
+        ],
+    };
+    (spec, tables)
+}
+
+/// A load copies the fact joined to each ref's dim, its attributes after
+/// its columns, and reads them in the dim columns' types.
+#[test]
+fn loads_copy_the_fact_joined_to_its_dims() {
+    let (spec, tables) = tasks_tables();
+    let tasks = spec.fact("tasks").unwrap();
+    assert_eq!(
+        load::copy_sql(&tables, tasks),
+        "COPY (SELECT t0.\"created\", t0.\"organization_id\", t0.\"taskgroup_id\", \
+         t0.\"location_id\", t1.\"category\", t2.\"location_type\" \
+         FROM \"public\".\"tasks\" AS t0 \
+         LEFT JOIN \"public\".\"taskgroups\" AS t1 \
+         ON t1.\"organization_id\" = t0.\"organization_id\" \
+         AND t1.\"taskgroup_id\" = t0.\"taskgroup_id\" \
+         LEFT JOIN \"public\".\"locations\" AS t2 ON t2.\"id\" = t0.\"location_id\") \
+         TO STDOUT (FORMAT binary)"
+    );
+    assert_eq!(
+        load::fact_types(&tables, tasks),
+        [
+            ColumnType::Time { zoned: false },
+            ColumnType::Int,
+            ColumnType::Int,
+            ColumnType::Numeric { scale: 1 },
+            ColumnType::Text,
+            ColumnType::Text,
+        ]
+    );
+}
 
 const PASSWORD: &str = "straum";
 /// Long enough for anything a test waits on to come.
@@ -89,7 +172,7 @@ CREATE TABLE $S.trips (
 ALTER TABLE $S.trips REPLICA IDENTITY FULL;
 CREATE TABLE $S.logins (id bigint PRIMARY KEY, at timestamptz, zone_id int);
 ALTER TABLE $S.logins REPLICA IDENTITY FULL;
-CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
+CREATE PUBLICATION $S FOR TABLE $S.trips, $S.logins;
 ";
 
 /// A warehouse-shaped spec: tasks per hour, organization and task group
@@ -114,10 +197,9 @@ LEFT JOIN $S.taskgroups g
 GROUP BY 1, 2, 3, 4, 5;
 ";
 
-/// The task tables with the group's category bound at ingest: the group
-/// itself is not selected, so the cells are keyed by the category's few
-/// values.
-const TASKS_EARLY_SPEC: &str = "
+/// The task tables keyed by the group's category alone: the group itself
+/// is not selected, so the cells are keyed by the category's few values.
+const PICKS_SPEC: &str = "
 CREATE VIEW picks WITH (buckets = '1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id,
@@ -148,7 +230,7 @@ CREATE TABLE $S.tasks (
     picks int
 );
 ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
-CREATE PUBLICATION $S FOR TABLE $S.taskgroups, $S.tasks;
+CREATE PUBLICATION $S FOR TABLE $S.tasks;
 ";
 
 /// The last of each holds what `COPY` escapes, so loads read escapes back.
@@ -448,7 +530,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         ask: ask(
             "trips",
             &MEASURES,
-            &["bucket", "kind", "pickup", "pickup.borough"],
+            &["bucket", "kind", "zone_id", "pickup.borough"],
         ),
         scales: vec![
             0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
@@ -459,7 +541,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
             "SELECT extract(epoch FROM bucket)::int8, zone_id, toll, logins FROM ({}) v",
             body(SPEC, "logins")
         ),
-        ask: ask("logins", &["logins"], &["bucket", "pickup", "pickup.toll"]),
+        ask: ask("logins", &["logins"], &["bucket", "zone_id", "pickup.toll"]),
         scales: vec![0, 0, 1, 0],
     };
     let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
@@ -476,7 +558,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         ask: Ask {
             from,
             to,
-            ..ask("trips", &MEASURES, &["kind", "pickup", "pickup.borough"])
+            ..ask("trips", &MEASURES, &["kind", "zone_id", "pickup.borough"])
         },
         scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
     };
@@ -567,9 +649,9 @@ fn task_oracles() -> Vec<Oracle> {
     vec![by_bucket, window, open]
 }
 
-/// The early-bound view's oracles: by bucket, organization, category and
-/// done, then by organization and category over a window.
-fn early_oracles() -> Vec<Oracle> {
+/// The picks view's oracles: by bucket, organization, category and done,
+/// then by organization and category over a window.
+fn picks_oracles() -> Vec<Oracle> {
     const MEASURES: [&str; 3] = ["tasks", "picks", "pick_tasks"];
     let by_bucket = Oracle {
         sql: format!(
@@ -578,7 +660,7 @@ fn early_oracles() -> Vec<Oracle> {
                FROM ({}) v
               WHERE bucket >= to_timestamp(0) AT TIME ZONE 'UTC'
                 AND bucket < to_timestamp({END}) AT TIME ZONE 'UTC'",
-            body(TASKS_EARLY_SPEC, "picks")
+            body(PICKS_SPEC, "picks")
         ),
         ask: ask(
             "picks",
@@ -782,9 +864,12 @@ fn follows_the_database() {
         let mut sql = vec!["BEGIN;".to_owned(), rng.trip(next)];
         trips.push(next);
         next += 1;
+        // The zones stand still: a fresh join in PostgreSQL is then what
+        // straum must hold. What a zone change does is settled in
+        // `attributes_are_as_of_ingest`.
         for _ in 0..rng.below(4) {
             let pick = trips[rng.below(trips.len() as u64) as usize];
-            let statement = match rng.below(10) {
+            let statement = match rng.below(8) {
                 0 | 1 => format!(
                     "UPDATE $S.trips SET fare = fare + 1, kind = '{}' WHERE id = {pick};",
                     rng.pick(&KINDS)
@@ -794,21 +879,12 @@ fn follows_the_database() {
                     trips.retain(|t| *t != pick);
                     format!("DELETE FROM $S.trips WHERE id = {pick};")
                 }
-                4 => format!(
-                    "INSERT INTO $S.zones VALUES ({}, '{}', {}) ON CONFLICT (id)
-                     DO UPDATE SET borough = excluded.borough, toll = excluded.toll;",
-                    1 + rng.below(6),
-                    rng.pick(&BOROUGHS),
-                    rng.toll()
-                ),
-                5 => format!("DELETE FROM $S.zones WHERE id = {};", 1 + rng.below(6)),
-                6 => format!(
-                    "UPDATE $S.zones SET id = {} WHERE id = {}
-                       AND NOT EXISTS (SELECT FROM $S.zones WHERE id = {0});",
-                    1 + rng.below(6),
+                // Into zones 5 and 6 too, which have no row.
+                4 | 5 => format!(
+                    "UPDATE $S.trips SET zone_id = {} WHERE id = {pick};",
                     1 + rng.below(6)
                 ),
-                7 => format!(
+                6 => format!(
                     "INSERT INTO $S.logins VALUES ({next}, to_timestamp({}), {});",
                     START + rng.below(3 * 86_400) as i64,
                     1 + rng.below(6)
@@ -871,12 +947,10 @@ fn follows_the_task_tables() {
            (1003, 2, 2, '-infinity', NULL, 2)"
     ));
     let spec = db.spec(TASKS_SPEC);
-    assert!(
-        crate::plan(&spec, "p", "r").contains(
-            "-- dim taskgroups: \"task_tables\".\"taskgroups\" needs a primary key on \
-             organization_id, taskgroup_id alone, or REPLICA IDENTITY FULL and a unique index on it."
-        )
-    );
+    assert!(crate::plan(&spec, "p", "r").contains(
+        "-- dim taskgroups: \"task_tables\".\"taskgroups\" needs a primary key or unique \
+             index on organization_id, taskgroup_id alone; straum reads it and does not follow it."
+    ));
     let mut writer = Writer::new(App::new(spec, LIMITS), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
@@ -897,20 +971,16 @@ fn follows_the_task_tables() {
         db.run(&rng.task(id));
         applied(&mut writer);
     }
-    // Each change is one commit, compared after it: a dim attribute, a dim
-    // key (the old key goes), a fact moving to another dim row, a dim row
-    // gone, times moved, rows gone.
+    // Each change is one commit, compared after it: facts moving to
+    // another dim row or to a group with no row, times moved, rows gone.
     let changes = [
         // Null-ness flips both ways.
         "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0"
             .to_owned(),
         "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0".to_owned(),
-        "UPDATE $S.taskgroups SET category = 'pack' WHERE organization_id = 1".to_owned(),
-        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1"
-            .to_owned(),
         "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
+        "UPDATE $S.tasks SET taskgroup_id = 4 WHERE task_id % 17 = 0".to_owned(),
         "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0".to_owned(),
-        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2".to_owned(),
         "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0"
             .to_owned(),
         // An infinite time becomes a real one and lands in its bucket; a
@@ -1009,14 +1079,15 @@ fn a_transaction_past_the_cap_starts_over() {
     }
 }
 
-/// The same tables under the late and the early view: fact changes bind as
-/// the dim is, in both; a dim change moves the late view with PostgreSQL
-/// and leaves the early one as it was, until a row bound to the old value
-/// changes and the early view starts over, binding anew.
+/// The same tables under two views: fact rows come with their attributes
+/// as the dim is when they come. A dim change moves PostgreSQL's view and
+/// is nothing to straum, which never follows a dim, until a row that came
+/// in under the old value changes: then straum starts over and reads
+/// everything as the dim is now.
 #[test]
-fn binds_attributes_at_ingest() {
+fn attributes_are_as_of_ingest() {
     let pg = postgres();
-    let mut db = Db::new(&pg, "early", TASKS);
+    let mut db = Db::new(&pg, "ingest", TASKS);
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(29);
     for organization in 1..=3 {
@@ -1030,15 +1101,15 @@ fn binds_attributes_at_ingest() {
     for id in 0..200 {
         db.run(&rng.task(id));
     }
-    let mut early = Writer::new(App::new(db.spec(TASKS_EARLY_SPEC), LIMITS), db.pg());
-    let mut late = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
-    assert!(matches!(early.step(), Ok(Step::Started(_))));
-    assert!(matches!(late.step(), Ok(Step::Started(_))));
-    compare(&mut db, early.app(), &early_oracles()).expect("early ready");
-    compare(&mut db, late.app(), &task_oracles()).expect("late ready");
+    let mut picks = Writer::new(App::new(db.spec(PICKS_SPEC), LIMITS), db.pg());
+    let mut tasks = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
+    assert!(matches!(picks.step(), Ok(Step::Started(_))));
+    assert!(matches!(tasks.step(), Ok(Step::Started(_))));
+    compare(&mut db, picks.app(), &picks_oracles()).expect("picks ready");
+    compare(&mut db, tasks.app(), &task_oracles()).expect("tasks ready");
 
     // Fact rows come, move between groups, flip and go; tasks in groups
-    // 3 and 4 have no dim row and bind null.
+    // 3 and 4 have no dim row and read null.
     let mut changes: Vec<String> = (200..210).map(|id| rng.task(id)).collect();
     changes.extend([
         "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
@@ -1047,44 +1118,115 @@ fn binds_attributes_at_ingest() {
     ]);
     for change in changes {
         db.run(&change);
-        applied(&mut early);
-        applied(&mut late);
-        compare(&mut db, early.app(), &early_oracles()).unwrap_or_else(|| panic!("{change}"));
-        compare(&mut db, late.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
+        applied(&mut picks);
+        applied(&mut tasks);
+        compare(&mut db, picks.app(), &picks_oracles()).unwrap_or_else(|| panic!("{change}"));
+        compare(&mut db, tasks.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
     }
 
-    // A dim change: PostgreSQL and the late view regroup, the early view
-    // keeps what each row bound when it came.
-    let before = db.rows(&early_oracles()[0].sql);
-    db.run("UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1");
-    applied(&mut early);
-    applied(&mut late);
-    compare(&mut db, late.app(), &task_oracles()).expect("late follows the dim");
-    let after = db.rows(&early_oracles()[0].sql);
+    // A dim change, with a new task in the same transaction: PostgreSQL
+    // regroups, straum keeps what each row came with, and the new task
+    // alone reads the new category.
+    let before = db.rows(&picks_oracles()[0].sql);
+    db.run(&format!(
+        "BEGIN;
+         UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1;
+         INSERT INTO $S.tasks VALUES (300, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 5);
+         COMMIT;"
+    ));
+    applied(&mut picks);
+    applied(&mut tasks);
+    let after = db.rows(&picks_oracles()[0].sql);
     assert_ne!(before, after);
-    let answered = early.app().ask(&early_oracles()[0].ask).unwrap();
-    let mut got = printed(&answered.answer, &early_oracles()[0].scales);
-    let mut kept = before;
-    got.sort();
+    let answered = picks.app().ask(&picks_oracles()[0].ask).unwrap();
+    let got = printed(&answered.answer, &picks_oracles()[0].scales);
+    let (new, mut kept): (Vec<_>, Vec<_>) =
+        (got.into_iter()).partition(|row| row[2].as_deref() == Some("other"));
+    let mut expected = before;
     kept.sort();
-    assert_eq!(got, kept);
+    expected.sort();
+    assert_eq!(
+        kept, expected,
+        "the rows from before the change keep their category"
+    );
+    let text = |s: &str| Some(s.to_owned());
+    assert_eq!(
+        new,
+        [vec![
+            Some(START.to_string()),
+            text("1"),
+            text("other"),
+            text("f"),
+            text("1"),
+            text("5"),
+            text("0"),
+        ]]
+    );
 
-    // A row bound to the old category changes: its cell is not where the
-    // dim now says, so the early view starts over and binds everything as
-    // the dim is.
+    // A row that came in under the old category changes: its cell is not
+    // where the dim now says, so both views start over and read everything
+    // as the dim is.
     db.run(
         "UPDATE $S.tasks SET picks = coalesce(picks, 0) + 1
           WHERE task_id = (SELECT min(task_id) FROM $S.tasks
-                            WHERE organization_id = 1 AND taskgroup_id = 1)",
+                            WHERE organization_id = 1 AND taskgroup_id = 1 AND task_id < 300)",
     );
     assert_eq!(
-        early.step().unwrap_err().to_string(),
+        picks.step().unwrap_err().to_string(),
         "a change no longer fits picks"
     );
-    assert!(matches!(early.step(), Ok(Step::Started(_))));
-    compare(&mut db, early.app(), &early_oracles()).expect("early rebound");
-    applied(&mut late);
-    compare(&mut db, late.app(), &task_oracles()).expect("late ready");
+    assert_eq!(
+        tasks.step().unwrap_err().to_string(),
+        "a change no longer fits tasks"
+    );
+    assert!(matches!(picks.step(), Ok(Step::Started(_))));
+    assert!(matches!(tasks.step(), Ok(Step::Started(_))));
+    compare(&mut db, picks.app(), &picks_oracles()).expect("picks read anew");
+    compare(&mut db, tasks.app(), &task_oracles()).expect("tasks read anew");
+
+    // A dim key moved and a dim row gone, each with a task in the group
+    // that is gone: the task reads null attributes, as the join gives,
+    // and the rows from before keep theirs.
+    let null_tasks = |app: &App| -> Value {
+        let ask = Ask {
+            filter: vec![Cond {
+                path: KeyPath {
+                    head: id("organization_id"),
+                    attr: None,
+                },
+                values: vec![Literal::Int(2)],
+            }],
+            from: START,
+            to: START + 3_600,
+            ..ask("picks", &["tasks"], &["g.category"])
+        };
+        let answered = app.ask(&ask).unwrap();
+        (answered.answer.rows.iter())
+            .find(|(key, _)| key[0] == Datum::Null)
+            .map_or(Value::Int(0), |(_, values)| values[0].clone())
+    };
+    let before = null_tasks(picks.app());
+    for (task, change) in [
+        (
+            401,
+            "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1",
+        ),
+        (
+            402,
+            "DELETE FROM $S.taskgroups WHERE organization_id = 2 AND taskgroup_id = 3",
+        ),
+    ] {
+        db.run(&format!(
+            "BEGIN; {change}; INSERT INTO $S.tasks VALUES ({task}, 2, 1, to_timestamp({START}) \
+             AT TIME ZONE 'UTC', NULL, 1); COMMIT;"
+        ));
+        applied(&mut picks);
+        applied(&mut tasks);
+    }
+    let Value::Int(before) = before else {
+        panic!("a count");
+    };
+    assert_eq!(null_tasks(picks.app()), Value::Int(before + 2));
 }
 
 /// A value straum can't read stops the load, or the stream, naming the
@@ -1231,7 +1373,8 @@ fn asks_take_values_of_the_types_the_load_read() {
         ..ask(fact, &[measure], &[])
     };
     let text = |s: &str| Literal::Text(s.into());
-    // text, a ref id (int), a dim's text; then numeric(4, 1).
+    // text, the column a ref joins on (int), a dim's text; then
+    // numeric(4, 1).
     let cases = [
         (
             "trips",
@@ -1244,7 +1387,7 @@ fn asks_take_values_of_the_types_the_load_read() {
         (
             "trips",
             "trips",
-            "pickup",
+            "zone_id",
             Literal::Int(1),
             text("1"),
             ColumnType::Int,
@@ -1334,8 +1477,6 @@ fn follows_at_replica_from_19() {
         db.run(&rng.trip(id));
         applied(&mut writer);
     }
-    db.run("UPDATE $S.zones SET borough = 'Manhattan' WHERE id = 2");
-    applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
@@ -1490,29 +1631,30 @@ fn a_changed_column_type_starts_over() {
     assert!(err.contains("has no column rider"), "{err}");
 }
 
+/// Too big and too random to stay inline: PostgreSQL TOASTs the rider, and
+/// an update that leaves it alone doesn't send it. The old row, whole
+/// under `REPLICA IDENTITY FULL`, supplies it.
 #[test]
-fn a_value_left_out_starts_over() {
+fn a_value_left_out_comes_from_the_old_row() {
     let pg = postgres();
     let mut db = Db::new(&pg, "toast", TABLES);
-    // Too big and too random to stay inline: PostgreSQL TOASTs it, and an
-    // update that leaves it alone doesn't send it.
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
     db.run(
-        "INSERT INTO $S.zones
-         SELECT 1, string_agg(md5(random()::text), '') FROM generate_series(1, 2000)",
+        "INSERT INTO $S.trips
+         SELECT 1, to_timestamp(1705276800), 'cab', 1, 1.00,
+                string_agg(md5(random()::text), ''), 2
+           FROM generate_series(1, 2000)",
     );
-    db.run("ALTER TABLE $S.zones ADD COLUMN note text");
-    db.run(&Rng::new(1).trip(1));
     let mut writer = db.writer();
     writer.step().unwrap();
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
-    db.run("UPDATE $S.zones SET note = 'x' WHERE id = 1");
-    let err = writer.step().unwrap_err().to_string();
-    assert_eq!(err, "a change no longer fits zones");
-    writer.step().unwrap();
-    db.run(&Rng::new(2).trip(2));
+    db.run("UPDATE $S.trips SET tip = 3 WHERE id = 1");
     applied(&mut writer);
-    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the update");
+    db.run("DELETE FROM $S.trips WHERE id = 1");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the delete");
 }
 
 #[test]
@@ -1558,12 +1700,12 @@ CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 -- Then give \"straum_plan\" a password: \\password \"straum_plan\"
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";
 GRANT SELECT ON \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\" TO \"straum_plan\";
-CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\";
+CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"trips\", \"plan\".\"logins\";
 -- fact trips: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
 -- fact logins: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
--- dim zones: \"plan\".\"zones\" needs a primary key on id alone, or REPLICA IDENTITY FULL and a unique index on it.
+-- dim zones: \"plan\".\"zones\" needs a primary key or unique index on id alone; straum reads it and does not follow it.
 "
     );
     // One statement at a time: ALTER SYSTEM can't run in a transaction.
@@ -1801,6 +1943,7 @@ fn setup_problems_say_what_to_fix() {
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id, d.name, count(*) AS n
         FROM $S.f t LEFT JOIN $S.d d ON d.k = t.d_id GROUP BY 1, 2, 3;";
+    // The dim is published too, which straum neither needs nor minds.
     let dim = |d: &str, via: &str| {
         format!(
             "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id {via});
@@ -1816,11 +1959,13 @@ fn setup_problems_say_what_to_fix() {
             "",
         ),
         (
-            "dimfull",
-            dim(
-                "CREATE TABLE $S.d (k int UNIQUE, name text); ALTER TABLE $S.d REPLICA IDENTITY FULL;",
-                "int",
-            ),
+            "dimunpublished",
+            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(", $S.d;", ";"),
+            "",
+        ),
+        (
+            "dimunique",
+            dim("CREATE TABLE $S.d (k int UNIQUE, name text);", "int"),
             "",
         ),
         (
@@ -1829,9 +1974,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (s serial PRIMARY KEY, k int, name text);",
                 "int",
             ),
-            "dim d: the replica identity of dimpk.d must be k alone, so a delete names the row \
-             straum holds: a primary key on k, REPLICA IDENTITY USING INDEX on a unique index of k, \
-             or REPLICA IDENTITY FULL",
+            "dim d: dimpk.d needs a primary key or unique index on k alone",
         ),
         (
             "dimnounique",
@@ -1846,15 +1989,41 @@ fn setup_problems_say_what_to_fix() {
             dim("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
             "fact f: ref d joins d_id (an integer) to k (text); they must read alike",
         ),
+        (
+            "dimnoselect",
+            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(
+                "CREATE PUBLICATION",
+                "CREATE ROLE $S LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO $S; \
+                     GRANT SELECT ON $S.f TO $S; CREATE PUBLICATION",
+            ),
+            "d: straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d",
+        ),
     ];
     for (name, tables, expected) in cases {
-        let found = problems(&pg, name, &tables, dim_spec);
+        let found = if name == "dimnoselect" {
+            // As the role that may read the fact but not the dim.
+            let db = Db::new(&pg, name, &tables);
+            let dsn = pg
+                .dsn
+                .to_string()
+                .replace("postgres@", &format!("{name}:r@"));
+            let mut source = Pg::new(Dsn::parse(&dsn).unwrap(), name, MAX_ROWS);
+            match source.open(&db.spec(dim_spec)) {
+                Ok(_) => Vec::new(),
+                Err(e) => match e.downcast::<Error>().map(|e| *e) {
+                    Ok(Error::Setup(problems)) => problems,
+                    other => panic!("{name}: {other:?}"),
+                },
+            }
+        } else {
+            problems(&pg, name, &tables, dim_spec)
+        };
         let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
         assert_eq!(found, expected, "{name}");
     }
 
-    // A dim keyed by two columns: its key must be exactly the replica
-    // identity, or under FULL the columns of a unique index.
+    // A dim keyed by two columns: a primary key or unique index on exactly
+    // those columns, in any order.
     let pair_spec = "
         CREATE VIEW f AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
@@ -1909,9 +2078,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int PRIMARY KEY, y int, name text);",
                 "int",
             ),
-            "dim d: the replica identity of pairpk.d must be x, y alone, so a delete names the row \
-             straum holds: a primary key on x, y, REPLICA IDENTITY USING INDEX on a unique index of \
-             x, y, or REPLICA IDENTITY FULL",
+            "dim d: pairpk.d needs a primary key or unique index on x, y alone",
         ),
         (
             "pairtype",
@@ -2107,7 +2274,7 @@ fn connection_errors() {
 #[test]
 fn no_load_once_the_stream_runs() {
     let pg = postgres();
-    let mut db = Db::new(&pg, "early", TABLES);
+    let mut db = Db::new(&pg, "streaming", TABLES);
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     let start = source.open(&spec).unwrap();
@@ -2718,7 +2885,7 @@ fn taxi_month() {
            FROM '/data/trips_2024-01.csv' WITH (format csv, header);
          SET timezone = 'UTC';
          ANALYZE;
-         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
+         CREATE PUBLICATION straum FOR TABLE yellow_trips;",
     )
     .unwrap();
     let rows = |sql: &mut Conn, q: &str| sql.rows(q).unwrap();
@@ -2753,8 +2920,8 @@ fn taxi_month() {
             "bucket",
             "payment_type",
             "vendor_id",
-            "pickup",
-            "dropoff",
+            "pu_location_id",
+            "do_location_id",
             "pickup.borough",
             "pickup.zone",
             "pickup.service_zone",
@@ -2830,23 +2997,37 @@ fn taxi_month() {
         ))
         .unwrap();
     }
-    // Dims change: a zone renamed, another moved to a new key.
-    sql.execute("UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161")
-        .unwrap();
-    sql.execute("UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264")
-        .unwrap();
-    for _ in 0..202 {
+    for _ in 0..200 {
         applied(&mut writer);
     }
-    eprintln!("streamed 202 commits in {:.1?}", clock.elapsed());
+    eprintln!("streamed 200 commits in {:.1?}", clock.elapsed());
     check(&mut sql, writer.app(), "after the stream");
 
     // An update takes the old row out of its cell.
     sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
         .unwrap();
     applied(&mut writer);
-    sql.execute("UPDATE taxi_zones SET zone = zone WHERE location_id = 1")
-        .unwrap();
-    applied(&mut writer);
     check(&mut sql, writer.app(), "after an update");
+
+    // Dims change: a zone renamed, another moved to a new key. Straum
+    // keeps what its rows came with until a trip in the renamed zone
+    // changes, when it starts over and reads the zones as they are.
+    sql.execute("UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161")
+        .unwrap();
+    sql.execute("UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264")
+        .unwrap();
+    sql.execute(
+        "UPDATE yellow_trips SET tip_amount = tip_amount + 1
+          WHERE id = (SELECT min(id) FROM yellow_trips WHERE pu_location_id = 161)",
+    )
+    .unwrap();
+    let clock = Instant::now();
+    let unfit = writer.step();
+    assert!(
+        matches!(unfit, Err(straum_app::Error::Unfit(_))),
+        "{unfit:?}"
+    );
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    eprintln!("started over in {:.1?}", clock.elapsed());
+    check(&mut sql, writer.app(), "after the zones changed");
 }

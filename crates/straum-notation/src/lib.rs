@@ -26,16 +26,14 @@
 //! - `FROM schema.table alias`: the fact.
 //! - `LEFT JOIN schema.table alias ON alias.key = fact.column`, with more
 //!   equalities joined by `AND` for a key of several columns: a ref named
-//!   `alias` to the dim `table`. Every fact column joined on must be
-//!   selected; it is a `by` column, and the ref says which dim row its
-//!   value names.
+//!   `alias` to the dim `table`. The dim columns the view selects are the
+//!   ref's attributes, which come with each fact row and key its cells;
+//!   a join must select one. The fact columns joined on may be selected
+//!   as `by` columns or left out.
 //! - `date_bin('<n> <unit>', fact.column, timestamptz 'epoch')`: the bucket;
 //!   `timestamp 'epoch'` for a column without a zone.
 //! - Other fact columns are `by` columns; `(fact.column IS NULL) AS name`
-//!   or `IS NOT NULL` is a boolean `by` key; dim columns are attributes,
-//!   read after aggregation. A dim column selected without the fact
-//!   column its ref joins on is bound at ingest: it is the key, read as
-//!   each row comes in.
+//!   or `IS NOT NULL` is a boolean `by` key.
 //! - `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max`, `avg`, each `AS`
 //!   a name and with an optional `FILTER (WHERE ...)` of `=` and `IN`, or
 //!   `IS NULL` and `IS NOT NULL` over a column with a null-ness key, joined

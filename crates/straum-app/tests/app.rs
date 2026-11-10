@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use straum_app::{
-    AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Status, Step, Wal, Writer,
+    AnswerError, Answered, App, Change, Error, Limits, Lsn, Status, Step, Wal, Writer,
 };
 use straum_domain::{
     Answer, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal, Spec, Store,
@@ -47,10 +47,11 @@ GROUP BY 1, 2, 3, 4;
 CREATE VIEW logins AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
        l.zone_id,
+       zone.borough,
        count(*) AS logins
 FROM public.logins l
 LEFT JOIN public.zones zone ON zone.id = l.zone_id
-GROUP BY 1, 2;
+GROUP BY 1, 2, 3;
 ";
 
 /// `audit` is published but not in the spec. Only trips has
@@ -150,16 +151,11 @@ fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
 fn reference(db: &Database, lsn: Lsn) -> Store {
     let spec = spec();
     let mut store = Store::new(spec.clone());
-    fake::set_dim_types(&spec.dims()[0], store.dim("zones").unwrap());
-    for fact in ["trips", "logins"] {
-        fake::set_types(store.rollup(fact).unwrap());
-    }
-    for row in db.rows_at(lsn, "zones") {
-        store.dim("zones").unwrap().upsert(&row).unwrap();
-    }
-    for fact in ["trips", "logins"] {
-        for row in db.rows_at(lsn, fact) {
-            store.rollup(fact).unwrap().add(&row).unwrap();
+    for fact in spec.facts() {
+        let rollup = store.rollup(fact.name.as_str()).unwrap();
+        fake::set_types(fact, rollup);
+        for row in db.rows_at(&spec, lsn, fact) {
+            rollup.add(&row).unwrap();
         }
     }
     store
@@ -167,6 +163,12 @@ fn reference(db: &Database, lsn: Lsn) -> Store {
 
 fn expected(db: &Database, ask: &Ask) -> Answer {
     reference(db, db.lsn()).ask(ask).unwrap()
+}
+
+/// The rows an ask by borough answers.
+fn by_borough(app: &App, fact: &str) -> Vec<(Vec<Datum>, Vec<Value>)> {
+    let by_borough = ask(fact, &[fact], &["zone.borough"]);
+    app.ask(&by_borough).unwrap().answer.rows
 }
 
 #[test]
@@ -194,7 +196,8 @@ fn starts_from_one_snapshot() {
     let before = SystemTime::now();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert!(writer.app().ready());
-    assert_eq!(db.borrow().loads, ["zones", "trips", "logins"]);
+    // Dims are not loaded: their rows come with the facts'.
+    assert_eq!(db.borrow().loads, ["trips", "logins"]);
     let answered = writer
         .app()
         .ask(&ask("trips", &["trips", "fare"], &["zone.borough"]))
@@ -301,7 +304,7 @@ fn fact_rows_change_through_the_old_row() {
     ]);
     writer.step().unwrap();
 
-    assert_eq!(db.borrow().loads.len(), 3, "no reload");
+    assert_eq!(db.borrow().loads.len(), 2, "no reload");
     let by_kind = ask("trips", &["trips", "fare", "riders"], &["kind"]);
     let answered = writer.app().ask(&by_kind).unwrap();
     assert_eq!(
@@ -331,7 +334,7 @@ fn fact_change_without_the_old_row_starts_over() {
     assert!(!writer.app().ready());
     let lsn = db.borrow().lsn();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
-    assert_eq!(db.borrow().loads[3..], ["zones", "trips", "logins"]);
+    assert_eq!(db.borrow().loads[2..], ["trips", "logins"]);
     assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
 
     db.borrow_mut().commit(vec![Write::Update {
@@ -342,82 +345,100 @@ fn fact_change_without_the_old_row_starts_over() {
     }]);
     assert!(writer.step().is_err());
     writer.step().unwrap();
-    let by_bucket = ask("logins", &["logins"], &["bucket", "zone"]);
+    let by_bucket = ask("logins", &["logins"], &["bucket", "zone_id"]);
     assert_eq!(
         writer.app().ask(&by_bucket).unwrap().answer,
         expected(&db.borrow(), &by_bucket)
     );
 }
 
+/// A fact row carries its attributes as the dims were when it came in. A
+/// dim change is no change to straum: the rows keep what they came with,
+/// new rows take the new value, and a row that comes back out with its
+/// attribute resolved otherwise makes straum start over, which resolves
+/// everything as the dims are then.
 #[test]
-fn dim_key_change_drops_the_old_key() {
-    // Without and with `REPLICA IDENTITY FULL` on zones.
-    for full in [false, true] {
-        let (db, mut writer) = setup(&[("zones", full), ("trips", true), ("logins", false)]);
-        db.borrow_mut()
-            .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 2, 10)]);
-        writer.step().unwrap();
-
-        // Key 1 becomes 2: trip 1 loses its zone, trip 2 gains one.
-        db.borrow_mut().commit(vec![Write::Update {
-            table: "zones",
-            key: int(1),
-            new_key: int(2),
-            row: vec![int(2), text("Queens")],
-        }]);
-        writer.step().unwrap();
-        let by_zone = ask("trips", &["trips"], &["zone", "zone.borough"]);
-        let answer = writer.app().ask(&by_zone).unwrap().answer;
-        assert_eq!(
-            answer.rows,
-            [
-                (vec![int(1), Datum::Null], vec![Value::Int(1)]),
-                (vec![int(2), text("Queens")], vec![Value::Int(1)]),
-            ],
-            "full {full}"
-        );
-
-        // An update that keeps the key keeps the row.
-        db.borrow_mut().commit(vec![Write::Update {
-            table: "zones",
-            key: int(2),
-            new_key: int(2),
-            row: vec![int(2), text("Bronx")],
-        }]);
-        writer.step().unwrap();
-        let answer = writer.app().ask(&by_zone).unwrap().answer;
-        assert_eq!(answer, expected(&db.borrow(), &by_zone), "full {full}");
-        assert_eq!(answer.rows[1].0, [int(2), text("Bronx")], "full {full}");
-        assert_eq!(db.borrow().loads.len(), 3, "no reload, full {full}");
-    }
-}
-
-#[test]
-fn dim_delete_drops_the_key() {
+fn dim_changes_show_once_straum_starts_over() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), zone(2, "Queens"), trip(1, 1, 1, 10)]);
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
     writer.step().unwrap();
-    db.borrow_mut().commit(vec![Write::Delete {
+    let bronx = |n| (vec![text("Bronx")], vec![Value::Int(n)]);
+    let queens = |n| (vec![text("Queens")], vec![Value::Int(n)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [bronx(2)]);
+
+    // The dim changes: nothing to apply, and the cells stay as they were.
+    let lsn = db.borrow_mut().commit(vec![Write::Update {
         table: "zones",
         key: int(1),
+        new_key: int(1),
+        row: vec![int(1), text("Queens")],
     }]);
-    writer.step().unwrap();
-    let by_borough = ask("trips", &["trips"], &["zone.borough"]);
-    assert_eq!(
-        writer.app().ask(&by_borough).unwrap().answer.rows,
-        [(vec![Datum::Null], vec![Value::Int(1)])]
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(by_borough(writer.app(), "trips"), [bronx(2)]);
+    assert_ne!(
+        writer
+            .app()
+            .ask(&ask("trips", &["trips"], &["zone.borough"]))
+            .unwrap()
+            .answer,
+        expected(&db.borrow(), &ask("trips", &["trips"], &["zone.borough"]))
     );
-    assert_eq!(db.borrow().loads.len(), 3, "no reload");
 
-    // A delete that doesn't say which key: start over.
-    db.borrow_mut().send(vec![Change::Delete {
-        table: id("zones"),
-        old: Old::SameKey,
-    }]);
-    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("zones")));
+    // A new row takes the value the dim has now.
+    db.borrow_mut().commit(vec![trip(3, 1, 1, 30)]);
     writer.step().unwrap();
-    assert!(writer.app().ready());
+    assert_eq!(by_borough(writer.app(), "trips"), [bronx(2), queens(1)]);
+
+    // A row that came in as Bronx comes out as Queens: not found, so
+    // straum starts over and every row resolves as the dim is now.
+    db.borrow_mut().commit(vec![Write::Update {
+        table: "trips",
+        key: int(1),
+        new_key: int(1),
+        row: vec![int(0), int(1), int(1), int(11), text("ann")],
+    }]);
+    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
+    let lsn = db.borrow().lsn();
+    assert_eq!(writer.step().unwrap(), Step::Started(lsn));
+    assert_eq!(by_borough(writer.app(), "trips"), [queens(3)]);
+    assert_eq!(
+        writer
+            .app()
+            .ask(&ask("trips", &["trips"], &["zone.borough"]))
+            .unwrap()
+            .answer,
+        expected(&db.borrow(), &ask("trips", &["trips"], &["zone.borough"]))
+    );
+}
+
+/// A row whose dim row does not exist has null attributes, as the view's
+/// `LEFT JOIN` gives, and keeps them when the dim row comes later; a dim
+/// row deleted or truncated leaves nulls only for the rows after it.
+#[test]
+fn a_missing_dim_row_resolves_to_null() {
+    let (db, mut writer) = setup(&TABLES);
+    db.borrow_mut().commit(vec![trip(1, 1, 2, 10)]);
+    writer.step().unwrap();
+    let null = |n| (vec![Datum::Null], vec![Value::Int(n)]);
+    let queens = |n| (vec![text("Queens")], vec![Value::Int(n)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [null(1)]);
+
+    db.borrow_mut()
+        .commit(vec![zone(2, "Queens"), trip(2, 1, 2, 20)]);
+    writer.step().unwrap();
+    assert_eq!(by_borough(writer.app(), "trips"), [null(1), queens(1)]);
+
+    db.borrow_mut().commit(vec![
+        Write::Delete {
+            table: "zones",
+            key: int(2),
+        },
+        trip(3, 1, 2, 30),
+    ]);
+    writer.step().unwrap();
+    assert_eq!(by_borough(writer.app(), "trips"), [null(2), queens(1)]);
+    assert_eq!(db.borrow().loads.len(), 2, "no reload");
 }
 
 #[test]
@@ -433,7 +454,7 @@ fn truncate_empties_the_table() {
     ]);
     writer.step().unwrap();
 
-    assert_eq!(db.borrow().loads.len(), 3, "no reload");
+    assert_eq!(db.borrow().loads.len(), 2, "no reload");
     let by_borough = ask("trips", &["trips"], &["zone.borough"]);
     let answer = writer.app().ask(&by_borough).unwrap().answer;
     assert_eq!(answer.rows, [(vec![Datum::Null], vec![Value::Int(1)])]);
@@ -452,8 +473,15 @@ fn altered_table_starts_over() {
     ]);
     assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
     writer.step().unwrap();
-    assert_eq!(db.borrow().loads.len(), 6);
+    assert_eq!(db.borrow().loads.len(), 4);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
+
+    // A dim altered is nothing to straum, which never reads its shape.
+    let lsn = db
+        .borrow_mut()
+        .commit(vec![Write::Alter { table: "zones" }]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(db.borrow().loads.len(), 4);
 }
 
 #[test]
@@ -464,7 +492,7 @@ fn tables_outside_the_spec_are_skipped() {
         .borrow_mut()
         .commit(vec![insert("audit", 1, vec![text("x")])]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(db.borrow().loads.len(), 3, "no reload");
+    assert_eq!(db.borrow().loads.len(), 2, "no reload");
     assert!(writer.app().ready());
 }
 
@@ -497,10 +525,7 @@ fn asks_wait_while_the_tables_load() {
     writer.step().unwrap();
     let not_ready = Err(AnswerError::NotReady);
     let starting = |table: &str| (table.to_owned(), not_ready.clone(), not_ready.clone());
-    assert_eq!(
-        *seen.borrow(),
-        [starting("zones"), starting("trips"), starting("logins")]
-    );
+    assert_eq!(*seen.borrow(), [starting("trips"), starting("logins")]);
 }
 
 #[test]
@@ -535,11 +560,11 @@ fn ready_only_within_the_lag_bound() {
     };
     db.borrow_mut().wal = Some(wal(200, 100));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
-    assert!(writer.app().lag().unwrap() >= Duration::from_millis(3));
+    assert!(writer.app().lag().unwrap() >= Duration::from_millis(2));
     assert!(!writer.app().ready());
     // Answers are as of before the load, not the reading after it.
     let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
-    assert!(behind.as_of + Duration::from_millis(3) <= SystemTime::now());
+    assert!(behind.as_of + Duration::from_millis(2) <= SystemTime::now());
     assert_eq!(writer.app().error(), None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
@@ -701,89 +726,44 @@ fn a_row_that_does_not_fit_stops_straum() {
 }
 
 #[test]
-fn a_dim_row_that_does_not_fit_stops_straum() {
-    let (db, mut writer) = setup(&TABLES);
-    writer.step().unwrap();
-    db.borrow_mut()
-        .commit(vec![insert("zones", 3, vec![int(3)])]);
-
-    // The upsert fails, and so does loading zones again.
-    let err = writer.step().unwrap_err();
-    assert_eq!(err.to_string(), "a change no longer fits zones");
-    let err = writer.step().unwrap_err();
-    assert_eq!(err.to_string(), "row has 1 columns, expected 2");
-    assert!(!writer.app().ready());
-}
-
-#[test]
 fn a_change_that_does_not_fit_starts_over() {
     let trip_row = || vec![int(0), int(1), int(1), int(10), text("ann")];
     let never_added = || vec![int(0), int(9), int(9), int(9), text("zed")];
     let cases = [
         (
-            "dim insert of the wrong width",
-            "zones",
-            Change::Insert {
-                table: id("zones"),
-                row: vec![int(3)],
-            },
-        ),
-        (
-            "dim update of the wrong width",
-            "zones",
-            Change::Update {
-                table: id("zones"),
-                old: Old::SameKey,
-                new: vec![int(1)],
-            },
-        ),
-        (
-            "dim key change from a key straum never saw",
-            "zones",
-            Change::Update {
-                table: id("zones"),
-                old: Old::Key(vec![int(7)]),
-                new: vec![int(1), text("Bronx")],
-            },
-        ),
-        (
-            "dim delete of a key straum never saw",
-            "zones",
-            Change::Delete {
-                table: id("zones"),
-                old: Old::Key(vec![int(7)]),
-            },
-        ),
-        (
             "fact update from a row straum never saw",
-            "trips",
             Change::Update {
                 table: id("trips"),
-                old: Old::Row(never_added()),
+                old: never_added(),
                 new: trip_row(),
             },
         ),
         // The old row is already out of its cell when the new one fails.
         (
             "fact update to a row of the wrong width",
-            "trips",
             Change::Update {
                 table: id("trips"),
-                old: Old::Row(trip_row()),
+                old: trip_row(),
                 new: vec![int(0)],
             },
         ),
         (
             "fact delete of a row straum never saw",
-            "trips",
             Change::Delete {
                 table: id("trips"),
-                old: Old::Row(never_added()),
+                old: never_added(),
+            },
+        ),
+        (
+            "fact insert of the wrong width",
+            Change::Insert {
+                table: id("trips"),
+                row: vec![int(0)],
             },
         ),
     ];
     let by_borough = ask("trips", &["trips", "fare"], &["zone.borough"]);
-    for (name, table, change) in cases {
+    for (name, change) in cases {
         let (db, mut writer) = setup(&TABLES);
         db.borrow_mut()
             .commit(vec![zone(1, "Bronx"), zone(2, "Queens"), trip(1, 1, 1, 10)]);
@@ -791,7 +771,10 @@ fn a_change_that_does_not_fit_starts_over() {
         let lsn = db.borrow_mut().send(vec![change]);
 
         let err = writer.step().unwrap_err();
-        assert!(matches!(&err, Error::Unfit(t) if *t == id(table)), "{name}");
+        assert!(
+            matches!(&err, Error::Unfit(t) if *t == id("trips")),
+            "{name}"
+        );
         assert!(!writer.app().ready(), "{name}");
         assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
         assert_eq!(
@@ -822,7 +805,9 @@ fn answer_error_display() {
     );
 }
 
-// Random writes, dropped connections and restarts.
+// Random writes, dropped connections and restarts. The zones stand still,
+// so a fresh load at any LSN is what straum must hold; what a dim change
+// does is settled above.
 
 struct Rng(u64);
 
@@ -887,7 +872,7 @@ fn random_login(rng: &mut Rng) -> Row {
 /// One transaction's writes. `next_key` hands out fact keys.
 fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write> {
     // Keys as the transaction goes, so no write misses its row.
-    let mut keys: BTreeMap<&'static str, BTreeSet<Datum>> = ["zones", "trips", "logins"]
+    let mut keys: BTreeMap<&'static str, BTreeSet<Datum>> = ["trips", "logins"]
         .into_iter()
         .map(|t| (t, db.keys(t).into_iter().collect()))
         .collect();
@@ -926,45 +911,13 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 },
                 None => continue,
             },
-            65..75 => {
-                let key = int(rng.int(1, 7));
-                let borough = rng.maybe_text(&BOROUGHS);
-                if !keys["zones"].contains(&key) {
-                    Write::Insert {
-                        table: "zones",
-                        row: vec![key.clone(), borough],
-                        key,
-                    }
-                } else {
-                    // Sometimes to a free key, so the old one goes.
-                    let free = int(rng.int(1, 7));
-                    let new_key = if keys["zones"].contains(&free) {
-                        key.clone()
-                    } else {
-                        free
-                    };
-                    Write::Update {
-                        table: "zones",
-                        row: vec![new_key.clone(), borough],
-                        key,
-                        new_key,
-                    }
-                }
-            }
-            75..80 => match rng.pick(&existing(&keys, "zones")) {
-                Some(key) => Write::Delete {
-                    table: "zones",
-                    key,
-                },
-                None => continue,
-            },
-            80..90 => Write::Insert {
+            65..80 => Write::Insert {
                 table: "logins",
                 key: new_key(),
                 row: random_login(rng),
             },
             // Logins send no old rows; these make straum start over.
-            90..92 => match rng.pick(&existing(&keys, "logins")) {
+            80..84 => match rng.pick(&existing(&keys, "logins")) {
                 Some(key) if rng.chance(50) => Write::Delete {
                     table: "logins",
                     key,
@@ -977,13 +930,13 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 },
                 None => continue,
             },
-            92..95 => Write::Insert {
+            84..90 => Write::Insert {
                 table: "audit",
                 key: new_key(),
                 row: vec![text("x")],
             },
-            95..97 => Write::Truncate {
-                table: rng.pick(&["zones", "trips", "logins"]).unwrap(),
+            90..95 => Write::Truncate {
+                table: rng.pick(&["trips", "logins"]).unwrap(),
             },
             _ => Write::Alter {
                 table: rng.pick(&["zones", "trips", "logins"]).unwrap(),
@@ -1022,10 +975,10 @@ fn random_ask(rng: &mut Rng) -> Ask {
         (
             "trips",
             &["trips", "fare", "fare_max", "riders"],
-            &["kind", "zone", "zone.borough", "zone.id"],
+            &["kind", "zone_id", "zone.borough"],
         )
     } else {
-        ("logins", &["logins"], &["zone", "zone.borough"])
+        ("logins", &["logins"], &["zone_id", "zone.borough"])
     };
     let mut chosen: Vec<&str> = measures
         .iter()
@@ -1075,7 +1028,7 @@ struct Seen {
 /// waiting on the writer.
 fn check_aside(app: &App) -> usize {
     for fact in ["trips", "logins"] {
-        let ask = ask(fact, &[fact], &["zone"]);
+        let ask = ask(fact, &[fact], &["zone_id"]);
         assert_eq!(aside(app, ask), Err(AnswerError::NotReady), "{fact}");
     }
     2
@@ -1098,6 +1051,10 @@ fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
 fn follow(seed: u64, seen: &mut Seen) {
     let mut rng = Rng(seed);
     let db = Database::new(&TABLES).shared();
+    let zones: Vec<Write> = (1..=6)
+        .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
+        .collect();
+    db.borrow_mut().commit(zones);
     let app = App::new(spec(), LIMITS);
     let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));

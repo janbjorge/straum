@@ -15,10 +15,10 @@ mod value;
 pub use agg::Agg;
 pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Ident;
-pub use rollup::{DimTable, Rollup, RowError};
+pub use rollup::{Rollup, RowError};
 pub use spec::{
-    Binding, By, Cond, Dim, Fact, Grain, Key, KeyPath, Literal, Measure, Origin, Ref, Slot, Spec,
-    SpecError, Table, Time,
+    By, Cond, Dim, Fact, Grain, Key, KeyPath, Literal, Measure, Origin, Ref, Slot, Spec, SpecError,
+    Table, Time,
 };
 pub use store::{Answer, AnswerColumn, Store};
 pub use value::{ColumnType, Datum, Value};

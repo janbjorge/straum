@@ -337,13 +337,27 @@ fn serves_asks_from_postgres() {
     assert!(body.contains(cab), "{body}");
 
     pg.psql("INSERT INTO shop.trips VALUES (5, '2024-01-02 00:00Z', 'cab', 2, 1.25)");
-    pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
     pg.psql("DELETE FROM shop.trips WHERE id = 3");
     pg.psql("UPDATE shop.trips SET fare = 10 WHERE id = 1");
     let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
     straum.wait_for("the changes", |straum| {
         straum.call("POST", "/ask", ASK).1.ends_with(&rows)
     });
+
+    // A zone renamed is nothing to straum until a trip in it changes: then
+    // the trip's old row no longer fits its cell, and straum starts over
+    // and reads the zones as they are.
+    pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
+    pg.psql("UPDATE shop.trips SET fare = 20 WHERE id = 2");
+    let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
+    straum.wait_for("the start over", |straum| {
+        straum.call("POST", "/ask", ASK).1.ends_with(&rows)
+    });
+    assert!(
+        straum.log().contains("a change no longer fits trips"),
+        "{}",
+        straum.log()
+    );
 
     let (code, log) = straum.stop("-TERM");
     assert_eq!(code, Some(0), "{log}");

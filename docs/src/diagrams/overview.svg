@@ -132,7 +132,7 @@
   <text x="458" y="287" class="h">Rollup per fact</text>
   <text x="458" y="306" class="s ink2">cells by key and time bucket</text>
   <rect class="box" x="446" y="326" width="214" height="34" rx="5"/>
-  <text x="458" y="348" class="h">Dim rows by key</text>
+  <text x="458" y="348" class="h">No dim rows: read from PostgreSQL</text>
   <text x="446" y="384" class="s acc">RAM only, rebuilt on every start</text>
   <path class="a-cfg" d="M640 186 L640 224" marker-end="url(#m)"/>
   <text x="648" y="210" class="s muted">read at start</text>

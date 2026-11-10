@@ -7,13 +7,13 @@ use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Datum, DimTable, Ident, RowError, Spec, Store};
+use straum_domain::{Answer, Ask, AskError, Ident, RowError, Spec, Store};
 
 use crate::lag::Lag;
-use crate::source::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
+use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
 
-/// Panic message for tables taken from the spec.
-const IN_SPEC: &str = "every loaded table is in the spec";
+/// Panic message for facts taken from the spec.
+const IN_SPEC: &str = "every applied fact is in the spec";
 
 /// Panic message for a poisoned lock. The store may be half updated, so
 /// nothing reads it again.
@@ -229,16 +229,14 @@ impl State {
         lag.is_some_and(|lag| lag <= self.limits.max_lag)
     }
 
-    /// Applies the commit to every table, or names the first table it no
+    /// Applies the commit to every fact, or names the first fact it no
     /// longer fits.
     fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
         let Commit { lsn, time, changes } = commit;
         for change in changes {
             let table = change.table().clone();
             // The publication may carry tables the spec doesn't name.
-            let name = table.as_str();
-            let spec = self.store.spec();
-            if spec.fact(name).is_none() && spec.dim(name).is_none() {
+            if self.store.spec().fact(table.as_str()).is_none() {
                 continue;
             }
             if self.apply_change(change).is_err() {
@@ -250,66 +248,21 @@ impl State {
         Ok(())
     }
 
-    /// A fact needs the whole old row to take it out of its cell. A dim
-    /// needs only the old key.
+    /// A fact needs the whole old row to take it out of its cell.
     fn apply_change(&mut self, change: Change) -> Result<(), Stale> {
         match change {
-            Change::Insert { table, row } if self.is_fact(&table) => {
-                self.store.add_fact_row(table.as_str(), &row)?;
-            }
-            Change::Insert { table, row } => self.dim(&table).upsert(&row)?,
-            Change::Update { table, old, new } if self.is_fact(&table) => {
-                let Old::Row(old) = old else {
-                    return Err(Stale);
-                };
+            Change::Insert { table, row } => self.store.add_fact_row(table.as_str(), &row)?,
+            Change::Update { table, old, new } => {
                 self.store.remove_fact_row(table.as_str(), &old)?;
                 self.store.add_fact_row(table.as_str(), &new)?;
             }
-            Change::Update { table, old, new } => {
-                let rows = self.dim(&table);
-                let old = dim_key(rows, old);
-                rows.upsert(&new)?;
-                if let Some(key) = old
-                    && key.as_slice() != rows.key_of(&new)
-                {
-                    rows.delete(&key)?;
-                }
-            }
-            Change::Delete { table, old } if self.is_fact(&table) => {
-                let Old::Row(old) = old else {
-                    return Err(Stale);
-                };
-                self.store.remove_fact_row(table.as_str(), &old)?;
-            }
-            Change::Delete { table, old } => {
-                let rows = self.dim(&table);
-                let key = dim_key(rows, old).ok_or(Stale)?;
-                rows.delete(&key)?;
-            }
-            Change::Truncate { table } if self.is_fact(&table) => {
+            Change::Delete { table, old } => self.store.remove_fact_row(table.as_str(), &old)?,
+            Change::Truncate { table } => {
                 self.store.rollup(table.as_str()).expect(IN_SPEC).clear();
             }
-            Change::Truncate { table } => self.dim(&table).clear(),
             Change::Altered { .. } => return Err(Stale),
         }
         Ok(())
-    }
-
-    fn is_fact(&self, table: &Ident) -> bool {
-        self.store.spec().fact(table.as_str()).is_some()
-    }
-
-    fn dim(&mut self, table: &Ident) -> &mut DimTable {
-        self.store.dim(table.as_str()).expect(IN_SPEC)
-    }
-}
-
-/// The key a dim row had; `None` for an update that kept it.
-fn dim_key(rows: &DimTable, old: Old) -> Option<Vec<Datum>> {
-    match old {
-        Old::Row(row) => Some(rows.key_of(&row).to_vec()),
-        Old::Key(key) => Some(key),
-        Old::SameKey => None,
     }
 }
 
@@ -355,7 +308,7 @@ impl<S: Source> Writer<S> {
         step
     }
 
-    /// Loads every table into a new store outside the lock, then swaps it
+    /// Loads every fact into a new store outside the lock, then swaps it
     /// in. The old store goes first, so the two never take memory at once.
     fn start(&mut self) -> Result<Lsn, Error> {
         let empty = || Store::new(self.spec.clone());
@@ -364,10 +317,6 @@ impl<S: Source> Writer<S> {
         let opened = Instant::now();
         let start = self.source.open(&self.spec)?;
         let mut store = empty();
-        for dim in self.spec.dims() {
-            let rows = store.dim(dim.name.as_str()).expect(IN_SPEC);
-            self.source.load_dim(dim, rows)?;
-        }
         for fact in self.spec.facts() {
             self.source.load_fact(fact, &mut store)?;
         }

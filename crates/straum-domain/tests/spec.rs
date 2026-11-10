@@ -2,7 +2,7 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Binding, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec,
+    Agg, By, Cond, Dim, Fact, Grain, Ident, Key, KeyPath, Literal, Measure, Origin, Ref, Spec,
     SpecError, Table, Time,
 };
 
@@ -40,7 +40,7 @@ fn fact() -> Fact {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id")],
-            binding: Binding::Late,
+            attrs: vec![id("name")],
         }],
         by: vec![By::Column(id("a")), By::Column(id("z_id"))],
         measures: vec![Measure {
@@ -48,6 +48,19 @@ fn fact() -> Fact {
             agg: Agg::Count,
             filter: vec![],
         }],
+    }
+}
+
+fn path(s: &str) -> KeyPath {
+    match s.split_once('.') {
+        Some((head, attr)) => KeyPath {
+            head: id(head),
+            attr: Some(id(attr)),
+        },
+        None => KeyPath {
+            head: id(s),
+            attr: None,
+        },
     }
 }
 
@@ -70,6 +83,40 @@ fn which_measures_read_numbers() {
 #[test]
 fn valid() {
     assert!(Spec::new(vec![dim()], vec![fact()]).is_ok());
+}
+
+/// A bare name is a by key; `ref.attr` is an attribute the ref reads. A
+/// ref has no value of its own, and reads only what it declares.
+#[test]
+fn key_paths_resolve_to_by_keys_and_attributes() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let t = spec.fact("t").unwrap();
+    assert_eq!(spec.resolve(t, &path("a")), Some(Key::By(&t.by[0])));
+    assert_eq!(spec.resolve(t, &path("z_id")), Some(Key::By(&t.by[1])));
+    assert_eq!(
+        spec.resolve(t, &path("r.name")),
+        Some(Key::Attr(&t.refs[0], &t.refs[0].attrs[0]))
+    );
+    for missing in ["r", "r.id", "r.nope", "q.name", "b"] {
+        assert_eq!(spec.resolve(t, &path(missing)), None, "{missing}");
+    }
+}
+
+/// A row is read from the time column, the by columns, the via columns and
+/// the measure inputs, each once, and then holds the ref attributes.
+#[test]
+fn columns_and_rollup_key() {
+    let mut t = fact();
+    t.by = vec![By::Column(id("a"))];
+    t.measures.push(Measure {
+        name: id("s"),
+        agg: Agg::Sum(id("z_id")),
+        filter: vec![],
+    });
+    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
+    let attrs: Vec<String> = t.attrs().map(|(r, a)| format!("{}.{a}", r.name)).collect();
+    assert_eq!(attrs, ["r.name"]);
+    assert_eq!(t.rollup_key().count(), 3);
 }
 
 #[test]
@@ -149,8 +196,9 @@ fn every_error_is_reported_and_displayed() {
             filter: vec![],
         },
     ];
-    // A ref on two columns to a key of one, and one joining on a column
-    // twice.
+    // A ref on two columns to a key of one, one joining on a column twice,
+    // one reading nothing, and one reading an attribute the dim lacks and
+    // another twice.
     let mut u = fact();
     u.name = id("u");
     u.by = vec![
@@ -163,27 +211,25 @@ fn every_error_is_reported_and_displayed() {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id"), id("b")],
-            binding: Binding::Late,
+            attrs: vec![id("name")],
         },
         Ref {
             name: id("s"),
             dim: id("z"),
             via: vec![id("a"), id("a")],
-            binding: Binding::Late,
+            attrs: vec![id("name")],
         },
-        // Bound at ingest: nothing to bind, then an attribute the dim lacks
-        // and one bound twice.
         Ref {
             name: id("e"),
             dim: id("z"),
             via: vec![id("a")],
-            binding: Binding::Early(vec![]),
+            attrs: vec![],
         },
         Ref {
             name: id("q"),
             dim: id("z"),
             via: vec![id("b")],
-            binding: Binding::Early(vec![id("nope"), id("name"), id("name")]),
+            attrs: vec![id("nope"), id("name"), id("name")],
         },
     ];
     u.measures = vec![];
@@ -202,18 +248,17 @@ fn every_error_is_reported_and_displayed() {
             "fact z: no_time asks whether the time column at is null, which no ask could see: \
              a row with no time is never answered",
             "z: r declared twice",
-            "fact z: ref r joins on z_id, which is not a by column",
             "fact z: ref r points at unknown dim nope",
-            "fact z: measure m filters on c, which is not a by column, ref or ref attribute",
+            "fact z: measure m filters on c, which is not a by column or ref attribute",
             "z: m declared twice",
             "fact u: ref r joins on 2 columns, but the key of dim z has 1",
             "fact u: ref s joins on a twice",
             "fact u: ref s joins on 2 columns, but the key of dim z has 1",
-            "fact u: ref e binds at ingest but names no attribute",
-            "fact u: ref q binds nope, which dim z has no column of",
+            "fact u: ref e reads no column of its dim",
+            "fact u: ref q reads nope, which dim z has no column of",
             "q: name declared twice",
             "fact u: no measures",
         ]
     );
-    assert!(matches!(errors[9], SpecError::UnknownDim { .. }));
+    assert!(matches!(errors[8], SpecError::UnknownDim { .. }));
 }

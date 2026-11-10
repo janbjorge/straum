@@ -29,7 +29,6 @@ SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan_pickups
 FROM public.yellow_trips f
 LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-LEFT JOIN public.taxi_zones dropoff ON dropoff.location_id = f.do_location_id
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
 ```
 
@@ -84,7 +83,7 @@ so it reads far fewer cells; an ask grouped by `bucket` reads the
 week buckets add 719,124 cells to the 2,322,783 at 15 minutes, 31% more
 ([benchmark](benchmark.md)).
 
-## By columns, refs and dims
+## By columns, refs and attributes
 
 Other fact columns, such as `f.payment_type`, are by columns.
 
@@ -93,22 +92,41 @@ LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
 ```
 
 This declares the ref `pickup`: an N:1 pointer from a fact column to the
-key of a dim table. The dim's columns, such as `pickup.borough`, are the
-ref's attributes.
+key of a dim table. The dim columns the view selects, `pickup.borough`,
+`pickup.zone` and `pickup.service_zone`, are the ref's attributes. As each
+trip comes in, Straum reads them from the zone row the join names, in
+PostgreSQL, and the cell is keyed by them like any by column. Straum keeps
+no zone row of its own.
 
-- The fact column, `f.pu_location_id`, must be selected: it is a by
-  column like any other, and the ref only says which dim row its value
-  names.
-- Joins go from the fact to a dim only, so a spec can't fan out.
-- Two refs can share a dim table, like `pickup` and `dropoff`. A dim table
-  is one dim however many views join it, and all must join it on the same
-  key columns, in any order.
+- A join must select at least one dim column, or it would do nothing.
+- The fact column joined on, `f.pu_location_id`, may be selected as a by
+  column or left out. Left out, the cells are keyed by the attribute's
+  few values instead of the column's many: on a copy of a warehouse's
+  tables, 312 thousand hour cells against 12 million
+  ([benchmark](benchmark.md#cells-on-a-warehouses-tables)).
+- Joins go from the fact to a dim only, so a spec can't fan out. The dim
+  table needs a primary key or unique index on the key columns, so a key
+  names one row.
+- Two refs can join one dim table, a pickup and a dropoff zone, each
+  reading its own attributes. A dim table is one dim however many views
+  join it, and all must join it on the same key columns, in any order.
 - The join is `LEFT` because a fact row with no dim row still counts. Its
   attributes are null.
 
-Asks group and filter by all three: `payment_type`, `pickup` and
-`pickup.borough`. Straum looks attributes up when it answers, so a change
-to a dim row never touches a rollup.
+Asks group and filter by `payment_type`, `pu_location_id` and
+`pickup.borough`. The ref itself has no value: `pickup` alone is not a
+key.
+
+## Attributes are as of ingest
+
+A row's attributes are what the dim said when the row came in, and Straum
+never follows a dim: the setup publishes the fact tables only. A zone
+renamed later keeps its old trips where they were, while PostgreSQL's view
+would move them; new trips read the new name. When a trip that came in
+under the old name is updated or deleted, Straum can't find its cell and
+[starts over](running.md#states), reading every row as the dims are then.
+For dims that change often, select the fact column too and keep the
+mapping in your client, or ask PostgreSQL.
 
 ## Keys of several columns, and null-ness keys
 
@@ -132,11 +150,10 @@ LEFT JOIN public.taskgroups g
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-- The join names one equality per key column, joined by `AND`. Every
-  fact column joined on is selected; `organization_id` is a by column
-  and part of the ref's key at once. A ref on one column is a key asks
-  can group by, like `pickup`; a ref on several is not: ask for its
-  columns, or for its attributes such as `g.category`.
+- The join names one equality per key column, joined by `AND`.
+  `organization_id` is a by column and part of the ref's key at once. A
+  dim key column selected through the ref, `g.organization_id`, is the
+  fact column joined to it.
 - `(f.completed IS NOT NULL) AS done` is a null-ness key: a boolean, true
   for the rows with a `completed` time, grouped and filtered like a
   column under its name. `IS NULL` makes the opposite key. The column may
@@ -147,43 +164,6 @@ GROUP BY 1, 2, 3, 4, 5;
   key over `completed`, which is why the view needs one: Straum keeps
   nothing else about the column. The view body stays what PostgreSQL
   runs, since the key's name is no column there.
-
-## Binding attributes at ingest
-
-A dim's attributes are read after aggregation: the fact column a ref
-joins on is a key, an ask looks the attribute up by its value, and a
-change to a dim row changes answers at once without touching a cell.
-That keeps as many cells as the join column has values. When a column
-has hundreds of thousands of values and its attribute has three, leave
-the column out and select the attribute alone:
-
-```sql
-CREATE VIEW picks AS
-SELECT date_bin('1 hour', f.completed, timestamp 'epoch') AS bucket,
-       f.organization_id,
-       g.category,
-       count(*) AS picks
-FROM public.tasks f
-LEFT JOIN public.taskgroups g
-       ON g.organization_id = f.organization_id
-      AND g.taskgroup_id = f.taskgroup_id
-GROUP BY 1, 2, 3;
-```
-
-`f.taskgroup_id` is not selected, so the ref binds at ingest: as each
-task comes in, Straum reads its group's `category` and keys the cell by
-it. The rollup holds one cell per organization, category and hour instead
-of one per task group. On pio-shaped tables that is a few thousand cells
-against twelve million ([benchmark](benchmark.md#cells-on-pio-shaped-tables)).
-
-The trade is time. An attribute bound at ingest is as of when the row
-came in: a task group recategorised later keeps its old tasks where they
-were, while PostgreSQL's view would move them, and new tasks bind the new
-value. When a row bound to an old value is updated or deleted, Straum
-can't find its cell and [starts over](running.md#states), binding every
-row as the dims are then. Asks name the attribute, `g.category`; the ref
-has no id to group by, and only the attributes the view selects are
-bound.
 
 ## Measures
 
@@ -203,20 +183,20 @@ numeric values scaled by their column's scale.
 count(*) FILTER (WHERE f.payment_type = 1) AS card
 ```
 
-The condition is `=` or `IN (...)` on by columns, refs or attributes,
-or `IS NULL` or `IS NOT NULL` on a column with a [null-ness
+The condition is `=` or `IN (...)` on by columns or attributes the view
+selects, or `IS NULL` or `IS NOT NULL` on a column with a [null-ness
 key](#keys-of-several-columns-and-null-ness-keys), joined by `AND`.
 Literals are integers, `'text'`, `true` or `false`, and must fit their
 column.
 
-By columns, refs, dim keys and attributes are an integer type,
-`numeric(p, s)`, `boolean` or `text`. A ref's columns and its dim's key
-columns must be of the same kinds, column for column. The column of a
-null-ness key may be any type Straum reads.
+By columns, dim keys and attributes are an integer type, `numeric(p, s)`,
+`boolean` or `text`. A ref's columns and its dim's key columns must be of
+the same kinds, column for column. The column of a null-ness key may be
+any type Straum reads.
 
-`GROUP BY` names exactly the selected columns, null-ness keys and the
-bucket, by position or by expression, so the view groups the way the
-rollup does.
+`GROUP BY` names exactly the selected columns, attributes, null-ness keys
+and the bucket, by position or by expression, so the view groups the way
+the rollup does.
 
 ## What a spec can't say
 
@@ -244,9 +224,9 @@ wrong type, when it starts.
 
 ## Memory
 
-Memory follows cells. Each bucket width keeps one cell per distinct
-combination of by keys and bucket, the columns refs join on among them,
-so per width:
+Memory follows cells, and only cells: Straum holds no dim rows. Each
+bucket width keeps one cell per distinct combination of by keys,
+attributes and bucket, so per width:
 
 ```text
 cells <= min(rows, distinct key combinations x buckets)

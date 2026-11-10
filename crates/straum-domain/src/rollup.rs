@@ -6,7 +6,7 @@ use std::{iter, mem, panic, thread};
 use crate::agg::Agg;
 use crate::hash::FastMap;
 use crate::ident::Ident;
-use crate::spec::{Dim, Fact, Ref, Slot};
+use crate::spec::{Fact, Slot};
 use crate::value::{ColumnType, Datum};
 
 const TIME: usize = 0;
@@ -19,11 +19,11 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 /// reads few cells.
 #[derive(Debug)]
 pub struct Rollup {
-    /// The columns a load reads, as [`Fact::columns`].
+    /// The columns a row is read from, as [`Fact::columns`].
     columns: Vec<Ident>,
-    /// How many attributes bound at ingest the store appends to a row
-    /// after `columns`, in [`Fact::early_attrs`] order.
-    early: usize,
+    /// How many ref attributes a row holds after `columns`, in
+    /// [`Fact::attrs`] order.
+    attrs: usize,
     /// What each rollup-key slot codes of a row, in [`Fact::rollup_key`]
     /// order without the bucket.
     key_columns: Vec<Coded>,
@@ -250,8 +250,10 @@ pub(crate) enum Column {
 impl Rollup {
     pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
-        let early: Vec<(&Ref, &Ident)> = fact.early_attrs().collect();
+        let attrs = fact.attrs().count();
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
+        // The attributes follow the columns in a row, in rollup-key order.
+        let mut next_attr = columns.len();
         let key_columns: Vec<Coded> = fact
             .rollup_key()
             .filter_map(|slot| match slot {
@@ -260,13 +262,9 @@ impl Rollup {
                     column: position(column),
                     negated,
                 }),
-                Slot::Early(r, a) => {
-                    let i = early
-                        .iter()
-                        .position(|(er, ea)| er.name == r.name && *ea == a);
-                    Some(Coded::Value(
-                        columns.len() + i.expect("early_attrs lists it"),
-                    ))
+                Slot::Attr(..) => {
+                    next_attr += 1;
+                    Some(Coded::Value(next_attr - 1))
                 }
                 Slot::Bucket => None,
             })
@@ -298,21 +296,21 @@ impl Rollup {
             inputs,
             cells: 0,
             key: Vec::new(),
-            types: vec![ColumnType::Int; columns.len() + early.len()],
-            early: early.len(),
+            types: vec![ColumnType::Int; columns.len() + attrs],
+            attrs,
             columns,
         }
     }
 
-    /// The columns a load reads, as [`Fact::columns`]. A row of this rollup
-    /// holds them and then the attributes bound at ingest.
+    /// The columns a row is read from, as [`Fact::columns`]. A row of this
+    /// rollup holds them and then the fact's ref attributes.
     pub fn columns(&self) -> &[Ident] {
         &self.columns
     }
 
-    /// Columns a row holds: those read, then those bound at ingest.
+    /// Columns a row holds: those read, then the ref attributes.
     fn width(&self) -> usize {
-        self.columns.len() + self.early
+        self.columns.len() + self.attrs
     }
 
     /// At the `date_bin` width; a cell goes when its last row is removed.
@@ -327,18 +325,18 @@ impl Rollup {
         self.cells = 0;
     }
 
-    /// Sets the type of each of [`Rollup::columns`]. Only the source knows
-    /// them, so a load sets them; they are integers until then.
+    /// Sets the type of each column a row holds: [`Rollup::columns`], then
+    /// the ref attributes. Only the source knows them, so a load sets them;
+    /// they are integers until then.
     pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        let read = self.columns.len();
-        set_types(&mut self.types[..read], types)
-    }
-
-    /// Sets the types of the attributes bound at ingest, which their dims
-    /// know.
-    pub fn set_early_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        let read = self.columns.len();
-        set_types(&mut self.types[read..], types)
+        if types.len() != self.types.len() {
+            return Err(RowError::Arity {
+                expected: self.types.len(),
+                found: types.len(),
+            });
+        }
+        self.types.copy_from_slice(types);
+        Ok(())
     }
 
     pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
@@ -371,10 +369,9 @@ impl Rollup {
         Ok(())
     }
 
-    /// Adds rows of [`Rollup::columns`] laid end to end, as a load reads
-    /// them: each width of cells on its own thread, since they share
-    /// nothing but the rows. If a row fails [`Rollup::add`]'s checks, none
-    /// is added.
+    /// Adds whole rows laid end to end, as a load reads them: each width
+    /// of cells on its own thread, since they share nothing but the rows.
+    /// If a row fails [`Rollup::add`]'s checks, none is added.
     pub fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
         let width = self.width();
         if !rows.len().is_multiple_of(width) {
@@ -678,107 +675,6 @@ impl Values {
             ),
         }
     }
-}
-
-/// A dim's rows by key. A row holds [`Dim::columns`], kept as codes of
-/// each column's values: an ask numbers an attribute's values by their
-/// codes, hashing none of them.
-#[derive(Debug)]
-pub struct DimTable {
-    width: usize,
-    /// How many columns, from the first, make the key.
-    key_width: usize,
-    rows: HashMap<Box<[Datum]>, Box<[u32]>>,
-    /// One per column. Codes outlive their rows until [`DimTable::clear`].
-    codes: Vec<Codes>,
-    types: Vec<ColumnType>,
-}
-
-impl DimTable {
-    pub fn new(dim: &Dim) -> DimTable {
-        let width = dim.columns().count();
-        DimTable {
-            width,
-            key_width: dim.key.len(),
-            rows: HashMap::new(),
-            codes: (0..width).map(|_| Codes::default()).collect(),
-            types: vec![ColumnType::Int; width],
-        }
-    }
-
-    /// As [`Rollup::set_types`], for the key then the attributes.
-    pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        set_types(&mut self.types, types)
-    }
-
-    pub(crate) fn column_type(&self, column: usize) -> ColumnType {
-        self.types[column]
-    }
-
-    /// The key of a row of this dim. The table says which part of a row
-    /// that is, so callers that hold rows don't have to know.
-    pub fn key_of<'r>(&self, row: &'r [Datum]) -> &'r [Datum] {
-        &row[..self.key_width]
-    }
-
-    pub fn upsert(&mut self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.width {
-            return Err(RowError::Arity {
-                expected: self.width,
-                found: row.len(),
-            });
-        }
-        let codes = (row.iter().zip(&mut self.codes))
-            .map(|(value, codes)| codes.code(value))
-            .collect();
-        self.rows.insert(self.key_of(row).into(), codes);
-        Ok(())
-    }
-
-    pub fn delete(&mut self, key: &[Datum]) -> Result<(), RowError> {
-        self.rows.remove(key).map(drop).ok_or(RowError::Missing)
-    }
-
-    pub fn rows(&self) -> usize {
-        self.rows.len()
-    }
-
-    /// The types stay.
-    pub fn clear(&mut self) {
-        self.rows.clear();
-        self.codes.iter_mut().for_each(|c| *c = Codes::default());
-    }
-
-    pub(crate) fn get(&self, key: &[Datum]) -> Option<&[u32]> {
-        self.rows.get(key).map(|r| &**r)
-    }
-
-    pub(crate) fn codes(&self, column: usize) -> usize {
-        self.codes[column].values.len()
-    }
-
-    /// The code of null in column `column`, as for a key with no row: its
-    /// code if a row holds null there, else the next.
-    pub(crate) fn null(&self, column: usize) -> u32 {
-        let codes = &self.codes[column];
-        (codes.codes.get(&Datum::Null).copied())
-            .unwrap_or_else(|| u32::try_from(codes.values.len()).expect("codes are u32"))
-    }
-
-    pub(crate) fn value(&self, column: usize, code: u32) -> &Datum {
-        &self.codes[column].values[code as usize]
-    }
-}
-
-fn set_types(to: &mut [ColumnType], types: &[ColumnType]) -> Result<(), RowError> {
-    if types.len() != to.len() {
-        return Err(RowError::Arity {
-            expected: to.len(),
-            found: types.len(),
-        });
-    }
-    to.copy_from_slice(types);
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

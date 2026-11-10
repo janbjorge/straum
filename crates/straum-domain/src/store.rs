@@ -1,35 +1,22 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::slice;
 
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
-use crate::hash::FastMap;
-use crate::rollup::{Cells, DimTable, Rollup, RowError};
-use crate::spec::{Binding, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
+use crate::rollup::{Cells, Rollup, RowError};
+use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 const IN_SPEC: &str = "the fact is in the spec";
 
+/// The cells of every fact. Nothing else: a ref's attributes come in with
+/// each fact row, resolved by the source, so no dim row is ever held.
 #[derive(Debug)]
 pub struct Store {
     spec: Spec,
     /// One per fact, in spec order.
     rollups: Vec<Rollup>,
-    /// One per dim, in spec order.
-    dims: Vec<DimTable>,
-    /// Per fact, the refs bound at ingest, in [`Fact::early_attrs`] order.
-    early: Vec<Vec<Early>>,
-}
-
-/// A ref bound at ingest: where its via columns sit in a fact row as read,
-/// which dim table to look in, and which columns of the dim row to append.
-#[derive(Debug)]
-struct Early {
-    via: Vec<usize>,
-    dim: usize,
-    columns: Vec<usize>,
 }
 
 /// One row per group, sorted by key: the values of the ask's `by`, then its
@@ -53,127 +40,38 @@ pub struct AnswerColumn {
 
 impl Store {
     pub fn new(spec: Spec) -> Store {
-        let early = (spec.facts().iter())
-            .map(|fact| {
-                let columns = fact.columns();
-                (fact.refs.iter())
-                    .filter_map(|r| match &r.binding {
-                        Binding::Late => None,
-                        Binding::Early(attrs) => {
-                            let d = (spec.dims().iter())
-                                .position(|d| d.name == r.dim)
-                                .expect(CHECKED);
-                            let dim = &spec.dims()[d];
-                            Some(Early {
-                                via: (r.via.iter())
-                                    .map(|v| columns.iter().position(|c| c == v).expect(CHECKED))
-                                    .collect(),
-                                dim: d,
-                                columns: (attrs.iter())
-                                    .map(|a| dim.columns().position(|c| c == a).expect(CHECKED))
-                                    .collect(),
-                            })
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
         Store {
             rollups: spec.facts().iter().map(Rollup::new).collect(),
-            dims: spec.dims().iter().map(DimTable::new).collect(),
-            early,
             spec,
         }
     }
 
-    /// Sets the types of the columns a load reads for `fact`, as
-    /// [`Fact::columns`] lists them. The attributes bound at ingest take
-    /// their types from their dims, which load first.
+    /// Sets the types of a row of `fact`: [`Fact::columns`], then
+    /// [`Fact::attrs`]. Only the source knows them, so a load sets them.
     pub fn set_fact_types(&mut self, fact: &str, types: &[ColumnType]) -> Result<(), RowError> {
         let f = self.fact_index(fact).expect(IN_SPEC);
-        let early: Vec<ColumnType> = (self.early[f].iter())
-            .flat_map(|e| e.columns.iter().map(|&c| self.dims[e.dim].column_type(c)))
-            .collect();
-        self.rollups[f].set_types(types)?;
-        self.rollups[f].set_early_types(&early)
+        self.rollups[f].set_types(types)
     }
 
-    /// Adds rows of [`Fact::columns`] laid end to end, as a load reads
-    /// them, binding the attributes of the refs bound at ingest first. A
-    /// row whose dim row is missing binds nulls, as a `LEFT JOIN` would.
+    /// Adds rows laid end to end, as a load reads them: [`Fact::columns`]
+    /// then [`Fact::attrs`], each resolved by the source.
     pub fn add_fact_rows(&mut self, fact: &str, rows: &[Datum]) -> Result<(), RowError> {
         let f = self.fact_index(fact).expect(IN_SPEC);
-        if self.early[f].is_empty() {
-            return self.rollups[f].add_rows(rows);
-        }
-        let read = self.rollups[f].columns().len();
-        if !rows.len().is_multiple_of(read) {
-            return Err(RowError::Arity {
-                expected: read,
-                found: rows.len() % read,
-            });
-        }
-        let width = read + self.bound_width(f);
-        let mut bound = Vec::with_capacity(rows.len() / read * width);
-        for row in rows.chunks_exact(read) {
-            self.bind(f, row, &mut bound);
-        }
-        self.rollups[f].add_rows(&bound)
+        self.rollups[f].add_rows(rows)
     }
 
-    /// Adds one row of [`Fact::columns`], as the stream brings it.
+    /// Adds one row, as the stream brings it.
     pub fn add_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
         let f = self.fact_index(fact).expect(IN_SPEC);
-        let bound = self.bound_row(f, row)?;
-        self.rollups[f].add(&bound)
+        self.rollups[f].add(row)
     }
 
-    /// Removes one row, bound against the dims as they are now. A dim row
-    /// changed since the row came in binds differently, so the row is not
-    /// found and the caller starts over, which binds everything again.
+    /// Removes one row. A row whose attributes the source now resolves
+    /// otherwise than when it came in is not found, so the caller starts
+    /// over, which resolves everything again.
     pub fn remove_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
         let f = self.fact_index(fact).expect(IN_SPEC);
-        let bound = self.bound_row(f, row)?;
-        self.rollups[f].remove(&bound)
-    }
-
-    fn bound_row(&self, f: usize, row: &[Datum]) -> Result<Vec<Datum>, RowError> {
-        let read = self.rollups[f].columns().len();
-        if row.len() != read {
-            return Err(RowError::Arity {
-                expected: read,
-                found: row.len(),
-            });
-        }
-        let mut bound = Vec::with_capacity(read + self.bound_width(f));
-        self.bind(f, row, &mut bound);
-        Ok(bound)
-    }
-
-    fn bound_width(&self, f: usize) -> usize {
-        self.early[f].iter().map(|e| e.columns.len()).sum()
-    }
-
-    /// The row as read, then each attribute bound at ingest: the dim row
-    /// the via columns name gives it, or null when there is none.
-    fn bind(&self, f: usize, row: &[Datum], out: &mut Vec<Datum>) {
-        out.extend_from_slice(row);
-        for early in &self.early[f] {
-            let table = &self.dims[early.dim];
-            let found = match early.via.as_slice() {
-                [via] => table.get(slice::from_ref(&row[*via])),
-                via => {
-                    let key: Vec<Datum> = via.iter().map(|&v| row[v].clone()).collect();
-                    table.get(&key)
-                }
-            };
-            for &column in &early.columns {
-                let value = found.map_or(Datum::Null, |codes| {
-                    table.value(column, codes[column]).clone()
-                });
-                out.push(value);
-            }
-        }
+        self.rollups[f].remove(row)
     }
 
     pub fn spec(&self) -> &Spec {
@@ -185,17 +83,8 @@ impl Store {
         Some(&mut self.rollups[i])
     }
 
-    pub fn dim(&mut self, dim: &str) -> Option<&mut DimTable> {
-        let i = self.dim_index(dim)?;
-        Some(&mut self.dims[i])
-    }
-
     pub fn cells(&self, fact: &str) -> Option<usize> {
         Some(self.rollups[self.fact_index(fact)?].cells())
-    }
-
-    pub fn rows(&self, dim: &str) -> Option<usize> {
-        Some(self.dims[self.dim_index(dim)?].rows())
     }
 
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
@@ -204,15 +93,15 @@ impl Store {
         Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
     }
 
-    /// Dim attributes are read per code, after the rollup: the cell loop only
-    /// looks up what each code of a key column maps to.
+    /// Every key is a slot of the rollup key, so the cell loop only looks
+    /// up what each code of a slot maps to.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let fact = self.spec.check(ask)?;
         let rollup = &self.rollups[self.fact_index(fact.name.as_str()).expect(CHECKED)];
         // Only the load knows the types, so this check comes after Spec::check.
         let wrong: Vec<AskError> = (ask.filter.iter())
             .flat_map(|cond| {
-                let column = self.source(fact, &cond.path).column_type(rollup);
+                let column = rollup.key_type(self.slot(fact, &cond.path));
                 (cond.values.iter())
                     .filter(move |value| !column.fits(value))
                     .map(move |value| AskError::WrongType {
@@ -232,7 +121,7 @@ impl Store {
             .iter()
             .map(|key| {
                 let source = match key {
-                    AskKey::Key(path) => self.source(fact, path),
+                    AskKey::Key(path) => Source::Slot(self.slot(fact, path)),
                     AskKey::Time(t) => Source::Time(*t, fact.time.grain),
                 };
                 Part::new(source, rollup, buckets)
@@ -323,42 +212,24 @@ impl Store {
             .position(|f| f.name.as_str() == name)
     }
 
-    fn dim_index(&self, name: &str) -> Option<usize> {
-        self.spec
-            .dims()
-            .iter()
-            .position(|d| d.name.as_str() == name)
+    /// The rollup-key slot a key path names.
+    fn slot(&self, fact: &Fact, path: &KeyPath) -> usize {
+        let slot = match self.spec.resolve(fact, path).expect(CHECKED) {
+            Key::By(by) => by.slot(),
+            Key::Attr(r, attr) => Slot::Attr(r, attr),
+        };
+        fact.rollup_key().position(|k| k == slot).expect(CHECKED)
     }
 
-    fn source(&self, fact: &Fact, path: &KeyPath) -> Source<'_> {
-        let slot = |s: Slot| fact.rollup_key().position(|k| k == s).expect(CHECKED);
-        match self.spec.resolve(fact, path).expect(CHECKED) {
-            Key::By(by) => Source::Slot(slot(by.slot())),
-            Key::Ref(r) => Source::Slot(slot(Slot::Column(&r.via[0]))),
-            Key::Attr(r, attr) if r.binding != Binding::Late => {
-                Source::Slot(slot(Slot::Early(r, attr)))
-            }
-            Key::Attr(r, attr) => {
-                let d = self.dim_index(r.dim.as_str()).expect(CHECKED);
-                let dim = &self.spec.dims()[d];
-                Source::Dim {
-                    slots: r.via.iter().map(|v| slot(Slot::Column(v))).collect(),
-                    table: &self.dims[d],
-                    column: dim.columns().position(|a| a == attr).expect(CHECKED),
-                }
-            }
-        }
-    }
-
-    fn tests<'a>(&'a self, fact: &Fact, rollup: &Rollup, conds: &'a [Cond]) -> Vec<Test<'a>> {
+    fn tests<'a>(&self, fact: &Fact, rollup: &Rollup, conds: &'a [Cond]) -> Vec<Test<'a>> {
         conds
             .iter()
             .map(|c| {
-                let source = self.source(fact, &c.path);
+                let slot = self.slot(fact, &c.path);
                 Test {
-                    memo: Memo::new(source.slots(), rollup),
-                    source,
+                    slot,
                     values: &c.values,
+                    memo: vec![Known::Unknown; rollup.codes(slot)],
                 }
             })
             .collect()
@@ -370,144 +241,28 @@ fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Ce
     rollup.cover(ask.from, ask.to, each_bucket)
 }
 
-enum Source<'a> {
+#[derive(Debug, Clone, Copy)]
+enum Source {
     Slot(usize),
-    /// A column of the dim row the ref's via slots point at: the key
-    /// columns first, then the attributes, as [`Dim::columns`]. Null when
-    /// the dim has no such row.
-    Dim {
-        slots: Vec<usize>,
-        table: &'a DimTable,
-        column: usize,
-    },
     Time(TimeKey, Grain),
 }
 
-impl<'a> Source<'a> {
-    fn column_type(&self, rollup: &Rollup) -> ColumnType {
+impl Source {
+    fn column_type(self, rollup: &Rollup) -> ColumnType {
         match self {
-            Source::Slot(slot) => rollup.key_type(*slot),
-            Source::Dim { table, column, .. } => table.column_type(*column),
+            Source::Slot(slot) => rollup.key_type(slot),
             Source::Time(..) => rollup.time_type(),
         }
     }
-
-    /// The slots whose codes decide the value, which a memo goes by.
-    fn slots(&self) -> &[usize] {
-        match self {
-            Source::Slot(slot) => slice::from_ref(slot),
-            Source::Dim { slots, .. } => slots,
-            Source::Time(..) => &[],
-        }
-    }
-
-    /// Time keys number their periods in [`Part`] instead.
-    fn value<'k>(&self, rollup: &'k Rollup, key: &[u32]) -> Cow<'k, Datum>
-    where
-        'a: 'k,
-    {
-        match self {
-            Source::Slot(slot) => Cow::Borrowed(rollup.value(*slot, key[*slot])),
-            Source::Dim {
-                slots,
-                table,
-                column,
-            } => dim_row(table, slots, rollup, key).map_or(Cow::Owned(Datum::Null), |row| {
-                Cow::Borrowed(table.value(*column, row[*column]))
-            }),
-            Source::Time(..) => unreachable!("time keys are numbered by period"),
-        }
-    }
 }
 
-/// The dim row the via slots of a cell key point at, if the dim has it. A
-/// ref on one column looks up without allocating; one on several builds
-/// the tuple, which the memos make rare.
-fn dim_row<'a>(
-    table: &'a DimTable,
-    slots: &[usize],
-    rollup: &Rollup,
-    key: &[u32],
-) -> Option<&'a [u32]> {
-    match *slots {
-        [slot] => table.get(slice::from_ref(rollup.value(slot, key[slot]))),
-        _ => {
-            let tuple: Vec<Datum> = (slots.iter())
-                .map(|&slot| rollup.value(slot, key[slot]).clone())
-                .collect();
-            table.get(&tuple)
-        }
-    }
-}
-
-/// What an ask remembers per rollup-key code it has met: by the code of
-/// one slot, or by the codes of several together, since a ref on several
-/// columns has no code of its own.
-enum Memo<T> {
-    One {
-        slot: usize,
-        values: Vec<T>,
-    },
-    Many {
-        slots: Vec<usize>,
-        values: FastMap<Box<[u32]>, T>,
-        scratch: Vec<u32>,
-    },
-}
-
-impl<T: Copy + Default> Memo<T> {
-    /// Nothing is remembered for no slots.
-    fn new(slots: &[usize], rollup: &Rollup) -> Memo<T> {
-        match *slots {
-            [] => Memo::One {
-                slot: 0,
-                values: Vec::new(),
-            },
-            [slot] => Memo::One {
-                slot,
-                values: vec![T::default(); rollup.codes(slot)],
-            },
-            _ => Memo::Many {
-                slots: slots.to_vec(),
-                values: FastMap::default(),
-                scratch: Vec::with_capacity(slots.len()),
-            },
-        }
-    }
-
-    /// `T::default()` until set.
-    fn get(&mut self, key: &[u32]) -> T {
-        match self {
-            Memo::One { slot, values } => values[key[*slot] as usize],
-            Memo::Many {
-                slots,
-                values,
-                scratch,
-            } => {
-                scratch.clear();
-                scratch.extend(slots.iter().map(|&slot| key[slot]));
-                values.get(scratch.as_slice()).copied().unwrap_or_default()
-            }
-        }
-    }
-
-    fn set(&mut self, key: &[u32], value: T) {
-        match self {
-            Memo::One { slot, values } => values[key[*slot] as usize] = value,
-            Memo::Many { slots, values, .. } => {
-                let codes: Box<[u32]> = slots.iter().map(|&slot| key[slot]).collect();
-                values.insert(codes, value);
-            }
-        }
-    }
-}
-
-/// A [`Cond`] of an ask, worked out once per code of its slots as the ask
+/// A [`Cond`] of an ask, worked out once per code of its slot as the ask
 /// meets the code.
 struct Test<'a> {
-    source: Source<'a>,
+    slot: usize,
     values: &'a [Literal],
-    memo: Memo<Known>,
+    /// Per code of the slot.
+    memo: Vec<Known>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -518,62 +273,52 @@ enum Known {
     Fails,
 }
 
-impl<'a> Test<'a> {
+impl Test<'_> {
     /// Whether a cell passes is as likely as not, so the loop selects rather
     /// than branches; only a code met first branches.
-    fn pass(&mut self, rollup: &'a Rollup, cells: &'a Cells, groups: &mut [u32]) {
+    fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
         for (i, g) in groups.iter_mut().enumerate() {
-            let key = cells.key(i);
-            let mut known = self.memo.get(key);
+            let code = cells.code(i, self.slot);
+            let mut known = self.memo[code as usize];
             if known == Known::Unknown && *g != 0 {
-                known = self.resolve(rollup, key);
+                known = self.resolve(rollup, code);
             }
             *g = if known == Known::Holds { *g } else { 0 };
         }
     }
 
-    fn resolve(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> Known {
-        let v = self.source.value(rollup, key);
+    fn resolve(&mut self, rollup: &Rollup, code: u32) -> Known {
+        let v = rollup.value(self.slot, code);
         let known = if self.values.iter().any(|lit| v.matches(lit)) {
             Known::Holds
         } else {
             Known::Fails
         };
-        self.memo.set(key, known);
+        self.memo[code as usize] = known;
         known
     }
 }
 
 /// A by key of an ask, its values numbered without hashing any: a slot
-/// key's by their codes, a dim key's by the codes of its dim column, and a
-/// time key's in time order.
-struct Part<'a> {
-    source: Source<'a>,
-    /// For a dim key, per code combination of its slots: 1 + the number of
-    /// the value, or 0 until the ask meets it.
-    numbers: Memo<u32>,
+/// key's by their codes, a time key's in time order.
+struct Part {
+    source: Source,
     /// For a time key, the start of each period met so far, the bucket at
     /// hand's last.
     starts: Vec<i64>,
     bound: usize,
 }
 
-impl<'a> Part<'a> {
-    fn new(source: Source<'a>, rollup: &Rollup, buckets: usize) -> Part<'a> {
-        let (bound, numbers) = match &source {
-            Source::Slot(slot) => (rollup.codes(*slot), Memo::new(&[], rollup)),
-            Source::Dim {
-                slots,
-                table,
-                column,
-            } => (table.codes(*column) + 1, Memo::new(slots, rollup)),
-            Source::Time(..) => (buckets, Memo::new(&[], rollup)),
+impl Part {
+    fn new(source: Source, rollup: &Rollup, buckets: usize) -> Part {
+        let bound = match source {
+            Source::Slot(slot) => rollup.codes(slot),
+            Source::Time(..) => buckets,
         };
         Part {
-            bound,
-            numbers,
-            starts: Vec::new(),
             source,
+            starts: Vec::new(),
+            bound,
         }
     }
 
@@ -587,15 +332,8 @@ impl<'a> Part<'a> {
         }
     }
 
-    fn offsets(
-        &mut self,
-        rollup: &'a Rollup,
-        cells: &'a Cells,
-        stride: usize,
-        groups: &[u32],
-        at: &mut [usize],
-    ) {
-        match &self.source {
+    fn offsets(&self, cells: &Cells, stride: usize, at: &mut [usize]) {
+        match self.source {
             Source::Time(..) => {
                 let offset = (self.starts.len() - 1) * stride;
                 at.iter_mut().for_each(|a| *a += offset);
@@ -604,71 +342,25 @@ impl<'a> Part<'a> {
             // entries, which nothing reads.
             Source::Slot(slot) => {
                 for (i, a) in at.iter_mut().enumerate() {
-                    *a += cells.code(i, *slot) as usize * stride;
-                }
-            }
-            Source::Dim {
-                slots,
-                table,
-                column,
-            } => {
-                for (i, (a, &g)) in at.iter_mut().zip(groups).enumerate() {
-                    let key = cells.key(i);
-                    let n = match self.numbers.get(key).checked_sub(1) {
-                        Some(n) => n,
-                        None if g == 0 => continue,
-                        None => dim_number(table, slots, *column, &mut self.numbers, rollup, key),
-                    };
-                    *a += n as usize * stride;
+                    *a += cells.code(i, slot) as usize * stride;
                 }
             }
         }
     }
 
-    fn number(&mut self, rollup: &'a Rollup, key: &'a [u32]) -> u32 {
-        match &self.source {
-            Source::Slot(slot) => key[*slot],
+    fn number(&self, key: &[u32]) -> u32 {
+        match self.source {
+            Source::Slot(slot) => key[slot],
             Source::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
-            Source::Dim {
-                slots,
-                table,
-                column,
-            } => dim_number(table, slots, *column, &mut self.numbers, rollup, key),
         }
     }
 
-    fn value(&self, rollup: &'a Rollup, number: u32) -> Cow<'a, Datum> {
-        match &self.source {
-            Source::Slot(slot) => Cow::Borrowed(rollup.value(*slot, number)),
-            Source::Dim { table, column, .. } if (number as usize) < table.codes(*column) => {
-                Cow::Borrowed(table.value(*column, number))
-            }
-            Source::Dim { .. } => Cow::Owned(Datum::Null),
+    fn value<'r>(&self, rollup: &'r Rollup, number: u32) -> Cow<'r, Datum> {
+        match self.source {
+            Source::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
             Source::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
         }
     }
-}
-
-/// The number of the dim value a cell key points at: its code in the dim
-/// column, or the code of null when the dim has no such row. Remembered
-/// per code combination, so each is looked up once.
-fn dim_number(
-    table: &DimTable,
-    slots: &[usize],
-    column: usize,
-    numbers: &mut Memo<u32>,
-    rollup: &Rollup,
-    key: &[u32],
-) -> u32 {
-    if let Some(n) = numbers.get(key).checked_sub(1) {
-        return n;
-    }
-    let n = match dim_row(table, slots, rollup, key) {
-        Some(row) => row[column],
-        None => table.null(column),
-    };
-    numbers.set(key, n + 1);
-    n
 }
 
 /// A cell's group while [`Groups::assign`] has yet to look it up. Groups
@@ -726,7 +418,7 @@ impl<'a> Groups<'a> {
     /// Without `by`, every nonzero `groups` entry is group 1 already.
     fn assign(
         &mut self,
-        by: &mut [Part<'a>],
+        by: &mut [Part],
         rollup: &'a Rollup,
         cells: &'a Cells,
         groups: &mut [u32],
@@ -741,8 +433,8 @@ impl<'a> Groups<'a> {
             Index::Dense(table) => {
                 self.at.clear();
                 self.at.resize(groups.len(), 0);
-                for (p, &stride) in by.iter_mut().zip(&self.strides) {
-                    p.offsets(rollup, cells, stride, groups, &mut self.at);
+                for (p, &stride) in by.iter().zip(&self.strides) {
+                    p.offsets(cells, stride, &mut self.at);
                 }
                 // Selects, not branches: under a filter, whether a cell
                 // passed is as likely as not. `at` is in the table for
@@ -776,10 +468,9 @@ impl<'a> Groups<'a> {
         }
     }
 
-    fn make(&mut self, by: &mut [Part<'a>], rollup: &'a Rollup, key: &'a [u32]) -> u32 {
+    fn make(&mut self, by: &mut [Part], rollup: &'a Rollup, key: &[u32]) -> u32 {
         self.numbers.clear();
-        self.numbers
-            .extend(by.iter_mut().map(|p| p.number(rollup, key)));
+        self.numbers.extend(by.iter().map(|p| p.number(key)));
         let next = u32::try_from(self.len()).expect("fewer groups than cells");
         let group = match &mut self.index {
             Index::Dense(table) => {

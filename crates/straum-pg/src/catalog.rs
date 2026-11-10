@@ -3,25 +3,25 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{Binding, By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
+use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
 
 use crate::error::Error;
 use crate::value::type_of;
 use crate::wire::Conn;
 
-/// A spec table as PostgreSQL has it, ready to load and stream.
+/// A spec table as PostgreSQL has it, ready to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Table {
     /// The spec's name for it.
     pub(crate) name: Ident,
     pub(crate) schema: Ident,
     pub(crate) table: Ident,
-    /// What a row holds, in order: `Fact::columns`, or the dim's key columns
-    /// and then its attributes.
+    /// What straum reads of it, in order: `Fact::columns`, or the dim's
+    /// key columns and then its attributes.
     pub(crate) columns: Vec<Ident>,
     pub(crate) types: Vec<ColumnType>,
-    /// How many of `columns`, from the first, a change names a row by: a
-    /// dim's key. 0 for a fact, whose changes carry the whole old row.
+    /// How many of `columns`, from the first, make a dim's key. 0 for a
+    /// fact.
     pub(crate) key_width: usize,
 }
 
@@ -33,6 +33,24 @@ impl Table {
 
     pub(crate) fn qualified(&self) -> String {
         format!("{}.{}", self.schema, self.table)
+    }
+}
+
+/// The spec's tables as checked: the facts, which straum loads and
+/// follows, and the dims, which it only looks rows up in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Tables {
+    pub(crate) facts: Vec<Table>,
+    pub(crate) dims: Vec<Table>,
+}
+
+impl Tables {
+    pub(crate) fn fact(&self, name: &Ident) -> &Table {
+        (self.facts.iter().find(|t| t.name == *name)).expect("the spec's facts are checked")
+    }
+
+    pub(crate) fn dim(&self, name: &Ident) -> &Table {
+        (self.dims.iter().find(|t| t.name == *name)).expect("the spec's dims are checked")
     }
 }
 
@@ -56,8 +74,6 @@ pub(crate) struct Relation {
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
     pub(crate) select: bool,
-    /// The columns of the replica identity index, if there is one.
-    pub(crate) identity_columns: Vec<String>,
     /// The columns of each valid unique index without a predicate or an
     /// expression.
     pub(crate) unique_indexes: Vec<Vec<String>>,
@@ -78,7 +94,7 @@ pub(crate) struct Column {
 }
 
 /// Reads the catalog and checks it against the spec.
-pub(crate) fn read(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<Vec<Table>, Error> {
+pub(crate) fn read(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<Tables, Error> {
     let catalog = query(conn, spec, publication)?;
     check(spec, &catalog, publication).map_err(Error::Setup)
 }
@@ -116,14 +132,6 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
     let relations = conn.rows(&format!(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
-                (SELECT string_agg(a.attname, ',' ORDER BY k.ord)
-                   FROM pg_index i
-                  CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
-                   JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-                  WHERE i.indrelid = c.oid AND k.ord <= i.indnkeyatts
-                    AND CASE c.relreplident WHEN 'd' THEN i.indisprimary
-                                            WHEN 'i' THEN i.indisreplident
-                                            ELSE false END),
                 (SELECT string_agg(u.columns, ';')
                    FROM (SELECT string_agg(a.attname, ',' ORDER BY k.ord) AS columns
                            FROM pg_index i
@@ -149,7 +157,6 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             relkind,
             identity,
             select,
-            identity_columns,
             unique_indexes,
             published,
             row_filter,
@@ -168,7 +175,6 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             relkind: relkind.unwrap_or_default(),
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
-            identity_columns: list(identity_columns),
             unique_indexes: lists(unique_indexes),
             published: published.map(|p| list(Some(p))),
             row_filter: row_filter.as_deref() == Some("t"),
@@ -263,13 +269,23 @@ impl Role {
     }
 }
 
+/// How straum uses a table, which decides what the setup owes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// A fact: loaded whole and followed through the publication.
+    Streamed,
+    /// A dim: rows looked up by key, in the load and per commit. Never
+    /// followed, so the publication owes it nothing.
+    LookedUp,
+}
+
 /// Checks the catalog against the spec and returns every problem found,
 /// each with what to change. On success, the tables ready to read.
 pub(crate) fn check(
     spec: &Spec,
     catalog: &Catalog,
     publication: &str,
-) -> Result<Vec<Table>, Vec<String>> {
+) -> Result<Tables, Vec<String>> {
     let mut problems = Vec::new();
     // From 19, a logical slot turns logical decoding on under replica.
     let enough: &[&str] = if catalog.server_version >= 190_000 {
@@ -294,13 +310,17 @@ pub(crate) fn check(
         Some(true) => {}
     }
 
-    let mut tables = Vec::new();
+    let mut tables = Tables {
+        facts: Vec::new(),
+        dims: Vec::new(),
+    };
     for dim in spec.dims() {
         let roles = dim.columns().map(|c| (c, Role::Key)).collect();
         let checked = check_table(
             &dim.table,
             &dim.name,
             dim.key.len(),
+            Access::LookedUp,
             roles,
             catalog,
             publication,
@@ -308,7 +328,7 @@ pub(crate) fn check(
         );
         if let Some((table, relation)) = checked {
             check_dim(dim, &table, relation, &mut problems);
-            tables.push(table);
+            tables.dims.push(table);
         }
     }
     for fact in spec.facts() {
@@ -317,6 +337,7 @@ pub(crate) fn check(
             &fact.table,
             &fact.name,
             0,
+            Access::Streamed,
             roles,
             catalog,
             publication,
@@ -331,7 +352,7 @@ pub(crate) fn check(
                     table.qualified()
                 ));
             }
-            tables.push(table);
+            tables.facts.push(table);
         }
     }
     if problems.is_empty() {
@@ -351,11 +372,9 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
         By::Column(column) => (column, Role::Key),
         By::IsNull { column, .. } => (column, Role::Nullness),
     }));
-    // A ref bound at ingest reads its via columns without keeping them.
+    // A ref's via columns are read for the lookup, kept or not.
     for r in &fact.refs {
-        if let Binding::Early(_) = r.binding {
-            roles.extend(r.via.iter().map(|v| (v, Role::Key)));
-        }
+        roles.extend(r.via.iter().map(|v| (v, Role::Key)));
     }
     for m in &fact.measures {
         let Some(column) = m.agg.input() else {
@@ -374,10 +393,12 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
 /// The checks every table gets. `roles` names each column the spec reads,
 /// with what for; a column may come twice. A dim's key columns come first
 /// in `roles`, `key_width` of them.
+#[allow(clippy::too_many_arguments)]
 fn check_table<'a>(
     table: &straum_domain::Table,
     name: &Ident,
     key_width: usize,
+    access: Access,
     roles: Vec<(&Ident, Role)>,
     catalog: &'a Catalog,
     publication: &str,
@@ -402,21 +423,27 @@ fn check_table<'a>(
             "{name}: straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
         ));
     }
-    if relation.row_filter {
-        problems.push(format!(
-            "{name}: publication {publication} filters the rows of {qualified}; straum needs every row"
-        ));
-    }
-    // A missing publication is reported once, not per table.
-    let published = match (&relation.published, catalog.publication) {
-        (Some(published), _) => Some(published),
-        (None, None) => None,
-        (None, Some(_)) => {
-            problems.push(format!(
-                "{name}: publication {publication} leaves out {qualified}: \
-                 ALTER PUBLICATION {publication} ADD TABLE {qualified}"
-            ));
-            return None;
+    let published = match access {
+        Access::LookedUp => None,
+        Access::Streamed => {
+            if relation.row_filter {
+                problems.push(format!(
+                    "{name}: publication {publication} filters the rows of {qualified}; \
+                     straum needs every row"
+                ));
+            }
+            // A missing publication is reported once, not per table.
+            match (&relation.published, catalog.publication) {
+                (Some(published), _) => Some(published),
+                (None, None) => None,
+                (None, Some(_)) => {
+                    problems.push(format!(
+                        "{name}: publication {publication} leaves out {qualified}: \
+                         ALTER PUBLICATION {publication} ADD TABLE {qualified}"
+                    ));
+                    return None;
+                }
+            }
         }
     };
 
@@ -466,11 +493,10 @@ fn check_table<'a>(
     Some((table, relation))
 }
 
-/// A delete or key change names the row by the replica identity, so the
-/// dim's key must be exactly that, or under `REPLICA IDENTITY FULL` the
-/// columns of a unique index, which is what makes it a key at all.
+/// A lookup by key finds one row or none only if the key is unique: a
+/// primary key or unique index on exactly the dim's key columns, in any
+/// order.
 fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<String>) {
-    let qualified = table.qualified();
     let same = |columns: &[String]| {
         columns.len() == dim.key.len()
             && dim
@@ -478,33 +504,25 @@ fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<S
                 .iter()
                 .all(|k| columns.iter().any(|c| c == k.as_str()))
     };
-    let key = (dim.key.iter().map(Ident::as_str))
-        .collect::<Vec<_>>()
-        .join(", ");
-    match relation.identity.as_str() {
-        "f" if !relation.unique_indexes.iter().any(|i| same(i)) => problems.push(format!(
-            "dim {}: {qualified} needs a primary key or unique index on {key} alone",
-            dim.name
-        )),
-        "f" => {}
-        _ if !same(&relation.identity_columns) => problems.push(format!(
-            "dim {}: the replica identity of {qualified} must be {key} alone, \
-             so a delete names the row straum holds: a primary key on {key}, \
-             REPLICA IDENTITY USING INDEX on a unique index of {key}, or REPLICA IDENTITY FULL",
-            dim.name
-        )),
-        _ => {}
+    if !relation.unique_indexes.iter().any(|i| same(i)) {
+        let key = (dim.key.iter().map(Ident::as_str))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(format!(
+            "dim {}: {} needs a primary key or unique index on {key} alone",
+            dim.name,
+            table.qualified()
+        ));
     }
 }
 
 /// Refs join fact columns to dim keys of the same type, and filters compare
 /// columns with literals of their type.
-fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
-    let table = |name: &Ident| tables.iter().find(|t| t.name == *name).expect("checked");
+fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
     for fact in spec.facts() {
-        let facts = table(&fact.name);
+        let facts = tables.fact(&fact.name);
         for r in &fact.refs {
-            let dim = table(&r.dim);
+            let dim = tables.dim(&r.dim);
             for (via, key) in r.via.iter().zip(&dim.columns) {
                 let (via_type, key_type) = (facts.column_type(via), dim.column_type(key));
                 if via_type != key_type {
@@ -524,8 +542,7 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
                 {
                     Key::By(By::Column(c)) => facts.column_type(c),
                     Key::By(By::IsNull { .. }) => ColumnType::Bool,
-                    Key::Ref(r) => facts.column_type(&r.via[0]),
-                    Key::Attr(r, attr) => table(&r.dim).column_type(attr),
+                    Key::Attr(r, attr) => tables.dim(&r.dim).column_type(attr),
                 };
                 for value in &cond.values {
                     // The rule asks follow too.

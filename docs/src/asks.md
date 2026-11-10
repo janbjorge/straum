@@ -30,11 +30,11 @@ GROUP BY <keys>
 ```
 
 - `FROM` names one view, with no schema, alias or join.
-- A key is a by column (`status`), a null-ness key by its name, a ref on
-  one column, which reads the fact column it joins on (`customer`), a
-  ref's attribute (`customer.country`), or `bucket`, the view's time
-  bucket. A ref on several columns has no value of its own: ask for its
-  columns or its attributes. A spec can't name anything else `bucket`.
+- A key is a by column (`status`), a null-ness key by its name, a ref's
+  attribute the view selects (`customer.country`), or `bucket`, the
+  view's time bucket. A ref has no value of its own: ask for the fact
+  column it joins on (`customer_id`) or its attributes. A spec can't name
+  anything else `bucket`.
 - Keys come first in `SELECT`, then measures, by name, each once, since
   they name the fields of each answer row. `GROUP BY` names exactly the
   selected keys. Without keys there is no `GROUP BY`.
@@ -56,7 +56,7 @@ A condition's parameters must have the column's type, with no
 conversion: an integer for an integer column or a `numeric(p, 0)`, a
 string for text, a boolean for a boolean or a null-ness key. `status = $1`
 with `1`, or
-`customer = $1` with `"7"`, is an error, not an answer with no rows. A
+`customer_id = $1` with `"7"`, is an error, not an answer with no rows. A
 `numeric` with a scale above 0 takes no parameter at all: at scale 2,
 `1` would read as 0.01. The `bucket` bounds are
 RFC 3339 times, such as `"2026-01-01T00:00:00Z"`, or Unix seconds. Both
@@ -86,10 +86,10 @@ never answers for part of a bucket.
 Buckets are their start, in UTC. Counts are integers. `sum`, `min` and
 `max` are exact decimals in their column's scale: `120.00` for a
 `numeric(10, 2)`. `avg` is rounded half to even at four places past that
-scale, with trailing zeros dropped: `69.995` for 139.99 over 2. A ref id
-with no dim row has null attributes, as a `LEFT JOIN` gives. An ask
-without keys answers one row even when nothing matches, as SQL does
-without `GROUP BY`: counts are 0, the rest null.
+scale, with trailing zeros dropped: `69.995` for 139.99 over 2. A row
+whose dim row did not exist when it came in has null attributes, as a
+`LEFT JOIN` gives. An ask without keys answers one row even when nothing
+matches, as SQL does without `GROUP BY`: counts are 0, the rest null.
 
 The `Straum-LSN` header names the last commit the answer reflects, for
 debugging. Straum has no "read your writes" barrier yet, so `as_of` is
@@ -107,9 +107,10 @@ how a client judges whether an answer is fresh enough.
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Ask again later. |
 
 ```json
-{"errors": ["unknown measure x", "customer.zip is not a by column, ref or ref attribute"]}
+{"errors": ["unknown measure x", "customer.zip is not read by the view, which reads customer.country"]}
+{"errors": ["customer is a join and has no value of its own; ask for customer.country"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in straum SQL, the PostgreSQL subset made only for straum"]}
 {"errors": ["range end 1767227400 is not on a 3600s bucket edge"]}
-{"errors": ["customer is an integer, so it can't be the text \"7\""]}
+{"errors": ["customer_id is an integer, so it can't be the text \"7\""]}
 ```

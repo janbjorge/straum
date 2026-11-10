@@ -1,7 +1,6 @@
 use sqlparser::ast as sql;
 use straum_domain::{
-    Agg, Binding, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Table,
-    Time,
+    Agg, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Table, Time,
 };
 
 use super::{SqlError, Walker, and_parts, function_name, line};
@@ -356,26 +355,34 @@ impl Walker {
                 Item::Measure(m) => measures.push(m),
             }
         }
-        // A ref whose via columns are selected binds late: cells hold the
-        // columns, and an ask reads the dim row they name. One whose via
-        // columns are not selected binds the attributes it selects at
-        // ingest, so the cells hold those instead.
+        // A ref reads the dim columns the view selects: they come with each
+        // fact row and key its cells. A join that selects nothing would do
+        // nothing.
         for (j, attrs) in scope.refs.iter_mut().zip(attrs) {
-            let selected = |via: &Ident| by.contains(&By::Column(via.clone()));
-            if j.r.via.iter().all(selected) {
-                j.r.binding = Binding::Late;
-            } else if !attrs.is_empty() {
-                j.r.binding = Binding::Early(attrs);
-            } else {
-                for via in j.r.via.iter().filter(|via| !selected(via)) {
-                    self.error(
-                        at,
-                        format!(
-                            "select {}.{via}, or an attribute of {}, so the view groups by ref {}",
-                            scope.alias, j.r.name, j.r.name
-                        ),
-                    );
-                }
+            if attrs.is_empty() {
+                self.error(
+                    at,
+                    format!(
+                        "LEFT JOIN {} selects no column of it; select one or drop the join",
+                        j.r.name
+                    ),
+                );
+            }
+            j.r.attrs = attrs;
+        }
+        // A FILTER names parts of the rollup key only, so an attribute it
+        // tests must be selected too.
+        for cond in measures.iter().flat_map(|m| &m.filter) {
+            let Some(attr) = &cond.path.attr else {
+                continue;
+            };
+            let selected =
+                (scope.refs.iter()).any(|j| j.r.name == cond.path.head && j.r.attrs.contains(attr));
+            if !selected {
+                self.error(
+                    at,
+                    format!("FILTER on {} needs {} in SELECT", cond.path, cond.path),
+                );
             }
         }
         let Some(time) = time else {
@@ -532,7 +539,7 @@ impl Walker {
                 name: alias,
                 dim,
                 via,
-                binding: Binding::Late,
+                attrs: Vec::new(),
             },
             table,
             key,

@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Ask, ColumnType, Datum, Dim, DimTable, Fact, Ident, Spec, Store};
+use straum_domain::{Ask, ColumnType, Datum, Fact, Ident, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -37,10 +37,10 @@ const LIMITS: Limits = Limits {
     max_retained_wal: 4 << 30,
 };
 
-/// Loads fixed rows at [`START`], then streams its commits.
+/// Loads fixed rows at [`START`], then streams its commits. Rows come
+/// whole, the zone's borough resolved, as a source hands them over.
 struct Script {
     trips: Vec<Vec<Datum>>,
-    zones: Vec<Vec<Datum>>,
     commits: VecDeque<Commit>,
     /// How long loading the fact takes.
     pause: Duration,
@@ -54,7 +54,7 @@ impl Source for Script {
 
     fn load_fact(&mut self, _: &Fact, store: &mut Store) -> Result<(), SourceError> {
         thread::sleep(self.pause);
-        // at, kind, zone_id, fare.
+        // at, kind, zone_id, fare, then zone.borough.
         store.set_fact_types(
             "trips",
             &[
@@ -62,19 +62,11 @@ impl Source for Script {
                 ColumnType::Int,
                 ColumnType::Int,
                 ColumnType::Numeric { scale: 2 },
+                ColumnType::Text,
             ],
         )?;
         for row in &self.trips {
             store.add_fact_row("trips", row)?;
-        }
-        Ok(())
-    }
-
-    fn load_dim(&mut self, _: &Dim, table: &mut DimTable) -> Result<(), SourceError> {
-        // id, borough.
-        table.set_types(&[ColumnType::Int, ColumnType::Text])?;
-        for row in &self.zones {
-            table.upsert(row)?;
         }
         Ok(())
     }
@@ -97,8 +89,14 @@ fn text(s: &str) -> Datum {
     Datum::Text(s.into())
 }
 
-fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
-    vec![int(JAN_1 + hour * HOUR), int(kind), int(zone), fare]
+fn trip(hour: i64, kind: i64, zone: i64, fare: Datum, borough: Datum) -> Vec<Datum> {
+    vec![
+        int(JAN_1 + hour * HOUR),
+        int(kind),
+        int(zone),
+        fare,
+        borough,
+    ]
 }
 
 /// Four trips on 2024-01-01 UTC, one in a zone with no row, and a slot
@@ -106,21 +104,17 @@ fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
 fn script() -> Script {
     Script {
         trips: vec![
-            trip(0, 1, 1, int(1_250)),
-            trip(1, 1, 1, int(250)),
-            trip(2, 2, 3, Datum::Null),
-            trip(23, 2, 2, int(-5)),
-        ],
-        zones: vec![
-            vec![int(1), text("Bronx")],
-            vec![int(2), text("Queens \"Q\"")],
+            trip(0, 1, 1, int(1_250), text("Bronx")),
+            trip(1, 1, 1, int(250), text("Bronx")),
+            trip(2, 2, 3, Datum::Null, Datum::Null),
+            trip(23, 2, 2, int(-5), text("Queens \"Q\"")),
         ],
         commits: VecDeque::from([Commit {
             lsn: Lsn(0x17_0000_0000),
             time: UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456),
             changes: vec![Change::Insert {
                 table: Ident::new("trips").unwrap(),
-                row: trip(3, 1, 1, int(100)),
+                row: trip(3, 1, 1, int(100), text("Bronx")),
             }],
         }]),
         pause: Duration::ZERO,
@@ -305,7 +299,7 @@ fn asks_straum_cant_answer() {
             ),
             concat!(
                 r#"{"errors":["unknown measure nope","#,
-                r#""zone.nope is not a by column, ref or ref attribute","#,
+                r#""zone.nope is not read by the view, which reads zone.borough","#,
                 r#""range end 1 is not on a 3600s bucket edge"]}"#
             ),
         ),

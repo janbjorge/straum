@@ -1,12 +1,14 @@
-//! The port to PostgreSQL: tables read at a snapshot, and the stream of
+//! The port to PostgreSQL: facts read at a snapshot, and the stream of
 //! commits after it. One port, since the first load reads the snapshot of the
-//! slot the stream comes from, on the same connection.
+//! slot the stream comes from, on the same connection. The source resolves
+//! every ref: a fact row comes whole, its attributes looked up where the
+//! dims live, so straum holds no dim row.
 
 use std::error;
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Spec, Store};
+use straum_domain::{Datum, Fact, Ident, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
 /// is missing, a table no longer fits the spec. straum starts over after one.
@@ -22,14 +24,12 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
-    /// Adds the fact's rows to the store, whose rollup for it is empty and
-    /// whose dims are loaded, as of the LSN [`Source::open`] returned: every
-    /// commit up to it and none after. Rows go through
-    /// [`Store::add_fact_rows`], which binds the attributes read at ingest.
+    /// Adds the fact's rows to the store, whose rollup for it is empty, as
+    /// of the LSN [`Source::open`] returned: every commit up to it and none
+    /// after. Rows hold [`Fact::columns`] and then [`Fact::attrs`], each
+    /// attribute resolved by the source, and go through
+    /// [`Store::add_fact_rows`].
     fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError>;
-
-    /// As [`Source::load_fact`], for a dim's rows.
-    fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied, so PostgreSQL may recycle the WAL before it.
@@ -59,7 +59,7 @@ impl Wal {
     }
 }
 
-/// One transaction's changes to the spec's tables, in the order made.
+/// One transaction's changes to the spec's facts, in the order made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     /// The end of the commit record, which pgoutput reports as the
@@ -70,22 +70,25 @@ pub struct Commit {
     pub changes: Vec<Change>,
 }
 
-/// A change to a table, named as in the spec. Fact rows hold
-/// [`Fact::columns`]; dim rows hold the key, then the attributes.
+/// A change to a fact, named as in the spec. Rows hold [`Fact::columns`]
+/// and then [`Fact::attrs`], as a load's do; the source resolves the
+/// attributes of an old row as the dims are now, so a row whose dim row
+/// changed since it came in is not the row straum holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Insert {
         table: Ident,
         row: Vec<Datum>,
     },
+    /// With the whole old row, under `REPLICA IDENTITY FULL`.
     Update {
         table: Ident,
-        old: Old,
+        old: Vec<Datum>,
         new: Vec<Datum>,
     },
     Delete {
         table: Ident,
-        old: Old,
+        old: Vec<Datum>,
     },
     /// Every row is gone.
     Truncate {
@@ -93,22 +96,12 @@ pub enum Change {
     },
     /// The table changed shape, so rows already read may no longer read the
     /// same; a column's type changed, for example. Also a change the source
-    /// can't read whole, such as an update that left out an unchanged
-    /// TOASTed value with no old row to take it from.
+    /// can't read whole: an update or delete without the old row, or one
+    /// that left out an unchanged TOASTed value with no old row to take it
+    /// from.
     Altered {
         table: Ident,
     },
-}
-
-/// What PostgreSQL sends of a row before an update or delete.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Old {
-    /// The whole row, under `REPLICA IDENTITY FULL`.
-    Row(Vec<Datum>),
-    /// The key columns only: a delete, or an update that changed the key.
-    Key(Vec<Datum>),
-    /// Nothing: an update that kept the key.
-    SameKey,
 }
 
 impl Change {

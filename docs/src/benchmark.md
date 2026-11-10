@@ -140,17 +140,16 @@ the answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 25.8 ms | 114 µs | 227x |
-| Card trips | 1 | 46.8 ms | 122 µs | 385x |
-| Trips by pickup borough | 8 | 122.5 ms | 139 µs | 883x |
-| Fares by payment type | 5 | 98.5 ms | 147 µs | 672x |
-| Manhattan pickups, one week | 1 | 58.9 ms | 140 µs | 422x |
-| Trips per hour, one day | 24 | 15.7 ms | 137 µs | 115x |
+| Trips | 1 | 37.7 ms | 148 µs | 254x |
+| Card trips | 1 | 64.6 ms | 162 µs | 400x |
+| Trips by pickup borough | 8 | 171.2 ms | 172 µs | 997x |
+| Fares by payment type | 5 | 133.3 ms | 190 µs | 702x |
+| Manhattan pickups, one week | 1 | 75.1 ms | 173 µs | 434x |
+| Trips per hour, one day | 24 | 22.1 ms | 181 µs | 122x |
 
-Straum was ready 0.8 s after it started and held 38 MiB. In PostgreSQL
-the table and its indexes take 363 MiB. Two more runs right before
-stayed within 11% of these times, but for PostgreSQL's week ask, which
-took 72.0 ms once.
+Straum was ready 1.4 s after it started and held 40 MiB. In PostgreSQL
+the table and its indexes take 363 MiB. A run right before stayed
+within 7% of these times.
 
 How to read the table:
 
@@ -210,19 +209,21 @@ It needs the data `bench/bench.py` fetches. It loads the month into
 `postgres:18` with the full view of
 `crates/straum-notation/tests/taxi.sql`, which the [spec](spec.md) page
 walks through, has Straum load and follow it, and compares asks with the
-view body in PostgreSQL after the load, after 202 streamed commits and
-after an update. One run on 2026-11-09, release build, Docker on the
+view body in PostgreSQL after the load, after 200 streamed commits, after
+an update, and after two zones change and a trip in one of them makes
+Straum start over. One run on 2026-11-10, release build, Docker on the
 same laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
 | --- | ---: | ---: | ---: |
-| Load | | 2.0 s | |
-| 202 streamed commits | | 4.9 s | |
-| Every key | 2,322,783 to 2,329,715 | 2.4 to 3.0 s | 6.2 to 6.4 s |
-| By pickup borough | 8 | 6.6 to 8.8 ms | |
+| Load | | 2.1 s | |
+| 200 streamed commits | | 4.1 s | |
+| Start over after the zones changed | | 2.6 s | |
+| Every key | 2,322,783 to 2,329,698 | 1.7 to 1.8 s | 4.6 to 4.8 s |
+| By pickup borough | 8 | 4.5 to 5.2 ms | |
 
 The ask over every key reads every 15 minute cell and answers nearly as
-many groups, so it is only 2.1 to 2.6 times faster than the view in
+many groups, so it is only 2.6 to 2.8 times faster than the view in
 PostgreSQL. The test's reference for the ask by borough groups that
 whole view again, which nobody would write, so the table leaves its time
 out; the asks above time a query by borough.
@@ -245,60 +246,64 @@ spec collapses little at 15 minutes. Without the dropoff zone it
 collapses 5.2 times. Memory follows cells, so the key is the lever on
 memory.
 
-## Cells on pio-shaped tables
+## Cells on a warehouse's tables
 
-The same lever on a warehouse shape: tasks keyed by organization, task
-group, storage location and whether the task is live, with the group's
-category and the location's type as attributes, over hour buckets with a
-day width beside them. The tables are generated locally in the
-distributions of a production database (13 million tasks, 5.7 million
-task groups, 860,000 storage locations, a task group holding one to
-three tasks) and are not in the repository; the run below is three
-tenths of that size, on 2026-11-10, the machine and build of the
-[Results](#results). Both views answered every ask as PostgreSQL did,
-before and after streamed changes.
-
-| View | Keys | Cells, 1 hour | Cells, 1 day | Resident |
-| --- | --- | ---: | ---: | ---: |
-| Late | organization, task group, storage location, live | 3,669,223 | 3,669,206 | 1,478 MiB |
-| Bound at ingest | organization, live, category, location type | 932,532 | 127,014 | 498 MiB |
-
-3,932,790 tasks, 1,706,235 task groups, 253,555 storage locations. The
-late view keeps 0.93 cells a task, since a task group holds one task or
-two and every task has its own hour; at the production size that is
-about 12 million cells a width and 5.8 GiB. [Binding the
-attributes at ingest](spec.md#binding-attributes-at-ingest) keys the
-cells by the category's three values and the location type's four
-instead, so the day width collapses 29 times and memory falls to a
-third; what remains is the hour cells and the dim rows Straum keeps for
-the lookups.
-
-The same view over a copy of the production tables themselves, bound at
-ingest only, the same day and machine: 13,116,878 tasks, 5,690,651 task
-groups, 851,964 storage locations, 2,645 MiB of tasks in PostgreSQL.
-Straum loaded in 8 s and held 897 MiB; every ask equalled PostgreSQL
-before and after the streamed changes.
+The same lever on a warehouse shape: tasks keyed by organization,
+whether the task is live, its group's category and its storage
+location's type, over hour buckets with a day width beside them. The
+category and the type are attributes of two refs, read from the group
+and location tables as each task comes in. The tables are a copy of a
+production database and are not in the repository: 13,116,878 tasks,
+5,690,651 task groups and 851,964 storage locations, 2,645 MiB of tasks
+in PostgreSQL. One run on 2026-11-10, the machine and build of the
+[Results](#results).
 
 | Rollup | Cells |
 | --- | ---: |
 | 1 hour | 311,969 |
 | 1 day | 66,107 |
 
-The generated tables spread each organization's picks evenly over the
-hours and so held ten times the hour cells the real ones do: picks
-cluster in working hours. Memory did not fall with the cells, since most
-of it is the 6.5 million dim rows Straum keeps for the lookups. The
-asks, PostgreSQL run twice on the loaded tables and Straum the better
+Keyed by task group and storage location instead, the view would hold
+about a cell a task, 12 million a width: a group holds one task or two,
+and every task has its own hour. The attributes' few values collapse the
+day width to 66 thousand cells.
+
+Straum was ready 19 s after it started and held 84 MiB: the cells, and
+nothing else. The same view held 897 MiB a few hours before, when Straum
+kept the 6.5 million group and location rows for lookups of its own, and
+was ready in 8 s, since PostgreSQL now joins the tasks to their groups
+and locations for the load.
+
+Every ask equalled PostgreSQL after the load and after each streamed
+change. Each change is one transaction, applied once its attributes are
+looked up; the time runs from the commit until Straum had applied it:
+
+| Change | Rows | Applied |
+| --- | ---: | ---: |
+| New tasks for one organization, completed now | 1,000 | 74 ms |
+| Open tasks completed, one in fifty | 19,024 | 3.4 s |
+| Completed tasks of one day cancelled, one in twenty | 1,873 | 156 ms |
+| Tasks of one day deleted, one in thirty | 7,426 | 275 ms |
+
+An update looks both rows up, the old and the new, so the big one asked
+PostgreSQL for 38 thousand group keys and as many location keys, a
+thousand a statement, besides decoding the transaction.
+
+A task group recategorised is nothing to Straum until a task of it
+changes: then Straum starts over, 20 s, reads every task as the groups
+are now, and the asks equal PostgreSQL again.
+
+The asks, PostgreSQL run twice on the loaded tables and Straum the better
 of two:
 
 | Ask | Rows | PostgreSQL, first | PostgreSQL, second | Straum |
 | --- | ---: | ---: | ---: | ---: |
-| Picks by organization, one day | 44 | 24 ms | 12 ms | 0.3 ms |
-| Picks by organization and category, one week | 110 | 657 ms | 551 ms | 1.1 ms |
-| Live picks by location type, one day | 3 | 93 ms | 85 ms | 1.0 ms |
-| Picks per hour for one organization, one day | 16 | 7 ms | 4 ms | 0.3 ms |
+| Picks by organization, one day | 44 | 19 ms | 10 ms | 0.3 ms |
+| Picks by organization and category, one week | 110 | 667 ms | 603 ms | 0.9 ms |
+| Live picks by location type, one day | 3 | 100 ms | 92 ms | 0.9 ms |
+| Picks per hour for one organization, one day | 16 | 7 ms | 5 ms | 0.9 ms |
 
 PostgreSQL has an index on `completed` here, and these are the plain
-queries the asks mirror, not the dashboard's own. Straum reads the
-cells of one width in the range whatever the question, so its time
-barely moves between them.
+queries the asks mirror, not a dashboard's own. Straum reads the cells
+of one width in the range whatever the question, so its time barely
+moves between them.
