@@ -1,6 +1,6 @@
 # ADR-0017: Buckets are UTC date_bin levels
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Superseded by ADR-0028, 2026-11-10
 
 ## Context
 
