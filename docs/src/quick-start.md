@@ -116,8 +116,9 @@ explains the query, the parameters and the answer.
 
 ## 7. Change the data
 
-Insert an order, refund another, and ask for paid orders per hour on
-that day. Every value in an ask is a parameter:
+This is the point of Straum: change the tables and the answer is
+already new. Insert an order, refund another, and ask for paid orders
+per hour on that day. Every value in an ask is a parameter:
 
 ```sh
 docker exec straum-pg psql -U postgres -c "
@@ -140,12 +141,28 @@ curl --json '{
 ```
 
 The refund took the 10:00 order out of the paid rows and the new order
-added 11:00, both in one answer: Straum applies a transaction whole.
+added 11:00, both in one answer, with no cache to clear and no query to
+rerun: Straum applies a transaction whole, and `as_of` moved past the
+commit.
 
-## 8. Clean up
+## 8. Look at straum, then clean up
 
-`straum status` shows what Straum has done. Stop straum with Ctrl-C and
-remove the container:
+`straum status` shows what Straum has done. `as of` is the same time
+answers carry, and it keeps moving while the tables are quiet:
+
+```text
+$ straum status
+ready:        yes
+applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
+as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
+lag:          0.0 s, at most 30 s
+WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
+starts:       1
+failures:     0
+last failure: none
+```
+
+Stop straum with Ctrl-C and remove the container:
 
 ```sh
 docker rm -f straum-pg
