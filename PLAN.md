@@ -361,6 +361,14 @@ Tests:
   FULL` the columns of a unique index, in any order. Dim rows are kept by
   key tuple, and an ask remembers dim lookups per code combination of the
   via slots. No `key` option, no `(a, b)` tuple syntax.
+- 2026-11-10: Null-ness keys: `(f.col IS NULL) AS name` or `IS NOT NULL`,
+  selected and grouped like a column, a boolean key whatever the column's
+  type, since a nullable column such as `completed` means something by
+  being null. A FILTER's `f.col IS NULL` or `IS NOT NULL` counts through
+  the null-ness key over that column and is refused when there is none,
+  so the view body stays what PostgreSQL runs; asks filter the key by
+  name, `done = $n`, with a boolean. Over the time column it is refused:
+  a row with no time is never answered. No `IS NULL` elsewhere.
 
 ## M0: notation and domain model
 

@@ -3,7 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
+use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -220,6 +220,8 @@ enum Role {
     Number,
     /// A value straum groups, joins or counts distinct.
     Key,
+    /// A column whose null-ness is a key: any type straum reads.
+    Nullness,
 }
 
 impl Role {
@@ -228,6 +230,7 @@ impl Role {
             Role::Time(origin) => column_type == origin.column_type(),
             Role::Number => matches!(column_type, ColumnType::Int | ColumnType::Numeric { .. }),
             Role::Key => !matches!(column_type, ColumnType::Time { .. }),
+            Role::Nullness => true,
         }
     }
 
@@ -250,6 +253,11 @@ impl Role {
             }
             Role::Key => {
                 "straum needs an integer type, numeric(p, s), boolean or text there".into()
+            }
+            Role::Nullness => {
+                "straum needs a type it reads there: an integer type, numeric(p, s), \
+                               boolean, text, timestamptz or timestamp"
+                    .into()
             }
         }
     }
@@ -339,7 +347,10 @@ pub(crate) fn check(
 /// Every column the fact reads, with what it is for.
 fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     let mut roles = vec![(&fact.time.column, Role::Time(fact.time.origin))];
-    roles.extend(fact.by.iter().map(|c| (c, Role::Key)));
+    roles.extend(fact.by.iter().map(|by| match by {
+        By::Column(column) => (column, Role::Key),
+        By::IsNull { column, .. } => (column, Role::Nullness),
+    }));
     for m in &fact.measures {
         let Some(column) = m.agg.input() else {
             continue;
@@ -505,7 +516,8 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
                     .resolve(fact, &cond.path)
                     .expect("checked by Spec::new")
                 {
-                    Key::Column(c) => facts.column_type(c),
+                    Key::By(By::Column(c)) => facts.column_type(c),
+                    Key::By(By::IsNull { .. }) => ColumnType::Bool,
                     Key::Ref(r) => facts.column_type(&r.via[0]),
                     Key::Attr(r, attr) => table(&r.dim).column_type(attr),
                 };

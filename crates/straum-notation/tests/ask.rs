@@ -195,6 +195,17 @@ fn every_error_names_what_is_wrong() {
             &range(),
             "filter condition, use = or IN joined by AND, `kind NOT IN ($1)`",
         ),
+        // A null-ness key is asked for by name, `done = $n`.
+        (
+            "SELECT trips FROM t WHERE done_at IS NULL AND bucket >= $1 AND bucket < $2",
+            &range(),
+            "filter condition, use = or IN joined by AND, `done_at IS NULL`",
+        ),
+        (
+            "SELECT trips FROM t WHERE done_at IS NOT NULL AND bucket >= $1 AND bucket < $2",
+            &range(),
+            "filter condition, use = or IN joined by AND, `done_at IS NOT NULL`",
+        ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &[Literal::Bool(true), Literal::Int(FEB)],

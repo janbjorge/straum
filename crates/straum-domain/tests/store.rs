@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, ColumnType, Cond, Datum, Dim, Fact, Grain,
-    Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Spec, Store, Table, Time, TimeKey,
-    Value,
+    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, By, ColumnType, Cond, Datum, Dim, Fact,
+    Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Spec, Store, Table, Time,
+    TimeKey, Value,
 };
 
 const GRAIN: u32 = 900;
@@ -32,7 +32,7 @@ const WIDTH: usize = 10;
 /// differs, so an answer that takes a scale from the wrong column shows.
 const TRIP_SCALES: u32 = 20;
 
-const KEYS: [&str; 11] = [
+const KEYS: [&str; 12] = [
     "pay",
     "vendor",
     "shared",
@@ -44,6 +44,7 @@ const KEYS: [&str; 11] = [
     "dropoff.zone",
     "combo.label",
     "combo.vendor_id",
+    "known",
 ];
 
 fn id(s: &str) -> Ident {
@@ -128,7 +129,19 @@ fn spec() -> Spec {
                 via: vec![id("pu"), id("vendor")],
             },
         ],
-        by: vec![id("pay"), id("vendor"), id("shared"), id("pu"), id("dro")],
+        by: vec![
+            By::Column(id("pay")),
+            By::Column(id("vendor")),
+            By::Column(id("shared")),
+            By::Column(id("pu")),
+            By::Column(id("dro")),
+            // Over a by column, which the row carries once.
+            By::IsNull {
+                column: id("shared"),
+                name: id("known"),
+                negated: true,
+            },
+        ],
         measures: vec![
             m("trips", Agg::Count, vec![]),
             m("fare", Agg::Sum(id("fare")), vec![]),
@@ -275,6 +288,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         cond("dropoff.zone", vec![lit("a"), lit("c")]),
         cond("pickup.id", vec![Literal::Int(1), Literal::Int(3)]),
         cond("combo.label", vec![lit("x")]),
+        cond("known", vec![Literal::Bool(true)]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -320,6 +334,9 @@ fn holds(value: &Datum, values: &[Literal]) -> bool {
 }
 
 fn value(row: &[Datum], path: &KeyPath, dims: &Dims) -> Datum {
+    if path.head.as_str() == "known" {
+        return Datum::Bool(row[SHARED] != Datum::Null);
+    }
     if path.head.as_str() == "combo" {
         let attr = path.attr.as_ref().expect("combo has no value of its own");
         let (Datum::Int(pu), Datum::Int(vendor)) = (&row[PU], &row[VENDOR]) else {
@@ -403,6 +420,7 @@ fn typed(spec: &Spec) -> Store {
 
 fn scale(path: &KeyPath) -> u32 {
     match &path.attr {
+        None if path.head.as_str() == "known" => 0,
         None => trip_types()[column(path.head.as_str())].scale(),
         Some(_) if path.head.as_str() == "combo" => 0,
         Some(attr) => {

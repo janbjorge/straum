@@ -1,6 +1,6 @@
 use sqlparser::ast as sql;
 use straum_domain::{
-    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Table, Time,
+    Agg, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Table, Time,
 };
 
 use super::{SqlError, Walker, and_parts, function_name, line};
@@ -15,14 +15,24 @@ struct Body {
     table: Table,
     time: Time,
     refs: Vec<JoinedRef>,
-    by: Vec<Ident>,
+    by: Vec<By>,
     measures: Vec<Measure>,
 }
 
-/// The tables one view reads: the fact under `alias`, and one ref per join.
+/// The tables one view reads: the fact under `alias`, and one ref per join;
+/// and its null-ness keys, which a FILTER's `IS NULL` goes through.
 struct Scope {
     alias: Ident,
     refs: Vec<JoinedRef>,
+    nulls: Vec<NullKey>,
+}
+
+/// `(column IS NULL) AS name`, or `IS NOT NULL` when `negated`.
+#[derive(Clone)]
+struct NullKey {
+    column: Ident,
+    name: Ident,
+    negated: bool,
 }
 
 /// A join: `r.via[i]` of the fact meets `key[i]` of the dim.
@@ -43,6 +53,7 @@ enum Column {
 enum Item {
     Bucket(Time),
     Column(Ident),
+    IsNull(NullKey),
     Attr,
     Measure(Measure),
 }
@@ -274,36 +285,48 @@ impl Walker {
             );
             return None;
         };
-        let (table, scope) = self.from(from)?;
+        let (table, mut scope) = self.from(from)?;
 
+        // Keys first, then measures, so a FILTER can name a null-ness key
+        // selected after it.
         let mut items = Vec::new();
         let mut keys = Vec::new();
-        for item in projection {
-            let (expr, alias) = match item {
-                sql::SelectItem::UnnamedExpr(expr) => (expr, None),
-                sql::SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
-                other => {
-                    self.reject(line(other), "SELECT item", other);
+        for measures in [false, true] {
+            for item in projection {
+                let (expr, alias) = match item {
+                    sql::SelectItem::UnnamedExpr(expr) => (expr, None),
+                    sql::SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
+                    other => {
+                        if !measures {
+                            self.reject(line(other), "SELECT item", other);
+                        }
+                        continue;
+                    }
+                };
+                // Decided before walking the item, so a bad key column is
+                // reported once and not again by GROUP BY.
+                let is_key = match expr {
+                    sql::Expr::Function(f) => function_name(f).as_deref() == Some("date_bin"),
+                    _ => true,
+                };
+                if is_key == measures {
                     continue;
                 }
-            };
-            // Decided before walking the item, so a bad key column is
-            // reported once and not again by GROUP BY.
-            let is_key = match expr {
-                sql::Expr::Function(f) => function_name(f).as_deref() == Some("date_bin"),
-                _ => true,
-            };
-            if is_key {
-                keys.push(expr.to_string());
-            }
-            if let Some(it) = self.item(&scope, expr, alias) {
-                items.push(it);
+                if is_key {
+                    keys.push(key_text(expr));
+                }
+                if let Some(it) = self.item(&scope, expr, alias) {
+                    if let Item::IsNull(key) = &it {
+                        scope.nulls.push(key.clone());
+                    }
+                    items.push(it);
+                }
             }
         }
         self.group_by(at, group_by, projection, &keys);
 
         let mut time = None;
-        let mut by: Vec<Ident> = Vec::new();
+        let mut by: Vec<By> = Vec::new();
         let mut measures = Vec::new();
         for it in items {
             match it {
@@ -312,7 +335,16 @@ impl Walker {
                         self.error(at, "SELECT has more than one date_bin bucket".into());
                     }
                 }
-                Item::Column(c) => by.push(c),
+                Item::Column(c) => by.push(By::Column(c)),
+                Item::IsNull(NullKey {
+                    column,
+                    name,
+                    negated,
+                }) => by.push(By::IsNull {
+                    column,
+                    name,
+                    negated,
+                }),
                 Item::Attr => {}
                 Item::Measure(m) => measures.push(m),
             }
@@ -321,7 +353,7 @@ impl Walker {
         // reads the dim row they name.
         for j in &scope.refs {
             for via in &j.r.via {
-                if !by.contains(via) {
+                if !by.contains(&By::Column(via.clone())) {
                     self.error(
                         at,
                         format!(
@@ -356,6 +388,7 @@ impl Walker {
         let mut scope = Scope {
             alias,
             refs: Vec::new(),
+            nulls: Vec::new(),
         };
         for join in joins {
             if let Some(j) = self.join(&scope, join) {
@@ -566,6 +599,19 @@ impl Walker {
                 filter,
             }));
         }
+        if let Some((inner, negated)) = null_test(expr) {
+            let Some(alias) = alias else {
+                self.error(line(expr), format!("name the key: {expr} AS <name>"));
+                return None;
+            };
+            let name = self.ident(alias);
+            let column = self.fact_column(scope, inner, "the IS NULL column")?;
+            return Some(Item::IsNull(NullKey {
+                column,
+                name: name?,
+                negated,
+            }));
+        }
         if let Some(alias) = alias {
             self.reject(alias.span.start.line, "alias on a key column", alias);
             return None;
@@ -576,6 +622,37 @@ impl Walker {
                 self.attr(scope, i, attr);
                 Item::Attr
             }
+        })
+    }
+
+    /// `FILTER (WHERE f.column IS NULL)` counts through the null-ness key
+    /// over that column, which holds for the rows the test picks out. The
+    /// view body stays what PostgreSQL runs, since the key's name is no
+    /// column there.
+    fn null_cond(
+        &mut self,
+        scope: &Scope,
+        test: &sql::Expr,
+        column: &sql::Expr,
+        is_null: bool,
+    ) -> Option<Cond> {
+        let column = self.fact_column(scope, column, "the IS NULL column")?;
+        let Some(key) = scope.nulls.iter().find(|k| k.column == column) else {
+            self.error(
+                line(test),
+                format!(
+                    "FILTER (WHERE {test}) needs the key ({}.{column} IS NULL) AS <name> in SELECT",
+                    scope.alias
+                ),
+            );
+            return None;
+        };
+        Some(Cond {
+            path: KeyPath {
+                head: key.name.clone(),
+                attr: None,
+            },
+            values: vec![Literal::Bool(is_null != key.negated)],
         })
     }
 
@@ -693,6 +770,7 @@ impl Walker {
                 &mut conds,
                 &mut |w, e| w.path(scope, e),
                 &mut |w, e| w.literal(e),
+                &mut |w, test, column, is_null| w.null_cond(scope, test, column, is_null),
             );
             if self.errors.len() > before {
                 return None;
@@ -742,17 +820,20 @@ impl Walker {
                 }) => Some(n.parse::<usize>().ok()),
                 sql::Expr::Identifier(_)
                 | sql::Expr::CompoundIdentifier(_)
-                | sql::Expr::Function(_) => None,
+                | sql::Expr::Function(_)
+                | sql::Expr::Nested(_)
+                | sql::Expr::IsNull(_)
+                | sql::Expr::IsNotNull(_) => None,
                 other => {
                     self.reject(line(other), "GROUP BY item", other);
                     return;
                 }
             };
             let text = match position {
-                None => expr.to_string(),
+                None => key_text(expr),
                 Some(n) => match n.and_then(|n| projection.get(n.wrapping_sub(1))) {
                     Some(sql::SelectItem::UnnamedExpr(e))
-                    | Some(sql::SelectItem::ExprWithAlias { expr: e, alias: _ }) => e.to_string(),
+                    | Some(sql::SelectItem::ExprWithAlias { expr: e, alias: _ }) => key_text(e),
                     _ => {
                         self.error(
                             line(expr),
@@ -777,6 +858,26 @@ impl Walker {
                 );
             }
         }
+    }
+}
+
+/// `column IS NULL` or `column IS NOT NULL`, in any parentheses, and
+/// whether it is the `NOT` one.
+fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
+    match expr {
+        sql::Expr::Nested(inner) => null_test(inner),
+        sql::Expr::IsNull(column) => Some((column, false)),
+        sql::Expr::IsNotNull(column) => Some((column, true)),
+        _ => None,
+    }
+}
+
+/// A key as GROUP BY matches it: parentheses don't count, so `(f.c IS
+/// NULL) AS k` is grouped by `f.c IS NULL` or `(f.c IS NULL)` alike.
+fn key_text(expr: &sql::Expr) -> String {
+    match expr {
+        sql::Expr::Nested(inner) => key_text(inner),
+        other => other.to_string(),
     }
 }
 

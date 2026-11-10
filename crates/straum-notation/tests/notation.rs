@@ -1,5 +1,5 @@
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot, Spec,
+    Agg, Ask, AskError, AskKey, By, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot, Spec,
     SpecError, TimeKey,
 };
 use straum_notation::{Error, SqlError, parse};
@@ -76,6 +76,9 @@ fn taxi_parses() {
         .rollup_key()
         .map(|slot| match slot {
             Slot::Column(c) => c.to_string(),
+            Slot::IsNull { column, negated } => {
+                format!("{column} is {}null", if negated { "not " } else { "" })
+            }
             Slot::Bucket => "bucket".into(),
         })
         .collect();
@@ -249,7 +252,7 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.by, [id("a"), id("z_id")]);
+    assert_eq!(t.by, [By::Column(id("a")), By::Column(id("z_id"))]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, [id("z_id")]);
     assert!(t.time.buckets.is_empty());
@@ -382,7 +385,7 @@ GROUP BY 1, 2, 3, 4";
 fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.by, [id("org"), id("grp")]);
+    assert_eq!(t.by, [By::Column(id("org")), By::Column(id("grp"))]);
     assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
     let g = spec.dim("g").unwrap();
     assert_eq!(g.key, [id("org_id"), id("grp_id")]);
@@ -461,6 +464,169 @@ fn a_ref_on_two_columns_rejected() {
             }]
         );
     }
+}
+
+/// Null-ness keys: whether a column is null, grouped like a column, and
+/// what a FILTER's `IS NULL` counts through.
+const NULLS: &str = "CREATE VIEW t AS
+SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+       f.a,
+       (f.done_at IS NOT NULL) AS done,
+       f.gone_at IS NULL AS open,
+       count(*) AS n,
+       count(*) FILTER (WHERE f.done_at IS NOT NULL AND f.gone_at IS NOT NULL) AS closed,
+       count(*) FILTER (WHERE f.done_at IS NULL) AS pending
+FROM public.t f
+GROUP BY 1, 2, 3, 4";
+
+#[test]
+fn null_ness_keys() {
+    let spec = parse(NULLS).unwrap();
+    let t = spec.fact("t").unwrap();
+    assert_eq!(
+        t.by,
+        [
+            By::Column(id("a")),
+            By::IsNull {
+                column: id("done_at"),
+                name: id("done"),
+                negated: true
+            },
+            By::IsNull {
+                column: id("gone_at"),
+                name: id("open"),
+                negated: false
+            },
+        ]
+    );
+    assert_eq!(
+        t.columns(),
+        [id("at"), id("a"), id("done_at"), id("gone_at")]
+    );
+    let key: Vec<String> = (t.rollup_key())
+        .map(|slot| match slot {
+            Slot::Column(c) => c.to_string(),
+            Slot::IsNull { column, negated } => format!("{column} is null = {}", !negated),
+            Slot::Bucket => "bucket".into(),
+        })
+        .collect();
+    assert_eq!(
+        key,
+        [
+            "a",
+            "done_at is null = false",
+            "gone_at is null = true",
+            "bucket"
+        ]
+    );
+    // A FILTER's test holds when the key over its column has the value
+    // that means it.
+    let filter = |m: &str| t.measure(m).unwrap().filter.clone();
+    assert_eq!(
+        filter("closed"),
+        [
+            Cond {
+                path: path("done"),
+                values: vec![Literal::Bool(true)]
+            },
+            Cond {
+                path: path("open"),
+                values: vec![Literal::Bool(false)]
+            },
+        ]
+    );
+    assert_eq!(
+        filter("pending"),
+        [Cond {
+            path: path("done"),
+            values: vec![Literal::Bool(false)]
+        }]
+    );
+    // Grouped by expression, with or without the parentheses, or by
+    // position; and a FILTER may come before the key it goes through.
+    let by_expression = NULLS.replace(
+        "GROUP BY 1, 2, 3, 4",
+        "GROUP BY date_bin('1 hour', f.at, timestamptz 'epoch'), f.a, f.done_at IS NOT NULL, \
+         (f.gone_at IS NULL)",
+    );
+    assert_eq!(parse(&by_expression).unwrap(), spec);
+    let filter_first = NULLS
+        .replace(
+            "AS bucket,\n",
+            "AS bucket,\n       count(*) FILTER (WHERE f.done_at IS NULL) AS pending,\n",
+        )
+        .replace(
+            "AS closed,\n       count(*) FILTER (WHERE f.done_at IS NULL) AS pending\n",
+            "AS closed\n",
+        )
+        .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 3, 4, 5");
+    let early = parse(&filter_first).unwrap();
+    let names = |spec: &Spec| -> Vec<String> {
+        (spec.fact("t").unwrap().measures.iter())
+            .map(|m| m.name.to_string())
+            .collect()
+    };
+    assert_eq!(names(&early), ["pending", "n", "closed"]);
+    assert_eq!(early.fact("t").unwrap().by, t.by);
+    assert_eq!(
+        early.fact("t").unwrap().measure("pending").unwrap().filter,
+        filter("pending")
+    );
+    // Asks name the key.
+    let ask = Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: vec![AskKey::Key(path("done"))],
+        filter: vec![Cond {
+            path: path("open"),
+            values: vec![Literal::Bool(true)],
+        }],
+        from: JAN,
+        to: FEB,
+    };
+    assert!(spec.check(&ask).is_ok());
+}
+
+#[test]
+fn null_ness_keys_rejected() {
+    let cases = [
+        (
+            "(f.done_at IS NOT NULL) AS done,",
+            "(f.done_at IS NOT NULL),",
+            "name the key: (f.done_at IS NOT NULL) AS <name>",
+        ),
+        (
+            "count(*) FILTER (WHERE f.done_at IS NULL) AS pending",
+            "count(*) FILTER (WHERE f.a IS NULL) AS pending",
+            "FILTER (WHERE f.a IS NULL) needs the key (f.a IS NULL) AS <name> in SELECT",
+        ),
+    ];
+    for (from, to, fragment) in cases {
+        assert!(NULLS.contains(from), "{from}");
+        let errors = sql_errors(&NULLS.replacen(from, to, 1));
+        assert!(
+            errors.iter().any(|e| e.msg.contains(fragment)),
+            "{to}: {errors:?}"
+        );
+    }
+    // Over a dim column, and over the time column.
+    let errors = sql_errors(&base("f.a,", "f.a, (z.name IS NULL) AS unnamed,"));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.msg == "the IS NULL column must be a f column"),
+        "{errors:?}"
+    );
+    let no_time = base("f.a,", "f.a, (f.at IS NULL) AS no_time,")
+        .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3, 4, 5");
+    assert_eq!(
+        spec_errors(&no_time),
+        [SpecError::NullTime {
+            fact: id("t"),
+            name: id("no_time"),
+            column: id("at")
+        }]
+    );
 }
 
 #[test]

@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Spec, Store,
-    Table, Time, TimeKey,
+    Agg, Ask, AskKey, By, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Spec,
+    Store, Table, Time, TimeKey,
 };
 
 thread_local! {
@@ -94,7 +94,7 @@ fn spec(buckets: &[u32]) -> Spec {
             dim: id("zones"),
             via: vec![id("pu")],
         }],
-        by: vec![id("pay"), id("pu")],
+        by: vec![By::Column(id("pay")), By::Column(id("pu"))],
         measures: vec![
             m("trips", Agg::Count),
             m("fare", Agg::Sum(id("fare"))),

@@ -2,8 +2,8 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec, SpecError,
-    Table, Time,
+    Agg, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec,
+    SpecError, Table, Time,
 };
 
 fn id(s: &str) -> Ident {
@@ -41,7 +41,7 @@ fn fact() -> Fact {
             dim: id("z"),
             via: vec![id("z_id")],
         }],
-        by: vec![id("a"), id("z_id")],
+        by: vec![By::Column(id("a")), By::Column(id("z_id"))],
         measures: vec![Measure {
             name: id("n"),
             agg: Agg::Count,
@@ -118,7 +118,17 @@ fn every_error_is_reported_and_displayed() {
     let mut t = fact();
     t.name = id("z");
     t.time.grain = Grain(420);
-    t.by = vec![id("id"), id("at"), id("r"), id("id")];
+    t.by = vec![
+        By::Column(id("id")),
+        By::Column(id("at")),
+        By::Column(id("r")),
+        By::Column(id("id")),
+        By::IsNull {
+            column: id("at"),
+            name: id("no_time"),
+            negated: false,
+        },
+    ];
     t.refs[0].dim = id("nope");
     t.measures = vec![
         Measure {
@@ -142,7 +152,11 @@ fn every_error_is_reported_and_displayed() {
     // twice.
     let mut u = fact();
     u.name = id("u");
-    u.by = vec![id("a"), id("z_id"), id("b")];
+    u.by = vec![
+        By::Column(id("a")),
+        By::Column(id("z_id")),
+        By::Column(id("b")),
+    ];
     u.refs = vec![
         Ref {
             name: id("r"),
@@ -168,6 +182,8 @@ fn every_error_is_reported_and_displayed() {
             "fact z: grain of 420s does not divide a day",
             "fact z: at is the time column, so it can't be a by column too",
             "z: id declared twice",
+            "fact z: no_time asks whether the time column at is null, which no ask could see: \
+             a row with no time is never answered",
             "z: r declared twice",
             "fact z: ref r joins on z_id, which is not a by column",
             "fact z: ref r points at unknown dim nope",
@@ -179,5 +195,5 @@ fn every_error_is_reported_and_displayed() {
             "fact u: no measures",
         ]
     );
-    assert!(matches!(errors[8], SpecError::UnknownDim { .. }));
+    assert!(matches!(errors[9], SpecError::UnknownDim { .. }));
 }

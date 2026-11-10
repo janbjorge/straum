@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::{iter, mem, panic, thread};
@@ -19,9 +20,9 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 #[derive(Debug)]
 pub struct Rollup {
     columns: Vec<Ident>,
-    /// The row column each rollup-key slot codes, in [`Fact::rollup_key`]
+    /// What each rollup-key slot codes of a row, in [`Fact::rollup_key`]
     /// order without the bucket.
-    key_columns: Vec<usize>,
+    key_columns: Vec<Coded>,
     inputs: Vec<Input>,
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
@@ -34,6 +35,33 @@ pub struct Rollup {
     /// allocation per row.
     key: Vec<u32>,
     types: Vec<ColumnType>,
+}
+
+/// What a rollup-key slot codes of a row.
+#[derive(Debug, Clone, Copy)]
+enum Coded {
+    /// The column's value.
+    Value(usize),
+    /// Whether the column is null, or not null when `negated`.
+    IsNull { column: usize, negated: bool },
+}
+
+impl Coded {
+    fn datum<'r>(self, row: &'r [Datum]) -> Cow<'r, Datum> {
+        match self {
+            Coded::Value(column) => Cow::Borrowed(&row[column]),
+            Coded::IsNull { column, negated } => {
+                Cow::Owned(Datum::Bool((row[column] == Datum::Null) != negated))
+            }
+        }
+    }
+
+    fn column_type(self, types: &[ColumnType]) -> ColumnType {
+        match self {
+            Coded::Value(column) => types[column],
+            Coded::IsNull { .. } => ColumnType::Bool,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -219,10 +247,14 @@ impl Rollup {
     pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
-        let key_columns: Vec<usize> = fact
+        let key_columns: Vec<Coded> = fact
             .rollup_key()
             .filter_map(|slot| match slot {
-                Slot::Column(c) => Some(position(c)),
+                Slot::Column(c) => Some(Coded::Value(position(c))),
+                Slot::IsNull { column, negated } => Some(Coded::IsNull {
+                    column: position(column),
+                    negated,
+                }),
                 Slot::Bucket => None,
             })
             .collect();
@@ -281,7 +313,7 @@ impl Rollup {
     }
 
     pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
-        self.types[self.key_columns[slot]]
+        self.key_columns[slot].column_type(&self.types)
     }
 
     pub(crate) fn time_type(&self) -> ColumnType {
@@ -362,7 +394,7 @@ impl Rollup {
     pub fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let key: Vec<u32> = (self.key_columns.iter().zip(&self.codes))
-            .map(|(&column, codes)| codes.codes.get(&row[column]).copied())
+            .map(|(&coded, codes)| codes.codes.get(&*coded.datum(row)).copied())
             .collect::<Option<_>>()
             .ok_or(RowError::Missing)?;
         for (n, level) in self.levels.iter_mut().enumerate() {
@@ -473,7 +505,7 @@ impl Rollup {
     fn code(&mut self, row: &[Datum], key: &mut Vec<u32>) {
         key.extend(
             (self.key_columns.iter().zip(&mut self.codes))
-                .map(|(&column, codes)| codes.code(&row[column])),
+                .map(|(&coded, codes)| codes.code(&coded.datum(row))),
         );
     }
 }

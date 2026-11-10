@@ -5,7 +5,6 @@ use std::slice;
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::hash::FastMap;
-use crate::ident::Ident;
 use crate::rollup::{Cells, DimTable, Rollup};
 use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
@@ -204,16 +203,15 @@ impl Store {
     }
 
     fn source(&self, fact: &Fact, path: &KeyPath) -> Source<'_> {
-        let slot =
-            |s: &Ident| (fact.rollup_key().position(|k| k == Slot::Column(s))).expect(CHECKED);
+        let slot = |s: Slot| fact.rollup_key().position(|k| k == s).expect(CHECKED);
         match self.spec.resolve(fact, path).expect(CHECKED) {
-            Key::Column(c) => Source::Slot(slot(c)),
-            Key::Ref(r) => Source::Slot(slot(&r.via[0])),
+            Key::By(by) => Source::Slot(slot(by.slot())),
+            Key::Ref(r) => Source::Slot(slot(Slot::Column(&r.via[0]))),
             Key::Attr(r, attr) => {
                 let d = self.dim_index(r.dim.as_str()).expect(CHECKED);
                 let dim = &self.spec.dims()[d];
                 Source::Dim {
-                    slots: r.via.iter().map(slot).collect(),
+                    slots: r.via.iter().map(|v| slot(Slot::Column(v))).collect(),
                     table: &self.dims[d],
                     column: dim.columns().position(|a| a == attr).expect(CHECKED),
                 }

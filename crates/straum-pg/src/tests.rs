@@ -97,15 +97,17 @@ CREATE VIEW tasks WITH (buckets = '1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id,
        f.taskgroup_id,
+       (f.completed IS NOT NULL) AS done,
        g.category,
        count(*) AS tasks,
        sum(f.picks) AS picks,
        max(f.picks) AS picks_max,
-       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks
+       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks,
+       count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed_tasks
 FROM $S.tasks f
 LEFT JOIN $S.taskgroups g
        ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
-GROUP BY 1, 2, 3, 4;
+GROUP BY 1, 2, 3, 4, 5;
 ";
 
 const TASKS: &str = "
@@ -120,6 +122,7 @@ CREATE TABLE $S.tasks (
     organization_id int,
     taskgroup_id int,
     created timestamp NOT NULL,
+    completed timestamp,
     picks int
 );
 ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
@@ -463,26 +466,39 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
 /// window that cuts the day bucket `START` begins. A `timestamp` has no
 /// zone, so the window's bounds are wall clock in UTC.
 fn task_oracles() -> Vec<Oracle> {
-    const MEASURES: [&str; 4] = ["tasks", "picks", "picks_max", "pick_tasks"];
+    const MEASURES: [&str; 5] = [
+        "tasks",
+        "picks",
+        "picks_max",
+        "pick_tasks",
+        "completed_tasks",
+    ];
     let by_bucket = Oracle {
         sql: format!(
-            "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, category,
-                    tasks, picks, picks_max, pick_tasks
+            "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, done,
+                    category, tasks, picks, picks_max, pick_tasks, completed_tasks
                FROM ({}) v",
             body(TASKS_SPEC, "tasks")
         ),
         ask: ask(
             "tasks",
             &MEASURES,
-            &["bucket", "organization_id", "taskgroup_id", "g.category"],
+            &[
+                "bucket",
+                "organization_id",
+                "taskgroup_id",
+                "done",
+                "g.category",
+            ],
         ),
-        scales: vec![0; 8],
+        scales: vec![0; 10],
     };
     let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks), max(f.picks),
-                    count(*) FILTER (WHERE g.category = 'pick')
+                    count(*) FILTER (WHERE g.category = 'pick'),
+                    count(*) FILTER (WHERE f.completed IS NOT NULL)
                FROM $S.tasks f
                LEFT JOIN $S.taskgroups g
                       ON g.organization_id = f.organization_id
@@ -496,9 +512,33 @@ fn task_oracles() -> Vec<Oracle> {
             to,
             ..ask("tasks", &MEASURES, &["organization_id", "g.category"])
         },
-        scales: vec![0; 6],
+        scales: vec![0; 7],
     };
-    vec![by_bucket, window]
+    // The null-ness key as a filter, against the test it stands for.
+    let open = Oracle {
+        sql: format!(
+            "SELECT f.organization_id, count(*), sum(f.picks)
+               FROM $S.tasks f
+              WHERE f.completed IS NULL
+                AND f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+              GROUP BY 1"
+        ),
+        ask: Ask {
+            from,
+            to,
+            filter: vec![Cond {
+                path: KeyPath {
+                    head: id("done"),
+                    attr: None,
+                },
+                values: vec![Literal::Bool(false)],
+            }],
+            ..ask("tasks", &["tasks", "picks"], &["organization_id"])
+        },
+        scales: vec![0; 3],
+    };
+    vec![by_bucket, window, open]
 }
 
 /// Asks straum what each oracle's SQL answers in PostgreSQL and compares the
@@ -607,10 +647,15 @@ impl Rng {
         let at = START + self.below(self.hours * 3_600) as i64;
         let organization = 1 + self.below(3);
         let taskgroup = (1 + self.below(4)).to_string();
+        let completed = if self.chance(50) {
+            format!("to_timestamp({}) AT TIME ZONE 'UTC'", at + 600)
+        } else {
+            "NULL".into()
+        };
         let picks = self.below(50).to_string();
         format!(
             "INSERT INTO $S.tasks VALUES ({id}, {organization}, {}, \
-             to_timestamp({at}) AT TIME ZONE 'UTC', {});",
+             to_timestamp({at}) AT TIME ZONE 'UTC', {completed}, {});",
             self.or_null(taskgroup),
             self.or_null(picks)
         )
@@ -750,8 +795,8 @@ fn follows_the_task_tables() {
     // On a bucket edge, and a microsecond before it.
     db.run(&format!(
         "INSERT INTO $S.tasks VALUES
-           (1000, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', 1),
-           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', 1)"
+           (1000, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1),
+           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', NULL, 1)"
     ));
     let spec = db.spec(TASKS_SPEC);
     assert!(
@@ -784,6 +829,9 @@ fn follows_the_task_tables() {
     // key (the old key goes), a fact moving to another dim row, a dim row
     // gone, times moved, rows gone.
     let changes = [
+        // Null-ness flips both ways.
+        "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0",
+        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0",
         "UPDATE $S.taskgroups SET category = 'pack' WHERE organization_id = 1",
         "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1",
         "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0",
@@ -797,6 +845,26 @@ fn follows_the_task_tables() {
         applied(&mut writer);
         compare(&mut db, writer.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
     }
+    // The key is a boolean, whatever its column is.
+    let done_is = |value| Ask {
+        filter: vec![Cond {
+            path: KeyPath {
+                head: id("done"),
+                attr: None,
+            },
+            values: vec![value],
+        }],
+        ..ask("tasks", &["tasks"], &[])
+    };
+    assert!(writer.app().ask(&done_is(Literal::Bool(true))).is_ok());
+    assert_eq!(
+        writer
+            .app()
+            .ask(&done_is(Literal::Int(1)))
+            .unwrap_err()
+            .to_string(),
+        "done is a boolean, so it can't be the integer 1"
+    );
 }
 
 #[test]
@@ -1446,6 +1514,28 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            "",
+        ),
+        (
+            "nullkey",
+            format!("{} {publish}", fact("k timestamp", "").0),
+            fact(
+                "",
+                "(t.k IS NULL) AS open, count(*) FILTER (WHERE t.open = 1) AS n",
+            )
+            .1
+            .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            "fact f: measure n compares open (a boolean) with 1",
+        ),
+        (
+            "nullkeyok",
+            format!("{} {publish}", fact("k timestamp", "").0),
+            fact(
+                "",
+                "(t.k IS NULL) AS open, count(*) FILTER (WHERE t.k IS NOT NULL) AS n",
+            )
+            .1
+            .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "",
         ),
     ];

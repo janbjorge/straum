@@ -225,9 +225,21 @@ impl Walker {
                 *slot = Some(self.instant(value, params));
                 continue;
             }
-            self.conds(part, &mut conds, &mut |w, e| w.ask_path(e), &mut |w, e| {
-                w.parameter(e, params)
-            });
+            self.conds(
+                part,
+                &mut conds,
+                &mut |w, e| w.ask_path(e),
+                &mut |w, e| w.parameter(e, params),
+                // A null-ness key is asked for by name, `key = $n`.
+                &mut |w, test, _, _| {
+                    w.reject(
+                        line(test),
+                        "filter condition, use = or IN joined by AND,",
+                        test,
+                    );
+                    None
+                },
+            );
         }
         if from.is_none() || to.is_none() {
             self.error(at, "an ask needs WHERE bucket >= $n AND bucket < $m".into());

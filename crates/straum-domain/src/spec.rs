@@ -40,8 +40,51 @@ pub struct Fact {
     pub table: Table,
     pub time: Time,
     pub refs: Vec<Ref>,
-    pub by: Vec<Ident>,
+    pub by: Vec<By>,
     pub measures: Vec<Measure>,
+}
+
+/// A rollup key a fact row gives: a column's value, or whether a column
+/// is null, which a nullable column such as `completed` means by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum By {
+    Column(Ident),
+    /// `(column IS NULL) AS name`, or `IS NOT NULL` when `negated`: a
+    /// boolean key whatever the column's type.
+    IsNull {
+        column: Ident,
+        name: Ident,
+        negated: bool,
+    },
+}
+
+impl By {
+    /// What asks call it.
+    pub fn name(&self) -> &Ident {
+        match self {
+            By::Column(column) => column,
+            By::IsNull { name, .. } => name,
+        }
+    }
+
+    /// The fact column it reads.
+    pub fn column(&self) -> &Ident {
+        match self {
+            By::Column(column) | By::IsNull { column, .. } => column,
+        }
+    }
+
+    pub fn slot(&self) -> Slot<'_> {
+        match self {
+            By::Column(column) => Slot::Column(column),
+            By::IsNull {
+                column, negated, ..
+            } => Slot::IsNull {
+                column,
+                negated: *negated,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +173,7 @@ pub enum Literal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key<'a> {
-    Column(&'a Ident),
+    By(&'a By),
     /// A ref on one column, whose value is the ref's id. A ref on several
     /// has no id: asks name its columns or its attributes.
     Ref(&'a Ref),
@@ -138,33 +181,31 @@ pub enum Key<'a> {
     Attr(&'a Ref, &'a Ident),
 }
 
-/// One part of the rollup key: a fact column, or the time bucket.
+/// One part of the rollup key: a fact column's value, whether a fact
+/// column is null, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
+    IsNull { column: &'a Ident, negated: bool },
     Bucket,
 }
 
 impl Fact {
-    /// The `by` columns, then the time bucket. A ref's via columns are
-    /// `by` columns, so a ref adds nothing; dim attributes are never part
-    /// of it.
+    /// The `by` keys, then the time bucket. A ref's via columns are `by`
+    /// columns, so a ref adds nothing; dim attributes are never part of it.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
-        (self.by.iter().map(Slot::Column)).chain(iter::once(Slot::Bucket))
+        (self.by.iter().map(By::slot)).chain(iter::once(Slot::Bucket))
     }
 
     /// The columns a row of this fact carries, in order: the time column,
-    /// the `by` columns in rollup-key order, then the measure inputs not
-    /// already among them.
+    /// the columns the `by` keys read in rollup-key order, each once, then
+    /// the measure inputs not already among them.
     pub fn columns(&self) -> Vec<Ident> {
-        let mut columns: Vec<Ident> = iter::once(&self.time.column)
-            .chain(&self.by)
-            .cloned()
-            .collect();
-        for m in &self.measures {
-            if let Some(column) = m.agg.input()
-                && !columns.contains(column)
-            {
+        let mut columns: Vec<Ident> = vec![self.time.column.clone()];
+        let read = (self.by.iter().map(By::column))
+            .chain(self.measures.iter().filter_map(|m| m.agg.input()));
+        for column in read {
+            if !columns.contains(column) {
                 columns.push(column.clone());
             }
         }
@@ -246,8 +287,8 @@ impl Spec {
         self.facts.iter().find(|f| f.name.as_str() == name)
     }
 
-    /// A bare name is a `by` column or a ref on one column; `ref.attr` is
-    /// one of the dim's key columns or attributes.
+    /// A bare name is a `by` key or a ref on one column; `ref.attr` is one
+    /// of the dim's key columns or attributes.
     pub fn resolve<'a>(&'a self, fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
         resolve(&self.dims, fact, path)
     }
@@ -255,8 +296,8 @@ impl Spec {
 
 fn resolve<'a>(dims: &'a [Dim], fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
     let Some(attr) = &path.attr else {
-        if let Some(column) = fact.by.iter().find(|c| **c == path.head) {
-            return Some(Key::Column(column));
+        if let Some(by) = fact.by.iter().find(|b| *b.name() == path.head) {
+            return Some(Key::By(by));
         }
         let r = fact.refs.iter().find(|r| r.name == path.head)?;
         return (r.via.len() == 1).then_some(Key::Ref(r));
@@ -306,18 +347,31 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         below = bucket;
     }
 
-    // `by` columns and ref names share one namespace in key paths.
+    // `by` keys and ref names share one namespace in key paths.
     let mut keys: HashSet<&Ident> = HashSet::new();
-    for column in &fact.by {
-        if *column == fact.time.column {
-            errors.push(SpecError::TimeAsKey {
-                fact: name.clone(),
-                column: column.clone(),
-            });
-        } else if !keys.insert(column) {
+    for by in &fact.by {
+        match by {
+            By::Column(column) if *column == fact.time.column => {
+                errors.push(SpecError::TimeAsKey {
+                    fact: name.clone(),
+                    column: column.clone(),
+                });
+            }
+            By::IsNull {
+                column, name: key, ..
+            } if *column == fact.time.column => {
+                errors.push(SpecError::NullTime {
+                    fact: name.clone(),
+                    name: key.clone(),
+                    column: column.clone(),
+                });
+            }
+            By::Column(_) | By::IsNull { .. } => {}
+        }
+        if !keys.insert(by.name()) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
-                name: column.clone(),
+                name: by.name().clone(),
             });
         }
     }
@@ -336,7 +390,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                     ref_name: r.name.clone(),
                     column: column.clone(),
                 });
-            } else if !fact.by.contains(column) {
+            } else if !fact.by.contains(&By::Column(column.clone())) {
                 errors.push(SpecError::ViaNotKey {
                     fact: name.clone(),
                     ref_name: r.name.clone(),
@@ -364,7 +418,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
-    let named = (fact.by.iter())
+    let named = (fact.by.iter().map(By::name))
         .chain(fact.refs.iter().map(|r| &r.name))
         .chain(fact.measures.iter().map(|m| &m.name));
     if named.into_iter().any(|n| n.as_str() == "bucket") {
@@ -412,6 +466,13 @@ pub enum SpecError {
     /// anyway: a time never groups.
     TimeAsKey {
         fact: Ident,
+        column: Ident,
+    },
+    /// A null-ness key over the time column, which could never be true in
+    /// an answer: a row with no time is never answered.
+    NullTime {
+        fact: Ident,
+        name: Ident,
         column: Ident,
     },
     /// A ref's via column is not a `by` column, so cells don't hold it.
@@ -484,6 +545,11 @@ impl fmt::Display for SpecError {
                     "fact {fact}: {column} is the time column, so it can't be a by column too"
                 )
             }
+            SpecError::NullTime { fact, name, column } => write!(
+                f,
+                "fact {fact}: {name} asks whether the time column {column} is null, \
+                 which no ask could see: a row with no time is never answered"
+            ),
             SpecError::ViaNotKey {
                 fact,
                 ref_name,

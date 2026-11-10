@@ -292,23 +292,29 @@ impl Walker {
         at
     }
 
+    /// `path = value` and `path IN (values)` joined by `AND`; `column IS
+    /// NULL` and `IS NOT NULL` go to `null_test` with whether it is the
+    /// `NULL` one, since what they mean depends on the caller.
     fn conds(
         &mut self,
         expr: &sql::Expr,
         conds: &mut Vec<Cond>,
         path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<KeyPath>,
         value: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Literal>,
+        null_test: &mut impl FnMut(&mut Self, &sql::Expr, &sql::Expr, bool) -> Option<Cond>,
     ) {
         match expr {
-            sql::Expr::Nested(inner) => self.conds(inner, conds, path, value),
+            sql::Expr::Nested(inner) => self.conds(inner, conds, path, value, null_test),
             sql::Expr::BinaryOp {
                 left,
                 op: sql::BinaryOperator::And,
                 right,
             } => {
-                self.conds(left, conds, path, value);
-                self.conds(right, conds, path, value);
+                self.conds(left, conds, path, value, null_test);
+                self.conds(right, conds, path, value, null_test);
             }
+            sql::Expr::IsNull(column) => conds.extend(null_test(self, expr, column, true)),
+            sql::Expr::IsNotNull(column) => conds.extend(null_test(self, expr, column, false)),
             sql::Expr::BinaryOp {
                 left,
                 op: sql::BinaryOperator::Eq,
