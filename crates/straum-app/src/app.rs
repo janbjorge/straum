@@ -7,7 +7,7 @@ use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Datum, DimTable, Ident, Rollup, RowError, Spec, Store};
+use straum_domain::{Answer, Ask, AskError, Datum, DimTable, Ident, RowError, Spec, Store};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
@@ -254,62 +254,54 @@ impl State {
     /// needs only the old key.
     fn apply_change(&mut self, change: Change) -> Result<(), Stale> {
         match change {
-            Change::Insert { table, row } => match self.target(&table) {
-                Target::Fact(rollup) => rollup.add(&row)?,
-                Target::Dim(rows) => rows.upsert(&row)?,
-            },
-            Change::Update { table, old, new } => match self.target(&table) {
-                Target::Fact(rollup) => {
-                    let Old::Row(old) = old else {
-                        return Err(Stale);
-                    };
-                    rollup.remove(&old)?;
-                    rollup.add(&new)?;
-                }
-                Target::Dim(rows) => {
-                    let old = dim_key(rows, old);
-                    rows.upsert(&new)?;
-                    if let Some(key) = old
-                        && key.as_slice() != rows.key_of(&new)
-                    {
-                        rows.delete(&key)?;
-                    }
-                }
-            },
-            Change::Delete { table, old } => match self.target(&table) {
-                Target::Fact(rollup) => {
-                    let Old::Row(old) = old else {
-                        return Err(Stale);
-                    };
-                    rollup.remove(&old)?;
-                }
-                Target::Dim(rows) => {
-                    let key = dim_key(rows, old).ok_or(Stale)?;
+            Change::Insert { table, row } if self.is_fact(&table) => {
+                self.store.add_fact_row(table.as_str(), &row)?;
+            }
+            Change::Insert { table, row } => self.dim(&table).upsert(&row)?,
+            Change::Update { table, old, new } if self.is_fact(&table) => {
+                let Old::Row(old) = old else {
+                    return Err(Stale);
+                };
+                self.store.remove_fact_row(table.as_str(), &old)?;
+                self.store.add_fact_row(table.as_str(), &new)?;
+            }
+            Change::Update { table, old, new } => {
+                let rows = self.dim(&table);
+                let old = dim_key(rows, old);
+                rows.upsert(&new)?;
+                if let Some(key) = old
+                    && key.as_slice() != rows.key_of(&new)
+                {
                     rows.delete(&key)?;
                 }
-            },
-            Change::Truncate { table } => match self.target(&table) {
-                Target::Fact(rollup) => rollup.clear(),
-                Target::Dim(rows) => rows.clear(),
-            },
+            }
+            Change::Delete { table, old } if self.is_fact(&table) => {
+                let Old::Row(old) = old else {
+                    return Err(Stale);
+                };
+                self.store.remove_fact_row(table.as_str(), &old)?;
+            }
+            Change::Delete { table, old } => {
+                let rows = self.dim(&table);
+                let key = dim_key(rows, old).ok_or(Stale)?;
+                rows.delete(&key)?;
+            }
+            Change::Truncate { table } if self.is_fact(&table) => {
+                self.store.rollup(table.as_str()).expect(IN_SPEC).clear();
+            }
+            Change::Truncate { table } => self.dim(&table).clear(),
             Change::Altered { .. } => return Err(Stale),
         }
         Ok(())
     }
 
-    fn target(&mut self, table: &Ident) -> Target<'_> {
-        let name = table.as_str();
-        if self.store.spec().fact(name).is_some() {
-            Target::Fact(self.store.rollup(name).expect(IN_SPEC))
-        } else {
-            Target::Dim(self.store.dim(name).expect(IN_SPEC))
-        }
+    fn is_fact(&self, table: &Ident) -> bool {
+        self.store.spec().fact(table.as_str()).is_some()
     }
-}
 
-enum Target<'a> {
-    Fact(&'a mut Rollup),
-    Dim(&'a mut DimTable),
+    fn dim(&mut self, table: &Ident) -> &mut DimTable {
+        self.store.dim(table.as_str()).expect(IN_SPEC)
+    }
 }
 
 /// The key a dim row had; `None` for an update that kept it.
@@ -377,8 +369,7 @@ impl<S: Source> Writer<S> {
             self.source.load_dim(dim, rows)?;
         }
         for fact in self.spec.facts() {
-            let rollup = store.rollup(fact.name.as_str()).expect(IN_SPEC);
-            self.source.load_fact(fact, rollup)?;
+            self.source.load_fact(fact, &mut store)?;
         }
         let wal = self.measure()?;
         let mut lag = Lag::new(opened);

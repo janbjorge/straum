@@ -385,6 +385,20 @@ Tests:
   (`NaN`, an overflowing numeric, non-UTF-8 text) still fail it, and the
   error names the table and column (`ValueError::at`), so the poison row
   can be found; the row itself is not named.
+- 2026-11-10: A ref whose via columns are not selected binds the
+  attributes it selects at ingest (`Binding::Early`): they are rollup
+  keys, read from the dim row as each fact row comes in, so the rollup is
+  keyed by an attribute's few values instead of the ref's many. On
+  pio-shaped tables the late picks view held 0.93 cells a task, about 12
+  million per width and 5.8 GiB at pio's size, measured at a tenth and
+  three tenths of it. The trade against the 2026-11-08 "mapped after
+  aggregation" decision is time: an attribute bound at ingest is as of
+  when the row came in, a dim change does not rewrite history, and a row
+  bound to an old value that is updated or deleted is not found, so
+  Straum starts over and binds everything again. The `Source` port hands
+  fact rows to the `Store` (`Store::add_fact_rows`), which binds before
+  the rollup codes. Asks name the attribute; the ref has no id, and only
+  the attributes the view selects are bound.
 
 ## M0: notation and domain model
 
@@ -642,3 +656,14 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
   it takes 6.6 to 8.8 ms (2026-11-09). An ask over every 15-minute bucket
   still reads every cell, 2.4 to 3.0 s. Cap asks, keep
   the status outside the lock, or both?
+- Deferred from M9 to M11 (2026-11-10): `AT TIME ZONE` in views, since a
+  `timestamp` is wall clock; keeping the old store answering during a
+  reload (pio's Redis cache is the stale fallback); naming a poison row by
+  `ctid` or key in the failure text; `uuid` and `date` kinds, enums and
+  custom types through their label text, `numeric` above precision 18;
+  matching relations by OID instead of `(schema, name)`; generated
+  columns, which need `publish_generated_columns = stored` and are silent
+  today; a `straum estimate` for cell counts, which `bench/pio` counts
+  in SQL instead; per-table reload, and a chunked apply of one
+  transaction. Dim rows kept for the lookups of attributes bound at
+  ingest are most of what memory an early-bound view still holds.

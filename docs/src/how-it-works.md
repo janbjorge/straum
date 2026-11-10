@@ -34,9 +34,10 @@ A cell holds its row count and what each measure needs:
 - `count(DISTINCT c)` keeps a count per value.
 
 A null-ness key is kept as the boolean it is: whether the column was
-null. Each bucket width keeps cells of its own. A fact row with no time
-goes to a bucket no ask reads. Dims are kept as rows by key, one column
-or more.
+null. An attribute [bound at ingest](spec.md#binding-attributes-at-ingest)
+is kept as its value, read from the dim row as the fact row came in. Each
+bucket width keeps cells of its own. A fact row with no time goes to a
+bucket no ask reads. Dims are kept as rows by key, one column or more.
 
 ## Applying a commit
 
@@ -53,7 +54,9 @@ transaction whole:
 
 A change Straum can't apply makes it [start over](running.md#states) from
 a new slot: an update without its old row, a row that doesn't fit its
-rollup, or a table whose columns now read differently.
+rollup, a table whose columns now read differently, or an update or
+delete of a row whose attribute bound at ingest the dim has since
+changed, since its cell is no longer where the dim says.
 
 A transaction that changes more than `--max-transaction-rows` rows of the
 spec's tables makes it start over too, on purpose. Straum holds a
@@ -73,9 +76,10 @@ the failure names the transaction's LSN and the cap.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
 3. It looks up the attributes the ask needs by the values of the columns
-   the ref joins on, once per combination it meets. Attributes are not
-   part of the rollup key, so a change to a dim row changes answers
-   without touching a cell.
+   the ref joins on, once per combination it meets. Such attributes are
+   not part of the rollup key, so a change to a dim row changes answers
+   without touching a cell. An attribute bound at ingest is in the key
+   already and is read like a column.
 4. It adds each cell to its group, and to each measure whose filter holds.
    Filters name only parts of the rollup key, so a cell counts whole or
    not at all.

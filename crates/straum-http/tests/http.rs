@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Ask, ColumnType, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{Ask, ColumnType, Datum, Dim, DimTable, Fact, Ident, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -52,17 +52,20 @@ impl Source for Script {
         Ok(START)
     }
 
-    fn load_fact(&mut self, _: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
+    fn load_fact(&mut self, _: &Fact, store: &mut Store) -> Result<(), SourceError> {
         thread::sleep(self.pause);
         // at, kind, zone_id, fare.
-        rollup.set_types(&[
-            ColumnType::Time { zoned: true },
-            ColumnType::Int,
-            ColumnType::Int,
-            ColumnType::Numeric { scale: 2 },
-        ])?;
+        store.set_fact_types(
+            "trips",
+            &[
+                ColumnType::Time { zoned: true },
+                ColumnType::Int,
+                ColumnType::Int,
+                ColumnType::Numeric { scale: 2 },
+            ],
+        )?;
         for row in &self.trips {
-            rollup.add(row)?;
+            store.add_fact_row("trips", row)?;
         }
         Ok(())
     }

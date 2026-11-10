@@ -114,6 +114,24 @@ LEFT JOIN $S.taskgroups g
 GROUP BY 1, 2, 3, 4, 5;
 ";
 
+/// The task tables with the group's category bound at ingest: the group
+/// itself is not selected, so the cells are keyed by the category's few
+/// values.
+const TASKS_EARLY_SPEC: &str = "
+CREATE VIEW picks WITH (buckets = '1 day') AS
+SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+       f.organization_id,
+       g.category,
+       (f.completed IS NOT NULL) AS done,
+       count(*) AS tasks,
+       sum(f.picks) AS picks,
+       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks
+FROM $S.tasks f
+LEFT JOIN $S.taskgroups g
+       ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
+GROUP BY 1, 2, 3, 4;
+";
+
 const TASKS: &str = "
 CREATE TABLE $S.taskgroups (
     organization_id int,
@@ -549,6 +567,49 @@ fn task_oracles() -> Vec<Oracle> {
     vec![by_bucket, window, open]
 }
 
+/// The early-bound view's oracles: by bucket, organization, category and
+/// done, then by organization and category over a window.
+fn early_oracles() -> Vec<Oracle> {
+    const MEASURES: [&str; 3] = ["tasks", "picks", "pick_tasks"];
+    let by_bucket = Oracle {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, organization_id, category, done,
+                    tasks, picks, pick_tasks
+               FROM ({}) v
+              WHERE bucket >= to_timestamp(0) AT TIME ZONE 'UTC'
+                AND bucket < to_timestamp({END}) AT TIME ZONE 'UTC'",
+            body(TASKS_EARLY_SPEC, "picks")
+        ),
+        ask: ask(
+            "picks",
+            &MEASURES,
+            &["bucket", "organization_id", "g.category", "done"],
+        ),
+        scales: vec![0; 7],
+    };
+    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
+    let window = Oracle {
+        sql: format!(
+            "SELECT f.organization_id, g.category, count(*), sum(f.picks),
+                    count(*) FILTER (WHERE g.category = 'pick')
+               FROM $S.tasks f
+               LEFT JOIN $S.taskgroups g
+                      ON g.organization_id = f.organization_id
+                     AND g.taskgroup_id = f.taskgroup_id
+              WHERE f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+              GROUP BY 1, 2"
+        ),
+        ask: Ask {
+            from,
+            to,
+            ..ask("picks", &MEASURES, &["organization_id", "g.category"])
+        },
+        scales: vec![0; 5],
+    };
+    vec![by_bucket, window]
+}
+
 /// Asks straum what each oracle's SQL answers in PostgreSQL and compares the
 /// rows. `None` when straum isn't ready.
 fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
@@ -946,6 +1007,84 @@ fn a_transaction_past_the_cap_starts_over() {
         let (high, low) = lsn.split_once('/').unwrap();
         u64::from_str_radix(high, 16).unwrap() << 32 | u64::from_str_radix(low, 16).unwrap()
     }
+}
+
+/// The same tables under the late and the early view: fact changes bind as
+/// the dim is, in both; a dim change moves the late view with PostgreSQL
+/// and leaves the early one as it was, until a row bound to the old value
+/// changes and the early view starts over, binding anew.
+#[test]
+fn binds_attributes_at_ingest() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "early", TASKS);
+    db.run("SET TIME ZONE 'Europe/Oslo'");
+    let mut rng = Rng::new(29);
+    for organization in 1..=3 {
+        for taskgroup in 1..=2 {
+            db.run(&format!(
+                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
+                rng.pick(&["pick", "pack", "count"])
+            ));
+        }
+    }
+    for id in 0..200 {
+        db.run(&rng.task(id));
+    }
+    let mut early = Writer::new(App::new(db.spec(TASKS_EARLY_SPEC), LIMITS), db.pg());
+    let mut late = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
+    assert!(matches!(early.step(), Ok(Step::Started(_))));
+    assert!(matches!(late.step(), Ok(Step::Started(_))));
+    compare(&mut db, early.app(), &early_oracles()).expect("early ready");
+    compare(&mut db, late.app(), &task_oracles()).expect("late ready");
+
+    // Fact rows come, move between groups, flip and go; tasks in groups
+    // 3 and 4 have no dim row and bind null.
+    let mut changes: Vec<String> = (200..210).map(|id| rng.task(id)).collect();
+    changes.extend([
+        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
+        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 4 = 0".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
+    ]);
+    for change in changes {
+        db.run(&change);
+        applied(&mut early);
+        applied(&mut late);
+        compare(&mut db, early.app(), &early_oracles()).unwrap_or_else(|| panic!("{change}"));
+        compare(&mut db, late.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
+    }
+
+    // A dim change: PostgreSQL and the late view regroup, the early view
+    // keeps what each row bound when it came.
+    let before = db.rows(&early_oracles()[0].sql);
+    db.run("UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1");
+    applied(&mut early);
+    applied(&mut late);
+    compare(&mut db, late.app(), &task_oracles()).expect("late follows the dim");
+    let after = db.rows(&early_oracles()[0].sql);
+    assert_ne!(before, after);
+    let answered = early.app().ask(&early_oracles()[0].ask).unwrap();
+    let mut got = printed(&answered.answer, &early_oracles()[0].scales);
+    let mut kept = before;
+    got.sort();
+    kept.sort();
+    assert_eq!(got, kept);
+
+    // A row bound to the old category changes: its cell is not where the
+    // dim now says, so the early view starts over and binds everything as
+    // the dim is.
+    db.run(
+        "UPDATE $S.tasks SET picks = coalesce(picks, 0) + 1
+          WHERE task_id = (SELECT min(task_id) FROM $S.tasks
+                            WHERE organization_id = 1 AND taskgroup_id = 1)",
+    );
+    assert_eq!(
+        early.step().unwrap_err().to_string(),
+        "a change no longer fits picks"
+    );
+    assert!(matches!(early.step(), Ok(Step::Started(_))));
+    compare(&mut db, early.app(), &early_oracles()).expect("early rebound");
+    applied(&mut late);
+    compare(&mut db, late.app(), &task_oracles()).expect("late ready");
 }
 
 /// A value straum can't read stops the load, or the stream, naming the
@@ -1961,7 +2100,7 @@ fn connection_errors() {
     assert_eq!(idle.wal().unwrap_err().to_string(), stopped);
     let mut store = Store::new(spec.clone());
     let trips = spec.fact("trips").unwrap();
-    let err = idle.load_fact(trips, store.rollup("trips").unwrap());
+    let err = idle.load_fact(trips, &mut store);
     assert_eq!(err.unwrap_err().to_string(), stopped);
 }
 
@@ -1976,7 +2115,7 @@ fn no_load_once_the_stream_runs() {
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);
     let mut store = Store::new(spec.clone());
-    let err = source.load_fact(spec.fact("trips").unwrap(), store.rollup("trips").unwrap());
+    let err = source.load_fact(spec.fact("trips").unwrap(), &mut store);
     assert_eq!(
         err.unwrap_err().to_string(),
         "the replication stream stopped"

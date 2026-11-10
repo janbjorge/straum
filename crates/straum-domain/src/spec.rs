@@ -132,14 +132,28 @@ impl fmt::Display for Origin {
 pub struct Grain(pub u32);
 
 /// N:1 pointer from fact columns to a dim key, column for column. The only
-/// way a fact reaches another table, so fan-out can't be declared. The via
-/// columns are `by` columns of the fact: a ref adds nothing to the rollup
-/// key, it only says which dim row a cell's values name.
+/// way a fact reaches another table, so fan-out can't be declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     pub name: Ident,
     pub dim: Ident,
     pub via: Vec<Ident>,
+    pub binding: Binding,
+}
+
+/// When a ref's attributes are read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    /// After aggregation. The via columns are `by` columns, so the ref adds
+    /// nothing to the rollup key; an ask looks the attributes up by their
+    /// values, so a change to a dim row changes answers at once.
+    Late,
+    /// At ingest. These attributes are rollup keys, read from the dim row
+    /// the via columns name as each fact row comes in, so a rollup is keyed
+    /// by an attribute's few values instead of the ref's many. The via
+    /// columns are read and kept by nothing. A dim row changed later leaves
+    /// the cells made before as they were: history is not rewritten.
+    Early(Vec<Ident>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,35 +188,57 @@ pub enum Literal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key<'a> {
     By(&'a By),
-    /// A ref on one column, whose value is the ref's id. A ref on several
-    /// has no id: asks name its columns or its attributes.
+    /// A late ref on one column, whose value is the ref's id. A ref on
+    /// several columns, or one bound at ingest, has no id: asks name its
+    /// columns or its attributes.
     Ref(&'a Ref),
-    /// Mapped after aggregation.
+    /// Mapped after aggregation, or at ingest when the ref binds early.
     Attr(&'a Ref, &'a Ident),
 }
 
 /// One part of the rollup key: a fact column's value, whether a fact
-/// column is null, or the time bucket.
+/// column is null, a dim attribute bound at ingest, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
     IsNull { column: &'a Ident, negated: bool },
+    Early(&'a Ref, &'a Ident),
     Bucket,
 }
 
 impl Fact {
-    /// The `by` keys, then the time bucket. A ref's via columns are `by`
-    /// columns, so a ref adds nothing; dim attributes are never part of it.
+    /// The `by` keys, then the attributes bound at ingest, then the time
+    /// bucket. A late ref's via columns are `by` columns, so it adds
+    /// nothing; late attributes are never part of it.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
-        (self.by.iter().map(By::slot)).chain(iter::once(Slot::Bucket))
+        (self.by.iter().map(By::slot))
+            .chain(self.early_attrs().map(|(r, a)| Slot::Early(r, a)))
+            .chain(iter::once(Slot::Bucket))
     }
 
-    /// The columns a row of this fact carries, in order: the time column,
-    /// the columns the `by` keys read in rollup-key order, each once, then
-    /// the measure inputs not already among them.
+    /// The attributes bound at ingest, each with its ref, in rollup-key
+    /// order.
+    pub fn early_attrs(&self) -> impl Iterator<Item = (&Ref, &Ident)> {
+        self.refs.iter().flat_map(|r| {
+            let attrs = match &r.binding {
+                Binding::Late => &[][..],
+                Binding::Early(attrs) => attrs.as_slice(),
+            };
+            attrs.iter().map(move |a| (r, a))
+        })
+    }
+
+    /// The columns a load reads for this fact, in order: the time column,
+    /// the columns the `by` keys read in rollup-key order, the via columns
+    /// of the refs bound at ingest, then the measure inputs, each column
+    /// once. The store appends the attributes bound at ingest after them.
     pub fn columns(&self) -> Vec<Ident> {
         let mut columns: Vec<Ident> = vec![self.time.column.clone()];
+        let early_via = (self.refs.iter())
+            .filter(|r| matches!(r.binding, Binding::Early(_)))
+            .flat_map(|r| &r.via);
         let read = (self.by.iter().map(By::column))
+            .chain(early_via)
             .chain(self.measures.iter().filter_map(|m| m.agg.input()));
         for column in read {
             if !columns.contains(column) {
@@ -287,8 +323,9 @@ impl Spec {
         self.facts.iter().find(|f| f.name.as_str() == name)
     }
 
-    /// A bare name is a `by` key or a ref on one column; `ref.attr` is one
-    /// of the dim's key columns or attributes.
+    /// A bare name is a `by` key or a late ref on one column; `ref.attr`
+    /// is one of the dim's key columns or attributes for a late ref, and
+    /// one of the attributes bound for a ref bound at ingest.
     pub fn resolve<'a>(&'a self, fact: &'a Fact, path: &KeyPath) -> Option<Key<'a>> {
         resolve(&self.dims, fact, path)
     }
@@ -300,11 +337,16 @@ fn resolve<'a>(dims: &'a [Dim], fact: &'a Fact, path: &KeyPath) -> Option<Key<'a
             return Some(Key::By(by));
         }
         let r = fact.refs.iter().find(|r| r.name == path.head)?;
-        return (r.via.len() == 1).then_some(Key::Ref(r));
+        return (r.via.len() == 1 && r.binding == Binding::Late).then_some(Key::Ref(r));
     };
     let r = fact.refs.iter().find(|r| r.name == path.head)?;
-    let dim = dims.iter().find(|d| d.name == r.dim)?;
-    let attr = dim.columns().find(|a| *a == attr)?;
+    let attr = match &r.binding {
+        Binding::Late => {
+            let dim = dims.iter().find(|d| d.name == r.dim)?;
+            dim.columns().find(|a| *a == attr)?
+        }
+        Binding::Early(attrs) => attrs.iter().find(|a| *a == attr)?,
+    };
     Some(Key::Attr(r, attr))
 }
 
@@ -390,7 +432,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                     ref_name: r.name.clone(),
                     column: column.clone(),
                 });
-            } else if !fact.by.contains(&By::Column(column.clone())) {
+            } else if r.binding == Binding::Late && !fact.by.contains(&By::Column(column.clone())) {
                 errors.push(SpecError::ViaNotKey {
                     fact: name.clone(),
                     ref_name: r.name.clone(),
@@ -398,7 +440,8 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                 });
             }
         }
-        match dims.iter().find(|d| d.name == r.dim) {
+        let dim = dims.iter().find(|d| d.name == r.dim);
+        match dim {
             None => errors.push(SpecError::UnknownDim {
                 fact: name.clone(),
                 ref_name: r.name.clone(),
@@ -412,6 +455,32 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                 key: dim.key.len(),
             }),
             Some(_) => {}
+        }
+        if let Binding::Early(attrs) = &r.binding {
+            if attrs.is_empty() {
+                errors.push(SpecError::EarlyNoAttrs {
+                    fact: name.clone(),
+                    ref_name: r.name.clone(),
+                });
+            }
+            let mut bound = HashSet::new();
+            for attr in attrs {
+                if !bound.insert(attr) {
+                    errors.push(SpecError::Duplicate {
+                        scope: Some(r.name.clone()),
+                        name: attr.clone(),
+                    });
+                } else if let Some(dim) = dim
+                    && !dim.columns().any(|c| c == attr)
+                {
+                    errors.push(SpecError::UnknownAttr {
+                        fact: name.clone(),
+                        ref_name: r.name.clone(),
+                        attr: attr.clone(),
+                        dim: dim.name.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -500,6 +569,18 @@ pub enum SpecError {
         ref_name: Ident,
         dim: Ident,
     },
+    /// A ref bound at ingest with nothing to bind.
+    EarlyNoAttrs {
+        fact: Ident,
+        ref_name: Ident,
+    },
+    /// A ref binds an attribute its dim has no column of.
+    UnknownAttr {
+        fact: Ident,
+        ref_name: Ident,
+        attr: Ident,
+        dim: Ident,
+    },
     NoKey {
         dim: Ident,
     },
@@ -572,6 +653,19 @@ impl fmt::Display for SpecError {
             } => write!(
                 f,
                 "fact {fact}: ref {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
+            ),
+            SpecError::EarlyNoAttrs { fact, ref_name } => write!(
+                f,
+                "fact {fact}: ref {ref_name} binds at ingest but names no attribute"
+            ),
+            SpecError::UnknownAttr {
+                fact,
+                ref_name,
+                attr,
+                dim,
+            } => write!(
+                f,
+                "fact {fact}: ref {ref_name} binds {attr}, which dim {dim} has no column of"
             ),
             SpecError::NoKey { dim } => write!(f, "dim {dim}: no key columns"),
             SpecError::UnknownDim {

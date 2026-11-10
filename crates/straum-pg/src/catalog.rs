@@ -3,7 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
+use straum_domain::{Binding, By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -351,6 +351,12 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
         By::Column(column) => (column, Role::Key),
         By::IsNull { column, .. } => (column, Role::Nullness),
     }));
+    // A ref bound at ingest reads its via columns without keeping them.
+    for r in &fact.refs {
+        if let Binding::Early(_) = r.binding {
+            roles.extend(r.via.iter().map(|v| (v, Role::Key)));
+        }
+    }
     for m in &fact.measures {
         let Some(column) = m.agg.input() else {
             continue;

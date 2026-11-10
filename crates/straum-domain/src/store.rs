@@ -5,11 +5,12 @@ use std::slice;
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::hash::FastMap;
-use crate::rollup::{Cells, DimTable, Rollup};
-use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
+use crate::rollup::{Cells, DimTable, Rollup, RowError};
+use crate::spec::{Binding, Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
+const IN_SPEC: &str = "the fact is in the spec";
 
 #[derive(Debug)]
 pub struct Store {
@@ -18,6 +19,17 @@ pub struct Store {
     rollups: Vec<Rollup>,
     /// One per dim, in spec order.
     dims: Vec<DimTable>,
+    /// Per fact, the refs bound at ingest, in [`Fact::early_attrs`] order.
+    early: Vec<Vec<Early>>,
+}
+
+/// A ref bound at ingest: where its via columns sit in a fact row as read,
+/// which dim table to look in, and which columns of the dim row to append.
+#[derive(Debug)]
+struct Early {
+    via: Vec<usize>,
+    dim: usize,
+    columns: Vec<usize>,
 }
 
 /// One row per group, sorted by key: the values of the ask's `by`, then its
@@ -41,10 +53,126 @@ pub struct AnswerColumn {
 
 impl Store {
     pub fn new(spec: Spec) -> Store {
+        let early = (spec.facts().iter())
+            .map(|fact| {
+                let columns = fact.columns();
+                (fact.refs.iter())
+                    .filter_map(|r| match &r.binding {
+                        Binding::Late => None,
+                        Binding::Early(attrs) => {
+                            let d = (spec.dims().iter())
+                                .position(|d| d.name == r.dim)
+                                .expect(CHECKED);
+                            let dim = &spec.dims()[d];
+                            Some(Early {
+                                via: (r.via.iter())
+                                    .map(|v| columns.iter().position(|c| c == v).expect(CHECKED))
+                                    .collect(),
+                                dim: d,
+                                columns: (attrs.iter())
+                                    .map(|a| dim.columns().position(|c| c == a).expect(CHECKED))
+                                    .collect(),
+                            })
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
         Store {
             rollups: spec.facts().iter().map(Rollup::new).collect(),
             dims: spec.dims().iter().map(DimTable::new).collect(),
+            early,
             spec,
+        }
+    }
+
+    /// Sets the types of the columns a load reads for `fact`, as
+    /// [`Fact::columns`] lists them. The attributes bound at ingest take
+    /// their types from their dims, which load first.
+    pub fn set_fact_types(&mut self, fact: &str, types: &[ColumnType]) -> Result<(), RowError> {
+        let f = self.fact_index(fact).expect(IN_SPEC);
+        let early: Vec<ColumnType> = (self.early[f].iter())
+            .flat_map(|e| e.columns.iter().map(|&c| self.dims[e.dim].column_type(c)))
+            .collect();
+        self.rollups[f].set_types(types)?;
+        self.rollups[f].set_early_types(&early)
+    }
+
+    /// Adds rows of [`Fact::columns`] laid end to end, as a load reads
+    /// them, binding the attributes of the refs bound at ingest first. A
+    /// row whose dim row is missing binds nulls, as a `LEFT JOIN` would.
+    pub fn add_fact_rows(&mut self, fact: &str, rows: &[Datum]) -> Result<(), RowError> {
+        let f = self.fact_index(fact).expect(IN_SPEC);
+        if self.early[f].is_empty() {
+            return self.rollups[f].add_rows(rows);
+        }
+        let read = self.rollups[f].columns().len();
+        if !rows.len().is_multiple_of(read) {
+            return Err(RowError::Arity {
+                expected: read,
+                found: rows.len() % read,
+            });
+        }
+        let width = read + self.bound_width(f);
+        let mut bound = Vec::with_capacity(rows.len() / read * width);
+        for row in rows.chunks_exact(read) {
+            self.bind(f, row, &mut bound);
+        }
+        self.rollups[f].add_rows(&bound)
+    }
+
+    /// Adds one row of [`Fact::columns`], as the stream brings it.
+    pub fn add_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
+        let f = self.fact_index(fact).expect(IN_SPEC);
+        let bound = self.bound_row(f, row)?;
+        self.rollups[f].add(&bound)
+    }
+
+    /// Removes one row, bound against the dims as they are now. A dim row
+    /// changed since the row came in binds differently, so the row is not
+    /// found and the caller starts over, which binds everything again.
+    pub fn remove_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
+        let f = self.fact_index(fact).expect(IN_SPEC);
+        let bound = self.bound_row(f, row)?;
+        self.rollups[f].remove(&bound)
+    }
+
+    fn bound_row(&self, f: usize, row: &[Datum]) -> Result<Vec<Datum>, RowError> {
+        let read = self.rollups[f].columns().len();
+        if row.len() != read {
+            return Err(RowError::Arity {
+                expected: read,
+                found: row.len(),
+            });
+        }
+        let mut bound = Vec::with_capacity(read + self.bound_width(f));
+        self.bind(f, row, &mut bound);
+        Ok(bound)
+    }
+
+    fn bound_width(&self, f: usize) -> usize {
+        self.early[f].iter().map(|e| e.columns.len()).sum()
+    }
+
+    /// The row as read, then each attribute bound at ingest: the dim row
+    /// the via columns name gives it, or null when there is none.
+    fn bind(&self, f: usize, row: &[Datum], out: &mut Vec<Datum>) {
+        out.extend_from_slice(row);
+        for early in &self.early[f] {
+            let table = &self.dims[early.dim];
+            let found = match early.via.as_slice() {
+                [via] => table.get(slice::from_ref(&row[*via])),
+                via => {
+                    let key: Vec<Datum> = via.iter().map(|&v| row[v].clone()).collect();
+                    table.get(&key)
+                }
+            };
+            for &column in &early.columns {
+                let value = found.map_or(Datum::Null, |codes| {
+                    table.value(column, codes[column]).clone()
+                });
+                out.push(value);
+            }
         }
     }
 
@@ -207,6 +335,9 @@ impl Store {
         match self.spec.resolve(fact, path).expect(CHECKED) {
             Key::By(by) => Source::Slot(slot(by.slot())),
             Key::Ref(r) => Source::Slot(slot(Slot::Column(&r.via[0]))),
+            Key::Attr(r, attr) if r.binding != Binding::Late => {
+                Source::Slot(slot(Slot::Early(r, attr)))
+            }
             Key::Attr(r, attr) => {
                 let d = self.dim_index(r.dim.as_str()).expect(CHECKED);
                 let dim = &self.spec.dims()[d];

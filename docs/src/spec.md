@@ -148,6 +148,43 @@ GROUP BY 1, 2, 3, 4, 5;
   nothing else about the column. The view body stays what PostgreSQL
   runs, since the key's name is no column there.
 
+## Binding attributes at ingest
+
+A dim's attributes are read after aggregation: the fact column a ref
+joins on is a key, an ask looks the attribute up by its value, and a
+change to a dim row changes answers at once without touching a cell.
+That keeps as many cells as the join column has values. When a column
+has hundreds of thousands of values and its attribute has three, leave
+the column out and select the attribute alone:
+
+```sql
+CREATE VIEW picks AS
+SELECT date_bin('1 hour', f.completed, timestamp 'epoch') AS bucket,
+       f.organization_id,
+       g.category,
+       count(*) AS picks
+FROM public.tasks f
+LEFT JOIN public.taskgroups g
+       ON g.organization_id = f.organization_id
+      AND g.taskgroup_id = f.taskgroup_id
+GROUP BY 1, 2, 3;
+```
+
+`f.taskgroup_id` is not selected, so the ref binds at ingest: as each
+task comes in, Straum reads its group's `category` and keys the cell by
+it. The rollup holds one cell per organization, category and hour instead
+of one per task group. On pio-shaped tables that is a few thousand cells
+against twelve million ([benchmark](benchmark.md#cells-on-pio-shaped-tables)).
+
+The trade is time. An attribute bound at ingest is as of when the row
+came in: a task group recategorised later keeps its old tasks where they
+were, while PostgreSQL's view would move them, and new tasks bind the new
+value. When a row bound to an old value is updated or deleted, Straum
+can't find its cell and [starts over](running.md#states), binding every
+row as the dims are then. Asks name the attribute, `g.category`; the ref
+has no id to group by, and only the attributes the view selects are
+bound.
+
 ## Measures
 
 | Measure | Input column | Answer |

@@ -91,14 +91,21 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
   by expression or position, so the view groups like the rollup.
 - Every column is qualified with its table alias; identifiers are unquoted.
 
-The rollup key is the by keys, then the time bucket (`Fact::rollup_key`); a
-ref's columns are by columns, so a ref adds nothing to it. Dim attributes are
-never part of it. Straum maps the values a ref joins on to its attributes
-after aggregation, as Kylin does with derived dimensions
+The rollup key is the by keys, then the attributes bound at ingest, then the
+time bucket (`Fact::rollup_key`). A ref whose via columns are selected binds
+late: the columns are by columns, the ref adds nothing, and Straum maps their
+values to the attributes after aggregation, as Kylin does with derived
+dimensions
 ([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/)).
 A change to a dim row therefore never touches a rollup. M1 checked this on one
 month of NYC taxi trips: eight ask shapes gave the same rows from the rollup
-as from the raw join in PostgreSQL (PLAN.md, M1).
+as from the raw join in PostgreSQL (PLAN.md, M1). A ref whose via columns are
+not selected binds the attributes it selects at ingest (M11): the store reads
+them from the dim row as each fact row comes in and they are keys, so the
+rollup is keyed by an attribute's few values instead of the ref's many. The
+trade is time: a dim row changed later leaves the cells made before as they
+were, and a row bound to the old value that is updated or deleted makes Straum
+start over and bind everything again.
 
 `Spec::new` checks the declarations against each other and reports every
 problem at once: duplicate names, a grain that doesn't divide a day, the time

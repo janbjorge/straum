@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{Dim, DimTable, Fact, Ident, Spec, Store};
 
 use crate::catalog::{self, Table};
 use crate::decode::Decoder;
@@ -82,7 +82,7 @@ impl Pg {
             .find(|t| t.name == *name)
             .expect("the spec's tables are checked");
         match target {
-            Target::Fact(rollup) => load::fact(&mut snapshot.conn, table, rollup)?,
+            Target::Fact(fact, store) => load::fact(&mut snapshot.conn, table, fact, store)?,
             Target::Dim(rows) => load::dim(&mut snapshot.conn, table, rows)?,
         }
         snapshot.unloaded.retain(|t| t != name);
@@ -135,7 +135,7 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
 }
 
 enum Target<'a> {
-    Fact(&'a mut Rollup),
+    Fact(&'a Fact, &'a mut Store),
     Dim(&'a mut DimTable),
 }
 
@@ -151,8 +151,8 @@ impl Source for Pg {
         Ok(at)
     }
 
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
-        Ok(self.load(&fact.name, Target::Fact(rollup))?)
+    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
+        Ok(self.load(&fact.name, Target::Fact(fact, store))?)
     }
 
     fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError> {

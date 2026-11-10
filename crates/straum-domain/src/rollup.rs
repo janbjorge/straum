@@ -6,7 +6,7 @@ use std::{iter, mem, panic, thread};
 use crate::agg::Agg;
 use crate::hash::FastMap;
 use crate::ident::Ident;
-use crate::spec::{Dim, Fact, Slot};
+use crate::spec::{Dim, Fact, Ref, Slot};
 use crate::value::{ColumnType, Datum};
 
 const TIME: usize = 0;
@@ -19,7 +19,11 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 /// reads few cells.
 #[derive(Debug)]
 pub struct Rollup {
+    /// The columns a load reads, as [`Fact::columns`].
     columns: Vec<Ident>,
+    /// How many attributes bound at ingest the store appends to a row
+    /// after `columns`, in [`Fact::early_attrs`] order.
+    early: usize,
     /// What each rollup-key slot codes of a row, in [`Fact::rollup_key`]
     /// order without the bucket.
     key_columns: Vec<Coded>,
@@ -246,6 +250,7 @@ pub(crate) enum Column {
 impl Rollup {
     pub fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
+        let early: Vec<(&Ref, &Ident)> = fact.early_attrs().collect();
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
         let key_columns: Vec<Coded> = fact
             .rollup_key()
@@ -255,6 +260,14 @@ impl Rollup {
                     column: position(column),
                     negated,
                 }),
+                Slot::Early(r, a) => {
+                    let i = early
+                        .iter()
+                        .position(|(er, ea)| er.name == r.name && *ea == a);
+                    Some(Coded::Value(
+                        columns.len() + i.expect("early_attrs lists it"),
+                    ))
+                }
                 Slot::Bucket => None,
             })
             .collect();
@@ -285,13 +298,21 @@ impl Rollup {
             inputs,
             cells: 0,
             key: Vec::new(),
-            types: vec![ColumnType::Int; columns.len()],
+            types: vec![ColumnType::Int; columns.len() + early.len()],
+            early: early.len(),
             columns,
         }
     }
 
+    /// The columns a load reads, as [`Fact::columns`]. A row of this rollup
+    /// holds them and then the attributes bound at ingest.
     pub fn columns(&self) -> &[Ident] {
         &self.columns
+    }
+
+    /// Columns a row holds: those read, then those bound at ingest.
+    fn width(&self) -> usize {
+        self.columns.len() + self.early
     }
 
     /// At the `date_bin` width; a cell goes when its last row is removed.
@@ -309,7 +330,15 @@ impl Rollup {
     /// Sets the type of each of [`Rollup::columns`]. Only the source knows
     /// them, so a load sets them; they are integers until then.
     pub fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        set_types(&mut self.types, types)
+        let read = self.columns.len();
+        set_types(&mut self.types[..read], types)
+    }
+
+    /// Sets the types of the attributes bound at ingest, which their dims
+    /// know.
+    pub fn set_early_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
+        let read = self.columns.len();
+        set_types(&mut self.types[read..], types)
     }
 
     pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
@@ -347,7 +376,7 @@ impl Rollup {
     /// nothing but the rows. If a row fails [`Rollup::add`]'s checks, none
     /// is added.
     pub fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let width = self.columns.len();
+        let width = self.width();
         if !rows.len().is_multiple_of(width) {
             return Err(RowError::Arity {
                 expected: width,
@@ -481,9 +510,9 @@ impl Rollup {
 
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.columns.len() {
+        if row.len() != self.width() {
             return Err(RowError::Arity {
-                expected: self.columns.len(),
+                expected: self.width(),
                 found: row.len(),
             });
         }

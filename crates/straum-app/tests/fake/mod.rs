@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Old, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{ColumnType, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
@@ -280,10 +280,11 @@ impl Source for Fake {
         Ok(start)
     }
 
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError> {
-        set_types(rollup);
+    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
+        let types: Vec<ColumnType> = fact.columns().iter().map(type_of).collect();
+        store.set_fact_types(fact.name.as_str(), &types)?;
         for row in self.read(&fact.name)? {
-            rollup.add(&row)?;
+            store.add_fact_row(fact.name.as_str(), &row)?;
         }
         Ok(())
     }

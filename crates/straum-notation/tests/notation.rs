@@ -1,6 +1,6 @@
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, By, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot, Spec,
-    SpecError, TimeKey,
+    Agg, Ask, AskError, AskKey, Binding, By, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot,
+    Spec, SpecError, TimeKey,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -79,6 +79,7 @@ fn taxi_parses() {
             Slot::IsNull { column, negated } => {
                 format!("{column} is {}null", if negated { "not " } else { "" })
             }
+            Slot::Early(r, a) => format!("{}.{a}", r.name),
             Slot::Bucket => "bucket".into(),
         })
         .collect();
@@ -438,14 +439,28 @@ fn a_ref_on_two_columns() {
 
 #[test]
 fn a_ref_on_two_columns_rejected() {
-    // Both via columns must be selected.
-    let errors = sql_errors(
+    // With a via column left out and an attribute selected, the ref binds
+    // at ingest; with neither, nothing groups by the ref.
+    let early = parse(
         &GROUPED
             .replace("f.org, f.grp,", "f.org,")
             .replace(", 4", ""),
+    )
+    .unwrap();
+    assert_eq!(
+        early.fact("t").unwrap().refs[0].binding,
+        Binding::Early(vec![id("label")])
+    );
+    let errors = sql_errors(
+        &GROUPED
+            .replace("f.org, f.grp, g.label,", "f.org,")
+            .replace(", 3, 4", ""),
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].msg, "select f.grp so the view groups by ref g");
+    assert_eq!(
+        errors[0].msg,
+        "select f.grp, or an attribute of g, so the view groups by ref g"
+    );
     // Another view joins the dim on another key list: fewer columns, or
     // as many but not the same.
     for (edit, found) in [
@@ -464,6 +479,88 @@ fn a_ref_on_two_columns_rejected() {
             }]
         );
     }
+}
+
+/// A ref whose via column is not selected: its attribute is bound at
+/// ingest and is the key.
+const EARLY: &str = "CREATE VIEW t AS
+SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+       f.a, z.name, count(*) AS n,
+       count(*) FILTER (WHERE z.name = 'x') AS named
+FROM public.t f
+LEFT JOIN public.z z ON z.id = f.z_id
+GROUP BY 1, 2, 3";
+
+#[test]
+fn a_ref_bound_at_ingest() {
+    let spec = parse(EARLY).unwrap();
+    let t = spec.fact("t").unwrap();
+    assert_eq!(t.by, [By::Column(id("a"))]);
+    assert_eq!(t.refs[0].via, [id("z_id")]);
+    assert_eq!(t.refs[0].binding, Binding::Early(vec![id("name")]));
+    // The via column is read for the lookup, not kept.
+    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
+    let key: Vec<String> = (t.rollup_key())
+        .map(|slot| match slot {
+            Slot::Column(c) => c.to_string(),
+            Slot::Early(r, a) => format!("{}.{a}", r.name),
+            Slot::IsNull { .. } | Slot::Bucket => "other".into(),
+        })
+        .collect();
+    assert_eq!(key, ["a", "z.name", "other"]);
+    assert_eq!(
+        t.measure("named").unwrap().filter,
+        [Cond {
+            path: path("z.name"),
+            values: vec![Literal::Text("x".into())]
+        }]
+    );
+    assert_eq!(spec.dim("z").unwrap().attrs, [id("name")]);
+
+    // Asks name the attribute; the ref has no id, and binds only what the
+    // view selected.
+    let ask = |by: &[&str]| Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
+        filter: vec![],
+        from: JAN,
+        to: FEB,
+    };
+    assert!(spec.check(&ask(&["a", "z.name"])).is_ok());
+    let shown = |by: &[&str]| -> Vec<String> {
+        (spec.check(&ask(by)).unwrap_err().iter())
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert_eq!(
+        shown(&["z"]),
+        ["z binds its attributes at ingest and has no id; ask for z.name"]
+    );
+    assert_eq!(
+        shown(&["z.id"]),
+        ["z.id is not bound at ingest; the view binds z.name"]
+    );
+    assert_eq!(
+        spec.check(&ask(&["z"])).unwrap_err(),
+        [AskError::EarlyRef {
+            name: id("z"),
+            attrs: vec![id("name")]
+        }]
+    );
+
+    // Another view may bind the same dim late; the attribute must still be
+    // grouped by.
+    let both = format!("{EARLY};\n{}", BASE.replace("VIEW t", "VIEW u"));
+    let spec = parse(&both).unwrap();
+    assert_eq!(spec.fact("u").unwrap().refs[0].binding, Binding::Late);
+    let errors = sql_errors(&EARLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.msg == "z.name is selected but not in GROUP BY"),
+        "{errors:?}"
+    );
 }
 
 /// Null-ness keys: whether a column is null, grouped like a column, and
@@ -507,6 +604,7 @@ fn null_ness_keys() {
         .map(|slot| match slot {
             Slot::Column(c) => c.to_string(),
             Slot::IsNull { column, negated } => format!("{column} is null = {}", !negated),
+            Slot::Early(r, a) => format!("{}.{a}", r.name),
             Slot::Bucket => "bucket".into(),
         })
         .collect();
@@ -1105,10 +1203,10 @@ fn rejects_everything_outside_the_subset() {
             "name the measure: count(*) AS <name>",
         ),
         (
-            ", f.z_id,",
-            ",",
+            "f.z_id, z.name, ",
+            "",
             2,
-            "select f.z_id so the view groups by ref z",
+            "select f.z_id, or an attribute of z, so the view groups by ref z",
         ),
         // Aggregates.
         (

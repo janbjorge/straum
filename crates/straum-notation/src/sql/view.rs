@@ -1,6 +1,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{
-    Agg, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Table, Time,
+    Agg, Binding, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Table,
+    Time,
 };
 
 use super::{SqlError, Walker, and_parts, function_name, line};
@@ -54,7 +55,8 @@ enum Item {
     Bucket(Time),
     Column(Ident),
     IsNull(NullKey),
-    Attr,
+    /// A dim attribute, by its ref.
+    Attr(usize, Ident),
     Measure(Measure),
 }
 
@@ -328,6 +330,7 @@ impl Walker {
         let mut time = None;
         let mut by: Vec<By> = Vec::new();
         let mut measures = Vec::new();
+        let mut attrs: Vec<Vec<Ident>> = vec![Vec::new(); scope.refs.len()];
         for it in items {
             match it {
                 Item::Bucket(t) => {
@@ -345,20 +348,31 @@ impl Walker {
                     name,
                     negated,
                 }),
-                Item::Attr => {}
+                Item::Attr(i, attr) => {
+                    if !attrs[i].contains(&attr) {
+                        attrs[i].push(attr);
+                    }
+                }
                 Item::Measure(m) => measures.push(m),
             }
         }
-        // A ref's via columns are by columns: cells hold them, and the ask
-        // reads the dim row they name.
-        for j in &scope.refs {
-            for via in &j.r.via {
-                if !by.contains(&By::Column(via.clone())) {
+        // A ref whose via columns are selected binds late: cells hold the
+        // columns, and an ask reads the dim row they name. One whose via
+        // columns are not selected binds the attributes it selects at
+        // ingest, so the cells hold those instead.
+        for (j, attrs) in scope.refs.iter_mut().zip(attrs) {
+            let selected = |via: &Ident| by.contains(&By::Column(via.clone()));
+            if j.r.via.iter().all(selected) {
+                j.r.binding = Binding::Late;
+            } else if !attrs.is_empty() {
+                j.r.binding = Binding::Early(attrs);
+            } else {
+                for via in j.r.via.iter().filter(|via| !selected(via)) {
                     self.error(
                         at,
                         format!(
-                            "select {}.{via} so the view groups by ref {}",
-                            scope.alias, j.r.name
+                            "select {}.{via}, or an attribute of {}, so the view groups by ref {}",
+                            scope.alias, j.r.name, j.r.name
                         ),
                     );
                 }
@@ -518,6 +532,7 @@ impl Walker {
                 name: alias,
                 dim,
                 via,
+                binding: Binding::Late,
             },
             table,
             key,
@@ -619,8 +634,8 @@ impl Walker {
         Some(match self.column(scope, expr)? {
             Column::Fact(c) => Item::Column(c),
             Column::Attr(i, attr) => {
-                self.attr(scope, i, attr);
-                Item::Attr
+                self.attr(scope, i, attr.clone());
+                Item::Attr(i, attr)
             }
         })
     }

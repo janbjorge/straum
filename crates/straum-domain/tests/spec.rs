@@ -2,7 +2,7 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec,
+    Agg, Binding, By, Cond, Dim, Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, Spec,
     SpecError, Table, Time,
 };
 
@@ -40,6 +40,7 @@ fn fact() -> Fact {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id")],
+            binding: Binding::Late,
         }],
         by: vec![By::Column(id("a")), By::Column(id("z_id"))],
         measures: vec![Measure {
@@ -162,11 +163,27 @@ fn every_error_is_reported_and_displayed() {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id"), id("b")],
+            binding: Binding::Late,
         },
         Ref {
             name: id("s"),
             dim: id("z"),
             via: vec![id("a"), id("a")],
+            binding: Binding::Late,
+        },
+        // Bound at ingest: nothing to bind, then an attribute the dim lacks
+        // and one bound twice.
+        Ref {
+            name: id("e"),
+            dim: id("z"),
+            via: vec![id("a")],
+            binding: Binding::Early(vec![]),
+        },
+        Ref {
+            name: id("q"),
+            dim: id("z"),
+            via: vec![id("b")],
+            binding: Binding::Early(vec![id("nope"), id("name"), id("name")]),
         },
     ];
     u.measures = vec![];
@@ -192,6 +209,9 @@ fn every_error_is_reported_and_displayed() {
             "fact u: ref r joins on 2 columns, but the key of dim z has 1",
             "fact u: ref s joins on a twice",
             "fact u: ref s joins on 2 columns, but the key of dim z has 1",
+            "fact u: ref e binds at ingest but names no attribute",
+            "fact u: ref q binds nope, which dim z has no column of",
+            "q: name declared twice",
             "fact u: no measures",
         ]
     );

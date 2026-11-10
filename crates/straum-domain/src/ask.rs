@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::ident::Ident;
-use crate::spec::{Cond, Fact, Grain, KeyPath, Literal, Spec};
+use crate::spec::{Binding, Cond, Fact, Grain, KeyPath, Literal, Spec};
 use crate::value::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,12 +106,24 @@ impl Spec {
     }
 }
 
-/// Why a path resolved to nothing: a ref on several columns has no value
-/// of its own, so it is named by what it has.
+/// Why a path resolved to nothing: a ref on several columns or one bound
+/// at ingest has no value of its own, and a ref bound at ingest has only
+/// the attributes it bound, so each is named by what it has.
 fn unknown(fact: &Fact, path: &KeyPath) -> AskError {
-    let composite = (fact.refs.iter()).find(|r| r.name == path.head && r.via.len() > 1);
-    match composite {
-        Some(r) if path.attr.is_none() => AskError::CompositeRef {
+    let Some(r) = fact.refs.iter().find(|r| r.name == path.head) else {
+        return AskError::UnknownKey(path.clone());
+    };
+    match (&r.binding, &path.attr) {
+        (Binding::Early(attrs), None) => AskError::EarlyRef {
+            name: r.name.clone(),
+            attrs: attrs.clone(),
+        },
+        (Binding::Early(attrs), Some(attr)) => AskError::Unbound {
+            name: r.name.clone(),
+            attr: attr.clone(),
+            attrs: attrs.clone(),
+        },
+        (Binding::Late, None) if r.via.len() > 1 => AskError::CompositeRef {
             name: r.name.clone(),
             columns: r.via.clone(),
         },
@@ -128,6 +140,17 @@ pub enum AskError {
     CompositeRef {
         name: Ident,
         columns: Vec<Ident>,
+    },
+    /// A ref bound at ingest asked for as a key.
+    EarlyRef {
+        name: Ident,
+        attrs: Vec<Ident>,
+    },
+    /// An attribute of a ref bound at ingest that the view did not bind.
+    Unbound {
+        name: Ident,
+        attr: Ident,
+        attrs: Vec<Ident>,
     },
     NoMeasures,
     TimeKeyTwice,
@@ -164,6 +187,22 @@ impl fmt::Display for AskError {
                     f,
                     "{name} joins on {}; ask for those columns or for {name}.<attribute>",
                     columns.join(", ")
+                )
+            }
+            AskError::EarlyRef { name, attrs } => {
+                let attrs: Vec<String> = attrs.iter().map(|a| format!("{name}.{a}")).collect();
+                write!(
+                    f,
+                    "{name} binds its attributes at ingest and has no id; ask for {}",
+                    attrs.join(", ")
+                )
+            }
+            AskError::Unbound { name, attr, attrs } => {
+                let attrs: Vec<String> = attrs.iter().map(|a| format!("{name}.{a}")).collect();
+                write!(
+                    f,
+                    "{name}.{attr} is not bound at ingest; the view binds {}",
+                    attrs.join(", ")
                 )
             }
             AskError::NoMeasures => write!(f, "no measures asked"),

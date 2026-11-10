@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, By, ColumnType, Cond, Datum, Dim, Fact,
-    Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Spec, Store, Table, Time,
+    Agg, Answer, AnswerColumn, Ask, AskError, AskKey, Binding, By, ColumnType, Cond, Datum, Dim,
+    Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Spec, Store, Table, Time,
     TimeKey, Value,
 };
 
@@ -32,7 +32,7 @@ const WIDTH: usize = 10;
 /// differs, so an answer that takes a scale from the wrong column shows.
 const TRIP_SCALES: u32 = 20;
 
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "pay",
     "vendor",
     "shared",
@@ -45,6 +45,7 @@ const KEYS: [&str; 12] = [
     "combo.label",
     "combo.vendor_id",
     "known",
+    "vend.label",
 ];
 
 fn id(s: &str) -> Ident {
@@ -102,6 +103,14 @@ fn spec() -> Spec {
         key: vec![id("pu_id"), id("vendor_id")],
         attrs: vec![id("label")],
     };
+    // Bound at ingest over the vendor column; vendor 2 has no row, so it
+    // binds null.
+    let vendors = Dim {
+        name: id("vendors"),
+        table: table("vendors"),
+        key: vec![id("id")],
+        attrs: vec![id("label")],
+    };
     let trips = Fact {
         name: id("trips"),
         table: table("trips"),
@@ -117,16 +126,25 @@ fn spec() -> Spec {
                 name: id("pickup"),
                 dim: id("zones"),
                 via: vec![id("pu")],
+                binding: Binding::Late,
             },
             Ref {
                 name: id("dropoff"),
                 dim: id("zones"),
                 via: vec![id("dro")],
+                binding: Binding::Late,
             },
             Ref {
                 name: id("combo"),
                 dim: id("combos"),
                 via: vec![id("pu"), id("vendor")],
+                binding: Binding::Late,
+            },
+            Ref {
+                name: id("vend"),
+                dim: id("vendors"),
+                via: vec![id("vendor")],
+                binding: Binding::Early(vec![id("label")]),
             },
         ],
         by: vec![
@@ -183,7 +201,7 @@ fn spec() -> Spec {
             ),
         ],
     };
-    Spec::new(vec![zones, combos], vec![trips]).unwrap()
+    Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
 }
 
 /// splitmix64; the tests need no crate for randomness.
@@ -289,6 +307,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         cond("pickup.id", vec![Literal::Int(1), Literal::Int(3)]),
         cond("combo.label", vec![lit("x")]),
         cond("known", vec![Literal::Bool(true)]),
+        cond("vend.label", vec![lit("v1")]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -316,11 +335,13 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
 type Zones = BTreeMap<i64, Vec<Datum>>;
 type Combos = BTreeMap<(i64, i64), Vec<Datum>>;
 
-/// The dim rows as the reference sees them.
+/// The dim rows as the reference sees them. Vendors never change once
+/// set, so what a row bound at ingest is what the dim says now.
 #[derive(Default)]
 struct Dims {
     zones: Zones,
     combos: Combos,
+    vendors: Zones,
 }
 
 /// SQL `=`: null matches nothing.
@@ -336,6 +357,16 @@ fn holds(value: &Datum, values: &[Literal]) -> bool {
 fn value(row: &[Datum], path: &KeyPath, dims: &Dims) -> Datum {
     if path.head.as_str() == "known" {
         return Datum::Bool(row[SHARED] != Datum::Null);
+    }
+    if path.head.as_str() == "vend" {
+        assert_eq!(path.attr.as_ref().map(Ident::as_str), Some("label"));
+        let Datum::Int(vendor) = &row[VENDOR] else {
+            return Datum::Null;
+        };
+        return dims
+            .vendors
+            .get(vendor)
+            .map_or(Datum::Null, |v| v[1].clone());
     }
     if path.head.as_str() == "combo" {
         let attr = path.attr.as_ref().expect("combo has no value of its own");
@@ -397,14 +428,14 @@ fn combo_types() -> Vec<ColumnType> {
     vec![ColumnType::Int, ColumnType::Int, ColumnType::Text]
 }
 
-/// A store with the types a load would set.
+fn vendor_types() -> Vec<ColumnType> {
+    vec![ColumnType::Int, ColumnType::Text]
+}
+
+/// A store with the types a load would set: the dims' first, since the
+/// fact's attributes bound at ingest take theirs from them.
 fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
-    store
-        .rollup("trips")
-        .unwrap()
-        .set_types(&trip_types())
-        .unwrap();
     store
         .dim("zones")
         .unwrap()
@@ -416,13 +447,26 @@ fn typed(spec: &Spec) -> Store {
         .set_types(&combo_types())
         .unwrap();
     store
+        .dim("vendors")
+        .unwrap()
+        .set_types(&vendor_types())
+        .unwrap();
+    store.set_fact_types("trips", &trip_types()).unwrap();
+    store
+}
+
+/// The one vendor row, which `run` and the batch test share.
+fn vendor_one(store: &mut Store, dims: &mut Dims) {
+    let row = vec![Datum::Int(1), text("v1")];
+    store.dim("vendors").unwrap().upsert(&row).unwrap();
+    dims.vendors.insert(1, row);
 }
 
 fn scale(path: &KeyPath) -> u32 {
     match &path.attr {
         None if path.head.as_str() == "known" => 0,
         None => trip_types()[column(path.head.as_str())].scale(),
-        Some(_) if path.head.as_str() == "combo" => 0,
+        Some(_) if path.head.as_str() == "combo" || path.head.as_str() == "vend" => 0,
         Some(attr) => {
             let column = match attr.as_str() {
                 "id" => 0,
@@ -572,6 +616,7 @@ fn run(seed: u64) {
         store.dim("combos").unwrap().upsert(&row).unwrap();
         dims.combos.insert(key, row);
     }
+    vendor_one(&mut store, &mut dims);
 
     for step in 0..2_000 {
         match rng.below(40) {
@@ -611,7 +656,7 @@ fn run(seed: u64) {
             }
             2..=7 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
-                store.rollup("trips").unwrap().remove(&row).unwrap();
+                store.remove_fact_row("trips", &row).unwrap();
             }
             8..=13 if !rows.is_empty() => {
                 // An update: the old row out, a new one in, often in the
@@ -621,9 +666,8 @@ fn run(seed: u64) {
                 if rng.chance(50) {
                     new[..=DRO].clone_from_slice(&rows[i][..=DRO]);
                 }
-                let rollup = store.rollup("trips").unwrap();
-                rollup.remove(&rows[i]).unwrap();
-                rollup.add(&new).unwrap();
+                store.remove_fact_row("trips", &rows[i]).unwrap();
+                store.add_fact_row("trips", &new).unwrap();
                 rows[i] = new;
             }
             _ => {
@@ -633,7 +677,7 @@ fn run(seed: u64) {
                     let other = rng.below(rows.len());
                     row[..=DRO].clone_from_slice(&rows[other][..=DRO]);
                 }
-                store.rollup("trips").unwrap().add(&row).unwrap();
+                store.add_fact_row("trips", &row).unwrap();
                 rows.push(row);
             }
         }
@@ -649,12 +693,15 @@ fn run(seed: u64) {
         }
     }
 
-    let rollup = store.rollup("trips").unwrap();
-    assert!(rollup.cells() > 0);
+    assert!(store.cells("trips").unwrap() > 0);
     for row in rows {
-        rollup.remove(&row).unwrap();
+        store.remove_fact_row("trips", &row).unwrap();
     }
-    assert_eq!(rollup.cells(), 0, "seed {seed}: a cell outlived its rows");
+    assert_eq!(
+        store.cells("trips").unwrap(),
+        0,
+        "seed {seed}: a cell outlived its rows"
+    );
 }
 
 #[test]
@@ -676,15 +723,17 @@ fn rows_added_together_match_rows_added_one_by_one() {
             by_row.dim("zones").unwrap().upsert(&row).unwrap();
             together.dim("zones").unwrap().upsert(&row).unwrap();
         }
+        vendor_one(&mut by_row, &mut Dims::default());
+        vendor_one(&mut together, &mut Dims::default());
         let rows: Vec<Vec<Datum>> = (0..2_000).map(|_| trip(&mut rng)).collect();
         for row in &rows {
-            by_row.rollup("trips").unwrap().add(row).unwrap();
+            by_row.add_fact_row("trips", row).unwrap();
         }
         let flat: Vec<Datum> = rows.concat();
         let mut rest = &flat[..];
         while !rest.is_empty() {
             let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * WIDTH));
-            together.rollup("trips").unwrap().add_rows(batch).unwrap();
+            together.add_fact_rows("trips", batch).unwrap();
             rest = after;
         }
         assert_eq!(
@@ -701,22 +750,70 @@ fn rows_added_together_match_rows_added_one_by_one() {
             );
         }
         // The stream takes out rows the load put in.
-        let rollup = together.rollup("trips").unwrap();
         for row in &rows {
-            rollup.remove(row).unwrap();
+            together.remove_fact_row("trips", row).unwrap();
         }
-        assert_eq!(rollup.cells(), 0, "seed {seed}: a cell outlived its rows");
+        assert_eq!(
+            together.cells("trips").unwrap(),
+            0,
+            "seed {seed}: a cell outlived its rows"
+        );
     }
+}
+
+/// A dim row changed after rows bound to it: the cells keep the old value,
+/// a new row binds the new one, and a row bound to the old value can't be
+/// taken out again, which is what makes the writer start over.
+#[test]
+fn a_dim_change_leaves_cells_bound_at_ingest() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    vendor_one(&mut store, &mut Dims::default());
+    let mut row = trip(&mut Rng(3));
+    row[AT] = Datum::Int(START);
+    row[VENDOR] = Datum::Int(1);
+    store.add_fact_row("trips", &row).unwrap();
+    let by_label = Ask {
+        fact: id("trips"),
+        measures: vec![id("trips")],
+        by: vec![AskKey::Key(path("vend.label"))],
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let labels = |store: &Store| -> Vec<Datum> {
+        (store.ask(&by_label).unwrap().rows.into_iter())
+            .map(|(key, _)| key[0].clone())
+            .collect()
+    };
+    assert_eq!(labels(&store), [text("v1")]);
+
+    store
+        .dim("vendors")
+        .unwrap()
+        .upsert(&[Datum::Int(1), text("v2")])
+        .unwrap();
+    assert_eq!(labels(&store), [text("v1")]);
+    // In another bucket, so its cell is its own.
+    let mut later = row.clone();
+    later[AT] = Datum::Int(START + i64::from(GRAIN));
+    store.add_fact_row("trips", &later).unwrap();
+    assert_eq!(labels(&store), [text("v1"), text("v2")]);
+    assert_eq!(store.remove_fact_row("trips", &row), Err(RowError::Missing));
+    store.remove_fact_row("trips", &later).unwrap();
+    // A vendor with no row binds null, as the join would give.
+    row[VENDOR] = Datum::Int(2);
+    store.add_fact_row("trips", &row).unwrap();
+    assert_eq!(labels(&store), [Datum::Null, text("v1")]);
 }
 
 #[test]
 fn rows_added_together_add_none_on_error() {
     let mut rng = Rng(5);
     let mut store = Store::new(spec());
-    let rollup = store.rollup("trips").unwrap();
     let good = [trip(&mut rng), trip(&mut rng)].concat();
     assert_eq!(
-        rollup.add_rows(&good[1..]),
+        store.add_fact_rows("trips", &good[1..]),
         Err(RowError::Arity {
             expected: WIDTH,
             found: WIDTH - 1
@@ -725,13 +822,13 @@ fn rows_added_together_add_none_on_error() {
     let mut bad = good.clone();
     bad[WIDTH + AT] = text("noon");
     assert_eq!(
-        rollup.add_rows(&bad),
+        store.add_fact_rows("trips", &bad),
         Err(RowError::NotInt { column: id("at") })
     );
-    assert_eq!(rollup.cells(), 0);
-    rollup.add_rows(&[]).unwrap();
-    rollup.add_rows(&good).unwrap();
-    assert!(rollup.cells() > 0);
+    assert_eq!(store.cells("trips"), Some(0));
+    store.add_fact_rows("trips", &[]).unwrap();
+    store.add_fact_rows("trips", &good).unwrap();
+    assert!(store.cells("trips").unwrap() > 0);
 }
 
 #[test]
@@ -765,16 +862,15 @@ fn columns_put_measure_inputs_after_the_key() {
 #[test]
 fn rows_collapse_into_cells() {
     let mut store = Store::new(spec());
-    let rollup = store.rollup("trips").unwrap();
     let mut row = trip(&mut Rng(7));
     row[AT] = Datum::Int(START + 1);
-    rollup.add(&row).unwrap();
+    store.add_fact_row("trips", &row).unwrap();
     row[AT] = Datum::Int(START + i64::from(GRAIN) - 1);
-    rollup.add(&row).unwrap();
-    assert_eq!(rollup.cells(), 1);
+    store.add_fact_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(1));
     row[AT] = Datum::Int(START + i64::from(GRAIN));
-    rollup.add(&row).unwrap();
-    assert_eq!(rollup.cells(), 2);
+    store.add_fact_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(2));
 }
 
 #[test]
@@ -798,23 +894,22 @@ fn removing_an_extreme_reveals_the_next() {
             row.clone()
         })
         .collect();
-    let rollup = store.rollup("trips").unwrap();
     for row in &rows {
-        rollup.add(row).unwrap();
+        store.add_fact_row("trips", row).unwrap();
     }
-    assert_eq!(rollup.cells(), 1);
+    assert_eq!(store.cells("trips"), Some(1));
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
 
     // One of two 9s out: the max stays.
-    store.rollup("trips").unwrap().remove(&rows[1]).unwrap();
+    store.remove_fact_row("trips", &rows[1]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
-    store.rollup("trips").unwrap().remove(&rows[2]).unwrap();
+    store.remove_fact_row("trips", &rows[2]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(7)]);
-    store.rollup("trips").unwrap().remove(&rows[3]).unwrap();
+    store.remove_fact_row("trips", &rows[3]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(5), Value::Int(7)]);
     // A value past the old extremes after they went.
     row[TIP] = Datum::Int(1);
-    store.rollup("trips").unwrap().add(&row).unwrap();
+    store.add_fact_row("trips", &row).unwrap();
     assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
 }
 
@@ -822,13 +917,15 @@ fn removing_an_extreme_reveals_the_next() {
 fn clear_drops_every_row() {
     let mut store = Store::new(spec());
     let trip = trip(&mut Rng(5));
-    let rollup = store.rollup("trips").unwrap();
-    rollup.add(&trip).unwrap();
-    rollup.clear();
-    assert_eq!(rollup.cells(), 0);
-    assert_eq!(rollup.remove(&trip), Err(RowError::Missing));
-    rollup.add(&trip).unwrap();
-    assert_eq!(rollup.cells(), 1);
+    store.add_fact_row("trips", &trip).unwrap();
+    store.rollup("trips").unwrap().clear();
+    assert_eq!(store.cells("trips"), Some(0));
+    assert_eq!(
+        store.remove_fact_row("trips", &trip),
+        Err(RowError::Missing)
+    );
+    store.add_fact_row("trips", &trip).unwrap();
+    assert_eq!(store.cells("trips"), Some(1));
 
     let zone = zone(&mut Rng(5), 1);
     let zones = store.dim("zones").unwrap();
@@ -879,10 +976,10 @@ fn filter_values_are_of_their_column_type() {
     let pay = || ask(vec![cond("pay", vec![Literal::Int(1)])]);
     let mut types = trip_types();
     types[PAY] = ColumnType::Numeric { scale: 0 };
-    store.rollup("trips").unwrap().set_types(&types).unwrap();
+    store.set_fact_types("trips", &types).unwrap();
     assert!(store.ask(&pay()).is_ok());
     types[PAY] = ColumnType::Numeric { scale: 2 };
-    store.rollup("trips").unwrap().set_types(&types).unwrap();
+    store.set_fact_types("trips", &types).unwrap();
     assert_eq!(
         store.ask(&pay()).unwrap_err()[0].to_string(),
         "pay is a numeric of scale 2, so it can't be the integer 1"
@@ -905,13 +1002,12 @@ fn types_stay_through_clear() {
         answer.columns.iter().map(|c| c.scale).collect()
     };
     assert_eq!(scales(&store), [0, 0, 0, 0, 0]);
-    let rollup = store.rollup("trips").unwrap();
     let mut types = vec![ColumnType::Int; 10];
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
     types[TIP] = ColumnType::Numeric { scale: 1 };
-    rollup.set_types(&types).unwrap();
-    rollup.clear();
+    store.set_fact_types("trips", &types).unwrap();
+    store.rollup("trips").unwrap().clear();
     let zones = store.dim("zones").unwrap();
     let zone = ColumnType::Numeric { scale: 4 };
     let types = [ColumnType::Int, ColumnType::Text, zone];
@@ -1037,25 +1133,37 @@ fn row_errors() {
     };
 
     let mut store = fresh();
-    let rollup = store.rollup("trips").unwrap();
     assert_eq!(
-        rollup.add(&base[1..]),
+        store.add_fact_row("trips", &base[1..]),
         Err(RowError::Arity {
             expected: 10,
             found: 9
         })
     );
     assert_eq!(
-        rollup.add(&with(AT, text("noon"))),
+        store.add_fact_row("trips", &with(AT, text("noon"))),
         Err(RowError::NotInt { column: id("at") })
     );
     assert_eq!(
-        rollup.remove(&with(TIP, Datum::Bool(true))),
+        store.remove_fact_row("trips", &with(TIP, Datum::Bool(true))),
         Err(RowError::NotInt { column: id("tip") })
     );
     // Count distinct takes any value.
-    rollup.add(&with(RIDER, Datum::Bool(true))).unwrap();
-    assert_eq!(rollup.remove(&base), Err(RowError::Missing));
+    store
+        .add_fact_row("trips", &with(RIDER, Datum::Bool(true)))
+        .unwrap();
+    assert_eq!(
+        store.remove_fact_row("trips", &base),
+        Err(RowError::Missing)
+    );
+    // A batch that isn't whole rows.
+    assert_eq!(
+        store.add_fact_rows("trips", &base[1..]),
+        Err(RowError::Arity {
+            expected: 10,
+            found: 9
+        })
+    );
 
     // Each kind of state notices a value it never saw.
     let seen = with(FARE, Datum::Null);
@@ -1065,11 +1173,14 @@ fn row_errors() {
         (RIDER, text("zed")),
     ] {
         let mut store = fresh();
-        let rollup = store.rollup("trips").unwrap();
-        rollup.add(&seen).unwrap();
+        store.add_fact_row("trips", &seen).unwrap();
         let mut other = seen.clone();
         other[pos] = v;
-        assert_eq!(rollup.remove(&other), Err(RowError::Missing), "{pos}");
+        assert_eq!(
+            store.remove_fact_row("trips", &other),
+            Err(RowError::Missing),
+            "{pos}"
+        );
     }
 
     let mut store = fresh();
@@ -1084,9 +1195,8 @@ fn row_errors() {
     assert_eq!(zones.delete(&[Datum::Int(1)]), Err(RowError::Missing));
 
     let mut store = fresh();
-    let rollup = store.rollup("trips").unwrap();
     assert_eq!(
-        rollup.set_types(&[ColumnType::Int; 11]),
+        store.set_fact_types("trips", &[ColumnType::Int; 11]),
         Err(RowError::Arity {
             expected: 10,
             found: 11

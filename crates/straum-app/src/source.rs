@@ -6,7 +6,7 @@ use std::error;
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
+use straum_domain::{Datum, Dim, DimTable, Fact, Ident, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
 /// is missing, a table no longer fits the spec. straum starts over after one.
@@ -22,9 +22,11 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
-    /// Adds the fact's rows to an empty rollup, as of the LSN
-    /// [`Source::open`] returned: every commit up to it and none after.
-    fn load_fact(&mut self, fact: &Fact, rollup: &mut Rollup) -> Result<(), SourceError>;
+    /// Adds the fact's rows to the store, whose rollup for it is empty and
+    /// whose dims are loaded, as of the LSN [`Source::open`] returned: every
+    /// commit up to it and none after. Rows go through
+    /// [`Store::add_fact_rows`], which binds the attributes read at ingest.
+    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError>;
 
     /// As [`Source::load_fact`], for a dim's rows.
     fn load_dim(&mut self, dim: &Dim, table: &mut DimTable) -> Result<(), SourceError>;
@@ -69,7 +71,7 @@ pub struct Commit {
 }
 
 /// A change to a table, named as in the spec. Fact rows hold
-/// [`Rollup::columns`]; dim rows hold the key, then the attributes.
+/// [`Fact::columns`]; dim rows hold the key, then the attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Insert {

@@ -244,3 +244,31 @@ Pickup and dropoff zone together are nearly unique per trip, so this
 spec collapses little at 15 minutes. Without the dropoff zone it
 collapses 5.2 times. Memory follows cells, so the key is the lever on
 memory.
+
+## Cells on pio-shaped tables
+
+The same lever on a warehouse shape: tasks keyed by organization, task
+group, storage location and whether the task is live, with the group's
+category and the location's type as attributes, over hour buckets with a
+day width beside them. The tables are generated locally in the
+distributions of a production database (13 million tasks, 5.7 million
+task groups, 860,000 storage locations, a task group holding one to
+three tasks) and are not in the repository; the run below is three
+tenths of that size, on 2026-11-10, the machine and build of the
+[Results](#results). Both views answered every ask as PostgreSQL did,
+before and after streamed changes.
+
+| View | Keys | Cells, 1 hour | Cells, 1 day | Resident |
+| --- | --- | ---: | ---: | ---: |
+| Late | organization, task group, storage location, live | 3,669,223 | 3,669,206 | 1,478 MiB |
+| Bound at ingest | organization, live, category, location type | 932,532 | 127,014 | 498 MiB |
+
+3,932,790 tasks, 1,706,235 task groups, 253,555 storage locations. The
+late view keeps 0.93 cells a task, since a task group holds one task or
+two and every task has its own hour; at the production size that is
+about 12 million cells a width and 5.8 GiB. [Binding the
+attributes at ingest](spec.md#binding-attributes-at-ingest) keys the
+cells by the category's three values and the location type's four
+instead, so the day width collapses 29 times and memory falls to a
+third; what remains is the hour cells and the dim rows Straum keeps for
+the lookups.

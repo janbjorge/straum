@@ -33,7 +33,9 @@
 //!   `timestamp 'epoch'` for a column without a zone.
 //! - Other fact columns are `by` columns; `(fact.column IS NULL) AS name`
 //!   or `IS NOT NULL` is a boolean `by` key; dim columns are attributes,
-//!   read after aggregation.
+//!   read after aggregation. A dim column selected without the fact
+//!   column its ref joins on is bound at ingest: it is the key, read as
+//!   each row comes in.
 //! - `count(*)`, `count(DISTINCT c)`, `sum`, `min`, `max`, `avg`, each `AS`
 //!   a name and with an optional `FILTER (WHERE ...)` of `=` and `IN`, or
 //!   `IS NULL` and `IS NOT NULL` over a column with a null-ness key, joined

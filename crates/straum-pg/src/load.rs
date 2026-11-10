@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{ColumnType, Datum, DimTable, Ident, Rollup};
+use straum_domain::{ColumnType, Datum, DimTable, Fact, Ident, Store};
 
 use crate::catalog::Table;
 use crate::error::Error;
@@ -38,21 +38,24 @@ pub(crate) struct Columns {
     pub(crate) types: Vec<ColumnType>,
 }
 
-pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Result<(), Error> {
-    let types: Vec<ColumnType> = rollup
-        .columns()
-        .iter()
-        .map(|c| table.column_type(c))
-        .collect();
-    rollup.set_types(&types).map_err(Error::Row)?;
-    let sql = copy_sql(table, rollup.columns());
+pub(crate) fn fact(
+    conn: &mut Conn,
+    table: &Table,
+    fact: &Fact,
+    store: &mut Store,
+) -> Result<(), Error> {
+    let name = fact.name.as_str();
+    let names = fact.columns();
+    let types: Vec<ColumnType> = names.iter().map(|c| table.column_type(c)).collect();
+    store.set_fact_types(name, &types).map_err(Error::Row)?;
+    let sql = copy_sql(table, &names);
     let columns = Columns {
         table: table.qualified(),
-        names: rollup.columns().to_vec(),
+        names,
         types,
     };
     copy(conn, &sql, &columns, |rows| {
-        rollup.add_rows(rows).map_err(Error::Row)
+        store.add_fact_rows(name, rows).map_err(Error::Row)
     })
 }
 
