@@ -1,3 +1,4 @@
 /target
 /bench/data
 /docs/book
+__pycache__/
