@@ -60,8 +60,6 @@ superuser. The setup lives in the catalog and survives restarts.
   in any order. Only the schema can give that, so the SQL says it in a
   comment.
 
-[How Straum works](how-it-works.md) says what each line is for.
-
 ## 3. Connect
 
 Straum reads its DSN from `STRAUM_DSN` or from a file named by
@@ -125,12 +123,10 @@ fact orders: ref customer joins customer_id (an integer) to id (text); they must
   Temporary slots don't move to a standby either, so after a failover
   Straum loads again from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
-  database and makes `ALTER TABLE` on its tables wait. Each fact loads
-  with one binary `COPY` of the fact joined to its dims, and Straum ends
-  the snapshot right after the last fact.
-- One plain connection beside the replication connection, which reads
-  the WAL position every second and looks up the dim rows of each
-  transaction's fact rows: one keyed `SELECT` per ref and transaction,
-  at most 1,000 keys a statement.
+  database and makes `ALTER TABLE` on its tables wait; Straum ends it
+  right after the last fact loads.
+- One plain connection beside the replication connection, for the WAL
+  position every second and the dim lookups of each transaction: one
+  keyed `SELECT` per ref, at most 1,000 keys a statement.
 - WAL decoding per replication connection, so run one Straum per database
   unless you need more.

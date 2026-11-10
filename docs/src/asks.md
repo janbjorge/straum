@@ -86,12 +86,10 @@ buckets: Straum never answers for part of a bucket.
   nothing matches, as SQL does without `GROUP BY`: counts are 0, the
   rest null.
 
-Buckets are their start, in UTC. Counts are integers. `sum`, `min` and
-`max` are exact decimals in their column's scale: `120.00` for a
-`numeric(10, 2)`. `avg` is rounded half to even at four places past that
-scale, with trailing zeros dropped: `69.995` for 139.99 over 2. A row
-whose dim row did not exist when it came in has null attributes, as a
-`LEFT JOIN` gives.
+Buckets are their start, in UTC. Measures print as the
+[measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
+sum, `69.995` for its avg of 139.99 over 2. A row whose dim row did not
+exist when it came in has null attributes, as a `LEFT JOIN` gives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in

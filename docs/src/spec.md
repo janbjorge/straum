@@ -27,9 +27,8 @@ GROUP BY 1, 2, 3, 4, 5;
 ```
 
 Straum keeps one cell per distinct hour, status, customer, country and
-shipped-ness, and each cell holds what the measures need: a count, a
-sum, and the filtered counts. An ask merges those cells and never
-reads a row.
+shipped-ness, holding what the measures need. An ask merges cells and
+never reads a row.
 
 ## The view and its fact table
 
@@ -66,10 +65,8 @@ date_bin('1 hour', placed_at, timestamptz 'epoch')
   and ask bounds are wall clock, and answers print them with a `Z` that
   means nothing.
 - A row whose time is null, `infinity` or `-infinity` is kept but never
-  answered: it falls in no bucket an ask can name. Any other value Straum
-  can't read, such as a `NaN` in a `numeric` column, stops the load or
-  the stream with the table and column named, and Straum [starts
-  over](running.md#states) until the row is fixed.
+  answered. Any other value Straum can't read, such as a `NaN`, stops
+  the load or the stream with the table and column named.
 
 `WITH (buckets = '1 day')` is the only view option. It keeps wider
 buckets beside the `date_bin` width: each listed width is a whole
@@ -106,10 +103,8 @@ like any by column. Straum keeps no customer row of its own.
   ```
 
 - A join must select at least one dim column. The fact column joined on,
-  `customer_id`, may be selected too or left out. Left out, cells are
-  keyed by the attribute's few values instead of the column's many, and
-  there are far fewer of them. A fact column may be both selected and
-  joined on.
+  `customer_id`, may be selected too or left out; left out, cells
+  collapse to the attribute's few values ([Memory](#memory)).
 - Two refs can join one dim table, each reading its own attributes. A
   dim table is one dim however many views join it, and all must join it
   on the same key columns.
@@ -120,8 +115,8 @@ Attributes are as of ingest. Straum never follows a dim: the setup
 publishes the fact tables only. A customer who moves from NO to SE keeps
 their old orders under NO, while PostgreSQL's view would move them; new
 orders read SE. When an order that came in under NO is updated or
-deleted, Straum can't find its cell and [starts over](running.md#states),
-reading every row as the dims are then. For dims that change often,
+deleted, Straum can't find its cell and [starts
+over](how-it-works.md#applying-a-commit). For dims that change often,
 select the fact column too and keep the mapping in your client.
 
 ## Null-ness keys

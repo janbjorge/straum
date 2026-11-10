@@ -252,10 +252,9 @@ and every task has its own hour. The attributes' few values collapse the
 day width to 66 thousand cells.
 
 Straum was ready 19 s after it started and held 84 MiB: the cells, and
-nothing else. The same view held 897 MiB a few hours before, when Straum
-kept the 6.5 million group and location rows for lookups of its own, and
-was ready in 8 s, since PostgreSQL now joins the tasks to their groups
-and locations for the load.
+nothing else. Holding the 6.5 million group and location rows for
+lookups of its own, as it did before joins moved to PostgreSQL, it held
+897 MiB and was ready in 8 s.
 
 Every ask equalled PostgreSQL after the load and after each streamed
 change. Each change is one transaction, applied once its attributes are
@@ -268,13 +267,10 @@ looked up; the time runs from the commit until Straum had applied it:
 | Completed tasks of one day cancelled, one in twenty | 1,873 | 156 ms |
 | Tasks of one day deleted, one in thirty | 7,426 | 275 ms |
 
-An update looks both rows up, the old and the new, so the big one asked
-PostgreSQL for 38 thousand group keys and as many location keys, a
-thousand a statement, besides decoding the transaction.
-
-A task group recategorised is nothing to Straum until a task of it
-changes: then Straum starts over, 20 s, reads every task as the groups
-are now, and the asks equal PostgreSQL again.
+An update looks up the old row and the new, so the big one asked
+PostgreSQL for 38 thousand group keys and as many location keys. A task
+group recategorised is nothing to Straum until a task of it changes;
+then Straum starts over, 20 s, and the asks equal PostgreSQL again.
 
 The asks, PostgreSQL run twice on the loaded tables and Straum the better
 of two:

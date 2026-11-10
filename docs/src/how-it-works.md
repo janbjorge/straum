@@ -47,9 +47,8 @@ on a plain second connection, with the keys of every changed row, as the
 dims are at that moment. Then it applies the transaction whole:
 
 - An insert into a fact adds the row to its cell.
-- An update takes the old row out of its cell and adds the new one. This
-  is why facts need `REPLICA IDENTITY FULL`: without the old row, Straum
-  can't know which cell to take it from.
+- An update takes the old row out of its cell and adds the new one; the
+  old row is there because facts have `REPLICA IDENTITY FULL`.
 - A delete takes the old row out. A cell goes with its last row.
 - A truncate empties the rollup.
 
@@ -57,20 +56,15 @@ Dims are not in the stream. A change to a dim row shows in the fact rows
 that come after it and leaves the cells before it as they were, as
 [Writing a spec](spec.md#dims-refs-and-attributes) describes.
 
-A change Straum can't apply makes it [start over](running.md#states) from
-a new slot: an update without its old row, a row that doesn't fit its
-rollup, a table whose columns now read differently, or an update or
-delete of a row whose dim row has changed since the row came in, since
-its cell is no longer where the dim says.
-
-A transaction that changes more than `--max-transaction-rows` rows of the
-spec's facts makes it start over too, on purpose. Straum holds a
-transaction's rows until its commit and applies them under the write
-lock, so a bulk update of millions of rows would hold the memory for them
-and block asks for as long as it takes. The new slot's snapshot is after
-the big commit, so its rows come in through the bulk `COPY` load
-instead. The [benchmark](benchmark.md#transactions) measures where the
-default comes from.
+A change Straum can't apply makes it [start over](running.md#states)
+from a new slot: an update without its old row, a row that doesn't fit
+its rollup, a value it can't read, a table whose columns now read
+differently, an update or delete of a row whose dim row has changed
+since it came in, or a transaction above `--max-transaction-rows`. The
+last is on purpose: a transaction waits in memory until its commit and
+applies under the write lock, and the new slot's snapshot is after the
+big commit, so its rows come in through the bulk `COPY` instead. The
+[benchmark](benchmark.md#transactions) sets the default.
 
 ## Answering an ask
 
