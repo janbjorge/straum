@@ -132,7 +132,7 @@ python3 scripts/check-layers.py
 
 ## Nits
 
-- [ ] `crates/straum-domain/src/spec.rs:454`: `named.into_iter()` on an
+- [x] `crates/straum-domain/src/spec.rs:454`: `named.into_iter()` on an
   iterator; drop it.
 - [ ] `crates/straum-pg/src/plan.rs:18` and `:25`: `dedup()` drops only
   neighbours, so `a, b, a` stays. Harmless today, since PostgreSQL skips a

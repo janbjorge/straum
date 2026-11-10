@@ -460,10 +460,10 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
-    let named = (fact.by.iter().map(By::name))
+    let mut named = (fact.by.iter().map(By::name))
         .chain(fact.refs.iter().map(|r| &r.name))
         .chain(fact.measures.iter().map(|m| &m.name));
-    if named.into_iter().any(|n| n.as_str() == "bucket") {
+    if named.any(|n| n.as_str() == "bucket") {
         errors.push(SpecError::NamedBucket { fact: name.clone() });
     }
     let mut measures = HashSet::new();
