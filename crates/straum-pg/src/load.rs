@@ -31,7 +31,11 @@ pub(crate) fn copy_sql(table: &Table, columns: &[Ident]) -> String {
 }
 
 pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Result<(), Error> {
-    let types: Vec<ColumnType> = rollup.columns().iter().map(|c| table.kind(c)).collect();
+    let types: Vec<ColumnType> = rollup
+        .columns()
+        .iter()
+        .map(|c| table.column_type(c))
+        .collect();
     rollup.set_types(&types).map_err(Error::Row)?;
     let sql = copy_sql(table, rollup.columns());
     copy(conn, &sql, &types, |rows| {
@@ -40,10 +44,10 @@ pub(crate) fn fact(conn: &mut Conn, table: &Table, rollup: &mut Rollup) -> Resul
 }
 
 pub(crate) fn dim(conn: &mut Conn, table: &Table, rows: &mut DimTable) -> Result<(), Error> {
-    rows.set_types(&table.kinds).map_err(Error::Row)?;
+    rows.set_types(&table.types).map_err(Error::Row)?;
     let sql = copy_sql(table, &table.columns);
-    copy(conn, &sql, &table.kinds, |batch| {
-        for row in batch.chunks_exact(table.kinds.len()) {
+    copy(conn, &sql, &table.types, |batch| {
+        for row in batch.chunks_exact(table.types.len()) {
             rows.upsert(row).map_err(Error::Row)?;
         }
         Ok(())
@@ -64,19 +68,19 @@ const IN_FLIGHT: usize = 4;
 pub(crate) fn copy(
     conn: &mut Conn,
     sql: &str,
-    kinds: &[ColumnType],
+    types: &[ColumnType],
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A fact has its time column, a dim its key.
-    debug_assert!(!kinds.is_empty());
+    debug_assert!(!types.is_empty());
     let (full, filled) = mpsc::sync_channel::<Vec<Datum>>(IN_FLIGHT);
     let (spent, empty) = mpsc::channel::<Vec<Datum>>();
     thread::scope(|scope| {
         let reader = scope.spawn(move || {
-            read(conn, sql, kinds, |batch| {
+            read(conn, sql, types, |batch| {
                 let next = empty
                     .try_recv()
-                    .unwrap_or_else(|_| Vec::with_capacity(BATCH * kinds.len()));
+                    .unwrap_or_else(|_| Vec::with_capacity(BATCH * types.len()));
                 // The receiver is gone once `each` has failed.
                 full.send(mem::replace(batch, next))
                     .map_err(|_| Error::Stopped)
@@ -103,10 +107,10 @@ pub(crate) fn copy(
 fn read(
     conn: &mut Conn,
     sql: &str,
-    kinds: &[ColumnType],
+    types: &[ColumnType],
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let mut batch = Vec::with_capacity(BATCH * kinds.len());
+    let mut batch = Vec::with_capacity(BATCH * types.len());
     let mut started = false;
     let mut ended = false;
     conn.copy_out(sql, |mut data| {
@@ -124,13 +128,13 @@ fn read(
                 ended = true;
                 continue;
             }
-            if usize::try_from(fields).ok() != Some(kinds.len()) {
+            if usize::try_from(fields).ok() != Some(types.len()) {
                 return Err(Error::Protocol(format!(
                     "a copy row of {fields} columns, not {}",
-                    kinds.len()
+                    types.len()
                 )));
             }
-            for kind in kinds {
+            for column_type in types {
                 let len = i32::from_be_bytes(take(&mut data)?);
                 batch.push(match usize::try_from(len) {
                     // -1 is null.
@@ -140,11 +144,11 @@ fn read(
                             .split_at_checked(len)
                             .ok_or_else(|| copy_error("a copy value cut short"))?;
                         data = rest;
-                        read_binary(*kind, value)?
+                        read_binary(*column_type, value)?
                     }
                 });
             }
-            if batch.len() >= BATCH * kinds.len() {
+            if batch.len() >= BATCH * types.len() {
                 hand_over(&mut batch)?;
             }
         }

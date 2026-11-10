@@ -19,9 +19,9 @@ pub(crate) struct Decoder {
     /// By relation id. A table read by two facts, or a fact and a dim, maps
     /// to both.
     relations: HashMap<u32, Vec<Mapping>>,
-    /// Each spec table's kinds as last loaded or announced. A Relation that
+    /// Each spec table's types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
-    kinds: HashMap<Ident, Vec<ColumnType>>,
+    types: HashMap<Ident, Vec<ColumnType>>,
     changes: Vec<Change>,
     in_transaction: bool,
 }
@@ -30,22 +30,22 @@ pub(crate) struct Decoder {
 struct Mapping {
     table: Ident,
     positions: Vec<usize>,
-    kinds: Vec<ColumnType>,
+    types: Vec<ColumnType>,
     key: usize,
-    key_kind: ColumnType,
+    key_type: ColumnType,
     width: usize,
 }
 
 impl Decoder {
     pub(crate) fn new(tables: Vec<Table>) -> Decoder {
-        let kinds = tables
+        let types = tables
             .iter()
-            .map(|t| (t.name.clone(), t.kinds.clone()))
+            .map(|t| (t.name.clone(), t.types.clone()))
             .collect();
         Decoder {
             tables,
             relations: HashMap::new(),
-            kinds,
+            types,
             changes: Vec::new(),
             in_transaction: false,
         }
@@ -153,23 +153,23 @@ impl Decoder {
                     .ok_or_else(|| changed(table, column))
             };
             let mut positions = Vec::new();
-            let mut kinds = Vec::new();
+            let mut types = Vec::new();
             for column in &table.columns {
                 let i = position(column)?;
                 let c = &relation.columns[i];
                 positions.push(i);
-                kinds.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
+                types.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
             }
             let key = position(&table.key)?;
-            let key_kind = match table.columns.iter().position(|c| *c == table.key) {
-                Some(i) => kinds[i],
+            let key_type = match table.columns.iter().position(|c| *c == table.key) {
+                Some(i) => types[i],
                 None => {
                     let c = &relation.columns[key];
                     type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)
                 }
             };
-            let known = self.kinds.insert(table.name.clone(), kinds.clone());
-            if known.as_ref() != Some(&kinds) {
+            let known = self.types.insert(table.name.clone(), types.clone());
+            if known.as_ref() != Some(&types) {
                 self.changes.push(Change::Altered {
                     table: table.name.clone(),
                 });
@@ -177,9 +177,9 @@ impl Decoder {
             mappings.push(Mapping {
                 table: table.name.clone(),
                 positions,
-                kinds,
+                types,
                 key,
-                key_kind,
+                key_type,
                 width: relation.columns.len(),
             });
         }
@@ -214,10 +214,10 @@ impl Mapping {
     fn row(&self, tuple: &Tuple, old: Option<&[Datum]>) -> Result<Option<Vec<Datum>>, Error> {
         self.fits(tuple)?;
         let mut row = Vec::with_capacity(self.positions.len());
-        for (i, (&position, kind)) in self.positions.iter().zip(&self.kinds).enumerate() {
+        for (i, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate() {
             let datum = match (tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
-                (Field::Text(text), _) => read(*kind, text)?,
+                (Field::Text(text), _) => read(*column_type, text)?,
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };
@@ -229,7 +229,7 @@ impl Mapping {
     fn key(&self, tuple: &Tuple) -> Result<Datum, Error> {
         self.fits(tuple)?;
         match tuple[self.key] {
-            Field::Text(text) => Ok(read(self.key_kind, text)?),
+            Field::Text(text) => Ok(read(self.key_type, text)?),
             Field::Null | Field::Unchanged => {
                 Err(Error::Protocol("an old key without a value".into()))
             }
@@ -268,14 +268,14 @@ mod tests {
     /// and as fact `visits`, keyed on `ref`.
     fn decoder() -> Decoder {
         let table =
-            |name: &str, columns: &[&str], kinds: Vec<ColumnType>, key: &str, key_kind| Table {
+            |name: &str, columns: &[&str], types: Vec<ColumnType>, key: &str, key_type| Table {
                 name: id(name),
                 schema: id("public"),
                 table: id("zones"),
                 columns: columns.iter().map(|c| id(c)).collect(),
-                kinds,
+                types,
                 key: id(key),
-                key_kind,
+                key_type,
             };
         Decoder::new(vec![
             table(
@@ -464,7 +464,7 @@ mod tests {
         if let Message::Relation(r) = &mut other {
             r.name = "other".into();
         }
-        // The same kinds in another order; then a column that reads
+        // The same types in another order; then a column that reads
         // differently.
         let reordered = relation(
             7,

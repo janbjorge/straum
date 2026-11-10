@@ -1290,7 +1290,7 @@ fn setup_problems_say_what_to_fix() {
             "dim d: dimnounique.d needs a primary key or unique index on k alone",
         ),
         (
-            "dimkind",
+            "dimtype",
             dim("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
             "fact f: ref d joins d_id (an integer) to k (text); they must read alike",
         ),
@@ -1306,7 +1306,7 @@ fn setup_problems_say_what_to_fix() {
 fn binary_copies_read_as_text_does() {
     let pg = postgres();
     let mut conn = Conn::connect(&pg.dsn, false).unwrap();
-    let kinds = [
+    let types = [
         ColumnType::Int,
         ColumnType::Int,
         ColumnType::Int,
@@ -1336,9 +1336,9 @@ fn binary_copies_read_as_text_does() {
     let columns = "a, b, c, d, e, f, g, h, i, j, k";
     let mut texts = Vec::new();
     conn.query(&format!("SELECT {columns} FROM every"), |fields| {
-        let row = kinds.iter().zip(fields).map(|(kind, field)| {
+        let row = types.iter().zip(fields).map(|(column_type, field)| {
             field.map_or(Ok(Datum::Null), |text| {
-                read(*kind, text).map_err(Error::Value)
+                read(*column_type, text).map_err(Error::Value)
             })
         });
         texts.push(row.collect::<Result<Vec<_>, _>>()?);
@@ -1347,8 +1347,8 @@ fn binary_copies_read_as_text_does() {
     .unwrap();
     let mut binaries = Vec::new();
     let sql = format!("COPY (SELECT {columns} FROM every) TO STDOUT (FORMAT binary)");
-    crate::load::copy(&mut conn, &sql, &kinds, |batch| {
-        binaries.extend(batch.chunks(kinds.len()).map(<[Datum]>::to_vec));
+    crate::load::copy(&mut conn, &sql, &types, |batch| {
+        binaries.extend(batch.chunks(types.len()).map(<[Datum]>::to_vec));
         Ok(())
     })
     .unwrap();

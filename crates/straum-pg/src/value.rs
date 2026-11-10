@@ -58,8 +58,8 @@ pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
     }
 }
 
-pub(crate) fn read(kind: ColumnType, text: &str) -> Result<Datum, ValueError> {
-    let datum = match kind {
+pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueError> {
+    let datum = match column_type {
         ColumnType::Int => text.parse().ok().map(Datum::Int),
         ColumnType::Numeric { scale } => decimal(text, scale)
             .and_then(|v| i64::try_from(v).ok())
@@ -72,12 +72,12 @@ pub(crate) fn read(kind: ColumnType, text: &str) -> Result<Datum, ValueError> {
         ColumnType::Text => Some(Datum::Text(text.into())),
         ColumnType::Time => timestamptz(text).map(Datum::Int),
     };
-    datum.ok_or_else(|| ValueError::new(kind, text))
+    datum.ok_or_else(|| ValueError::new(column_type, text))
 }
 
 /// Reads the binary form `COPY ... (FORMAT binary)` sends.
-pub(crate) fn read_binary(kind: ColumnType, bytes: &[u8]) -> Result<Datum, ValueError> {
-    let datum = match kind {
+pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum, ValueError> {
+    let datum = match column_type {
         ColumnType::Int => int(bytes).map(Datum::Int),
         ColumnType::Numeric { scale } => binary_decimal(bytes, scale)
             .and_then(|v| i64::try_from(v).ok())
@@ -94,7 +94,7 @@ pub(crate) fn read_binary(kind: ColumnType, bytes: &[u8]) -> Result<Datum, Value
             Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
         },
     };
-    datum.ok_or_else(|| ValueError::binary(kind, bytes))
+    datum.ok_or_else(|| ValueError::binary(column_type, bytes))
 }
 
 /// A PostgreSQL timestamp, microseconds since its epoch, as a clock time.
@@ -240,23 +240,23 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 /// A value PostgreSQL sent that doesn't read as its column's type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueError {
-    kind: ColumnType,
+    column_type: ColumnType,
     text: String,
 }
 
 impl ValueError {
-    fn new(kind: ColumnType, text: &str) -> ValueError {
+    fn new(column_type: ColumnType, text: &str) -> ValueError {
         ValueError {
-            kind,
+            column_type,
             text: text.to_owned(),
         }
     }
 
     /// Shows the bytes in hex, as `bytea` prints.
-    fn binary(kind: ColumnType, bytes: &[u8]) -> ValueError {
+    fn binary(column_type: ColumnType, bytes: &[u8]) -> ValueError {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         ValueError {
-            kind,
+            column_type,
             text: format!("\\x{hex}"),
         }
     }
@@ -264,7 +264,7 @@ impl ValueError {
 
 impl fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "can't read {:?} as {}", self.text, self.kind)
+        write!(f, "can't read {:?} as {}", self.text, self.column_type)
     }
 }
 
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn kinds_from_types() {
+    fn column_types_from_oids() {
         let cases = [
             (INT2, -1, Some(ColumnType::Int)),
             (INT4, -1, Some(ColumnType::Int)),
@@ -321,8 +321,8 @@ mod tests {
             (1114, -1, None),
             (1082, -1, None),
         ];
-        for (oid, typmod, kind) in cases {
-            assert_eq!(type_of(oid, typmod), kind, "{oid} {typmod}");
+        for (oid, typmod, column_type) in cases {
+            assert_eq!(type_of(oid, typmod), column_type, "{oid} {typmod}");
         }
     }
 
@@ -379,8 +379,8 @@ mod tests {
                 Datum::Int(-2_147_483_656),
             ),
         ];
-        for (kind, text, datum) in cases {
-            assert_eq!(read(kind, text), Ok(datum), "{kind} {text}");
+        for (column_type, text, datum) in cases {
+            assert_eq!(read(column_type, text), Ok(datum), "{column_type} {text}");
         }
     }
 
@@ -422,11 +422,11 @@ mod tests {
             (ColumnType::Time, "2024-01-01 00:00:00+00:00:00:00"),
             (ColumnType::Time, "2024-01-01 00:00:00+"),
         ];
-        for (kind, text) in cases {
+        for (column_type, text) in cases {
             assert_eq!(
-                read(kind, text),
-                Err(ValueError::new(kind, text)),
-                "{kind} {text}"
+                read(column_type, text),
+                Err(ValueError::new(column_type, text)),
+                "{column_type} {text}"
             );
         }
     }
@@ -509,8 +509,12 @@ mod tests {
             ),
             (ColumnType::Time, micros(-1, 500_000), Datum::Int(-1)),
         ];
-        for (kind, bytes, datum) in cases {
-            assert_eq!(read_binary(kind, &bytes), Ok(datum), "{kind} {bytes:?}");
+        for (column_type, bytes, datum) in cases {
+            assert_eq!(
+                read_binary(column_type, &bytes),
+                Ok(datum),
+                "{column_type} {bytes:?}"
+            );
         }
     }
 
@@ -543,11 +547,11 @@ mod tests {
             (ColumnType::Time, i64::MIN.to_be_bytes().to_vec()),
             (ColumnType::Time, vec![0; 4]),
         ];
-        for (kind, bytes) in cases {
+        for (column_type, bytes) in cases {
             assert_eq!(
-                read_binary(kind, &bytes),
-                Err(ValueError::binary(kind, &bytes)),
-                "{kind} {bytes:?}"
+                read_binary(column_type, &bytes),
+                Err(ValueError::binary(column_type, &bytes)),
+                "{column_type} {bytes:?}"
             );
         }
         assert_eq!(
@@ -569,8 +573,8 @@ mod tests {
             (ColumnType::Text, "x", r#"can't read "x" as text"#),
             (ColumnType::Time, "x", r#"can't read "x" as a timestamptz"#),
         ];
-        for (kind, text, msg) in cases {
-            assert_eq!(ValueError::new(kind, text).to_string(), msg);
+        for (column_type, text, msg) in cases {
+            assert_eq!(ValueError::new(column_type, text).to_string(), msg);
         }
     }
 }

@@ -21,17 +21,17 @@ pub(crate) struct Table {
     /// What a row holds, in order: `Fact::columns`, or the dim key and then
     /// its attributes.
     pub(crate) columns: Vec<Ident>,
-    pub(crate) kinds: Vec<ColumnType>,
+    pub(crate) types: Vec<ColumnType>,
     /// The fact's or dim's key. A fact's key may be of any type; straum only
     /// needs to see that a change carries it instead of the whole row.
     pub(crate) key: Ident,
-    pub(crate) key_kind: ColumnType,
+    pub(crate) key_type: ColumnType,
 }
 
 impl Table {
-    pub(crate) fn kind(&self, column: &Ident) -> ColumnType {
+    pub(crate) fn column_type(&self, column: &Ident) -> ColumnType {
         let i = self.columns.iter().position(|c| c == column);
-        self.kinds[i.expect("the column is in the table's row")]
+        self.types[i.expect("the column is in the table's row")]
     }
 
     pub(crate) fn qualified(&self) -> String {
@@ -55,7 +55,7 @@ pub(crate) struct Relation {
     pub(crate) schema: String,
     pub(crate) name: String,
     /// `pg_class.relkind`: `r` for a plain table.
-    pub(crate) kind: String,
+    pub(crate) relkind: String,
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
     pub(crate) select: bool,
@@ -144,7 +144,7 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
         let [
             schema,
             name,
-            kind,
+            relkind,
             identity,
             select,
             identity_columns,
@@ -159,7 +159,7 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
         catalog.relations.push(Relation {
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
-            kind: kind.unwrap_or_default(),
+            relkind: relkind.unwrap_or_default(),
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
             identity_columns: list(identity_columns),
@@ -217,11 +217,11 @@ enum Role {
 }
 
 impl Role {
-    fn allows(self, kind: ColumnType) -> bool {
+    fn allows(self, column_type: ColumnType) -> bool {
         match self {
-            Role::Time => kind == ColumnType::Time,
-            Role::Number => matches!(kind, ColumnType::Int | ColumnType::Numeric { .. }),
-            Role::Key => kind != ColumnType::Time,
+            Role::Time => column_type == ColumnType::Time,
+            Role::Number => matches!(column_type, ColumnType::Int | ColumnType::Numeric { .. }),
+            Role::Key => column_type != ColumnType::Time,
         }
     }
 
@@ -359,7 +359,7 @@ fn check_table<'a>(
         return None;
     };
     let before = problems.len();
-    if relation.kind != "r" {
+    if relation.relkind != "r" {
         problems.push(format!("{name}: {qualified} is not a plain table"));
         return None;
     }
@@ -391,7 +391,7 @@ fn check_table<'a>(
         found.ok_or_else(|| format!("{name}: {qualified} has no column {column}"))
     };
     let mut columns: Vec<Ident> = Vec::new();
-    let mut kinds = Vec::new();
+    let mut types = Vec::new();
     for (name_of, role) in roles {
         let found = column(name_of).and_then(|c| {
             if published.is_some_and(|p| !p.contains(&c.name)) {
@@ -412,15 +412,15 @@ fn check_table<'a>(
         match found {
             Err(problem) => problems.push(problem),
             Ok(_) if columns.contains(name_of) => {}
-            Ok(kind) => {
+            Ok(column_type) => {
                 columns.push(name_of.clone());
-                kinds.push(kind);
+                types.push(column_type);
             }
         }
     }
-    // A fact's key reads as text when straum has no kind for its type.
-    let key_kind = match key {
-        None => kinds.first().copied(),
+    // A fact's key reads as text when straum doesn't read its type.
+    let key_type = match key {
+        None => types.first().copied(),
         Some(key) => match column(key) {
             Ok(c) => Some(type_of(c.type_oid, c.typmod).unwrap_or(ColumnType::Text)),
             Err(problem) => {
@@ -438,8 +438,8 @@ fn check_table<'a>(
         table: table.name.clone(),
         key: key.unwrap_or(&columns[0]).clone(),
         columns,
-        kinds,
-        key_kind: key_kind.expect("no problem, so the key was found"),
+        types,
+        key_type: key_type.expect("no problem, so the key was found"),
     };
     Some((table, relation))
 }
@@ -463,15 +463,15 @@ fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<S
     }
 }
 
-/// Refs join fact columns to dim keys of the same kind, and filters compare
-/// columns with literals of their kind.
+/// Refs join fact columns to dim keys of the same type, and filters compare
+/// columns with literals of their type.
 fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
     let table = |name: &Ident| tables.iter().find(|t| t.name == *name).expect("checked");
     for fact in spec.facts() {
         let facts = table(&fact.name);
         for r in &fact.refs {
             let dim = table(&r.dim);
-            let (via, key) = (facts.kind(&r.via), dim.kinds[0]);
+            let (via, key) = (facts.column_type(&r.via), dim.types[0]);
             if via != key {
                 problems.push(format!(
                     "fact {}: ref {} joins {} ({via}) to {} ({key}); they must read alike",
@@ -481,19 +481,19 @@ fn check_refs(spec: &Spec, tables: &[Table], problems: &mut Vec<String>) {
         }
         for m in &fact.measures {
             for cond in &m.filter {
-                let kind = match spec
+                let column_type = match spec
                     .resolve(fact, &cond.path)
                     .expect("checked by Spec::new")
                 {
-                    Key::Column(c) => facts.kind(c),
-                    Key::Ref(r) => facts.kind(&r.via),
-                    Key::Attr(r, attr) => table(&r.dim).kind(attr),
+                    Key::Column(c) => facts.column_type(c),
+                    Key::Ref(r) => facts.column_type(&r.via),
+                    Key::Attr(r, attr) => table(&r.dim).column_type(attr),
                 };
                 for value in &cond.values {
                     // The rule asks follow too.
-                    if !kind.fits(value) {
+                    if !column_type.fits(value) {
                         problems.push(format!(
-                            "fact {}: measure {} compares {} ({kind}) with {}",
+                            "fact {}: measure {} compares {} ({column_type}) with {}",
                             fact.name,
                             m.name,
                             cond.path,
