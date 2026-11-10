@@ -28,11 +28,11 @@ It needs the data `bench/bench.py` fetches. It loads the month with
 `crates/straum-notation/tests/taxi.sql`, a wider view than the
 benchmark's: 15 minute buckets with day and week widths, keyed by payment
 type, vendor, pickup zone, dropoff zone and the pickup zone's borough,
-zone and service zone, with two filtered counts. It has Straum load and
-follow it, and compares asks with the view body in PostgreSQL after the
-load, after 200 streamed commits, after an update, and after two zones
-change and a trip in one of them makes Straum start over. One run on
-2026-11-10, release build, Docker on the same laptop:
+zone and service zone, with two filtered counts. Straum loads and
+follows it, and the test compares asks with the view body in PostgreSQL
+four times: after the load, after 200 streamed commits, after an update,
+and after two zones change and a trip in one of them makes Straum start
+over. One run on 2026-11-10, release build, Docker on the same laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
 | --- | ---: | ---: | ---: |

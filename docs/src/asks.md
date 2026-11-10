@@ -35,9 +35,10 @@ SELECT orders, revenue FROM orders
   (`shipped`), a dim column (`customers.country`), or `bucket`, the
   view's time bucket. A join has no value of its own: ask for the fact
   column it joins on (`customer_id`) or the dim's columns.
-- Keys come first in `SELECT`, then measures, by name, each once, since
-  they name the fields of each answer row. `GROUP BY` names exactly the
-  selected keys. Without keys there is no `GROUP BY`.
+- Keys come first in `SELECT`, then measures. Each goes by name and at
+  most once, since the names become the fields of each answer row.
+  `GROUP BY` names exactly the selected keys. Without keys there is no
+  `GROUP BY`.
 - `WHERE` joins conditions with `AND`. A condition is `key = $n` or
   `key IN ($n, $m)`. `bucket >= $n` and `bucket < $m` bound the range,
   once each; a bound left out is open, so an ask with neither reads
@@ -55,8 +56,8 @@ Each must be used, and one can be used more than once.
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
 for a boolean or a null-ness key. `customer_id = $1` with `"7"` is an
-error, not an answer with no rows. A `numeric` with a scale above 0 takes
-no parameter at all: at scale 2, `1` would read as 0.01.
+error, not an answer with no rows. A `numeric` with a scale above 0
+can't be filtered on: at scale 2, `1` could mean 1 or 0.01.
 
 The `bucket` bounds are RFC 3339 times, such as `"2026-01-01T00:00:00Z"`,
 or Unix seconds. Both must fall on an edge of the view's `date_bin`
@@ -79,8 +80,8 @@ buckets: Straum never answers for part of a bucket.
   the answer. It is the last time Straum knew it had applied all the WAL
   PostgreSQL had written, so it keeps moving on a quiet database. A
   transaction is applied whole, so an answer never sees half of one.
-  Straum has no "read your writes" barrier, so `as_of` is how a client
-  judges whether an answer is fresh enough.
+  There is no "read your writes" barrier; `as_of` is how a client judges
+  whether an answer is fresh enough.
 - `rows`: one object per group, keyed by the names in `SELECT`, sorted by
   key, nulls first. An ask without keys answers one row even when
   nothing matches, as SQL does without `GROUP BY`: counts are 0, the

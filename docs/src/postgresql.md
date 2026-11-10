@@ -27,11 +27,11 @@ These are the providers' documented settings as of November 2026.
 ## 2. Run the setup SQL
 
 `straum plan --spec FILE` prints the SQL that lets Straum read the spec's
-tables. With `STRAUM_DSN` set, or `--dsn-file`, the role is the DSN's
-user and gets the DSN's password as a SCRAM-SHA-256 verifier, so the
-password itself is in neither the SQL nor the server's log. Without a
-DSN the role is `straum` and the SQL says how to give it a password. For
-the [quick start](quick-start.md):
+tables. With `STRAUM_DSN` or `--dsn-file` set, the role is the DSN's
+user, and its password goes in as a SCRAM-SHA-256 verifier, so the
+password itself appears in neither the SQL nor the server's log. Without
+a DSN the role is `straum` and the SQL says how to give it a password.
+For the [quick start](quick-start.md):
 
 ```sql
 -- straum setup: run once, as an owner of the tables.

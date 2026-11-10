@@ -61,16 +61,16 @@ then Loading from a new slot. SIGTERM leads to Stopping.*
 | Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
 | Waiting | 503 `not ready: ` and the failure | 503 |
 
-Straum reads the server's WAL position every second. Lag is how long ago
-Straum last caught up with a position the server had reached, so it can
-overstate how far behind Straum is but never understate it.
+Straum reads the server's WAL position every second. Lag is the time
+since Straum last caught up with a position the server had reached. It
+can say Straum is further behind than it is, never less.
 
 Any failure leads to Waiting: a lost connection, a change Straum can't
 apply, a table altered under it, or too much WAL held for its slot.
-Straum closes the connection, so PostgreSQL drops the slot, and waits 1
-second, twice as long after each failure in a row, up to 60 seconds. Then
-it loads every table again from a new slot. A load that finishes resets
-the wait.
+Straum closes the connection, which drops the slot, and waits: 1 second
+after the first failure, twice as long after each failure in a row, up
+to 60 seconds. Then it loads every table again from a new slot. A load
+that finishes resets the wait.
 
 ```text
 straum: PostgreSQL holds 5120.0 MiB of WAL for straum's slot, past the limit of 4096.0 MiB

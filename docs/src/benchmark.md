@@ -158,12 +158,13 @@ SELECT bucket, trips FROM trips
 Straum holds a transaction until its commit and applies it whole under
 its write lock, so its rows wait in memory and every ask waits for the
 apply. `bench/transaction.py` updates the fare of the first N trips in
-one transaction while asking for one day of hour buckets as fast as the
-answers come, and measures the time from the commit until Straum has
-applied it, the longest ask seen meanwhile, which is the lock hold as a
-client feels it, and how much Straum's resident set grew. One run on
-2026-11-10, the machine, build and PostgreSQL of the [Results](#results);
-Straum held 38 MiB after the load and an idle ask took 136 µs:
+one transaction while a client asks for one day of hour buckets as fast
+as the answers come. It measures three things: the time from the commit
+until Straum has applied it, the longest ask meanwhile, which is the
+lock hold as a client feels it, and how much Straum's resident set grew.
+One run on 2026-11-10, the machine, build and PostgreSQL of the
+[Results](#results); Straum held 38 MiB after the load and an idle ask
+took 136 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
