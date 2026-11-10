@@ -4,8 +4,8 @@
 //!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
-//!   (see `answer.rs`). 400 for an ask straum can't answer, 503 while a table it
-//!   reads isn't ready.
+//!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN`. 400 for
+//!   an ask straum can't answer, 503 while a table it reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and straum is within its
 //!   lag bound, else 503 and why. Asks still answer while straum lags.
@@ -31,7 +31,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue};
+use hyper::header::{ALLOW, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -40,6 +40,9 @@ use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::{AnswerError, App};
 use straum_domain::{Ask, Literal};
 use tokio::net::TcpListener;
+
+/// The LSN an answer reflects.
+const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
 /// The largest ask body straum reads.
 const MAX_ASK: usize = 1 << 20;
@@ -137,11 +140,16 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let answered = app.ask(&request)?;
-        Ok(answer::write(&answered))
+        Ok((answered.lsn, answer::write(&answered)))
     })
     .await;
     match answered {
-        Ok(Ok(json)) => respond(StatusCode::OK, "application/json", json),
+        Ok(Ok((lsn, json))) => {
+            let mut response = respond(StatusCode::OK, "application/json", json);
+            let lsn = HeaderValue::try_from(lsn.to_string()).expect("an LSN is ASCII");
+            response.headers_mut().insert(LSN, lsn);
+            response
+        }
         Ok(Err(AnswerError::NotReady)) => {
             errors(StatusCode::SERVICE_UNAVAILABLE, &["not ready".to_owned()])
         }

@@ -667,7 +667,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
         }
         assert!(streamed > 1, "round {round}: nothing was streamed");
         // The marker's commit time, by the server's clock, is now.
-        let time = writer.app().ask(&marker).unwrap().time.unwrap();
+        let time = writer.app().status().time.unwrap();
         let apart = match SystemTime::now().duration_since(time) {
             Ok(behind) => behind,
             Err(ahead) => ahead.duration(),

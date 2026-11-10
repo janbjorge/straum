@@ -51,7 +51,7 @@ flight and exits, and PostgreSQL drops the slot as the connection closes.
 | --- | --- | --- |
 | Loading | 503 `not ready: loading`, or the failure that led here | 503 |
 | Ready | 200 `ready` | Answered |
-| Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `lsn` |
+| Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
 | Waiting | 503 `not ready: ` and the failure | 503 |
 
 Straum reads the server's WAL position every second. Lag is how long ago

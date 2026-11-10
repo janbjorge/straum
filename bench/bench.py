@@ -327,19 +327,17 @@ async def compare(
 
 def plain(row) -> tuple:
     """The row in one form for both sides. orjson reads Straum's exact
-    decimals as floats, so both sides compare as floats to six places;
-    Straum's avg comes as sum and count, and its buckets as RFC 3339 text."""
+    decimals as floats, so both sides compare as floats to four places,
+    which Straum's avg always has; its buckets come as RFC 3339 text."""
     values = []
-    for value in row:
+    for value in row.values():
         match value:
-            case {"sum": total, "count": count}:
-                value = total / count if count else None
             case decimal.Decimal():
                 value = float(value)
             case datetime.datetime():
                 value = value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if isinstance(value, float):
-            value = round(value, 6)
+            value = round(value, 4)
         values.append(value)
     return tuple(values)
 

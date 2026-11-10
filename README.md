@@ -52,20 +52,17 @@ curl --json '{
 
 ```json
 {
-  "lsn": "0/17B2788",
-  "commit_time": null,
-  "columns": ["status", "customer.country", "orders", "revenue", "avg_amount"],
+  "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    ["paid", "NO", 2, 139.99, {"sum": 139.99, "count": 2}],
-    ["paid", "SE", 1, 80.50, {"sum": 80.50, "count": 1}],
-    ["refunded", "NO", 1, 42.00, {"sum": 42.00, "count": 1}]
+    {"status": "paid", "customer.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
+    {"status": "paid", "customer.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
+    {"status": "refunded", "customer.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
   ]
 }
 ```
 
-`lsn` is the last PostgreSQL commit reflected in the answer. `commit_time` is
-that commit's timestamp. It is `null` until Straum applies its first streamed
-commit. `avg` comes as sum and count, so you pick the rounding. The guide's
+Every commit made before `as_of` is in the answer. Sums keep their column's
+scale; `avg` is rounded to four more places. The guide's
 [quick start](https://janbjorge.github.io/straum/quick-start.html) makes
 these tables in Docker and gives this answer.
 

@@ -65,7 +65,8 @@ Tests:
   (replaced by binary `COPY`, 2026-11-09); one
   time level (bucket) merged up at ask time (replaced by `buckets`,
   2026-11-09); asks over HTTP/JSON, no pgwire;
-  no WAL barrier in v1, answers carry the LSN they reflect.
+  no WAL barrier in v1, answers carry the LSN they reflect (moved to a
+  header, 2026-11-10).
 - 2026-11-08: Cell state is kept per input column and shared by measures: sum
   and avg share sum and count, min and max share value counts. Filtered
   measures keep none (M1). One enum of cell states, no accumulator trait.
@@ -163,7 +164,8 @@ Tests:
   never wait on PostgreSQL, and asks on the other tables go on during a
   reload. A long ask delays the writer, which shows as lag; copy-on-write
   shards or `left-right` if that matters.
-- 2026-11-09: Answers carry the scale of each column (`Answer::scales`). Only
+- 2026-11-09: Answers carry the scale of each column (`Answer::scales`, now
+  `Answer::columns`, 2026-11-10). Only
   the source knows column types, so a load sets them (`Rollup::set_scales`,
   `DimTable::set_scales`), and JSON answers print exact decimals.
 - 2026-11-09: straum-http is hyper 1 on tokio, no framework, no macros. JSON
@@ -173,7 +175,8 @@ Tests:
   clash with a column. Zones come from jiff with the tz database built in,
   for the distroless image.
 - 2026-11-09: The commit time in answers is pgoutput's Commit timestamp; it
-  is null when the LSN is where the stream started. Metrics are Prometheus
+  is null when the LSN is where the stream started (replaced by `as_of`,
+  2026-11-10). Metrics are Prometheus
   text written by hand. Lag, retained WAL and OTLP move to M7, since they
   need the server's WAL position or a collector.
 - 2026-11-09: The binary reads its arguments by hand. The DSN comes from
@@ -303,6 +306,17 @@ Tests:
   reads only the JSON around it and gets the reader from the binary, so it
   stays off `straum-notation`. No backward compatibility, since Straum
   isn't live.
+- 2026-11-10: An answer is `{"as_of", "rows"}`, each row an object keyed
+  by the names in `SELECT`. `as_of` is when the slot was last known to
+  have confirmed all the WAL the server had written (`Lag::caught_up`), so
+  every commit made before it is in the answer and it keeps moving on a
+  quiet database; the WAL read's start counts as its time. It replaces the
+  LSN and commit time in the body: the LSN goes in a `Straum-LSN` header,
+  since without a barrier a client can't act on it. avg is rounded half to
+  even at four places past its column's scale, trailing zeros dropped,
+  instead of `{"sum", "count"}`; the domain keeps sum and count, so
+  rounding stays in `straum-http`. `Answer` names its own columns, so the
+  writer doesn't need the ask.
 
 ## M0: notation and domain model
 
@@ -553,8 +567,6 @@ Touches: `crates/straum-http`, `crates/straum-app`, `crates/straum`,
 - A CA bundle in the chart: a value naming a ConfigMap or Secret, mounted
   read-only, for the DSN's `sslrootcert`. Until then a server whose
   certificate needs `sslrootcert` can't be reached through the chart.
-- An "as of" time from keepalives, so answers on a quiet database don't
-  look stale by their commit time.
 - Long asks hold the read lock and delay the writer, and `/readyz` waits
   behind a writer that waits. A coarse ask on the taxi month
   held it 1.5 s; with day and week buckets and the column-at-a-time ask

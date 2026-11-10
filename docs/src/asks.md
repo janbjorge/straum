@@ -57,35 +57,33 @@ never answers for part of a bucket.
 
 ```json
 {
-  "lsn": "0/17B2958",
-  "commit_time": "2026-11-09T17:12:57.346371Z",
-  "columns": ["bucket", "customer.country", "orders", "revenue"],
+  "as_of": "2026-11-09T17:12:57.861204Z",
   "rows": [
-    ["2026-01-01T09:00:00Z", "NO", 1, 120.00],
-    ["2026-01-01T09:00:00Z", "SE", 1, 80.50],
-    ["2026-01-01T11:00:00Z", "SE", 1, 300.00]
+    {"bucket": "2026-01-01T09:00:00Z", "customer.country": "NO", "orders": 1, "revenue": 120.00},
+    {"bucket": "2026-01-01T09:00:00Z", "customer.country": "SE", "orders": 1, "revenue": 80.50},
+    {"bucket": "2026-01-01T11:00:00Z", "customer.country": "SE", "orders": 1, "revenue": 300.00}
   ]
 }
 ```
 
-- `lsn`: the answer reflects every commit up to this one and none after.
-  Straum applies a transaction whole, so an answer never sees half of
-  one.
-- `commit_time`: when that commit committed, by the server's clock. It is
-  null until the first commit after a load, and on a quiet database it
-  ages while the answer stays current.
-- `columns`: the selected keys, then the measures, as in `SELECT`.
-- `rows`: one per group, sorted by key, nulls first.
+- `as_of`: every commit made before this time, by Straum's clock, is in
+  the answer. It is the last time Straum knew it had applied all the WAL
+  PostgreSQL had written, so it keeps moving on a quiet database. Straum
+  applies a transaction whole, so an answer never sees half of one.
+- `rows`: one object per group, keyed by the names in `SELECT`, sorted by
+  key, nulls first.
 
 Buckets are their start, in UTC. Counts are integers. `sum`, `min` and
 `max` are exact decimals in their column's scale: `120.00` for a
-`numeric(10, 2)`. `avg` is `{"sum": 139.99, "count": 2}`, so you pick the
-rounding. A ref id with no dim row has null attributes, as a `LEFT JOIN`
-gives. An ask without keys answers one row even when nothing matches,
-as SQL does without `GROUP BY`: counts are 0, the rest null.
+`numeric(10, 2)`. `avg` is rounded half to even at four places past that
+scale, with trailing zeros dropped: `69.995` for 139.99 over 2. A ref id
+with no dim row has null attributes, as a `LEFT JOIN` gives. An ask
+without keys answers one row even when nothing matches, as SQL does
+without `GROUP BY`: counts are 0, the rest null.
 
-Straum has no "read your writes" barrier yet. The client decides from
-`lsn` whether an answer is fresh enough.
+The `Straum-LSN` header names the last commit the answer reflects, for
+debugging. Straum has no "read your writes" barrier yet, so `as_of` is
+how a client judges whether an answer is fresh enough.
 
 ## Errors
 

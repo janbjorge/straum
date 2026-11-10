@@ -97,7 +97,7 @@ to a dim row never touches a rollup.
 | `count(*)` | | an integer |
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean` or `text` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
-| `avg(c)` | the same | `{"sum": ..., "count": ...}` |
+| `avg(c)` | the same | a decimal rounded to four places past `c`'s scale |
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
 numeric values scaled by their column's scale.

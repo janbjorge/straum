@@ -105,20 +105,17 @@ curl --json '{
 
 ```json
 {
-  "lsn": "0/17B2788",
-  "commit_time": null,
-  "columns": ["status", "customer.country", "orders", "revenue", "avg_amount"],
+  "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    ["paid", "NO", 2, 139.99, {"sum": 139.99, "count": 2}],
-    ["paid", "SE", 1, 80.50, {"sum": 80.50, "count": 1}],
-    ["refunded", "NO", 1, 42.00, {"sum": 42.00, "count": 1}]
+    {"status": "paid", "customer.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
+    {"status": "paid", "customer.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
+    {"status": "refunded", "customer.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
   ]
 }
 ```
 
-`lsn` is the last commit the answer reflects; `commit_time` is null until
-a commit arrives after the load. `avg` comes as sum and count, so you pick
-the rounding.
+Every commit made before `as_of` is in the answer. `avg` is rounded to
+four places past the column's scale.
 
 ## 7. Change the data
 
@@ -136,18 +133,17 @@ curl --json '{
 
 ```json
 {
-  "lsn": "0/17B2958",
-  "commit_time": "2026-11-09T17:12:57.346371Z",
-  "columns": ["bucket", "orders", "revenue"],
+  "as_of": "2026-11-09T17:12:57.861204Z",
   "rows": [
-    ["2026-01-01T09:00:00Z", 2, 200.50],
-    ["2026-01-01T11:00:00Z", 1, 300.00]
+    {"bucket": "2026-01-01T09:00:00Z", "orders": 2, "revenue": 200.50},
+    {"bucket": "2026-01-01T11:00:00Z", "orders": 1, "revenue": 300.00}
   ]
 }
 ```
 
 The refund took the 10:00 order out of the paid rows and the new order
-added 11:00, both at the commit the answer names.
+added 11:00, both in one answer, since Straum applies a transaction
+whole.
 
 ## 8. Clean up
 

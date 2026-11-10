@@ -7,6 +7,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
+use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
 use straum_domain::{Ask, Datum, Dim, DimTable, Fact, Ident, Rollup, Spec};
 use straum_http::ReadAsk;
@@ -229,36 +230,47 @@ fn answers_asks_as_json() {
         "{}",
         reply.head
     );
-    let rows = concat!(
-        r#"["2024-01-01T00:00:00Z",1,"Bronx",1,12.50,{"sum":12.50,"count":1},12.50],"#,
-        r#"["2024-01-01T01:00:00Z",1,"Bronx",1,2.50,{"sum":2.50,"count":1},2.50],"#,
-        r#"["2024-01-01T02:00:00Z",2,null,1,null,null,null],"#,
-        r#"["2024-01-01T23:00:00Z",2,"Queens \"Q\"",1,-0.05,{"sum":-0.05,"count":1},-0.05]"#,
+    assert!(
+        reply.head.contains("straum-lsn: 16/B374D848"),
+        "{}",
+        reply.head
     );
-    let columns = r#"["bucket","kind","zone.borough","trips","fare","fare_avg","fare_max"]"#;
-    assert_eq!(
-        reply.body,
+    let row = |bucket, kind, borough, fare, avg| {
         format!(
-            r#"{{"lsn":"16/B374D848","commit_time":null,"columns":{columns},"rows":[{rows}]}}"#
+            r#"{{"bucket":"{bucket}","kind":{kind},"zone.borough":{borough},"trips":1,"fare":{fare},"fare_avg":{avg},"fare_max":{fare}}}"#
         )
-    );
+    };
+    let rows = [
+        row("2024-01-01T00:00:00Z", 1, r#""Bronx""#, "12.50", "12.5"),
+        row("2024-01-01T01:00:00Z", 1, r#""Bronx""#, "2.50", "2.5"),
+        row("2024-01-01T02:00:00Z", 2, "null", "null", "null"),
+        row(
+            "2024-01-01T23:00:00Z",
+            2,
+            r#""Queens \"Q\"""#,
+            "-0.05",
+            "-0.05",
+        ),
+    ];
+    assert_eq!(rows_of(&reply.body), format!("[{}]", rows.join(",")));
 
     // The same range in Unix seconds.
     let seconds = ask(BY_BUCKET, "[1704067200, 1704240000]");
-    assert_eq!(call(server.addr, "POST", "/ask", &seconds).body, reply.body);
+    let again = call(server.addr, "POST", "/ask", &seconds);
+    assert_eq!(rows_of(&again.body), rows_of(&reply.body));
 
-    // After a commit, answers carry its LSN and time.
+    // After a commit, answers carry its LSN.
     assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(0x17_0000_0000)));
     let totals = ask(
-        "SELECT trips, fare FROM trips WHERE bucket >= $1 AND bucket < $2",
+        "SELECT trips, fare, fare_avg FROM trips WHERE bucket >= $1 AND bucket < $2",
         "[0, 1704240000]",
     );
+    let reply = call(server.addr, "POST", "/ask", &totals);
+    assert!(reply.head.contains("straum-lsn: 17/0"), "{}", reply.head);
+    // 15.95 over the 4 trips with a fare, to four places past its scale.
     assert_eq!(
-        call(server.addr, "POST", "/ask", &totals).body,
-        concat!(
-            r#"{"lsn":"17/0","commit_time":"2024-01-02T00:00:00.123456Z","#,
-            r#""columns":["trips","fare"],"rows":[[5,15.95]]}"#
-        )
+        rows_of(&reply.body),
+        r#"[{"trips":5,"fare":15.95,"fare_avg":3.9875}]"#
     );
     server.stop();
 }
@@ -496,13 +508,8 @@ fn reads_asks_with_the_reader_it_is_given() {
 
     let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(JAN_1)));
     let reply = call(server.addr, "POST", "/ask", body);
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (
-            200,
-            r#"{"lsn":"16/B374D848","commit_time":null,"columns":["trips"],"rows":[[4]]}"#
-        )
-    );
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(rows_of(&reply.body), r#"[{"trips":4}]"#);
     server.stop();
 
     let server = serve_with(writer.app().clone(), |_, _| {
@@ -528,4 +535,22 @@ fn reads_asks_with_the_reader_it_is_given() {
         reply.body
     );
     server.stop();
+}
+
+/// An answer's rows, once its `as_of` is checked to be a time from the last
+/// minute.
+fn rows_of(body: &str) -> &str {
+    let fields = (body.strip_prefix(r#"{"as_of":""#))
+        .and_then(|rest| rest.strip_suffix('}'))
+        .and_then(|rest| rest.split_once(r#"","rows":"#));
+    let Some((as_of, rows)) = fields else {
+        panic!("not an answer: {body}");
+    };
+    let as_of: Timestamp = as_of.parse().unwrap();
+    let age = Timestamp::now().duration_since(as_of);
+    assert!(
+        (SignedDuration::ZERO..SignedDuration::from_secs(60)).contains(&age),
+        "{as_of}"
+    );
+    rows
 }

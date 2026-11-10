@@ -46,6 +46,12 @@ impl Lag {
         }
     }
 
+    /// When the slot was last known to have confirmed all the WAL there
+    /// was.
+    pub(crate) fn caught_up(&self) -> Instant {
+        self.caught_up
+    }
+
     /// The time since the slot was last known to have confirmed all the
     /// WAL there was: zero when it had at the last reading. Readings a
     /// second apart make it up to a second longer than it is, never

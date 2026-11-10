@@ -91,9 +91,11 @@ pub struct Answered {
     pub answer: Answer,
     /// The answer reflects every commit up to here and none after.
     pub lsn: Lsn,
-    /// When the commit at `lsn` committed. `None` when `lsn` is where the
-    /// stream started and no commit has come since.
-    pub time: Option<SystemTime>,
+    /// Every commit made before this, by straum's clock, is in the answer:
+    /// when the slot was last known to have confirmed all the WAL there
+    /// was. Unlike the time of the commit at `lsn`, it moves on while the
+    /// database is idle.
+    pub as_of: SystemTime,
 }
 
 /// What [`App::status`] reports, read at one moment.
@@ -168,11 +170,15 @@ impl App {
             .check(ask)
             .map_err(AnswerError::Invalid)?;
         let lsn = state.position.ok_or(AnswerError::NotReady)?;
+        let caught_up = state.lag.as_ref().expect(STARTED).caught_up();
         let answer = state.store.ask(ask).expect("checked by Spec::check");
+        let since = Instant::now().saturating_duration_since(caught_up);
         Ok(Answered {
             answer,
             lsn,
-            time: state.time,
+            // A clock set before 1970 gets the earliest time there is,
+            // which is still true.
+            as_of: (SystemTime::now().checked_sub(since)).unwrap_or(SystemTime::UNIX_EPOCH),
         })
     }
 
@@ -388,8 +394,10 @@ impl<S: Source> Writer<S> {
     /// Reads the server's WAL, and fails once the slot holds more of it
     /// than [`Limits::max_retained_wal`].
     fn measure(&mut self) -> Result<Wal, Error> {
+        // Taken before the read, so the reading holds all WAL written by then.
+        let at = Instant::now();
         let wal = self.source.wal()?;
-        self.measured = Instant::now();
+        self.measured = at;
         let (retained, limit) = (wal.retained(), self.limits.max_retained_wal);
         if retained > limit {
             return Err(Error::Retained { retained, limit });

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="476" viewBox="0 0 880 476" role="img" aria-labelledby="t d">
   <title id="t">How Straum works</title>
-  <desc id="d">A table owner applies the setup SQL that straum plan prints. On every start Straum loads aggregates from a snapshot at LSN L into RAM, then applies every commit after L from a temporary logical slot. Apps ask over HTTP and each answer carries the LSN and commit time it reflects.</desc>
+  <desc id="d">A table owner applies the setup SQL that straum plan prints. On every start Straum loads aggregates from a snapshot at LSN L into RAM, then applies every commit after L from a temporary logical slot. Apps ask over HTTP and each answer says when every commit before it was in.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -151,9 +151,9 @@
   <path class="a" d="M776 350 L680 350" marker-end="url(#m)"/>
   <text x="726" y="342" class="mono" text-anchor="middle">POST /ask</text>
   <path class="a" d="M676 380 L772 380" marker-end="url(#m)"/>
-  <text x="726" y="372" class="s ink2" text-anchor="middle">rows, lsn</text>
-  <text x="726" y="398" class="s muted" text-anchor="middle">commit_time</text>
+  <text x="726" y="372" class="s ink2" text-anchor="middle">rows</text>
+  <text x="726" y="398" class="s muted" text-anchor="middle">as_of</text>
   <rect class="fillacc" x="32" y="430" width="4" height="30" rx="1"/>
   <text x="46" y="442" xml:space="preserve"><tspan class="b">One LSN joins load and stream. </tspan><tspan class="ink2">The snapshot holds every commit up to L; the slot streams from the first commit after L.</tspan></text>
-  <text x="46" y="460" class="muted">No commit is missed and none is applied twice. Each answer says which commit it reflects.</text>
+  <text x="46" y="460" class="muted">No commit is missed and none is applied twice. Each answer says how fresh it is.</text>
 </svg>

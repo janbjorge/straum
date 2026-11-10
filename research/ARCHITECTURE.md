@@ -16,8 +16,8 @@ PostgreSQL paths are relative to the root of [upstream PostgreSQL](https://githu
 - Straum follows the fact and dim tables over logical replication and keeps one
   rollup per fact in RAM.
 - Clients send asks over HTTP/JSON: measures, keys to group by, filters and a
-  time range, in UTC. Straum answers from the rollup, and every answer carries
-  the LSN and commit time it reflects.
+  time range, in UTC. Straum answers from the rollup, and every answer says
+  how fresh it is.
 - PostgreSQL stays the source of truth. Straum keeps nothing on disk and rebuilds
   from PostgreSQL on every start.
 - Everything Straum needs ships in stock PostgreSQL 17 and newer and works on
@@ -126,8 +126,8 @@ time keys and a range end inside a bucket.
   (PLAN.md, 2026-11-09).
 - An ask without keys answers one row even when nothing matches, as SQL does
   without GROUP BY.
-- sum, min and max come back in the column's scale. avg comes back as sum and
-  count, so the caller picks the rounding.
+- sum, min and max come back in the column's scale. avg keeps sum and count;
+  HTTP rounds it half to even at four places past the scale.
 
 Over HTTP (`crates/straum-http`), `POST /ask` takes a query in Straum SQL
 and its parameters as JSON:
@@ -155,18 +155,19 @@ The answer, with made-up values:
 
 ```json
 {
-  "lsn": "16/B374D848",
-  "commit_time": "2024-01-31T22:59:59.123456Z",
-  "columns": ["bucket", "payment_type", "pickup.borough", "trips", "fare", "distance"],
-  "rows": [["2024-01-01T00:00:00Z", 1, "Bronx", 412, 6234.50,
-            {"sum": 1203.11, "count": 412}]]
+  "as_of": "2024-01-31T22:59:59.123456Z",
+  "rows": [{"bucket": "2024-01-01T00:00:00Z", "payment_type": 1,
+            "pickup.borough": "Bronx", "trips": 412, "fare": 6234.50,
+            "distance": 2.92017}]
 }
 ```
+
+The LSN goes in a `Straum-LSN` header.
 
 - A bucket prints as its start, RFC 3339 in UTC.
 - Numeric values are exact decimals in their column's scale. The load sets
   each column's scale from the catalog (`Rollup::set_scales`), and answers
-  carry them (`Answer::scales`).
+  carry them (`Answer::columns`).
 - Status 503 while a table the ask reads isn't ready.
 
 ## 3. Rollups in memory
@@ -307,12 +308,12 @@ half a transaction.
 
 ### 4c. Freshness
 
-v1 has no barrier. Every answer carries the LSN and commit time it reflects,
-and the client decides whether that is fresh enough. The commit time is the
-timestamp of pgoutput's Commit message, by the server's clock. It is null when
-the LSN is where the stream started and no commit has come since. On a quiet
-database it ages while the answer stays current; keepalives could give an
-"as of" time instead (open point). A per-ask barrier stays
+v1 has no barrier. Every answer carries `as_of`, and the client decides
+whether that is fresh enough: every commit made before it, by Straum's
+clock, is in the answer. It is when the slot was last known to have
+confirmed all the WAL the server had written (`Lag::caught_up`), so on a
+quiet database it keeps moving. The LSN goes in a `Straum-LSN` header, for
+debugging. A per-ask barrier stays
 possible: Straum calls `pg_logical_emit_message(..., flush => true)` on a SQL
 connection and answers once the stream passes the returned LSN
 (POSTGRES-REPLICATION.md §8, R).
@@ -359,7 +360,7 @@ Clean architecture as Cargo crates:
   connection. `App` is the store and how far it has followed the source;
   clones share it. `Writer::step` is the loop that does the I/O: it loads
   every table or applies a commit, and starts over when a change no longer
-  fits. `App::ask` answers with the LSN and commit time. About once a
+  fits. `App::ask` answers with the LSN and `as_of`. About once a
   second the writer reads the server's WAL position for the lag and the
   WAL held for its slot (`crates/straum-app/src/lag.rs`, M7).
 - `straum-pg` (M5, M7): our own replication client on `postgres-protocol`.

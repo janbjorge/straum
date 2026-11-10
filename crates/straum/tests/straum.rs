@@ -56,7 +56,8 @@ const EXPECTED: &str = r#"
 SELECT coalesce(string_agg(row, ',' ORDER BY kind COLLATE "C" NULLS FIRST,
                                              borough COLLATE "C" NULLS FIRST), '')
   FROM (SELECT kind, borough,
-               json_build_array(kind, borough, count(*), sum(fare))::text AS row
+               json_build_object('kind', kind, 'zone.borough', borough,
+                                 'trips', count(*), 'fare', sum(fare))::text AS row
           FROM shop.trips t
           LEFT JOIN shop.zones zone ON zone.id = t.zone_id
          GROUP BY 1, 2) v
@@ -132,7 +133,7 @@ impl Postgres {
     }
 
     fn expected_rows(&self) -> String {
-        self.psql(EXPECTED).replace(", ", ",")
+        self.psql(EXPECTED).replace(", ", ",").replace(" : ", ":")
     }
 }
 
@@ -328,10 +329,12 @@ fn serves_asks_from_postgres() {
 
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
-    assert!(body.contains(r#""commit_time":null"#), "{body}");
+    assert!(body.starts_with(r#"{"as_of":"20"#), "{body}");
+    assert!(!body.contains("lsn"), "{body}");
     let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
     assert!(body.ends_with(&rows), "{body}\nis not\n{rows}");
-    assert!(body.contains(r#"["cab","Bronx",1,12.50]"#), "{body}");
+    let cab = r#"{"kind":"cab","zone.borough":"Bronx","trips":1,"fare":12.50}"#;
+    assert!(body.contains(cab), "{body}");
 
     pg.psql("INSERT INTO shop.trips VALUES (5, '2024-01-02 00:00Z', 'cab', 2, 1.25)");
     pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
@@ -341,8 +344,6 @@ fn serves_asks_from_postgres() {
     straum.wait_for("the changes", |straum| {
         straum.call("POST", "/ask", ASK).1.ends_with(&rows)
     });
-    let (_, body) = straum.call("POST", "/ask", ASK);
-    assert!(!body.contains(r#""commit_time":null"#), "{body}");
 
     let (code, log) = straum.stop("-TERM");
     assert_eq!(code, Some(0), "{log}");

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use straum_app::{
     AnswerError, Answered, App, Change, Error, Limits, Lsn, Old, Status, Step, Wal, Writer,
@@ -186,6 +186,7 @@ fn starts_from_one_snapshot() {
         .borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
 
+    let before = SystemTime::now();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert!(writer.app().ready());
     assert_eq!(db.borrow().loads, ["zones", "trips", "logins"]);
@@ -194,7 +195,10 @@ fn starts_from_one_snapshot() {
         .ask(&ask("trips", &["trips", "fare"], &["zone.borough"]))
         .unwrap();
     assert_eq!(answered.lsn, lsn);
-    assert_eq!(answered.time, None, "no commit since the start");
+    // Caught up when the WAL was read after the load.
+    let slack = Duration::from_millis(1);
+    assert!(answered.as_of + slack >= before, "{:?}", answered.as_of);
+    assert!(answered.as_of <= SystemTime::now(), "{:?}", answered.as_of);
     assert_eq!(
         answered.answer.rows,
         [(vec![text("Bronx")], vec![Value::Int(1), Value::Int(10)])]
@@ -232,8 +236,6 @@ fn a_dropped_stream_starts_over() {
     let first = db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     assert_eq!(writer.step().unwrap(), Step::Applied(first));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
-    let trips = ask("trips", &["trips"], &[]);
-    assert_eq!(writer.app().ask(&trips).unwrap().time, Some(time(first)));
 
     let second = db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
     db.borrow_mut().drop_connection = true;
@@ -245,7 +247,6 @@ fn a_dropped_stream_starts_over() {
     // the first trip once.
     assert_eq!(writer.step().unwrap(), Step::Started(second));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
-    assert_eq!(writer.app().ask(&trips).unwrap().time, None);
 }
 
 #[test]
@@ -504,6 +505,9 @@ fn ready_only_within_the_lag_bound() {
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().lag().unwrap() >= Duration::from_millis(3));
     assert!(!writer.app().ready());
+    // Answers are as of before the load, not the reading after it.
+    let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
+    assert!(behind.as_of + Duration::from_millis(3) <= SystemTime::now());
     assert_eq!(writer.app().error(), None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
@@ -516,6 +520,8 @@ fn ready_only_within_the_lag_bound() {
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     assert_eq!(writer.app().lag(), Some(Duration::ZERO));
     assert!(writer.app().ready());
+    let caught_up = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
+    assert!(caught_up.as_of >= behind.as_of + Duration::from_secs(1));
 
     // A failure forgets the lag along with the tables.
     db.borrow_mut().drop_connection = true;
