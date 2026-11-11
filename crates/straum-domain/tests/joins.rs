@@ -5,10 +5,12 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+mod common;
+
+use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
     Agg, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attr, By, ColumnType, Cond, Datum, Dim,
-    Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Spec, Store, Table, TimeKey, Value,
-    Via,
+    Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Spec, Store, TimeKey, Value, Via,
 };
 
 const HOUR: i64 = 3_600;
@@ -31,32 +33,6 @@ const BLOCKED: usize = 4;
 
 const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "bucket"];
 const MEASURES: [&str; 5] = ["n", "q", "q_max", "q_min", "products"];
-
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
-}
-
-fn text(s: &str) -> Datum {
-    Datum::Text(s.into())
-}
-
-fn lit(s: &str) -> Literal {
-    Literal::Text(s.into())
-}
-
-fn cond(key: &str, values: Vec<Literal>) -> Cond {
-    Cond {
-        key: id(key),
-        values,
-    }
-}
-
-fn table(name: &str) -> Table {
-    Table {
-        schema: id("public"),
-        name: id(name),
-    }
-}
 
 fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
     Dim {
@@ -204,10 +180,6 @@ fn typed(spec: &Spec) -> Store {
     store
 }
 
-fn dim_row(key: &[Datum], attrs: &[Datum]) -> Vec<Datum> {
-    [key, attrs].concat()
-}
-
 fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
         for (key, each) in rows {
@@ -313,15 +285,6 @@ fn value(row: &[Datum], joined: &JoinRow, key: &Ident) -> Datum {
         "tag" => attr(TAGS, 0),
         other => panic!("no key {other}"),
     }
-}
-
-fn holds(value: &Datum, values: &[Literal]) -> bool {
-    values.iter().any(|l| match (value, l) {
-        (Datum::Int(a), Literal::Int(b)) => a == b,
-        (Datum::Text(a), Literal::Text(b)) => **a == **b,
-        (Datum::Bool(a), Literal::Bool(b)) => a == b,
-        _ => false,
-    })
 }
 
 fn passes(row: &[Datum], joined: &JoinRow, conds: &[Cond]) -> bool {
@@ -838,42 +801,7 @@ fn null_keys_join_nothing() {
     check(&store, &spec, &dims, &kinds, &orders, &all);
 }
 
-/// splitmix64.
-struct Rng(u64);
-
 impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-
-    fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next() % (hi - lo) as u64) as i64
-    }
-
-    fn maybe(&mut self, lo: i64, hi: i64, percent: usize) -> Datum {
-        if self.chance(percent) {
-            Datum::Null
-        } else {
-            Datum::Int(self.int(lo, hi))
-        }
-    }
-
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
-    }
-
     fn kinds(&mut self) -> [RefKind; 5] {
         let any = [RefKind::Left, RefKind::Inner, RefKind::Semi, RefKind::Anti];
         let reads = [RefKind::Left, RefKind::Inner];

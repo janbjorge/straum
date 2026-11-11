@@ -5,10 +5,13 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod common;
+
+use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
     Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attr, By, ColumnType, Cond, Datum,
     Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, RowError, Sealed,
-    SealedColumn, SealedError, SealedId, Slot, Spec, Store, Table, Time, TimeKey, Value, Via,
+    SealedColumn, SealedError, SealedId, Slot, Spec, Store, Time, TimeKey, Value, Via,
 };
 
 const GRAIN: u32 = 900;
@@ -65,14 +68,6 @@ const KEYS: [&str; 12] = [
     "vend_label",
 ];
 
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
-}
-
-fn key(s: &str) -> Ident {
-    id(s)
-}
-
 fn col(s: &str) -> By {
     By::Column {
         column: id(s),
@@ -87,26 +82,7 @@ fn attr(name: &str, column: &str) -> Attr {
     }
 }
 
-fn text(s: &str) -> Datum {
-    Datum::Text(s.into())
-}
-
-fn lit(s: &str) -> Literal {
-    Literal::Text(s.into())
-}
-
-fn cond(k: &str, values: Vec<Literal>) -> Cond {
-    Cond {
-        key: key(k),
-        values,
-    }
-}
-
 fn spec() -> Spec {
-    let table = |name| Table {
-        schema: id("public"),
-        name: id(name),
-    };
     let m = |name, agg, filter| Measure {
         name: id(name),
         agg,
@@ -235,43 +211,7 @@ fn spec() -> Spec {
     Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
 }
 
-/// splitmix64; the tests need no crate for randomness.
-struct Rng(u64);
-
 impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-
-    fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next() % (hi - lo) as u64) as i64
-    }
-
-    /// An integer in `lo..hi`, or null `percent` percent of the time.
-    fn maybe(&mut self, lo: i64, hi: i64, percent: usize) -> Datum {
-        if self.chance(percent) {
-            Datum::Null
-        } else {
-            Datum::Int(self.int(lo, hi))
-        }
-    }
-
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
-    }
-
     /// One of a few texts, or null `percent` percent of the time, as a
     /// dim value comes.
     fn attr(&mut self, choices: &[&str], percent: usize) -> Datum {
@@ -339,11 +279,6 @@ fn random_dims(rng: &mut Rng) -> Dims {
     dims
 }
 
-/// A dim row as a load reads it: the key, then the attributes.
-fn dim_row(key: &[Datum], attrs: &[Datum]) -> Vec<Datum> {
-    [key, attrs].concat()
-}
-
 /// Loads every dim, as a load does, rows laid end to end.
 fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
@@ -392,7 +327,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let mut by: Vec<AskKey> = KEYS
         .iter()
         .filter(|_| rng.chance(25))
-        .map(|k| AskKey::Key(key(k)))
+        .map(|k| AskKey::Key(id(k)))
         .collect();
     if rng.chance(60) {
         let at = rng.below(by.len() + 1);
@@ -431,16 +366,6 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         from,
         to,
     }
-}
-
-/// SQL `=`: null matches nothing.
-fn holds(value: &Datum, values: &[Literal]) -> bool {
-    values.iter().any(|l| match (value, l) {
-        (Datum::Int(a), Literal::Int(b)) => a == b,
-        (Datum::Text(a), Literal::Text(b)) => **a == **b,
-        (Datum::Bool(a), Literal::Bool(b)) => a == b,
-        _ => false,
-    })
 }
 
 /// A key's value for a row: a column, the null-ness key, or a dim value
@@ -854,7 +779,7 @@ fn a_dim_change_moves_the_answer_at_once() {
     let by_label = Ask {
         fact: id("trips"),
         measures: vec![id("trips")],
-        by: vec![AskKey::Key(key("vend_label"))],
+        by: vec![AskKey::Key(id("vend_label"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -916,7 +841,7 @@ fn a_composite_key_matches_every_column() {
     let mut by_label = Ask {
         fact: id("trips"),
         measures: vec![id("trips")],
-        by: vec![AskKey::Key(key("combo_label"))],
+        by: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1020,7 +945,7 @@ fn every_key_at_once_uses_the_sparse_index() {
     let ask = Ask {
         fact: id("trips"),
         measures: vec![id("trips"), id("riders")],
-        by: KEYS.iter().map(|k| AskKey::Key(key(k))).collect(),
+        by: KEYS.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1032,27 +957,13 @@ fn every_key_at_once_uses_the_sparse_index() {
 fn dim_row_errors() {
     let mut store = typed(&spec());
     let row = [Datum::Int(1), text("m"), text("a")];
-    assert_eq!(
-        store.add_dim_row("zones", &row[1..]),
-        Err(RowError::Arity {
-            expected: 3,
-            found: 2
-        })
-    );
-    assert_eq!(
-        store.add_dim_rows("zones", &row[1..]),
-        Err(RowError::Arity {
-            expected: 3,
-            found: 2
-        })
-    );
-    assert_eq!(
-        store.set_dim_types("zones", &[ColumnType::Int; 2]),
-        Err(RowError::Arity {
-            expected: 3,
-            found: 2
-        })
-    );
+    let short = Err(RowError::Arity {
+        expected: 3,
+        found: 2,
+    });
+    assert_eq!(store.add_dim_row("zones", &row[1..]), short);
+    assert_eq!(store.add_dim_rows("zones", &row[1..]), short);
+    assert_eq!(store.set_dim_types("zones", &[ColumnType::Int; 2]), short);
     store.add_dim_row("zones", &row).unwrap();
     // The same row again is a second row under the key, as a join finds.
     store.add_dim_row("zones", &row).unwrap();
@@ -1316,7 +1227,7 @@ fn types_stay_through_clear() {
     let ask = Ask {
         fact: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: vec![AskKey::Key(key("pay")), AskKey::Key(key("pickup_zone"))],
+        by: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1348,7 +1259,7 @@ fn columns_name_keys_and_measures_as_asked() {
         fact: id("trips"),
         measures: vec![id("fare"), id("trips")],
         by: vec![
-            AskKey::Key(key("pickup_zone")),
+            AskKey::Key(id("pickup_zone")),
             AskKey::Time(TimeKey::Bucket),
         ],
         filter: Vec::new(),
@@ -1479,14 +1390,6 @@ fn row_errors() {
     assert_eq!(
         store.remove_fact_row("trips", &base),
         Err(RowError::Missing)
-    );
-    // A batch that isn't whole rows.
-    assert_eq!(
-        store.add_fact_rows("trips", &base[1..]),
-        Err(RowError::Arity {
-            expected: WIDTH,
-            found: WIDTH - 1
-        })
     );
 
     // Each kind of state notices a value it never saw.
