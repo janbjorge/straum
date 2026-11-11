@@ -1,6 +1,6 @@
 # ADR-0016: Cell state is per input column and integer
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Accepted (retroactive), 2026-11-10; amended by ADR-0037
 
 ## Context
 
