@@ -566,12 +566,12 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
 }
 
 /// A via column as a message names it: the fact's, or `ref.column`.
-fn via_name(via: &Via, refs: &[Ref]) -> Ident {
+fn via_name(via: &Via, refs: &[Ref]) -> String {
     match via {
-        Via::Fact(column) => column.clone(),
+        Via::Fact(column) => column.to_string(),
         Via::Attr { through, column } => {
             let through = refs.get(*through).map_or("?", |r| r.name.as_str());
-            Ident::new(&format!("{through}.{column}")).unwrap_or_else(|| column.clone())
+            format!("{through}.{column}")
         }
     }
 }
@@ -612,7 +612,7 @@ pub enum SpecError {
     ViaReused {
         fact: Ident,
         ref_name: Ident,
-        column: Ident,
+        column: String,
     },
     /// A ref joins on another number of columns than its dim's key has.
     KeyWidth {

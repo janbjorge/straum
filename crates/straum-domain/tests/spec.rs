@@ -272,6 +272,29 @@ fn every_error_is_reported_and_displayed() {
     assert!(matches!(errors[7], SpecError::UnknownDim { .. }));
 }
 
+#[test]
+fn a_chained_via_used_twice_names_its_ref() {
+    let mut t = fact();
+    let chained = Via::Attr {
+        through: 0,
+        column: id("name"),
+    };
+    t.refs.push(Ref {
+        name: id("c"),
+        dim: id("z"),
+        via: vec![chained.clone(), chained],
+        kind: RefKind::Left,
+        attrs: vec![attr("c_name", "name")],
+    });
+    let shown: Vec<String> = (Spec::new(vec![dim()], vec![t]).unwrap_err().iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        shown.contains(&"fact t: ref c joins on r.name twice".to_owned()),
+        "{shown:?}"
+    );
+}
+
 /// Two refs under one alias, which straum SQL refuses before the spec
 /// does; the spec refuses it too, for a spec built by hand.
 #[test]
