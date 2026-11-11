@@ -6,7 +6,6 @@
 //! asks read sealed buckets from it (ADR-0033, ADR-0035).
 
 use std::fmt;
-use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -366,10 +365,7 @@ impl<S: Source> Writer<S> {
     /// at once.
     fn start(&mut self) -> Result<Lsn, Error> {
         let spec = self.app.read().store.spec().clone();
-        drop(mem::replace(
-            &mut self.app.write().store,
-            Store::new(spec.clone()),
-        ));
+        self.app.write().store = Store::new(spec.clone());
         if let Some(spilling) = self.spilling() {
             spilling.spill.clear().map_err(Error::Spill)?;
         }
