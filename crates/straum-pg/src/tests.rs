@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal,
-    Spec, Store, TimeKey, Value, decimal,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, Spec, Store,
+    TimeKey, Value, decimal,
 };
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -37,11 +37,12 @@ pub(crate) fn tasks_tables() -> (Spec, Tables) {
     let spec = straum_notation::parse(
         "CREATE VIEW tasks WITH (buckets = '1 hour') AS
          SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
-                f.organization_id, g.category, l.location_type, count(*) AS tasks
-         FROM public.tasks f
-         LEFT JOIN public.taskgroups g
+                f.organization_id AS organization_id, g.category AS category,
+                l.location_type AS location_type, count(*) AS tasks
+         FROM public.tasks AS f
+         LEFT OUTER JOIN public.taskgroups AS g
                 ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
-         LEFT JOIN public.locations l ON l.id = f.location_id
+         LEFT OUTER JOIN public.locations AS l ON l.id = f.location_id
          GROUP BY 1, 2, 3, 4",
     )
     .unwrap();
@@ -133,9 +134,9 @@ const START: i64 = 1_705_276_800;
 const SPEC: &str = "
 CREATE VIEW trips WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
-       f.kind,
-       f.zone_id,
-       pickup.borough,
+       f.kind AS kind,
+       f.zone_id AS zone_id,
+       pickup.borough AS borough,
        count(*) AS trips,
        sum(f.fare) AS fare,
        max(f.fare) AS fare_max,
@@ -144,17 +145,17 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        sum(f.tip) AS tips,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan,
        count(*) FILTER (WHERE f.zone_id IN (1, 2)) AS near
-FROM $S.trips f
-LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
+FROM $S.trips AS f
+LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
 CREATE VIEW logins WITH (buckets = '1 day, 7 days') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
-       l.zone_id,
-       pickup.toll,
+       l.zone_id AS zone_id,
+       pickup.toll AS toll,
        count(*) AS logins
-FROM $S.logins l
-LEFT JOIN $S.zones pickup ON pickup.id = l.zone_id
+FROM $S.logins AS l
+LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = l.zone_id
 GROUP BY 1, 2, 3;
 ";
 
@@ -182,17 +183,17 @@ CREATE PUBLICATION $S FOR TABLE $S.trips, $S.logins;
 const TASKS_SPEC: &str = "
 CREATE VIEW tasks WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
-       f.organization_id,
-       f.taskgroup_id,
+       f.organization_id AS organization_id,
+       f.taskgroup_id AS taskgroup_id,
        (f.completed IS NOT NULL) AS done,
-       g.category,
+       g.category AS category,
        count(*) AS tasks,
        sum(f.picks) AS picks,
        max(f.picks) AS picks_max,
        count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks,
        count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed_tasks
-FROM $S.tasks f
-LEFT JOIN $S.taskgroups g
+FROM $S.tasks AS f
+LEFT OUTER JOIN $S.taskgroups AS g
        ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
 GROUP BY 1, 2, 3, 4, 5;
 ";
@@ -202,14 +203,14 @@ GROUP BY 1, 2, 3, 4, 5;
 const PICKS_SPEC: &str = "
 CREATE VIEW picks WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
-       f.organization_id,
-       g.category,
+       f.organization_id AS organization_id,
+       g.category AS category,
        (f.completed IS NOT NULL) AS done,
        count(*) AS tasks,
        sum(f.picks) AS picks,
        count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks
-FROM $S.tasks f
-LEFT JOIN $S.taskgroups g
+FROM $S.tasks AS f
+LEFT OUTER JOIN $S.taskgroups AS g
        ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
 GROUP BY 1, 2, 3, 4;
 ";
@@ -434,12 +435,12 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
-                k => AskKey::Key(KeyPath::parse(k).unwrap()),
+                k => AskKey::Key(id(k)),
             })
             .collect(),
         filter: Vec::new(),
-        from: Some(0),
-        to: Some(END),
+        from: 0,
+        to: END,
     }
 }
 
@@ -511,7 +512,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         ask: ask(
             "trips",
             &MEASURES,
-            &["bucket", "kind", "zone_id", "pickup.borough"],
+            &["bucket", "kind", "zone_id", "borough"],
         ),
         scales: vec![
             0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
@@ -522,7 +523,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
             "SELECT extract(epoch FROM bucket)::int8, zone_id, toll, logins FROM ({}) v",
             body(SPEC, "logins")
         ),
-        ask: ask("logins", &["logins"], &["bucket", "zone_id", "pickup.toll"]),
+        ask: ask("logins", &["logins"], &["bucket", "zone_id", "toll"]),
         scales: vec![0, 0, 1, 0],
     };
     let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
@@ -537,9 +538,9 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
               GROUP BY 1, 2, 3"
         ),
         ask: Ask {
-            from: Some(from),
-            to: Some(to),
-            ..ask("trips", &MEASURES, &["kind", "zone_id", "pickup.borough"])
+            from,
+            to,
+            ..ask("trips", &MEASURES, &["kind", "zone_id", "borough"])
         },
         scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
     };
@@ -577,7 +578,7 @@ fn task_oracles() -> Vec<Oracle> {
                 "organization_id",
                 "taskgroup_id",
                 "done",
-                "g.category",
+                "category",
             ],
         ),
         scales: vec![0; 10],
@@ -597,9 +598,9 @@ fn task_oracles() -> Vec<Oracle> {
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from: Some(from),
-            to: Some(to),
-            ..ask("tasks", &MEASURES, &["organization_id", "g.category"])
+            from,
+            to,
+            ..ask("tasks", &MEASURES, &["organization_id", "category"])
         },
         scales: vec![0; 7],
     };
@@ -614,13 +615,10 @@ fn task_oracles() -> Vec<Oracle> {
               GROUP BY 1"
         ),
         ask: Ask {
-            from: Some(from),
-            to: Some(to),
+            from,
+            to,
             filter: vec![Cond {
-                path: KeyPath {
-                    head: id("done"),
-                    attr: None,
-                },
+                key: id("done"),
                 values: vec![Literal::Bool(false)],
             }],
             ..ask("tasks", &["tasks", "picks"], &["organization_id"])
@@ -646,7 +644,7 @@ fn picks_oracles() -> Vec<Oracle> {
         ask: ask(
             "picks",
             &MEASURES,
-            &["bucket", "organization_id", "g.category", "done"],
+            &["bucket", "organization_id", "category", "done"],
         ),
         scales: vec![0; 7],
     };
@@ -664,9 +662,9 @@ fn picks_oracles() -> Vec<Oracle> {
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from: Some(from),
-            to: Some(to),
-            ..ask("picks", &MEASURES, &["organization_id", "g.category"])
+            from,
+            to,
+            ..ask("picks", &MEASURES, &["organization_id", "category"])
         },
         scales: vec![0; 5],
     };
@@ -936,8 +934,8 @@ fn follows_the_task_tables() {
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
     let edges = Ask {
-        from: Some(START - 3_600),
-        to: Some(START + 3_600),
+        from: START - 3_600,
+        to: START + 3_600,
         ..ask("tasks", &["tasks"], &["bucket"])
     };
     let answered = writer.app().ask(&edges).unwrap();
@@ -985,10 +983,7 @@ fn follows_the_task_tables() {
     // The key is a boolean, whatever its column is.
     let done_is = |value| Ask {
         filter: vec![Cond {
-            path: KeyPath {
-                head: id("done"),
-                attr: None,
-            },
+            key: id("done"),
             values: vec![value],
         }],
         ..ask("tasks", &["tasks"], &[])
@@ -1174,15 +1169,12 @@ fn attributes_are_as_of_ingest() {
     let null_tasks = |app: &App| -> Value {
         let ask = Ask {
             filter: vec![Cond {
-                path: KeyPath {
-                    head: id("organization_id"),
-                    attr: None,
-                },
+                key: id("organization_id"),
                 values: vec![Literal::Int(2)],
             }],
-            from: Some(START),
-            to: Some(START + 3_600),
-            ..ask("picks", &["tasks"], &["g.category"])
+            from: START,
+            to: START + 3_600,
+            ..ask("picks", &["tasks"], &["category"])
         };
         let answered = app.ask(&ask).unwrap();
         (answered.answer.rows.iter())
@@ -1352,8 +1344,8 @@ fn asks_take_values_of_the_types_the_load_read() {
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     let filtered = |fact, measure, key: &str, value| Ask {
         filter: vec![Cond {
-            path: match ask(fact, &[], &[key]).by.remove(0) {
-                AskKey::Key(path) => path,
+            key: match ask(fact, &[], &[key]).by.remove(0) {
+                AskKey::Key(name) => name,
                 AskKey::Time(_) => unreachable!("cases filter on keys"),
             },
             values: vec![value],
@@ -1383,7 +1375,7 @@ fn asks_take_values_of_the_types_the_load_read() {
         (
             "trips",
             "trips",
-            "pickup.borough",
+            "borough",
             text("Bronx"),
             Literal::Bool(true),
             ColumnType::Text,
@@ -1404,10 +1396,10 @@ fn asks_take_values_of_the_types_the_load_read() {
         );
     }
     // A numeric of scale 1 takes no integer: 1 would read as 0.1.
-    let toll = filtered("logins", "logins", "pickup.toll", Literal::Int(1));
+    let toll = filtered("logins", "logins", "toll", Literal::Int(1));
     assert_eq!(
         writer.app().ask(&toll).unwrap_err().to_string(),
-        "pickup.toll is a numeric of scale 1, so it can't be the integer 1"
+        "toll is a numeric of scale 1, so it can't be the integer 1"
     );
 }
 
@@ -1734,7 +1726,7 @@ fn setup_problems_say_what_to_fix() {
             format!(
                 "CREATE VIEW f WITH (buckets = '1 hour') AS
                  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
-                 FROM $S.f t GROUP BY 1;"
+                 FROM $S.f AS t GROUP BY 1;"
             ),
         )
     };
@@ -1835,7 +1827,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "timekey",
             format!("{} {publish}", fact("x int, k timestamptz", "").0),
-            fact("", "t.k, count(*) AS n")
+            fact("", "t.k AS k, count(*) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "f: column k of timekey.f is timestamp with time zone; \
@@ -1844,7 +1836,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "naivekey",
             format!("{} {publish}", fact("x int, k timestamp", "").0),
-            fact("", "t.k, count(*) AS n")
+            fact("", "t.k AS k, count(*) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "f: column k of naivekey.f is timestamp without time zone; \
@@ -1860,7 +1852,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "filter",
             format!("{} {publish}", fact("k text", "").0),
-            fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
+            fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "fact f: measure n compares k (text) with 1",
@@ -1868,7 +1860,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "filtertext",
             format!("{} {publish}", fact("k int", "").0),
-            fact("", "t.k, count(*) FILTER (WHERE t.k = 'a') AS n")
+            fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 'a') AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "fact f: measure n compares k (an integer) with 'a'",
@@ -1876,7 +1868,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "filterbool",
             format!("{} {publish}", fact("k text", "").0),
-            fact("", "t.k, count(*) FILTER (WHERE t.k = true) AS n")
+            fact("", "t.k AS k, count(*) FILTER (WHERE t.k = true) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "fact f: measure n compares k (text) with true",
@@ -1884,7 +1876,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "filterscale",
             format!("{} {publish}", fact("k numeric(6, 2)", "").0),
-            fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
+            fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "fact f: measure n compares k (a numeric of scale 2) with 1",
@@ -1892,21 +1884,10 @@ fn setup_problems_say_what_to_fix() {
         (
             "filterwhole",
             format!("{} {publish}", fact("k numeric(6, 0)", "").0),
-            fact("", "t.k, count(*) FILTER (WHERE t.k = 1) AS n")
+            fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             "",
-        ),
-        (
-            "nullkey",
-            format!("{} {publish}", fact("k timestamp", "").0),
-            fact(
-                "",
-                "(t.k IS NULL) AS open, count(*) FILTER (WHERE t.open = 1) AS n",
-            )
-            .1
-            .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "fact f: measure n compares open (a boolean) with 1",
         ),
         (
             "nullkeyok",
@@ -1929,8 +1910,8 @@ fn setup_problems_say_what_to_fix() {
     let dim_spec = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-               t.d_id, d.name, count(*) AS n
-        FROM $S.f t LEFT JOIN $S.d d ON d.k = t.d_id GROUP BY 1, 2, 3;";
+               t.d_id AS d_id, d.name AS name, count(*) AS n
+        FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id GROUP BY 1, 2, 3;";
     // The dim is published too, which straum neither needs nor minds.
     let dim = |d: &str, via: &str| {
         format!(
@@ -2015,8 +1996,9 @@ fn setup_problems_say_what_to_fix() {
     let pair_spec = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-               t.a, t.b, d.name, count(*) AS n
-        FROM $S.f t LEFT JOIN $S.d d ON d.x = t.a AND d.y = t.b GROUP BY 1, 2, 3, 4;";
+               t.a AS a, t.b AS b, d.name AS name, count(*) AS n
+        FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.x = t.a AND d.y = t.b
+        GROUP BY 1, 2, 3, 4;";
     let pair = |d: &str, b: &str| {
         format!(
             "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, a int, b {b});
@@ -2910,9 +2892,9 @@ fn taxi_month() {
             "vendor_id",
             "pu_location_id",
             "do_location_id",
-            "pickup.borough",
-            "pickup.zone",
-            "pickup.service_zone",
+            "borough",
+            "zone",
+            "service_zone",
         ],
     );
     let all_scales = [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0];
@@ -2921,7 +2903,7 @@ fn taxi_month() {
     let coarse = ask(
         "trips",
         &["trips", "fare", "tip_max", "card", "manhattan_pickups"],
-        &["pickup.borough"],
+        &["borough"],
     );
     let coarse_reference = format!(
         "SELECT borough,

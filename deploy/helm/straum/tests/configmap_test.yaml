@@ -8,8 +8,8 @@ tests:
     set:
       spec: |
         CREATE VIEW trips WITH (buckets = '1 hour') AS
-        SELECT count(*) AS "trips"
-        FROM public.trips t;
+        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips
+        FROM public.trips AS t GROUP BY 1;
     asserts:
       - isKind:
           of: ConfigMap
@@ -17,8 +17,8 @@ tests:
           path: data["spec.sql"]
           value: |
             CREATE VIEW trips WITH (buckets = '1 hour') AS
-            SELECT count(*) AS "trips"
-            FROM public.trips t;
+            SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips
+            FROM public.trips AS t GROUP BY 1;
 
   - it: names itself after the release and the chart
     set:

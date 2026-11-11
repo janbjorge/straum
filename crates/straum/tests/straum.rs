@@ -22,13 +22,13 @@ const READY: &str = "database system is ready to accept connections";
 const SPEC: &str = "
 CREATE VIEW trips WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-       t.kind,
-       t.zone_id,
-       zone.borough,
+       t.kind AS kind,
+       t.zone_id AS zone_id,
+       zone.borough AS borough,
        count(*) AS trips,
        sum(t.fare) AS fare
-FROM shop.trips t
-LEFT JOIN shop.zones zone ON zone.id = t.zone_id
+FROM shop.trips AS t
+LEFT OUTER JOIN shop.zones AS zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 ";
 
@@ -56,7 +56,7 @@ const EXPECTED: &str = r#"
 SELECT coalesce(string_agg(row, ',' ORDER BY kind COLLATE "C" NULLS FIRST,
                                              borough COLLATE "C" NULLS FIRST), '')
   FROM (SELECT kind, borough,
-               json_build_object('kind', kind, 'zone.borough', borough,
+               json_build_object('kind', kind, 'borough', borough,
                                  'trips', count(*), 'fare', sum(fare))::text AS row
           FROM shop.trips t
           LEFT JOIN shop.zones zone ON zone.id = t.zone_id
@@ -64,8 +64,8 @@ SELECT coalesce(string_agg(row, ',' ORDER BY kind COLLATE "C" NULLS FIRST,
 "#;
 
 const ASK: &str = concat!(
-    r#"{"query": "SELECT kind, zone.borough, trips, fare FROM trips "#,
-    r#"WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, zone.borough", "#,
+    r#"{"query": "SELECT kind, borough, trips, fare FROM trips "#,
+    r#"WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough", "#,
     r#""parameters": [0, "2100-01-01T00:00:00Z"]}"#
 );
 
@@ -335,7 +335,7 @@ fn serves_asks_from_postgres() {
     assert!(!body.contains("lsn"), "{body}");
     let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
     assert!(body.ends_with(&rows), "{body}\nis not\n{rows}");
-    let cab = r#"{"kind":"cab","zone.borough":"Bronx","trips":1,"fare":12.50}"#;
+    let cab = r#"{"kind":"cab","borough":"Bronx","trips":1,"fare":12.50}"#;
     assert!(body.contains(cab), "{body}");
 
     pg.psql("INSERT INTO shop.trips VALUES (5, '2024-01-02 00:00Z', 'cab', 2, 1.25)");

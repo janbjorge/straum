@@ -58,7 +58,8 @@ impl Resolver {
                     .map(|r| {
                         let dim = tables.dim(&r.dim);
                         let key = &dim.columns[..dim.key_width];
-                        let dim_columns: Vec<(Ident, ColumnType)> = (key.iter().chain(&r.attrs))
+                        let attrs = r.attrs.iter().map(|a| &a.column);
+                        let dim_columns: Vec<(Ident, ColumnType)> = (key.iter().chain(attrs))
                             .map(|c| (c.clone(), dim.column_type(c)))
                             .collect();
                         let selected: Vec<String> = (dim_columns.iter())

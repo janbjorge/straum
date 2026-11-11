@@ -16,15 +16,15 @@ use tokio::sync::oneshot;
 const SPEC: &str = "
 CREATE VIEW trips WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-       t.kind,
-       t.zone_id,
-       zone.borough,
+       t.kind AS kind,
+       t.zone_id AS zone_id,
+       zone.borough AS borough,
        count(*) AS trips,
        sum(t.fare) AS fare,
        avg(t.fare) AS fare_avg,
        max(t.fare) AS fare_max
-FROM public.trips t
-LEFT JOIN public.zones zone ON zone.id = t.zone_id
+FROM public.trips AS t
+LEFT OUTER JOIN public.zones AS zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 ";
 
@@ -54,7 +54,7 @@ impl Source for Script {
 
     fn load_fact(&mut self, _: &Fact, store: &mut Store) -> Result<(), SourceError> {
         thread::sleep(self.pause);
-        // at, kind, zone_id, fare, then zone.borough.
+        // at, kind, zone_id, fare, then the zone's borough.
         store.set_fact_types(
             "trips",
             &[
@@ -217,8 +217,8 @@ fn first_hour() -> String {
     )
 }
 
-const BY_BUCKET: &str = "SELECT bucket, kind, zone.borough, trips, fare, fare_avg, fare_max \
-    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket, kind, zone.borough";
+const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
+    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket, kind, borough";
 
 #[test]
 fn answers_asks_as_json() {
@@ -241,7 +241,7 @@ fn answers_asks_as_json() {
     );
     let row = |bucket, kind, borough, fare, avg| {
         format!(
-            r#"{{"bucket":"{bucket}","kind":{kind},"zone.borough":{borough},"trips":1,"fare":{fare},"fare_avg":{avg},"fare_max":{fare}}}"#
+            r#"{{"bucket":"{bucket}","kind":{kind},"borough":{borough},"trips":1,"fare":{fare},"fare_avg":{avg},"fare_max":{fare}}}"#
         )
     };
     let rows = [
@@ -293,13 +293,13 @@ fn asks_straum_cant_answer() {
     let cases = [
         (
             ask(
-                "SELECT zone.nope, nope FROM trips \
-                 WHERE bucket >= $1 AND bucket < $2 GROUP BY zone.nope",
+                "SELECT zone_nope, nope FROM trips \
+                 WHERE bucket >= $1 AND bucket < $2 GROUP BY zone_nope",
                 "[0, 1]",
             ),
             concat!(
                 r#"{"errors":["unknown measure nope","#,
-                r#""zone.nope is not read by the view, which reads zone.borough","#,
+                r#""zone_nope is not a key of the view","#,
                 r#""range end 1 is not on a 3600s bucket edge"]}"#
             ),
         ),
@@ -323,13 +323,13 @@ fn asks_straum_cant_answer() {
         ),
         (
             ask(
-                "SELECT trips FROM trips WHERE kind = $1 AND zone.borough = $2 \
+                "SELECT trips FROM trips WHERE kind = $1 AND borough = $2 \
                  AND bucket >= $3 AND bucket < $4",
                 r#"["1", 2, 0, 3600]"#,
             ),
             concat!(
                 r#"{"errors":["kind is an integer, so it can't be the text \"1\"","#,
-                r#""zone.borough is text, so it can't be the integer 2"]}"#
+                r#""borough is text, so it can't be the integer 2"]}"#
             ),
         ),
         (
@@ -561,8 +561,8 @@ fn trips_from(from: i64) -> Ask {
         measures: vec![Ident::new("trips").unwrap()],
         by: Vec::new(),
         filter: Vec::new(),
-        from: Some(from),
-        to: Some(JAN_1 + 24 * HOUR),
+        from,
+        to: JAN_1 + 24 * HOUR,
     }
 }
 

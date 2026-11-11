@@ -49,23 +49,24 @@ Save as `orders.sql`:
 
 ```sql
 CREATE VIEW orders WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
-       status,
-       customer_id,
-       customers.country,
+SELECT date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket,
+       orders.status AS status,
+       orders.customer_id AS customer_id,
+       customers.country AS country,
        count(*) AS orders,
-       sum(amount) AS revenue,
-       avg(amount) AS avg_amount
-FROM orders
-LEFT JOIN customers ON customers.id = customer_id
+       sum(orders.amount) AS revenue,
+       avg(orders.amount) AS avg_amount
+FROM public.orders AS orders
+LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
 PostgreSQL would give the same rows for this view. Straum never creates
 it; it keeps one cell per hour, status, customer and country in memory.
 `WITH (buckets = '1 hour')` lists every bucket width it keeps, here the
-hour of the `date_bin` alone. [Writing a spec](spec.md) explains each
-line.
+hour of the `date_bin` alone. Every table, column and output name is
+written in full: Straum SQL has one spelling per meaning and infers
+nothing. [Writing a spec](spec.md) explains each line.
 
 ## 4. Set up PostgreSQL
 
@@ -98,7 +99,8 @@ In another terminal:
 
 ```sh
 curl --json '{
-  "query": "SELECT status, customers.country, orders, revenue, avg_amount FROM orders GROUP BY status, customers.country"
+  "query": "SELECT status, country, orders, revenue, avg_amount FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status, country",
+  "parameters": ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
 
@@ -106,15 +108,16 @@ curl --json '{
 {
   "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    {"status": "paid", "customers.country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
-    {"status": "paid", "customers.country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
-    {"status": "refunded", "customers.country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
+    {"status": "paid", "country": "NO", "orders": 2, "revenue": 139.99, "avg_amount": 69.995},
+    {"status": "paid", "country": "SE", "orders": 1, "revenue": 80.50, "avg_amount": 80.5},
+    {"status": "refunded", "country": "NO", "orders": 1, "revenue": 42.00, "avg_amount": 42}
   ]
 }
 ```
 
-Every commit made before `as_of` is in the answer. [Asking](asks.md)
-explains the query, the parameters and the answer.
+Every commit made before `as_of` is in the answer, and every ask says
+which buckets it reads. [Asking](asks.md) explains the query, the
+parameters and the answer.
 
 ## 7. Change the data
 

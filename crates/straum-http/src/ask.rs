@@ -3,7 +3,7 @@
 //!
 //! ```json
 //! {
-//!   "query": "SELECT pickup.borough, trips FROM trips WHERE vendor_id = $1 AND bucket >= $2 AND bucket < $3 GROUP BY pickup.borough",
+//!   "query": "SELECT borough, trips FROM trips WHERE vendor_id = $1 AND bucket >= $2 AND bucket < $3 GROUP BY borough",
 //!   "parameters": [2, "2024-01-01T00:00:00Z", 1706745600]
 //! }
 //! ```

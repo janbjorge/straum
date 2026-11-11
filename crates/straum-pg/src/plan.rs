@@ -96,7 +96,7 @@ mod tests {
             format!(
                 "CREATE VIEW {name} WITH (buckets = '1 hour') AS
                  SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
-                 FROM {table} f GROUP BY 1;"
+                 FROM {table} AS f GROUP BY 1;"
             )
         };
         let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
@@ -122,7 +122,7 @@ mod tests {
         let spec = straum_notation::parse(
             "CREATE VIEW x WITH (buckets = '1 hour') AS
              SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
-             FROM a.t f GROUP BY 1;",
+             FROM a.t AS f GROUP BY 1;",
         )
         .unwrap();
         let sql = plan(&spec, "p", "r", Some("s'cret"));

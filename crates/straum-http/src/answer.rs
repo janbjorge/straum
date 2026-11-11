@@ -39,7 +39,6 @@ pub(crate) fn range_errors(ask: &Ask) -> Vec<String> {
     let latest = Timestamp::MAX.as_second();
     [("start", ask.from), ("end", ask.to)]
         .into_iter()
-        .filter_map(|(end, at)| Some((end, at?)))
         .filter(|(_, at)| !(earliest..=latest).contains(at))
         .map(|(end, at)| format!("range {end} {at} is not between {earliest} and {latest}"))
         .collect()

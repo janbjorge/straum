@@ -1,4 +1,4 @@
-use straum_domain::{Ask, AskKey, Cond, Ident, KeyPath, Literal, TimeKey};
+use straum_domain::{Ask, AskKey, Cond, Ident, Literal, TimeKey};
 use straum_notation::parse_ask;
 
 // 2024-01-01 and 2024-02-01, 00:00 UTC.
@@ -9,15 +9,19 @@ fn id(s: &str) -> Ident {
     Ident::new(s).unwrap()
 }
 
-fn key(head: &str, attr: Option<&str>) -> AskKey {
-    AskKey::Key(KeyPath {
-        head: id(head),
-        attr: attr.map(id),
-    })
+fn key(name: &str) -> AskKey {
+    AskKey::Key(id(name))
 }
 
 fn text(s: &str) -> Literal {
     Literal::Text(s.into())
+}
+
+fn cond(key: &str, values: Vec<Literal>) -> Cond {
+    Cond {
+        key: id(key),
+        values,
+    }
 }
 
 /// The range parameters most cases end on.
@@ -33,11 +37,11 @@ fn errors(query: &str, parameters: &[Literal]) -> Vec<String> {
 #[test]
 fn reads_every_part() {
     let ask = parse_ask(
-        "SELECT bucket, payment_type, pickup, pickup.borough, trips, fare
+        "SELECT bucket, payment_type, pu_location_id, borough, trips, fare
          FROM trips
-         WHERE (pickup.borough IN ($1, $2) AND payment_type = $3)
+         WHERE (borough IN ($1, $2) AND payment_type = $3)
            AND bucket >= $4 AND shared = $5 AND vendor_id = $3 AND bucket < $6
-         GROUP BY pickup.borough, bucket, pickup, payment_type",
+         GROUP BY borough, bucket, pu_location_id, payment_type",
         &[
             text("Manhattan"),
             text("Queens"),
@@ -55,68 +59,25 @@ fn reads_every_part() {
             measures: vec![id("trips"), id("fare")],
             by: vec![
                 AskKey::Time(TimeKey::Bucket),
-                key("payment_type", None),
-                key("pickup", None),
-                key("pickup", Some("borough")),
+                key("payment_type"),
+                key("pu_location_id"),
+                key("borough"),
             ],
             filter: vec![
-                Cond {
-                    path: KeyPath {
-                        head: id("pickup"),
-                        attr: Some(id("borough")),
-                    },
-                    values: vec![text("Manhattan"), text("Queens")],
-                },
-                Cond {
-                    path: KeyPath {
-                        head: id("payment_type"),
-                        attr: None,
-                    },
-                    values: vec![Literal::Int(1)],
-                },
-                Cond {
-                    path: KeyPath {
-                        head: id("shared"),
-                        attr: None,
-                    },
-                    values: vec![Literal::Bool(false)],
-                },
-                Cond {
-                    path: KeyPath {
-                        head: id("vendor_id"),
-                        attr: None,
-                    },
-                    values: vec![Literal::Int(1)],
-                },
+                cond("borough", vec![text("Manhattan"), text("Queens")]),
+                cond("payment_type", vec![Literal::Int(1)]),
+                cond("shared", vec![Literal::Bool(false)]),
+                cond("vendor_id", vec![Literal::Int(1)]),
             ],
-            from: Some(JAN),
-            to: Some(FEB),
+            from: JAN,
+            to: FEB,
         }
     );
 }
 
-/// A bound left out is open on that side.
+/// Both bounds are written, whichever order; an ask says what it reads.
 #[test]
-fn range_bounds_are_optional() {
-    let ask = parse_ask("SELECT trips FROM t", &[]).unwrap();
-    assert_eq!((ask.from, ask.to), (None, None));
-    let ask = parse_ask(
-        "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
-        &[Literal::Int(1), Literal::Int(JAN)],
-    )
-    .unwrap();
-    assert_eq!((ask.from, ask.to), (Some(JAN), None));
-    assert_eq!(ask.filter.len(), 1);
-    let ask = parse_ask(
-        "SELECT trips FROM t WHERE bucket < $1",
-        &[Literal::Int(FEB)],
-    )
-    .unwrap();
-    assert_eq!((ask.from, ask.to), (None, Some(FEB)));
-}
-
-#[test]
-fn measures_alone_and_keys_in_select_order() {
+fn both_bounds_are_required() {
     let ask = parse_ask(
         "select TRIPS from Trips where bucket < $2 and bucket >= $1",
         &range(),
@@ -124,22 +85,38 @@ fn measures_alone_and_keys_in_select_order() {
     .unwrap();
     assert_eq!(
         (ask.fact, ask.measures, ask.by, ask.from, ask.to),
-        (
-            id("trips"),
-            vec![id("trips")],
-            Vec::new(),
-            Some(JAN),
-            Some(FEB)
-        )
+        (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
     );
+    let missing = |bound: &str| format!("line 1: an ask writes both bounds; {bound} is missing");
+    assert_eq!(
+        errors("SELECT trips FROM t", &[]),
+        [missing("bucket >= $n"), missing("bucket < $n")]
+    );
+    assert_eq!(
+        errors(
+            "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
+            &[Literal::Int(1), Literal::Int(JAN)]
+        ),
+        [missing("bucket < $n")]
+    );
+    assert_eq!(
+        errors(
+            "SELECT trips FROM t WHERE bucket < $1",
+            &[Literal::Int(FEB)]
+        ),
+        [missing("bucket >= $n")]
+    );
+}
 
+#[test]
+fn keys_come_in_select_order() {
     let ask = parse_ask(
-        "SELECT zone.borough, kind, trips FROM t
-         WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, zone.borough",
+        "SELECT borough, kind, trips FROM t
+         WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough",
         &range(),
     )
     .unwrap();
-    assert_eq!(ask.by, [key("zone", Some("borough")), key("kind", None)]);
+    assert_eq!(ask.by, [key("borough"), key("kind")]);
 }
 
 /// Each case is one wrong ask; its errors must include the fragment.
@@ -155,6 +132,11 @@ fn every_error_names_what_is_wrong() {
             "SELECT trips FROM t WHERE kind IN ($3, 'x') AND bucket >= $1 AND bucket < $2",
             &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
             "value, use a parameter such as $1, `'x'`",
+        ),
+        (
+            "SELECT trips FROM t WHERE kind IN ($3) AND bucket >= $1 AND bucket < $2",
+            &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
+            "IN with one value, write =, `kind IN ($3)` is not in straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -199,28 +181,38 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t WHERE bucket > $1 AND bucket < $2",
             &range(),
-            "filter condition, use = or IN joined by AND, `bucket > $1`",
+            "filter condition, write = or IN joined by AND, `bucket > $1`",
         ),
         (
             "SELECT trips FROM t WHERE (kind = $1 OR kind = $1) AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, use = or IN joined by AND, `kind = $1 OR kind = $1`",
+            "filter condition, write = or IN joined by AND, `kind = $1 OR kind = $1`",
         ),
         (
-            "SELECT trips FROM t WHERE kind NOT IN ($1) AND bucket >= $1 AND bucket < $2",
+            "SELECT trips FROM t WHERE kind NOT IN ($1, $2) AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, use = or IN joined by AND, `kind NOT IN ($1)`",
+            "filter condition, write = or IN joined by AND, `kind NOT IN ($1, $2)`",
+        ),
+        (
+            "SELECT trips FROM t WHERE kind <> $1 AND bucket >= $1 AND bucket < $2",
+            &range(),
+            "filter condition, write = or IN joined by AND, `kind <> $1`",
+        ),
+        (
+            "SELECT trips FROM t WHERE NOT kind = $1 AND bucket >= $1 AND bucket < $2",
+            &range(),
+            "filter condition, write = or IN joined by AND, `NOT kind = $1`",
         ),
         // A null-ness key is asked for by name, `done = $n`.
         (
             "SELECT trips FROM t WHERE done_at IS NULL AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, use = or IN joined by AND, `done_at IS NULL`",
+            "filter condition, write = or IN joined by AND, `done_at IS NULL`",
         ),
         (
             "SELECT trips FROM t WHERE done_at IS NOT NULL AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, use = or IN joined by AND, `done_at IS NOT NULL`",
+            "filter condition, write = or IN joined by AND, `done_at IS NOT NULL`",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -312,22 +304,25 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT count(*) FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "expression, use column, ref or ref.attribute, `count(*)`",
+            "expression, write the name the view gives the key or measure, `count(*)`",
+        ),
+        // A dim column goes by the name the view gave it, never by
+        // `alias.column`.
+        (
+            "SELECT pickup.borough, trips FROM t WHERE bucket >= $1 AND bucket < $2 \
+             GROUP BY pickup.borough",
+            &range(),
+            "expression, write the name the view gives the key or measure, `pickup.borough`",
         ),
         (
-            "SELECT a.b.c FROM t WHERE bucket >= $1 AND bucket < $2",
+            "SELECT trips FROM t WHERE pickup.borough = $1 AND bucket >= $1 AND bucket < $2",
             &range(),
-            "name, use column, ref or ref.attribute, `a.b.c`",
+            "expression, write the name the view gives the key or measure, `pickup.borough`",
         ),
         (
             "SELECT \"Trips\" FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
             "quoted identifier `\"Trips\"` is not in straum SQL",
-        ),
-        (
-            "SELECT zone.borough, trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &range(),
-            "zone.borough is selected but not in GROUP BY",
         ),
         (
             "SELECT bucket, trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -343,6 +338,11 @@ fn every_error_names_what_is_wrong() {
             "SELECT kind, trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, kind",
             &range(),
             "GROUP BY kind given twice",
+        ),
+        (
+            "SELECT kind, trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY 1",
+            &range(),
+            "expression, write the name the view gives the key or measure, `1`",
         ),
         (
             "SELECT trips, kind FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY kind",

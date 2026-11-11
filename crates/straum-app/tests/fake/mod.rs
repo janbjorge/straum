@@ -27,7 +27,7 @@ pub fn type_of(column: &Ident) -> ColumnType {
 /// Sets the types a load sets: the fact's columns, then its attributes.
 pub fn set_types(fact: &Fact, store: &mut Store) {
     let types: Vec<ColumnType> = (fact.columns().iter())
-        .chain(fact.attrs().map(|(_, attr)| attr))
+        .chain(fact.attrs().map(|(_, attr)| &attr.column))
         .map(type_of)
         .collect();
     store
@@ -251,7 +251,7 @@ fn resolve(tables: &Tables, spec: &Spec, fact: &Fact, row: &mut Row) {
             key => tables[dim.table.name.as_str()].rows.get(key),
         };
         for attr in &r.attrs {
-            let i = dim.columns().position(|c| c == attr).unwrap();
+            let i = dim.columns().position(|c| *c == attr.column).unwrap();
             row.push(found.map_or(Datum::Null, |d| d[i].clone()));
         }
     }

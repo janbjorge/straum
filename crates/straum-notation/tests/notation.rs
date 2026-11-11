@@ -1,5 +1,5 @@
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, By, Cond, Grain, Ident, KeyPath, Literal, Origin, Slot, Spec,
+    Agg, Ask, AskError, AskKey, Attr, By, Cond, Grain, Ident, Literal, Origin, Slot, Spec,
     SpecError, TimeKey,
 };
 use straum_notation::{Error, SqlError, parse};
@@ -14,8 +14,25 @@ fn id(s: &str) -> Ident {
     Ident::new(s).unwrap()
 }
 
-fn path(s: &str) -> KeyPath {
-    KeyPath::parse(s).unwrap()
+fn col(s: &str) -> By {
+    By::Column {
+        column: id(s),
+        name: id(s),
+    }
+}
+
+fn attr(name: &str, column: &str) -> Attr {
+    Attr {
+        name: id(name),
+        column: id(column),
+    }
+}
+
+fn cond(key: &str, values: Vec<Literal>) -> Cond {
+    Cond {
+        key: id(key),
+        values,
+    }
 }
 
 fn taxi() -> Spec {
@@ -40,17 +57,26 @@ fn month_ask() -> Ask {
     Ask {
         fact: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: vec![
-            AskKey::Key(path("pickup.borough")),
-            AskKey::Time(TimeKey::Bucket),
-        ],
-        filter: vec![Cond {
-            path: path("pickup.borough"),
-            values: vec![Literal::Text("Manhattan".into())],
-        }],
-        from: Some(JAN),
-        to: Some(FEB),
+        by: vec![AskKey::Key(id("borough")), AskKey::Time(TimeKey::Bucket)],
+        filter: vec![cond("borough", vec![Literal::Text("Manhattan".into())])],
+        from: JAN,
+        to: FEB,
     }
+}
+
+/// The rollup key as text: column names, null-ness tests, `ref.column`
+/// for an attribute, and `bucket`.
+fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
+    (spec.fact(fact).unwrap().rollup_key())
+        .map(|slot| match slot {
+            Slot::Column(c) => c.to_string(),
+            Slot::IsNull { column, negated } => {
+                format!("{column} is {}null", if negated { "not " } else { "" })
+            }
+            Slot::Attr(r, a) => format!("{}.{a}", r.name),
+            Slot::Bucket => "bucket".into(),
+        })
+        .collect()
 }
 
 #[test]
@@ -62,20 +88,8 @@ fn taxi_parses() {
         spec.dim("taxi_zones").unwrap().attrs,
         [id("borough"), id("zone"), id("service_zone")]
     );
-
-    let key: Vec<String> = trips
-        .rollup_key()
-        .map(|slot| match slot {
-            Slot::Column(c) => c.to_string(),
-            Slot::IsNull { column, negated } => {
-                format!("{column} is {}null", if negated { "not " } else { "" })
-            }
-            Slot::Attr(r, a) => format!("{}.{a}", r.name),
-            Slot::Bucket => "bucket".into(),
-        })
-        .collect();
     assert_eq!(
-        key,
+        key_text(&spec, "trips"),
         [
             "payment_type",
             "vendor_id",
@@ -87,21 +101,25 @@ fn taxi_parses() {
             "bucket"
         ]
     );
-
+    assert_eq!(
+        trips.refs[0].attrs,
+        [
+            attr("borough", "borough"),
+            attr("zone", "zone"),
+            attr("service_zone", "service_zone")
+        ]
+    );
     assert_eq!(
         trips.measure("distance").unwrap().agg,
         Agg::Avg(id("trip_distance"))
     );
     assert_eq!(
         trips.measure("card").unwrap().filter,
-        [Cond {
-            path: path("payment_type"),
-            values: vec![Literal::Int(1)]
-        }]
+        [cond("payment_type", vec![Literal::Int(1)])]
     );
     assert_eq!(
-        trips.measure("manhattan_pickups").unwrap().filter[0].path,
-        path("pickup.borough")
+        trips.measure("manhattan_pickups").unwrap().filter[0].key,
+        id("borough")
     );
 }
 
@@ -117,28 +135,24 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
     let ask = Ask {
         measures: vec![id("trips"), id("tips"), id("trips")],
         by: vec![
-            AskKey::Key(path("fare_amount")),
-            AskKey::Key(path("pickup.colour")),
-            AskKey::Key(path("pickup.borough")),
-            AskKey::Key(path("pickup.borough")),
+            AskKey::Key(id("fare_amount")),
+            AskKey::Key(id("colour")),
+            AskKey::Key(id("borough")),
+            AskKey::Key(id("borough")),
             AskKey::Time(TimeKey::Bucket),
             AskKey::Time(TimeKey::Bucket),
         ],
-        from: Some(JAN + 60),
+        from: JAN + 60,
         ..month_ask()
     };
     assert_eq!(
         spec.check(&ask).unwrap_err(),
         [
             AskError::UnknownMeasure(id("tips")),
-            AskError::UnknownKey(path("fare_amount")),
-            AskError::AttrNotRead {
-                name: id("pickup"),
-                attr: id("colour"),
-                attrs: vec![id("borough"), id("zone"), id("service_zone")]
-            },
+            AskError::UnknownKey(id("fare_amount")),
+            AskError::UnknownKey(id("colour")),
             AskError::TimeKeyTwice,
-            AskError::AskedTwice("pickup.borough".into()),
+            AskError::AskedTwice("borough".into()),
             AskError::AskedTwice("trips".into()),
             AskError::RangeUnaligned {
                 at: JAN + 60,
@@ -154,8 +168,8 @@ fn ask_errors_display() {
         (AskError::UnknownFact(id("nope")), "unknown fact nope"),
         (AskError::UnknownMeasure(id("tips")), "unknown measure tips"),
         (
-            AskError::UnknownKey(path("fare_amount")),
-            "fare_amount is not a by column or ref attribute",
+            AskError::UnknownKey(id("fare_amount")),
+            "fare_amount is not a key of the view",
         ),
         (AskError::NoMeasures, "no measures asked"),
         (AskError::TimeKeyTwice, "more than one time key"),
@@ -184,9 +198,9 @@ fn ask_every_key_form() {
     let spec = taxi();
     let ask = Ask {
         by: vec![
-            AskKey::Key(path("pu_location_id")),
-            AskKey::Key(path("pickup.zone")),
-            AskKey::Key(path("payment_type")),
+            AskKey::Key(id("pu_location_id")),
+            AskKey::Key(id("zone")),
+            AskKey::Key(id("payment_type")),
             AskKey::Time(TimeKey::Bucket),
         ],
         ..month_ask()
@@ -208,19 +222,16 @@ fn ask_rejects_bad_shape() {
 
     let ask = Ask {
         measures: vec![],
-        filter: vec![Cond {
-            path: path("fare_amount"),
-            values: vec![Literal::Int(1)],
-        }],
-        from: Some(FEB),
-        to: Some(JAN + 60),
+        filter: vec![cond("fare_amount", vec![Literal::Int(1)])],
+        from: FEB,
+        to: JAN + 60,
         ..month_ask()
     };
     assert_eq!(
         spec.check(&ask).unwrap_err(),
         [
             AskError::NoMeasures,
-            AskError::UnknownKey(path("fare_amount")),
+            AskError::UnknownKey(id("fare_amount")),
             AskError::RangeEmpty {
                 from: FEB,
                 to: JAN + 60
@@ -236,9 +247,9 @@ fn ask_rejects_bad_shape() {
 /// One fact `t` with a ref `z`, valid as written. Tests swap one piece.
 const BASE: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
-       f.a, f.z_id, z.name, count(*) AS n
-FROM public.t f
-LEFT JOIN public.z z ON z.id = f.z_id
+       f.a AS a, f.z_id AS z_id, z.name AS name, count(*) AS n
+FROM public.t AS f
+LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
 
 fn base(from: &str, to: &str) -> String {
@@ -251,10 +262,10 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.by, [By::Column(id("a")), By::Column(id("z_id"))]);
+    assert_eq!(t.by, [col("a"), col("z_id")]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, [id("z_id")]);
-    assert_eq!(t.refs[0].attrs, [id("name")]);
+    assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
     assert!(t.time.buckets.is_empty());
     assert_eq!(t.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
@@ -264,35 +275,61 @@ fn base_parses() {
     );
 }
 
-/// Without an alias a table goes by its name, without a schema it is in
-/// `public`, and a bare column is the fact's, as PostgreSQL would read
-/// the same view.
+/// A key goes by the name `AS` gives it, which may differ from the
+/// column's; asks use that name, while a FILTER names the column, as
+/// PostgreSQL reads the view.
 #[test]
-fn alias_schema_and_qualification_default() {
-    let src = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', at, timestamptz 'epoch') AS bucket,
-       a, z_id, z.name, count(*) AS n
-FROM t
-LEFT JOIN z ON z.id = z_id
-GROUP BY 1, 2, 3, 4";
-    let spec = parse(src).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!((&t.table.schema, &t.table.name), (&id("public"), &id("t")));
-    assert_eq!(t.time.column, id("at"));
-    assert_eq!(t.by, [By::Column(id("a")), By::Column(id("z_id"))]);
-    assert_eq!(
-        (&t.refs[0].name, &t.refs[0].via[..]),
-        (&id("z"), &[id("z_id")][..])
+fn keys_go_by_their_select_name() {
+    let src = base(
+        "f.a AS a, f.z_id AS z_id, z.name AS name",
+        "f.a AS kind, f.z_id AS zone, z.name AS label",
+    )
+    .replace(
+        "count(*) AS n",
+        "count(*) AS n, count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS some",
     );
-    assert_eq!(spec.dim("z").unwrap().table.schema, id("public"));
-    assert_eq!(parse(src).unwrap(), parse(BASE).unwrap());
-
-    // A bare column is never a dim's: the dim is reached through its alias.
-    let errors = sql_errors(&base("z.name", "name"));
-    assert_eq!(errors.len(), 1, "{errors:?}");
+    let spec = parse(&src).unwrap();
+    let t = spec.fact("t").unwrap();
     assert_eq!(
-        errors[0].msg,
-        "LEFT JOIN z selects no column of it; select one or drop the join"
+        t.by,
+        [
+            By::Column {
+                column: id("a"),
+                name: id("kind")
+            },
+            By::Column {
+                column: id("z_id"),
+                name: id("zone")
+            }
+        ]
+    );
+    assert_eq!(t.refs[0].attrs, [attr("label", "name")]);
+    assert_eq!(
+        t.measure("some").unwrap().filter,
+        [
+            cond("kind", vec![Literal::Int(1)]),
+            cond("label", vec![Literal::Text("x".into())])
+        ]
+    );
+    let ask = |by: &[&str]| Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
+        filter: vec![],
+        from: JAN,
+        to: FEB,
+    };
+    assert!(spec.check(&ask(&["kind", "zone", "label"])).is_ok());
+    let shown: Vec<String> = (spec.check(&ask(&["a", "name", "z"])).unwrap_err().iter())
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "a is not a key of the view",
+            "name is not a key of the view",
+            "z is not a key of the view"
+        ]
     );
 }
 
@@ -373,29 +410,15 @@ fn literals_and_filters() {
          AND z.id = 4 AND f.a = true) AS n",
     );
     let spec = parse(&src).unwrap();
+    // A dim key column names the fact column joined to it.
     assert_eq!(
         spec.fact("t").unwrap().measure("n").unwrap().filter,
         [
-            Cond {
-                path: path("a"),
-                values: vec![Literal::Int(-1), Literal::Int(2)]
-            },
-            Cond {
-                path: path("z.name"),
-                values: vec![Literal::Text("it's".into())]
-            },
-            Cond {
-                path: path("z_id"),
-                values: vec![Literal::Int(3)]
-            },
-            Cond {
-                path: path("z_id"),
-                values: vec![Literal::Int(4)]
-            },
-            Cond {
-                path: path("a"),
-                values: vec![Literal::Bool(true)]
-            },
+            cond("a", vec![Literal::Int(-1), Literal::Int(2)]),
+            cond("name", vec![Literal::Text("it's".into())]),
+            cond("z_id", vec![Literal::Int(3)]),
+            cond("z_id", vec![Literal::Int(4)]),
+            cond("a", vec![Literal::Bool(true)]),
         ]
     );
 }
@@ -403,18 +426,18 @@ fn literals_and_filters() {
 #[test]
 fn every_agg_grain_unit_and_key_form() {
     let src = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
-SELECT date_bin('30 seconds', f.at, timestamptz 'epoch'),
-       f.a, z.id, z.name,
+SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
+       f.a AS a, z.id AS z_id, z.name AS name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
        avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids
-FROM public.t f
-LEFT OUTER JOIN public.z z ON f.z_id = z.id
-GROUP BY f.a, date_bin('30 seconds', f.at, timestamptz 'epoch'), 3, 4";
+FROM public.t AS f
+LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
+GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.time.grain, Grain(30));
     // A dim key column names the fact column joined to it.
-    assert_eq!(t.by, [By::Column(id("a")), By::Column(id("z_id"))]);
+    assert_eq!(t.by, [col("a"), col("z_id")]);
     let aggs: Vec<&Agg> = t.measures.iter().map(|m| &m.agg).collect();
     assert_eq!(
         aggs,
@@ -439,28 +462,31 @@ GROUP BY f.a, date_bin('30 seconds', f.at, timestamptz 'epoch'), 3, 4";
 /// One dim keyed by two columns, joined by two views in either order.
 const GROUPED: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
-       f.org, f.grp, g.label, count(*) AS n
-FROM public.t f
-LEFT JOIN public.g g ON g.org_id = f.org AND f.grp = g.grp_id
+       f.org AS org, f.grp AS grp, g.label AS label, count(*) AS n
+FROM public.t AS f
+LEFT OUTER JOIN public.g AS g ON g.org_id = f.org AND g.grp_id = f.grp
 GROUP BY 1, 2, 3, 4";
 
 #[test]
 fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.by, [By::Column(id("org")), By::Column(id("grp"))]);
+    assert_eq!(t.by, [col("org"), col("grp")]);
     assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
     let g = spec.dim("g").unwrap();
     assert_eq!(g.key, [id("org_id"), id("grp_id")]);
     assert_eq!(g.attrs, [id("label")]);
     // A dim key column names the fact column joined to it.
-    let through = GROUPED.replace("f.org, f.grp, g.label", "g.org_id, f.grp, g.label");
+    let through = GROUPED.replace(
+        "f.org AS org, f.grp AS grp",
+        "g.org_id AS org, f.grp AS grp",
+    );
     assert_eq!(parse(&through).unwrap(), spec);
 
     // Another view joins the same key in the other order: its via follows
     // the dim's key order.
     let other = GROUPED.replace("VIEW t", "VIEW u").replace(
-        "ON g.org_id = f.org AND f.grp = g.grp_id",
+        "ON g.org_id = f.org AND g.grp_id = f.grp",
         "ON g.grp_id = f.grp AND g.org_id = f.org",
     );
     let spec = parse(&format!(
@@ -471,33 +497,19 @@ fn a_ref_on_two_columns() {
     assert_eq!(spec.fact("u").unwrap().refs[0].via, [id("org"), id("grp")]);
     assert_eq!(spec.dim("g").unwrap().key, [id("org_id"), id("grp_id")]);
 
-    // The ref has no value of its own, so asks name its columns or its
-    // attributes, and a dim key column is no attribute: it is the fact
-    // column joined to it.
+    // The ref has no value of its own: asks name the keys the view named.
     let ask = |by: &[&str]| Ask {
         fact: id("t"),
         measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
+        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: vec![],
-        from: Some(JAN),
-        to: Some(FEB),
+        from: JAN,
+        to: FEB,
     };
-    assert!(spec.check(&ask(&["org", "grp", "g.label"])).is_ok());
-    let errors = spec.check(&ask(&["g"])).unwrap_err();
+    assert!(spec.check(&ask(&["org", "grp", "label"])).is_ok());
     assert_eq!(
-        errors,
-        [AskError::RefAsKey {
-            name: id("g"),
-            attrs: vec![id("label")]
-        }]
-    );
-    assert_eq!(
-        errors[0].to_string(),
-        "g is a join and has no value of its own; ask for g.label"
-    );
-    assert_eq!(
-        spec.check(&ask(&["g.org_id"])).unwrap_err()[0].to_string(),
-        "g.org_id is not read by the view, which reads g.label"
+        spec.check(&ask(&["g"])).unwrap_err(),
+        [AskError::UnknownKey(id("g"))]
     );
 }
 
@@ -507,33 +519,36 @@ fn a_ref_on_two_columns_rejected() {
     // that selects nothing is not.
     let without_grp = parse(
         &GROUPED
-            .replace("f.org, f.grp,", "f.org,")
-            .replace(", 4", ""),
+            .replace("f.org AS org, f.grp AS grp,", "f.org AS org,")
+            .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3"),
     )
     .unwrap();
     let t = without_grp.fact("t").unwrap();
-    assert_eq!(t.by, [By::Column(id("org"))]);
+    assert_eq!(t.by, [col("org")]);
     assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
-    assert_eq!(t.refs[0].attrs, [id("label")]);
+    assert_eq!(t.refs[0].attrs, [attr("label", "label")]);
     let errors = sql_errors(
         &GROUPED
-            .replace("f.org, f.grp, g.label,", "f.org,")
-            .replace(", 3, 4", ""),
+            .replace(
+                "f.org AS org, f.grp AS grp, g.label AS label,",
+                "f.org AS org,",
+            )
+            .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2"),
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
         errors[0].msg,
-        "LEFT JOIN g selects no column of it; select one or drop the join"
+        "LEFT OUTER JOIN g selects no column of it; select one or drop the join"
     );
     // Another view joins the dim on another key list: fewer columns, or
     // as many but not the same.
     for (edit, found) in [
         ("", "org_id"),
-        ("AND f.grp = g.other_id", "org_id, other_id"),
+        ("AND g.other_id = f.grp", "org_id, other_id"),
     ] {
         let other = GROUPED
             .replace("VIEW t", "VIEW u")
-            .replace("AND f.grp = g.grp_id", edit);
+            .replace("AND g.grp_id = f.grp", edit);
         let errors = sql_errors(&format!("{GROUPED};\n{other}"));
         assert_eq!(
             errors,
@@ -549,83 +564,61 @@ fn a_ref_on_two_columns_rejected() {
 /// cells.
 const ATTR_ONLY: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
-       f.a, z.name, count(*) AS n,
+       f.a AS a, z.name AS name, count(*) AS n,
        count(*) FILTER (WHERE z.name = 'x') AS named
-FROM public.t f
-LEFT JOIN public.z z ON z.id = f.z_id
+FROM public.t AS f
+LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3";
 
 #[test]
 fn a_ref_reads_what_the_view_selects() {
     let spec = parse(ATTR_ONLY).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.by, [By::Column(id("a"))]);
+    assert_eq!(t.by, [col("a")]);
     assert_eq!(t.refs[0].via, [id("z_id")]);
-    assert_eq!(t.refs[0].attrs, [id("name")]);
+    assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
     // The via column is read for the lookup, not kept.
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
-    let key: Vec<String> = (t.rollup_key())
-        .map(|slot| match slot {
-            Slot::Column(c) => c.to_string(),
-            Slot::Attr(r, a) => format!("{}.{a}", r.name),
-            Slot::IsNull { .. } | Slot::Bucket => "other".into(),
-        })
-        .collect();
-    assert_eq!(key, ["a", "z.name", "other"]);
+    assert_eq!(key_text(&spec, "t"), ["a", "z.name", "bucket"]);
     assert_eq!(
         t.measure("named").unwrap().filter,
-        [Cond {
-            path: path("z.name"),
-            values: vec![Literal::Text("x".into())]
-        }]
+        [cond("name", vec![Literal::Text("x".into())])]
     );
     assert_eq!(spec.dim("z").unwrap().attrs, [id("name")]);
 
-    // Asks name the attribute; the ref has no value of its own, and reads
-    // only what the view selected.
+    // Asks name the attribute as the view named it; the ref itself and
+    // its unread columns are no keys.
     let ask = |by: &[&str]| Ask {
         fact: id("t"),
         measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(path(k))).collect(),
+        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: vec![],
-        from: Some(JAN),
-        to: Some(FEB),
+        from: JAN,
+        to: FEB,
     };
-    assert!(spec.check(&ask(&["a", "z.name"])).is_ok());
-    let shown = |by: &[&str]| -> Vec<String> {
-        (spec.check(&ask(by)).unwrap_err().iter())
-            .map(ToString::to_string)
-            .collect()
-    };
-    assert_eq!(
-        shown(&["z"]),
-        ["z is a join and has no value of its own; ask for z.name"]
-    );
-    assert_eq!(
-        shown(&["z.id"]),
-        ["z.id is not read by the view, which reads z.name"]
-    );
-    assert_eq!(
-        spec.check(&ask(&["z"])).unwrap_err(),
-        [AskError::RefAsKey {
-            name: id("z"),
-            attrs: vec![id("name")]
-        }]
-    );
+    assert!(spec.check(&ask(&["a", "name"])).is_ok());
+    for missing in ["z", "id", "z_id"] {
+        assert_eq!(
+            spec.check(&ask(&[missing])).unwrap_err(),
+            [AskError::UnknownKey(id(missing))],
+            "{missing}"
+        );
+    }
 
     // Another view may select the via column too; the attribute must
     // still be grouped by.
     let both = format!("{ATTR_ONLY};\n{}", BASE.replace("VIEW t", "VIEW u"));
     let spec = parse(&both).unwrap();
     let u = spec.fact("u").unwrap();
-    assert_eq!(u.by, [By::Column(id("a")), By::Column(id("z_id"))]);
-    assert_eq!(u.refs[0].attrs, [id("name")]);
+    assert_eq!(u.by, [col("a"), col("z_id")]);
+    assert_eq!(u.refs[0].attrs, [attr("name", "name")]);
     let errors = sql_errors(&ATTR_ONLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.msg == "z.name is selected but not in GROUP BY"),
-        "{errors:?}"
+    assert_eq!(
+        errors,
+        [SqlError {
+            line: 2,
+            msg: "GROUP BY 1, 2 must list the keys' positions in SELECT: GROUP BY 1, 2, 3".into()
+        }]
     );
 }
 
@@ -633,13 +626,13 @@ fn a_ref_reads_what_the_view_selects() {
 /// what a FILTER's `IS NULL` counts through.
 const NULLS: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
-       f.a,
+       f.a AS a,
        (f.done_at IS NOT NULL) AS done,
        f.gone_at IS NULL AS open,
        count(*) AS n,
        count(*) FILTER (WHERE f.done_at IS NOT NULL AND f.gone_at IS NOT NULL) AS closed,
        count(*) FILTER (WHERE f.done_at IS NULL) AS pending
-FROM public.t f
+FROM public.t AS f
 GROUP BY 1, 2, 3, 4";
 
 #[test]
@@ -649,7 +642,7 @@ fn null_ness_keys() {
     assert_eq!(
         t.by,
         [
-            By::Column(id("a")),
+            col("a"),
             By::IsNull {
                 column: id("done_at"),
                 name: id("done"),
@@ -666,54 +659,23 @@ fn null_ness_keys() {
         t.columns(),
         [id("at"), id("a"), id("done_at"), id("gone_at")]
     );
-    let key: Vec<String> = (t.rollup_key())
-        .map(|slot| match slot {
-            Slot::Column(c) => c.to_string(),
-            Slot::IsNull { column, negated } => format!("{column} is null = {}", !negated),
-            Slot::Attr(r, a) => format!("{}.{a}", r.name),
-            Slot::Bucket => "bucket".into(),
-        })
-        .collect();
     assert_eq!(
-        key,
-        [
-            "a",
-            "done_at is null = false",
-            "gone_at is null = true",
-            "bucket"
-        ]
+        key_text(&spec, "t"),
+        ["a", "done_at is not null", "gone_at is null", "bucket"]
     );
-    // A FILTER's test holds when the key over its column has the value
-    // that means it.
     let filter = |m: &str| t.measure(m).unwrap().filter.clone();
     assert_eq!(
         filter("closed"),
         [
-            Cond {
-                path: path("done"),
-                values: vec![Literal::Bool(true)]
-            },
-            Cond {
-                path: path("open"),
-                values: vec![Literal::Bool(false)]
-            },
+            cond("done", vec![Literal::Bool(true)]),
+            cond("open", vec![Literal::Bool(false)]),
         ]
     );
     assert_eq!(
         filter("pending"),
-        [Cond {
-            path: path("done"),
-            values: vec![Literal::Bool(false)]
-        }]
+        [cond("done", vec![Literal::Bool(false)])]
     );
-    // Grouped by expression, with or without the parentheses, or by
-    // position; and a FILTER may come before the key it goes through.
-    let by_expression = NULLS.replace(
-        "GROUP BY 1, 2, 3, 4",
-        "GROUP BY date_bin('1 hour', f.at, timestamptz 'epoch'), f.a, f.done_at IS NOT NULL, \
-         (f.gone_at IS NULL)",
-    );
-    assert_eq!(parse(&by_expression).unwrap(), spec);
+    // A FILTER may come before the key it names.
     let filter_first = NULLS
         .replace(
             "AS bucket,\n",
@@ -740,13 +702,10 @@ fn null_ness_keys() {
     let ask = Ask {
         fact: id("t"),
         measures: vec![id("n")],
-        by: vec![AskKey::Key(path("done"))],
-        filter: vec![Cond {
-            path: path("open"),
-            values: vec![Literal::Bool(true)],
-        }],
-        from: Some(JAN),
-        to: Some(FEB),
+        by: vec![AskKey::Key(id("done"))],
+        filter: vec![cond("open", vec![Literal::Bool(true)])],
+        from: JAN,
+        to: FEB,
     };
     assert!(spec.check(&ask).is_ok());
 }
@@ -757,12 +716,24 @@ fn null_ness_keys_rejected() {
         (
             "(f.done_at IS NOT NULL) AS done,",
             "(f.done_at IS NOT NULL),",
-            "name the key: (f.done_at IS NOT NULL) AS <name>",
+            "name every SELECT item: (f.done_at IS NOT NULL) AS <name>",
+        ),
+        // A FILTER names the column, as PostgreSQL reads the view, never
+        // the key's name.
+        (
+            "count(*) FILTER (WHERE f.done_at IS NULL) AS pending",
+            "count(*) FILTER (WHERE done = false) AS pending",
+            "column, write alias.column, `done`",
         ),
         (
             "count(*) FILTER (WHERE f.done_at IS NULL) AS pending",
             "count(*) FILTER (WHERE f.a IS NULL) AS pending",
             "FILTER (WHERE f.a IS NULL) needs the key (f.a IS NULL) AS <name> in SELECT",
+        ),
+        (
+            "count(*) FILTER (WHERE f.done_at IS NULL) AS pending",
+            "count(*) FILTER (WHERE f.done_at = true) AS pending",
+            "FILTER on f.done_at needs f.done_at AS <name> in SELECT",
         ),
     ];
     for (from, to, fragment) in cases {
@@ -774,14 +745,14 @@ fn null_ness_keys_rejected() {
         );
     }
     // Over a dim column, and over the time column.
-    let errors = sql_errors(&base("f.a,", "f.a, (z.name IS NULL) AS unnamed,"));
+    let errors = sql_errors(&base("f.a AS a,", "f.a AS a, (z.name IS NULL) AS unnamed,"));
     assert!(
         errors
             .iter()
             .any(|e| e.msg == "the IS NULL column must be a f column"),
         "{errors:?}"
     );
-    let no_time = base("f.a,", "f.a, (f.at IS NULL) AS no_time,")
+    let no_time = base("f.a AS a,", "f.a AS a, (f.at IS NULL) AS no_time,")
         .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3, 4, 5");
     assert_eq!(
         spec_errors(&no_time),
@@ -798,7 +769,7 @@ fn views_share_a_dim() {
     let src = format!(
         "{BASE};\n{}",
         BASE.replace("VIEW t", "VIEW u")
-            .replace("z.name", "z.code, z.kind")
+            .replace("z.name AS name", "z.code AS code, z.kind AS kind")
             .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3, 4, 5")
             .replace(
                 "count(*) AS n",
@@ -830,7 +801,7 @@ fn views_share_a_dim() {
 fn spec_errors_pass_through() {
     let src = base("'1 hour'", "'7 minutes'")
         .replace("date_bin('1 hour'", "date_bin('7 minutes'")
-        .replace("f.a,", "f.id, f.z_id AS z,");
+        .replace("f.a AS a,", "f.id AS id, f.z_id AS z,");
     assert!(matches!(parse(&src), Err(Error::Sql(_))));
 
     let src = base("'1 hour'", "'7 minutes'")
@@ -850,22 +821,19 @@ fn spec_errors_pass_through() {
         ]
     );
 
-    let clash = base("f.a,", "f.z,");
+    let clash = base("f.a AS a,", "f.z AS z_id,");
     assert_eq!(
         spec_errors(&clash),
         [SpecError::Duplicate {
             scope: Some(id("t")),
-            name: id("z")
+            name: id("z_id")
         }]
     );
 
-    let named_ref = BASE
-        .replace("z.name", "bucket.name")
-        .replace("public.z z ON z.id", "public.z bucket ON bucket.id");
     for src in [
-        base("f.a,", "f.bucket,"),
+        base("f.a AS a,", "f.a AS bucket,"),
         base("count(*) AS n", "count(*) AS bucket"),
-        named_ref,
+        base("z.name AS name", "z.name AS bucket"),
     ] {
         assert_eq!(
             spec_errors(&src),
@@ -1059,24 +1027,29 @@ fn rejects_everything_outside_the_subset() {
             "QUALIFY is not",
         ),
         (
-            "FROM public.t f",
-            "FROM public.t(1) f",
+            "FROM public.t AS f",
+            "FROM public.t(1) AS f",
             4,
             "a table function is not",
         ),
         (
-            "FROM public.t f",
-            "FROM public.t(1) WITH ORDINALITY f",
+            "FROM public.t AS f",
+            "FROM public.t(1) WITH ORDINALITY AS f",
             4,
             "WITH ORDINALITY is not",
         ),
         (
-            "FROM public.t f",
-            "FROM public.t f WITH (NOLOCK)",
+            "FROM public.t AS f",
+            "FROM public.t AS f WITH (NOLOCK)",
             4,
             "a table hint is not",
         ),
-        ("LEFT JOIN", "GLOBAL LEFT JOIN", 5, "GLOBAL is not"),
+        (
+            "LEFT OUTER JOIN",
+            "GLOBAL LEFT OUTER JOIN",
+            5,
+            "GLOBAL is not",
+        ),
         (
             "count(*) AS n",
             "count(*) RESPECT NULLS AS n",
@@ -1148,7 +1121,7 @@ fn rejects_everything_outside_the_subset() {
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY ROLLUP (1, 2, 3, 4)",
             6,
-            "GROUP BY item `ROLLUP (1, 2, 3, 4)` is not",
+            "GROUP BY item, write the key's position in SELECT, `ROLLUP (1, 2, 3, 4)`",
         ),
         (
             "GROUP BY 1, 2, 3, 4",
@@ -1156,127 +1129,249 @@ fn rejects_everything_outside_the_subset() {
             2,
             "GROUP BY ALL is not",
         ),
-        // FROM and joins.
+        // FROM and joins: every part written, one join spelling.
         (
-            "FROM public.t f",
-            "FROM public.t f, public.u u",
+            "FROM public.t AS f",
+            "FROM public.t AS f, public.u AS u",
             2,
             "exactly one FROM table",
         ),
         (
-            "FROM public.t f",
-            "FROM (SELECT 1) f",
+            "FROM public.t AS f",
+            "FROM (SELECT 1) AS f",
             4,
-            "table `(SELECT 1) f` is not",
+            "table `(SELECT 1) AS f` is not",
         ),
         (
-            "FROM public.t f",
+            "FROM public.t AS f",
             "FROM public.t",
-            3,
-            "unknown table alias f",
+            4,
+            "table public.t must be public.t AS <alias>",
         ),
         (
+            "FROM public.t AS f",
             "FROM public.t f",
-            "FROM db.public.t f",
+            4,
+            "table public.t must be public.t AS <alias>",
+        ),
+        (
+            "FROM public.t AS f",
+            "FROM t AS f",
+            4,
+            "table t must be schema.table",
+        ),
+        (
+            "FROM public.t AS f",
+            "FROM db.public.t AS f",
             4,
             "table db.public.t must be schema.table",
         ),
         (
-            "FROM public.t f",
-            "FROM public.t f(a)",
+            "FROM public.t AS f",
+            "FROM public.t AS f(a)",
             4,
             "an alias column list is not",
         ),
         (
-            "FROM public.t f",
-            "FROM public.t f TABLESAMPLE SYSTEM (10)",
+            "FROM public.t AS f",
+            "FROM public.t AS f TABLESAMPLE SYSTEM (10)",
             4,
             "TABLESAMPLE is not",
         ),
-        ("LEFT JOIN", "JOIN", 5, "join, use LEFT JOIN,"),
-        ("LEFT JOIN", "INNER JOIN", 5, "join, use LEFT JOIN,"),
-        ("LEFT JOIN", "FULL JOIN", 5, "join, use LEFT JOIN,"),
+        ("LEFT OUTER JOIN", "JOIN", 5, "join, write LEFT OUTER JOIN,"),
         (
-            "LEFT JOIN public.z z ON z.id = f.z_id",
-            "CROSS JOIN public.z z",
+            "LEFT OUTER JOIN",
+            "INNER JOIN",
             5,
-            "join, use LEFT JOIN,",
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN",
+            "LEFT JOIN",
+            5,
+            "LEFT JOIN, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN",
+            "RIGHT JOIN",
+            5,
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN",
+            "RIGHT OUTER JOIN",
+            5,
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN",
+            "FULL JOIN",
+            5,
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN",
+            "FULL OUTER JOIN",
+            5,
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
+            "CROSS JOIN public.z AS z",
+            5,
+            "join, write LEFT OUTER JOIN,",
+        ),
+        (
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
+            "NATURAL LEFT OUTER JOIN public.z AS z",
+            5,
+            "join condition, write ON,",
         ),
         (
             "ON z.id = f.z_id",
             "USING (id)",
             5,
-            "join condition, use ON,",
+            "join condition, write ON,",
+        ),
+        (
+            "public.z AS z ON",
+            "public.z z ON",
+            5,
+            "table public.z must be public.z AS <alias>",
+        ),
+        (
+            "public.z AS z ON",
+            "z AS z ON",
+            5,
+            "table z must be schema.table",
         ),
         (
             "ON z.id = f.z_id",
             "ON z.id = 1",
             5,
-            "join on z.<key> = f.<column>, one or more joined by AND; found z.id = 1",
+            "join ON z.<key> = f.<column>, the joined table's column on the left, one or \
+             more joined by AND; found z.id = 1",
+        ),
+        (
+            "ON z.id = f.z_id",
+            "ON f.z_id = z.id",
+            5,
+            "join ON z.<key> = f.<column>, the joined table's column on the left",
+        ),
+        (
+            "ON z.id = f.z_id",
+            "ON z.id = f.z_id AND z.name = 'x'",
+            5,
+            "join ON z.<key> = f.<column>",
         ),
         (
             "ON z.id = f.z_id",
             "ON z.id = f.z_id OR z.id = f.a",
             5,
-            "join on z.<key> = f.<column>, one or more joined by AND; found",
+            "join ON z.<key> = f.<column>",
         ),
         (
             "ON z.id = f.z_id",
             "ON z.id > f.z_id",
             5,
-            "join on z.<key> = f.<column>",
+            "join ON z.<key> = f.<column>",
         ),
         (
             "ON z.id = f.z_id",
             "ON z.id = z.z_id",
             5,
-            "join on z.<key> = f.<column>",
+            "join ON z.<key> = f.<column>",
         ),
         (
-            "public.z z ON z.id",
-            "public.z f ON f.id",
+            "public.z AS z ON z.id",
+            "public.z AS f ON f.id",
             5,
             "alias f used twice",
         ),
-        // SELECT items and columns.
-        ("f.a, f.z_id", "*, f.z_id", 3, "SELECT item `*` is not"),
-        ("f.a, f.z_id", "f.*, f.z_id", 3, "SELECT item `f.*` is not"),
+        // SELECT items and columns: every item named, every column owned.
         (
-            "f.a, f.z_id",
-            "f.a AS b, f.z_id",
+            "f.a AS a, f.z_id AS z_id",
+            "*, f.z_id AS z_id",
             3,
-            "alias on a key column `b` is not",
+            "SELECT item `*` is not",
         ),
         (
-            "f.a, f.z_id",
-            "public.f.a, f.z_id",
+            "f.a AS a, f.z_id AS z_id",
+            "f.*, f.z_id AS z_id",
             3,
-            "column, use alias.column, `public.f.a`",
+            "SELECT item `f.*` is not",
         ),
-        ("f.a, f.z_id", "q.a, f.z_id", 3, "unknown table alias q"),
         (
-            "f.a, f.z_id",
-            "f.a + 1, f.z_id",
+            "f.a AS a, f.z_id AS z_id",
+            "f.a, f.z_id AS z_id",
             3,
-            "column `f.a + 1` is not",
+            "name every SELECT item: f.a AS <name>",
+        ),
+        (
+            "f.a AS a, f.z_id AS z_id",
+            "a AS a, f.z_id AS z_id",
+            3,
+            "column, write alias.column, `a`",
+        ),
+        (
+            "f.a AS a, f.z_id AS z_id",
+            "public.f.a AS a, f.z_id AS z_id",
+            3,
+            "column, write alias.column, `public.f.a`",
+        ),
+        (
+            "f.a AS a, f.z_id AS z_id",
+            "q.a AS a, f.z_id AS z_id",
+            3,
+            "unknown table alias q",
+        ),
+        (
+            "f.a AS a, f.z_id AS z_id",
+            "f.a + 1 AS a, f.z_id AS z_id",
+            3,
+            "column, write alias.column, `f.a + 1`",
+        ),
+        (
+            "f.a AS a, f.z_id AS z_id",
+            "f.a AS \"A\", f.z_id AS z_id",
+            3,
+            "quoted identifier `\"A\"` is not",
         ),
         (
             "count(*) AS n",
             "count(*)",
             3,
-            "name the measure: count(*) AS <name>",
+            "name every SELECT item: count(*) AS <name>",
         ),
         (
-            "f.z_id, z.name, ",
-            "f.z_id, ",
+            "f.z_id AS z_id, z.name AS name, ",
+            "f.z_id AS z_id, ",
             2,
-            "LEFT JOIN z selects no column of it; select one or drop the join",
+            "LEFT OUTER JOIN z selects no column of it; select one or drop the join",
         ),
         (
             "count(*) AS n",
             "count(*) FILTER (WHERE z.code = 'x') AS n",
-            2,
-            "FILTER on z.code needs z.code in SELECT",
+            3,
+            "FILTER on z.code needs z.code AS <name> in SELECT",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE a = 1) AS n",
+            3,
+            "column, write alias.column, `a`",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE name = 'x') AS n",
+            3,
+            "column, write alias.column, `name`",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.b = 1) AS n",
+            3,
+            "FILTER on f.b needs f.b AS <name> in SELECT",
         ),
         // Aggregates.
         (
@@ -1288,6 +1383,12 @@ fn rejects_everything_outside_the_subset() {
         (
             "count(*) AS n",
             "count(f.x) AS n",
+            3,
+            "count, use count(*) or count(DISTINCT column),",
+        ),
+        (
+            "count(*) AS n",
+            "count(1) AS n",
             3,
             "count, use count(*) or count(DISTINCT column),",
         ),
@@ -1351,12 +1452,12 @@ fn rejects_everything_outside_the_subset() {
             3,
             "function call `current_timestamp` is not",
         ),
-        // Measure filters.
+        // Measure filters: one condition form.
         (
             "count(*) AS n",
             "count(*) FILTER (WHERE f.a = 1 OR f.a = 2) AS n",
             3,
-            "filter condition, use = or IN joined by AND,",
+            "filter condition, write = or IN joined by AND,",
         ),
         (
             "count(*) AS n",
@@ -1366,9 +1467,39 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "count(*) AS n",
+            "count(*) FILTER (WHERE f.a IN (1)) AS n",
+            3,
+            "IN with one value, write =, `f.a IN (1)`",
+        ),
+        (
+            "count(*) AS n",
             "count(*) FILTER (WHERE f.a > 1) AS n",
             3,
             "filter condition",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a <> 1) AS n",
+            3,
+            "filter condition",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE NOT f.a = 1) AS n",
+            3,
+            "filter condition",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a BETWEEN 1 AND 2) AS n",
+            3,
+            "filter condition",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a IS NULL) AS n",
+            3,
+            "FILTER (WHERE f.a IS NULL) needs the key (f.a IS NULL) AS <name> in SELECT",
         ),
         (
             "count(*) AS n",
@@ -1468,6 +1599,12 @@ fn rejects_everything_outside_the_subset() {
             "the date_bin column must be a f column",
         ),
         (
+            "date_bin('1 hour', f.at",
+            "date_bin('1 hour', at",
+            2,
+            "column, write alias.column, `at`",
+        ),
+        (
             "timestamptz 'epoch')",
             "timestamptz 'epoch') FILTER (WHERE f.a = 1)",
             2,
@@ -1488,40 +1625,70 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "AS bucket,",
-            "AS bucket, date_bin('1 day', f.at, timestamptz 'epoch'),",
+            "AS bucket, date_bin('1 day', f.at, timestamptz 'epoch') AS bucket,",
             2,
             "more than one date_bin bucket",
         ),
-        // GROUP BY.
+        (
+            "AS bucket,",
+            "AS hour,",
+            2,
+            "the date_bin bucket is named AS bucket, not AS hour",
+        ),
+        // GROUP BY: the keys' positions, in order.
         (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, 2, 3",
             2,
-            "z.name is selected but not in GROUP BY",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4, f.b",
-            2,
-            "GROUP BY f.b is not a selected key column",
+            "GROUP BY 1, 2, 3 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4",
         ),
         (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, 2, 3, 4, 5",
             2,
-            "GROUP BY count(*) is not a selected key column",
+            "GROUP BY 1, 2, 3, 4, 5 must list the keys' positions in SELECT",
         ),
         (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, 2, 3, 4, 9",
-            6,
-            "GROUP BY 9 is not a SELECT position",
+            2,
+            "GROUP BY 1, 2, 3, 4, 9 must list the keys' positions in SELECT",
         ),
         (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 0, 1, 2, 3, 4",
+            2,
+            "GROUP BY 0, 1, 2, 3, 4 must list the keys' positions in SELECT",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 2, 1, 3, 4",
+            2,
+            "GROUP BY 2, 1, 3, 4 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY bucket, a, z_id, name",
             6,
-            "GROUP BY 0 is not a SELECT position",
+            "GROUP BY item, write the key's position in SELECT, `bucket`",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, f.a, 3, 4",
+            6,
+            "GROUP BY item, write the key's position in SELECT, `f.a`",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY date_bin('1 hour', f.at, timestamptz 'epoch'), 2, 3, 4",
+            6,
+            "GROUP BY item, write the key's position in SELECT, `date_bin(",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, (2), 3, 4",
+            6,
+            "GROUP BY item, write the key's position in SELECT, `(2)`",
         ),
     ];
     let mut failed = Vec::new();
@@ -1602,7 +1769,7 @@ fn error_display() {
         "buckets = '1 hour'",
         "buckets = '1 hour', buckets = '2 days'",
     )
-    .replace("f.a,", "q.a,");
+    .replace("f.a AS a,", "q.a AS a,");
     assert_eq!(
         parse(&src).unwrap_err().to_string(),
         "line 1: view option buckets given twice\n\

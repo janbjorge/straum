@@ -2,7 +2,7 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, By, Cond, Dim, Fact, Grain, Ident, Key, KeyPath, Literal, Measure, Origin, Ref, Spec,
+    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure, Origin, Ref, Spec,
     SpecError, Table, Time,
 };
 
@@ -40,9 +40,9 @@ fn fact() -> Fact {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id")],
-            attrs: vec![id("name")],
+            attrs: vec![attr("name", "name")],
         }],
-        by: vec![By::Column(id("a")), By::Column(id("z_id"))],
+        by: vec![col("a"), col("z_id")],
         measures: vec![Measure {
             name: id("n"),
             agg: Agg::Count,
@@ -51,8 +51,18 @@ fn fact() -> Fact {
     }
 }
 
-fn path(s: &str) -> KeyPath {
-    KeyPath::parse(s).unwrap()
+fn col(s: &str) -> By {
+    By::Column {
+        column: id(s),
+        name: id(s),
+    }
+}
+
+fn attr(name: &str, column: &str) -> Attr {
+    Attr {
+        name: id(name),
+        column: id(column),
+    }
 }
 
 #[test]
@@ -76,31 +86,23 @@ fn valid() {
     assert!(Spec::new(vec![dim()], vec![fact()]).is_ok());
 }
 
-#[test]
-fn key_paths_parse_as_they_print() {
-    for text in ["a", "r.name", "_x1.y_2"] {
-        assert_eq!(KeyPath::parse(text).unwrap().to_string(), text);
-    }
-    for bad in ["", ".", "a.", ".b", "a.b.c", "A", "r.Name", "1a", "a b"] {
-        assert_eq!(KeyPath::parse(bad), None, "{bad:?}");
-    }
-}
-
-/// A bare name is a by key; `ref.attr` is an attribute the ref reads. A
+/// A name is a by key or an attribute a ref reads, in one namespace. A
 /// ref has no value of its own, and reads only what it declares.
 #[test]
-fn key_paths_resolve_to_by_keys_and_attributes() {
+fn names_resolve_to_by_keys_and_attributes() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.resolve(&path("a")), Some(Key::By(&t.by[0])));
-    assert_eq!(t.resolve(&path("z_id")), Some(Key::By(&t.by[1])));
+    assert_eq!(t.resolve(&id("a")), Some(Key::By(&t.by[0])));
+    assert_eq!(t.resolve(&id("z_id")), Some(Key::By(&t.by[1])));
     assert_eq!(
-        t.resolve(&path("r.name")),
+        t.resolve(&id("name")),
         Some(Key::Attr(&t.refs[0], &t.refs[0].attrs[0]))
     );
-    for missing in ["r", "r.id", "r.nope", "q.name", "b"] {
-        assert_eq!(t.resolve(&path(missing)), None, "{missing}");
+    for missing in ["r", "id", "nope", "b", "n"] {
+        assert_eq!(t.resolve(&id(missing)), None, "{missing}");
     }
+    let keys: Vec<&Ident> = t.keys().collect();
+    assert_eq!(keys, [&id("a"), &id("z_id"), &id("name")]);
 }
 
 /// A row is read from the time column, the by columns, the via columns and
@@ -108,15 +110,17 @@ fn key_paths_resolve_to_by_keys_and_attributes() {
 #[test]
 fn columns_and_rollup_key() {
     let mut t = fact();
-    t.by = vec![By::Column(id("a"))];
+    t.by = vec![col("a")];
     t.measures.push(Measure {
         name: id("s"),
         agg: Agg::Sum(id("z_id")),
         filter: vec![],
     });
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
-    let attrs: Vec<String> = t.attrs().map(|(r, a)| format!("{}.{a}", r.name)).collect();
-    assert_eq!(attrs, ["r.name"]);
+    let attrs: Vec<String> = (t.attrs())
+        .map(|(r, a)| format!("{}.{} AS {}", r.name, a.column, a.name))
+        .collect();
+    assert_eq!(attrs, ["r.name AS name"]);
     assert_eq!(t.rollup_key().count(), 3);
 }
 
@@ -168,10 +172,10 @@ fn every_error_is_reported_and_displayed() {
     t.name = id("z");
     t.time.grain = Grain(420);
     t.by = vec![
-        By::Column(id("id")),
-        By::Column(id("at")),
-        By::Column(id("r")),
-        By::Column(id("id")),
+        col("id"),
+        col("at"),
+        col("name"),
+        col("id"),
         By::IsNull {
             column: id("at"),
             name: id("no_time"),
@@ -184,10 +188,7 @@ fn every_error_is_reported_and_displayed() {
             name: id("m"),
             agg: Agg::Count,
             filter: vec![Cond {
-                path: KeyPath {
-                    head: id("c"),
-                    attr: None,
-                },
+                key: id("c"),
                 values: vec![Literal::Int(1)],
             }],
         },
@@ -202,23 +203,19 @@ fn every_error_is_reported_and_displayed() {
     // another twice.
     let mut u = fact();
     u.name = id("u");
-    u.by = vec![
-        By::Column(id("a")),
-        By::Column(id("z_id")),
-        By::Column(id("b")),
-    ];
+    u.by = vec![col("a"), col("z_id"), col("b")];
     u.refs = vec![
         Ref {
             name: id("r"),
             dim: id("z"),
             via: vec![id("z_id"), id("b")],
-            attrs: vec![id("name")],
+            attrs: vec![attr("r_name", "name")],
         },
         Ref {
             name: id("s"),
             dim: id("z"),
             via: vec![id("a"), id("a")],
-            attrs: vec![id("name")],
+            attrs: vec![attr("s_name", "name")],
         },
         Ref {
             name: id("e"),
@@ -230,7 +227,11 @@ fn every_error_is_reported_and_displayed() {
             name: id("q"),
             dim: id("z"),
             via: vec![id("b")],
-            attrs: vec![id("nope"), id("name"), id("name")],
+            attrs: vec![
+                attr("nope", "nope"),
+                attr("q_name", "name"),
+                attr("a", "name"),
+            ],
         },
     ];
     u.measures = vec![];
@@ -248,9 +249,9 @@ fn every_error_is_reported_and_displayed() {
             "z: id declared twice",
             "fact z: no_time asks whether the time column at is null, which no ask could see: \
              a row with no time is never answered",
-            "z: r declared twice",
             "fact z: ref r points at unknown dim nope",
-            "fact z: measure m filters on c, which is not a by column or ref attribute",
+            "z: name declared twice",
+            "fact z: measure m filters on c, which names no key of the view",
             "z: m declared twice",
             "fact u: ref r joins on 2 columns, but the key of dim z has 1",
             "fact u: ref s joins on a twice",
@@ -258,8 +259,22 @@ fn every_error_is_reported_and_displayed() {
             "fact u: ref e reads no column of its dim",
             "fact u: ref q reads nope, which dim z has no column of",
             "q: name declared twice",
+            "u: a declared twice",
             "fact u: no measures",
         ]
     );
-    assert!(matches!(errors[8], SpecError::UnknownDim { .. }));
+    assert!(matches!(errors[7], SpecError::UnknownDim { .. }));
+}
+
+/// Two refs under one alias, which straum SQL refuses before the spec
+/// does; the spec refuses it too, for a spec built by hand.
+#[test]
+fn a_ref_name_used_twice_is_refused() {
+    let mut t = fact();
+    let again = t.refs[0].clone();
+    t.refs.push(again);
+    let shown: Vec<String> = (Spec::new(vec![dim()], vec![t]).unwrap_err().iter())
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(shown, ["t: r declared twice", "t: name declared twice"]);
 }

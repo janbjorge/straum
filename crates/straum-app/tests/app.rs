@@ -15,8 +15,8 @@ use straum_app::{
     AnswerError, Answered, App, Change, Error, Limits, Lsn, Status, Step, Wal, Writer,
 };
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, KeyPath, Literal,
-    Spec, Store, TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, Spec, Store,
+    TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -33,24 +33,24 @@ const LIMITS: Limits = Limits {
 const SPEC: &str = "
 CREATE VIEW trips WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-       t.kind,
-       t.zone_id,
-       zone.borough,
+       t.kind AS kind,
+       t.zone_id AS zone_id,
+       zone.borough AS borough,
        count(*) AS trips,
        sum(t.fare) AS fare,
        max(t.fare) AS fare_max,
        count(DISTINCT t.rider) AS riders
-FROM public.trips t
-LEFT JOIN public.zones zone ON zone.id = t.zone_id
+FROM public.trips AS t
+LEFT OUTER JOIN public.zones AS zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 
 CREATE VIEW logins WITH (buckets = '1 day') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
-       l.zone_id,
-       zone.borough,
+       l.zone_id AS zone_id,
+       zone.borough AS borough,
        count(*) AS logins
-FROM public.logins l
-LEFT JOIN public.zones zone ON zone.id = l.zone_id
+FROM public.logins AS l
+LEFT OUTER JOIN public.zones AS zone ON zone.id = l.zone_id
 GROUP BY 1, 2, 3;
 ";
 
@@ -116,20 +116,16 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by.iter().map(|k| ask_key(k)).collect(),
         filter: Vec::new(),
-        from: Some(0),
-        to: Some(RANGE),
+        from: 0,
+        to: RANGE,
     }
 }
 
 fn ask_key(s: &str) -> AskKey {
     match s {
         "bucket" => AskKey::Time(TimeKey::Bucket),
-        _ => AskKey::Key(path(s)),
+        _ => AskKey::Key(id(s)),
     }
-}
-
-fn path(s: &str) -> KeyPath {
-    KeyPath::parse(s).unwrap()
 }
 
 /// The fact's row count over the whole range.
@@ -157,7 +153,7 @@ fn expected(db: &Database, ask: &Ask) -> Answer {
 
 /// The rows an ask by borough answers.
 fn by_borough(app: &App, fact: &str) -> Vec<AnswerRow> {
-    let by_borough = ask(fact, &[fact], &["zone.borough"]);
+    let by_borough = ask(fact, &[fact], &["borough"]);
     app.ask(&by_borough).unwrap().answer.rows
 }
 
@@ -190,7 +186,7 @@ fn starts_from_one_snapshot() {
     assert_eq!(db.borrow().loads, ["trips", "logins"]);
     let answered = writer
         .app()
-        .ask(&ask("trips", &["trips", "fare"], &["zone.borough"]))
+        .ask(&ask("trips", &["trips", "fare"], &["borough"]))
         .unwrap();
     assert_eq!(answered.lsn, lsn);
     // Caught up when the WAL was read after the load.
@@ -211,7 +207,7 @@ fn a_value_of_another_type_is_refused_once_loaded() {
     let (_db, mut writer) = setup(&TABLES);
     let by_kind = |value| Ask {
         filter: vec![Cond {
-            path: path("kind"),
+            key: id("kind"),
             values: vec![value],
         }],
         ..ask("trips", &["trips"], &[])
@@ -225,7 +221,7 @@ fn a_value_of_another_type_is_refused_once_loaded() {
     assert_eq!(
         writer.app().ask(&by_kind(Literal::Text("1".into()))),
         Err(AnswerError::Invalid(vec![AskError::WrongType {
-            path: path("kind"),
+            key: id("kind"),
             column: ColumnType::Int,
             value: Literal::Text("1".into()),
         }]))
@@ -378,10 +374,10 @@ fn dim_changes_show_once_straum_starts_over() {
     assert_ne!(
         writer
             .app()
-            .ask(&ask("trips", &["trips"], &["zone.borough"]))
+            .ask(&ask("trips", &["trips"], &["borough"]))
             .unwrap()
             .answer,
-        expected(&db.borrow(), &ask("trips", &["trips"], &["zone.borough"]))
+        expected(&db.borrow(), &ask("trips", &["trips"], &["borough"]))
     );
 
     // A new row takes the value the dim has now.
@@ -404,10 +400,10 @@ fn dim_changes_show_once_straum_starts_over() {
     assert_eq!(
         writer
             .app()
-            .ask(&ask("trips", &["trips"], &["zone.borough"]))
+            .ask(&ask("trips", &["trips"], &["borough"]))
             .unwrap()
             .answer,
-        expected(&db.borrow(), &ask("trips", &["trips"], &["zone.borough"]))
+        expected(&db.borrow(), &ask("trips", &["trips"], &["borough"]))
     );
 }
 
@@ -460,7 +456,7 @@ fn truncate_empties_the_table() {
     writer.step().unwrap();
 
     assert_eq!(db.borrow().loads.len(), 2, "no reload");
-    let by_borough = ask("trips", &["trips"], &["zone.borough"]);
+    let by_borough = ask("trips", &["trips"], &["borough"]);
     let answer = writer.app().ask(&by_borough).unwrap().answer;
     assert_eq!(
         answer.rows,
@@ -774,7 +770,7 @@ fn a_change_that_does_not_fit_starts_over() {
             },
         ),
     ];
-    let by_borough = ask("trips", &["trips", "fare"], &["zone.borough"]);
+    let by_borough = ask("trips", &["trips", "fare"], &["borough"]);
     for (name, change) in cases {
         let (db, mut writer) = setup(&TABLES);
         db.borrow_mut()
@@ -987,10 +983,10 @@ fn random_ask(rng: &mut Rng) -> Ask {
         (
             "trips",
             &["trips", "fare", "fare_max", "riders"],
-            &["kind", "zone_id", "zone.borough"],
+            &["kind", "zone_id", "borough"],
         )
     } else {
-        ("logins", &["logins"], &["zone_id", "zone.borough"])
+        ("logins", &["logins"], &["zone_id", "borough"])
     };
     let mut chosen: Vec<&str> = measures
         .iter()
@@ -1013,7 +1009,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
             .collect::<Vec<_>>();
         if !values.is_empty() {
             ask.filter.push(Cond {
-                path: path("zone.borough"),
+                key: id("borough"),
                 values,
             });
         }
@@ -1021,8 +1017,8 @@ fn random_ask(rng: &mut Rng) -> Ask {
     // Sometimes one day of the range.
     if rng.chance(30) {
         let from = DAY * rng.int(0, 3);
-        ask.from = Some(from);
-        ask.to = Some(from + DAY);
+        ask.from = from;
+        ask.to = from + DAY;
     }
     ask
 }

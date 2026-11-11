@@ -365,7 +365,7 @@ pub(crate) fn check(
 fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     let mut roles = vec![(&fact.time.column, Role::Time(fact.time.origin))];
     roles.extend(fact.by.iter().map(|by| match by {
-        By::Column(column) => (column, Role::Key),
+        By::Column { column, .. } => (column, Role::Key),
         By::IsNull { column, .. } => (column, Role::Nullness),
     }));
     // A ref's via columns are read for the lookup, kept or not.
@@ -539,10 +539,10 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
         }
         for m in &fact.measures {
             for cond in &m.filter {
-                let column_type = match fact.resolve(&cond.path).expect("checked by Spec::new") {
-                    Key::By(By::Column(c)) => facts.column_type(c),
+                let column_type = match fact.resolve(&cond.key).expect("checked by Spec::new") {
+                    Key::By(By::Column { column, .. }) => facts.column_type(column),
                     Key::By(By::IsNull { .. }) => ColumnType::Bool,
-                    Key::Attr(r, attr) => tables.dim(&r.dim).column_type(attr),
+                    Key::Attr(r, attr) => tables.dim(&r.dim).column_type(&attr.column),
                 };
                 for value in &cond.values {
                     // The rule asks follow too.
@@ -551,7 +551,7 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
                             "fact {}: measure {} compares {} ({column_type}) with {}",
                             fact.name,
                             m.name,
-                            cond.path,
+                            cond.key,
                             literal(value)
                         ));
                     }

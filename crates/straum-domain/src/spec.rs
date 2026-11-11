@@ -46,10 +46,12 @@ pub struct Fact {
 }
 
 /// A rollup key a fact row gives: a column's value, or whether a column
-/// is null, which a nullable column such as `completed` means by.
+/// is null, which a nullable column such as `completed` means by. Every
+/// key has the name the view gives it with `AS`, which is what asks use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum By {
-    Column(Ident),
+    /// `column AS name`.
+    Column { column: Ident, name: Ident },
     /// `(column IS NULL) AS name`, or `IS NOT NULL` when `negated`: a
     /// boolean key whatever the column's type.
     IsNull {
@@ -63,21 +65,20 @@ impl By {
     /// What asks call it.
     pub fn name(&self) -> &Ident {
         match self {
-            By::Column(column) => column,
-            By::IsNull { name, .. } => name,
+            By::Column { name, .. } | By::IsNull { name, .. } => name,
         }
     }
 
     /// The fact column it reads.
     pub fn column(&self) -> &Ident {
         match self {
-            By::Column(column) | By::IsNull { column, .. } => column,
+            By::Column { column, .. } | By::IsNull { column, .. } => column,
         }
     }
 
     pub fn slot(&self) -> Slot<'_> {
         match self {
-            By::Column(column) => Slot::Column(column),
+            By::Column { column, .. } => Slot::Column(column),
             By::IsNull {
                 column, negated, ..
             } => Slot::IsNull {
@@ -143,8 +144,16 @@ pub struct Ref {
     pub name: Ident,
     pub dim: Ident,
     pub via: Vec<Ident>,
-    /// The dim columns this ref reads, which asks name as `ref.attr`.
-    pub attrs: Vec<Ident>,
+    /// The dim columns this ref reads, each under the name asks use.
+    pub attrs: Vec<Attr>,
+}
+
+/// `alias.column AS name`: a dim column a ref reads, and what asks call
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attr {
+    pub name: Ident,
+    pub column: Ident,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,34 +164,12 @@ pub struct Measure {
     pub filter: Vec<Cond>,
 }
 
-/// `path = value`, or `path in (values)` with more than one value.
+/// `key = value`, or `key in (values)` with more than one value, `key`
+/// being a name the view gives a key; see [`Fact::resolve`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cond {
-    pub path: KeyPath,
+    pub key: Ident,
     pub values: Vec<Literal>,
-}
-
-/// `column` or `ref.attr`; see [`Fact::resolve`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyPath {
-    pub head: Ident,
-    pub attr: Option<Ident>,
-}
-
-impl KeyPath {
-    /// A path as [`fmt::Display`] writes it.
-    pub fn parse(s: &str) -> Option<KeyPath> {
-        Some(match s.split_once('.') {
-            Some((head, attr)) => KeyPath {
-                head: Ident::new(head)?,
-                attr: Some(Ident::new(attr)?),
-            },
-            None => KeyPath {
-                head: Ident::new(s)?,
-                attr: None,
-            },
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +184,7 @@ pub enum Key<'a> {
     By(&'a By),
     /// An attribute a ref reads. A ref has no value of its own: asks name
     /// its attributes, or the fact columns it joins on.
-    Attr(&'a Ref, &'a Ident),
+    Attr(&'a Ref, &'a Attr),
 }
 
 /// One part of the rollup key: a fact column's value, whether a fact
@@ -215,12 +202,12 @@ impl Fact {
     /// time bucket.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
         (self.by.iter().map(By::slot))
-            .chain(self.attrs().map(|(r, a)| Slot::Attr(r, a)))
+            .chain(self.attrs().map(|(r, a)| Slot::Attr(r, &a.column)))
             .chain(iter::once(Slot::Bucket))
     }
 
     /// Every ref's attributes, each with its ref, in rollup-key order.
-    pub fn attrs(&self) -> impl Iterator<Item = (&Ref, &Ident)> {
+    pub fn attrs(&self) -> impl Iterator<Item = (&Ref, &Attr)> {
         self.refs
             .iter()
             .flat_map(|r| r.attrs.iter().map(move |a| (r, a)))
@@ -247,16 +234,21 @@ impl Fact {
         self.measures.iter().find(|m| m.name.as_str() == name)
     }
 
-    /// A bare name is a `by` key; `ref.attr` is an attribute the ref
-    /// reads.
-    pub fn resolve(&self, path: &KeyPath) -> Option<Key<'_>> {
-        let Some(attr) = &path.attr else {
-            let by = self.by.iter().find(|b| *b.name() == path.head)?;
+    /// The key the view names so: a `by` key, or an attribute a ref
+    /// reads. Keys and attributes share one namespace.
+    pub fn resolve(&self, name: &Ident) -> Option<Key<'_>> {
+        if let Some(by) = self.by.iter().find(|b| b.name() == name) {
             return Some(Key::By(by));
-        };
-        let r = self.refs.iter().find(|r| r.name == path.head)?;
-        let attr = r.attrs.iter().find(|a| *a == attr)?;
-        Some(Key::Attr(r, attr))
+        }
+        self.refs.iter().find_map(|r| {
+            let attr = r.attrs.iter().find(|a| a.name == *name)?;
+            Some(Key::Attr(r, attr))
+        })
+    }
+
+    /// Every name an ask may group or filter by, keys then attributes.
+    pub fn keys(&self) -> impl Iterator<Item = &Ident> {
+        (self.by.iter().map(By::name)).chain(self.attrs().map(|(_, a)| &a.name))
     }
 }
 
@@ -370,11 +362,12 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         below = bucket;
     }
 
-    // `by` keys and ref names share one namespace in key paths.
+    // `by` keys and the attributes refs read share one namespace, since
+    // an ask names either by its name alone.
     let mut keys: HashSet<&Ident> = HashSet::new();
     for by in &fact.by {
         match by {
-            By::Column(column) if *column == fact.time.column => {
+            By::Column { column, .. } if *column == fact.time.column => {
                 errors.push(SpecError::TimeAsKey {
                     fact: name.clone(),
                     column: column.clone(),
@@ -389,7 +382,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                     column: column.clone(),
                 });
             }
-            By::Column(_) | By::IsNull { .. } => {}
+            By::Column { .. } | By::IsNull { .. } => {}
         }
         if !keys.insert(by.name()) {
             errors.push(SpecError::Duplicate {
@@ -398,8 +391,9 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             });
         }
     }
+    let mut ref_names = HashSet::new();
     for r in &fact.refs {
-        if !keys.insert(&r.name) {
+        if !ref_names.insert(&r.name) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
                 name: r.name.clone(),
@@ -439,19 +433,25 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         }
         let mut read = HashSet::new();
         for attr in &r.attrs {
-            if !read.insert(attr) {
+            if !read.insert(&attr.column) {
                 errors.push(SpecError::Duplicate {
                     scope: Some(r.name.clone()),
-                    name: attr.clone(),
+                    name: attr.column.clone(),
                 });
             } else if let Some(dim) = dim
-                && !dim.columns().any(|c| c == attr)
+                && !dim.columns().any(|c| *c == attr.column)
             {
                 errors.push(SpecError::UnknownAttr {
                     fact: name.clone(),
                     ref_name: r.name.clone(),
-                    attr: attr.clone(),
+                    attr: attr.column.clone(),
                     dim: dim.name.clone(),
+                });
+            }
+            if !keys.insert(&attr.name) {
+                errors.push(SpecError::Duplicate {
+                    scope: Some(name.clone()),
+                    name: attr.name.clone(),
                 });
             }
         }
@@ -460,26 +460,24 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
-    let mut named = (fact.by.iter().map(By::name))
-        .chain(fact.refs.iter().map(|r| &r.name))
-        .chain(fact.measures.iter().map(|m| &m.name));
+    let mut named = fact.keys().chain(fact.measures.iter().map(|m| &m.name));
     if named.any(|n| n.as_str() == "bucket") {
         errors.push(SpecError::NamedBucket { fact: name.clone() });
     }
-    let mut measures = HashSet::new();
+    // Measures share the namespace too: an ask names both alike.
     for m in &fact.measures {
-        if !measures.insert(&m.name) {
+        if !keys.insert(&m.name) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
                 name: m.name.clone(),
             });
         }
         for cond in &m.filter {
-            if fact.resolve(&cond.path).is_none() {
+            if fact.resolve(&cond.key).is_none() {
                 errors.push(SpecError::UnknownKey {
                     fact: name.clone(),
                     measure: m.name.clone(),
-                    path: cond.path.clone(),
+                    key: cond.key.clone(),
                 });
             }
         }
@@ -556,7 +554,7 @@ pub enum SpecError {
     UnknownKey {
         fact: Ident,
         measure: Ident,
-        path: KeyPath,
+        key: Ident,
     },
     NoMeasures {
         fact: Ident,
@@ -634,14 +632,9 @@ impl fmt::Display for SpecError {
             } => {
                 write!(f, "fact {fact}: ref {ref_name} points at unknown dim {dim}")
             }
-            SpecError::UnknownKey {
-                fact,
-                measure,
-                path,
-            } => write!(
+            SpecError::UnknownKey { fact, measure, key } => write!(
                 f,
-                "fact {fact}: measure {measure} filters on {path}, \
-                 which is not a by column or ref attribute"
+                "fact {fact}: measure {measure} filters on {key}, which names no key of the view"
             ),
             SpecError::NoMeasures { fact } => write!(f, "fact {fact}: no measures"),
             SpecError::NamedBucket { fact } => write!(
@@ -658,14 +651,5 @@ impl std::error::Error for SpecError {}
 impl fmt::Display for Grain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}s", self.0)
-    }
-}
-
-impl fmt::Display for KeyPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.attr {
-            None => write!(f, "{}", self.head),
-            Some(attr) => write!(f, "{}.{attr}", self.head),
-        }
     }
 }

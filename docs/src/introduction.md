@@ -12,15 +12,15 @@ PostgreSQL's `CREATE VIEW`:
 
 ```sql
 CREATE VIEW orders WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', placed_at, timestamptz 'epoch') AS hour,
-       status,
-       customer_id,
-       customers.country,
+SELECT date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket,
+       orders.status AS status,
+       orders.customer_id AS customer_id,
+       customers.country AS country,
        count(*) AS orders,
-       sum(amount) AS revenue,
-       avg(amount) AS avg_amount
-FROM orders
-LEFT JOIN customers ON customers.id = customer_id
+       sum(orders.amount) AS revenue,
+       avg(orders.amount) AS avg_amount
+FROM public.orders AS orders
+LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_id
 GROUP BY 1, 2, 3, 4;
 ```
 
@@ -28,8 +28,8 @@ An ask is a `SELECT` over that view, with every value as a parameter:
 
 ```sh
 curl --json '{
-  "query": "SELECT customers.country, orders, revenue FROM orders WHERE status = $1 GROUP BY customers.country",
-  "parameters": ["paid"]
+  "query": "SELECT country, orders, revenue FROM orders WHERE status = $1 AND bucket >= $2 AND bucket < $3 GROUP BY country",
+  "parameters": ["paid", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
 
@@ -37,8 +37,8 @@ curl --json '{
 {
   "as_of": "2026-11-09T17:12:41.902318Z",
   "rows": [
-    {"customers.country": "NO", "orders": 2, "revenue": 139.99},
-    {"customers.country": "SE", "orders": 1, "revenue": 80.50}
+    {"country": "NO", "orders": 2, "revenue": 139.99},
+    {"country": "SE", "orders": 1, "revenue": 80.50}
   ]
 }
 ```

@@ -5,7 +5,7 @@ The examples use the [quick start](quick-start.md) after step 7.
 
 ```sh
 curl --json '{
-  "query": "SELECT bucket, customers.country, orders, revenue FROM orders WHERE status = $1 AND customers.country IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, customers.country",
+  "query": "SELECT bucket, country, orders, revenue FROM orders WHERE status = $1 AND country IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, country",
   "parameters": ["paid", "NO", "SE", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
@@ -24,27 +24,29 @@ WHERE <conditions> AND bucket >= $n AND bucket < $m
 GROUP BY <keys>
 ```
 
-Every clause but `SELECT` and `FROM` may be left out:
+`SELECT`, `FROM` and the two bounds are always there; conditions and
+keys may be left out:
 
 ```sql
-SELECT orders, revenue FROM orders
+SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
 ```
 
 - `FROM` names one view, with no schema, alias or join.
-- A key is a fact column (`status`), a null-ness key by its name
-  (`shipped`), a dim column (`customers.country`), or `bucket`, the
-  view's time bucket. A join has no value of its own: ask for the fact
-  column it joins on (`customer_id`) or the dim's columns.
+- A key or a measure goes by the name the view gives it with `AS`:
+  `country`, `shipped`, `customer_id`, `revenue`. `customers.country`
+  is not a name an ask can use; neither is `customers`, the join.
+  `bucket` is the view's time bucket.
 - Keys come first in `SELECT`, then measures. Each goes by name and at
   most once, since the names become the fields of each answer row.
   `GROUP BY` names exactly the selected keys. Without keys there is no
   `GROUP BY`.
 - `WHERE` joins conditions with `AND`. A condition is `key = $n` or
-  `key IN ($n, $m)`. `bucket >= $n` and `bucket < $m` bound the range,
-  once each; a bound left out is open, so an ask with neither reads
-  every bucket the view holds.
+  `key IN ($n, $m)`, two values or more. `bucket >= $n` and
+  `bucket < $m` bound the range, once each, and both are written: an
+  ask says what it reads.
 - No `ORDER BY`, `LIMIT`, `HAVING`, `OR`, `NOT`, expressions or aliases.
-  Anything outside the subset is an error that names the construct.
+  Anything outside the subset is an error that names the construct and
+  says what to write.
 
 ## Parameters
 
@@ -69,9 +71,9 @@ buckets: Straum never answers for part of a bucket.
 {
   "as_of": "2026-11-09T17:12:57.861204Z",
   "rows": [
-    {"bucket": "2026-01-01T09:00:00Z", "customers.country": "NO", "orders": 1, "revenue": 120.00},
-    {"bucket": "2026-01-01T09:00:00Z", "customers.country": "SE", "orders": 1, "revenue": 80.50},
-    {"bucket": "2026-01-01T11:00:00Z", "customers.country": "SE", "orders": 1, "revenue": 300.00}
+    {"bucket": "2026-01-01T09:00:00Z", "country": "NO", "orders": 1, "revenue": 120.00},
+    {"bucket": "2026-01-01T09:00:00Z", "country": "SE", "orders": 1, "revenue": 80.50},
+    {"bucket": "2026-01-01T11:00:00Z", "country": "SE", "orders": 1, "revenue": 300.00}
   ]
 }
 ```
@@ -90,7 +92,8 @@ buckets: Straum never answers for part of a bucket.
 Buckets are their start, in UTC. Measures print as the
 [measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
 sum, `69.995` for its avg of 139.99 over 2. A row whose dim row did not
-exist when it came in has null dim columns, as a `LEFT JOIN` gives.
+exist when it came in has null dim columns, as a `LEFT OUTER JOIN`
+gives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in
@@ -109,8 +112,8 @@ measures beyond `total` is the network and the client itself.
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Ask again later. |
 
 ```json
-{"errors": ["unknown measure x", "customers.zip is not read by the view, which reads customers.country"]}
-{"errors": ["customers is a join and has no value of its own; ask for customers.country"]}
+{"errors": ["unknown measure x", "zip is not a key of the view"]}
+{"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in straum SQL, the PostgreSQL subset made only for straum"]}
 {"errors": ["range end 1767227400 is not on a 3600s bucket edge"]}

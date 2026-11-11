@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, By, Datum, Dim, Fact, Grain, Ident, KeyPath, Measure, Origin, Ref, Spec,
-    Store, Table, Time, TimeKey,
+    Agg, Ask, AskKey, Attr, By, Datum, Dim, Fact, Grain, Ident, Measure, Origin, Ref, Spec, Store,
+    Table, Time, TimeKey,
 };
 
 thread_local! {
@@ -50,7 +50,7 @@ fn id(s: &str) -> Ident {
 }
 
 fn key(s: &str) -> AskKey {
-    AskKey::Key(KeyPath::parse(s).unwrap())
+    AskKey::Key(id(s))
 }
 
 /// The fact, with `buckets` (in hours) beside its one-hour grain.
@@ -83,9 +83,21 @@ fn spec(buckets: &[u32]) -> Spec {
             name: id("pickup"),
             dim: id("zones"),
             via: vec![id("pu")],
-            attrs: vec![id("borough")],
+            attrs: vec![Attr {
+                name: id("borough"),
+                column: id("borough"),
+            }],
         }],
-        by: vec![By::Column(id("pay")), By::Column(id("pu"))],
+        by: vec![
+            By::Column {
+                column: id("pay"),
+                name: id("pay"),
+            },
+            By::Column {
+                column: id("pu"),
+                name: id("pu"),
+            },
+        ],
         measures: vec![
             m("trips", Agg::Count),
             m("fare", Agg::Sum(id("fare"))),
@@ -133,8 +145,8 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: by.iter().map(|b| key(b)).collect(),
         filter: vec![],
-        from: Some(from * i64::from(HOUR)),
-        to: Some(to * i64::from(HOUR)),
+        from: from * i64::from(HOUR),
+        to: to * i64::from(HOUR),
     }
 }
 
@@ -151,7 +163,7 @@ fn allocs(store: &Store, by: &[&str]) -> usize {
 fn an_ask_allocates_per_group_not_per_cell() {
     let small = store(1_000);
     let big = store(8_000);
-    for by in [&[][..], &["pay"], &["pu"], &["pickup.borough"]] {
+    for by in [&[][..], &["pay"], &["pu"], &["borough"]] {
         assert_eq!(
             allocs(&small, by),
             allocs(&big, by),
@@ -187,7 +199,7 @@ fn an_ask_stays_within_its_time_per_cell() {
     const REPS: u32 = 20;
     let store = store(CELLS);
     let hours = CELLS / (2 * ZONES);
-    for (by, budget) in [(&[][..], 4.0), (&["pickup.borough"], 10.0)] {
+    for (by, budget) in [(&[][..], 4.0), (&["borough"], 10.0)] {
         let ask = ask(by, 0, hours);
         store.ask(&ask).unwrap();
         let clock = Instant::now();

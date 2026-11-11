@@ -1,20 +1,21 @@
 //! An ask: one `SELECT` over a view.
 //!
 //! ```sql
-//! SELECT bucket, pickup.borough, trips, fare
+//! SELECT bucket, borough, trips, fare
 //! FROM trips
 //! WHERE payment_type IN ($1, $2) AND bucket >= $3 AND bucket < $4
-//! GROUP BY bucket, pickup.borough
+//! GROUP BY bucket, borough
 //! ```
 //!
 //! Every value is a `$n` parameter, so no value is ever spliced into the
-//! query text. `bucket` is the view's time bucket; a spec can't name a
-//! column or ref `bucket`, so it never clashes. Either bound may be left
-//! out, and the ask then reads every bucket on that side.
+//! query text. Keys and measures go by the names the view gives them.
+//! `bucket` is the view's time bucket; a spec can't name a key or measure
+//! `bucket`, so it never clashes. Both bounds are written: an ask says
+//! what it reads.
 
 use jiff::Timestamp;
 use sqlparser::ast as sql;
-use straum_domain::{Ask, AskKey, Cond, KeyPath, Literal, TimeKey};
+use straum_domain::{Ask, AskKey, Cond, Ident, Literal, TimeKey};
 
 use super::{SqlError, Walker, and_parts, line, statements};
 
@@ -116,8 +117,8 @@ impl Walker {
                 continue;
             }
             match key {
-                AskKey::Key(KeyPath { head, attr: None }) => measures.push(head),
-                _ => self.error(
+                AskKey::Key(name) => measures.push(name),
+                AskKey::Time(_) => self.error(
                     line(expr),
                     format!("{expr} is selected but not in GROUP BY"),
                 ),
@@ -129,14 +130,14 @@ impl Walker {
             }
         }
 
-        let (filter, from, to) = self.ask_where(select.selection.as_ref(), params);
+        let (filter, from, to) = self.ask_where(at, select.selection.as_ref(), params);
         Some(Ask {
             fact: fact?,
             measures,
             by,
             filter,
-            from: from.flatten(),
-            to: to.flatten(),
+            from: from?,
+            to: to?,
         })
     }
 
@@ -157,7 +158,7 @@ impl Walker {
         keys
     }
 
-    /// `column`, `ref`, `ref.attribute` or `bucket`.
+    /// A key or measure by the name the view gives it, or `bucket`.
     fn ask_key(&mut self, expr: &sql::Expr) -> Option<AskKey> {
         match expr {
             sql::Expr::Identifier(id) => {
@@ -165,26 +166,12 @@ impl Walker {
                 if name.as_str() == "bucket" {
                     return Some(AskKey::Time(TimeKey::Bucket));
                 }
-                Some(AskKey::Key(KeyPath {
-                    head: name,
-                    attr: None,
-                }))
-            }
-            sql::Expr::CompoundIdentifier(ids) => {
-                let [head, attr] = ids.as_slice() else {
-                    self.reject(line(expr), "name, use column, ref or ref.attribute,", expr);
-                    return None;
-                };
-                let (head, attr) = (self.ident(head), self.ident(attr));
-                Some(AskKey::Key(KeyPath {
-                    head: head?,
-                    attr: Some(attr?),
-                }))
+                Some(AskKey::Key(name))
             }
             other => {
                 self.reject(
                     line(other),
-                    "expression, use column, ref or ref.attribute,",
+                    "expression, write the name the view gives the key or measure,",
                     other,
                 );
                 None
@@ -193,12 +180,13 @@ impl Walker {
     }
 
     /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
-    /// each bound `None` when not given.
+    /// both bounds required.
     fn ask_where(
         &mut self,
+        at: u64,
         selection: Option<&sql::Expr>,
         params: &mut Params,
-    ) -> (Vec<Cond>, Option<Option<i64>>, Option<Option<i64>>) {
+    ) -> (Vec<Cond>, Option<i64>, Option<i64>) {
         let mut parts = Vec::new();
         if let Some(expr) = selection {
             and_parts(expr, &mut parts);
@@ -222,25 +210,33 @@ impl Walker {
             self.conds(
                 part,
                 &mut conds,
-                &mut |w, e| w.ask_path(e),
+                &mut |w, e| w.ask_name(e),
                 &mut |w, e| w.parameter(e, params),
                 // A null-ness key is asked for by name, `key = $n`.
                 &mut |w, test, _, _| {
                     w.reject(
                         line(test),
-                        "filter condition, use = or IN joined by AND,",
+                        "filter condition, write = or IN joined by AND,",
                         test,
                     );
                     None
                 },
             );
         }
-        (conds, from, to)
+        for (bound, op) in [(&from, ">="), (&to, "<")] {
+            if bound.is_none() {
+                self.error(
+                    at,
+                    format!("an ask writes both bounds; bucket {op} $n is missing"),
+                );
+            }
+        }
+        (conds, from.flatten(), to.flatten())
     }
 
-    fn ask_path(&mut self, expr: &sql::Expr) -> Option<KeyPath> {
+    fn ask_name(&mut self, expr: &sql::Expr) -> Option<Ident> {
         match self.ask_key(expr)? {
-            AskKey::Key(path) => Some(path),
+            AskKey::Key(name) => Some(name),
             AskKey::Time(_) => {
                 self.error(
                     line(expr),
@@ -315,7 +311,7 @@ fn bucket_bound(expr: &sql::Expr) -> Option<(End, &sql::Expr)> {
 
 fn key_name(key: &AskKey) -> String {
     match key {
-        AskKey::Key(path) => path.to_string(),
+        AskKey::Key(name) => name.to_string(),
         AskKey::Time(t) => t.to_string(),
     }
 }

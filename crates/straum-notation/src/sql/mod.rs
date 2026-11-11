@@ -12,7 +12,7 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Cond, Dim, Fact, Ident, KeyPath, Literal};
+use straum_domain::{Cond, Dim, Fact, Ident, Literal};
 
 mod ask;
 mod view;
@@ -308,14 +308,14 @@ impl Walker {
         at
     }
 
-    /// `path = value` and `path IN (values)` joined by `AND`; `column IS
+    /// `key = value` and `key IN (values)` joined by `AND`; `column IS
     /// NULL` and `IS NOT NULL` go to `null_test` with whether it is the
     /// `NULL` one, since what they mean depends on the caller.
     fn conds(
         &mut self,
         expr: &sql::Expr,
         conds: &mut Vec<Cond>,
-        path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<KeyPath>,
+        path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Ident>,
         value: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Literal>,
         null_test: &mut impl FnMut(&mut Self, &sql::Expr, &sql::Expr, bool) -> Option<Cond>,
     ) {
@@ -338,9 +338,9 @@ impl Walker {
             } => {
                 let key = path(self, left);
                 let literal = value(self, right);
-                if let (Some(path), Some(literal)) = (key, literal) {
+                if let (Some(key), Some(literal)) = (key, literal) {
                     conds.push(Cond {
-                        path,
+                        key,
                         values: vec![literal],
                     });
                 }
@@ -350,15 +350,19 @@ impl Walker {
                 list,
                 negated: false,
             } => {
+                if list.len() < 2 {
+                    self.reject(line(expr), "IN with one value, write =,", expr);
+                    return;
+                }
                 let key = path(self, inner);
                 let values: Vec<Literal> = list.iter().filter_map(|v| value(self, v)).collect();
-                if let Some(path) = key.filter(|_| values.len() == list.len()) {
-                    conds.push(Cond { path, values });
+                if let Some(key) = key.filter(|_| values.len() == list.len()) {
+                    conds.push(Cond { key, values });
                 }
             }
             other => self.reject(
                 line(other),
-                "filter condition, use = or IN joined by AND,",
+                "filter condition, write = or IN joined by AND,",
                 other,
             ),
         }

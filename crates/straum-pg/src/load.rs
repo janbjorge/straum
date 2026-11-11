@@ -36,8 +36,9 @@ pub(crate) fn copy_sql(tables: &Tables, fact: &Fact) -> String {
     for (i, r) in fact.refs.iter().enumerate() {
         let alias = format!("t{}", i + 1);
         let dim = tables.dim(&r.dim);
-        select
-            .extend((r.attrs.iter()).map(|a| format!("{alias}.{}", escape_identifier(a.as_str()))));
+        select.extend(
+            (r.attrs.iter()).map(|a| format!("{alias}.{}", escape_identifier(a.column.as_str()))),
+        );
         let on: Vec<String> = (dim.columns[..dim.key_width].iter().zip(&r.via))
             .map(|(key, via)| {
                 format!(
@@ -73,7 +74,10 @@ pub(crate) struct Columns {
 pub(crate) fn fact_types(tables: &Tables, fact: &Fact) -> Vec<ColumnType> {
     let table = tables.fact(&fact.name);
     (fact.columns().iter().map(|c| table.column_type(c)))
-        .chain(fact.attrs().map(|(r, a)| tables.dim(&r.dim).column_type(a)))
+        .chain(
+            fact.attrs()
+                .map(|(r, a)| tables.dim(&r.dim).column_type(&a.column)),
+        )
         .collect()
 }
 
@@ -87,7 +91,7 @@ pub(crate) fn fact(
     let types = fact_types(tables, fact);
     store.set_fact_types(name, &types).map_err(Error::Row)?;
     let names = (fact.columns().into_iter())
-        .chain(fact.attrs().map(|(_, a)| a.clone()))
+        .chain(fact.attrs().map(|(_, a)| a.column.clone()))
         .collect();
     let columns = Columns {
         table: tables.fact(&fact.name).qualified(),

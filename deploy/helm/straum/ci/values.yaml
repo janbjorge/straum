@@ -6,7 +6,7 @@ dsn:
 spec: |
   CREATE VIEW trips WITH (buckets = '1 hour') AS
   SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
-         t.kind,
+         t.kind AS kind,
          count(*) AS trips
-  FROM public.trips t
+  FROM public.trips AS t
   GROUP BY 1, 2;

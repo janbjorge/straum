@@ -450,19 +450,13 @@ impl Rollup {
     /// Buckets that cover `from..to` once, in time order, each with its
     /// start and cells: the widest that fit, narrower ones at the ends. With
     /// `each_bucket`, as an ask grouped by the bucket needs, only `date_bin`
-    /// buckets. `from` and `to` are on `date_bin` edges; an end not given
-    /// is the first or last bucket held.
+    /// buckets. `from` and `to` are on `date_bin` edges.
     pub(crate) fn cover(
         &self,
-        from: Option<i64>,
-        to: Option<i64>,
+        from: i64,
+        to: i64,
         each_bucket: bool,
     ) -> impl Iterator<Item = (i64, &Cells)> {
-        let held = &self.levels[0];
-        let mut times = held.buckets.keys().flatten();
-        let (first, last) = (times.next().copied(), times.next_back().copied());
-        let from = from.or(first).unwrap_or(0);
-        let to = to.or(last.or(first).map(|t| t + held.width)).unwrap_or(0);
         let widest = if each_bucket {
             0
         } else {

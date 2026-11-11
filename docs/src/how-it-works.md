@@ -76,9 +76,9 @@ The [quick start](quick-start.md) after step 7 holds five orders in
 four cells. This ask reads paid orders by country over the day:
 
 ```sql
-SELECT customers.country, orders, revenue FROM orders
+SELECT country, orders, revenue FROM orders
 WHERE status = $1 AND bucket >= $2 AND bucket < $3
-GROUP BY customers.country
+GROUP BY country
 ```
 
 ```text

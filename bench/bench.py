@@ -114,9 +114,9 @@ ASKS = [
              FROM yellow_trips t
              LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
             GROUP BY z.borough""",
-        """SELECT pickup.borough, trips FROM trips
+        """SELECT borough, trips FROM trips
             WHERE bucket >= $1 AND bucket < $2
-            GROUP BY pickup.borough""",
+            GROUP BY borough""",
         ALL_TIME,
     ),
     (
@@ -137,7 +137,7 @@ ASKS = [
             WHERE z.borough = 'Manhattan'
               AND t.pickup_at >= '2024-01-08' AND t.pickup_at < '2024-01-15'""",
         """SELECT trips FROM trips
-            WHERE pickup.borough = $1 AND bucket >= $2 AND bucket < $3""",
+            WHERE borough = $1 AND bucket >= $2 AND bucket < $3""",
         ["Manhattan", "2024-01-08T00:00:00-05:00", "2024-01-15T00:00:00-05:00"],
     ),
     (

@@ -3,8 +3,9 @@ use std::collections::HashMap;
 
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
+use crate::ident::Ident;
 use crate::rollup::{Cells, Rollup, RowError};
-use crate::spec::{Cond, Fact, Grain, Key, KeyPath, Literal, Slot, Spec};
+use crate::spec::{Cond, Fact, Grain, Key, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
@@ -103,11 +104,11 @@ impl Store {
         // Only the load knows the types, so this check comes after Spec::check.
         let wrong: Vec<AskError> = (ask.filter.iter())
             .flat_map(|cond| {
-                let column = rollup.key_type(self.slot(fact, &cond.path));
+                let column = rollup.key_type(self.slot(fact, &cond.key));
                 (cond.values.iter())
                     .filter(move |value| !column.fits(value))
                     .map(move |value| AskError::WrongType {
-                        path: cond.path.clone(),
+                        key: cond.key.clone(),
                         column,
                         value: value.clone(),
                     })
@@ -123,7 +124,7 @@ impl Store {
             .iter()
             .map(|key| {
                 let of = match key {
-                    AskKey::Key(path) => KeyOf::Slot(self.slot(fact, path)),
+                    AskKey::Key(name) => KeyOf::Slot(self.slot(fact, name)),
                     AskKey::Time(t) => KeyOf::Time(*t, fact.time.grain),
                 };
                 Part::new(of, rollup, buckets)
@@ -146,7 +147,7 @@ impl Store {
         let keys = (ask.by.iter().zip(&by)).map(|(key, p)| AnswerColumn {
             name: match key {
                 AskKey::Time(t) => t.to_string(),
-                AskKey::Key(path) => path.to_string(),
+                AskKey::Key(name) => name.to_string(),
             },
             scale: p.of.column_type(rollup).scale(),
             time: matches!(key, AskKey::Time(_)),
@@ -223,11 +224,11 @@ impl Store {
         Ok((fact, &self.rollups[i]))
     }
 
-    /// The rollup-key slot a key path names.
-    fn slot(&self, fact: &Fact, path: &KeyPath) -> usize {
-        let slot = match fact.resolve(path).expect(CHECKED) {
+    /// The rollup-key slot a key name names.
+    fn slot(&self, fact: &Fact, name: &Ident) -> usize {
+        let slot = match fact.resolve(name).expect(CHECKED) {
             Key::By(by) => by.slot(),
-            Key::Attr(r, attr) => Slot::Attr(r, attr),
+            Key::Attr(r, attr) => Slot::Attr(r, &attr.column),
         };
         fact.rollup_key().position(|k| k == slot).expect(CHECKED)
     }
@@ -236,7 +237,7 @@ impl Store {
         conds
             .iter()
             .map(|c| {
-                let slot = self.slot(fact, &c.path);
+                let slot = self.slot(fact, &c.key);
                 Test {
                     slot,
                     values: &c.values,

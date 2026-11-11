@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
-    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, By, ColumnType, Cond, Datum, Dim,
-    Fact, Grain, Ident, KeyPath, Literal, Measure, Origin, Ref, RowError, Slot, Spec, Store, Table,
+    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attr, By, ColumnType, Cond, Datum,
+    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RowError, Slot, Spec, Store, Table,
     Time, TimeKey, Value,
 };
 
@@ -45,21 +45,35 @@ const KEYS: [&str; 12] = [
     "shared",
     "pu",
     "dro",
-    "pickup.borough",
-    "pickup.zone",
-    "dropoff.borough",
-    "dropoff.zone",
-    "combo.label",
+    "pickup_borough",
+    "pickup_zone",
+    "dropoff_borough",
+    "dropoff_zone",
+    "combo_label",
     "known",
-    "vend.label",
+    "vend_label",
 ];
 
 fn id(s: &str) -> Ident {
     Ident::new(s).unwrap()
 }
 
-fn path(s: &str) -> KeyPath {
-    KeyPath::parse(s).unwrap()
+fn key(s: &str) -> Ident {
+    id(s)
+}
+
+fn col(s: &str) -> By {
+    By::Column {
+        column: id(s),
+        name: id(s),
+    }
+}
+
+fn attr(name: &str, column: &str) -> Attr {
+    Attr {
+        name: id(name),
+        column: id(column),
+    }
 }
 
 fn text(s: &str) -> Datum {
@@ -70,9 +84,9 @@ fn lit(s: &str) -> Literal {
     Literal::Text(s.into())
 }
 
-fn cond(p: &str, values: Vec<Literal>) -> Cond {
+fn cond(k: &str, values: Vec<Literal>) -> Cond {
     Cond {
-        path: path(p),
+        key: key(k),
         values,
     }
 }
@@ -121,33 +135,39 @@ fn spec() -> Spec {
                 name: id("pickup"),
                 dim: id("zones"),
                 via: vec![id("pu")],
-                attrs: vec![id("borough"), id("zone")],
+                attrs: vec![
+                    attr("pickup_borough", "borough"),
+                    attr("pickup_zone", "zone"),
+                ],
             },
             Ref {
                 name: id("dropoff"),
                 dim: id("zones"),
                 via: vec![id("dro")],
-                attrs: vec![id("borough"), id("zone")],
+                attrs: vec![
+                    attr("dropoff_borough", "borough"),
+                    attr("dropoff_zone", "zone"),
+                ],
             },
             Ref {
                 name: id("combo"),
                 dim: id("combos"),
                 via: vec![id("pu"), id("vendor")],
-                attrs: vec![id("label")],
+                attrs: vec![attr("combo_label", "label")],
             },
             Ref {
                 name: id("vend"),
                 dim: id("vendors"),
                 via: vec![id("vendor")],
-                attrs: vec![id("label")],
+                attrs: vec![attr("vend_label", "label")],
             },
         ],
         by: vec![
-            By::Column(id("pay")),
-            By::Column(id("vendor")),
-            By::Column(id("shared")),
-            By::Column(id("pu")),
-            By::Column(id("dro")),
+            col("pay"),
+            col("vendor"),
+            col("shared"),
+            col("pu"),
+            col("dro"),
             // Over a by column, which the row carries once.
             By::IsNull {
                 column: id("shared"),
@@ -175,14 +195,14 @@ fn spec() -> Spec {
                 "mq_fare",
                 Agg::Sum(id("fare")),
                 vec![
-                    cond("pickup.borough", vec![lit("m"), lit("q")]),
+                    cond("pickup_borough", vec![lit("m"), lit("q")]),
                     cond("vendor", vec![Literal::Int(2)]),
                 ],
             ),
             m(
                 "m_riders",
                 Agg::CountDistinct(id("rider")),
-                vec![cond("dropoff.borough", vec![lit("m")])],
+                vec![cond("dropoff_borough", vec![lit("m")])],
             ),
             m(
                 "far_tip",
@@ -284,7 +304,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let mut by: Vec<AskKey> = KEYS
         .iter()
         .filter(|_| rng.chance(25))
-        .map(|k| AskKey::Key(path(k)))
+        .map(|k| AskKey::Key(key(k)))
         .collect();
     if rng.chance(60) {
         let at = rng.below(by.len() + 1);
@@ -294,13 +314,13 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         cond("pay", vec![Literal::Int(1), Literal::Int(2)]),
         cond("vendor", vec![Literal::Int(2)]),
         cond("shared", vec![Literal::Bool(false)]),
-        cond("pickup.borough", vec![lit("m")]),
+        cond("pickup_borough", vec![lit("m")]),
         cond("dro", vec![Literal::Int(5)]),
-        cond("dropoff.zone", vec![lit("a"), lit("c")]),
+        cond("dropoff_zone", vec![lit("a"), lit("c")]),
         cond("pu", vec![Literal::Int(1), Literal::Int(3)]),
-        cond("combo.label", vec![lit("x")]),
+        cond("combo_label", vec![lit("x")]),
         cond("known", vec![Literal::Bool(true)]),
-        cond("vend.label", vec![lit("v1")]),
+        cond("vend_label", vec![lit("v1")]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -315,9 +335,6 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let buckets = (END - START) / i64::from(GRAIN);
     let from = START + i64::from(GRAIN) * rng.int(-10, buckets);
     let to = from + i64::from(GRAIN) * rng.int(1, buckets + 20);
-    // Sometimes open on one side or both, which reads every bucket there.
-    let from = (!rng.chance(15)).then_some(from);
-    let to = (!rng.chance(15)).then_some(to);
     Ask {
         fact: id("trips"),
         measures,
@@ -338,11 +355,11 @@ fn holds(value: &Datum, values: &[Literal]) -> bool {
     })
 }
 
-fn value(row: &[Datum], path: &KeyPath) -> Datum {
-    if path.head.as_str() == "known" {
+fn value(row: &[Datum], key: &Ident) -> Datum {
+    if key.as_str() == "known" {
         return Datum::Bool(row[SHARED] != Datum::Null);
     }
-    row[column(&path.to_string())].clone()
+    row[column(key.as_str())].clone()
 }
 
 /// The column types `run` sets.
@@ -373,11 +390,11 @@ fn typed(spec: &Spec) -> Store {
     store
 }
 
-fn scale(path: &KeyPath) -> u32 {
-    if path.head.as_str() == "known" {
+fn scale(key: &Ident) -> u32 {
+    if key.as_str() == "known" {
         return 0;
     }
-    trip_types()[column(&path.to_string())].scale()
+    trip_types()[column(key.as_str())].scale()
 }
 
 /// Where a key, as an ask names it, sits in a row.
@@ -392,18 +409,18 @@ fn column(name: &str) -> usize {
         "tip" => TIP,
         "dist" => DIST,
         "rider" => RIDER,
-        "pickup.borough" => PICKUP_BOROUGH,
-        "pickup.zone" => PICKUP_ZONE,
-        "dropoff.borough" => DROPOFF_BOROUGH,
-        "dropoff.zone" => DROPOFF_ZONE,
-        "combo.label" => COMBO_LABEL,
-        "vend.label" => VEND_LABEL,
+        "pickup_borough" => PICKUP_BOROUGH,
+        "pickup_zone" => PICKUP_ZONE,
+        "dropoff_borough" => DROPOFF_BOROUGH,
+        "dropoff_zone" => DROPOFF_ZONE,
+        "combo_label" => COMBO_LABEL,
+        "vend_label" => VEND_LABEL,
         other => panic!("no column {other}"),
     }
 }
 
 fn passes(row: &[Datum], conds: &[Cond]) -> bool {
-    conds.iter().all(|c| holds(&value(row, &c.path), &c.values))
+    conds.iter().all(|c| holds(&value(row, &c.key), &c.values))
 }
 
 /// The ask over the raw rows: no rollup, no buckets.
@@ -415,10 +432,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
     }
     for row in rows {
         let Datum::Int(t) = row[AT] else { continue };
-        if ask.from.is_some_and(|from| t < from)
-            || ask.to.is_some_and(|to| t >= to)
-            || !passes(row, &ask.filter)
-        {
+        if t < ask.from || t >= ask.to || !passes(row, &ask.filter) {
             continue;
         }
         let key = ask
@@ -619,10 +633,10 @@ fn rows_added_together_match_rows_added_one_by_one() {
     }
 }
 
-/// A bound left out reads every bucket on that side; one that is given
-/// still cuts, even past everything held.
+/// A bound cuts even past everything held, and an empty store answers a
+/// zero count.
 #[test]
-fn an_open_range_reads_every_bucket() {
+fn a_range_cuts_at_both_ends() {
     let spec = spec();
     let mut store = typed(&spec);
     let mut rng = Rng(5);
@@ -643,14 +657,15 @@ fn an_open_range_reads_every_bucket() {
     };
     let trips = |ask: &Ask| store.ask(ask).unwrap().rows[0].values[0].clone();
     let count = |n: i128| Value::Int(n);
-    assert_eq!(trips(&ask(None, None)), count(4));
-    assert_eq!(trips(&ask(Some(START + i64::from(GRAIN)), None)), count(3));
-    assert_eq!(trips(&ask(None, Some(START + i64::from(GRAIN)))), count(1));
-    assert_eq!(trips(&ask(None, Some(START))), count(0));
-    assert_eq!(trips(&ask(Some(END), None)), count(0));
+    let grain = i64::from(GRAIN);
+    assert_eq!(trips(&ask(START - grain, END + grain)), count(4));
+    assert_eq!(trips(&ask(START + grain, END)), count(3));
+    assert_eq!(trips(&ask(START, START + grain)), count(1));
+    assert_eq!(trips(&ask(START - grain, START)), count(0));
+    assert_eq!(trips(&ask(END, END + grain)), count(0));
     let empty = typed(&spec);
     assert_eq!(
-        empty.ask(&ask(None, None)).unwrap().rows[0].values[0],
+        empty.ask(&ask(START, END)).unwrap().rows[0].values[0],
         count(0)
     );
 }
@@ -670,10 +685,10 @@ fn a_row_is_found_only_under_the_attributes_it_came_with() {
     let by_label = Ask {
         fact: id("trips"),
         measures: vec![id("trips")],
-        by: vec![AskKey::Key(path("vend.label"))],
+        by: vec![AskKey::Key(key("vend_label"))],
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let labels = |store: &Store| -> Vec<Datum> {
         (store.ask(&by_label).unwrap().rows.into_iter())
@@ -813,8 +828,8 @@ fn removing_an_extreme_reveals_the_next() {
         measures: vec![id("tip_min"), id("tip_max")],
         by: Vec::new(),
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].values.clone();
     let mut row = trip(&mut Rng(11));
@@ -868,21 +883,21 @@ fn filter_values_are_of_their_column_type() {
         measures: vec![id("trips")],
         by: Vec::new(),
         filter,
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let fits = vec![
         cond("pay", vec![Literal::Int(1)]),
         cond("shared", vec![Literal::Bool(true)]),
         cond("pu", vec![Literal::Int(2)]),
-        cond("pickup.borough", vec![lit("m")]),
+        cond("pickup_borough", vec![lit("m")]),
     ];
     assert!(store.ask(&ask(fits)).is_ok());
 
     let wrong = vec![
         cond("pay", vec![lit("1"), Literal::Int(1)]),
         cond("shared", vec![Literal::Int(1)]),
-        cond("pickup.borough", vec![Literal::Bool(true)]),
+        cond("pickup_borough", vec![Literal::Bool(true)]),
     ];
     let errors: Vec<String> = (store.ask(&ask(wrong)).unwrap_err().iter())
         .map(ToString::to_string)
@@ -892,7 +907,7 @@ fn filter_values_are_of_their_column_type() {
         [
             r#"pay is an integer, so it can't be the text "1""#,
             "shared is a boolean, so it can't be the integer 1",
-            "pickup.borough is text, so it can't be the boolean true",
+            "pickup_borough is text, so it can't be the boolean true",
         ]
     );
 
@@ -916,10 +931,10 @@ fn types_stay_through_clear() {
     let ask = Ask {
         fact: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: vec![AskKey::Key(path("pay")), AskKey::Key(path("pickup.zone"))],
+        by: vec![AskKey::Key(key("pay")), AskKey::Key(key("pickup_zone"))],
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let scales = |store: &Store| -> Vec<u32> {
         let answer = store.ask(&ask).unwrap();
@@ -944,12 +959,12 @@ fn columns_name_keys_and_measures_as_asked() {
         fact: id("trips"),
         measures: vec![id("fare"), id("trips")],
         by: vec![
-            AskKey::Key(path("pickup.zone")),
+            AskKey::Key(key("pickup_zone")),
             AskKey::Time(TimeKey::Bucket),
         ],
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let columns: Vec<(String, bool)> = (store.ask(&ask).unwrap().columns.into_iter())
         .map(|c| (c.name, c.time))
@@ -957,7 +972,7 @@ fn columns_name_keys_and_measures_as_asked() {
     assert_eq!(
         columns,
         [
-            ("pickup.zone".to_owned(), false),
+            ("pickup_zone".to_owned(), false),
             ("bucket".to_owned(), true),
             ("fare".to_owned(), false),
             ("trips".to_owned(), false),
@@ -995,8 +1010,8 @@ fn ask_without_by_answers_one_row() {
         measures,
         by: Vec::new(),
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     let zero = Value::Int(0);
     let null = Value::Null;
@@ -1033,8 +1048,8 @@ fn unknown_names() {
         measures: vec![id("trips")],
         by: Vec::new(),
         filter: Vec::new(),
-        from: Some(START),
-        to: Some(END),
+        from: START,
+        to: END,
     };
     assert_eq!(
         store.ask(&ask),

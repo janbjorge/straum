@@ -69,15 +69,15 @@ zone, with day and week buckets for long ranges.
 
 ```sql
 CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', f.pickup_at, timestamptz 'epoch') AS hour,
-       f.payment_type,
-       f.pu_location_id,
-       pickup.borough,
+SELECT date_bin('1 hour', f.pickup_at, timestamptz 'epoch') AS bucket,
+       f.payment_type AS payment_type,
+       f.pu_location_id AS pu_location_id,
+       pickup.borough AS borough,
        count(*) AS trips,
        sum(f.fare_amount) AS fare,
        avg(f.fare_amount) AS avg_fare
-FROM public.yellow_trips f
-LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
+FROM public.yellow_trips AS f
+LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = f.pu_location_id
 GROUP BY 1, 2, 3, 4;
 ```
 
@@ -134,9 +134,9 @@ SELECT trips FROM trips
  WHERE payment_type = $1 AND bucket >= $2 AND bucket < $3
 
 -- Trips by pickup borough
-SELECT pickup.borough, trips FROM trips
+SELECT borough, trips FROM trips
  WHERE bucket >= $1 AND bucket < $2
- GROUP BY pickup.borough
+ GROUP BY borough
 
 -- Fares by payment type
 SELECT payment_type, trips, fare, avg_fare FROM trips
@@ -145,7 +145,7 @@ SELECT payment_type, trips, fare, avg_fare FROM trips
 
 -- Manhattan pickups, one week
 SELECT trips FROM trips
- WHERE pickup.borough = $1 AND bucket >= $2 AND bucket < $3
+ WHERE borough = $1 AND bucket >= $2 AND bucket < $3
 
 -- Trips per hour, one day
 SELECT bucket, trips FROM trips
