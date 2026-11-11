@@ -6,7 +6,7 @@ use straum_domain::{
     Time, Via,
 };
 
-use super::{SqlError, Walker, and_parts, function_name, line, statements};
+use super::{Names, SqlError, Walker, and_parts, function_name, line, statements};
 
 pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
     let statements = statements(src)?;
@@ -39,7 +39,7 @@ struct Body {
 
 /// The tables one view reads: the fact under `alias`, and one ref per join;
 /// and its keys so far, which a FILTER reaches through their columns.
-struct Scope {
+pub(super) struct Scope {
     alias: Ident,
     refs: Vec<JoinedRef>,
     keys: Vec<ScopedKey>,
@@ -449,13 +449,7 @@ impl Walker {
         let mut conds = Vec::new();
         for condition in conditions {
             let before = self.errors.len();
-            self.conds(
-                condition,
-                &mut conds,
-                &mut |w, e| w.key_of(scope, e),
-                &mut |w, e| w.literal(e),
-                &mut |w, test, column, is_null| w.null_cond(scope, test, column, is_null),
-            );
+            self.conds(condition, &mut conds, &mut Names::View(scope));
             if self.errors.len() > before {
                 return None;
             }
@@ -825,7 +819,7 @@ impl Walker {
     /// `FILTER (WHERE alias.column = ...)` reaches the key that reads the
     /// column, by the column, as PostgreSQL reads the view: an output name
     /// is no column there.
-    fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Ident> {
+    pub(super) fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Ident> {
         let column = self.column(scope, expr)?;
         let key = (scope.keys.iter()).find(|k| k.column == column && k.is_null.is_none());
         let Some(key) = key else {
@@ -840,7 +834,7 @@ impl Walker {
 
     /// `FILTER (WHERE alias.column IS NULL)` counts through the null-ness
     /// key over that column, which holds for the rows the test picks out.
-    fn null_cond(
+    pub(super) fn null_cond(
         &mut self,
         scope: &Scope,
         test: &sql::Expr,

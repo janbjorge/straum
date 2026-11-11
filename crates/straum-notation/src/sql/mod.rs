@@ -17,7 +17,9 @@ use straum_domain::{Cond, Ident, Literal, Table};
 mod ask;
 mod view;
 
+use ask::Params;
 pub(crate) use ask::parse_ask;
+use view::Scope;
 pub(crate) use view::parse;
 
 const QUOTE_LEN: usize = 60;
@@ -42,9 +44,19 @@ fn line(node: &impl Spanned) -> u64 {
     node.span().start.line
 }
 
+const CONDITION: &str = "filter condition, write = or IN joined by AND,";
+
 #[derive(Default)]
 struct Walker {
     errors: Vec<SqlError>,
+}
+
+/// What a condition's keys and values are read against: a view's scope,
+/// whose columns reach the keys that read them, or an ask's parameters,
+/// the keys named outright.
+enum Names<'n, 'p> {
+    View(&'n Scope),
+    Ask(&'n mut Params<'p>),
 }
 
 impl Walker {
@@ -336,30 +348,30 @@ impl Walker {
         at
     }
 
-    /// `key = value` and `key IN (values)` joined by `AND`; `column IS
-    /// NULL` and `IS NOT NULL` go to `null_test` with whether it is the
-    /// `NULL` one, since what they mean depends on the caller.
-    fn conds(
-        &mut self,
-        expr: &sql::Expr,
-        conds: &mut Vec<Cond>,
-        path: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Ident>,
-        value: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Literal>,
-        null_test: &mut impl FnMut(&mut Self, &sql::Expr, &sql::Expr, bool) -> Option<Cond>,
-    ) {
+    /// `key = value` and `key IN (values)` joined by `AND`, and in a view
+    /// `column IS NULL` and `IS NOT NULL`, which count through a null-ness
+    /// key; an ask names that key outright, `key = $n`.
+    fn conds(&mut self, expr: &sql::Expr, conds: &mut Vec<Cond>, names: &mut Names<'_, '_>) {
         let mut parts = Vec::new();
         and_parts(expr, &mut parts);
         for part in parts {
             match part {
-                sql::Expr::IsNull(column) => conds.extend(null_test(self, part, column, true)),
-                sql::Expr::IsNotNull(column) => conds.extend(null_test(self, part, column, false)),
+                sql::Expr::IsNull(column) | sql::Expr::IsNotNull(column) => {
+                    let is_null = matches!(part, sql::Expr::IsNull(_));
+                    match names {
+                        Names::View(scope) => {
+                            conds.extend(self.null_cond(scope, part, column, is_null));
+                        }
+                        Names::Ask(_) => self.reject(line(part), CONDITION, part),
+                    }
+                }
                 sql::Expr::BinaryOp {
                     left,
                     op: sql::BinaryOperator::Eq,
                     right,
                 } => {
-                    let key = path(self, left);
-                    let literal = value(self, right);
+                    let key = self.cond_key(names, left);
+                    let literal = self.cond_value(names, right);
                     if let (Some(key), Some(literal)) = (key, literal) {
                         conds.push(Cond {
                             key,
@@ -376,19 +388,30 @@ impl Walker {
                         self.reject(line(part), "IN with one value, write =,", part);
                         continue;
                     }
-                    let key = path(self, inner);
-                    let values: Vec<Literal> =
-                        list.iter().filter_map(|item| value(self, item)).collect();
+                    let key = self.cond_key(names, inner);
+                    let values: Vec<Literal> = (list.iter())
+                        .filter_map(|item| self.cond_value(names, item))
+                        .collect();
                     if let Some(key) = key.filter(|_| values.len() == list.len()) {
                         conds.push(Cond { key, values });
                     }
                 }
-                other => self.reject(
-                    line(other),
-                    "filter condition, write = or IN joined by AND,",
-                    other,
-                ),
+                other => self.reject(line(other), CONDITION, other),
             }
+        }
+    }
+
+    fn cond_key(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Ident> {
+        match names {
+            Names::View(scope) => self.key_of(scope, expr),
+            Names::Ask(_) => self.ask_name(expr),
+        }
+    }
+
+    fn cond_value(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Literal> {
+        match names {
+            Names::View(_) => self.literal(expr),
+            Names::Ask(params) => self.parameter(expr, params),
         }
     }
 

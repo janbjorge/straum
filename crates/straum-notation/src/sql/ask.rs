@@ -17,7 +17,7 @@ use jiff::Timestamp;
 use sqlparser::ast as sql;
 use straum_domain::{Ask, AskKey, Cond, Ident, Literal, TimeKey};
 
-use super::{SqlError, Walker, and_parts, line, statements};
+use super::{Names, SqlError, Walker, and_parts, line, statements};
 
 pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
     let statements = statements(query)?;
@@ -48,7 +48,7 @@ pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<
     }
 }
 
-struct Params<'a> {
+pub(super) struct Params<'a> {
     values: &'a [Literal],
     used: Vec<bool>,
 }
@@ -225,21 +225,7 @@ impl Walker {
                 };
                 continue;
             }
-            self.conds(
-                part,
-                &mut conds,
-                &mut |w, e| w.ask_name(e),
-                &mut |w, e| w.parameter(e, params),
-                // A null-ness key is asked for by name, `key = $n`.
-                &mut |w, test, _, _| {
-                    w.reject(
-                        line(test),
-                        "filter condition, write = or IN joined by AND,",
-                        test,
-                    );
-                    None
-                },
-            );
+            self.conds(part, &mut conds, &mut Names::Ask(params));
         }
         for (end, bound) in [(End::From, &from), (End::To, &to)] {
             if matches!(bound, Bound::Missing) {
@@ -253,7 +239,7 @@ impl Walker {
         (conds, from.seconds(), to.seconds())
     }
 
-    fn ask_name(&mut self, expr: &sql::Expr) -> Option<Ident> {
+    pub(super) fn ask_name(&mut self, expr: &sql::Expr) -> Option<Ident> {
         match self.ask_key(expr)? {
             AskKey::Key(name) => Some(name),
             AskKey::Time(_) => {
@@ -268,7 +254,7 @@ impl Walker {
 
     /// `$n`, the n-th parameter. Values written into the query are
     /// rejected, so callers never build a query out of their values.
-    fn parameter(&mut self, expr: &sql::Expr, params: &mut Params) -> Option<Literal> {
+    pub(super) fn parameter(&mut self, expr: &sql::Expr, params: &mut Params) -> Option<Literal> {
         let sql::Expr::Value(sql::ValueWithSpan {
             value: sql::Value::Placeholder(name),
             span: _,
