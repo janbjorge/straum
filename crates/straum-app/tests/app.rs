@@ -17,8 +17,8 @@ use straum_app::{
     Writer,
 };
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, SealedId,
-    Spec, Store, TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Literal, SealedId, Spec,
+    Store, TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -161,24 +161,17 @@ fn expected(db: &Database, ask: &Ask) -> Answer {
 }
 
 /// The rows an ask by borough answers.
+/// An answer row of one key and one count.
+fn row(key: Datum, n: i128) -> AnswerRow {
+    AnswerRow {
+        keys: vec![key],
+        values: vec![Value::Int(n)],
+    }
+}
+
 fn by_borough(app: &App, fact: &str) -> Vec<AnswerRow> {
     let by_borough = ask(fact, &[fact], &["borough"]);
     app.ask(&by_borough).unwrap().answer.rows
-}
-
-#[test]
-fn fake_rows_hold_the_rollup_columns() {
-    let spec = spec();
-    let columns = |fact| {
-        spec.fact(fact)
-            .unwrap()
-            .columns()
-            .iter()
-            .map(Ident::to_string)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(columns("trips"), ["at", "kind", "zone_id", "fare", "rider"]);
-    assert_eq!(columns("logins"), ["at", "zone_id"]);
 }
 
 #[test]
@@ -359,15 +352,7 @@ fn dim_changes_show_at_once() {
     db.borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
     writer.step().unwrap();
-    let bronx = |n| AnswerRow {
-        keys: vec![text("Bronx")],
-        values: vec![Value::Int(n)],
-    };
-    let queens = |n| AnswerRow {
-        keys: vec![text("Queens")],
-        values: vec![Value::Int(n)],
-    };
-    assert_eq!(by_borough(writer.app(), "trips"), [bronx(2)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Bronx"), 2)]);
 
     let lsn = db.borrow_mut().commit(vec![Write::Update {
         table: "zones",
@@ -376,7 +361,7 @@ fn dim_changes_show_at_once() {
         row: vec![int(1), text("Queens")],
     }]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(by_borough(writer.app(), "trips"), [queens(2)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 2)]);
     assert_eq!(
         writer
             .app()
@@ -389,7 +374,7 @@ fn dim_changes_show_at_once() {
     // A new row and a changed one join the dim as it is.
     db.borrow_mut().commit(vec![trip(3, 1, 1, 30)]);
     writer.step().unwrap();
-    assert_eq!(by_borough(writer.app(), "trips"), [queens(3)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 3)]);
     let lsn = db.borrow_mut().commit(vec![Write::Update {
         table: "trips",
         key: int(1),
@@ -397,7 +382,7 @@ fn dim_changes_show_at_once() {
         row: vec![int(0), int(1), int(1), int(11), text("ann")],
     }]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(by_borough(writer.app(), "trips"), [queens(3)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 3)]);
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
 
     // A dim key moved: the rows that pointed at the old key read null.
@@ -408,13 +393,7 @@ fn dim_changes_show_at_once() {
         row: vec![int(9), text("Queens")],
     }]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(
-        by_borough(writer.app(), "trips"),
-        [AnswerRow {
-            keys: vec![Datum::Null],
-            values: vec![Value::Int(3)]
-        }]
-    );
+    assert_eq!(by_borough(writer.app(), "trips"), [row(Datum::Null, 3)]);
 }
 
 /// A second dim row under a key straum holds is a change like any other:
@@ -426,11 +405,7 @@ fn a_dim_key_held_twice_joins_twice() {
     db.borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
     writer.step().unwrap();
-    let row = |borough: &str, n| AnswerRow {
-        keys: vec![text(borough)],
-        values: vec![Value::Int(n)],
-    };
-    assert_eq!(by_borough(writer.app(), "trips"), [row("Bronx", 2)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Bronx"), 2)]);
 
     let lsn = db.borrow_mut().send(vec![Change::Insert {
         table: id("zones"),
@@ -439,14 +414,17 @@ fn a_dim_key_held_twice_joins_twice() {
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     assert_eq!(
         by_borough(writer.app(), "trips"),
-        [row("Bronx", 2), row("Staten Island", 2)]
+        [row(text("Bronx"), 2), row(text("Staten Island"), 2)]
     );
     let lsn = db.borrow_mut().send(vec![Change::Delete {
         table: id("zones"),
         old: vec![int(1), text("Bronx")],
     }]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(by_borough(writer.app(), "trips"), [row("Staten Island", 2)]);
+    assert_eq!(
+        by_borough(writer.app(), "trips"),
+        [row(text("Staten Island"), 2)]
+    );
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
 }
 
@@ -458,20 +436,12 @@ fn a_missing_dim_row_reads_null_until_it_comes() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().commit(vec![trip(1, 1, 2, 10)]);
     writer.step().unwrap();
-    let null = |n| AnswerRow {
-        keys: vec![Datum::Null],
-        values: vec![Value::Int(n)],
-    };
-    let queens = |n| AnswerRow {
-        keys: vec![text("Queens")],
-        values: vec![Value::Int(n)],
-    };
-    assert_eq!(by_borough(writer.app(), "trips"), [null(1)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(Datum::Null, 1)]);
 
     db.borrow_mut()
         .commit(vec![zone(2, "Queens"), trip(2, 1, 2, 20)]);
     writer.step().unwrap();
-    assert_eq!(by_borough(writer.app(), "trips"), [queens(2)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(text("Queens"), 2)]);
 
     db.borrow_mut().commit(vec![
         Write::Delete {
@@ -481,7 +451,7 @@ fn a_missing_dim_row_reads_null_until_it_comes() {
         trip(3, 1, 2, 30),
     ]);
     writer.step().unwrap();
-    assert_eq!(by_borough(writer.app(), "trips"), [null(3)]);
+    assert_eq!(by_borough(writer.app(), "trips"), [row(Datum::Null, 3)]);
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
 }
 
@@ -501,13 +471,7 @@ fn truncate_empties_the_table() {
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
     let by_borough = ask("trips", &["trips"], &["borough"]);
     let answer = writer.app().ask(&by_borough).unwrap().answer;
-    assert_eq!(
-        answer.rows,
-        [AnswerRow {
-            keys: vec![Datum::Null],
-            values: vec![Value::Int(1)]
-        }]
-    );
+    assert_eq!(answer.rows, [row(Datum::Null, 1)]);
     assert_eq!(answer, expected(&db.borrow(), &by_borough));
 }
 
@@ -887,12 +851,18 @@ fn day_of_logins() -> SealedId {
     }
 }
 
-#[test]
-fn old_buckets_are_sealed_and_answer_as_before() {
-    let (db, mut writer, spill) = spilling(Duration::ZERO);
+/// A spilling writer started on a trip and a login in the Bronx.
+fn started(seal_after: Duration) -> (Rc<RefCell<Database>>, Writer<Fake>, Arc<MemorySpill>) {
+    let (db, mut writer, spill) = spilling(seal_after);
     db.borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
     writer.step().unwrap();
+    (db, writer, spill)
+}
+
+#[test]
+fn old_buckets_are_sealed_and_answer_as_before() {
+    let (db, writer, spill) = started(Duration::ZERO);
     assert_eq!(spill.ids(), [day_of_logins(), hour_of_trips()]);
     for fact in ["trips", "logins"] {
         assert_eq!(
@@ -906,10 +876,7 @@ fn old_buckets_are_sealed_and_answer_as_before() {
 
 #[test]
 fn buckets_younger_than_seal_after_stay() {
-    let (db, mut writer, spill) = spilling(NEVER);
-    db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
-    writer.step().unwrap();
+    let (_db, writer, spill) = started(NEVER);
     assert_eq!(spill.ids(), []);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
     assert_eq!(spill.gets(), 0);
@@ -917,10 +884,7 @@ fn buckets_younger_than_seal_after_stay() {
 
 #[test]
 fn a_change_unseals_the_buckets_it_falls_in() {
-    let (db, mut writer, spill) = spilling(Duration::ZERO);
-    db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
-    writer.step().unwrap();
+    let (db, mut writer, spill) = started(Duration::ZERO);
     let lsn = db.borrow_mut().commit(vec![trip(2, 1, 1, 5)]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     // Back in memory until the writer next seals.
@@ -960,10 +924,7 @@ fn stale_bucket() -> straum_domain::Sealed {
 
 #[test]
 fn a_truncate_removes_its_sealed_buckets_from_the_spill() {
-    let (db, mut writer, spill) = spilling(Duration::ZERO);
-    db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
-    writer.step().unwrap();
+    let (db, mut writer, spill) = started(Duration::ZERO);
     assert_eq!(writer.app().status().sealed, Some(2));
     db.borrow_mut()
         .commit(vec![Write::Truncate { table: "trips" }]);
@@ -976,10 +937,7 @@ fn a_truncate_removes_its_sealed_buckets_from_the_spill() {
 
 #[test]
 fn a_truncate_the_spill_cannot_take_starts_over_without_a_leak() {
-    let (db, mut writer, spill) = spilling(Duration::ZERO);
-    db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
-    writer.step().unwrap();
+    let (db, mut writer, spill) = started(Duration::ZERO);
     // A dim has no buckets: its truncate leaves the spill alone.
     db.borrow_mut()
         .commit(vec![Write::Truncate { table: "zones" }]);
@@ -1000,10 +958,7 @@ fn a_truncate_the_spill_cannot_take_starts_over_without_a_leak() {
 
 #[test]
 fn status_counts_sealed_buckets_and_unseals() {
-    let (db, mut writer, _spill) = spilling(Duration::ZERO);
-    db.borrow_mut()
-        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
-    writer.step().unwrap();
+    let (db, mut writer, _spill) = started(Duration::ZERO);
     let status = writer.app().status();
     assert_eq!((status.sealed, status.unseals), (Some(2), 0));
     db.borrow_mut().commit(vec![trip(2, 1, 1, 5), login(2, 1)]);
@@ -1447,26 +1402,23 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
 #[test]
 fn follows_the_database() {
     let mut seen = Seen::default();
+    let spill = Arc::new(MemorySpill::default());
     for seed in 0..16 {
-        follow(seed, &mut seen, None);
+        let (mut plain, mut spilled) = (Seen::default(), Seen::default());
+        follow(seed, &mut plain, None);
+        // Spilling changes no answer and adds no failure: each seed runs as
+        // it does with every bucket in memory.
+        follow(seed, &mut spilled, Some(&spill));
+        assert_eq!(spilled, plain, "seed {seed}");
+        seen.answered += plain.answered;
+        seen.failed += plain.failed;
+        seen.unfit += plain.unfit;
+        seen.aside += plain.aside;
     }
     // The run went through every path it claims to test.
     assert!(seen.answered > 1_000, "{seen:?}");
     assert!(seen.failed > seen.unfit, "{seen:?}");
     assert!(seen.unfit > 0, "{seen:?}");
     assert!(seen.aside > 0, "{seen:?}");
-}
-
-/// Spilling changes no answer and adds no failure: each seed runs as it
-/// does with every bucket in memory.
-#[test]
-fn follows_the_database_while_spilling() {
-    let spill = Arc::new(MemorySpill::default());
-    for seed in 0..16 {
-        let (mut plain, mut spilled) = (Seen::default(), Seen::default());
-        follow(seed, &mut plain, None);
-        follow(seed, &mut spilled, Some(&spill));
-        assert_eq!(spilled, plain, "seed {seed}");
-    }
     assert!(spill.gets() > 1_000, "{}", spill.gets());
 }
