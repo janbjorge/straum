@@ -132,9 +132,11 @@ impl fmt::Display for Origin {
     }
 }
 
-/// Bucket width in seconds.
+/// A bucket width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grain(pub u32);
+pub struct Grain {
+    pub seconds: u32,
+}
 
 /// A join from the fact, or from a dim already joined, to a dim's key,
 /// column for column, of any cardinality. The fact-side via columns are
@@ -408,7 +410,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
 
 fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
     let name = &fact.name;
-    let Grain(seconds) = fact.time.grain;
+    let seconds = fact.time.grain.seconds;
     if seconds == 0 || !DAY.is_multiple_of(seconds) {
         errors.push(SpecError::BadGrain {
             fact: name.clone(),
@@ -417,11 +419,11 @@ fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
     }
     let mut below = fact.time.grain;
     for &bucket in &fact.time.buckets {
-        if bucket.0 <= below.0 || !bucket.0.is_multiple_of(below.0) {
+        if bucket.seconds <= below.seconds || !bucket.seconds.is_multiple_of(below.seconds) {
             errors.push(SpecError::BadBucket {
                 fact: name.clone(),
-                seconds: bucket.0,
-                below: below.0,
+                seconds: bucket.seconds,
+                below: below.seconds,
             });
         }
         below = bucket;
@@ -816,6 +818,6 @@ impl fmt::Display for RefKind {
 
 impl fmt::Display for Grain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}s", self.0)
+        write!(f, "{}s", self.seconds)
     }
 }

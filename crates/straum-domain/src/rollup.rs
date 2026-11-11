@@ -287,7 +287,7 @@ impl Rollup {
         let levels = iter::once(fact.time.grain)
             .chain(fact.time.buckets.iter().copied())
             .map(|grain| Level {
-                width: i64::from(grain.0),
+                width: i64::from(grain.seconds),
                 buckets: BTreeMap::new(),
             })
             .collect();

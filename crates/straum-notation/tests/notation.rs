@@ -80,7 +80,7 @@ fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
 fn taxi_parses() {
     let spec = taxi();
     let trips = spec.fact("trips").unwrap();
-    assert_eq!(trips.time.grain, Grain(900));
+    assert_eq!(trips.time.grain, Grain { seconds: 900 });
     assert_eq!(
         spec.dim("taxi_zones").unwrap().attrs,
         [id("borough"), id("zone"), id("service_zone")]
@@ -150,7 +150,7 @@ fn ask_rejects_what_the_rollup_does_not_hold() {
             AskError::AskedTwice("trips".into()),
             AskError::RangeUnaligned {
                 at: JAN + 60,
-                grain: Grain(900)
+                grain: Grain { seconds: 900 }
             },
         ]
     );
@@ -175,7 +175,7 @@ fn ask_errors_display() {
         (
             AskError::RangeUnaligned {
                 at: 60,
-                grain: Grain(900),
+                grain: Grain { seconds: 900 },
             },
             "range end 60 is not on a 900s bucket edge",
         ),
@@ -232,7 +232,7 @@ fn ask_rejects_bad_shape() {
             },
             AskError::RangeUnaligned {
                 at: JAN + 60,
-                grain: Grain(900)
+                grain: Grain { seconds: 900 }
             },
         ]
     );
@@ -328,7 +328,7 @@ fn buckets_parse() {
     let spec = parse(&src).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.buckets,
-        [Grain(86_400), Grain(604_800)]
+        [Grain { seconds: 86_400 }, Grain { seconds: 604_800 }]
     );
 
     let src = base(
@@ -424,7 +424,7 @@ LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.time.grain, Grain(30));
+    assert_eq!(t.time.grain, Grain { seconds: 30 });
     // A dim key column names the fact column joined to it.
     assert_eq!(t.by, [col("a"), col("z_id")]);
     let aggs: Vec<&Agg> = t.measures.iter().map(|m| &m.agg).collect();
@@ -444,7 +444,7 @@ GROUP BY 1, 2, 3, 4";
 
     for (width, seconds) in [("1 second", 1), ("5 minute", 300), ("1 day", 86_400)] {
         let spec = parse(&base("1 hour", width).replace("1 hour", width)).unwrap();
-        assert_eq!(spec.fact("t").unwrap().time.grain, Grain(seconds));
+        assert_eq!(spec.fact("t").unwrap().time.grain, Grain { seconds });
     }
 }
 

@@ -86,8 +86,11 @@ fn spec(buckets: &[u32]) -> Spec {
         table: table("trips"),
         time: Time {
             column: id("at"),
-            grain: Grain(HOUR),
-            buckets: buckets.iter().map(|h| Grain(h * HOUR)).collect(),
+            grain: Grain { seconds: HOUR },
+            buckets: buckets
+                .iter()
+                .map(|h| Grain { seconds: h * HOUR })
+                .collect(),
             origin: Origin::Timestamptz,
         },
         refs: vec![Ref {

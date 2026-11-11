@@ -77,8 +77,12 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
         table: table("orders"),
         time: straum_domain::Time {
             column: id("at"),
-            grain: Grain(HOUR as u32),
-            buckets: vec![Grain(24 * HOUR as u32)],
+            grain: Grain {
+                seconds: HOUR as u32,
+            },
+            buckets: vec![Grain {
+                seconds: 24 * HOUR as u32,
+            }],
             origin: Origin::Timestamptz,
         },
         refs: vec![
@@ -315,7 +319,12 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: &[RefK
                 .iter()
                 .map(|k| match k {
                     AskKey::Key(name) => value(row, &joined, name),
-                    AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(HOUR as u32))),
+                    AskKey::Time(tk) => Datum::Int(tk.start(
+                        t,
+                        Grain {
+                            seconds: HOUR as u32,
+                        },
+                    )),
                 })
                 .collect();
             groups.entry(key).or_default().push((row, joined));

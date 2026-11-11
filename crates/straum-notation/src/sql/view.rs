@@ -1053,7 +1053,11 @@ fn grain(s: &str) -> Option<Grain> {
         "day" => 86_400,
         _ => return None,
     };
-    count.parse::<u32>().ok()?.checked_mul(scale).map(Grain)
+    count
+        .parse::<u32>()
+        .ok()?
+        .checked_mul(scale)
+        .map(|seconds| Grain { seconds })
 }
 
 fn is_date_bin(function: &sql::Function) -> bool {

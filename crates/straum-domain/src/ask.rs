@@ -33,7 +33,7 @@ pub enum TimeKey {
 impl TimeKey {
     pub fn start(self, t: i64, grain: Grain) -> i64 {
         match self {
-            TimeKey::Bucket => t.div_euclid(i64::from(grain.0)) * i64::from(grain.0),
+            TimeKey::Bucket => t.div_euclid(i64::from(grain.seconds)) * i64::from(grain.seconds),
         }
     }
 }
@@ -94,7 +94,7 @@ impl Spec {
             });
         }
         for at in [ask.from, ask.to] {
-            if at.rem_euclid(i64::from(grain.0)) != 0 {
+            if at.rem_euclid(i64::from(grain.seconds)) != 0 {
                 errors.push(AskError::RangeUnaligned { at, grain });
             }
         }

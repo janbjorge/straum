@@ -112,9 +112,13 @@ fn spec() -> Spec {
         table: table("trips"),
         time: Time {
             column: id("at"),
-            grain: Grain(GRAIN),
+            grain: Grain { seconds: GRAIN },
             // Hours, days and weeks, so random ranges read every width.
-            buckets: vec![Grain(3_600), Grain(86_400), Grain(604_800)],
+            buckets: vec![
+                Grain { seconds: 3_600 },
+                Grain { seconds: 86_400 },
+                Grain { seconds: 604_800 },
+            ],
             origin: Origin::Timestamptz,
         },
         refs: vec![
@@ -470,7 +474,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
             .iter()
             .map(|k| match k {
                 AskKey::Key(p) => value(row, p, dims),
-                AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(GRAIN))),
+                AskKey::Time(tk) => Datum::Int(tk.start(t, Grain { seconds: GRAIN })),
             })
             .collect();
         groups.entry(key).or_default().push(row);
@@ -1282,7 +1286,7 @@ fn columns_name_keys_and_measures_as_asked() {
 
 #[test]
 fn time_key_start() {
-    let grain = Grain(GRAIN);
+    let grain = Grain { seconds: GRAIN };
     let cases = [
         // 2024-02-29 13:47:05 UTC.
         (1_709_214_425, 1_709_214_300),

@@ -32,7 +32,7 @@ fn fact() -> Fact {
         table: table("t"),
         time: Time {
             column: id("at"),
-            grain: Grain(3_600),
+            grain: Grain { seconds: 3_600 },
             buckets: vec![],
             origin: Origin::Timestamptz,
         },
@@ -147,11 +147,19 @@ fn tables_once_each_dims_first() {
 #[test]
 fn buckets_widen_by_whole_multiples() {
     let mut t = fact();
-    t.time.buckets = vec![Grain(7_200), Grain(86_400), Grain(604_800)];
+    t.time.buckets = vec![
+        Grain { seconds: 7_200 },
+        Grain { seconds: 86_400 },
+        Grain { seconds: 604_800 },
+    ];
     assert!(Spec::new(vec![dim()], vec![t.clone()]).is_ok());
 
     // 1.5 hours over an hour, then a day that doesn't widen the day.
-    t.time.buckets = vec![Grain(5_400), Grain(86_400), Grain(86_400)];
+    t.time.buckets = vec![
+        Grain { seconds: 5_400 },
+        Grain { seconds: 86_400 },
+        Grain { seconds: 86_400 },
+    ];
     let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
@@ -172,7 +180,7 @@ fn every_error_is_reported_and_displayed() {
     w.key = vec![];
     let mut t = fact();
     t.name = id("z");
-    t.time.grain = Grain(420);
+    t.time.grain = Grain { seconds: 420 };
     t.by = vec![
         col("id"),
         col("at"),
