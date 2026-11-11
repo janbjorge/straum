@@ -3,12 +3,12 @@
 //! deletes of trips and of dim rows. Rows hold the fact's columns only; a
 //! dim's values come through its projection when asked.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use straum_domain::{
     Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attr, By, ColumnType, Cond, Datum,
-    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, RowError, Slot, Spec, Store,
-    Table, Time, TimeKey, Value, Via,
+    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, RowError, Sealed,
+    SealedColumn, SealedError, SealedId, Slot, Spec, Store, Table, Time, TimeKey, Value, Via,
 };
 
 const GRAIN: u32 = 900;
@@ -628,19 +628,66 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
     }
 }
 
-fn run(seed: u64) {
+/// Sealed buckets kept aside, as a spill keeps them, when `run` seals.
+#[derive(Default)]
+struct Spilled {
+    buckets: HashMap<SealedId, Sealed>,
+    /// Sealed buckets asks read.
+    read: usize,
+}
+
+impl Spilled {
+    /// Seals every bucket that ends by `before`, or some of them.
+    fn seal(&mut self, rng: &mut Rng, store: &mut Store, before: i64) {
+        for id in store.sealable(before) {
+            if rng.chance(70) {
+                let sealed = store.sealed_copy(&id).unwrap();
+                assert!(store.seal(&id));
+                self.buckets.insert(id, sealed);
+            }
+        }
+    }
+
+    /// Unseals the buckets a row falls in, as the writer does before it
+    /// applies a change.
+    fn unseal(&mut self, store: &mut Store, row: &[Datum]) {
+        for id in store.sealed_touched("trips", row) {
+            let thawed = store.thaw(self.buckets.remove(&id).unwrap()).unwrap();
+            store.unseal(thawed).unwrap();
+        }
+    }
+
+    fn ask(&mut self, store: &Store, ask: &Ask) -> Answer {
+        let thawed: Vec<_> = (store.sealed_read(ask).unwrap().iter())
+            .map(|id| store.thaw(self.buckets[id].clone()).unwrap())
+            .collect();
+        self.read += thawed.len();
+        store.ask_with(ask, &thawed).unwrap()
+    }
+}
+
+/// Random changes and asks against the naive reference. With `sealing`,
+/// buckets are sealed and unsealed at random as they go, and the answers
+/// must not change; returns the sealed buckets asks read.
+fn run(seed: u64, sealing: bool) -> usize {
     let spec = spec();
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     let mut dims = random_dims(&mut rng);
+    let mut spilled = Spilled::default();
     load_dims(&mut store, &dims);
 
     for step in 0..2_000 {
+        if sealing && rng.chance(5) {
+            let before = rng.int(START, END + 7 * 86_400);
+            spilled.seal(&mut rng, &mut store, before);
+        }
         match rng.below(40) {
             0..=3 => change_dim(&mut rng, &mut store, &mut dims),
             4..=8 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
+                spilled.unseal(&mut store, &row);
                 store.remove_fact_row("trips", &row).unwrap();
             }
             9..=14 if !rows.is_empty() => {
@@ -651,7 +698,9 @@ fn run(seed: u64) {
                 if rng.chance(50) {
                     new[..=DRO].clone_from_slice(&rows[i][..=DRO]);
                 }
+                spilled.unseal(&mut store, &rows[i]);
                 store.remove_fact_row("trips", &rows[i]).unwrap();
+                spilled.unseal(&mut store, &new);
                 store.add_fact_row("trips", &new).unwrap();
                 rows[i] = new;
             }
@@ -662,6 +711,7 @@ fn run(seed: u64) {
                     let other = rng.below(rows.len());
                     row[..=DRO].clone_from_slice(&rows[other][..=DRO]);
                 }
+                spilled.unseal(&mut store, &row);
                 store.add_fact_row("trips", &row).unwrap();
                 rows.push(row);
             }
@@ -670,7 +720,7 @@ fn run(seed: u64) {
             for _ in 0..10 {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
-                    store.ask(&ask).unwrap(),
+                    spilled.ask(&store, &ask),
                     naive(&spec, &ask, &rows, &dims),
                     "seed {seed}, step {step}, {ask:?}"
                 );
@@ -680,6 +730,7 @@ fn run(seed: u64) {
 
     assert!(store.cells("trips").unwrap() > 0);
     for row in rows {
+        spilled.unseal(&mut store, &row);
         store.remove_fact_row("trips", &row).unwrap();
     }
     assert_eq!(
@@ -687,13 +738,20 @@ fn run(seed: u64) {
         0,
         "seed {seed}: a cell outlived its rows"
     );
+    spilled.read
 }
 
 #[test]
 fn store_matches_naive_reference() {
     for seed in 0..16 {
-        run(seed);
+        assert_eq!(run(seed, false), 0);
     }
+}
+
+#[test]
+fn sealed_store_matches_naive_reference() {
+    let read: usize = (0..16).map(|seed| run(seed, true)).sum();
+    assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
 #[test]
@@ -1474,8 +1532,246 @@ fn row_error_display() {
             "column tip is not an integer",
         ),
         (RowError::Missing, "removed row was never added"),
+        (RowError::Sealed, "row falls in a sealed bucket"),
     ];
     for (err, msg) in cases {
         assert_eq!(err.to_string(), msg);
     }
+}
+
+/// A store with two rows in one 15-minute bucket and one in the next.
+fn three_rows() -> (Store, Vec<Vec<Datum>>) {
+    let mut store = typed(&spec());
+    let mut row = trip(&mut Rng(3));
+    let rows: Vec<Vec<Datum>> = [(START, 4), (START + 60, 9), (START + 900, 1)]
+        .iter()
+        .map(|&(at, tip)| {
+            row[AT] = Datum::Int(at);
+            row[TIP] = Datum::Int(tip);
+            row.clone()
+        })
+        .collect();
+    for row in &rows {
+        store.add_fact_row("trips", row).unwrap();
+    }
+    (store, rows)
+}
+
+fn sealed_id(width: i64, start: i64) -> SealedId {
+    SealedId {
+        fact: id("trips"),
+        width,
+        start,
+    }
+}
+
+fn whole_range(by: Vec<AskKey>) -> Ask {
+    Ask {
+        fact: id("trips"),
+        measures: vec![id("trips"), id("tip_min"), id("tip_max"), id("riders")],
+        by,
+        filter: Vec::new(),
+        from: START,
+        to: START + 604_800,
+    }
+}
+
+#[test]
+fn a_sealed_bucket_answers_as_before() {
+    let (mut store, _) = three_rows();
+    let ask = whole_range(vec![AskKey::Time(TimeKey::Bucket)]);
+    let before = store.ask(&ask).unwrap();
+    let cells = store.cells_read(&ask).unwrap();
+
+    let id = sealed_id(i64::from(GRAIN), START);
+    let sealed = store.sealed_copy(&id).unwrap();
+    assert_eq!(sealed.rows, [2]);
+    assert!(store.seal(&id));
+    assert_eq!(store.sealed_read(&ask).unwrap(), std::slice::from_ref(&id));
+    assert_eq!(store.cells_read(&ask).unwrap(), cells);
+    assert_eq!(store.cells("trips"), Some(2));
+    let thawed = store.thaw(sealed.clone()).unwrap();
+    assert_eq!(store.ask_with(&ask, &[thawed]).unwrap(), before);
+
+    store.unseal(store.thaw(sealed).unwrap()).unwrap();
+    assert_eq!(store.sealed_read(&ask).unwrap(), []);
+    assert_eq!(store.ask(&ask).unwrap(), before);
+}
+
+#[test]
+fn sealable_buckets_end_by_the_cutoff() {
+    let (mut store, _) = three_rows();
+    let grain = i64::from(GRAIN);
+    assert_eq!(store.sealable(START + grain - 1), []);
+    assert_eq!(store.sealable(START + grain), [sealed_id(grain, START)]);
+    let all = store.sealable(START + 604_800 * 2);
+    // The two buckets of 15 minutes; wider widths stay in memory.
+    assert_eq!(
+        all,
+        [sealed_id(grain, START), sealed_id(grain, START + grain)]
+    );
+    for id in &all {
+        assert!(store.seal(id));
+    }
+    assert_eq!(store.sealable(START + 604_800 * 2), []);
+    assert_eq!(store.sealed("trips"), all);
+    store.clear_fact("trips");
+    assert_eq!(store.sealed("trips"), []);
+    // Sealed already, or never there.
+    assert!(!store.seal(&all[0]));
+    assert_eq!(store.sealed_copy(&all[0]), None);
+    assert!(!store.seal(&sealed_id(grain, START - grain)));
+    assert!(!store.seal(&sealed_id(7, START)));
+    assert!(!store.seal(&SealedId {
+        fact: id("nope"),
+        ..all[0].clone()
+    }));
+}
+
+#[test]
+fn a_row_in_a_sealed_bucket_waits_for_unseal() {
+    let (mut store, rows) = three_rows();
+    let id = sealed_id(86_400, START);
+    let sealed = store.sealed_copy(&id).unwrap();
+    store.seal(&id);
+    assert_eq!(
+        store.sealed_touched("trips", &rows[2]),
+        std::slice::from_ref(&id)
+    );
+    assert_eq!(store.sealed_touched("trips", &[]), []);
+    assert_eq!(store.add_fact_row("trips", &rows[0]), Err(RowError::Sealed));
+    assert_eq!(
+        store.remove_fact_row("trips", &rows[0]),
+        Err(RowError::Sealed)
+    );
+    let mut many = rows[0].clone();
+    many.extend(rows[1].iter().cloned());
+    assert_eq!(store.add_fact_rows("trips", &many), Err(RowError::Sealed));
+    // A row of another day goes in.
+    let mut later = rows[0].clone();
+    later[AT] = Datum::Int(START + 86_400);
+    assert_eq!(store.sealed_touched("trips", &later), []);
+    store.add_fact_row("trips", &later).unwrap();
+
+    store.unseal(store.thaw(sealed).unwrap()).unwrap();
+    assert_eq!(store.sealed_touched("trips", &rows[2]), []);
+    store.remove_fact_row("trips", &rows[0]).unwrap();
+    store.add_fact_row("trips", &rows[0]).unwrap();
+}
+
+type Change<'a> = dyn Fn(&mut Sealed) + 'a;
+
+#[test]
+fn thaw_refuses_a_bucket_that_does_not_fit() {
+    let (mut store, _) = three_rows();
+    let bucket = sealed_id(i64::from(GRAIN), START);
+    let good = store.sealed_copy(&bucket).unwrap();
+    store.seal(&bucket);
+    let refused = |change: &Change<'_>| {
+        let mut sealed = good.clone();
+        change(&mut sealed);
+        store.thaw(sealed).unwrap_err().reason
+    };
+    let extent = good
+        .columns
+        .iter()
+        .position(|c| matches!(c, SealedColumn::Extent { .. }))
+        .unwrap();
+    let distinct = good
+        .columns
+        .iter()
+        .position(|c| matches!(c, SealedColumn::Distinct { .. }))
+        .unwrap();
+    let cases: [(&str, &Change<'_>); 13] = [
+        ("unknown fact", &|s| s.id.fact = id("nope")),
+        ("no such width", &|s| s.id.width = 7),
+        ("no cells", &|s| s.rows.clear()),
+        ("a cell without rows", &|s| s.rows[0] = 0),
+        ("keys don't fit the rollup key", &|s| {
+            s.keys.pop();
+        }),
+        ("a code the store never gave", &|s| s.keys[0] = 99),
+        ("columns don't fit the measures", &|s| {
+            s.columns.pop();
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns.swap(0, extent);
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[0] = SealedColumn::Sum {
+                sums: Vec::new(),
+                counts: vec![0],
+            };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[extent] = SealedColumn::Extent {
+                values: vec![vec![(1, 0)]],
+            };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[extent] = SealedColumn::Extent { values: vec![] };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[distinct] = SealedColumn::Distinct {
+                values: vec![vec![(Datum::Null, 0)]],
+            };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[distinct] = SealedColumn::Distinct { values: vec![] };
+        }),
+    ];
+    for (reason, change) in cases {
+        assert_eq!(refused(change), reason);
+    }
+    assert!(store.thaw(good).is_ok());
+}
+
+#[test]
+fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
+    let (mut store, _) = three_rows();
+    let id = sealed_id(86_400, START);
+    let mut sealed = store.sealed_copy(&id).unwrap();
+    let err = store
+        .unseal(store.thaw(sealed.clone()).unwrap())
+        .unwrap_err();
+    assert_eq!(err.reason, "not sealed");
+    store.seal(&id);
+    // Two cells under one key.
+    sealed.keys.extend_from_slice(&sealed.keys.clone());
+    sealed.rows.extend_from_slice(&sealed.rows.clone());
+    for column in &mut sealed.columns {
+        match column {
+            SealedColumn::Sum { sums, counts } => {
+                sums.extend_from_slice(&sums.clone());
+                counts.extend_from_slice(&counts.clone());
+            }
+            SealedColumn::Extent { values } => values.extend_from_slice(&values.clone()),
+            SealedColumn::Distinct { values } => values.extend_from_slice(&values.clone()),
+        }
+    }
+    let err = store.unseal(store.thaw(sealed).unwrap()).unwrap_err();
+    assert_eq!(err.reason, "a key held twice");
+}
+
+#[test]
+fn sealed_error_display() {
+    let err = SealedError {
+        id: sealed_id(900, 1_800),
+        reason: "no cells",
+    };
+    assert_eq!(
+        err.to_string(),
+        "sealed trips bucket of 900s at 1800: no cells"
+    );
+}
+
+#[test]
+fn a_row_of_a_bucket_never_filled_is_missing() {
+    let (mut store, rows) = three_rows();
+    let mut elsewhere = rows[0].clone();
+    elsewhere[AT] = Datum::Int(START + 86_400);
+    assert_eq!(
+        store.remove_fact_row("trips", &elsewhere),
+        Err(RowError::Missing)
+    );
 }

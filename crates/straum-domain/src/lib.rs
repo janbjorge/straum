@@ -10,6 +10,7 @@ mod hash;
 mod ident;
 mod projection;
 mod rollup;
+mod sealed;
 mod spec;
 mod store;
 mod value;
@@ -18,6 +19,7 @@ pub use agg::Agg;
 pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Ident;
 pub use rollup::RowError;
+pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 pub use spec::{
     Attr, By, Cond, Dim, Fact, Grain, Key, Literal, Measure, Origin, Ref, RefKind, Slot, Spec,
     SpecError, Table, Time, Via,

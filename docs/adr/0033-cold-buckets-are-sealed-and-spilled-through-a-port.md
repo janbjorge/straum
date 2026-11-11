@@ -1,6 +1,6 @@
 # ADR-0033: Cold buckets are sealed and spilled through a port
 
-Status: Accepted, 2026-11-11
+Status: Accepted, 2026-11-11; amended by ADR-0035
 
 ## Context
 

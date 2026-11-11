@@ -1,5 +1,6 @@
 //! What an ask costs: it allocates per group, never per cell, reads only
 //! the cells of the buckets in its range, and stays within a time per cell.
+//! And what sealing saves: the heap a sealed bucket's cells held.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -13,6 +14,12 @@ use straum_domain::{
 
 thread_local! {
     static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    /// Bytes allocated and not yet freed by this thread.
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+}
+
+fn grow(bytes: usize, by: isize) {
+    LIVE.with(|n| n.set(n.get() + by * bytes as isize));
 }
 
 /// Counts the allocations of the thread that makes them, so tests running
@@ -25,15 +32,19 @@ struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
+        grow(layout.size(), 1);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        grow(layout.size(), -1);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
+        grow(new_size, 1);
+        grow(layout.size(), -1);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -243,4 +254,30 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
     let mut by_bucket = ask(&[], 5, 700);
     by_bucket.by = vec![AskKey::Time(TimeKey::Bucket)];
     assert_eq!(store.cells_read(&by_bucket).unwrap(), 695 * per_hour);
+}
+
+fn live() -> isize {
+    LIVE.with(Cell::get)
+}
+
+/// Sealing 90% of the hours, with their copies gone to a spill, frees
+/// about 80% of what the store held: the day buckets stay in memory.
+#[test]
+fn sealing_frees_the_cells_it_seals() {
+    let empty = live();
+    let mut store = store_with(200_000, &[24]);
+    let held = live() - empty;
+    let hours = 200_000 / (2 * ZONES);
+    let before = hours * 9 / 10 * i64::from(HOUR);
+    for id in store.sealable(before) {
+        let spilled = store.sealed_copy(&id).unwrap();
+        assert!(store.seal(&id));
+        drop(spilled);
+    }
+    let sealed = live() - empty;
+    drop(store);
+    let dropped = live() - empty;
+    eprintln!("store held {held} bytes, {sealed} after sealing, {dropped} after drop");
+    assert!(sealed * 100 < held * 20, "{sealed} of {held} bytes");
+    assert_eq!(dropped, 0);
 }

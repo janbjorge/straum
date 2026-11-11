@@ -6,13 +6,18 @@ use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::hash::FastMap;
 use crate::ident::Ident;
 use crate::projection::{NULL, Projection};
-use crate::rollup::{Cells, Rollup, RowError};
+use crate::rollup::{Bucket, Cells, Rollup, RowError};
+use crate::sealed::{Sealed, SealedError, SealedId, Thawed};
 use crate::spec::{Cond, Fact, Grain, Key, Literal, RefKind, Slot, Spec, Via};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 const IN_SPEC: &str = "the fact is in the spec";
 const IN_DIMS: &str = "the dim is in the spec";
+const THAWED: &str = "ask_with is given every bucket sealed_read names";
+
+/// Thawed cells an ask reads, by width and start.
+type Loaded<'t> = FastMap<(i64, i64), &'t Cells>;
 
 /// The cells of every fact, and every dim projected to its key and the
 /// columns the views read. Nothing else: a cell is keyed by the fact's
@@ -132,7 +137,124 @@ impl Store {
 
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let (_, rollup) = self.checked(ask)?;
-        Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
+        Ok(buckets(rollup, ask).map(|(_, _, b)| b.len()).sum())
+    }
+
+    /// Each `date_bin` bucket not sealed that ends by `before`, Unix
+    /// seconds, every fact.
+    pub fn sealable(&self, before: i64) -> Vec<SealedId> {
+        (self.spec.facts().iter().zip(&self.rollups))
+            .flat_map(|(fact, rollup)| {
+                (rollup.sealable(before)).map(|(width, start)| SealedId {
+                    fact: fact.name.clone(),
+                    width,
+                    start,
+                })
+            })
+            .collect()
+    }
+
+    /// A copy of a bucket's cells, for a spill to keep before
+    /// [`Store::seal`] drops them. `None` if it is sealed or has no cells.
+    pub fn sealed_copy(&self, id: &SealedId) -> Option<Sealed> {
+        let rollup = &self.rollups[self.fact_index(id.fact.as_str())?];
+        let (keys, rows, columns) = rollup.sealed_copy(id.width, id.start)?;
+        Some(Sealed {
+            id: id.clone(),
+            keys,
+            rows,
+            columns,
+        })
+    }
+
+    /// Drops a bucket's cells, keeping its place, so asks and changes ask
+    /// for it back. Whether it was not sealed.
+    pub fn seal(&mut self, id: &SealedId) -> bool {
+        match self.fact_index(id.fact.as_str()) {
+            Some(i) => self.rollups[i].seal(id.width, id.start),
+            None => false,
+        }
+    }
+
+    /// Every sealed bucket of a fact, which a truncate drops with the rest.
+    pub fn sealed(&self, fact: &str) -> Vec<SealedId> {
+        let i = self.fact_index(fact).expect(IN_SPEC);
+        (self.rollups[i].sealed())
+            .map(|(width, start)| SealedId {
+                fact: self.spec.facts()[i].name.clone(),
+                width,
+                start,
+            })
+            .collect()
+    }
+
+    /// The sealed buckets [`Store::ask_with`] needs for `ask`.
+    pub fn sealed_read(&self, ask: &Ask) -> Result<Vec<SealedId>, Vec<AskError>> {
+        let (fact, rollup) = self.checked(ask)?;
+        Ok(buckets(rollup, ask)
+            .filter(|(_, _, b)| matches!(b, Bucket::Sealed { .. }))
+            .map(|(width, start, _)| SealedId {
+                fact: fact.name.clone(),
+                width,
+                start,
+            })
+            .collect())
+    }
+
+    /// The sealed buckets a fact row falls in, which must be unsealed
+    /// before the row is added or removed.
+    pub fn sealed_touched(&self, fact: &str, row: &[Datum]) -> Vec<SealedId> {
+        let i = self.fact_index(fact).expect(IN_SPEC);
+        let Some(time) = row.first() else {
+            return Vec::new();
+        };
+        (self.rollups[i].touched(time))
+            .map(|(width, start)| SealedId {
+                fact: self.spec.facts()[i].name.clone(),
+                width,
+                start,
+            })
+            .collect()
+    }
+
+    /// Checks a sealed bucket against the store, so neither an ask nor
+    /// [`Store::unseal`] can panic on it.
+    pub fn thaw(&self, sealed: Sealed) -> Result<Thawed, SealedError> {
+        let Sealed {
+            id,
+            keys,
+            rows,
+            columns,
+        } = sealed;
+        let rollup = match self.fact_index(id.fact.as_str()) {
+            Some(i) if self.rollups[i].has_width(id.width) => &self.rollups[i],
+            Some(_) => {
+                return Err(SealedError {
+                    id,
+                    reason: "no such width",
+                });
+            }
+            None => {
+                return Err(SealedError {
+                    id,
+                    reason: "unknown fact",
+                });
+            }
+        };
+        match rollup.thaw(keys, rows, columns) {
+            Ok(cells) => Ok(Thawed { id, cells }),
+            Err(reason) => Err(SealedError { id, reason }),
+        }
+    }
+
+    /// Puts a sealed bucket's cells back, so changes reach them again.
+    pub fn unseal(&mut self, thawed: Thawed) -> Result<(), SealedError> {
+        let Thawed { id, cells } = thawed;
+        let i = self
+            .fact_index(id.fact.as_str())
+            .expect("thawed by this store");
+        (self.rollups[i].unseal(id.width, id.start, cells))
+            .map_err(|reason| SealedError { id, reason })
     }
 
     /// Every key is a slot of the rollup key or a dim value reached
@@ -142,7 +264,17 @@ impl Store {
     /// another kind of join, or a key with several rows, walks each cell
     /// once per row its joins find, as PostgreSQL repeats the fact row.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
+        self.ask_with(ask, &[])
+    }
+
+    /// As [`Store::ask`], reading sealed buckets from `thawed`, which holds
+    /// every one [`Store::sealed_read`] names.
+    pub fn ask_with(&self, ask: &Ask, thawed: &[Thawed]) -> Result<Answer, Vec<AskError>> {
         let (fact, rollup) = self.checked(ask)?;
+        let loaded: Loaded<'_> = (thawed.iter())
+            .filter(|t| t.id.fact == fact.name)
+            .map(|t| ((t.id.width, t.id.start), &t.cells))
+            .collect();
         // Only the load knows the types, so this check comes after Spec::check.
         let wrong: Vec<AskError> = (ask.filter.iter())
             .flat_map(|cond| {
@@ -159,7 +291,7 @@ impl Store {
         if !wrong.is_empty() {
             return Err(wrong);
         }
-        let buckets = cover(rollup, ask).count();
+        let buckets = buckets(rollup, ask).count();
 
         let mut by: Vec<Part> = ask
             .by
@@ -212,13 +344,14 @@ impl Store {
             None => ask_once(
                 rollup,
                 ask,
+                &loaded,
                 &mut by,
                 &mut groups,
                 &mut filter,
                 &mut measures,
             ),
             Some(mut expander) => {
-                for (bucket, cells) in cover(rollup, ask) {
+                for (bucket, cells) in cover(rollup, ask, &loaded) {
                     by.iter_mut().for_each(|p| p.enter(bucket));
                     for i in 0..cells.len() {
                         for row in expander.expand(rollup, cells.key(i)) {
@@ -400,6 +533,7 @@ impl Store {
 fn ask_once<'s>(
     rollup: &'s Rollup,
     ask: &Ask,
+    loaded: &'s Loaded<'s>,
     by: &mut [Part<'s>],
     groups: &mut Groups<'s>,
     filter: &mut [Test<'s, '_>],
@@ -409,7 +543,7 @@ fn ask_once<'s>(
     // cells passed over. Again per measure with a filter of its own.
     let mut cell_groups = Vec::new();
     let mut measure_groups = Vec::new();
-    for (bucket, cells) in cover(rollup, ask) {
+    for (bucket, cells) in cover(rollup, ask, loaded) {
         by.iter_mut().for_each(|p| p.enter(bucket));
         cell_groups.clear();
         cell_groups.resize(cells.len(), 1);
@@ -438,9 +572,21 @@ fn slot_of(fact: &Fact, slot: Slot<'_>) -> usize {
     fact.rollup_key().position(|k| k == slot).expect(CHECKED)
 }
 
-fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Cells)> {
+fn buckets<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, i64, &'r Bucket)> {
     let each_bucket = ask.by.iter().any(|key| matches!(key, AskKey::Time(_)));
     rollup.cover(ask.from, ask.to, each_bucket)
+}
+
+/// Each bucket's start and cells, a sealed one's from `loaded`.
+fn cover<'r>(
+    rollup: &'r Rollup,
+    ask: &Ask,
+    loaded: &'r Loaded<'r>,
+) -> impl Iterator<Item = (i64, &'r Cells)> {
+    buckets(rollup, ask).map(|(width, start, bucket)| match bucket {
+        Bucket::Hot(cells) => (start, cells),
+        Bucket::Sealed { .. } => (start, *loaded.get(&(width, start)).expect(THAWED)),
+    })
 }
 
 /// One way a cell's joins resolve: per ref, the dim row matched, or none
