@@ -3,23 +3,25 @@
 //! the database at the same LSN.
 
 mod fake;
+mod spill;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use straum_app::{
-    AnswerError, Answered, App, Change, Error, Limits, Lsn, Status, Step, Wal, Writer,
+    AnswerError, Answered, App, Change, Error, Limits, Lsn, Spilling, Status, Step, Wal, Writer,
 };
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, Spec, Store,
-    TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, SealedId,
+    Spec, Store, TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
+use spill::MemorySpill;
 
 const DAY: i64 = 86_400;
 /// Every row's time falls in `[0, RANGE)`.
@@ -655,6 +657,8 @@ fn status_reports_what_straum_did() {
             last_failure: None,
             starts: 0,
             failures: 0,
+            sealed: None,
+            unseals: 0,
         }
     );
 
@@ -846,6 +850,234 @@ fn a_change_that_does_not_fit_starts_over() {
             "{name}"
         );
     }
+}
+
+/// Long enough that no bucket here is old enough to seal.
+const NEVER: Duration = Duration::from_secs(1_000 * 365 * DAY as u64);
+
+/// A writer that seals buckets once they ended `seal_after` ago.
+fn spilling(seal_after: Duration) -> (Rc<RefCell<Database>>, Writer<Fake>, Arc<MemorySpill>) {
+    let db = Database::new(&TABLES).shared();
+    let spill = Arc::new(MemorySpill::default());
+    let spilling = Spilling {
+        spill: spill.clone(),
+        seal_after,
+    };
+    let app = App::with_spilling(spec(), LIMITS, spilling);
+    (Rc::clone(&db), Writer::new(app, Fake::new(&db)), spill)
+}
+
+fn hour_of_trips() -> SealedId {
+    SealedId {
+        fact: id("trips"),
+        width: 3_600,
+        start: 0,
+    }
+}
+
+fn day_of_logins() -> SealedId {
+    SealedId {
+        fact: id("logins"),
+        width: DAY,
+        start: 0,
+    }
+}
+
+#[test]
+fn old_buckets_are_sealed_and_answer_as_before() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), [day_of_logins(), hour_of_trips()]);
+    for fact in ["trips", "logins"] {
+        assert_eq!(
+            by_borough(writer.app(), fact),
+            expected(&db.borrow(), &ask(fact, &[fact], &["borough"])).rows,
+            "{fact}"
+        );
+    }
+    assert_eq!(spill.gets(), 2);
+}
+
+#[test]
+fn buckets_younger_than_seal_after_stay() {
+    let (db, mut writer, spill) = spilling(NEVER);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), []);
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
+    assert_eq!(spill.gets(), 0);
+}
+
+#[test]
+fn a_change_unseals_the_buckets_it_falls_in() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    let lsn = db.borrow_mut().commit(vec![trip(2, 1, 1, 5)]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    // Back in memory until the writer next seals.
+    assert_eq!(spill.ids(), [day_of_logins()]);
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
+    let lsn = db.borrow_mut().commit(vec![Write::Delete {
+        table: "trips",
+        key: int(1),
+    }]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
+    assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
+}
+
+#[test]
+fn each_start_empties_the_spill() {
+    let (db, mut writer, spill) = spilling(NEVER);
+    (spill.buckets.lock().unwrap()).insert(hour_of_trips(), stale_bucket());
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), []);
+    db.borrow_mut().drop_connection = true;
+    db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    assert!(writer.step().is_err());
+    writer.step().unwrap();
+    assert_eq!(spill.clears(), 2);
+}
+
+/// A bucket no store sealed: a cell keyed by codes it never gave.
+fn stale_bucket() -> straum_domain::Sealed {
+    straum_domain::Sealed {
+        id: hour_of_trips(),
+        keys: vec![7, 7],
+        rows: vec![1],
+        columns: Vec::new(),
+    }
+}
+
+#[test]
+fn a_truncate_removes_its_sealed_buckets_from_the_spill() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    assert_eq!(writer.app().status().sealed, Some(2));
+    db.borrow_mut()
+        .commit(vec![Write::Truncate { table: "trips" }]);
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), [day_of_logins()]);
+    assert_eq!(writer.app().status().sealed, Some(1));
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
+    assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
+}
+
+#[test]
+fn a_truncate_the_spill_cannot_take_starts_over_without_a_leak() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    // A dim has no buckets: its truncate leaves the spill alone.
+    db.borrow_mut()
+        .commit(vec![Write::Truncate { table: "zones" }]);
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), [day_of_logins(), hour_of_trips()]);
+
+    db.borrow_mut()
+        .commit(vec![Write::Truncate { table: "trips" }]);
+    spill.break_it(true);
+    assert!(matches!(writer.step(), Err(Error::Spill(_))));
+    spill.break_it(false);
+    writer.step().unwrap();
+    // The start emptied the spill and sealed what the store holds now.
+    assert_eq!(spill.ids(), [day_of_logins()]);
+    assert_eq!(writer.app().status().sealed, Some(1));
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
+}
+
+#[test]
+fn status_counts_sealed_buckets_and_unseals() {
+    let (db, mut writer, _spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    let status = writer.app().status();
+    assert_eq!((status.sealed, status.unseals), (Some(2), 0));
+    db.borrow_mut().commit(vec![trip(2, 1, 1, 5), login(2, 1)]);
+    writer.step().unwrap();
+    let status = writer.app().status();
+    assert_eq!((status.sealed, status.unseals), (Some(0), 2));
+}
+
+#[test]
+fn a_spill_that_fails_starts_over() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10)]);
+    spill.break_it(true);
+    let err = writer.step().unwrap_err();
+    assert!(matches!(err, Error::Spill(_)), "{err:?}");
+    assert_eq!(err.to_string(), "spill: broken");
+    assert!(!writer.app().ready());
+    spill.break_it(false);
+    writer.step().unwrap();
+    assert_eq!(spill.ids(), [hour_of_trips()]);
+
+    // Unsealing for a change fails too.
+    db.borrow_mut().commit(vec![trip(2, 1, 1, 5)]);
+    spill.break_it(true);
+    assert!(matches!(writer.step(), Err(Error::Spill(_))));
+    spill.break_it(false);
+    writer.step().unwrap();
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
+}
+
+#[test]
+fn an_ask_fails_when_a_sealed_bucket_cannot_be_read() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    spill.break_it(true);
+    assert_eq!(
+        count(writer.app(), "trips"),
+        Err(AnswerError::Spill("broken".into()))
+    );
+    spill.break_it(false);
+    spill.buckets.lock().unwrap().clear();
+    assert_eq!(
+        count(writer.app(), "trips").unwrap_err().to_string(),
+        "reading a sealed bucket failed: no trips bucket of 3600s at 0"
+    );
+    // An ask outside the sealed buckets needs none of them.
+    let later = Ask {
+        from: RANGE,
+        to: 2 * RANGE,
+        ..ask("trips", &["trips"], &[])
+    };
+    assert!(writer.app().ask(&later).is_ok());
+}
+
+#[test]
+fn a_spilled_bucket_that_does_not_fit_starts_over() {
+    let (db, mut writer, spill) = spilling(Duration::ZERO);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    spill
+        .buckets
+        .lock()
+        .unwrap()
+        .insert(hour_of_trips(), stale_bucket());
+    let reason = "sealed trips bucket of 3600s at 0: a code the store never gave";
+    let asked = count(writer.app(), "trips").unwrap_err();
+    assert_eq!(asked, AnswerError::Spill(reason.into()));
+    db.borrow_mut().commit(vec![trip(2, 1, 1, 5)]);
+    let err = writer.step().unwrap_err();
+    assert!(matches!(err, Error::Sealed(_)), "{err:?}");
+    assert_eq!(err.to_string(), reason);
+    // The start after holds every row again.
+    writer.step().unwrap();
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
 }
 
 #[test]
@@ -1111,7 +1343,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
     ask
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Seen {
     answered: usize,
     failed: usize,
@@ -1145,14 +1377,26 @@ fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
     }
 }
 
-fn follow(seed: u64, seen: &mut Seen) {
+/// Follows random writes, checking asks at every LSN. With a spill, every
+/// bucket is sealed on each start, so changes unseal them as they come.
+fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
     let mut rng = Rng(seed);
     let db = Database::new(&TABLES).shared();
     let zones: Vec<Write> = (1..=6)
         .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
         .collect();
     db.borrow_mut().commit(zones);
-    let app = App::new(spec(), LIMITS);
+    let app = match spill {
+        None => App::new(spec(), LIMITS),
+        Some(spill) => {
+            let spill = Arc::clone(spill);
+            let spilling = Spilling {
+                spill,
+                seal_after: Duration::ZERO,
+            };
+            App::with_spilling(spec(), LIMITS, spilling)
+        }
+    };
     let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));
     let (watch, count) = (app.clone(), Rc::clone(&aside));
@@ -1186,6 +1430,16 @@ fn follow(seed: u64, seen: &mut Seen) {
             if let Some(lsn) = position {
                 check(writer.app(), &db.borrow(), lsn, &mut rng, seen);
             }
+            // The spill holds what the store has sealed and no more. After
+            // a failed step it may hold more, until the next start empties
+            // it.
+            if let (Some(spill), Some(_)) = (spill, position) {
+                assert_eq!(
+                    writer.app().status().sealed,
+                    Some(spill.ids().len()),
+                    "seed {seed}"
+                );
+            }
         }
         assert!(writer.app().ready(), "seed {seed}");
     }
@@ -1196,11 +1450,25 @@ fn follow(seed: u64, seen: &mut Seen) {
 fn follows_the_database() {
     let mut seen = Seen::default();
     for seed in 0..16 {
-        follow(seed, &mut seen);
+        follow(seed, &mut seen, None);
     }
     // The run went through every path it claims to test.
     assert!(seen.answered > 1_000, "{seen:?}");
     assert!(seen.failed > seen.unfit, "{seen:?}");
     assert!(seen.unfit > 0, "{seen:?}");
     assert!(seen.aside > 0, "{seen:?}");
+}
+
+/// Spilling changes no answer and adds no failure: each seed runs as it
+/// does with every bucket in memory.
+#[test]
+fn follows_the_database_while_spilling() {
+    let spill = Arc::new(MemorySpill::default());
+    for seed in 0..16 {
+        let (mut plain, mut spilled) = (Seen::default(), Seen::default());
+        follow(seed, &mut plain, None);
+        follow(seed, &mut spilled, Some(&spill));
+        assert_eq!(spilled, plain, "seed {seed}");
+    }
+    assert!(spill.gets() > 1_000, "{}", spill.gets());
 }

@@ -57,6 +57,13 @@ pub(crate) fn write(status: &Status) -> String {
         None => "none".to_owned(),
         Some(Failure { at, error }) => format!("{}: {error}", timestamp(*at)),
     };
+    let sealed = match status.sealed {
+        None => "no spill".to_owned(),
+        Some(sealed) => format!(
+            "{sealed} buckets in the spill, {} unsealed by a change",
+            status.unseals
+        ),
+    };
     let mut out = String::new();
     for (label, value) in [
         ("ready", ready),
@@ -67,6 +74,7 @@ pub(crate) fn write(status: &Status) -> String {
         ("starts", status.starts.to_string()),
         ("failures", status.failures.to_string()),
         ("last failure", last_failure),
+        ("sealed", sealed),
     ] {
         let label = format!("{label}:");
         // An error of several lines keeps them under its value.
@@ -116,6 +124,8 @@ mod tests {
             }),
             starts: 2,
             failures: 1,
+            sealed: Some(12),
+            unseals: 3,
         }
     }
 
@@ -132,6 +142,7 @@ WAL held:     256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
 starts:       2
 failures:     1
 last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
+sealed:       12 buckets in the spill, 3 unsealed by a change
 "
         );
     }
@@ -174,6 +185,7 @@ starts:       2
 failures:     1
 last failure: 1970-01-01T00:00:00Z: trips: one
               trips: two
+sealed:       12 buckets in the spill, 3 unsealed by a change
 "
         );
 

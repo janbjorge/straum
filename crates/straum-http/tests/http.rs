@@ -4,12 +4,16 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use jiff::{SignedDuration, Timestamp};
-use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Ask, ColumnType, Datum, Dim, Fact, Ident, Spec, Store};
+use straum_app::{
+    App, Change, Commit, Limits, Lsn, Source, SourceError, Spill, SpillError, Spilling, Step, Wal,
+    Writer,
+};
+use straum_domain::{Ask, ColumnType, Datum, Dim, Fact, Ident, Sealed, SealedId, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -281,6 +285,45 @@ fn answers_asks_as_json() {
     server.stop();
 }
 
+/// Takes every bucket and gives none back.
+#[derive(Debug)]
+struct Lost;
+
+impl Spill for Lost {
+    fn put(&self, _: &Sealed) -> Result<(), SpillError> {
+        Ok(())
+    }
+
+    fn get(&self, id: &SealedId) -> Result<Sealed, SpillError> {
+        Err(format!("lost {id}").into())
+    }
+
+    fn remove(&self, _: &SealedId) -> Result<(), SpillError> {
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), SpillError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
+    let spec = straum_notation::parse(SPEC).unwrap();
+    let spilling = Spilling {
+        spill: Arc::new(Lost),
+        seal_after: Duration::ZERO,
+    };
+    let mut writer = Writer::new(App::with_spilling(spec, LIMITS, spilling), script());
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let range = r#"["2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"]"#;
+    let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
+    let error = r#"{"errors":["reading a sealed bucket failed: lost trips bucket of 3600s at 1704067200"]}"#;
+    assert_eq!((reply.status, reply.body.as_str()), (500, error));
+    server.stop();
+}
+
 #[test]
 fn no_reply_may_be_cached() {
     let mut writer = writer();
@@ -469,6 +512,7 @@ WAL held:     unknown until every table is loaded
 starts:       0
 failures:     0
 last failure: none
+sealed:       no spill
 "
     );
 

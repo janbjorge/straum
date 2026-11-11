@@ -113,6 +113,7 @@ WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
 starts:       1
 failures:     0
 last failure: none
+sealed:       no spill
 ```
 
 - `ready`: `yes`, or `no` and why, as `/readyz` says.
@@ -125,3 +126,6 @@ last failure: none
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
 - `last failure`: when, and the error.
+- `sealed`: `no spill`, or the buckets in the spill and how many a
+  change brought back since the process started. A count that keeps
+  climbing means old buckets keep changing.

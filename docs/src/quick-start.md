@@ -167,6 +167,7 @@ WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
 starts:       1
 failures:     0
 last failure: none
+sealed:       no spill
 ```
 
 Stop straum with Ctrl-C and remove PostgreSQL and the network:

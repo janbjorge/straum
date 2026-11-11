@@ -326,7 +326,7 @@ fn serves_asks_from_postgres() {
         status.starts_with("ready:        yes\napplied:      "),
         "{status}"
     );
-    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\n";
+    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\nsealed:       no spill\n";
     assert!(status.ends_with(counts), "{status}");
 
     let (status, body) = straum.call("POST", "/ask", ASK);

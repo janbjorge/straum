@@ -1,16 +1,20 @@
 //! A store kept in step with a source by one writer, and read by asks while
 //! it writes. The writer holds the lock only to apply what it has read,
 //! never while it waits on the source, so asks never wait on PostgreSQL.
+//! With a spill, the writer seals `date_bin` buckets that ended
+//! `seal_after` ago into it and unseals one before a change reaches it;
+//! asks read sealed buckets from it (ADR-0033, ADR-0035).
 
 use std::fmt;
 use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Ident, RowError, Spec, Store};
+use straum_domain::{Answer, Ask, AskError, Ident, RowError, SealedError, SealedId, Spec, Store};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
+use crate::spill::{SpillError, Spilling};
 
 /// Panic message for a poisoned lock. The store may be half updated, so
 /// nothing reads it again.
@@ -46,12 +50,15 @@ struct State {
     /// `None` until every table is loaded, and again after a failure.
     following: Option<Following>,
     limits: Limits,
+    /// `None` keeps every bucket in memory.
+    spilling: Option<Spilling>,
     /// The last failure, until the next start.
     error: Option<String>,
     /// The last failure and when it came, kept across starts.
     last_failure: Option<Failure>,
     starts: u64,
     failures: u64,
+    unseals: u64,
 }
 
 /// Where a stream with every table loaded stands.
@@ -74,6 +81,7 @@ struct Following {
 pub struct Writer<S> {
     spec: Spec,
     limits: Limits,
+    spilling: Option<Spilling>,
     source: S,
     app: App,
     /// When the server's WAL was last read.
@@ -127,6 +135,11 @@ pub struct Status {
     pub starts: u64,
     /// Steps that failed, after which straum started over.
     pub failures: u64,
+    /// Buckets in the spill now; `None` without a spill.
+    pub sealed: Option<usize>,
+    /// Sealed buckets a change brought back, since straum started. One
+    /// that keeps climbing means old buckets keep changing.
+    pub unseals: u64,
 }
 
 /// A step that failed.
@@ -143,15 +156,26 @@ impl App {
     /// An empty store that answers not ready until a [`Writer`] has loaded
     /// it.
     pub fn new(spec: Spec, limits: Limits) -> App {
+        App::open(spec, limits, None)
+    }
+
+    /// As [`App::new`], with buckets sealed into a spill.
+    pub fn with_spilling(spec: Spec, limits: Limits, spilling: Spilling) -> App {
+        App::open(spec, limits, Some(spilling))
+    }
+
+    fn open(spec: Spec, limits: Limits, spilling: Option<Spilling>) -> App {
         App {
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec),
                 following: None,
                 limits,
+                spilling,
                 error: None,
                 last_failure: None,
                 starts: 0,
                 failures: 0,
+                unseals: 0,
             })),
         }
     }
@@ -179,7 +203,19 @@ impl App {
             .check(ask)
             .map_err(AnswerError::Invalid)?;
         let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
-        let answer = state.store.ask(ask).map_err(AnswerError::Invalid)?;
+        let store = &state.store;
+        let ids = store.sealed_read(ask).map_err(AnswerError::Invalid)?;
+        let thawed = match (&state.spilling, ids.is_empty()) {
+            (_, true) => Vec::new(),
+            (None, false) => unreachable!("only a spilling writer seals"),
+            (Some(spilling), false) => (ids.iter())
+                .map(|id| {
+                    let sealed = spilling.spill.get(id).map_err(spill_error)?;
+                    store.thaw(sealed).map_err(spill_error)
+                })
+                .collect::<Result<_, _>>()?,
+        };
+        let answer = store.ask_with(ask, &thawed).map_err(AnswerError::Invalid)?;
         Ok(Answered {
             answer,
             lsn: following.position,
@@ -208,6 +244,12 @@ impl App {
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,
+            sealed: state.spilling.as_ref().map(|_| {
+                (state.store.spec().facts().iter())
+                    .map(|fact| state.store.sealed(fact.name.as_str()).len())
+                    .sum()
+            }),
+            unseals: state.unseals,
         }
     }
 
@@ -218,6 +260,10 @@ impl App {
     fn write(&self) -> RwLockWriteGuard<'_, State> {
         self.state.write().expect(POISONED)
     }
+}
+
+fn spill_error(e: impl fmt::Display) -> AnswerError {
+    AnswerError::Spill(e.to_string())
 }
 
 impl Following {
@@ -306,13 +352,18 @@ impl State {
 
 impl<S: Source> Writer<S> {
     pub fn new(app: App, source: S) -> Writer<S> {
-        let (spec, limits) = {
+        let (spec, limits, spilling) = {
             let state = app.read();
-            (state.store.spec().clone(), state.limits)
+            (
+                state.store.spec().clone(),
+                state.limits,
+                state.spilling.clone(),
+            )
         };
         Writer {
             spec,
             limits,
+            spilling,
             source,
             app,
             measured: Instant::now(),
@@ -353,6 +404,9 @@ impl<S: Source> Writer<S> {
     fn start(&mut self) -> Result<Lsn, Error> {
         let empty = || Store::new(self.spec.clone());
         drop(mem::replace(&mut self.app.write().store, empty()));
+        if let Some(spilling) = &self.spilling {
+            spilling.spill.clear().map_err(Error::Spill)?;
+        }
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
         let start = self.source.open(&self.spec)?;
@@ -376,6 +430,8 @@ impl<S: Source> Writer<S> {
         });
         state.error = None;
         state.starts += 1;
+        drop(state);
+        self.seal()?;
         Ok(start)
     }
 
@@ -387,14 +443,77 @@ impl<S: Source> Writer<S> {
                 let following = state.following();
                 following.lag.read(&wal, self.measured);
                 following.wal = wal;
+                drop(state);
+                self.seal()?;
             }
             let wait = MEASURE_EVERY.saturating_sub(self.measured.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {
                 let lsn = commit.lsn;
+                self.unseal(&commit)?;
+                let truncated = truncated(&self.app.read().store, &commit);
                 self.app.write().apply(commit).map_err(Error::Unfit)?;
+                self.forget(&truncated)?;
                 return Ok(lsn);
             }
         }
+    }
+
+    /// Seals each bucket that ended [`Spilling::seal_after`] ago: put into
+    /// the spill before its cells go, so an ask never meets a sealed bucket
+    /// the spill doesn't hold. Only the writer changes the store, so the
+    /// copy is still the bucket when its cells go.
+    fn seal(&mut self) -> Result<(), Error> {
+        let Some(spilling) = &self.spilling else {
+            return Ok(());
+        };
+        let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
+        let now = since_epoch.map_or(0, seconds);
+        let before = now.saturating_sub(seconds(spilling.seal_after));
+        let ids = self.app.read().store.sealable(before);
+        for id in ids {
+            let Some(sealed) = self.app.read().store.sealed_copy(&id) else {
+                continue;
+            };
+            spilling.spill.put(&sealed).map_err(Error::Spill)?;
+            self.app.write().store.seal(&id);
+        }
+        Ok(())
+    }
+
+    /// Unseals the buckets the commit's fact rows fall in, so it applies.
+    fn unseal(&mut self, commit: &Commit) -> Result<(), Error> {
+        let Some(spilling) = &self.spilling else {
+            return Ok(());
+        };
+        let ids = touched(&self.app.read().store, commit);
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let sealed = (ids.iter())
+            .map(|id| spilling.spill.get(id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Error::Spill)?;
+        {
+            let mut state = self.app.write();
+            for sealed in sealed {
+                let thawed = state.store.thaw(sealed)?;
+                state.store.unseal(thawed)?;
+                state.unseals += 1;
+            }
+        }
+        self.forget(&ids)
+    }
+
+    /// Removes buckets the store no longer holds sealed, so the spill
+    /// holds what the store has sealed and no more.
+    fn forget(&self, ids: &[SealedId]) -> Result<(), Error> {
+        let Some(spilling) = &self.spilling else {
+            return Ok(());
+        };
+        for id in ids {
+            spilling.spill.remove(id).map_err(Error::Spill)?;
+        }
+        Ok(())
     }
 
     /// Reads the server's WAL, and fails once the slot holds more of it
@@ -410,6 +529,47 @@ impl<S: Source> Writer<S> {
         }
         Ok(wal)
     }
+}
+
+/// The sealed buckets a commit's fact rows fall in, each once.
+fn touched(store: &Store, commit: &Commit) -> Vec<SealedId> {
+    let mut ids = Vec::new();
+    for change in &commit.changes {
+        let table = change.table().as_str();
+        if store.spec().fact(table).is_none() {
+            continue;
+        }
+        let rows: &[&Vec<_>] = match change {
+            Change::Insert { row, .. } => &[row],
+            Change::Update { old, new, .. } => &[old, new],
+            Change::Delete { old, .. } => &[old],
+            Change::Truncate { .. } | Change::Altered { .. } => &[],
+        };
+        for row in rows {
+            ids.extend(store.sealed_touched(table, row));
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The sealed buckets of the facts a commit truncates.
+fn truncated(store: &Store, commit: &Commit) -> Vec<SealedId> {
+    (commit.changes.iter())
+        .filter_map(|change| match change {
+            Change::Truncate { table } if store.spec().fact(table.as_str()).is_some() => {
+                Some(store.sealed(table.as_str()))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// Whole seconds, saturating.
+fn seconds(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 impl From<RowError> for Stale {
@@ -430,6 +590,15 @@ pub enum Error {
         retained: u64,
         limit: u64,
     },
+    Spill(SpillError),
+    /// A bucket from the spill doesn't fit the store.
+    Sealed(SealedError),
+}
+
+impl From<SealedError> for Error {
+    fn from(e: SealedError) -> Error {
+        Error::Sealed(e)
+    }
 }
 
 impl From<SourceError> for Error {
@@ -449,6 +618,8 @@ impl fmt::Display for Error {
                 mib(*retained),
                 mib(*limit)
             ),
+            Error::Spill(e) => write!(f, "spill: {e}"),
+            Error::Sealed(e) => write!(f, "{e}"),
         }
     }
 }
@@ -464,12 +635,15 @@ pub enum AnswerError {
     /// The tables are loading.
     NotReady,
     Invalid(Vec<AskError>),
+    /// A sealed bucket the ask reads could not be read back.
+    Spill(String),
 }
 
 impl fmt::Display for AnswerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AnswerError::NotReady => f.write_str("not ready"),
+            AnswerError::Spill(e) => write!(f, "reading a sealed bucket failed: {e}"),
             AnswerError::Invalid(errors) => {
                 for (i, e) in errors.iter().enumerate() {
                     if i > 0 {

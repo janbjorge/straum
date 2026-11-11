@@ -180,6 +180,9 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
             let invalid: Vec<String> = invalid.iter().map(ToString::to_string).collect();
             errors(StatusCode::BAD_REQUEST, &invalid)
         }
+        Ok(Err(e @ AnswerError::Spill(_))) => {
+            errors(StatusCode::INTERNAL_SERVER_ERROR, &[e.to_string()])
+        }
         Err(_) => {
             let error = "straum failed while answering; its log says why".to_owned();
             errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
