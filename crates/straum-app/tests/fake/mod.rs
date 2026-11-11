@@ -98,7 +98,6 @@ pub struct Database {
 /// reads.
 pub struct Fake {
     db: Rc<RefCell<Database>>,
-    spec: Option<Spec>,
     stream: Option<Stream>,
     pub on_load: Option<OnLoad>,
 }
@@ -255,7 +254,6 @@ impl Fake {
     pub fn new(db: &Rc<RefCell<Database>>) -> Fake {
         Fake {
             db: Rc::clone(db),
-            spec: None,
             stream: None,
             on_load: None,
         }
@@ -277,11 +275,10 @@ impl Fake {
 }
 
 impl Source for Fake {
-    fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
+    fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
         let start = db.lsn();
-        self.spec = Some(spec.clone());
         self.stream = Some(Stream {
             start,
             next: db.log.len(),

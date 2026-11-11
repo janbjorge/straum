@@ -807,9 +807,8 @@ struct Test<'s, 'a> {
     memo: Vec<Known>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Known {
-    #[default]
     Unknown,
     Holds,
     Fails,

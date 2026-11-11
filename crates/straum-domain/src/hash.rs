@@ -11,7 +11,6 @@ const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 
 pub(crate) type FastMap<K, V> = HashMap<K, V, Seeded>;
 
-#[derive(Debug, Clone)]
 pub(crate) struct Seeded(u64);
 
 impl Default for Seeded {

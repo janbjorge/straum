@@ -4,7 +4,6 @@ use std::io;
 use straum_app::Lsn;
 use straum_domain::RowError;
 
-use crate::dsn::DsnError;
 use crate::pgoutput::DecodeError;
 use crate::value::ValueError;
 
@@ -23,7 +22,6 @@ pub enum Error {
     Value(ValueError),
     /// A loaded row that doesn't fit its table in straum.
     Row(RowError),
-    Dsn(DsnError),
     /// TLS didn't start: the server has it off, or straum doesn't trust its
     /// certificate.
     Tls(String),
@@ -61,12 +59,6 @@ impl From<ValueError> for Error {
     }
 }
 
-impl From<DsnError> for Error {
-    fn from(e: DsnError) -> Error {
-        Error::Dsn(e)
-    }
-}
-
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -76,7 +68,6 @@ impl fmt::Display for Error {
             Error::Decode(e) => write!(f, "{e}"),
             Error::Value(e) => write!(f, "{e}"),
             Error::Row(e) => write!(f, "loaded {e}"),
-            Error::Dsn(e) => write!(f, "{e}"),
             Error::Tls(e) => write!(f, "TLS to PostgreSQL: {e}"),
             Error::Setup(problems) => f.write_str(&problems.join("\n")),
             Error::Transaction { lsn, limit } => write!(
@@ -123,7 +114,6 @@ mod tests {
                 Error::Row(RowError::Missing),
                 "loaded removed row was never added",
             ),
-            (Error::from(DsnError::Host), "DSN must name a host"),
             (Error::Tls("no".into()), "TLS to PostgreSQL: no"),
             (Error::Setup(vec!["one".into(), "two".into()]), "one\ntwo"),
             (

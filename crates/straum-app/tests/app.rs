@@ -189,7 +189,7 @@ fn starts_from_one_snapshot() {
 
     let before = SystemTime::now();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
-    assert!(writer.app().ready());
+    assert!(writer.app().status().ready);
     // Dims load first, so the facts' rows find them when asked.
     assert_eq!(db.borrow().loads, ["zones", "trips", "logins"]);
     let answered = writer
@@ -240,7 +240,7 @@ fn a_value_of_another_type_is_refused_once_loaded() {
 #[test]
 fn not_ready_before_the_first_step() {
     let (_db, writer) = setup(&TABLES);
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
     // A wrong ask is refused for what it is, ready or not.
     assert_eq!(
@@ -256,9 +256,9 @@ fn a_failed_start_is_tried_again() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().drop_connection = true;
     assert_eq!(writer.step().unwrap_err().to_string(), "connection dropped");
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
-    assert!(writer.app().ready());
+    assert!(writer.app().status().ready);
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn a_dropped_stream_starts_over() {
     let second = db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
     db.borrow_mut().drop_connection = true;
     assert!(writer.step().is_err());
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
 
     // The new stream starts after the second commit, and the new load counts
@@ -328,7 +328,7 @@ fn fact_change_without_the_old_row_starts_over() {
         writer.step().unwrap_err().to_string(),
         "a change no longer fits logins"
     );
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
     let lsn = db.borrow().lsn();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert_eq!(db.borrow().loads[3..], ["zones", "trips", "logins"]);
@@ -542,7 +542,7 @@ fn tables_outside_the_spec_are_skipped() {
         .commit(vec![insert("audit", 1, vec![text("x")])]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
     assert_eq!(db.borrow().loads.len(), 3, "no reload");
-    assert!(writer.app().ready());
+    assert!(writer.app().status().ready);
 }
 
 /// Asks the app from another thread, so a writer that holds the lock while
@@ -584,12 +584,15 @@ fn asks_wait_while_the_tables_load() {
 #[test]
 fn the_last_failure_is_kept_until_the_next_start() {
     let (db, mut writer) = setup(&TABLES);
-    assert_eq!(writer.app().error(), None);
+    assert_eq!(writer.app().status().error, None);
     db.borrow_mut().drop_connection = true;
     writer.step().unwrap_err();
-    assert_eq!(writer.app().error().as_deref(), Some("connection dropped"));
+    assert_eq!(
+        writer.app().status().error.as_deref(),
+        Some("connection dropped")
+    );
     writer.step().unwrap();
-    assert_eq!(writer.app().error(), None);
+    assert_eq!(writer.app().status().error, None);
 }
 
 #[test]
@@ -603,7 +606,7 @@ fn ready_only_within_the_lag_bound() {
     // Loading takes time, so WAL written meanwhile has an age.
     fake.on_load = Some(Box::new(|_| thread::sleep(Duration::from_millis(1))));
     let mut writer = Writer::new(App::new(spec(), limits), fake);
-    assert_eq!(writer.app().lag(), None);
+    assert_eq!(writer.app().status().lag, None);
 
     // WAL written during the load that the slot hasn't confirmed.
     let wal = |server, confirmed| Wal {
@@ -613,12 +616,12 @@ fn ready_only_within_the_lag_bound() {
     };
     db.borrow_mut().wal = Some(wal(200, 100));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
-    assert!(writer.app().lag().unwrap() >= Duration::from_millis(2));
-    assert!(!writer.app().ready());
+    assert!(writer.app().status().lag.unwrap() >= Duration::from_millis(2));
+    assert!(!writer.app().status().ready);
     // Answers are as of before the load, not the reading after it.
     let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(behind.as_of + Duration::from_millis(2) <= SystemTime::now());
-    assert_eq!(writer.app().error(), None);
+    assert_eq!(writer.app().status().error, None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
 
@@ -628,8 +631,8 @@ fn ready_only_within_the_lag_bound() {
     db.borrow_mut().waits = 1;
     let lsn = db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(writer.app().lag(), Some(Duration::ZERO));
-    assert!(writer.app().ready());
+    assert_eq!(writer.app().status().lag, Some(Duration::ZERO));
+    assert!(writer.app().status().ready);
     let caught_up = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(caught_up.as_of >= behind.as_of + Duration::from_secs(1));
 
@@ -637,7 +640,7 @@ fn ready_only_within_the_lag_bound() {
     db.borrow_mut().drop_connection = true;
     db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
     writer.step().unwrap_err();
-    assert_eq!(writer.app().lag(), None);
+    assert_eq!(writer.app().status().lag, None);
 }
 
 #[test]
@@ -737,20 +740,20 @@ fn too_much_wal_starts_over() {
         matches!(err, Error::Retained { retained, limit: 4_294_967_296 } if retained == 5 << 30)
     );
     assert_eq!(err.to_string(), message);
-    assert!(!writer.app().ready());
-    assert_eq!(writer.app().error().as_deref(), Some(message));
+    assert!(!writer.app().status().ready);
+    assert_eq!(writer.app().status().error.as_deref(), Some(message));
 
     // Up to the limit is fine.
     db.borrow_mut().wal = Some(held(limit));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
-    assert!(writer.app().ready());
+    assert!(writer.app().status().ready);
 
     // Past it while streaming, at the next reading.
     db.borrow_mut().wal = Some(held(5 << 30));
     db.borrow_mut().waits = 1;
     db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     assert_eq!(writer.step().unwrap_err().to_string(), message);
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
 }
 
 #[test]
@@ -766,7 +769,7 @@ fn a_row_that_does_not_fit_stops_straum() {
     assert_eq!(err.to_string(), "a change no longer fits trips");
     let err = writer.step().unwrap_err();
     assert_eq!(err.to_string(), "column fare is not an integer");
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
 
     // Once the row is fixed, straum starts again.
     row[3] = int(10);
@@ -842,7 +845,7 @@ fn a_change_that_does_not_fit_starts_over() {
 
         let err = writer.step().unwrap_err();
         assert!(matches!(&err, Error::Unfit(t) if *t == table), "{name}");
-        assert!(!writer.app().ready(), "{name}");
+        assert!(!writer.app().status().ready, "{name}");
         assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
         assert_eq!(
             writer.app().ask(&by_borough).unwrap().answer,
@@ -1017,7 +1020,7 @@ fn a_spill_that_fails_starts_over() {
     let err = writer.step().unwrap_err();
     assert!(matches!(err, Error::Spill(_)), "{err:?}");
     assert_eq!(err.to_string(), "spill: broken");
-    assert!(!writer.app().ready());
+    assert!(!writer.app().status().ready);
     spill.break_it(false);
     writer.step().unwrap();
     assert_eq!(spill.ids(), [hour_of_trips()]);
@@ -1441,7 +1444,7 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
                 );
             }
         }
-        assert!(writer.app().ready(), "seed {seed}");
+        assert!(writer.app().status().ready, "seed {seed}");
     }
     seen.aside += *aside.borrow();
 }

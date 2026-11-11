@@ -112,7 +112,8 @@ pub struct Answered {
 /// What [`App::status`] reports, read at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
-    /// As [`App::ready`].
+    /// Every table is loaded, and straum is at most [`Limits::max_lag`]
+    /// behind the server.
     pub ready: bool,
     /// Every commit up to here is applied. `None` until every table is
     /// loaded, and again after a failure.
@@ -122,7 +123,8 @@ pub struct Status {
     pub time: Option<SystemTime>,
     /// As [`Answered::as_of`]. `None` until every table is loaded.
     pub as_of: Option<SystemTime>,
-    /// As [`App::lag`].
+    /// The time since straum's slot was last known to have confirmed all
+    /// the WAL there was. `None` until every table is loaded.
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
     pub wal: Option<Wal>,
@@ -180,20 +182,6 @@ impl App {
         }
     }
 
-    /// Every table is loaded, and straum is at most [`Limits::max_lag`]
-    /// behind the server.
-    pub fn ready(&self) -> bool {
-        let state = self.read();
-        state.ready(state.behind())
-    }
-
-    /// How far behind the server straum is: the time since its slot was
-    /// last known to have confirmed all the WAL there was. `None` until
-    /// every table is loaded.
-    pub fn lag(&self) -> Option<Duration> {
-        self.read().behind()
-    }
-
     /// Answers once every table is loaded.
     pub fn ask(&self, ask: &Ask) -> Result<Answered, AnswerError> {
         let state = self.read();
@@ -221,11 +209,6 @@ impl App {
             lsn: following.position,
             as_of: following.as_of(),
         })
-    }
-
-    /// The last failure, until the next start.
-    pub fn error(&self) -> Option<String> {
-        self.read().error.clone()
     }
 
     pub fn status(&self) -> Status {

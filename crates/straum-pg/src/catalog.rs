@@ -62,7 +62,7 @@ pub(crate) struct Catalog {
     pub(crate) relations: Vec<Relation>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relation {
     pub(crate) schema: String,
     pub(crate) name: String,

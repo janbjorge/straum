@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use crate::value;
 
 /// One pgoutput message, borrowing its text from the received bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Message<'a> {
     Begin {
         /// The LSN of the transaction's commit record, which names it.
@@ -42,7 +42,7 @@ pub(crate) enum Message<'a> {
 }
 
 /// A table's shape, sent before its first change and again after it changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Relation {
     pub(crate) id: u32,
     pub(crate) schema: String,
@@ -50,7 +50,7 @@ pub(crate) struct Relation {
     pub(crate) columns: Vec<Column>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Column {
     pub(crate) name: String,
     pub(crate) type_oid: u32,
@@ -58,7 +58,7 @@ pub(crate) struct Column {
 }
 
 /// The row before an update or delete.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Old<'a> {
     /// The replica identity columns; the others are null.
     Key(Tuple<'a>),

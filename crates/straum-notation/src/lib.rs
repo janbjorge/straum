@@ -62,7 +62,7 @@ use straum_domain::{Ask, Literal, Spec, SpecError};
 
 pub use sql::SqlError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Sql(Vec<SqlError>),
     Spec(Vec<SpecError>),

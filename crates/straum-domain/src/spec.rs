@@ -75,13 +75,13 @@ impl By {
     }
 
     /// The fact column it reads.
-    pub fn column(&self) -> &Ident {
+    pub(crate) fn column(&self) -> &Ident {
         match self {
             By::Column { column, .. } | By::IsNull { column, .. } => column,
         }
     }
 
-    pub fn slot(&self) -> Slot<'_> {
+    pub(crate) fn slot(&self) -> Slot<'_> {
         match self {
             By::Column { column, .. } => Slot::Column(column),
             By::IsNull {
