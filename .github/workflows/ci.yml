@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   # A release is published on the release page, which makes its tag
-  # (ADR-0032). Drafts start nothing.
+  # (ADR-0036). Drafts start nothing.
   release:
     types: [published]
 
@@ -107,15 +107,13 @@ jobs:
       - run: docker build -t straum:ci .
       - run: docker run --rm straum:ci help
 
-  # Decides whether a run publishes, and the version it builds. A push to
-  # main publishes latest only while it is still main's newest commit:
-  # concurrency cancels a run once a newer push starts, and this keeps a
-  # re-run of an older commit from moving latest back. A release fails
-  # unless its tag is vX.Y.Z on a commit on main, marked pre-release
-  # exactly when it has a suffix, and has no assets yet: publishing again
-  # would move the image tags off the digest the release names.
+  # Only a release publishes. It fails unless its tag is vX.Y.Z on a
+  # commit on main, marked pre-release exactly when it has a suffix, and
+  # has no assets yet: publishing again would move the image tags off the
+  # digest the release names. latest goes only to the highest release
+  # without a suffix, so a fix to an older line doesn't move it back.
   gate:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -124,6 +122,7 @@ jobs:
       PRERELEASE: ${{ github.event.release.prerelease }}
     outputs:
       publish: ${{ steps.gate.outputs.publish }}
+      latest: ${{ steps.gate.outputs.latest }}
       version: ${{ steps.gate.outputs.version }}
       tag: ${{ steps.gate.outputs.tag }}
     steps:
@@ -132,13 +131,6 @@ jobs:
           fetch-depth: 0
       - id: gate
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
-            main=$(git ls-remote origin refs/heads/main | cut -f1)
-            describe=$(git describe --tags --match 'v[0-9]*' 2>/dev/null || echo "v0.0.0-g$(git rev-parse --short HEAD)")
-            echo "version=${describe#v}" >> "$GITHUB_OUTPUT"
-            echo "publish=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
             echo "::error::$TAG is not vX.Y.Z or vX.Y.Z-suffix"
             exit 1
@@ -155,15 +147,17 @@ jobs:
             echo "::error::$TAG already has assets; make a new release instead"
             exit 1
           fi
+          highest=$(git tag -l 'v[0-9]*' --sort=-v:refname | awk '!/-/' | head -1)
           {
+            echo "latest=$([ "$TAG" = "$highest" ] && echo true || echo false)"
             echo "version=${TAG#v}"
             echo "tag=$TAG"
             echo publish=true
           } >> "$GITHUB_OUTPUT"
 
   # Publishes ghcr.io/janbjorge/straum for amd64 and arm64, each built on
-  # its own native runner, since under emulation the Rust build crawls:
-  # latest from main, X.Y.Z and X.Y from a release. The OCI labels and
+  # its own native runner, since under emulation the Rust build crawls,
+  # as X.Y.Z, X.Y and, from the gate, latest. The OCI labels and
   # index annotations come from the repository's description and license;
   # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
@@ -182,8 +176,10 @@ jobs:
       build-args: STRAUM_VERSION=${{ needs.gate.outputs.version }}
       meta-images: ghcr.io/janbjorge/straum
       # type=semver reads the tag only on a tag push, so a release passes it.
+      # flavor latest=false keeps metadata-action from adding latest itself.
+      meta-flavor: latest=false
       meta-tags: |
-        type=raw,value=latest,enable={{is_default_branch}}
+        type=raw,value=latest,enable=${{ needs.gate.outputs.latest }}
         type=semver,pattern={{version}},value=${{ needs.gate.outputs.tag }}
         type=semver,pattern={{major}}.{{minor}},value=${{ needs.gate.outputs.tag }}
       set-meta-labels: true

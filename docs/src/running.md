@@ -33,7 +33,7 @@ sudo install -m 755 straum-x86_64-unknown-linux-musl /usr/local/bin/straum
 janbjorge/straum` checks it was built by this repository's CI, and
 `gh attestation verify oci://ghcr.io/janbjorge/straum:X.Y.Z --repo
 janbjorge/straum` does the same for an image. The image tagged `latest`
-is the newest commit on `main`, between releases.
+is the newest release.
 
 ## straum run
 

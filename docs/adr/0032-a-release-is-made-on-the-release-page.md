@@ -1,6 +1,6 @@
 # ADR-0032: A release is made on the release page
 
-Status: Accepted, 2026-11-11
+Status: Superseded by ADR-0036
 
 ## Context
 

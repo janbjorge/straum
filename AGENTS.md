@@ -56,7 +56,7 @@ plugin and kubeconform. For a change under `docs/`, also run
 - A settled decision gets a record in `docs/adr/`; ADR-0001 says how.
 - Commit straight to `main`, one change per commit, with a short
   imperative subject. No branches, no PRs. Releases and their tags are
-  made by the maintainer on the release page (ADR-0032). Code goes in
+  made by the maintainer on the release page (ADR-0036). Code goes in
   with the commit that first uses it.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
 - Wrap markdown at about 78 columns. Don't use em dashes.

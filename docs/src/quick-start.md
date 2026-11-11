@@ -10,7 +10,7 @@ spec.
 docker pull ghcr.io/janbjorge/straum
 ```
 
-`latest` is built from every commit to `main` that passes CI.
+`latest` is the newest release.
 
 ## 2. Start PostgreSQL
 
