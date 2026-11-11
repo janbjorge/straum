@@ -19,3 +19,4 @@
 
 - [How Straum works](how-it-works.md)
 - [Benchmark](benchmark.md)
+- [Glossary](glossary.md)

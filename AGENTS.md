@@ -46,6 +46,9 @@ plugin and kubeconform. For a change under `docs/`, also run
   architectural decision. Do not add convenience crates for small
   helpers. Review dependency changes with
   `cargo tree --workspace -e normal`.
+- `docs/src/glossary.md` names each thing once. Use its terms in docs,
+  comments and error text; its Clashes table lists the renames still
+  open.
 - No doc comments by default; names and types carry the what. Write a
   comment only for a why the code can't show: a constraint, an
   invariant, a PostgreSQL quirk, a rejected alternative. Never reference
