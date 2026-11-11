@@ -437,3 +437,98 @@ fn asks_follow_the_same_rule() {
         );
     }
 }
+
+/// An enum column is read as its label by writing `alias.column::text`
+/// (ADR-0037): on a key, its null-ness, or a FILTER column, spelled alike
+/// everywhere the view reads the column, and nowhere else.
+#[test]
+fn enum_columns_are_cast_to_text() {
+    let cast = canon("orders.status AS status", "orders.status::text AS status");
+    let cast = cast.replacen(
+        "FILTER (WHERE orders.status = 'paid')",
+        "FILTER (WHERE orders.status::text = 'paid')",
+        1,
+    );
+    let cast = cast.replacen(
+        "customers.country AS country",
+        "customers.country::text AS country",
+        1,
+    );
+    let cast = cast.replacen(
+        "(orders.shipped_at IS NOT NULL) AS shipped",
+        "(orders.shipped_at::text IS NOT NULL) AS shipped",
+        1,
+    );
+    let cast = cast.replacen(
+        "WHERE orders.shipped_at IS NOT NULL AND customers.country IN",
+        "WHERE orders.shipped_at::text IS NOT NULL AND customers.country::text IN",
+        1,
+    );
+    let spec = parse(&cast).unwrap();
+    let orders = spec.fact("orders").unwrap();
+    let as_text: Vec<&str> = orders.as_text.iter().map(|c| c.as_str()).collect();
+    assert_eq!(as_text, ["status", "shipped_at"]);
+    let customers = spec.dim("customers").unwrap();
+    assert_eq!(customers.as_text, [customers.attrs[0].clone()]);
+    assert_eq!(
+        orders.measures[2].filter[0],
+        straum_domain::Cond {
+            key: orders.by[0].name().clone(),
+            values: vec![Literal::Text("paid".into())],
+        }
+    );
+
+    // A second view reads the dim column without the cast.
+    let two = format!(
+        "{cast};\n{}",
+        CANON.replace("VIEW orders", "VIEW orders_again")
+    );
+    assert!(errors(&two).iter().any(|e| e.contains(
+        "shop.customers.country is read without ::text here and with it in another view; \
+         write it alike"
+    )));
+
+    check(&[
+        (
+            "orders.status AS status",
+            "CAST(orders.status AS text) AS status",
+            "CAST, write alias.column::text,",
+        ),
+        (
+            "orders.status AS status",
+            "orders.status::varchar AS status",
+            ", write ::text,",
+        ),
+        (
+            "ON customers.id = orders.customer_id",
+            "ON customers.id::text = orders.customer_id",
+            "::text outside a key or a FILTER column,",
+        ),
+        (
+            "sum(orders.amount)",
+            "sum(orders.amount::text)",
+            "an aggregated column orders.amount::text can't be ::text; it goes on a key or a \
+             FILTER column",
+        ),
+        (
+            "date_bin('1 hour', orders.placed_at,",
+            "date_bin('1 hour', orders.placed_at::text,",
+            "the date_bin column orders.placed_at::text can't be ::text",
+        ),
+        (
+            "orders.status AS status",
+            "orders.status::text AS status",
+            "orders.status: SELECT spells the column orders.status::text; write it alike",
+        ),
+        (
+            "FILTER (WHERE orders.status = 'paid')",
+            "FILTER (WHERE orders.status::text = 'paid')",
+            "orders.status::text: SELECT spells the column orders.status; write it alike",
+        ),
+        (
+            "WHERE orders.shipped_at IS NOT NULL AND",
+            "WHERE orders.shipped_at::text IS NOT NULL AND",
+            "orders.shipped_at::text: SELECT spells the column orders.shipped_at; write it alike",
+        ),
+    ]);
+}

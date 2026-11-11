@@ -104,6 +104,9 @@ publication straum does not exist; run the SQL straum plan prints
 orders: publication straum leaves out public.orders: ALTER PUBLICATION straum ADD TABLE public.orders
 orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
+orders: column status of public.orders is order_status, an enum; write status::text
+orders: column note of public.orders is text, not an enum; drop the ::text
+fact orders: measure paid compares status with 'payed', which is no label of order_status
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike

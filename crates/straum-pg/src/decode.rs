@@ -124,7 +124,13 @@ impl Decoder {
                 let i = position(column)?;
                 let c = &relation.columns[i];
                 positions.push(i);
-                types.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
+                let column_type = type_of(c.type_oid, c.typmod).or_else(|| {
+                    table
+                        .enums
+                        .contains(&c.type_oid)
+                        .then_some(ColumnType::Text)
+                });
+                types.push(column_type.ok_or_else(|| changed(table, column))?);
             }
             if table.types != types {
                 self.transaction.changes.push(altered(table));
@@ -287,6 +293,7 @@ mod tests {
             table: id("zones"),
             columns: columns.iter().map(|c| id(c)).collect(),
             types,
+            enums: Vec::new(),
         };
         Decoder::new(
             vec![
@@ -342,6 +349,46 @@ mod tests {
 
     fn text(s: &str) -> Datum {
         Datum::Text(s.into())
+    }
+
+    /// An enum's OID is its own, so a relation names it only through the
+    /// catalog's list; another OID under the column's name is a change.
+    #[test]
+    fn an_enum_column_reads_as_its_label() {
+        let moods = Table {
+            name: id("moods"),
+            schema: id("public"),
+            table: id("zones"),
+            columns: vec![id("mood")],
+            types: vec![ColumnType::Text],
+            enums: vec![777],
+        };
+        let mut d = Decoder::new(vec![moods], CAP);
+        let changes = feed(
+            &mut d,
+            vec![
+                relation(7, &[("mood", 777)]),
+                Message::Insert {
+                    relation: 7,
+                    new: vec![Field::Text("ok")],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            changes,
+            [Change::Insert {
+                table: id("moods"),
+                row: vec![text("ok")]
+            }]
+        );
+        let changed = feed(&mut d, vec![relation(7, &[("mood", 778)])]).unwrap_err();
+        assert!(
+            changed
+                .to_string()
+                .contains("moods: column mood of public.zones was dropped or changed type"),
+            "{changed}"
+        );
     }
 
     #[test]

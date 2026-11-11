@@ -19,6 +19,7 @@ fn table(name: &str) -> Table {
 
 fn dim() -> Dim {
     Dim {
+        as_text: Vec::new(),
         name: id("z"),
         table: table("z"),
         key: vec![id("id")],
@@ -28,6 +29,7 @@ fn dim() -> Dim {
 
 fn fact() -> Fact {
     Fact {
+        as_text: Vec::new(),
         name: id("t"),
         table: table("t"),
         time: Time {

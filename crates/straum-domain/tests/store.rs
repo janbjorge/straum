@@ -89,6 +89,7 @@ fn spec() -> Spec {
         filter,
     };
     let zones = Dim {
+        as_text: Vec::new(),
         name: id("zones"),
         table: table("zones"),
         key: vec![id("id")],
@@ -96,18 +97,21 @@ fn spec() -> Spec {
     };
     // Keyed by two fact columns, one of them a by column asks group by.
     let combos = Dim {
+        as_text: Vec::new(),
         name: id("combos"),
         table: table("combos"),
         key: vec![id("pu_id"), id("vendor_id")],
         attrs: vec![id("label")],
     };
     let vendors = Dim {
+        as_text: Vec::new(),
         name: id("vendors"),
         table: table("vendors"),
         key: vec![id("id")],
         attrs: vec![id("label")],
     };
     let trips = Fact {
+        as_text: Vec::new(),
         name: id("trips"),
         table: table("trips"),
         time: Time {

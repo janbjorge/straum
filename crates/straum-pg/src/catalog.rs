@@ -3,7 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_domain::{By, ColumnType, Fact, Ident, Key, Literal, Origin, Spec, Via};
+use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec, Via};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -20,6 +20,10 @@ pub(crate) struct Table {
     /// key columns and then its attributes.
     pub(crate) columns: Vec<Ident>,
     pub(crate) types: Vec<ColumnType>,
+    /// The enum types its `::text` columns have, by OID. An enum's OID is
+    /// its own, so the stream can't know one from a type straum doesn't
+    /// read without this list.
+    pub(crate) enums: Vec<u32>,
 }
 
 impl Table {
@@ -79,6 +83,14 @@ pub(crate) struct Catalog {
     /// truncates; `None` when it doesn't exist.
     pub(crate) publication: Option<bool>,
     pub(crate) relations: Vec<Relation>,
+    /// Every label of every enum type a spec column has, in type order.
+    pub(crate) labels: Vec<EnumLabel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnumLabel {
+    pub(crate) type_oid: u32,
+    pub(crate) label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +116,8 @@ pub(crate) struct Column {
     pub(crate) typmod: i32,
     /// As `format_type` prints it, for messages.
     pub(crate) type_name: String,
+    /// `pg_type.typtype`: `e` for an enum.
+    pub(crate) typtype: String,
 }
 
 /// Reads the catalog and checks it against the spec.
@@ -179,18 +193,19 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
 
     let columns = conn.rows(&format!(
         "SELECT n.nspname, c.relname, a.attname, a.atttypid, a.atttypmod,
-                format_type(a.atttypid, a.atttypmod)
+                format_type(a.atttypid, a.atttypmod), t.typtype
            FROM pg_attribute a
            JOIN pg_class c ON c.oid = a.attrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_type t ON t.oid = a.atttypid
           WHERE a.attnum > 0 AND NOT a.attisdropped
             AND (n.nspname, c.relname) IN (VALUES {tables})
           ORDER BY a.attnum"
     ))?;
     for row in columns {
         // None of these is ever null.
-        let [schema, table, name, type_oid, typmod, type_name] =
-            <[Option<String>; 6]>::try_from(row)
+        let [schema, table, name, type_oid, typmod, type_name, typtype] =
+            <[Option<String>; 7]>::try_from(row)
                 .map_err(|_| shape("columns"))?
                 .map(Option::unwrap_or_default);
         let relation = catalog
@@ -203,6 +218,27 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             type_oid: type_oid.parse().map_err(|_| shape("columns"))?,
             typmod: typmod.parse().map_err(|_| shape("columns"))?,
             type_name,
+            typtype,
+        });
+    }
+
+    let labels = conn.rows(&format!(
+        "SELECT e.enumtypid, e.enumlabel
+           FROM pg_enum e
+          WHERE e.enumtypid IN (SELECT a.atttypid
+                                  FROM pg_attribute a
+                                  JOIN pg_class c ON c.oid = a.attrelid
+                                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                                 WHERE (n.nspname, c.relname) IN (VALUES {tables}))
+          ORDER BY e.enumtypid, e.enumsortorder"
+    ))?;
+    for row in labels {
+        let [type_oid, label] = <[Option<String>; 2]>::try_from(row)
+            .map_err(|_| shape("labels"))?
+            .map(Option::unwrap_or_default);
+        catalog.labels.push(EnumLabel {
+            type_oid: type_oid.parse().map_err(|_| shape("labels"))?,
+            label,
         });
     }
     Ok(catalog)
@@ -301,33 +337,15 @@ pub(crate) fn check(
     };
     // Both kinds are loaded whole and followed through the publication.
     for dim in spec.dims() {
-        // The key columns come first.
-        let roles = dim.columns().map(|c| (c, Role::Key)).collect();
-        let checked = check_table(
-            &dim.name,
-            "dim",
-            &dim.table,
-            roles,
-            catalog,
-            publication,
-            &mut problems,
-        );
+        let checked = check_table(Member::Dim(dim), catalog, publication, &mut problems);
         tables.dims.extend(checked);
     }
     for fact in spec.facts() {
-        let checked = check_table(
-            &fact.name,
-            "fact",
-            &fact.table,
-            fact_roles(fact),
-            catalog,
-            publication,
-            &mut problems,
-        );
+        let checked = check_table(Member::Fact(fact), catalog, publication, &mut problems);
         tables.facts.extend(checked);
     }
     if problems.is_empty() {
-        check_refs(spec, &tables, &mut problems);
+        check_refs(spec, &tables, catalog, &mut problems);
     }
     if problems.is_empty() {
         Ok(tables)
@@ -359,17 +377,64 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     roles
 }
 
-/// The checks every table gets. `roles` holds every column the table's
-/// member reads, with what it is for; a column may come twice.
+/// A spec table as the spec reads it: what it is called, which columns it
+/// reads for what, and which of them are written `::text`.
+#[derive(Clone, Copy)]
+enum Member<'a> {
+    Dim(&'a Dim),
+    Fact(&'a Fact),
+}
+
+impl<'a> Member<'a> {
+    fn name(self) -> &'a Ident {
+        match self {
+            Member::Dim(dim) => &dim.name,
+            Member::Fact(fact) => &fact.name,
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            Member::Dim(_) => "dim",
+            Member::Fact(_) => "fact",
+        }
+    }
+
+    fn table(self) -> &'a straum_domain::Table {
+        match self {
+            Member::Dim(dim) => &dim.table,
+            Member::Fact(fact) => &fact.table,
+        }
+    }
+
+    /// Every column read, with what it is for; a column may come twice.
+    fn roles(self) -> Vec<(&'a Ident, Role)> {
+        match self {
+            // The key columns come first.
+            Member::Dim(dim) => dim.columns().map(|c| (c, Role::Key)).collect(),
+            Member::Fact(fact) => fact_roles(fact),
+        }
+    }
+
+    /// The columns written `::text`: enums, read as their labels
+    /// (ADR-0037).
+    fn as_text(self) -> &'a [Ident] {
+        match self {
+            Member::Dim(dim) => &dim.as_text,
+            Member::Fact(fact) => &fact.as_text,
+        }
+    }
+}
+
+/// The checks every table gets.
 fn check_table(
-    name: &Ident,
-    kind: &str,
-    table: &straum_domain::Table,
-    roles: Vec<(&Ident, Role)>,
+    member: Member<'_>,
     catalog: &Catalog,
     publication: &str,
     problems: &mut Vec<String>,
 ) -> Option<Table> {
+    let (name, kind, table) = (member.name(), member.kind(), member.table());
+    let (roles, as_text) = (member.roles(), member.as_text());
     let qualified = format!("{}.{}", table.schema, table.name);
     let Some(relation) = catalog
         .relations
@@ -414,6 +479,7 @@ fn check_table(
     };
     let mut columns: Vec<Ident> = Vec::new();
     let mut types = Vec::new();
+    let mut enums = Vec::new();
     for (name_of, role) in roles {
         let found = column(name_of).and_then(|c| {
             if published.is_some_and(|p| !p.contains(&c.name)) {
@@ -421,15 +487,27 @@ fn check_table(
                     "{name}: publication {publication} leaves out column {name_of} of {qualified}"
                 ));
             }
-            type_of(c.type_oid, c.typmod)
-                .filter(|k| role.allows(*k))
-                .ok_or_else(|| {
-                    format!(
-                        "{name}: column {name_of} of {qualified} is {}; {}",
-                        c.type_name,
-                        role.needs()
-                    )
-                })
+            let is = |what: &str| {
+                format!(
+                    "{name}: column {name_of} of {qualified} is {}{what}",
+                    c.type_name
+                )
+            };
+            let column_type = match (as_text.contains(name_of), c.typtype == "e") {
+                (true, true) => {
+                    if !enums.contains(&c.type_oid) {
+                        enums.push(c.type_oid);
+                    }
+                    Some(ColumnType::Text)
+                }
+                (true, false) => return Err(is(", not an enum; drop the ::text")),
+                (false, true) => {
+                    return Err(is(&format!(", an enum; write {name_of}::text")));
+                }
+                (false, false) => type_of(c.type_oid, c.typmod),
+            };
+            (column_type.filter(|k| role.allows(*k)))
+                .ok_or_else(|| is(&format!("; {}", role.needs())))
         });
         match found {
             Err(problem) => problems.push(problem),
@@ -455,12 +533,13 @@ fn check_table(
         table: table.name.clone(),
         columns,
         types,
+        enums,
     })
 }
 
 /// Refs join fact columns to dim keys of the same type, and filters compare
-/// columns with literals of their type.
-fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
+/// columns with literals of their type, an enum's with one of its labels.
+fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Vec<String>) {
     for fact in spec.facts() {
         let facts = tables.fact(&fact.name);
         for r in &fact.refs {
@@ -484,20 +563,37 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
                 }
             }
         }
-        for m in &fact.measures {
-            for cond in &m.filter {
-                let column_type = match fact.resolve(&cond.key).expect("checked by Spec::new") {
-                    Key::By(By::Column { column, .. }) => facts.column_type(column),
-                    Key::By(By::IsNull { .. }) => ColumnType::Bool,
-                    Key::Attr(r, attr) => tables.dim(&r.dim).column_type(&attr.column),
+        let filters = (fact.measures.iter())
+            .map(|m| (format!("measure {}", m.name), &m.filter))
+            .chain(std::iter::once(("WHERE".to_owned(), &fact.filter)));
+        for (what, conds) in filters {
+            for cond in conds {
+                let (table, column) = match fact.resolve(&cond.key).expect("checked by Spec::new") {
+                    Key::By(By::Column { column, .. }) => (facts, column),
+                    Key::By(By::IsNull { .. }) => (facts, &fact.time.column),
+                    Key::Attr(r, attr) => (tables.dim(&r.dim), &attr.column),
                 };
+                let column_type = match fact.resolve(&cond.key).expect("checked by Spec::new") {
+                    Key::By(By::IsNull { .. }) => ColumnType::Bool,
+                    Key::By(By::Column { .. }) | Key::Attr(..) => table.column_type(column),
+                };
+                let labels = catalog.labels(table, column);
                 for value in &cond.values {
                     // The rule asks follow too.
                     if !column_type.fits(value) {
                         problems.push(format!(
-                            "fact {}: measure {} compares {} ({column_type}) with {}",
+                            "fact {}: {what} compares {} ({column_type}) with {}",
                             fact.name,
-                            m.name,
+                            cond.key,
+                            literal(value)
+                        ));
+                    } else if let (Some((type_name, labels)), Literal::Text(text)) =
+                        (&labels, value)
+                        && !labels.contains(&text.as_str())
+                    {
+                        problems.push(format!(
+                            "fact {}: {what} compares {} with {}, which is no label of {type_name}",
+                            fact.name,
                             cond.key,
                             literal(value)
                         ));
@@ -505,6 +601,26 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
                 }
             }
         }
+    }
+}
+
+impl Catalog {
+    /// An enum column's type name and labels; `None` for any other column.
+    fn labels(&self, table: &Table, column: &Ident) -> Option<(&str, Vec<&str>)> {
+        let relation = (self.relations.iter())
+            .find(|r| r.schema == table.schema.as_str() && r.name == table.table.as_str())?;
+        let column = relation
+            .columns
+            .iter()
+            .find(|c| c.name == column.as_str())?;
+        if column.typtype != "e" {
+            return None;
+        }
+        let labels = (self.labels.iter())
+            .filter(|l| l.type_oid == column.type_oid)
+            .map(|l| l.label.as_str())
+            .collect();
+        Some((&column.type_name, labels))
     }
 }
 

@@ -35,6 +35,7 @@ struct Body {
     by: Vec<By>,
     measures: Vec<Measure>,
     filter: Vec<Cond>,
+    as_text: Vec<Ident>,
 }
 
 /// The tables one view reads: the fact under `alias`, and one ref per join;
@@ -51,6 +52,10 @@ struct ScopedKey {
     name: Ident,
     column: Column,
     is_null: Option<bool>,
+    /// Written `alias.column::text`.
+    cast: bool,
+    /// The column as written, so a second spelling can be named.
+    spelled: String,
 }
 
 /// A join: `reference.via[i]`, of the fact or of a dim joined before,
@@ -59,6 +64,8 @@ struct JoinedRef {
     reference: Ref,
     table: Table,
     key: Vec<Ident>,
+    /// The dim columns this view reads as `::text`.
+    as_text: Vec<Ident>,
 }
 
 /// What a column reference names. A dim's key column names the fact
@@ -134,6 +141,7 @@ impl Walker {
             by,
             measures,
             filter,
+            as_text,
         } = body;
         // Every width is said once, in the view's `WITH`; the body's `date_bin`
         // must agree with the first, so a reader finds the whole list in one
@@ -159,6 +167,7 @@ impl Walker {
             by,
             measures,
             filter,
+            as_text,
         })
     }
 
@@ -205,6 +214,7 @@ impl Walker {
                 attrs: (joined.reference.attrs.iter())
                     .map(|attr| attr.column.clone())
                     .collect(),
+                as_text: joined.as_text.clone(),
             });
             return dims.last_mut();
         };
@@ -234,9 +244,32 @@ impl Walker {
             .collect();
         joined.reference.via = via;
         joined.key.clone_from(&dim.key);
+        // A column is one spelling in every view, since it is one type.
         for attr in &joined.reference.attrs {
-            if !dim.attrs.contains(&attr.column) {
-                dim.attrs.push(attr.column.clone());
+            let column = &attr.column;
+            let cast = joined.as_text.contains(column);
+            let read_before = dim.attrs.contains(column);
+            let cast_before = dim.as_text.contains(column);
+            if read_before && cast != cast_before {
+                let (here, there) = if cast {
+                    ("::text", "without it")
+                } else {
+                    ("without ::text", "with it")
+                };
+                self.error(
+                    at,
+                    format!(
+                        "{}.{}.{column} is read {here} here and {there} in another view; \
+                         write it alike",
+                        joined.table.schema, joined.table.name
+                    ),
+                );
+            }
+            if !read_before {
+                dim.attrs.push(column.clone());
+            }
+            if cast && !cast_before {
+                dim.as_text.push(column.clone());
             }
         }
         Some(dim)
@@ -376,6 +409,17 @@ impl Walker {
             self.error(at, "SELECT has more than one date_bin bucket".into());
         }
         self.ref_attrs(at, &mut scope.refs, attrs);
+        let mut as_text = Vec::new();
+        for key in &scope.keys {
+            let (read, column) = match &key.column {
+                _ if !key.cast => continue,
+                Column::Fact(column) => (&mut as_text, column),
+                Column::Attr { through, column } => (&mut scope.refs[*through].as_text, column),
+            };
+            if !read.contains(column) {
+                read.push(column.clone());
+            }
+        }
         let filter = self.key_conds(&scope, conditions)?;
         // A FILTER every measure shares is the view's WHERE in disguise; a
         // lone measure shares with nobody.
@@ -407,6 +451,7 @@ impl Walker {
             by,
             measures,
             filter,
+            as_text,
         })
     }
 
@@ -468,14 +513,21 @@ impl Walker {
         attrs: &mut [Vec<Attr>],
     ) {
         let name = self.ident(alias);
-        let read = match null_test(expr) {
-            Some((inner, negated)) => (self.fact_column(scope, inner, "the IS NULL column"))
-                .map(|column| (Column::Fact(column), Some(!negated))),
-            None => self.column(scope, expr).map(|column| (column, None)),
+        let (spelled, read) = match null_test(expr) {
+            Some((inner, negated)) => (
+                inner,
+                (self.fact_column(scope, inner, "the IS NULL column"))
+                    .map(|(column, cast)| (Column::Fact(column), Some(!negated), cast)),
+            ),
+            None => (
+                expr,
+                (self.column(scope, expr)).map(|(column, cast)| (column, None, cast)),
+            ),
         };
-        let (Some(name), Some((column, is_null))) = (name, read) else {
+        let (Some(name), Some((column, is_null, cast))) = (name, read) else {
             return;
         };
+        self.same_spelling(scope, spelled, &column, cast);
         match (&column, is_null) {
             (Column::Fact(fact_column), None) => by.push(By::Column {
                 column: fact_column.clone(),
@@ -501,7 +553,41 @@ impl Walker {
             name,
             column,
             is_null,
+            cast,
+            spelled: spelling(spelled),
         });
+    }
+
+    /// A column is one spelling throughout a view: with `::text` or
+    /// without, as its type decides.
+    fn same_spelling(&mut self, scope: &Scope, expr: &sql::Expr, column: &Column, cast: bool) {
+        let other = (scope.keys.iter()).find(|k| k.column == *column && k.cast != cast);
+        if let Some(other) = other {
+            self.error(
+                line(expr),
+                format!(
+                    "{}: SELECT spells the column {}; write it alike",
+                    spelling(expr),
+                    other.spelled
+                ),
+            );
+        }
+    }
+
+    /// A column that can't be `::text`: the cast goes on a key or a
+    /// FILTER column, where the text is what straum keeps.
+    fn uncast(&mut self, expr: &sql::Expr, cast: bool, what: &str) -> Option<()> {
+        if cast {
+            self.error(
+                line(expr),
+                format!(
+                    "{what} {} can't be ::text; it goes on a key or a FILTER column",
+                    spelling(expr)
+                ),
+            );
+            return None;
+        }
+        Some(())
     }
 
     fn measure(
@@ -585,6 +671,7 @@ impl Walker {
             },
             table,
             key,
+            as_text: Vec::new(),
         })
     }
 
@@ -766,9 +853,48 @@ impl Walker {
         self.joined(scope, kind, table, alias, on)
     }
 
+    /// `alias.column`, or `alias.column::text` to read an enum column as
+    /// the label PostgreSQL prints (ADR-0037). `true` when cast.
+    fn reference(&mut self, expr: &sql::Expr) -> Option<(Ident, Ident, bool)> {
+        let sql::Expr::Cast {
+            kind,
+            expr: inner,
+            data_type,
+            format,
+        } = expr
+        else {
+            return self
+                .qualified(expr)
+                .map(|(alias, column)| (alias, column, false));
+        };
+        let at = line(expr);
+        self.absent(at, format.is_some(), "CAST ... FORMAT");
+        match kind {
+            sql::CastKind::DoubleColon => {}
+            sql::CastKind::Cast => {
+                self.reject(at, "CAST, write alias.column::text,", expr);
+                return None;
+            }
+            sql::CastKind::TryCast | sql::CastKind::SafeCast => {
+                self.reject(at, "cast", expr);
+                return None;
+            }
+        }
+        if !matches!(data_type, sql::DataType::Text) {
+            self.reject(at, &format!("::{data_type}, write ::text,"), expr);
+            return None;
+        }
+        let (alias, column) = self.qualified(inner)?;
+        Some((alias, column, true))
+    }
+
     /// `alias.column`, the fact's included: no table is anyone's default.
     fn qualified(&mut self, expr: &sql::Expr) -> Option<(Ident, Ident)> {
         match expr {
+            sql::Expr::Cast { .. } => {
+                self.reject(line(expr), "::text outside a key or a FILTER column,", expr);
+                None
+            }
             sql::Expr::CompoundIdentifier(ids) => {
                 let [alias, column] = ids.as_slice() else {
                     self.reject(line(expr), "column, write alias.column,", expr);
@@ -783,10 +909,10 @@ impl Walker {
         }
     }
 
-    fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Column> {
-        let (alias, column) = self.qualified(expr)?;
+    fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<(Column, bool)> {
+        let (alias, column, cast) = self.reference(expr)?;
         if alias == scope.alias {
-            return Some(Column::Fact(column));
+            return Some((Column::Fact(column), cast));
         }
         let Some(through) = (scope.refs.iter()).position(|joined| joined.reference.name == alias)
         else {
@@ -795,18 +921,22 @@ impl Walker {
         };
         let joined = &scope.refs[through];
         let position = joined.key.iter().position(|key| *key == column);
-        Some(
-            match position.map(|position| &joined.reference.via[position]) {
-                Some(Via::Fact(via)) => Column::Fact(via.clone()),
-                Some(Via::Attr { .. }) | None => Column::Attr { through, column },
-            },
-        )
+        let column = match position.map(|position| &joined.reference.via[position]) {
+            Some(Via::Fact(via)) => Column::Fact(via.clone()),
+            Some(Via::Attr { .. }) | None => Column::Attr { through, column },
+        };
+        Some((column, cast))
     }
 
-    fn fact_column(&mut self, scope: &Scope, expr: &sql::Expr, what: &str) -> Option<Ident> {
+    fn fact_column(
+        &mut self,
+        scope: &Scope,
+        expr: &sql::Expr,
+        what: &str,
+    ) -> Option<(Ident, bool)> {
         match self.column(scope, expr)? {
-            Column::Fact(column) => Some(column),
-            Column::Attr { .. } => {
+            (Column::Fact(column), cast) => Some((column, cast)),
+            (Column::Attr { .. }, _) => {
                 self.error(
                     line(expr),
                     format!("{what} must be a {} column", scope.alias),
@@ -820,7 +950,7 @@ impl Walker {
     /// column, by the column, as PostgreSQL reads the view: an output name
     /// is no column there.
     pub(super) fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Ident> {
-        let column = self.column(scope, expr)?;
+        let (column, cast) = self.column(scope, expr)?;
         let key = (scope.keys.iter()).find(|k| k.column == column && k.is_null.is_none());
         let Some(key) = key else {
             self.error(
@@ -829,6 +959,7 @@ impl Walker {
             );
             return None;
         };
+        self.same_spelling(scope, expr, &column, cast);
         Some(key.name.clone())
     }
 
@@ -841,19 +972,18 @@ impl Walker {
         column: &sql::Expr,
         is_null: bool,
     ) -> Option<Cond> {
-        let column = self.fact_column(scope, column, "the IS NULL column")?;
-        let key = (scope.keys.iter())
-            .find(|k| k.column == Column::Fact(column.clone()) && k.is_null.is_some());
+        let expr = column;
+        let (column, cast) = self.fact_column(scope, expr, "the IS NULL column")?;
+        let column = Column::Fact(column);
+        let key = (scope.keys.iter()).find(|k| k.column == column && k.is_null.is_some());
         let Some(key) = key else {
             self.error(
                 line(test),
-                format!(
-                    "FILTER (WHERE {test}) needs the key ({}.{column} IS NULL) AS <name> in SELECT",
-                    scope.alias
-                ),
+                format!("FILTER (WHERE {test}) needs the key ({expr} IS NULL) AS <name> in SELECT"),
             );
             return None;
         };
+        self.same_spelling(scope, expr, &column, cast);
         Some(Cond {
             key: key.name.clone(),
             values: vec![Literal::Bool(
@@ -886,7 +1016,7 @@ impl Walker {
         self.absent(at, distinct, "DISTINCT on date_bin");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
-            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column_expr)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(origin)),
         ] = args
         else {
@@ -928,7 +1058,8 @@ impl Walker {
                 format!("date_bin origin {origin}: use timestamptz 'epoch' or timestamp 'epoch'"),
             );
         }
-        let column = self.fact_column(scope, column, "the date_bin column")?;
+        let (column, cast) = self.fact_column(scope, column_expr, "the date_bin column")?;
+        self.uncast(column_expr, cast, "the date_bin column")?;
         Some(Time {
             column,
             grain: grain?,
@@ -973,7 +1104,8 @@ impl Walker {
             }
         };
         let arg = self.single(function, args)?;
-        let column = self.fact_column(scope, arg, "an aggregated column")?;
+        let (column, cast) = self.fact_column(scope, arg, "an aggregated column")?;
+        self.uncast(arg, cast, "an aggregated column")?;
         Some((
             agg(column),
             self.key_conds(scope, function.filter.as_deref())?,
@@ -1046,6 +1178,15 @@ fn grain(s: &str) -> Option<Grain> {
         .ok()?
         .checked_mul(scale)
         .map(|seconds| Grain { seconds })
+}
+
+/// A column reference as straum SQL spells it: `sqlparser` prints the cast
+/// as `::TEXT`.
+fn spelling(expr: &sql::Expr) -> String {
+    match expr {
+        sql::Expr::Cast { expr: inner, .. } => format!("{inner}::text"),
+        other => other.to_string(),
+    }
 }
 
 fn is_date_bin(function: &sql::Function) -> bool {

@@ -36,6 +36,7 @@ const MEASURES: [&str; 5] = ["n", "q", "q_max", "q_min", "products"];
 
 fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
     Dim {
+        as_text: Vec::new(),
         name: id(name),
         table: table(name),
         key: key.iter().map(|k| id(k)).collect(),
@@ -73,6 +74,7 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
         },
     };
     let orders = Fact {
+        as_text: Vec::new(),
         name: id("orders"),
         table: table("orders"),
         time: straum_domain::Time {

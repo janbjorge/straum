@@ -76,12 +76,14 @@ fn spec(buckets: &[u32]) -> Spec {
         filter: vec![],
     };
     let zones = Dim {
+        as_text: Vec::new(),
         name: id("zones"),
         table: table("zones"),
         key: vec![id("id")],
         attrs: vec![id("borough")],
     };
     let trips = Fact {
+        as_text: Vec::new(),
         name: id("trips"),
         table: table("trips"),
         time: Time {

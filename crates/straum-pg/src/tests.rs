@@ -47,6 +47,7 @@ pub(crate) fn tasks_tables() -> (Spec, Tables) {
     )
     .unwrap();
     let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Table {
+        enums: Vec::new(),
         name: id(name),
         schema: id("public"),
         table: id(name),
@@ -174,16 +175,18 @@ SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id AS organization_id,
        f.taskgroup_id AS taskgroup_id,
        (f.completed IS NOT NULL) AS done,
-       g.category AS category,
+       g.category::text AS category,
+       f.kind::text AS kind,
        count(*) AS tasks,
        sum(f.picks) AS picks,
        max(f.picks) AS picks_max,
-       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks,
-       count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed_tasks
+       count(*) FILTER (WHERE g.category::text = 'pick') AS pick_tasks,
+       count(*) FILTER (WHERE f.completed IS NOT NULL) AS completed_tasks,
+       count(*) FILTER (WHERE f.kind::text = 'shelf') AS shelf_tasks
 FROM $S.tasks AS f
 LEFT OUTER JOIN $S.taskgroups AS g
        ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
-GROUP BY 1, 2, 3, 4, 5;
+GROUP BY 1, 2, 3, 4, 5, 6;
 ";
 
 /// The task tables keyed by the group's category alone: the group itself
@@ -192,11 +195,11 @@ const PICKS_SPEC: &str = "
 CREATE VIEW picks WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
        f.organization_id AS organization_id,
-       g.category AS category,
+       g.category::text AS category,
        (f.completed IS NOT NULL) AS done,
        count(*) AS tasks,
        sum(f.picks) AS picks,
-       count(*) FILTER (WHERE g.category = 'pick') AS pick_tasks
+       count(*) FILTER (WHERE g.category::text = 'pick') AS pick_tasks
 FROM $S.tasks AS f
 LEFT OUTER JOIN $S.taskgroups AS g
        ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
@@ -204,10 +207,12 @@ GROUP BY 1, 2, 3, 4;
 ";
 
 const TASKS: &str = "
+CREATE TYPE $S.category AS ENUM ('pick', 'pack', 'count', 'other');
+CREATE TYPE $S.kind AS ENUM ('grid', 'shelf');
 CREATE TABLE $S.taskgroups (
     organization_id int,
     taskgroup_id int,
-    category text,
+    category $S.category,
     PRIMARY KEY (organization_id, taskgroup_id)
 );
 CREATE TABLE $S.tasks (
@@ -216,7 +221,8 @@ CREATE TABLE $S.tasks (
     taskgroup_id int,
     created timestamp NOT NULL,
     completed timestamp,
-    picks int
+    picks int,
+    kind $S.kind NOT NULL DEFAULT 'grid'
 );
 ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
 ALTER TABLE $S.taskgroups REPLICA IDENTITY FULL;
@@ -537,19 +543,21 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
 /// window that cuts the day bucket `START` begins. A `timestamp` has no
 /// zone, so the window's bounds are wall clock in UTC.
 fn task_oracles() -> Vec<Oracle> {
-    const MEASURES: [&str; 5] = [
+    const MEASURES: [&str; 6] = [
         "tasks",
         "picks",
         "picks_max",
         "pick_tasks",
         "completed_tasks",
+        "shelf_tasks",
     ];
     // The ask covers every finite bucket; a row at an infinite time is in
     // none, and the view in PostgreSQL would answer it on its own.
     let by_bucket = Oracle {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, done,
-                    category, tasks, picks, picks_max, pick_tasks, completed_tasks
+                    category, kind, tasks, picks, picks_max, pick_tasks, completed_tasks,
+                    shelf_tasks
                FROM ({}) v
               WHERE bucket >= to_timestamp(0) AT TIME ZONE 'UTC'
                 AND bucket < to_timestamp({END}) AT TIME ZONE 'UTC'",
@@ -564,15 +572,17 @@ fn task_oracles() -> Vec<Oracle> {
                 "taskgroup_id",
                 "done",
                 "category",
+                "kind",
             ],
         ),
-        scales: vec![0; 10],
+        scales: vec![0; 12],
     };
     let window = Oracle {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks), max(f.picks),
                     count(*) FILTER (WHERE g.category = 'pick'),
-                    count(*) FILTER (WHERE f.completed IS NOT NULL)
+                    count(*) FILTER (WHERE f.completed IS NOT NULL),
+                    count(*) FILTER (WHERE f.kind = 'shelf')
                FROM $S.tasks f
                LEFT JOIN $S.taskgroups g
                       ON g.organization_id = f.organization_id
@@ -586,7 +596,7 @@ fn task_oracles() -> Vec<Oracle> {
             to: WINDOW_TO,
             ..ask("tasks", &MEASURES, &["organization_id", "category"])
         },
-        scales: vec![0; 7],
+        scales: vec![0; 8],
     };
     // The null-ness key as a filter, against the test it stands for.
     let open = Oracle {
@@ -944,6 +954,8 @@ fn follows_the_task_tables() {
         "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0".to_owned(),
         "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
         "UPDATE $S.tasks SET taskgroup_id = 4 WHERE task_id % 17 = 0".to_owned(),
+        // The enum key moves, in the fact and through the dim.
+        "UPDATE $S.tasks SET kind = 'shelf' WHERE task_id % 4 = 0".to_owned(),
         "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0".to_owned(),
         "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0"
             .to_owned(),
@@ -1881,6 +1893,7 @@ fn setup_problems_say_what_to_fix() {
         )
     };
     let publish = "CREATE PUBLICATION $S FOR TABLE $S.f;";
+    let enum_type = "CREATE TYPE $S.mood AS ENUM ('ok', 'bad');";
     let (table, spec) = fact("x int", "count(*) AS n, sum(t.x) AS total");
     let cases: Vec<(&str, String, String, Option<&str>)> = vec![
         ("ok", format!("{table} {publish}"), spec.clone(), None),
@@ -2065,6 +2078,54 @@ fn setup_problems_say_what_to_fix() {
             .1
             .replace("GROUP BY 1", "GROUP BY 1, 2"),
             None,
+        ),
+        (
+            "wheretype",
+            format!("{} {publish}", fact("k text", "").0),
+            fact("", "t.k AS k, count(*) AS n")
+                .1
+                .replace("AS t GROUP BY 1", "AS t WHERE t.k = 1 GROUP BY 1, 2"),
+            Some("fact f: WHERE compares k (text) with 1"),
+        ),
+        // An enum column is read as its label when written ::text (ADR-0037).
+        (
+            "enumok",
+            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            fact(
+                "",
+                "t.m::text AS m, (t.m::text IS NULL) AS moody, \
+                 count(*) FILTER (WHERE t.m::text = 'ok') AS n",
+            )
+            .1
+            .replace("GROUP BY 1", "GROUP BY 1, 2, 3"),
+            None,
+        ),
+        (
+            "enumbare",
+            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            fact("", "t.m AS m, count(*) AS n")
+                .1
+                .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            Some("f: column m of enumbare.f is enumbare.mood, an enum; write m::text"),
+        ),
+        (
+            "notenum",
+            format!("{} {publish}", fact("k text", "").0),
+            fact("", "t.k::text AS k, count(*) AS n")
+                .1
+                .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            Some("f: column k of notenum.f is text, not an enum; drop the ::text"),
+        ),
+        (
+            "nolabel",
+            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            fact(
+                "",
+                "t.m::text AS m, count(*) FILTER (WHERE t.m::text IN ('ok', 'meh')) AS n",
+            )
+            .1
+            .replace("GROUP BY 1", "GROUP BY 1, 2"),
+            Some("fact f: measure n compares m with 'meh', which is no label of nolabel.mood"),
         ),
     ];
     for (name, tables, spec, expected) in cases {
@@ -2343,6 +2404,7 @@ fn binary_copies_read_as_text_does() {
         .collect();
     let mut binaries = Vec::new();
     let every = Table {
+        enums: Vec::new(),
         name: id("every"),
         schema: id("public"),
         table: id("every"),
@@ -2680,6 +2742,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
 /// Two `int4` columns, `a` and `b` of `t`, as a stand-in copy sends.
 fn two_ints() -> Table {
     Table {
+        enums: Vec::new(),
         name: id("t"),
         schema: id("public"),
         table: id("t"),

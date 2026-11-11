@@ -26,6 +26,9 @@ pub struct Dim {
     pub key: Vec<Ident>,
     /// Every column any ref reads of it.
     pub attrs: Vec<Ident>,
+    /// The columns written `alias.column::text`: read as the text
+    /// PostgreSQL prints for them, whatever their type there.
+    pub as_text: Vec<Ident>,
 }
 
 impl Dim {
@@ -48,6 +51,9 @@ pub struct Fact {
     /// The view's `WHERE`: a row counts, for every measure, only when
     /// every condition holds.
     pub filter: Vec<Cond>,
+    /// The columns written `alias.column::text`: read as the text
+    /// PostgreSQL prints for them, whatever their type there.
+    pub as_text: Vec<Ident>,
 }
 
 /// A rollup key a fact row gives: a column's value, or whether a column

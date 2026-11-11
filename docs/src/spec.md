@@ -80,8 +80,9 @@ PostgreSQL resolves without a lookup, where an output name it may read
 as an input column. Inside the view, a `FILTER` names columns, as
 PostgreSQL does.
 
-A key column is an integer type, `numeric(p, s)`, `boolean` or `text`.
-Fewer keys, or keys with fewer values, mean fewer cells; see
+A key column is an integer type, `numeric(p, s)`, `boolean` or `text`,
+or an [enum written `::text`](#enum-columns). Fewer keys, or keys with
+fewer values, mean fewer cells; see
 [Sizing memory](#memory).
 
 ## Time
@@ -222,6 +223,25 @@ opposite key. The column may be of any type Straum reads, a time
 included, but not the view's time column: a row with no time is never
 answered, so the key could never be true. The view body stays what
 PostgreSQL runs, since the key's name is no column there.
+
+## Enum columns
+
+```sql
+orders.status::text AS status
+```
+
+An enum column is read as its label, the text PostgreSQL prints for
+it, by writing `::text` wherever the view reads the column: on a key,
+in a null-ness key, `(orders.status::text IS NULL)`, in a `FILTER` and
+in `WHERE`, spelled alike in every place and in every view that reads
+the column. `::text` is the one cast, and it goes nowhere else: not in
+`ON`, `EXISTS`, `date_bin` or a measure. Straum refuses an enum column
+written without it, and the cast on a column of any other type, so a
+spec says what it reads. A `FILTER` literal must be one of the type's
+labels, which Straum reads at start. The label is a text key: asks
+filter it with a string, and answers sort labels as text, not in the
+type's order ([ADR-0037](https://github.com/janbjorge/straum/blob/main/docs/adr/0037-an-enum-column-is-read-as-its-label-when-cast-to-text.md)).
+Which types take the cast is listed here; today it is enums alone.
 
 ## Measures
 
