@@ -83,13 +83,15 @@ GROUP BY country
 ```
 
 ```text
-cells of orders, one per hour, status, customer_id, country
+cells of orders, one per hour, status and customer_id
 
-  hour   status    customer_id  country | orders  revenue
-  09:00  paid      1            NO      |   1     120.00   -> NO
-  09:00  paid      2            SE      |   1      80.50   -> SE
-  10:00  refunded  3            NO      |   2      61.99   status is not paid
-  11:00  paid      2            SE      |   1     300.00   -> SE
+  hour   status    customer_id | orders  revenue
+  09:00  paid      1           |   1     120.00   customer 1 is NO -> NO
+  09:00  paid      2           |   1      80.50   customer 2 is SE -> SE
+  10:00  refunded  3           |   2      61.99   status is not paid
+  11:00  paid      2           |   1     300.00   customer 2 is SE -> SE
+
+customers, projected: 1 -> NO, 2 -> SE, 3 -> NO
 
 answer: NO 1 120.00, SE 2 380.50
 ```
@@ -99,8 +101,10 @@ answer: NO 1 120.00, SE 2 380.50
    a filter value of another type than its column.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
-3. Every key the ask names is part of the cell key, so nothing is looked
-   up: a cell's country has sat in its key since the row came in.
+3. A key the ask names is in the cell key or is a dim's column. A dim
+   column is read from the dim's projection through the join id in the
+   cell key, as the dim is now, so a customer who moved country moves
+   their orders with them.
 4. It adds each cell to its group, and to each measure whose filter holds.
    Filters name only parts of the cell key, so a cell counts whole or
    not at all.
