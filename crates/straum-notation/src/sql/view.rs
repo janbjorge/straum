@@ -376,7 +376,7 @@ impl Walker {
             self.error(at, "SELECT has more than one date_bin bucket".into());
         }
         self.ref_attrs(at, &mut scope.refs, attrs);
-        let filter = self.view_filter(&scope, conditions)?;
+        let filter = self.key_conds(&scope, conditions)?;
         // A FILTER every measure shares is the view's WHERE in disguise; a
         // lone measure shares with nobody.
         if let [first, rest @ ..] = &measures[..]
@@ -438,14 +438,20 @@ impl Walker {
         }
     }
 
-    /// The view's WHERE, on the keys like a FILTER.
-    fn view_filter(&mut self, scope: &Scope, conditions: Vec<&sql::Expr>) -> Option<Vec<Cond>> {
-        let mut filter = Vec::new();
+    /// The view's WHERE and a measure's FILTER alike: `=`, `IN`, `IS NULL`
+    /// and `IS NOT NULL` on columns, joined by AND, each reaching the key
+    /// that reads the column. `None` once a condition fails.
+    fn key_conds<'e>(
+        &mut self,
+        scope: &Scope,
+        conditions: impl IntoIterator<Item = &'e sql::Expr>,
+    ) -> Option<Vec<Cond>> {
+        let mut conds = Vec::new();
         for condition in conditions {
             let before = self.errors.len();
             self.conds(
                 condition,
-                &mut filter,
+                &mut conds,
                 &mut |w, e| w.key_of(scope, e),
                 &mut |w, e| w.literal(e),
                 &mut |w, test, column, is_null| w.null_cond(scope, test, column, is_null),
@@ -454,7 +460,7 @@ impl Walker {
                 return None;
             }
         }
-        Some(filter)
+        Some(conds)
     }
 
     /// A key item: a fact column, its null-ness, or a dim column through its
@@ -955,7 +961,10 @@ impl Walker {
                         );
                         return None;
                     }
-                    return Some((Agg::Count, self.filter(scope, function)?));
+                    return Some((
+                        Agg::Count,
+                        self.key_conds(scope, function.filter.as_deref())?,
+                    ));
                 }
                 Agg::CountDistinct
             }
@@ -974,27 +983,10 @@ impl Walker {
         }
         let arg = self.single(function, args)?;
         let column = self.fact_column(scope, arg, "an aggregated column")?;
-        Some((agg(column), self.filter(scope, function)?))
-    }
-
-    /// `FILTER (WHERE ...)`: `=`, `IN`, `IS NULL` and `IS NOT NULL` on
-    /// columns, joined by AND.
-    fn filter(&mut self, scope: &Scope, function: &sql::Function) -> Option<Vec<Cond>> {
-        let mut conds = Vec::new();
-        if let Some(expr) = &function.filter {
-            let before = self.errors.len();
-            self.conds(
-                expr,
-                &mut conds,
-                &mut |w, e| w.key_of(scope, e),
-                &mut |w, e| w.literal(e),
-                &mut |w, test, column, is_null| w.null_cond(scope, test, column, is_null),
-            );
-            if self.errors.len() > before {
-                return None;
-            }
-        }
-        Some(conds)
+        Some((
+            agg(column),
+            self.key_conds(scope, function.filter.as_deref())?,
+        ))
     }
 
     /// GROUP BY lists the keys by their SELECT positions, in order, so the
