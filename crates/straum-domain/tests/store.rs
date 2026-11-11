@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use straum_domain::{
     Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attr, By, ColumnType, Cond, Datum,
-    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RowError, Slot, Spec, Store, Table,
-    Time, TimeKey, Value,
+    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, RowError, Slot, Spec, Store,
+    Table, Time, TimeKey, Value, Via,
 };
 
 const GRAIN: u32 = 900;
@@ -145,7 +145,8 @@ fn spec() -> Spec {
             Ref {
                 name: id("pickup"),
                 dim: id("zones"),
-                via: vec![id("pu")],
+                via: vec![Via::Fact(id("pu"))],
+                kind: RefKind::Left,
                 attrs: vec![
                     attr("pickup_borough", "borough"),
                     attr("pickup_zone", "zone"),
@@ -154,7 +155,8 @@ fn spec() -> Spec {
             Ref {
                 name: id("dropoff"),
                 dim: id("zones"),
-                via: vec![id("dro")],
+                via: vec![Via::Fact(id("dro"))],
+                kind: RefKind::Left,
                 attrs: vec![
                     attr("dropoff_borough", "borough"),
                     attr("dropoff_zone", "zone"),
@@ -163,13 +165,15 @@ fn spec() -> Spec {
             Ref {
                 name: id("combo"),
                 dim: id("combos"),
-                via: vec![id("pu"), id("vendor")],
+                via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
+                kind: RefKind::Left,
                 attrs: vec![attr("combo_label", "label")],
             },
             Ref {
                 name: id("vend"),
                 dim: id("vendors"),
-                via: vec![id("vendor")],
+                via: vec![Via::Fact(id("vendor"))],
+                kind: RefKind::Left,
                 attrs: vec![attr("vend_label", "label")],
             },
         ],
@@ -186,6 +190,7 @@ fn spec() -> Spec {
                 negated: true,
             },
         ],
+        filter: vec![],
         measures: vec![
             m("trips", Agg::Count, vec![]),
             m("fare", Agg::Sum(id("fare")), vec![]),
@@ -991,18 +996,27 @@ fn dim_row_errors() {
         })
     );
     store.add_dim_row("zones", &row).unwrap();
-    assert_eq!(store.add_dim_row("zones", &row), Err(RowError::Present));
+    // The same row again is a second row under the key, as a join finds.
+    store.add_dim_row("zones", &row).unwrap();
+    assert_eq!(store.dim_rows("zones"), Some(2));
     let other = [Datum::Int(1), text("q"), text("a")];
     assert_eq!(
         store.remove_dim_row("zones", &other),
         Err(RowError::Missing)
     );
     store.remove_dim_row("zones", &row).unwrap();
+    store.remove_dim_row("zones", &row).unwrap();
     assert_eq!(store.remove_dim_row("zones", &row), Err(RowError::Missing));
     // A batch is all or nothing.
-    let bad = [row.clone(), row.clone()].concat();
-    assert_eq!(store.add_dim_rows("zones", &bad), Err(RowError::Present));
-    assert_eq!(store.dim_rows("zones"), Some(1));
+    let bad = [row.to_vec(), vec![Datum::Int(2)]].concat();
+    assert_eq!(
+        store.add_dim_rows("zones", &bad),
+        Err(RowError::Arity {
+            expected: 3,
+            found: 1
+        })
+    );
+    assert_eq!(store.dim_rows("zones"), Some(0));
     assert_eq!(store.dim_rows("trips"), None);
 }
 
@@ -1460,7 +1474,6 @@ fn row_error_display() {
             "column tip is not an integer",
         ),
         (RowError::Missing, "removed row was never added"),
-        (RowError::Present, "added row is held already"),
     ];
     for (err, msg) in cases {
         assert_eq!(err.to_string(), msg);

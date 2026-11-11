@@ -654,8 +654,6 @@ pub enum RowError {
     },
     /// A removed row was never added.
     Missing,
-    /// An added dim row's key is held already.
-    Present,
 }
 
 impl fmt::Display for RowError {
@@ -666,7 +664,6 @@ impl fmt::Display for RowError {
             }
             RowError::NotInt { column } => write!(f, "column {column} is not an integer"),
             RowError::Missing => f.write_str("removed row was never added"),
-            RowError::Present => f.write_str("added row is held already"),
         }
     }
 }

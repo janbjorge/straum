@@ -42,7 +42,7 @@ GROUP BY 1, 2, 3, 4, 5;
 | `count(*)` to `avg(orders.amount)` | Measures, and what each cell holds. | [Measures](#measures) |
 | `count(*) FILTER (WHERE ...)` | Measures over some rows only. | [Measures](#measures) |
 | `FROM public.orders AS orders` | The fact table, whose rows are counted. | [The tables](#the-tables) |
-| `LEFT OUTER JOIN public.customers AS customers ON ...` | A dim: a lookup table joined N:1. | [Joining a lookup table](#joining-a-lookup-table) |
+| `LEFT OUTER JOIN public.customers AS customers ON ...` | A dim: a lookup table joined. | [Joining a lookup table](#joining-a-lookup-table) |
 | `GROUP BY 1, 2, 3, 4, 5` | The keys again, by position, as PostgreSQL wants. | [Keys](#keys) |
 
 Straum keeps one cell per distinct hour, status, customer, country and
@@ -121,21 +121,25 @@ memory, under [Memory](#memory).
 ## Joining a lookup table
 
 ```sql
-LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_id
+INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
+LEFT OUTER JOIN public.products AS products ON products.id = orders.product_id
 ```
 
-The join points from a fact column to the key of a dim, N:1. The dim
-columns the view selects, here `customers.country AS country`, are keys
-like any other. Straum keys each cell by the join column,
-`customer_id`, and holds the dim projected to its key and the columns
-the views read, kept current from the stream; an ask reads `country`
-through the cell's `customer_id` as the customer row is now.
+A join points from a column of the fact, or of a dim already joined, to
+the key of a dim. The dim columns the view selects, here
+`customers.country AS country`, are keys like any other. Straum keys
+each cell by the join column, `customer_id`, and holds the dim projected
+to its key and the columns the views read, kept current from the stream;
+an ask reads `country` through the cell's `customer_id` as the customer
+rows are now.
 
-- The join is `LEFT OUTER JOIN`, spelled whole, because a fact row with
-  no dim row still counts; its dim columns are null, and they take a
-  value the moment the dim row arrives. `LEFT JOIN`, bare `JOIN`,
-  `INNER`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and `USING` are refused,
-  each naming this spelling.
+- The kind is spelled whole. `INNER JOIN` keeps a fact row only while a
+  dim row matches it; `LEFT OUTER JOIN` keeps every fact row, with null
+  dim columns while none matches. `LEFT JOIN`, bare `JOIN`, `RIGHT`,
+  `FULL`, `CROSS`, `NATURAL` and `USING` are refused, each naming the
+  spelling to write. A `RIGHT` or `FULL` join would add dim rows no
+  fact row points at, whose bucket is null and which no ask reads, so
+  it answers as `INNER` or `LEFT OUTER`; write that.
 - `ON` holds equalities, the joined table's column on the left, joined
   by `AND` for a key of several columns:
 
@@ -145,10 +149,21 @@ through the cell's `customer_id` as the customer row is now.
   ```
 
   A literal in `ON` is refused.
-- Joins go from the fact to a dim only, so a spec can't fan out. The dim
-  needs a primary key or unique index on exactly its key columns, so a
-  key names one row, and `REPLICA IDENTITY FULL` like a fact, so Straum
-  can follow its updates and deletes.
+- The right side names the fact's alias or the alias of a dim joined
+  before it, a chain:
+
+  ```sql
+  INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
+  LEFT OUTER JOIN public.tiers AS tiers ON tiers.id = customers.tier_id
+  ```
+
+  Straum then holds `tier_id` in its projection of `customers` and
+  reads `tiers` through it. A chain through a semi or anti join is
+  refused: those keep no row to read through.
+- Any number of dim rows may match a key. A key the dim holds twice
+  counts the fact row twice, as PostgreSQL's join does: `count(*)` and
+  `sum` double, `min`, `max` and `count(DISTINCT ...)` don't, `avg`
+  stays. A dim needs no index on its key.
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
@@ -167,6 +182,31 @@ change to a customer row is one entry in Straum's projection of
 theirs to SE in the next answer, as PostgreSQL's view would. Nothing
 starts over and no cell moves, since cells are keyed by `customer_id`,
 not by the country.
+
+## Semi and anti joins
+
+```sql
+WHERE EXISTS (SELECT 1 FROM public.promos AS promos WHERE promos.sku = orders.sku)
+  AND NOT EXISTS (SELECT 1 FROM public.blocked AS blocked WHERE blocked.id = orders.customer_id)
+```
+
+`EXISTS` keeps a fact row while at least one dim row matches it, once
+however many match; `NOT EXISTS` keeps it while none does. The subquery
+is exactly `SELECT 1 FROM schema.table AS alias WHERE` equalities as in
+`ON`, and nothing else: no column of it can be selected, filtered on or
+joined through. `IN (SELECT ...)` and `NOT IN` are refused naming
+these. Both follow the dim as it is now, like any join.
+
+## The view's WHERE
+
+```sql
+WHERE orders.status IN ('paid', 'shipped') AND customers.country = 'NO'
+```
+
+`WHERE` drops rows from every answer, as the view's `WHERE` does in
+PostgreSQL. Its conditions are those of a `FILTER`, below, on columns
+the view selects as keys, so a condition on a dim column follows the
+dim. A `FILTER` that every measure repeats is refused: write it here.
 
 ## Null-ness keys
 
@@ -211,9 +251,9 @@ refused: write `=`.
 
 ## What a spec can't say
 
-No `WHERE` (filter measures instead), no expressions, no joins other than
-to a dim's key, no subqueries, no window functions, no `HAVING`, no
-`ROLLUP`, `CUBE` or `GROUPING SETS`. Ask PostgreSQL for those.
+No expressions, no joins other than to a dim's key, no subquery but the
+`EXISTS` above, no `OR`, no window functions, no `HAVING`, no `ROLLUP`,
+`CUBE` or `GROUPING SETS`. Ask PostgreSQL for those.
 
 ## Checking a spec
 
@@ -222,7 +262,7 @@ to a dim's key, no subqueries, no window functions, no `HAVING`, no
 problem between declarations at once:
 
 ```text
-straum: orders.sql: line 5: WHERE, filter measures instead, is not in straum SQL, the PostgreSQL subset made only for straum
+straum: orders.sql: line 5: JOIN, write INNER JOIN, `JOIN public.customers AS customers ON customers.id = orders.customer_id` is not in straum SQL, the PostgreSQL subset made only for straum
 ```
 
 ```text

@@ -158,6 +158,38 @@ impl Partials {
         }
     }
 
+    /// One cell into one group, for a cell that counts more than once or
+    /// under several groups.
+    pub(crate) fn merge_cell(&mut self, g: u32, i: usize, rows: &[u64], column: Option<&Column>) {
+        let at = lane(i, g);
+        match (self, column) {
+            (Partials::Count(counts), None) => counts[at] += rows[i],
+            (
+                Partials::Sum { sums, counts, .. },
+                Some(Column::Sum {
+                    sums: cell_sums,
+                    counts: cell_counts,
+                }),
+            ) => {
+                sums[at] += cell_sums[i];
+                counts[at] += cell_counts[i];
+            }
+            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                values[at] = values[at].min(mins[i]);
+                seen[at] |= mins[i] <= maxs[i];
+            }
+            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+                values[at] = values[at].max(maxs[i]);
+                seen[at] |= mins[i] <= maxs[i];
+            }
+            (Partials::Distinct(seen), Some(Column::Distinct(counts))) if g != 0 => {
+                seen[g as usize].extend(counts[i].keys().cloned());
+            }
+            (Partials::Distinct(_), Some(Column::Distinct(_))) => {}
+            _ => unreachable!("Agg::state names the column the measure reads"),
+        }
+    }
+
     /// Folding in registers beats adding to one place in memory, each add
     /// waiting on the last.
     fn merge_into(&mut self, g: u32, rows: &[u64], column: Option<&Column>) {

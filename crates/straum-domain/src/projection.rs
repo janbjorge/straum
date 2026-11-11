@@ -6,9 +6,10 @@ use crate::value::{ColumnType, Datum};
 
 /// A dim projected to its key and the columns the views read: what a join
 /// needs of it and nothing more. Cells are keyed by the fact's join
-/// columns; an ask maps a cell's key through here to the dim's values as
+/// columns; an ask maps a cell's key through here to the dim's rows as
 /// they are now, so a dim change is one entry here and the next ask sees
-/// it.
+/// it. A key may hold several rows, as a join of any cardinality may
+/// find.
 #[derive(Debug)]
 pub(crate) struct Projection {
     key_width: usize,
@@ -18,8 +19,12 @@ pub(crate) struct Projection {
     /// One per attribute, with `Null` under code 0, so a key with no row
     /// and a null value read alike without a lookup.
     codes: Vec<Codes>,
-    /// By key: the attribute codes of the one row under it.
-    rows: FastMap<Box<[Datum]>, Box<[u32]>>,
+    /// By key: the attribute codes of each row under it, in arrival order.
+    rows: FastMap<Box<[Datum]>, Vec<Box<[u32]>>>,
+    /// Rows held, over every key.
+    held: usize,
+    /// Keys holding more than one row.
+    many: usize,
 }
 
 /// The code of `Null` in every attribute's codes.
@@ -32,6 +37,8 @@ impl Projection {
             types: vec![ColumnType::Int; dim.columns().count()],
             codes: dim.attrs.iter().map(|_| Codes::default()).collect(),
             rows: FastMap::default(),
+            held: 0,
+            many: 0,
         };
         projection.code_null();
         projection
@@ -62,31 +69,41 @@ impl Projection {
     /// Rows held; one with a null in its key is never held, since a join
     /// on null matches nothing.
     pub(crate) fn len(&self) -> usize {
-        self.rows.len()
+        self.held
+    }
+
+    /// Every key holds one row at most, so a join through it never
+    /// repeats a cell.
+    pub(crate) fn is_unique(&self) -> bool {
+        self.many == 0
     }
 
     /// The types stay.
     pub(crate) fn clear(&mut self) {
         self.rows.clear();
+        self.held = 0;
+        self.many = 0;
         self.codes.iter_mut().for_each(|c| *c = Codes::default());
         self.code_null();
     }
 
-    /// Adds one row, [`Dim::columns`] wide. A key already held is
-    /// [`RowError::Present`]: the stream removes before it adds.
+    /// Adds one row, [`Dim::columns`] wide. A row equal to one held counts
+    /// twice, as PostgreSQL's join would.
     pub(crate) fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let (key, attrs) = row.split_at(self.key_width);
         if key.contains(&Datum::Null) {
             return Ok(());
         }
-        if self.rows.contains_key(key) {
-            return Err(RowError::Present);
-        }
         let codes: Box<[u32]> = (attrs.iter().zip(&mut self.codes))
             .map(|(value, codes)| codes.code(value))
             .collect();
-        self.rows.insert(key.into(), codes);
+        let rows = self.rows.entry(key.into()).or_default();
+        rows.push(codes);
+        self.held += 1;
+        if rows.len() == 2 {
+            self.many += 1;
+        }
         Ok(())
     }
 
@@ -109,32 +126,41 @@ impl Projection {
         Ok(())
     }
 
-    /// Removes the row, which must be held as given; after
-    /// [`RowError::Missing`] the projection no longer matches the table.
+    /// Removes one row equal to `row`; after [`RowError::Missing`] the
+    /// projection no longer matches the table.
     pub(crate) fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let (key, attrs) = row.split_at(self.key_width);
         if key.contains(&Datum::Null) {
             return Ok(());
         }
-        let held = self.rows.get(key).ok_or(RowError::Missing)?;
-        let same = (attrs.iter().zip(&self.codes).zip(held.iter()))
-            .all(|((value, codes), &code)| codes.get(value) == Some(code));
-        if !same {
-            return Err(RowError::Missing);
+        let held = self.rows.get_mut(key).ok_or(RowError::Missing)?;
+        let same = |codes: &[u32]| {
+            (attrs.iter().zip(&self.codes).zip(codes))
+                .all(|((value, known), &code)| known.get(value) == Some(code))
+        };
+        let i = held
+            .iter()
+            .position(|codes| same(codes))
+            .ok_or(RowError::Missing)?;
+        held.swap_remove(i);
+        self.held -= 1;
+        if held.len() == 1 {
+            self.many -= 1;
         }
-        self.rows.remove(key);
+        if held.is_empty() {
+            self.rows.remove(key);
+        }
         Ok(())
     }
 
-    /// The code of attribute `attr` under `key`: [`NULL`] when no row is
-    /// held under it, as a `LEFT OUTER JOIN` gives, or when the key has a
-    /// null, which joins nothing.
-    pub(crate) fn attr_code(&self, key: &[Datum], attr: usize) -> u32 {
+    /// The rows under `key`, each as its attribute codes: none when no row
+    /// is held under it, or when the key has a null, which joins nothing.
+    pub(crate) fn matches(&self, key: &[Datum]) -> &[Box<[u32]>] {
         if key.contains(&Datum::Null) {
-            return NULL;
+            return &[];
         }
-        self.rows.get(key).map_or(NULL, |codes| codes[attr])
+        self.rows.get(key).map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn attr_value(&self, attr: usize, code: u32) -> &Datum {

@@ -414,6 +414,39 @@ fn dim_changes_show_at_once() {
     );
 }
 
+/// A second dim row under a key straum holds is a change like any other:
+/// the join finds both, so the trips count once under each borough, as
+/// PostgreSQL's join would repeat them.
+#[test]
+fn a_dim_key_held_twice_joins_twice() {
+    let (db, mut writer) = setup(&TABLES);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 1, 1, 20)]);
+    writer.step().unwrap();
+    let row = |borough: &str, n| AnswerRow {
+        keys: vec![text(borough)],
+        values: vec![Value::Int(n)],
+    };
+    assert_eq!(by_borough(writer.app(), "trips"), [row("Bronx", 2)]);
+
+    let lsn = db.borrow_mut().send(vec![Change::Insert {
+        table: id("zones"),
+        row: vec![int(1), text("Staten Island")],
+    }]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(
+        by_borough(writer.app(), "trips"),
+        [row("Bronx", 2), row("Staten Island", 2)]
+    );
+    let lsn = db.borrow_mut().send(vec![Change::Delete {
+        table: id("zones"),
+        old: vec![int(1), text("Bronx")],
+    }]);
+    assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
+    assert_eq!(by_borough(writer.app(), "trips"), [row("Staten Island", 2)]);
+    assert_eq!(db.borrow().loads.len(), 3, "no reload");
+}
+
 /// A row whose dim row does not exist reads null, as the view's `LEFT
 /// OUTER JOIN` gives, until the dim row comes; a dim row deleted or
 /// truncated leaves null for every row that pointed at it.
@@ -784,13 +817,6 @@ fn a_change_that_does_not_fit_starts_over() {
             Change::Delete {
                 table: id("zones"),
                 old: vec![int(7), text("Staten Island")],
-            },
-        ),
-        (
-            "dim insert under a key straum holds",
-            Change::Insert {
-                table: id("zones"),
-                row: vec![int(1), text("Staten Island")],
             },
         ),
         (

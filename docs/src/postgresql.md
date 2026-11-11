@@ -43,7 +43,7 @@ GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
 CREATE PUBLICATION "straum" FOR TABLE "public"."customers", "public"."orders";
 -- fact orders: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
--- dim customers: straum holds its key and the columns the views read, and follows it; "public"."customers" needs a primary key or unique index on id alone.
+-- dim customers: straum holds its key and the columns the views read, and follows it.
 ALTER TABLE "public"."customers" REPLICA IDENTITY FULL;
 ```
 
@@ -58,9 +58,8 @@ superuser. The setup lives in the catalog and survives restarts.
 - `--publication NAME` names the publication; give `straum run` the same
   name.
 - Dims are published and get `REPLICA IDENTITY FULL` like facts, since
-  Straum holds and follows them. They also need a primary key or unique
-  index on exactly their key columns, in any order. Only the schema can
-  give that, so the SQL says it in a comment.
+  Straum holds and follows them. A dim needs no index on its key: a key
+  may match any number of rows, as in PostgreSQL.
 
 ## 3. Connect
 
@@ -109,7 +108,6 @@ orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
 dim customers: straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
-dim customers: public.customers needs a primary key or unique index on id alone
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
 ```
 

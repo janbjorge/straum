@@ -29,13 +29,16 @@
 //!   multiple of the width before it. PostgreSQL rejects view options;
 //!   straum never sends a view to PostgreSQL, so it needn't take them.
 //! - `FROM schema.table AS alias`: the fact.
-//! - `LEFT OUTER JOIN schema.table AS alias ON alias.key = fact.column`,
-//!   with more equalities joined by `AND` for a key of several columns,
-//!   the joined table's column on the left: a ref named `alias` to the
+//! - `INNER JOIN` or `LEFT OUTER JOIN schema.table AS alias ON alias.key
+//!   = near.column`, with more equalities joined by `AND` for a key of
+//!   several columns, the joined table's column on the left and the fact
+//!   or a dim joined before it on the right: a ref named `alias` to the
 //!   dim `table`. The fact columns joined on key the cells, selected as
 //!   `by` columns or not; the dim columns the view selects are the ref's
 //!   attributes, read through them when asked, and a join must select
-//!   one.
+//!   one. `WHERE EXISTS (SELECT 1 FROM schema.table AS alias WHERE ...)`
+//!   and `NOT EXISTS` are the semi and anti joins, which select nothing.
+//! - `WHERE` conditions, as a `FILTER`'s, drop rows from every ask.
 //! - `date_bin('<n> <unit>', fact.column, timestamptz 'epoch') AS bucket`:
 //!   the bucket; `timestamp 'epoch'` for a column without a zone.
 //! - Other fact columns are `by` columns; `(fact.column IS NULL) AS name`

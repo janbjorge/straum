@@ -19,8 +19,8 @@ pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Ident;
 pub use rollup::RowError;
 pub use spec::{
-    Attr, By, Cond, Dim, Fact, Grain, Key, Literal, Measure, Origin, Ref, Slot, Spec, SpecError,
-    Table, Time,
+    Attr, By, Cond, Dim, Fact, Grain, Key, Literal, Measure, Origin, Ref, RefKind, Slot, Spec,
+    SpecError, Table, Time, Via,
 };
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
 pub use value::{ColumnType, Datum, Value, decimal};

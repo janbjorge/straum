@@ -2,7 +2,7 @@
 //! is one other spelling PostgreSQL would take, and the error must name
 //! the construct and say what to write instead.
 
-use straum_domain::Literal;
+use straum_domain::{Literal, RefKind};
 use straum_notation::{Error, parse, parse_ask};
 
 /// The canon: every schema, alias, column owner, output name and join
@@ -62,11 +62,7 @@ fn one_join_spelling() {
     let cases = [
         (
             format!("JOIN shop.customers AS customers {on}"),
-            "join, write LEFT OUTER JOIN,",
-        ),
-        (
-            format!("INNER JOIN shop.customers AS customers {on}"),
-            "join, write LEFT OUTER JOIN,",
+            "JOIN, write INNER JOIN,",
         ),
         (
             format!("LEFT JOIN shop.customers AS customers {on}"),
@@ -74,19 +70,19 @@ fn one_join_spelling() {
         ),
         (
             format!("RIGHT JOIN shop.customers AS customers {on}"),
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             format!("RIGHT OUTER JOIN shop.customers AS customers {on}"),
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             format!("FULL OUTER JOIN shop.customers AS customers {on}"),
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "CROSS JOIN shop.customers AS customers".to_owned(),
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "NATURAL LEFT OUTER JOIN shop.customers AS customers".to_owned(),
@@ -116,6 +112,53 @@ fn one_join_spelling() {
     ];
     for (to, fragment) in cases {
         let errors = errors(&canon(join, &to));
+        assert!(
+            errors.iter().any(|e| e.contains(fragment)),
+            "{to}: {errors:?} has no {fragment:?}"
+        );
+    }
+}
+
+/// `INNER JOIN` is the other spelling that stays, and the view's `WHERE`
+/// with `EXISTS` and `NOT EXISTS` are the semi and anti joins.
+#[test]
+fn inner_join_and_exists_parse() {
+    let src = canon(
+        "LEFT OUTER JOIN shop.customers AS customers ON customers.id = orders.customer_id",
+        "INNER JOIN shop.customers AS customers ON customers.id = orders.customer_id\n\
+         WHERE EXISTS (SELECT 1 FROM shop.promos AS promos WHERE promos.sku = orders.sku)\n\
+         AND NOT EXISTS (SELECT 1 FROM shop.blocked AS blocked WHERE blocked.id = orders.customer_id)",
+    );
+    let spec = parse(&src).unwrap();
+    let kinds: Vec<_> = (spec.fact("orders").unwrap().refs.iter())
+        .map(|r| (r.name.to_string(), r.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("customers".into(), RefKind::Inner),
+            ("promos".into(), RefKind::Semi),
+            ("blocked".into(), RefKind::Anti),
+        ]
+    );
+    for (to, fragment) in [
+        (
+            "WHERE orders.customer_id IN (SELECT id FROM shop.blocked AS blocked)",
+            "filter condition, write = or IN joined by AND,",
+        ),
+        (
+            "WHERE NOT orders.customer_id IN (SELECT id FROM shop.blocked AS blocked)",
+            "filter condition, write = or IN joined by AND,",
+        ),
+        (
+            "WHERE EXISTS (SELECT 1 FROM shop.promos AS promos WHERE promos.sku = orders.sku AND promos.live = true)",
+            "join ON promos.<key> = orders.<column>",
+        ),
+    ] {
+        let errors = errors(&canon(
+            "GROUP BY 1, 2, 3, 4, 5",
+            &format!("{to} GROUP BY 1, 2, 3, 4, 5"),
+        ));
         assert!(
             errors.iter().any(|e| e.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"

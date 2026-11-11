@@ -912,9 +912,7 @@ fn follows_the_task_tables() {
     ));
     let spec = db.spec(TASKS_SPEC);
     assert!(crate::plan(&spec, "p", "r", None).contains(
-        "-- dim taskgroups: straum holds its key and the columns the views read, and follows \
-         it; \"task_tables\".\"taskgroups\" needs a primary key or unique index on \
-         organization_id, taskgroup_id alone."
+        "-- dim taskgroups: straum holds its key and the columns the views read, and follows it."
     ));
     let mut writer = Writer::new(App::new(spec, LIMITS), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
@@ -1143,6 +1141,206 @@ fn a_dim_change_shows_at_once() {
 
 /// A value straum can't read stops the load, or the stream, naming the
 /// table and column it was in, so the row can be found and fixed.
+/// A shop with every join kind at once: orders joined to customers, which
+/// may hold a key twice and lack a key, through them to tiers, kept by a
+/// promo on their sku and dropped by a block on their customer, under a
+/// standing `WHERE`; and a view of the same orders keeping every row.
+const SHOP: &str = "
+CREATE TABLE $S.customers (id int, country text, tier_id int);
+CREATE TABLE $S.tiers (id int, label text);
+CREATE TABLE $S.promos (sku int, note text);
+CREATE TABLE $S.blocked (id int, reason text);
+CREATE TABLE $S.orders (
+    id int PRIMARY KEY,
+    at timestamptz,
+    customer_id int,
+    sku int,
+    qty int,
+    status text
+);
+ALTER TABLE $S.customers REPLICA IDENTITY FULL;
+ALTER TABLE $S.tiers REPLICA IDENTITY FULL;
+ALTER TABLE $S.promos REPLICA IDENTITY FULL;
+ALTER TABLE $S.blocked REPLICA IDENTITY FULL;
+ALTER TABLE $S.orders REPLICA IDENTITY FULL;
+CREATE PUBLICATION $S FOR TABLE $S.customers, $S.tiers, $S.promos, $S.blocked, $S.orders;
+";
+
+const PAID_SPEC: &str = "
+CREATE VIEW paid WITH (buckets = '1 hour, 1 day') AS
+SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
+       o.status AS status,
+       c.country AS country,
+       t.label AS label,
+       count(*) AS orders,
+       sum(o.qty) AS qty,
+       max(o.qty) AS qty_max,
+       avg(o.qty) AS qty_avg,
+       count(DISTINCT o.qty) AS sizes,
+       count(*) FILTER (WHERE c.country = 'NO') AS norwegian
+FROM $S.orders AS o
+INNER JOIN $S.customers AS c ON c.id = o.customer_id
+LEFT OUTER JOIN $S.tiers AS t ON t.id = c.tier_id
+WHERE EXISTS (SELECT 1 FROM $S.promos AS p WHERE p.sku = o.sku)
+  AND NOT EXISTS (SELECT 1 FROM $S.blocked AS b WHERE b.id = o.customer_id)
+  AND o.status IN ('paid', 'shipped')
+  AND c.country IN ('NO', 'SE', 'DK')
+GROUP BY 1, 2, 3, 4;
+";
+
+const OFFERS_SPEC: &str = "
+CREATE VIEW offers WITH (buckets = '1 hour, 1 day') AS
+SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
+       c.country AS country,
+       p.note AS note,
+       count(*) AS orders,
+       sum(o.qty) AS qty,
+       min(o.qty) AS qty_min
+FROM $S.orders AS o
+LEFT OUTER JOIN $S.customers AS c ON c.id = o.customer_id
+LEFT OUTER JOIN $S.promos AS p ON p.sku = o.sku
+GROUP BY 1, 2, 3;
+";
+
+/// The shop specs' oracles, the paid view's then the offers view's: each
+/// by bucket, and the paid view by country and label over a window that
+/// cuts the day bucket `START` begins, against the raw rows joined as the
+/// view says.
+fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
+    const PAID: [&str; 6] = ["orders", "qty", "qty_max", "qty_avg", "sizes", "norwegian"];
+    let paid = Oracle {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, status, country, label, orders, qty,
+                    qty_max, round(qty_avg, 6), sizes, norwegian
+               FROM ({}) v",
+            body(PAID_SPEC, "paid")
+        ),
+        ask: ask("paid", &PAID, &["bucket", "status", "country", "label"]),
+        scales: vec![0; 10],
+    };
+    let offers = Oracle {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, country, note, orders, qty, qty_min
+               FROM ({}) v",
+            body(OFFERS_SPEC, "offers")
+        ),
+        ask: ask(
+            "offers",
+            &["orders", "qty", "qty_min"],
+            &["bucket", "country", "note"],
+        ),
+        scales: vec![0; 6],
+    };
+    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
+    let window = Oracle {
+        sql: format!(
+            "SELECT c.country, t.label, count(*), sum(o.qty), max(o.qty), round(avg(o.qty), 6),
+                    count(DISTINCT o.qty), count(*) FILTER (WHERE c.country = 'NO')
+               FROM $S.orders o
+               JOIN $S.customers c ON c.id = o.customer_id
+               LEFT JOIN $S.tiers t ON t.id = c.tier_id
+              WHERE EXISTS (SELECT 1 FROM $S.promos p WHERE p.sku = o.sku)
+                AND NOT EXISTS (SELECT 1 FROM $S.blocked b WHERE b.id = o.customer_id)
+                AND o.status IN ('paid', 'shipped')
+                AND c.country IN ('NO', 'SE', 'DK')
+                AND o.at >= to_timestamp({from}) AND o.at < to_timestamp({to})
+              GROUP BY 1, 2"
+        ),
+        ask: Ask {
+            from,
+            to,
+            ..ask("paid", &PAID, &["country", "label"])
+        },
+        scales: vec![0; 8],
+    };
+    (vec![paid, window], vec![offers])
+}
+
+/// Every join kind answers as PostgreSQL's view does, through dim rows
+/// that come, move, double and go.
+#[test]
+fn every_join_kind_matches_postgresql() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "shop", SHOP);
+    let mut rng = Rng::new(31);
+    // Customer 7 is held twice, 8 not at all; tier 4 and sku 5 have no
+    // row; customer 3 is blocked.
+    db.run(
+        "INSERT INTO $S.customers VALUES
+           (1, 'NO', 1), (2, 'SE', 2), (3, 'NO', 3), (4, 'DK', 4), (5, 'FI', 1),
+           (6, NULL, 2), (7, 'NO', 1), (7, 'SE', 3);
+         INSERT INTO $S.tiers VALUES (1, 'bronze'), (2, 'silver'), (3, 'gold');
+         INSERT INTO $S.promos VALUES (1, 'two for one'), (1, 'free shipping'), (2, 'sale'),
+                                      (3, NULL), (4, 'sale');
+         INSERT INTO $S.blocked VALUES (3, 'fraud')",
+    );
+    let order = |id: u64, rng: &mut Rng| {
+        let at = START + rng.below(rng.hours * 3_600) as i64;
+        let customer = (1 + rng.below(8)).to_string();
+        let sku = (1 + rng.below(5)).to_string();
+        let qty = rng.below(10).to_string();
+        let status = format!("'{}'", rng.pick(&["paid", "shipped", "new", "cancelled"]));
+        format!(
+            "INSERT INTO $S.orders VALUES ({id}, to_timestamp({at}), {}, {}, {}, {})",
+            rng.or_null(customer),
+            rng.or_null(sku),
+            rng.or_null(qty),
+            rng.or_null(status)
+        )
+    };
+    for id in 0..300 {
+        let sql = order(id, &mut rng);
+        db.run(&sql);
+    }
+    let mut paid = Writer::new(App::new(db.spec(PAID_SPEC), LIMITS), db.pg());
+    let mut offers = Writer::new(App::new(db.spec(OFFERS_SPEC), LIMITS), db.pg());
+    assert!(matches!(paid.step(), Ok(Step::Started(_))));
+    assert!(matches!(offers.step(), Ok(Step::Started(_))));
+    let (paid_oracles, offers_oracles) = shop_oracles();
+    compare(&mut db, paid.app(), &paid_oracles).expect("ready");
+    compare(&mut db, offers.app(), &offers_oracles).expect("ready");
+
+    let mut changes: Vec<String> = (300..320).map(|id| order(id, &mut rng)).collect();
+    changes.extend(
+        [
+            // A dim row moves, under an inner join and a standing WHERE.
+            "UPDATE $S.customers SET country = 'SE' WHERE id = 1",
+            // A key held once is held twice, then once again.
+            "INSERT INTO $S.customers VALUES (2, 'DK', 3)",
+            "DELETE FROM $S.customers WHERE id = 7 AND country = 'SE'",
+            // The chain: the far dim changes, then the near dim's link.
+            "UPDATE $S.tiers SET label = 'platinum' WHERE id = 3",
+            "UPDATE $S.customers SET tier_id = 2 WHERE id = 4",
+            "DELETE FROM $S.tiers WHERE id = 1",
+            // Semi and anti: a promo for the sku without one, a doubled
+            // promo gone whole, a customer blocked and one unblocked.
+            "INSERT INTO $S.promos VALUES (5, 'late')",
+            "DELETE FROM $S.promos WHERE sku = 1",
+            "INSERT INTO $S.blocked VALUES (1, 'chargeback')",
+            "DELETE FROM $S.blocked WHERE id = 3",
+            // Fact rows move across the WHERE, the joins and out.
+            "UPDATE $S.orders SET status = 'paid' WHERE id % 3 = 0",
+            "UPDATE $S.orders SET customer_id = 8 WHERE id % 7 = 0",
+            "UPDATE $S.orders SET sku = 1 WHERE id % 5 = 0",
+            "DELETE FROM $S.orders WHERE id % 11 = 0",
+            // A dim key moves, a dim is emptied and filled again.
+            "UPDATE $S.customers SET id = 8 WHERE id = 5",
+            "TRUNCATE $S.tiers",
+            "INSERT INTO $S.tiers VALUES (1, 'bronze'), (2, 'silver'), (2, 'silver again')",
+        ]
+        .map(str::to_owned),
+    );
+    for change in changes {
+        db.run(&change);
+        applied(&mut paid);
+        applied(&mut offers);
+        compare(&mut db, paid.app(), &paid_oracles).unwrap_or_else(|| panic!("{change}"));
+        compare(&mut db, offers.app(), &offers_oracles).unwrap_or_else(|| panic!("{change}"));
+    }
+    assert_eq!(paid.app().status().starts, 1);
+    assert_eq!(offers.app().status().starts, 1);
+}
+
 #[test]
 fn a_poison_value_names_its_column() {
     let pg = postgres();
@@ -1637,7 +1835,7 @@ CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
 -- fact logins: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
--- dim zones: straum holds its key and the columns the views read, and follows it; \"plan\".\"zones\" needs a primary key or unique index on id alone.
+-- dim zones: straum holds its key and the columns the views read, and follows it.
 ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
 "
     );
@@ -1918,7 +2116,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (s serial PRIMARY KEY, k int, name text);",
                 "int",
             ),
-            "dim d: dimpk.d needs a primary key or unique index on k alone",
+            "",
         ),
         (
             "dimnounique",
@@ -1926,7 +2124,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (k int, name text); ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
-            "dim d: dimnounique.d needs a primary key or unique index on k alone",
+            "",
         ),
         (
             "dimtype",
@@ -1966,8 +2164,7 @@ fn setup_problems_say_what_to_fix() {
         assert_eq!(found, expected, "{name}");
     }
 
-    // A dim keyed by two columns: a primary key or unique index on exactly
-    // those columns, in any order.
+    // A dim keyed by two columns, with or without a key of its own.
     let pair_spec = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
@@ -2016,7 +2213,7 @@ fn setup_problems_say_what_to_fix() {
                  ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
-            "dim d: pairsuper.d needs a primary key or unique index on x, y alone",
+            "",
         ),
         (
             "pairpk",
@@ -2024,7 +2221,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int PRIMARY KEY, y int, name text);",
                 "int",
             ),
-            "dim d: pairpk.d needs a primary key or unique index on x, y alone",
+            "",
         ),
         (
             "pairtype",
@@ -2037,6 +2234,50 @@ fn setup_problems_say_what_to_fix() {
     ];
     for (name, tables, expected) in cases {
         let found = problems(&pg, name, &tables, pair_spec);
+        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
+        assert_eq!(found, expected, "{name}");
+    }
+
+    // A chain joins a dim's column to the next dim's key, and a semi join's
+    // dim is published like any other.
+    let chain_spec = "
+        CREATE VIEW f WITH (buckets = '1 hour') AS
+        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+               d.name AS name, e.label AS label, count(*) AS n
+        FROM $S.f AS t
+        LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id
+        LEFT OUTER JOIN $S.e AS e ON e.k = d.e_id
+        WHERE EXISTS (SELECT 1 FROM $S.s AS s WHERE s.k = t.d_id)
+        GROUP BY 1, 2, 3;";
+    let chain = |e_key: &str, publish: &str| {
+        format!(
+            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id int);
+             CREATE TABLE $S.d (k int, name text, e_id int);
+             CREATE TABLE $S.e (k {e_key}, label text);
+             CREATE TABLE $S.s (k int);
+             ALTER TABLE $S.f REPLICA IDENTITY FULL;
+             ALTER TABLE $S.d REPLICA IDENTITY FULL;
+             ALTER TABLE $S.e REPLICA IDENTITY FULL;
+             ALTER TABLE $S.s REPLICA IDENTITY FULL;
+             CREATE PUBLICATION $S FOR TABLE {publish};"
+        )
+    };
+    let cases = [
+        ("chainok", chain("int", "$S.f, $S.d, $S.e, $S.s"), ""),
+        (
+            "chaintype",
+            chain("text", "$S.f, $S.d, $S.e, $S.s"),
+            "fact f: ref e joins d.e_id (an integer) to k (text); they must read alike",
+        ),
+        (
+            "semiunpublished",
+            chain("int", "$S.f, $S.d, $S.e"),
+            "s: publication semiunpublished leaves out semiunpublished.s: \
+             ALTER PUBLICATION semiunpublished ADD TABLE semiunpublished.s",
+        ),
+    ];
+    for (name, tables, expected) in cases {
+        let found = problems(&pg, name, &tables, chain_spec);
         let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
         assert_eq!(found, expected, "{name}");
     }

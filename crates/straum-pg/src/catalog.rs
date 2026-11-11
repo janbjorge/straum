@@ -3,7 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::escape_literal;
-use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec};
+use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec, Via};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -71,9 +71,6 @@ pub(crate) struct Relation {
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
     pub(crate) select: bool,
-    /// The columns of each valid unique index without a predicate or an
-    /// expression.
-    pub(crate) unique_indexes: Vec<Vec<String>>,
     /// The columns the publication sends; `None` when it leaves the table
     /// out.
     pub(crate) published: Option<Vec<String>>,
@@ -129,15 +126,6 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
     let relations = conn.rows(&format!(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
-                (SELECT string_agg(u.columns, ';')
-                   FROM (SELECT string_agg(a.attname, ',' ORDER BY k.ord) AS columns
-                           FROM pg_index i
-                          CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
-                           JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-                          WHERE i.indrelid = c.oid AND k.ord <= i.indnkeyatts
-                            AND i.indisunique AND i.indisvalid
-                            AND i.indpred IS NULL AND i.indexprs IS NULL
-                          GROUP BY i.indexrelid) u),
                 (SELECT array_to_string(p.attnames, ',') FROM pg_publication_tables p
                   WHERE p.pubname = {publication}
                     AND p.schemaname = n.nspname AND p.tablename = c.relname),
@@ -154,22 +142,16 @@ pub(crate) fn query(conn: &mut Conn, spec: &Spec, publication: &str) -> Result<C
             relkind,
             identity,
             select,
-            unique_indexes,
             published,
             row_filter,
         ] = row.try_into().map_err(|_| shape("relations"))?;
         let list = |s: &str| -> Vec<String> { s.split(',').map(str::to_owned).collect() };
-        let lists = |s: Option<String>| -> Vec<Vec<String>> {
-            s.map(|s| s.split(';').map(list).collect())
-                .unwrap_or_default()
-        };
         catalog.relations.push(Relation {
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
             relkind: relkind.unwrap_or_default(),
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
-            unique_indexes: lists(unique_indexes),
             published: published.as_deref().map(list),
             row_filter: row_filter.as_deref() == Some("t"),
             columns: Vec::new(),
@@ -363,10 +345,8 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
         By::Column { column, .. } => (column, Role::Key),
         By::IsNull { column, .. } => (column, Role::Nullness),
     }));
-    // A ref's via columns key the cells, selected or not.
-    for r in &fact.refs {
-        roles.extend(r.via.iter().map(|v| (v, Role::Key)));
-    }
+    // A ref's fact-side via columns key the cells, selected or not.
+    roles.extend(fact.fact_vias().map(|v| (v, Role::Key)));
     for m in &fact.measures {
         let Some(column) = m.agg.input() else {
             continue;
@@ -469,9 +449,6 @@ fn check_table(
         columns,
         types,
     };
-    if let Member::Dim(dim) = member {
-        check_dim(dim, &table, relation, problems);
-    }
     if relation.identity != "f" {
         problems.push(format!(
             "{} {name}: straum needs the whole old row of every update and delete: \
@@ -483,28 +460,6 @@ fn check_table(
     Some(table)
 }
 
-/// A join finds one row or none only if the key is unique: a primary key
-/// or unique index on exactly the dim's key columns, in any order.
-fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<String>) {
-    let same = |columns: &[String]| {
-        columns.len() == dim.key.len()
-            && dim
-                .key
-                .iter()
-                .all(|k| columns.iter().any(|c| c == k.as_str()))
-    };
-    if !relation.unique_indexes.iter().any(|i| same(i)) {
-        let key = (dim.key.iter().map(Ident::as_str))
-            .collect::<Vec<_>>()
-            .join(", ");
-        problems.push(format!(
-            "dim {}: {} needs a primary key or unique index on {key} alone",
-            dim.name,
-            table.qualified()
-        ));
-    }
-}
-
 /// Refs join fact columns to dim keys of the same type, and filters compare
 /// columns with literals of their type.
 fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
@@ -513,10 +468,18 @@ fn check_refs(spec: &Spec, tables: &Tables, problems: &mut Vec<String>) {
         for r in &fact.refs {
             let dim = tables.dim(&r.dim);
             for (via, key) in r.via.iter().zip(&dim.columns) {
-                let (via_type, key_type) = (facts.column_type(via), dim.column_type(key));
+                let (via_name, via_type) = match via {
+                    Via::Fact(column) => (column.to_string(), facts.column_type(column)),
+                    Via::Attr { through, column } => {
+                        let parent = &fact.refs[*through];
+                        let name = format!("{}.{column}", parent.name);
+                        (name, tables.dim(&parent.dim).column_type(column))
+                    }
+                };
+                let key_type = dim.column_type(key);
                 if via_type != key_type {
                     problems.push(format!(
-                        "fact {}: ref {} joins {via} ({via_type}) to {key} ({key_type}); \
+                        "fact {}: ref {} joins {via_name} ({via_type}) to {key} ({key_type}); \
                          they must read alike",
                         fact.name, r.name
                     ));

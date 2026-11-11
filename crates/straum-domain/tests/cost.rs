@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Agg, Ask, AskKey, Attr, By, ColumnType, Datum, Dim, Fact, Grain, Ident, Measure, Origin, Ref,
-    Spec, Store, Table, Time, TimeKey,
+    RefKind, Spec, Store, Table, Time, TimeKey, Via,
 };
 
 thread_local! {
@@ -82,7 +82,8 @@ fn spec(buckets: &[u32]) -> Spec {
         refs: vec![Ref {
             name: id("pickup"),
             dim: id("zones"),
-            via: vec![id("pu")],
+            via: vec![Via::Fact(id("pu"))],
+            kind: RefKind::Left,
             attrs: vec![Attr {
                 name: id("borough"),
                 column: id("borough"),
@@ -98,6 +99,7 @@ fn spec(buckets: &[u32]) -> Spec {
                 name: id("pu"),
             },
         ],
+        filter: vec![],
         measures: vec![
             m("trips", Agg::Count),
             m("fare", Agg::Sum(id("fare"))),

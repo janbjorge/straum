@@ -8,8 +8,7 @@ use straum_domain::Spec;
 /// attribute, lets it read the spec's tables, and publishes every one of
 /// them as `publication`. Each gets `REPLICA IDENTITY FULL`, so an update
 /// or delete carries the old row straum takes out of its cell or its
-/// projection. A dim needs a unique key too, which only the schema can
-/// give; the SQL says it in a comment.
+/// projection.
 ///
 /// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so
 /// neither the SQL nor the server's statement log holds the password
@@ -58,12 +57,9 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
         ));
     }
     for dim in spec.dims() {
-        let key: Vec<&str> = dim.key.iter().map(|k| k.as_str()).collect();
         sql.push(format!(
-            "-- dim {}: straum holds its key and the columns the views read, and follows it; {} needs a primary key or unique index on {} alone.",
-            dim.name,
-            qualified(&dim.table),
-            key.join(", ")
+            "-- dim {}: straum holds its key and the columns the views read, and follows it.",
+            dim.name
         ));
         sql.push(format!(
             "ALTER TABLE {} REPLICA IDENTITY FULL;",

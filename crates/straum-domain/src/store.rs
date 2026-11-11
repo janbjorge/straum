@@ -5,9 +5,9 @@ use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
 use crate::hash::FastMap;
 use crate::ident::Ident;
-use crate::projection::Projection;
+use crate::projection::{NULL, Projection};
 use crate::rollup::{Cells, Rollup, RowError};
-use crate::spec::{Cond, Fact, Grain, Key, Literal, Slot, Spec};
+use crate::spec::{Cond, Fact, Grain, Key, Literal, RefKind, Slot, Spec, Via};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
@@ -16,7 +16,7 @@ const IN_DIMS: &str = "the dim is in the spec";
 
 /// The cells of every fact, and every dim projected to its key and the
 /// columns the views read. Nothing else: a cell is keyed by the fact's
-/// join columns, and an ask reads a dim's values through them, as the dim
+/// join columns, and an ask reads a dim's rows through them, as the dim
 /// is now.
 #[derive(Debug)]
 pub struct Store {
@@ -111,12 +111,12 @@ impl Store {
         self.projection_mut(dim).add_rows(rows)
     }
 
-    /// Adds one row, as the stream brings it; its key must be new.
+    /// Adds one row, as the stream brings it.
     pub fn add_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
         self.projection_mut(dim).add(row)
     }
 
-    /// Removes one row, which must be held as given.
+    /// Removes one row equal to the one given.
     pub fn remove_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
         self.projection_mut(dim).remove(row)
     }
@@ -137,7 +137,10 @@ impl Store {
 
     /// Every key is a slot of the rollup key or a dim value reached
     /// through the slots of a ref's via columns, so the cell loop only
-    /// looks up what each code maps to, once per code.
+    /// looks up what each code maps to, once per code. A view whose joins
+    /// are all left and one row a key walks the cells once each; one with
+    /// another kind of join, or a key with several rows, walks each cell
+    /// once per row its joins find, as PostgreSQL repeats the fact row.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let (fact, rollup) = self.checked(ask)?;
         // Only the load knows the types, so this check comes after Spec::check.
@@ -170,7 +173,8 @@ impl Store {
             })
             .collect();
         let mut groups = Groups::new(&by);
-        let mut filter = self.tests(fact, rollup, &ask.filter);
+        let mut filter = self.tests(fact, rollup, &fact.filter);
+        filter.extend(self.tests(fact, rollup, &ask.filter));
         let mut measures: Vec<Asked> = ask
             .measures
             .iter()
@@ -204,31 +208,41 @@ impl Store {
             groups.numbers.clear();
             groups.insert(&by, rollup);
         }
-        // Per cell of a bucket: 1 while it may pass, then its group; 0 for
-        // cells passed over. Again per measure with a filter of its own.
-        let mut cell_groups = Vec::new();
-        let mut measure_groups = Vec::new();
-        for (bucket, cells) in cover(rollup, ask) {
-            by.iter_mut().for_each(|p| p.enter(bucket));
-            cell_groups.clear();
-            cell_groups.resize(cells.len(), 1);
-            for t in &mut filter {
-                t.pass(rollup, cells, &mut cell_groups);
-            }
-            groups.assign(&mut by, rollup, cells, &mut cell_groups);
-            for m in &mut measures {
-                m.partials.grow(groups.len());
-                let read = if m.filter.is_empty() {
-                    &cell_groups
-                } else {
-                    measure_groups.clone_from(&cell_groups);
-                    for t in &mut m.filter {
-                        t.pass(rollup, cells, &mut measure_groups);
+        match self.expander(fact) {
+            None => ask_once(
+                rollup,
+                ask,
+                &mut by,
+                &mut groups,
+                &mut filter,
+                &mut measures,
+            ),
+            Some(mut expander) => {
+                for (bucket, cells) in cover(rollup, ask) {
+                    by.iter_mut().for_each(|p| p.enter(bucket));
+                    for i in 0..cells.len() {
+                        for row in expander.expand(rollup, cells.key(i)) {
+                            let held = filter.iter_mut().all(|t| t.holds(rollup, cells, i, row));
+                            if !held {
+                                continue;
+                            }
+                            groups.numbers.clear();
+                            groups
+                                .numbers
+                                .extend(by.iter_mut().map(|p| p.number_in(cells, i, row)));
+                            let g = groups.insert(&by, rollup);
+                            for m in &mut measures {
+                                m.partials.grow(groups.len());
+                                let held =
+                                    m.filter.iter_mut().all(|t| t.holds(rollup, cells, i, row));
+                                if held {
+                                    let column = m.state.map(|s| cells.column(s));
+                                    m.partials.merge_cell(g, i, cells.rows(), column);
+                                }
+                            }
+                        }
                     }
-                    &measure_groups
-                };
-                m.partials
-                    .merge(read, cells.rows(), m.state.map(|i| cells.column(i)));
+                }
             }
         }
 
@@ -244,6 +258,55 @@ impl Store {
             .collect();
         rows.sort_by(|a, b| a.keys.cmp(&b.keys));
         Ok(Answer { columns, rows })
+    }
+
+    /// How a cell's joins repeat it, when any can: a join not left, a key
+    /// with several rows, or a join through another dim. `None` when every
+    /// cell counts once.
+    fn expander(&self, fact: &Fact) -> Option<Expander<'_>> {
+        let plans: Vec<RefPlan<'_>> = (fact.refs.iter())
+            .map(|r| {
+                let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
+                let via = (r.via.iter())
+                    .map(|v| match v {
+                        Via::Fact(column) => ViaSource::Slot(slot_of(fact, Slot::Column(column))),
+                        Via::Attr { through, column } => {
+                            let parent = self.spec.dim(fact.refs[*through].dim.as_str());
+                            let attr = (parent.expect(CHECKED).attrs.iter())
+                                .position(|a| a == column)
+                                .expect(CHECKED);
+                            ViaSource::Through { r: *through, attr }
+                        }
+                    })
+                    .collect();
+                RefPlan {
+                    kind: r.kind,
+                    projection: self.projection(dim.name.as_str()),
+                    via,
+                }
+            })
+            .collect();
+        let once = plans.iter().all(|p| {
+            p.kind == RefKind::Left
+                && p.projection.is_unique()
+                && p.via.iter().all(|v| matches!(v, ViaSource::Slot(_)))
+        });
+        if once {
+            return None;
+        }
+        let mut slots = Vec::new();
+        for v in plans.iter().flat_map(|p| &p.via) {
+            if let ViaSource::Slot(slot) = v
+                && !slots.contains(slot)
+            {
+                slots.push(*slot);
+            }
+        }
+        Some(Expander {
+            plans,
+            slots,
+            memo: FastMap::default(),
+        })
     }
 
     fn fact_index(&self, name: &str) -> Option<usize> {
@@ -265,6 +328,10 @@ impl Store {
         &mut self.rollups[i]
     }
 
+    fn projection(&self, dim: &str) -> &Projection {
+        &self.projections[self.dim_index(dim).expect(IN_DIMS)]
+    }
+
     fn projection_mut(&mut self, dim: &str) -> &mut Projection {
         let i = self.dim_index(dim).expect(IN_DIMS);
         &mut self.projections[i]
@@ -277,27 +344,35 @@ impl Store {
     }
 
     /// Where a key's values come from: a rollup-key slot, or a dim's
-    /// projection reached through the slots of the ref's via columns.
+    /// projection reached through a ref.
     fn lookup(&self, fact: &Fact, rollup: &Rollup, name: &Ident) -> Lookup<'_> {
-        let slot_of = |slot: Slot<'_>| fact.rollup_key().position(|k| k == slot).expect(CHECKED);
         match fact.resolve(name).expect(CHECKED) {
-            Key::By(by) => Lookup::Slot(slot_of(by.slot())),
+            Key::By(by) => Lookup::Slot(slot_of(fact, by.slot())),
             Key::Attr(r, attr) => {
                 let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
-                let via: Vec<usize> = r.via.iter().map(|v| slot_of(Slot::Column(v))).collect();
+                let via: Vec<usize> = (r.via.iter())
+                    .filter_map(|v| match v {
+                        Via::Fact(column) => Some(slot_of(fact, Slot::Column(column))),
+                        Via::Attr { .. } => None,
+                    })
+                    .collect();
                 let memo = match via[..] {
                     [slot] => Memo::Dense(vec![UNKNOWN; rollup.codes(slot)]),
                     _ => Memo::Sparse(FastMap::default()),
                 };
                 Lookup::Attr(AttrLookup {
-                    via,
-                    projection: &self.projections
-                        [self.dim_index(dim.name.as_str()).expect(CHECKED)],
+                    r: fact
+                        .refs
+                        .iter()
+                        .position(|q| q.name == r.name)
+                        .expect(CHECKED),
                     attr: dim
                         .attrs
                         .iter()
                         .position(|a| *a == attr.column)
                         .expect(CHECKED),
+                    projection: self.projection(dim.name.as_str()),
+                    via,
                     key: Vec::new(),
                     memo,
                 })
@@ -320,9 +395,131 @@ impl Store {
     }
 }
 
+/// The cell loop for a view that counts each cell once: every join left
+/// and one row a key, none joined through another.
+fn ask_once<'s>(
+    rollup: &'s Rollup,
+    ask: &Ask,
+    by: &mut [Part<'s>],
+    groups: &mut Groups<'s>,
+    filter: &mut [Test<'s, '_>],
+    measures: &mut [Asked<'s, '_>],
+) {
+    // Per cell of a bucket: 1 while it may pass, then its group; 0 for
+    // cells passed over. Again per measure with a filter of its own.
+    let mut cell_groups = Vec::new();
+    let mut measure_groups = Vec::new();
+    for (bucket, cells) in cover(rollup, ask) {
+        by.iter_mut().for_each(|p| p.enter(bucket));
+        cell_groups.clear();
+        cell_groups.resize(cells.len(), 1);
+        for t in filter.iter_mut() {
+            t.pass(rollup, cells, &mut cell_groups);
+        }
+        groups.assign(by, rollup, cells, &mut cell_groups);
+        for m in measures.iter_mut() {
+            m.partials.grow(groups.len());
+            let read = if m.filter.is_empty() {
+                &cell_groups
+            } else {
+                measure_groups.clone_from(&cell_groups);
+                for t in &mut m.filter {
+                    t.pass(rollup, cells, &mut measure_groups);
+                }
+                &measure_groups
+            };
+            m.partials
+                .merge(read, cells.rows(), m.state.map(|i| cells.column(i)));
+        }
+    }
+}
+
+fn slot_of(fact: &Fact, slot: Slot<'_>) -> usize {
+    fact.rollup_key().position(|k| k == slot).expect(CHECKED)
+}
+
 fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Cells)> {
     let each_bucket = ask.by.iter().any(|key| matches!(key, AskKey::Time(_)));
     rollup.cover(ask.from, ask.to, each_bucket)
+}
+
+/// One way a cell's joins resolve: per ref, the dim row matched, or none
+/// for a left join with no match and for a semi or anti join, which keep
+/// no row.
+type JoinRow<'s> = Vec<Option<&'s [u32]>>;
+
+/// Enumerates how each cell's joins resolve, once per distinct tuple of
+/// its join codes.
+struct Expander<'s> {
+    plans: Vec<RefPlan<'s>>,
+    /// The rollup-key slots the refs read, each once.
+    slots: Vec<usize>,
+    memo: FastMap<Box<[u32]>, Vec<JoinRow<'s>>>,
+}
+
+struct RefPlan<'s> {
+    kind: RefKind,
+    projection: &'s Projection,
+    via: Vec<ViaSource>,
+}
+
+/// Where a ref's key column comes from: a cell's slot, or an attribute
+/// of a ref before it.
+enum ViaSource {
+    Slot(usize),
+    Through { r: usize, attr: usize },
+}
+
+impl<'s> Expander<'s> {
+    fn expand(&mut self, rollup: &Rollup, key: &[u32]) -> &[JoinRow<'s>] {
+        let tuple: Box<[u32]> = self.slots.iter().map(|&slot| key[slot]).collect();
+        if !self.memo.contains_key(&tuple) {
+            let rows = self.resolve(rollup, key);
+            self.memo.insert(tuple.clone(), rows);
+        }
+        &self.memo[&tuple]
+    }
+
+    /// Every way the refs resolve for a cell, in ref order: a ref's key
+    /// comes from the cell or from a ref before it, and its kind says what
+    /// of the rows matched goes on.
+    fn resolve(&self, rollup: &Rollup, key: &[u32]) -> Vec<JoinRow<'s>> {
+        let mut rows: Vec<JoinRow<'s>> = vec![Vec::new()];
+        let mut dim_key = Vec::new();
+        for plan in &self.plans {
+            let mut next = Vec::new();
+            for row in &rows {
+                dim_key.clear();
+                for via in &plan.via {
+                    dim_key.push(match *via {
+                        ViaSource::Slot(slot) => rollup.value(slot, key[slot]).clone(),
+                        ViaSource::Through { r, attr } => match row[r] {
+                            Some(found) => self.plans[r].projection.attr_value(attr, found[attr]),
+                            None => &Datum::Null,
+                        }
+                        .clone(),
+                    });
+                }
+                let matches = plan.projection.matches(&dim_key);
+                let with = |found: Option<&'s [u32]>| {
+                    let mut row = row.clone();
+                    row.push(found);
+                    row
+                };
+                match plan.kind {
+                    RefKind::Left if matches.is_empty() => next.push(with(None)),
+                    RefKind::Left | RefKind::Inner => {
+                        next.extend(matches.iter().map(|m| with(Some(m))));
+                    }
+                    RefKind::Semi if !matches.is_empty() => next.push(with(None)),
+                    RefKind::Anti if matches.is_empty() => next.push(with(None)),
+                    RefKind::Semi | RefKind::Anti => {}
+                }
+            }
+            rows = next;
+        }
+        rows
+    }
 }
 
 /// Where a key's values come from.
@@ -331,15 +528,16 @@ enum Lookup<'s> {
     Attr(AttrLookup<'s>),
 }
 
-/// A dim value read through a cell's via codes, worked out once per code
-/// tuple as the ask meets it.
+/// A dim value read through a ref.
 struct AttrLookup<'s> {
-    /// The rollup-key slots of the ref's via columns, in the dim's key
-    /// order.
-    via: Vec<usize>,
-    projection: &'s Projection,
+    /// Into [`Fact::refs`].
+    r: usize,
     /// Into the dim's attributes.
     attr: usize,
+    projection: &'s Projection,
+    /// The rollup-key slots of the ref's fact-side via columns, in the
+    /// dim's key order, for a view that counts each cell once.
+    via: Vec<usize>,
     /// The key of one lookup, kept to spare an allocation per lookup.
     key: Vec<Datum>,
     memo: Memo,
@@ -356,7 +554,8 @@ enum Memo {
 }
 
 impl AttrLookup<'_> {
-    /// The attribute's code for the cell with `key`.
+    /// The attribute's code for the cell with `key`: the one row under the
+    /// key, or [`NULL`].
     fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
         let known = match &self.memo {
             Memo::Dense(codes) => codes[key[self.via[0]] as usize],
@@ -374,7 +573,8 @@ impl AttrLookup<'_> {
                 .iter()
                 .map(|&slot| rollup.value(slot, key[slot]).clone()),
         );
-        let code = self.projection.attr_code(&self.key, self.attr);
+        let found = self.projection.matches(&self.key).first();
+        let code = found.map_or(NULL, |row| row[self.attr]);
         match &mut self.memo {
             Memo::Dense(codes) => codes[key[self.via[0]] as usize] = code,
             Memo::Sparse(map) => {
@@ -384,14 +584,29 @@ impl AttrLookup<'_> {
         }
         code
     }
+
+    /// The attribute's code under one way the joins resolved.
+    fn code_in(&self, row: &JoinRow<'_>) -> u32 {
+        row[self.r].map_or(NULL, |found| found[self.attr])
+    }
 }
 
 impl<'s> Lookup<'s> {
-    /// The code of the key's value for the cell with `key`.
+    /// The code of the key's value for cell `i`, in a view that counts each
+    /// cell once.
     fn code(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
         match self {
             Lookup::Slot(slot) => cells.code(i, *slot),
             Lookup::Attr(attr) => attr.code(rollup, cells.key(i)),
+        }
+    }
+
+    /// The code of the key's value for cell `i` under one way its joins
+    /// resolved.
+    fn code_in(&self, cells: &Cells, i: usize, row: &JoinRow<'_>) -> u32 {
+        match self {
+            Lookup::Slot(slot) => cells.code(i, *slot),
+            Lookup::Attr(attr) => attr.code_in(row),
         }
     }
 
@@ -468,6 +683,16 @@ impl Test<'_, '_> {
         }
     }
 
+    /// Whether cell `i` passes under one way its joins resolved.
+    fn holds(&mut self, rollup: &Rollup, cells: &Cells, i: usize, row: &JoinRow<'_>) -> bool {
+        let code = self.lookup.code_in(cells, i, row);
+        let mut known = self.memo[code as usize];
+        if known == Known::Unknown {
+            known = self.resolve(rollup, code);
+        }
+        known == Known::Holds
+    }
+
     fn resolve(&mut self, rollup: &Rollup, code: u32) -> Known {
         let v = self.lookup.value(rollup, code);
         let known = if self.values.iter().any(|lit| v.matches(lit)) {
@@ -532,8 +757,19 @@ impl<'s> Part<'s> {
     fn number(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
         match &mut self.of {
             KeyOf::Lookup(lookup) => lookup.code(rollup, cells, i),
-            KeyOf::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
+            KeyOf::Time(..) => self.period(),
         }
+    }
+
+    fn number_in(&self, cells: &Cells, i: usize, row: &JoinRow<'_>) -> u32 {
+        match &self.of {
+            KeyOf::Lookup(lookup) => lookup.code_in(cells, i, row),
+            KeyOf::Time(..) => self.period(),
+        }
+    }
+
+    fn period(&self) -> u32 {
+        u32::try_from(self.starts.len() - 1).expect("codes are u32")
     }
 
     fn value<'r>(&self, rollup: &'r Rollup, number: u32) -> Cow<'r, Datum>

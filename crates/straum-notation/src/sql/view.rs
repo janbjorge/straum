@@ -1,6 +1,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{
-    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, Table, Time,
+    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Table,
+    Time, Via,
 };
 
 use super::{SqlError, Walker, and_parts, function_name, line};
@@ -18,6 +19,7 @@ struct Body {
     refs: Vec<JoinedRef>,
     by: Vec<By>,
     measures: Vec<Measure>,
+    filter: Vec<Cond>,
 }
 
 /// The tables one view reads: the fact under `alias`, and one ref per join;
@@ -36,7 +38,8 @@ struct ScopedKey {
     is_null: Option<bool>,
 }
 
-/// A join: `r.via[i]` of the fact meets `key[i]` of the dim.
+/// A join: `r.via[i]`, of the fact or of a dim joined before, meets
+/// `key[i]` of the dim.
 struct JoinedRef {
     r: Ref,
     table: Table,
@@ -121,6 +124,7 @@ impl Walker {
             refs,
             by,
             measures,
+            filter,
         } = body;
         // Every width is said once, in the view's `WITH`; the body's `date_bin`
         // must agree with the first, so a reader finds the whole list in one
@@ -140,10 +144,28 @@ impl Walker {
             }
             None => return,
         }
+        // A dim a later join reads its key from carries that column too.
+        let mut carried: Vec<(usize, Ident)> = Vec::new();
+        for j in &refs {
+            for via in &j.r.via {
+                if let Via::Attr { through, column } = via {
+                    carried.push((*through, column.clone()));
+                }
+            }
+        }
         let refs = refs
             .into_iter()
-            .map(|mut j| {
+            .enumerate()
+            .map(|(i, mut j)| {
                 self.add_dim(at, &mut j);
+                let dim = (self.dims.iter_mut())
+                    .find(|d| d.table == j.table)
+                    .expect("added just now");
+                for (through, column) in &carried {
+                    if *through == i && !dim.attrs.contains(column) {
+                        dim.attrs.push(column.clone());
+                    }
+                }
                 j.r
             })
             .collect();
@@ -154,13 +176,15 @@ impl Walker {
             refs,
             by,
             measures,
+            filter,
         });
     }
 
     /// A dim is its table. Every view that joins it must join on the same
     /// key columns, in any order, and its attributes are every column any
-    /// view reads. The join's via columns are put in the dim's key order,
-    /// so a ref's via and its dim's key pair up by position.
+    /// view reads, a column another join reads its key from included. The
+    /// join's via columns are put in the dim's key order, so a ref's via
+    /// and its dim's key pair up by position.
     fn add_dim(&mut self, at: u64, j: &mut JoinedRef) {
         let Some(dim) = self.dims.iter_mut().find(|d| d.table == j.table) else {
             self.dims.push(Dim {
@@ -188,7 +212,7 @@ impl Walker {
             self.errors.push(SqlError { line: at, msg });
             return;
         }
-        let via: Vec<Ident> = (dim.key.iter())
+        let via: Vec<Via> = (dim.key.iter())
             .map(|k| {
                 let i = j
                     .key
@@ -288,11 +312,6 @@ impl Walker {
     fn select(&mut self, select: &sql::Select) -> Option<Body> {
         let at = self.select_clauses(select);
         let (projection, from, group_by) = (&select.projection, &select.from, &select.group_by);
-        self.absent(
-            at,
-            select.selection.is_some(),
-            "WHERE, filter measures instead,",
-        );
 
         let [from] = from.as_slice() else {
             self.error(
@@ -302,6 +321,23 @@ impl Walker {
             return None;
         };
         let (table, mut scope) = self.from(from)?;
+        // Semi and anti joins live in WHERE; the rest of it waits for the
+        // keys, which it names.
+        let mut conditions = Vec::new();
+        if let Some(selection) = &select.selection {
+            and_parts(selection, &mut conditions);
+        }
+        let (subqueries, conditions): (Vec<_>, Vec<_>) =
+            (conditions.into_iter()).partition(|e| matches!(e, sql::Expr::Exists { .. }));
+        for subquery in subqueries {
+            if let Some(j) = self.exists(&scope, subquery) {
+                if j.r.name == scope.alias || scope.refs.iter().any(|o| o.r.name == j.r.name) {
+                    self.error(line(subquery), format!("alias {} used twice", j.r.name));
+                    continue;
+                }
+                scope.refs.push(j);
+            }
+        }
 
         let mut selected = Vec::new();
         for item in projection {
@@ -382,19 +418,57 @@ impl Walker {
         }
         // A ref reads the dim columns the view selects, through the via
         // columns that key its cells. A join that selects nothing would do
-        // nothing.
+        // nothing; a semi or anti join selects nothing by nature.
         for (j, attrs) in scope.refs.iter_mut().zip(attrs) {
-            if attrs.is_empty() {
-                self.error(
+            match j.r.kind {
+                RefKind::Left | RefKind::Inner if attrs.is_empty() => self.error(
                     at,
                     format!(
-                        "LEFT OUTER JOIN {} selects no column of it; select one or drop the join",
+                        "{} {} selects no column of it; select one or drop the join",
+                        join_name(j.r.kind),
                         j.r.name
                     ),
-                );
+                ),
+                RefKind::Semi | RefKind::Anti if !attrs.is_empty() => self.error(
+                    at,
+                    format!(
+                        "{} is {} and has no columns to select; select none of it",
+                        j.r.name, j.r.kind
+                    ),
+                ),
+                _ => {}
             }
             j.r.attrs = attrs;
         }
+        // The view's WHERE, on the keys like a FILTER.
+        let mut filter = Vec::new();
+        for condition in conditions {
+            let before = self.errors.len();
+            self.conds(
+                condition,
+                &mut filter,
+                &mut |w, e| w.key_of(&scope, e),
+                &mut |w, e| w.literal(e),
+                &mut |w, test, column, is_null| w.null_cond(&scope, test, column, is_null),
+            );
+            if self.errors.len() > before {
+                return None;
+            }
+        }
+        // A FILTER every measure shares is the view's WHERE in disguise; a
+        // lone measure shares with nobody.
+        if let [first, rest @ ..] = &measures[..]
+            && !first.filter.is_empty()
+            && !rest.is_empty()
+            && rest.iter().all(|m| m.filter == first.filter)
+        {
+            self.error(
+                at,
+                "every measure has the same FILTER; write it as the view's WHERE".into(),
+            );
+            return None;
+        }
+
         let Some(time) = time else {
             self.error(
                 at,
@@ -410,7 +484,125 @@ impl Walker {
             refs: scope.refs,
             by,
             measures,
+            filter,
         })
+    }
+
+    /// `EXISTS (SELECT 1 FROM schema.dim AS alias WHERE alias.key =
+    /// near.column AND ...)`, or `NOT EXISTS`: a semi or anti join, which
+    /// keeps or drops the fact row and reads nothing of the dim.
+    fn exists(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<JoinedRef> {
+        let sql::Expr::Exists { subquery, negated } = expr else {
+            unreachable!("only EXISTS comes here");
+        };
+        let at = line(expr);
+        let kind = if *negated {
+            RefKind::Anti
+        } else {
+            RefKind::Semi
+        };
+        let select = self.one_select(subquery, "EXISTS")?;
+        self.select_clauses(select);
+        let one = matches!(
+            select.projection.as_slice(),
+            [sql::SelectItem::UnnamedExpr(sql::Expr::Value(sql::ValueWithSpan {
+                value: sql::Value::Number(n, false),
+                ..
+            }))] if n == "1"
+        );
+        if !one {
+            self.reject(at, "EXISTS, write EXISTS (SELECT 1 FROM ...),", expr);
+            return None;
+        }
+        self.absent(
+            at,
+            !matches!(select.group_by, sql::GroupByExpr::Expressions(ref e, _) if e.is_empty()),
+            "GROUP BY inside EXISTS",
+        );
+        let [from] = select.from.as_slice() else {
+            self.reject(at, "EXISTS, write EXISTS (SELECT 1 FROM one table),", expr);
+            return None;
+        };
+        self.absent(at, !from.joins.is_empty(), "a join inside EXISTS");
+        let (table, alias) = self.table(&from.relation)?;
+        let Some(on) = &select.selection else {
+            self.reject(at, "EXISTS without WHERE alias.key = ...,", expr);
+            return None;
+        };
+        let (key, via) = self.equalities(scope, &alias, on)?;
+        Some(JoinedRef {
+            r: Ref {
+                name: alias,
+                dim: table.name.clone(),
+                kind,
+                via,
+                attrs: Vec::new(),
+            },
+            table,
+            key,
+        })
+    }
+
+    /// The key equalities of a join: `alias.key = near.column` joined by
+    /// `AND`, the joined table's column on the left, the other the fact's
+    /// or a column of a dim joined before.
+    fn equalities(
+        &mut self,
+        scope: &Scope,
+        alias: &Ident,
+        on: &sql::Expr,
+    ) -> Option<(Vec<Ident>, Vec<Via>)> {
+        let mut parts = Vec::new();
+        and_parts(on, &mut parts);
+        let mut key = Vec::new();
+        let mut via = Vec::new();
+        for equality in parts {
+            let pair = match equality {
+                sql::Expr::BinaryOp {
+                    left,
+                    op: sql::BinaryOperator::Eq,
+                    right,
+                } => (self.qualified(left).zip(self.qualified(right)))
+                    .filter(|(l, _)| l.0 == *alias)
+                    .and_then(|(l, r)| Some((l.1, self.near(scope, r)?))),
+                _ => None,
+            };
+            let Some((k, v)) = pair else {
+                self.error(
+                    line(on),
+                    format!(
+                        "join ON {alias}.<key> = {}.<column>, the joined table's column on \
+                         the left, one or more joined by AND; found {on}",
+                        scope.alias
+                    ),
+                );
+                return None;
+            };
+            key.push(k);
+            via.push(v);
+        }
+        Some((key, via))
+    }
+
+    /// The near side of a join equality: a fact column, or a column of a
+    /// dim joined before, which then carries it.
+    fn near(&mut self, scope: &Scope, (alias, column): (Ident, Ident)) -> Option<Via> {
+        if alias == scope.alias {
+            return Some(Via::Fact(column));
+        }
+        let through = scope.refs.iter().position(|j| j.r.name == alias)?;
+        let j = &scope.refs[through];
+        match j.r.kind {
+            RefKind::Left | RefKind::Inner => {}
+            RefKind::Semi | RefKind::Anti => return None,
+        }
+        // A key column of that dim is the column it was joined on.
+        if let Some(k) = j.key.iter().position(|k| *k == column)
+            && let Via::Fact(_) = &j.r.via[k]
+        {
+            return Some(j.r.via[k].clone());
+        }
+        Some(Via::Attr { through, column })
     }
 
     fn from(&mut self, from: &sql::TableWithJoins) -> Option<(Table, Scope)> {
@@ -490,11 +682,10 @@ impl Walker {
         Some((Table { schema, name }, alias?))
     }
 
-    /// `LEFT OUTER JOIN schema.dim AS alias ON alias.key = fact.column`,
-    /// with more such equalities joined by `AND` for a key of several
-    /// columns, the dim's column on the left of each. LEFT OUTER, spelled
-    /// whole, so a fact row with no dim row keeps null attributes, as in
-    /// straum.
+    /// `LEFT OUTER JOIN schema.dim AS alias ON alias.key = near.column` or
+    /// `INNER JOIN ...`, spelled whole, with more such equalities joined by
+    /// `AND` for a key of several columns, the dim's column on the left of
+    /// each; `near` is the fact or a dim joined before.
     fn join(&mut self, scope: &Scope, join: &sql::Join) -> Option<JoinedRef> {
         let sql::Join {
             relation,
@@ -503,14 +694,19 @@ impl Walker {
         } = join;
         let at = line(join);
         self.absent(at, *global, "GLOBAL");
-        let constraint = match join_operator {
-            sql::JoinOperator::LeftOuter(c) => c,
+        let (kind, constraint) = match join_operator {
+            sql::JoinOperator::LeftOuter(c) => (RefKind::Left, c),
+            sql::JoinOperator::Inner(c) => (RefKind::Inner, c),
             sql::JoinOperator::Left(_) => {
                 self.reject(at, "LEFT JOIN, write LEFT OUTER JOIN,", join);
                 return None;
             }
+            sql::JoinOperator::Join(_) => {
+                self.reject(at, "JOIN, write INNER JOIN,", join);
+                return None;
+            }
             _ => {
-                self.reject(at, "join, write LEFT OUTER JOIN,", join);
+                self.reject(at, "join, write INNER JOIN or LEFT OUTER JOIN,", join);
                 return None;
             }
         };
@@ -522,42 +718,12 @@ impl Walker {
                 return None;
             }
         };
-        let mut equalities = Vec::new();
-        and_parts(on, &mut equalities);
-        let mut key = Vec::new();
-        let mut via = Vec::new();
-        for equality in equalities {
-            let pair = match equality {
-                sql::Expr::BinaryOp {
-                    left,
-                    op: sql::BinaryOperator::Eq,
-                    right,
-                } => self
-                    .qualified(left)
-                    .zip(self.qualified(right))
-                    .filter(|(l, r)| l.0 == alias && r.0 == scope.alias)
-                    .map(|(l, r)| (l.1, r.1)),
-                _ => None,
-            };
-            let Some((k, v)) = pair else {
-                self.error(
-                    line(on),
-                    format!(
-                        "join ON {alias}.<key> = {}.<column>, the joined table's column on \
-                         the left, one or more joined by AND; found {on}",
-                        scope.alias
-                    ),
-                );
-                return None;
-            };
-            key.push(k);
-            via.push(v);
-        }
-        let dim = table.name.clone();
+        let (key, via) = self.equalities(scope, &alias, on)?;
         Some(JoinedRef {
             r: Ref {
                 name: alias,
-                dim,
+                dim: table.name.clone(),
+                kind,
                 via,
                 attrs: Vec::new(),
             },
@@ -594,7 +760,10 @@ impl Walker {
         };
         let j = &scope.refs[i];
         Some(match j.key.iter().position(|k| *k == column) {
-            Some(k) => Column::Fact(j.r.via[k].clone()),
+            Some(k) => match &j.r.via[k] {
+                Via::Fact(via) => Column::Fact(via.clone()),
+                Via::Attr { .. } => Column::Attr(i, column),
+            },
             None => Column::Attr(i, column),
         })
     }
@@ -886,4 +1055,14 @@ fn grain(s: &str) -> Option<Grain> {
         _ => return None,
     };
     count.parse::<u32>().ok()?.checked_mul(scale).map(Grain)
+}
+
+/// A join kind as its spelling.
+fn join_name(kind: RefKind) -> &'static str {
+    match kind {
+        RefKind::Left => "LEFT OUTER JOIN",
+        RefKind::Inner => "INNER JOIN",
+        RefKind::Semi => "EXISTS",
+        RefKind::Anti => "NOT EXISTS",
+    }
 }

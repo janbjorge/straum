@@ -1,6 +1,6 @@
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attr, By, Cond, Grain, Ident, Literal, Origin, Slot, Spec,
-    SpecError, TimeKey,
+    Agg, Ask, AskError, AskKey, Attr, By, Cond, Grain, Ident, Literal, Origin, RefKind, Slot, Spec,
+    SpecError, TimeKey, Via,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -259,7 +259,7 @@ fn base_parses() {
     assert_eq!(t.table.schema, id("public"));
     assert_eq!(t.by, [col("a"), col("z_id")]);
     assert_eq!(t.refs[0].name, id("z"));
-    assert_eq!(t.refs[0].via, [id("z_id")]);
+    assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
     assert!(t.time.buckets.is_empty());
     assert_eq!(t.time.origin, Origin::Timestamptz);
@@ -467,7 +467,7 @@ fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.by, [col("org"), col("grp")]);
-    assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
+    assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
     let g = spec.dim("g").unwrap();
     assert_eq!(g.key, [id("org_id"), id("grp_id")]);
     assert_eq!(g.attrs, [id("label")]);
@@ -489,7 +489,10 @@ fn a_ref_on_two_columns() {
 {other}"
     ))
     .unwrap();
-    assert_eq!(spec.fact("u").unwrap().refs[0].via, [id("org"), id("grp")]);
+    assert_eq!(
+        spec.fact("u").unwrap().refs[0].via,
+        [Via::Fact(id("org")), Via::Fact(id("grp"))]
+    );
     assert_eq!(spec.dim("g").unwrap().key, [id("org_id"), id("grp_id")]);
 
     // The ref has no value of its own: asks name the keys the view named.
@@ -520,7 +523,7 @@ fn a_ref_on_two_columns_rejected() {
     .unwrap();
     let t = without_grp.fact("t").unwrap();
     assert_eq!(t.by, [col("org")]);
-    assert_eq!(t.refs[0].via, [id("org"), id("grp")]);
+    assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
     assert_eq!(t.refs[0].attrs, [attr("label", "label")]);
     let errors = sql_errors(
         &GROUPED
@@ -570,7 +573,7 @@ fn a_ref_reads_what_the_view_selects() {
     let spec = parse(ATTR_ONLY).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.by, [col("a")]);
-    assert_eq!(t.refs[0].via, [id("z_id")]);
+    assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
     // The via column keys the cells, selected or not.
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
@@ -1096,9 +1099,21 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "\nGROUP BY",
-            "\nWHERE f.a = 1\nGROUP BY",
-            2,
-            "WHERE, filter measures instead,",
+            "\nWHERE f.b = 1\nGROUP BY",
+            6,
+            "FILTER on f.b needs f.b AS <name> in SELECT",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE a = 1\nGROUP BY",
+            6,
+            "column, write alias.column, `a`",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE f.a = 1 OR f.a = 2\nGROUP BY",
+            6,
+            "filter condition, write = or IN joined by AND,",
         ),
         (
             "GROUP BY 1, 2, 3, 4",
@@ -1173,13 +1188,7 @@ fn rejects_everything_outside_the_subset() {
             4,
             "TABLESAMPLE is not",
         ),
-        ("LEFT OUTER JOIN", "JOIN", 5, "join, write LEFT OUTER JOIN,"),
-        (
-            "LEFT OUTER JOIN",
-            "INNER JOIN",
-            5,
-            "join, write LEFT OUTER JOIN,",
-        ),
+        ("LEFT OUTER JOIN", "JOIN", 5, "JOIN, write INNER JOIN,"),
         (
             "LEFT OUTER JOIN",
             "LEFT JOIN",
@@ -1190,31 +1199,83 @@ fn rejects_everything_outside_the_subset() {
             "LEFT OUTER JOIN",
             "RIGHT JOIN",
             5,
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "LEFT OUTER JOIN",
             "RIGHT OUTER JOIN",
             5,
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "LEFT OUTER JOIN",
             "FULL JOIN",
             5,
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "LEFT OUTER JOIN",
             "FULL OUTER JOIN",
             5,
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
             "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
             "CROSS JOIN public.z AS z",
             5,
-            "join, write LEFT OUTER JOIN,",
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
+        ),
+        // Semi and anti joins: one shape of EXISTS.
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT * FROM public.p AS p WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "EXISTS, write EXISTS (SELECT 1 FROM ...),",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p)\nGROUP BY",
+            6,
+            "EXISTS without WHERE alias.key = ...,",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = 1)\nGROUP BY",
+            6,
+            "join ON p.<key> = f.<column>",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p, public.q AS q WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "EXISTS, write EXISTS (SELECT 1 FROM one table),",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "table public.p must be public.p AS <alias>",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS z WHERE z.k = f.a)\nGROUP BY",
+            6,
+            "alias z used twice",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE f.a IN (SELECT p.k FROM public.p AS p)\nGROUP BY",
+            6,
+            "filter condition, write = or IN joined by AND,",
+        ),
+        // A join through a dim that keeps no row, or through a column the
+        // near dim is not read for.
+        (
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id \
+             LEFT OUTER JOIN public.w AS w ON w.id = q.x",
+            5,
+            "join ON w.<key> = f.<column>",
         ),
         (
             "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
@@ -1705,6 +1766,127 @@ fn rejects_everything_outside_the_subset() {
         }
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+#[test]
+fn joins_of_every_kind_parse() {
+    // Inner and left outer joins, a join through a dim, and both EXISTS
+    // forms, in one view.
+    let src = "CREATE VIEW t WITH (buckets = '1 hour') AS
+SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+       f.a AS a, z.name AS name, w.label AS label, count(*) AS n
+FROM public.t AS f
+INNER JOIN public.z AS z ON z.id = f.z_id
+LEFT OUTER JOIN public.w AS w ON w.id = z.w_id
+WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a)
+  AND NOT EXISTS (SELECT 1 FROM public.b AS b WHERE b.x = f.a AND b.y = z.name)
+  AND f.a IN (1, 2) AND z.name = 'x'
+GROUP BY 1, 2, 3, 4";
+    let spec = parse(src).unwrap();
+    let t = spec.fact("t").unwrap();
+    let shown: Vec<(String, RefKind, Vec<Via>, usize)> = (t.refs.iter())
+        .map(|r| (r.name.to_string(), r.kind, r.via.clone(), r.attrs.len()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("z".into(), RefKind::Inner, vec![Via::Fact(id("z_id"))], 1),
+            (
+                "w".into(),
+                RefKind::Left,
+                vec![Via::Attr {
+                    through: 0,
+                    column: id("w_id")
+                }],
+                1
+            ),
+            ("p".into(), RefKind::Semi, vec![Via::Fact(id("a"))], 0),
+            (
+                "b".into(),
+                RefKind::Anti,
+                vec![
+                    Via::Fact(id("a")),
+                    Via::Attr {
+                        through: 0,
+                        column: id("name")
+                    }
+                ],
+                0
+            ),
+        ]
+    );
+    // The dim joined through carries the column read for the key.
+    assert_eq!(spec.dim("z").unwrap().attrs, [id("name"), id("w_id")]);
+    assert_eq!(spec.dim("b").unwrap().key, [id("x"), id("y")]);
+    assert_eq!(
+        t.filter,
+        [
+            cond("a", vec![Literal::Int(1), Literal::Int(2)]),
+            cond("name", vec![Literal::Text("x".into())]),
+        ]
+    );
+    // Only the fact-side join columns key the cells.
+    assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
+    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
+}
+
+#[test]
+fn joins_of_every_kind_rejected() {
+    let base = "CREATE VIEW t WITH (buckets = '1 hour') AS
+SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+       f.a AS a, z.name AS name, count(*) AS n
+FROM public.t AS f
+INNER JOIN public.z AS z ON z.id = f.z_id
+WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a)
+GROUP BY 1, 2, 3";
+    for (from, to, fragment) in [
+        // A semi join has no columns to select.
+        (
+            "z.name AS name,",
+            "z.name AS name, p.x AS x,",
+            "p is a semi join and has no columns to select; select none of it",
+        ),
+        // Nor to join through.
+        (
+            "GROUP BY",
+            "AND EXISTS (SELECT 1 FROM public.q AS q WHERE q.k = p.x)\nGROUP BY",
+            "join ON q.<key> = f.<column>",
+        ),
+        // An inner join that selects nothing.
+        (
+            "z.name AS name,",
+            "",
+            "INNER JOIN z selects no column of it; select one or drop the join",
+        ),
+        // The same FILTER on every measure is the view's WHERE.
+        (
+            "count(*) AS n",
+            "count(*) FILTER (WHERE f.a = 1) AS n, count(*) FILTER (WHERE f.a = 1) AS m",
+            "every measure has the same FILTER; write it as the view's WHERE",
+        ),
+    ] {
+        assert!(base.contains(from), "{from}");
+        let src = base.replacen(from, to, 1).replace(
+            "GROUP BY 1, 2, 3",
+            if to.is_empty() {
+                "GROUP BY 1, 2"
+            } else {
+                "GROUP BY 1, 2, 3"
+            },
+        );
+        let errors = match parse(&src) {
+            Err(Error::Sql(errors)) => errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            Err(Error::Spec(errors)) => errors.iter().map(ToString::to_string).collect(),
+            Ok(_) => panic!("{to}: parsed"),
+        };
+        assert!(
+            errors.iter().any(|e| e.contains(fragment)),
+            "{to}: {errors:?} has no {fragment:?}"
+        );
+    }
+    // One FILTER on the one measure is fine: there is nothing to share.
+    let one = base.replace("count(*) AS n", "count(*) FILTER (WHERE f.a = 1) AS n");
+    assert!(parse(&one).is_ok());
 }
 
 #[test]

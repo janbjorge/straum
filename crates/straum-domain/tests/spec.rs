@@ -2,8 +2,8 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure, Origin, Ref, Spec,
-    SpecError, Table, Time,
+    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure, Origin, Ref, RefKind,
+    Spec, SpecError, Table, Time, Via,
 };
 
 fn id(s: &str) -> Ident {
@@ -39,10 +39,12 @@ fn fact() -> Fact {
         refs: vec![Ref {
             name: id("r"),
             dim: id("z"),
-            via: vec![id("z_id")],
+            via: vec![Via::Fact(id("z_id"))],
+            kind: RefKind::Left,
             attrs: vec![attr("name", "name")],
         }],
         by: vec![col("a"), col("z_id")],
+        filter: vec![],
         measures: vec![Measure {
             name: id("n"),
             agg: Agg::Count,
@@ -208,25 +210,29 @@ fn every_error_is_reported_and_displayed() {
         Ref {
             name: id("r"),
             dim: id("z"),
-            via: vec![id("z_id"), id("b")],
+            via: vec![Via::Fact(id("z_id")), Via::Fact(id("b"))],
+            kind: RefKind::Left,
             attrs: vec![attr("r_name", "name")],
         },
         Ref {
             name: id("s"),
             dim: id("z"),
-            via: vec![id("a"), id("a")],
+            via: vec![Via::Fact(id("a")), Via::Fact(id("a"))],
+            kind: RefKind::Left,
             attrs: vec![attr("s_name", "name")],
         },
         Ref {
             name: id("e"),
             dim: id("z"),
-            via: vec![id("a")],
+            via: vec![Via::Fact(id("a"))],
+            kind: RefKind::Left,
             attrs: vec![],
         },
         Ref {
             name: id("q"),
             dim: id("z"),
-            via: vec![id("b")],
+            via: vec![Via::Fact(id("b"))],
+            kind: RefKind::Left,
             attrs: vec![
                 attr("nope", "nope"),
                 attr("q_name", "name"),

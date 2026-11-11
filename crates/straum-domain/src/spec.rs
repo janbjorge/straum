@@ -14,7 +14,8 @@ pub struct Table {
     pub name: Ident,
 }
 
-/// A table facts join to, N:1, by key. Straum holds it projected to its
+/// A table facts join to by key, any number of rows per key. Straum holds
+/// it projected to its
 /// key and the columns the views read, kept current from the stream, and
 /// an ask reads a dim's values through a cell's join columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,9 +41,13 @@ pub struct Fact {
     pub name: Ident,
     pub table: Table,
     pub time: Time,
+    /// In join order: a ref joined through another comes after it.
     pub refs: Vec<Ref>,
     pub by: Vec<By>,
     pub measures: Vec<Measure>,
+    /// The view's `WHERE`: a row counts, for every measure, only when
+    /// every condition holds.
+    pub filter: Vec<Cond>,
 }
 
 /// A rollup key a fact row gives: a column's value, or whether a column
@@ -133,18 +138,49 @@ impl fmt::Display for Origin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grain(pub u32);
 
-/// N:1 pointer from fact columns to a dim key, column for column. The only
-/// way a fact reaches another table, so fan-out can't be declared. The via
-/// columns are rollup keys, so a cell is keyed by the dim row it points
-/// at; its attributes are read from the dim's projection when asked, as
-/// the dim is then, so a dim change moves every answer at once.
+/// A join from the fact, or from a dim already joined, to a dim's key,
+/// column for column, of any cardinality. The fact-side via columns are
+/// rollup keys, so a cell is keyed by the dim rows it points at; the
+/// dim's values are read from its projection when asked, as the dim is
+/// then, so a dim change moves every answer at once. A key with several
+/// rows repeats the cell once per row, as PostgreSQL repeats the fact
+/// row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     pub name: Ident,
     pub dim: Ident,
-    pub via: Vec<Ident>,
-    /// The dim columns this ref reads, each under the name asks use.
+    pub kind: RefKind,
+    /// In the dim's key order.
+    pub via: Vec<Via>,
+    /// The dim columns this ref reads, each under the name asks use;
+    /// none for a semi or anti join.
     pub attrs: Vec<Attr>,
+}
+
+/// What the join keeps of a fact row, as SQL's join kinds do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefKind {
+    /// Every row, once per dim row matched, with null dim values when
+    /// none is: `LEFT OUTER JOIN`.
+    Left,
+    /// Rows with a match, once per dim row matched: `INNER JOIN`.
+    Inner,
+    /// Rows with a match, once: `WHERE EXISTS (...)`.
+    Semi,
+    /// Rows without a match, once: `WHERE NOT EXISTS (...)`.
+    Anti,
+}
+
+/// A column a join reads its key from: the fact's, or a column of a dim
+/// joined before, which that dim's projection then carries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Via {
+    Fact(Ident),
+    Attr {
+        /// Index into [`Fact::refs`], before this ref.
+        through: usize,
+        column: Ident,
+    },
 }
 
 /// `alias.column AS name`: a dim column a ref reads, and what asks call
@@ -196,11 +232,11 @@ pub enum Slot<'a> {
 }
 
 impl Fact {
-    /// The `by` keys, then every ref's via columns in ref order, each slot
-    /// once, then the time bucket.
+    /// The `by` keys, then every ref's fact-side via columns in ref
+    /// order, each slot once, then the time bucket.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
         let mut slots: Vec<Slot<'_>> = Vec::new();
-        let vias = self.refs.iter().flat_map(|r| &r.via).map(Slot::Column);
+        let vias = self.fact_vias().map(Slot::Column);
         for slot in self.by.iter().map(By::slot).chain(vias) {
             if !slots.contains(&slot) {
                 slots.push(slot);
@@ -208,6 +244,18 @@ impl Fact {
         }
         slots.push(Slot::Bucket);
         slots.into_iter()
+    }
+
+    /// The fact columns the refs join on, in ref order, a column as often
+    /// as it is joined on.
+    pub fn fact_vias(&self) -> impl Iterator<Item = &Ident> {
+        self.refs
+            .iter()
+            .flat_map(|r| &r.via)
+            .filter_map(|v| match v {
+                Via::Fact(column) => Some(column),
+                Via::Attr { .. } => None,
+            })
     }
 
     /// Every ref's attributes, each with its ref, in ref order.
@@ -223,7 +271,7 @@ impl Fact {
     pub fn columns(&self) -> Vec<Ident> {
         let mut columns: Vec<Ident> = vec![self.time.column.clone()];
         let read = (self.by.iter().map(By::column))
-            .chain(self.refs.iter().flat_map(|r| &r.via))
+            .chain(self.fact_vias())
             .chain(self.measures.iter().filter_map(|m| m.agg.input()));
         for column in read {
             if !columns.contains(column) {
@@ -395,7 +443,7 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         }
     }
     let mut ref_names = HashSet::new();
-    for r in &fact.refs {
+    for (i, r) in fact.refs.iter().enumerate() {
         if !ref_names.insert(&r.name) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
@@ -408,8 +456,22 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
                 errors.push(SpecError::ViaReused {
                     fact: name.clone(),
                     ref_name: r.name.clone(),
-                    column: column.clone(),
+                    column: via_name(column, &fact.refs),
                 });
+            }
+            if let Via::Attr { through, column } = column {
+                let parent = (*through < i).then(|| &fact.refs[*through]);
+                let carried = parent
+                    .and_then(|p| dims.iter().find(|d| d.name == p.dim))
+                    .is_some_and(|d| d.attrs.contains(column));
+                if !carried {
+                    errors.push(SpecError::ChainColumn {
+                        fact: name.clone(),
+                        ref_name: r.name.clone(),
+                        through: *through,
+                        column: column.clone(),
+                    });
+                }
             }
         }
         let dim = dims.iter().find(|d| d.name == r.dim);
@@ -428,11 +490,18 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             }),
             Some(_) => {}
         }
-        if r.attrs.is_empty() {
-            errors.push(SpecError::RefNoAttrs {
+        let reads = !r.attrs.is_empty();
+        match r.kind {
+            RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefNoAttrs {
                 fact: name.clone(),
                 ref_name: r.name.clone(),
-            });
+            }),
+            RefKind::Semi | RefKind::Anti if reads => errors.push(SpecError::RefReads {
+                fact: name.clone(),
+                ref_name: r.name.clone(),
+                kind: r.kind,
+            }),
+            _ => {}
         }
         let mut read = HashSet::new();
         for attr in &r.attrs {
@@ -479,10 +548,30 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             if fact.resolve(&cond.key).is_none() {
                 errors.push(SpecError::UnknownKey {
                     fact: name.clone(),
-                    measure: m.name.clone(),
+                    measure: Some(m.name.clone()),
                     key: cond.key.clone(),
                 });
             }
+        }
+    }
+    for cond in &fact.filter {
+        if fact.resolve(&cond.key).is_none() {
+            errors.push(SpecError::UnknownKey {
+                fact: name.clone(),
+                measure: None,
+                key: cond.key.clone(),
+            });
+        }
+    }
+}
+
+/// A via column as a message names it: the fact's, or `ref.column`.
+fn via_name(via: &Via, refs: &[Ref]) -> Ident {
+    match via {
+        Via::Fact(column) => column.clone(),
+        Via::Attr { through, column } => {
+            let through = refs.get(*through).map_or("?", |r| r.name.as_str());
+            Ident::new(&format!("{through}.{column}")).unwrap_or_else(|| column.clone())
         }
     }
 }
@@ -538,10 +627,23 @@ pub enum SpecError {
         ref_name: Ident,
         dim: Ident,
     },
-    /// A ref that reads nothing, so the join does nothing.
+    /// A left or inner ref that reads nothing, so the join does nothing.
     RefNoAttrs {
         fact: Ident,
         ref_name: Ident,
+    },
+    /// A semi or anti ref that reads columns, which it has none of.
+    RefReads {
+        fact: Ident,
+        ref_name: Ident,
+        kind: RefKind,
+    },
+    /// A ref joined through a dim column that no ref before it carries.
+    ChainColumn {
+        fact: Ident,
+        ref_name: Ident,
+        through: usize,
+        column: Ident,
     },
     /// A ref reads an attribute its dim has no column of.
     UnknownAttr {
@@ -553,10 +655,11 @@ pub enum SpecError {
     NoKey {
         dim: Ident,
     },
-    /// A measure filter names something that is not in the rollup key.
+    /// A filter, of a measure or the view's, names something that is no
+    /// key of the view.
     UnknownKey {
         fact: Ident,
-        measure: Ident,
+        measure: Option<Ident>,
         key: Ident,
     },
     NoMeasures {
@@ -618,6 +721,24 @@ impl fmt::Display for SpecError {
             SpecError::RefNoAttrs { fact, ref_name } => {
                 write!(f, "fact {fact}: ref {ref_name} reads no column of its dim")
             }
+            SpecError::RefReads {
+                fact,
+                ref_name,
+                kind,
+            } => write!(
+                f,
+                "fact {fact}: ref {ref_name} is {kind} and reads columns, which it has none of"
+            ),
+            SpecError::ChainColumn {
+                fact,
+                ref_name,
+                through,
+                column,
+            } => write!(
+                f,
+                "fact {fact}: ref {ref_name} joins through column {column} of ref {through}, \
+                 which no ref before it carries"
+            ),
             SpecError::UnknownAttr {
                 fact,
                 ref_name,
@@ -635,9 +756,21 @@ impl fmt::Display for SpecError {
             } => {
                 write!(f, "fact {fact}: ref {ref_name} points at unknown dim {dim}")
             }
-            SpecError::UnknownKey { fact, measure, key } => write!(
+            SpecError::UnknownKey {
+                fact,
+                measure: Some(measure),
+                key,
+            } => write!(
                 f,
                 "fact {fact}: measure {measure} filters on {key}, which names no key of the view"
+            ),
+            SpecError::UnknownKey {
+                fact,
+                measure: None,
+                key,
+            } => write!(
+                f,
+                "fact {fact}: WHERE filters on {key}, which names no key of the view"
             ),
             SpecError::NoMeasures { fact } => write!(f, "fact {fact}: no measures"),
             SpecError::NamedBucket { fact } => write!(
@@ -650,6 +783,17 @@ impl fmt::Display for SpecError {
 }
 
 impl std::error::Error for SpecError {}
+
+impl fmt::Display for RefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RefKind::Left => "a left outer join",
+            RefKind::Inner => "an inner join",
+            RefKind::Semi => "a semi join",
+            RefKind::Anti => "an anti join",
+        })
+    }
+}
 
 impl fmt::Display for Grain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
