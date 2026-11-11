@@ -173,7 +173,7 @@ struct Run {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Failure {
+enum Exit {
     NoCommand,
     Usage {
         message: String,
@@ -182,36 +182,36 @@ enum Failure {
     Runtime(String),
 }
 
-impl Failure {
+impl Exit {
     fn exit_code(&self) -> ExitCode {
         match self {
-            Failure::NoCommand | Failure::Usage { .. } => ExitCode::from(2),
-            Failure::Runtime(_) => ExitCode::FAILURE,
+            Exit::NoCommand | Exit::Usage { .. } => ExitCode::from(2),
+            Exit::Runtime(_) => ExitCode::FAILURE,
         }
     }
 }
 
-impl Display for Failure {
+impl Display for Exit {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Failure::NoCommand => formatter.write_str(HELP.trim_end()),
-            Failure::Usage { message, command } => {
+            Exit::NoCommand => formatter.write_str(HELP.trim_end()),
+            Exit::Usage { message, command } => {
                 let hint =
                     command.map_or("help".into(), |name| format!("{} --help", name.as_str()));
                 write!(formatter, "straum: {message}\ntry: straum {hint}")
             }
-            Failure::Runtime(message) => write!(formatter, "straum: {message}"),
+            Exit::Runtime(message) => write!(formatter, "straum: {message}"),
         }
     }
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    match command(&args).and_then(|command| execute(command).map_err(Failure::Runtime)) {
+    match command(&args).and_then(|command| execute(command).map_err(Exit::Runtime)) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => {
-            eprintln!("{failure}");
-            failure.exit_code()
+        Err(exit) => {
+            eprintln!("{exit}");
+            exit.exit_code()
         }
     }
 }
@@ -239,16 +239,16 @@ fn execute(command: Command) -> Result<(), String> {
     }
 }
 
-fn command(args: &[String]) -> Result<Command, Failure> {
+fn command(args: &[String]) -> Result<Command, Exit> {
     let Some((first, rest)) = args.split_first() else {
-        return Err(Failure::NoCommand);
+        return Err(Exit::NoCommand);
     };
     let name = Name::parse(first);
     let parsed = match name {
         Some(name) => flags(name, rest),
         None => help_or_version(first, rest),
     };
-    parsed.map_err(|message| Failure::Usage {
+    parsed.map_err(|message| Exit::Usage {
         message,
         command: name,
     })
@@ -650,15 +650,15 @@ mod tests {
 
     fn usage(line: &str) -> String {
         match command(&args(line)) {
-            Err(Failure::Usage { message, .. }) => message,
+            Err(Exit::Usage { message, .. }) => message,
             other => panic!("{line}: {other:?}"),
         }
     }
 
     #[test]
     fn failures_say_what_to_try() {
-        assert_eq!(command(&[]), Err(Failure::NoCommand));
-        assert_eq!(Failure::NoCommand.to_string(), HELP.trim_end());
+        assert_eq!(command(&[]), Err(Exit::NoCommand));
+        assert_eq!(Exit::NoCommand.to_string(), HELP.trim_end());
         let cases = [
             (
                 "serve",
@@ -678,13 +678,13 @@ mod tests {
             ),
         ];
         for (line, printed) in cases {
-            let failure = command(&args(line)).unwrap_err();
-            assert_eq!(failure.to_string(), printed, "{line}");
-            assert_eq!(failure.exit_code(), ExitCode::from(2), "{line}");
+            let exit = command(&args(line)).unwrap_err();
+            assert_eq!(exit.to_string(), printed, "{line}");
+            assert_eq!(exit.exit_code(), ExitCode::from(2), "{line}");
         }
-        let failure = Failure::Runtime("reading s: gone".into());
-        assert_eq!(failure.to_string(), "straum: reading s: gone");
-        assert_eq!(failure.exit_code(), ExitCode::FAILURE);
+        let exit = Exit::Runtime("reading s: gone".into());
+        assert_eq!(exit.to_string(), "straum: reading s: gone");
+        assert_eq!(exit.exit_code(), ExitCode::FAILURE);
     }
 
     #[test]
