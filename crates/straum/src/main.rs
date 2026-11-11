@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use std::env;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::fs;
 use std::future::poll_fn;
 use std::io::{self, Read, Write};
@@ -20,8 +20,6 @@ use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
 use straum_pg::{Dsn, Pg};
 use tokio::signal::unix::{SignalKind, signal};
-
-const COMMANDS: [&str; 3] = ["run", "plan", "status"];
 
 const HELP: &str = "\
 straum follows tables in PostgreSQL and answers asks over HTTP.
@@ -77,7 +75,7 @@ usage: straum status [flags]
 
 Prints what the straum at URL has done: ready or why not, how far behind
 PostgreSQL, the WAL held for it, its starts and its failures. In a pod:
-kubectl exec deploy/straum -- /straum status
+kubectl exec deployment/straum -- /straum status
 
   --url URL  where straum serves HTTP (http://127.0.0.1:8080)
 
@@ -88,7 +86,6 @@ const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
 const ROLE: &str = "straum";
 const URL: &str = "http://127.0.0.1:8080";
-/// How long `straum status` waits for an answer.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
@@ -99,10 +96,55 @@ const LIMITS: Limits = Limits {
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
 
-/// The wait after a failure, doubled after each failure in a row up to
-/// [`MAX_BACKOFF`].
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Name {
+    Run,
+    Plan,
+    Status,
+}
+
+impl Name {
+    const ALL: [Name; 3] = [Name::Run, Name::Plan, Name::Status];
+
+    fn parse(text: &str) -> Option<Name> {
+        Name::ALL.into_iter().find(|name| name.as_str() == text)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Name::Run => "run",
+            Name::Plan => "plan",
+            Name::Status => "status",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Name::Run => RUN_HELP,
+            Name::Plan => PLAN_HELP,
+            Name::Status => STATUS_HELP,
+        }
+    }
+
+    fn flags(self) -> &'static [&'static str] {
+        match self {
+            Name::Run => &[
+                "--spec",
+                "--listen",
+                "--publication",
+                "--dsn-file",
+                "--max-lag",
+                "--max-retained-wal",
+                "--max-transaction-rows",
+            ],
+            Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
+            Name::Status => &["--url"],
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
@@ -116,8 +158,7 @@ enum Command {
     Status {
         url: String,
     },
-    /// The help of one command, or of straum.
-    Help(Option<&'static str>),
+    Help(Option<Name>),
     Version,
 }
 
@@ -131,189 +172,219 @@ struct Run {
     max_transaction_rows: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Failure {
+    NoCommand,
+    Usage {
+        message: String,
+        command: Option<Name>,
+    },
+    Runtime(String),
+}
+
+impl Failure {
+    fn exit_code(&self) -> ExitCode {
+        match self {
+            Failure::NoCommand | Failure::Usage { .. } => ExitCode::from(2),
+            Failure::Runtime(_) => ExitCode::FAILURE,
+        }
+    }
+}
+
+impl Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Failure::NoCommand => formatter.write_str(HELP.trim_end()),
+            Failure::Usage { message, command } => {
+                let hint =
+                    command.map_or("help".into(), |name| format!("{} --help", name.as_str()));
+                write!(formatter, "straum: {message}\ntry: straum {hint}")
+            }
+            Failure::Runtime(message) => write!(formatter, "straum: {message}"),
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let done = match command(&args) {
-        Ok(Command::Help(topic)) => {
-            print!("{}", help(topic));
+    match command(&args).and_then(|command| execute(command).map_err(Failure::Runtime)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failure) => {
+            eprintln!("{failure}");
+            failure.exit_code()
+        }
+    }
+}
+
+fn execute(command: Command) -> Result<(), String> {
+    match command {
+        Command::Help(topic) => {
+            print!("{}", topic.map_or(HELP, Name::help));
             Ok(())
         }
-        Ok(Command::Version) => {
+        Command::Version => {
             // CI builds with the release's version; Cargo.toml never names it.
             let version = option_env!("STRAUM_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
             println!("straum {version}");
             Ok(())
         }
-        Ok(Command::Plan {
+        Command::Plan {
             spec,
             publication,
             role,
             dsn_file,
-        }) => plan(&spec, &publication, role.as_deref(), dsn_file.as_deref()),
-        Ok(Command::Run(args)) => run(args),
-        Ok(Command::Status { url }) => status(&url).map(|text| print!("{text}")),
-        Err(_) if args.is_empty() => {
-            eprint!("{HELP}");
-            return ExitCode::from(2);
-        }
-        Err(usage) => {
-            let hint = match known(&args[0]) {
-                Ok(name) => format!("straum {name} --help"),
-                Err(_) => "straum help".into(),
-            };
-            eprintln!("straum: {usage}\ntry: {hint}");
-            return ExitCode::from(2);
-        }
+        } => plan(&spec, &publication, role.as_deref(), dsn_file.as_deref()),
+        Command::Run(args) => run(args),
+        Command::Status { url } => status(&url).map(|text| print!("{text}")),
+    }
+}
+
+fn command(args: &[String]) -> Result<Command, Failure> {
+    let Some((first, rest)) = args.split_first() else {
+        return Err(Failure::NoCommand);
     };
-    match done {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            log(e);
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn help(topic: Option<&str>) -> &'static str {
-    match topic {
-        None => HELP,
-        Some("run") => RUN_HELP,
-        Some("plan") => PLAN_HELP,
-        Some(_) => STATUS_HELP,
-    }
-}
-
-fn known(name: &str) -> Result<&'static str, String> {
-    (COMMANDS.into_iter())
-        .find(|&command| command == name)
-        .ok_or_else(|| format!("unknown command {name:?}"))
-}
-
-fn flags(name: &str) -> &'static [&'static str] {
-    match name {
-        "run" => &[
-            "--spec",
-            "--listen",
-            "--publication",
-            "--dsn-file",
-            "--max-lag",
-            "--max-retained-wal",
-            "--max-transaction-rows",
-        ],
-        "plan" => &["--spec", "--publication", "--role", "--dsn-file"],
-        _ => &["--url"],
-    }
-}
-
-fn command(args: &[String]) -> Result<Command, String> {
-    let Some((name, rest)) = args.split_first() else {
-        return Err("no command".into());
+    let name = Name::parse(first);
+    let parsed = match name {
+        Some(name) => flags(name, rest),
+        None => help_or_version(first, rest),
     };
-    if ["help", "--help", "-h"].contains(&name.as_str()) {
+    parsed.map_err(|message| Failure::Usage {
+        message,
+        command: name,
+    })
+}
+
+fn unknown(text: &str) -> String {
+    format!("unknown command {text:?}")
+}
+
+fn help_or_version(word: &str, rest: &[String]) -> Result<Command, String> {
+    if ["help", "--help", "-h"].contains(&word) {
         return match rest {
             [] => Ok(Command::Help(None)),
-            [topic] => known(topic).map(|name| Command::Help(Some(name))),
+            [topic] => Name::parse(topic)
+                .map(|name| Command::Help(Some(name)))
+                .ok_or_else(|| unknown(topic)),
             _ => Err("straum help takes one command".into()),
         };
     }
-    if ["version", "--version", "-V"].contains(&name.as_str()) {
+    if ["version", "--version", "-V"].contains(&word) {
         return match rest {
             [] => Ok(Command::Version),
             _ => Err("straum version takes nothing".into()),
         };
     }
-    let name = known(name)?;
+    Err(unknown(word))
+}
+
+struct Given<'a> {
+    flag: &'a str,
+    value: &'a str,
+}
+
+fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     // -h anywhere asks for help, whatever else is on the line.
     if rest.iter().any(|arg| arg == "-h" || arg == "--help") {
         return Ok(Command::Help(Some(name)));
     }
-    let allowed = flags(name);
-    let mut flags: Vec<(&str, &str)> = Vec::new();
+    let mut given: Vec<Given> = Vec::new();
     let mut rest = rest.iter();
     while let Some(flag) = rest.next() {
-        if !allowed.contains(&flag.as_str()) {
-            return Err(format!("straum {name} takes no {flag:?}"));
+        if !name.flags().contains(&flag.as_str()) {
+            return Err(format!("straum {} takes no {flag:?}", name.as_str()));
         }
-        if flags.iter().any(|(f, _)| f == flag) {
+        if value(&given, flag).is_some() {
             return Err(format!("{flag} given twice"));
         }
         let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
-        flags.push((flag, value));
+        given.push(Given { flag, value });
     }
-    let flag = |name: &str| {
-        (flags.iter())
-            .find(|(f, _)| *f == name)
-            .map(|(_, value)| (*value).to_owned())
-    };
-    if name == "status" {
-        let url = flag("--url").unwrap_or_else(|| URL.into());
-        return Ok(Command::Status { url });
-    }
-    let spec = flag("--spec").ok_or_else(|| format!("straum {name} needs --spec"))?;
-    let publication = flag("--publication").unwrap_or_else(|| PUBLICATION.into());
-    Ok(if name == "run" {
-        let max_lag = match flag("--max-lag") {
-            None => LIMITS.max_lag,
-            Some(value) => seconds(&value)
-                .ok_or_else(|| format!("--max-lag takes whole seconds above 0, not {value:?}"))?,
-        };
-        let max_retained_wal = match flag("--max-retained-wal") {
-            None => LIMITS.max_retained_wal,
-            Some(value) => bytes(&value).ok_or_else(|| {
-                format!(
-                    "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {value:?}"
-                )
-            })?,
-        };
-        let max_transaction_rows = match flag("--max-transaction-rows") {
-            None => MAX_TRANSACTION_ROWS,
-            Some(value) => count(&value).ok_or_else(|| {
-                format!("--max-transaction-rows takes a count of rows above 0, not {value:?}")
-            })?,
-        };
-        Command::Run(Run {
-            spec,
-            listen: flag("--listen").unwrap_or_else(|| LISTEN.into()),
-            publication,
-            dsn_file: flag("--dsn-file"),
+    let text = |flag| value(&given, flag).map(str::to_owned);
+    let spec = || text("--spec").ok_or_else(|| format!("straum {} needs --spec", name.as_str()));
+    let publication = || text("--publication").unwrap_or_else(|| PUBLICATION.into());
+    Ok(match name {
+        Name::Status => Command::Status {
+            url: text("--url").unwrap_or_else(|| URL.into()),
+        },
+        Name::Plan => Command::Plan {
+            spec: spec()?,
+            publication: publication(),
+            role: text("--role"),
+            dsn_file: text("--dsn-file"),
+        },
+        Name::Run => Command::Run(Run {
+            spec: spec()?,
+            listen: text("--listen").unwrap_or_else(|| LISTEN.into()),
+            publication: publication(),
+            dsn_file: text("--dsn-file"),
             limits: Limits {
-                max_lag,
-                max_retained_wal,
+                max_lag: parsed(
+                    &given,
+                    "--max-lag",
+                    LIMITS.max_lag,
+                    seconds,
+                    "whole seconds above 0",
+                )?,
+                max_retained_wal: parsed(
+                    &given,
+                    "--max-retained-wal",
+                    LIMITS.max_retained_wal,
+                    bytes,
+                    "bytes above 0, as 4294967296 or 4Gi",
+                )?,
             },
-            max_transaction_rows,
-        })
-    } else {
-        Command::Plan {
-            spec,
-            publication,
-            role: flag("--role"),
-            dsn_file: flag("--dsn-file"),
-        }
+            max_transaction_rows: parsed(
+                &given,
+                "--max-transaction-rows",
+                MAX_TRANSACTION_ROWS,
+                count,
+                "a count of rows above 0",
+            )?,
+        }),
     })
 }
 
-fn seconds(text: &str) -> Option<Duration> {
-    let seconds = text.parse().ok().filter(|&n| n > 0)?;
-    Some(Duration::from_secs(seconds))
+fn value<'a>(given: &[Given<'a>], flag: &str) -> Option<&'a str> {
+    (given.iter())
+        .find(|given| given.flag == flag)
+        .map(|given| given.value)
 }
 
-fn count(text: &str) -> Option<usize> {
+fn parsed<T>(
+    given: &[Given],
+    flag: &str,
+    default: T,
+    parse: fn(&str) -> Option<T>,
+    takes: &str,
+) -> Result<T, String> {
+    match value(given, flag) {
+        None => Ok(default),
+        Some(value) => parse(value).ok_or_else(|| format!("{flag} takes {takes}, not {value:?}")),
+    }
+}
+
+fn positive(text: &str) -> Option<u64> {
     text.parse().ok().filter(|&n| n > 0)
 }
 
-/// A count of bytes, or of `Ki`, `Mi`, `Gi` or `Ti` as Kubernetes writes
-/// them: `4Gi`.
+fn seconds(text: &str) -> Option<Duration> {
+    positive(text).map(Duration::from_secs)
+}
+
+fn count(text: &str) -> Option<usize> {
+    usize::try_from(positive(text)?).ok()
+}
+
+// The suffixes are Kubernetes' own, so a chart's `4Gi` passes as written.
 fn bytes(text: &str) -> Option<u64> {
     let (count, shift) = [("Ki", 10), ("Mi", 20), ("Gi", 30), ("Ti", 40)]
         .into_iter()
         .find_map(|(unit, shift)| Some((text.strip_suffix(unit)?, shift)))
         .unwrap_or((text, 0));
-    let count: u64 = count.parse().ok().filter(|&n| n > 0)?;
-    count.checked_mul(1 << shift)
+    positive(count)?.checked_mul(1 << shift)
 }
 
-/// What the straum at `url` says it has done: GET /status over a plain
-/// socket, since its image holds nothing else to ask with.
+// A plain socket, since straum's image holds nothing else to ask with.
 fn status(url: &str) -> Result<String, String> {
     let address = (url.strip_prefix("http://"))
         .map(|rest| rest.trim_end_matches('/'))
@@ -357,10 +428,7 @@ fn plan(
     dsn_file: Option<&str>,
 ) -> Result<(), String> {
     let spec = read_spec(spec)?;
-    let dsn = match (dsn_file, env::var("STRAUM_DSN").is_ok()) {
-        (None, false) => None,
-        _ => Some(read_dsn(dsn_file)?),
-    };
+    let dsn = read_dsn(dsn_file)?;
     let role = role.or_else(|| dsn.as_ref().map(Dsn::user)).unwrap_or(ROLE);
     let password = dsn.as_ref().and_then(Dsn::password);
     print!("{}", straum_pg::plan(&spec, publication, role, password));
@@ -374,12 +442,13 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
 
 /// From the file, else from `STRAUM_DSN`. Never from the command line, where
 /// other users of the machine can read it.
-fn read_dsn(file: Option<&str>) -> Result<Dsn, String> {
-    let text = match file {
-        Some(path) => fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?,
-        None => env::var("STRAUM_DSN").map_err(|_| "set STRAUM_DSN or pass --dsn-file")?,
+fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, String> {
+    let text = match (file, env::var("STRAUM_DSN")) {
+        (Some(path), _) => fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?,
+        (None, Ok(text)) => text,
+        (None, Err(_)) => return Ok(None),
     };
-    Dsn::parse(text.trim()).map_err(|e| e.to_string())
+    Dsn::parse(text.trim()).map(Some).map_err(|e| e.to_string())
 }
 
 fn run(args: Run) -> Result<(), String> {
@@ -392,11 +461,10 @@ fn run(args: Run) -> Result<(), String> {
         max_transaction_rows,
     } = args;
     let spec = read_spec(&spec)?;
-    let dsn = read_dsn(dsn_file.as_deref())?;
-    let listener = TcpListener::bind(&listen).map_err(|e| format!("listening on {listen}: {e}"))?;
-    let address = listener
-        .local_addr()
-        .map_err(|e| format!("listening on {listen}: {e}"))?;
+    let dsn = read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?;
+    let listening = |e: io::Error| format!("listening on {listen}: {e}");
+    let listener = TcpListener::bind(&listen).map_err(listening)?;
+    let address = listener.local_addr().map_err(listening)?;
 
     // After a panic the store may be half written, or nothing writes it
     // any more. Stop, rather than answer from it.
@@ -420,10 +488,17 @@ fn run(args: Run) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| format!("starting tokio: {e}"))?;
+    let handling =
+        |name: &str, kind: SignalKind| signal(kind).map_err(|e| format!("handling {name}: {e}"));
+    let (mut terminate, mut interrupt) = {
+        let _entered = runtime.enter();
+        (
+            handling("SIGTERM", SignalKind::terminate())?,
+            handling("SIGINT", SignalKind::interrupt())?,
+        )
+    };
     runtime
         .block_on(async {
-            let mut terminate = signal(SignalKind::terminate())?;
-            let mut interrupt = signal(SignalKind::interrupt())?;
             let stop = async move {
                 poll_fn(|cx| {
                     let terminated = terminate.poll_recv(cx).is_ready();
@@ -446,7 +521,6 @@ fn run(args: Run) -> Result<(), String> {
     Ok(())
 }
 
-/// Steps the writer for as long as the process runs.
 fn write(mut writer: Writer<Pg>) {
     let mut backoff = FIRST_BACKOFF;
     loop {
@@ -542,10 +616,10 @@ mod tests {
             assert_eq!(command(&args(version)), Ok(Command::Version));
         }
         for (line, name) in [
-            ("help run", "run"),
-            ("run --spec s -h", "run"),
-            ("plan --help", "plan"),
-            ("status -h --url", "status"),
+            ("help run", Name::Run),
+            ("run --spec s -h", Name::Run),
+            ("plan --help", Name::Plan),
+            ("status -h --url", Name::Status),
         ] {
             assert_eq!(
                 command(&args(line)),
@@ -557,26 +631,65 @@ mod tests {
 
     #[test]
     fn help_names_every_flag() {
-        assert!(help(None).contains("usage: straum <command>"));
-        for name in COMMANDS {
-            let text = help(Some(name));
-            assert!(text.starts_with(&format!("usage: straum {name}")), "{name}");
-            assert!(help(None).contains(&format!("\n  {name} ")), "{name}");
-            for flag in flags(name) {
-                assert!(text.contains(&format!("  {flag} ")), "{name} {flag}");
+        assert!(HELP.contains("usage: straum <command>"));
+        for name in Name::ALL {
+            let text = name.help();
+            let word = name.as_str();
+            assert!(text.starts_with(&format!("usage: straum {word}")), "{word}");
+            assert!(HELP.contains(&format!("\n  {word} ")), "{word}");
+            for flag in name.flags() {
+                assert!(text.contains(&format!("  {flag} ")), "{word} {flag}");
             }
-            for other in COMMANDS.into_iter().filter(|&other| other != name) {
-                for flag in flags(other).iter().filter(|f| !flags(name).contains(f)) {
-                    assert!(!text.contains(flag), "{name} {flag}");
+            for other in Name::ALL.into_iter().filter(|&other| other != name) {
+                for flag in other.flags().iter().filter(|f| !name.flags().contains(f)) {
+                    assert!(!text.contains(flag), "{word} {flag}");
                 }
             }
         }
     }
 
+    fn usage(line: &str) -> String {
+        match command(&args(line)) {
+            Err(Failure::Usage { message, .. }) => message,
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failures_say_what_to_try() {
+        assert_eq!(command(&[]), Err(Failure::NoCommand));
+        assert_eq!(Failure::NoCommand.to_string(), HELP.trim_end());
+        let cases = [
+            (
+                "serve",
+                "straum: unknown command \"serve\"\ntry: straum help",
+            ),
+            (
+                "help serve",
+                "straum: unknown command \"serve\"\ntry: straum help",
+            ),
+            (
+                "run",
+                "straum: straum run needs --spec\ntry: straum run --help",
+            ),
+            (
+                "status --spec s",
+                "straum: straum status takes no \"--spec\"\ntry: straum status --help",
+            ),
+        ];
+        for (line, printed) in cases {
+            let failure = command(&args(line)).unwrap_err();
+            assert_eq!(failure.to_string(), printed, "{line}");
+            assert_eq!(failure.exit_code(), ExitCode::from(2), "{line}");
+        }
+        let failure = Failure::Runtime("reading s: gone".into());
+        assert_eq!(failure.to_string(), "straum: reading s: gone");
+        assert_eq!(failure.exit_code(), ExitCode::FAILURE);
+    }
+
     #[test]
     fn command_errors() {
         let cases = [
-            ("", "no command"),
             ("serve", "unknown command \"serve\""),
             ("help --spec s", "straum help takes one command"),
             ("help --spec", "unknown command \"--spec\""),
@@ -601,34 +714,33 @@ mod tests {
             ("status --url", "--url needs a value"),
         ];
         for (line, error) in cases {
-            assert_eq!(command(&args(line)), Err(error.to_owned()), "{line}");
+            assert_eq!(usage(line), error, "{line}");
         }
         for lag in ["0", "-1", "1.5", "30s", ""] {
-            let line = args(&format!("run --spec s --max-lag {lag}"));
+            let line = format!("run --spec s --max-lag {lag}");
             let error = format!("--max-lag takes whole seconds above 0, not {lag:?}");
             let error = if lag.is_empty() {
                 "--max-lag needs a value".into()
             } else {
                 error
             };
-            assert_eq!(command(&line), Err(error), "{lag}");
+            assert_eq!(usage(&line), error, "{lag}");
         }
         for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
-            let line = args(&format!("run --spec s --max-retained-wal {size}"));
+            let line = format!("run --spec s --max-retained-wal {size}");
             let error = format!(
                 "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {size:?}"
             );
-            assert_eq!(command(&line), Err(error), "{size}");
+            assert_eq!(usage(&line), error, "{size}");
         }
         for rows in ["0", "-1", "1.5", "10k", "1Ki"] {
-            let line = args(&format!("run --spec s --max-transaction-rows {rows}"));
+            let line = format!("run --spec s --max-transaction-rows {rows}");
             let error =
                 format!("--max-transaction-rows takes a count of rows above 0, not {rows:?}");
-            assert_eq!(command(&line), Err(error), "{rows}");
+            assert_eq!(usage(&line), error, "{rows}");
         }
     }
 
-    /// A server that answers one GET /status with `reply`; its URL.
     fn answering(reply: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());

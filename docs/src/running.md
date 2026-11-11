@@ -40,15 +40,15 @@ is the newest stable release.
 Loads every table the spec names, follows their changes and answers asks
 over HTTP.
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--spec FILE` | required | The [spec](spec.md). |
-| `--listen ADDRESS` | `0.0.0.0:8080` | Where to serve HTTP. |
-| `--publication NAME` | `straum` | The publication `straum plan` made. |
-| `--dsn-file FILE` | `STRAUM_DSN` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
-| `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
-| `--max-retained-wal BYTES` | `4Gi` | WAL held for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
-| `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#applying-a-commit) instead of applying it. |
+| Flag | Meaning |
+| --- | --- |
+| `--spec FILE` | The [spec](spec.md). |
+| `--listen ADDRESS` | Where to serve HTTP. |
+| `--publication NAME` | The publication `straum plan` made. |
+| `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
+| `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
+| `--max-retained-wal BYTES` | WAL held for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#applying-a-commit) instead of applying it. |
 
 It logs to stderr, one line per event:
 
@@ -100,8 +100,7 @@ starting over in 1 s
 
 ## straum status
 
-Prints what a running Straum has done, from `GET /status`. `--url`
-defaults to `http://127.0.0.1:8080`.
+Prints what the Straum at `--url` has done, from its `GET /status`.
 
 ```text
 $ straum status
