@@ -103,6 +103,48 @@ jobs:
       - run: docker build -t straum:ci .
       - run: docker run --rm straum:ci help
 
+  # latest must name the newest commit on main that passed CI. Concurrency
+  # cancels a run once a newer push starts, and this check keeps a re-run
+  # of an older commit from moving latest back.
+  head:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.head.outputs.current }}
+    steps:
+      - id: head
+        run: |
+          main=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)
+          echo "current=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # Publishes ghcr.io/janbjorge/straum:latest for amd64 and arm64, each built
+  # on its own native runner, since under emulation the Rust build crawls.
+  # The OCI labels and index annotations come from the repository's
+  # description and license; provenance and SBOM attestations are signed
+  # through GitHub OIDC.
+  publish:
+    needs: [head, test, image]
+    if: needs.head.outputs.current == 'true'
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    with:
+      output: image
+      push: true
+      platforms: linux/amd64,linux/arm64
+      sbom: true
+      meta-images: ghcr.io/janbjorge/straum
+      meta-tags: type=raw,value=latest
+      set-meta-labels: true
+      set-meta-annotations: true
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
   docs:
     runs-on: ubuntu-latest
     steps:
