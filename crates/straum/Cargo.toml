@@ -6,6 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# Runs the HTTP server and waits for signals (ADR-0008).
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
@@ -14,4 +15,5 @@ straum-notation = { path = "../straum-notation" }
 straum-pg = { path = "../straum-pg" }
 
 [dev-dependencies]
+# PostgreSQL in Docker for tests (ADR-0024).
 testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }

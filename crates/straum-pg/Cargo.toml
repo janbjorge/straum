@@ -6,15 +6,22 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# Forced by postgres-protocol: its writers take BytesMut.
 bytes = "1.12.1"
+# Forced by postgres-protocol: its parsers return FallibleIterator.
 fallible-iterator = "0.2"
+# Wire messages and SCRAM (ADR-0010).
 postgres-protocol = "0.6.12"
+# TLS (ADR-0011).
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
+# Pure Rust crypto for rustls, no C toolchain (ADR-0011).
 rustls-graviola = "0.4.0"
+# Default trust roots when no CA file is given.
 webpki-roots = "1.0.11"
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
 
 [dev-dependencies]
+# PostgreSQL in Docker for tests (ADR-0024).
 testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }
 straum-notation = { path = "../straum-notation" }

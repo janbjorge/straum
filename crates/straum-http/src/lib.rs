@@ -29,9 +29,8 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
-use hyper::body::Incoming;
+use hyper::body::{Bytes, Incoming};
 use hyper::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;

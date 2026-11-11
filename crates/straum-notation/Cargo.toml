@@ -6,6 +6,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# RFC 3339 parsing of ask timestamps, which std lacks.
 jiff = { version = "0.2.41", default-features = false, features = ["std"] }
+# The PostgreSQL parser the walker reads (ADR-0004); pinned because
+# the walker matches its AST exactly.
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }
 straum-domain = { path = "../straum-domain" }

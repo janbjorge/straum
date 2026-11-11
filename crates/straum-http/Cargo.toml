@@ -6,13 +6,19 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-bytes = "1.12.1"
+# Full and Limited bodies; hyper 1 left them out of its core.
 http-body-util = "0.1.5"
+# HTTP/1 server (ADR-0008).
 hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
+# Tokio glue and graceful shutdown for hyper.
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "http1", "server-graceful"] }
+# RFC 3339 formatting of as_of, which std lacks.
 jiff = { version = "0.2.41", default-features = false, features = ["std"] }
+# A Visitor that rejects duplicate keys in an ask.
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
+# The JSON parser behind that Visitor.
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# The one async runtime (ADR-0008).
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
