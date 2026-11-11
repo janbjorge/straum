@@ -37,7 +37,8 @@ plugin and kubeconform. For a change under `docs/`, also run
 - Errors are hand-written enums with `Display` and `From` impls, no
   `thiserror` or `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the
-  construct.
+  construct, and holds one spelling per meaning with nothing inferred
+  (ADR-0029).
 - Only `straum-http` runs tokio.
 - Before adding a direct dependency, check `std` first. Add a crate only
   for a capability `std` lacks or a measured material gain. State why
