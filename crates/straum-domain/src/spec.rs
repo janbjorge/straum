@@ -15,9 +15,9 @@ pub struct Table {
 }
 
 /// A table facts join to by key, any number of rows per key. Straum holds
-/// it projected to its
-/// key and the columns the views read, kept current from the stream, and
-/// an ask reads a dim's values through a cell's join columns.
+/// it projected to its key and the columns the views read, kept current
+/// from the stream, and an ask reads a dim's values through a cell's join
+/// columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dim {
     pub name: Ident,

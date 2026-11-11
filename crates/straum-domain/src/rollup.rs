@@ -195,17 +195,17 @@ impl Cells {
 
     fn swap_remove(&mut self, i: usize) {
         let last = self.len() - 1;
-        self.index
-            .remove(&self.keys[i * self.width..][..self.width]);
+        let width = self.width;
+        let key = |n: usize| n * width..(n + 1) * width;
+        self.index.remove(&self.keys[key(i)]);
         if i != last {
             *self
                 .index
-                .get_mut(&self.keys[last * self.width..][..self.width])
+                .get_mut(&self.keys[key(last)])
                 .expect("every cell is indexed") = i;
-            self.keys
-                .copy_within(last * self.width..(last + 1) * self.width, i * self.width);
+            self.keys.copy_within(key(last), i * width);
         }
-        self.keys.truncate(last * self.width);
+        self.keys.truncate(last * width);
         self.rows.swap_remove(i);
         self.columns.iter_mut().for_each(|c| c.swap_remove(i));
     }
