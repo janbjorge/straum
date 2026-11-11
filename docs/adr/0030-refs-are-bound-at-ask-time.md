@@ -1,6 +1,6 @@
 # ADR-0030: Refs are bound at ask time
 
-Status: Accepted, 2026-11-11
+Status: Accepted, 2026-11-11; amended by ADR-0038
 
 ## Context
 
