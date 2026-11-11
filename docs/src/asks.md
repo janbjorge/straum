@@ -91,9 +91,9 @@ buckets: Straum never answers for part of a bucket.
 
 Buckets are their start, in UTC. Measures print as the
 [measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
-sum, `69.995` for its avg of 139.99 over 2. A row whose dim row did not
-exist when it came in has null dim columns, as a `LEFT OUTER JOIN`
-gives.
+sum, `69.995` for its avg of 139.99 over 2. A row whose dim row does
+not exist has null dim columns, as a `LEFT OUTER JOIN` gives, until the
+dim row arrives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in

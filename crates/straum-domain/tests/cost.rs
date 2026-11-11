@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Attr, By, Datum, Dim, Fact, Grain, Ident, Measure, Origin, Ref, Spec, Store,
-    Table, Time, TimeKey,
+    Agg, Ask, AskKey, Attr, By, ColumnType, Datum, Dim, Fact, Grain, Ident, Measure, Origin, Ref,
+    Spec, Store, Table, Time, TimeKey,
 };
 
 thread_local! {
@@ -112,15 +112,27 @@ fn store(cells: i64) -> Store {
     store_with(cells, &[])
 }
 
-/// As [`store`], with `buckets` (in hours). Each row carries the borough of
-/// its zone, as the source resolves it.
+/// As [`store`], with `buckets` (in hours). The zones are loaded first,
+/// each with its borough, as a load does.
 fn store_with(cells: i64, buckets: &[u32]) -> Store {
     let spec = spec(buckets);
     let columns = spec.fact("trips").unwrap().columns().to_vec();
     let mut store = Store::new(spec);
+    store
+        .set_dim_types("zones", &[ColumnType::Int, ColumnType::Text])
+        .unwrap();
+    let zones: Vec<Datum> = (0..ZONES)
+        .flat_map(|zone| {
+            [
+                Datum::Int(zone),
+                Datum::Text(BOROUGHS[zone as usize % BOROUGHS.len()].into()),
+            ]
+        })
+        .collect();
+    store.add_dim_rows("zones", &zones).unwrap();
     for n in 0..cells {
         let zone = n / 2 % ZONES;
-        let mut row: Vec<_> = columns
+        let row: Vec<_> = columns
             .iter()
             .map(|c| match c.as_str() {
                 "at" => Datum::Int(n / (2 * ZONES) * i64::from(HOUR)),
@@ -131,7 +143,6 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
                 other => panic!("no value for {other}"),
             })
             .collect();
-        row.push(Datum::Text(BOROUGHS[zone as usize % BOROUGHS.len()].into()));
         store.add_fact_row("trips", &row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(cells as usize));

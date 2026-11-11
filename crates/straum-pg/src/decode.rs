@@ -1,6 +1,6 @@
-//! pgoutput messages turned into commits of fact rows: which facts a
-//! relation holds, where their columns sit, and how its values read. Dims
-//! are not followed, so their relations map to nothing.
+//! pgoutput messages turned into commits of fact and dim rows: which
+//! tables a relation holds, where their columns sit, and how its values
+//! read.
 
 use std::collections::HashMap;
 use std::mem;
@@ -14,13 +14,14 @@ use crate::pgoutput::{self, Field, Message, Relation, Tuple};
 use crate::value::{read, type_of};
 use straum_domain::ColumnType;
 
-/// Turns pgoutput messages into commits of fact rows, each as the stream
-/// brings it: `Fact::columns`, its attributes resolved later.
+/// Turns pgoutput messages into commits of rows, each as the stream brings
+/// it: `Fact::columns` or `Dim::columns`.
 pub(crate) struct Decoder {
-    facts: Vec<Table>,
-    /// By relation id. A table read by two facts maps to both.
+    tables: Vec<Table>,
+    /// By relation id. A table read by two members of the spec maps to
+    /// both.
     relations: HashMap<u32, Vec<Mapping>>,
-    /// Each fact's types as last loaded or announced. A Relation that
+    /// Each table's types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so straum starts over.
     types: HashMap<Ident, Vec<ColumnType>>,
     transaction: Transaction,
@@ -35,7 +36,7 @@ struct Transaction {
     lsn: Option<Lsn>,
 }
 
-/// Where a fact's columns sit in a relation's tuples.
+/// Where a table's columns sit in a relation's tuples.
 struct Mapping {
     table: Ident,
     /// `schema.table`, for the error a value that doesn't read gives.
@@ -47,15 +48,15 @@ struct Mapping {
 }
 
 impl Decoder {
-    /// `facts` are the fact tables; `max_rows` is the most changes to them
-    /// one transaction may hold.
-    pub(crate) fn new(facts: Vec<Table>, max_rows: usize) -> Decoder {
-        let types = facts
+    /// `tables` are the spec's tables, dims and facts; `max_rows` is the
+    /// most changes to them one transaction may hold.
+    pub(crate) fn new(tables: Vec<Table>, max_rows: usize) -> Decoder {
+        let types = tables
             .iter()
             .map(|t| (t.name.clone(), t.types.clone()))
             .collect();
         Decoder {
-            facts,
+            tables,
             relations: HashMap::new(),
             types,
             transaction: Transaction {
@@ -141,17 +142,18 @@ impl Decoder {
         self.transaction.lsn.is_some()
     }
 
-    /// Maps the relation's columns for each fact it holds. A fact whose
-    /// columns now read differently is read again; one that lost a column,
-    /// or whose column turned to a type straum doesn't read, stops the
-    /// stream, and the setup check on the next start says what is wrong.
+    /// Maps the relation's columns for each table of the spec it holds. A
+    /// table whose columns now read differently is read again; one that
+    /// lost a column, or whose column turned to a type straum doesn't
+    /// read, stops the stream, and the setup check on the next start says
+    /// what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
-        let facts = self
-            .facts
+        let tables = self
+            .tables
             .iter()
             .filter(|t| t.schema.as_str() == relation.schema && t.table.as_str() == relation.name);
-        for table in facts {
+        for table in tables {
             let position = |column: &Ident| {
                 relation
                     .columns
@@ -202,7 +204,7 @@ impl Transaction {
     }
 }
 
-/// The facts a relation holds; none for a relation straum doesn't follow.
+/// The tables a relation holds; none for a relation outside the spec.
 fn mappings(relations: &HashMap<u32, Vec<Mapping>>, relation: u32) -> &[Mapping] {
     relations.get(&relation).map_or(&[], Vec::as_slice)
 }
@@ -222,7 +224,7 @@ fn altered(m: &Mapping) -> Change {
 }
 
 impl Mapping {
-    /// The fact row a tuple holds. A value PostgreSQL left out because the
+    /// The row a tuple holds. A value PostgreSQL left out because the
     /// change kept it comes from `old`; `None` when there is no old row to
     /// take it from.
     fn row(&self, tuple: &Tuple, old: Option<&[Datum]>) -> Result<Option<Vec<Datum>>, Error> {
@@ -243,7 +245,7 @@ impl Mapping {
     }
 
     /// The old row of an update or delete as straum needs it; `None` when
-    /// the change can't be read whole. A key-only old row is one: the fact
+    /// the change can't be read whole. A key-only old row is one: the table
     /// no longer has `REPLICA IDENTITY FULL`, so straum starts over and the
     /// setup check says so.
     fn old(&self, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
@@ -295,7 +297,6 @@ mod tests {
             table: id("zones"),
             columns: columns.iter().map(|c| id(c)).collect(),
             types,
-            key_width: 0,
         };
         Decoder::new(
             vec![
@@ -471,7 +472,7 @@ mod tests {
     #[test]
     fn relations_that_change() {
         let mut d = decoder();
-        // Not a fact: its changes are skipped.
+        // Not in the spec: its changes are skipped.
         let mut other = relation(8, &[("x", INT4)]);
         if let Message::Relation(r) = &mut other {
             r.name = "other".into();

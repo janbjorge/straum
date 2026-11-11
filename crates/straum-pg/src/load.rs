@@ -1,13 +1,12 @@
-//! Loads: a binary `COPY` of the columns the spec reads, each fact joined
-//! to its dims in PostgreSQL, so a row comes whole and straum groups it as
-//! it comes. A load must not cost straum the table's rows in memory; what
-//! the join costs PostgreSQL is the planner's, as it is for the view.
+//! Loads: a binary `COPY` of the columns the spec reads of each table, dim
+//! or fact, so straum groups or projects a row as it comes. A load must
+//! not cost straum the table's rows in memory.
 
 use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{ColumnType, Datum, Fact, Ident, Store};
+use straum_domain::{ColumnType, Datum, Dim, Fact, Ident, Store};
 
 use crate::catalog::{Table, Tables};
 use crate::error::Error;
@@ -25,39 +24,15 @@ fn qualified(table: &Table) -> String {
     )
 }
 
-/// The fact's row as the spec joins it: `t0` is the fact and `t1` on its
-/// refs, the aliases plain since no identifier straum accepts is quoted.
-pub(crate) fn copy_sql(tables: &Tables, fact: &Fact) -> String {
-    let fact_table = tables.fact(&fact.name);
-    let mut select: Vec<String> = (fact.columns().iter())
-        .map(|c| format!("t0.{}", escape_identifier(c.as_str())))
+/// The columns straum reads of the table, as the catalog checked them.
+pub(crate) fn copy_sql(table: &Table) -> String {
+    let select: Vec<String> = (table.columns.iter())
+        .map(|c| escape_identifier(c.as_str()))
         .collect();
-    let mut joins = String::new();
-    for (i, r) in fact.refs.iter().enumerate() {
-        let alias = format!("t{}", i + 1);
-        let dim = tables.dim(&r.dim);
-        select.extend(
-            (r.attrs.iter()).map(|a| format!("{alias}.{}", escape_identifier(a.column.as_str()))),
-        );
-        let on: Vec<String> = (dim.columns[..dim.key_width].iter().zip(&r.via))
-            .map(|(key, via)| {
-                format!(
-                    "{alias}.{} = t0.{}",
-                    escape_identifier(key.as_str()),
-                    escape_identifier(via.as_str())
-                )
-            })
-            .collect();
-        joins.push_str(&format!(
-            " LEFT JOIN {} AS {alias} ON {}",
-            qualified(dim),
-            on.join(" AND ")
-        ));
-    }
     format!(
-        "COPY (SELECT {} FROM {} AS t0{joins}) TO STDOUT (FORMAT binary)",
+        "COPY (SELECT {} FROM {}) TO STDOUT (FORMAT binary)",
         select.join(", "),
-        qualified(fact_table)
+        qualified(table)
     )
 }
 
@@ -69,16 +44,12 @@ pub(crate) struct Columns {
     pub(crate) types: Vec<ColumnType>,
 }
 
-/// The types of a fact's row: its columns', then its attributes', which
-/// are the dim columns'.
-pub(crate) fn fact_types(tables: &Tables, fact: &Fact) -> Vec<ColumnType> {
-    let table = tables.fact(&fact.name);
-    (fact.columns().iter().map(|c| table.column_type(c)))
-        .chain(
-            fact.attrs()
-                .map(|(r, a)| tables.dim(&r.dim).column_type(&a.column)),
-        )
-        .collect()
+fn columns_of(table: &Table) -> Columns {
+    Columns {
+        table: table.qualified(),
+        names: table.columns.clone(),
+        types: table.types.clone(),
+    }
 }
 
 pub(crate) fn fact(
@@ -88,18 +59,28 @@ pub(crate) fn fact(
     store: &mut Store,
 ) -> Result<(), Error> {
     let name = fact.name.as_str();
-    let types = fact_types(tables, fact);
-    store.set_fact_types(name, &types).map_err(Error::Row)?;
-    let names = (fact.columns().into_iter())
-        .chain(fact.attrs().map(|(_, a)| a.column.clone()))
-        .collect();
-    let columns = Columns {
-        table: tables.fact(&fact.name).qualified(),
-        names,
-        types,
-    };
-    copy(conn, &copy_sql(tables, fact), &columns, |rows| {
+    let table = tables.fact(&fact.name);
+    store
+        .set_fact_types(name, &table.types)
+        .map_err(Error::Row)?;
+    copy(conn, &copy_sql(table), &columns_of(table), |rows| {
         store.add_fact_rows(name, rows).map_err(Error::Row)
+    })
+}
+
+pub(crate) fn dim(
+    conn: &mut Conn,
+    tables: &Tables,
+    dim: &Dim,
+    store: &mut Store,
+) -> Result<(), Error> {
+    let name = dim.name.as_str();
+    let table = tables.dim(&dim.name);
+    store
+        .set_dim_types(name, &table.types)
+        .map_err(Error::Row)?;
+    copy(conn, &copy_sql(table), &columns_of(table), |rows| {
+        store.add_dim_rows(name, rows).map_err(Error::Row)
     })
 }
 
@@ -120,7 +101,7 @@ pub(crate) fn copy(
     columns: &Columns,
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    // A fact has its time column.
+    // A fact has its time column, a dim its key.
     debug_assert!(!columns.types.is_empty());
     let width = columns.types.len();
     let (full, filled) = mpsc::sync_channel::<Vec<Datum>>(IN_FLIGHT);

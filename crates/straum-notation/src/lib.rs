@@ -32,10 +32,10 @@
 //! - `LEFT OUTER JOIN schema.table AS alias ON alias.key = fact.column`,
 //!   with more equalities joined by `AND` for a key of several columns,
 //!   the joined table's column on the left: a ref named `alias` to the
-//!   dim `table`. The dim columns the view selects are the ref's
-//!   attributes, which come with each fact row and key its cells; a join
-//!   must select one. The fact columns joined on may be selected as `by`
-//!   columns or left out.
+//!   dim `table`. The fact columns joined on key the cells, selected as
+//!   `by` columns or not; the dim columns the view selects are the ref's
+//!   attributes, read through them when asked, and a join must select
+//!   one.
 //! - `date_bin('<n> <unit>', fact.column, timestamptz 'epoch') AS bucket`:
 //!   the bucket; `timestamp 'epoch'` for a column without a zone.
 //! - Other fact columns are `by` columns; `(fact.column IS NULL) AS name`

@@ -17,10 +17,10 @@ L. A stream thread hands each commit to the writer.*
    consistent point, L.
 2. In that snapshot, Straum [checks the
    catalog](postgresql.md#what-straum-checks-at-start) against the spec
-   and loads every fact table. Each loads with one binary `COPY` of a
-   `SELECT` that joins the fact to its dims and reads only the columns
-   the spec names. Straum groups the rows into cells as they come, a
-   batch at a time, so it never holds the table.
+   and loads every dim and fact table. Each loads with one binary `COPY`
+   of the columns the spec names. Straum projects a dim's rows to its
+   key and those columns, and groups a fact's rows into cells as they
+   come, a batch at a time, so it never holds a fact table.
 3. Straum ends the snapshot, swaps the loaded store in and turns ready.
 4. It starts the stream at L. A stream thread reads it, answers the
    server's keepalives and confirms what the writer has applied, so the
@@ -45,26 +45,27 @@ to a bucket no ask reads.
 
 ## Applying a commit
 
-Changes arrive after their transaction commits. Before Straum applies
-one, it reads the dim columns of the fact rows in it: one `SELECT` per
-join on a plain second connection, with the keys of every changed row,
-as the dims are at that moment. Then it applies the transaction whole:
+Changes arrive after their transaction commits, and Straum applies the
+transaction whole, nothing read from PostgreSQL in between:
 
-- An insert into a fact table adds the row to its cell.
-- An update takes the old row out of its cell and adds the new one; the
-  old row is there because fact tables have `REPLICA IDENTITY FULL`.
+- An insert into a fact table adds the row to its cell; one into a dim
+  table adds the row to the dim's projection.
+- An update takes the old row out and adds the new one, of a cell or of
+  a projection; the old row is there because every table in the spec
+  has `REPLICA IDENTITY FULL`.
 - A delete takes the old row out. A cell goes with its last row.
-- A truncate empties the view's cells.
+- A truncate empties the view's cells, or the dim's projection.
 
-Dims are not in the stream. A change to a dim row shows in the fact rows
-that come after it and leaves the cells before it as they were, as
-[Writing a spec](spec.md#joining-a-lookup-table) describes.
+A dim change is in the stream like any other. Cells are keyed by the
+join column, so a dim row relabelled, moved, removed or added changes
+no cell: the next ask reads the dim as it is now, as [Writing a
+spec](spec.md#joining-a-lookup-table) describes.
 
 A change Straum can't apply makes it [start over](running.md#states)
 from a new slot: an update without its old row, a row that doesn't fit
-its cells, a value it can't read, a table whose columns now read
-differently, an update or delete of a row whose dim row has changed
-since it came in, or a transaction above `--max-transaction-rows`. The
+its cells, a dim row it never held, a value it can't read, a table whose
+columns now read differently, or a transaction above
+`--max-transaction-rows`. The
 last is on purpose: a transaction waits in memory until its commit and
 applies under the write lock, and the new slot's snapshot is after the
 big commit, so its rows come in through the bulk `COPY` instead. The

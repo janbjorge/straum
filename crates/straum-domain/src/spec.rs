@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::iter;
 
 use crate::agg::Agg;
 use crate::ident::Ident;
@@ -15,8 +14,9 @@ pub struct Table {
     pub name: Ident,
 }
 
-/// A table facts look rows up in, by key, as their rows come in. Straum
-/// keeps none of its rows: the source resolves each lookup.
+/// A table facts join to, N:1, by key. Straum holds it projected to its
+/// key and the columns the views read, kept current from the stream, and
+/// an ask reads a dim's values through a cell's join columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dim {
     pub name: Ident,
@@ -134,11 +134,10 @@ impl fmt::Display for Origin {
 pub struct Grain(pub u32);
 
 /// N:1 pointer from fact columns to a dim key, column for column. The only
-/// way a fact reaches another table, so fan-out can't be declared. Its
-/// attributes are resolved as each fact row comes in and are rollup keys,
-/// so a cell is keyed by an attribute's few values instead of the ref's
-/// many. A dim row changed later leaves the cells made before as they
-/// were: history is not rewritten.
+/// way a fact reaches another table, so fan-out can't be declared. The via
+/// columns are rollup keys, so a cell is keyed by the dim row it points
+/// at; its attributes are read from the dim's projection when asked, as
+/// the dim is then, so a dim change moves every answer at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     pub name: Ident,
@@ -188,25 +187,30 @@ pub enum Key<'a> {
 }
 
 /// One part of the rollup key: a fact column's value, whether a fact
-/// column is null, a ref's attribute, or the time bucket.
+/// column is null, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot<'a> {
     Column(&'a Ident),
     IsNull { column: &'a Ident, negated: bool },
-    Attr(&'a Ref, &'a Ident),
     Bucket,
 }
 
 impl Fact {
-    /// The `by` keys, then every ref's attributes in ref order, then the
-    /// time bucket.
+    /// The `by` keys, then every ref's via columns in ref order, each slot
+    /// once, then the time bucket.
     pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
-        (self.by.iter().map(By::slot))
-            .chain(self.attrs().map(|(r, a)| Slot::Attr(r, &a.column)))
-            .chain(iter::once(Slot::Bucket))
+        let mut slots: Vec<Slot<'_>> = Vec::new();
+        let vias = self.refs.iter().flat_map(|r| &r.via).map(Slot::Column);
+        for slot in self.by.iter().map(By::slot).chain(vias) {
+            if !slots.contains(&slot) {
+                slots.push(slot);
+            }
+        }
+        slots.push(Slot::Bucket);
+        slots.into_iter()
     }
 
-    /// Every ref's attributes, each with its ref, in rollup-key order.
+    /// Every ref's attributes, each with its ref, in ref order.
     pub fn attrs(&self) -> impl Iterator<Item = (&Ref, &Attr)> {
         self.refs
             .iter()
@@ -215,8 +219,7 @@ impl Fact {
 
     /// The columns a row of this fact is read from, in order: the time
     /// column, the columns the `by` keys read in rollup-key order, the via
-    /// columns of the refs, then the measure inputs, each column once. A
-    /// row the source hands over holds them and then [`Fact::attrs`].
+    /// columns of the refs, then the measure inputs, each column once.
     pub fn columns(&self) -> Vec<Ident> {
         let mut columns: Vec<Ident> = vec![self.time.column.clone()];
         let read = (self.by.iter().map(By::column))

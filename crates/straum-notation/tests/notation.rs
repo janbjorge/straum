@@ -64,8 +64,7 @@ fn month_ask() -> Ask {
     }
 }
 
-/// The rollup key as text: column names, null-ness tests, `ref.column`
-/// for an attribute, and `bucket`.
+/// The rollup key as text: column names, null-ness tests and `bucket`.
 fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
     (spec.fact(fact).unwrap().rollup_key())
         .map(|slot| match slot {
@@ -73,7 +72,6 @@ fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
             Slot::IsNull { column, negated } => {
                 format!("{column} is {}null", if negated { "not " } else { "" })
             }
-            Slot::Attr(r, a) => format!("{}.{a}", r.name),
             Slot::Bucket => "bucket".into(),
         })
         .collect()
@@ -95,9 +93,6 @@ fn taxi_parses() {
             "vendor_id",
             "pu_location_id",
             "do_location_id",
-            "pickup.borough",
-            "pickup.zone",
-            "pickup.service_zone",
             "bucket"
         ]
     );
@@ -560,8 +555,8 @@ fn a_ref_on_two_columns_rejected() {
     }
 }
 
-/// A ref whose via column is not selected: its attribute alone keys the
-/// cells.
+/// A ref whose via column is not selected: the via column still keys the
+/// cells, and the attribute is read through it.
 const ATTR_ONLY: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a, z.name AS name, count(*) AS n,
@@ -577,9 +572,9 @@ fn a_ref_reads_what_the_view_selects() {
     assert_eq!(t.by, [col("a")]);
     assert_eq!(t.refs[0].via, [id("z_id")]);
     assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
-    // The via column is read for the lookup, not kept.
+    // The via column keys the cells, selected or not.
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
-    assert_eq!(key_text(&spec, "t"), ["a", "z.name", "bucket"]);
+    assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
     assert_eq!(
         t.measure("named").unwrap().filter,
         [cond("name", vec![Literal::Text("x".into())])]

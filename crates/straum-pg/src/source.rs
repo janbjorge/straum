@@ -1,7 +1,6 @@
 //! [`Pg`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
 //! snapshot on the same connection, then the stream from its consistent
-//! point. A plain connection on the side reads the server's WAL position
-//! and resolves the refs of each commit's fact rows.
+//! point. A plain connection on the side reads the server's WAL position.
 
 use std::mem;
 use std::process;
@@ -10,14 +9,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{Fact, Ident, Spec, Store};
+use straum_domain::{Dim, Fact, Ident, Spec, Store};
 
 use crate::catalog::{self, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
-use crate::resolve::Resolver;
 use crate::stream::Stream;
 use crate::wire::Conn;
 
@@ -35,20 +33,17 @@ pub struct Pg {
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
-    /// Reads the server's WAL and looks dim rows up, since the stream's
-    /// connection is busy streaming. Connects again after an error.
+    /// Reads the server's WAL, since the stream's connection is busy
+    /// streaming. Connects again after an error.
     side: Option<Conn>,
 }
 
 enum State {
     Closed,
-    /// Every fact loads in the snapshot of the slot the stream starts
-    /// from.
+    /// Every dim and fact loads in the snapshot of the slot the stream
+    /// starts from.
     Loading(Snapshot),
-    Streaming {
-        stream: Stream,
-        resolver: Resolver,
-    },
+    Streaming(Stream),
 }
 
 /// A replication connection in a read-only, repeatable-read transaction
@@ -57,9 +52,8 @@ struct Snapshot {
     conn: Conn,
     slot: String,
     at: Lsn,
-    spec: Spec,
     tables: Tables,
-    /// Facts not loaded yet. The transaction ends with the last load, so
+    /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Ident>,
 }
@@ -103,12 +97,13 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
         .and_then(|point| parse_lsn(point.as_deref()?))
         .ok_or_else(|| Error::Protocol("a slot without a consistent point".into()))?;
     let tables = catalog::read(&mut conn, spec, publication)?;
-    let unloaded = spec.facts().iter().map(|f| f.name.clone()).collect();
+    let unloaded = (spec.dims().iter().map(|d| d.name.clone()))
+        .chain(spec.facts().iter().map(|f| f.name.clone()))
+        .collect();
     Ok(Snapshot {
         conn,
         slot,
         at,
-        spec: spec.clone(),
         tables,
         unloaded,
     })
@@ -139,36 +134,30 @@ impl Source for Pg {
             return Err(Error::Stopped.into());
         };
         load::fact(&mut snapshot.conn, &snapshot.tables, fact, store)?;
-        snapshot.unloaded.retain(|t| *t != fact.name);
-        if snapshot.unloaded.is_empty() {
-            snapshot.conn.execute("COMMIT")?;
-        }
-        Ok(())
+        loaded(snapshot, &fact.name)
+    }
+
+    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError> {
+        let State::Loading(snapshot) = &mut self.state else {
+            return Err(Error::Stopped.into());
+        };
+        load::dim(&mut snapshot.conn, &snapshot.tables, dim, store)?;
+        loaded(snapshot, &dim.name)
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
-            State::Loading(snapshot) => {
-                let resolver = Resolver::new(&snapshot.spec, &snapshot.tables);
-                let stream = stream(snapshot, &self.publication, self.max_transaction_rows)?;
-                State::Streaming { stream, resolver }
-            }
+            State::Loading(snapshot) => State::Streaming(stream(
+                snapshot,
+                &self.publication,
+                self.max_transaction_rows,
+            )?),
             other => other,
         };
-        let State::Streaming { stream, resolver } = &mut self.state else {
+        let State::Streaming(stream) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        let Some(mut commit) = stream.next(wait)? else {
-            return Ok(None);
-        };
-        // A failed lookup leaves the connection mid-query, so it goes.
-        let resolved =
-            side(&mut self.side, &self.dsn).and_then(|conn| resolver.resolve(conn, &mut commit));
-        if let Err(e) = resolved {
-            self.side = None;
-            return Err(e.into());
-        }
-        Ok(Some(commit))
+        Ok(stream.next(wait)?)
     }
 
     fn wal(&mut self) -> Result<Wal, SourceError> {
@@ -181,6 +170,15 @@ impl Source for Pg {
         }
         Ok(wal?)
     }
+}
+
+/// The table is loaded; the snapshot's transaction ends with the last one.
+fn loaded(snapshot: &mut Snapshot, table: &Ident) -> Result<(), SourceError> {
+    snapshot.unloaded.retain(|t| t != table);
+    if snapshot.unloaded.is_empty() {
+        snapshot.conn.execute("COMMIT")?;
+    }
+    Ok(())
 }
 
 /// The server's WAL position, and how far the slot has confirmed and keeps
@@ -204,7 +202,7 @@ pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
     }
 }
 
-/// Streams from the snapshot's consistent point. Facts not loaded yet
+/// Streams from the snapshot's consistent point. Tables not loaded yet
 /// can't load any more.
 fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
@@ -215,11 +213,10 @@ fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<
         "START_REPLICATION SLOT {} LOGICAL {} (proto_version '1', publication_names {names})",
         snapshot.slot, snapshot.at
     ))?;
-    Stream::start(
-        snapshot.conn,
-        Decoder::new(snapshot.tables.facts, max_rows),
-        snapshot.at,
-    )
+    let tables = (snapshot.tables.facts.into_iter())
+        .chain(snapshot.tables.dims)
+        .collect();
+    Stream::start(snapshot.conn, Decoder::new(tables, max_rows), snapshot.at)
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.

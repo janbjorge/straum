@@ -20,9 +20,6 @@ pub(crate) struct Table {
     /// key columns and then its attributes.
     pub(crate) columns: Vec<Ident>,
     pub(crate) types: Vec<ColumnType>,
-    /// How many of `columns`, from the first, make a dim's key. 0 for a
-    /// fact.
-    pub(crate) key_width: usize,
 }
 
 impl Table {
@@ -36,8 +33,8 @@ impl Table {
     }
 }
 
-/// The spec's tables as checked: the facts, which straum loads and
-/// follows, and the dims, which it only looks rows up in.
+/// The spec's tables as checked, facts and dims, each loaded whole and
+/// followed through the publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Tables {
     pub(crate) facts: Vec<Table>,
@@ -266,13 +263,11 @@ impl Role {
     }
 }
 
-/// A table of the spec. How straum uses it decides what the setup owes it.
+/// A table of the spec. Both kinds are loaded whole and followed through
+/// the publication; a dim's key must name one row.
 #[derive(Debug, Clone, Copy)]
 enum Member<'s> {
-    /// Rows looked up by key, in the load and per commit. Never followed,
-    /// so the publication owes it nothing.
     Dim(&'s Dim),
-    /// Loaded whole and followed through the publication.
     Fact(&'s Fact),
 }
 
@@ -281,6 +276,13 @@ impl<'s> Member<'s> {
         match self {
             Member::Dim(dim) => &dim.name,
             Member::Fact(fact) => &fact.name,
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            Member::Dim(_) => "dim",
+            Member::Fact(_) => "fact",
         }
     }
 
@@ -297,13 +299,6 @@ impl<'s> Member<'s> {
         match self {
             Member::Dim(dim) => dim.columns().map(|c| (c, Role::Key)).collect(),
             Member::Fact(fact) => fact_roles(fact),
-        }
-    }
-
-    fn key_width(self) -> usize {
-        match self {
-            Member::Dim(dim) => dim.key.len(),
-            Member::Fact(_) => 0,
         }
     }
 }
@@ -368,7 +363,7 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
         By::Column { column, .. } => (column, Role::Key),
         By::IsNull { column, .. } => (column, Role::Nullness),
     }));
-    // A ref's via columns are read for the lookup, kept or not.
+    // A ref's via columns key the cells, selected or not.
     for r in &fact.refs {
         roles.extend(r.via.iter().map(|v| (v, Role::Key)));
     }
@@ -413,27 +408,22 @@ fn check_table(
             "{name}: straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
         ));
     }
-    let published = match member {
-        Member::Dim(_) => None,
-        Member::Fact(_) => {
-            if relation.row_filter {
-                problems.push(format!(
-                    "{name}: publication {publication} filters the rows of {qualified}; \
-                     straum needs every row"
-                ));
-            }
-            // A missing publication is reported once, not per table.
-            match (&relation.published, catalog.publication) {
-                (Some(published), _) => Some(published),
-                (None, None) => None,
-                (None, Some(_)) => {
-                    problems.push(format!(
-                        "{name}: publication {publication} leaves out {qualified}: \
-                         ALTER PUBLICATION {publication} ADD TABLE {qualified}"
-                    ));
-                    return None;
-                }
-            }
+    if relation.row_filter {
+        problems.push(format!(
+            "{name}: publication {publication} filters the rows of {qualified}; \
+             straum needs every row"
+        ));
+    }
+    // A missing publication is reported once, not per table.
+    let published = match (&relation.published, catalog.publication) {
+        (Some(published), _) => Some(published),
+        (None, None) => None,
+        (None, Some(_)) => {
+            problems.push(format!(
+                "{name}: publication {publication} leaves out {qualified}: \
+                 ALTER PUBLICATION {publication} ADD TABLE {qualified}"
+            ));
+            return None;
         }
     };
 
@@ -478,27 +468,23 @@ fn check_table(
         table: table.name.clone(),
         columns,
         types,
-        key_width: member.key_width(),
     };
-    match member {
-        Member::Dim(dim) => check_dim(dim, &table, relation, problems),
-        Member::Fact(fact) => {
-            if relation.identity != "f" {
-                problems.push(format!(
-                    "fact {}: straum needs the whole old row of every update and delete: \
-                     ALTER TABLE {} REPLICA IDENTITY FULL",
-                    fact.name,
-                    table.qualified()
-                ));
-            }
-        }
+    if let Member::Dim(dim) = member {
+        check_dim(dim, &table, relation, problems);
+    }
+    if relation.identity != "f" {
+        problems.push(format!(
+            "{} {name}: straum needs the whole old row of every update and delete: \
+             ALTER TABLE {} REPLICA IDENTITY FULL",
+            member.kind(),
+            table.qualified()
+        ));
     }
     Some(table)
 }
 
-/// A lookup by key finds one row or none only if the key is unique: a
-/// primary key or unique index on exactly the dim's key columns, in any
-/// order.
+/// A join finds one row or none only if the key is unique: a primary key
+/// or unique index on exactly the dim's key columns, in any order.
 fn check_dim(dim: &Dim, table: &Table, relation: &Relation, problems: &mut Vec<String>) {
     let same = |columns: &[String]| {
         columns.len() == dim.key.len()

@@ -46,13 +46,12 @@ pub(crate) fn tasks_tables() -> (Spec, Tables) {
          GROUP BY 1, 2, 3, 4",
     )
     .unwrap();
-    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>, key_width| Table {
+    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Table {
         name: id(name),
         schema: id("public"),
         table: id(name),
         columns: columns.iter().map(|c| id(c)).collect(),
         types,
-        key_width,
     };
     let tables = Tables {
         facts: vec![table(
@@ -64,53 +63,37 @@ pub(crate) fn tasks_tables() -> (Spec, Tables) {
                 ColumnType::Int,
                 ColumnType::Numeric { scale: 1 },
             ],
-            0,
         )],
         dims: vec![
             table(
                 "taskgroups",
                 &["organization_id", "taskgroup_id", "category"],
                 vec![ColumnType::Int, ColumnType::Int, ColumnType::Text],
-                2,
             ),
             table(
                 "locations",
                 &["id", "location_type"],
                 vec![ColumnType::Numeric { scale: 1 }, ColumnType::Text],
-                1,
             ),
         ],
     };
     (spec, tables)
 }
 
-/// A load copies the fact joined to each ref's dim, its attributes after
-/// its columns, and reads them in the dim columns' types.
+/// A load copies each table alone, the columns the spec reads of it: a
+/// fact's columns, a dim's key and attributes.
 #[test]
-fn loads_copy_the_fact_joined_to_its_dims() {
-    let (spec, tables) = tasks_tables();
-    let tasks = spec.fact("tasks").unwrap();
+fn loads_copy_each_table_alone() {
+    let (_, tables) = tasks_tables();
     assert_eq!(
-        load::copy_sql(&tables, tasks),
-        "COPY (SELECT t0.\"created\", t0.\"organization_id\", t0.\"taskgroup_id\", \
-         t0.\"location_id\", t1.\"category\", t2.\"location_type\" \
-         FROM \"public\".\"tasks\" AS t0 \
-         LEFT JOIN \"public\".\"taskgroups\" AS t1 \
-         ON t1.\"organization_id\" = t0.\"organization_id\" \
-         AND t1.\"taskgroup_id\" = t0.\"taskgroup_id\" \
-         LEFT JOIN \"public\".\"locations\" AS t2 ON t2.\"id\" = t0.\"location_id\") \
-         TO STDOUT (FORMAT binary)"
+        load::copy_sql(&tables.facts[0]),
+        "COPY (SELECT \"created\", \"organization_id\", \"taskgroup_id\", \"location_id\" \
+         FROM \"public\".\"tasks\") TO STDOUT (FORMAT binary)"
     );
     assert_eq!(
-        load::fact_types(&tables, tasks),
-        [
-            ColumnType::Time { zoned: false },
-            ColumnType::Int,
-            ColumnType::Int,
-            ColumnType::Numeric { scale: 1 },
-            ColumnType::Text,
-            ColumnType::Text,
-        ]
+        load::copy_sql(&tables.dims[0]),
+        "COPY (SELECT \"organization_id\", \"taskgroup_id\", \"category\" \
+         FROM \"public\".\"taskgroups\") TO STDOUT (FORMAT binary)"
     );
 }
 
@@ -173,7 +156,8 @@ CREATE TABLE $S.trips (
 ALTER TABLE $S.trips REPLICA IDENTITY FULL;
 CREATE TABLE $S.logins (id bigint PRIMARY KEY, at timestamptz, zone_id int);
 ALTER TABLE $S.logins REPLICA IDENTITY FULL;
-CREATE PUBLICATION $S FOR TABLE $S.trips, $S.logins;
+ALTER TABLE $S.zones REPLICA IDENTITY FULL;
+CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 ";
 
 /// A warehouse-shaped spec: tasks per hour, organization and task group
@@ -231,7 +215,8 @@ CREATE TABLE $S.tasks (
     picks int
 );
 ALTER TABLE $S.tasks REPLICA IDENTITY FULL;
-CREATE PUBLICATION $S FOR TABLE $S.tasks;
+ALTER TABLE $S.taskgroups REPLICA IDENTITY FULL;
+CREATE PUBLICATION $S FOR TABLE $S.taskgroups, $S.tasks;
 ";
 
 /// The last of each holds what `COPY` escapes, so loads read escapes back.
@@ -927,8 +912,9 @@ fn follows_the_task_tables() {
     ));
     let spec = db.spec(TASKS_SPEC);
     assert!(crate::plan(&spec, "p", "r", None).contains(
-        "-- dim taskgroups: \"task_tables\".\"taskgroups\" needs a primary key or unique \
-             index on organization_id, taskgroup_id alone; straum reads it and does not follow it."
+        "-- dim taskgroups: straum holds its key and the columns the views read, and follows \
+         it; \"task_tables\".\"taskgroups\" needs a primary key or unique index on \
+         organization_id, taskgroup_id alone."
     ));
     let mut writer = Writer::new(App::new(spec, LIMITS), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
@@ -974,6 +960,13 @@ fn follows_the_task_tables() {
         "UPDATE $S.tasks SET created = 'infinity' WHERE task_id = 1000".to_owned(),
         "DELETE FROM $S.tasks WHERE task_id = 1003".to_owned(),
         "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
+        // The dim moves: a group recategorised, one moved to a new key,
+        // one gone, one back.
+        "UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1".to_owned(),
+        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1"
+            .to_owned(),
+        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2".to_owned(),
+        "INSERT INTO $S.taskgroups VALUES (3, 2, 'count')".to_owned(),
     ];
     for change in changes {
         db.run(&change);
@@ -1058,13 +1051,11 @@ fn a_transaction_past_the_cap_starts_over() {
     }
 }
 
-/// The same tables under two views: fact rows come with their attributes
-/// as the dim is when they come. A dim change moves PostgreSQL's view and
-/// is nothing to straum, which never follows a dim, until a row that came
-/// in under the old value changes: then straum starts over and reads
-/// everything as the dim is now.
+/// The same tables under two views: a dim change is a change to the dim's
+/// projection, and every ask reads the dim as it is now, as PostgreSQL's
+/// view does. Nothing starts over.
 #[test]
-fn attributes_are_as_of_ingest() {
+fn a_dim_change_shows_at_once() {
     let pg = postgres();
     let mut db = Db::new(&pg, "ingest", TASKS);
     db.run("SET TIME ZONE 'Europe/Oslo'");
@@ -1088,12 +1079,40 @@ fn attributes_are_as_of_ingest() {
     compare(&mut db, tasks.app(), &task_oracles()).expect("tasks ready");
 
     // Fact rows come, move between groups, flip and go; tasks in groups
-    // 3 and 4 have no dim row and read null.
+    // 3 and 4 have no dim row and read null. Then the dim moves: a group
+    // recategorised with a new task in the same transaction, a key moved
+    // and a row gone each with a task pointing at them, the table emptied
+    // and filled again.
     let mut changes: Vec<String> = (200..210).map(|id| rng.task(id)).collect();
     changes.extend([
         "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
         "UPDATE $S.tasks SET completed = NULL WHERE task_id % 4 = 0".to_owned(),
         "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
+        format!(
+            "BEGIN;
+             UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1;
+             INSERT INTO $S.tasks VALUES (300, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 5);
+             COMMIT;"
+        ),
+        "UPDATE $S.tasks SET picks = coalesce(picks, 0) + 1
+          WHERE task_id = (SELECT min(task_id) FROM $S.tasks
+                            WHERE organization_id = 1 AND taskgroup_id = 1 AND task_id < 300)"
+            .to_owned(),
+        format!(
+            "BEGIN;
+             UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1;
+             INSERT INTO $S.tasks VALUES (401, 2, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1);
+             COMMIT;"
+        ),
+        format!(
+            "BEGIN;
+             DELETE FROM $S.taskgroups WHERE organization_id = 2 AND taskgroup_id = 3;
+             INSERT INTO $S.tasks VALUES (402, 2, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1);
+             COMMIT;"
+        ),
+        "TRUNCATE $S.taskgroups".to_owned(),
+        "INSERT INTO $S.taskgroups VALUES (1, 1, 'pick'), (2, 2, 'pack'), (3, 1, 'count')"
+            .to_owned(),
     ]);
     for change in changes {
         db.run(&change);
@@ -1102,107 +1121,24 @@ fn attributes_are_as_of_ingest() {
         compare(&mut db, picks.app(), &picks_oracles()).unwrap_or_else(|| panic!("{change}"));
         compare(&mut db, tasks.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
     }
+    assert_eq!(picks.app().status().starts, 1);
+    assert_eq!(tasks.app().status().starts, 1);
 
-    // A dim change, with a new task in the same transaction: PostgreSQL
-    // regroups, straum keeps what each row came with, and the new task
-    // alone reads the new category.
-    let before = db.rows(&picks_oracles()[0].sql);
-    db.run(&format!(
-        "BEGIN;
-         UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1;
-         INSERT INTO $S.tasks VALUES (300, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 5);
-         COMMIT;"
-    ));
-    applied(&mut picks);
-    applied(&mut tasks);
-    let after = db.rows(&picks_oracles()[0].sql);
-    assert_ne!(before, after);
-    let answered = picks.app().ask(&picks_oracles()[0].ask).unwrap();
-    let got = printed(&answered.answer, &picks_oracles()[0].scales);
-    let (new, mut kept): (Vec<_>, Vec<_>) =
-        (got.into_iter()).partition(|row| row[2].as_deref() == Some("other"));
-    let mut expected = before;
-    kept.sort();
-    expected.sort();
-    assert_eq!(
-        kept, expected,
-        "the rows from before the change keep their category"
-    );
-    let text = |s: &str| Some(s.to_owned());
-    assert_eq!(
-        new,
-        [vec![
-            Some(START.to_string()),
-            text("1"),
-            text("other"),
-            text("f"),
-            text("1"),
-            text("5"),
-            text("0"),
-        ]]
-    );
-
-    // A row that came in under the old category changes: its cell is not
-    // where the dim now says, so both views start over and read everything
-    // as the dim is.
-    db.run(
-        "UPDATE $S.tasks SET picks = coalesce(picks, 0) + 1
-          WHERE task_id = (SELECT min(task_id) FROM $S.tasks
-                            WHERE organization_id = 1 AND taskgroup_id = 1 AND task_id < 300)",
-    );
-    assert_eq!(
-        picks.step().unwrap_err().to_string(),
-        "a change no longer fits picks"
-    );
-    assert_eq!(
-        tasks.step().unwrap_err().to_string(),
-        "a change no longer fits tasks"
-    );
-    assert!(matches!(picks.step(), Ok(Step::Started(_))));
-    assert!(matches!(tasks.step(), Ok(Step::Started(_))));
-    compare(&mut db, picks.app(), &picks_oracles()).expect("picks read anew");
-    compare(&mut db, tasks.app(), &task_oracles()).expect("tasks read anew");
-
-    // A dim key moved and a dim row gone, each with a task in the group
-    // that is gone: the task reads null attributes, as the join gives,
-    // and the rows from before keep theirs.
-    let null_tasks = |app: &App| -> Value {
-        let ask = Ask {
-            filter: vec![Cond {
-                key: id("organization_id"),
-                values: vec![Literal::Int(2)],
-            }],
-            from: START,
-            to: START + 3_600,
-            ..ask("picks", &["tasks"], &["category"])
-        };
-        let answered = app.ask(&ask).unwrap();
-        (answered.answer.rows.iter())
-            .find(|row| row.keys[0] == Datum::Null)
-            .map_or(Value::Int(0), |row| row.values[0].clone())
+    // Tasks whose group is gone read null, as the join gives.
+    let null_tasks = Ask {
+        filter: vec![Cond {
+            key: id("organization_id"),
+            values: vec![Literal::Int(2)],
+        }],
+        from: START,
+        to: START + 3_600,
+        ..ask("picks", &["tasks"], &["category"])
     };
-    let before = null_tasks(picks.app());
-    for (task, change) in [
-        (
-            401,
-            "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1",
-        ),
-        (
-            402,
-            "DELETE FROM $S.taskgroups WHERE organization_id = 2 AND taskgroup_id = 3",
-        ),
-    ] {
-        db.run(&format!(
-            "BEGIN; {change}; INSERT INTO $S.tasks VALUES ({task}, 2, 1, to_timestamp({START}) \
-             AT TIME ZONE 'UTC', NULL, 1); COMMIT;"
-        ));
-        applied(&mut picks);
-        applied(&mut tasks);
-    }
-    let Value::Int(before) = before else {
-        panic!("a count");
-    };
-    assert_eq!(null_tasks(picks.app()), Value::Int(before + 2));
+    let answered = picks.app().ask(&null_tasks).unwrap();
+    let nulls = (answered.answer.rows.iter())
+        .find(|row| row.keys[0] == Datum::Null)
+        .map(|row| row.values[0].clone());
+    assert!(matches!(nulls, Some(Value::Int(n)) if n >= 2), "{nulls:?}");
 }
 
 /// A value straum can't read stops the load, or the stream, naming the
@@ -1334,6 +1270,22 @@ fn an_unfit_change_starts_over() {
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    // A dim is held too, so it owes the same.
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    applied(&mut writer);
+    db.run("ALTER TABLE $S.zones REPLICA IDENTITY DEFAULT");
+    db.run("UPDATE $S.zones SET borough = 'Staten Island' WHERE id = 1");
+    let err = writer.step().unwrap_err().to_string();
+    assert_eq!(err, "a change no longer fits zones");
+    let err = writer.step().unwrap_err().to_string();
+    assert!(
+        err.contains("dim zones: straum needs the whole old row of every update and delete"),
+        "{err}"
+    );
+    db.run("ALTER TABLE $S.zones REPLICA IDENTITY FULL");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the dim's new load");
 }
 
 #[test]
@@ -1680,12 +1632,13 @@ CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 -- Then give \"straum_plan\" a password: \\password \"straum_plan\"
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";
 GRANT SELECT ON \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\" TO \"straum_plan\";
-CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"trips\", \"plan\".\"logins\";
+CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\";
 -- fact trips: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
 -- fact logins: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
--- dim zones: \"plan\".\"zones\" needs a primary key or unique index on id alone; straum reads it and does not follow it.
+-- dim zones: straum holds its key and the columns the views read, and follows it; \"plan\".\"zones\" needs a primary key or unique index on id alone.
+ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
 "
     );
     // One statement at a time: ALTER SYSTEM can't run in a transaction.
@@ -1912,12 +1865,14 @@ fn setup_problems_say_what_to_fix() {
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id AS d_id, d.name AS name, count(*) AS n
         FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id GROUP BY 1, 2, 3;";
-    // The dim is published too, which straum neither needs nor minds.
+    // A dim is held and followed, so it is published with the whole old
+    // row, as a fact is.
     let dim = |d: &str, via: &str| {
         format!(
             "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id {via});
              ALTER TABLE $S.f REPLICA IDENTITY FULL;
              {d}
+             ALTER TABLE $S.d REPLICA IDENTITY FULL;
              CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
         )
     };
@@ -1930,7 +1885,27 @@ fn setup_problems_say_what_to_fix() {
         (
             "dimunpublished",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(", $S.d;", ";"),
-            "",
+            "d: publication dimunpublished leaves out dimunpublished.d: \
+             ALTER PUBLICATION dimunpublished ADD TABLE dimunpublished.d",
+        ),
+        (
+            "dimidentity",
+            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+                .replace("ALTER TABLE $S.d REPLICA IDENTITY FULL;", ""),
+            "dim d: straum needs the whole old row of every update and delete: \
+             ALTER TABLE dimidentity.d REPLICA IDENTITY FULL",
+        ),
+        (
+            "dimfiltered",
+            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+                .replace("$S.f, $S.d;", "$S.f, $S.d WHERE (k > 0);"),
+            "d: publication dimfiltered filters the rows of dimfiltered.d; straum needs every row",
+        ),
+        (
+            "dimlisted",
+            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+                .replace("$S.f, $S.d;", "$S.f, $S.d (k);"),
+            "d: publication dimlisted leaves out column name of dimlisted.d",
         ),
         (
             "dimunique",
@@ -2004,6 +1979,7 @@ fn setup_problems_say_what_to_fix() {
             "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, a int, b {b});
              ALTER TABLE $S.f REPLICA IDENTITY FULL;
              {d}
+             ALTER TABLE $S.d REPLICA IDENTITY FULL;
              CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
         )
     };
@@ -2847,7 +2823,8 @@ fn taxi_month() {
              vendor_id int, pickup_at timestamptz, pu_location_id int, do_location_id int,
              payment_type int, fare_amount numeric(12, 2), tip_amount numeric(12, 2),
              trip_distance numeric(12, 2));
-         ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
+                  ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
+         ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
          SET timezone = 'America/New_York';
          COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
          COPY yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id, payment_type,
@@ -2855,7 +2832,7 @@ fn taxi_month() {
            FROM '/data/trips_2024-01.csv' WITH (format csv, header);
          SET timezone = 'UTC';
          ANALYZE;
-         CREATE PUBLICATION straum FOR TABLE yellow_trips;",
+                  CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
     )
     .unwrap();
     let rows = |sql: &mut Conn, q: &str| sql.rows(q).unwrap();
@@ -2979,25 +2956,25 @@ fn taxi_month() {
     applied(&mut writer);
     check(&mut sql, writer.app(), "after an update");
 
-    // Dims change: a zone renamed, another moved to a new key. Straum
-    // keeps what its rows came with until a trip in the renamed zone
-    // changes, when it starts over and reads the zones as they are.
+    // Dims change: a zone renamed, another moved to a new key, then a
+    // trip in the renamed zone. Each is one commit applied; nothing
+    // starts over.
+    let clock = Instant::now();
     sql.execute("UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161")
         .unwrap();
+    applied(&mut writer);
+    check(&mut sql, writer.app(), "after a zone was renamed");
     sql.execute("UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264")
         .unwrap();
+    applied(&mut writer);
+    check(&mut sql, writer.app(), "after a zone moved");
     sql.execute(
         "UPDATE yellow_trips SET tip_amount = tip_amount + 1
           WHERE id = (SELECT min(id) FROM yellow_trips WHERE pu_location_id = 161)",
     )
     .unwrap();
-    let clock = Instant::now();
-    let unfit = writer.step();
-    assert!(
-        matches!(unfit, Err(straum_app::Error::Unfit(_))),
-        "{unfit:?}"
-    );
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    eprintln!("started over in {:.1?}", clock.elapsed());
+    applied(&mut writer);
+    eprintln!("followed the zone changes in {:.1?}", clock.elapsed());
     check(&mut sql, writer.app(), "after the zones changed");
+    assert_eq!(writer.app().status().starts, 1);
 }

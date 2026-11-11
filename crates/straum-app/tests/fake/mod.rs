@@ -1,6 +1,5 @@
 //! PostgreSQL in memory: tables, a log of commits, and a source that loads
-//! and streams facts the way a temporary slot and pgoutput would, each ref
-//! resolved against the dims as they are at the commit.
+//! and streams facts and dims the way a temporary slot and pgoutput would.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -10,7 +9,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Fact, Ident, Spec, Store};
+use straum_domain::{ColumnType, Datum, Dim, Fact, Ident, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
@@ -24,14 +23,19 @@ pub fn type_of(column: &Ident) -> ColumnType {
     }
 }
 
-/// Sets the types a load sets: the fact's columns, then its attributes.
+/// Sets the types a load sets: the fact's columns.
 pub fn set_types(fact: &Fact, store: &mut Store) {
-    let types: Vec<ColumnType> = (fact.columns().iter())
-        .chain(fact.attrs().map(|(_, attr)| &attr.column))
-        .map(type_of)
-        .collect();
+    let types: Vec<ColumnType> = fact.columns().iter().map(type_of).collect();
     store
         .set_fact_types(fact.name.as_str(), &types)
+        .expect("one type per column");
+}
+
+/// Sets the types a load sets: the dim's key, then its attributes.
+pub fn set_dim_types(dim: &Dim, store: &mut Store) {
+    let types: Vec<ColumnType> = dim.columns().map(type_of).collect();
+    store
+        .set_dim_types(dim.name.as_str(), &types)
         .expect("one type per column");
 }
 
@@ -76,8 +80,7 @@ pub enum Write {
 pub struct Database {
     /// The tables after each commit, and before the first.
     history: BTreeMap<Lsn, Tables>,
-    /// What pgoutput would send for each commit: every table's changes,
-    /// the fact rows unresolved.
+    /// What pgoutput would send for each commit: every table's changes.
     log: Vec<Commit>,
     /// The next call from the source fails, as if the connection dropped.
     pub drop_connection: bool,
@@ -87,7 +90,7 @@ pub struct Database {
     /// What reading the WAL returns instead of a slot that has confirmed
     /// every commit applied.
     pub wal: Option<Wal>,
-    /// Every fact load, in order.
+    /// Every load, dims and facts, in order.
     pub loads: Vec<String>,
 }
 
@@ -155,15 +158,11 @@ impl Database {
         tables
     }
 
-    /// The fact's rows after every commit up to `lsn`, each with its
-    /// attributes as the dims were then: what a load at `lsn` reads.
-    pub fn rows_at(&self, spec: &Spec, lsn: Lsn, fact: &Fact) -> Vec<Row> {
+    /// A table's rows after every commit up to `lsn`: what a load at
+    /// `lsn` reads. A dim row starts with its key, as [`Dim::columns`].
+    pub fn rows_at(&self, lsn: Lsn, table: &str) -> Vec<Row> {
         let tables = self.tables_at(lsn);
-        let mut rows: Vec<Row> = tables[fact.name.as_str()].rows.values().cloned().collect();
-        for row in &mut rows {
-            resolve(tables, spec, fact, row);
-        }
-        rows
+        tables[table].rows.values().cloned().collect()
     }
 
     pub fn keys(&self, table: &str) -> Vec<Datum> {
@@ -201,59 +200,6 @@ impl Database {
             return Err("connection dropped".into());
         }
         Ok(())
-    }
-
-    /// A commit as straum's source hands it over: the facts' rows with
-    /// their attributes as the dims are after the commit, and no change to
-    /// a dim, which straum never follows.
-    fn delivered(&self, spec: &Spec, commit: &Commit) -> Commit {
-        let tables = self.tables_at(commit.lsn);
-        let changes = (commit.changes.iter())
-            .filter(|change| spec.dim(change.table().as_str()).is_none())
-            .cloned()
-            .map(|mut change| {
-                if let Some(fact) = spec.fact(change.table().as_str()) {
-                    match &mut change {
-                        Change::Insert { row, .. } | Change::Delete { old: row, .. } => {
-                            resolve(tables, spec, fact, row);
-                        }
-                        Change::Update { old, new, .. } => {
-                            resolve(tables, spec, fact, old);
-                            resolve(tables, spec, fact, new);
-                        }
-                        Change::Truncate { .. } | Change::Altered { .. } => {}
-                    }
-                }
-                change
-            })
-            .collect();
-        Commit {
-            lsn: commit.lsn,
-            time: commit.time,
-            changes,
-        }
-    }
-}
-
-/// Appends the attributes of each ref to a row of `fact`, from the dim
-/// row its via column names, or nulls when there is none. A row of the
-/// wrong width is left for the store to refuse.
-fn resolve(tables: &Tables, spec: &Spec, fact: &Fact, row: &mut Row) {
-    let columns = fact.columns();
-    if row.len() != columns.len() {
-        return;
-    }
-    for r in &fact.refs {
-        let dim = spec.dim(r.dim.as_str()).expect("the spec names the dim");
-        let via = columns.iter().position(|c| *c == r.via[0]).unwrap();
-        let found = match &row[via] {
-            Datum::Null => None,
-            key => tables[dim.table.name.as_str()].rows.get(key),
-        };
-        for attr in &r.attrs {
-            let i = dim.columns().position(|c| *c == attr.column).unwrap();
-            row.push(found.map_or(Datum::Null, |d| d[i].clone()));
-        }
     }
 }
 
@@ -315,16 +261,16 @@ impl Fake {
         }
     }
 
-    /// The fact's rows in the snapshot the stream starts from.
-    fn read(&mut self, fact: &Fact) -> Result<Vec<Row>, SourceError> {
+    /// A table's rows in the snapshot the stream starts from.
+    fn read(&mut self, table: &Ident) -> Result<Vec<Row>, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
-        db.loads.push(fact.name.to_string());
+        db.loads.push(table.to_string());
         let start = self.stream.as_ref().expect("open first").start;
-        let rows = db.rows_at(self.spec.as_ref().expect("open first"), start, fact);
+        let rows = db.rows_at(start, table.as_str());
         drop(db);
         if let Some(on_load) = &mut self.on_load {
-            on_load(fact.name.as_str());
+            on_load(table.as_str());
         }
         Ok(rows)
     }
@@ -346,8 +292,16 @@ impl Source for Fake {
 
     fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
         set_types(fact, store);
-        for row in self.read(fact)? {
+        for row in self.read(&fact.name)? {
             store.add_fact_row(fact.name.as_str(), &row)?;
+        }
+        Ok(())
+    }
+
+    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError> {
+        set_dim_types(dim, store);
+        for row in self.read(&dim.name)? {
+            store.add_dim_row(dim.name.as_str(), &row)?;
         }
         Ok(())
     }
@@ -361,8 +315,13 @@ impl Source for Fake {
             return Ok(None);
         }
         let stream = self.stream.as_mut().expect("open first");
-        let commit = db.log.get(stream.next).expect("a commit is waiting");
-        let commit = db.delivered(self.spec.as_ref().expect("open first"), commit);
+        // Every published table's changes, as pgoutput sends them; the
+        // writer skips the ones outside the spec.
+        let commit = db
+            .log
+            .get(stream.next)
+            .expect("a commit is waiting")
+            .clone();
         stream.next += 1;
         // The writer applies it before it reads the WAL again.
         stream.applied = commit.lsn;

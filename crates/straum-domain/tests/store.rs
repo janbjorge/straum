@@ -1,6 +1,7 @@
-//! `Store` against a naive reference that aggregates the live rows directly,
-//! over random inserts, updates and deletes of trips. Rows come whole, the
-//! ref attributes resolved, as the source hands them over.
+//! `Store` against a naive reference that aggregates the live rows directly
+//! and joins them to the dims as they are, over random inserts, updates and
+//! deletes of trips and of dim rows. Rows hold the fact's columns only; a
+//! dim's values come through its projection when asked.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -26,14 +27,24 @@ const FARE: usize = 6;
 const TIP: usize = 7;
 const DIST: usize = 8;
 const RIDER: usize = 9;
-/// The ref attributes, after the columns read.
-const PICKUP_BOROUGH: usize = 10;
-const PICKUP_ZONE: usize = 11;
-const DROPOFF_BOROUGH: usize = 12;
-const DROPOFF_ZONE: usize = 13;
-const COMBO_LABEL: usize = 14;
-const VEND_LABEL: usize = 15;
-const WIDTH: usize = 16;
+const WIDTH: usize = 10;
+
+/// The dims as the projections key them: zones by `id`, combos by
+/// `(pu_id, vendor_id)`, vendors by `id`; each key to its attributes.
+type Dims = BTreeMap<&'static str, BTreeMap<Vec<Datum>, Vec<Datum>>>;
+
+/// The types a load sets for each dim: the key, then the attributes.
+const DIM_TYPES: [(&str, &[ColumnType]); 3] = [
+    (
+        "zones",
+        &[ColumnType::Int, ColumnType::Text, ColumnType::Text],
+    ),
+    (
+        "combos",
+        &[ColumnType::Int, ColumnType::Int, ColumnType::Text],
+    ),
+    ("vendors", &[ColumnType::Int, ColumnType::Text]),
+];
 
 /// The scales of the numeric columns `run` sets, from this up. Each
 /// differs, so an answer that takes a scale from the wrong column shows.
@@ -257,7 +268,7 @@ impl Rng {
     }
 
     /// One of a few texts, or null `percent` percent of the time, as a
-    /// resolved attribute comes.
+    /// dim value comes.
     fn attr(&mut self, choices: &[&str], percent: usize) -> Datum {
         if self.chance(percent) {
             Datum::Null
@@ -267,8 +278,7 @@ impl Rng {
     }
 }
 
-/// A whole row: the columns read, then the attributes as the source
-/// resolved them.
+/// A whole row: the fact's columns, as the source hands them over.
 fn trip(rng: &mut Rng) -> Vec<Datum> {
     let shared = if rng.chance(5) {
         Datum::Null
@@ -291,13 +301,86 @@ fn trip(rng: &mut Rng) -> Vec<Datum> {
         rng.maybe(0, 300, 20),
         rng.maybe(0, 5_000, 5),
         rider,
-        rng.attr(&["m", "q", "b"], 25),
-        rng.attr(&["a", "b", "c"], 25),
-        rng.attr(&["m", "q", "b"], 25),
-        rng.attr(&["a", "b", "c"], 25),
-        rng.attr(&["x", "y"], 50),
-        rng.attr(&["v1"], 50),
     ]
+}
+
+/// Random dims over the keys trips point at: `pu` and `dro` in 1..7,
+/// `vendor` in 1..3. Some keys have no row, so some joins find nothing.
+fn random_dims(rng: &mut Rng) -> Dims {
+    let mut dims = Dims::new();
+    let zones = dims.entry("zones").or_default();
+    for id in 1..7 {
+        if rng.chance(75) {
+            let attrs = vec![
+                rng.attr(&["m", "q", "b"], 25),
+                rng.attr(&["a", "b", "c"], 25),
+            ];
+            zones.insert(vec![Datum::Int(id)], attrs);
+        }
+    }
+    let combos = dims.entry("combos").or_default();
+    for pu in 1..7 {
+        for vendor in 1..3 {
+            if rng.chance(60) {
+                let attrs = vec![rng.attr(&["x", "y"], 50)];
+                combos.insert(vec![Datum::Int(pu), Datum::Int(vendor)], attrs);
+            }
+        }
+    }
+    let vendors = dims.entry("vendors").or_default();
+    for id in 1..3 {
+        vendors.insert(vec![Datum::Int(id)], vec![rng.attr(&["v1", "v2"], 50)]);
+    }
+    dims
+}
+
+/// A dim row as a load reads it: the key, then the attributes.
+fn dim_row(key: &[Datum], attrs: &[Datum]) -> Vec<Datum> {
+    [key, attrs].concat()
+}
+
+/// Loads every dim, as a load does, rows laid end to end.
+fn load_dims(store: &mut Store, dims: &Dims) {
+    for (dim, rows) in dims {
+        let flat: Vec<Datum> = (rows.iter())
+            .flat_map(|(key, attrs)| dim_row(key, attrs))
+            .collect();
+        store.add_dim_rows(dim, &flat).unwrap();
+    }
+}
+
+/// A random change to one dim, applied to the store and to `dims`: a row
+/// relabelled, removed or added.
+fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
+    let (dim, key, attrs): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
+        0 => (
+            "zones",
+            vec![Datum::Int(rng.int(1, 7))],
+            vec![
+                rng.attr(&["m", "q", "b"], 25),
+                rng.attr(&["a", "b", "c"], 25),
+            ],
+        ),
+        1 => (
+            "combos",
+            vec![Datum::Int(rng.int(1, 7)), Datum::Int(rng.int(1, 3))],
+            vec![rng.attr(&["x", "y"], 50)],
+        ),
+        _ => (
+            "vendors",
+            vec![Datum::Int(rng.int(1, 3))],
+            vec![rng.attr(&["v1", "v2"], 50)],
+        ),
+    };
+    let rows = dims.get_mut(dim).unwrap();
+    if let Some(old) = rows.remove(&key) {
+        store.remove_dim_row(dim, &dim_row(&key, &old)).unwrap();
+        if rng.chance(40) {
+            return;
+        }
+    }
+    store.add_dim_row(dim, &dim_row(&key, &attrs)).unwrap();
+    rows.insert(key, attrs);
 }
 
 fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
@@ -355,11 +438,27 @@ fn holds(value: &Datum, values: &[Literal]) -> bool {
     })
 }
 
-fn value(row: &[Datum], key: &Ident) -> Datum {
-    if key.as_str() == "known" {
-        return Datum::Bool(row[SHARED] != Datum::Null);
+/// A key's value for a row: a column, the null-ness key, or a dim value
+/// joined as the dims are now, null when the join finds no row.
+fn value(row: &[Datum], key: &Ident, dims: &Dims) -> Datum {
+    let joined = |dim: &str, key: Vec<Datum>, attr: usize| -> Datum {
+        if key.contains(&Datum::Null) {
+            return Datum::Null;
+        }
+        dims[dim]
+            .get(&key)
+            .map_or(Datum::Null, |attrs| attrs[attr].clone())
+    };
+    match key.as_str() {
+        "known" => Datum::Bool(row[SHARED] != Datum::Null),
+        "pickup_borough" => joined("zones", vec![row[PU].clone()], 0),
+        "pickup_zone" => joined("zones", vec![row[PU].clone()], 1),
+        "dropoff_borough" => joined("zones", vec![row[DRO].clone()], 0),
+        "dropoff_zone" => joined("zones", vec![row[DRO].clone()], 1),
+        "combo_label" => joined("combos", vec![row[PU].clone(), row[VENDOR].clone()], 0),
+        "vend_label" => joined("vendors", vec![row[VENDOR].clone()], 0),
+        name => row[column(name)].clone(),
     }
-    row[column(key.as_str())].clone()
 }
 
 /// The column types `run` sets.
@@ -367,7 +466,7 @@ fn trip_types() -> Vec<ColumnType> {
     let numeric = |column: usize| ColumnType::Numeric {
         scale: TRIP_SCALES + column as u32,
     };
-    let mut types = vec![
+    let types = vec![
         ColumnType::Time { zoned: true },
         ColumnType::Int,
         ColumnType::Int,
@@ -379,22 +478,27 @@ fn trip_types() -> Vec<ColumnType> {
         numeric(DIST),
         ColumnType::Text,
     ];
-    types.resize(WIDTH, ColumnType::Text);
+    assert_eq!(types.len(), WIDTH);
     types
 }
 
-/// A store with the types a load would set.
+/// A store with the types a load would set, for the fact and the dims.
 fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
     store.set_fact_types("trips", &trip_types()).unwrap();
+    for (dim, types) in DIM_TYPES {
+        store.set_dim_types(dim, types).unwrap();
+    }
     store
 }
 
+/// The scale a key's values print in: the dims' attributes are all text.
 fn scale(key: &Ident) -> u32 {
-    if key.as_str() == "known" {
-        return 0;
+    match key.as_str() {
+        "known" | "pickup_borough" | "pickup_zone" | "dropoff_borough" | "dropoff_zone"
+        | "combo_label" | "vend_label" => 0,
+        name => trip_types()[column(name)].scale(),
     }
-    trip_types()[column(key.as_str())].scale()
 }
 
 /// Where a key, as an ask names it, sits in a row.
@@ -409,22 +513,18 @@ fn column(name: &str) -> usize {
         "tip" => TIP,
         "dist" => DIST,
         "rider" => RIDER,
-        "pickup_borough" => PICKUP_BOROUGH,
-        "pickup_zone" => PICKUP_ZONE,
-        "dropoff_borough" => DROPOFF_BOROUGH,
-        "dropoff_zone" => DROPOFF_ZONE,
-        "combo_label" => COMBO_LABEL,
-        "vend_label" => VEND_LABEL,
         other => panic!("no column {other}"),
     }
 }
 
-fn passes(row: &[Datum], conds: &[Cond]) -> bool {
-    conds.iter().all(|c| holds(&value(row, &c.key), &c.values))
+fn passes(row: &[Datum], conds: &[Cond], dims: &Dims) -> bool {
+    conds
+        .iter()
+        .all(|c| holds(&value(row, &c.key, dims), &c.values))
 }
 
-/// The ask over the raw rows: no rollup, no buckets.
-fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
+/// The ask over the raw rows joined to the dims: no rollup, no buckets.
+fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
     let fact = spec.fact("trips").unwrap();
     let mut groups: BTreeMap<Vec<Datum>, Vec<&[Datum]>> = BTreeMap::new();
     if ask.by.is_empty() {
@@ -432,14 +532,14 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
     }
     for row in rows {
         let Datum::Int(t) = row[AT] else { continue };
-        if t < ask.from || t >= ask.to || !passes(row, &ask.filter) {
+        if t < ask.from || t >= ask.to || !passes(row, &ask.filter, dims) {
             continue;
         }
         let key = ask
             .by
             .iter()
             .map(|k| match k {
-                AskKey::Key(p) => value(row, p),
+                AskKey::Key(p) => value(row, p, dims),
                 AskKey::Time(tk) => Datum::Int(tk.start(t, Grain(GRAIN))),
             })
             .collect();
@@ -451,7 +551,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
             let values = ask
                 .measures
                 .iter()
-                .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows))
+                .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows, dims))
                 .collect();
             AnswerRow { keys, values }
         })
@@ -482,8 +582,8 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>]) -> Answer {
     Answer { columns, rows }
 }
 
-fn measure(m: &Measure, rows: &[&[Datum]]) -> Value {
-    let rows: Vec<_> = rows.iter().filter(|r| passes(r, &m.filter)).collect();
+fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
+    let rows: Vec<_> = rows.iter().filter(|r| passes(r, &m.filter, dims)).collect();
     let ints = |c: &Ident| -> Vec<i128> {
         rows.iter()
             .filter_map(|r| match r[column(c.as_str())] {
@@ -528,21 +628,23 @@ fn run(seed: u64) {
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
+    let mut dims = random_dims(&mut rng);
+    load_dims(&mut store, &dims);
 
     for step in 0..2_000 {
         match rng.below(40) {
-            0..=5 if !rows.is_empty() => {
+            0..=3 => change_dim(&mut rng, &mut store, &mut dims),
+            4..=8 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
                 store.remove_fact_row("trips", &row).unwrap();
             }
-            6..=11 if !rows.is_empty() => {
+            9..=14 if !rows.is_empty() => {
                 // An update: the old row out, a new one in, often in the
                 // same cell.
                 let i = rng.below(rows.len());
                 let mut new = trip(&mut rng);
                 if rng.chance(50) {
                     new[..=DRO].clone_from_slice(&rows[i][..=DRO]);
-                    new[PICKUP_BOROUGH..].clone_from_slice(&rows[i][PICKUP_BOROUGH..]);
                 }
                 store.remove_fact_row("trips", &rows[i]).unwrap();
                 store.add_fact_row("trips", &new).unwrap();
@@ -554,7 +656,6 @@ fn run(seed: u64) {
                 if !rows.is_empty() && rng.chance(40) {
                     let other = rng.below(rows.len());
                     row[..=DRO].clone_from_slice(&rows[other][..=DRO]);
-                    row[PICKUP_BOROUGH..].clone_from_slice(&rows[other][PICKUP_BOROUGH..]);
                 }
                 store.add_fact_row("trips", &row).unwrap();
                 rows.push(row);
@@ -565,7 +666,7 @@ fn run(seed: u64) {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
                     store.ask(&ask).unwrap(),
-                    naive(&spec, &ask, &rows),
+                    naive(&spec, &ask, &rows, &dims),
                     "seed {seed}, step {step}, {ask:?}"
                 );
             }
@@ -597,6 +698,9 @@ fn rows_added_together_match_rows_added_one_by_one() {
         let mut rng = Rng(seed);
         let mut by_row = typed(&spec);
         let mut together = typed(&spec);
+        let dims = random_dims(&mut rng);
+        load_dims(&mut by_row, &dims);
+        load_dims(&mut together, &dims);
         let rows: Vec<Vec<Datum>> = (0..2_000).map(|_| trip(&mut rng)).collect();
         for row in &rows {
             by_row.add_fact_row("trips", row).unwrap();
@@ -670,17 +774,19 @@ fn a_range_cuts_at_both_ends() {
     );
 }
 
-/// An attribute is part of the cell key as it was resolved when the row
-/// came in. A row that comes back out with the attribute resolved
-/// otherwise, because the dim row changed meanwhile, is not found, which
-/// is what makes the writer start over.
+/// A cell is keyed by the join column, not the dim's value, so a dim row
+/// relabelled, removed or added moves the answer at once and moves no
+/// cell. A key with no dim row reads null, as the join gives.
 #[test]
-fn a_row_is_found_only_under_the_attributes_it_came_with() {
+fn a_dim_change_moves_the_answer_at_once() {
     let spec = spec();
     let mut store = typed(&spec);
+    store
+        .add_dim_row("vendors", &[Datum::Int(1), text("v1")])
+        .unwrap();
     let mut row = trip(&mut Rng(3));
     row[AT] = Datum::Int(START);
-    row[VEND_LABEL] = text("v1");
+    row[VENDOR] = Datum::Int(1);
     store.add_fact_row("trips", &row).unwrap();
     let by_label = Ask {
         fact: id("trips"),
@@ -696,22 +802,232 @@ fn a_row_is_found_only_under_the_attributes_it_came_with() {
             .collect()
     };
     assert_eq!(labels(&store), [text("v1")]);
+    let cells = store.cells("trips");
 
-    // The same row, its label resolved anew.
-    let mut relabelled = row.clone();
-    relabelled[VEND_LABEL] = text("v2");
+    store
+        .remove_dim_row("vendors", &[Datum::Int(1), text("v1")])
+        .unwrap();
+    assert_eq!(labels(&store), [Datum::Null]);
+    store
+        .add_dim_row("vendors", &[Datum::Int(1), text("v2")])
+        .unwrap();
+    assert_eq!(labels(&store), [text("v2")]);
+    assert_eq!(store.cells("trips"), cells);
+    // Another vendor's row changes nothing here.
+    store
+        .add_dim_row("vendors", &[Datum::Int(2), text("v9")])
+        .unwrap();
+    assert_eq!(labels(&store), [text("v2")]);
+    store.clear_dim("vendors");
+    assert_eq!(labels(&store), [Datum::Null]);
+    assert_eq!(store.dim_rows("vendors"), Some(0));
+    // The fact row comes out as it went in, whatever the dim did.
+    store.remove_fact_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// A dim keyed by several columns matches on all of them; a via that is
+/// null joins nothing, even when a dim row has a null there.
+#[test]
+fn a_composite_key_matches_every_column() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    store
+        .add_dim_rows(
+            "combos",
+            &[
+                Datum::Int(1),
+                Datum::Int(1),
+                text("x"),
+                Datum::Int(1),
+                Datum::Int(2),
+                text("y"),
+                Datum::Null,
+                Datum::Int(2),
+                text("z"),
+            ],
+        )
+        .unwrap();
+    // A row with a null in its key is never held: nothing could join it.
+    assert_eq!(store.dim_rows("combos"), Some(2));
+    let mut by_label = Ask {
+        fact: id("trips"),
+        measures: vec![id("trips")],
+        by: vec![AskKey::Key(key("combo_label"))],
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let mut rng = Rng(4);
+    for (pu, vendor, label) in [
+        (Datum::Int(1), Datum::Int(1), text("x")),
+        (Datum::Int(1), Datum::Int(2), text("y")),
+        (Datum::Int(2), Datum::Int(1), Datum::Null),
+        (Datum::Null, Datum::Int(2), Datum::Null),
+    ] {
+        let mut store = typed(&spec);
+        store
+            .add_dim_rows(
+                "combos",
+                &[
+                    Datum::Int(1),
+                    Datum::Int(1),
+                    text("x"),
+                    Datum::Int(1),
+                    Datum::Int(2),
+                    text("y"),
+                ],
+            )
+            .unwrap();
+        let mut row = trip(&mut rng);
+        row[AT] = Datum::Int(START);
+        row[PU] = pu;
+        row[VENDOR] = vendor;
+        store.add_fact_row("trips", &row).unwrap();
+        let answer = store.ask(&by_label).unwrap();
+        assert_eq!(answer.rows[0].keys, [label]);
+    }
+    // Filtered on the attribute too.
+    by_label.filter = vec![cond("combo_label", vec![lit("x")])];
+    by_label.by.clear();
+    let mut row = trip(&mut rng);
+    row[AT] = Datum::Int(START);
+    row[PU] = Datum::Int(1);
+    row[VENDOR] = Datum::Int(1);
+    store.add_fact_row("trips", &row).unwrap();
     assert_eq!(
-        store.remove_fact_row("trips", &relabelled),
+        store.ask(&by_label).unwrap().rows[0].values,
+        [Value::Int(1)]
+    );
+    store
+        .remove_dim_row("combos", &[Datum::Int(1), Datum::Int(1), text("x")])
+        .unwrap();
+    assert_eq!(
+        store.ask(&by_label).unwrap().rows[0].values,
+        [Value::Int(0)]
+    );
+}
+
+/// A measure's FILTER on a dim column reads the dim as it is now too.
+#[test]
+fn a_filter_on_an_attribute_reads_the_dim() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    store
+        .add_dim_rows("zones", &[Datum::Int(2), text("m"), text("a")])
+        .unwrap();
+    let mut row = trip(&mut Rng(8));
+    row[AT] = Datum::Int(START);
+    row[PU] = Datum::Int(2);
+    row[VENDOR] = Datum::Int(2);
+    row[FARE] = Datum::Int(100);
+    store.add_fact_row("trips", &row).unwrap();
+    let mq_fare = Ask {
+        fact: id("trips"),
+        measures: vec![id("mq_fare")],
+        by: Vec::new(),
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let fare = |store: &Store| store.ask(&mq_fare).unwrap().rows[0].values[0].clone();
+    assert_eq!(fare(&store), Value::Int(100));
+    store
+        .remove_dim_row("zones", &[Datum::Int(2), text("m"), text("a")])
+        .unwrap();
+    store
+        .add_dim_row("zones", &[Datum::Int(2), text("b"), text("a")])
+        .unwrap();
+    assert_eq!(fare(&store), Value::Null);
+}
+
+/// Every key at once, so the group table is sparse and a cell's group is
+/// numbered as it is met.
+#[test]
+fn every_key_at_once_uses_the_sparse_index() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    let mut rng = Rng(9);
+    let dims = random_dims(&mut rng);
+    load_dims(&mut store, &dims);
+    let rows: Vec<Vec<Datum>> = (0..500).map(|_| trip(&mut rng)).collect();
+    for row in &rows {
+        store.add_fact_row("trips", row).unwrap();
+    }
+    let ask = Ask {
+        fact: id("trips"),
+        measures: vec![id("trips"), id("riders")],
+        by: KEYS.iter().map(|k| AskKey::Key(key(k))).collect(),
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    assert_eq!(store.ask(&ask).unwrap(), naive(&spec, &ask, &rows, &dims));
+}
+
+#[test]
+fn dim_row_errors() {
+    let mut store = typed(&spec());
+    let row = [Datum::Int(1), text("m"), text("a")];
+    assert_eq!(
+        store.add_dim_row("zones", &row[1..]),
+        Err(RowError::Arity {
+            expected: 3,
+            found: 2
+        })
+    );
+    assert_eq!(
+        store.add_dim_rows("zones", &row[1..]),
+        Err(RowError::Arity {
+            expected: 3,
+            found: 2
+        })
+    );
+    assert_eq!(
+        store.set_dim_types("zones", &[ColumnType::Int; 2]),
+        Err(RowError::Arity {
+            expected: 3,
+            found: 2
+        })
+    );
+    store.add_dim_row("zones", &row).unwrap();
+    assert_eq!(store.add_dim_row("zones", &row), Err(RowError::Present));
+    let other = [Datum::Int(1), text("q"), text("a")];
+    assert_eq!(
+        store.remove_dim_row("zones", &other),
         Err(RowError::Missing)
     );
-    store.add_fact_row("trips", &relabelled).unwrap();
-    assert_eq!(labels(&store), [text("v1"), text("v2")]);
-    store.remove_fact_row("trips", &row).unwrap();
-    store.remove_fact_row("trips", &relabelled).unwrap();
-    // A row with no dim row has null attributes, as the join gives.
-    row[VEND_LABEL] = Datum::Null;
-    store.add_fact_row("trips", &row).unwrap();
-    assert_eq!(labels(&store), [Datum::Null]);
+    store.remove_dim_row("zones", &row).unwrap();
+    assert_eq!(store.remove_dim_row("zones", &row), Err(RowError::Missing));
+    // A batch is all or nothing.
+    let bad = [row.clone(), row.clone()].concat();
+    assert_eq!(store.add_dim_rows("zones", &bad), Err(RowError::Present));
+    assert_eq!(store.dim_rows("zones"), Some(1));
+    assert_eq!(store.dim_rows("trips"), None);
+}
+
+#[test]
+fn dim_rows_added_together_match_rows_added_one_by_one() {
+    let spec = spec();
+    let mut rng = Rng(2);
+    let dims = random_dims(&mut rng);
+    let mut together = typed(&spec);
+    load_dims(&mut together, &dims);
+    let mut by_row = typed(&spec);
+    for (dim, rows) in &dims {
+        for (key, attrs) in rows {
+            by_row.add_dim_row(dim, &dim_row(key, attrs)).unwrap();
+        }
+    }
+    let rows: Vec<Vec<Datum>> = (0..300).map(|_| trip(&mut rng)).collect();
+    for row in &rows {
+        together.add_fact_row("trips", row).unwrap();
+        by_row.add_fact_row("trips", row).unwrap();
+    }
+    for _ in 0..20 {
+        let ask = random_ask(&mut rng, &spec);
+        assert_eq!(together.ask(&ask).unwrap(), by_row.ask(&ask).unwrap());
+    }
 }
 
 #[test]
@@ -766,10 +1082,10 @@ fn columns_put_measure_inputs_after_the_key() {
     }
 }
 
-/// The attributes follow the by keys in the rollup key, ref by ref, so a
-/// row holds them after the columns read.
+/// The refs' via columns follow the by keys in the rollup key, each slot
+/// once: here every via is a by column already.
 #[test]
-fn rollup_key_puts_attributes_after_the_by_keys() {
+fn rollup_key_puts_via_columns_after_the_by_keys_each_once() {
     let spec = spec();
     let key: Vec<String> = (spec.fact("trips").unwrap().rollup_key())
         .map(|slot| match slot {
@@ -777,7 +1093,6 @@ fn rollup_key_puts_attributes_after_the_by_keys() {
             Slot::IsNull { column, negated } => {
                 format!("{column} is {}null", if negated { "not " } else { "" })
             }
-            Slot::Attr(r, a) => format!("{}.{a}", r.name),
             Slot::Bucket => "bucket".into(),
         })
         .collect();
@@ -790,16 +1105,9 @@ fn rollup_key_puts_attributes_after_the_by_keys() {
             "pu",
             "dro",
             "shared is not null",
-            "pickup.borough",
-            "pickup.zone",
-            "dropoff.borough",
-            "dropoff.zone",
-            "combo.label",
-            "vend.label",
             "bucket",
         ]
     );
-    assert_eq!(key.len() - 1 - 6 + 10, WIDTH);
 }
 
 #[test]
@@ -814,9 +1122,14 @@ fn rows_collapse_into_cells() {
     row[AT] = Datum::Int(START + i64::from(GRAIN));
     store.add_fact_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(2));
-    // An attribute is a key: another value is another cell.
-    row[PICKUP_ZONE] = text("other");
+    // A join column is a key: another value is another cell.
+    row[PU] = Datum::Int(9);
     store.add_fact_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(3));
+    // A dim row is none.
+    store
+        .add_dim_row("zones", &[Datum::Int(9), text("m"), text("a")])
+        .unwrap();
     assert_eq!(store.cells("trips"), Some(3));
 }
 
@@ -945,10 +1258,14 @@ fn types_stay_through_clear() {
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
     types[TIP] = ColumnType::Numeric { scale: 1 };
-    // An attribute has the type its dim column has.
-    types[PICKUP_ZONE] = ColumnType::Numeric { scale: 4 };
     store.set_fact_types("trips", &types).unwrap();
+    // An attribute has the type its dim column has.
+    let zone = ColumnType::Numeric { scale: 4 };
+    store
+        .set_dim_types("zones", &[ColumnType::Int, ColumnType::Text, zone])
+        .unwrap();
     store.clear_fact("trips");
+    store.clear_dim("zones");
     assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
 }
 
@@ -1143,6 +1460,7 @@ fn row_error_display() {
             "column tip is not an integer",
         ),
         (RowError::Missing, "removed row was never added"),
+        (RowError::Present, "added row is held already"),
     ];
     for (err, msg) in cases {
         assert_eq!(err.to_string(), msg);

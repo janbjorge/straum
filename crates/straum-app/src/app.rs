@@ -247,17 +247,22 @@ impl State {
         lag.is_some_and(|lag| lag <= self.limits.max_lag)
     }
 
-    /// Applies the commit to every fact, or names the first fact it no
-    /// longer fits.
+    /// Applies the commit to every fact and dim, or names the first table
+    /// it no longer fits.
     fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
         let Commit { lsn, time, changes } = commit;
         for change in changes {
             let table = change.table().clone();
-            // The publication may carry tables the spec doesn't name.
-            if self.store.spec().fact(table.as_str()).is_none() {
+            let spec = self.store.spec();
+            let applied = if spec.fact(table.as_str()).is_some() {
+                self.apply_change(change)
+            } else if spec.dim(table.as_str()).is_some() {
+                self.apply_dim_change(change)
+            } else {
+                // The publication may carry tables the spec doesn't name.
                 continue;
-            }
-            if self.apply_change(change).is_err() {
+            };
+            if applied.is_err() {
                 return Err(table);
             }
         }
@@ -277,6 +282,22 @@ impl State {
             }
             Change::Delete { table, old } => self.store.remove_fact_row(table.as_str(), &old)?,
             Change::Truncate { table } => self.store.clear_fact(table.as_str()),
+            Change::Altered { .. } => return Err(Stale),
+        }
+        Ok(())
+    }
+
+    /// A dim needs the whole old row too: a key change is the old row out
+    /// and the new one in.
+    fn apply_dim_change(&mut self, change: Change) -> Result<(), Stale> {
+        match change {
+            Change::Insert { table, row } => self.store.add_dim_row(table.as_str(), &row)?,
+            Change::Update { table, old, new } => {
+                self.store.remove_dim_row(table.as_str(), &old)?;
+                self.store.add_dim_row(table.as_str(), &new)?;
+            }
+            Change::Delete { table, old } => self.store.remove_dim_row(table.as_str(), &old)?,
+            Change::Truncate { table } => self.store.clear_dim(table.as_str()),
             Change::Altered { .. } => return Err(Stale),
         }
         Ok(())
@@ -326,8 +347,9 @@ impl<S: Source> Writer<S> {
         step
     }
 
-    /// Loads every fact into a new store outside the lock, then swaps it
-    /// in. The old store goes first, so the two never take memory at once.
+    /// Loads every dim and fact into a new store outside the lock, then
+    /// swaps it in. The old store goes first, so the two never take memory
+    /// at once.
     fn start(&mut self) -> Result<Lsn, Error> {
         let empty = || Store::new(self.spec.clone());
         drop(mem::replace(&mut self.app.write().store, empty()));
@@ -335,6 +357,9 @@ impl<S: Source> Writer<S> {
         let opened = Instant::now();
         let start = self.source.open(&self.spec)?;
         let mut store = empty();
+        for dim in self.spec.dims() {
+            self.source.load_dim(dim, &mut store)?;
+        }
         for fact in self.spec.facts() {
             self.source.load_fact(fact, &mut store)?;
         }
@@ -396,8 +421,8 @@ impl From<RowError> for Stale {
 #[derive(Debug)]
 pub enum Error {
     Source(SourceError),
-    /// A change no longer fits the table: a row that doesn't fit, a fact
-    /// change without the old row, an altered table.
+    /// A change no longer fits the table: a row that doesn't fit, a change
+    /// without the old row, a dim row straum never held, an altered table.
     Unfit(Ident),
     /// The server holds more WAL for straum's slot than
     /// [`Limits::max_retained_wal`], in bytes.

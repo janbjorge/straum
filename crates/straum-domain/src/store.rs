@@ -3,21 +3,28 @@ use std::collections::HashMap;
 
 use crate::agg::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
+use crate::hash::FastMap;
 use crate::ident::Ident;
+use crate::projection::Projection;
 use crate::rollup::{Cells, Rollup, RowError};
 use crate::spec::{Cond, Fact, Grain, Key, Literal, Slot, Spec};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 const IN_SPEC: &str = "the fact is in the spec";
+const IN_DIMS: &str = "the dim is in the spec";
 
-/// The cells of every fact. Nothing else: a ref's attributes come in with
-/// each fact row, resolved by the source, so no dim row is ever held.
+/// The cells of every fact, and every dim projected to its key and the
+/// columns the views read. Nothing else: a cell is keyed by the fact's
+/// join columns, and an ask reads a dim's values through them, as the dim
+/// is now.
 #[derive(Debug)]
 pub struct Store {
     spec: Spec,
     /// One per fact, in spec order.
     rollups: Vec<Rollup>,
+    /// One per dim, in spec order.
+    projections: Vec<Projection>,
 }
 
 /// One row per group, sorted by key: the values of the ask's `by`, then its
@@ -51,18 +58,19 @@ impl Store {
     pub fn new(spec: Spec) -> Store {
         Store {
             rollups: spec.facts().iter().map(Rollup::new).collect(),
+            projections: spec.dims().iter().map(Projection::new).collect(),
             spec,
         }
     }
 
-    /// Sets the types of a row of `fact`: [`Fact::columns`], then
-    /// [`Fact::attrs`]. Only the source knows them, so a load sets them.
+    /// Sets the types of a row of `fact`, [`Fact::columns`]. Only the
+    /// source knows them, so a load sets them.
     pub fn set_fact_types(&mut self, fact: &str, types: &[ColumnType]) -> Result<(), RowError> {
         self.rollup_mut(fact).set_types(types)
     }
 
-    /// Adds rows laid end to end, as a load reads them: [`Fact::columns`]
-    /// then [`Fact::attrs`], each resolved by the source.
+    /// Adds rows laid end to end, as a load reads them, each
+    /// [`Fact::columns`] wide.
     pub fn add_fact_rows(&mut self, fact: &str, rows: &[Datum]) -> Result<(), RowError> {
         self.rollup_mut(fact).add_rows(rows)
     }
@@ -72,9 +80,8 @@ impl Store {
         self.rollup_mut(fact).add(row)
     }
 
-    /// Removes one row. A row whose attributes the source now resolves
-    /// otherwise than when it came in is not found, so the caller starts
-    /// over, which resolves everything again.
+    /// Removes one row. A row never added is not found, so the caller
+    /// starts over.
     pub fn remove_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
         self.rollup_mut(fact).remove(row)
     }
@@ -92,19 +99,51 @@ impl Store {
         Some(self.rollups[self.fact_index(fact)?].cells())
     }
 
+    /// Sets the types of a row of `dim`, [`Dim::columns`]: the key, then
+    /// the attributes. Only the source knows them, so a load sets them.
+    pub fn set_dim_types(&mut self, dim: &str, types: &[ColumnType]) -> Result<(), RowError> {
+        self.projection_mut(dim).set_types(types)
+    }
+
+    /// Adds rows laid end to end, as a load reads them, each
+    /// [`Dim::columns`] wide.
+    pub fn add_dim_rows(&mut self, dim: &str, rows: &[Datum]) -> Result<(), RowError> {
+        self.projection_mut(dim).add_rows(rows)
+    }
+
+    /// Adds one row, as the stream brings it; its key must be new.
+    pub fn add_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
+        self.projection_mut(dim).add(row)
+    }
+
+    /// Removes one row, which must be held as given.
+    pub fn remove_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
+        self.projection_mut(dim).remove(row)
+    }
+
+    /// Drops every row of a dim after a truncate.
+    pub fn clear_dim(&mut self, dim: &str) {
+        self.projection_mut(dim).clear();
+    }
+
+    pub fn dim_rows(&self, dim: &str) -> Option<usize> {
+        Some(self.projections[self.dim_index(dim)?].len())
+    }
+
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let (_, rollup) = self.checked(ask)?;
         Ok(cover(rollup, ask).map(|(_, cells)| cells.len()).sum())
     }
 
-    /// Every key is a slot of the rollup key, so the cell loop only looks
-    /// up what each code of a slot maps to.
+    /// Every key is a slot of the rollup key or a dim value reached
+    /// through the slots of a ref's via columns, so the cell loop only
+    /// looks up what each code maps to, once per code.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         let (fact, rollup) = self.checked(ask)?;
         // Only the load knows the types, so this check comes after Spec::check.
         let wrong: Vec<AskError> = (ask.filter.iter())
             .flat_map(|cond| {
-                let column = rollup.key_type(self.slot(fact, &cond.key));
+                let column = self.lookup(fact, rollup, &cond.key).column_type(rollup);
                 (cond.values.iter())
                     .filter(move |value| !column.fits(value))
                     .map(move |value| AskError::WrongType {
@@ -124,7 +163,7 @@ impl Store {
             .iter()
             .map(|key| {
                 let of = match key {
-                    AskKey::Key(name) => KeyOf::Slot(self.slot(fact, name)),
+                    AskKey::Key(name) => KeyOf::Lookup(self.lookup(fact, rollup, name)),
                     AskKey::Time(t) => KeyOf::Time(*t, fact.time.grain),
                 };
                 Part::new(of, rollup, buckets)
@@ -162,7 +201,8 @@ impl Store {
 
         if by.is_empty() {
             // As in SQL without GROUP BY: one row even when nothing matches.
-            groups.make(&mut by, rollup, &[]);
+            groups.numbers.clear();
+            groups.insert(&by, rollup);
         }
         // Per cell of a bucket: 1 while it may pass, then its group; 0 for
         // cells passed over. Again per measure with a filter of its own.
@@ -213,9 +253,21 @@ impl Store {
             .position(|f| f.name.as_str() == name)
     }
 
+    fn dim_index(&self, name: &str) -> Option<usize> {
+        self.spec
+            .dims()
+            .iter()
+            .position(|d| d.name.as_str() == name)
+    }
+
     fn rollup_mut(&mut self, fact: &str) -> &mut Rollup {
         let i = self.fact_index(fact).expect(IN_SPEC);
         &mut self.rollups[i]
+    }
+
+    fn projection_mut(&mut self, dim: &str) -> &mut Projection {
+        let i = self.dim_index(dim).expect(IN_DIMS);
+        &mut self.projections[i]
     }
 
     fn checked(&self, ask: &Ask) -> Result<(&Fact, &Rollup), Vec<AskError>> {
@@ -224,24 +276,44 @@ impl Store {
         Ok((fact, &self.rollups[i]))
     }
 
-    /// The rollup-key slot a key name names.
-    fn slot(&self, fact: &Fact, name: &Ident) -> usize {
-        let slot = match fact.resolve(name).expect(CHECKED) {
-            Key::By(by) => by.slot(),
-            Key::Attr(r, attr) => Slot::Attr(r, &attr.column),
-        };
-        fact.rollup_key().position(|k| k == slot).expect(CHECKED)
+    /// Where a key's values come from: a rollup-key slot, or a dim's
+    /// projection reached through the slots of the ref's via columns.
+    fn lookup(&self, fact: &Fact, rollup: &Rollup, name: &Ident) -> Lookup<'_> {
+        let slot_of = |slot: Slot<'_>| fact.rollup_key().position(|k| k == slot).expect(CHECKED);
+        match fact.resolve(name).expect(CHECKED) {
+            Key::By(by) => Lookup::Slot(slot_of(by.slot())),
+            Key::Attr(r, attr) => {
+                let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
+                let via: Vec<usize> = r.via.iter().map(|v| slot_of(Slot::Column(v))).collect();
+                let memo = match via[..] {
+                    [slot] => Memo::Dense(vec![UNKNOWN; rollup.codes(slot)]),
+                    _ => Memo::Sparse(FastMap::default()),
+                };
+                Lookup::Attr(AttrLookup {
+                    via,
+                    projection: &self.projections
+                        [self.dim_index(dim.name.as_str()).expect(CHECKED)],
+                    attr: dim
+                        .attrs
+                        .iter()
+                        .position(|a| *a == attr.column)
+                        .expect(CHECKED),
+                    key: Vec::new(),
+                    memo,
+                })
+            }
+        }
     }
 
-    fn tests<'a>(&self, fact: &Fact, rollup: &Rollup, conds: &'a [Cond]) -> Vec<Test<'a>> {
+    fn tests<'a>(&self, fact: &Fact, rollup: &Rollup, conds: &'a [Cond]) -> Vec<Test<'_, 'a>> {
         conds
             .iter()
             .map(|c| {
-                let slot = self.slot(fact, &c.key);
+                let lookup = self.lookup(fact, rollup, &c.key);
                 Test {
-                    slot,
+                    memo: vec![Known::Unknown; lookup.bound(rollup)],
+                    lookup,
                     values: &c.values,
-                    memo: vec![Known::Unknown; rollup.codes(slot)],
                 }
             })
             .collect()
@@ -253,29 +325,124 @@ fn cover<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, &'r Ce
     rollup.cover(ask.from, ask.to, each_bucket)
 }
 
-/// What a by key's values are: a slot of the rollup key, or the period of
-/// a time key.
-#[derive(Debug, Clone, Copy)]
-enum KeyOf {
+/// Where a key's values come from.
+enum Lookup<'s> {
     Slot(usize),
+    Attr(AttrLookup<'s>),
+}
+
+/// A dim value read through a cell's via codes, worked out once per code
+/// tuple as the ask meets it.
+struct AttrLookup<'s> {
+    /// The rollup-key slots of the ref's via columns, in the dim's key
+    /// order.
+    via: Vec<usize>,
+    projection: &'s Projection,
+    /// Into the dim's attributes.
+    attr: usize,
+    /// The key of one lookup, kept to spare an allocation per lookup.
+    key: Vec<Datum>,
+    memo: Memo,
+}
+
+/// A via code not looked up yet.
+const UNKNOWN: u32 = u32::MAX;
+
+/// Attribute code per via code tuple: by the one code when the ref joins
+/// on one column, else by the tuple.
+enum Memo {
+    Dense(Vec<u32>),
+    Sparse(FastMap<Box<[u32]>, u32>),
+}
+
+impl AttrLookup<'_> {
+    /// The attribute's code for the cell with `key`.
+    fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
+        let known = match &self.memo {
+            Memo::Dense(codes) => codes[key[self.via[0]] as usize],
+            Memo::Sparse(map) => {
+                let tuple: Vec<u32> = self.via.iter().map(|&slot| key[slot]).collect();
+                map.get(tuple.as_slice()).copied().unwrap_or(UNKNOWN)
+            }
+        };
+        if known != UNKNOWN {
+            return known;
+        }
+        self.key.clear();
+        self.key.extend(
+            self.via
+                .iter()
+                .map(|&slot| rollup.value(slot, key[slot]).clone()),
+        );
+        let code = self.projection.attr_code(&self.key, self.attr);
+        match &mut self.memo {
+            Memo::Dense(codes) => codes[key[self.via[0]] as usize] = code,
+            Memo::Sparse(map) => {
+                let tuple: Box<[u32]> = self.via.iter().map(|&slot| key[slot]).collect();
+                map.insert(tuple, code);
+            }
+        }
+        code
+    }
+}
+
+impl<'s> Lookup<'s> {
+    /// The code of the key's value for the cell with `key`.
+    fn code(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
+        match self {
+            Lookup::Slot(slot) => cells.code(i, *slot),
+            Lookup::Attr(attr) => attr.code(rollup, cells.key(i)),
+        }
+    }
+
+    /// Borrowed from the rollup or the projection, which outlive the ask.
+    fn value<'r>(&self, rollup: &'r Rollup, code: u32) -> &'r Datum
+    where
+        's: 'r,
+    {
+        match self {
+            Lookup::Slot(slot) => rollup.value(*slot, code),
+            Lookup::Attr(attr) => attr.projection.attr_value(attr.attr, code),
+        }
+    }
+
+    /// Codes the key's values have.
+    fn bound(&self, rollup: &Rollup) -> usize {
+        match self {
+            Lookup::Slot(slot) => rollup.codes(*slot),
+            Lookup::Attr(attr) => attr.projection.attr_codes(attr.attr),
+        }
+    }
+
+    fn column_type(&self, rollup: &Rollup) -> ColumnType {
+        match self {
+            Lookup::Slot(slot) => rollup.key_type(*slot),
+            Lookup::Attr(attr) => attr.projection.attr_type(attr.attr),
+        }
+    }
+}
+
+/// What a by key's values are: a lookup, or the period of a time key.
+enum KeyOf<'s> {
+    Lookup(Lookup<'s>),
     Time(TimeKey, Grain),
 }
 
-impl KeyOf {
-    fn column_type(self, rollup: &Rollup) -> ColumnType {
+impl KeyOf<'_> {
+    fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
-            KeyOf::Slot(slot) => rollup.key_type(slot),
+            KeyOf::Lookup(lookup) => lookup.column_type(rollup),
             KeyOf::Time(..) => rollup.time_type(),
         }
     }
 }
 
-/// A [`Cond`] of an ask, worked out once per code of its slot as the ask
+/// A [`Cond`] of an ask, worked out once per code of its key as the ask
 /// meets the code.
-struct Test<'a> {
-    slot: usize,
+struct Test<'s, 'a> {
+    lookup: Lookup<'s>,
     values: &'a [Literal],
-    /// Per code of the slot.
+    /// Per code of the key.
     memo: Vec<Known>,
 }
 
@@ -287,12 +454,12 @@ enum Known {
     Fails,
 }
 
-impl Test<'_> {
+impl Test<'_, '_> {
     /// Whether a cell passes is as likely as not, so the loop selects rather
     /// than branches; only a code met first branches.
     fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
         for (i, g) in groups.iter_mut().enumerate() {
-            let code = cells.code(i, self.slot);
+            let code = self.lookup.code(rollup, cells, i);
             let mut known = self.memo[code as usize];
             if known == Known::Unknown && *g != 0 {
                 known = self.resolve(rollup, code);
@@ -302,7 +469,7 @@ impl Test<'_> {
     }
 
     fn resolve(&mut self, rollup: &Rollup, code: u32) -> Known {
-        let v = rollup.value(self.slot, code);
+        let v = self.lookup.value(rollup, code);
         let known = if self.values.iter().any(|lit| v.matches(lit)) {
             Known::Holds
         } else {
@@ -313,20 +480,20 @@ impl Test<'_> {
     }
 }
 
-/// A by key of an ask, its values numbered without hashing any: a slot
-/// key's by their codes, a time key's in time order.
-struct Part {
-    of: KeyOf,
+/// A by key of an ask, its values numbered without hashing any: a key's by
+/// its codes, a time key's in time order.
+struct Part<'s> {
+    of: KeyOf<'s>,
     /// For a time key, the start of each period met so far, the bucket at
     /// hand's last.
     starts: Vec<i64>,
     bound: usize,
 }
 
-impl Part {
-    fn new(of: KeyOf, rollup: &Rollup, buckets: usize) -> Part {
-        let bound = match of {
-            KeyOf::Slot(slot) => rollup.codes(slot),
+impl<'s> Part<'s> {
+    fn new(of: KeyOf<'s>, rollup: &Rollup, buckets: usize) -> Part<'s> {
+        let bound = match &of {
+            KeyOf::Lookup(lookup) => lookup.bound(rollup),
             KeyOf::Time(..) => buckets,
         };
         Part {
@@ -346,32 +513,35 @@ impl Part {
         }
     }
 
-    fn offsets(&self, cells: &Cells, stride: usize, at: &mut [usize]) {
-        match self.of {
+    fn offsets(&mut self, rollup: &Rollup, cells: &Cells, stride: usize, at: &mut [usize]) {
+        match &mut self.of {
             KeyOf::Time(..) => {
                 let offset = (self.starts.len() - 1) * stride;
                 at.iter_mut().for_each(|a| *a += offset);
             }
             // Cells passed over too, as a branch costs more than their
             // entries, which nothing reads.
-            KeyOf::Slot(slot) => {
+            KeyOf::Lookup(lookup) => {
                 for (i, a) in at.iter_mut().enumerate() {
-                    *a += cells.code(i, slot) as usize * stride;
+                    *a += lookup.code(rollup, cells, i) as usize * stride;
                 }
             }
         }
     }
 
-    fn number(&self, key: &[u32]) -> u32 {
-        match self.of {
-            KeyOf::Slot(slot) => key[slot],
+    fn number(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
+        match &mut self.of {
+            KeyOf::Lookup(lookup) => lookup.code(rollup, cells, i),
             KeyOf::Time(..) => u32::try_from(self.starts.len() - 1).expect("codes are u32"),
         }
     }
 
-    fn value<'r>(&self, rollup: &'r Rollup, number: u32) -> Cow<'r, Datum> {
-        match self.of {
-            KeyOf::Slot(slot) => Cow::Borrowed(rollup.value(slot, number)),
+    fn value<'r>(&self, rollup: &'r Rollup, number: u32) -> Cow<'r, Datum>
+    where
+        's: 'r,
+    {
+        match &self.of {
+            KeyOf::Lookup(lookup) => Cow::Borrowed(lookup.value(rollup, number)),
             KeyOf::Time(..) => Cow::Owned(Datum::Int(self.starts[number as usize])),
         }
     }
@@ -404,7 +574,7 @@ enum Index {
 }
 
 impl<'a> Groups<'a> {
-    fn new(by: &[Part]) -> Groups<'a> {
+    fn new(by: &[Part<'_>]) -> Groups<'a> {
         let mut strides = Vec::with_capacity(by.len());
         let size = by.iter().try_fold(1usize, |size, p| {
             strides.push(size);
@@ -432,7 +602,7 @@ impl<'a> Groups<'a> {
     /// Without `by`, every nonzero `groups` entry is group 1 already.
     fn assign(
         &mut self,
-        by: &mut [Part],
+        by: &mut [Part<'a>],
         rollup: &'a Rollup,
         cells: &'a Cells,
         groups: &mut [u32],
@@ -447,8 +617,8 @@ impl<'a> Groups<'a> {
             Index::Dense(table) => {
                 self.at.clear();
                 self.at.resize(groups.len(), 0);
-                for (p, &stride) in by.iter().zip(&self.strides) {
-                    p.offsets(cells, stride, &mut self.at);
+                for (p, &stride) in by.iter_mut().zip(&self.strides) {
+                    p.offsets(rollup, cells, stride, &mut self.at);
                 }
                 // Selects, not branches: under a filter, whether a cell
                 // passed is as likely as not. `at` is in the table for
@@ -476,15 +646,22 @@ impl<'a> Groups<'a> {
                 // A cell before it in the bucket may have made its group.
                 *g = match &self.index {
                     Index::Dense(table) if table[self.at[i]] != 0 => table[self.at[i]],
-                    _ => self.make(by, rollup, cells.key(i)),
+                    _ => self.make(by, rollup, cells, i),
                 };
             }
         }
     }
 
-    fn make(&mut self, by: &mut [Part], rollup: &'a Rollup, key: &[u32]) -> u32 {
+    /// The group of cell `i`, made if new.
+    fn make(&mut self, by: &mut [Part<'a>], rollup: &'a Rollup, cells: &'a Cells, i: usize) -> u32 {
         self.numbers.clear();
-        self.numbers.extend(by.iter().map(|p| p.number(key)));
+        self.numbers
+            .extend(by.iter_mut().map(|p| p.number(rollup, cells, i)));
+        self.insert(by, rollup)
+    }
+
+    /// The group `numbers` names, made if new.
+    fn insert(&mut self, by: &[Part<'a>], rollup: &'a Rollup) -> u32 {
         let next = u32::try_from(self.len()).expect("fewer groups than cells");
         let group = match &mut self.index {
             Index::Dense(table) => {
@@ -506,7 +683,7 @@ impl<'a> Groups<'a> {
             },
         };
         if group == next {
-            let values = (self.numbers.iter().zip(&*by)).map(|(&n, p)| p.value(rollup, n));
+            let values = (self.numbers.iter().zip(by)).map(|(&n, p)| p.value(rollup, n));
             self.keys.extend(values);
             self.made += 1;
         }
@@ -514,8 +691,8 @@ impl<'a> Groups<'a> {
     }
 }
 
-struct Asked<'a> {
+struct Asked<'s, 'a> {
     partials: Partials,
     state: Option<usize>,
-    filter: Vec<Test<'a>>,
+    filter: Vec<Test<'s, 'a>>,
 }

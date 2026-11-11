@@ -40,10 +40,11 @@ ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
-CREATE PUBLICATION "straum" FOR TABLE "public"."orders";
+CREATE PUBLICATION "straum" FOR TABLE "public"."customers", "public"."orders";
 -- fact orders: straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
--- dim customers: "public"."customers" needs a primary key or unique index on id alone; straum reads it and does not follow it.
+-- dim customers: straum holds its key and the columns the views read, and follows it; "public"."customers" needs a primary key or unique index on id alone.
+ALTER TABLE "public"."customers" REPLICA IDENTITY FULL;
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
@@ -56,9 +57,10 @@ superuser. The setup lives in the catalog and survives restarts.
   on Amazon RDS. `--role NAME` names the role.
 - `--publication NAME` names the publication; give `straum run` the same
   name.
-- Dims need a primary key or unique index on exactly their key columns,
-  in any order. Only the schema can give that, so the SQL says it in a
-  comment.
+- Dims are published and get `REPLICA IDENTITY FULL` like facts, since
+  Straum holds and follows them. They also need a primary key or unique
+  index on exactly their key columns, in any order. Only the schema can
+  give that, so the SQL says it in a comment.
 
 ## 3. Connect
 
@@ -106,6 +108,7 @@ orders: publication straum leaves out public.orders: ALTER PUBLICATION straum AD
 orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
 orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
 fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
+dim customers: straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
 dim customers: public.customers needs a primary key or unique index on id alone
 fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
 ```
@@ -124,9 +127,8 @@ fact orders: ref customer joins customer_id (an integer) to id (text); they must
   Straum loads again from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
   database and makes `ALTER TABLE` on its tables wait; Straum ends it
-  right after the last fact loads.
+  right after the last table loads.
 - One plain connection beside the replication connection, for the WAL
-  position every second and the dim lookups of each transaction: one
-  keyed `SELECT` per join, at most 1,000 keys a statement.
+  position every second. Nothing else is read after the load.
 - WAL decoding per replication connection, so run one Straum per database
   unless you need more.

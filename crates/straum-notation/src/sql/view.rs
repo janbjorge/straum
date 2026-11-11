@@ -380,8 +380,8 @@ impl Walker {
                 Item::Measure(m) => measures.push(m),
             }
         }
-        // A ref reads the dim columns the view selects: they come with each
-        // fact row and key its cells. A join that selects nothing would do
+        // A ref reads the dim columns the view selects, through the via
+        // columns that key its cells. A join that selects nothing would do
         // nothing.
         for (j, attrs) in scope.refs.iter_mut().zip(attrs) {
             if attrs.is_empty() {

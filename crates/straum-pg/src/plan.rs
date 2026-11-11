@@ -5,11 +5,11 @@ use postgres_protocol::password::scram_sha_256;
 use straum_domain::Spec;
 
 /// Turns on logical decoding, creates `role` with the replication
-/// attribute, lets it read the spec's tables, and publishes the facts as
-/// `publication`. Facts get `REPLICA IDENTITY FULL`, so an update or
-/// delete carries the old row straum takes out of its cell. Dims are only
-/// read, by key, so they need a unique key and nothing else, which only
-/// the schema can give; the SQL says it in a comment.
+/// attribute, lets it read the spec's tables, and publishes every one of
+/// them as `publication`. Each gets `REPLICA IDENTITY FULL`, so an update
+/// or delete carries the old row straum takes out of its cell or its
+/// projection. A dim needs a unique key too, which only the schema can
+/// give; the SQL says it in a comment.
 ///
 /// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so
 /// neither the SQL nor the server's statement log holds the password
@@ -25,7 +25,6 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
         .map(|t| qualified(t))
         .collect::<Vec<_>>()
         .join(", ");
-    let facts = once(spec.facts().iter().map(|f| qualified(&f.table)));
     let (publication, role) = (id(publication), id(role));
 
     let mut sql = vec![
@@ -46,10 +45,7 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     sql.extend([
         format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
         format!("GRANT SELECT ON {list} TO {role};"),
-        format!(
-            "CREATE PUBLICATION {publication} FOR TABLE {};",
-            facts.join(", ")
-        ),
+        format!("CREATE PUBLICATION {publication} FOR TABLE {list};"),
     ]);
     for fact in spec.facts() {
         sql.push(format!(
@@ -64,10 +60,14 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     for dim in spec.dims() {
         let key: Vec<&str> = dim.key.iter().map(|k| k.as_str()).collect();
         sql.push(format!(
-            "-- dim {}: {} needs a primary key or unique index on {} alone; straum reads it and does not follow it.",
+            "-- dim {}: straum holds its key and the columns the views read, and follows it; {} needs a primary key or unique index on {} alone.",
             dim.name,
             qualified(&dim.table),
             key.join(", ")
+        ));
+        sql.push(format!(
+            "ALTER TABLE {} REPLICA IDENTITY FULL;",
+            qualified(&dim.table)
         ));
     }
     sql.join("\n") + "\n"
@@ -88,10 +88,10 @@ fn once(items: impl Iterator<Item = String>) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// A schema or a fact table named again apart from its first place
-    /// still comes once.
+    /// A schema or a table named again apart from its first place still
+    /// comes once.
     #[test]
-    fn schemas_and_fact_tables_come_once() {
+    fn schemas_and_tables_come_once() {
         let view = |name: &str, table: &str| {
             format!(
                 "CREATE VIEW {name} WITH (buckets = '1 hour') AS

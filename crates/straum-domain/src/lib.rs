@@ -5,8 +5,10 @@
 
 mod agg;
 mod ask;
+mod codes;
 mod hash;
 mod ident;
+mod projection;
 mod rollup;
 mod spec;
 mod store;

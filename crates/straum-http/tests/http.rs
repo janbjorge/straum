@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use jiff::{SignedDuration, Timestamp};
 use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Step, Wal, Writer};
-use straum_domain::{Ask, ColumnType, Datum, Fact, Ident, Spec, Store};
+use straum_domain::{Ask, ColumnType, Datum, Dim, Fact, Ident, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -37,8 +37,7 @@ const LIMITS: Limits = Limits {
     max_retained_wal: 4 << 30,
 };
 
-/// Loads fixed rows at [`START`], then streams its commits. Rows come
-/// whole, the zone's borough resolved, as a source hands them over.
+/// Loads fixed zones and trips at [`START`], then streams its commits.
 struct Script {
     trips: Vec<Vec<Datum>>,
     commits: VecDeque<Commit>,
@@ -54,7 +53,7 @@ impl Source for Script {
 
     fn load_fact(&mut self, _: &Fact, store: &mut Store) -> Result<(), SourceError> {
         thread::sleep(self.pause);
-        // at, kind, zone_id, fare, then the zone's borough.
+        // at, kind, zone_id, fare.
         store.set_fact_types(
             "trips",
             &[
@@ -62,12 +61,21 @@ impl Source for Script {
                 ColumnType::Int,
                 ColumnType::Int,
                 ColumnType::Numeric { scale: 2 },
-                ColumnType::Text,
             ],
         )?;
         for row in &self.trips {
             store.add_fact_row("trips", row)?;
         }
+        Ok(())
+    }
+
+    /// Zones 1 and 2; a trip in zone 3 finds no row.
+    fn load_dim(&mut self, _: &Dim, store: &mut Store) -> Result<(), SourceError> {
+        store.set_dim_types("zones", &[ColumnType::Int, ColumnType::Text])?;
+        store.add_dim_rows(
+            "zones",
+            &[int(1), text("Bronx"), int(2), text("Queens \"Q\"")],
+        )?;
         Ok(())
     }
 
@@ -89,14 +97,8 @@ fn text(s: &str) -> Datum {
     Datum::Text(s.into())
 }
 
-fn trip(hour: i64, kind: i64, zone: i64, fare: Datum, borough: Datum) -> Vec<Datum> {
-    vec![
-        int(JAN_1 + hour * HOUR),
-        int(kind),
-        int(zone),
-        fare,
-        borough,
-    ]
+fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
+    vec![int(JAN_1 + hour * HOUR), int(kind), int(zone), fare]
 }
 
 /// Four trips on 2024-01-01 UTC, one in a zone with no row, and a slot
@@ -104,17 +106,17 @@ fn trip(hour: i64, kind: i64, zone: i64, fare: Datum, borough: Datum) -> Vec<Dat
 fn script() -> Script {
     Script {
         trips: vec![
-            trip(0, 1, 1, int(1_250), text("Bronx")),
-            trip(1, 1, 1, int(250), text("Bronx")),
-            trip(2, 2, 3, Datum::Null, Datum::Null),
-            trip(23, 2, 2, int(-5), text("Queens \"Q\"")),
+            trip(0, 1, 1, int(1_250)),
+            trip(1, 1, 1, int(250)),
+            trip(2, 2, 3, Datum::Null),
+            trip(23, 2, 2, int(-5)),
         ],
         commits: VecDeque::from([Commit {
             lsn: Lsn(0x17_0000_0000),
             time: UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456),
             changes: vec![Change::Insert {
                 table: Ident::new("trips").unwrap(),
-                row: trip(3, 1, 1, int(100), text("Bronx")),
+                row: trip(3, 1, 1, int(100)),
             }],
         }]),
         pause: Duration::ZERO,

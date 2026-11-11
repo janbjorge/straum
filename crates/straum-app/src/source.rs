@@ -1,14 +1,14 @@
-//! The port to PostgreSQL: facts read at a snapshot, and the stream of
-//! commits after it. One port, since the first load reads the snapshot of the
-//! slot the stream comes from, on the same connection. The source resolves
-//! every ref: a fact row comes whole, its attributes looked up where the
-//! dims live, so straum holds no dim row.
+//! The port to PostgreSQL: facts and dims read at a snapshot, and the
+//! stream of commits after it. One port, since the first load reads the
+//! snapshot of the slot the stream comes from, on the same connection. A
+//! row comes as its table holds it: a fact's columns, or a dim's key and
+//! the columns the views read.
 
 use std::error;
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use straum_domain::{Datum, Fact, Ident, Spec, Store};
+use straum_domain::{Datum, Dim, Fact, Ident, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
 /// is missing, a table no longer fits the spec. straum starts over after one.
@@ -26,10 +26,14 @@ pub trait Source {
 
     /// Adds the fact's rows to the store, whose rollup for it is empty, as
     /// of the LSN [`Source::open`] returned: every commit up to it and none
-    /// after. Rows hold [`Fact::columns`] and then [`Fact::attrs`], each
-    /// attribute resolved by the source, and go through
+    /// after. Rows hold [`Fact::columns`] and go through
     /// [`Store::add_fact_rows`].
     fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError>;
+
+    /// Adds the dim's rows to the store, whose projection for it is empty,
+    /// as of the same LSN. Rows hold [`Dim::columns`] and go through
+    /// [`Store::add_dim_rows`].
+    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied, so PostgreSQL may recycle the WAL before it.
@@ -59,7 +63,8 @@ impl Wal {
     }
 }
 
-/// One transaction's changes to the spec's facts, in the order made.
+/// One transaction's changes to the spec's facts and dims, in the order
+/// made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     /// The end of the commit record, which pgoutput reports as the
@@ -70,10 +75,8 @@ pub struct Commit {
     pub changes: Vec<Change>,
 }
 
-/// A change to a fact, named as in the spec. Rows hold [`Fact::columns`]
-/// and then [`Fact::attrs`], as a load's do; the source resolves the
-/// attributes of an old row as the dims are now, so a row whose dim row
-/// changed since it came in is not the row straum holds.
+/// A change to a fact or a dim, named as in the spec. Rows hold
+/// [`Fact::columns`] or [`Dim::columns`], as a load's do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Insert {

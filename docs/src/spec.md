@@ -126,14 +126,16 @@ LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_
 
 The join points from a fact column to the key of a dim, N:1. The dim
 columns the view selects, here `customers.country AS country`, are keys
-like any other: as each order comes in, Straum reads them from the
-customer row the join names, in PostgreSQL, and keys the cell by them.
-Straum keeps no customer row of its own.
+like any other. Straum keys each cell by the join column,
+`customer_id`, and holds the dim projected to its key and the columns
+the views read, kept current from the stream; an ask reads `country`
+through the cell's `customer_id` as the customer row is now.
 
 - The join is `LEFT OUTER JOIN`, spelled whole, because a fact row with
-  no dim row still counts; its dim columns are null. `LEFT JOIN`, bare
-  `JOIN`, `INNER`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and `USING` are
-  refused, each naming this spelling.
+  no dim row still counts; its dim columns are null, and they take a
+  value the moment the dim row arrives. `LEFT JOIN`, bare `JOIN`,
+  `INNER`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and `USING` are refused,
+  each naming this spelling.
 - `ON` holds equalities, the joined table's column on the left, joined
   by `AND` for a key of several columns:
 
@@ -145,25 +147,26 @@ Straum keeps no customer row of its own.
   A literal in `ON` is refused.
 - Joins go from the fact to a dim only, so a spec can't fan out. The dim
   needs a primary key or unique index on exactly its key columns, so a
-  key names one row.
+  key names one row, and `REPLICA IDENTITY FULL` like a fact, so Straum
+  can follow its updates and deletes.
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
-  `orders.customer_id`, may be selected too or left out; left out, cells
-  collapse to the dim column's few values ([Memory](#memory)).
+  `orders.customer_id`, may be selected too or left out; either way it
+  keys the cells, so a view with a join has one cell per distinct join
+  id, bucket and other keys ([Memory](#memory)).
 - Two joins can point at one dim table, each reading its own columns. A
   dim table is one dim however many views join it, and all must join it
   on the same key columns.
 - The join itself has no value: asks group and filter by `country` or
   `customer_id`, never by `customers`.
 
-Dim columns are as of ingest. Straum never follows a dim: the setup
-publishes the fact tables only. A customer who moves from NO to SE keeps
-their old orders under NO, while PostgreSQL's view would move them; new
-orders read SE. When an order that came in under NO is updated or
-deleted, Straum can't find its cell and [starts
-over](how-it-works.md#applying-a-commit). For dims that change often,
-select the fact column too and keep the mapping in your client.
+Dim columns are as of now. The setup publishes the dims too, and a
+change to a customer row is one entry in Straum's projection of
+`customers`: a customer who moves from NO to SE moves every order of
+theirs to SE in the next answer, as PostgreSQL's view would. Nothing
+starts over and no cell moves, since cells are keyed by `customer_id`,
+not by the country.
 
 ## Null-ness keys
 
@@ -232,7 +235,9 @@ wrong type, [when it starts](postgresql.md#what-straum-checks-at-start).
 
 ## Memory
 
-Memory follows cells: one per distinct combination of keys and bucket,
-per width. Fewer keys, keys with fewer values and wider buckets mean
-fewer cells. [Sizing memory](sizing.md) has the formula and what real
-tables measured.
+Memory follows cells: one per distinct combination of keys, join
+columns and bucket, per width, plus one entry per dim row for the
+columns the views read. Fewer keys, keys with fewer values and wider
+buckets mean fewer cells; a join to a dim with many rows means many
+cells, one per dim row referenced. [Sizing memory](sizing.md) has the
+formula and what real tables measured.

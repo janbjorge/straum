@@ -2,12 +2,11 @@
 //! replication.
 //!
 //! One replication connection checks the setup, creates a temporary slot,
-//! loads every fact in the slot's snapshot (one `COPY` per fact, joined to
-//! its dims), then streams pgoutput from the slot's consistent point. A
-//! thread owns the stream: it decodes commits and answers PostgreSQL while
-//! straum applies them. A plain connection on the side looks up the dim
-//! rows of each commit's fact rows. Connections are TLS unless the DSN
-//! says `sslmode=disable`.
+//! loads every dim and fact in the slot's snapshot (one `COPY` per table),
+//! then streams pgoutput from the slot's consistent point. A thread owns
+//! the stream: it decodes commits and answers PostgreSQL while straum
+//! applies them. A plain connection on the side reads the server's WAL
+//! position. Connections are TLS unless the DSN says `sslmode=disable`.
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +17,6 @@ mod error;
 mod load;
 mod pgoutput;
 mod plan;
-mod resolve;
 mod source;
 mod stream;
 #[cfg(test)]

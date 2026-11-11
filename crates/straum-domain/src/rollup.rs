@@ -4,6 +4,7 @@ use std::fmt;
 use std::{iter, mem, panic, thread};
 
 use crate::agg::Agg;
+use crate::codes::Codes;
 use crate::hash::FastMap;
 use crate::ident::Ident;
 use crate::spec::{Fact, Slot};
@@ -21,9 +22,6 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 pub(crate) struct Rollup {
     /// The columns a row is read from, as [`Fact::columns`].
     columns: Vec<Ident>,
-    /// How many ref attributes a row holds after `columns`, in
-    /// [`Fact::attrs`] order.
-    attrs: usize,
     /// What each rollup-key slot codes of a row, in [`Fact::rollup_key`]
     /// order without the bucket.
     key_columns: Vec<Coded>,
@@ -103,26 +101,6 @@ impl Level {
             .or_insert_with(|| Cells::new(key.len(), inputs));
         let (i, new) = cells.entry(key);
         (cells, i, new)
-    }
-}
-
-/// A rollup-key column's values, each under the code of its first add.
-/// Codes outlive their cells until [`Rollup::clear`].
-#[derive(Debug, Default)]
-struct Codes {
-    codes: FastMap<Datum, u32>,
-    values: Vec<Datum>,
-}
-
-impl Codes {
-    fn code(&mut self, value: &Datum) -> u32 {
-        if let Some(&code) = self.codes.get(value) {
-            return code;
-        }
-        let code = u32::try_from(self.values.len()).expect("fewer than 2^32 values fit in memory");
-        self.values.push(value.clone());
-        self.codes.insert(value.clone(), code);
-        code
     }
 }
 
@@ -249,10 +227,7 @@ pub(crate) enum Column {
 impl Rollup {
     pub(crate) fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
-        let attrs = fact.attrs().count();
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
-        // The attributes follow the columns in a row, in rollup-key order.
-        let mut next_attr = columns.len();
         let key_columns: Vec<Coded> = fact
             .rollup_key()
             .filter_map(|slot| match slot {
@@ -261,10 +236,6 @@ impl Rollup {
                     column: position(column),
                     negated,
                 }),
-                Slot::Attr(..) => {
-                    next_attr += 1;
-                    Some(Coded::Value(next_attr - 1))
-                }
                 Slot::Bucket => None,
             })
             .collect();
@@ -295,15 +266,14 @@ impl Rollup {
             inputs,
             cells: 0,
             key: Vec::new(),
-            types: vec![ColumnType::Int; columns.len() + attrs],
-            attrs,
+            types: vec![ColumnType::Int; columns.len()],
             columns,
         }
     }
 
-    /// Columns a row holds: those read, then the ref attributes.
+    /// Columns a row holds, as [`Fact::columns`].
     fn width(&self) -> usize {
-        self.columns.len() + self.attrs
+        self.columns.len()
     }
 
     /// At the `date_bin` width; a cell goes when its last row is removed.
@@ -415,7 +385,7 @@ impl Rollup {
     pub(crate) fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
         let key: Vec<u32> = (self.key_columns.iter().zip(&self.codes))
-            .map(|(&coded, codes)| codes.codes.get(&*coded.datum(row)).copied())
+            .map(|(&coded, codes)| codes.get(&coded.datum(row)))
             .collect::<Option<_>>()
             .ok_or(RowError::Missing)?;
         for (n, level) in self.levels.iter_mut().enumerate() {
@@ -493,11 +463,11 @@ impl Rollup {
     }
 
     pub(crate) fn codes(&self, slot: usize) -> usize {
-        self.codes[slot].values.len()
+        self.codes[slot].len()
     }
 
     pub(crate) fn value(&self, slot: usize, code: u32) -> &Datum {
-        &self.codes[slot].values[code as usize]
+        self.codes[slot].value(code)
     }
 
     /// Rejects rows that would leave the rollup half updated.
@@ -684,6 +654,8 @@ pub enum RowError {
     },
     /// A removed row was never added.
     Missing,
+    /// An added dim row's key is held already.
+    Present,
 }
 
 impl fmt::Display for RowError {
@@ -694,6 +666,7 @@ impl fmt::Display for RowError {
             }
             RowError::NotInt { column } => write!(f, "column {column} is not an integer"),
             RowError::Missing => f.write_str("removed row was never added"),
+            RowError::Present => f.write_str("added row is held already"),
         }
     }
 }
