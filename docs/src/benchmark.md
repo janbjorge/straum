@@ -179,7 +179,7 @@ reading it, outside the lock; the lock itself is held for about 0.3 ms
 per 1,000 rows. Memory is what grows: the rows of a transaction wait in
 Straum until its commit, about 260 bytes each, so a million-row
 transaction holds six times the whole taxi view. That sets the
-default of `--max-transaction-rows` at 100,000: a transaction at the cap
+default of `--max-transaction-rows` at 100,000: a transaction at the limit
 holds the lock for 30 ms and 28 MiB, and anything larger is cheaper to
 [start over](how-it-works.md#applying-a-commit), which takes the rows
 through the bulk `COPY` instead.

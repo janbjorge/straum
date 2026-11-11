@@ -1,5 +1,5 @@
 //! Every join kind, any cardinality, a join through another dim and the
-//! view's `WHERE`, each against a naive reference that joins the live rows
+//! view's `WHERE`, each against a reference that joins the live rows
 //! to the dims as they are: hand-made cases first, then random rows, dims
 //! and changes to both.
 
@@ -9,8 +9,9 @@ mod common;
 
 use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
-    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, By, ColumnType, Cond, Datum, Dim,
-    Fact, Ident, Literal, Measure, Origin, Ref, RefKind, Spec, Store, TimeKey, Value, Via, Width,
+    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, ByKey, ColumnType,
+    Condition, Datum, Dim, Fact, Identifier, Literal, Measure, Origin, Ref, RefKind, Spec, Store,
+    TimeKey, Value, Via, Width,
 };
 
 const HOUR: i64 = 3_600;
@@ -55,16 +56,16 @@ fn attr(name: &str) -> Attribute {
 /// to tiers), to tags of any cardinality, and to promos and blocked
 /// customers which keep no column, each join of the kind given; `filter`
 /// is the view's `WHERE`.
-fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
-    let m = |name, agg| Measure {
+fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
+    let m = |name, aggregate| Measure {
         name: id(name),
-        agg,
+        aggregate,
         filter: vec![],
     };
     // A semi or anti join reads nothing; the same ref as a left or inner
     // join reads the dim's one column.
     let r = |i: usize, name: &str, via: Via, attrs: Vec<Attribute>| Ref {
-        name: id(name),
+        alias: id(name),
         dim: id(name),
         kind: kinds[i],
         via: vec![via],
@@ -117,22 +118,22 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
                 vec![attr("reason")],
             ),
         ],
-        by: vec![
-            By::Column {
+        by_keys: vec![
+            ByKey::Column {
                 column: id("customer"),
                 name: id("customer"),
             },
-            By::Column {
+            ByKey::Column {
                 column: id("product"),
                 name: id("product"),
             },
         ],
         measures: vec![
-            m("n", Agg::Count),
-            m("q", Agg::Sum(id("qty"))),
-            m("q_max", Agg::Max(id("qty"))),
-            m("q_min", Agg::Min(id("qty"))),
-            m("products", Agg::CountDistinct(id("product"))),
+            m("n", Aggregate::Count),
+            m("q", Aggregate::Sum(id("qty"))),
+            m("q_max", Aggregate::Max(id("qty"))),
+            m("q_min", Aggregate::Min(id("qty"))),
+            m("products", Aggregate::CountDistinct(id("product"))),
         ],
         filter,
     };
@@ -281,7 +282,7 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5]) -> Vec<JoinRow> {
 }
 
 /// A key's value for one order under one way its joins resolved.
-fn value(row: &[Datum], joined: &JoinRow, key: &Ident) -> Datum {
+fn value(row: &[Datum], joined: &JoinRow, key: &Identifier) -> Datum {
     let attr = |r: usize, i: usize| (joined[r].as_ref()).map_or(Datum::Null, |m| m[i].clone());
     match key.as_str() {
         "customer" => row[CUSTOMER].clone(),
@@ -293,18 +294,24 @@ fn value(row: &[Datum], joined: &JoinRow, key: &Ident) -> Datum {
     }
 }
 
-fn passes(row: &[Datum], joined: &JoinRow, conds: &[Cond]) -> bool {
+fn passes(row: &[Datum], joined: &JoinRow, conds: &[Condition]) -> bool {
     conds
         .iter()
         .all(|c| holds(&value(row, joined, &c.key), &c.values))
 }
 
-/// The ask over the raw rows joined as the dims are: every way each row's
+/// The reference answer: the ask over the raw rows joined as the dims are: every way each row's
 /// joins resolve is one row of the view, as it would be in PostgreSQL.
-fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: &[RefKind; 5]) -> Answer {
+fn reference(
+    spec: &Spec,
+    ask: &Ask,
+    rows: &[Vec<Datum>],
+    dims: &Dims,
+    kinds: &[RefKind; 5],
+) -> Answer {
     let fact = spec.fact("orders").unwrap();
     let mut groups: BTreeMap<Vec<Datum>, Vec<(&[Datum], JoinRow)>> = BTreeMap::new();
-    if ask.by.is_empty() {
+    if ask.keys.is_empty() {
         groups.insert(Vec::new(), Vec::new());
     }
     for row in rows {
@@ -317,11 +324,11 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: &[RefK
                 continue;
             }
             let key = ask
-                .by
+                .keys
                 .iter()
                 .map(|k| match k {
                     AskKey::Key(name) => value(row, &joined, name),
-                    AskKey::Time(tk) => Datum::Int(tk.start(
+                    AskKey::Time(tk) => Datum::Int(tk.bucket_start(
                         t,
                         Width {
                             seconds: HOUR as u32,
@@ -341,22 +348,22 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: &[RefK
             AnswerRow { keys, values }
         })
         .collect();
-    let columns = (ask.by.iter().map(|k| match k {
+    let columns = (ask.keys.iter().map(|k| match k {
         AskKey::Key(p) => AnswerColumn {
             name: p.to_string(),
             scale: 0,
-            time: false,
+            is_time: false,
         },
         AskKey::Time(t) => AnswerColumn {
             name: t.to_string(),
             scale: 0,
-            time: true,
+            is_time: true,
         },
     }))
     .chain(ask.measures.iter().map(|name| AnswerColumn {
         name: name.to_string(),
         scale: 0,
-        time: false,
+        is_time: false,
     }))
     .collect();
     Answer { columns, rows }
@@ -376,15 +383,15 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
             .collect()
     };
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
-    match &m.agg {
-        Agg::Count => Value::Int(rows.len() as i128),
-        Agg::Sum(_) => {
+    match &m.aggregate {
+        Aggregate::Count => Value::Int(rows.len() as i128),
+        Aggregate::Sum(_) => {
             let v = ints(QTY);
             or_null((!v.is_empty()).then(|| v.iter().sum()))
         }
-        Agg::Max(_) => or_null(ints(QTY).into_iter().max()),
-        Agg::Min(_) => or_null(ints(QTY).into_iter().min()),
-        Agg::CountDistinct(_) => {
+        Aggregate::Max(_) => or_null(ints(QTY).into_iter().max()),
+        Aggregate::Min(_) => or_null(ints(QTY).into_iter().min()),
+        Aggregate::CountDistinct(_) => {
             let seen: HashSet<_> = rows
                 .iter()
                 .map(|(r, _)| &r[PRODUCT])
@@ -392,15 +399,15 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
                 .collect();
             Value::Int(seen.len() as i128)
         }
-        Agg::Avg(_) => unreachable!("no average here"),
+        Aggregate::Avg(_) => unreachable!("no average here"),
     }
 }
 
-fn ask(measures: &[&str], by: &[&str], filter: Vec<Cond>) -> Ask {
+fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
     Ask {
         view: id("orders"),
         measures: measures.iter().map(|m| id(m)).collect(),
-        by: by
+        keys: by
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
@@ -444,7 +451,11 @@ fn small_dims() -> Dims {
 
 /// A store over `small_dims` and the orders given, with the naive answer
 /// to compare against.
-fn small(kinds: [RefKind; 5], filter: Vec<Cond>, orders: &[Vec<Datum>]) -> (Store, Spec, Dims) {
+fn small(
+    kinds: [RefKind; 5],
+    filter: Vec<Condition>,
+    orders: &[Vec<Datum>],
+) -> (Store, Spec, Dims) {
     let spec = spec(kinds, filter);
     let mut store = typed(&spec);
     let dims = small_dims();
@@ -465,7 +476,7 @@ fn check(
 ) {
     assert_eq!(
         store.ask(ask).unwrap(),
-        naive(spec, ask, rows, dims, kinds),
+        reference(spec, ask, rows, dims, kinds),
         "{ask:?}"
     );
 }
@@ -893,7 +904,7 @@ impl Rng {
 }
 
 /// Random kinds, rows, dims and changes to both, checked against the
-/// naive reference every few steps.
+/// reference every few steps.
 fn run(seed: u64) {
     let mut rng = Rng(seed);
     let kinds = rng.kinds();
@@ -940,7 +951,7 @@ fn run(seed: u64) {
                 let ask = rng.random_ask();
                 assert_eq!(
                     store.ask(&ask).unwrap(),
-                    naive(&spec, &ask, &rows, &dims, &kinds),
+                    reference(&spec, &ask, &rows, &dims, &kinds),
                     "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
                 );
             }

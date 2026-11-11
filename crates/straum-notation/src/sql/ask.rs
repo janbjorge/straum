@@ -15,7 +15,7 @@
 
 use jiff::Timestamp;
 use sqlparser::ast as sql;
-use straum_domain::{Ask, AskKey, Cond, Ident, Literal, TimeKey};
+use straum_domain::{Ask, AskKey, Condition, Identifier, Literal, TimeKey};
 
 use super::{Names, SqlError, Walker, and_parts, line, statements};
 
@@ -29,7 +29,7 @@ pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<
     let ask = match statements.as_slice() {
         [sql::Statement::Query(query)] => walker.ask(query, &mut params),
         [other] => {
-            walker.reject(line(other), "statement", other);
+            walker.refuse(line(other), "statement", other);
             None
         }
         _ => {
@@ -91,7 +91,7 @@ impl Walker {
         let fact = match select.from.as_slice() {
             [sql::TableWithJoins { relation, joins }] => {
                 for join in joins {
-                    self.reject(line(join), "join in an ask, read FROM one view,", join);
+                    self.refuse(line(join), "join in an ask, read FROM one view,", join);
                 }
                 self.ask_view(relation)
             }
@@ -106,7 +106,7 @@ impl Walker {
         let mut measures = Vec::new();
         for item in &select.projection {
             let sql::SelectItem::UnnamedExpr(expr) = item else {
-                self.reject(line(item), "SELECT item", item);
+                self.refuse(line(item), "SELECT item", item);
                 continue;
             };
             let Some(key) = self.ask_key(expr) else {
@@ -137,17 +137,17 @@ impl Walker {
         Some(Ask {
             view: fact?,
             measures,
-            by,
+            keys: by,
             filter,
             from: from?,
             to: to?,
         })
     }
 
-    fn ask_view(&mut self, relation: &sql::TableFactor) -> Option<Ident> {
+    fn ask_view(&mut self, relation: &sql::TableFactor) -> Option<Identifier> {
         let (name, alias) = self.table_factor(relation)?;
         if let Some(alias) = alias {
-            self.reject(
+            self.refuse(
                 line(relation),
                 "alias in an ask, read FROM the view by name,",
                 alias,
@@ -184,7 +184,7 @@ impl Walker {
                 Some(AskKey::Key(name))
             }
             other => {
-                self.reject(
+                self.refuse(
                     line(other),
                     "expression, write the name the view gives the key or measure,",
                     other,
@@ -201,7 +201,7 @@ impl Walker {
         at: u64,
         selection: Option<&sql::Expr>,
         params: &mut Params,
-    ) -> (Vec<Cond>, Option<i64>, Option<i64>) {
+    ) -> (Vec<Condition>, Option<i64>, Option<i64>) {
         let mut parts = Vec::new();
         if let Some(expr) = selection {
             and_parts(expr, &mut parts);
@@ -239,7 +239,7 @@ impl Walker {
         (conds, from.seconds(), to.seconds())
     }
 
-    pub(super) fn ask_name(&mut self, expr: &sql::Expr) -> Option<Ident> {
+    pub(super) fn ask_name(&mut self, expr: &sql::Expr) -> Option<Identifier> {
         match self.ask_key(expr)? {
             AskKey::Key(name) => Some(name),
             AskKey::Time(_) => {
@@ -260,7 +260,7 @@ impl Walker {
             span: _,
         }) = expr
         else {
-            self.reject(line(expr), "value, use a parameter such as $1,", expr);
+            self.refuse(line(expr), "value, use a parameter such as $1,", expr);
             return None;
         };
         let n = name.strip_prefix('$').and_then(|n| n.parse::<usize>().ok());

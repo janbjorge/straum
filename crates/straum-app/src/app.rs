@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Ident, SealedError, SealedId, Spec, Store};
+use straum_domain::{Answer, Ask, AskError, Identifier, SealedError, SealedId, Spec, Store};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
@@ -59,10 +59,10 @@ struct State {
 #[derive(Debug)]
 struct Following {
     /// Every commit up to here is applied.
-    position: Lsn,
-    /// When the commit at `position` committed. `None` when `position` is
+    applied: Lsn,
+    /// When the commit at `applied` committed. `None` when `applied` is
     /// where the stream started.
-    time: Option<SystemTime>,
+    committed: Option<SystemTime>,
     /// How far behind the server the stream is.
     lag: Lag,
     /// The last reading of the server's WAL.
@@ -90,7 +90,7 @@ pub enum Step {
 pub struct Answered {
     pub answer: Answer,
     /// The answer reflects every commit up to here and none after.
-    pub lsn: Lsn,
+    pub applied: Lsn,
     /// Every commit made before this, by Straum's clock, is in the answer:
     /// when the slot was last known to have confirmed all the WAL there
     /// was. Unlike the time of the commit at `lsn`, it moves on while the
@@ -106,10 +106,10 @@ pub struct Status {
     pub ready: bool,
     /// Every commit up to here is applied. `None` until every table is
     /// loaded, and again after a failure.
-    pub lsn: Option<Lsn>,
-    /// When the commit at `lsn` committed. `None` when `lsn` is where the
-    /// stream started.
-    pub time: Option<SystemTime>,
+    pub applied: Option<Lsn>,
+    /// When the commit at `applied` committed. `None` when `applied` is
+    /// where the stream started.
+    pub committed: Option<SystemTime>,
     /// As [`Answered::as_of`]. `None` until every table is loaded.
     pub as_of: Option<SystemTime>,
     /// The time since Straum's slot was last known to have confirmed all
@@ -119,7 +119,7 @@ pub struct Status {
     pub wal: Option<Wal>,
     pub limits: Limits,
     /// The last failure, until the next start.
-    pub error: Option<String>,
+    pub failure: Option<String>,
     /// The last failure and when it came, kept across starts.
     pub last_failure: Option<Failure>,
     /// Streams started, each with every table loaded.
@@ -183,7 +183,7 @@ impl App {
         let answer = store.ask_with(ask, &thawed).map_err(AnswerError::Invalid)?;
         Ok(Answered {
             answer,
-            lsn: following.position,
+            applied: following.applied,
             as_of: following.as_of(),
         })
     }
@@ -194,13 +194,13 @@ impl App {
         let lag = state.behind();
         Status {
             ready: state.ready(lag),
-            lsn: following.map(|f| f.position),
-            time: following.and_then(|f| f.time),
+            applied: following.map(|f| f.applied),
+            committed: following.and_then(|f| f.committed),
             as_of: following.map(Following::as_of),
             lag,
             wal: following.map(|f| f.wal),
             limits: state.limits,
-            error: (state.last_failure.as_ref())
+            failure: (state.last_failure.as_ref())
                 .filter(|_| following.is_none())
                 .map(|failure| failure.error.clone()),
             last_failure: state.last_failure.clone(),
@@ -257,8 +257,12 @@ impl State {
 
     /// Applies the commit to every fact and dim, or names the first table
     /// it no longer fits.
-    fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
-        let Commit { lsn, time, changes } = commit;
+    fn apply(&mut self, commit: Commit) -> Result<(), Identifier> {
+        let Commit {
+            lsn,
+            committed,
+            changes,
+        } = commit;
         for change in changes {
             let table = change.table();
             let spec = self.store.spec();
@@ -271,8 +275,8 @@ impl State {
             }
         }
         let following = self.following();
-        following.position = lsn;
-        following.time = Some(time);
+        following.applied = lsn;
+        following.committed = Some(committed);
         Ok(())
     }
 }
@@ -356,8 +360,8 @@ impl<S: Source> Writer<S> {
         let mut state = self.app.write();
         state.store = store;
         state.following = Some(Following {
-            position: start,
-            time: None,
+            applied: start,
+            committed: None,
             lag,
             wal,
         });
@@ -514,7 +518,7 @@ pub enum Error {
     Source(SourceError),
     /// A change no longer fits the table: a row that doesn't fit, a change
     /// without the old row, a dim row Straum never held, an altered table.
-    Unfit(Ident),
+    Unfit(Identifier),
     /// The server holds more WAL for Straum's slot than
     /// [`Limits::max_retained_wal`], in bytes.
     Retained {

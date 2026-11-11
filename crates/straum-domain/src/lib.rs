@@ -3,7 +3,7 @@
 
 #![forbid(unsafe_code)]
 
-mod agg;
+mod aggregate;
 mod ask;
 mod codes;
 mod hash;
@@ -15,14 +15,14 @@ mod spec;
 mod store;
 mod value;
 
-pub use agg::Agg;
+pub use aggregate::Aggregate;
 pub use ask::{Ask, AskError, AskKey, TimeKey};
-pub use ident::Ident;
+pub use ident::Identifier;
 pub use rollup::RowError;
 pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 pub use spec::{
-    Attribute, By, Cond, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind, Spec,
-    SpecError, Table, Time, Via, Width,
+    Attribute, ByKey, Condition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind,
+    Spec, SpecError, Table, Time, Via, Width,
 };
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
 pub use value::{ColumnType, Datum, Value, decimal};

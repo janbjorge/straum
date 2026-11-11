@@ -108,7 +108,7 @@ ready:        yes
 applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
 as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
 lag:          0.0 s, at most 30 s
-WAL retained: 0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
+WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
 starts:       1
 failures:     0
 last failure: none
@@ -121,7 +121,7 @@ sealed:       no spill
   `as_of` answers carry. It keeps moving while the database is quiet.
 - `lag`: against `--max-lag`.
 - `WAL retained`: what PostgreSQL keeps for the slot, against
-  `--max-retained-wal`, and the server's current WAL position.
+  `--max-retained-wal`, and how far PostgreSQL has written.
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
 - `last failure`: when, and the error.

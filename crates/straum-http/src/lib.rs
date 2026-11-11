@@ -151,7 +151,7 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
         let writing = Instant::now();
         let json = answer::write(&answered);
         Ok(Timed {
-            lsn: answered.lsn,
+            applied: answered.applied,
             json,
             answer: writing - answering,
             write: writing.elapsed(),
@@ -169,7 +169,7 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
 }
 
 struct Timed {
-    lsn: Lsn,
+    applied: Lsn,
     json: Vec<u8>,
     answer: Duration,
     write: Duration,
@@ -177,7 +177,7 @@ struct Timed {
 
 fn answered_response(timed: Timed, parse: Duration, start: Instant) -> Response<Full<Bytes>> {
     let mut response = respond(StatusCode::OK, "application/json", timed.json);
-    let lsn = HeaderValue::try_from(timed.lsn.to_string()).expect("an LSN is ASCII");
+    let lsn = HeaderValue::try_from(timed.applied.to_string()).expect("an LSN is ASCII");
     response.headers_mut().insert(LSN, lsn);
     // total also holds reading the body and the hops to and from the
     // blocking thread, which no phase covers.

@@ -13,7 +13,7 @@ pub(crate) fn why_not(status: &Status) -> Option<String> {
     if status.ready {
         return None;
     }
-    Some(match (&status.error, status.lag) {
+    Some(match (&status.failure, status.lag) {
         (Some(error), _) => error.clone(),
         (None, Some(lag)) => format!("{} s behind PostgreSQL", lag.as_secs()),
         (None, None) => "loading".to_owned(),
@@ -26,7 +26,7 @@ pub(crate) fn write(status: &Status) -> String {
         None => "yes".to_owned(),
         Some(why) => format!("no, {why}"),
     };
-    let applied = match (status.lsn, status.time) {
+    let applied = match (status.applied, status.committed) {
         (None, _) => "nothing yet".to_owned(),
         (Some(lsn), None) => format!("{lsn}, where the stream started"),
         (Some(lsn), Some(time)) => format!("{lsn}, committed {}", timestamp(time)),
@@ -46,10 +46,10 @@ pub(crate) fn write(status: &Status) -> String {
     let wal = match status.wal {
         None => UNKNOWN.to_owned(),
         Some(wal) => format!(
-            "{}, at most {}; the server is at {}",
+            "{}, at most {}; PostgreSQL is at {}",
             mib(wal.retained()),
             mib(status.limits.max_retained_wal),
-            wal.server
+            wal.written
         ),
     };
     let last_failure = match &status.last_failure {
@@ -99,12 +99,12 @@ mod tests {
     fn status() -> Status {
         Status {
             ready: true,
-            lsn: Some(Lsn(0x16_B374_D848)),
-            time: Some(UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456)),
+            applied: Some(Lsn(0x16_B374_D848)),
+            committed: Some(UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456)),
             as_of: Some(UNIX_EPOCH + Duration::from_secs(1_704_153_660)),
             lag: Some(Duration::from_millis(1_300)),
             wal: Some(Wal {
-                server: Lsn(0x16_C000_0000),
+                written: Lsn(0x16_C000_0000),
                 confirmed: Lsn(0x16_B374_D848),
                 restart: Lsn(0x16_B000_0000),
             }),
@@ -112,7 +112,7 @@ mod tests {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: 4 << 30,
             },
-            error: None,
+            failure: None,
             last_failure: Some(Failure {
                 at: UNIX_EPOCH + Duration::from_secs(1_704_067_200),
                 error: "a change no longer fits trips".to_owned(),
@@ -133,7 +133,7 @@ ready:        yes
 applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
 as of:        2024-01-02T00:01:00Z, every commit before it applied
 lag:          1.3 s, at most 30 s
-WAL retained: 256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
+WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
 starts:       2
 failures:     1
 last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
@@ -154,12 +154,12 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
 
         let failed = Status {
             ready: false,
-            lsn: None,
-            time: None,
+            applied: None,
+            committed: None,
             as_of: None,
             lag: None,
             wal: None,
-            error: Some("trips: one\ntrips: two".to_owned()),
+            failure: Some("trips: one\ntrips: two".to_owned()),
             last_failure: Some(Failure {
                 at: UNIX_EPOCH,
                 error: "trips: one\ntrips: two".to_owned(),
@@ -185,7 +185,7 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
         );
 
         let loading = Status {
-            error: None,
+            failure: None,
             ..failed
         };
         assert_eq!(why_not(&loading).as_deref(), Some("loading"));
@@ -195,7 +195,7 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
     #[test]
     fn where_the_stream_started_and_broken_clocks() {
         let started = Status {
-            time: None,
+            committed: None,
             last_failure: Some(Failure {
                 at: UNIX_EPOCH + Duration::from_secs(400_000_000_000),
                 error: "x".to_owned(),

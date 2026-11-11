@@ -3,29 +3,29 @@
 
 use std::fmt;
 
-use crate::ident::Ident;
+use crate::ident::Identifier;
 use crate::rollup::Cells;
 use crate::value::Datum;
 
 /// Names one bucket of one width of a fact.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SealedId {
-    pub fact: Ident,
+    pub fact: Identifier,
     /// Bucket width in seconds.
     pub width: i64,
     /// Unix seconds.
-    pub start: i64,
+    pub bucket_start: i64,
 }
 
 /// A bucket's cells as plain data, for a spill to keep: cell `i` has key
-/// `keys[i * len..][..len]` with `len = keys.len() / rows.len()`,
-/// `rows[i]` rows and entry `i` of each column. Keys are codes, which mean
+/// `keys[i * len..][..len]` with `len = keys.len() / counts.len()`,
+/// `counts[i]` rows and entry `i` of each column. Keys are codes, which mean
 /// something only to the store that sealed them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sealed {
     pub id: SealedId,
     pub keys: Vec<u32>,
-    pub rows: Vec<u64>,
+    pub counts: Vec<u64>,
     /// One per input column of the fact's measures, in the store's order.
     pub columns: Vec<SealedColumn>,
 }
@@ -59,7 +59,7 @@ impl fmt::Display for SealedId {
         write!(
             f,
             "{} bucket of {}s at {}",
-            self.fact, self.width, self.start
+            self.fact, self.width, self.bucket_start
         )
     }
 }

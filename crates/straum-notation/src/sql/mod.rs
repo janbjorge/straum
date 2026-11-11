@@ -12,7 +12,7 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Cond, Ident, Literal, Table};
+use straum_domain::{Condition, Identifier, Literal, Table};
 
 mod ask;
 mod view;
@@ -64,7 +64,7 @@ impl Walker {
         self.errors.push(SqlError { line, msg });
     }
 
-    fn reject(&mut self, line: u64, what: &str, node: &impl fmt::Display) {
+    fn refuse(&mut self, line: u64, what: &str, node: &impl fmt::Display) {
         let text = node.to_string();
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         let text = match text.char_indices().nth(QUOTE_LEN) {
@@ -109,24 +109,24 @@ impl Walker {
     }
 
     /// An unquoted name, folded to lower case as PostgreSQL does.
-    fn ident(&mut self, id: &sql::Ident) -> Option<Ident> {
+    fn ident(&mut self, id: &sql::Ident) -> Option<Identifier> {
         let sql::Ident {
             value,
             quote_style,
             span,
         } = id;
         if quote_style.is_some() {
-            self.reject(span.start.line, "quoted identifier", id);
+            self.refuse(span.start.line, "quoted identifier", id);
             return None;
         }
-        let ident = Ident::new(&value.to_lowercase());
+        let ident = Identifier::new(&value.to_lowercase());
         if ident.is_none() {
             self.error(span.start.line, format!("bad identifier {value}"));
         }
         ident
     }
 
-    fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Option<Ident> {
+    fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Option<Identifier> {
         let sql::ObjectName(parts) = name;
         let [part] = parts.as_slice() else {
             self.error(line(name), format!("{what} {name} must be a bare name"));
@@ -149,11 +149,15 @@ impl Walker {
         })
     }
 
-    fn name_part(&mut self, name: &sql::ObjectName, part: &sql::ObjectNamePart) -> Option<Ident> {
+    fn name_part(
+        &mut self,
+        name: &sql::ObjectName,
+        part: &sql::ObjectNamePart,
+    ) -> Option<Identifier> {
         match part {
             sql::ObjectNamePart::Identifier(id) => self.ident(id),
             other => {
-                self.reject(line(name), "name part", other);
+                self.refuse(line(name), "name part", other);
                 None
             }
         }
@@ -178,7 +182,7 @@ impl Walker {
             index_hints,
         } = factor
         else {
-            self.reject(line(factor), "table", factor);
+            self.refuse(line(factor), "table", factor);
             return None;
         };
         let at = line(factor);
@@ -222,7 +226,7 @@ impl Walker {
             clauses,
         }) = args
         else {
-            self.reject(at, "function call", function);
+            self.refuse(at, "function call", function);
             return None;
         };
         self.absent(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
@@ -246,7 +250,7 @@ impl Walker {
         match args {
             [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => Some(expr),
             _ => {
-                self.reject(line(function), "arguments", function);
+                self.refuse(line(function), "arguments", function);
                 None
             }
         }
@@ -279,7 +283,7 @@ impl Walker {
         match body.as_ref() {
             sql::SetExpr::Select(select) => Some(select),
             other => {
-                self.reject(at, &format!("{what}, use one SELECT,"), other);
+                self.refuse(at, &format!("{what}, use one SELECT,"), other);
                 None
             }
         }
@@ -351,7 +355,7 @@ impl Walker {
     /// `key = value` and `key IN (values)` joined by `AND`, and in a view
     /// `column IS NULL` and `IS NOT NULL`, which count through a null-ness
     /// key; an ask names that key outright, `key = $n`.
-    fn conds(&mut self, expr: &sql::Expr, conds: &mut Vec<Cond>, names: &mut Names<'_, '_>) {
+    fn conds(&mut self, expr: &sql::Expr, conds: &mut Vec<Condition>, names: &mut Names<'_, '_>) {
         let mut parts = Vec::new();
         and_parts(expr, &mut parts);
         for part in parts {
@@ -362,7 +366,7 @@ impl Walker {
                         Names::View(scope) => {
                             conds.extend(self.null_cond(scope, part, column, is_null));
                         }
-                        Names::Ask(_) => self.reject(line(part), CONDITION, part),
+                        Names::Ask(_) => self.refuse(line(part), CONDITION, part),
                     }
                 }
                 sql::Expr::BinaryOp {
@@ -373,7 +377,7 @@ impl Walker {
                     let key = self.cond_key(names, left);
                     let literal = self.cond_value(names, right);
                     if let (Some(key), Some(literal)) = (key, literal) {
-                        conds.push(Cond {
+                        conds.push(Condition {
                             key,
                             values: vec![literal],
                         });
@@ -385,7 +389,7 @@ impl Walker {
                     negated: false,
                 } => {
                     if list.len() < 2 {
-                        self.reject(line(part), "IN with one value, write =,", part);
+                        self.refuse(line(part), "IN with one value, write =,", part);
                         continue;
                     }
                     let key = self.cond_key(names, inner);
@@ -393,15 +397,15 @@ impl Walker {
                         .filter_map(|item| self.cond_value(names, item))
                         .collect();
                     if let Some(key) = key.filter(|_| values.len() == list.len()) {
-                        conds.push(Cond { key, values });
+                        conds.push(Condition { key, values });
                     }
                 }
-                other => self.reject(line(other), CONDITION, other),
+                other => self.refuse(line(other), CONDITION, other),
             }
         }
     }
 
-    fn cond_key(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Ident> {
+    fn cond_key(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Identifier> {
         match names {
             Names::View(scope) => self.key_of(scope, expr),
             Names::Ask(_) => self.ask_name(expr),
@@ -436,7 +440,7 @@ impl Walker {
             _ => None,
         };
         if literal.is_none() {
-            self.reject(
+            self.refuse(
                 line(expr),
                 "literal, use an integer, 'text', true or false,",
                 expr,

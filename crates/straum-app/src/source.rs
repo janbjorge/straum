@@ -8,7 +8,7 @@ use std::error;
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use straum_domain::{Datum, Ident, Spec, Store};
+use straum_domain::{Datum, Identifier, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
 /// is missing, a table no longer fits the spec. Straum starts over after one.
@@ -28,7 +28,7 @@ pub trait Source {
     /// of the LSN [`Source::open`] returned: every commit up to it and none
     /// after. Rows hold [`Fact::columns`] or [`Dim::columns`] and go
     /// through [`Store::add_rows`].
-    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError>;
+    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied, so PostgreSQL may recycle the WAL before it.
@@ -43,7 +43,7 @@ pub trait Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wal {
     /// How far the server has written WAL.
-    pub server: Lsn,
+    pub written: Lsn,
     /// Every commit up to here is applied, as far as the server knows: the
     /// slot's `confirmed_flush_lsn`.
     pub confirmed: Lsn,
@@ -54,7 +54,7 @@ pub struct Wal {
 impl Wal {
     /// Bytes of WAL the server keeps for the slot.
     pub fn retained(&self) -> u64 {
-        self.server.0.saturating_sub(self.restart.0)
+        self.written.0.saturating_sub(self.restart.0)
     }
 }
 
@@ -66,7 +66,7 @@ pub struct Commit {
     /// transaction's end. Loads and the stream are ordered by it.
     pub lsn: Lsn,
     /// When the transaction committed, by the server's clock.
-    pub time: SystemTime,
+    pub committed: SystemTime,
     pub changes: Vec<Change>,
 }
 
@@ -75,22 +75,22 @@ pub struct Commit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Insert {
-        table: Ident,
+        table: Identifier,
         row: Vec<Datum>,
     },
     /// With the whole old row, under `REPLICA IDENTITY FULL`.
     Update {
-        table: Ident,
+        table: Identifier,
         old: Vec<Datum>,
         new: Vec<Datum>,
     },
     Delete {
-        table: Ident,
+        table: Identifier,
         old: Vec<Datum>,
     },
     /// Every row is gone.
     Truncate {
-        table: Ident,
+        table: Identifier,
     },
     /// The table changed shape, so rows already read may no longer read the
     /// same; a column's type changed, for example. Also a change the source
@@ -98,12 +98,12 @@ pub enum Change {
     /// that left out an unchanged TOASTed value with no old row to take it
     /// from.
     Unfit {
-        table: Ident,
+        table: Identifier,
     },
 }
 
 impl Change {
-    pub fn table(&self) -> &Ident {
+    pub fn table(&self) -> &Identifier {
         match self {
             Change::Insert { table, .. }
             | Change::Update { table, .. }

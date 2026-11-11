@@ -67,7 +67,7 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         for (column, datum) in key_columns.iter().zip(keys) {
             field(&mut out, &column.name, &mut first);
             match datum {
-                &Datum::Int(seconds) if column.time => {
+                &Datum::Int(seconds) if column.is_time => {
                     let at = Timestamp::from_second(seconds)
                         .expect("range_errors keeps time keys in range");
                     string(&mut out, &at.to_string());

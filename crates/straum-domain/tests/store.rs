@@ -1,4 +1,4 @@
-//! `Store` against a naive reference that aggregates the live rows directly
+//! `Store` against a reference that aggregates the live rows directly
 //! and joins them to the dims as they are, over random inserts, updates and
 //! deletes of trips and of dim rows. Rows hold the fact's columns only; a
 //! dim's values come through its projection when asked.
@@ -9,9 +9,10 @@ mod common;
 
 use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
-    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attribute, By, ColumnType, Cond,
-    Datum, Dim, Fact, Ident, KeyPart, Literal, Measure, Origin, Ref, RefKind, RowError, Sealed,
-    SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey, Value, Via, Width,
+    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attribute, ByKey,
+    ColumnType, Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref,
+    RefKind, RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey,
+    Value, Via, Width,
 };
 
 const WIDTH: u32 = 900;
@@ -68,8 +69,8 @@ const KEYS: [&str; 12] = [
     "vend_label",
 ];
 
-fn col(s: &str) -> By {
-    By::Column {
+fn col(s: &str) -> ByKey {
+    ByKey::Column {
         column: id(s),
         name: id(s),
     }
@@ -83,9 +84,9 @@ fn attr(name: &str, column: &str) -> Attribute {
 }
 
 fn spec() -> Spec {
-    let m = |name, agg, filter| Measure {
+    let m = |name, aggregate, filter| Measure {
         name: id(name),
-        agg,
+        aggregate,
         filter,
     };
     let zones = Dim {
@@ -127,7 +128,7 @@ fn spec() -> Spec {
         },
         refs: vec![
             Ref {
-                name: id("pickup"),
+                alias: id("pickup"),
                 dim: id("zones"),
                 via: vec![Via::Fact(id("pu"))],
                 kind: RefKind::Left,
@@ -137,7 +138,7 @@ fn spec() -> Spec {
                 ],
             },
             Ref {
-                name: id("dropoff"),
+                alias: id("dropoff"),
                 dim: id("zones"),
                 via: vec![Via::Fact(id("dro"))],
                 kind: RefKind::Left,
@@ -147,28 +148,28 @@ fn spec() -> Spec {
                 ],
             },
             Ref {
-                name: id("combo"),
+                alias: id("combo"),
                 dim: id("combos"),
                 via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
                 kind: RefKind::Left,
                 reads: vec![attr("combo_label", "label")],
             },
             Ref {
-                name: id("vend"),
+                alias: id("vend"),
                 dim: id("vendors"),
                 via: vec![Via::Fact(id("vendor"))],
                 kind: RefKind::Left,
                 reads: vec![attr("vend_label", "label")],
             },
         ],
-        by: vec![
+        by_keys: vec![
             col("pay"),
             col("vendor"),
             col("shared"),
             col("pu"),
             col("dro"),
             // Over a by column, which the row carries once.
-            By::IsNull {
+            ByKey::IsNull {
                 column: id("shared"),
                 name: id("known"),
                 negated: true,
@@ -176,24 +177,28 @@ fn spec() -> Spec {
         ],
         filter: vec![],
         measures: vec![
-            m("trips", Agg::Count, vec![]),
-            m("fare", Agg::Sum(id("fare")), vec![]),
-            m("tip_min", Agg::Min(id("tip")), vec![]),
-            m("tip_max", Agg::Max(id("tip")), vec![]),
+            m("trips", Aggregate::Count, vec![]),
+            m("fare", Aggregate::Sum(id("fare")), vec![]),
+            m("tip_min", Aggregate::Min(id("tip")), vec![]),
+            m("tip_max", Aggregate::Max(id("tip")), vec![]),
             // A sum over a column the load groups by.
-            m("tip_avg", Agg::Avg(id("tip")), vec![]),
-            m("distance", Agg::Avg(id("dist")), vec![]),
-            m("riders", Agg::CountDistinct(id("rider")), vec![]),
-            m("pickups", Agg::CountDistinct(id("pu")), vec![]),
-            m("card", Agg::Count, vec![cond("pay", vec![Literal::Int(1)])]),
+            m("tip_avg", Aggregate::Avg(id("tip")), vec![]),
+            m("distance", Aggregate::Avg(id("dist")), vec![]),
+            m("riders", Aggregate::CountDistinct(id("rider")), vec![]),
+            m("pickups", Aggregate::CountDistinct(id("pu")), vec![]),
+            m(
+                "card",
+                Aggregate::Count,
+                vec![cond("pay", vec![Literal::Int(1)])],
+            ),
             m(
                 "shared_fare",
-                Agg::Sum(id("fare")),
+                Aggregate::Sum(id("fare")),
                 vec![cond("shared", vec![Literal::Bool(true)])],
             ),
             m(
                 "mq_fare",
-                Agg::Sum(id("fare")),
+                Aggregate::Sum(id("fare")),
                 vec![
                     cond("pickup_borough", vec![lit("m"), lit("q")]),
                     cond("vendor", vec![Literal::Int(2)]),
@@ -201,17 +206,17 @@ fn spec() -> Spec {
             ),
             m(
                 "m_riders",
-                Agg::CountDistinct(id("rider")),
+                Aggregate::CountDistinct(id("rider")),
                 vec![cond("dropoff_borough", vec![lit("m")])],
             ),
             m(
                 "far_tip",
-                Agg::Max(id("tip")),
+                Aggregate::Max(id("tip")),
                 vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
             ),
             m(
                 "zone_four_distance",
-                Agg::Avg(id("dist")),
+                Aggregate::Avg(id("dist")),
                 vec![cond("pu", vec![Literal::Int(4)])],
             ),
         ],
@@ -355,7 +360,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
-    let mut measures: Vec<Ident> = all
+    let mut measures: Vec<Identifier> = all
         .iter()
         .filter(|_| rng.chance(50))
         .map(|m| m.name.clone())
@@ -369,7 +374,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     Ask {
         view: id("trips"),
         measures,
-        by,
+        keys: by,
         filter,
         from,
         to,
@@ -378,7 +383,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
 
 /// A key's value for a row: a column, the null-ness key, or a dim value
 /// joined as the dims are now, null when the join finds no row.
-fn value(row: &[Datum], key: &Ident, dims: &Dims) -> Datum {
+fn value(row: &[Datum], key: &Identifier, dims: &Dims) -> Datum {
     let joined = |dim: &str, key: Vec<Datum>, attr: usize| -> Datum {
         if key.contains(&Datum::Null) {
             return Datum::Null;
@@ -431,7 +436,7 @@ fn typed(spec: &Spec) -> Store {
 }
 
 /// The scale a key's values print in: the dims' attributes are all text.
-fn scale(key: &Ident) -> u32 {
+fn scale(key: &Identifier) -> u32 {
     match key.as_str() {
         "known" | "pickup_borough" | "pickup_zone" | "dropoff_borough" | "dropoff_zone"
         | "combo_label" | "vend_label" => 0,
@@ -455,17 +460,17 @@ fn column(name: &str) -> usize {
     }
 }
 
-fn passes(row: &[Datum], conds: &[Cond], dims: &Dims) -> bool {
+fn passes(row: &[Datum], conds: &[Condition], dims: &Dims) -> bool {
     conds
         .iter()
         .all(|c| holds(&value(row, &c.key, dims), &c.values))
 }
 
-/// The ask over the raw rows joined to the dims: no rollup, no buckets.
-fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
+/// The reference answer: the ask over the raw rows joined to the dims: no rollup, no buckets.
+fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
     let fact = spec.fact("trips").unwrap();
     let mut groups: BTreeMap<Vec<Datum>, Vec<&[Datum]>> = BTreeMap::new();
-    if ask.by.is_empty() {
+    if ask.keys.is_empty() {
         groups.insert(Vec::new(), Vec::new());
     }
     for row in rows {
@@ -474,11 +479,11 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
             continue;
         }
         let key = ask
-            .by
+            .keys
             .iter()
             .map(|k| match k {
                 AskKey::Key(p) => value(row, p, dims),
-                AskKey::Time(tk) => Datum::Int(tk.start(t, Width { seconds: WIDTH })),
+                AskKey::Time(tk) => Datum::Int(tk.bucket_start(t, Width { seconds: WIDTH })),
             })
             .collect();
         groups.entry(key).or_default().push(row);
@@ -494,27 +499,27 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
             AnswerRow { keys, values }
         })
         .collect();
-    let columns = (ask.by.iter().map(|k| match k {
+    let columns = (ask.keys.iter().map(|k| match k {
         AskKey::Key(p) => AnswerColumn {
             name: p.to_string(),
             scale: scale(p),
-            time: false,
+            is_time: false,
         },
         AskKey::Time(t) => AnswerColumn {
             name: t.to_string(),
             scale: 0,
-            time: true,
+            is_time: true,
         },
     }))
     .chain(ask.measures.iter().map(|name| AnswerColumn {
         name: name.to_string(),
-        scale: match &fact.measure(name.as_str()).unwrap().agg {
-            Agg::Count | Agg::CountDistinct(_) => 0,
-            Agg::Sum(c) | Agg::Min(c) | Agg::Max(c) | Agg::Avg(c) => {
+        scale: match &fact.measure(name.as_str()).unwrap().aggregate {
+            Aggregate::Count | Aggregate::CountDistinct(_) => 0,
+            Aggregate::Sum(c) | Aggregate::Min(c) | Aggregate::Max(c) | Aggregate::Avg(c) => {
                 trip_types()[column(c.as_str())].scale()
             }
         },
-        time: false,
+        is_time: false,
     }))
     .collect();
     Answer { columns, rows }
@@ -522,7 +527,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
 
 fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
     let rows: Vec<_> = rows.iter().filter(|r| passes(r, &m.filter, dims)).collect();
-    let ints = |c: &Ident| -> Vec<i128> {
+    let ints = |c: &Identifier| -> Vec<i128> {
         rows.iter()
             .filter_map(|r| match r[column(c.as_str())] {
                 Datum::Int(v) => Some(i128::from(v)),
@@ -531,13 +536,13 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
             .collect()
     };
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
-    match &m.agg {
-        Agg::Count => Value::Int(rows.len() as i128),
-        Agg::Sum(c) => {
+    match &m.aggregate {
+        Aggregate::Count => Value::Int(rows.len() as i128),
+        Aggregate::Sum(c) => {
             let v = ints(c);
             or_null((!v.is_empty()).then(|| v.iter().sum()))
         }
-        Agg::Avg(c) => {
+        Aggregate::Avg(c) => {
             let v = ints(c);
             if v.is_empty() {
                 Value::Null
@@ -548,9 +553,9 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
                 }
             }
         }
-        Agg::Min(c) => or_null(ints(c).into_iter().min()),
-        Agg::Max(c) => or_null(ints(c).into_iter().max()),
-        Agg::CountDistinct(c) => {
+        Aggregate::Min(c) => or_null(ints(c).into_iter().min()),
+        Aggregate::Max(c) => or_null(ints(c).into_iter().max()),
+        Aggregate::CountDistinct(c) => {
             let seen: HashSet<_> = rows
                 .iter()
                 .map(|r| &r[column(c.as_str())])
@@ -599,7 +604,7 @@ impl Spilled {
     }
 }
 
-/// Random changes and asks against the naive reference. With `sealing`,
+/// Random changes and asks against the reference. With `sealing`,
 /// buckets are sealed and unsealed at random as they go, and the answers
 /// must not change; returns the sealed buckets asks read.
 fn run(seed: u64, sealing: bool) -> usize {
@@ -654,7 +659,7 @@ fn run(seed: u64, sealing: bool) -> usize {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
                     spilled.ask(&store, &ask),
-                    naive(&spec, &ask, &rows, &dims),
+                    reference(&spec, &ask, &rows, &dims),
                     "seed {seed}, step {step}, {ask:?}"
                 );
             }
@@ -750,7 +755,7 @@ fn a_range_cuts_at_both_ends() {
     let ask = |from, to| Ask {
         view: id("trips"),
         measures: vec![id("trips")],
-        by: Vec::new(),
+        keys: Vec::new(),
         filter: Vec::new(),
         from,
         to,
@@ -787,7 +792,7 @@ fn a_dim_change_moves_the_answer_at_once() {
     let by_label = Ask {
         view: id("trips"),
         measures: vec![id("trips")],
-        by: vec![AskKey::Key(id("vend_label"))],
+        keys: vec![AskKey::Key(id("vend_label"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -849,7 +854,7 @@ fn a_composite_key_matches_every_column() {
     let mut by_label = Ask {
         view: id("trips"),
         measures: vec![id("trips")],
-        by: vec![AskKey::Key(id("combo_label"))],
+        keys: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -885,7 +890,7 @@ fn a_composite_key_matches_every_column() {
     }
     // Filtered on the attribute too.
     by_label.filter = vec![cond("combo_label", vec![lit("x")])];
-    by_label.by.clear();
+    by_label.keys.clear();
     let mut row = trip(&mut rng);
     row[AT] = Datum::Int(START);
     row[PU] = Datum::Int(1);
@@ -921,7 +926,7 @@ fn a_filter_on_an_attribute_reads_the_dim() {
     let mq_fare = Ask {
         view: id("trips"),
         measures: vec![id("mq_fare")],
-        by: Vec::new(),
+        keys: Vec::new(),
         filter: Vec::new(),
         from: START,
         to: END,
@@ -953,12 +958,15 @@ fn every_key_at_once_uses_the_sparse_index() {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("riders")],
-        by: KEYS.iter().map(|k| AskKey::Key(id(k))).collect(),
+        keys: KEYS.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: Vec::new(),
         from: START,
         to: END,
     };
-    assert_eq!(store.ask(&ask).unwrap(), naive(&spec, &ask, &rows, &dims));
+    assert_eq!(
+        store.ask(&ask).unwrap(),
+        reference(&spec, &ask, &rows, &dims)
+    );
 }
 
 #[test]
@@ -1050,7 +1058,7 @@ fn columns_put_measure_inputs_after_the_key() {
         .unwrap()
         .columns()
         .iter()
-        .map(Ident::to_string)
+        .map(Identifier::to_string)
         .collect();
     let expected = [
         (AT, "at"),
@@ -1127,7 +1135,7 @@ fn removing_an_extreme_reveals_the_next() {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("tip_min"), id("tip_max")],
-        by: Vec::new(),
+        keys: Vec::new(),
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1179,7 +1187,7 @@ fn filter_values_are_of_their_column_type() {
     let ask = |filter| Ask {
         view: id("trips"),
         measures: vec![id("trips")],
-        by: Vec::new(),
+        keys: Vec::new(),
         filter,
         from: START,
         to: END,
@@ -1229,7 +1237,7 @@ fn types_stay_through_clear() {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
+        keys: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1260,7 +1268,7 @@ fn columns_name_keys_and_measures_as_asked() {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("fare"), id("trips")],
-        by: vec![
+        keys: vec![
             AskKey::Key(id("pickup_zone")),
             AskKey::Time(TimeKey::Bucket),
         ],
@@ -1269,7 +1277,7 @@ fn columns_name_keys_and_measures_as_asked() {
         to: END,
     };
     let columns: Vec<(String, bool)> = (store.ask(&ask).unwrap().columns.into_iter())
-        .map(|c| (c.name, c.time))
+        .map(|c| (c.name, c.is_time))
         .collect();
     assert_eq!(
         columns,
@@ -1292,7 +1300,7 @@ fn time_key_start() {
         (-1, -900),
     ];
     for (t, start) in cases {
-        assert_eq!(TimeKey::Bucket.start(t, width), start, "{t}");
+        assert_eq!(TimeKey::Bucket.bucket_start(t, width), start, "{t}");
     }
 }
 
@@ -1300,7 +1308,7 @@ fn time_key_start() {
 fn ask_without_by_answers_one_row() {
     let store = Store::new(spec());
     let fact = spec();
-    let measures: Vec<Ident> = fact
+    let measures: Vec<Identifier> = fact
         .fact("trips")
         .unwrap()
         .measures
@@ -1310,7 +1318,7 @@ fn ask_without_by_answers_one_row() {
     let ask = Ask {
         view: id("trips"),
         measures,
-        by: Vec::new(),
+        keys: Vec::new(),
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1348,7 +1356,7 @@ fn unknown_names() {
     let ask = Ask {
         view: id("zones"),
         measures: vec![id("trips")],
-        by: Vec::new(),
+        keys: Vec::new(),
         filter: Vec::new(),
         from: START,
         to: END,
@@ -1459,11 +1467,11 @@ fn three_rows() -> (Store, Vec<Vec<Datum>>) {
     (store, rows)
 }
 
-fn sealed_id(width: i64, start: i64) -> SealedId {
+fn sealed_id(width: i64, bucket_start: i64) -> SealedId {
     SealedId {
         fact: id("trips"),
         width,
-        start,
+        bucket_start,
     }
 }
 
@@ -1471,7 +1479,7 @@ fn whole_range(by: Vec<AskKey>) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("tip_min"), id("tip_max"), id("riders")],
-        by,
+        keys: by,
         filter: Vec::new(),
         from: START,
         to: START + 604_800,
@@ -1487,7 +1495,7 @@ fn a_sealed_bucket_answers_as_before() {
 
     let id = sealed_id(i64::from(WIDTH), START);
     let sealed = store.sealed_copy(&id).unwrap();
-    assert_eq!(sealed.rows, [2]);
+    assert_eq!(sealed.counts, [2]);
     store.seal(&id).unwrap();
     assert_eq!(store.sealed_read(&ask).unwrap(), std::slice::from_ref(&id));
     assert_eq!(store.cells_read(&ask).unwrap(), cells);
@@ -1586,8 +1594,8 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
     let cases: [(&str, &Change<'_>); 13] = [
         ("unknown fact", &|s| s.id.fact = id("nope")),
         ("no such width", &|s| s.id.width = 7),
-        ("no cells", &|s| s.rows.clear()),
-        ("a cell without rows", &|s| s.rows[0] = 0),
+        ("no cells", &|s| s.counts.clear()),
+        ("a cell without rows", &|s| s.counts[0] = 0),
         ("keys don't fit the rollup key", &|s| {
             s.keys.pop();
         }),
@@ -1639,7 +1647,7 @@ fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
     store.seal(&id).unwrap();
     // Two cells under one key.
     sealed.keys.extend_from_slice(&sealed.keys.clone());
-    sealed.rows.extend_from_slice(&sealed.rows.clone());
+    sealed.counts.extend_from_slice(&sealed.counts.clone());
     for column in &mut sealed.columns {
         match column {
             SealedColumn::Sum { sums, counts } => {

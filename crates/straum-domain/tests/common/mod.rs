@@ -1,9 +1,9 @@
 //! Helpers the store and join tests share.
 
-use straum_domain::{Cond, Datum, Ident, Literal, Table};
+use straum_domain::{Condition, Datum, Identifier, Literal, Table};
 
-pub fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
+pub fn id(s: &str) -> Identifier {
+    Identifier::new(s).unwrap()
 }
 
 pub fn text(s: &str) -> Datum {
@@ -14,8 +14,8 @@ pub fn lit(s: &str) -> Literal {
     Literal::Text(s.into())
 }
 
-pub fn cond(key: &str, values: Vec<Literal>) -> Cond {
-    Cond {
+pub fn cond(key: &str, values: Vec<Literal>) -> Condition {
+    Condition {
         key: id(key),
         values,
     }

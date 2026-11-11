@@ -19,7 +19,7 @@ pub(crate) struct Projection {
     /// One per attribute, with `Null` under code 0, so a key with no row
     /// and a null value read alike without a lookup.
     codes: Vec<Codes>,
-    /// By key: the attribute codes of each row under it, in arrival order.
+    /// ByKey key: the attribute codes of each row under it, in arrival order.
     rows: FastMap<Box<[Datum]>, Vec<Box<[u32]>>>,
     /// Rows held, over every key.
     held: usize,

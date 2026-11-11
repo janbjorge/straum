@@ -54,7 +54,7 @@ plugin and kubeconform. For a change under `docs/`, also run
   invariant, a PostgreSQL quirk, a rejected alternative. Never reference
   callers or tickets, and never leave `TODO` or commented-out code.
 - Every behaviour gets a positive and a negative test. State that
-  changes over time gets a property test against a naive reference;
+  changes over time gets a property test against a reference;
   planting a bug must make it fail.
 - A settled decision gets a record in `docs/adr/`; ADR-0001 says how.
 - Commit straight to `main`, one change per commit, with a short

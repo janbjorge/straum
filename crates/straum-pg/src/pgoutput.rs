@@ -18,7 +18,7 @@ pub(crate) enum Message<'a> {
     Commit {
         /// The end of the commit record.
         end_lsn: u64,
-        time: SystemTime,
+        committed: SystemTime,
     },
     Relation(Relation),
     Insert {
@@ -118,8 +118,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
             // commit time.
             r.skip(1 + 8)?;
             let end_lsn = r.u64()?;
-            let time = r.time()?;
-            Message::Commit { end_lsn, time }
+            let committed = r.time()?;
+            Message::Commit { end_lsn, committed }
         }
         b'R' => {
             let id = r.u32()?;
@@ -402,7 +402,7 @@ mod tests {
                 Bytes::default().tag(b'C').tag(0).u64(10).u64(20).u64(30),
                 Message::Commit {
                     end_lsn: 20,
-                    time: UNIX_EPOCH + Duration::from_micros(946_684_800_000_030),
+                    committed: UNIX_EPOCH + Duration::from_micros(946_684_800_000_030),
                 },
             ),
             (
@@ -415,7 +415,7 @@ mod tests {
                     .i64(-1_000_000),
                 Message::Commit {
                     end_lsn: 20,
-                    time: UNIX_EPOCH + Duration::from_secs(946_684_799),
+                    committed: UNIX_EPOCH + Duration::from_secs(946_684_799),
                 },
             ),
             (

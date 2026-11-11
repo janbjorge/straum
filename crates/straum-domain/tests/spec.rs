@@ -2,12 +2,12 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attribute, By, Cond, Dim, Fact, Ident, Key, Literal, Measure,
-    Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via, Width,
+    Aggregate, Ask, AskError, AskKey, Attribute, ByKey, Condition, Dim, Fact, Identifier, Key,
+    Literal, Measure, Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via, Width,
 };
 
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
+fn id(s: &str) -> Identifier {
+    Identifier::new(s).unwrap()
 }
 
 fn table(name: &str) -> Table {
@@ -39,24 +39,24 @@ fn fact() -> Fact {
             origin: Origin::Timestamptz,
         },
         refs: vec![Ref {
-            name: id("r"),
+            alias: id("r"),
             dim: id("z"),
             via: vec![Via::Fact(id("z_id"))],
             kind: RefKind::Left,
             reads: vec![attr("name", "name")],
         }],
-        by: vec![col("a"), col("z_id")],
+        by_keys: vec![col("a"), col("z_id")],
         filter: vec![],
         measures: vec![Measure {
             name: id("n"),
-            agg: Agg::Count,
+            aggregate: Aggregate::Count,
             filter: vec![],
         }],
     }
 }
 
-fn col(s: &str) -> By {
-    By::Column {
+fn col(s: &str) -> ByKey {
+    ByKey::Column {
         column: id(s),
         name: id(s),
     }
@@ -73,15 +73,15 @@ fn attr(name: &str, column: &str) -> Attribute {
 fn which_measures_read_numbers() {
     let x = || id("x");
     let cases = [
-        (Agg::Sum(x()), true),
-        (Agg::Min(x()), true),
-        (Agg::Max(x()), true),
-        (Agg::Avg(x()), true),
-        (Agg::CountDistinct(x()), false),
-        (Agg::Count, false),
+        (Aggregate::Sum(x()), true),
+        (Aggregate::Min(x()), true),
+        (Aggregate::Max(x()), true),
+        (Aggregate::Avg(x()), true),
+        (Aggregate::CountDistinct(x()), false),
+        (Aggregate::Count, false),
     ];
-    for (agg, numbers) in cases {
-        assert_eq!(agg.reads_numbers(), numbers, "{agg:?}");
+    for (aggregate, numbers) in cases {
+        assert_eq!(aggregate.reads_numbers(), numbers, "{aggregate:?}");
     }
 }
 
@@ -96,8 +96,8 @@ fn valid() {
 fn names_resolve_to_by_keys_and_attributes() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.resolve(&id("a")), Some(Key::By(&t.by[0])));
-    assert_eq!(t.resolve(&id("z_id")), Some(Key::By(&t.by[1])));
+    assert_eq!(t.resolve(&id("a")), Some(Key::ByKey(&t.by_keys[0])));
+    assert_eq!(t.resolve(&id("z_id")), Some(Key::ByKey(&t.by_keys[1])));
     assert_eq!(
         t.resolve(&id("name")),
         Some(Key::Attribute(&t.refs[0], &t.refs[0].reads[0]))
@@ -105,7 +105,7 @@ fn names_resolve_to_by_keys_and_attributes() {
     for missing in ["r", "id", "nope", "b", "n"] {
         assert_eq!(t.resolve(&id(missing)), None, "{missing}");
     }
-    let keys: Vec<&Ident> = t.keys().collect();
+    let keys: Vec<&Identifier> = t.keys().collect();
     assert_eq!(keys, [&id("a"), &id("z_id"), &id("name")]);
 }
 
@@ -114,15 +114,15 @@ fn names_resolve_to_by_keys_and_attributes() {
 #[test]
 fn columns_and_rollup_key() {
     let mut t = fact();
-    t.by = vec![col("a")];
+    t.by_keys = vec![col("a")];
     t.measures.push(Measure {
         name: id("s"),
-        agg: Agg::Sum(id("z_id")),
+        aggregate: Aggregate::Sum(id("z_id")),
         filter: vec![],
     });
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
     let attrs: Vec<String> = (t.attributes())
-        .map(|(r, a)| format!("{}.{} AS {}", r.name, a.column, a.name))
+        .map(|(r, a)| format!("{}.{} AS {}", r.alias, a.column, a.name))
         .collect();
     assert_eq!(attrs, ["r.name AS name"]);
     assert_eq!(t.rollup_key().count(), 3);
@@ -183,12 +183,12 @@ fn every_error_is_reported_and_displayed() {
     let mut t = fact();
     t.name = id("z");
     t.time.width = Width { seconds: 420 };
-    t.by = vec![
+    t.by_keys = vec![
         col("id"),
         col("at"),
         col("name"),
         col("id"),
-        By::IsNull {
+        ByKey::IsNull {
             column: id("at"),
             name: id("no_time"),
             negated: false,
@@ -198,15 +198,15 @@ fn every_error_is_reported_and_displayed() {
     t.measures = vec![
         Measure {
             name: id("m"),
-            agg: Agg::Count,
-            filter: vec![Cond {
+            aggregate: Aggregate::Count,
+            filter: vec![Condition {
                 key: id("c"),
                 values: vec![Literal::Int(1)],
             }],
         },
         Measure {
             name: id("m"),
-            agg: Agg::Count,
+            aggregate: Aggregate::Count,
             filter: vec![],
         },
     ];
@@ -215,31 +215,31 @@ fn every_error_is_reported_and_displayed() {
     // another twice.
     let mut u = fact();
     u.name = id("u");
-    u.by = vec![col("a"), col("z_id"), col("b")];
+    u.by_keys = vec![col("a"), col("z_id"), col("b")];
     u.refs = vec![
         Ref {
-            name: id("r"),
+            alias: id("r"),
             dim: id("z"),
             via: vec![Via::Fact(id("z_id")), Via::Fact(id("b"))],
             kind: RefKind::Left,
             reads: vec![attr("r_name", "name")],
         },
         Ref {
-            name: id("s"),
+            alias: id("s"),
             dim: id("z"),
             via: vec![Via::Fact(id("a")), Via::Fact(id("a"))],
             kind: RefKind::Left,
             reads: vec![attr("s_name", "name")],
         },
         Ref {
-            name: id("e"),
+            alias: id("e"),
             dim: id("z"),
             via: vec![Via::Fact(id("a"))],
             kind: RefKind::Left,
             reads: vec![],
         },
         Ref {
-            name: id("q"),
+            alias: id("q"),
             dim: id("z"),
             via: vec![Via::Fact(id("b"))],
             kind: RefKind::Left,
@@ -290,7 +290,7 @@ fn a_chained_via_used_twice_names_its_ref() {
         column: id("name"),
     };
     t.refs.push(Ref {
-        name: id("c"),
+        alias: id("c"),
         dim: id("z"),
         via: vec![chained.clone(), chained],
         kind: RefKind::Left,
@@ -324,13 +324,13 @@ fn ask() -> Ask {
     Ask {
         view: id("t"),
         measures: vec![id("n")],
-        by: vec![
+        keys: vec![
             AskKey::Key(id("a")),
             AskKey::Key(id("z_id")),
             AskKey::Key(id("name")),
             AskKey::Time(TimeKey::Bucket),
         ],
-        filter: vec![Cond {
+        filter: vec![Condition {
             key: id("name"),
             values: vec![Literal::Text("x".into())],
         }],
@@ -342,7 +342,7 @@ fn ask() -> Ask {
 #[test]
 fn an_ask_by_every_key_form_checks() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
-    assert_eq!(spec.check(&ask()).unwrap().name, id("t"));
+    assert_eq!(spec.check_ask(&ask()).unwrap().name, id("t"));
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let unheld = Ask {
         measures: vec![id("n"), id("tips"), id("n")],
-        by: vec![
+        keys: vec![
             AskKey::Key(id("fare")),
             AskKey::Key(id("colour")),
             AskKey::Key(id("name")),
@@ -362,7 +362,7 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
         ..ask()
     };
     assert_eq!(
-        spec.check(&unheld).unwrap_err(),
+        spec.check_ask(&unheld).unwrap_err(),
         [
             AskError::UnknownMeasure(id("tips")),
             AskError::UnknownKey(id("fare")),
@@ -386,13 +386,13 @@ fn an_ask_of_a_bad_shape_is_rejected() {
         ..ask()
     };
     assert_eq!(
-        spec.check(&unknown).unwrap_err(),
+        spec.check_ask(&unknown).unwrap_err(),
         [AskError::UnknownView(id("nope"))]
     );
 
     let empty = Ask {
         measures: vec![],
-        filter: vec![Cond {
+        filter: vec![Condition {
             key: id("fare"),
             values: vec![Literal::Int(1)],
         }],
@@ -401,7 +401,7 @@ fn an_ask_of_a_bad_shape_is_rejected() {
         ..ask()
     };
     assert_eq!(
-        spec.check(&empty).unwrap_err(),
+        spec.check_ask(&empty).unwrap_err(),
         [
             AskError::NoMeasures,
             AskError::UnknownKey(id("fare")),
@@ -438,7 +438,7 @@ fn ask_errors_display() {
                 at: 60,
                 width: Width { seconds: 900 },
             },
-            "range end 60 is not on a 900s bucket edge",
+            "bound 60 is not on a 900s bucket edge",
         ),
     ];
     for (error, shown) in cases {

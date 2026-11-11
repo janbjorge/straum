@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
-use straum_pg::{Dsn, Pg};
+use straum_pg::{Dsn, Postgres};
 use tokio::signal::unix::{SignalKind, signal};
 
 const HELP: &str = "\
@@ -477,11 +477,11 @@ fn run(args: Run) -> Result<(), String> {
     let app = App::new(spec, limits, None);
     let writer = Writer::new(
         app.clone(),
-        Pg::new(dsn, &publication, max_transaction_rows),
+        Postgres::new(dsn, &publication, max_transaction_rows),
     );
     thread::Builder::new()
-        .name("writer".into())
-        .spawn(move || write(writer))
+        .name("straum-writer".into())
+        .spawn(move || run_writer(writer))
         .map_err(|e| format!("starting the writer: {e}"))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -521,7 +521,7 @@ fn run(args: Run) -> Result<(), String> {
     Ok(())
 }
 
-fn write(mut writer: Writer<Pg>) {
+fn run_writer(mut writer: Writer<Postgres>) {
     let mut backoff = FIRST_BACKOFF;
     loop {
         match writer.step() {

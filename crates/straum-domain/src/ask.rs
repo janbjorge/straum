@@ -1,17 +1,17 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::ident::Ident;
-use crate::spec::{Cond, Fact, Literal, Spec, Width};
+use crate::ident::Identifier;
+use crate::spec::{Condition, Fact, Literal, Spec, Width};
 use crate::value::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
-    pub view: Ident,
-    pub measures: Vec<Ident>,
-    pub by: Vec<AskKey>,
+    pub view: Identifier,
+    pub measures: Vec<Identifier>,
+    pub keys: Vec<AskKey>,
     /// Every condition must hold.
-    pub filter: Vec<Cond>,
+    pub filter: Vec<Condition>,
     /// The half-open range `[from, to)`, Unix seconds, on bucket edges.
     pub from: i64,
     pub to: i64,
@@ -20,7 +20,7 @@ pub struct Ask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskKey {
     /// A key by the name the view gives it.
-    Key(Ident),
+    Key(Identifier),
     Time(TimeKey),
 }
 
@@ -31,7 +31,7 @@ pub enum TimeKey {
 }
 
 impl TimeKey {
-    pub fn start(self, t: i64, width: Width) -> i64 {
+    pub fn bucket_start(self, t: i64, width: Width) -> i64 {
         match self {
             TimeKey::Bucket => t.div_euclid(i64::from(width.seconds)) * i64::from(width.seconds),
         }
@@ -39,7 +39,7 @@ impl TimeKey {
 }
 
 impl Spec {
-    pub fn check(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
+    pub fn check_ask(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
         let Some(fact) = self.fact(ask.view.as_str()) else {
             return Err(vec![AskError::UnknownView(ask.view.clone())]);
         };
@@ -56,7 +56,7 @@ impl Spec {
         }
 
         let mut time = None;
-        for key in &ask.by {
+        for key in &ask.keys {
             match key {
                 AskKey::Key(name) => {
                     if fact.resolve(name).is_none() {
@@ -72,11 +72,11 @@ impl Spec {
         }
         // An answer's columns go by name, so two can't share one.
         let mut names = HashSet::new();
-        let keys = (ask.by.iter()).filter_map(|key| match key {
+        let keys = (ask.keys.iter()).filter_map(|key| match key {
             AskKey::Key(name) => Some(name.as_str()),
             AskKey::Time(_) => None,
         });
-        for name in keys.chain(ask.measures.iter().map(Ident::as_str)) {
+        for name in keys.chain(ask.measures.iter().map(Identifier::as_str)) {
             if !names.insert(name) {
                 errors.push(AskError::AskedTwice(name.to_owned()));
             }
@@ -109,18 +109,18 @@ impl Spec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskError {
-    UnknownView(Ident),
-    UnknownMeasure(Ident),
+    UnknownView(Identifier),
+    UnknownMeasure(Identifier),
     /// A name that is no key of the view: not a `by` key, not an
     /// attribute a ref reads.
-    UnknownKey(Ident),
+    UnknownKey(Identifier),
     NoMeasures,
     TimeKeyTwice,
     /// A key or measure named twice, or a key and a measure of one name.
     AskedTwice(String),
     /// A filter value not of its column's type, which would match nothing.
     WrongType {
-        key: Ident,
+        key: Identifier,
         column: ColumnType,
         value: Literal,
     },
@@ -154,7 +154,7 @@ impl fmt::Display for AskError {
             }
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, width } => {
-                write!(f, "range end {at} is not on a {width} bucket edge")
+                write!(f, "bound {at} is not on a {width} bucket edge")
             }
         }
     }

@@ -1,24 +1,24 @@
-//! Every match on `Agg` is here, so a new aggregate is one variant and the
+//! Every match on `Aggregate` is here, so a new aggregate is one variant and the
 //! arms the compiler asks for.
 
 use std::collections::HashSet;
 
-use crate::ident::Ident;
-use crate::rollup::{Column, Kind};
+use crate::ident::Identifier;
+use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Agg {
+pub enum Aggregate {
     Count,
-    Sum(Ident),
-    Min(Ident),
-    Max(Ident),
-    Avg(Ident),
-    CountDistinct(Ident),
+    Sum(Identifier),
+    Min(Identifier),
+    Max(Identifier),
+    Avg(Identifier),
+    CountDistinct(Identifier),
 }
 
-impl Agg {
-    pub fn input(&self) -> Option<&Ident> {
+impl Aggregate {
+    pub fn input(&self) -> Option<&Identifier> {
         self.state().map(|(_, column)| column)
     }
 
@@ -26,12 +26,12 @@ impl Agg {
         self.state().is_some_and(|(kind, _)| kind.numeric())
     }
 
-    pub(crate) fn state(&self) -> Option<(Kind, &Ident)> {
+    pub(crate) fn state(&self) -> Option<(StateKind, &Identifier)> {
         match self {
-            Agg::Count => None,
-            Agg::Sum(c) | Agg::Avg(c) => Some((Kind::Sum, c)),
-            Agg::Min(c) | Agg::Max(c) => Some((Kind::Extent, c)),
-            Agg::CountDistinct(c) => Some((Kind::Distinct, c)),
+            Aggregate::Count => None,
+            Aggregate::Sum(c) | Aggregate::Avg(c) => Some((StateKind::Sum, c)),
+            Aggregate::Min(c) | Aggregate::Max(c) => Some((StateKind::Extent, c)),
+            Aggregate::CountDistinct(c) => Some((StateKind::Distinct, c)),
         }
     }
 }
@@ -70,23 +70,23 @@ pub(crate) enum Partials {
 }
 
 impl Partials {
-    pub(crate) fn new(agg: &Agg) -> Partials {
-        match agg {
-            Agg::Count => Partials::Count(Vec::new()),
-            Agg::Sum(_) | Agg::Avg(_) => Partials::Sum {
+    pub(crate) fn new(aggregate: &Aggregate) -> Partials {
+        match aggregate {
+            Aggregate::Count => Partials::Count(Vec::new()),
+            Aggregate::Sum(_) | Aggregate::Avg(_) => Partials::Sum {
                 sums: Vec::new(),
                 counts: Vec::new(),
-                average: matches!(agg, Agg::Avg(_)),
+                average: matches!(aggregate, Aggregate::Avg(_)),
             },
-            Agg::Min(_) => Partials::Min {
+            Aggregate::Min(_) => Partials::Min {
                 values: Vec::new(),
                 seen: Vec::new(),
             },
-            Agg::Max(_) => Partials::Max {
+            Aggregate::Max(_) => Partials::Max {
                 values: Vec::new(),
                 seen: Vec::new(),
             },
-            Agg::CountDistinct(_) => Partials::Distinct(Vec::new()),
+            Aggregate::CountDistinct(_) => Partials::Distinct(Vec::new()),
         }
     }
 
@@ -111,22 +111,22 @@ impl Partials {
         }
     }
 
-    pub(crate) fn merge(&mut self, groups: &[u32], rows: &[u64], column: Option<&Column>) {
+    pub(crate) fn merge(&mut self, groups: &[u32], cell_counts: &[u64], state: Option<&State>) {
         if let Some(&g) = groups.first()
             && groups.iter().all(|&h| h == g)
         {
-            return self.merge_into(g, rows, column);
+            return self.merge_into(g, cell_counts, state);
         }
         let cells = groups.iter().enumerate().map(|(i, &g)| lane(i, g));
-        match (self, column) {
+        match (self, state) {
             (Partials::Count(counts), None) => {
-                for (g, &n) in cells.zip(rows) {
+                for (g, &n) in cells.zip(cell_counts) {
                     counts[g] += n;
                 }
             }
             (
                 Partials::Sum { sums, counts, .. },
-                Some(Column::Sum {
+                Some(State::Sum {
                     sums: cell_sums,
                     counts: cell_counts,
                 }),
@@ -136,37 +136,43 @@ impl Partials {
                     counts[g] += count;
                 }
             }
-            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 for (g, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
                     values[g] = values[g].min(min);
                     seen[g] |= min <= max;
                 }
             }
-            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 for (g, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
                     values[g] = values[g].max(max);
                     seen[g] |= min <= max;
                 }
             }
-            (Partials::Distinct(seen), Some(Column::Distinct(counts))) => {
+            (Partials::Distinct(seen), Some(State::Distinct(counts))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
                 for (&g, counts) in groups.iter().zip(counts).filter(|&(&g, _)| g != 0) {
                     seen[g as usize].extend(counts.keys().cloned());
                 }
             }
-            _ => unreachable!("Agg::state names the column the measure reads"),
+            _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
 
     /// One cell into one group, for a cell that counts more than once or
     /// under several groups.
-    pub(crate) fn merge_cell(&mut self, g: u32, i: usize, rows: &[u64], column: Option<&Column>) {
+    pub(crate) fn merge_cell(
+        &mut self,
+        g: u32,
+        i: usize,
+        cell_counts: &[u64],
+        state: Option<&State>,
+    ) {
         let at = lane(i, g);
-        match (self, column) {
-            (Partials::Count(counts), None) => counts[at] += rows[i],
+        match (self, state) {
+            (Partials::Count(counts), None) => counts[at] += cell_counts[i],
             (
                 Partials::Sum { sums, counts, .. },
-                Some(Column::Sum {
+                Some(State::Sum {
                     sums: cell_sums,
                     counts: cell_counts,
                 }),
@@ -174,31 +180,31 @@ impl Partials {
                 sums[at] += cell_sums[i];
                 counts[at] += cell_counts[i];
             }
-            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = values[at].min(mins[i]);
                 seen[at] |= mins[i] <= maxs[i];
             }
-            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = values[at].max(maxs[i]);
                 seen[at] |= mins[i] <= maxs[i];
             }
-            (Partials::Distinct(seen), Some(Column::Distinct(counts))) if g != 0 => {
+            (Partials::Distinct(seen), Some(State::Distinct(counts))) if g != 0 => {
                 seen[g as usize].extend(counts[i].keys().cloned());
             }
-            (Partials::Distinct(_), Some(Column::Distinct(_))) => {}
-            _ => unreachable!("Agg::state names the column the measure reads"),
+            (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
 
     /// Folding in registers beats adding to one place in memory, each add
     /// waiting on the last.
-    fn merge_into(&mut self, g: u32, rows: &[u64], column: Option<&Column>) {
+    fn merge_into(&mut self, g: u32, cell_counts: &[u64], state: Option<&State>) {
         let (at, g) = (lane(0, g), g as usize);
-        match (self, column) {
-            (Partials::Count(counts), None) => counts[at] += rows.iter().sum::<u64>(),
+        match (self, state) {
+            (Partials::Count(counts), None) => counts[at] += cell_counts.iter().sum::<u64>(),
             (
                 Partials::Sum { sums, counts, .. },
-                Some(Column::Sum {
+                Some(State::Sum {
                     sums: cell_sums,
                     counts: cell_counts,
                 }),
@@ -206,19 +212,19 @@ impl Partials {
                 sums[at] += cell_sums.iter().sum::<i128>();
                 counts[at] += cell_counts.iter().sum::<u64>();
             }
-            (Partials::Min { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = mins.iter().fold(values[at], |a, &b| a.min(b));
                 seen[at] |= mins.iter().zip(maxs).any(|(a, b)| a <= b);
             }
-            (Partials::Max { values, seen }, Some(Column::Extent { mins, maxs, .. })) => {
+            (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = maxs.iter().fold(values[at], |a, &b| a.max(b));
                 seen[at] |= mins.iter().zip(maxs).any(|(a, b)| a <= b);
             }
-            (Partials::Distinct(seen), Some(Column::Distinct(counts))) if g != 0 => {
+            (Partials::Distinct(seen), Some(State::Distinct(counts))) if g != 0 => {
                 seen[g].extend(counts.iter().flat_map(|c| c.keys().cloned()));
             }
-            (Partials::Distinct(_), Some(Column::Distinct(_))) => {}
-            _ => unreachable!("Agg::state names the column the measure reads"),
+            (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
 

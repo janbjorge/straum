@@ -29,5 +29,5 @@ pub use dsn::{Dsn, DsnError};
 pub use error::Error;
 pub use pgoutput::DecodeError;
 pub use plan::plan;
-pub use source::Pg;
+pub use source::Postgres;
 pub use value::ValueError;

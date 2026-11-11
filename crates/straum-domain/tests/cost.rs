@@ -8,8 +8,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Attribute, By, ColumnType, Datum, Dim, Fact, Ident, Measure, Origin, Ref,
-    RefKind, Spec, Store, Table, Time, TimeKey, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Datum, Dim, Fact, Identifier, Measure,
+    Origin, Ref, RefKind, Spec, Store, Table, Time, TimeKey, Via, Width,
 };
 
 thread_local! {
@@ -56,8 +56,8 @@ const HOUR: u32 = 3600;
 const ZONES: i64 = 40;
 const BOROUGHS: [&str; 4] = ["m", "q", "b", "x"];
 
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
+fn id(s: &str) -> Identifier {
+    Identifier::new(s).unwrap()
 }
 
 fn key(s: &str) -> AskKey {
@@ -70,9 +70,9 @@ fn spec(buckets: &[u32]) -> Spec {
         schema: id("public"),
         name: id(name),
     };
-    let m = |name, agg| Measure {
+    let m = |name, aggregate| Measure {
         name: id(name),
-        agg,
+        aggregate,
         filter: vec![],
     };
     let zones = Dim {
@@ -96,7 +96,7 @@ fn spec(buckets: &[u32]) -> Spec {
             origin: Origin::Timestamptz,
         },
         refs: vec![Ref {
-            name: id("pickup"),
+            alias: id("pickup"),
             dim: id("zones"),
             via: vec![Via::Fact(id("pu"))],
             kind: RefKind::Left,
@@ -105,21 +105,21 @@ fn spec(buckets: &[u32]) -> Spec {
                 column: id("borough"),
             }],
         }],
-        by: vec![
-            By::Column {
+        by_keys: vec![
+            ByKey::Column {
                 column: id("pay"),
                 name: id("pay"),
             },
-            By::Column {
+            ByKey::Column {
                 column: id("pu"),
                 name: id("pu"),
             },
         ],
         filter: vec![],
         measures: vec![
-            m("trips", Agg::Count),
-            m("fare", Agg::Sum(id("fare"))),
-            m("tip_max", Agg::Max(id("tip"))),
+            m("trips", Aggregate::Count),
+            m("fare", Aggregate::Sum(id("fare"))),
+            m("tip_max", Aggregate::Max(id("tip"))),
         ],
     };
     Spec::new(vec![zones], vec![trips]).unwrap()
@@ -172,7 +172,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: by.iter().map(|b| key(b)).collect(),
+        keys: by.iter().map(|b| key(b)).collect(),
         filter: vec![],
         from: from * i64::from(HOUR),
         to: to * i64::from(HOUR),
@@ -257,7 +257,7 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
         (19 + 6 + 3 + 1 + 4) * per_hour
     );
     let mut by_bucket = ask(&[], 5, 700);
-    by_bucket.by = vec![AskKey::Time(TimeKey::Bucket)];
+    by_bucket.keys = vec![AskKey::Time(TimeKey::Bucket)];
     assert_eq!(store.cells_read(&by_bucket).unwrap(), 695 * per_hour);
 }
 

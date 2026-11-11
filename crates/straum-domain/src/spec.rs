@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::agg::Agg;
-use crate::ident::Ident;
+use crate::aggregate::Aggregate;
+use crate::ident::Identifier;
 use crate::value::ColumnType;
 
 /// Seconds per day. Every width divides it, so buckets roll up to days.
@@ -10,8 +10,8 @@ const DAY: u32 = 86_400;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
-    pub schema: Ident,
-    pub name: Ident,
+    pub schema: Identifier,
+    pub name: Identifier,
 }
 
 /// A table facts join to by key, any number of rows per key. Straum holds
@@ -20,75 +20,78 @@ pub struct Table {
 /// columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dim {
-    pub name: Ident,
+    pub name: Identifier,
     pub table: Table,
     /// One column or more; a row is named by their values together.
-    pub key: Vec<Ident>,
+    pub key: Vec<Identifier>,
     /// Every column any ref reads of it.
-    pub attributes: Vec<Ident>,
+    pub attributes: Vec<Identifier>,
     /// The columns written `alias.column::text`: read as the text
     /// PostgreSQL prints for them, whatever their type there.
-    pub as_text: Vec<Ident>,
+    pub as_text: Vec<Identifier>,
 }
 
 impl Dim {
     /// The columns a row of this dim carries, in order: the key columns,
     /// then the attributes.
-    pub fn columns(&self) -> impl Iterator<Item = &Ident> {
+    pub fn columns(&self) -> impl Iterator<Item = &Identifier> {
         self.key.iter().chain(&self.attributes)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
-    pub name: Ident,
+    pub name: Identifier,
     pub table: Table,
     pub time: Time,
     /// In join order: a ref joined through another comes after it.
     pub refs: Vec<Ref>,
-    pub by: Vec<By>,
+    pub by_keys: Vec<ByKey>,
     pub measures: Vec<Measure>,
     /// The view's `WHERE`: a row counts, for every measure, only when
     /// every condition holds.
-    pub filter: Vec<Cond>,
+    pub filter: Vec<Condition>,
     /// The columns written `alias.column::text`: read as the text
     /// PostgreSQL prints for them, whatever their type there.
-    pub as_text: Vec<Ident>,
+    pub as_text: Vec<Identifier>,
 }
 
 /// A rollup key a fact row gives: a column's value, or whether a column
 /// is null, which a nullable column such as `completed` means by. Every
 /// key has the name the view gives it with `AS`, which is what asks use.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum By {
+pub enum ByKey {
     /// `column AS name`.
-    Column { column: Ident, name: Ident },
+    Column {
+        column: Identifier,
+        name: Identifier,
+    },
     /// `(column IS NULL) AS name`, or `IS NOT NULL` when `negated`: a
     /// boolean key whatever the column's type.
     IsNull {
-        column: Ident,
-        name: Ident,
+        column: Identifier,
+        name: Identifier,
         negated: bool,
     },
 }
 
-impl By {
-    pub fn name(&self) -> &Ident {
+impl ByKey {
+    pub fn name(&self) -> &Identifier {
         match self {
-            By::Column { name, .. } | By::IsNull { name, .. } => name,
+            ByKey::Column { name, .. } | ByKey::IsNull { name, .. } => name,
         }
     }
 
-    pub(crate) fn column(&self) -> &Ident {
+    pub(crate) fn column(&self) -> &Identifier {
         match self {
-            By::Column { column, .. } | By::IsNull { column, .. } => column,
+            ByKey::Column { column, .. } | ByKey::IsNull { column, .. } => column,
         }
     }
 
     pub(crate) fn key_part(&self) -> KeyPart<'_> {
         match self {
-            By::Column { column, .. } => KeyPart::Column(column),
-            By::IsNull {
+            ByKey::Column { column, .. } => KeyPart::Column(column),
+            ByKey::IsNull {
                 column, negated, ..
             } => KeyPart::IsNull {
                 column,
@@ -100,7 +103,7 @@ impl By {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Time {
-    pub column: Ident,
+    pub column: Identifier,
     pub width: Width,
     /// Wider bucket widths kept beside `width`, narrowest first. Each is a
     /// whole multiple of the width before it, so one of its buckets is made
@@ -153,8 +156,8 @@ pub struct Width {
 /// row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
-    pub name: Ident,
-    pub dim: Ident,
+    pub alias: Identifier,
+    pub dim: Identifier,
     pub kind: RefKind,
     /// In the dim's key order.
     pub via: Vec<Via>,
@@ -181,11 +184,11 @@ pub enum RefKind {
 /// joined before, which that dim's projection then carries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Via {
-    Fact(Ident),
+    Fact(Identifier),
     Attribute {
         /// Index into [`Fact::refs`], before this ref.
         through: usize,
-        column: Ident,
+        column: Identifier,
     },
 }
 
@@ -193,23 +196,23 @@ pub enum Via {
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribute {
-    pub name: Ident,
-    pub column: Ident,
+    pub name: Identifier,
+    pub column: Identifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Measure {
-    pub name: Ident,
-    pub agg: Agg,
+    pub name: Identifier,
+    pub aggregate: Aggregate,
     /// A row counts only when every condition holds.
-    pub filter: Vec<Cond>,
+    pub filter: Vec<Condition>,
 }
 
 /// `key = value`, or `key in (values)` with more than one value, `key`
 /// being a name the view gives a key; see [`Fact::resolve`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Cond {
-    pub key: Ident,
+pub struct Condition {
+    pub key: Identifier,
     pub values: Vec<Literal>,
 }
 
@@ -222,7 +225,7 @@ pub enum Literal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key<'a> {
-    By(&'a By),
+    ByKey(&'a ByKey),
     /// An attribute a ref reads. A ref has no value of its own: asks name
     /// its attributes, or the fact columns it joins on.
     Attribute(&'a Ref, &'a Attribute),
@@ -232,8 +235,11 @@ pub enum Key<'a> {
 /// column is null, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyPart<'a> {
-    Column(&'a Ident),
-    IsNull { column: &'a Ident, negated: bool },
+    Column(&'a Identifier),
+    IsNull {
+        column: &'a Identifier,
+        negated: bool,
+    },
     Bucket,
 }
 
@@ -243,7 +249,7 @@ impl Fact {
     pub fn rollup_key(&self) -> impl Iterator<Item = KeyPart<'_>> {
         let mut parts: Vec<KeyPart<'_>> = Vec::new();
         let vias = self.fact_vias().map(KeyPart::Column);
-        for part in self.by.iter().map(By::key_part).chain(vias) {
+        for part in self.by_keys.iter().map(ByKey::key_part).chain(vias) {
             if !parts.contains(&part) {
                 parts.push(part);
             }
@@ -254,7 +260,7 @@ impl Fact {
 
     /// The fact columns the refs join on, in ref order, a column as often
     /// as it is joined on.
-    pub fn fact_vias(&self) -> impl Iterator<Item = &Ident> {
+    pub fn fact_vias(&self) -> impl Iterator<Item = &Identifier> {
         self.refs
             .iter()
             .flat_map(|r| &r.via)
@@ -274,11 +280,11 @@ impl Fact {
     /// The columns a row of this fact is read from, in order: the time
     /// column, the columns the `by` keys read in rollup-key order, the via
     /// columns of the refs, then the measure inputs, each column once.
-    pub fn columns(&self) -> Vec<Ident> {
-        let mut columns: Vec<Ident> = vec![self.time.column.clone()];
-        let read = (self.by.iter().map(By::column))
+    pub fn columns(&self) -> Vec<Identifier> {
+        let mut columns: Vec<Identifier> = vec![self.time.column.clone()];
+        let read = (self.by_keys.iter().map(ByKey::column))
             .chain(self.fact_vias())
-            .chain(self.measures.iter().filter_map(|m| m.agg.input()));
+            .chain(self.measures.iter().filter_map(|m| m.aggregate.input()));
         for column in read {
             if !columns.contains(column) {
                 columns.push(column.clone());
@@ -293,9 +299,9 @@ impl Fact {
 
     /// The key the view names so: a `by` key, or an attribute a ref
     /// reads. Keys and attributes share one namespace.
-    pub fn resolve(&self, name: &Ident) -> Option<Key<'_>> {
-        if let Some(by) = self.by.iter().find(|b| b.name() == name) {
-            return Some(Key::By(by));
+    pub fn resolve(&self, name: &Identifier) -> Option<Key<'_>> {
+        if let Some(by) = self.by_keys.iter().find(|b| b.name() == name) {
+            return Some(Key::ByKey(by));
         }
         self.refs.iter().find_map(|r| {
             let attr = r.reads.iter().find(|a| a.name == *name)?;
@@ -304,8 +310,8 @@ impl Fact {
     }
 
     /// Every name an ask may group or filter by, keys then attributes.
-    pub fn keys(&self) -> impl Iterator<Item = &Ident> {
-        (self.by.iter().map(By::name)).chain(self.attributes().map(|(_, a)| &a.name))
+    pub fn keys(&self) -> impl Iterator<Item = &Identifier> {
+        (self.by_keys.iter().map(ByKey::name)).chain(self.attributes().map(|(_, a)| &a.name))
     }
 }
 
@@ -399,14 +405,14 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     check_time(fact, errors);
     // `by` keys and the attributes refs read share one namespace, since
     // an ask names either by its name alone.
-    let mut keys: HashSet<&Ident> = HashSet::new();
+    let mut keys: HashSet<&Identifier> = HashSet::new();
     check_by(fact, &mut keys, errors);
     let mut ref_names = HashSet::new();
     for (position, r) in fact.refs.iter().enumerate() {
-        if !ref_names.insert(&r.name) {
+        if !ref_names.insert(&r.alias) {
             errors.push(SpecError::Duplicate {
                 scope: Some(fact.name.clone()),
-                name: r.name.clone(),
+                name: r.alias.clone(),
             });
         }
         check_ref(fact, position, dims, &mut keys, errors);
@@ -436,16 +442,16 @@ fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
     }
 }
 
-fn check_by<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mut Vec<SpecError>) {
+fn check_by<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Identifier>, errors: &mut Vec<SpecError>) {
     let name = &fact.name;
-    for by in &fact.by {
+    for by in &fact.by_keys {
         if *by.column() == fact.time.column {
             errors.push(match by {
-                By::Column { column, .. } => SpecError::TimeAsKey {
+                ByKey::Column { column, .. } => SpecError::TimeAsKey {
                     fact: name.clone(),
                     column: column.clone(),
                 },
-                By::IsNull {
+                ByKey::IsNull {
                     column, name: key, ..
                 } => SpecError::NullTime {
                     fact: name.clone(),
@@ -467,7 +473,7 @@ fn check_ref<'a>(
     fact: &'a Fact,
     position: usize,
     dims: &[Dim],
-    keys: &mut HashSet<&'a Ident>,
+    keys: &mut HashSet<&'a Identifier>,
     errors: &mut Vec<SpecError>,
 ) {
     let name = &fact.name;
@@ -477,7 +483,7 @@ fn check_ref<'a>(
         if !via.insert(column) {
             errors.push(SpecError::ViaReused {
                 fact: name.clone(),
-                ref_name: r.name.clone(),
+                ref_name: r.alias.clone(),
                 column: via_name(column, &fact.refs),
             });
         }
@@ -489,7 +495,7 @@ fn check_ref<'a>(
             if !carried {
                 errors.push(SpecError::ChainColumn {
                     fact: name.clone(),
-                    ref_name: r.name.clone(),
+                    ref_name: r.alias.clone(),
                     through: *through,
                     column: column.clone(),
                 });
@@ -500,12 +506,12 @@ fn check_ref<'a>(
     match dim {
         None => errors.push(SpecError::UnknownDim {
             fact: name.clone(),
-            ref_name: r.name.clone(),
+            ref_name: r.alias.clone(),
             dim: r.dim.clone(),
         }),
         Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyLength {
             fact: name.clone(),
-            ref_name: r.name.clone(),
+            ref_name: r.alias.clone(),
             via: r.via.len(),
             dim: dim.name.clone(),
             key: dim.key.len(),
@@ -516,11 +522,11 @@ fn check_ref<'a>(
     match r.kind {
         RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefReadsNothing {
             fact: name.clone(),
-            ref_name: r.name.clone(),
+            ref_name: r.alias.clone(),
         }),
         RefKind::Semi | RefKind::Anti if reads => errors.push(SpecError::RefReads {
             fact: name.clone(),
-            ref_name: r.name.clone(),
+            ref_name: r.alias.clone(),
             kind: r.kind,
         }),
         _ => {}
@@ -529,7 +535,7 @@ fn check_ref<'a>(
     for attr in &r.reads {
         if !read.insert(&attr.column) {
             errors.push(SpecError::Duplicate {
-                scope: Some(r.name.clone()),
+                scope: Some(r.alias.clone()),
                 name: attr.column.clone(),
             });
         } else if let Some(dim) = dim
@@ -537,7 +543,7 @@ fn check_ref<'a>(
         {
             errors.push(SpecError::UnknownAttribute {
                 fact: name.clone(),
-                ref_name: r.name.clone(),
+                ref_name: r.alias.clone(),
                 attr: attr.column.clone(),
                 dim: dim.name.clone(),
             });
@@ -552,7 +558,11 @@ fn check_ref<'a>(
 }
 
 /// Measures share the key namespace too: an ask names both alike.
-fn check_measures<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mut Vec<SpecError>) {
+fn check_measures<'a>(
+    fact: &'a Fact,
+    keys: &mut HashSet<&'a Identifier>,
+    errors: &mut Vec<SpecError>,
+) {
     let name = &fact.name;
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
@@ -594,7 +604,7 @@ fn via_name(via: &Via, refs: &[Ref]) -> String {
     match via {
         Via::Fact(column) => column.to_string(),
         Via::Attribute { through, column } => {
-            let through = refs.get(*through).map_or("?", |r| r.name.as_str());
+            let through = refs.get(*through).map_or("?", |r| r.alias.as_str());
             format!("{through}.{column}")
         }
     }
@@ -605,93 +615,93 @@ pub enum SpecError {
     /// Two declarations share a name; `scope` is the enclosing dim, fact or
     /// ref.
     Duplicate {
-        scope: Option<Ident>,
-        name: Ident,
+        scope: Option<Identifier>,
+        name: Identifier,
     },
     BadWidth {
-        fact: Ident,
+        fact: Identifier,
         seconds: u32,
     },
     /// A bucket width that isn't a wider whole multiple of the width
     /// before it.
     BadBucket {
-        fact: Ident,
+        fact: Identifier,
         seconds: u32,
         below: u32,
     },
     /// The time column is a `by` column too, which the catalog would refuse
     /// anyway: a time never groups.
     TimeAsKey {
-        fact: Ident,
-        column: Ident,
+        fact: Identifier,
+        column: Identifier,
     },
     /// A null-ness key over the time column, which could never be true in
     /// an answer: a row with no time is never answered.
     NullTime {
-        fact: Ident,
-        name: Ident,
-        column: Ident,
+        fact: Identifier,
+        name: Identifier,
+        column: Identifier,
     },
     /// A ref joins on one column twice.
     ViaReused {
-        fact: Ident,
-        ref_name: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
         column: String,
     },
     /// A ref joins on another number of columns than its dim's key has.
     KeyLength {
-        fact: Ident,
-        ref_name: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
         via: usize,
-        dim: Ident,
+        dim: Identifier,
         key: usize,
     },
     UnknownDim {
-        fact: Ident,
-        ref_name: Ident,
-        dim: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
+        dim: Identifier,
     },
     /// A left or inner ref that reads nothing, so the join does nothing.
     RefReadsNothing {
-        fact: Ident,
-        ref_name: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
     },
     /// A semi or anti ref that reads columns, which it has none of.
     RefReads {
-        fact: Ident,
-        ref_name: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
         kind: RefKind,
     },
     /// A ref joined through a dim column that no ref before it carries.
     ChainColumn {
-        fact: Ident,
-        ref_name: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
         through: usize,
-        column: Ident,
+        column: Identifier,
     },
     /// A ref reads an attribute its dim has no column of.
     UnknownAttribute {
-        fact: Ident,
-        ref_name: Ident,
-        attr: Ident,
-        dim: Ident,
+        fact: Identifier,
+        ref_name: Identifier,
+        attr: Identifier,
+        dim: Identifier,
     },
     NoKey {
-        dim: Ident,
+        dim: Identifier,
     },
     /// A filter, of a measure or the view's, names something that is no
     /// key of the view.
     UnknownKey {
-        fact: Ident,
-        measure: Option<Ident>,
-        key: Ident,
+        fact: Identifier,
+        measure: Option<Identifier>,
+        key: Identifier,
     },
     NoMeasures {
-        fact: Ident,
+        fact: Identifier,
     },
     /// Asks call the time bucket `bucket`, so nothing else may be.
     NamedBucket {
-        fact: Ident,
+        fact: Identifier,
     },
 }
 

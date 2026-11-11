@@ -79,7 +79,7 @@ impl fmt::Display for Error {
             Error::Transaction { lsn, limit } => write!(
                 f,
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
-                 the --max-transaction-rows cap; Straum loads again from a snapshot after it"
+                 the --max-transaction-rows limit; Straum starts over from a snapshot after it"
             ),
             Error::Stopped => f.write_str("the replication stream stopped"),
         }
@@ -128,7 +128,7 @@ mod tests {
                     limit: 100_000,
                 },
                 "transaction 16/B374D848 changes more than 100000 rows Straum reads, \
-                 the --max-transaction-rows cap; Straum loads again from a snapshot after it",
+                 the --max-transaction-rows limit; Straum starts over from a snapshot after it",
             ),
             (Error::Stopped, "the replication stream stopped"),
         ];

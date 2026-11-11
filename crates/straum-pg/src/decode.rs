@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::{mem, slice};
 
 use straum_app::{Change, Commit, Lsn};
-use straum_domain::{ColumnType, Datum, Ident};
+use straum_domain::{ColumnType, Datum, Identifier};
 
 use crate::catalog::Checked;
 use crate::error::Error;
@@ -19,17 +19,17 @@ pub(crate) struct Decoder {
     /// Each with its types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so Straum starts over.
     tables: Vec<Checked>,
-    /// By relation id. A table read by two members of the spec maps to
+    /// ByKey relation id. A table read by two members of the spec maps to
     /// both.
     relations: HashMap<u32, Vec<Mapping>>,
     transaction: Transaction,
 }
 
-/// The transaction so far, held until its Commit; `max_rows` bounds it,
+/// The transaction so far, held until its Commit; `limit` bounds it,
 /// since every change here is applied under the write lock.
 struct Transaction {
     changes: Vec<Change>,
-    max_rows: usize,
+    limit: usize,
     /// The transaction being read, by the LSN of its commit record.
     lsn: Option<Lsn>,
 }
@@ -44,15 +44,15 @@ struct Mapping {
 }
 
 impl Decoder {
-    /// `tables` are the spec's tables, dims and facts; `max_rows` is the
+    /// `tables` are the spec's tables, dims and facts; `limit` is the
     /// most changes to them one transaction may hold.
-    pub(crate) fn new(tables: Vec<Checked>, max_rows: usize) -> Decoder {
+    pub(crate) fn new(tables: Vec<Checked>, limit: usize) -> Decoder {
         Decoder {
             tables,
             relations: HashMap::new(),
             transaction: Transaction {
                 changes: Vec::new(),
-                max_rows,
+                limit,
                 lsn: None,
             },
         }
@@ -65,12 +65,12 @@ impl Decoder {
                 self.transaction.lsn = Some(Lsn(*final_lsn));
                 return Ok(None);
             }
-            Message::Commit { end_lsn, time } => {
+            Message::Commit { end_lsn, committed } => {
                 self.transaction.lsn = None;
                 let changes = mem::take(&mut self.transaction.changes);
                 return Ok(Some(Commit {
                     lsn: Lsn(*end_lsn),
-                    time: *time,
+                    committed: *committed,
                     changes,
                 }));
             }
@@ -89,7 +89,7 @@ impl Decoder {
                 let table = &self.tables[m.table];
                 let change = m.change(table, &message)?;
                 self.transaction
-                    .hold(change.unwrap_or_else(|| altered(table)))?;
+                    .hold(change.unwrap_or_else(|| unfit(table)))?;
             }
         }
         Ok(None)
@@ -111,7 +111,7 @@ impl Decoder {
             t.schema.as_str() == relation.schema && t.table.as_str() == relation.name
         });
         for (index, table) in tables {
-            let position = |column: &Ident| {
+            let position = |column: &Identifier| {
                 relation
                     .columns
                     .iter()
@@ -133,7 +133,7 @@ impl Decoder {
                 types.push(column_type.ok_or_else(|| changed(table, column))?);
             }
             if table.types != types {
-                self.transaction.changes.push(altered(table));
+                self.transaction.changes.push(unfit(table));
                 table.types.clone_from(&types);
             }
             mappings.push(Mapping {
@@ -149,13 +149,13 @@ impl Decoder {
 }
 
 impl Transaction {
-    /// Holds a change for the commit, or stops at the cap. The count is per
+    /// Holds a change for the commit, or stops at the limit. The count is per
     /// transaction, not per table: the lock is held for all of it at once.
     fn hold(&mut self, change: Change) -> Result<(), Error> {
-        if self.changes.len() >= self.max_rows {
+        if self.changes.len() >= self.limit {
             return Err(Error::Transaction {
                 lsn: self.lsn.unwrap_or(Lsn(0)),
-                limit: self.max_rows,
+                limit: self.limit,
             });
         }
         self.changes.push(change);
@@ -168,7 +168,7 @@ fn mappings(relations: &HashMap<u32, Vec<Mapping>>, relation: u32) -> &[Mapping]
     relations.get(&relation).map_or(&[], Vec::as_slice)
 }
 
-fn changed(table: &Checked, column: &Ident) -> Error {
+fn changed(table: &Checked, column: &Identifier) -> Error {
     Error::Setup(vec![format!(
         "{}: column {column} of {} was dropped or changed type",
         table.name,
@@ -176,7 +176,7 @@ fn changed(table: &Checked, column: &Ident) -> Error {
     )])
 }
 
-fn altered(table: &Checked) -> Change {
+fn unfit(table: &Checked) -> Change {
     Change::Unfit {
         table: table.name.clone(),
     }
@@ -278,10 +278,10 @@ mod tests {
     const UUID: u32 = 2950;
     const FLOAT8: u32 = 701;
     /// Changes a transaction may hold in these tests; the longest feeds ten.
-    const CAP: usize = 16;
+    const LIMIT: usize = 16;
 
-    fn id(s: &str) -> Ident {
-        Ident::new(s).unwrap()
+    fn id(s: &str) -> Identifier {
+        Identifier::new(s).unwrap()
     }
 
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
@@ -304,7 +304,7 @@ mod tests {
                 ),
                 table("visits", &["name"], vec![ColumnType::Text]),
             ],
-            CAP,
+            LIMIT,
         )
     }
 
@@ -338,8 +338,12 @@ mod tests {
             decoder.feed(m)?;
         }
         let time = UNIX_EPOCH + Duration::from_secs(9);
-        let commit = (decoder.feed(Message::Commit { end_lsn: 9, time }))?.unwrap();
-        assert_eq!((commit.lsn, commit.time), (Lsn(9), time));
+        let commit = (decoder.feed(Message::Commit {
+            end_lsn: 9,
+            committed: time,
+        }))?
+        .unwrap();
+        assert_eq!((commit.lsn, commit.committed), (Lsn(9), time));
         Ok(commit.changes)
     }
 
@@ -363,7 +367,7 @@ mod tests {
             types: vec![ColumnType::Text],
             enums: vec![777],
         };
-        let mut d = Decoder::new(vec![moods], CAP);
+        let mut d = Decoder::new(vec![moods], LIMIT);
         let changes = feed(
             &mut d,
             vec![
@@ -500,8 +504,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let altered = |t: &str| Change::Unfit { table: id(t) };
-        let pair = [altered("zones"), altered("visits")];
+        let unfit = |t: &str| Change::Unfit { table: id(t) };
+        let pair = [unfit("zones"), unfit("visits")];
         let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
         assert_eq!(changes, expected);
     }
@@ -581,7 +585,7 @@ mod tests {
         }
     }
 
-    /// The cap counts a transaction's changes to every fact together: each
+    /// The limit counts a transaction's changes to every fact together: each
     /// insert here is a change to both facts.
     #[test]
     fn a_transaction_past_the_cap_stops_the_stream() {
@@ -589,24 +593,24 @@ mod tests {
             relation: 7,
             new: row(Field::Text("1"), Field::Text("Bronx")),
         };
-        // CAP / 2 inserts make CAP changes: fine, twice over.
+        // LIMIT / 2 inserts make LIMIT changes: fine, twice over.
         let mut d = decoder();
         for _ in 0..2 {
-            let messages = [zones()].into_iter().chain((0..CAP / 2).map(insert));
+            let messages = [zones()].into_iter().chain((0..LIMIT / 2).map(insert));
             let changes = feed(&mut d, messages.collect()).unwrap();
-            assert_eq!(changes.len(), CAP);
+            assert_eq!(changes.len(), LIMIT);
         }
-        // One more insert is one change past the cap, in the transaction
+        // One more insert is one change past the limit, in the transaction
         // that commits at 9.
         let mut d = decoder();
-        let messages = [zones()].into_iter().chain((0..CAP / 2 + 1).map(insert));
+        let messages = [zones()].into_iter().chain((0..LIMIT / 2 + 1).map(insert));
         let err = feed(&mut d, messages.collect()).unwrap_err();
         assert!(
             matches!(
                 err,
                 Error::Transaction {
                     lsn: Lsn(9),
-                    limit: CAP
+                    limit: LIMIT
                 }
             ),
             "{err:?}"

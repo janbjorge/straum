@@ -17,8 +17,8 @@ use straum_app::{
     Writer,
 };
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Literal, SealedId, Spec,
-    Store, TimeKey, Value,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Literal, SealedId,
+    Spec, Store, TimeKey, Value,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -117,7 +117,7 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
         view: id(fact),
         measures: measures.iter().map(|m| id(m)).collect(),
-        by: by.iter().map(|k| ask_key(k)).collect(),
+        keys: by.iter().map(|k| ask_key(k)).collect(),
         filter: Vec::new(),
         from: 0,
         to: RANGE,
@@ -156,7 +156,7 @@ fn reference(db: &Database, lsn: Lsn) -> Store {
     store
 }
 
-fn expected(db: &Database, ask: &Ask) -> Answer {
+fn reference_answer(db: &Database, ask: &Ask) -> Answer {
     reference(db, db.lsn()).ask(ask).unwrap()
 }
 
@@ -190,7 +190,7 @@ fn starts_from_one_snapshot() {
         .app()
         .ask(&ask("trips", &["trips", "fare"], &["borough"]))
         .unwrap();
-    assert_eq!(answered.lsn, lsn);
+    assert_eq!(answered.applied, lsn);
     // Caught up when the WAL was read after the load.
     let slack = Duration::from_millis(1);
     assert!(answered.as_of + slack >= before, "{:?}", answered.as_of);
@@ -208,7 +208,7 @@ fn starts_from_one_snapshot() {
 fn a_value_of_another_type_is_refused_once_loaded() {
     let (_db, mut writer) = setup(&TABLES);
     let by_kind = |value| Ask {
-        filter: vec![Cond {
+        filter: vec![Condition {
             key: id("kind"),
             values: vec![value],
         }],
@@ -305,7 +305,7 @@ fn fact_rows_change_through_the_old_row() {
             values: vec![Value::Int(1), Value::Int(30), Value::Int(1)]
         }]
     );
-    assert_eq!(answered.answer, expected(&db.borrow(), &by_kind));
+    assert_eq!(answered.answer, reference_answer(&db.borrow(), &by_kind));
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn fact_change_without_the_old_row_starts_over() {
     let by_bucket = ask("logins", &["logins"], &["bucket", "zone_id"]);
     assert_eq!(
         writer.app().ask(&by_bucket).unwrap().answer,
-        expected(&db.borrow(), &by_bucket)
+        reference_answer(&db.borrow(), &by_bucket)
     );
 }
 
@@ -368,7 +368,7 @@ fn dim_changes_show_at_once() {
             .ask(&ask("trips", &["trips"], &["borough"]))
             .unwrap()
             .answer,
-        expected(&db.borrow(), &ask("trips", &["trips"], &["borough"]))
+        reference_answer(&db.borrow(), &ask("trips", &["trips"], &["borough"]))
     );
 
     // A new row and a changed one join the dim as it is.
@@ -472,7 +472,7 @@ fn truncate_empties_the_table() {
     let by_borough = ask("trips", &["trips"], &["borough"]);
     let answer = writer.app().ask(&by_borough).unwrap().answer;
     assert_eq!(answer.rows, [row(Datum::Null, 1)]);
-    assert_eq!(answer, expected(&db.borrow(), &by_borough));
+    assert_eq!(answer, reference_answer(&db.borrow(), &by_borough));
 }
 
 #[test]
@@ -549,15 +549,15 @@ fn asks_wait_while_the_tables_load() {
 #[test]
 fn the_last_failure_is_kept_until_the_next_start() {
     let (db, mut writer) = setup(&TABLES);
-    assert_eq!(writer.app().status().error, None);
+    assert_eq!(writer.app().status().failure, None);
     db.borrow_mut().drop_connection = true;
     writer.step().unwrap_err();
     assert_eq!(
-        writer.app().status().error.as_deref(),
+        writer.app().status().failure.as_deref(),
         Some("connection dropped")
     );
     writer.step().unwrap();
-    assert_eq!(writer.app().status().error, None);
+    assert_eq!(writer.app().status().failure, None);
 }
 
 #[test]
@@ -575,7 +575,7 @@ fn ready_only_within_the_lag_bound() {
 
     // WAL written during the load that the slot hasn't confirmed.
     let wal = |server, confirmed| Wal {
-        server: Lsn(server),
+        written: Lsn(server),
         confirmed: Lsn(confirmed),
         restart: Lsn(confirmed),
     };
@@ -586,7 +586,7 @@ fn ready_only_within_the_lag_bound() {
     // Answers are as of before the load, not the reading after it.
     let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(behind.as_of + Duration::from_millis(2) <= SystemTime::now());
-    assert_eq!(writer.app().status().error, None);
+    assert_eq!(writer.app().status().failure, None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
 
@@ -615,13 +615,13 @@ fn status_reports_what_straum_did() {
         writer.app().status(),
         Status {
             ready: false,
-            lsn: None,
-            time: None,
+            applied: None,
+            committed: None,
             as_of: None,
             lag: None,
             wal: None,
             limits: LIMITS,
-            error: None,
+            failure: None,
             last_failure: None,
             starts: 0,
             failures: 0,
@@ -634,7 +634,7 @@ fn status_reports_what_straum_did() {
     writer.step().unwrap();
     let status = writer.app().status();
     assert!(status.ready);
-    assert_eq!((status.lsn, status.time), (Some(start), None));
+    assert_eq!((status.applied, status.committed), (Some(start), None));
     // Answers say the same.
     let answered = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     let apart = match answered.as_of.duration_since(status.as_of.unwrap()) {
@@ -644,7 +644,7 @@ fn status_reports_what_straum_did() {
     assert!(apart < Duration::from_millis(1), "{apart:?}");
     assert_eq!(status.lag, Some(Duration::ZERO));
     let caught_up = Wal {
-        server: start,
+        written: start,
         confirmed: start,
         restart: start,
     };
@@ -653,7 +653,7 @@ fn status_reports_what_straum_did() {
 
     // A reading while it waits for the next commit.
     let held = Wal {
-        server: Lsn(start.0 + 50),
+        written: Lsn(start.0 + 50),
         confirmed: start,
         restart: Lsn(start.0 - 20),
     };
@@ -662,7 +662,10 @@ fn status_reports_what_straum_did() {
     let lsn = db.borrow_mut().commit(vec![trip(2, 1, 1, 10)]);
     writer.step().unwrap();
     let status = writer.app().status();
-    assert_eq!((status.lsn, status.time), (Some(lsn), Some(time(lsn))));
+    assert_eq!(
+        (status.applied, status.committed),
+        (Some(lsn), Some(time(lsn)))
+    );
     assert_eq!(status.wal, Some(held));
 
     db.borrow_mut().drop_connection = true;
@@ -670,9 +673,9 @@ fn status_reports_what_straum_did() {
     writer.step().unwrap_err();
     let status = writer.app().status();
     assert!(!status.ready);
-    assert_eq!((status.lsn, status.lag, status.wal), (None, None, None));
+    assert_eq!((status.applied, status.lag, status.wal), (None, None, None));
     assert_eq!(status.as_of, None);
-    assert_eq!(status.error.as_deref(), Some("connection dropped"));
+    assert_eq!(status.failure.as_deref(), Some("connection dropped"));
     let failure = status.last_failure.clone().unwrap();
     assert_eq!(failure.error, "connection dropped");
     assert_eq!((status.starts, status.failures), (1, 1));
@@ -682,7 +685,7 @@ fn status_reports_what_straum_did() {
     writer.step().unwrap();
     let after = writer.app().status();
     assert!(after.ready);
-    assert_eq!(after.error, None);
+    assert_eq!(after.failure, None);
     assert_eq!(after.last_failure, status.last_failure);
     assert_eq!((after.starts, after.failures), (2, 1));
 }
@@ -692,7 +695,7 @@ fn too_much_wal_starts_over() {
     let (db, mut writer) = setup(&TABLES);
     let limit = LIMITS.max_retained_wal;
     let held = |bytes| Wal {
-        server: Lsn(100 + bytes),
+        written: Lsn(100 + bytes),
         confirmed: Lsn(100),
         restart: Lsn(100),
     };
@@ -706,7 +709,7 @@ fn too_much_wal_starts_over() {
     );
     assert_eq!(err.to_string(), message);
     assert!(!writer.app().status().ready);
-    assert_eq!(writer.app().status().error.as_deref(), Some(message));
+    assert_eq!(writer.app().status().failure.as_deref(), Some(message));
 
     // Up to the limit is fine.
     db.borrow_mut().wal = Some(held(limit));
@@ -814,7 +817,7 @@ fn a_change_that_does_not_fit_starts_over() {
         assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
         assert_eq!(
             writer.app().ask(&by_borough).unwrap().answer,
-            expected(&db.borrow(), &by_borough),
+            reference_answer(&db.borrow(), &by_borough),
             "{name}"
         );
     }
@@ -839,7 +842,7 @@ fn hour_of_trips() -> SealedId {
     SealedId {
         fact: id("trips"),
         width: 3_600,
-        start: 0,
+        bucket_start: 0,
     }
 }
 
@@ -847,7 +850,7 @@ fn day_of_logins() -> SealedId {
     SealedId {
         fact: id("logins"),
         width: DAY,
-        start: 0,
+        bucket_start: 0,
     }
 }
 
@@ -867,7 +870,7 @@ fn old_buckets_are_sealed_and_answer_as_before() {
     for fact in ["trips", "logins"] {
         assert_eq!(
             by_borough(writer.app(), fact),
-            expected(&db.borrow(), &ask(fact, &[fact], &["borough"])).rows,
+            reference_answer(&db.borrow(), &ask(fact, &[fact], &["borough"])).rows,
             "{fact}"
         );
     }
@@ -917,7 +920,7 @@ fn stale_bucket() -> straum_domain::Sealed {
     straum_domain::Sealed {
         id: hour_of_trips(),
         keys: vec![7, 7],
-        rows: vec![1],
+        counts: vec![1],
         columns: Vec::new(),
     }
 }
@@ -1287,7 +1290,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
             .map(|b| Literal::Text(b.to_string()))
             .collect::<Vec<_>>();
         if !values.is_empty() {
-            ask.filter.push(Cond {
+            ask.filter.push(Condition {
                 key: id("borough"),
                 values,
             });
@@ -1330,7 +1333,7 @@ fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
         let answered = app
             .ask(&ask)
             .unwrap_or_else(|e| panic!("{e} at {lsn} for {ask:?}"));
-        assert_eq!(answered.lsn, lsn);
+        assert_eq!(answered.applied, lsn);
         assert_eq!(answered.answer, reference.ask(&ask).unwrap(), "{ask:?}");
         seen.answered += 1;
     }

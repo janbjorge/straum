@@ -1,4 +1,4 @@
-//! [`Pg`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
+//! [`Postgres`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
 //! snapshot on the same connection, then the stream from its consistent
 //! point. A plain connection on the side reads the server's WAL position.
 
@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{Ident, Spec, Store};
+use straum_domain::{Identifier, Spec, Store};
 
 use crate::catalog::{self, Tables};
 use crate::decode::Decoder;
@@ -17,13 +17,13 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
 use crate::stream::Stream;
-use crate::wire::Conn;
+use crate::wire::Connection;
 
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
 
 /// Straum's [`Source`] over PostgreSQL 18 with `wal_level = logical`.
-pub struct Pg {
+pub struct Postgres {
     dsn: Dsn,
     publication: String,
     /// The most rows one transaction may change in the spec's tables; past
@@ -35,7 +35,7 @@ pub struct Pg {
     slot: String,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
-    plain: Option<Conn>,
+    plain: Option<Connection>,
 }
 
 enum State {
@@ -49,19 +49,19 @@ enum State {
 /// A replication connection in a read-only, repeatable-read transaction
 /// that sees the database as of a new temporary slot's consistent point.
 struct Snapshot {
-    conn: Conn,
+    conn: Connection,
     slot: String,
     at: Lsn,
     tables: Tables,
     /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
-    unloaded: Vec<Ident>,
+    unloaded: Vec<Identifier>,
 }
 
-impl Pg {
+impl Postgres {
     /// Nothing connects until [`Source::open`].
-    pub fn new(dsn: Dsn, publication: &str, max_transaction_rows: usize) -> Pg {
-        Pg {
+    pub fn new(dsn: Dsn, publication: &str, max_transaction_rows: usize) -> Postgres {
+        Postgres {
             dsn,
             publication: publication.to_owned(),
             max_transaction_rows,
@@ -75,7 +75,7 @@ impl Pg {
 /// A new temporary slot, and a transaction on its connection that sees
 /// the database as of the slot's consistent point.
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
-    let mut conn = Conn::connect(dsn, true)?;
+    let mut conn = Connection::connect(dsn, true)?;
     conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = format!(
         "straum_{}_{}_{}",
@@ -116,14 +116,14 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
 }
 
 /// The plain connection, made on first use and after a failure.
-fn plain<'c>(plain: &'c mut Option<Conn>, dsn: &Dsn) -> Result<&'c mut Conn, Error> {
+fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
     if plain.is_none() {
-        *plain = Some(Conn::connect(dsn, false)?);
+        *plain = Some(Connection::connect(dsn, false)?);
     }
     Ok(plain.as_mut().expect("connected just now"))
 }
 
-impl Source for Pg {
+impl Source for Postgres {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
@@ -135,7 +135,7 @@ impl Source for Pg {
         Ok(at)
     }
 
-    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
+    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
@@ -171,7 +171,7 @@ impl Source for Pg {
 }
 
 /// The table is loaded; the snapshot's transaction ends with the last one.
-fn loaded(snapshot: &mut Snapshot, table: &Ident) -> Result<(), SourceError> {
+fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), SourceError> {
     snapshot.unloaded.retain(|t| t != table);
     if snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;
@@ -181,7 +181,7 @@ fn loaded(snapshot: &mut Snapshot, table: &Ident) -> Result<(), SourceError> {
 
 /// The server's WAL position, and how far the slot has confirmed and keeps
 /// WAL.
-pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
+pub(crate) fn read_wal(conn: &mut Connection, slot: &str) -> Result<Wal, Error> {
     let rows = conn.rows(&format!(
         "SELECT pg_current_wal_lsn(), confirmed_flush_lsn, restart_lsn \
          FROM pg_replication_slots WHERE slot_name = {}",
@@ -191,8 +191,8 @@ pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
         .filter_map(|lsn| parse_lsn(lsn.as_deref()?))
         .collect();
     match lsns[..] {
-        [server, confirmed, restart] => Ok(Wal {
-            server,
+        [written, confirmed, restart] => Ok(Wal {
+            written,
             confirmed,
             restart,
         }),
@@ -202,7 +202,7 @@ pub(crate) fn read_wal(conn: &mut Conn, slot: &str) -> Result<Wal, Error> {
 
 /// Streams from the snapshot's consistent point. Tables not loaded yet
 /// can't load any more.
-fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<Stream, Error> {
+fn stream(mut snapshot: Snapshot, publication: &str, limit: usize) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;
     }
@@ -214,7 +214,7 @@ fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<
     let tables = (snapshot.tables.facts.into_iter())
         .chain(snapshot.tables.dims)
         .collect();
-    Stream::start(snapshot.conn, Decoder::new(tables, max_rows), snapshot.at)
+    Stream::start(snapshot.conn, Decoder::new(tables, limit), snapshot.at)
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.

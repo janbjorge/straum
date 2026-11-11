@@ -2,7 +2,7 @@
 
 One name per thing. Bold is the term to write; `code` after it is the
 code's name where it differs; "also" lists other spellings found and
-where. The clashes at the end are the renames still open.
+where. The clashes at the end are still open.
 
 ## Straum
 
@@ -36,9 +36,8 @@ where. The clashes at the end are the renames still open.
   (`straum_domain::Table`). `catalog::Checked` is a spec table with its
   columns and types; PostgreSQL's side is `Relation` (pgoutput and
   catalog).
-- **Alias**: `AS name` after a table; a joined table's alias is the
-  ref's name.
-- **Name** (`Ident`): `AS name` after a `SELECT` item; what asks use.
+- **Alias** (`Ref::alias`): `AS name` after a table.
+- **Name** (`Identifier`): `AS name` after a `SELECT` item; what asks use.
   Also "output name" (ADR-0029), "select name" (JOINS.md).
 - **View option**: `WITH (buckets = '...')`, the only one.
 - **Flag**: a CLI option (`--max-lag`). The chart says value (`maxLag`).
@@ -47,9 +46,9 @@ where. The clashes at the end are the renames still open.
 
 - **Key**: a selected non-measure column: fact column, dim column,
   null-ness key or bucket. Resolves to `Key::By` or `Key::Attr`.
-- **By key** (`By`, `Fact::by`): a key from a fact column. Code and
+- **By key** (`ByKey`, `Fact::by_keys`): a key from a fact column. Code and
   ADRs say "by key"; the guide says key.
-- **Null-ness key** (`By::IsNull`): `(f.col IS NULL) AS name`. Also
+- **Null-ness key** (`ByKey::IsNull`): `(f.col IS NULL) AS name`. Also
   `Role::Nullness`.
 - **Dim column** (`Attribute`, `Ref::reads`, `Dim::attributes`): a dim
   column the view selects, read as the dim is now. Code, ADRs and
@@ -86,13 +85,13 @@ where. The clashes at the end are the renames still open.
 ## Measures and cells
 
 - **Measure** (`Measure`): a named aggregate with optional `FILTER`.
-- **Aggregate** (`Agg`): the function: count, sum, min, max, avg,
+- **Aggregate** (`Aggregate`): the function: count, sum, min, max, avg,
   count distinct. Walker: "aggregate", "an aggregated column".
-- **Input column** (`Agg::input`, `Input`): the column a measure reads.
+- **Input column** (`Aggregate::input`, `Input`): the column a measure reads.
   Also `Role::Number`.
 - **Cell**: one rollup key and bucket, with row count and states.
   `Cells` is every cell of one bucket.
-- **Cell state** (`Column`, `Kind`): sum and count, count per value
+- **Cell state** (`State`, `StateKind`): sum and count, count per value
   ("extent" in code), distinct counts (ADR-0016).
 - **Rollup** (`Rollup`): every cell of one fact, per width. Guide says
   it once (sizing.md).
@@ -112,21 +111,23 @@ where. The clashes at the end are the renames still open.
 - **Query**: the ask's `query` field, one `SELECT` over a view.
 - **Parameter** (`Literal`): a `$n` value; integer, string or boolean.
 - **Literal** (`Literal`): a constant in a spec `FILTER` or `WHERE`.
-- **Condition** (`Cond`): `key = value`, `key IN (...)`, `IS [NOT]
+- **Condition** (`Condition`): `key = value`, `key IN (...)`, `IS [NOT]
   NULL`. **Filter**: a list of them: measure `FILTER`, view `WHERE`
-  (`Fact::filter`, JOINS.md "standing filter"), ask `WHERE`. `Test` in
+  (`Fact::filter`, JOINS.md "standing filter"), ask `WHERE`. `Match` in
   `store.rs`.
 - **Range** (`from`, `to`): `[from, to)` on bucket edges; its two
   **bounds** are `bucket >= $n` and `bucket < $m`. Tests: "window".
+- **Limit**: `--max-lag`, `--max-retained-wal`, `--max-transaction-rows`
+  (`Limits`, `Transaction::limit`).
 - **Cover** (`Rollup::cover`): the buckets an ask reads for its range.
-- **Answer** (`Answer`; `Answered` adds LSN and `as_of`):
+- **Answer** (`Answer`; `Answered` adds `applied` and `as_of`):
   `{"as_of", "rows"}`. Tests: "reply"; `straum-http`: "response".
 - **Row** (`AnswerRow`): one answer object. Also a table row.
 - **as_of** (`Lag::caught_up`): every commit before it is in the
   answer. Status prints "as of".
 - **Straum-LSN**, **Server-Timing**: response headers.
-- **Datum** (`Datum`): a stored column value. **Value** (`Value`): a
-  measure result. Guide says "value" for both and for parameters.
+- **Datum** (`Datum`, `DatumError`): a stored column value. **Value**
+  (`Value`): a measure result. Guide says "value" for both and for parameters.
 - **Column type** (`ColumnType`): what the load learns per column; a
   filter value must fit it (`AskError::WrongType`).
 - **Scale**: digits past the point of a numeric.
@@ -144,8 +145,8 @@ where. The clashes at the end are the renames still open.
   No enum; `following: None` and `why_not`.
 - **Ready** (`Status::ready`, `/readyz`): loaded and within
   `--max-lag`.
-- **Lag** (`Lag`): time since last caught up with the server's WAL
-  position. Also "behind".
+- **Lag** (`Lag`): time since last caught up with how far PostgreSQL
+  has written (`Wal::written`). Also "behind".
 - **Caught up** (`Lag::caught_up`): last reading the slot had confirmed
   all of.
 - **Snapshot** (`Snapshot`): the database at the slot's consistent
@@ -154,12 +155,15 @@ where. The clashes at the end are the renames still open.
   "LSN L".
 - **Stream** (`Stream`): commits from the consistent point on. Straum
   follows a table; `Following` is where it stands.
+- **Applied** (`Following::applied`, `Status::applied`,
+  `Answered::applied`): the last commit in the store. **Committed**
+  (`Commit::committed`, `Status::committed`): when it committed.
 - **Stream thread** (`StreamThread`, thread `straum-stream`): owns the
   socket, decodes ahead, answers keepalives. **Reader thread**: decodes
   `COPY` batches in a load.
 - **Writer** (`Writer`): the one loop that loads and applies.
 - **Step** (`Writer::step`): a start or one commit applied. A failed
-  step is a **failure** (`Failure`).
+  step is a **failure** (`Failure`, `Status::failure`).
 - **Commit** (`Commit`): one transaction's changes. "Transaction" only
   for `--max-transaction-rows`.
 - **Change** (`Change`): insert, update, delete, truncate, or `Unfit`:
@@ -167,14 +171,15 @@ where. The clashes at the end are the renames still open.
 - **Apply** (`State::apply`): put a commit in the store under the lock.
 - **Unfit** (`Change::Unfit`, `Error::Unfit`): a change that no longer
   fits its table. ADR-0015 says "can't apply".
-- **Source** (`Source`, `Pg`): the port to PostgreSQL. "Source of
+- **Source** (`Source`, `Postgres`): the port to PostgreSQL. "Source of
   truth" means PostgreSQL itself.
-- **Plain connection** (`Pg::plain`): reads the WAL position each
-  second (ADR-0010). ARCHITECTURE.md says "side connection".
+- **Plain connection** (`Postgres::plain`, `Connection`): reads the WAL
+  position each second (ADR-0010). ARCHITECTURE.md says "side connection".
 - **WAL retained** (`Wal::retained`, `--max-retained-wal`,
   `maxRetainedWal`): bytes the server keeps for the slot.
 - **Status** (`Status`): `/status` and `straum status`. Not telemetry
-  (ADR-0023).
+  (ADR-0023). The stream thread **reports** the applied LSN to
+  PostgreSQL (`StreamThread::report`).
 - **Health check**: `/livez`, `/readyz`.
 
 ## PostgreSQL
@@ -194,11 +199,12 @@ where. The clashes at the end are the renames still open.
 - **Replication connection**: creates the slot, loads, streams.
 - **LSN** (`Lsn`): `16/B374D848`. `Wal`: `server`, `confirmed`,
   `restart`.
-- **Catalog** (`Catalog`): what the setup check reads.
+- **Catalog** (`Catalog`, `Class`, `Column`): what the setup check
+  reads.
 - **Old row** (`Change::Update::old`): whole under `REPLICA IDENTITY
   FULL`; facts and dims both need it (ADR-0031).
 - **Label** (`EnumLabel`): an enum value's text, read via `::text`.
-- **Poison value** (`ValueError::at`): a value Straum can't read; names
+- **Poison value** (`DatumError::at`): a value Straum can't read; names
   table and column.
 
 ## Sealing
@@ -210,61 +216,34 @@ where. The clashes at the end are the renames still open.
 - **Spill** (`Spill`, `Spilling`): the port sealed buckets go to.
   `--spill-dir`, `--seal-after` and `straum-arrow` (ADR-0033,
   ADR-0034) do not exist yet; `main.rs` passes `None`.
-- **Sealed** (`Sealed`, `SealedId`): a bucket's cells as plain data.
+- **Sealed** (`Sealed`, `SealedId`): a bucket's cells as plain data;
+  `SealedId::bucket_start` is its first second.
 - **Thaw** (`Store::thaw`): check a sealed bucket against the store.
   **Unseal** (`Store::unseal`): put it back. A change **touches** the
   sealed buckets its rows fall in.
 
 ## Testing
 
-- **Naive reference**: the plain computation property tests compare
-  against (`tests/store.rs`, `tests/joins.rs`).
-- **Oracle** (`Oracle`): the PostgreSQL SQL an ask must equal
-  (`straum-pg` tests).
-- **Fake** (`Fake`, `Database`): in-memory PostgreSQL for app tests.
-  `Script`: HTTP tests' source. `MemorySpill`, `Lost`: spills.
+- **Reference**: what a test compares against: a plain computation over
+  raw rows (domain tests), a store loaded at the same LSN (app tests),
+  SQL run in PostgreSQL (`Reference`, `straum-pg` tests).
+- **Fake** (`Fake`): a scripted PostgreSQL in the app and HTTP tests;
+  `PostgresContainer` is a real one in Docker. `MemorySpill`, `Lost`:
+  spills.
 - **Taxi month**: January 2024 TLC trips; `taxi.sql`, the benchmark,
   the ignored `taxi_month` test. **Warehouse copy**: sizing.md's
   production-shaped tables, not in the repository.
 
 ## Clashes
 
-### Settled
-
-Renamed on 2026-11-11. The old name stays in ADRs written before.
-
-| Was | Now |
-| --- | --- |
-| `Grain`, `Time::grain`, "grain of 420s" | `Width`, `Time::width`, "width of 420s" |
-| `Time::buckets` | `Time::wider` |
-| `Slot`, `slot_of` | `KeyPart`, `key_part_of` |
-| `Attr`, `Ref::attrs`, `Dim::attrs` | `Attribute`, `Ref::reads`, `Dim::attributes` |
-| `Cells::width`, `Projection::key_width`, `Rollup::width()` | `key_len`, `key_len`, `row_len()` |
-| `SpecError::KeyWidth` | `SpecError::KeyLength` |
-| "fact x: ref y ..." in errors | "view x: join y ..." |
-| `AskError::UnknownFact`, `Ask::fact` | `UnknownView`, `Ask::view` |
-| `Writer::measure`, `MEASURE_EVERY`, `measured` | `read_wal`, `WAL_EVERY`, `wal_read_at` |
-| `Change::Altered` | `Change::Unfit` |
-| `catalog::Role` | `catalog::Purpose` |
-| `catalog::Table` | `catalog::Checked` |
-| `Follower` | `StreamThread` |
-| `Pg::side` | `Pg::plain` |
-| "period" in `store.rs` | bucket |
-| "WAL held" in status | "WAL retained" |
-| "straum SQL", "straum" in prose | "Straum SQL", "Straum" |
-| "lookup table", "start checks" in spec.md | dim, setup check |
-| "questions" in introduction.md, benchmark.md | asks |
-| "can't apply" in how-it-works.md | "no longer fits" |
-
-### Open
-
 | Word | Meanings | Verdict |
 | --- | --- | --- |
-| key | view key; dim key; cell key; rollup key; `Cond::key` | bare key is a view key; qualify the rest |
+| key | view key; dim key; cell key; rollup key; `Condition::key` | bare key is a view key; qualify the rest |
 | attribute / dim column | code, ADRs / guide | dim column in prose; attribute stays in code |
 | level / width | how-it-works.md, ADR-0017 / spec.md | level is the cells, width the duration |
-| state | `app::State`; `source::State`; cell state; running states | qualify in prose |
-| kind | `RefKind`; `Kind` (cell state form); `Json::kind` | qualify |
+| state | `app::State`; `source::State`; cell state (`State`); running states | qualify in prose |
+| Member | `store::Member`, `catalog::Member`, one meaning in two private enums | left |
 | Table | `straum_domain::Table`; `fake::Table` | fine; test-only |
+| the crate for Straum SQL | `straum-notation` | `straum-sql` needs an `ALLOWED` change in `scripts/check-layers.py`; not done |
 | cold | ADR-0033 title | sealed, hot; ADR text stays |
 | spill flags | `--spill-dir`, `--seal-after`, `straum-arrow` in ADR-0033, ADR-0034 | not shipped; `main.rs` passes `None` |

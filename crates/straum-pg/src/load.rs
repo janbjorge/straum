@@ -11,7 +11,7 @@ use straum_domain::{Datum, Store};
 use crate::catalog::{Checked, escaped};
 use crate::error::Error;
 use crate::value::read_binary;
-use crate::wire::Conn;
+use crate::wire::Connection;
 
 /// What starts a binary copy, before its flags and header extension.
 const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
@@ -28,7 +28,11 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
     )
 }
 
-pub(crate) fn table(conn: &mut Conn, table: &Checked, store: &mut Store) -> Result<(), Error> {
+pub(crate) fn table(
+    conn: &mut Connection,
+    table: &Checked,
+    store: &mut Store,
+) -> Result<(), Error> {
     let name = table.name.as_str();
     store.set_types(name, &table.types).map_err(Error::Row)?;
     copy(conn, table, |rows| {
@@ -36,7 +40,7 @@ pub(crate) fn table(conn: &mut Conn, table: &Checked, store: &mut Store) -> Resu
     })
 }
 
-/// Rows per batch the reading thread hands over. A batch starts a thread
+/// Rows per batch the reader thread hands over. A batch starts a thread
 /// per wider bucket width (`Rollup::add_rows`), so a small one costs.
 pub(crate) const BATCH: usize = 8192;
 /// Batches between the threads. With the one being read and the one being
@@ -48,7 +52,7 @@ const IN_FLIGHT: usize = 4;
 /// rows, laid end to end. A second thread reads and decodes the next batch
 /// meanwhile; spent buffers go back to it.
 pub(crate) fn copy(
-    conn: &mut Conn,
+    conn: &mut Connection,
     table: &Checked,
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -88,7 +92,7 @@ pub(crate) fn copy(
 /// Runs a binary `COPY`, decoding rows into a batch and calling `hand_over`
 /// with each full one and the last, which it swaps for an empty one.
 fn read(
-    conn: &mut Conn,
+    conn: &mut Connection,
     sql: &str,
     table: &Checked,
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,

@@ -2,15 +2,15 @@ mod common;
 
 use common::{FEB, JAN, cond, id};
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attribute, By, KeyPart, Literal, Origin, RefKind, Spec, SpecError,
-    Via, Width,
+    Aggregate, Ask, AskError, AskKey, Attribute, ByKey, KeyPart, Literal, Origin, RefKind, Spec,
+    SpecError, Via, Width,
 };
 use straum_notation::{Error, SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
 
-fn col(s: &str) -> By {
-    By::Column {
+fn col(s: &str) -> ByKey {
+    ByKey::Column {
         column: id(s),
         name: id(s),
     }
@@ -45,7 +45,7 @@ fn ask_view_t(by: &[&str]) -> Ask {
     Ask {
         view: id("t"),
         measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
+        keys: by.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: vec![],
         from: JAN,
         to: FEB,
@@ -93,8 +93,8 @@ fn taxi_parses() {
         ]
     );
     assert_eq!(
-        trips.measure("distance").unwrap().agg,
-        Agg::Avg(id("trip_distance"))
+        trips.measure("distance").unwrap().aggregate,
+        Aggregate::Avg(id("trip_distance"))
     );
     assert_eq!(
         trips.measure("card").unwrap().filter,
@@ -124,8 +124,8 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.by, [col("a"), col("z_id")]);
-    assert_eq!(t.refs[0].name, id("z"));
+    assert_eq!(t.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(t.refs[0].alias, id("z"));
     assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(t.refs[0].reads, [attr("name", "name")]);
     assert!(t.time.wider.is_empty());
@@ -153,13 +153,13 @@ fn keys_go_by_their_select_name() {
     let spec = parse(&src).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(
-        t.by,
+        t.by_keys,
         [
-            By::Column {
+            ByKey::Column {
                 column: id("a"),
                 name: id("kind")
             },
-            By::Column {
+            ByKey::Column {
                 column: id("z_id"),
                 name: id("zone")
             }
@@ -173,9 +173,12 @@ fn keys_go_by_their_select_name() {
             cond("label", vec![Literal::Text("x".into())])
         ]
     );
-    assert!(spec.check(&ask_view_t(&["kind", "zone", "label"])).is_ok());
+    assert!(
+        spec.check_ask(&ask_view_t(&["kind", "zone", "label"]))
+            .is_ok()
+    );
     let shown: Vec<String> = (spec
-        .check(&ask_view_t(&["a", "name", "z"]))
+        .check_ask(&ask_view_t(&["a", "name", "z"]))
         .unwrap_err()
         .iter())
     .map(ToString::to_string)
@@ -294,18 +297,18 @@ GROUP BY 1, 2, 3, 4";
     let t = spec.fact("t").unwrap();
     assert_eq!(t.time.width, Width { seconds: 30 });
     // A dim key column names the fact column joined to it.
-    assert_eq!(t.by, [col("a"), col("z_id")]);
-    let aggs: Vec<&Agg> = t.measures.iter().map(|m| &m.agg).collect();
+    assert_eq!(t.by_keys, [col("a"), col("z_id")]);
+    let aggs: Vec<&Aggregate> = t.measures.iter().map(|m| &m.aggregate).collect();
     assert_eq!(
         aggs,
         [
-            &Agg::Count,
-            &Agg::Sum(id("x")),
-            &Agg::Min(id("x")),
-            &Agg::Max(id("x")),
-            &Agg::Avg(id("x")),
-            &Agg::CountDistinct(id("x")),
-            &Agg::Sum(id("z_id")),
+            &Aggregate::Count,
+            &Aggregate::Sum(id("x")),
+            &Aggregate::Min(id("x")),
+            &Aggregate::Max(id("x")),
+            &Aggregate::Avg(id("x")),
+            &Aggregate::CountDistinct(id("x")),
+            &Aggregate::Sum(id("z_id")),
         ]
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
@@ -328,7 +331,7 @@ GROUP BY 1, 2, 3, 4";
 fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.by, [col("org"), col("grp")]);
+    assert_eq!(t.by_keys, [col("org"), col("grp")]);
     assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
     let g = spec.dim("g").unwrap();
     assert_eq!(g.key, [id("org_id"), id("grp_id")]);
@@ -358,9 +361,12 @@ fn a_ref_on_two_columns() {
     assert_eq!(spec.dim("g").unwrap().key, [id("org_id"), id("grp_id")]);
 
     // The ref has no value of its own: asks name the keys the view named.
-    assert!(spec.check(&ask_view_t(&["org", "grp", "label"])).is_ok());
+    assert!(
+        spec.check_ask(&ask_view_t(&["org", "grp", "label"]))
+            .is_ok()
+    );
     assert_eq!(
-        spec.check(&ask_view_t(&["g"])).unwrap_err(),
+        spec.check_ask(&ask_view_t(&["g"])).unwrap_err(),
         [AskError::UnknownKey(id("g"))]
     );
 }
@@ -376,7 +382,7 @@ fn a_ref_on_two_columns_rejected() {
     )
     .unwrap();
     let t = without_grp.fact("t").unwrap();
-    assert_eq!(t.by, [col("org")]);
+    assert_eq!(t.by_keys, [col("org")]);
     assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
     assert_eq!(t.refs[0].reads, [attr("label", "label")]);
     let errors = sql_errors(
@@ -426,7 +432,7 @@ GROUP BY 1, 2, 3";
 fn a_ref_reads_what_the_view_selects() {
     let spec = parse(ATTR_ONLY).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.by, [col("a")]);
+    assert_eq!(t.by_keys, [col("a")]);
     assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(t.refs[0].reads, [attr("name", "name")]);
     // The via column keys the cells, selected or not.
@@ -440,10 +446,10 @@ fn a_ref_reads_what_the_view_selects() {
 
     // Asks name the attribute as the view named it; the ref itself and
     // its unread columns are no keys.
-    assert!(spec.check(&ask_view_t(&["a", "name"])).is_ok());
+    assert!(spec.check_ask(&ask_view_t(&["a", "name"])).is_ok());
     for missing in ["z", "id", "z_id"] {
         assert_eq!(
-            spec.check(&ask_view_t(&[missing])).unwrap_err(),
+            spec.check_ask(&ask_view_t(&[missing])).unwrap_err(),
             [AskError::UnknownKey(id(missing))],
             "{missing}"
         );
@@ -454,7 +460,7 @@ fn a_ref_reads_what_the_view_selects() {
     let both = format!("{ATTR_ONLY};\n{}", BASE.replace("VIEW t", "VIEW u"));
     let spec = parse(&both).unwrap();
     let u = spec.fact("u").unwrap();
-    assert_eq!(u.by, [col("a"), col("z_id")]);
+    assert_eq!(u.by_keys, [col("a"), col("z_id")]);
     assert_eq!(u.refs[0].reads, [attr("name", "name")]);
     let errors = sql_errors(&ATTR_ONLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
     assert_eq!(
@@ -484,15 +490,15 @@ fn null_ness_keys() {
     let spec = parse(NULLS).unwrap();
     let t = spec.fact("t").unwrap();
     assert_eq!(
-        t.by,
+        t.by_keys,
         [
             col("a"),
-            By::IsNull {
+            ByKey::IsNull {
                 column: id("done_at"),
                 name: id("done"),
                 negated: true
             },
-            By::IsNull {
+            ByKey::IsNull {
                 column: id("gone_at"),
                 name: id("open"),
                 negated: false
@@ -537,7 +543,7 @@ fn null_ness_keys() {
             .collect()
     };
     assert_eq!(names(&early), ["pending", "n", "closed"]);
-    assert_eq!(early.fact("t").unwrap().by, t.by);
+    assert_eq!(early.fact("t").unwrap().by_keys, t.by_keys);
     assert_eq!(
         early.fact("t").unwrap().measure("pending").unwrap().filter,
         filter("pending")
@@ -546,12 +552,12 @@ fn null_ness_keys() {
     let ask = Ask {
         view: id("t"),
         measures: vec![id("n")],
-        by: vec![AskKey::Key(id("done"))],
+        keys: vec![AskKey::Key(id("done"))],
         filter: vec![cond("open", vec![Literal::Bool(true)])],
         from: JAN,
         to: FEB,
     };
-    assert!(spec.check(&ask).is_ok());
+    assert!(spec.check_ask(&ask).is_ok());
 }
 
 #[test]
@@ -1460,7 +1466,7 @@ GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
     let t = spec.fact("t").unwrap();
     let shown: Vec<(String, RefKind, Vec<Via>, usize)> = (t.refs.iter())
-        .map(|r| (r.name.to_string(), r.kind, r.via.clone(), r.reads.len()))
+        .map(|r| (r.alias.to_string(), r.kind, r.via.clone(), r.reads.len()))
         .collect();
     assert_eq!(
         shown,

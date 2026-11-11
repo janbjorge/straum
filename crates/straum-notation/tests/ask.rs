@@ -45,7 +45,7 @@ fn reads_every_part() {
         Ask {
             view: id("trips"),
             measures: vec![id("trips"), id("fare")],
-            by: vec![
+            keys: vec![
                 AskKey::Time(TimeKey::Bucket),
                 key("payment_type"),
                 key("pu_location_id"),
@@ -72,7 +72,7 @@ fn both_bounds_are_required() {
     )
     .unwrap();
     assert_eq!(
-        (ask.view, ask.measures, ask.by, ask.from, ask.to),
+        (ask.view, ask.measures, ask.keys, ask.from, ask.to),
         (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
     );
     let missing = |bound: &str| format!("line 1: an ask writes both bounds; {bound} is missing");
@@ -104,7 +104,7 @@ fn keys_come_in_select_order() {
         &range(),
     )
     .unwrap();
-    assert_eq!(ask.by, [key("borough"), key("kind")]);
+    assert_eq!(ask.keys, [key("borough"), key("kind")]);
 }
 
 /// Each case is one wrong ask; its errors must include the fragment.

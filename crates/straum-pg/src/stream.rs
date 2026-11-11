@@ -16,7 +16,7 @@ use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
 use crate::value;
-use crate::wire::{Closer, Conn, server_error};
+use crate::wire::{Closer, Connection, server_error};
 
 /// How long a read waits before the thread checks whether a status update
 /// is due or it should stop.
@@ -24,7 +24,7 @@ const POLL: Duration = Duration::from_secs(1);
 /// How often the thread reports, whether or not the server asks. Short, so
 /// a full queue, which stops the thread reading, can't outlast a
 /// `wal_sender_timeout` of a few seconds.
-const STATUS_INTERVAL: Duration = Duration::from_secs(1);
+const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Commits read ahead of the writer.
 const QUEUE: usize = 64;
 /// How long the thread waits for room in a full queue before trying again.
@@ -38,7 +38,7 @@ pub(crate) struct Stream {
     thread: Option<JoinHandle<()>>,
     /// The last commit handed out. Asking for the next one means it is
     /// applied.
-    last: Lsn,
+    applied: Lsn,
 }
 
 struct Shared {
@@ -49,7 +49,7 @@ struct Shared {
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
     /// streaming from `start`.
-    pub(crate) fn start(conn: Conn, decoder: Decoder, start: Lsn) -> Result<Stream, Error> {
+    pub(crate) fn start(conn: Connection, decoder: Decoder, start: Lsn) -> Result<Stream, Error> {
         conn.set_read_timeout(POLL)?;
         let closer = conn.closer()?;
         let (commits, receiver) = mpsc::sync_channel(QUEUE);
@@ -64,7 +64,7 @@ impl Stream {
             shared: Arc::clone(&shared),
             sent: start.0,
             idle: start.0,
-            last_status: Instant::now(),
+            last_report: Instant::now(),
         };
         let thread = thread::Builder::new()
             .name("straum-stream".into())
@@ -74,16 +74,16 @@ impl Stream {
             shared,
             closer,
             thread: Some(thread),
-            last: start,
+            applied: start,
         })
     }
 
     /// The next commit, waiting at most `wait` for one.
     pub(crate) fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
-        self.shared.applied.store(self.last.0, Ordering::Release);
+        self.shared.applied.store(self.applied.0, Ordering::Release);
         match self.commits.recv_timeout(wait) {
             Ok(Ok(commit)) => {
-                self.last = commit.lsn;
+                self.applied = commit.lsn;
                 Ok(Some(commit))
             }
             Ok(Err(e)) => Err(e),
@@ -108,7 +108,7 @@ impl Drop for Stream {
 
 /// The thread's end: the socket, the decoder and what it has reported.
 struct StreamThread {
-    conn: Conn,
+    conn: Connection,
     decoder: Decoder,
     commits: SyncSender<Result<Commit, Error>>,
     shared: Arc<Shared>,
@@ -117,7 +117,7 @@ struct StreamThread {
     /// The server's position at the last keepalive between transactions.
     /// Every commit up to it has been queued.
     idle: u64,
-    last_status: Instant,
+    last_report: Instant,
 }
 
 impl StreamThread {
@@ -140,8 +140,8 @@ impl StreamThread {
                 Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
                 Some(_) => return Err(Error::protocol("a message that ended the stream")),
             }
-            if self.last_status.elapsed() >= STATUS_INTERVAL {
-                self.status()?;
+            if self.last_report.elapsed() >= REPORT_INTERVAL {
+                self.report()?;
             }
         }
         Ok(())
@@ -163,7 +163,7 @@ impl StreamThread {
                     self.idle = self.idle.max(end);
                 }
                 if reply {
-                    self.status()?;
+                    self.report()?;
                 }
             }
         }
@@ -182,8 +182,8 @@ impl StreamThread {
                     if self.shared.stop.load(Ordering::Acquire) {
                         return Ok(false);
                     }
-                    if self.last_status.elapsed() >= STATUS_INTERVAL {
-                        self.status()?;
+                    if self.last_report.elapsed() >= REPORT_INTERVAL {
+                        self.report()?;
                     }
                     thread::sleep(WAIT);
                 }
@@ -194,7 +194,7 @@ impl StreamThread {
     /// Tells the server what is applied, so it may recycle the WAL before
     /// it. With every queued commit applied and no transaction open, that is
     /// everything up to the last keepalive.
-    fn status(&mut self) -> Result<(), Error> {
+    fn report(&mut self) -> Result<(), Error> {
         let applied = self.shared.applied.load(Ordering::Acquire);
         let done = if applied >= self.sent && !self.decoder.in_transaction() {
             applied.max(self.idle)
@@ -211,7 +211,7 @@ impl StreamThread {
         message.extend(now.to_be_bytes());
         message.push(0);
         self.conn.send_copy_data(&message)?;
-        self.last_status = Instant::now();
+        self.last_report = Instant::now();
         Ok(())
     }
 }

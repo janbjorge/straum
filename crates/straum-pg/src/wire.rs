@@ -23,7 +23,7 @@ const READ_CHUNK: usize = 64 * 1024;
 /// CopyBothResponse, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
-pub(crate) struct Conn {
+pub(crate) struct Connection {
     socket: Socket,
     input: BytesMut,
     output: BytesMut,
@@ -69,11 +69,11 @@ impl Write for Socket {
     }
 }
 
-impl Conn {
+impl Connection {
     /// Connects and authenticates. A replication connection takes
     /// replication commands as well as SQL. Every connection reads dates as
     /// ISO in UTC, which `value` expects.
-    pub(crate) fn connect(dsn: &Dsn, replication: bool) -> Result<Conn, Error> {
+    pub(crate) fn connect(dsn: &Dsn, replication: bool) -> Result<Connection, Error> {
         let mut failure = None;
         let tcp = (dsn.host.as_str(), dsn.port)
             .to_socket_addrs()?
@@ -92,7 +92,7 @@ impl Conn {
                 Socket::Tls(Box::new(tls::start(tcp, name, root_cert.as_deref())?))
             }
         };
-        let mut conn = Conn {
+        let mut conn = Connection {
             socket,
             input: BytesMut::new(),
             output: BytesMut::new(),
@@ -335,7 +335,7 @@ impl Conn {
     }
 }
 
-impl Drop for Conn {
+impl Drop for Connection {
     /// Says goodbye, so PostgreSQL ends the session, and drops its temporary
     /// slot, without waiting for the socket to time out.
     fn drop(&mut self) {

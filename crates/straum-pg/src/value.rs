@@ -6,7 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, str};
 
-use straum_domain::{ColumnType, Datum, Ident};
+use straum_domain::{ColumnType, Datum, Identifier};
 
 const BOOL: u32 = 16;
 const INT8: u32 = 20;
@@ -265,7 +265,7 @@ pub struct ValueError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Place {
     table: String,
-    column: Ident,
+    column: Identifier,
 }
 
 impl ValueError {
@@ -288,7 +288,7 @@ impl ValueError {
     }
 
     /// Names where the value came from, so a poison row can be found.
-    pub(crate) fn at(mut self, table: &str, column: &Ident) -> ValueError {
+    pub(crate) fn at(mut self, table: &str, column: &Identifier) -> ValueError {
         self.place = Some(Place {
             table: table.to_owned(),
             column: column.clone(),
@@ -640,8 +640,8 @@ mod tests {
         for (column_type, text, msg) in cases {
             assert_eq!(ValueError::new(column_type, text).to_string(), msg);
         }
-        let placed =
-            ValueError::new(ColumnType::Int, "x").at("public.trips", &Ident::new("fare").unwrap());
+        let placed = ValueError::new(ColumnType::Int, "x")
+            .at("public.trips", &Identifier::new("fare").unwrap());
         assert_eq!(
             placed.to_string(),
             r#"can't read "x" as an integer in column fare of public.trips"#

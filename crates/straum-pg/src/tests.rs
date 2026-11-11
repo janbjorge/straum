@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use straum_app::{AnswerError, App, Limits, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
-    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, Spec, Store,
-    TimeKey, Value, decimal,
+    Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Literal,
+    Spec, Store, TimeKey, Value, decimal,
 };
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -25,10 +25,10 @@ use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
-use crate::source::{Pg, parse_lsn, read_wal};
+use crate::source::{Postgres, parse_lsn, read_wal};
 use crate::stream::Stream;
 use crate::value::read;
-use crate::wire::Conn;
+use crate::wire::Connection;
 
 /// The tasks spec as checked: a fact on two refs, one keyed by two
 /// columns, with the tables the catalog would give. For the tests that
@@ -107,7 +107,7 @@ const LIMITS: Limits = Limits {
 };
 /// Rows a transaction may change before Straum starts over; no test but
 /// the one for it comes near.
-const MAX_ROWS: usize = 10_000;
+const ROW_LIMIT: usize = 10_000;
 const READY: &str = "database system is ready to accept connections";
 /// 2100-01-01, on every bucket edge.
 const END: i64 = 4_102_444_800;
@@ -261,7 +261,7 @@ exec docker-entrypoint.sh postgres -c ssl=on \
 "#;
 
 /// PostgreSQL, removed when dropped, with its CA file if it has TLS.
-struct Postgres {
+struct PostgresContainer {
     _container: Container<GenericImage>,
     dsn: Dsn,
     _ca: Option<TempFile>,
@@ -289,18 +289,18 @@ fn tag() -> String {
     std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
 }
 
-fn postgres() -> Postgres {
+fn postgres() -> PostgresContainer {
     plain(image(&tag()).with_cmd(FLAGS))
 }
 
-fn postgres_at_replica(tag: &str) -> Postgres {
+fn postgres_at_replica(tag: &str) -> PostgresContainer {
     plain(image(tag).with_cmd(["-c", "wal_level=replica"]))
 }
 
-fn plain(request: ContainerRequest<GenericImage>) -> Postgres {
+fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
     let (container, port) = start(request);
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
-    Postgres {
+    PostgresContainer {
         _container: container,
         dsn: Dsn::parse(&dsn).unwrap(),
         _ca: None,
@@ -308,7 +308,7 @@ fn plain(request: ContainerRequest<GenericImage>) -> Postgres {
 }
 
 /// As [`postgres`], with ssl on. The DSN trusts the test's CA alone.
-fn postgres_tls() -> Postgres {
+fn postgres_tls() -> PostgresContainer {
     let [c, wal_level, c2, timeout] = FLAGS.map(str::to_owned);
     let cmd = [
         "-c".into(),
@@ -328,7 +328,7 @@ fn postgres_tls() -> Postgres {
         "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslrootcert={}",
         ca.0.display()
     );
-    Postgres {
+    PostgresContainer {
         _container: container,
         dsn: Dsn::parse(&dsn).unwrap(),
         _ca: Some(ca),
@@ -368,15 +368,15 @@ fn start(request: ContainerRequest<GenericImage>) -> (Container<GenericImage>, u
 /// A plain SQL connection, plus the test's schema and publication, both
 /// named `name`.
 struct Db {
-    conn: Conn,
+    conn: Connection,
     name: String,
     dsn: Dsn,
 }
 
 impl Db {
-    fn new(pg: &Postgres, name: &str, tables: &str) -> Db {
+    fn new(pg: &PostgresContainer, name: &str, tables: &str) -> Db {
         let mut db = Db {
-            conn: Conn::connect(&pg.dsn, false).unwrap(),
+            conn: Connection::connect(&pg.dsn, false).unwrap(),
             name: name.to_owned(),
             dsn: pg.dsn.clone(),
         };
@@ -406,24 +406,24 @@ impl Db {
         straum_notation::parse(&self.sql(text)).unwrap()
     }
 
-    fn pg(&self) -> Pg {
-        Pg::new(self.dsn.clone(), &self.name, MAX_ROWS)
+    fn pg(&self) -> Postgres {
+        Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT)
     }
 
-    fn writer(&self) -> Writer<Pg> {
+    fn writer(&self) -> Writer<Postgres> {
         Writer::new(App::new(self.spec(SPEC), LIMITS, None), self.pg())
     }
 }
 
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
+fn id(s: &str) -> Identifier {
+    Identifier::new(s).unwrap()
 }
 
 fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
         view: id(fact),
         measures: measures.iter().map(|m| id(m)).collect(),
-        by: by
+        keys: by
             .iter()
             .map(|k| match *k {
                 "bucket" => AskKey::Time(TimeKey::Bucket),
@@ -472,18 +472,18 @@ fn body(spec: &str, view: &str) -> String {
 
 /// What an ask must equal in PostgreSQL: the SQL, the ask, and the scale
 /// each printed column is compared at.
-struct Oracle {
+struct Reference {
     sql: String,
     ask: Ask,
     scales: Vec<u32>,
 }
 
-/// The taxi spec's oracles: trips by bucket, kind, zone and borough; logins
+/// The taxi spec's references: trips by bucket, kind, zone and borough; logins
 /// by day, zone and toll; then trips without the bucket from 5 hours before
 /// `START` to 29 after, which reads the day bucket `START` begins and the
 /// hours at either end, against the raw rows. `fare_scale` follows `fare`'s
 /// type.
-fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
+fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
     const MEASURES: [&str; 8] = [
         "trips",
         "fare",
@@ -494,7 +494,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         "manhattan",
         "near",
     ];
-    let trips = Oracle {
+    let trips = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
                     fare_max, round(fare_avg, 6), riders, tips, manhattan, near
@@ -510,7 +510,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
             0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
         ],
     };
-    let logins = Oracle {
+    let logins = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, zone_id, toll, logins FROM ({}) v",
             body(SPEC, "logins")
@@ -518,7 +518,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         ask: ask("logins", &["logins"], &["bucket", "zone_id", "toll"]),
         scales: vec![0, 0, 1, 0],
     };
-    let window = Oracle {
+    let window = Reference {
         sql: format!(
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
                     round(avg(f.fare), 6), count(DISTINCT f.rider), sum(f.tip),
@@ -538,11 +538,11 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
     vec![trips, logins, window]
 }
 
-/// The tasks spec's oracles: by bucket, organization, task group and
+/// The tasks spec's references: by bucket, organization, task group and
 /// category, then by organization and category without the bucket over a
 /// window that cuts the day bucket `START` begins. A `timestamp` has no
 /// zone, so the window's bounds are wall clock in UTC.
-fn task_oracles() -> Vec<Oracle> {
+fn task_oracles() -> Vec<Reference> {
     const MEASURES: [&str; 6] = [
         "tasks",
         "picks",
@@ -553,7 +553,7 @@ fn task_oracles() -> Vec<Oracle> {
     ];
     // The ask covers every finite bucket; a row at an infinite time is in
     // none, and the view in PostgreSQL would answer it on its own.
-    let by_bucket = Oracle {
+    let by_bucket = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, organization_id, taskgroup_id, done,
                     category, kind, tasks, picks, picks_max, pick_tasks, completed_tasks,
@@ -577,7 +577,7 @@ fn task_oracles() -> Vec<Oracle> {
         ),
         scales: vec![0; 12],
     };
-    let window = Oracle {
+    let window = Reference {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks), max(f.picks),
                     count(*) FILTER (WHERE g.category = 'pick'),
@@ -599,7 +599,7 @@ fn task_oracles() -> Vec<Oracle> {
         scales: vec![0; 8],
     };
     // The null-ness key as a filter, against the test it stands for.
-    let open = Oracle {
+    let open = Reference {
         sql: format!(
             "SELECT f.organization_id, count(*), sum(f.picks)
                FROM $S.tasks f
@@ -611,7 +611,7 @@ fn task_oracles() -> Vec<Oracle> {
         ask: Ask {
             from: WINDOW_FROM,
             to: WINDOW_TO,
-            filter: vec![Cond {
+            filter: vec![Condition {
                 key: id("done"),
                 values: vec![Literal::Bool(false)],
             }],
@@ -622,11 +622,11 @@ fn task_oracles() -> Vec<Oracle> {
     vec![by_bucket, window, open]
 }
 
-/// The picks view's oracles: by bucket, organization, category and done,
+/// The picks view's references: by bucket, organization, category and done,
 /// then by organization and category over a window.
-fn picks_oracles() -> Vec<Oracle> {
+fn picks_oracles() -> Vec<Reference> {
     const MEASURES: [&str; 3] = ["tasks", "picks", "pick_tasks"];
-    let by_bucket = Oracle {
+    let by_bucket = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, organization_id, category, done,
                     tasks, picks, pick_tasks
@@ -642,7 +642,7 @@ fn picks_oracles() -> Vec<Oracle> {
         ),
         scales: vec![0; 7],
     };
-    let window = Oracle {
+    let window = Reference {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks),
                     count(*) FILTER (WHERE g.category = 'pick')
@@ -664,10 +664,10 @@ fn picks_oracles() -> Vec<Oracle> {
     vec![by_bucket, window]
 }
 
-/// Asks Straum what each oracle's SQL answers in PostgreSQL and compares the
+/// Asks Straum what each reference's SQL answers in PostgreSQL and compares the
 /// rows. `None` when Straum isn't ready.
-fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
-    for Oracle { sql, ask, scales } in oracles {
+fn compare(db: &mut Db, app: &App, references: &[Reference]) -> Option<()> {
+    for Reference { sql, ask, scales } in references {
         let answered = match app.ask(ask) {
             Ok(answered) => answered,
             Err(AnswerError::NotReady) => return None,
@@ -696,7 +696,7 @@ fn printed(answer: &Answer, scales: &[u32]) -> Vec<Vec<Option<String>>> {
         .collect()
 }
 
-fn applied(writer: &mut Writer<Pg>) {
+fn applied(writer: &mut Writer<Postgres>) {
     match writer.step() {
         Ok(Step::Applied(_)) => {}
         other => panic!("expected a commit, got {other:?}"),
@@ -704,7 +704,7 @@ fn applied(writer: &mut Writer<Pg>) {
 }
 
 /// Applies the next commit, or starts over when it doesn't fit a table.
-fn applied_or_started(writer: &mut Writer<Pg>) {
+fn applied_or_started(writer: &mut Writer<Postgres>) {
     match writer.step() {
         Ok(Step::Applied(_)) => {}
         Err(straum_app::Error::Unfit(_)) => {
@@ -983,7 +983,7 @@ fn follows_the_task_tables() {
     }
     // The key is a boolean, whatever its column is.
     let done_is = |value| Ask {
-        filter: vec![Cond {
+        filter: vec![Condition {
             key: id("done"),
             values: vec![value],
         }],
@@ -1000,13 +1000,13 @@ fn follows_the_task_tables() {
     );
 }
 
-/// A transaction at the cap applies; one past it starts Straum over, and
+/// A transaction at the limit applies; one past it starts Straum over, and
 /// the new load holds its rows.
 #[test]
-fn a_transaction_past_the_cap_starts_over() {
+fn a_transaction_past_the_limit_starts_over() {
     const CAP: usize = 50;
     let pg = postgres();
-    let mut db = Db::new(&pg, "cap", TABLES);
+    let mut db = Db::new(&pg, "capped", TABLES);
     db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
     let mut rng = Rng::new(23);
     for id in 0..20 {
@@ -1014,7 +1014,7 @@ fn a_transaction_past_the_cap_starts_over() {
     }
     let mut writer = Writer::new(
         App::new(db.spec(SPEC), LIMITS, None),
-        Pg::new(db.dsn.clone(), &db.name, CAP),
+        Postgres::new(db.dsn.clone(), &db.name, CAP),
     );
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     let batch = |rng: &mut Rng, from: u64, rows: usize| {
@@ -1034,7 +1034,7 @@ fn a_transaction_past_the_cap_starts_over() {
         err,
         format!(
             "transaction {} changes more than {CAP} rows Straum reads, the --max-transaction-rows \
-             cap; Straum loads again from a snapshot after it",
+             limit; Straum starts over from a snapshot after it",
             err.split(' ').nth(1).unwrap_or_default()
         ),
         "{err}"
@@ -1046,7 +1046,7 @@ fn a_transaction_past_the_cap_starts_over() {
         parse_lsn(named).unwrap() <= parse_lsn(&lsn).unwrap(),
         "transaction {named} is past the server at {lsn}"
     );
-    assert_eq!(writer.app().status().error.as_deref(), Some(err.as_str()));
+    assert_eq!(writer.app().status().failure.as_deref(), Some(err.as_str()));
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run(&rng.trip(300));
@@ -1129,7 +1129,7 @@ fn a_dim_change_shows_at_once() {
 
     // Tasks whose group is gone read null, as the join gives.
     let null_tasks = Ask {
-        filter: vec![Cond {
+        filter: vec![Condition {
             key: id("organization_id"),
             values: vec![Literal::Int(2)],
         }],
@@ -1207,13 +1207,13 @@ LEFT OUTER JOIN $S.promos AS p ON p.sku = o.sku
 GROUP BY 1, 2, 3;
 ";
 
-/// The shop specs' oracles, the paid view's then the offers view's: each
+/// The shop specs' references, the paid view's then the offers view's: each
 /// by bucket, and the paid view by country and label over a window that
 /// cuts the day bucket `START` begins, against the raw rows joined as the
 /// view says.
-fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
+fn shop_oracles() -> (Vec<Reference>, Vec<Reference>) {
     const PAID: [&str; 6] = ["orders", "qty", "qty_max", "qty_avg", "sizes", "norwegian"];
-    let paid = Oracle {
+    let paid = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, status, country, label, orders, qty,
                     qty_max, round(qty_avg, 6), sizes, norwegian
@@ -1223,7 +1223,7 @@ fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
         ask: ask("paid", &PAID, &["bucket", "status", "country", "label"]),
         scales: vec![0; 10],
     };
-    let offers = Oracle {
+    let offers = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, country, note, orders, qty, qty_min
                FROM ({}) v",
@@ -1236,7 +1236,7 @@ fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
         ),
         scales: vec![0; 6],
     };
-    let window = Oracle {
+    let window = Reference {
         sql: format!(
             "SELECT c.country, t.label, count(*), sum(o.qty), max(o.qty), round(avg(o.qty), 6),
                     count(DISTINCT o.qty), count(*) FILTER (WHERE c.country = 'NO')
@@ -1357,7 +1357,7 @@ fn a_poison_value_names_its_column() {
             && err.ends_with("as a numeric of scale 2 in column fare of poison.trips"),
         "{err}"
     );
-    assert_eq!(writer.app().status().error.as_deref(), Some(err.as_str()));
+    assert_eq!(writer.app().status().failure.as_deref(), Some(err.as_str()));
     db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
@@ -1386,7 +1386,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
             let (dsn, name) = (db.dsn.clone(), db.name.clone());
             let (written, done) = (Arc::clone(&written), Arc::clone(&done));
             thread::spawn(move || {
-                let mut conn = Conn::connect(&dsn, false).unwrap();
+                let mut conn = Connection::connect(&dsn, false).unwrap();
                 for i in 0..2_000 {
                     let sql = format!(
                         "INSERT INTO {name}.trips VALUES ({i}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
@@ -1432,7 +1432,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
         }
         assert!(streamed > 1, "round {round}: nothing was streamed");
         // The marker's commit time, by the server's clock, is now.
-        let time = writer.app().status().time.unwrap();
+        let time = writer.app().status().committed.unwrap();
         let apart = match SystemTime::now().duration_since(time) {
             Ok(behind) => behind,
             Err(ahead) => ahead.duration(),
@@ -1497,8 +1497,8 @@ fn asks_take_values_of_the_types_the_load_read() {
     let mut writer = db.writer();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     let filtered = |fact, measure, key: &str, value| Ask {
-        filter: vec![Cond {
-            key: match ask(fact, &[], &[key]).by.remove(0) {
+        filter: vec![Condition {
+            key: match ask(fact, &[], &[key]).keys.remove(0) {
                 AskKey::Key(name) => name,
                 AskKey::Time(_) => unreachable!("cases filter on keys"),
             },
@@ -1633,7 +1633,7 @@ fn tls_trusts_only_its_roots() {
     // Display leaves the password out.
     let dsn = (pg.dsn.to_string()).replace("postgres@", &format!("postgres:{PASSWORD}@"));
     let ssl = |dsn: &str| {
-        let mut conn = Conn::connect(&Dsn::parse(dsn).unwrap(), false)?;
+        let mut conn = Connection::connect(&Dsn::parse(dsn).unwrap(), false)?;
         let rows = conn.rows("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")?;
         Ok::<_, Error>(rows[0][0].clone().unwrap())
     };
@@ -1730,7 +1730,7 @@ fn tls_start_errors() {
             format!("sslrootcert={ca}")
         });
         let dsn = Dsn::parse(&dsn.to_string().replace("sslmode=disable", &tls)).unwrap();
-        let err = Conn::connect(&dsn, false).err().unwrap().to_string();
+        let err = Connection::connect(&dsn, false).err().unwrap().to_string();
         assert!(err.starts_with(&expected), "{err:?} is not {expected:?}");
     }
 }
@@ -1849,7 +1849,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
-    let pg = Pg::new(Dsn::parse(&dsn).unwrap(), "plan", MAX_ROWS);
+    let pg = Postgres::new(Dsn::parse(&dsn).unwrap(), "plan", ROW_LIMIT);
     let mut writer = Writer::new(App::new(spec, LIMITS, None), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
@@ -1870,7 +1870,13 @@ fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
 
 /// Opens `spec` against `tables` and checks the setup problems found;
 /// `None` expects none.
-fn expect_problems(pg: &Postgres, name: &str, tables: &str, spec: &str, expected: Option<&str>) {
+fn expect_problems(
+    pg: &PostgresContainer,
+    name: &str,
+    tables: &str,
+    spec: &str,
+    expected: Option<&str>,
+) {
     let db = Db::new(pg, name, tables);
     let found = setup_problems(name, db.pg().open(&db.spec(spec)));
     assert_eq!(found, Vec::from_iter(expected), "{name}");
@@ -2227,7 +2233,7 @@ fn setup_problems_say_what_to_fix() {
         .dsn
         .to_string()
         .replace("postgres@", &format!("{name}:r@"));
-    let mut source = Pg::new(Dsn::parse(&dsn).unwrap(), name, MAX_ROWS);
+    let mut source = Postgres::new(Dsn::parse(&dsn).unwrap(), name, ROW_LIMIT);
     assert_eq!(
         setup_problems(name, source.open(&db.spec(dim_spec))),
         ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
@@ -2354,7 +2360,7 @@ fn setup_problems_say_what_to_fix() {
 #[test]
 fn binary_copies_read_as_text_does() {
     let pg = postgres();
-    let mut conn = Conn::connect(&pg.dsn, false).unwrap();
+    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
     let types = [
         ColumnType::Int,
         ColumnType::Int,
@@ -2459,7 +2465,7 @@ fn reports_wal_level_and_read_access() {
 
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
-    let mut reader = Pg::new(Dsn::parse(&dsn).unwrap(), "access", MAX_ROWS);
+    let mut reader = Postgres::new(Dsn::parse(&dsn).unwrap(), "access", ROW_LIMIT);
     let err = reader.open(&spec).unwrap_err().to_string();
     for table in ["zones", "trips", "logins"] {
         let line =
@@ -2472,7 +2478,7 @@ fn reports_wal_level_and_read_access() {
 fn connection_errors() {
     let pg = postgres();
     let wrong = pg.dsn.to_string().replace("postgres@", "postgres:wrong@");
-    let mut source = Pg::new(Dsn::parse(&wrong).unwrap(), "p", MAX_ROWS);
+    let mut source = Postgres::new(Dsn::parse(&wrong).unwrap(), "p", ROW_LIMIT);
     let spec = straum_notation::parse(&SPEC.replace("$S", "p")).unwrap();
     let err = source.open(&spec).unwrap_err().to_string();
     assert!(
@@ -2481,7 +2487,7 @@ fn connection_errors() {
     );
 
     let bare = Dsn::parse(&pg.dsn.to_string()).unwrap();
-    let err = Pg::new(bare, "p", MAX_ROWS)
+    let err = Postgres::new(bare, "p", ROW_LIMIT)
         .open(&spec)
         .unwrap_err()
         .to_string();
@@ -2498,7 +2504,7 @@ fn connection_errors() {
 
     // Nothing listens on port 1.
     let closed = Dsn::parse("postgres://straum@127.0.0.1:1/straum").unwrap();
-    let err = Pg::new(closed, "p", MAX_ROWS)
+    let err = Postgres::new(closed, "p", ROW_LIMIT)
         .open(&spec)
         .unwrap_err()
         .to_string();
@@ -2578,7 +2584,7 @@ fn error_response(code: &str, text: &str) -> Vec<u8> {
     message(b'E', format!("SERROR\0C{code}\0M{text}\0\0").as_bytes())
 }
 
-/// A stand-in for PostgreSQL: writes each part after its pause, then stops
+/// A fake for PostgreSQL: writes each part after its pause, then stops
 /// writing, reads until the client hangs up and returns what it sent.
 fn scripted(parts: Vec<(Duration, Vec<u8>)>) -> (Dsn, thread::JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2606,9 +2612,9 @@ fn now(bytes: Vec<u8>) -> (Duration, Vec<u8>) {
     (Duration::ZERO, bytes)
 }
 
-fn connect(parts: Vec<(Duration, Vec<u8>)>, replication: bool) -> Result<Conn, Error> {
+fn connect(parts: Vec<(Duration, Vec<u8>)>, replication: bool) -> Result<Connection, Error> {
     let (dsn, _server) = scripted(parts);
-    Conn::connect(&dsn, replication)
+    Connection::connect(&dsn, replication)
 }
 
 #[test]
@@ -2722,7 +2728,7 @@ fn copy_tuple(fields: &[Option<i32>]) -> Vec<u8> {
 
 const COPY_END: [u8; 2] = (-1_i16).to_be_bytes();
 
-/// The rows a stand-in server's copy of two `int4` columns gives, sent as
+/// The rows a fake server's copy of two `int4` columns gives, sent as
 /// `messages` CopyData bodies, then `after`.
 fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> {
     let mut reply = copy_out(2);
@@ -2739,7 +2745,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
     Ok(rows)
 }
 
-/// Two `int4` columns, `a` and `b` of `t`, as a stand-in copy sends.
+/// Two `int4` columns, `a` and `b` of `t`, as a fake copy sends.
 fn two_ints() -> Checked {
     Checked {
         enums: Vec::new(),
@@ -2911,15 +2917,15 @@ fn copy_both_errors() {
     }
 }
 
-/// A stream from a stand-in server that sends `parts` once it has started.
+/// A stream from a fake server that sends `parts` once it has started.
 fn scripted_stream(parts: Vec<(Duration, Vec<u8>)>) -> (Stream, thread::JoinHandle<Vec<u8>>) {
     let mut start = signed_in();
     start.extend(message(b'N', b"SNOTICE\0Mstarting\0\0"));
     start.extend(message(b'W', &[0, 0, 0]));
     let (dsn, server) = scripted([vec![now(start)], parts].concat());
-    let mut conn = Conn::connect(&dsn, true).unwrap();
+    let mut conn = Connection::connect(&dsn, true).unwrap();
     conn.copy_both("START_REPLICATION").unwrap();
-    let stream = Stream::start(conn, Decoder::new(Vec::new(), MAX_ROWS), Lsn(0x10)).unwrap();
+    let stream = Stream::start(conn, Decoder::new(Vec::new(), ROW_LIMIT), Lsn(0x10)).unwrap();
     (stream, server)
 }
 
@@ -2964,11 +2970,11 @@ fn reads_the_servers_wal() {
     // A new slot has confirmed everything before its consistent point.
     let wal = source.wal().unwrap();
     assert_eq!(wal.confirmed, start);
-    assert!(wal.restart <= start && start <= wal.server, "{wal:?}");
+    assert!(wal.restart <= start && start <= wal.written, "{wal:?}");
 
     db.run(&Rng::new(1).trip(1));
     let commit = source.next_commit(LONG).unwrap().unwrap();
-    assert!(source.wal().unwrap().server >= commit.lsn);
+    assert!(source.wal().unwrap().written >= commit.lsn);
     // Asking for the next commit says this one is applied, and the stream
     // tells the server within a status interval.
     assert_eq!(
@@ -2998,7 +3004,7 @@ fn reads_the_servers_wal() {
     assert!(source.wal().unwrap().confirmed >= commit.lsn);
 
     // A slot the server doesn't have.
-    let mut conn = Conn::connect(&pg.dsn, false).unwrap();
+    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
     let err = read_wal(&mut conn, "nope").unwrap_err().to_string();
     assert_eq!(err, "PostgreSQL sent no WAL position for slot nope");
 }
@@ -3115,7 +3121,7 @@ fn taxi_month() {
         "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable"
     ))
     .unwrap();
-    let mut sql = Conn::connect(&dsn, false).unwrap();
+    let mut sql = Connection::connect(&dsn, false).unwrap();
     let clock = Instant::now();
     sql.execute(
         "CREATE TABLE taxi_zones (location_id int PRIMARY KEY, borough text, zone text, service_zone text);
@@ -3136,7 +3142,7 @@ fn taxi_month() {
                   CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
     )
     .unwrap();
-    let rows = |sql: &mut Conn, q: &str| sql.rows(q).unwrap();
+    let rows = |sql: &mut Connection, q: &str| sql.rows(q).unwrap();
     eprintln!(
         "copied {:?} trips in {:.1?}",
         rows(&mut sql, "SELECT count(*) FROM yellow_trips")[0][0],
@@ -3191,32 +3197,34 @@ fn taxi_month() {
     );
     let coarse_scales = [0, 0, 2, 2, 0, 0];
     // Straum's time is the time `ask` holds the read lock.
-    let compare =
-        |sql: &mut Conn, app: &App, (ask, reference, scales): (&Ask, &str, &[u32]), when: &str| {
-            let clock = Instant::now();
-            let answered = app.ask(ask).unwrap();
-            let asked = clock.elapsed();
-            let mut got = printed(&answered.answer, scales);
-            let clock = Instant::now();
-            let mut expected = sql.rows(reference).unwrap();
-            let queried = clock.elapsed();
-            got.sort();
-            expected.sort();
-            let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
-            assert!(
-                got.len() == expected.len() && differ.is_none(),
-                "{when}: {} rows from Straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
-                got.len(),
-                expected.len(),
-                differ.map(|i| &got[i]),
-                differ.map(|i| &expected[i])
-            );
-            eprintln!(
-                "{when}: {} groups equal; Straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
-                got.len()
-            );
-        };
-    let check = |sql: &mut Conn, app: &App, when: &str| {
+    let compare = |sql: &mut Connection,
+                   app: &App,
+                   (ask, reference, scales): (&Ask, &str, &[u32]),
+                   when: &str| {
+        let clock = Instant::now();
+        let answered = app.ask(ask).unwrap();
+        let asked = clock.elapsed();
+        let mut got = printed(&answered.answer, scales);
+        let clock = Instant::now();
+        let mut expected = sql.rows(reference).unwrap();
+        let queried = clock.elapsed();
+        got.sort();
+        expected.sort();
+        let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
+        assert!(
+            got.len() == expected.len() && differ.is_none(),
+            "{when}: {} rows from Straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
+            got.len(),
+            expected.len(),
+            differ.map(|i| &got[i]),
+            differ.map(|i| &expected[i])
+        );
+        eprintln!(
+            "{when}: {} groups equal; Straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
+            got.len()
+        );
+    };
+    let check = |sql: &mut Connection, app: &App, when: &str| {
         compare(sql, app, (&all, &reference, &all_scales), when);
         let when = format!("{when}, by borough");
         compare(
@@ -3229,7 +3237,7 @@ fn taxi_month() {
 
     let mut writer = Writer::new(
         App::new(spec, LIMITS, None),
-        Pg::new(dsn, "straum", MAX_ROWS),
+        Postgres::new(dsn, "straum", ROW_LIMIT),
     );
     let clock = Instant::now();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
@@ -3263,12 +3271,13 @@ fn taxi_month() {
     // Dims change: a zone renamed, another moved to a new key, then a
     // trip in the renamed zone. Each is one commit applied; nothing
     // starts over.
-    let change = |sql: &mut Conn, writer: &mut Writer<Pg>, what: &str, statement: &str| {
-        sql.execute(statement).unwrap();
-        let clock = Instant::now();
-        applied(writer);
-        eprintln!("applied {what} in {:.1?}", clock.elapsed());
-    };
+    let change =
+        |sql: &mut Connection, writer: &mut Writer<Postgres>, what: &str, statement: &str| {
+            sql.execute(statement).unwrap();
+            let clock = Instant::now();
+            applied(writer);
+            eprintln!("applied {what} in {:.1?}", clock.elapsed());
+        };
     change(
         &mut sql,
         &mut writer,

@@ -9,13 +9,13 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Ident, Spec, Store};
+use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
 /// A column's type, as the catalog gives it: every table here names its
 /// columns alike.
-pub fn type_of(column: &Ident) -> ColumnType {
+pub fn type_of(column: &Identifier) -> ColumnType {
     match column.as_str() {
         "at" => ColumnType::Time { zoned: true },
         "borough" | "rider" => ColumnType::Text,
@@ -25,7 +25,7 @@ pub fn type_of(column: &Ident) -> ColumnType {
 
 /// Sets the types a load sets: a fact's columns, or a dim's key and then
 /// its attributes.
-pub fn set_types(table: &Ident, store: &mut Store) {
+pub fn set_types(table: &Identifier, store: &mut Store) {
     let spec = store.spec();
     let types: Vec<ColumnType> = match (spec.fact(table.as_str()), spec.dim(table.as_str())) {
         (Some(fact), _) => fact.columns().iter().map(type_of).collect(),
@@ -41,7 +41,7 @@ pub fn set_types(table: &Ident, store: &mut Store) {
 struct Table {
     /// `REPLICA IDENTITY FULL`: updates and deletes send the whole old row.
     full: bool,
-    /// By primary key. A dim row starts with its key.
+    /// ByKey primary key. A dim row starts with its key.
     rows: BTreeMap<Datum, Row>,
 }
 
@@ -118,8 +118,8 @@ pub fn time(lsn: Lsn) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(lsn.0)
 }
 
-pub fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
+pub fn id(s: &str) -> Identifier {
+    Identifier::new(s).unwrap()
 }
 
 impl Database {
@@ -185,7 +185,7 @@ impl Database {
         let lsn = Lsn(self.lsn().0 + 10);
         self.log.push(Commit {
             lsn,
-            time: time(lsn),
+            committed: time(lsn),
             changes,
         });
         self.history.insert(lsn, tables);
@@ -258,7 +258,7 @@ impl Fake {
     }
 
     /// A table's rows in the snapshot the stream starts from.
-    fn read(&mut self, table: &Ident) -> Result<Vec<Row>, SourceError> {
+    fn read(&mut self, table: &Identifier) -> Result<Vec<Row>, SourceError> {
         let mut db = self.db.borrow_mut();
         db.connect()?;
         db.loads.push(table.to_string());
@@ -285,7 +285,7 @@ impl Source for Fake {
         Ok(start)
     }
 
-    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
+    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
         set_types(table, store);
         for row in self.read(table)? {
             store.add_row(table.as_str(), &row)?;
@@ -320,7 +320,7 @@ impl Source for Fake {
         db.connect()?;
         let applied = self.stream.as_ref().expect("open first").applied;
         Ok(db.wal.unwrap_or(Wal {
-            server: db.lsn(),
+            written: db.lsn(),
             confirmed: applied,
             restart: applied,
         }))

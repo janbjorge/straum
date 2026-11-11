@@ -69,7 +69,7 @@ const ASK: &str = concat!(
     r#""parameters": [0, "2100-01-01T00:00:00Z"]}"#
 );
 
-struct Postgres {
+struct PostgresContainer {
     container: Container<GenericImage>,
     port: u16,
 }
@@ -79,7 +79,7 @@ fn tag() -> String {
     std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
 }
 
-fn postgres() -> Postgres {
+fn postgres() -> PostgresContainer {
     let container = GenericImage::new("postgres", tag().as_str())
         .with_exposed_port(5432.tcp())
         // The init server says it on stdout, the real one on stderr.
@@ -100,10 +100,10 @@ fn postgres() -> Postgres {
             port
         })
         .expect("Docker publishes port 5432");
-    Postgres { container, port }
+    PostgresContainer { container, port }
 }
 
-impl Postgres {
+impl PostgresContainer {
     /// One statement at a time, as the superuser; the output unaligned.
     fn psql(&self, sql: &str) -> String {
         let mut result = self
@@ -250,7 +250,7 @@ impl Running {
         }
     }
 
-    fn wait_for_rows(&mut self, pg: &Postgres, what: &str) {
+    fn wait_for_rows(&mut self, pg: &PostgresContainer, what: &str) {
         let rows = pg.expected_rows();
         self.wait_for(what, |straum| {
             straum.call("POST", "/ask", ASK).1.ends_with(&rows)
@@ -295,7 +295,7 @@ impl Drop for Running {
 /// can't run in a transaction, but those that start with `hold`, which it
 /// returns. The role `straum` gets its password from the DSN the plan
 /// reads, the one `straum run` connects with after.
-fn set_up(pg: &Postgres, spec: &str, hold: Option<&str>) -> Vec<String> {
+fn set_up(pg: &PostgresContainer, spec: &str, hold: Option<&str>) -> Vec<String> {
     let mut plan = straum(&["plan", "--spec", spec]);
     plan.env("STRAUM_DSN", pg.dsn("straum"));
     let (code, plan, _) = output(&mut plan);

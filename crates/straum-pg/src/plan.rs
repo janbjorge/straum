@@ -1,4 +1,4 @@
-//! The setup SQL an admin runs once, which `straum plan` prints.
+//! The setup SQL a table owner runs once, which `straum plan` prints.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use postgres_protocol::password::scram_sha_256;

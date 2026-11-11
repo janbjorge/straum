@@ -50,7 +50,7 @@ fn the_canon_parses() {
     let orders = spec.fact("orders").unwrap();
     let keys: Vec<String> = orders.keys().map(ToString::to_string).collect();
     assert_eq!(keys, ["status", "customer_id", "shipped", "country"]);
-    assert_eq!(orders.refs[0].name.as_str(), "customers");
+    assert_eq!(orders.refs[0].alias.as_str(), "customers");
     assert_eq!(spec.dim("customers").unwrap().table.schema.as_str(), "shop");
 }
 
@@ -135,7 +135,7 @@ fn inner_join_and_exists_parse() {
     );
     let spec = parse(&src).unwrap();
     let kinds: Vec<_> = (spec.fact("orders").unwrap().refs.iter())
-        .map(|r| (r.name.to_string(), r.kind))
+        .map(|r| (r.alias.to_string(), r.kind))
         .collect();
     assert_eq!(
         kinds,
@@ -472,8 +472,8 @@ fn enum_columns_are_cast_to_text() {
     assert_eq!(customers.as_text, [customers.attributes[0].clone()]);
     assert_eq!(
         orders.measures[2].filter[0],
-        straum_domain::Cond {
-            key: orders.by[0].name().clone(),
+        straum_domain::Condition {
+            key: orders.by_keys[0].name().clone(),
             values: vec![Literal::Text("paid".into())],
         }
     );

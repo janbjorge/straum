@@ -32,28 +32,28 @@ tests:
       - failedTemplate:
           errorPattern: "maxLag"
 
-  - it: refuses a WAL cap straum can't read
+  - it: refuses a WAL limit Straum can't read
     set:
       maxRetainedWal: 4GB
     asserts:
       - failedTemplate:
           errorPattern: "maxRetainedWal"
 
-  - it: refuses a WAL cap of nothing
+  - it: refuses a WAL limit of nothing
     set:
       maxRetainedWal: "0"
     asserts:
       - failedTemplate:
           errorPattern: "maxRetainedWal"
 
-  - it: refuses a transaction cap of nothing
+  - it: refuses a transaction limit of nothing
     set:
       maxTransactionRows: 0
     asserts:
       - failedTemplate:
           errorPattern: "maxTransactionRows"
 
-  - it: refuses a transaction cap that isn't a count
+  - it: refuses a transaction limit that isn't a count
     set:
       maxTransactionRows: "many"
     asserts:

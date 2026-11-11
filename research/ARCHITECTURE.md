@@ -131,8 +131,8 @@ An ask names one fact and gives:
 - filters, `=` or `in` on the same keys;
 - a half-open range `[from, to)` in Unix seconds, both ends on bucket edges.
 
-`Spec::check` rejects asks the rollup can't answer exactly: unknown names, two
-time keys and a range end inside a bucket.
+`Spec::check_ask` refuses asks the rollup can't answer exactly: unknown
+names, two time keys and a bound inside a bucket.
 
 `Store::ask` answers from the cells:
 

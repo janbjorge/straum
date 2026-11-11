@@ -13,7 +13,7 @@ use straum_app::{
     App, Change, Commit, Limits, Lsn, Source, SourceError, Spill, SpillError, Spilling, Step, Wal,
     Writer,
 };
-use straum_domain::{Ask, ColumnType, Datum, Ident, Sealed, SealedId, Spec, Store};
+use straum_domain::{Ask, ColumnType, Datum, Identifier, Sealed, SealedId, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -42,7 +42,7 @@ const LIMITS: Limits = Limits {
 };
 
 /// Loads fixed zones and trips at [`START`], then streams its commits.
-struct Script {
+struct Fake {
     trips: Vec<Vec<Datum>>,
     commits: VecDeque<Commit>,
     /// How long loading the fact takes.
@@ -50,13 +50,13 @@ struct Script {
     wal: Wal,
 }
 
-impl Source for Script {
+impl Source for Fake {
     fn open(&mut self, _: &Spec) -> Result<Lsn, SourceError> {
         Ok(START)
     }
 
     /// Zones 1 and 2; a trip in zone 3 finds no row.
-    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
+    fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
         if table.as_str() == "zones" {
             store.set_types("zones", &[ColumnType::Int, ColumnType::Text])?;
             return Ok(store.add_rows(
@@ -105,8 +105,8 @@ fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
 
 /// Four trips on 2024-01-01 UTC, one in a zone with no row, and a slot
 /// that has confirmed all there is.
-fn script() -> Script {
-    Script {
+fn fake() -> Fake {
+    Fake {
         trips: vec![
             trip(0, 1, 1, int(1_250)),
             trip(1, 1, 1, int(250)),
@@ -115,28 +115,28 @@ fn script() -> Script {
         ],
         commits: VecDeque::from([Commit {
             lsn: Lsn(0x17_0000_0000),
-            time: UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456),
+            committed: UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456),
             changes: vec![Change::Insert {
-                table: Ident::new("trips").unwrap(),
+                table: Identifier::new("trips").unwrap(),
                 row: trip(3, 1, 1, int(100)),
             }],
         }]),
         pause: Duration::ZERO,
         wal: Wal {
-            server: START,
+            written: START,
             confirmed: START,
             restart: START,
         },
     }
 }
 
-fn writer_with(limits: Limits, script: Script) -> Writer<Script> {
+fn writer_with(limits: Limits, fake: Fake) -> Writer<Fake> {
     let spec = straum_notation::parse(SPEC).unwrap();
-    Writer::new(App::new(spec, limits, None), script)
+    Writer::new(App::new(spec, limits, None), fake)
 }
 
-fn writer() -> Writer<Script> {
-    writer_with(LIMITS, script())
+fn writer() -> Writer<Fake> {
+    writer_with(LIMITS, fake())
 }
 
 struct Server {
@@ -311,7 +311,7 @@ fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
         spill: Arc::new(Lost),
         seal_after: Duration::ZERO,
     };
-    let mut writer = Writer::new(App::new(spec, LIMITS, Some(spilling)), script());
+    let mut writer = Writer::new(App::new(spec, LIMITS, Some(spilling)), fake());
     writer.step().unwrap();
     let server = serve(writer.app().clone());
     let range = r#"["2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"]"#;
@@ -360,7 +360,7 @@ fn asks_straum_cant_answer() {
             concat!(
                 r#"{"errors":["unknown measure nope","#,
                 r#""zone_nope is not a key of the view","#,
-                r#""range end 1 is not on a 3600s bucket edge"]}"#
+                r#""bound 1 is not on a 3600s bucket edge"]}"#
             ),
         ),
         (
@@ -539,7 +539,7 @@ sealed:       no spill
     );
     assert_eq!(
         lines[4],
-        "WAL retained: 0.0 MiB, at most 4096.0 MiB; the server is at 16/B374D848"
+        "WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/B374D848"
     );
     assert_eq!(lines[5..7], ["starts:       1", "failures:     0"]);
     server.stop();
@@ -571,14 +571,14 @@ fn readiness_says_why_not() {
 fn readiness_says_how_far_behind() {
     // WAL written while the load took a second, which the slot hasn't
     // confirmed.
-    let mut script = script();
-    script.wal.server = Lsn(START.0 + 1);
-    script.pause = Duration::from_secs(1);
+    let mut fake = fake();
+    fake.wal.written = Lsn(START.0 + 1);
+    fake.pause = Duration::from_secs(1);
     let limits = Limits {
         max_lag: Duration::ZERO,
         ..LIMITS
     };
-    let mut writer = writer_with(limits, script);
+    let mut writer = writer_with(limits, fake);
     writer.step().unwrap();
     let server = serve(writer.app().clone());
     let reply = call(server.addr, "GET", "/readyz", "");
@@ -623,9 +623,9 @@ fn shutdown_finishes_requests_in_flight() {
 
 fn trips_from(from: i64) -> Ask {
     Ask {
-        view: Ident::new("trips").unwrap(),
-        measures: vec![Ident::new("trips").unwrap()],
-        by: Vec::new(),
+        view: Identifier::new("trips").unwrap(),
+        measures: vec![Identifier::new("trips").unwrap()],
+        keys: Vec::new(),
         filter: Vec::new(),
         from,
         to: JAN_1 + 24 * HOUR,

@@ -34,9 +34,9 @@ impl Lag {
         match self.unconfirmed.back_mut() {
             // The later of two readings at one position is the closer
             // bound.
-            Some((when, lsn)) if *lsn >= wal.server => *when = at,
-            Some((_, lsn)) if full => *lsn = wal.server,
-            _ => self.unconfirmed.push_back((at, wal.server)),
+            Some((when, lsn)) if *lsn >= wal.written => *when = at,
+            Some((_, lsn)) if full => *lsn = wal.written,
+            _ => self.unconfirmed.push_back((at, wal.written)),
         }
         while let Some(&(when, lsn)) = self.unconfirmed.front()
             && lsn <= wal.confirmed
@@ -70,7 +70,7 @@ mod tests {
 
     fn wal(server: u64, confirmed: u64) -> Wal {
         Wal {
-            server: Lsn(server),
+            written: Lsn(server),
             confirmed: Lsn(confirmed),
             restart: Lsn(confirmed),
         }
@@ -125,11 +125,11 @@ mod tests {
                 return Duration::ZERO;
             };
             let confirmed = last.confirmed;
-            if last.server <= confirmed {
+            if last.written <= confirmed {
                 return Duration::ZERO;
             }
             let since = (self.readings.iter().rev())
-                .find(|(_, w)| w.server <= confirmed)
+                .find(|(_, w)| w.written <= confirmed)
                 .map_or(self.start, |(at, _)| *at);
             now.saturating_duration_since(since)
         }
