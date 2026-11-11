@@ -693,8 +693,8 @@ fn spec_errors_pass_through() {
     }
     assert_eq!(
         SpecError::NamedBucket { fact: id("t") }.to_string(),
-        "fact t: bucket is what asks call the time bucket; \
-         name the column, ref or measure otherwise"
+        "view t: bucket is what asks call the time bucket; \
+         name the column, join or measure otherwise"
     );
 }
 
