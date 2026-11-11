@@ -162,6 +162,16 @@ impl fmt::Display for AskError {
 
 impl std::error::Error for AskError {}
 
+/// As an answer names its column.
+impl fmt::Display for AskKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AskKey::Key(name) => write!(f, "{name}"),
+            AskKey::Time(t) => write!(f, "{t}"),
+        }
+    }
+}
+
 impl fmt::Display for TimeKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

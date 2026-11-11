@@ -524,10 +524,7 @@ fn answer_columns(
     measures: &[&Measure],
 ) -> Vec<AnswerColumn> {
     let keys = (ask.by.iter().zip(by)).map(|(key, p)| AnswerColumn {
-        name: match key {
-            AskKey::Time(t) => t.to_string(),
-            AskKey::Key(name) => name.to_string(),
-        },
+        name: key.to_string(),
         scale: p.column_type(rollup).scale(),
         time: matches!(key, AskKey::Time(_)),
     });

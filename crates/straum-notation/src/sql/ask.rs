@@ -129,7 +129,7 @@ impl Walker {
         }
         for key in &grouped {
             if !by.contains(key) {
-                self.error(at, format!("GROUP BY {} is not selected", key_name(key)));
+                self.error(at, format!("GROUP BY {key} is not selected"));
             }
         }
 
@@ -325,12 +325,5 @@ fn bucket_bound(expr: &sql::Expr) -> Option<(End, &sql::Expr)> {
         sql::BinaryOperator::GtEq => Some((End::From, right)),
         sql::BinaryOperator::Lt => Some((End::To, right)),
         _ => None,
-    }
-}
-
-fn key_name(key: &AskKey) -> String {
-    match key {
-        AskKey::Key(name) => name.to_string(),
-        AskKey::Time(t) => t.to_string(),
     }
 }
