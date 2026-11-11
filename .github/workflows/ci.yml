@@ -123,7 +123,7 @@ jobs:
   # description and license; provenance and SBOM attestations are signed
   # through GitHub OIDC.
   publish:
-    needs: [head, test, image]
+    needs: [head, format, lint, architecture, test, coverage, chart, image]
     if: needs.head.outputs.current == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
