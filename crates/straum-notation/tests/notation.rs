@@ -3,7 +3,7 @@ mod common;
 use common::{FEB, JAN, cond, id};
 use straum_domain::{
     Agg, Ask, AskError, AskKey, Attr, By, Grain, Literal, Origin, RefKind, Slot, Spec, SpecError,
-    TimeKey, Via,
+    Via,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -38,17 +38,6 @@ fn sql_errors(src: &str) -> Vec<SqlError> {
     match parse(src) {
         Err(Error::Sql(errors)) => errors,
         other => panic!("expected straum SQL errors, got {other:?}"),
-    }
-}
-
-fn month_ask() -> Ask {
-    Ask {
-        fact: id("trips"),
-        measures: vec![id("trips"), id("fare"), id("tip_max")],
-        by: vec![AskKey::Key(id("borough")), AskKey::Time(TimeKey::Bucket)],
-        filter: vec![cond("borough", vec![Literal::Text("Manhattan".into())])],
-        from: JAN,
-        to: FEB,
     }
 }
 
@@ -114,127 +103,6 @@ fn taxi_parses() {
     assert_eq!(
         trips.measure("manhattan_pickups").unwrap().filter[0].key,
         id("borough")
-    );
-}
-
-#[test]
-fn ask_by_dim_attribute() {
-    let spec = taxi();
-    assert_eq!(spec.check(&month_ask()).unwrap().name, id("trips"));
-}
-
-#[test]
-fn ask_rejects_what_the_rollup_does_not_hold() {
-    let spec = taxi();
-    let ask = Ask {
-        measures: vec![id("trips"), id("tips"), id("trips")],
-        by: vec![
-            AskKey::Key(id("fare_amount")),
-            AskKey::Key(id("colour")),
-            AskKey::Key(id("borough")),
-            AskKey::Key(id("borough")),
-            AskKey::Time(TimeKey::Bucket),
-            AskKey::Time(TimeKey::Bucket),
-        ],
-        from: JAN + 60,
-        ..month_ask()
-    };
-    assert_eq!(
-        spec.check(&ask).unwrap_err(),
-        [
-            AskError::UnknownMeasure(id("tips")),
-            AskError::UnknownKey(id("fare_amount")),
-            AskError::UnknownKey(id("colour")),
-            AskError::TimeKeyTwice,
-            AskError::AskedTwice("borough".into()),
-            AskError::AskedTwice("trips".into()),
-            AskError::RangeUnaligned {
-                at: JAN + 60,
-                grain: Grain { seconds: 900 }
-            },
-        ]
-    );
-}
-
-#[test]
-fn ask_errors_display() {
-    let ask_errors = [
-        (AskError::UnknownFact(id("nope")), "unknown fact nope"),
-        (AskError::UnknownMeasure(id("tips")), "unknown measure tips"),
-        (
-            AskError::UnknownKey(id("fare_amount")),
-            "fare_amount is not a key of the view",
-        ),
-        (AskError::NoMeasures, "no measures asked"),
-        (AskError::TimeKeyTwice, "more than one time key"),
-        (AskError::AskedTwice("trips".into()), "trips asked twice"),
-        (
-            AskError::RangeEmpty { from: 2, to: 1 },
-            "empty range [2, 1)",
-        ),
-        (
-            AskError::RangeUnaligned {
-                at: 60,
-                grain: Grain { seconds: 900 },
-            },
-            "range end 60 is not on a 900s bucket edge",
-        ),
-    ];
-    for (e, msg) in ask_errors {
-        assert_eq!(e.to_string(), msg);
-    }
-
-    assert_eq!(TimeKey::Bucket.to_string(), "bucket");
-}
-
-#[test]
-fn ask_every_key_form() {
-    let spec = taxi();
-    let ask = Ask {
-        by: vec![
-            AskKey::Key(id("pu_location_id")),
-            AskKey::Key(id("zone")),
-            AskKey::Key(id("payment_type")),
-            AskKey::Time(TimeKey::Bucket),
-        ],
-        ..month_ask()
-    };
-    assert!(spec.check(&ask).is_ok());
-}
-
-#[test]
-fn ask_rejects_bad_shape() {
-    let spec = taxi();
-    let unknown = Ask {
-        fact: id("nope"),
-        ..month_ask()
-    };
-    assert_eq!(
-        spec.check(&unknown).unwrap_err(),
-        [AskError::UnknownFact(id("nope"))]
-    );
-
-    let ask = Ask {
-        measures: vec![],
-        filter: vec![cond("fare_amount", vec![Literal::Int(1)])],
-        from: FEB,
-        to: JAN + 60,
-        ..month_ask()
-    };
-    assert_eq!(
-        spec.check(&ask).unwrap_err(),
-        [
-            AskError::NoMeasures,
-            AskError::UnknownKey(id("fare_amount")),
-            AskError::RangeEmpty {
-                from: FEB,
-                to: JAN + 60
-            },
-            AskError::RangeUnaligned {
-                at: JAN + 60,
-                grain: Grain { seconds: 900 }
-            },
-        ]
     );
 }
 

@@ -2,8 +2,8 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure, Origin, Ref, RefKind,
-    Spec, SpecError, Table, Time, Via,
+    Agg, Ask, AskError, AskKey, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure,
+    Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via,
 };
 
 fn id(s: &str) -> Ident {
@@ -314,4 +314,133 @@ fn a_ref_name_used_twice_is_refused() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(shown, ["t: r declared twice", "t: name declared twice"]);
+}
+
+/// One day of `t` by every key form: by keys, an attribute a ref reads
+/// and the bucket.
+fn ask() -> Ask {
+    Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: vec![
+            AskKey::Key(id("a")),
+            AskKey::Key(id("z_id")),
+            AskKey::Key(id("name")),
+            AskKey::Time(TimeKey::Bucket),
+        ],
+        filter: vec![Cond {
+            key: id("name"),
+            values: vec![Literal::Text("x".into())],
+        }],
+        from: 0,
+        to: 86_400,
+    }
+}
+
+#[test]
+fn an_ask_by_every_key_form_checks() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    assert_eq!(spec.check(&ask()).unwrap().name, id("t"));
+}
+
+#[test]
+fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let unheld = Ask {
+        measures: vec![id("n"), id("tips"), id("n")],
+        by: vec![
+            AskKey::Key(id("fare")),
+            AskKey::Key(id("colour")),
+            AskKey::Key(id("name")),
+            AskKey::Key(id("name")),
+            AskKey::Time(TimeKey::Bucket),
+            AskKey::Time(TimeKey::Bucket),
+        ],
+        from: 60,
+        ..ask()
+    };
+    assert_eq!(
+        spec.check(&unheld).unwrap_err(),
+        [
+            AskError::UnknownMeasure(id("tips")),
+            AskError::UnknownKey(id("fare")),
+            AskError::UnknownKey(id("colour")),
+            AskError::TimeKeyTwice,
+            AskError::AskedTwice("name".into()),
+            AskError::AskedTwice("n".into()),
+            AskError::RangeUnaligned {
+                at: 60,
+                grain: Grain { seconds: 3_600 },
+            },
+        ]
+    );
+}
+
+#[test]
+fn an_ask_of_a_bad_shape_is_rejected() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let unknown = Ask {
+        fact: id("nope"),
+        ..ask()
+    };
+    assert_eq!(
+        spec.check(&unknown).unwrap_err(),
+        [AskError::UnknownFact(id("nope"))]
+    );
+
+    let empty = Ask {
+        measures: vec![],
+        filter: vec![Cond {
+            key: id("fare"),
+            values: vec![Literal::Int(1)],
+        }],
+        from: 86_400,
+        to: 60,
+        ..ask()
+    };
+    assert_eq!(
+        spec.check(&empty).unwrap_err(),
+        [
+            AskError::NoMeasures,
+            AskError::UnknownKey(id("fare")),
+            AskError::RangeEmpty {
+                from: 86_400,
+                to: 60,
+            },
+            AskError::RangeUnaligned {
+                at: 60,
+                grain: Grain { seconds: 3_600 },
+            },
+        ]
+    );
+}
+
+#[test]
+fn ask_errors_display() {
+    let cases = [
+        (AskError::UnknownFact(id("nope")), "unknown fact nope"),
+        (AskError::UnknownMeasure(id("tips")), "unknown measure tips"),
+        (
+            AskError::UnknownKey(id("fare")),
+            "fare is not a key of the view",
+        ),
+        (AskError::NoMeasures, "no measures asked"),
+        (AskError::TimeKeyTwice, "more than one time key"),
+        (AskError::AskedTwice("n".into()), "n asked twice"),
+        (
+            AskError::RangeEmpty { from: 2, to: 1 },
+            "empty range [2, 1)",
+        ),
+        (
+            AskError::RangeUnaligned {
+                at: 60,
+                grain: Grain { seconds: 900 },
+            },
+            "range end 60 is not on a 900s bucket edge",
+        ),
+    ];
+    for (error, shown) in cases {
+        assert_eq!(error.to_string(), shown);
+    }
+    assert_eq!(TimeKey::Bucket.to_string(), "bucket");
 }
