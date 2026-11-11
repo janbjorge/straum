@@ -426,15 +426,16 @@ fn plan_prints_the_setup_sql() {
     assert_eq!(stdout, straum_pg::plan(&parsed, "p", "r", None));
 
     // With a DSN the role is its user, with its password as a verifier;
-    // --role still names the role.
-    let dsn = scratch.file("dsn", "postgres://reader:pw@db/app\n");
+    // --role still names the role. The password has a hyphen, which no
+    // base64 verifier can contain, so the check can't trip on chance.
+    let dsn = scratch.file("dsn", "postgres://reader:plain-pw@db/app\n");
     let mut with_dsn = straum(&["plan", "--spec", &spec, "--dsn-file", &dsn]);
     let (code, stdout, stderr) = output(&mut with_dsn);
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     let role = "CREATE ROLE \"reader\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:";
     assert!(stdout.contains(role), "{stdout}");
     assert!(
-        !stdout.contains("pw") && !stdout.contains("\\password"),
+        !stdout.contains("plain-pw") && !stdout.contains("\\password"),
         "{stdout}"
     );
     let mut named = straum(&["plan", "--spec", &spec, "--role", "r"]);
