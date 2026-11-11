@@ -164,14 +164,10 @@ impl App {
     /// Answers once every table is loaded.
     pub fn ask(&self, ask: &Ask) -> Result<Answered, AnswerError> {
         let state = self.read();
-        state
-            .store
-            .spec()
-            .check(ask)
-            .map_err(AnswerError::Invalid)?;
-        let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
         let store = &state.store;
+        // Checks the ask, so an invalid one is refused even while loading.
         let ids = store.sealed_read(ask).map_err(AnswerError::Invalid)?;
+        let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
         let thawed = if ids.is_empty() {
             Vec::new()
         } else {
