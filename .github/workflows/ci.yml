@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A release is published on the release page, which makes its tag
+  # (ADR-0032). Drafts start nothing.
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -103,28 +107,68 @@ jobs:
       - run: docker build -t straum:ci .
       - run: docker run --rm straum:ci help
 
-  # latest must name the newest commit on main that passed CI. Concurrency
-  # cancels a run once a newer push starts, and this check keeps a re-run
-  # of an older commit from moving latest back.
-  head:
-    if: github.event_name == 'push'
+  # Decides whether a run publishes, and the version it builds. A push to
+  # main publishes latest only while it is still main's newest commit:
+  # concurrency cancels a run once a newer push starts, and this keeps a
+  # re-run of an older commit from moving latest back. A release fails
+  # unless its tag is vX.Y.Z on a commit on main, marked pre-release
+  # exactly when it has a suffix, and has no assets yet: publishing again
+  # would move the image tags off the digest the release names.
+  gate:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+      PRERELEASE: ${{ github.event.release.prerelease }}
     outputs:
-      current: ${{ steps.head.outputs.current }}
+      publish: ${{ steps.gate.outputs.publish }}
+      version: ${{ steps.gate.outputs.version }}
+      tag: ${{ steps.gate.outputs.tag }}
     steps:
-      - id: head
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: gate
         run: |
-          main=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)
-          echo "current=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            main=$(git ls-remote origin refs/heads/main | cut -f1)
+            describe=$(git describe --tags --match 'v[0-9]*' 2>/dev/null || echo "v0.0.0-g$(git rev-parse --short HEAD)")
+            echo "version=${describe#v}" >> "$GITHUB_OUTPUT"
+            echo "publish=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$TAG is not vX.Y.Z or vX.Y.Z-suffix"
+            exit 1
+          fi
+          if [ "$PRERELEASE" != "$([[ $TAG == *-* ]] && echo true || echo false)" ]; then
+            echo "::error::$TAG must be marked pre-release exactly when it has a suffix"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG is not on main"
+            exit 1
+          fi
+          if [ "$(gh release view "$TAG" --json assets --jq '.assets | length')" != 0 ]; then
+            echo "::error::$TAG already has assets; make a new release instead"
+            exit 1
+          fi
+          {
+            echo "version=${TAG#v}"
+            echo "tag=$TAG"
+            echo publish=true
+          } >> "$GITHUB_OUTPUT"
 
-  # Publishes ghcr.io/janbjorge/straum:latest for amd64 and arm64, each built
-  # on its own native runner, since under emulation the Rust build crawls.
-  # The OCI labels and index annotations come from the repository's
-  # description and license; provenance and SBOM attestations are signed
-  # through GitHub OIDC.
+  # Publishes ghcr.io/janbjorge/straum for amd64 and arm64, each built on
+  # its own native runner, since under emulation the Rust build crawls:
+  # latest from main, X.Y.Z and X.Y from a release. The OCI labels and
+  # index annotations come from the repository's description and license;
+  # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
-    needs: [head, format, lint, architecture, test, coverage, chart, image]
-    if: needs.head.outputs.current == 'true'
+    needs: [gate, format, lint, architecture, test, coverage, chart, image]
+    if: needs.gate.outputs.publish == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -135,8 +179,13 @@ jobs:
       push: true
       platforms: linux/amd64,linux/arm64
       sbom: true
+      build-args: STRAUM_VERSION=${{ needs.gate.outputs.version }}
       meta-images: ghcr.io/janbjorge/straum
-      meta-tags: type=raw,value=latest
+      # type=semver reads the tag only on a tag push, so a release passes it.
+      meta-tags: |
+        type=raw,value=latest,enable={{is_default_branch}}
+        type=semver,pattern={{version}},value=${{ needs.gate.outputs.tag }}
+        type=semver,pattern={{major}}.{{minor}},value=${{ needs.gate.outputs.tag }}
       set-meta-labels: true
       set-meta-annotations: true
     secrets:
@@ -144,6 +193,77 @@ jobs:
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+  # Fills the release: the binaries copied out of the image just published,
+  # so they are the bytes the image runs, their sums, and signed provenance
+  # attestations for them and the image. The notes gain the image digest
+  # and how to verify.
+  release:
+    if: github.event_name == 'release'
+    needs: [gate, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.gate.outputs.tag }}
+      VERSION: ${{ needs.gate.outputs.version }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Copy the binaries out of the image
+        run: |
+          mkdir dist
+          for pair in amd64:x86_64 arm64:aarch64; do
+            container=$(docker create --platform "linux/${pair%%:*}" "ghcr.io/janbjorge/straum@$DIGEST")
+            docker cp "$container:/straum" "dist/straum-${pair#*:}-unknown-linux-musl"
+            docker rm "$container"
+          done
+          case $(file -b dist/straum-x86_64-unknown-linux-musl) in
+            *x86-64*static*) ;;
+            *) echo "::error::the amd64 binary is not static x86-64"; exit 1 ;;
+          esac
+          case $(file -b dist/straum-aarch64-unknown-linux-musl) in
+            *aarch64*static*) ;;
+            *) echo "::error::the arm64 binary is not static aarch64"; exit 1 ;;
+          esac
+          test "$(dist/straum-x86_64-unknown-linux-musl version)" = "straum $VERSION"
+          (cd dist && sha256sum straum-* > SHA256SUMS)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/straum-*
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/janbjorge/straum
+          subject-digest: ${{ needs.publish.outputs.digest }}
+          push-to-registry: true
+      - name: Attach the binaries and extend the notes
+        run: |
+          gh release upload "$TAG" dist/*
+          gh release view "$TAG" --json body --jq .body > notes.md
+          fence='```'
+          cat >> notes.md <<NOTES
+
+          ## Image
+
+          ${fence}sh
+          docker pull ghcr.io/janbjorge/straum:$VERSION
+          docker pull ghcr.io/janbjorge/straum@$DIGEST
+          ${fence}
+
+          ## Verify
+
+          ${fence}sh
+          sha256sum -c --ignore-missing SHA256SUMS
+          gh attestation verify straum-x86_64-unknown-linux-musl --repo $GH_REPO
+          gh attestation verify oci://ghcr.io/janbjorge/straum:$VERSION --repo $GH_REPO
+          ${fence}
+          NOTES
+          gh release edit "$TAG" --notes-file notes.md
 
   docs:
     runs-on: ubuntu-latest
@@ -159,7 +279,7 @@ jobs:
           tar -xzf "$tarball" -C "$RUNNER_TEMP/mdbook"
           echo "$RUNNER_TEMP/mdbook" >> "$GITHUB_PATH"
       - run: mdbook build docs
-      - if: github.event_name == 'push'
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5
         with:
           path: docs/book
@@ -167,7 +287,7 @@ jobs:
   # Publishes the guide to GitHub Pages; the repository's Pages source must
   # be GitHub Actions.
   pages:
-    if: github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: docs
     runs-on: ubuntu-latest
     permissions:

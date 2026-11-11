@@ -8,11 +8,32 @@ straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
            [--max-transaction-rows ROWS]
 straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
+straum version
 straum help
 ```
 
 `straum <command> --help` lists the command's flags and their defaults.
 `straum plan` prints the [setup SQL](postgresql.md#2-run-the-setup-sql).
+
+## Getting straum
+
+Each [release](https://github.com/janbjorge/straum/releases) is an
+image, `ghcr.io/janbjorge/straum:X.Y.Z`, and the same binary on its own
+for Linux on x86-64 and arm64, with no libraries it needs. To install
+the newest on x86-64:
+
+```sh
+base=https://github.com/janbjorge/straum/releases/latest/download
+curl -fL -O "$base/straum-x86_64-unknown-linux-musl" -O "$base/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+sudo install -m 755 straum-x86_64-unknown-linux-musl /usr/local/bin/straum
+```
+
+`gh attestation verify straum-x86_64-unknown-linux-musl --repo
+janbjorge/straum` checks it was built by this repository's CI, and
+`gh attestation verify oci://ghcr.io/janbjorge/straum:X.Y.Z --repo
+janbjorge/straum` does the same for an image. The image tagged `latest`
+is the newest commit on `main`, between releases.
 
 ## straum run
 
