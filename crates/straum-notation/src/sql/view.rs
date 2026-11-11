@@ -150,6 +150,19 @@ impl Walker {
             return None;
         }
         time.buckets = wider.to_vec();
+        let refs = self.add_dims(at, dims, refs);
+        Some(Fact {
+            name,
+            table,
+            time,
+            refs,
+            by,
+            measures,
+            filter,
+        })
+    }
+
+    fn add_dims(&mut self, at: u64, dims: &mut Vec<Dim>, refs: Vec<JoinedRef>) -> Vec<Ref> {
         // A dim a later join reads its key from carries that column too.
         let mut carried: Vec<(usize, Ident)> = Vec::new();
         for joined in &refs {
@@ -170,15 +183,7 @@ impl Walker {
             }
             fact_refs.push(joined.reference);
         }
-        Some(Fact {
-            name,
-            table,
-            time,
-            refs: fact_refs,
-            by,
-            measures,
-            filter,
-        })
+        fact_refs
     }
 
     /// A dim is its table. Every view that joins it must join on the same
