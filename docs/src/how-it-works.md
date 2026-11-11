@@ -43,6 +43,12 @@ holds its row count and what each measure needs:
 Each bucket width keeps cells of its own. A fact row with no time goes
 to a bucket no ask reads.
 
+![Where a row's time puts it](diagrams/buckets.svg)
+
+*A row's time is floored to each width the view keeps, all aligned to
+1970-01-01, so it lands in one bucket per level in the same commit.
+Times are Unix seconds without a zone.*
+
 ## Applying a commit
 
 Changes arrive after their transaction commits, and Straum applies the
@@ -108,6 +114,12 @@ answer: NO 1 120.00, SE 2 380.50
 4. It adds each cell to its group, and to each measure whose filter holds.
    Filters name only parts of the cell key, so a cell counts whole or
    not at all.
+
+![How an ask range is read](diagrams/cover.svg)
+
+*Each level takes the whole buckets inside the range, and what is left
+at the ends falls to the next narrower level. An ask grouped by bucket
+reads the `date_bin` level only.*
 
 One writer applies the stream while asks read. They share the store
 behind a read-write lock, which the writer takes only to apply a commit it

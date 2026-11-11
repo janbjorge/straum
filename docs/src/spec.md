@@ -115,8 +115,9 @@ place while the body stays what PostgreSQL runs. Each wider width is a
 whole multiple of the one before and starts at the epoch, so `7 days`
 buckets start on Thursdays. Answers don't change. An ask over a long
 range reads its middle from the widest buckets that fit and its ends
-from narrower ones, so it reads far fewer cells. Each width costs
-memory, under [Memory](#memory).
+from narrower ones, so it reads far fewer cells; both are drawn under
+[How it works](how-it-works.md#cells). Each width costs memory, under
+[Memory](#memory).
 
 ## Joining a lookup table
 

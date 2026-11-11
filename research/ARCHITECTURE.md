@@ -136,7 +136,7 @@ time keys and a range end inside a bucket.
 
 `Store::ask` answers from the cells:
 
-![Store::ask walks the cells of a fact, reads each cell's attributes from its key and merges each cell into the measures whose filter holds. Drawn before ADR-0030: the attributes now come from the dim projections, once per matching dim row.](../docs/src/diagrams/ask.svg)
+![An ask range over 1 hour, 1 day and 7 day buckets: the 7-day level takes the whole bucket inside the range, the day level the whole days left at each end, the hour level the rest.](../docs/src/diagrams/cover.svg)
 
 - It reads only the buckets that cover the range: the widest the view keeps
   that fit, `date_bin` buckets at the ends, or only `date_bin` buckets when
