@@ -77,6 +77,10 @@ fn one_join_spelling() {
             "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
         (
+            format!("FULL JOIN shop.customers AS customers {on}"),
+            "join, write INNER JOIN or LEFT OUTER JOIN,",
+        ),
+        (
             format!("FULL OUTER JOIN shop.customers AS customers {on}"),
             "join, write INNER JOIN or LEFT OUTER JOIN,",
         ),
@@ -311,17 +315,17 @@ fn group_by_lists_the_key_positions() {
         (
             keys,
             "GROUP BY 2, 1, 3, 4, 5",
-            "must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4, 5",
+            "GROUP BY 2, 1, 3, 4, 5 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4, 5",
         ),
         (
             keys,
             "GROUP BY 1, 2, 3, 4",
-            "must list the keys' positions in SELECT",
+            "GROUP BY 1, 2, 3, 4 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4, 5",
         ),
         (
             keys,
             "GROUP BY 1, 2, 3, 4, 5, 6",
-            "must list the keys' positions in SELECT",
+            "GROUP BY 1, 2, 3, 4, 5, 6 must list the keys' positions in SELECT",
         ),
         (keys, "", "must list the keys' positions in SELECT"),
     ]);

@@ -1,13 +1,8 @@
-use straum_domain::{Ask, AskKey, Cond, Ident, Literal, TimeKey};
+mod common;
+
+use common::{FEB, JAN, cond, id};
+use straum_domain::{Ask, AskKey, Literal, TimeKey};
 use straum_notation::parse_ask;
-
-// 2024-01-01 and 2024-02-01, 00:00 UTC.
-const JAN: i64 = 1_704_067_200;
-const FEB: i64 = 1_706_745_600;
-
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
-}
 
 fn key(name: &str) -> AskKey {
     AskKey::Key(id(name))
@@ -15,13 +10,6 @@ fn key(name: &str) -> AskKey {
 
 fn text(s: &str) -> Literal {
     Literal::Text(s.into())
-}
-
-fn cond(key: &str, values: Vec<Literal>) -> Cond {
-    Cond {
-        key: id(key),
-        values,
-    }
 }
 
 /// The range parameters most cases end on.

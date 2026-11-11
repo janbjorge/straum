@@ -1,18 +1,13 @@
+mod common;
+
+use common::{FEB, JAN, cond, id};
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attr, By, Cond, Grain, Ident, Literal, Origin, RefKind, Slot, Spec,
-    SpecError, TimeKey, Via,
+    Agg, Ask, AskError, AskKey, Attr, By, Grain, Literal, Origin, RefKind, Slot, Spec, SpecError,
+    TimeKey, Via,
 };
 use straum_notation::{Error, SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
-
-// 2024-01-01 and 2024-02-01, 00:00 UTC.
-const JAN: i64 = 1_704_067_200;
-const FEB: i64 = 1_706_745_600;
-
-fn id(s: &str) -> Ident {
-    Ident::new(s).unwrap()
-}
 
 fn col(s: &str) -> By {
     By::Column {
@@ -25,13 +20,6 @@ fn attr(name: &str, column: &str) -> Attr {
     Attr {
         name: id(name),
         column: id(column),
-    }
-}
-
-fn cond(key: &str, values: Vec<Literal>) -> Cond {
-    Cond {
-        key: id(key),
-        values,
     }
 }
 
@@ -59,6 +47,17 @@ fn month_ask() -> Ask {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: vec![AskKey::Key(id("borough")), AskKey::Time(TimeKey::Bucket)],
         filter: vec![cond("borough", vec![Literal::Text("Manhattan".into())])],
+        from: JAN,
+        to: FEB,
+    }
+}
+
+fn ask_view_t(by: &[&str]) -> Ask {
+    Ask {
+        fact: id("t"),
+        measures: vec![id("n")],
+        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
+        filter: vec![],
         from: JAN,
         to: FEB,
     }
@@ -306,18 +305,13 @@ fn keys_go_by_their_select_name() {
             cond("label", vec![Literal::Text("x".into())])
         ]
     );
-    let ask = |by: &[&str]| Ask {
-        fact: id("t"),
-        measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
-        filter: vec![],
-        from: JAN,
-        to: FEB,
-    };
-    assert!(spec.check(&ask(&["kind", "zone", "label"])).is_ok());
-    let shown: Vec<String> = (spec.check(&ask(&["a", "name", "z"])).unwrap_err().iter())
-        .map(ToString::to_string)
-        .collect();
+    assert!(spec.check(&ask_view_t(&["kind", "zone", "label"])).is_ok());
+    let shown: Vec<String> = (spec
+        .check(&ask_view_t(&["a", "name", "z"]))
+        .unwrap_err()
+        .iter())
+    .map(ToString::to_string)
+    .collect();
     assert_eq!(
         shown,
         [
@@ -496,17 +490,9 @@ fn a_ref_on_two_columns() {
     assert_eq!(spec.dim("g").unwrap().key, [id("org_id"), id("grp_id")]);
 
     // The ref has no value of its own: asks name the keys the view named.
-    let ask = |by: &[&str]| Ask {
-        fact: id("t"),
-        measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
-        filter: vec![],
-        from: JAN,
-        to: FEB,
-    };
-    assert!(spec.check(&ask(&["org", "grp", "label"])).is_ok());
+    assert!(spec.check(&ask_view_t(&["org", "grp", "label"])).is_ok());
     assert_eq!(
-        spec.check(&ask(&["g"])).unwrap_err(),
+        spec.check(&ask_view_t(&["g"])).unwrap_err(),
         [AskError::UnknownKey(id("g"))]
     );
 }
@@ -586,18 +572,10 @@ fn a_ref_reads_what_the_view_selects() {
 
     // Asks name the attribute as the view named it; the ref itself and
     // its unread columns are no keys.
-    let ask = |by: &[&str]| Ask {
-        fact: id("t"),
-        measures: vec![id("n")],
-        by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
-        filter: vec![],
-        from: JAN,
-        to: FEB,
-    };
-    assert!(spec.check(&ask(&["a", "name"])).is_ok());
+    assert!(spec.check(&ask_view_t(&["a", "name"])).is_ok());
     for missing in ["z", "id", "z_id"] {
         assert_eq!(
-            spec.check(&ask(&[missing])).unwrap_err(),
+            spec.check(&ask_view_t(&[missing])).unwrap_err(),
             [AskError::UnknownKey(id(missing))],
             "{missing}"
         );
@@ -848,10 +826,32 @@ fn spec_errors_pass_through() {
 
 /// Every construct outside straum SQL is an error that names it; none is
 /// ignored. `(from, to, line, message fragment)` edits to `BASE`.
+fn rejects(cases: &[(&str, &str, u64, &str)]) {
+    let mut failed = Vec::new();
+    for &(from, to, line, fragment) in cases {
+        let errors = match parse(&base(from, to)) {
+            Err(Error::Sql(errors)) => errors,
+            other => {
+                failed.push(format!("{to}: got {other:?}"));
+                continue;
+            }
+        };
+        if !errors
+            .iter()
+            .any(|e| e.line == line && e.msg.contains(fragment))
+        {
+            failed.push(format!(
+                "{to}: expected line {line}: {fragment}, got {errors:?}"
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// Statements and view shape.
 #[test]
-fn rejects_everything_outside_the_subset() {
-    let cases = [
-        // Statements and view shape.
+fn view_shapes_outside_the_subset_are_rejected() {
+    rejects(&[
         (
             "CREATE VIEW t",
             "CREATE MATERIALIZED VIEW t",
@@ -906,7 +906,14 @@ fn rejects_everything_outside_the_subset() {
             1,
             "quoted identifier `\"t\"` is not in straum SQL",
         ),
-        // Options. `key` was required once; a spec that still has it says so.
+    ]);
+}
+
+/// Every view option but buckets. `key` was required once; a spec that
+/// still has it says so.
+#[test]
+fn view_options_other_than_buckets_are_rejected() {
+    rejects(&[
         (
             "WITH (buckets = '1 hour')",
             "WITH (key = id)",
@@ -962,7 +969,13 @@ fn rejects_everything_outside_the_subset() {
             1,
             "bad identifier kkkk",
         ),
-        // Query.
+    ]);
+}
+
+/// Query.
+#[test]
+fn query_clauses_outside_the_subset_are_rejected() {
+    rejects(&[
         (
             "AS\nSELECT",
             "AS\nWITH c AS (SELECT 1) SELECT",
@@ -1090,7 +1103,13 @@ fn rejects_everything_outside_the_subset() {
             2,
             "FETCH is not",
         ),
-        // Select clauses.
+    ]);
+}
+
+/// Select clauses.
+#[test]
+fn select_clauses_outside_the_subset_are_rejected() {
+    rejects(&[
         (
             "SELECT date_bin",
             "SELECT DISTINCT date_bin",
@@ -1139,7 +1158,13 @@ fn rejects_everything_outside_the_subset() {
             2,
             "GROUP BY ALL is not",
         ),
-        // FROM and joins: every part written, one join spelling.
+    ]);
+}
+
+/// FROM: one table, written whole.
+#[test]
+fn from_forms_outside_the_subset_are_rejected() {
+    rejects(&[
         (
             "FROM public.t AS f",
             "FROM public.t AS f, public.u AS u",
@@ -1154,30 +1179,6 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "FROM public.t AS f",
-            "FROM public.t",
-            4,
-            "table public.t must be public.t AS <alias>",
-        ),
-        (
-            "FROM public.t AS f",
-            "FROM public.t f",
-            4,
-            "table public.t must be public.t AS <alias>",
-        ),
-        (
-            "FROM public.t AS f",
-            "FROM t AS f",
-            4,
-            "table t must be schema.table",
-        ),
-        (
-            "FROM public.t AS f",
-            "FROM db.public.t AS f",
-            4,
-            "table db.public.t must be schema.table",
-        ),
-        (
-            "FROM public.t AS f",
             "FROM public.t AS f(a)",
             4,
             "an alias column list is not",
@@ -1188,44 +1189,13 @@ fn rejects_everything_outside_the_subset() {
             4,
             "TABLESAMPLE is not",
         ),
-        ("LEFT OUTER JOIN", "JOIN", 5, "JOIN, write INNER JOIN,"),
-        (
-            "LEFT OUTER JOIN",
-            "LEFT JOIN",
-            5,
-            "LEFT JOIN, write LEFT OUTER JOIN,",
-        ),
-        (
-            "LEFT OUTER JOIN",
-            "RIGHT JOIN",
-            5,
-            "join, write INNER JOIN or LEFT OUTER JOIN,",
-        ),
-        (
-            "LEFT OUTER JOIN",
-            "RIGHT OUTER JOIN",
-            5,
-            "join, write INNER JOIN or LEFT OUTER JOIN,",
-        ),
-        (
-            "LEFT OUTER JOIN",
-            "FULL JOIN",
-            5,
-            "join, write INNER JOIN or LEFT OUTER JOIN,",
-        ),
-        (
-            "LEFT OUTER JOIN",
-            "FULL OUTER JOIN",
-            5,
-            "join, write INNER JOIN or LEFT OUTER JOIN,",
-        ),
-        (
-            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
-            "CROSS JOIN public.z AS z",
-            5,
-            "join, write INNER JOIN or LEFT OUTER JOIN,",
-        ),
-        // Semi and anti joins: one shape of EXISTS.
+    ]);
+}
+
+/// Semi and anti joins: one shape of EXISTS.
+#[test]
+fn exists_has_one_shape() {
+    rejects(&[
         (
             "\nGROUP BY",
             "\nWHERE EXISTS (SELECT * FROM public.p AS p WHERE p.k = f.a)\nGROUP BY",
@@ -1262,14 +1232,14 @@ fn rejects_everything_outside_the_subset() {
             6,
             "alias z used twice",
         ),
-        (
-            "\nGROUP BY",
-            "\nWHERE f.a IN (SELECT p.k FROM public.p AS p)\nGROUP BY",
-            6,
-            "filter condition, write = or IN joined by AND,",
-        ),
-        // A join through a dim that keeps no row, or through a column the
-        // near dim is not read for.
+    ]);
+}
+
+/// A join ON compares a dim key to a fact column, never through a dim
+/// that keeps no row or a column the near dim is not read for.
+#[test]
+fn join_on_names_a_dim_key_and_a_fact_column() {
+    rejects(&[
         (
             "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
             "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id \
@@ -1278,47 +1248,11 @@ fn rejects_everything_outside_the_subset() {
             "join ON w.<key> = f.<column>",
         ),
         (
-            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
-            "NATURAL LEFT OUTER JOIN public.z AS z",
-            5,
-            "join condition, write ON,",
-        ),
-        (
-            "ON z.id = f.z_id",
-            "USING (id)",
-            5,
-            "join condition, write ON,",
-        ),
-        (
-            "public.z AS z ON",
-            "public.z z ON",
-            5,
-            "table public.z must be public.z AS <alias>",
-        ),
-        (
-            "public.z AS z ON",
-            "z AS z ON",
-            5,
-            "table z must be schema.table",
-        ),
-        (
             "ON z.id = f.z_id",
             "ON z.id = 1",
             5,
             "join ON z.<key> = f.<column>, the joined table's column on the left, one or \
              more joined by AND; found z.id = 1",
-        ),
-        (
-            "ON z.id = f.z_id",
-            "ON f.z_id = z.id",
-            5,
-            "join ON z.<key> = f.<column>, the joined table's column on the left",
-        ),
-        (
-            "ON z.id = f.z_id",
-            "ON z.id = f.z_id AND z.name = 'x'",
-            5,
-            "join ON z.<key> = f.<column>",
         ),
         (
             "ON z.id = f.z_id",
@@ -1344,7 +1278,13 @@ fn rejects_everything_outside_the_subset() {
             5,
             "alias f used twice",
         ),
-        // SELECT items and columns: every item named, every column owned.
+    ]);
+}
+
+/// SELECT items and columns: every item named, every column owned.
+#[test]
+fn select_items_are_named_and_columns_owned() {
+    rejects(&[
         (
             "f.a AS a, f.z_id AS z_id",
             "*, f.z_id AS z_id",
@@ -1356,18 +1296,6 @@ fn rejects_everything_outside_the_subset() {
             "f.*, f.z_id AS z_id",
             3,
             "SELECT item `f.*` is not",
-        ),
-        (
-            "f.a AS a, f.z_id AS z_id",
-            "f.a, f.z_id AS z_id",
-            3,
-            "name every SELECT item: f.a AS <name>",
-        ),
-        (
-            "f.a AS a, f.z_id AS z_id",
-            "a AS a, f.z_id AS z_id",
-            3,
-            "column, write alias.column, `a`",
         ),
         (
             "f.a AS a, f.z_id AS z_id",
@@ -1394,12 +1322,6 @@ fn rejects_everything_outside_the_subset() {
             "quoted identifier `\"A\"` is not",
         ),
         (
-            "count(*) AS n",
-            "count(*)",
-            3,
-            "name every SELECT item: count(*) AS <name>",
-        ),
-        (
             "f.z_id AS z_id, z.name AS name, ",
             "f.z_id AS z_id, ",
             2,
@@ -1411,42 +1333,18 @@ fn rejects_everything_outside_the_subset() {
             3,
             "FILTER on z.code needs z.code AS <name> in SELECT",
         ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE a = 1) AS n",
-            3,
-            "column, write alias.column, `a`",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE name = 'x') AS n",
-            3,
-            "column, write alias.column, `name`",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.b = 1) AS n",
-            3,
-            "FILTER on f.b needs f.b AS <name> in SELECT",
-        ),
-        // Aggregates.
+    ]);
+}
+
+/// Aggregates.
+#[test]
+fn aggregates_outside_the_subset_are_rejected() {
+    rejects(&[
         (
             "count(*) AS n",
             "median(f.x) AS n",
             3,
             "aggregate `median(f.x)` is not",
-        ),
-        (
-            "count(*) AS n",
-            "count(f.x) AS n",
-            3,
-            "count, use count(*) or count(DISTINCT column),",
-        ),
-        (
-            "count(*) AS n",
-            "count(1) AS n",
-            3,
-            "count, use count(*) or count(DISTINCT column),",
         ),
         (
             "count(*) AS n",
@@ -1508,54 +1406,18 @@ fn rejects_everything_outside_the_subset() {
             3,
             "function call `current_timestamp` is not",
         ),
-        // Measure filters: one condition form.
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a = 1 OR f.a = 2) AS n",
-            3,
-            "filter condition, write = or IN joined by AND,",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a NOT IN (1, 2)) AS n",
-            3,
-            "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a IN (1)) AS n",
-            3,
-            "IN with one value, write =, `f.a IN (1)`",
-        ),
+    ]);
+}
+
+/// Measure filters: one condition form.
+#[test]
+fn measure_filters_take_one_condition_form() {
+    rejects(&[
         (
             "count(*) AS n",
             "count(*) FILTER (WHERE f.a > 1) AS n",
             3,
             "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a <> 1) AS n",
-            3,
-            "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE NOT f.a = 1) AS n",
-            3,
-            "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a BETWEEN 1 AND 2) AS n",
-            3,
-            "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "count(*) FILTER (WHERE f.a IS NULL) AS n",
-            3,
-            "FILTER (WHERE f.a IS NULL) needs the key (f.a IS NULL) AS <name> in SELECT",
         ),
         (
             "count(*) AS n",
@@ -1593,7 +1455,13 @@ fn rejects_everything_outside_the_subset() {
             3,
             "literal, use an integer, 'text', true or false, `x`",
         ),
-        // The bucket.
+    ]);
+}
+
+/// The bucket.
+#[test]
+fn the_bucket_is_one_date_bin() {
+    rejects(&[
         (
             "date_bin('1 hour'",
             "date_bin('15x'",
@@ -1655,12 +1523,6 @@ fn rejects_everything_outside_the_subset() {
             "the date_bin column must be a f column",
         ),
         (
-            "date_bin('1 hour', f.at",
-            "date_bin('1 hour', at",
-            2,
-            "column, write alias.column, `at`",
-        ),
-        (
             "timestamptz 'epoch')",
             "timestamptz 'epoch') FILTER (WHERE f.a = 1)",
             2,
@@ -1685,25 +1547,13 @@ fn rejects_everything_outside_the_subset() {
             2,
             "more than one date_bin bucket",
         ),
-        (
-            "AS bucket,",
-            "AS hour,",
-            2,
-            "the date_bin bucket is named AS bucket, not AS hour",
-        ),
-        // GROUP BY: the keys' positions, in order.
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3",
-            2,
-            "GROUP BY 1, 2, 3 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4, 5",
-            2,
-            "GROUP BY 1, 2, 3, 4, 5 must list the keys' positions in SELECT",
-        ),
+    ]);
+}
+
+/// GROUP BY: the keys' positions, in order.
+#[test]
+fn group_by_takes_the_key_positions() {
+    rejects(&[
         (
             "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, 2, 3, 4, 9",
@@ -1718,54 +1568,11 @@ fn rejects_everything_outside_the_subset() {
         ),
         (
             "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 2, 1, 3, 4",
-            2,
-            "GROUP BY 2, 1, 3, 4 must list the keys' positions in SELECT: GROUP BY 1, 2, 3, 4",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY bucket, a, z_id, name",
-            6,
-            "GROUP BY item, write the key's position in SELECT, `bucket`",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, f.a, 3, 4",
-            6,
-            "GROUP BY item, write the key's position in SELECT, `f.a`",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY date_bin('1 hour', f.at, timestamptz 'epoch'), 2, 3, 4",
-            6,
-            "GROUP BY item, write the key's position in SELECT, `date_bin(",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
             "GROUP BY 1, (2), 3, 4",
             6,
             "GROUP BY item, write the key's position in SELECT, `(2)`",
         ),
-    ];
-    let mut failed = Vec::new();
-    for (from, to, line, fragment) in cases {
-        let errors = match parse(&base(from, to)) {
-            Err(Error::Sql(errors)) => errors,
-            other => {
-                failed.push(format!("{to}: got {other:?}"));
-                continue;
-            }
-        };
-        if !errors
-            .iter()
-            .any(|e| e.line == line && e.msg.contains(fragment))
-        {
-            failed.push(format!(
-                "{to}: expected line {line}: {fragment}, got {errors:?}"
-            ));
-        }
-    }
-    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    ]);
 }
 
 #[test]
