@@ -31,6 +31,7 @@ usage: straum <command> [flags]
   run     load the spec's tables, follow their changes, answer asks
   plan    print the SQL that sets PostgreSQL up for the spec
   status  print what a running straum has done
+  version print straum's version
   help    print this; straum help <command> prints its flags
 
 Guide: https://janbjorge.github.io/straum/
@@ -117,6 +118,7 @@ enum Command {
     },
     /// The help of one command, or of straum.
     Help(Option<&'static str>),
+    Version,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -134,6 +136,12 @@ fn main() -> ExitCode {
     let done = match command(&args) {
         Ok(Command::Help(topic)) => {
             print!("{}", help(topic));
+            Ok(())
+        }
+        Ok(Command::Version) => {
+            // CI builds with the release's version; Cargo.toml never names it.
+            let version = option_env!("STRAUM_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            println!("straum {version}");
             Ok(())
         }
         Ok(Command::Plan {
@@ -206,6 +214,12 @@ fn command(args: &[String]) -> Result<Command, String> {
             [] => Ok(Command::Help(None)),
             [topic] => known(topic).map(|name| Command::Help(Some(name))),
             _ => Err("straum help takes one command".into()),
+        };
+    }
+    if ["version", "--version", "-V"].contains(&name.as_str()) {
+        return match rest {
+            [] => Ok(Command::Version),
+            _ => Err("straum version takes nothing".into()),
         };
     }
     let name = known(name)?;
@@ -524,6 +538,9 @@ mod tests {
         for help in ["help", "--help", "-h"] {
             assert_eq!(command(&args(help)), Ok(Command::Help(None)));
         }
+        for version in ["version", "--version", "-V"] {
+            assert_eq!(command(&args(version)), Ok(Command::Version));
+        }
         for (line, name) in [
             ("help run", "run"),
             ("run --spec s -h", "run"),
@@ -565,6 +582,8 @@ mod tests {
             ("help --spec", "unknown command \"--spec\""),
             ("help serve", "unknown command \"serve\""),
             ("help run plan", "straum help takes one command"),
+            ("version run", "straum version takes nothing"),
+            ("-V --spec s", "straum version takes nothing"),
             ("run --spec", "--spec needs a value"),
             ("run --spec a --spec b", "--spec given twice"),
             (

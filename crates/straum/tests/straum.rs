@@ -467,6 +467,9 @@ fn says_what_is_wrong() {
     let (code, stdout, _) = output(&mut straum(&["help"]));
     assert_eq!(code, Some(0));
     assert!(stdout.contains("usage: straum <command>"), "{stdout}");
+    let (code, stdout, _) = output(&mut straum(&["version"]));
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout, format!("straum {}\n", env!("CARGO_PKG_VERSION")));
     let (code, stdout, _) = output(&mut straum(&["plan", "--help"]));
     assert_eq!(code, Some(0));
     assert!(
