@@ -1,6 +1,6 @@
 # ADR-0014: Facts need REPLICA IDENTITY FULL
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Superseded by ADR-0031
 
 ## Context
 

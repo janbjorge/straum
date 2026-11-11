@@ -1,185 +1,160 @@
-# Joins: the data model, the code, and where it comes from (2026-11-10)
+# Joins: the data model, the code, and where it comes from (2026-11-11)
 
-Straum aggregates one fact table joined N:1 to dim tables. This note says
-what a join is in Straum's data, which code does what, how the join runs
-in PostgreSQL, what that means for answers, what was built before it (M9
-to M11), and the sources behind the choice (M12, PLAN.md decision of
-2026-11-10). Tags as in README.md (R, U, I).
+Straum aggregates one fact table joined to dim tables. This note says
+what a join is in Straum's data, which code does what, how a join runs,
+what that means for answers, what was built before it (M9 to M12), and
+the sources behind the choice (ADR-0030, 2026-11-11). Tags as in
+README.md (R, U, I).
 
 ## 1. The data model
 
 ```text
-PostgreSQL                                 Straum, per fact
-------------------------------------       ---------------------------------
-fact table   --COPY, pgoutput------>       row:  columns          attrs
-dim tables   --SELECT ... WHERE key IN-->        [c1 .. cn]  ++  [a1 .. am]
-                                                 Fact::columns   Fact::attrs
-                                                      |
-                                                      v  Rollup::add
-                                           cell key = by slots, attrs, bucket
-                                                      (Fact::rollup_key)
-                                           cell     = rows, sums, extents,
-                                                      distinct counts
+PostgreSQL                              Straum, per fact
+---------------------------------       ---------------------------------
+fact table   --COPY, pgoutput-->        row: Fact::columns()
+                                             |
+                                             v  Rollup::add
+                                        cell key = by slots, vias, bucket
+                                                   (Fact::rollup_key)
+                                        cell     = rows, sums, extents,
+                                                   distinct counts
+dim tables   --COPY, pgoutput-->        Projection: key -> [attr codes]
+                                                    one per row (Dim::columns())
+                                             ^
+ask ------------------------------------------+  Store::ask maps each cell's
+                                                 via columns through the
+                                                 projections as they are now
 ```
 
-- A **fact** is one view: a table, a time column, by columns, refs and
-  measures (`Fact`, `crates/straum-domain/src/spec.rs`).
-- A **ref** is an N:1 pointer from fact columns (`via`) to a dim's key,
-  with the dim columns the view selects through it (`attrs`). A ref has no
-  value of its own.
+- A **fact** is one view: a table, a time column, by columns, refs,
+  measures and a standing filter (`Fact`,
+  `crates/straum-domain/src/spec.rs`).
+- A **ref** is an edge of the join tree: `via` columns on the near side,
+  the fact or a dim joined before it (`Via::Fact`, `Via::Attr`), equal
+  to the far dim's key. Its `kind` is `Left`, `Inner`, `Semi` or `Anti`;
+  left and inner read dim columns (`attrs`), semi and anti read none. A
+  ref has no value of its own.
 - A **dim** is a table with a key of one column or more and the union of
-  the attributes every view reads of it (`Dim`). Straum keeps none of its
-  rows.
-- A **row** of a fact, as the source hands it over, holds
-  `Fact::columns()` (time, by columns, via columns, measure inputs, each
-  once) and then `Fact::attrs()`, the attributes of every ref in ref order.
-  The source resolves the attributes; the domain never sees a dim.
-- A **cell** is keyed by the by slots, then the attributes, then the time
-  bucket (`Fact::rollup_key`). Attributes are rollup-key columns like any
-  other: values coded once, cells keyed by codes.
+  the columns every view reads of it (`Dim`), chain links included.
+- A **row** of a fact holds `Fact::columns()`: time, by columns, via
+  columns and measure inputs, each once. A row of a dim holds
+  `Dim::columns()`: key, then attributes.
+- A **cell** is keyed by the by slots, then each fact-side via column
+  once, then the time bucket (`Fact::rollup_key`). Values are coded
+  once, cells keyed by codes.
+- A **projection** (`crates/straum-domain/src/projection.rs`) is a dim
+  held as a multimap from key to the attribute-code tuples of every row
+  under it, with `Null` coded 0 so a key with no row and a null value
+  read alike. A row with a null in its key is never held: null joins
+  nothing.
 
 Invariants:
 
-- Every key an ask can name is a slot of the cell key (`Fact::resolve`
-  gives `Key::By` or `Key::Attr`), so an ask looks nothing up. The ref
-  itself is not a key (`AskError::RefAsKey`), and an attribute the view
-  does not select is not either (`AskError::AttrNotRead`).
-- A row's attributes are what the dims said when the row came in. A dim
-  change rewrites nothing. Straum follows fact tables only; the dims are
-  read, never published.
-- The view body is what PostgreSQL computes. Straum's answers equal it as
-  long as no dim row changed between a fact row's arrival and the ask;
-  after a dim change they differ for the rows from before, until Straum
-  starts over (§3d).
+- Every key an ask can name is a select name of the view: a by column,
+  a null-ness key, a ref attribute or the bucket (`Fact::resolve`). An
+  attribute resolves to a lookup through the cell's via columns, so an
+  ask looks nothing up outside Straum.
+- Dim columns are as of now, always. A dim change is one projection
+  entry; no cell moves and nothing starts over.
+- The view body is what PostgreSQL computes, and Straum's answer equals
+  it at every commit, dim changes included (§3d).
 
 ## 2. The code model
 
 | Piece | Where | What |
 | --- | --- | --- |
-| `Ref`, `Dim`, `Fact::columns`, `Fact::attrs`, `Fact::rollup_key` | `crates/straum-domain/src/spec.rs` | The declarations and the row and key layouts. `Spec::new` refuses a ref that reads nothing (`RefNoAttrs`), reads a column its dim lacks (`UnknownAttr`), joins on a column twice (`ViaReused`) or on another number of columns than the key has (`KeyWidth`). |
-| `Rollup` | `crates/straum-domain/src/rollup.rs` | Rows of `columns.len() + attrs` values; `Coded::Value(columns.len() + i)` for the i-th attribute; `set_types` over the whole row. |
-| `Store` | `crates/straum-domain/src/store.rs` | The rollups, and nothing else. `slot()` maps a key path to its cell-key slot. |
-| `Spec::check`, `AskError` | `crates/straum-domain/src/ask.rs` | `RefAsKey` and `AttrNotRead` say why `g` or `g.id` is no key. |
-| `Walker::join`, `add_dim`, `select` | `crates/straum-notation/src/sql/view.rs` | `LEFT JOIN d ON d.k = f.v AND ...` makes a `JoinedRef`; a dim is its table, keyed in the first view's order; the selected dim columns become `attrs`; a join that selects nothing and a FILTER on an unselected attribute are errors; a dim key column selected through the ref is the fact column joined to it (`Column::Fact`). |
-| `Source`, `Change` | `crates/straum-app/src/source.rs` | `load_fact` hands over whole rows; `Change` carries fact rows only, old and new whole. |
-| `State::apply` | `crates/straum-app/src/app.rs` | Facts only; a change to any other table is skipped. |
-| `Tables`, `Access`, `check_dim` | `crates/straum-pg/src/catalog.rs` | Facts are `Streamed` (publication, `REPLICA IDENTITY FULL`, no row filter); dims are `LookedUp` (SELECT privilege, a primary key or unique index on exactly the key). |
-| `copy_sql`, `fact_types` | `crates/straum-pg/src/load.rs` | The load's `COPY (SELECT ... LEFT JOIN ...)` and the row's types, the attributes' from the dim columns. |
-| `Resolver`, `Lookup` | `crates/straum-pg/src/resolve.rs` | Per commit, per fact, per ref: one `SELECT key, attrs FROM dim WHERE (key) IN (...)`, 1,000 keys a statement; appends attributes or nulls. |
-| `Pg::next_commit`, `Pg.side` | `crates/straum-pg/src/source.rs` | Resolves a commit on the side connection before handing it to the writer; the connection goes on error. |
-| `Decoder` | `crates/straum-pg/src/decode.rs` | Maps fact relations only; a dim relation maps to nothing. |
-| `plan` | `crates/straum-pg/src/plan.rs` | Publishes the fact tables; says what a dim's schema needs in a comment. |
-| Fake source | `crates/straum-app/tests/fake/mod.rs` | Resolves refs against the tables at the commit's LSN and drops dim changes, as PostgreSQL would. |
-| PostgreSQL tests | `crates/straum-pg/src/tests.rs` | `attributes_are_as_of_ingest`, `loads_copy_the_fact_joined_to_its_dims`, `a_value_left_out_comes_from_the_old_row`, `follows_the_task_tables`. |
-| End to end | `crates/straum/tests/straum.rs` | A zone renamed shows once a trip in it changes and Straum starts over. |
+| `Ref`, `RefKind`, `Via`, `Dim`, `Fact::rollup_key`, `Fact::filter` | `crates/straum-domain/src/spec.rs` | The declarations and the key layout. `Spec::new` refuses a left or inner ref that reads nothing (`RefNoAttrs`), a semi or anti ref that reads anything (`RefReads`), a chain through a later ref or a column its parent does not carry (`ChainColumn`), a via reused (`ViaReused`), a key of the wrong width (`KeyWidth`) and a filter on a name the view lacks (`UnknownKey`). |
+| `Projection` | `crates/straum-domain/src/projection.rs` | `add`, `add_rows`, `remove`, `clear`, `matches(key)`, `is_unique`; a row added twice is held twice, a `remove` of a row not held is `RowError::Missing`. |
+| `Store` | `crates/straum-domain/src/store.rs` | Rollups and projections. `ask` takes the fast path when every ref is left, unique and unchained: one group per cell, multiplicity one. Otherwise `Expander` lists each cell's join rows, memoised per distinct via tuple, and `Partials::merge_cell` adds the cell once per row. `Test::holds` applies the standing filter and the measures' filters per join row. |
+| `AskError` | `crates/straum-domain/src/ask.rs` | `UnknownKey` names what is not a select name; `WrongType` reads attribute types from the projection. |
+| `Walker::join`, `exists`, `near`, `select` | `crates/straum-notation/src/sql/view.rs` | `INNER JOIN` and `LEFT OUTER JOIN ... ON d.k = near.v` make a `JoinedRef`; `WHERE EXISTS (SELECT 1 FROM s.d AS d WHERE d.k = near.v)` and `NOT EXISTS` make semi and anti refs; `near` is the fact alias or an earlier left or inner alias, whose column the parent dim then carries; the rest of `WHERE` is `Fact::filter`; a `FILTER` every measure shares is refused naming `WHERE`. |
+| `Source::load_dim`, `Change` | `crates/straum-app/src/source.rs` | Dims load like facts, and `Change` carries dim rows like fact rows. |
+| `State::apply` | `crates/straum-app/src/app.rs` | Fact changes go to the rollup, dim changes to the projection: insert adds, update removes the old row and adds the new, delete removes, truncate clears. |
+| `Tables`, `check_table` | `crates/straum-pg/src/catalog.rs` | Every spec table is published whole with `REPLICA IDENTITY FULL`; `check_refs` compares via and key types along chains. No index is required of a dim. |
+| `copy_sql`, `fact`, `dim` | `crates/straum-pg/src/load.rs` | One plain binary `COPY` of the spec's columns per table. |
+| `Decoder` | `crates/straum-pg/src/decode.rs` | Maps fact and dim relations alike. |
+| `plan` | `crates/straum-pg/src/plan.rs` | Publishes every table and sets FULL on each. |
+| Fake source | `crates/straum-app/tests/fake/mod.rs` | Streams dim changes like fact changes; the reference store loads the tables at the commit's LSN. |
+| Property tests | `crates/straum-domain/tests/store.rs`, `tests/joins.rs` | Random fact and dim steps against a naive join over rows, every kind, N:M and chains. |
+| PostgreSQL tests | `crates/straum-pg/src/tests.rs` | `a_dim_change_shows_at_once`, `every_join_kind_matches_postgresql`, `follows_the_task_tables`, each ask compared with the view body in PostgreSQL after every commit. |
+| End to end | `crates/straum/tests/straum.rs` | A zone renamed shows in the next answer, with no start over. |
 
 ## 3. How a join runs
 
 ### 3a. The load
 
-One binary `COPY` per fact, the fact joined to its dims in PostgreSQL
-(`load::copy_sql`). For the tasks fixture of the tests:
+One binary `COPY` per table, fact or dim, of the columns the spec
+names, in the slot's snapshot (`load::copy_sql`):
 
 ```sql
-COPY (SELECT t0."created", t0."organization_id", t0."taskgroup_id",
-             t0."location_id", t1."category", t2."location_type"
-        FROM "public"."tasks" AS t0
-        LEFT JOIN "public"."taskgroups" AS t1
-               ON t1."organization_id" = t0."organization_id"
-              AND t1."taskgroup_id" = t0."taskgroup_id"
-        LEFT JOIN "public"."locations" AS t2 ON t2."id" = t0."location_id")
+COPY (SELECT "id", "country", "tier_id" FROM "shop"."customers")
   TO STDOUT (FORMAT binary)
 ```
 
-`t0` is the fact and `t1` on its refs, in ref order, so the attributes
-come in `Fact::attrs` order after the columns. PostgreSQL plans the join
-as it would for the view, which may hash a dim; Straum groups the rows as
-they come and holds no table. On the copy of pio's tables the load went
-from 8 s with the dims copied as tables of their own to 19 s with the
-join, and memory from 897 MiB to 84 MiB (`docs/src/benchmark.md`).
+Dims load first, then facts, so the store answers as soon as the last
+fact is in. A fact's rows go into cells as they come; a dim's rows go
+into its projection. Nothing is joined in PostgreSQL.
 
 ### 3b. The stream
 
-pgoutput brings fact rows as the publication has them: `Fact::columns`,
-the old row whole under `REPLICA IDENTITY FULL`. Before the writer applies
-a commit, `Resolver::resolve` gives every fact row its attributes:
-
-1. For each fact with refs, collect the rows in the commit: an insert's
-   row, an update's old and new rows, a delete's old row.
-2. For each ref, take the via values of every row as a key, skipping keys
-   with a null in them (null joins nothing), and run
-
-   ```sql
-   SELECT "organization_id", "taskgroup_id", "category"
-     FROM "public"."taskgroups"
-    WHERE ("organization_id", "taskgroup_id") IN ((27, 1), (27, 2), ...)
-   ```
-
-   a thousand keys a statement, on the plain connection that also reads
-   the WAL position. Integers print as digits, numerics as decimals in
-   their scale, booleans as `true` and `false`, text through
-   `escape_literal`.
-3. Append the attributes found to each row, or nulls for a key with no
-   row.
-
-Then the commit goes under the write lock and applies as before: insert
-adds, update removes the old row and adds the new, delete removes. The
-lookups run outside the lock, so asks never wait on them.
+pgoutput brings every spec table's rows, the old row whole under
+`REPLICA IDENTITY FULL`. A commit applies under the write lock as one:
+fact rows to cells, dim rows to projections. There is no lookup, no
+side connection and nothing between a commit and its apply.
 
 ### 3c. Removal
 
-The old row of an update or delete gets its attributes from the dims as
-they are now. If a dim row changed since the row came in, the old row
-resolves to another cell key than the one it sits under, the rollup
-reports `RowError::Missing`, the writer returns `Error::Unfit`, and
-Straum starts over from a new slot, reading every row as the dims are
-then. The same path handles a fact row that never fit.
+A fact row's old values name its cell, so an update or delete takes it
+out in place. A dim row's old values name the projection entry, one of
+possibly several under the key, and `Projection::remove` takes that one
+out; a row not held is `RowError::Missing`, and Straum starts over, as
+for a fact row that never fit.
 
 ### 3d. Semantics
 
-Processing time, as a stream engine's lookup join: attributes are as of
-when the row was processed, not as of the commit, and not as of the ask.
+Ask time, as the view in PostgreSQL: every answer joins the cells to
+the dims as they are at the commit the answer reflects.
 
-- A dim change is not a change to Straum: it is not in the stream, and
-  the cells before it keep what they had. Rows after it read the new
-  value. A transaction that touches only unpublished tables sends no
-  commit at all (pgoutput skips empty transactions since PostgreSQL 15).
-- A fact row whose dim row does not exist resolves to nulls, as the
-  view's `LEFT JOIN` gives. A dim row that arrives later changes nothing
-  for it.
-- Between a commit and its apply, the dims may have moved on; the lookup
-  reads them as they are at apply time. A snapshot at the commit's LSN
-  would need a slot per commit.
-- PostgreSQL's view regroups on a dim change; Straum's answer catches up
-  on the next start over. For a dim that must move history, select the
-  join column too and map in the client, or ask PostgreSQL.
+- A cell contributes once per element of the cross product of its
+  refs' match lists. A left ref with no match is one null tuple; an
+  inner or semi ref with none drops the cell; an anti ref with one
+  drops it. count and sum scale by the multiplicity, min, max and count
+  distinct do not, avg cancels. Exact, as PostgreSQL repeats the row.
+- A chain reads through the parent's projection: the child's via
+  values are the parent row's attribute codes, so a chained ref
+  multiplies per parent row.
+- The view's `WHERE` and a measure's `FILTER` are tested per join row,
+  so a condition on a dim column follows the dim.
+- `RIGHT` and `FULL` would add dim rows no fact points at, whose
+  `date_bin` is null; Straum keeps null-time rows in a bucket no ask
+  reads, so for every ask Straum can answer they are `INNER` and `LEFT
+  OUTER`. The walker refuses the spellings and names those.
 
 ## 4. What it replaces, and what was not chosen
 
-- **M9, late binding.** The join column was a key, Straum held every dim
-  row (`DimTable`) and mapped attributes after aggregation, as Kylin's
+- **M9, late binding, one kind.** The join column was a key, Straum held
+  every dim row and mapped attributes after aggregation, as Kylin's
   derived dimensions do
   ([Kylin cube design](https://kylin.apache.org/docs/3.1.3/howto/howto_optimize_cubes/),
-  U). A dim change moved answers at once. The cost was cells: on pio's
-  shape a task group holds one task or two, so the rollup held nearly a
-  cell a task, 12 million a width.
-- **M11, early binding.** Attributes read from the held dim rows as each
-  fact row came in, so cells collapsed to the attributes' few values. The
-  cost was the held dims: 6.5 million rows, 875 of 897 MiB on the copy of
-  pio's tables. Two bindings doubled the spec, the walker, the store and
-  the ask errors.
-- **M12, this.** No dim rows held; one binding; the join runs where the
-  dims live. Chosen under jb's constraints of 2026-11-10: no data
-  duplication, PostgreSQL the single source of truth, pio a reference case
-  and not the model.
-- **Not chosen:** looking attributes up at ask time against PostgreSQL
-  (the cells would still be keyed by the join column, and asks would wait
-  on PostgreSQL); denormalising the attributes onto the fact table in
-  PostgreSQL (duplication in the database, and a migration per view);
-  summary tables kept by triggers, `pg_ivm` or `pg_cron` (no Straum at
-  all; they put a trigger or a lock on the write path, §5.10). A bounded
-  cache of recent keys in front of the lookup stays open as the lever if
-  a source writes faster than the lookups keep up (§5.8).
+  U). Left joins only, N:1 only, no chains, no `WHERE`.
+- **M11, early binding.** Attributes read from held dim rows as each
+  fact row came in, so cells collapsed to the attributes' few values.
+  Two bindings doubled the spec, the walker, the store and the ask
+  errors, and a dim change rewrote nothing.
+- **M12, resolved in PostgreSQL (ADR-0013).** No dim rows held; the load
+  joined in PostgreSQL and each commit looked its attributes up. 84 MiB
+  instead of 897 on the warehouse copy, and a dim change invisible
+  until a fact row of it changed and Straum started over.
+- **This (ADR-0030).** Late binding always, the projection held beside
+  the cells, every join kind, any cardinality, chains and `WHERE`. The
+  cost is cells keyed by join ids, which the warehouse copy makes about
+  a cell a task (§6). That is the question's cost, not a shortcut's.
+- **Not chosen:** a per-dim choice of binding or a flip at run time
+  (fitting the solution to the data); looking attributes up at ask time
+  against PostgreSQL (asks would wait on it); denormalising the
+  attributes onto the fact table (duplication in the database, a
+  migration per view); summary tables kept by triggers, `pg_ivm` or
+  `pg_cron` (a trigger or a lock on the write path, §5.10).
 
 ## 5. Sources
 
@@ -230,8 +205,8 @@ the source says and what Straum took from it.
    the docs warn against `cache` and `direct` on ingest paths
    ([Dictionary layouts](https://clickhouse.com/docs/reference/statements/create/dictionary/layouts/overview),
    [cache layout](https://clickhouse.com/docs/reference/statements/create/dictionary/layouts/cache),
-   U). Straum is `direct`, batched per transaction, which the pio rate of
-   about two fact changes a second makes cheap.
+   U). Straum is `direct`, batched per transaction, which the warehouse
+   copy's rate of about two fact changes a second made cheap.
 6. **Druid lookups.** "Lookups do not have history. They always use the
    current data"; ingestion-time lookups freeze the value in the row, and
    query-time lookups exist only for the case where a change must show on
@@ -280,10 +255,28 @@ the source says and what Straum took from it.
 
 ## 6. Numbers
 
-The copy of pio's tables, release build, laptop Docker, 2026-11-10: ready
-in 19 s, 84 MiB resident; 311,969 hour cells and 66,107 day cells;
-streamed transactions of 1,000, 19,024, 1,873 and 7,426 rows applied in
-74 ms, 3.4 s, 156 ms and 275 ms, every ask equal to PostgreSQL after
-each; a task group recategorised showed once a task of it changed and
-Straum started over. The taxi month: load 2.1 s, 200 commits 4.1 s, start
-over 2.6 s. Details in `docs/src/benchmark.md`.
+Re-measured on 2026-11-11 after ADR-0030, on the warehouse copy of
+`docs/src/sizing.md`: 13,116,878 tasks, 5,690,651 task groups, 851,964
+storage locations; the view keyed by organization, live-ness, the
+group's category and the location's type.
+
+| | Early binding (M12) | Ask-time binding |
+| --- | ---: | ---: |
+| Hour cells | 311,969 | 11,932,307 |
+| Day cells | 66,107 | 11,930,678 |
+| Resident | 84 MiB | 1,998 to 2,378 MiB |
+| Ready | 19 s | 10 s |
+| Dim rows held | 0 | 6,542,615 |
+| Group recategorised | start over, 20 s | 208 ms, no start |
+| Locations retyped, one in ten | start over | 1.1 s, no start |
+| Groups deleted, one in a hundred | start over | 3.8 s, no start |
+| Ask by organization and category, one week | 0.9 ms | 89.2 ms |
+
+The cells follow the join ids, as §5.2 says they must: a group holds a
+task or two, so both widths hold about a cell a task, and the day width
+collapses nothing. Memory is 24 to 28 times M12's, and an ask over a
+week reads that week's hour cells and maps each through the
+projections, so it costs 100 times what it did. In
+exchange no dim change starts Straum over, and every ask equalled
+PostgreSQL after each of the seven changes. The full tables are in
+`docs/src/sizing.md`.

@@ -1,13 +1,13 @@
 # ADR-0013: Joins are resolved in PostgreSQL
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Superseded by ADR-0030
 
 ## Context
 
 A ref is an N:1 pointer from a fact to a dim. Before M12 Straum held
 the dim rows and joined in memory, first after aggregation, then at
 ingest for refs whose via columns weren't selected. Held dims cost 897
-MiB on a copy of pio's tables, and every engine that joins outside the
+MiB on a copy of a warehouse's tables, and every engine that joins outside the
 database holds that mapping (Quass et al. 1996; ClickHouse
 dictionaries; Flink and RisingWave lookup joins).
 
@@ -24,7 +24,8 @@ key columns, which may be several.
 
 ## Consequences
 
-- Straum holds no dim rows (ADR-0002): 84 MiB instead of 897 on pio.
+- Straum holds no dim rows (ADR-0002): 84 MiB instead of 897 on the
+  warehouse copy.
 - Dims are read as of ingest. A dim change rewrites nothing; a fact row
   that came in under an old value and then changes is not found, so
   Straum starts over (ADR-0015).
