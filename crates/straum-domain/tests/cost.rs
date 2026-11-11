@@ -135,7 +135,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
     let columns = spec.fact("trips").unwrap().columns().to_vec();
     let mut store = Store::new(spec);
     store
-        .set_dim_types("zones", &[ColumnType::Int, ColumnType::Text])
+        .set_types("zones", &[ColumnType::Int, ColumnType::Text])
         .unwrap();
     let zones: Vec<Datum> = (0..ZONES)
         .flat_map(|zone| {
@@ -145,7 +145,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
             ]
         })
         .collect();
-    store.add_dim_rows("zones", &zones).unwrap();
+    store.add_rows("zones", &zones).unwrap();
     for n in 0..cells {
         let zone = n / 2 % ZONES;
         let row: Vec<_> = columns
@@ -159,7 +159,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
                 other => panic!("no value for {other}"),
             })
             .collect();
-        store.add_fact_row("trips", &row).unwrap();
+        store.add_row("trips", &row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(cells as usize));
     store

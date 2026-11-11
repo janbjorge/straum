@@ -160,7 +160,7 @@ type Dims = BTreeMap<&'static str, BTreeMap<Vec<Datum>, Vec<Vec<Datum>>>>;
 fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
     store
-        .set_fact_types(
+        .set_types(
             "orders",
             &[
                 ColumnType::Time { zoned: true },
@@ -179,7 +179,7 @@ fn typed(spec: &Spec) -> Store {
         ("promos", vec![int, text]),
         ("blocked", vec![int, text]),
     ] {
-        store.set_dim_types(dim, &types).unwrap();
+        store.set_types(dim, &types).unwrap();
     }
     store
 }
@@ -188,7 +188,7 @@ fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
         for (key, each) in rows {
             for attrs in each {
-                store.add_dim_row(dim, &dim_row(key, attrs)).unwrap();
+                store.add_row(dim, &dim_row(key, attrs)).unwrap();
             }
         }
     }
@@ -201,7 +201,7 @@ fn add_dim(
     key: Vec<Datum>,
     attrs: Vec<Datum>,
 ) {
-    store.add_dim_row(dim, &dim_row(&key, &attrs)).unwrap();
+    store.add_row(dim, &dim_row(&key, &attrs)).unwrap();
     dims.entry(dim)
         .or_default()
         .entry(key)
@@ -216,7 +216,7 @@ fn remove_dim(
     key: &[Datum],
     attrs: &[Datum],
 ) {
-    store.remove_dim_row(dim, &dim_row(key, attrs)).unwrap();
+    store.remove_row(dim, &dim_row(key, attrs)).unwrap();
     let rows = dims.get_mut(dim).unwrap().get_mut(key).unwrap();
     let i = rows.iter().position(|a| a == attrs).unwrap();
     rows.remove(i);
@@ -448,7 +448,7 @@ fn small(kinds: [RefKind; 5], filter: Vec<Cond>, orders: &[Vec<Datum>]) -> (Stor
     let dims = small_dims();
     load_dims(&mut store, &dims);
     for row in orders {
-        store.add_fact_row("orders", row).unwrap();
+        store.add_row("orders", row).unwrap();
     }
     (store, spec, dims)
 }
@@ -925,11 +925,11 @@ fn run(seed: u64) {
             }
             3 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
-                store.remove_fact_row("orders", &row).unwrap();
+                store.remove_row("orders", &row).unwrap();
             }
             _ => {
                 let row = rng.random_order();
-                store.add_fact_row("orders", &row).unwrap();
+                store.add_row("orders", &row).unwrap();
                 rows.push(row);
             }
         }

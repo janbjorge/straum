@@ -289,7 +289,7 @@ fn load_dims(store: &mut Store, dims: &Dims) {
         let flat: Vec<Datum> = (rows.iter())
             .flat_map(|(key, attrs)| dim_row(key, attrs))
             .collect();
-        store.add_dim_rows(dim, &flat).unwrap();
+        store.add_rows(dim, &flat).unwrap();
     }
 }
 
@@ -318,12 +318,12 @@ fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     };
     let rows = dims.get_mut(dim).unwrap();
     if let Some(old) = rows.remove(&key) {
-        store.remove_dim_row(dim, &dim_row(&key, &old)).unwrap();
+        store.remove_row(dim, &dim_row(&key, &old)).unwrap();
         if rng.chance(40) {
             return;
         }
     }
-    store.add_dim_row(dim, &dim_row(&key, &attrs)).unwrap();
+    store.add_row(dim, &dim_row(&key, &attrs)).unwrap();
     rows.insert(key, attrs);
 }
 
@@ -419,9 +419,9 @@ fn trip_types() -> Vec<ColumnType> {
 /// A store with the types a load would set, for the fact and the dims.
 fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
-    store.set_fact_types("trips", &trip_types()).unwrap();
+    store.set_types("trips", &trip_types()).unwrap();
     for (dim, types) in DIM_TYPES {
-        store.set_dim_types(dim, types).unwrap();
+        store.set_types(dim, types).unwrap();
     }
     store
 }
@@ -617,7 +617,7 @@ fn run(seed: u64, sealing: bool) -> usize {
             4..=8 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
                 spilled.unseal(&mut store, &row);
-                store.remove_fact_row("trips", &row).unwrap();
+                store.remove_row("trips", &row).unwrap();
             }
             9..=14 if !rows.is_empty() => {
                 // An update: the old row out, a new one in, often in the
@@ -628,9 +628,9 @@ fn run(seed: u64, sealing: bool) -> usize {
                     new[..=DRO].clone_from_slice(&rows[i][..=DRO]);
                 }
                 spilled.unseal(&mut store, &rows[i]);
-                store.remove_fact_row("trips", &rows[i]).unwrap();
+                store.remove_row("trips", &rows[i]).unwrap();
                 spilled.unseal(&mut store, &new);
-                store.add_fact_row("trips", &new).unwrap();
+                store.add_row("trips", &new).unwrap();
                 rows[i] = new;
             }
             _ => {
@@ -641,7 +641,7 @@ fn run(seed: u64, sealing: bool) -> usize {
                     row[..=DRO].clone_from_slice(&rows[other][..=DRO]);
                 }
                 spilled.unseal(&mut store, &row);
-                store.add_fact_row("trips", &row).unwrap();
+                store.add_row("trips", &row).unwrap();
                 rows.push(row);
             }
         }
@@ -660,7 +660,7 @@ fn run(seed: u64, sealing: bool) -> usize {
     assert!(store.cells("trips").unwrap() > 0);
     for row in rows {
         spilled.unseal(&mut store, &row);
-        store.remove_fact_row("trips", &row).unwrap();
+        store.remove_row("trips", &row).unwrap();
     }
     assert_eq!(
         store.cells("trips").unwrap(),
@@ -695,13 +695,13 @@ fn rows_added_together_match_rows_added_one_by_one() {
         load_dims(&mut together, &dims);
         let rows: Vec<Vec<Datum>> = (0..2_000).map(|_| trip(&mut rng)).collect();
         for row in &rows {
-            by_row.add_fact_row("trips", row).unwrap();
+            by_row.add_row("trips", row).unwrap();
         }
         let flat: Vec<Datum> = rows.concat();
         let mut rest = &flat[..];
         while !rest.is_empty() {
             let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * WIDTH));
-            together.add_fact_rows("trips", batch).unwrap();
+            together.add_rows("trips", batch).unwrap();
             rest = after;
         }
         assert_eq!(
@@ -719,7 +719,7 @@ fn rows_added_together_match_rows_added_one_by_one() {
         }
         // The stream takes out rows the load put in.
         for row in &rows {
-            together.remove_fact_row("trips", row).unwrap();
+            together.remove_row("trips", row).unwrap();
         }
         assert_eq!(
             together.cells("trips").unwrap(),
@@ -740,7 +740,7 @@ fn a_range_cuts_at_both_ends() {
     for i in 0..4 {
         let mut row = trip(&mut rng);
         row[AT] = Datum::Int(START + i64::from(GRAIN) * i);
-        store.add_fact_row("trips", &row).unwrap();
+        store.add_row("trips", &row).unwrap();
         rows.push(row);
     }
     let ask = |from, to| Ask {
@@ -774,12 +774,12 @@ fn a_dim_change_moves_the_answer_at_once() {
     let spec = spec();
     let mut store = typed(&spec);
     store
-        .add_dim_row("vendors", &[Datum::Int(1), text("v1")])
+        .add_row("vendors", &[Datum::Int(1), text("v1")])
         .unwrap();
     let mut row = trip(&mut Rng(3));
     row[AT] = Datum::Int(START);
     row[VENDOR] = Datum::Int(1);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     let by_label = Ask {
         fact: id("trips"),
         measures: vec![id("trips")],
@@ -797,24 +797,24 @@ fn a_dim_change_moves_the_answer_at_once() {
     let cells = store.cells("trips");
 
     store
-        .remove_dim_row("vendors", &[Datum::Int(1), text("v1")])
+        .remove_row("vendors", &[Datum::Int(1), text("v1")])
         .unwrap();
     assert_eq!(labels(&store), [Datum::Null]);
     store
-        .add_dim_row("vendors", &[Datum::Int(1), text("v2")])
+        .add_row("vendors", &[Datum::Int(1), text("v2")])
         .unwrap();
     assert_eq!(labels(&store), [text("v2")]);
     assert_eq!(store.cells("trips"), cells);
     // Another vendor's row changes nothing here.
     store
-        .add_dim_row("vendors", &[Datum::Int(2), text("v9")])
+        .add_row("vendors", &[Datum::Int(2), text("v9")])
         .unwrap();
     assert_eq!(labels(&store), [text("v2")]);
-    store.clear_dim("vendors");
+    store.clear("vendors");
     assert_eq!(labels(&store), [Datum::Null]);
     assert_eq!(store.dim_rows("vendors"), Some(0));
     // The fact row comes out as it went in, whatever the dim did.
-    store.remove_fact_row("trips", &row).unwrap();
+    store.remove_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(0));
 }
 
@@ -825,7 +825,7 @@ fn a_composite_key_matches_every_column() {
     let spec = spec();
     let mut store = typed(&spec);
     store
-        .add_dim_rows(
+        .add_rows(
             "combos",
             &[
                 Datum::Int(1),
@@ -859,7 +859,7 @@ fn a_composite_key_matches_every_column() {
     ] {
         let mut store = typed(&spec);
         store
-            .add_dim_rows(
+            .add_rows(
                 "combos",
                 &[
                     Datum::Int(1),
@@ -875,7 +875,7 @@ fn a_composite_key_matches_every_column() {
         row[AT] = Datum::Int(START);
         row[PU] = pu;
         row[VENDOR] = vendor;
-        store.add_fact_row("trips", &row).unwrap();
+        store.add_row("trips", &row).unwrap();
         let answer = store.ask(&by_label).unwrap();
         assert_eq!(answer.rows[0].keys, [label]);
     }
@@ -886,13 +886,13 @@ fn a_composite_key_matches_every_column() {
     row[AT] = Datum::Int(START);
     row[PU] = Datum::Int(1);
     row[VENDOR] = Datum::Int(1);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     assert_eq!(
         store.ask(&by_label).unwrap().rows[0].values,
         [Value::Int(1)]
     );
     store
-        .remove_dim_row("combos", &[Datum::Int(1), Datum::Int(1), text("x")])
+        .remove_row("combos", &[Datum::Int(1), Datum::Int(1), text("x")])
         .unwrap();
     assert_eq!(
         store.ask(&by_label).unwrap().rows[0].values,
@@ -906,14 +906,14 @@ fn a_filter_on_an_attribute_reads_the_dim() {
     let spec = spec();
     let mut store = typed(&spec);
     store
-        .add_dim_rows("zones", &[Datum::Int(2), text("m"), text("a")])
+        .add_rows("zones", &[Datum::Int(2), text("m"), text("a")])
         .unwrap();
     let mut row = trip(&mut Rng(8));
     row[AT] = Datum::Int(START);
     row[PU] = Datum::Int(2);
     row[VENDOR] = Datum::Int(2);
     row[FARE] = Datum::Int(100);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     let mq_fare = Ask {
         fact: id("trips"),
         measures: vec![id("mq_fare")],
@@ -925,10 +925,10 @@ fn a_filter_on_an_attribute_reads_the_dim() {
     let fare = |store: &Store| store.ask(&mq_fare).unwrap().rows[0].values[0].clone();
     assert_eq!(fare(&store), Value::Int(100));
     store
-        .remove_dim_row("zones", &[Datum::Int(2), text("m"), text("a")])
+        .remove_row("zones", &[Datum::Int(2), text("m"), text("a")])
         .unwrap();
     store
-        .add_dim_row("zones", &[Datum::Int(2), text("b"), text("a")])
+        .add_row("zones", &[Datum::Int(2), text("b"), text("a")])
         .unwrap();
     assert_eq!(fare(&store), Value::Null);
 }
@@ -944,7 +944,7 @@ fn every_key_at_once_uses_the_sparse_index() {
     load_dims(&mut store, &dims);
     let rows: Vec<Vec<Datum>> = (0..500).map(|_| trip(&mut rng)).collect();
     for row in &rows {
-        store.add_fact_row("trips", row).unwrap();
+        store.add_row("trips", row).unwrap();
     }
     let ask = Ask {
         fact: id("trips"),
@@ -965,25 +965,22 @@ fn dim_row_errors() {
         expected: 3,
         found: 2,
     });
-    assert_eq!(store.add_dim_row("zones", &row[1..]), short);
-    assert_eq!(store.add_dim_rows("zones", &row[1..]), short);
-    assert_eq!(store.set_dim_types("zones", &[ColumnType::Int; 2]), short);
-    store.add_dim_row("zones", &row).unwrap();
+    assert_eq!(store.add_row("zones", &row[1..]), short);
+    assert_eq!(store.add_rows("zones", &row[1..]), short);
+    assert_eq!(store.set_types("zones", &[ColumnType::Int; 2]), short);
+    store.add_row("zones", &row).unwrap();
     // The same row again is a second row under the key, as a join finds.
-    store.add_dim_row("zones", &row).unwrap();
+    store.add_row("zones", &row).unwrap();
     assert_eq!(store.dim_rows("zones"), Some(2));
     let other = [Datum::Int(1), text("q"), text("a")];
-    assert_eq!(
-        store.remove_dim_row("zones", &other),
-        Err(RowError::Missing)
-    );
-    store.remove_dim_row("zones", &row).unwrap();
-    store.remove_dim_row("zones", &row).unwrap();
-    assert_eq!(store.remove_dim_row("zones", &row), Err(RowError::Missing));
+    assert_eq!(store.remove_row("zones", &other), Err(RowError::Missing));
+    store.remove_row("zones", &row).unwrap();
+    store.remove_row("zones", &row).unwrap();
+    assert_eq!(store.remove_row("zones", &row), Err(RowError::Missing));
     // A batch is all or nothing.
     let bad = [row.to_vec(), vec![Datum::Int(2)]].concat();
     assert_eq!(
-        store.add_dim_rows("zones", &bad),
+        store.add_rows("zones", &bad),
         Err(RowError::Arity {
             expected: 3,
             found: 1
@@ -1003,13 +1000,13 @@ fn dim_rows_added_together_match_rows_added_one_by_one() {
     let mut by_row = typed(&spec);
     for (dim, rows) in &dims {
         for (key, attrs) in rows {
-            by_row.add_dim_row(dim, &dim_row(key, attrs)).unwrap();
+            by_row.add_row(dim, &dim_row(key, attrs)).unwrap();
         }
     }
     let rows: Vec<Vec<Datum>> = (0..300).map(|_| trip(&mut rng)).collect();
     for row in &rows {
-        together.add_fact_row("trips", row).unwrap();
-        by_row.add_fact_row("trips", row).unwrap();
+        together.add_row("trips", row).unwrap();
+        by_row.add_row("trips", row).unwrap();
     }
     for _ in 0..20 {
         let ask = random_ask(&mut rng, &spec);
@@ -1023,7 +1020,7 @@ fn rows_added_together_add_none_on_error() {
     let mut store = Store::new(spec());
     let good = [trip(&mut rng), trip(&mut rng)].concat();
     assert_eq!(
-        store.add_fact_rows("trips", &good[1..]),
+        store.add_rows("trips", &good[1..]),
         Err(RowError::Arity {
             expected: WIDTH,
             found: WIDTH - 1
@@ -1032,12 +1029,12 @@ fn rows_added_together_add_none_on_error() {
     let mut bad = good.clone();
     bad[WIDTH + AT] = text("noon");
     assert_eq!(
-        store.add_fact_rows("trips", &bad),
+        store.add_rows("trips", &bad),
         Err(RowError::NotInt { column: id("at") })
     );
     assert_eq!(store.cells("trips"), Some(0));
-    store.add_fact_rows("trips", &[]).unwrap();
-    store.add_fact_rows("trips", &good).unwrap();
+    store.add_rows("trips", &[]).unwrap();
+    store.add_rows("trips", &good).unwrap();
     assert!(store.cells("trips").unwrap() > 0);
 }
 
@@ -1102,20 +1099,20 @@ fn rows_collapse_into_cells() {
     let mut store = Store::new(spec());
     let mut row = trip(&mut Rng(7));
     row[AT] = Datum::Int(START + 1);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     row[AT] = Datum::Int(START + i64::from(GRAIN) - 1);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(1));
     row[AT] = Datum::Int(START + i64::from(GRAIN));
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(2));
     // A join column is a key: another value is another cell.
     row[PU] = Datum::Int(9);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(3));
     // A dim row is none.
     store
-        .add_dim_row("zones", &[Datum::Int(9), text("m"), text("a")])
+        .add_row("zones", &[Datum::Int(9), text("m"), text("a")])
         .unwrap();
     assert_eq!(store.cells("trips"), Some(3));
 }
@@ -1142,21 +1139,21 @@ fn removing_an_extreme_reveals_the_next() {
         })
         .collect();
     for row in &rows {
-        store.add_fact_row("trips", row).unwrap();
+        store.add_row("trips", row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(1));
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
 
     // One of two 9s out: the max stays.
-    store.remove_fact_row("trips", &rows[1]).unwrap();
+    store.remove_row("trips", &rows[1]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
-    store.remove_fact_row("trips", &rows[2]).unwrap();
+    store.remove_row("trips", &rows[2]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(2), Value::Int(7)]);
-    store.remove_fact_row("trips", &rows[3]).unwrap();
+    store.remove_row("trips", &rows[3]).unwrap();
     assert_eq!(extremes(&store), [Value::Int(5), Value::Int(7)]);
     // A value past the old extremes after they went.
     row[TIP] = Datum::Int(1);
-    store.add_fact_row("trips", &row).unwrap();
+    store.add_row("trips", &row).unwrap();
     assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
 }
 
@@ -1164,14 +1161,11 @@ fn removing_an_extreme_reveals_the_next() {
 fn clear_drops_every_row() {
     let mut store = Store::new(spec());
     let trip = trip(&mut Rng(5));
-    store.add_fact_row("trips", &trip).unwrap();
-    store.clear_fact("trips");
+    store.add_row("trips", &trip).unwrap();
+    store.clear("trips");
     assert_eq!(store.cells("trips"), Some(0));
-    assert_eq!(
-        store.remove_fact_row("trips", &trip),
-        Err(RowError::Missing)
-    );
-    store.add_fact_row("trips", &trip).unwrap();
+    assert_eq!(store.remove_row("trips", &trip), Err(RowError::Missing));
+    store.add_row("trips", &trip).unwrap();
     assert_eq!(store.cells("trips"), Some(1));
 }
 
@@ -1215,10 +1209,10 @@ fn filter_values_are_of_their_column_type() {
     let pay = || ask(vec![cond("pay", vec![Literal::Int(1)])]);
     let mut types = trip_types();
     types[PAY] = ColumnType::Numeric { scale: 0 };
-    store.set_fact_types("trips", &types).unwrap();
+    store.set_types("trips", &types).unwrap();
     assert!(store.ask(&pay()).is_ok());
     types[PAY] = ColumnType::Numeric { scale: 2 };
-    store.set_fact_types("trips", &types).unwrap();
+    store.set_types("trips", &types).unwrap();
     assert_eq!(
         store.ask(&pay()).unwrap_err()[0].to_string(),
         "pay is a numeric of scale 2, so it can't be the integer 1"
@@ -1245,14 +1239,14 @@ fn types_stay_through_clear() {
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
     types[TIP] = ColumnType::Numeric { scale: 1 };
-    store.set_fact_types("trips", &types).unwrap();
+    store.set_types("trips", &types).unwrap();
     // An attribute has the type its dim column has.
     let zone = ColumnType::Numeric { scale: 4 };
     store
-        .set_dim_types("zones", &[ColumnType::Int, ColumnType::Text, zone])
+        .set_types("zones", &[ColumnType::Int, ColumnType::Text, zone])
         .unwrap();
-    store.clear_fact("trips");
-    store.clear_dim("zones");
+    store.clear("trips");
+    store.clear("zones");
     assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
 }
 
@@ -1373,28 +1367,25 @@ fn row_errors() {
 
     let mut store = fresh();
     assert_eq!(
-        store.add_fact_row("trips", &base[1..]),
+        store.add_row("trips", &base[1..]),
         Err(RowError::Arity {
             expected: WIDTH,
             found: WIDTH - 1
         })
     );
     assert_eq!(
-        store.add_fact_row("trips", &with(AT, text("noon"))),
+        store.add_row("trips", &with(AT, text("noon"))),
         Err(RowError::NotInt { column: id("at") })
     );
     assert_eq!(
-        store.remove_fact_row("trips", &with(TIP, Datum::Bool(true))),
+        store.remove_row("trips", &with(TIP, Datum::Bool(true))),
         Err(RowError::NotInt { column: id("tip") })
     );
     // Count distinct takes any value.
     store
-        .add_fact_row("trips", &with(RIDER, Datum::Bool(true)))
+        .add_row("trips", &with(RIDER, Datum::Bool(true)))
         .unwrap();
-    assert_eq!(
-        store.remove_fact_row("trips", &base),
-        Err(RowError::Missing)
-    );
+    assert_eq!(store.remove_row("trips", &base), Err(RowError::Missing));
 
     // Each kind of state notices a value it never saw.
     let seen = with(FARE, Datum::Null);
@@ -1404,11 +1395,11 @@ fn row_errors() {
         (RIDER, text("zed")),
     ] {
         let mut store = fresh();
-        store.add_fact_row("trips", &seen).unwrap();
+        store.add_row("trips", &seen).unwrap();
         let mut other = seen.clone();
         other[pos] = v;
         assert_eq!(
-            store.remove_fact_row("trips", &other),
+            store.remove_row("trips", &other),
             Err(RowError::Missing),
             "{pos}"
         );
@@ -1416,7 +1407,7 @@ fn row_errors() {
 
     let mut store = fresh();
     assert_eq!(
-        store.set_fact_types("trips", &[ColumnType::Int; WIDTH + 1]),
+        store.set_types("trips", &[ColumnType::Int; WIDTH + 1]),
         Err(RowError::Arity {
             expected: WIDTH,
             found: WIDTH + 1
@@ -1459,7 +1450,7 @@ fn three_rows() -> (Store, Vec<Vec<Datum>>) {
         })
         .collect();
     for row in &rows {
-        store.add_fact_row("trips", row).unwrap();
+        store.add_row("trips", row).unwrap();
     }
     (store, rows)
 }
@@ -1522,7 +1513,7 @@ fn sealable_buckets_end_by_the_cutoff() {
     }
     assert_eq!(store.sealable(START + 604_800 * 2), []);
     assert_eq!(store.sealed("trips"), all);
-    store.clear_fact("trips");
+    store.clear("trips");
     assert_eq!(store.sealed("trips"), []);
     // Gone with the truncate, or never there.
     let mut reason = |id: &SealedId| store.seal(id).unwrap_err().reason;
@@ -1548,24 +1539,21 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
         std::slice::from_ref(&id)
     );
     assert_eq!(store.sealed_touched("trips", &[]), []);
-    assert_eq!(store.add_fact_row("trips", &rows[0]), Err(RowError::Sealed));
-    assert_eq!(
-        store.remove_fact_row("trips", &rows[0]),
-        Err(RowError::Sealed)
-    );
+    assert_eq!(store.add_row("trips", &rows[0]), Err(RowError::Sealed));
+    assert_eq!(store.remove_row("trips", &rows[0]), Err(RowError::Sealed));
     let mut many = rows[0].clone();
     many.extend(rows[1].iter().cloned());
-    assert_eq!(store.add_fact_rows("trips", &many), Err(RowError::Sealed));
+    assert_eq!(store.add_rows("trips", &many), Err(RowError::Sealed));
     // A row of another day goes in.
     let mut later = rows[0].clone();
     later[AT] = Datum::Int(START + 86_400);
     assert_eq!(store.sealed_touched("trips", &later), []);
-    store.add_fact_row("trips", &later).unwrap();
+    store.add_row("trips", &later).unwrap();
 
     store.unseal(store.thaw(sealed).unwrap()).unwrap();
     assert_eq!(store.sealed_touched("trips", &rows[2]), []);
-    store.remove_fact_row("trips", &rows[0]).unwrap();
-    store.add_fact_row("trips", &rows[0]).unwrap();
+    store.remove_row("trips", &rows[0]).unwrap();
+    store.add_row("trips", &rows[0]).unwrap();
 }
 
 type Change<'a> = dyn Fn(&mut Sealed) + 'a;
@@ -1680,7 +1668,7 @@ fn a_row_of_a_bucket_never_filled_is_missing() {
     let mut elsewhere = rows[0].clone();
     elsewhere[AT] = Datum::Int(START + 86_400);
     assert_eq!(
-        store.remove_fact_row("trips", &elsewhere),
+        store.remove_row("trips", &elsewhere),
         Err(RowError::Missing)
     );
 }

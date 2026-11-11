@@ -63,67 +63,56 @@ impl Store {
         }
     }
 
-    /// Sets the types of a row of `fact`, [`Fact::columns`]. Only the
-    /// source knows them, so a load sets them.
-    pub fn set_fact_types(&mut self, fact: &str, types: &[ColumnType]) -> Result<(), RowError> {
-        self.rollup_mut(fact).set_types(types)
+    /// Sets the types of a row of `table`, a fact's [`Fact::columns`] or
+    /// a dim's [`Dim::columns`]. Only the source knows them, so a load
+    /// sets them.
+    pub fn set_types(&mut self, table: &str, types: &[ColumnType]) -> Result<(), RowError> {
+        match self.member_mut(table) {
+            Member::Rollup(rollup) => rollup.set_types(types),
+            Member::Projection(projection) => projection.set_types(types),
+        }
     }
 
-    /// Adds rows laid end to end, as a load reads them, each
-    /// [`Fact::columns`] wide.
-    pub fn add_fact_rows(&mut self, fact: &str, rows: &[Datum]) -> Result<(), RowError> {
-        self.rollup_mut(fact).add_rows(rows)
+    /// Adds rows laid end to end, as a load reads them, each a row of
+    /// `table` wide.
+    pub fn add_rows(&mut self, table: &str, rows: &[Datum]) -> Result<(), RowError> {
+        match self.member_mut(table) {
+            Member::Rollup(rollup) => rollup.add_rows(rows),
+            Member::Projection(projection) => projection.add_rows(rows),
+        }
     }
 
     /// Adds one row, as the stream brings it.
-    pub fn add_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
-        self.rollup_mut(fact).add(row)
+    pub fn add_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
+        match self.member_mut(table) {
+            Member::Rollup(rollup) => rollup.add(row),
+            Member::Projection(projection) => projection.add(row),
+        }
     }
 
-    /// Removes one row. A row never added is not found, so the caller
-    /// starts over.
-    pub fn remove_fact_row(&mut self, fact: &str, row: &[Datum]) -> Result<(), RowError> {
-        self.rollup_mut(fact).remove(row)
+    /// Removes one row equal to the one given. A row never added is not
+    /// found, so the caller starts over.
+    pub fn remove_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
+        match self.member_mut(table) {
+            Member::Rollup(rollup) => rollup.remove(row),
+            Member::Projection(projection) => projection.remove(row),
+        }
+    }
+
+    /// Drops every row of a table after a truncate.
+    pub fn clear(&mut self, table: &str) {
+        match self.member_mut(table) {
+            Member::Rollup(rollup) => rollup.clear(),
+            Member::Projection(projection) => projection.clear(),
+        }
     }
 
     pub fn spec(&self) -> &Spec {
         &self.spec
     }
 
-    /// Drops every row of a fact after a truncate.
-    pub fn clear_fact(&mut self, fact: &str) {
-        self.rollup_mut(fact).clear();
-    }
-
     pub fn cells(&self, fact: &str) -> Option<usize> {
         Some(self.rollup(fact)?.1.cells())
-    }
-
-    /// Sets the types of a row of `dim`, [`Dim::columns`]: the key, then
-    /// the attributes. Only the source knows them, so a load sets them.
-    pub fn set_dim_types(&mut self, dim: &str, types: &[ColumnType]) -> Result<(), RowError> {
-        self.projection_mut(dim).set_types(types)
-    }
-
-    /// Adds rows laid end to end, as a load reads them, each
-    /// [`Dim::columns`] wide.
-    pub fn add_dim_rows(&mut self, dim: &str, rows: &[Datum]) -> Result<(), RowError> {
-        self.projection_mut(dim).add_rows(rows)
-    }
-
-    /// Adds one row, as the stream brings it.
-    pub fn add_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
-        self.projection_mut(dim).add(row)
-    }
-
-    /// Removes one row equal to the one given.
-    pub fn remove_dim_row(&mut self, dim: &str, row: &[Datum]) -> Result<(), RowError> {
-        self.projection_mut(dim).remove(row)
-    }
-
-    /// Drops every row of a dim after a truncate.
-    pub fn clear_dim(&mut self, dim: &str) {
-        self.projection_mut(dim).clear();
     }
 
     pub fn dim_rows(&self, dim: &str) -> Option<usize> {
@@ -374,9 +363,14 @@ impl Store {
         &self.projections[self.dim_index(dim).expect(IN_SPEC)]
     }
 
-    fn projection_mut(&mut self, dim: &str) -> &mut Projection {
-        let i = self.dim_index(dim).expect(IN_SPEC);
-        &mut self.projections[i]
+    /// A fact's rollup or a dim's projection: dims and facts share one
+    /// namespace, so the name says which.
+    fn member_mut(&mut self, table: &str) -> Member<'_> {
+        if let Some(i) = self.fact_index(table) {
+            return Member::Rollup(&mut self.rollups[i]);
+        }
+        let i = self.dim_index(table).expect(IN_SPEC);
+        Member::Projection(&mut self.projections[i])
     }
 
     fn checked(&self, ask: &Ask) -> Result<(&Fact, &Rollup), Vec<AskError>> {
@@ -435,6 +429,11 @@ impl Store {
             })
             .collect()
     }
+}
+
+enum Member<'s> {
+    Rollup(&'s mut Rollup),
+    Projection(&'s mut Projection),
 }
 
 /// What the cell loops fill in.

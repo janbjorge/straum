@@ -9,9 +9,7 @@ use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{
-    Answer, Ask, AskError, Datum, Ident, RowError, SealedError, SealedId, Spec, Store,
-};
+use straum_domain::{Answer, Ask, AskError, Ident, SealedError, SealedId, Spec, Store};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
@@ -262,18 +260,14 @@ impl State {
     fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
         let Commit { lsn, time, changes } = commit;
         for change in changes {
-            let table = change.table().as_str();
+            let table = change.table();
             let spec = self.store.spec();
-            let rows = if spec.fact(table).is_some() {
-                &FACT_ROWS
-            } else if spec.dim(table).is_some() {
-                &DIM_ROWS
-            } else {
-                // The publication may carry tables the spec doesn't name.
+            // The publication may carry tables the spec doesn't name.
+            if spec.fact(table.as_str()).is_none() && spec.dim(table.as_str()).is_none() {
                 continue;
-            };
-            if !apply_change(&mut self.store, &change, rows) {
-                return Err(change.table().clone());
+            }
+            if !apply_change(&mut self.store, &change) {
+                return Err(table.clone());
             }
         }
         let following = self.following();
@@ -283,37 +277,19 @@ impl State {
     }
 }
 
-/// The store's row operations for one kind of table.
-struct Rows {
-    add: fn(&mut Store, &str, &[Datum]) -> Result<(), RowError>,
-    remove: fn(&mut Store, &str, &[Datum]) -> Result<(), RowError>,
-    clear: fn(&mut Store, &str),
-}
-
-const FACT_ROWS: Rows = Rows {
-    add: Store::add_fact_row,
-    remove: Store::remove_fact_row,
-    clear: Store::clear_fact,
-};
-
-const DIM_ROWS: Rows = Rows {
-    add: Store::add_dim_row,
-    remove: Store::remove_dim_row,
-    clear: Store::clear_dim,
-};
-
 /// Applies one change; `false` when it no longer fits. Facts and dims need
 /// the whole old row: a fact to take it out of its cell, a dim because a
 /// key change is the old row out and the new one in.
-fn apply_change(store: &mut Store, change: &Change, rows: &Rows) -> bool {
+fn apply_change(store: &mut Store, change: &Change) -> bool {
     match change {
-        Change::Insert { table, row } => (rows.add)(store, table.as_str(), row).is_ok(),
-        Change::Update { table, old, new } => (rows.remove)(store, table.as_str(), old)
-            .and_then(|()| (rows.add)(store, table.as_str(), new))
+        Change::Insert { table, row } => store.add_row(table.as_str(), row).is_ok(),
+        Change::Update { table, old, new } => store
+            .remove_row(table.as_str(), old)
+            .and_then(|()| store.add_row(table.as_str(), new))
             .is_ok(),
-        Change::Delete { table, old } => (rows.remove)(store, table.as_str(), old).is_ok(),
+        Change::Delete { table, old } => store.remove_row(table.as_str(), old).is_ok(),
         Change::Truncate { table } => {
-            (rows.clear)(store, table.as_str());
+            store.clear(table.as_str());
             true
         }
         Change::Altered { .. } => false,
@@ -369,11 +345,10 @@ impl<S: Source> Writer<S> {
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
         let mut store = Store::new(spec.clone());
-        for dim in spec.dims() {
-            self.source.load_dim(dim, &mut store)?;
-        }
-        for fact in spec.facts() {
-            self.source.load_fact(fact, &mut store)?;
+        let dims = spec.dims().iter().map(|dim| &dim.name);
+        let facts = spec.facts().iter().map(|fact| &fact.name);
+        for table in dims.chain(facts) {
+            self.source.load(table, &mut store)?;
         }
         let wal = self.measure()?;
         let mut lag = Lag::new(opened);

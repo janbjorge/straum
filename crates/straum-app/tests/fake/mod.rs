@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Dim, Fact, Ident, Spec, Store};
+use straum_domain::{ColumnType, Datum, Ident, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
@@ -23,19 +23,17 @@ pub fn type_of(column: &Ident) -> ColumnType {
     }
 }
 
-/// Sets the types a load sets: the fact's columns.
-pub fn set_types(fact: &Fact, store: &mut Store) {
-    let types: Vec<ColumnType> = fact.columns().iter().map(type_of).collect();
+/// Sets the types a load sets: a fact's columns, or a dim's key and then
+/// its attributes.
+pub fn set_types(table: &Ident, store: &mut Store) {
+    let spec = store.spec();
+    let types: Vec<ColumnType> = match (spec.fact(table.as_str()), spec.dim(table.as_str())) {
+        (Some(fact), _) => fact.columns().iter().map(type_of).collect(),
+        (None, Some(dim)) => dim.columns().map(type_of).collect(),
+        (None, None) => panic!("{table} is in the spec"),
+    };
     store
-        .set_fact_types(fact.name.as_str(), &types)
-        .expect("one type per column");
-}
-
-/// Sets the types a load sets: the dim's key, then its attributes.
-pub fn set_dim_types(dim: &Dim, store: &mut Store) {
-    let types: Vec<ColumnType> = dim.columns().map(type_of).collect();
-    store
-        .set_dim_types(dim.name.as_str(), &types)
+        .set_types(table.as_str(), &types)
         .expect("one type per column");
 }
 
@@ -287,18 +285,10 @@ impl Source for Fake {
         Ok(start)
     }
 
-    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
-        set_types(fact, store);
-        for row in self.read(&fact.name)? {
-            store.add_fact_row(fact.name.as_str(), &row)?;
-        }
-        Ok(())
-    }
-
-    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError> {
-        set_dim_types(dim, store);
-        for row in self.read(&dim.name)? {
-            store.add_dim_row(dim.name.as_str(), &row)?;
+    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
+        set_types(table, store);
+        for row in self.read(table)? {
+            store.add_row(table.as_str(), &row)?;
         }
         Ok(())
     }

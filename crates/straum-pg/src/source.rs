@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{Dim, Fact, Ident, Spec, Store};
+use straum_domain::{Ident, Spec, Store};
 
 use crate::catalog::{self, Tables};
 use crate::decode::Decoder;
@@ -135,20 +135,12 @@ impl Source for Pg {
         Ok(at)
     }
 
-    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError> {
+    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        load::fact(&mut snapshot.conn, &snapshot.tables, fact, store)?;
-        loaded(snapshot, &fact.name)
-    }
-
-    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError> {
-        let State::Loading(snapshot) = &mut self.state else {
-            return Err(Error::Stopped.into());
-        };
-        load::dim(&mut snapshot.conn, &snapshot.tables, dim, store)?;
-        loaded(snapshot, &dim.name)
+        load::table(&mut snapshot.conn, snapshot.tables.get(table), store)?;
+        loaded(snapshot, table)
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {

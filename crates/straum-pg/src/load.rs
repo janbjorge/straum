@@ -6,9 +6,9 @@ use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{Datum, Dim, Fact, Store};
+use straum_domain::{Datum, Store};
 
-use crate::catalog::{Table, Tables, escaped};
+use crate::catalog::{Table, escaped};
 use crate::error::Error;
 use crate::value::read_binary;
 use crate::wire::Conn;
@@ -28,35 +28,11 @@ pub(crate) fn copy_sql(table: &Table) -> String {
     )
 }
 
-pub(crate) fn fact(
-    conn: &mut Conn,
-    tables: &Tables,
-    fact: &Fact,
-    store: &mut Store,
-) -> Result<(), Error> {
-    let name = fact.name.as_str();
-    let table = tables.fact(&fact.name);
-    store
-        .set_fact_types(name, &table.types)
-        .map_err(Error::Row)?;
+pub(crate) fn table(conn: &mut Conn, table: &Table, store: &mut Store) -> Result<(), Error> {
+    let name = table.name.as_str();
+    store.set_types(name, &table.types).map_err(Error::Row)?;
     copy(conn, table, |rows| {
-        store.add_fact_rows(name, rows).map_err(Error::Row)
-    })
-}
-
-pub(crate) fn dim(
-    conn: &mut Conn,
-    tables: &Tables,
-    dim: &Dim,
-    store: &mut Store,
-) -> Result<(), Error> {
-    let name = dim.name.as_str();
-    let table = tables.dim(&dim.name);
-    store
-        .set_dim_types(name, &table.types)
-        .map_err(Error::Row)?;
-    copy(conn, table, |rows| {
-        store.add_dim_rows(name, rows).map_err(Error::Row)
+        store.add_rows(name, rows).map_err(Error::Row)
     })
 }
 

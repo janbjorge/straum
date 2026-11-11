@@ -2462,7 +2462,7 @@ fn connection_errors() {
     assert_eq!(idle.wal().unwrap_err().to_string(), stopped);
     let mut store = Store::new(spec.clone());
     let trips = spec.fact("trips").unwrap();
-    let err = idle.load_fact(trips, &mut store);
+    let err = idle.load(&trips.name, &mut store);
     assert_eq!(err.unwrap_err().to_string(), stopped);
 }
 
@@ -2477,7 +2477,7 @@ fn no_load_once_the_stream_runs() {
     let commit = source.next_commit(LONG).unwrap().unwrap();
     assert!(commit.lsn > start);
     let mut store = Store::new(spec.clone());
-    let err = source.load_fact(spec.fact("trips").unwrap(), &mut store);
+    let err = source.load(&id("trips"), &mut store);
     assert_eq!(
         err.unwrap_err().to_string(),
         "the replication stream stopped"

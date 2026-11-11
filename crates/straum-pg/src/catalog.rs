@@ -51,6 +51,16 @@ pub(crate) struct Tables {
 }
 
 impl Tables {
+    /// A table by the spec's name for it, dim or fact.
+    pub(crate) fn get(&self, name: &Ident) -> &Table {
+        (self
+            .facts
+            .iter()
+            .chain(&self.dims)
+            .find(|t| t.name == *name))
+        .expect("the spec's tables are checked")
+    }
+
     pub(crate) fn fact(&self, name: &Ident) -> &Table {
         (self.facts.iter().find(|t| t.name == *name)).expect("the spec's facts are checked")
     }

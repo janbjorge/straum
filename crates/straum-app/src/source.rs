@@ -8,7 +8,7 @@ use std::error;
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use straum_domain::{Datum, Dim, Fact, Ident, Spec, Store};
+use straum_domain::{Datum, Ident, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
 /// is missing, a table no longer fits the spec. straum starts over after one.
@@ -24,16 +24,11 @@ pub trait Source {
     /// are in the snapshot, later ones are streamed.
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError>;
 
-    /// Adds the fact's rows to the store, whose rollup for it is empty, as
+    /// Adds the table's rows to the store, which holds none of it yet, as
     /// of the LSN [`Source::open`] returned: every commit up to it and none
-    /// after. Rows hold [`Fact::columns`] and go through
-    /// [`Store::add_fact_rows`].
-    fn load_fact(&mut self, fact: &Fact, store: &mut Store) -> Result<(), SourceError>;
-
-    /// Adds the dim's rows to the store, whose projection for it is empty,
-    /// as of the same LSN. Rows hold [`Dim::columns`] and go through
-    /// [`Store::add_dim_rows`].
-    fn load_dim(&mut self, dim: &Dim, store: &mut Store) -> Result<(), SourceError>;
+    /// after. Rows hold [`Fact::columns`] or [`Dim::columns`] and go
+    /// through [`Store::add_rows`].
+    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError>;
 
     /// The next commit, waiting at most `wait` for one. Asking means the
     /// last one is applied, so PostgreSQL may recycle the WAL before it.

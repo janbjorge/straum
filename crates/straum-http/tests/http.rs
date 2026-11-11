@@ -13,7 +13,7 @@ use straum_app::{
     App, Change, Commit, Limits, Lsn, Source, SourceError, Spill, SpillError, Spilling, Step, Wal,
     Writer,
 };
-use straum_domain::{Ask, ColumnType, Datum, Dim, Fact, Ident, Sealed, SealedId, Spec, Store};
+use straum_domain::{Ask, ColumnType, Datum, Ident, Sealed, SealedId, Spec, Store};
 use straum_http::ReadAsk;
 use tokio::sync::oneshot;
 
@@ -55,10 +55,18 @@ impl Source for Script {
         Ok(START)
     }
 
-    fn load_fact(&mut self, _: &Fact, store: &mut Store) -> Result<(), SourceError> {
+    /// Zones 1 and 2; a trip in zone 3 finds no row.
+    fn load(&mut self, table: &Ident, store: &mut Store) -> Result<(), SourceError> {
+        if table.as_str() == "zones" {
+            store.set_types("zones", &[ColumnType::Int, ColumnType::Text])?;
+            return Ok(store.add_rows(
+                "zones",
+                &[int(1), text("Bronx"), int(2), text("Queens \"Q\"")],
+            )?);
+        }
         thread::sleep(self.pause);
         // at, kind, zone_id, fare.
-        store.set_fact_types(
+        store.set_types(
             "trips",
             &[
                 ColumnType::Time { zoned: true },
@@ -68,18 +76,8 @@ impl Source for Script {
             ],
         )?;
         for row in &self.trips {
-            store.add_fact_row("trips", row)?;
+            store.add_row("trips", row)?;
         }
-        Ok(())
-    }
-
-    /// Zones 1 and 2; a trip in zone 3 finds no row.
-    fn load_dim(&mut self, _: &Dim, store: &mut Store) -> Result<(), SourceError> {
-        store.set_dim_types("zones", &[ColumnType::Int, ColumnType::Text])?;
-        store.add_dim_rows(
-            "zones",
-            &[int(1), text("Bronx"), int(2), text("Queens \"Q\"")],
-        )?;
         Ok(())
     }
 

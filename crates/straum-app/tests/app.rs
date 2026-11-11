@@ -142,15 +142,15 @@ fn reference(db: &Database, lsn: Lsn) -> Store {
     let spec = spec();
     let mut store = Store::new(spec.clone());
     for dim in spec.dims() {
-        fake::set_dim_types(dim, &mut store);
+        fake::set_types(&dim.name, &mut store);
         for row in db.rows_at(lsn, dim.name.as_str()) {
-            store.add_dim_row(dim.name.as_str(), &row).unwrap();
+            store.add_row(dim.name.as_str(), &row).unwrap();
         }
     }
     for fact in spec.facts() {
-        fake::set_types(fact, &mut store);
+        fake::set_types(&fact.name, &mut store);
         for row in db.rows_at(lsn, fact.name.as_str()) {
-            store.add_fact_row(fact.name.as_str(), &row).unwrap();
+            store.add_row(fact.name.as_str(), &row).unwrap();
         }
     }
     store
