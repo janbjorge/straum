@@ -14,7 +14,7 @@ use straum_app::{Commit, Lsn};
 
 use crate::decode::Decoder;
 use crate::error::Error;
-use crate::pgoutput;
+use crate::pgoutput::{self, CopyMessage};
 use crate::value;
 use crate::wire::{Closer, Conn, server_error};
 
@@ -57,7 +57,7 @@ impl Stream {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
         });
-        let reader = Reader {
+        let follower = Follower {
             conn,
             decoder,
             commits,
@@ -68,7 +68,7 @@ impl Stream {
         };
         let thread = thread::Builder::new()
             .name("straum-stream".into())
-            .spawn(move || reader.run())?;
+            .spawn(move || follower.run())?;
         Ok(Stream {
             commits: receiver,
             shared,
@@ -107,7 +107,7 @@ impl Drop for Stream {
 }
 
 /// The thread's end: the socket, the decoder and what it has reported.
-struct Reader {
+struct Follower {
     conn: Conn,
     decoder: Decoder,
     commits: SyncSender<Result<Commit, Error>>,
@@ -120,7 +120,7 @@ struct Reader {
     last_status: Instant,
 }
 
-impl Reader {
+impl Follower {
     fn run(mut self) {
         if let Err(e) = self.serve() {
             // The writer may be gone, or the connection with it.
@@ -138,7 +138,7 @@ impl Reader {
                     }
                 }
                 Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
-                Some(_) => return Err(Error::Protocol("a message that ended the stream".into())),
+                Some(_) => return Err(Error::protocol("a message that ended the stream")),
             }
             if self.last_status.elapsed() >= STATUS_INTERVAL {
                 self.status()?;
@@ -149,26 +149,23 @@ impl Reader {
 
     /// `false` once the writer is gone.
     fn copy_data(&mut self, data: &[u8]) -> Result<bool, Error> {
-        match data.split_first() {
-            // XLogData: start, end and send time, then the message.
-            Some((b'w', rest)) if rest.len() >= 24 => {
-                let message = pgoutput::decode(&rest[24..])?;
-                if let Some(commit) = self.decoder.feed(message)? {
+        let message = pgoutput::copy_message(data)
+            .map_err(|_| Error::protocol("a copy message straum doesn't know"))?;
+        match message {
+            CopyMessage::XLogData(bytes) => {
+                if let Some(commit) = self.decoder.feed(pgoutput::decode(bytes)?)? {
                     self.sent = commit.lsn.0;
                     return self.deliver(Ok(commit));
                 }
             }
-            // Keepalive: the server's position, send time, reply requested.
-            Some((b'k', rest)) if rest.len() >= 17 => {
+            CopyMessage::Keepalive { end, reply } => {
                 if !self.decoder.in_transaction() {
-                    let end = u64::from_be_bytes(rest[..8].try_into().expect("8 bytes"));
                     self.idle = self.idle.max(end);
                 }
-                if rest[16] == 1 {
+                if reply {
                     self.status()?;
                 }
             }
-            _ => return Err(Error::Protocol("a copy message straum doesn't know".into())),
         }
         Ok(true)
     }

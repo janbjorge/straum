@@ -3,27 +3,25 @@
 //! read.
 
 use std::collections::HashMap;
-use std::mem;
+use std::{mem, slice};
 
 use straum_app::{Change, Commit, Lsn};
-use straum_domain::{Datum, Ident};
+use straum_domain::{ColumnType, Datum, Ident};
 
 use crate::catalog::Table;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, Tuple};
 use crate::value::{read, type_of};
-use straum_domain::ColumnType;
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
 /// it: `Fact::columns` or `Dim::columns`.
 pub(crate) struct Decoder {
+    /// Each with its types as last loaded or announced. A Relation that
+    /// changes them changes what rows read as, so straum starts over.
     tables: Vec<Table>,
     /// By relation id. A table read by two members of the spec maps to
     /// both.
     relations: HashMap<u32, Vec<Mapping>>,
-    /// Each table's types as last loaded or announced. A Relation that
-    /// changes them changes what rows read as, so straum starts over.
-    types: HashMap<Ident, Vec<ColumnType>>,
     transaction: Transaction,
 }
 
@@ -38,10 +36,8 @@ struct Transaction {
 
 /// Where a table's columns sit in a relation's tuples.
 struct Mapping {
-    table: Ident,
-    /// `schema.table`, for the error a value that doesn't read gives.
-    qualified: String,
-    columns: Vec<Ident>,
+    /// The table's index in `Decoder::tables`.
+    table: usize,
     positions: Vec<usize>,
     types: Vec<ColumnType>,
     width: usize,
@@ -51,14 +47,9 @@ impl Decoder {
     /// `tables` are the spec's tables, dims and facts; `max_rows` is the
     /// most changes to them one transaction may hold.
     pub(crate) fn new(tables: Vec<Table>, max_rows: usize) -> Decoder {
-        let types = tables
-            .iter()
-            .map(|t| (t.name.clone(), t.types.clone()))
-            .collect();
         Decoder {
             tables,
             relations: HashMap::new(),
-            types,
             transaction: Transaction {
                 changes: Vec::new(),
                 max_rows,
@@ -69,70 +60,37 @@ impl Decoder {
 
     /// A commit once its Commit message comes.
     pub(crate) fn feed(&mut self, message: Message) -> Result<Option<Commit>, Error> {
-        match message {
-            Message::Begin { final_lsn } => self.transaction.lsn = Some(Lsn(final_lsn)),
+        let relations = match &message {
+            Message::Begin { final_lsn } => {
+                self.transaction.lsn = Some(Lsn(*final_lsn));
+                return Ok(None);
+            }
             Message::Commit { end_lsn, time } => {
                 self.transaction.lsn = None;
                 let changes = mem::take(&mut self.transaction.changes);
                 return Ok(Some(Commit {
-                    lsn: Lsn(end_lsn),
-                    time,
+                    lsn: Lsn(*end_lsn),
+                    time: *time,
                     changes,
                 }));
             }
-            Message::Relation(relation) => self.relation(&relation)?,
-            Message::Insert { relation, new } => {
-                for m in mappings(&self.relations, relation) {
-                    let change = match m.row(&new, None)? {
-                        Some(row) => Change::Insert {
-                            table: m.table.clone(),
-                            row,
-                        },
-                        None => altered(m),
-                    };
-                    self.transaction.hold(change)?;
-                }
+            Message::Relation(relation) => {
+                self.relation(relation)?;
+                return Ok(None);
             }
-            Message::Update { relation, old, new } => {
-                for m in mappings(&self.relations, relation) {
-                    let old = match &old {
-                        Some(old) => m.old(old)?,
-                        None => None,
-                    };
-                    let change = match (m.row(&new, old.as_deref())?, old) {
-                        (Some(new), Some(old)) => Change::Update {
-                            table: m.table.clone(),
-                            old,
-                            new,
-                        },
-                        _ => altered(m),
-                    };
-                    self.transaction.hold(change)?;
-                }
+            Message::Insert { relation, .. }
+            | Message::Update { relation, .. }
+            | Message::Delete { relation, .. } => slice::from_ref(relation),
+            Message::Truncate { relations } => relations.as_slice(),
+            Message::Other => &[],
+        };
+        for &relation in relations {
+            for m in mappings(&self.relations, relation) {
+                let table = &self.tables[m.table];
+                let change = m.change(table, &message)?;
+                self.transaction
+                    .hold(change.unwrap_or_else(|| altered(table)))?;
             }
-            Message::Delete { relation, old } => {
-                for m in mappings(&self.relations, relation) {
-                    let change = match m.old(&old)? {
-                        Some(old) => Change::Delete {
-                            table: m.table.clone(),
-                            old,
-                        },
-                        None => altered(m),
-                    };
-                    self.transaction.hold(change)?;
-                }
-            }
-            Message::Truncate { relations } => {
-                for relation in relations {
-                    for m in mappings(&self.relations, relation) {
-                        let change = Change::Truncate {
-                            table: m.table.clone(),
-                        };
-                        self.transaction.hold(change)?;
-                    }
-                }
-            }
-            Message::Other => {}
         }
         Ok(None)
     }
@@ -149,11 +107,10 @@ impl Decoder {
     /// what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
-        let tables = self
-            .tables
-            .iter()
-            .filter(|t| t.schema.as_str() == relation.schema && t.table.as_str() == relation.name);
-        for table in tables {
+        let tables = (self.tables.iter_mut().enumerate()).filter(|(_, t)| {
+            t.schema.as_str() == relation.schema && t.table.as_str() == relation.name
+        });
+        for (index, table) in tables {
             let position = |column: &Ident| {
                 relation
                     .columns
@@ -169,16 +126,12 @@ impl Decoder {
                 positions.push(i);
                 types.push(type_of(c.type_oid, c.typmod).ok_or_else(|| changed(table, column))?);
             }
-            let known = self.types.insert(table.name.clone(), types.clone());
-            if known.as_ref() != Some(&types) {
-                self.transaction.changes.push(Change::Altered {
-                    table: table.name.clone(),
-                });
+            if table.types != types {
+                self.transaction.changes.push(altered(table));
+                table.types.clone_from(&types);
             }
             mappings.push(Mapping {
-                table: table.name.clone(),
-                qualified: table.qualified(),
-                columns: table.columns.clone(),
+                table: index,
                 positions,
                 types,
                 width: relation.columns.len(),
@@ -217,25 +170,62 @@ fn changed(table: &Table, column: &Ident) -> Error {
     )])
 }
 
-fn altered(m: &Mapping) -> Change {
+fn altered(table: &Table) -> Change {
     Change::Altered {
-        table: m.table.clone(),
+        table: table.name.clone(),
     }
 }
 
 impl Mapping {
+    /// The change a row message makes to the table; `None` when it can't
+    /// be read whole.
+    fn change(&self, table: &Table, message: &Message) -> Result<Option<Change>, Error> {
+        let name = || table.name.clone();
+        Ok(match message {
+            Message::Insert { new, .. } => {
+                (self.row(table, new, None)?).map(|row| Change::Insert { table: name(), row })
+            }
+            Message::Update { old, new, .. } => {
+                let old = match old {
+                    Some(old) => self.old(table, old)?,
+                    None => None,
+                };
+                match (self.row(table, new, old.as_deref())?, old) {
+                    (Some(new), Some(old)) => Some(Change::Update {
+                        table: name(),
+                        old,
+                        new,
+                    }),
+                    _ => None,
+                }
+            }
+            Message::Delete { old, .. } => {
+                (self.old(table, old)?).map(|old| Change::Delete { table: name(), old })
+            }
+            Message::Truncate { .. } => Some(Change::Truncate { table: name() }),
+            Message::Begin { .. }
+            | Message::Commit { .. }
+            | Message::Relation(_)
+            | Message::Other => None,
+        })
+    }
+
     /// The row a tuple holds. A value PostgreSQL left out because the
     /// change kept it comes from `old`; `None` when there is no old row to
     /// take it from.
-    fn row(&self, tuple: &Tuple, old: Option<&[Datum]>) -> Result<Option<Vec<Datum>>, Error> {
+    fn row(
+        &self,
+        table: &Table,
+        tuple: &Tuple,
+        old: Option<&[Datum]>,
+    ) -> Result<Option<Vec<Datum>>, Error> {
         self.fits(tuple)?;
         let mut row = Vec::with_capacity(self.positions.len());
         for (i, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate() {
             let datum = match (tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
-                (Field::Text(text), _) => {
-                    read(*column_type, text).map_err(|e| e.at(&self.qualified, &self.columns[i]))?
-                }
+                (Field::Text(text), _) => read(*column_type, text)
+                    .map_err(|e| e.at(&table.qualified(), &table.columns[i]))?,
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };
@@ -248,9 +238,9 @@ impl Mapping {
     /// the change can't be read whole. A key-only old row is one: the table
     /// no longer has `REPLICA IDENTITY FULL`, so straum starts over and the
     /// setup check says so.
-    fn old(&self, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
+    fn old(&self, table: &Table, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
         match old {
-            pgoutput::Old::Row(tuple) => self.row(tuple, None),
+            pgoutput::Old::Row(tuple) => self.row(table, tuple, None),
             pgoutput::Old::Key(tuple) => {
                 self.fits(tuple)?;
                 Ok(None)

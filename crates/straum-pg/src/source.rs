@@ -76,9 +76,6 @@ impl Pg {
 /// the database as of the slot's consistent point.
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
     let mut conn = Conn::connect(dsn, true)?;
-    // Without the wal_level logical decoding needs, the slot can't be made
-    // and PostgreSQL's error names no fix, so the setup is checked first too.
-    catalog::read(&mut conn, spec, publication)?;
     conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = format!(
         "straum_{}_{}_{}",
@@ -88,17 +85,26 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
             .map_or(0, |d| d.as_nanos()),
         SLOTS.fetch_add(1, Ordering::Relaxed)
     );
-    let created = conn.rows(&format!(
+    let created = match conn.rows(&format!(
         "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')"
-    ))?;
+    )) {
+        Ok(created) => created,
+        // Without the wal_level logical decoding needs, PostgreSQL's error
+        // names no fix; the setup check says what to change.
+        Err(e) => {
+            conn.execute("ROLLBACK")?;
+            catalog::read(&mut conn, spec, publication)?;
+            return Err(e);
+        }
+    };
     let at = created
         .first()
         .and_then(|row| row.get(1))
         .and_then(|point| parse_lsn(point.as_deref()?))
-        .ok_or_else(|| Error::Protocol("a slot without a consistent point".into()))?;
+        .ok_or_else(|| Error::protocol("a slot without a consistent point"))?;
     let tables = catalog::read(&mut conn, spec, publication)?;
-    let unloaded = (spec.dims().iter().map(|d| d.name.clone()))
-        .chain(spec.facts().iter().map(|f| f.name.clone()))
+    let unloaded = (tables.dims.iter().chain(&tables.facts))
+        .map(|t| t.name.clone())
         .collect();
     Ok(Snapshot {
         conn,
@@ -220,7 +226,7 @@ fn stream(mut snapshot: Snapshot, publication: &str, max_rows: usize) -> Result<
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.
-fn parse_lsn(text: &str) -> Option<Lsn> {
+pub(crate) fn parse_lsn(text: &str) -> Option<Lsn> {
     let (high, low) = text.split_once('/')?;
     let high = u32::from_str_radix(high, 16).ok()?;
     let low = u32::from_str_radix(low, 16).ok()?;

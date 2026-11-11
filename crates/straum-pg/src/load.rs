@@ -6,23 +6,15 @@ use std::sync::mpsc;
 use std::{mem, panic, thread};
 
 use postgres_protocol::escape::escape_identifier;
-use straum_domain::{ColumnType, Datum, Dim, Fact, Ident, Store};
+use straum_domain::{Datum, Dim, Fact, Store};
 
-use crate::catalog::{Table, Tables};
+use crate::catalog::{Table, Tables, escaped};
 use crate::error::Error;
 use crate::value::read_binary;
 use crate::wire::Conn;
 
 /// What starts a binary copy, before its flags and header extension.
 const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
-
-fn qualified(table: &Table) -> String {
-    format!(
-        "{}.{}",
-        escape_identifier(table.schema.as_str()),
-        escape_identifier(table.table.as_str())
-    )
-}
 
 /// The columns straum reads of the table, as the catalog checked them.
 pub(crate) fn copy_sql(table: &Table) -> String {
@@ -32,24 +24,8 @@ pub(crate) fn copy_sql(table: &Table) -> String {
     format!(
         "COPY (SELECT {} FROM {}) TO STDOUT (FORMAT binary)",
         select.join(", "),
-        qualified(table)
+        escaped(&table.schema, &table.table)
     )
-}
-
-/// The columns a copy reads, named so a value that doesn't read says
-/// where it was.
-pub(crate) struct Columns {
-    pub(crate) table: String,
-    pub(crate) names: Vec<Ident>,
-    pub(crate) types: Vec<ColumnType>,
-}
-
-fn columns_of(table: &Table) -> Columns {
-    Columns {
-        table: table.qualified(),
-        names: table.columns.clone(),
-        types: table.types.clone(),
-    }
 }
 
 pub(crate) fn fact(
@@ -63,7 +39,7 @@ pub(crate) fn fact(
     store
         .set_fact_types(name, &table.types)
         .map_err(Error::Row)?;
-    copy(conn, &copy_sql(table), &columns_of(table), |rows| {
+    copy(conn, table, |rows| {
         store.add_fact_rows(name, rows).map_err(Error::Row)
     })
 }
@@ -79,7 +55,7 @@ pub(crate) fn dim(
     store
         .set_dim_types(name, &table.types)
         .map_err(Error::Row)?;
-    copy(conn, &copy_sql(table), &columns_of(table), |rows| {
+    copy(conn, table, |rows| {
         store.add_dim_rows(name, rows).map_err(Error::Row)
     })
 }
@@ -92,23 +68,23 @@ pub(crate) const BATCH: usize = 8192;
 /// column copied, however big the table.
 const IN_FLIGHT: usize = 4;
 
-/// Runs a binary `COPY` and calls `each` with every batch of rows, laid
-/// end to end. A second thread reads and decodes the next batch
+/// Runs a binary `COPY` of the table and calls `each` with every batch of
+/// rows, laid end to end. A second thread reads and decodes the next batch
 /// meanwhile; spent buffers go back to it.
 pub(crate) fn copy(
     conn: &mut Conn,
-    sql: &str,
-    columns: &Columns,
+    table: &Table,
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A fact has its time column, a dim its key.
-    debug_assert!(!columns.types.is_empty());
-    let width = columns.types.len();
+    debug_assert!(!table.types.is_empty());
+    let width = table.types.len();
+    let sql = copy_sql(table);
     let (full, filled) = mpsc::sync_channel::<Vec<Datum>>(IN_FLIGHT);
     let (spent, empty) = mpsc::channel::<Vec<Datum>>();
     thread::scope(|scope| {
         let reader = scope.spawn(move || {
-            read(conn, sql, columns, |batch| {
+            read(conn, &sql, table, |batch| {
                 let next = empty
                     .try_recv()
                     .unwrap_or_else(|_| Vec::with_capacity(BATCH * width));
@@ -138,10 +114,10 @@ pub(crate) fn copy(
 fn read(
     conn: &mut Conn,
     sql: &str,
-    columns: &Columns,
+    table: &Table,
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let types = &columns.types;
+    let types = &table.types;
     let mut batch = Vec::with_capacity(BATCH * types.len());
     let mut started = false;
     let mut ended = false;
@@ -153,7 +129,7 @@ fn read(
         // PostgreSQL sends a row per message, but nothing here needs it to.
         while !data.is_empty() {
             if ended {
-                return Err(copy_error("data after the end of a copy"));
+                return Err(Error::protocol("data after the end of a copy"));
             }
             let fields = i16::from_be_bytes(take(&mut data)?);
             if fields == -1 {
@@ -166,7 +142,7 @@ fn read(
                     types.len()
                 )));
             }
-            for (name, column_type) in columns.names.iter().zip(types) {
+            for (name, column_type) in table.columns.iter().zip(types) {
                 let len = i32::from_be_bytes(take(&mut data)?);
                 batch.push(match usize::try_from(len) {
                     // -1 is null.
@@ -174,9 +150,10 @@ fn read(
                     Ok(len) => {
                         let (value, rest) = data
                             .split_at_checked(len)
-                            .ok_or_else(|| copy_error("a copy value cut short"))?;
+                            .ok_or_else(|| Error::protocol("a copy value cut short"))?;
                         data = rest;
-                        read_binary(*column_type, value).map_err(|e| e.at(&columns.table, name))?
+                        read_binary(*column_type, value)
+                            .map_err(|e| e.at(&table.qualified(), name))?
                     }
                 });
             }
@@ -187,7 +164,7 @@ fn read(
         Ok(())
     })?;
     if !ended {
-        return Err(copy_error("a copy without its end"));
+        return Err(Error::protocol("a copy without its end"));
     }
     if batch.is_empty() {
         Ok(())
@@ -200,24 +177,20 @@ fn read(
 fn header(data: &[u8]) -> Result<&[u8], Error> {
     let mut data = data
         .strip_prefix(SIGNATURE)
-        .ok_or_else(|| copy_error("a copy that isn't binary"))?;
+        .ok_or_else(|| Error::protocol("a copy that isn't binary"))?;
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
     usize::try_from(extension)
         .ok()
         .and_then(|len| data.get(len..))
-        .ok_or_else(|| copy_error("a copy header cut short"))
+        .ok_or_else(|| Error::protocol("a copy header cut short"))
 }
 
 /// The next `N` bytes.
 fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], Error> {
     let (head, rest) = data
         .split_first_chunk()
-        .ok_or_else(|| copy_error("a copy row cut short"))?;
+        .ok_or_else(|| Error::protocol("a copy row cut short"))?;
     *data = rest;
     Ok(*head)
-}
-
-fn copy_error(what: &str) -> Error {
-    Error::Protocol(what.to_owned())
 }

@@ -88,8 +88,8 @@ impl Conn {
         tcp.set_nodelay(true)?;
         let socket = match &dsn.tls {
             Tls::Off => Socket::Plain(tcp),
-            Tls::Verify { root_cert } => {
-                Socket::Tls(Box::new(tls::start(tcp, &dsn.host, root_cert.as_deref())?))
+            Tls::Verify { name, root_cert } => {
+                Socket::Tls(Box::new(tls::start(tcp, name, root_cert.as_deref())?))
             }
         };
         let mut conn = Conn {
@@ -129,9 +129,10 @@ impl Conn {
                             "SASL mechanisms {offered:?}; straum needs {SCRAM_SHA_256}"
                         )));
                     }
-                    let password = dsn.password.as_deref().ok_or_else(|| {
-                        Error::Protocol("a password request; the DSN has none".into())
-                    })?;
+                    let password = dsn
+                        .password
+                        .as_deref()
+                        .ok_or_else(|| Error::protocol("a password request; the DSN has none"))?;
                     let state =
                         ScramSha256::new(password.as_bytes(), ChannelBinding::unsupported());
                     frontend::sasl_initial_response(
@@ -143,13 +144,17 @@ impl Conn {
                     scram = Some(state);
                 }
                 Message::AuthenticationSaslContinue(body) => {
-                    let state = scram.as_mut().ok_or_else(|| unexpected("SASL continue"))?;
+                    let state = scram
+                        .as_mut()
+                        .ok_or_else(|| Error::protocol("SASL continue"))?;
                     state.update(body.data())?;
                     frontend::sasl_response(state.message(), &mut self.output)?;
                     self.flush()?;
                 }
                 Message::AuthenticationSaslFinal(body) => {
-                    let state = scram.as_mut().ok_or_else(|| unexpected("SASL final"))?;
+                    let state = scram
+                        .as_mut()
+                        .ok_or_else(|| Error::protocol("SASL final"))?;
                     state.finish(body.data())?;
                 }
                 Message::ReadyForQuery(_) => return Ok(()),
@@ -165,33 +170,28 @@ impl Conn {
         }
     }
 
-    /// Runs one simple query, calling `each` with every row's fields as
-    /// text. The rest of the result is read even after an error, so the
-    /// connection stays usable.
-    pub(crate) fn query(
-        &mut self,
-        sql: &str,
-        mut each: impl FnMut(&[Option<&str>]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+    /// Runs one simple query and returns every row of its result, owned,
+    /// so it suits a small result. The rest of the result is read even
+    /// after an error, so the connection stays usable.
+    pub(crate) fn rows(&mut self, sql: &str) -> Result<Vec<Vec<Option<String>>>, Error> {
         frontend::query(sql, &mut self.output)?;
         self.flush()?;
-        let mut result = Ok(());
+        let mut rows = Vec::new();
+        let mut error = None;
         loop {
             match self.read()? {
                 Message::DataRow(row) => {
-                    if result.is_ok() {
-                        let buffer = row.buffer();
-                        let fields: Vec<Option<&str>> = row
-                            .ranges()
-                            .map(|range| {
-                                range
-                                    .map(|r| str::from_utf8(&buffer[r]))
-                                    .transpose()
-                                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-                            })
-                            .collect()?;
-                        result = each(&fields);
-                    }
+                    let buffer = row.buffer();
+                    let fields = row
+                        .ranges()
+                        .map(|range| {
+                            range
+                                .map(|r| str::from_utf8(&buffer[r]).map(str::to_owned))
+                                .transpose()
+                                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                        })
+                        .collect()?;
+                    rows.push(fields);
                 }
                 Message::RowDescription(_)
                 | Message::CommandComplete(_)
@@ -199,12 +199,10 @@ impl Conn {
                 | Message::NoticeResponse(_)
                 | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => {
-                    if result.is_ok() {
-                        result = Err(server_error(&body));
-                    }
+                    error.get_or_insert_with(|| server_error(&body));
                 }
-                Message::ReadyForQuery(_) => return result,
-                _ => return Err(unexpected("a message during a query")),
+                Message::ReadyForQuery(_) => return error.map_or(Ok(rows), Err),
+                _ => return Err(Error::protocol("a message during a query")),
             }
         }
     }
@@ -229,23 +227,13 @@ impl Conn {
                 | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 Message::ReadyForQuery(_) => return Ok(()),
-                _ => return Err(unexpected("a message during a copy")),
+                _ => return Err(Error::protocol("a message during a copy")),
             }
         }
     }
 
     pub(crate) fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.query(sql, |_| Ok(()))
-    }
-
-    /// Every row of a small result, owned.
-    pub(crate) fn rows(&mut self, sql: &str) -> Result<Vec<Vec<Option<String>>>, Error> {
-        let mut rows = Vec::new();
-        self.query(sql, |fields| {
-            rows.push(fields.iter().map(|f| f.map(str::to_owned)).collect());
-            Ok(())
-        })?;
-        Ok(rows)
+        self.rows(sql).map(drop)
     }
 
     /// Sends a command that answers with CopyBothResponse, such as
@@ -262,7 +250,7 @@ impl Conn {
             match self.read()? {
                 Message::NoticeResponse(_) | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
-                _ => return Err(unexpected("a message instead of CopyBothResponse")),
+                _ => return Err(Error::protocol("a message instead of CopyBothResponse")),
             }
         }
     }
@@ -373,10 +361,6 @@ impl Closer {
 /// The tag byte plus the length, which counts itself.
 fn frame_len(header: Header) -> usize {
     1 + usize::try_from(header.len()).expect("Header::parse rejects lengths below 4")
-}
-
-fn unexpected(what: &str) -> Error {
-    Error::Protocol(what.to_owned())
 }
 
 /// The message and, when given, the detail.

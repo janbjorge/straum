@@ -76,6 +76,34 @@ pub(crate) enum Field<'a> {
     Text(&'a str),
 }
 
+/// What a CopyData on a replication connection holds.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CopyMessage<'a> {
+    /// XLogData: a pgoutput message, for [`decode`].
+    XLogData(&'a [u8]),
+    /// The server's position, and whether it asks for a status update now.
+    Keepalive { end: u64, reply: bool },
+}
+
+pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError> {
+    let mut r = Reader { bytes };
+    match r.u8()? {
+        b'w' => {
+            // The WAL start and end, and the send time.
+            r.skip(8 + 8 + 8)?;
+            Ok(CopyMessage::XLogData(r.bytes))
+        }
+        b'k' => {
+            let end = r.u64()?;
+            // The send time.
+            r.skip(8)?;
+            let reply = r.u8()? == 1;
+            Ok(CopyMessage::Keepalive { end, reply })
+        }
+        other => Err(DecodeError::Tag(other)),
+    }
+}
+
 pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
     let mut r = Reader { bytes };
     let message = match r.u8()? {
@@ -186,7 +214,9 @@ impl<'a> Reader<'a> {
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
-        Ok(self.take(N)?.try_into().expect("took N bytes"))
+        let (head, rest) = self.bytes.split_first_chunk().ok_or(DecodeError::Short)?;
+        self.bytes = rest;
+        Ok(*head)
     }
 
     fn u8(&mut self) -> Result<u8, DecodeError> {
@@ -546,6 +576,31 @@ mod tests {
             .0;
         invalid.push(0xff);
         assert_eq!(decode(&invalid), Err(DecodeError::Utf8));
+    }
+
+    #[test]
+    fn reads_copy_messages() {
+        let xlog = Bytes::default().tag(b'w').u64(1).u64(2).i64(3).tag(b'B');
+        assert_eq!(copy_message(&xlog.0), Ok(CopyMessage::XLogData(b"B")));
+        for (reply, asks) in [(0, false), (1, true)] {
+            let keepalive = Bytes::default().tag(b'k').u64(7).i64(3).tag(reply);
+            assert_eq!(
+                copy_message(&keepalive.0),
+                Ok(CopyMessage::Keepalive {
+                    end: 7,
+                    reply: asks
+                })
+            );
+        }
+        let cases = [
+            (Bytes::default(), DecodeError::Short),
+            (Bytes::default().tag(b'w').u64(1), DecodeError::Short),
+            (Bytes::default().tag(b'k').u64(7).i64(3), DecodeError::Short),
+            (Bytes::default().tag(b'x'), DecodeError::Tag(b'x')),
+        ];
+        for (bytes, err) in cases {
+            assert_eq!(copy_message(&bytes.0), Err(err), "{:?}", bytes.0);
+        }
     }
 
     #[test]

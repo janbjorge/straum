@@ -41,6 +41,12 @@ pub enum Error {
     Stopped,
 }
 
+impl Error {
+    pub(crate) fn protocol(what: &str) -> Error {
+        Error::Protocol(what.to_owned())
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         Error::Io(e)

@@ -4,6 +4,8 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use postgres_protocol::password::scram_sha_256;
 use straum_domain::Spec;
 
+use crate::catalog::escaped;
+
 /// Turns on logical decoding, creates `role` with the replication
 /// attribute, lets it read the spec's tables, and publishes every one of
 /// them as `publication`. Each gets `REPLICA IDENTITY FULL`, so an update
@@ -15,8 +17,7 @@ use straum_domain::Spec;
 /// itself. Without one, the SQL says how to set it.
 pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) -> String {
     let id = |s: &str| escape_identifier(s);
-    let qualified =
-        |t: &straum_domain::Table| format!("{}.{}", id(t.schema.as_str()), id(t.name.as_str()));
+    let qualified = |t: &straum_domain::Table| escaped(&t.schema, &t.name);
     let tables = spec.tables();
     let schemas = once(tables.iter().map(|t| id(t.schema.as_str())));
     let list = tables

@@ -20,10 +20,9 @@ pub(crate) type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 /// file `root_cert`, else Mozilla's, built in.
 pub(crate) fn start(
     mut tcp: TcpStream,
-    host: &str,
+    name: &ServerName<'static>,
     root_cert: Option<&str>,
 ) -> Result<TlsStream, Error> {
-    let name = ServerName::try_from(host.to_owned()).expect("Dsn::parse checks the host");
     let config = config(root_cert)?;
     let mut request = BytesMut::new();
     frontend::ssl_request(&mut request);
@@ -45,7 +44,7 @@ pub(crate) fn start(
             )));
         }
     }
-    let mut conn = ClientConnection::new(config, name).expect("the config is complete");
+    let mut conn = ClientConnection::new(config, name.clone()).expect("the config is complete");
     while conn.is_handshaking() {
         conn.complete_io(&mut tcp)
             .map_err(|e| Error::Tls(e.to_string()))?;

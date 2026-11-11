@@ -11,21 +11,21 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_app::{AnswerError, App, Limits, Lsn, Source, Step, Writer};
+use straum_app::{AnswerError, App, Limits, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, Spec, Store,
     TimeKey, Value, decimal,
 };
 use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::SyncRunner;
-use testcontainers::{Container, GenericImage, ImageExt};
+use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 
 use crate::catalog::{self, Table, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::load::{self, Columns};
-use crate::source::{Pg, read_wal};
+use crate::load;
+use crate::source::{Pg, parse_lsn, read_wal};
 use crate::stream::Stream;
 use crate::value::read;
 use crate::wire::Conn;
@@ -112,6 +112,10 @@ const READY: &str = "database system is ready to accept connections";
 const END: i64 = 4_102_444_800;
 /// 2024-01-15, where test rows start.
 const START: i64 = 1_705_276_800;
+/// From 5 hours before `START` to 29 after: the day bucket `START` begins
+/// and the hours at either end.
+const WINDOW_FROM: i64 = START - 5 * 3_600;
+const WINDOW_TO: i64 = START + 29 * 3_600;
 
 /// The spec the taxi-shaped tests follow. `$S` is the test's schema.
 const SPEC: &str = "
@@ -280,21 +284,15 @@ fn tag() -> String {
 }
 
 fn postgres() -> Postgres {
-    plain(
-        GenericImage::new("postgres", tag().as_str()),
-        FLAGS.map(str::to_owned),
-    )
+    plain(image(&tag()).with_cmd(FLAGS))
 }
 
 fn postgres_at_replica(tag: &str) -> Postgres {
-    plain(
-        GenericImage::new("postgres", tag),
-        ["-c", "wal_level=replica"].map(str::to_owned),
-    )
+    plain(image(tag).with_cmd(["-c", "wal_level=replica"]))
 }
 
-fn plain<const N: usize>(image: GenericImage, cmd: [String; N]) -> Postgres {
-    let (container, port) = start(image, cmd);
+fn plain(request: ContainerRequest<GenericImage>) -> Postgres {
+    let (container, port) = start(request);
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     Postgres {
         _container: container,
@@ -315,8 +313,7 @@ fn postgres_tls() -> Postgres {
         c2,
         timeout,
     ];
-    let image = GenericImage::new("postgres", tag().as_str()).with_entrypoint("sh");
-    let (container, port) = start(image, cmd);
+    let (container, port) = start(image(&tag()).with_entrypoint("sh").with_cmd(cmd));
     let mut cat = container
         .exec(ExecCommand::new(["cat", "/tmp/ca.pem"]))
         .unwrap();
@@ -332,17 +329,21 @@ fn postgres_tls() -> Postgres {
     }
 }
 
-/// Runs `image` with `cmd` and waits until PostgreSQL takes connections;
-/// returns the container and its port on the host.
-fn start<const N: usize>(image: GenericImage, cmd: [String; N]) -> (Container<GenericImage>, u16) {
-    let container = image
+/// The postgres image at `tag`, ready once PostgreSQL takes connections.
+fn image(tag: &str) -> GenericImage {
+    GenericImage::new("postgres", tag)
         .with_exposed_port(5432.tcp())
         // The init server says it on stdout, the real one on stderr.
         .with_wait_for(WaitFor::message_on_stdout(READY))
         .with_wait_for(WaitFor::message_on_stderr(READY))
+}
+
+/// Runs `request` and waits until PostgreSQL takes connections; returns
+/// the container and its port on the host.
+fn start(request: ContainerRequest<GenericImage>) -> (Container<GenericImage>, u16) {
+    let container = request
         .with_env_var("POSTGRES_PASSWORD", PASSWORD)
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
-        .with_cmd(cmd)
         .start()
         .expect("Docker runs postgres");
     // Docker may publish the port a moment after the container starts.
@@ -511,7 +512,6 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
         ask: ask("logins", &["logins"], &["bucket", "zone_id", "toll"]),
         scales: vec![0, 0, 1, 0],
     };
-    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
@@ -519,12 +519,12 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Oracle> {
                     count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
                     count(*) FILTER (WHERE f.zone_id IN (1, 2))
                FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
-              WHERE f.at >= to_timestamp({from}) AND f.at < to_timestamp({to})
+              WHERE f.at >= to_timestamp({WINDOW_FROM}) AND f.at < to_timestamp({WINDOW_TO})
               GROUP BY 1, 2, 3"
         ),
         ask: Ask {
-            from,
-            to,
+            from: WINDOW_FROM,
+            to: WINDOW_TO,
             ..ask("trips", &MEASURES, &["kind", "zone_id", "borough"])
         },
         scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
@@ -568,7 +568,6 @@ fn task_oracles() -> Vec<Oracle> {
         ),
         scales: vec![0; 10],
     };
-    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks), max(f.picks),
@@ -578,13 +577,13 @@ fn task_oracles() -> Vec<Oracle> {
                LEFT JOIN $S.taskgroups g
                       ON g.organization_id = f.organization_id
                      AND g.taskgroup_id = f.taskgroup_id
-              WHERE f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
-                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+              WHERE f.created >= to_timestamp({WINDOW_FROM}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({WINDOW_TO}) AT TIME ZONE 'UTC'
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from,
-            to,
+            from: WINDOW_FROM,
+            to: WINDOW_TO,
             ..ask("tasks", &MEASURES, &["organization_id", "category"])
         },
         scales: vec![0; 7],
@@ -595,13 +594,13 @@ fn task_oracles() -> Vec<Oracle> {
             "SELECT f.organization_id, count(*), sum(f.picks)
                FROM $S.tasks f
               WHERE f.completed IS NULL
-                AND f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
-                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+                AND f.created >= to_timestamp({WINDOW_FROM}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({WINDOW_TO}) AT TIME ZONE 'UTC'
               GROUP BY 1"
         ),
         ask: Ask {
-            from,
-            to,
+            from: WINDOW_FROM,
+            to: WINDOW_TO,
             filter: vec![Cond {
                 key: id("done"),
                 values: vec![Literal::Bool(false)],
@@ -633,7 +632,6 @@ fn picks_oracles() -> Vec<Oracle> {
         ),
         scales: vec![0; 7],
     };
-    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
             "SELECT f.organization_id, g.category, count(*), sum(f.picks),
@@ -642,13 +640,13 @@ fn picks_oracles() -> Vec<Oracle> {
                LEFT JOIN $S.taskgroups g
                       ON g.organization_id = f.organization_id
                      AND g.taskgroup_id = f.taskgroup_id
-              WHERE f.created >= to_timestamp({from}) AT TIME ZONE 'UTC'
-                AND f.created < to_timestamp({to}) AT TIME ZONE 'UTC'
+              WHERE f.created >= to_timestamp({WINDOW_FROM}) AT TIME ZONE 'UTC'
+                AND f.created < to_timestamp({WINDOW_TO}) AT TIME ZONE 'UTC'
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from,
-            to,
+            from: WINDOW_FROM,
+            to: WINDOW_TO,
             ..ask("picks", &MEASURES, &["organization_id", "category"])
         },
         scales: vec![0; 5],
@@ -1033,7 +1031,7 @@ fn a_transaction_past_the_cap_starts_over() {
     // position now, and the failure is what /status shows.
     let named = err.split(' ').nth(1).unwrap();
     assert!(
-        parse(named) <= parse(&lsn),
+        parse_lsn(named).unwrap() <= parse_lsn(&lsn).unwrap(),
         "transaction {named} is past the server at {lsn}"
     );
     assert_eq!(writer.app().status().error.as_deref(), Some(err.as_str()));
@@ -1042,11 +1040,6 @@ fn a_transaction_past_the_cap_starts_over() {
     db.run(&rng.trip(300));
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
-
-    fn parse(lsn: &str) -> u64 {
-        let (high, low) = lsn.split_once('/').unwrap();
-        u64::from_str_radix(high, 16).unwrap() << 32 | u64::from_str_radix(low, 16).unwrap()
-    }
 }
 
 /// The same tables under two views: a dim change is a change to the dim's
@@ -1231,7 +1224,6 @@ fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
         ),
         scales: vec![0; 6],
     };
-    let (from, to) = (START - 5 * 3_600, START + 29 * 3_600);
     let window = Oracle {
         sql: format!(
             "SELECT c.country, t.label, count(*), sum(o.qty), max(o.qty), round(avg(o.qty), 6),
@@ -1243,12 +1235,12 @@ fn shop_oracles() -> (Vec<Oracle>, Vec<Oracle>) {
                 AND NOT EXISTS (SELECT 1 FROM $S.blocked b WHERE b.id = o.customer_id)
                 AND o.status IN ('paid', 'shipped')
                 AND c.country IN ('NO', 'SE', 'DK')
-                AND o.at >= to_timestamp({from}) AND o.at < to_timestamp({to})
+                AND o.at >= to_timestamp({WINDOW_FROM}) AND o.at < to_timestamp({WINDOW_TO})
               GROUP BY 1, 2"
         ),
         ask: Ask {
-            from,
-            to,
+            from: WINDOW_FROM,
+            to: WINDOW_TO,
             ..ask("paid", &PAID, &["country", "label"])
         },
         scales: vec![0; 8],
@@ -1853,16 +1845,23 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
-/// Opens with `spec` against `tables` and returns the setup problems.
-fn problems(pg: &Postgres, name: &str, tables: &str, spec: &str) -> Vec<String> {
-    let db = Db::new(pg, name, tables);
-    match db.pg().open(&db.spec(spec)) {
+/// The setup problems an open stopped at; none when it opened.
+fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
+    match opened {
         Ok(_) => Vec::new(),
         Err(e) => match e.downcast::<Error>().map(|e| *e) {
             Ok(Error::Setup(problems)) => problems,
             other => panic!("{name}: {other:?}"),
         },
     }
+}
+
+/// Opens `spec` against `tables` and checks the setup problems found;
+/// `None` expects none.
+fn expect_problems(pg: &Postgres, name: &str, tables: &str, spec: &str, expected: Option<&str>) {
+    let db = Db::new(pg, name, tables);
+    let found = setup_problems(name, db.pg().open(&db.spec(spec)));
+    assert_eq!(found, Vec::from_iter(expected), "{name}");
 }
 
 #[test]
@@ -1883,13 +1882,13 @@ fn setup_problems_say_what_to_fix() {
     };
     let publish = "CREATE PUBLICATION $S FOR TABLE $S.f;";
     let (table, spec) = fact("x int", "count(*) AS n, sum(t.x) AS total");
-    let cases: Vec<(&str, String, String, &str)> = vec![
-        ("ok", format!("{table} {publish}"), spec.clone(), ""),
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
+        ("ok", format!("{table} {publish}"), spec.clone(), None),
         (
             "nopub",
             table.clone(),
             spec.clone(),
-            "publication nopub does not exist; run the SQL straum plan prints",
+            Some("publication nopub does not exist; run the SQL straum plan prints"),
         ),
         (
             "notrunc",
@@ -1897,19 +1896,21 @@ fn setup_problems_say_what_to_fix() {
                 "{table} CREATE PUBLICATION $S FOR TABLE $S.f WITH (publish = 'insert, update, delete');"
             ),
             spec.clone(),
-            "publication notrunc must publish insert, update, delete and truncate",
+            Some("publication notrunc must publish insert, update, delete and truncate"),
         ),
         (
             "missing",
             "CREATE PUBLICATION $S;".into(),
             spec.clone(),
-            "f: table missing.f does not exist",
+            Some("f: table missing.f does not exist"),
         ),
         (
             "unpub",
             format!("{table} CREATE TABLE $S.g (); CREATE PUBLICATION $S FOR TABLE $S.g;"),
             spec.clone(),
-            "f: publication unpub leaves out unpub.f: ALTER PUBLICATION unpub ADD TABLE unpub.f",
+            Some(
+                "f: publication unpub leaves out unpub.f: ALTER PUBLICATION unpub ADD TABLE unpub.f",
+            ),
         ),
         (
             "partitioned",
@@ -1917,25 +1918,25 @@ fn setup_problems_say_what_to_fix() {
              CREATE PUBLICATION $S FOR TABLE $S.f;"
                 .into(),
             spec.clone(),
-            "f: partitioned.f is not a plain table",
+            Some("f: partitioned.f is not a plain table"),
         ),
         (
             "filtered",
             format!("{table} CREATE PUBLICATION $S FOR TABLE $S.f WHERE (x > 0);"),
             spec.clone(),
-            "f: publication filtered filters the rows of filtered.f; straum needs every row",
+            Some("f: publication filtered filters the rows of filtered.f; straum needs every row"),
         ),
         (
             "listed",
             format!("{table} CREATE PUBLICATION $S FOR TABLE $S.f (id, at);"),
             spec.clone(),
-            "f: publication listed leaves out column x of listed.f",
+            Some("f: publication listed leaves out column x of listed.f"),
         ),
         (
             "nocolumn",
             format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz); {publish}"),
             spec.clone(),
-            "f: nocolumn.f has no column x",
+            Some("f: nocolumn.f has no column x"),
         ),
         (
             "nokey",
@@ -1943,37 +1944,45 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.f (at timestamptz, x int); ALTER TABLE $S.f REPLICA IDENTITY FULL; {publish}"
             ),
             spec.clone(),
-            "",
+            None,
         ),
         (
             "float",
             format!("{} {publish}", fact("x float8", "").0),
             spec.clone(),
-            "f: column x of float.f is double precision; \
+            Some(
+                "f: column x of float.f is double precision; \
              straum needs an integer type or numeric(p, s) with p at most 18 there",
+            ),
         ),
         (
             "naive",
             format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamp, x int); {publish}"),
             spec.clone(),
-            "f: column at of naive.f is timestamp without time zone; the date_bin origin \
+            Some(
+                "f: column at of naive.f is timestamp without time zone; the date_bin origin \
              timestamptz 'epoch' needs a timestamptz there; for a timestamp column, \
              write timestamp 'epoch'",
+            ),
         ),
         (
             "zoned",
             format!("{table} {publish}"),
             spec.replace("timestamptz 'epoch'", "timestamp 'epoch'"),
-            "f: column at of zoned.f is timestamp with time zone; the date_bin origin \
+            Some(
+                "f: column at of zoned.f is timestamp with time zone; the date_bin origin \
              timestamp 'epoch' needs a timestamp there; for a timestamptz column, \
              write timestamptz 'epoch'",
+            ),
         ),
         (
             "notime",
             format!("{} {publish}", fact("x int, k timestamptz", "").0),
             spec.replace("t.at", "t.x"),
-            "f: column x of notime.f is integer; the date_bin origin timestamptz 'epoch' \
+            Some(
+                "f: column x of notime.f is integer; the date_bin origin timestamptz 'epoch' \
              needs a timestamptz there; for a timestamp column, write timestamp 'epoch'",
+            ),
         ),
         (
             "timekey",
@@ -1981,8 +1990,10 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "f: column k of timekey.f is timestamp with time zone; \
+            Some(
+                "f: column k of timekey.f is timestamp with time zone; \
              straum needs an integer type, numeric(p, s), boolean or text there",
+            ),
         ),
         (
             "naivekey",
@@ -1990,15 +2001,19 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "f: column k of naivekey.f is timestamp without time zone; \
+            Some(
+                "f: column k of naivekey.f is timestamp without time zone; \
              straum needs an integer type, numeric(p, s), boolean or text there",
+            ),
         ),
         (
             "identity",
             format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, x int); {publish}"),
             spec.clone(),
-            "fact f: straum needs the whole old row of every update and delete: \
+            Some(
+                "fact f: straum needs the whole old row of every update and delete: \
              ALTER TABLE identity.f REPLICA IDENTITY FULL",
+            ),
         ),
         (
             "filter",
@@ -2006,7 +2021,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "fact f: measure n compares k (text) with 1",
+            Some("fact f: measure n compares k (text) with 1"),
         ),
         (
             "filtertext",
@@ -2014,7 +2029,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 'a') AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "fact f: measure n compares k (an integer) with 'a'",
+            Some("fact f: measure n compares k (an integer) with 'a'"),
         ),
         (
             "filterbool",
@@ -2022,7 +2037,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = true) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "fact f: measure n compares k (text) with true",
+            Some("fact f: measure n compares k (text) with true"),
         ),
         (
             "filterscale",
@@ -2030,7 +2045,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "fact f: measure n compares k (a numeric of scale 2) with 1",
+            Some("fact f: measure n compares k (a numeric of scale 2) with 1"),
         ),
         (
             "filterwhole",
@@ -2038,7 +2053,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "",
+            None,
         ),
         (
             "nullkeyok",
@@ -2049,13 +2064,11 @@ fn setup_problems_say_what_to_fix() {
             )
             .1
             .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            "",
+            None,
         ),
     ];
     for (name, tables, spec, expected) in cases {
-        let found = problems(&pg, name, &tables, &spec);
-        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
-        assert_eq!(found, expected, "{name}");
+        expect_problems(&pg, name, &tables, &spec, expected);
     }
 
     let dim_spec = "
@@ -2078,37 +2091,43 @@ fn setup_problems_say_what_to_fix() {
         (
             "dimok",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int"),
-            "",
+            None,
         ),
         (
             "dimunpublished",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(", $S.d;", ";"),
-            "d: publication dimunpublished leaves out dimunpublished.d: \
+            Some(
+                "d: publication dimunpublished leaves out dimunpublished.d: \
              ALTER PUBLICATION dimunpublished ADD TABLE dimunpublished.d",
+            ),
         ),
         (
             "dimidentity",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("ALTER TABLE $S.d REPLICA IDENTITY FULL;", ""),
-            "dim d: straum needs the whole old row of every update and delete: \
+            Some(
+                "dim d: straum needs the whole old row of every update and delete: \
              ALTER TABLE dimidentity.d REPLICA IDENTITY FULL",
+            ),
         ),
         (
             "dimfiltered",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("$S.f, $S.d;", "$S.f, $S.d WHERE (k > 0);"),
-            "d: publication dimfiltered filters the rows of dimfiltered.d; straum needs every row",
+            Some(
+                "d: publication dimfiltered filters the rows of dimfiltered.d; straum needs every row",
+            ),
         ),
         (
             "dimlisted",
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("$S.f, $S.d;", "$S.f, $S.d (k);"),
-            "d: publication dimlisted leaves out column name of dimlisted.d",
+            Some("d: publication dimlisted leaves out column name of dimlisted.d"),
         ),
         (
             "dimunique",
             dim("CREATE TABLE $S.d (k int UNIQUE, name text);", "int"),
-            "",
+            None,
         ),
         (
             "dimpk",
@@ -2116,7 +2135,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (s serial PRIMARY KEY, k int, name text);",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "dimnounique",
@@ -2124,45 +2143,35 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (k int, name text); ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "dimtype",
             dim("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
-            "fact f: ref d joins d_id (an integer) to k (text); they must read alike",
-        ),
-        (
-            "dimnoselect",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(
-                "CREATE PUBLICATION",
-                "CREATE ROLE $S LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO $S; \
-                     GRANT SELECT ON $S.f TO $S; CREATE PUBLICATION",
-            ),
-            "d: straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d",
+            Some("fact f: ref d joins d_id (an integer) to k (text); they must read alike"),
         ),
     ];
     for (name, tables, expected) in cases {
-        let found = if name == "dimnoselect" {
-            // As the role that may read the fact but not the dim.
-            let db = Db::new(&pg, name, &tables);
-            let dsn = pg
-                .dsn
-                .to_string()
-                .replace("postgres@", &format!("{name}:r@"));
-            let mut source = Pg::new(Dsn::parse(&dsn).unwrap(), name, MAX_ROWS);
-            match source.open(&db.spec(dim_spec)) {
-                Ok(_) => Vec::new(),
-                Err(e) => match e.downcast::<Error>().map(|e| *e) {
-                    Ok(Error::Setup(problems)) => problems,
-                    other => panic!("{name}: {other:?}"),
-                },
-            }
-        } else {
-            problems(&pg, name, &tables, dim_spec)
-        };
-        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
-        assert_eq!(found, expected, "{name}");
+        expect_problems(&pg, name, &tables, dim_spec, expected);
     }
+    // As the role that may read the fact but not the dim.
+    let name = "dimnoselect";
+    let tables = dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(
+        "CREATE PUBLICATION",
+        "CREATE ROLE $S LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO $S; \
+             GRANT SELECT ON $S.f TO $S; CREATE PUBLICATION",
+    );
+    let db = Db::new(&pg, name, &tables);
+    let dsn = pg
+        .dsn
+        .to_string()
+        .replace("postgres@", &format!("{name}:r@"));
+    let mut source = Pg::new(Dsn::parse(&dsn).unwrap(), name, MAX_ROWS);
+    assert_eq!(
+        setup_problems(name, source.open(&db.spec(dim_spec))),
+        ["d: straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
+        "{name}"
+    );
 
     // A dim keyed by two columns, with or without a key of its own.
     let pair_spec = "
@@ -2187,7 +2196,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (x, y));",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "pairorder",
@@ -2195,7 +2204,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (y, x));",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "pairfull",
@@ -2204,7 +2213,7 @@ fn setup_problems_say_what_to_fix() {
                  ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "pairsuper",
@@ -2213,7 +2222,7 @@ fn setup_problems_say_what_to_fix() {
                  ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "pairpk",
@@ -2221,7 +2230,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int PRIMARY KEY, y int, name text);",
                 "int",
             ),
-            "",
+            None,
         ),
         (
             "pairtype",
@@ -2229,13 +2238,11 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int, y text, name text, PRIMARY KEY (x, y));",
                 "int",
             ),
-            "fact f: ref d joins b (an integer) to y (text); they must read alike",
+            Some("fact f: ref d joins b (an integer) to y (text); they must read alike"),
         ),
     ];
     for (name, tables, expected) in cases {
-        let found = problems(&pg, name, &tables, pair_spec);
-        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
-        assert_eq!(found, expected, "{name}");
+        expect_problems(&pg, name, &tables, pair_spec, expected);
     }
 
     // A chain joins a dim's column to the next dim's key, and a semi join's
@@ -2263,23 +2270,23 @@ fn setup_problems_say_what_to_fix() {
         )
     };
     let cases = [
-        ("chainok", chain("int", "$S.f, $S.d, $S.e, $S.s"), ""),
+        ("chainok", chain("int", "$S.f, $S.d, $S.e, $S.s"), None),
         (
             "chaintype",
             chain("text", "$S.f, $S.d, $S.e, $S.s"),
-            "fact f: ref e joins d.e_id (an integer) to k (text); they must read alike",
+            Some("fact f: ref e joins d.e_id (an integer) to k (text); they must read alike"),
         ),
         (
             "semiunpublished",
             chain("int", "$S.f, $S.d, $S.e"),
-            "s: publication semiunpublished leaves out semiunpublished.s: \
+            Some(
+                "s: publication semiunpublished leaves out semiunpublished.s: \
              ALTER PUBLICATION semiunpublished ADD TABLE semiunpublished.s",
+            ),
         ),
     ];
     for (name, tables, expected) in cases {
-        let found = problems(&pg, name, &tables, chain_spec);
-        let expected: Vec<&str> = [expected].into_iter().filter(|e| !e.is_empty()).collect();
-        assert_eq!(found, expected, "{name}");
+        expect_problems(&pg, name, &tables, chain_spec, expected);
     }
 }
 
@@ -2323,25 +2330,26 @@ fn binary_copies_read_as_text_does() {
     )
     .unwrap();
     let columns = "a, b, c, d, e, f, g, h, i, j, k, l";
-    let mut texts = Vec::new();
-    conn.query(&format!("SELECT {columns} FROM every"), |fields| {
-        let row = types.iter().zip(fields).map(|(column_type, field)| {
-            field.map_or(Ok(Datum::Null), |text| {
-                read(*column_type, text).map_err(Error::Value)
-            })
-        });
-        texts.push(row.collect::<Result<Vec<_>, _>>()?);
-        Ok(())
-    })
-    .unwrap();
+    let rows = conn.rows(&format!("SELECT {columns} FROM every")).unwrap();
+    let texts: Vec<Vec<Datum>> = (rows.iter())
+        .map(|fields| {
+            let row = types.iter().zip(fields).map(|(column_type, field)| {
+                field
+                    .as_deref()
+                    .map_or(Ok(Datum::Null), |text| read(*column_type, text))
+            });
+            row.collect::<Result<Vec<_>, _>>().unwrap()
+        })
+        .collect();
     let mut binaries = Vec::new();
-    let sql = format!("COPY (SELECT {columns} FROM every) TO STDOUT (FORMAT binary)");
-    let every = Columns {
-        table: "public.every".into(),
-        names: columns.split(", ").map(id).collect(),
+    let every = Table {
+        name: id("every"),
+        schema: id("public"),
+        table: id("every"),
+        columns: columns.split(", ").map(id).collect(),
         types: types.to_vec(),
     };
-    crate::load::copy(&mut conn, &sql, &every, |batch| {
+    load::copy(&mut conn, &every, |batch| {
         binaries.extend(batch.chunks(types.len()).map(<[Datum]>::to_vec));
         Ok(())
     })
@@ -2662,7 +2670,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
     reply.extend(after);
     let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
     let mut rows = Vec::new();
-    crate::load::copy(&mut conn, "COPY", &two_ints(), |batch| {
+    load::copy(&mut conn, &two_ints(), |batch| {
         rows.extend(batch.chunks(2).map(<[Datum]>::to_vec));
         Ok(())
     })?;
@@ -2670,10 +2678,12 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
 }
 
 /// Two `int4` columns, `a` and `b` of `t`, as a stand-in copy sends.
-fn two_ints() -> Columns {
-    Columns {
-        table: "public.t".into(),
-        names: vec![id("a"), id("b")],
+fn two_ints() -> Table {
+    Table {
+        name: id("t"),
+        schema: id("public"),
+        table: id("t"),
+        columns: vec![id("a"), id("b")],
         types: vec![ColumnType::Int; 2],
     }
 }
@@ -2714,7 +2724,7 @@ fn reads_binary_copies() {
 
 #[test]
 fn copies_hand_over_bounded_batches() {
-    let count = 2 * crate::load::BATCH + 7;
+    let count = 2 * load::BATCH + 7;
     let mut sent = vec![copy_header(b"")];
     sent.extend((0..count).map(|i| copy_tuple(&[Some(i32::try_from(i).unwrap()), None])));
     sent.push(COPY_END.to_vec());
@@ -2726,7 +2736,7 @@ fn copies_hand_over_bounded_batches() {
     let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
     let mut batches = Vec::new();
     let mut next = 0;
-    crate::load::copy(&mut conn, "COPY", &two_ints(), |batch| {
+    load::copy(&mut conn, &two_ints(), |batch| {
         batches.push(batch.len() / 2);
         for row in batch.chunks(2) {
             assert_eq!(row, [Datum::Int(next), Datum::Null]);
@@ -2735,13 +2745,13 @@ fn copies_hand_over_bounded_batches() {
         Ok(())
     })
     .unwrap();
-    let full = crate::load::BATCH;
+    let full = load::BATCH;
     assert_eq!(batches, [full, full, 7]);
 
     // A failed batch stops the copy, and its error is the one returned.
     let mut conn = connect(vec![now(signed_in()), now(reply)], false).unwrap();
     let mut calls = 0;
-    let err = crate::load::copy(&mut conn, "COPY", &two_ints(), |_| {
+    let err = load::copy(&mut conn, &two_ints(), |_| {
         calls += 1;
         Err(Error::Protocol("a row Straum refused".into()))
     })
@@ -3029,28 +3039,15 @@ fn taxi_month() {
         .expect("bench/data, from bench/bench.py");
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
-    let container = GenericImage::new("postgres", "18")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stdout(READY))
-        .with_wait_for(WaitFor::message_on_stderr(READY))
-        .with_env_var("POSTGRES_PASSWORD", PASSWORD)
-        .with_mount(
-            Mount::bind_mount(data.to_str().unwrap(), "/data")
-                .with_access_mode(AccessMode::ReadOnly),
-        )
-        .with_shm_size(1 << 30)
-        .with_cmd(["-c", "wal_level=logical"])
-        .start()
-        .expect("Docker runs postgres:18");
-    let port = (0..50)
-        .find_map(|_| {
-            let port = container.get_host_port_ipv4(5432).ok();
-            if port.is_none() {
-                thread::sleep(Duration::from_millis(100));
-            }
-            port
-        })
-        .unwrap();
+    let (_container, port) = start(
+        image("18")
+            .with_mount(
+                Mount::bind_mount(data.to_str().unwrap(), "/data")
+                    .with_access_mode(AccessMode::ReadOnly),
+            )
+            .with_shm_size(1 << 30)
+            .with_cmd(["-c", "wal_level=logical"]),
+    );
     let dsn = Dsn::parse(&format!(
         "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable"
     ))

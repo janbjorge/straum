@@ -2,8 +2,8 @@
 //! can read and follow? Read from the catalog on the connection that loads,
 //! so it sees the tables as the load does.
 
-use postgres_protocol::escape::escape_literal;
-use straum_domain::{By, ColumnType, Dim, Fact, Ident, Key, Literal, Origin, Spec, Via};
+use postgres_protocol::escape::{escape_identifier, escape_literal};
+use straum_domain::{By, ColumnType, Fact, Ident, Key, Literal, Origin, Spec, Via};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -31,6 +31,15 @@ impl Table {
     pub(crate) fn qualified(&self) -> String {
         format!("{}.{}", self.schema, self.table)
     }
+}
+
+/// `"schema"."table"`, quoted for SQL.
+pub(crate) fn escaped(schema: &Ident, table: &Ident) -> String {
+    format!(
+        "{}.{}",
+        escape_identifier(schema.as_str()),
+        escape_identifier(table.as_str())
+    )
 }
 
 /// The spec's tables as checked, facts and dims, each loaded whole and
@@ -245,46 +254,6 @@ impl Role {
     }
 }
 
-/// A table of the spec. Both kinds are loaded whole and followed through
-/// the publication; a dim's key must name one row.
-#[derive(Debug, Clone, Copy)]
-enum Member<'s> {
-    Dim(&'s Dim),
-    Fact(&'s Fact),
-}
-
-impl<'s> Member<'s> {
-    fn name(self) -> &'s Ident {
-        match self {
-            Member::Dim(dim) => &dim.name,
-            Member::Fact(fact) => &fact.name,
-        }
-    }
-
-    fn kind(self) -> &'static str {
-        match self {
-            Member::Dim(_) => "dim",
-            Member::Fact(_) => "fact",
-        }
-    }
-
-    fn table(self) -> &'s straum_domain::Table {
-        match self {
-            Member::Dim(dim) => &dim.table,
-            Member::Fact(fact) => &fact.table,
-        }
-    }
-
-    /// Every column the member reads, with what it is for; a column may
-    /// come twice. A dim's key columns come first.
-    fn roles(self) -> Vec<(&'s Ident, Role)> {
-        match self {
-            Member::Dim(dim) => dim.columns().map(|c| (c, Role::Key)).collect(),
-            Member::Fact(fact) => fact_roles(fact),
-        }
-    }
-}
-
 /// Checks the catalog against the spec and returns every problem found,
 /// each with what to change. On success, the tables ready to read.
 pub(crate) fn check(
@@ -320,12 +289,31 @@ pub(crate) fn check(
         facts: Vec::new(),
         dims: Vec::new(),
     };
+    // Both kinds are loaded whole and followed through the publication.
     for dim in spec.dims() {
-        let checked = check_table(Member::Dim(dim), catalog, publication, &mut problems);
+        // The key columns come first.
+        let roles = dim.columns().map(|c| (c, Role::Key)).collect();
+        let checked = check_table(
+            &dim.name,
+            "dim",
+            &dim.table,
+            roles,
+            catalog,
+            publication,
+            &mut problems,
+        );
         tables.dims.extend(checked);
     }
     for fact in spec.facts() {
-        let checked = check_table(Member::Fact(fact), catalog, publication, &mut problems);
+        let checked = check_table(
+            &fact.name,
+            "fact",
+            &fact.table,
+            fact_roles(fact),
+            catalog,
+            publication,
+            &mut problems,
+        );
         tables.facts.extend(checked);
     }
     if problems.is_empty() {
@@ -361,14 +349,17 @@ fn fact_roles(fact: &Fact) -> Vec<(&Ident, Role)> {
     roles
 }
 
-/// The checks every table gets, then those its kind of member owes.
+/// The checks every table gets. `roles` holds every column the table's
+/// member reads, with what it is for; a column may come twice.
 fn check_table(
-    member: Member<'_>,
+    name: &Ident,
+    kind: &str,
+    table: &straum_domain::Table,
+    roles: Vec<(&Ident, Role)>,
     catalog: &Catalog,
     publication: &str,
     problems: &mut Vec<String>,
 ) -> Option<Table> {
-    let (name, table) = (member.name(), member.table());
     let qualified = format!("{}.{}", table.schema, table.name);
     let Some(relation) = catalog
         .relations
@@ -413,7 +404,7 @@ fn check_table(
     };
     let mut columns: Vec<Ident> = Vec::new();
     let mut types = Vec::new();
-    for (name_of, role) in member.roles() {
+    for (name_of, role) in roles {
         let found = column(name_of).and_then(|c| {
             if published.is_some_and(|p| !p.contains(&c.name)) {
                 return Err(format!(
@@ -442,22 +433,19 @@ fn check_table(
     if problems.len() > before {
         return None;
     }
-    let table = Table {
+    if relation.identity != "f" {
+        problems.push(format!(
+            "{kind} {name}: straum needs the whole old row of every update and delete: \
+             ALTER TABLE {qualified} REPLICA IDENTITY FULL"
+        ));
+    }
+    Some(Table {
         name: name.clone(),
         schema: table.schema.clone(),
         table: table.name.clone(),
         columns,
         types,
-    };
-    if relation.identity != "f" {
-        problems.push(format!(
-            "{} {name}: straum needs the whole old row of every update and delete: \
-             ALTER TABLE {} REPLICA IDENTITY FULL",
-            member.kind(),
-            table.qualified()
-        ));
-    }
-    Some(table)
+    })
 }
 
 /// Refs join fact columns to dim keys of the same type, and filters compare

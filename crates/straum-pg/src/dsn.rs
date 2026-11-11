@@ -23,9 +23,12 @@ pub(crate) enum Tls {
     /// Plain TCP.
     Off,
     /// TLS, with a certificate that chains to a root straum trusts and names
-    /// the host: the roots in the PEM file `root_cert`, else the roots
-    /// built in.
-    Verify { root_cert: Option<String> },
+    /// the host, as `name`: the roots in the PEM file `root_cert`, else the
+    /// roots built in.
+    Verify {
+        name: ServerName<'static>,
+        root_cert: Option<String>,
+    },
 }
 
 impl Dsn {
@@ -85,10 +88,10 @@ impl Dsn {
         let tls = match (plain, root_cert) {
             (true, Some(_)) => return Err(DsnError::RootCert),
             (true, None) => Tls::Off,
-            (false, _) if ServerName::try_from(host).is_err() => {
-                return Err(DsnError::TlsHost(host.to_owned()));
-            }
-            (false, root_cert) => Tls::Verify { root_cert },
+            (false, root_cert) => match ServerName::try_from(host.to_owned()) {
+                Ok(name) => Tls::Verify { name, root_cert },
+                Err(_) => return Err(DsnError::TlsHost(host.to_owned())),
+            },
         };
         let database = match decode(database)? {
             d if d.is_empty() => user.clone(),
@@ -133,9 +136,12 @@ impl fmt::Display for Dsn {
         )?;
         match &self.tls {
             Tls::Off => f.write_str("?sslmode=disable"),
-            Tls::Verify { root_cert: None } => f.write_str("?sslmode=verify-full"),
+            Tls::Verify {
+                root_cert: None, ..
+            } => f.write_str("?sslmode=verify-full"),
             Tls::Verify {
                 root_cert: Some(file),
+                ..
             } => write!(f, "?sslmode=verify-full&sslrootcert={file}"),
         }
     }
@@ -218,7 +224,13 @@ mod tests {
             dsn.to_string(),
             "postgres://ann@localhost:5432/ann?sslmode=verify-full"
         );
-        assert_eq!(dsn.tls, Tls::Verify { root_cert: None });
+        assert_eq!(
+            dsn.tls,
+            Tls::Verify {
+                name: ServerName::try_from("localhost").unwrap(),
+                root_cert: None
+            }
+        );
         assert_eq!(
             (dsn.port, dsn.password, dsn.database),
             (5432, None, "ann".to_owned())
@@ -228,6 +240,7 @@ mod tests {
     #[test]
     fn every_mode_but_disable_verifies() {
         let verify = |root_cert: Option<&str>| Tls::Verify {
+            name: ServerName::try_from("h").unwrap(),
             root_cert: root_cert.map(str::to_owned),
         };
         let cases = [

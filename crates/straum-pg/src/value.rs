@@ -129,7 +129,8 @@ fn int(bytes: &[u8]) -> Option<i64> {
     match *bytes {
         [a, b] => Some(i16::from_be_bytes([a, b]).into()),
         [a, b, c, d] => Some(i32::from_be_bytes([a, b, c, d]).into()),
-        _ => Some(i64::from_be_bytes(bytes.try_into().ok()?)),
+        [a, b, c, d, e, f, g, h] => Some(i64::from_be_bytes([a, b, c, d, e, f, g, h])),
+        _ => None,
     }
 }
 
@@ -256,8 +257,15 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 pub struct ValueError {
     column_type: ColumnType,
     text: String,
-    /// The table and column, once the reader that knows them adds them.
-    place: Option<(String, Ident)>,
+    /// Set by the reader that knows it.
+    place: Option<Place>,
+}
+
+/// Where a value was: its table, as `schema.table`, and its column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Place {
+    table: String,
+    column: Ident,
 }
 
 impl ValueError {
@@ -281,7 +289,10 @@ impl ValueError {
 
     /// Names where the value came from, so a poison row can be found.
     pub(crate) fn at(mut self, table: &str, column: &Ident) -> ValueError {
-        self.place = Some((table.to_owned(), column.clone()));
+        self.place = Some(Place {
+            table: table.to_owned(),
+            column: column.clone(),
+        });
         self
     }
 }
@@ -289,7 +300,7 @@ impl ValueError {
 impl fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "can't read {:?} as {}", self.text, self.column_type)?;
-        if let Some((table, column)) = &self.place {
+        if let Some(Place { table, column }) = &self.place {
             write!(f, " in column {column} of {table}")?;
         }
         Ok(())
