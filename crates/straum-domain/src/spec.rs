@@ -433,23 +433,20 @@ fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
 fn check_by<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mut Vec<SpecError>) {
     let name = &fact.name;
     for by in &fact.by {
-        match by {
-            By::Column { column, .. } if *column == fact.time.column => {
-                errors.push(SpecError::TimeAsKey {
+        if *by.column() == fact.time.column {
+            errors.push(match by {
+                By::Column { column, .. } => SpecError::TimeAsKey {
                     fact: name.clone(),
                     column: column.clone(),
-                });
-            }
-            By::IsNull {
-                column, name: key, ..
-            } if *column == fact.time.column => {
-                errors.push(SpecError::NullTime {
+                },
+                By::IsNull {
+                    column, name: key, ..
+                } => SpecError::NullTime {
                     fact: name.clone(),
                     name: key.clone(),
                     column: column.clone(),
-                });
-            }
-            By::Column { .. } | By::IsNull { .. } => {}
+                },
+            });
         }
         if !keys.insert(by.name()) {
             errors.push(SpecError::Duplicate {
