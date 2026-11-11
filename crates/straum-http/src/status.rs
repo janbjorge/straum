@@ -9,7 +9,6 @@ use straum_app::{Failure, Status, mib};
 /// Labels and values line up after this many characters.
 const LABEL: usize = 14;
 
-/// Why straum isn't ready, or `None` when it is.
 pub(crate) fn why_not(status: &Status) -> Option<String> {
     if status.ready {
         return None;

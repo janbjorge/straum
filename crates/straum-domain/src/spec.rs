@@ -67,14 +67,12 @@ pub enum By {
 }
 
 impl By {
-    /// What asks call it.
     pub fn name(&self) -> &Ident {
         match self {
             By::Column { name, .. } | By::IsNull { name, .. } => name,
         }
     }
 
-    /// The fact column it reads.
     pub(crate) fn column(&self) -> &Ident {
         match self {
             By::Column { column, .. } | By::IsNull { column, .. } => column,
@@ -341,12 +339,10 @@ impl Spec {
         }
     }
 
-    /// In declaration order.
     pub fn dims(&self) -> &[Dim] {
         &self.dims
     }
 
-    /// In declaration order.
     pub fn facts(&self) -> &[Fact] {
         &self.facts
     }

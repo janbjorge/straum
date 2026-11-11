@@ -18,11 +18,9 @@ use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
 use crate::spill::{SpillError, Spilling};
 
-/// Panic message for a poisoned lock. The store may be half updated, so
-/// nothing reads it again.
+/// The store may be half updated, so nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
 
-/// Panic message for a commit applied before the stream started.
 const STARTED: &str = "the writer applies commits only to a started stream";
 
 /// How often the writer reads the server's WAL while it waits for commits.
@@ -83,7 +81,6 @@ pub struct Writer<S> {
     measured: Instant,
 }
 
-/// What [`Writer::step`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     /// Loaded every table from a new stream that starts here.

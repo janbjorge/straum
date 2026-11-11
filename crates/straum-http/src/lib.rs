@@ -41,14 +41,12 @@ use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Literal};
 use tokio::net::TcpListener;
 
-/// The LSN an answer reflects.
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
 /// Where an answer's time went in straum, so a client can tell it from the
 /// network's.
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
-/// The largest ask body straum reads.
 const MAX_ASK: usize = 1 << 20;
 
 /// How long to wait before accepting again after an accept fails, as when
@@ -170,7 +168,6 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
     }
 }
 
-/// An answer written as JSON, with how long answering and writing took.
 struct Timed {
     lsn: Lsn,
     json: Vec<u8>,

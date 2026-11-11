@@ -23,9 +23,7 @@ type Loaded<'t> = FastMap<(i64, i64), &'t Cells>;
 #[derive(Debug)]
 pub struct Store {
     spec: Spec,
-    /// One per fact, in spec order.
     rollups: Vec<Rollup>,
-    /// One per dim, in spec order.
     projections: Vec<Projection>,
 }
 

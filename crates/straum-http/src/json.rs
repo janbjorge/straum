@@ -97,7 +97,6 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 }
 
-/// Appends `s` as a JSON string.
 pub(crate) fn string(out: &mut Vec<u8>, s: &str) {
     serde_json::to_writer(out, s).expect("a Vec takes every write");
 }
