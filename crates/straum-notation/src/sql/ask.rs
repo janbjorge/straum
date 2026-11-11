@@ -53,10 +53,34 @@ struct Params<'a> {
     used: Vec<bool>,
 }
 
-/// Which end of the range a `bucket` comparison sets.
 enum End {
     From,
     To,
+}
+
+impl End {
+    fn spelling(&self) -> &'static str {
+        match self {
+            End::From => ">=",
+            End::To => "<",
+        }
+    }
+}
+
+/// A bucket bound as the ask writes it; `Bad` is one already reported.
+enum Bound {
+    Missing,
+    Bad,
+    At { seconds: i64 },
+}
+
+impl Bound {
+    fn seconds(&self) -> Option<i64> {
+        match self {
+            Bound::At { seconds } => Some(*seconds),
+            Bound::Missing | Bound::Bad => None,
+        }
+    }
 }
 
 impl Walker {
@@ -65,35 +89,14 @@ impl Walker {
         let at = self.select_clauses(select);
 
         let fact = match select.from.as_slice() {
-            [
-                sql::TableWithJoins {
-                    relation:
-                        sql::TableFactor::Table {
-                            name,
-                            alias: None,
-                            args: None,
-                            with_hints,
-                            version: None,
-                            with_ordinality: false,
-                            partitions,
-                            json_path: None,
-                            sample: None,
-                            index_hints,
-                        },
-                    joins,
-                },
-            ] if joins.is_empty()
-                && with_hints.is_empty()
-                && partitions.is_empty()
-                && index_hints.is_empty() =>
-            {
-                self.name(name, 1, "view").map(|mut n| n.remove(0))
+            [sql::TableWithJoins { relation, joins }] => {
+                for join in joins {
+                    self.reject(line(join), "join in an ask, read FROM one view,", join);
+                }
+                self.ask_view(relation)
             }
             _ => {
-                self.error(
-                    at,
-                    "an ask reads FROM one view by name, with no alias or join".into(),
-                );
+                self.error(at, "an ask reads FROM one view".into());
                 None
             }
         };
@@ -139,6 +142,18 @@ impl Walker {
             from: from?,
             to: to?,
         })
+    }
+
+    fn ask_view(&mut self, relation: &sql::TableFactor) -> Option<Ident> {
+        let (name, alias) = self.table_factor(relation)?;
+        if let Some(alias) = alias {
+            self.reject(
+                line(relation),
+                "alias in an ask, read FROM the view by name,",
+                alias,
+            );
+        }
+        self.bare_name(name, "view")
     }
 
     fn ask_group_by(&mut self, at: u64, group_by: &sql::GroupByExpr) -> Vec<AskKey> {
@@ -192,19 +207,22 @@ impl Walker {
             and_parts(expr, &mut parts);
         }
         let mut conds = Vec::new();
-        // Outer `None`: not given. Inner `None`: given, and already an error.
-        let (mut from, mut to): (Option<Option<i64>>, Option<Option<i64>>) = (None, None);
+        let (mut from, mut to) = (Bound::Missing, Bound::Missing);
         for part in parts {
             if let Some((end, value)) = bucket_bound(part) {
-                let (slot, op) = match end {
-                    End::From => (&mut from, ">="),
-                    End::To => (&mut to, "<"),
+                let bound = match end {
+                    End::From => &mut from,
+                    End::To => &mut to,
                 };
-                if slot.is_some() {
+                if !matches!(bound, Bound::Missing) {
+                    let op = end.spelling();
                     self.error(line(part), format!("bucket {op} given twice"));
                     continue;
                 }
-                *slot = Some(self.instant(value, params));
+                *bound = match self.instant(value, params) {
+                    Some(seconds) => Bound::At { seconds },
+                    None => Bound::Bad,
+                };
                 continue;
             }
             self.conds(
@@ -223,15 +241,16 @@ impl Walker {
                 },
             );
         }
-        for (bound, op) in [(&from, ">="), (&to, "<")] {
-            if bound.is_none() {
+        for (end, bound) in [(End::From, &from), (End::To, &to)] {
+            if matches!(bound, Bound::Missing) {
+                let op = end.spelling();
                 self.error(
                     at,
                     format!("an ask writes both bounds; bucket {op} $n is missing"),
                 );
             }
         }
-        (conds, from.flatten(), to.flatten())
+        (conds, from.seconds(), to.seconds())
     }
 
     fn ask_name(&mut self, expr: &sql::Expr) -> Option<Ident> {

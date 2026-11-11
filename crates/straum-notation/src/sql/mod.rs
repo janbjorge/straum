@@ -12,14 +12,14 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Cond, Dim, Fact, Ident, Literal};
+use straum_domain::{Cond, Ident, Literal, Table};
 
 mod ask;
 mod view;
 
 pub(crate) use ask::parse_ask;
+pub(crate) use view::parse;
 
-/// Longest SQL text quoted in an error.
 const QUOTE_LEN: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,30 +38,12 @@ fn statements(src: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
     })
 }
 
-pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
-    let statements = statements(src)?;
-    let mut walker = Walker::default();
-    for statement in &statements {
-        match statement {
-            sql::Statement::CreateView(view) => walker.view(view),
-            other => walker.reject(line(other), "statement", other),
-        }
-    }
-    if walker.errors.is_empty() {
-        Ok((walker.dims, walker.facts))
-    } else {
-        Err(walker.errors)
-    }
-}
-
 fn line(node: &impl Spanned) -> u64 {
     node.span().start.line
 }
 
 #[derive(Default)]
 struct Walker {
-    dims: Vec<Dim>,
-    facts: Vec<Fact>,
     errors: Vec<SqlError>,
 }
 
@@ -99,7 +81,7 @@ impl Walker {
                 Some(exprs)
             }
             sql::GroupByExpr::All(_) => {
-                self.absent(at, true, "GROUP BY ALL");
+                self.not_in_subset(at, "GROUP BY ALL");
                 None
             }
         }
@@ -132,30 +114,76 @@ impl Walker {
         ident
     }
 
-    fn name(&mut self, name: &sql::ObjectName, parts: usize, what: &str) -> Option<Vec<Ident>> {
-        let sql::ObjectName(list) = name;
-        if list.len() != parts {
-            let shape = if parts == 1 {
-                "a bare name"
-            } else {
-                "schema.table"
-            };
-            self.error(line(name), format!("{what} {name} must be {shape}"));
+    fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Option<Ident> {
+        let sql::ObjectName(parts) = name;
+        let [part] = parts.as_slice() else {
+            self.error(line(name), format!("{what} {name} must be a bare name"));
             return None;
-        }
-        let mut idents = Vec::new();
-        for part in list {
-            match part {
-                sql::ObjectNamePart::Identifier(id) => idents.push(self.ident(id)?),
-                other => self.reject(line(name), "name part", other),
+        };
+        self.name_part(name, part)
+    }
+
+    fn schema_table(&mut self, name: &sql::ObjectName) -> Option<Table> {
+        let sql::ObjectName(parts) = name;
+        let [schema, table] = parts.as_slice() else {
+            self.error(line(name), format!("table {name} must be schema.table"));
+            return None;
+        };
+        let schema = self.name_part(name, schema)?;
+        let table = self.name_part(name, table)?;
+        Some(Table {
+            schema,
+            name: table,
+        })
+    }
+
+    fn name_part(&mut self, name: &sql::ObjectName, part: &sql::ObjectNamePart) -> Option<Ident> {
+        match part {
+            sql::ObjectNamePart::Identifier(id) => self.ident(id),
+            other => {
+                self.reject(line(name), "name part", other);
+                None
             }
         }
-        (idents.len() == parts).then_some(idents)
+    }
+
+    /// A table by name, after rejecting every other part of a table
+    /// reference by name; what the alias may be is the caller's.
+    fn table_factor<'a>(
+        &mut self,
+        factor: &'a sql::TableFactor,
+    ) -> Option<(&'a sql::ObjectName, Option<&'a sql::TableAlias>)> {
+        let sql::TableFactor::Table {
+            name,
+            alias,
+            args,
+            with_hints,
+            version,
+            with_ordinality,
+            partitions,
+            json_path,
+            sample,
+            index_hints,
+        } = factor
+        else {
+            self.reject(line(factor), "table", factor);
+            return None;
+        };
+        let at = line(factor);
+        self.absent(at, args.is_some(), "a table function");
+        self.absent(at, !with_hints.is_empty(), "a table hint");
+        self.absent(at, version.is_some(), "a table version");
+        self.absent(at, *with_ordinality, "WITH ORDINALITY");
+        self.absent(at, !partitions.is_empty(), "PARTITION");
+        self.absent(at, json_path.is_some(), "a JSON path");
+        self.absent(at, sample.is_some(), "TABLESAMPLE");
+        self.absent(at, !index_hints.is_empty(), "an index hint");
+        Some((name, alias.as_ref()))
     }
 
     /// The arguments of a plain call `name(args)`, or `None` after rejecting
     /// anything else about the call.
-    fn call<'a>(&mut self, f: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
+    fn call<'a>(&mut self, function: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
         let sql::Function {
             name: _,
             uses_odbc_syntax,
@@ -165,8 +193,8 @@ impl Walker {
             filter: _,
             null_treatment,
             over,
-        } = f;
-        let at = line(f);
+        } = function;
+        let at = line(function);
         self.absent(at, *uses_odbc_syntax, "ODBC call syntax");
         self.absent(
             at,
@@ -182,7 +210,7 @@ impl Walker {
             clauses,
         }) = args
         else {
-            self.reject(at, "function call", f);
+            self.reject(at, "function call", function);
             return None;
         };
         self.absent(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
@@ -190,7 +218,7 @@ impl Walker {
             None => false,
             Some(sql::DuplicateTreatment::Distinct) => true,
             Some(sql::DuplicateTreatment::All) => {
-                self.absent(at, true, "ALL inside a call");
+                self.not_in_subset(at, "ALL inside a call");
                 false
             }
         };
@@ -200,13 +228,13 @@ impl Walker {
     /// The one plain expression argument of a call.
     fn single<'a>(
         &mut self,
-        f: &'a sql::Function,
+        function: &'a sql::Function,
         args: &'a [sql::FunctionArg],
     ) -> Option<&'a sql::Expr> {
         match args {
-            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(e))] => Some(e),
+            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => Some(expr),
             _ => {
-                self.reject(line(f), "arguments", f);
+                self.reject(line(function), "arguments", function);
                 None
             }
         }
@@ -280,9 +308,9 @@ impl Walker {
         self.absent(at, !optimizer_hints.is_empty(), "an optimizer hint");
         match distinct {
             None => {}
-            Some(sql::Distinct::All) => self.absent(at, true, "SELECT ALL"),
+            Some(sql::Distinct::All) => self.not_in_subset(at, "SELECT ALL"),
             Some(sql::Distinct::Distinct | sql::Distinct::On(_)) => {
-                self.absent(at, true, "SELECT DISTINCT");
+                self.not_in_subset(at, "SELECT DISTINCT");
             }
         }
         self.absent(at, select_modifiers.is_some(), "a SELECT modifier");
@@ -302,7 +330,7 @@ impl Walker {
         match flavor {
             sql::SelectFlavor::Standard => {}
             sql::SelectFlavor::FromFirst | sql::SelectFlavor::FromFirstNoSelect => {
-                self.absent(at, true, "FROM before SELECT");
+                self.not_in_subset(at, "FROM before SELECT");
             }
         }
         at
@@ -319,52 +347,48 @@ impl Walker {
         value: &mut impl FnMut(&mut Self, &sql::Expr) -> Option<Literal>,
         null_test: &mut impl FnMut(&mut Self, &sql::Expr, &sql::Expr, bool) -> Option<Cond>,
     ) {
-        match expr {
-            sql::Expr::Nested(inner) => self.conds(inner, conds, path, value, null_test),
-            sql::Expr::BinaryOp {
-                left,
-                op: sql::BinaryOperator::And,
-                right,
-            } => {
-                self.conds(left, conds, path, value, null_test);
-                self.conds(right, conds, path, value, null_test);
-            }
-            sql::Expr::IsNull(column) => conds.extend(null_test(self, expr, column, true)),
-            sql::Expr::IsNotNull(column) => conds.extend(null_test(self, expr, column, false)),
-            sql::Expr::BinaryOp {
-                left,
-                op: sql::BinaryOperator::Eq,
-                right,
-            } => {
-                let key = path(self, left);
-                let literal = value(self, right);
-                if let (Some(key), Some(literal)) = (key, literal) {
-                    conds.push(Cond {
-                        key,
-                        values: vec![literal],
-                    });
+        let mut parts = Vec::new();
+        and_parts(expr, &mut parts);
+        for part in parts {
+            match part {
+                sql::Expr::IsNull(column) => conds.extend(null_test(self, part, column, true)),
+                sql::Expr::IsNotNull(column) => conds.extend(null_test(self, part, column, false)),
+                sql::Expr::BinaryOp {
+                    left,
+                    op: sql::BinaryOperator::Eq,
+                    right,
+                } => {
+                    let key = path(self, left);
+                    let literal = value(self, right);
+                    if let (Some(key), Some(literal)) = (key, literal) {
+                        conds.push(Cond {
+                            key,
+                            values: vec![literal],
+                        });
+                    }
                 }
-            }
-            sql::Expr::InList {
-                expr: inner,
-                list,
-                negated: false,
-            } => {
-                if list.len() < 2 {
-                    self.reject(line(expr), "IN with one value, write =,", expr);
-                    return;
+                sql::Expr::InList {
+                    expr: inner,
+                    list,
+                    negated: false,
+                } => {
+                    if list.len() < 2 {
+                        self.reject(line(part), "IN with one value, write =,", part);
+                        continue;
+                    }
+                    let key = path(self, inner);
+                    let values: Vec<Literal> =
+                        list.iter().filter_map(|item| value(self, item)).collect();
+                    if let Some(key) = key.filter(|_| values.len() == list.len()) {
+                        conds.push(Cond { key, values });
+                    }
                 }
-                let key = path(self, inner);
-                let values: Vec<Literal> = list.iter().filter_map(|v| value(self, v)).collect();
-                if let Some(key) = key.filter(|_| values.len() == list.len()) {
-                    conds.push(Cond { key, values });
-                }
+                other => self.reject(
+                    line(other),
+                    "filter condition, write = or IN joined by AND,",
+                    other,
+                ),
             }
-            other => self.reject(
-                line(other),
-                "filter condition, write = or IN joined by AND,",
-                other,
-            ),
         }
     }
 
@@ -415,11 +439,9 @@ fn and_parts<'a>(expr: &'a sql::Expr, parts: &mut Vec<&'a sql::Expr>) {
     }
 }
 
-fn function_name(f: &sql::Function) -> Option<String> {
-    match f.name.0.as_slice() {
-        [sql::ObjectNamePart::Identifier(id)] if id.quote_style.is_none() => {
-            Some(id.value.to_lowercase())
-        }
+fn function_name(function: &sql::Function) -> Option<&str> {
+    match function.name.0.as_slice() {
+        [sql::ObjectNamePart::Identifier(id)] if id.quote_style.is_none() => Some(&id.value),
         _ => None,
     }
 }

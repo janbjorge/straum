@@ -1,18 +1,33 @@
+use std::fmt;
+
 use sqlparser::ast as sql;
 use straum_domain::{
     Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Table,
     Time, Via,
 };
 
-use super::{SqlError, Walker, and_parts, function_name, line};
+use super::{SqlError, Walker, and_parts, function_name, line, statements};
 
-/// What a view's `WITH` declares: every bucket width the view keeps, the
-/// `date_bin` width first, or nothing when the `WITH` is missing.
-struct ViewOptions {
-    buckets: Option<Vec<Grain>>,
+pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
+    let statements = statements(src)?;
+    let mut walker = Walker::default();
+    let mut dims = Vec::new();
+    let mut facts = Vec::new();
+    for statement in &statements {
+        match statement {
+            sql::Statement::CreateView(view) => {
+                facts.extend(walker.view(view, &mut dims));
+            }
+            other => walker.reject(line(other), "statement", other),
+        }
+    }
+    if walker.errors.is_empty() {
+        Ok((dims, facts))
+    } else {
+        Err(walker.errors)
+    }
 }
 
-/// What a view's `SELECT` declares.
 struct Body {
     table: Table,
     time: Time,
@@ -38,10 +53,10 @@ struct ScopedKey {
     is_null: Option<bool>,
 }
 
-/// A join: `r.via[i]`, of the fact or of a dim joined before, meets
-/// `key[i]` of the dim.
+/// A join: `reference.via[i]`, of the fact or of a dim joined before,
+/// meets `key[i]` of the dim.
 struct JoinedRef {
-    r: Ref,
+    reference: Ref,
     table: Table,
     key: Vec<Ident>,
 }
@@ -51,20 +66,11 @@ struct JoinedRef {
 #[derive(PartialEq, Eq)]
 enum Column {
     Fact(Ident),
-    Attr(usize, Ident),
-}
-
-/// A `SELECT` item, as the rollup sees it.
-enum Item {
-    Bucket(Time),
-    By(By),
-    /// A dim attribute, by its ref.
-    Attr(usize, Attr),
-    Measure(Measure),
+    Attr { through: usize, column: Ident },
 }
 
 impl Walker {
-    pub(super) fn view(&mut self, view: &sql::CreateView) {
+    fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Option<Fact> {
         let sql::CreateView {
             or_alter,
             or_replace: _,
@@ -100,8 +106,8 @@ impl Walker {
         self.absent(at, to.is_some(), "TO");
         self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
 
-        let fact_name = self.name(name, 1, "view").map(|mut n| n.remove(0));
-        let ViewOptions { buckets } = self.options(at, options);
+        let fact_name = self.bare_name(name, "view");
+        let buckets = self.options(at, options);
         if let (Some(name), None) = (&fact_name, &buckets) {
             self.error(
                 at,
@@ -112,11 +118,14 @@ impl Walker {
             );
         }
         let body = self.query(query);
-        let (Some(name), Some(body)) = (fact_name, body) else {
-            return;
+        // An empty bucket list is always an error already reported.
+        let (Some(name), Some(body), Some([first, wider @ ..])) =
+            (fact_name, body, buckets.as_deref())
+        else {
+            return None;
         };
         if self.errors.len() > before {
-            return;
+            return None;
         }
         let Body {
             table,
@@ -129,55 +138,47 @@ impl Walker {
         // Every width is said once, in the view's `WITH`; the body's `date_bin`
         // must agree with the first, so a reader finds the whole list in one
         // place and the body still runs in PostgreSQL.
-        match buckets.unwrap_or_default().split_first() {
-            Some((first, wider)) if *first == time.grain => time.buckets = wider.to_vec(),
-            Some((first, _)) => {
-                self.error(
-                    at,
-                    format!(
-                        "view {name}: buckets starts with {first} but date_bin is {}: list \
-                         every width, the date_bin width first",
-                        time.grain
-                    ),
-                );
-                return;
-            }
-            None => return,
+        if *first != time.grain {
+            self.error(
+                at,
+                format!(
+                    "view {name}: buckets starts with {first} but date_bin is {}: list \
+                     every width, the date_bin width first",
+                    time.grain
+                ),
+            );
+            return None;
         }
+        time.buckets = wider.to_vec();
         // A dim a later join reads its key from carries that column too.
         let mut carried: Vec<(usize, Ident)> = Vec::new();
-        for j in &refs {
-            for via in &j.r.via {
+        for joined in &refs {
+            for via in &joined.reference.via {
                 if let Via::Attr { through, column } = via {
                     carried.push((*through, column.clone()));
                 }
             }
         }
-        let refs = refs
-            .into_iter()
-            .enumerate()
-            .map(|(i, mut j)| {
-                self.add_dim(at, &mut j);
-                let dim = (self.dims.iter_mut())
-                    .find(|d| d.table == j.table)
-                    .expect("added just now");
+        let mut fact_refs = Vec::new();
+        for (index, mut joined) in refs.into_iter().enumerate() {
+            if let Some(dim) = self.add_dim(at, dims, &mut joined) {
                 for (through, column) in &carried {
-                    if *through == i && !dim.attrs.contains(column) {
+                    if *through == index && !dim.attrs.contains(column) {
                         dim.attrs.push(column.clone());
                     }
                 }
-                j.r
-            })
-            .collect();
-        self.facts.push(Fact {
+            }
+            fact_refs.push(joined.reference);
+        }
+        Some(Fact {
             name,
             table,
             time,
-            refs,
+            refs: fact_refs,
             by,
             measures,
             filter,
-        });
+        })
     }
 
     /// A dim is its table. Every view that joins it must join on the same
@@ -185,56 +186,61 @@ impl Walker {
     /// view reads, a column another join reads its key from included. The
     /// join's via columns are put in the dim's key order, so a ref's via
     /// and its dim's key pair up by position.
-    fn add_dim(&mut self, at: u64, j: &mut JoinedRef) {
-        let Some(dim) = self.dims.iter_mut().find(|d| d.table == j.table) else {
-            self.dims.push(Dim {
-                name: j.r.dim.clone(),
-                table: j.table.clone(),
-                key: j.key.clone(),
-                attrs: j.r.attrs.iter().map(|a| a.column.clone()).collect(),
+    fn add_dim<'d>(
+        &mut self,
+        at: u64,
+        dims: &'d mut Vec<Dim>,
+        joined: &mut JoinedRef,
+    ) -> Option<&'d mut Dim> {
+        let Some(index) = dims.iter().position(|dim| dim.table == joined.table) else {
+            dims.push(Dim {
+                name: joined.reference.dim.clone(),
+                table: joined.table.clone(),
+                key: joined.key.clone(),
+                attrs: (joined.reference.attrs.iter())
+                    .map(|attr| attr.column.clone())
+                    .collect(),
             });
-            return;
+            return dims.last_mut();
         };
-        let same = dim.key.len() == j.key.len() && dim.key.iter().all(|k| j.key.contains(k));
+        let dim = &mut dims[index];
+        let same = dim.key.len() == joined.key.len()
+            && dim.key.iter().all(|column| joined.key.contains(column));
         if !same {
-            let list = |key: &[Ident]| {
-                (key.iter().map(ToString::to_string))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            let msg = format!(
-                "{}.{} is joined on {} here and on {} elsewhere",
-                j.table.schema,
-                j.table.name,
-                list(&j.key),
-                list(&dim.key)
+            self.error(
+                at,
+                format!(
+                    "{}.{} is joined on {} here and on {} elsewhere",
+                    joined.table.schema,
+                    joined.table.name,
+                    comma_list(&joined.key),
+                    comma_list(&dim.key)
+                ),
             );
-            self.errors.push(SqlError { line: at, msg });
-            return;
+            return None;
         }
         let via: Vec<Via> = (dim.key.iter())
-            .map(|k| {
-                let i = j
-                    .key
-                    .iter()
-                    .position(|c| c == k)
+            .map(|column| {
+                let position = (joined.key.iter())
+                    .position(|joined_column| joined_column == column)
                     .expect("the key sets are equal");
-                j.r.via[i].clone()
+                joined.reference.via[position].clone()
             })
             .collect();
-        j.r.via = via;
-        j.key.clone_from(&dim.key);
-        for attr in &j.r.attrs {
+        joined.reference.via = via;
+        joined.key.clone_from(&dim.key);
+        for attr in &joined.reference.attrs {
             if !dim.attrs.contains(&attr.column) {
                 dim.attrs.push(attr.column.clone());
             }
         }
+        Some(dim)
     }
 
     /// `WITH (buckets = '1 hour, 1 day, 7 days')`. The `key` option of
     /// earlier specs is refused by name, since a spec that still has it was
     /// written for a straum that needed it.
-    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> ViewOptions {
+    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Grain>> {
         let mut buckets = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
@@ -276,7 +282,7 @@ impl Walker {
             }
             buckets = Some(value);
         }
-        let buckets = match buckets {
+        match buckets {
             None => None,
             Some(
                 value @ sql::Expr::Value(sql::ValueWithSpan {
@@ -300,8 +306,7 @@ impl Walker {
                 self.reject(line(other), "buckets, use '<n> <unit>, ...',", other);
                 Some(Vec::new())
             }
-        };
-        ViewOptions { buckets }
+        }
     }
 
     fn query(&mut self, query: &sql::Query) -> Option<Body> {
@@ -311,156 +316,68 @@ impl Walker {
 
     fn select(&mut self, select: &sql::Select) -> Option<Body> {
         let at = self.select_clauses(select);
-        let (projection, from, group_by) = (&select.projection, &select.from, &select.group_by);
-
-        let [from] = from.as_slice() else {
+        let [from] = select.from.as_slice() else {
             self.error(
                 at,
                 "SELECT needs exactly one FROM table; join with LEFT OUTER JOIN".into(),
             );
             return None;
         };
-        let (table, mut scope) = self.from(from)?;
-        // Semi and anti joins live in WHERE; the rest of it waits for the
-        // keys, which it names.
-        let mut conditions = Vec::new();
-        if let Some(selection) = &select.selection {
-            and_parts(selection, &mut conditions);
-        }
-        let (subqueries, conditions): (Vec<_>, Vec<_>) =
-            (conditions.into_iter()).partition(|e| matches!(e, sql::Expr::Exists { .. }));
-        for subquery in subqueries {
-            if let Some(j) = self.exists(&scope, subquery) {
-                if j.r.name == scope.alias || scope.refs.iter().any(|o| o.r.name == j.r.name) {
-                    self.error(line(subquery), format!("alias {} used twice", j.r.name));
-                    continue;
-                }
-                scope.refs.push(j);
+        let (table, mut scope, conditions) = self.from(from, select.selection.as_ref())?;
+
+        let mut named = Vec::new();
+        for item in &select.projection {
+            match item {
+                sql::SelectItem::ExprWithAlias { expr, alias } => named.push((expr, alias)),
+                sql::SelectItem::UnnamedExpr(expr) => self.error(
+                    line(item),
+                    format!("name every SELECT item: {expr} AS <name>"),
+                ),
+                other => self.reject(line(other), "SELECT item", other),
             }
         }
-
-        let mut selected = Vec::new();
-        for item in projection {
-            let (expr, alias) = match item {
-                sql::SelectItem::ExprWithAlias { expr, alias } => (expr, alias),
-                sql::SelectItem::UnnamedExpr(expr) => {
-                    self.error(
-                        line(item),
-                        format!("name every SELECT item: {expr} AS <name>"),
-                    );
-                    continue;
-                }
-                other => {
-                    self.reject(line(other), "SELECT item", other);
-                    continue;
-                }
-            };
-            // Decided before walking the item, so a bad key column is
-            // reported once and not again by GROUP BY.
-            let is_key = match expr {
-                sql::Expr::Function(f) => function_name(f).as_deref() == Some("date_bin"),
-                _ => true,
-            };
-            selected.push((is_key, expr, alias));
-        }
-        // The keys' positions in SELECT, which GROUP BY must list.
-        let positions: Vec<usize> = (selected.iter().enumerate())
-            .filter(|(_, (is_key, ..))| *is_key)
-            .map(|(i, _)| i + 1)
-            .collect();
-        // Keys first, then measures, so a FILTER can reach any key.
-        selected.sort_by_key(|&(is_key, ..)| !is_key);
-        let mut items = Vec::new();
-        for (_, expr, alias) in selected {
-            if let Some(it) = self.item(&scope, expr, alias) {
-                match &it {
-                    Item::By(By::Column { column, name }) => scope.keys.push(ScopedKey {
-                        name: name.clone(),
-                        column: Column::Fact(column.clone()),
-                        is_null: None,
-                    }),
-                    Item::By(By::IsNull {
-                        column,
-                        name,
-                        negated,
-                    }) => scope.keys.push(ScopedKey {
-                        name: name.clone(),
-                        column: Column::Fact(column.clone()),
-                        is_null: Some(!negated),
-                    }),
-                    Item::Attr(i, attr) => scope.keys.push(ScopedKey {
-                        name: attr.name.clone(),
-                        column: Column::Attr(*i, attr.column.clone()),
-                        is_null: None,
-                    }),
-                    Item::Bucket(_) | Item::Measure(_) => {}
-                }
-                items.push(it);
-            }
-        }
-        self.group_by(at, group_by, &positions);
-
-        let mut time = None;
-        let mut by: Vec<By> = Vec::new();
-        let mut measures = Vec::new();
+        // Keys first, then measures, so a FILTER can reach any key. A
+        // position comes from the item's shape, not its walk, so a bad key
+        // column is reported once and not again by GROUP BY.
+        let mut positions = Vec::new();
+        let mut buckets = Vec::new();
+        let mut by = Vec::new();
         let mut attrs: Vec<Vec<Attr>> = vec![Vec::new(); scope.refs.len()];
-        for it in items {
-            match it {
-                Item::Bucket(t) => {
-                    if time.replace(t).is_some() {
-                        self.error(at, "SELECT has more than one date_bin bucket".into());
-                    }
+        for (index, &(expr, alias)) in named.iter().enumerate() {
+            match expr {
+                sql::Expr::Function(function) if is_date_bin(function) => {
+                    positions.push(index + 1);
+                    buckets.extend(self.bucket(&scope, function, alias));
                 }
-                Item::By(b) => by.push(b),
-                Item::Attr(i, attr) => attrs[i].push(attr),
-                Item::Measure(m) => measures.push(m),
+                sql::Expr::Function(_) => {}
+                _ => {
+                    positions.push(index + 1);
+                    self.key(&mut scope, expr, alias, &mut by, &mut attrs);
+                }
             }
         }
-        // A ref reads the dim columns the view selects, through the via
-        // columns that key its cells. A join that selects nothing would do
-        // nothing; a semi or anti join selects nothing by nature.
-        for (j, attrs) in scope.refs.iter_mut().zip(attrs) {
-            match j.r.kind {
-                RefKind::Left | RefKind::Inner if attrs.is_empty() => self.error(
-                    at,
-                    format!(
-                        "{} {} selects no column of it; select one or drop the join",
-                        join_name(j.r.kind),
-                        j.r.name
-                    ),
-                ),
-                RefKind::Semi | RefKind::Anti if !attrs.is_empty() => self.error(
-                    at,
-                    format!(
-                        "{} is {} and has no columns to select; select none of it",
-                        j.r.name, j.r.kind
-                    ),
-                ),
-                _ => {}
-            }
-            j.r.attrs = attrs;
-        }
-        // The view's WHERE, on the keys like a FILTER.
-        let mut filter = Vec::new();
-        for condition in conditions {
-            let before = self.errors.len();
-            self.conds(
-                condition,
-                &mut filter,
-                &mut |w, e| w.key_of(&scope, e),
-                &mut |w, e| w.literal(e),
-                &mut |w, test, column, is_null| w.null_cond(&scope, test, column, is_null),
-            );
-            if self.errors.len() > before {
-                return None;
+        let mut measures = Vec::new();
+        for &(expr, alias) in &named {
+            if let sql::Expr::Function(function) = expr
+                && !is_date_bin(function)
+            {
+                measures.extend(self.measure(&scope, function, alias));
             }
         }
+        self.group_by(at, &select.group_by, &positions);
+        let mut buckets = buckets.into_iter();
+        let time = buckets.next();
+        for _ in buckets {
+            self.error(at, "SELECT has more than one date_bin bucket".into());
+        }
+        self.ref_attrs(at, &mut scope.refs, attrs);
+        let filter = self.view_filter(&scope, conditions)?;
         // A FILTER every measure shares is the view's WHERE in disguise; a
         // lone measure shares with nobody.
         if let [first, rest @ ..] = &measures[..]
             && !first.filter.is_empty()
             && !rest.is_empty()
-            && rest.iter().all(|m| m.filter == first.filter)
+            && rest.iter().all(|measure| measure.filter == first.filter)
         {
             self.error(
                 at,
@@ -488,15 +405,127 @@ impl Walker {
         })
     }
 
+    /// A ref reads the dim columns the view selects, through the via
+    /// columns that key its cells. A join that selects nothing would do
+    /// nothing; a semi or anti join selects nothing by nature.
+    fn ref_attrs(&mut self, at: u64, refs: &mut [JoinedRef], attrs: Vec<Vec<Attr>>) {
+        for (joined, attrs) in refs.iter_mut().zip(attrs) {
+            let reference = &mut joined.reference;
+            let selects_none = attrs.is_empty();
+            match reference.kind {
+                RefKind::Left | RefKind::Inner if selects_none => self.error(
+                    at,
+                    format!(
+                        "{} is {} and selects no column of it; select one or drop the join",
+                        reference.name, reference.kind
+                    ),
+                ),
+                RefKind::Semi | RefKind::Anti if !selects_none => self.error(
+                    at,
+                    format!(
+                        "{} is {} and has no columns to select; select none of it",
+                        reference.name, reference.kind
+                    ),
+                ),
+                _ => {}
+            }
+            reference.attrs = attrs;
+        }
+    }
+
+    /// The view's WHERE, on the keys like a FILTER.
+    fn view_filter(&mut self, scope: &Scope, conditions: Vec<&sql::Expr>) -> Option<Vec<Cond>> {
+        let mut filter = Vec::new();
+        for condition in conditions {
+            let before = self.errors.len();
+            self.conds(
+                condition,
+                &mut filter,
+                &mut |w, e| w.key_of(scope, e),
+                &mut |w, e| w.literal(e),
+                &mut |w, test, column, is_null| w.null_cond(scope, test, column, is_null),
+            );
+            if self.errors.len() > before {
+                return None;
+            }
+        }
+        Some(filter)
+    }
+
+    /// A key item: a fact column, its null-ness, or a dim column through its
+    /// ref. Recorded in `scope` too, so a FILTER can reach it.
+    fn key(
+        &mut self,
+        scope: &mut Scope,
+        expr: &sql::Expr,
+        alias: &sql::Ident,
+        by: &mut Vec<By>,
+        attrs: &mut [Vec<Attr>],
+    ) {
+        let name = self.ident(alias);
+        let read = match null_test(expr) {
+            Some((inner, negated)) => (self.fact_column(scope, inner, "the IS NULL column"))
+                .map(|column| (Column::Fact(column), Some(!negated))),
+            None => self.column(scope, expr).map(|column| (column, None)),
+        };
+        let (Some(name), Some((column, is_null))) = (name, read) else {
+            return;
+        };
+        match (&column, is_null) {
+            (Column::Fact(fact_column), None) => by.push(By::Column {
+                column: fact_column.clone(),
+                name: name.clone(),
+            }),
+            (Column::Fact(fact_column), Some(is_null)) => by.push(By::IsNull {
+                column: fact_column.clone(),
+                name: name.clone(),
+                negated: !is_null,
+            }),
+            (
+                Column::Attr {
+                    through,
+                    column: attr_column,
+                },
+                _,
+            ) => attrs[*through].push(Attr {
+                name: name.clone(),
+                column: attr_column.clone(),
+            }),
+        }
+        scope.keys.push(ScopedKey {
+            name,
+            column,
+            is_null,
+        });
+    }
+
+    fn measure(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        alias: &sql::Ident,
+    ) -> Option<Measure> {
+        let name = self.ident(alias);
+        let (agg, filter) = self.aggregate(scope, function)?;
+        Some(Measure {
+            name: name?,
+            agg,
+            filter,
+        })
+    }
+
     /// `EXISTS (SELECT 1 FROM schema.dim AS alias WHERE alias.key =
     /// near.column AND ...)`, or `NOT EXISTS`: a semi or anti join, which
     /// keeps or drops the fact row and reads nothing of the dim.
-    fn exists(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<JoinedRef> {
-        let sql::Expr::Exists { subquery, negated } = expr else {
-            unreachable!("only EXISTS comes here");
-        };
+    fn exists(
+        &mut self,
+        scope: &Scope,
+        expr: &sql::Expr,
+        subquery: &sql::Query,
+        negated: bool,
+    ) -> Option<JoinedRef> {
         let at = line(expr);
-        let kind = if *negated {
+        let kind = if negated {
             RefKind::Anti
         } else {
             RefKind::Semi
@@ -529,9 +558,20 @@ impl Walker {
             self.reject(at, "EXISTS without WHERE alias.key = ...,", expr);
             return None;
         };
+        self.joined(scope, kind, table, alias, on)
+    }
+
+    fn joined(
+        &mut self,
+        scope: &Scope,
+        kind: RefKind,
+        table: Table,
+        alias: Ident,
+        on: &sql::Expr,
+    ) -> Option<JoinedRef> {
         let (key, via) = self.equalities(scope, &alias, on)?;
         Some(JoinedRef {
-            r: Ref {
+            reference: Ref {
                 name: alias,
                 dim: table.name.clone(),
                 kind,
@@ -541,6 +581,15 @@ impl Walker {
             table,
             key,
         })
+    }
+
+    fn push_ref(&mut self, scope: &mut Scope, at: u64, joined: JoinedRef) {
+        let name = &joined.reference.name;
+        if *name == scope.alias || (scope.refs.iter()).any(|other| other.reference.name == *name) {
+            self.error(at, format!("alias {name} used twice"));
+            return;
+        }
+        scope.refs.push(joined);
     }
 
     /// The key equalities of a join: `alias.key = near.column` joined by
@@ -590,22 +639,28 @@ impl Walker {
         if alias == scope.alias {
             return Some(Via::Fact(column));
         }
-        let through = scope.refs.iter().position(|j| j.r.name == alias)?;
-        let j = &scope.refs[through];
-        match j.r.kind {
+        let through = (scope.refs.iter()).position(|joined| joined.reference.name == alias)?;
+        let joined = &scope.refs[through];
+        match joined.reference.kind {
             RefKind::Left | RefKind::Inner => {}
             RefKind::Semi | RefKind::Anti => return None,
         }
         // A key column of that dim is the column it was joined on.
-        if let Some(k) = j.key.iter().position(|k| *k == column)
-            && let Via::Fact(_) = &j.r.via[k]
+        if let Some(position) = joined.key.iter().position(|key| *key == column)
+            && let Via::Fact(_) = &joined.reference.via[position]
         {
-            return Some(j.r.via[k].clone());
+            return Some(joined.reference.via[position].clone());
         }
         Some(Via::Attr { through, column })
     }
 
-    fn from(&mut self, from: &sql::TableWithJoins) -> Option<(Table, Scope)> {
+    /// The fact, its joins, and the semi and anti joins in WHERE; the rest
+    /// of WHERE waits for the keys, which it names.
+    fn from<'a>(
+        &mut self,
+        from: &sql::TableWithJoins,
+        selection: Option<&'a sql::Expr>,
+    ) -> Option<(Table, Scope, Vec<&'a sql::Expr>)> {
         let sql::TableWithJoins { relation, joins } = from;
         let (table, alias) = self.table(relation)?;
         let mut scope = Scope {
@@ -614,46 +669,34 @@ impl Walker {
             keys: Vec::new(),
         };
         for join in joins {
-            if let Some(j) = self.join(&scope, join) {
-                if j.r.name == scope.alias || scope.refs.iter().any(|o| o.r.name == j.r.name) {
-                    self.error(line(join), format!("alias {} used twice", j.r.name));
-                    continue;
-                }
-                scope.refs.push(j);
+            if let Some(joined) = self.join(&scope, join) {
+                self.push_ref(&mut scope, line(join), joined);
             }
         }
-        Some((table, scope))
+        let mut parts = Vec::new();
+        if let Some(selection) = selection {
+            and_parts(selection, &mut parts);
+        }
+        let mut conditions = Vec::new();
+        for part in parts {
+            match part {
+                sql::Expr::Exists { subquery, negated } => {
+                    if let Some(joined) = self.exists(&scope, part, subquery, *negated) {
+                        self.push_ref(&mut scope, line(part), joined);
+                    }
+                }
+                other => conditions.push(other),
+            }
+        }
+        Some((table, scope, conditions))
     }
 
     /// `schema.table AS alias`, every part written: nothing defaults to
     /// `public` or to the table's name.
     fn table(&mut self, factor: &sql::TableFactor) -> Option<(Table, Ident)> {
-        let sql::TableFactor::Table {
-            name,
-            alias,
-            args,
-            with_hints,
-            version,
-            with_ordinality,
-            partitions,
-            json_path,
-            sample,
-            index_hints,
-        } = factor
-        else {
-            self.reject(line(factor), "table", factor);
-            return None;
-        };
+        let (name, alias) = self.table_factor(factor)?;
         let at = line(factor);
-        self.absent(at, args.is_some(), "a table function");
-        self.absent(at, !with_hints.is_empty(), "a table hint");
-        self.absent(at, version.is_some(), "a table version");
-        self.absent(at, *with_ordinality, "WITH ORDINALITY");
-        self.absent(at, !partitions.is_empty(), "PARTITION");
-        self.absent(at, json_path.is_some(), "a JSON path");
-        self.absent(at, sample.is_some(), "TABLESAMPLE");
-        self.absent(at, !index_hints.is_empty(), "an index hint");
-        let parts = self.name(name, 2, "table");
+        let table = self.schema_table(name);
         let alias = match alias {
             Some(sql::TableAlias {
                 explicit: true,
@@ -676,10 +719,7 @@ impl Walker {
                 None
             }
         };
-        let mut parts = parts?;
-        let name = parts.pop()?;
-        let schema = parts.pop()?;
-        Some((Table { schema, name }, alias?))
+        Some((table?, alias?))
     }
 
     /// `LEFT OUTER JOIN schema.dim AS alias ON alias.key = near.column` or
@@ -718,18 +758,7 @@ impl Walker {
                 return None;
             }
         };
-        let (key, via) = self.equalities(scope, &alias, on)?;
-        Some(JoinedRef {
-            r: Ref {
-                name: alias,
-                dim: table.name.clone(),
-                kind,
-                via,
-                attrs: Vec::new(),
-            },
-            table,
-            key,
-        })
+        self.joined(scope, kind, table, alias, on)
     }
 
     /// `alias.column`, the fact's included: no table is anyone's default.
@@ -754,24 +783,25 @@ impl Walker {
         if alias == scope.alias {
             return Some(Column::Fact(column));
         }
-        let Some(i) = scope.refs.iter().position(|j| j.r.name == alias) else {
+        let Some(through) = (scope.refs.iter()).position(|joined| joined.reference.name == alias)
+        else {
             self.error(line(expr), format!("unknown table alias {alias}"));
             return None;
         };
-        let j = &scope.refs[i];
-        Some(match j.key.iter().position(|k| *k == column) {
-            Some(k) => match &j.r.via[k] {
-                Via::Fact(via) => Column::Fact(via.clone()),
-                Via::Attr { .. } => Column::Attr(i, column),
+        let joined = &scope.refs[through];
+        let position = joined.key.iter().position(|key| *key == column);
+        Some(
+            match position.map(|position| &joined.reference.via[position]) {
+                Some(Via::Fact(via)) => Column::Fact(via.clone()),
+                Some(Via::Attr { .. }) | None => Column::Attr { through, column },
             },
-            None => Column::Attr(i, column),
-        })
+        )
     }
 
     fn fact_column(&mut self, scope: &Scope, expr: &sql::Expr, what: &str) -> Option<Ident> {
         match self.column(scope, expr)? {
-            Column::Fact(c) => Some(c),
-            Column::Attr(..) => {
+            Column::Fact(column) => Some(column),
+            Column::Attr { .. } => {
                 self.error(
                     line(expr),
                     format!("{what} must be a {} column", scope.alias),
@@ -779,48 +809,6 @@ impl Walker {
                 None
             }
         }
-    }
-
-    fn item(&mut self, scope: &Scope, expr: &sql::Expr, alias: &sql::Ident) -> Option<Item> {
-        let name = self.ident(alias);
-        if let sql::Expr::Function(f) = expr {
-            if function_name(f).as_deref() == Some("date_bin") {
-                if alias.value != "bucket" {
-                    self.error(
-                        alias.span.start.line,
-                        format!("the date_bin bucket is named AS bucket, not AS {alias}"),
-                    );
-                }
-                return self.bucket(scope, f).map(Item::Bucket);
-            }
-            let (agg, filter) = self.aggregate(scope, f)?;
-            return Some(Item::Measure(Measure {
-                name: name?,
-                agg,
-                filter,
-            }));
-        }
-        if let Some((inner, negated)) = null_test(expr) {
-            let column = self.fact_column(scope, inner, "the IS NULL column")?;
-            return Some(Item::By(By::IsNull {
-                column,
-                name: name?,
-                negated,
-            }));
-        }
-        Some(match self.column(scope, expr)? {
-            Column::Fact(column) => Item::By(By::Column {
-                column,
-                name: name?,
-            }),
-            Column::Attr(i, column) => Item::Attr(
-                i,
-                Attr {
-                    name: name?,
-                    column,
-                },
-            ),
-        })
     }
 
     /// `FILTER (WHERE alias.column = ...)` reaches the key that reads the
@@ -873,10 +861,23 @@ impl Walker {
     /// `timestamp 'epoch'` for a column without a zone. The origin is fixed
     /// so buckets start on midnight, as straum's do; which type it has, the
     /// catalog checks against the column.
-    fn bucket(&mut self, scope: &Scope, f: &sql::Function) -> Option<Time> {
-        let at = line(f);
-        self.absent(at, f.filter.is_some(), "FILTER on date_bin");
-        let (args, distinct) = self.call(f)?;
+    fn bucket(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        alias: &sql::Ident,
+    ) -> Option<Time> {
+        // Walked for its errors: the name is fixed.
+        self.ident(alias);
+        if alias.value != "bucket" {
+            self.error(
+                alias.span.start.line,
+                format!("the date_bin bucket is named AS bucket, not AS {alias}"),
+            );
+        }
+        let at = line(function);
+        self.absent(at, function.filter.is_some(), "FILTER on date_bin");
+        let (args, distinct) = self.call(function)?;
         self.absent(at, distinct, "DISTINCT on date_bin");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
@@ -884,7 +885,7 @@ impl Walker {
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(origin)),
         ] = args
         else {
-            self.reject(at, "date_bin arguments", f);
+            self.reject(at, "date_bin arguments", function);
             return None;
         };
         let grain = match width {
@@ -931,10 +932,10 @@ impl Walker {
         })
     }
 
-    fn aggregate(&mut self, scope: &Scope, f: &sql::Function) -> Option<(Agg, Vec<Cond>)> {
-        let at = line(f);
-        let name = function_name(f);
-        let (args, distinct) = self.call(f)?;
+    fn aggregate(&mut self, scope: &Scope, function: &sql::Function) -> Option<(Agg, Vec<Cond>)> {
+        let at = line(function);
+        let name = function_name(function).map(str::to_ascii_lowercase);
+        let (args, distinct) = self.call(function)?;
         let agg: fn(Ident) -> Agg = match name.as_deref() {
             Some("count") => {
                 if !distinct {
@@ -942,10 +943,14 @@ impl Walker {
                         args,
                         [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
                     ) {
-                        self.reject(at, "count, use count(*) or count(DISTINCT column),", f);
+                        self.reject(
+                            at,
+                            "count, use count(*) or count(DISTINCT column),",
+                            function,
+                        );
                         return None;
                     }
-                    return Some((Agg::Count, self.filter(scope, f)?));
+                    return Some((Agg::Count, self.filter(scope, function)?));
                 }
                 Agg::CountDistinct
             }
@@ -954,24 +959,24 @@ impl Walker {
             Some("max") => Agg::Max,
             Some("avg") => Agg::Avg,
             _ => {
-                self.reject(at, "aggregate", f);
+                self.reject(at, "aggregate", function);
                 return None;
             }
         };
         if distinct && name.as_deref() != Some("count") {
-            self.reject(at, "DISTINCT outside count", f);
+            self.reject(at, "DISTINCT outside count", function);
             return None;
         }
-        let arg = self.single(f, args)?;
+        let arg = self.single(function, args)?;
         let column = self.fact_column(scope, arg, "an aggregated column")?;
-        Some((agg(column), self.filter(scope, f)?))
+        Some((agg(column), self.filter(scope, function)?))
     }
 
     /// `FILTER (WHERE ...)`: `=`, `IN`, `IS NULL` and `IS NOT NULL` on
     /// columns, joined by AND.
-    fn filter(&mut self, scope: &Scope, f: &sql::Function) -> Option<Vec<Cond>> {
+    fn filter(&mut self, scope: &Scope, function: &sql::Function) -> Option<Vec<Cond>> {
         let mut conds = Vec::new();
-        if let Some(expr) = &f.filter {
+        if let Some(expr) = &function.filter {
             let before = self.errors.len();
             self.conds(
                 expr,
@@ -1014,17 +1019,12 @@ impl Walker {
             grouped.push(position);
         }
         if grouped != positions {
-            let list = |positions: &[usize]| {
-                (positions.iter().map(ToString::to_string))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
             self.error(
                 at,
                 format!(
                     "GROUP BY {} must list the keys' positions in SELECT: GROUP BY {}",
-                    list(&grouped),
-                    list(positions)
+                    comma_list(&grouped),
+                    comma_list(positions)
                 ),
             );
         }
@@ -1042,7 +1042,6 @@ fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
     }
 }
 
-/// `'15 minutes'`: a count and a unit, singular or plural.
 fn grain(s: &str) -> Option<Grain> {
     let [count, unit] = s.split_whitespace().collect::<Vec<_>>()[..] else {
         return None;
@@ -1057,12 +1056,12 @@ fn grain(s: &str) -> Option<Grain> {
     count.parse::<u32>().ok()?.checked_mul(scale).map(Grain)
 }
 
-/// A join kind as its spelling.
-fn join_name(kind: RefKind) -> &'static str {
-    match kind {
-        RefKind::Left => "LEFT OUTER JOIN",
-        RefKind::Inner => "INNER JOIN",
-        RefKind::Semi => "EXISTS",
-        RefKind::Anti => "NOT EXISTS",
-    }
+fn is_date_bin(function: &sql::Function) -> bool {
+    function_name(function).is_some_and(|name| name.eq_ignore_ascii_case("date_bin"))
+}
+
+fn comma_list(items: &[impl fmt::Display]) -> String {
+    (items.iter().map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

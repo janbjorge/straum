@@ -227,22 +227,22 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t JOIN u ON t.a = u.a WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "an ask reads FROM one view by name, with no alias or join",
+            "join in an ask, read FROM one view, `JOIN u ON t.a = u.a` is not in straum SQL",
         ),
         (
             "SELECT trips FROM t x WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "an ask reads FROM one view by name, with no alias or join",
+            "alias in an ask, read FROM the view by name, `x` is not in straum SQL",
         ),
         (
             "SELECT trips FROM t, u WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "an ask reads FROM one view by name, with no alias or join",
+            "an ask reads FROM one view",
         ),
         (
             "SELECT trips WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "an ask reads FROM one view by name, with no alias or join",
+            "an ask reads FROM one view",
         ),
         (
             "SELECT trips FROM public.t WHERE bucket >= $1 AND bucket < $2",

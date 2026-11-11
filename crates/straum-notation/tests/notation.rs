@@ -522,7 +522,7 @@ fn a_ref_on_two_columns_rejected() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
         errors[0].msg,
-        "LEFT OUTER JOIN g selects no column of it; select one or drop the join"
+        "g is a left outer join and selects no column of it; select one or drop the join"
     );
     // Another view joins the dim on another key list: fewer columns, or
     // as many but not the same.
@@ -1325,7 +1325,7 @@ fn select_items_are_named_and_columns_owned() {
             "f.z_id AS z_id, z.name AS name, ",
             "f.z_id AS z_id, ",
             2,
-            "LEFT OUTER JOIN z selects no column of it; select one or drop the join",
+            "z is a left outer join and selects no column of it; select one or drop the join",
         ),
         (
             "count(*) AS n",
@@ -1663,7 +1663,7 @@ GROUP BY 1, 2, 3";
         (
             "z.name AS name,",
             "",
-            "INNER JOIN z selects no column of it; select one or drop the join",
+            "z is an inner join and selects no column of it; select one or drop the join",
         ),
         // The same FILTER on every measure is the view's WHERE.
         (
