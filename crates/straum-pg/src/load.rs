@@ -1,6 +1,6 @@
 //! Loads: a binary `COPY` of the columns the spec reads of each table, dim
-//! or fact, so straum groups or projects a row as it comes. A load must
-//! not cost straum the table's rows in memory.
+//! or fact, so Straum groups or projects a row as it comes. A load must
+//! not cost Straum the table's rows in memory.
 
 use std::sync::mpsc;
 use std::{mem, panic, thread};
@@ -8,7 +8,7 @@ use std::{mem, panic, thread};
 use postgres_protocol::escape::escape_identifier;
 use straum_domain::{Datum, Store};
 
-use crate::catalog::{Table, escaped};
+use crate::catalog::{Checked, escaped};
 use crate::error::Error;
 use crate::value::read_binary;
 use crate::wire::Conn;
@@ -16,8 +16,8 @@ use crate::wire::Conn;
 /// What starts a binary copy, before its flags and header extension.
 const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
 
-/// The columns straum reads of the table, as the catalog checked them.
-pub(crate) fn copy_sql(table: &Table) -> String {
+/// The columns Straum reads of the table, as the catalog checked them.
+pub(crate) fn copy_sql(table: &Checked) -> String {
     let select: Vec<String> = (table.columns.iter())
         .map(|c| escape_identifier(c.as_str()))
         .collect();
@@ -28,7 +28,7 @@ pub(crate) fn copy_sql(table: &Table) -> String {
     )
 }
 
-pub(crate) fn table(conn: &mut Conn, table: &Table, store: &mut Store) -> Result<(), Error> {
+pub(crate) fn table(conn: &mut Conn, table: &Checked, store: &mut Store) -> Result<(), Error> {
     let name = table.name.as_str();
     store.set_types(name, &table.types).map_err(Error::Row)?;
     copy(conn, table, |rows| {
@@ -49,7 +49,7 @@ const IN_FLIGHT: usize = 4;
 /// meanwhile; spent buffers go back to it.
 pub(crate) fn copy(
     conn: &mut Conn,
-    table: &Table,
+    table: &Checked,
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A fact has its time column, a dim its key.
@@ -90,7 +90,7 @@ pub(crate) fn copy(
 fn read(
     conn: &mut Conn,
     sql: &str,
-    table: &Table,
+    table: &Checked,
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let types = &table.types;

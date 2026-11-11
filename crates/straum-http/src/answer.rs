@@ -10,7 +10,7 @@
 //! }
 //! ```
 //!
-//! - `as_of`: every commit made before it, by straum's clock, is in the
+//! - `as_of`: every commit made before it, by Straum's clock, is in the
 //!   answer.
 //! - `rows`: one object per group, keyed by the names the ask selected.
 //! - Time keys are RFC 3339 in UTC; over a `timestamp` column, which has no

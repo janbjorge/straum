@@ -1,4 +1,4 @@
-//! Where and as whom straum connects: a `postgres://` URL, as libpq takes it.
+//! Where and as whom Straum connects: a `postgres://` URL, as libpq takes it.
 
 use std::fmt;
 
@@ -17,12 +17,12 @@ pub struct Dsn {
     pub(crate) tls: Tls,
 }
 
-/// How straum reaches PostgreSQL.
+/// How Straum reaches PostgreSQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Tls {
     /// Plain TCP.
     Off,
-    /// TLS, with a certificate that chains to a root straum trusts and names
+    /// TLS, with a certificate that chains to a root Straum trusts and names
     /// the host, as `name`: the roots in the PEM file `root_cert`, else the
     /// roots built in.
     Verify {
@@ -126,7 +126,7 @@ fn decode(s: &str) -> Result<String, DsnError> {
     String::from_utf8(bytes).map_err(|_| DsnError::Escape)
 }
 
-/// Says what straum does: `require` and `verify-ca` show as `verify-full`.
+/// Says what Straum does: `require` and `verify-ca` show as `verify-full`.
 impl fmt::Display for Dsn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

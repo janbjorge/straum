@@ -143,7 +143,7 @@ timeout or fall back to `as_of`.
 {"errors": ["unknown measure x", "zip is not a key of the view"]}
 {"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
 {"errors": ["unknown field \"tz\""]}
-{"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in straum SQL, the PostgreSQL subset made only for straum"]}
+{"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
 {"errors": ["range end 1767227400 is not on a 3600s bucket edge"]}
 {"errors": ["customer_id is an integer, so it can't be the text \"7\""]}
 ```

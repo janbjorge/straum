@@ -66,9 +66,9 @@ transaction whole, nothing read from PostgreSQL in between:
 A dim change is in the stream like any other. Cells are keyed by the
 join column, so a dim row relabelled, moved, removed or added changes
 no cell: the next ask reads the dim as it is now, as [Writing a
-spec](spec.md#joining-a-lookup-table) describes.
+spec](spec.md#joining-a-dim) describes.
 
-A change Straum can't apply makes it [start over](running.md#states)
+A change that no longer fits makes Straum [start over](running.md#states)
 from a new slot: an update without its old row, a row that doesn't fit
 its cells, a dim row it never held, a value it can't read, a table whose
 columns now read differently, or a transaction above

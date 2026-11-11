@@ -1,5 +1,5 @@
 //! pgoutput protocol version 1, the logical replication messages inside
-//! XLogData. Text tuples only: straum never asks for `binary`.
+//! XLogData. Text tuples only: Straum never asks for `binary`.
 //! <https://www.postgresql.org/docs/18/protocol-logicalrep-message-formats.html>
 
 use std::fmt;
@@ -37,7 +37,7 @@ pub(crate) enum Message<'a> {
     Truncate {
         relations: Vec<u32>,
     },
-    /// Origin, Type and logical decoding messages, which straum doesn't use.
+    /// Origin, Type and logical decoding messages, which Straum doesn't use.
     Other,
 }
 
@@ -287,14 +287,14 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// pgoutput sent bytes straum can't read.
+/// pgoutput sent bytes Straum can't read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
     /// The message ends early.
     Short,
     /// Bytes are left after the message.
     Trailing,
-    /// A message, tuple or field tag straum doesn't know.
+    /// A message, tuple or field tag Straum doesn't know.
     Tag(u8),
     Utf8,
 }

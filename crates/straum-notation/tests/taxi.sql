@@ -1,5 +1,5 @@
 -- NYC TLC yellow trips, loaded with snake_case columns and a bigint id.
--- straum SQL: a PostgreSQL subset made only for straum specs.
+-- Straum SQL: a PostgreSQL subset made only for Straum specs.
 
 CREATE VIEW trips WITH (buckets = '15 minutes, 1 day, 7 days') AS
 SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,

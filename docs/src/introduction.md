@@ -1,7 +1,7 @@
 # Straum
 
 Straum keeps aggregates of PostgreSQL tables in memory and answers
-questions about them over HTTP in microseconds.
+asks about them over HTTP in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once, from

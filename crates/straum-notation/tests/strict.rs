@@ -425,7 +425,7 @@ fn asks_follow_the_same_rule() {
         ),
         (
             "SELECT orders AS n FROM orders WHERE bucket >= $1 AND bucket < $2",
-            "SELECT item `orders AS n` is not in straum SQL",
+            "SELECT item `orders AS n` is not in Straum SQL",
         ),
     ] {
         let errors: Vec<String> = (parse_ask(query, &range).unwrap_err().iter())
@@ -469,7 +469,7 @@ fn enum_columns_are_cast_to_text() {
     let as_text: Vec<&str> = orders.as_text.iter().map(|c| c.as_str()).collect();
     assert_eq!(as_text, ["status", "shipped_at"]);
     let customers = spec.dim("customers").unwrap();
-    assert_eq!(customers.as_text, [customers.attrs[0].clone()]);
+    assert_eq!(customers.as_text, [customers.attributes[0].clone()]);
     assert_eq!(
         orders.measures[2].filter[0],
         straum_domain::Cond {

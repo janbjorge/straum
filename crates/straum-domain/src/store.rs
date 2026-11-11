@@ -7,7 +7,7 @@ use crate::ident::Ident;
 use crate::projection::{NULL, Projection};
 use crate::rollup::{Bucket, Cells, Rollup, RowError};
 use crate::sealed::{Sealed, SealedError, SealedId, Thawed};
-use crate::spec::{Cond, Fact, Grain, Key, Literal, Measure, RefKind, Slot, Spec, Via};
+use crate::spec::{Cond, Fact, Key, KeyPart, Literal, Measure, RefKind, Spec, Via, Width};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
@@ -50,7 +50,7 @@ pub struct AnswerColumn {
     pub name: String,
     /// Numeric values are integers in units of `10^-scale`.
     pub scale: u32,
-    /// A time key, whose values are the second its period starts.
+    /// A time key, whose values are the second its bucket starts.
     pub time: bool,
 }
 
@@ -195,8 +195,8 @@ impl Store {
         (rollup.unseal(id.width, id.start, cells)).map_err(|reason| SealedError { id, reason })
     }
 
-    /// Every key is a slot of the rollup key or a dim value reached
-    /// through the slots of a ref's via columns, so the cell loop only
+    /// Every key is a part of the rollup key or a dim value reached
+    /// through the parts of a ref's via columns, so the cell loop only
     /// looks up what each code maps to, once per code. A view whose joins
     /// are all left and one row a key walks the cells once each; one with
     /// another kind of join, or a key with several rows, walks each cell
@@ -218,7 +218,7 @@ impl Store {
         let mut by: Vec<Part> = (ask.by.iter())
             .map(|key| match key {
                 AskKey::Key(name) => Part::lookup(self.lookup(fact, rollup, name), rollup),
-                AskKey::Time(t) => Part::time(*t, fact.time.grain, buckets),
+                AskKey::Time(t) => Part::time(*t, fact.time.width, buckets),
             })
             .collect();
         let mut groups = Groups::new(&by);
@@ -295,10 +295,12 @@ impl Store {
             .map(|r| {
                 let via = (r.via.iter())
                     .map(|v| match v {
-                        Via::Fact(column) => ViaSource::Slot(slot_of(fact, Slot::Column(column))),
-                        Via::Attr { through, column } => {
+                        Via::Fact(column) => {
+                            ViaSource::KeyPart(key_part_of(fact, KeyPart::Column(column)))
+                        }
+                        Via::Attribute { through, column } => {
                             let parent = self.spec.dim(fact.refs[*through].dim.as_str());
-                            let attr = (parent.expect(CHECKED).attrs.iter())
+                            let attr = (parent.expect(CHECKED).attributes.iter())
                                 .position(|a| a == column)
                                 .expect(CHECKED);
                             ViaSource::Through { r: *through, attr }
@@ -315,22 +317,22 @@ impl Store {
         let once = plans.iter().all(|p| {
             p.kind == RefKind::Left
                 && p.projection.is_unique()
-                && p.via.iter().all(|v| matches!(v, ViaSource::Slot(_)))
+                && p.via.iter().all(|v| matches!(v, ViaSource::KeyPart(_)))
         });
         if once {
             return None;
         }
-        let mut slots = Vec::new();
+        let mut parts = Vec::new();
         for v in plans.iter().flat_map(|p| &p.via) {
-            if let ViaSource::Slot(slot) = v
-                && !slots.contains(slot)
+            if let ViaSource::KeyPart(part) = v
+                && !parts.contains(part)
             {
-                slots.push(*slot);
+                parts.push(*part);
             }
         }
         Some(Expander {
             plans,
-            slots,
+            parts,
             memo: FastMap::default(),
         })
     }
@@ -378,31 +380,31 @@ impl Store {
         Ok(self.rollup(fact.name.as_str()).expect(CHECKED))
     }
 
-    /// Where a key's values come from: a rollup-key slot, or a dim's
+    /// Where a key's values come from: a rollup-key part, or a dim's
     /// projection reached through a ref.
     fn lookup(&self, fact: &Fact, rollup: &Rollup, name: &Ident) -> Lookup<'_> {
         match fact.resolve(name).expect(CHECKED) {
-            Key::By(by) => Lookup::Slot(slot_of(fact, by.slot())),
-            Key::Attr(r, attr) => {
+            Key::By(by) => Lookup::KeyPart(key_part_of(fact, by.key_part())),
+            Key::Attribute(r, attr) => {
                 let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
                 let via: Vec<usize> = (r.via.iter())
                     .filter_map(|v| match v {
-                        Via::Fact(column) => Some(slot_of(fact, Slot::Column(column))),
-                        Via::Attr { .. } => None,
+                        Via::Fact(column) => Some(key_part_of(fact, KeyPart::Column(column))),
+                        Via::Attribute { .. } => None,
                     })
                     .collect();
                 let memo = match via[..] {
-                    [slot] => Memo::Dense(vec![UNKNOWN; rollup.codes(slot)]),
+                    [part] => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
                     _ => Memo::Sparse(FastMap::default()),
                 };
-                Lookup::Attr(AttrLookup {
+                Lookup::Attribute(AttributeLookup {
                     r: fact
                         .refs
                         .iter()
                         .position(|q| q.name == r.name)
                         .expect(CHECKED),
                     attr: dim
-                        .attrs
+                        .attributes
                         .iter()
                         .position(|a| *a == attr.column)
                         .expect(CHECKED),
@@ -543,8 +545,8 @@ fn sealed_ids(fact: &Fact, buckets: impl Iterator<Item = (i64, i64)>) -> Vec<Sea
         .collect()
 }
 
-fn slot_of(fact: &Fact, slot: Slot<'_>) -> usize {
-    fact.rollup_key().position(|k| k == slot).expect(CHECKED)
+fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> usize {
+    fact.rollup_key().position(|k| k == part).expect(CHECKED)
 }
 
 fn buckets<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, i64, &'r Bucket)> {
@@ -577,8 +579,8 @@ type JoinRow<'s> = Vec<Option<&'s [u32]>>;
 /// its join codes.
 struct Expander<'s> {
     plans: Vec<RefPlan<'s>>,
-    /// The rollup-key slots the refs read, each once.
-    slots: Vec<usize>,
+    /// The rollup-key parts the refs read, each once.
+    parts: Vec<usize>,
     memo: FastMap<Box<[u32]>, Vec<JoinRow<'s>>>,
 }
 
@@ -588,16 +590,16 @@ struct RefPlan<'s> {
     via: Vec<ViaSource>,
 }
 
-/// Where a ref's key column comes from: a cell's slot, or an attribute
+/// Where a ref's key column comes from: a cell's part, or an attribute
 /// of a ref before it.
 enum ViaSource {
-    Slot(usize),
+    KeyPart(usize),
     Through { r: usize, attr: usize },
 }
 
 impl<'s> Expander<'s> {
     fn expand(&mut self, rollup: &Rollup, key: &[u32]) -> &[JoinRow<'s>] {
-        let tuple: Box<[u32]> = self.slots.iter().map(|&slot| key[slot]).collect();
+        let tuple: Box<[u32]> = self.parts.iter().map(|&part| key[part]).collect();
         if !self.memo.contains_key(&tuple) {
             let rows = self.resolve(rollup, key);
             self.memo.insert(tuple.clone(), rows);
@@ -617,9 +619,11 @@ impl<'s> Expander<'s> {
                 dim_key.clear();
                 for via in &plan.via {
                     dim_key.push(match *via {
-                        ViaSource::Slot(slot) => rollup.value(slot, key[slot]).clone(),
+                        ViaSource::KeyPart(part) => rollup.value(part, key[part]).clone(),
                         ViaSource::Through { r, attr } => match row[r] {
-                            Some(found) => self.plans[r].projection.attr_value(attr, found[attr]),
+                            Some(found) => {
+                                self.plans[r].projection.attribute_value(attr, found[attr])
+                            }
                             None => &Datum::Null,
                         }
                         .clone(),
@@ -649,18 +653,18 @@ impl<'s> Expander<'s> {
 
 /// Where a key's values come from.
 enum Lookup<'s> {
-    Slot(usize),
-    Attr(AttrLookup<'s>),
+    KeyPart(usize),
+    Attribute(AttributeLookup<'s>),
 }
 
 /// A dim value read through a ref.
-struct AttrLookup<'s> {
+struct AttributeLookup<'s> {
     /// Into [`Fact::refs`].
     r: usize,
     /// Into the dim's attributes.
     attr: usize,
     projection: &'s Projection,
-    /// The rollup-key slots of the ref's fact-side via columns, in the
+    /// The rollup-key parts of the ref's fact-side via columns, in the
     /// dim's key order, for a view that counts each cell once.
     via: Vec<usize>,
     /// The key of one lookup, kept to spare an allocation per lookup.
@@ -680,7 +684,7 @@ enum Memo {
     Sparse(FastMap<Box<[u32]>, u32>),
 }
 
-impl AttrLookup<'_> {
+impl AttributeLookup<'_> {
     /// The attribute's code for the cell with `key`: the one row under the
     /// key, or [`NULL`].
     fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
@@ -688,7 +692,7 @@ impl AttrLookup<'_> {
             Memo::Dense(codes) => &mut codes[key[self.via[0]] as usize],
             Memo::Sparse(map) => {
                 self.tuple.clear();
-                self.tuple.extend(self.via.iter().map(|&slot| key[slot]));
+                self.tuple.extend(self.via.iter().map(|&part| key[part]));
                 // Looked up before inserting, so only a new tuple allocates.
                 if !map.contains_key(self.tuple.as_slice()) {
                     map.insert(self.tuple.as_slice().into(), UNKNOWN);
@@ -701,7 +705,7 @@ impl AttrLookup<'_> {
             (self.key).extend(
                 self.via
                     .iter()
-                    .map(|&slot| rollup.value(slot, key[slot]).clone()),
+                    .map(|&part| rollup.value(part, key[part]).clone()),
             );
             let found = self.projection.matches(&self.key).first();
             *known = found.map_or(NULL, |row| row[self.attr]);
@@ -720,8 +724,8 @@ impl<'s> Lookup<'s> {
     /// cell once.
     fn code(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
         match self {
-            Lookup::Slot(slot) => cells.code(i, *slot),
-            Lookup::Attr(attr) => attr.code(rollup, cells.key(i)),
+            Lookup::KeyPart(part) => cells.code(i, *part),
+            Lookup::Attribute(attr) => attr.code(rollup, cells.key(i)),
         }
     }
 
@@ -729,8 +733,8 @@ impl<'s> Lookup<'s> {
     /// resolved.
     fn code_in(&self, cells: &Cells, i: usize, row: &JoinRow<'_>) -> u32 {
         match self {
-            Lookup::Slot(slot) => cells.code(i, *slot),
-            Lookup::Attr(attr) => attr.code_in(row),
+            Lookup::KeyPart(part) => cells.code(i, *part),
+            Lookup::Attribute(attr) => attr.code_in(row),
         }
     }
 
@@ -740,23 +744,23 @@ impl<'s> Lookup<'s> {
         's: 'r,
     {
         match self {
-            Lookup::Slot(slot) => rollup.value(*slot, code),
-            Lookup::Attr(attr) => attr.projection.attr_value(attr.attr, code),
+            Lookup::KeyPart(part) => rollup.value(*part, code),
+            Lookup::Attribute(attr) => attr.projection.attribute_value(attr.attr, code),
         }
     }
 
     /// Codes the key's values have.
     fn bound(&self, rollup: &Rollup) -> usize {
         match self {
-            Lookup::Slot(slot) => rollup.codes(*slot),
-            Lookup::Attr(attr) => attr.projection.attr_codes(attr.attr),
+            Lookup::KeyPart(part) => rollup.codes(*part),
+            Lookup::Attribute(attr) => attr.projection.attribute_codes(attr.attr),
         }
     }
 
     fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
-            Lookup::Slot(slot) => rollup.key_type(*slot),
-            Lookup::Attr(attr) => attr.projection.attr_type(attr.attr),
+            Lookup::KeyPart(part) => rollup.key_type(*part),
+            Lookup::Attribute(attr) => attr.projection.attribute_type(attr.attr),
         }
     }
 }
@@ -822,10 +826,10 @@ enum Part<'s> {
     },
     Time {
         key: TimeKey,
-        grain: Grain,
-        /// The start of each period met so far, the bucket at hand's last.
+        width: Width,
+        /// The start of each time-key bucket met so far, the one at hand last.
         starts: Vec<i64>,
-        /// The buckets the ask covers, the most periods it can meet.
+        /// The buckets the ask covers, the most it can meet.
         bound: usize,
     },
 }
@@ -838,10 +842,10 @@ impl<'s> Part<'s> {
         }
     }
 
-    fn time(key: TimeKey, grain: Grain, buckets: usize) -> Part<'s> {
+    fn time(key: TimeKey, width: Width, buckets: usize) -> Part<'s> {
         Part::Time {
             key,
-            grain,
+            width,
             starts: Vec::new(),
             bound: buckets,
         }
@@ -861,13 +865,14 @@ impl<'s> Part<'s> {
         }
     }
 
-    /// Buckets come in time order, so a period's buckets come together.
+    /// Buckets come in time order, so those of one time-key bucket come
+    /// together.
     fn enter(&mut self, bucket: i64) {
         if let Part::Time {
-            key, grain, starts, ..
+            key, width, starts, ..
         } = self
         {
-            let start = key.start(bucket, *grain);
+            let start = key.start(bucket, *width);
             if starts.last() != Some(&start) {
                 starts.push(start);
             }
@@ -893,14 +898,14 @@ impl<'s> Part<'s> {
     fn number(&mut self, rollup: &Rollup, cells: &Cells, i: usize) -> u32 {
         match self {
             Part::Lookup { lookup, .. } => lookup.code(rollup, cells, i),
-            Part::Time { starts, .. } => period(starts),
+            Part::Time { starts, .. } => current(starts),
         }
     }
 
     fn number_in(&self, cells: &Cells, i: usize, row: &JoinRow<'_>) -> u32 {
         match self {
             Part::Lookup { lookup, .. } => lookup.code_in(cells, i, row),
-            Part::Time { starts, .. } => period(starts),
+            Part::Time { starts, .. } => current(starts),
         }
     }
 
@@ -915,8 +920,8 @@ impl<'s> Part<'s> {
     }
 }
 
-/// The number of the period at hand.
-fn period(starts: &[i64]) -> u32 {
+/// The number of the time-key bucket at hand.
+fn current(starts: &[i64]) -> u32 {
     u32::try_from(starts.len() - 1).expect("codes are u32")
 }
 

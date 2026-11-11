@@ -7,7 +7,7 @@ use straum_domain::RowError;
 use crate::pgoutput::DecodeError;
 use crate::value::ValueError;
 
-/// Whatever stops straum-pg. straum starts over from a new stream after one.
+/// Whatever stops straum-pg. Straum starts over from a new stream after one.
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
@@ -16,19 +16,19 @@ pub enum Error {
         code: String,
         message: String,
     },
-    /// PostgreSQL sent something straum didn't expect.
+    /// PostgreSQL sent something Straum didn't expect.
     Protocol(String),
     Decode(DecodeError),
     Value(ValueError),
     /// A loaded row that doesn't fit its table in straum.
     Row(RowError),
-    /// TLS didn't start: the server has it off, or straum doesn't trust its
+    /// TLS didn't start: the server has it off, or Straum doesn't trust its
     /// certificate.
     Tls(String),
     /// The setup doesn't fit the spec; one line per problem, saying what to
     /// fix.
     Setup(Vec<String>),
-    /// A transaction changed more rows straum reads than
+    /// A transaction changed more rows Straum reads than
     /// `--max-transaction-rows` allows. Starting over is the cheap way
     /// through it: the new slot's snapshot is after the commit, so its rows
     /// come in the bulk load instead of being held and applied under the
@@ -78,8 +78,8 @@ impl fmt::Display for Error {
             Error::Setup(problems) => f.write_str(&problems.join("\n")),
             Error::Transaction { lsn, limit } => write!(
                 f,
-                "transaction {lsn} changes more than {limit} rows straum reads, \
-                 the --max-transaction-rows cap; straum loads again from a snapshot after it"
+                "transaction {lsn} changes more than {limit} rows Straum reads, \
+                 the --max-transaction-rows cap; Straum loads again from a snapshot after it"
             ),
             Error::Stopped => f.write_str("the replication stream stopped"),
         }
@@ -127,8 +127,8 @@ mod tests {
                     lsn: Lsn(0x16_B374_D848),
                     limit: 100_000,
                 },
-                "transaction 16/B374D848 changes more than 100000 rows straum reads, \
-                 the --max-transaction-rows cap; straum loads again from a snapshot after it",
+                "transaction 16/B374D848 changes more than 100000 rows Straum reads, \
+                 the --max-transaction-rows cap; Straum loads again from a snapshot after it",
             ),
             (Error::Stopped, "the replication stream stopped"),
         ];

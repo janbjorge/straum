@@ -1,7 +1,7 @@
-//! Walks the `sqlparser` AST of a straum SQL spec into dims and facts, and
+//! Walks the `sqlparser` AST of a Straum SQL spec into dims and facts, and
 //! of an ask into an `Ask`.
 //!
-//! Deny by default: every `match` lists what straum SQL accepts and rejects the
+//! Deny by default: every `match` lists what Straum SQL accepts and rejects the
 //! rest by name, and accepted structs are destructured without `..`, so a
 //! field added by a `sqlparser` upgrade fails to compile until it is handled
 //! here.
@@ -74,7 +74,7 @@ impl Walker {
         self.not_in_subset(line, &format!("{what} `{text}`"));
     }
 
-    /// Rejects a clause straum SQL has no use for when it is present.
+    /// Rejects a clause Straum SQL has no use for when it is present.
     fn absent(&mut self, line: u64, present: bool, clause: &str) {
         if present {
             self.not_in_subset(line, clause);
@@ -99,12 +99,12 @@ impl Walker {
         }
     }
 
-    /// Every rejection says straum SQL is straum's own subset, so no one
+    /// Every rejection says Straum SQL is Straum's own subset, so no one
     /// takes it for PostgreSQL's error.
     fn not_in_subset(&mut self, line: u64, what: &str) {
         self.error(
             line,
-            format!("{what} is not in straum SQL, the PostgreSQL subset made only for straum"),
+            format!("{what} is not in Straum SQL, the PostgreSQL subset made only for Straum"),
         );
     }
 

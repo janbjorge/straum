@@ -9,7 +9,7 @@ use crate::catalog::escaped;
 /// Turns on logical decoding, creates `role` with the replication
 /// attribute, lets it read the spec's tables, and publishes every one of
 /// them as `publication`. Each gets `REPLICA IDENTITY FULL`, so an update
-/// or delete carries the old row straum takes out of its cell or its
+/// or delete carries the old row Straum takes out of its cell or its
 /// projection.
 ///
 /// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so
@@ -28,7 +28,7 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     let (publication, role) = (id(publication), id(role));
 
     let mut sql = vec![
-        "-- straum setup: run once, as an owner of the tables.".to_owned(),
+        "-- Straum setup: run once, as an owner of the tables.".to_owned(),
         "-- wal_level takes a restart. On Azure, set the server parameter instead.".to_owned(),
         "ALTER SYSTEM SET wal_level = logical;".to_owned(),
     ];
@@ -49,7 +49,7 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     ]);
     for fact in spec.facts() {
         sql.push(format!(
-            "-- fact {}: straum needs the old row of every update and delete; inserts cost no more.",
+            "-- fact {}: Straum needs the old row of every update and delete; inserts cost no more.",
             fact.name
         ));
         sql.push(format!(
@@ -59,7 +59,7 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     }
     for dim in spec.dims() {
         sql.push(format!(
-            "-- dim {}: straum holds its key and the columns the views read, and follows it.",
+            "-- dim {}: Straum holds its key and the columns the views read, and follows it.",
             dim.name
         ));
         sql.push(format!(

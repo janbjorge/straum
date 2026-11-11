@@ -1,5 +1,5 @@
 //! The JSON around an ask: its query and the values for its `$n`
-//! parameters. Fields straum doesn't know are errors, never ignored.
+//! parameters. Fields Straum doesn't know are errors, never ignored.
 //!
 //! ```json
 //! {

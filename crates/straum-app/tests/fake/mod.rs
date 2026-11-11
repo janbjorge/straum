@@ -225,7 +225,7 @@ fn write(tables: &mut Tables, write: Write) -> Change {
                     new: row,
                 }
             } else {
-                Change::Altered { table: id(table) }
+                Change::Unfit { table: id(table) }
             }
         }
         Write::Delete { table, key } => {
@@ -237,14 +237,14 @@ fn write(tables: &mut Tables, write: Write) -> Change {
                     old: before,
                 }
             } else {
-                Change::Altered { table: id(table) }
+                Change::Unfit { table: id(table) }
             }
         }
         Write::Truncate { table } => {
             tables.get_mut(table).unwrap().rows.clear();
             Change::Truncate { table: id(table) }
         }
-        Write::Alter { table } => Change::Altered { table: id(table) },
+        Write::Alter { table } => Change::Unfit { table: id(table) },
     }
 }
 

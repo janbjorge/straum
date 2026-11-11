@@ -22,15 +22,15 @@ const STARTED: &str = "the writer applies commits only to a started stream";
 
 /// How often the writer reads the server's WAL while it waits for commits.
 /// The lag can look up to this much longer than it is.
-const MEASURE_EVERY: Duration = Duration::from_secs(1);
+const WAL_EVERY: Duration = Duration::from_secs(1);
 
-/// How far behind the server straum may fall.
+/// How far behind the server Straum may fall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Past this, straum is not ready, though asks still answer.
+    /// Past this, Straum is not ready, though asks still answer.
     pub max_lag: Duration,
-    /// Bytes of WAL the server may keep for straum's slot. Past this,
-    /// straum starts over, so a straum that can't keep up doesn't fill the
+    /// Bytes of WAL the server may keep for Straum's slot. Past this,
+    /// Straum starts over, so a Straum that can't keep up doesn't fill the
     /// server's disk.
     pub max_retained_wal: u64,
 }
@@ -75,7 +75,7 @@ pub struct Writer<S> {
     source: S,
     app: App,
     /// When the server's WAL was last read.
-    measured: Instant,
+    wal_read_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub struct Answered {
     pub answer: Answer,
     /// The answer reflects every commit up to here and none after.
     pub lsn: Lsn,
-    /// Every commit made before this, by straum's clock, is in the answer:
+    /// Every commit made before this, by Straum's clock, is in the answer:
     /// when the slot was last known to have confirmed all the WAL there
     /// was. Unlike the time of the commit at `lsn`, it moves on while the
     /// database is idle.
@@ -101,7 +101,7 @@ pub struct Answered {
 /// What [`App::status`] reports, read at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
-    /// Every table is loaded, and straum is at most [`Limits::max_lag`]
+    /// Every table is loaded, and Straum is at most [`Limits::max_lag`]
     /// behind the server.
     pub ready: bool,
     /// Every commit up to here is applied. `None` until every table is
@@ -112,7 +112,7 @@ pub struct Status {
     pub time: Option<SystemTime>,
     /// As [`Answered::as_of`]. `None` until every table is loaded.
     pub as_of: Option<SystemTime>,
-    /// The time since straum's slot was last known to have confirmed all
+    /// The time since Straum's slot was last known to have confirmed all
     /// the WAL there was. `None` until every table is loaded.
     pub lag: Option<Duration>,
     /// The last reading of the server's WAL, while a stream runs.
@@ -124,11 +124,11 @@ pub struct Status {
     pub last_failure: Option<Failure>,
     /// Streams started, each with every table loaded.
     pub starts: u64,
-    /// Steps that failed, after which straum started over.
+    /// Steps that failed, after which Straum started over.
     pub failures: u64,
     /// Buckets in the spill now; `None` without a spill.
     pub sealed: Option<usize>,
-    /// Sealed buckets a change brought back, since straum started. One
+    /// Sealed buckets a change brought back, since Straum started. One
     /// that keeps climbing means old buckets keep changing.
     pub unseals: u64,
 }
@@ -292,7 +292,7 @@ fn apply_change(store: &mut Store, change: &Change) -> bool {
             store.clear(table.as_str());
             true
         }
-        Change::Altered { .. } => false,
+        Change::Unfit { .. } => false,
     }
 }
 
@@ -301,7 +301,7 @@ impl<S: Source> Writer<S> {
         Writer {
             source,
             app,
-            measured: Instant::now(),
+            wal_read_at: Instant::now(),
         }
     }
 
@@ -311,7 +311,7 @@ impl<S: Source> Writer<S> {
 
     /// Loads every table when nothing is loaded yet, else applies the next
     /// commit, waiting for one and reading the server's WAL meanwhile.
-    /// After an error straum is not ready, and the next step starts over
+    /// After an error Straum is not ready, and the next step starts over
     /// from a new stream.
     pub fn step(&mut self) -> Result<Step, Error> {
         let started = self.app.read().following.is_some();
@@ -350,9 +350,9 @@ impl<S: Source> Writer<S> {
         for table in dims.chain(facts) {
             self.source.load(table, &mut store)?;
         }
-        let wal = self.measure()?;
+        let wal = self.read_wal()?;
         let mut lag = Lag::new(opened);
-        lag.read(&wal, self.measured);
+        lag.read(&wal, self.wal_read_at);
         let mut state = self.app.write();
         state.store = store;
         state.following = Some(Following {
@@ -369,16 +369,16 @@ impl<S: Source> Writer<S> {
 
     fn apply_next(&mut self) -> Result<Lsn, Error> {
         loop {
-            if self.measured.elapsed() >= MEASURE_EVERY {
-                let wal = self.measure()?;
+            if self.wal_read_at.elapsed() >= WAL_EVERY {
+                let wal = self.read_wal()?;
                 let mut state = self.app.write();
                 let following = state.following();
-                following.lag.read(&wal, self.measured);
+                following.lag.read(&wal, self.wal_read_at);
                 following.wal = wal;
                 drop(state);
                 self.seal()?;
             }
-            let wait = MEASURE_EVERY.saturating_sub(self.measured.elapsed());
+            let wait = WAL_EVERY.saturating_sub(self.wal_read_at.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {
                 let lsn = commit.lsn;
                 self.unseal(&commit)?;
@@ -453,13 +453,13 @@ impl<S: Source> Writer<S> {
         self.app.read().spilling.clone()
     }
 
-    /// Reads the server's WAL, and fails once the slot holds more of it
+    /// Reads the server's WAL, and fails once the slot retains more of it
     /// than [`Limits::max_retained_wal`].
-    fn measure(&mut self) -> Result<Wal, Error> {
+    fn read_wal(&mut self) -> Result<Wal, Error> {
         // Taken before the read, so the reading holds all WAL written by then.
         let at = Instant::now();
         let wal = self.source.wal()?;
-        self.measured = at;
+        self.wal_read_at = at;
         let (retained, limit) = (wal.retained(), self.app.read().limits.max_retained_wal);
         if retained > limit {
             return Err(Error::Retained { retained, limit });
@@ -480,7 +480,7 @@ fn touched(store: &Store, commit: &Commit) -> Vec<SealedId> {
             Change::Insert { row, .. } => &[row],
             Change::Update { old, new, .. } => &[old, new],
             Change::Delete { old, .. } => &[old],
-            Change::Truncate { .. } | Change::Altered { .. } => &[],
+            Change::Truncate { .. } | Change::Unfit { .. } => &[],
         };
         for row in rows {
             ids.extend(store.sealed_touched(table, row));
@@ -513,9 +513,9 @@ fn seconds(duration: Duration) -> i64 {
 pub enum Error {
     Source(SourceError),
     /// A change no longer fits the table: a row that doesn't fit, a change
-    /// without the old row, a dim row straum never held, an altered table.
+    /// without the old row, a dim row Straum never held, an altered table.
     Unfit(Ident),
-    /// The server holds more WAL for straum's slot than
+    /// The server holds more WAL for Straum's slot than
     /// [`Limits::max_retained_wal`], in bytes.
     Retained {
         retained: u64,
@@ -545,7 +545,7 @@ impl fmt::Display for Error {
             Error::Unfit(table) => write!(f, "a change no longer fits {table}"),
             Error::Retained { retained, limit } => write!(
                 f,
-                "PostgreSQL holds {} of WAL for straum's slot, past the limit of {}",
+                "PostgreSQL holds {} of WAL for Straum's slot, past the limit of {}",
                 mib(*retained),
                 mib(*limit)
             ),

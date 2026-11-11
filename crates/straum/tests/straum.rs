@@ -1,4 +1,4 @@
-//! The straum binary end to end: `straum plan` sets up PostgreSQL 18 in Docker,
+//! The Straum binary end to end: `straum plan` sets up PostgreSQL 18 in Docker,
 //! `straum run` loads and follows it as the role the plan made, and asks over
 //! HTTP answer what the view body answers in PostgreSQL.
 
@@ -51,7 +51,7 @@ INSERT INTO shop.trips VALUES
 ";
 
 /// What the ask below answers, from the view body in PostgreSQL, as JSON
-/// rows in straum's order.
+/// rows in Straum's order.
 const EXPECTED: &str = r#"
 SELECT coalesce(string_agg(row, ',' ORDER BY kind COLLATE "C" NULLS FIRST,
                                              borough COLLATE "C" NULLS FIRST), '')
@@ -74,7 +74,7 @@ struct Postgres {
     port: u16,
 }
 
-/// CI sets `STRAUM_TEST_POSTGRES` to each major straum supports.
+/// CI sets `STRAUM_TEST_POSTGRES` to each major Straum supports.
 fn tag() -> String {
     std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
 }
@@ -209,7 +209,7 @@ fn run(args: &[&str], dsn: &str) -> Running {
     });
     let start = Instant::now();
     while !log.lock().unwrap().contains("listening on ") {
-        wait(&mut child, &log, "straum to listen", start);
+        wait(&mut child, &log, "Straum to listen", start);
     }
     let address = {
         let log = log.lock().unwrap();
@@ -227,12 +227,12 @@ fn run(args: &[&str], dsn: &str) -> Running {
 fn wait(child: &mut Child, log: &Mutex<String>, what: &str, start: Instant) {
     assert!(
         start.elapsed() < Duration::from_secs(60),
-        "waited a minute for {what}; straum's log:\n{}",
+        "waited a minute for {what}; Straum's log:\n{}",
         log.lock().unwrap()
     );
     assert!(
         child.try_wait().unwrap().is_none(),
-        "straum exited; its log:\n{}",
+        "Straum exited; its log:\n{}",
         log.lock().unwrap()
     );
     thread::sleep(Duration::from_millis(100));
@@ -272,7 +272,7 @@ impl Running {
         (head[9..12].parse().unwrap(), body.to_owned())
     }
 
-    /// Sends the signal and waits for straum to exit.
+    /// Sends the signal and waits for Straum to exit.
     fn stop(mut self, signal: &str) -> (Option<i32>, String) {
         let pid = self.child.id().to_string();
         let sent = Command::new("kill").args([signal, &pid]).status().unwrap();
@@ -377,7 +377,7 @@ fn serves_asks_from_postgres() {
         log.ends_with("straum: stopping: finishing the asks in flight\nstraum: stopped\n"),
         "{log}"
     );
-    // The temporary slot went with straum's connection.
+    // The temporary slot went with Straum's connection.
     let start = Instant::now();
     while pg.psql("SELECT count(*) FROM pg_replication_slots") != "0" {
         assert!(start.elapsed() < Duration::from_secs(30), "the slot stayed");

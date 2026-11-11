@@ -9,12 +9,12 @@ mod common;
 
 use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
-    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attr, By, ColumnType, Cond, Datum,
-    Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, RowError, Sealed,
-    SealedColumn, SealedError, SealedId, Slot, Spec, Store, Time, TimeKey, Value, Via,
+    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attribute, By, ColumnType, Cond,
+    Datum, Dim, Fact, Ident, KeyPart, Literal, Measure, Origin, Ref, RefKind, RowError, Sealed,
+    SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey, Value, Via, Width,
 };
 
-const GRAIN: u32 = 900;
+const WIDTH: u32 = 900;
 /// 2024-01-15 and 2024-04-15, 00:00 UTC: four months, one leap day.
 const START: i64 = 1_705_276_800;
 const END: i64 = 1_713_139_200;
@@ -30,7 +30,7 @@ const FARE: usize = 6;
 const TIP: usize = 7;
 const DIST: usize = 8;
 const RIDER: usize = 9;
-const WIDTH: usize = 10;
+const ROW_LEN: usize = 10;
 
 /// The dims as the projections key them: zones by `id`, combos by
 /// `(pu_id, vendor_id)`, vendors by `id`; each key to its attributes.
@@ -75,8 +75,8 @@ fn col(s: &str) -> By {
     }
 }
 
-fn attr(name: &str, column: &str) -> Attr {
-    Attr {
+fn attr(name: &str, column: &str) -> Attribute {
+    Attribute {
         name: id(name),
         column: id(column),
     }
@@ -93,7 +93,7 @@ fn spec() -> Spec {
         name: id("zones"),
         table: table("zones"),
         key: vec![id("id")],
-        attrs: vec![id("borough"), id("zone")],
+        attributes: vec![id("borough"), id("zone")],
     };
     // Keyed by two fact columns, one of them a by column asks group by.
     let combos = Dim {
@@ -101,14 +101,14 @@ fn spec() -> Spec {
         name: id("combos"),
         table: table("combos"),
         key: vec![id("pu_id"), id("vendor_id")],
-        attrs: vec![id("label")],
+        attributes: vec![id("label")],
     };
     let vendors = Dim {
         as_text: Vec::new(),
         name: id("vendors"),
         table: table("vendors"),
         key: vec![id("id")],
-        attrs: vec![id("label")],
+        attributes: vec![id("label")],
     };
     let trips = Fact {
         as_text: Vec::new(),
@@ -116,12 +116,12 @@ fn spec() -> Spec {
         table: table("trips"),
         time: Time {
             column: id("at"),
-            grain: Grain { seconds: GRAIN },
+            width: Width { seconds: WIDTH },
             // Hours, days and weeks, so random ranges read every width.
-            buckets: vec![
-                Grain { seconds: 3_600 },
-                Grain { seconds: 86_400 },
-                Grain { seconds: 604_800 },
+            wider: vec![
+                Width { seconds: 3_600 },
+                Width { seconds: 86_400 },
+                Width { seconds: 604_800 },
             ],
             origin: Origin::Timestamptz,
         },
@@ -131,7 +131,7 @@ fn spec() -> Spec {
                 dim: id("zones"),
                 via: vec![Via::Fact(id("pu"))],
                 kind: RefKind::Left,
-                attrs: vec![
+                reads: vec![
                     attr("pickup_borough", "borough"),
                     attr("pickup_zone", "zone"),
                 ],
@@ -141,7 +141,7 @@ fn spec() -> Spec {
                 dim: id("zones"),
                 via: vec![Via::Fact(id("dro"))],
                 kind: RefKind::Left,
-                attrs: vec![
+                reads: vec![
                     attr("dropoff_borough", "borough"),
                     attr("dropoff_zone", "zone"),
                 ],
@@ -151,14 +151,14 @@ fn spec() -> Spec {
                 dim: id("combos"),
                 via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
                 kind: RefKind::Left,
-                attrs: vec![attr("combo_label", "label")],
+                reads: vec![attr("combo_label", "label")],
             },
             Ref {
                 name: id("vend"),
                 dim: id("vendors"),
                 via: vec![Via::Fact(id("vendor"))],
                 kind: RefKind::Left,
-                attrs: vec![attr("vend_label", "label")],
+                reads: vec![attr("vend_label", "label")],
             },
         ],
         by: vec![
@@ -363,11 +363,11 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     if measures.is_empty() {
         measures.push(rng.pick(all).name.clone());
     }
-    let buckets = (END - START) / i64::from(GRAIN);
-    let from = START + i64::from(GRAIN) * rng.int(-10, buckets);
-    let to = from + i64::from(GRAIN) * rng.int(1, buckets + 20);
+    let buckets = (END - START) / i64::from(WIDTH);
+    let from = START + i64::from(WIDTH) * rng.int(-10, buckets);
+    let to = from + i64::from(WIDTH) * rng.int(1, buckets + 20);
     Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures,
         by,
         filter,
@@ -416,7 +416,7 @@ fn trip_types() -> Vec<ColumnType> {
         numeric(DIST),
         ColumnType::Text,
     ];
-    assert_eq!(types.len(), WIDTH);
+    assert_eq!(types.len(), ROW_LEN);
     types
 }
 
@@ -478,7 +478,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
             .iter()
             .map(|k| match k {
                 AskKey::Key(p) => value(row, p, dims),
-                AskKey::Time(tk) => Datum::Int(tk.start(t, Grain { seconds: GRAIN })),
+                AskKey::Time(tk) => Datum::Int(tk.start(t, Width { seconds: WIDTH })),
             })
             .collect();
         groups.entry(key).or_default().push(row);
@@ -704,7 +704,7 @@ fn rows_added_together_match_rows_added_one_by_one() {
         let flat: Vec<Datum> = rows.concat();
         let mut rest = &flat[..];
         while !rest.is_empty() {
-            let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * WIDTH));
+            let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * ROW_LEN));
             together.add_rows("trips", batch).unwrap();
             rest = after;
         }
@@ -743,12 +743,12 @@ fn a_range_cuts_at_both_ends() {
     let mut rows = Vec::new();
     for i in 0..4 {
         let mut row = trip(&mut rng);
-        row[AT] = Datum::Int(START + i64::from(GRAIN) * i);
+        row[AT] = Datum::Int(START + i64::from(WIDTH) * i);
         store.add_row("trips", &row).unwrap();
         rows.push(row);
     }
     let ask = |from, to| Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips")],
         by: Vec::new(),
         filter: Vec::new(),
@@ -757,12 +757,12 @@ fn a_range_cuts_at_both_ends() {
     };
     let trips = |ask: &Ask| store.ask(ask).unwrap().rows[0].values[0].clone();
     let count = |n: i128| Value::Int(n);
-    let grain = i64::from(GRAIN);
-    assert_eq!(trips(&ask(START - grain, END + grain)), count(4));
-    assert_eq!(trips(&ask(START + grain, END)), count(3));
-    assert_eq!(trips(&ask(START, START + grain)), count(1));
-    assert_eq!(trips(&ask(START - grain, START)), count(0));
-    assert_eq!(trips(&ask(END, END + grain)), count(0));
+    let width = i64::from(WIDTH);
+    assert_eq!(trips(&ask(START - width, END + width)), count(4));
+    assert_eq!(trips(&ask(START + width, END)), count(3));
+    assert_eq!(trips(&ask(START, START + width)), count(1));
+    assert_eq!(trips(&ask(START - width, START)), count(0));
+    assert_eq!(trips(&ask(END, END + width)), count(0));
     let empty = typed(&spec);
     assert_eq!(
         empty.ask(&ask(START, END)).unwrap().rows[0].values[0],
@@ -785,7 +785,7 @@ fn a_dim_change_moves_the_answer_at_once() {
     row[VENDOR] = Datum::Int(1);
     store.add_row("trips", &row).unwrap();
     let by_label = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips")],
         by: vec![AskKey::Key(id("vend_label"))],
         filter: Vec::new(),
@@ -847,7 +847,7 @@ fn a_composite_key_matches_every_column() {
     // A row with a null in its key is never held: nothing could join it.
     assert_eq!(store.dim_rows("combos"), Some(2));
     let mut by_label = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips")],
         by: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
@@ -919,7 +919,7 @@ fn a_filter_on_an_attribute_reads_the_dim() {
     row[FARE] = Datum::Int(100);
     store.add_row("trips", &row).unwrap();
     let mq_fare = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("mq_fare")],
         by: Vec::new(),
         filter: Vec::new(),
@@ -951,7 +951,7 @@ fn every_key_at_once_uses_the_sparse_index() {
         store.add_row("trips", row).unwrap();
     }
     let ask = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips"), id("riders")],
         by: KEYS.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: Vec::new(),
@@ -1026,12 +1026,12 @@ fn rows_added_together_add_none_on_error() {
     assert_eq!(
         store.add_rows("trips", &good[1..]),
         Err(RowError::Arity {
-            expected: WIDTH,
-            found: WIDTH - 1
+            expected: ROW_LEN,
+            found: ROW_LEN - 1
         })
     );
     let mut bad = good.clone();
-    bad[WIDTH + AT] = text("noon");
+    bad[ROW_LEN + AT] = text("noon");
     assert_eq!(
         store.add_rows("trips", &bad),
         Err(RowError::NotInt { column: id("at") })
@@ -1077,11 +1077,11 @@ fn rollup_key_puts_via_columns_after_the_by_keys_each_once() {
     let spec = spec();
     let key: Vec<String> = (spec.fact("trips").unwrap().rollup_key())
         .map(|slot| match slot {
-            Slot::Column(c) => c.to_string(),
-            Slot::IsNull { column, negated } => {
+            KeyPart::Column(c) => c.to_string(),
+            KeyPart::IsNull { column, negated } => {
                 format!("{column} is {}null", if negated { "not " } else { "" })
             }
-            Slot::Bucket => "bucket".into(),
+            KeyPart::Bucket => "bucket".into(),
         })
         .collect();
     assert_eq!(
@@ -1104,10 +1104,10 @@ fn rows_collapse_into_cells() {
     let mut row = trip(&mut Rng(7));
     row[AT] = Datum::Int(START + 1);
     store.add_row("trips", &row).unwrap();
-    row[AT] = Datum::Int(START + i64::from(GRAIN) - 1);
+    row[AT] = Datum::Int(START + i64::from(WIDTH) - 1);
     store.add_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(1));
-    row[AT] = Datum::Int(START + i64::from(GRAIN));
+    row[AT] = Datum::Int(START + i64::from(WIDTH));
     store.add_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(2));
     // A join column is a key: another value is another cell.
@@ -1125,7 +1125,7 @@ fn rows_collapse_into_cells() {
 fn removing_an_extreme_reveals_the_next() {
     let mut store = Store::new(spec());
     let ask = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("tip_min"), id("tip_max")],
         by: Vec::new(),
         filter: Vec::new(),
@@ -1177,7 +1177,7 @@ fn clear_drops_every_row() {
 fn filter_values_are_of_their_column_type() {
     let mut store = typed(&spec());
     let ask = |filter| Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips")],
         by: Vec::new(),
         filter,
@@ -1227,7 +1227,7 @@ fn filter_values_are_of_their_column_type() {
 fn types_stay_through_clear() {
     let mut store = Store::new(spec());
     let ask = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
         filter: Vec::new(),
@@ -1239,7 +1239,7 @@ fn types_stay_through_clear() {
         answer.columns.iter().map(|c| c.scale).collect()
     };
     assert_eq!(scales(&store), [0, 0, 0, 0, 0]);
-    let mut types = vec![ColumnType::Int; WIDTH];
+    let mut types = vec![ColumnType::Int; ROW_LEN];
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
     types[TIP] = ColumnType::Numeric { scale: 1 };
@@ -1258,7 +1258,7 @@ fn types_stay_through_clear() {
 fn columns_name_keys_and_measures_as_asked() {
     let store = Store::new(spec());
     let ask = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("fare"), id("trips")],
         by: vec![
             AskKey::Key(id("pickup_zone")),
@@ -1284,7 +1284,7 @@ fn columns_name_keys_and_measures_as_asked() {
 
 #[test]
 fn time_key_start() {
-    let grain = Grain { seconds: GRAIN };
+    let width = Width { seconds: WIDTH };
     let cases = [
         // 2024-02-29 13:47:05 UTC.
         (1_709_214_425, 1_709_214_300),
@@ -1292,7 +1292,7 @@ fn time_key_start() {
         (-1, -900),
     ];
     for (t, start) in cases {
-        assert_eq!(TimeKey::Bucket.start(t, grain), start, "{t}");
+        assert_eq!(TimeKey::Bucket.start(t, width), start, "{t}");
     }
 }
 
@@ -1308,7 +1308,7 @@ fn ask_without_by_answers_one_row() {
         .map(|m| m.name.clone())
         .collect();
     let ask = Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures,
         by: Vec::new(),
         filter: Vec::new(),
@@ -1346,7 +1346,7 @@ fn unknown_names() {
     let store = Store::new(spec());
     assert!(store.cells("zones").is_none());
     let ask = Ask {
-        fact: id("zones"),
+        view: id("zones"),
         measures: vec![id("trips")],
         by: Vec::new(),
         filter: Vec::new(),
@@ -1355,7 +1355,7 @@ fn unknown_names() {
     };
     assert_eq!(
         store.ask(&ask),
-        Err(vec![AskError::UnknownFact(id("zones"))])
+        Err(vec![AskError::UnknownView(id("zones"))])
     );
 }
 
@@ -1373,8 +1373,8 @@ fn row_errors() {
     assert_eq!(
         store.add_row("trips", &base[1..]),
         Err(RowError::Arity {
-            expected: WIDTH,
-            found: WIDTH - 1
+            expected: ROW_LEN,
+            found: ROW_LEN - 1
         })
     );
     assert_eq!(
@@ -1411,10 +1411,10 @@ fn row_errors() {
 
     let mut store = fresh();
     assert_eq!(
-        store.set_types("trips", &[ColumnType::Int; WIDTH + 1]),
+        store.set_types("trips", &[ColumnType::Int; ROW_LEN + 1]),
         Err(RowError::Arity {
-            expected: WIDTH,
-            found: WIDTH + 1
+            expected: ROW_LEN,
+            found: ROW_LEN + 1
         })
     );
 }
@@ -1469,7 +1469,7 @@ fn sealed_id(width: i64, start: i64) -> SealedId {
 
 fn whole_range(by: Vec<AskKey>) -> Ask {
     Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips"), id("tip_min"), id("tip_max"), id("riders")],
         by,
         filter: Vec::new(),
@@ -1485,7 +1485,7 @@ fn a_sealed_bucket_answers_as_before() {
     let before = store.ask(&ask).unwrap();
     let cells = store.cells_read(&ask).unwrap();
 
-    let id = sealed_id(i64::from(GRAIN), START);
+    let id = sealed_id(i64::from(WIDTH), START);
     let sealed = store.sealed_copy(&id).unwrap();
     assert_eq!(sealed.rows, [2]);
     store.seal(&id).unwrap();
@@ -1503,14 +1503,14 @@ fn a_sealed_bucket_answers_as_before() {
 #[test]
 fn sealable_buckets_end_by_the_cutoff() {
     let (mut store, _) = three_rows();
-    let grain = i64::from(GRAIN);
-    assert_eq!(store.sealable(START + grain - 1), []);
-    assert_eq!(store.sealable(START + grain), [sealed_id(grain, START)]);
+    let width = i64::from(WIDTH);
+    assert_eq!(store.sealable(START + width - 1), []);
+    assert_eq!(store.sealable(START + width), [sealed_id(width, START)]);
     let all = store.sealable(START + 604_800 * 2);
     // The two buckets of 15 minutes; wider widths stay in memory.
     assert_eq!(
         all,
-        [sealed_id(grain, START), sealed_id(grain, START + grain)]
+        [sealed_id(width, START), sealed_id(width, START + width)]
     );
     for id in &all {
         store.seal(id).unwrap();
@@ -1522,7 +1522,7 @@ fn sealable_buckets_end_by_the_cutoff() {
     // Gone with the truncate, or never there.
     let mut reason = |id: &SealedId| store.seal(id).unwrap_err().reason;
     assert_eq!(reason(&all[0]), "no such bucket");
-    assert_eq!(reason(&sealed_id(grain, START - grain)), "no such bucket");
+    assert_eq!(reason(&sealed_id(width, START - width)), "no such bucket");
     assert_eq!(reason(&sealed_id(7, START)), "no such width");
     let nope = SealedId {
         fact: id("nope"),
@@ -1565,7 +1565,7 @@ type Change<'a> = dyn Fn(&mut Sealed) + 'a;
 #[test]
 fn thaw_refuses_a_bucket_that_does_not_fit() {
     let (mut store, _) = three_rows();
-    let bucket = sealed_id(i64::from(GRAIN), START);
+    let bucket = sealed_id(i64::from(WIDTH), START);
     let good = store.sealed_copy(&bucket).unwrap();
     store.seal(&bucket).unwrap();
     let refused = |change: &Change<'_>| {

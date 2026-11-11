@@ -1,8 +1,8 @@
-//! straum SQL: the spec format straum reads at start, and the asks it
+//! Straum SQL: the spec format Straum reads at start, and the asks it
 //! answers. `docs/src/spec.md` is its grammar (ADR-0029); `sqlparser`
 //! parses the text and this crate walks the AST.
 //!
-//! PostgreSQL rejects view options, but straum never sends a view to
+//! PostgreSQL rejects view options, but Straum never sends a view to
 //! PostgreSQL, so `WITH (buckets = ...)` needn't be one it takes.
 
 #![forbid(unsafe_code)]

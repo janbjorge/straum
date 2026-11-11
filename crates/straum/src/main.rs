@@ -1,4 +1,4 @@
-//! The straum binary, where straum SQL, the PostgreSQL source, the use cases and
+//! The Straum binary, where Straum SQL, the PostgreSQL source, the use cases and
 //! HTTP meet. One thread writes: it loads every table, then applies the
 //! stream, and starts over after a failure. tokio serves asks meanwhile.
 
@@ -22,14 +22,14 @@ use straum_pg::{Dsn, Pg};
 use tokio::signal::unix::{SignalKind, signal};
 
 const HELP: &str = "\
-straum follows tables in PostgreSQL and answers asks over HTTP.
+Straum follows tables in PostgreSQL and answers asks over HTTP.
 
 usage: straum <command> [flags]
 
   run     load the spec's tables, follow their changes, answer asks
   plan    print the SQL that sets PostgreSQL up for the spec
-  status  print what a running straum has done
-  version print straum's version
+  status  print what a running Straum has done
+  version print Straum's version
   help    print this; straum help <command> prints its flags
 
 Guide: https://janbjorge.github.io/straum/
@@ -46,10 +46,10 @@ HTTP. SIGTERM or SIGINT stops it.
   --publication NAME           the publication straum plan made (straum)
   --dsn-file FILE              a file holding the DSN; else STRAUM_DSN
   --max-lag SECONDS            lag before /readyz turns off (30)
-  --max-retained-wal BYTES     WAL held for the slot before straum starts
+  --max-retained-wal BYTES     WAL retained for the slot before Straum starts
                                over (4Gi; takes Ki, Mi, Gi or Ti)
   --max-transaction-rows ROWS  rows one transaction may change before
-                               straum starts over (100000)
+                               Straum starts over (100000)
 
 Guide: https://janbjorge.github.io/straum/running.html#straum-run
 ";
@@ -73,11 +73,11 @@ Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 const STATUS_HELP: &str = "\
 usage: straum status [flags]
 
-Prints what the straum at URL has done: ready or why not, how far behind
-PostgreSQL, the WAL held for it, its starts and its failures. In a pod:
+Prints what the Straum at URL has done: ready or why not, how far behind
+PostgreSQL, the WAL retained for it, its starts and its failures. In a pod:
 kubectl exec deployment/straum -- /straum status
 
-  --url URL  where straum serves HTTP (http://127.0.0.1:8080)
+  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/running.html#straum-status
 ";
@@ -91,7 +91,7 @@ const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
 };
-/// Rows one transaction may change before straum loads again instead of
+/// Rows one transaction may change before Straum loads again instead of
 /// applying it; `bench/transaction.py` measures what a transaction this
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
@@ -384,7 +384,7 @@ fn bytes(text: &str) -> Option<u64> {
     positive(count)?.checked_mul(1 << shift)
 }
 
-// A plain socket, since straum's image holds nothing else to ask with.
+// A plain socket, since Straum's image holds nothing else to ask with.
 fn status(url: &str) -> Result<String, String> {
     let address = (url.strip_prefix("http://"))
         .map(|rest| rest.trim_end_matches('/'))

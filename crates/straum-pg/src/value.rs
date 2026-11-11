@@ -1,5 +1,5 @@
-//! Column types straum reads: their text form as PostgreSQL prints it
-//! under `DateStyle = ISO` and `TimeZone = UTC`, which straum sets on
+//! Column types Straum reads: their text form as PostgreSQL prints it
+//! under `DateStyle = ISO` and `TimeZone = UTC`, which Straum sets on
 //! connect, and their binary form, which loads read. Also PostgreSQL's
 //! timestamps as clock times, as the stream reads and writes them.
 
@@ -36,11 +36,11 @@ const PG_EPOCH_AFTER_UNIX: Duration = Duration::from_secs(PG_EPOCH.unsigned_abs(
 const NUMERIC_POS: u16 = 0x0000;
 const NUMERIC_NEG: u16 = 0x4000;
 
-/// How straum reads a column of this type: `int2`, `int4` and `int8` as
+/// How Straum reads a column of this type: `int2`, `int4` and `int8` as
 /// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
 /// `10^-s`, `text`, `varchar` and `bpchar` as text, `timestamptz` as Unix
 /// seconds, rounded down, and `timestamp` as the Unix seconds its wall
-/// clock reading would be in UTC. `None` for a type straum doesn't read.
+/// clock reading would be in UTC. `None` for a type Straum doesn't read.
 pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
     match type_oid {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
@@ -188,7 +188,7 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
 }
 
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
-/// read, though straum always asks for UTC. A `timestamp` has no offset,
+/// read, though Straum always asks for UTC. A `timestamp` has no offset,
 /// and its text must have none. `BC` dates are `None`.
 fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     let (date, rest) = text.split_once(' ')?;

@@ -30,7 +30,7 @@ ask ------------------------------------------+  Store::ask maps each cell's
   measures and a standing filter (`Fact`,
   `crates/straum-domain/src/spec.rs`).
 - A **ref** is an edge of the join tree: `via` columns on the near side,
-  the fact or a dim joined before it (`Via::Fact`, `Via::Attr`), equal
+  the fact or a dim joined before it (`Via::Fact`, `Via::Attribute`), equal
   to the far dim's key. Its `kind` is `Left`, `Inner`, `Semi` or `Anti`;
   left and inner read dim columns (`attrs`), semi and anti read none. A
   ref has no value of its own.
@@ -63,7 +63,7 @@ Invariants:
 
 | Piece | Where | What |
 | --- | --- | --- |
-| `Ref`, `RefKind`, `Via`, `Dim`, `Fact::rollup_key`, `Fact::filter` | `crates/straum-domain/src/spec.rs` | The declarations and the key layout. `Spec::new` refuses a left or inner ref that reads nothing (`RefNoAttrs`), a semi or anti ref that reads anything (`RefReads`), a chain through a later ref or a column its parent does not carry (`ChainColumn`), a via reused (`ViaReused`), a key of the wrong width (`KeyWidth`) and a filter on a name the view lacks (`UnknownKey`). |
+| `Ref`, `RefKind`, `Via`, `Dim`, `Fact::rollup_key`, `Fact::filter` | `crates/straum-domain/src/spec.rs` | The declarations and the key layout. `Spec::new` refuses a left or inner ref that reads nothing (`RefReadsNothing`), a semi or anti ref that reads anything (`RefReads`), a chain through a later ref or a column its parent does not carry (`ChainColumn`), a via reused (`ViaReused`), a key of the wrong length (`KeyLength`) and a filter on a name the view lacks (`UnknownKey`). |
 | `Projection` | `crates/straum-domain/src/projection.rs` | `add`, `add_rows`, `remove`, `clear`, `matches(key)`, `is_unique`; a row added twice is held twice, a `remove` of a row not held is `RowError::Missing`. |
 | `Store` | `crates/straum-domain/src/store.rs` | Rollups and projections. `ask` takes the fast path when every ref is left, unique and unchained: one group per cell, multiplicity one. Otherwise `Expander` lists each cell's join rows, memoised per distinct via tuple, and `Partials::merge_cell` adds the cell once per row. `Test::holds` applies the standing filter and the measures' filters per join row. |
 | `AskError` | `crates/straum-domain/src/ask.rs` | `UnknownKey` names what is not a select name; `WrongType` reads attribute types from the projection. |

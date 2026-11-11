@@ -12,7 +12,7 @@ use crate::value::{ColumnType, Datum};
 /// find.
 #[derive(Debug)]
 pub(crate) struct Projection {
-    key_width: usize,
+    key_len: usize,
     /// In [`Dim::columns`] order: the key, then the attributes. Integers
     /// until the load sets them.
     types: Vec<ColumnType>,
@@ -33,9 +33,9 @@ pub(crate) const NULL: u32 = 0;
 impl Projection {
     pub(crate) fn new(dim: &Dim) -> Projection {
         let mut projection = Projection {
-            key_width: dim.key.len(),
+            key_len: dim.key.len(),
             types: vec![ColumnType::Int; dim.columns().count()],
-            codes: dim.attrs.iter().map(|_| Codes::default()).collect(),
+            codes: dim.attributes.iter().map(|_| Codes::default()).collect(),
             rows: FastMap::default(),
             held: 0,
             many: 0,
@@ -50,15 +50,15 @@ impl Projection {
         }
     }
 
-    fn width(&self) -> usize {
+    fn row_len(&self) -> usize {
         self.types.len()
     }
 
     /// Only the source knows the row's types, so a load sets them.
     pub(crate) fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        if types.len() != self.width() {
+        if types.len() != self.row_len() {
             return Err(RowError::Arity {
-                expected: self.width(),
+                expected: self.row_len(),
                 found: types.len(),
             });
         }
@@ -96,7 +96,7 @@ impl Projection {
     }
 
     fn add_checked(&mut self, row: &[Datum]) {
-        let (key, attrs) = row.split_at(self.key_width);
+        let (key, attrs) = row.split_at(self.key_len);
         if key.contains(&Datum::Null) {
             return;
         }
@@ -114,17 +114,17 @@ impl Projection {
     /// Adds whole rows laid end to end, as a load reads them. If a row
     /// fails the checks, none is added.
     pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let width = self.width();
-        if !rows.len().is_multiple_of(width) {
+        let row_len = self.row_len();
+        if !rows.len().is_multiple_of(row_len) {
             return Err(RowError::Arity {
-                expected: width,
-                found: rows.len() % width,
+                expected: row_len,
+                found: rows.len() % row_len,
             });
         }
-        for row in rows.chunks_exact(width) {
+        for row in rows.chunks_exact(row_len) {
             self.check(row)?;
         }
-        for row in rows.chunks_exact(width) {
+        for row in rows.chunks_exact(row_len) {
             self.add_checked(row);
         }
         Ok(())
@@ -134,7 +134,7 @@ impl Projection {
     /// projection no longer matches the table.
     pub(crate) fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let (key, attrs) = row.split_at(self.key_width);
+        let (key, attrs) = row.split_at(self.key_len);
         if key.contains(&Datum::Null) {
             return Ok(());
         }
@@ -167,23 +167,23 @@ impl Projection {
         self.rows.get(key).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn attr_value(&self, attr: usize, code: u32) -> &Datum {
+    pub(crate) fn attribute_value(&self, attr: usize, code: u32) -> &Datum {
         self.codes[attr].value(code)
     }
 
     /// Codes an attribute has, `Null`'s counted.
-    pub(crate) fn attr_codes(&self, attr: usize) -> usize {
+    pub(crate) fn attribute_codes(&self, attr: usize) -> usize {
         self.codes[attr].len()
     }
 
-    pub(crate) fn attr_type(&self, attr: usize) -> ColumnType {
-        self.types[self.key_width + attr]
+    pub(crate) fn attribute_type(&self, attr: usize) -> ColumnType {
+        self.types[self.key_len + attr]
     }
 
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.width() {
+        if row.len() != self.row_len() {
             return Err(RowError::Arity {
-                expected: self.width(),
+                expected: self.row_len(),
                 found: row.len(),
             });
         }

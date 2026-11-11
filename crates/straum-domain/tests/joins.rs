@@ -9,8 +9,8 @@ mod common;
 
 use common::{Rng, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
-    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attr, By, ColumnType, Cond, Datum, Dim,
-    Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Spec, Store, TimeKey, Value, Via,
+    Agg, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, By, ColumnType, Cond, Datum, Dim,
+    Fact, Ident, Literal, Measure, Origin, Ref, RefKind, Spec, Store, TimeKey, Value, Via, Width,
 };
 
 const HOUR: i64 = 3_600;
@@ -40,12 +40,12 @@ fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
         name: id(name),
         table: table(name),
         key: key.iter().map(|k| id(k)).collect(),
-        attrs: attrs.iter().map(|a| id(a)).collect(),
+        attributes: attrs.iter().map(|a| id(a)).collect(),
     }
 }
 
-fn attr(name: &str) -> Attr {
-    Attr {
+fn attr(name: &str) -> Attribute {
+    Attribute {
         name: id(name),
         column: id(name),
     }
@@ -63,12 +63,12 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
     };
     // A semi or anti join reads nothing; the same ref as a left or inner
     // join reads the dim's one column.
-    let r = |i: usize, name: &str, via: Via, attrs: Vec<Attr>| Ref {
+    let r = |i: usize, name: &str, via: Via, attrs: Vec<Attribute>| Ref {
         name: id(name),
         dim: id(name),
         kind: kinds[i],
         via: vec![via],
-        attrs: match kinds[i] {
+        reads: match kinds[i] {
             RefKind::Left | RefKind::Inner => attrs,
             RefKind::Semi | RefKind::Anti => vec![],
         },
@@ -79,10 +79,10 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
         table: table("orders"),
         time: straum_domain::Time {
             column: id("at"),
-            grain: Grain {
+            width: Width {
                 seconds: HOUR as u32,
             },
-            buckets: vec![Grain {
+            wider: vec![Width {
                 seconds: 24 * HOUR as u32,
             }],
             origin: Origin::Timestamptz,
@@ -97,7 +97,7 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Cond>) -> Spec {
             r(
                 TIERS,
                 "tiers",
-                Via::Attr {
+                Via::Attribute {
                     through: CUSTOMERS,
                     column: id("tier_id"),
                 },
@@ -323,7 +323,7 @@ fn naive(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds: &[RefK
                     AskKey::Key(name) => value(row, &joined, name),
                     AskKey::Time(tk) => Datum::Int(tk.start(
                         t,
-                        Grain {
+                        Width {
                             seconds: HOUR as u32,
                         },
                     )),
@@ -398,7 +398,7 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
 
 fn ask(measures: &[&str], by: &[&str], filter: Vec<Cond>) -> Ask {
     Ask {
-        fact: id("orders"),
+        view: id("orders"),
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by
             .iter()

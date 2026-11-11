@@ -2,8 +2,8 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Agg, Attr, By, Cond, Dim, Fact, Grain, Ident, Literal, Measure, Origin, Ref, RefKind, Table,
-    Time, Via,
+    Agg, Attribute, By, Cond, Dim, Fact, Ident, Literal, Measure, Origin, Ref, RefKind, Table,
+    Time, Via, Width,
 };
 
 use super::{Names, SqlError, Walker, and_parts, function_name, line, statements};
@@ -73,7 +73,7 @@ struct JoinedRef {
 #[derive(PartialEq, Eq)]
 enum Column {
     Fact(Ident),
-    Attr { through: usize, column: Ident },
+    Attribute { through: usize, column: Ident },
 }
 
 impl Walker {
@@ -120,7 +120,7 @@ impl Walker {
                 at,
                 format!(
                     "view {name} needs WITH (buckets = '<n> <unit>, ...'): every width \
-                     straum keeps, the date_bin width first"
+                     Straum keeps, the date_bin width first"
                 ),
             );
         }
@@ -146,18 +146,18 @@ impl Walker {
         // Every width is said once, in the view's `WITH`; the body's `date_bin`
         // must agree with the first, so a reader finds the whole list in one
         // place and the body still runs in PostgreSQL.
-        if *first != time.grain {
+        if *first != time.width {
             self.error(
                 at,
                 format!(
                     "view {name}: buckets starts with {first} but date_bin is {}: list \
                      every width, the date_bin width first",
-                    time.grain
+                    time.width
                 ),
             );
             return None;
         }
-        time.buckets = wider.to_vec();
+        time.wider = wider.to_vec();
         let refs = self.add_dims(at, dims, refs);
         Some(Fact {
             name,
@@ -176,7 +176,7 @@ impl Walker {
         let mut carried: Vec<(usize, Ident)> = Vec::new();
         for joined in &refs {
             for via in &joined.reference.via {
-                if let Via::Attr { through, column } = via {
+                if let Via::Attribute { through, column } = via {
                     carried.push((*through, column.clone()));
                 }
             }
@@ -185,8 +185,8 @@ impl Walker {
         for (index, mut joined) in refs.into_iter().enumerate() {
             if let Some(dim) = self.add_dim(at, dims, &mut joined) {
                 for (through, column) in &carried {
-                    if *through == index && !dim.attrs.contains(column) {
-                        dim.attrs.push(column.clone());
+                    if *through == index && !dim.attributes.contains(column) {
+                        dim.attributes.push(column.clone());
                     }
                 }
             }
@@ -211,7 +211,7 @@ impl Walker {
                 name: joined.reference.dim.clone(),
                 table: joined.table.clone(),
                 key: joined.key.clone(),
-                attrs: (joined.reference.attrs.iter())
+                attributes: (joined.reference.reads.iter())
                     .map(|attr| attr.column.clone())
                     .collect(),
                 as_text: joined.as_text.clone(),
@@ -245,10 +245,10 @@ impl Walker {
         joined.reference.via = via;
         joined.key.clone_from(&dim.key);
         // A column is one spelling in every view, since it is one type.
-        for attr in &joined.reference.attrs {
+        for attr in &joined.reference.reads {
             let column = &attr.column;
             let cast = joined.as_text.contains(column);
-            let read_before = dim.attrs.contains(column);
+            let read_before = dim.attributes.contains(column);
             let cast_before = dim.as_text.contains(column);
             if read_before && cast != cast_before {
                 let (here, there) = if cast {
@@ -266,7 +266,7 @@ impl Walker {
                 );
             }
             if !read_before {
-                dim.attrs.push(column.clone());
+                dim.attributes.push(column.clone());
             }
             if cast && !cast_before {
                 dim.as_text.push(column.clone());
@@ -277,8 +277,8 @@ impl Walker {
 
     /// `WITH (buckets = '1 hour, 1 day, 7 days')`. The `key` option of
     /// earlier specs is refused by name, since a spec that still has it was
-    /// written for a straum that needed it.
-    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Grain>> {
+    /// written for a Straum that needed it.
+    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Width>> {
         let mut buckets = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
@@ -303,7 +303,7 @@ impl Walker {
                     self.error(
                         at,
                         format!(
-                            "view option {option} is gone: straum reads the whole old row \
+                            "view option {option} is gone: Straum reads the whole old row \
                              under REPLICA IDENTITY FULL, so drop it"
                         ),
                     );
@@ -330,7 +330,7 @@ impl Walker {
             ) => {
                 let mut buckets = Vec::new();
                 for width in s.split(',').map(str::trim) {
-                    match grain(width) {
+                    match parse_width(width) {
                         Some(g) => buckets.push(g),
                         None => self.error(
                             line(value),
@@ -380,7 +380,7 @@ impl Walker {
         let mut positions = Vec::new();
         let mut buckets = Vec::new();
         let mut by = Vec::new();
-        let mut attrs: Vec<Vec<Attr>> = vec![Vec::new(); scope.refs.len()];
+        let mut attrs: Vec<Vec<Attribute>> = vec![Vec::new(); scope.refs.len()];
         for (index, &(expr, alias)) in named.iter().enumerate() {
             match expr {
                 sql::Expr::Function(function) if is_date_bin(function) => {
@@ -414,7 +414,9 @@ impl Walker {
             let (read, column) = match &key.column {
                 _ if !key.cast => continue,
                 Column::Fact(column) => (&mut as_text, column),
-                Column::Attr { through, column } => (&mut scope.refs[*through].as_text, column),
+                Column::Attribute { through, column } => {
+                    (&mut scope.refs[*through].as_text, column)
+                }
             };
             if !read.contains(column) {
                 read.push(column.clone());
@@ -458,7 +460,7 @@ impl Walker {
     /// A ref reads the dim columns the view selects, through the via
     /// columns that key its cells. A join that selects nothing would do
     /// nothing; a semi or anti join selects nothing by nature.
-    fn ref_attrs(&mut self, at: u64, refs: &mut [JoinedRef], attrs: Vec<Vec<Attr>>) {
+    fn ref_attrs(&mut self, at: u64, refs: &mut [JoinedRef], attrs: Vec<Vec<Attribute>>) {
         for (joined, attrs) in refs.iter_mut().zip(attrs) {
             let reference = &mut joined.reference;
             let selects_none = attrs.is_empty();
@@ -479,7 +481,7 @@ impl Walker {
                 ),
                 _ => {}
             }
-            reference.attrs = attrs;
+            reference.reads = attrs;
         }
     }
 
@@ -510,7 +512,7 @@ impl Walker {
         expr: &sql::Expr,
         alias: &sql::Ident,
         by: &mut Vec<By>,
-        attrs: &mut [Vec<Attr>],
+        attrs: &mut [Vec<Attribute>],
     ) {
         let name = self.ident(alias);
         let (spelled, read) = match null_test(expr) {
@@ -539,12 +541,12 @@ impl Walker {
                 negated: !is_null,
             }),
             (
-                Column::Attr {
+                Column::Attribute {
                     through,
                     column: attr_column,
                 },
                 _,
-            ) => attrs[*through].push(Attr {
+            ) => attrs[*through].push(Attribute {
                 name: name.clone(),
                 column: attr_column.clone(),
             }),
@@ -575,7 +577,7 @@ impl Walker {
     }
 
     /// A column that can't be `::text`: the cast goes on a key or a
-    /// FILTER column, where the text is what straum keeps.
+    /// FILTER column, where the text is what Straum keeps.
     fn uncast(&mut self, expr: &sql::Expr, cast: bool, what: &str) -> Option<()> {
         if cast {
             self.error(
@@ -667,7 +669,7 @@ impl Walker {
                 dim: table.name.clone(),
                 kind,
                 via,
-                attrs: Vec::new(),
+                reads: Vec::new(),
             },
             table,
             key,
@@ -743,7 +745,7 @@ impl Walker {
         {
             return Some(joined.reference.via[position].clone());
         }
-        Some(Via::Attr { through, column })
+        Some(Via::Attribute { through, column })
     }
 
     /// The fact, its joins, and the semi and anti joins in WHERE; the rest
@@ -923,7 +925,7 @@ impl Walker {
         let position = joined.key.iter().position(|key| *key == column);
         let column = match position.map(|position| &joined.reference.via[position]) {
             Some(Via::Fact(via)) => Column::Fact(via.clone()),
-            Some(Via::Attr { .. }) | None => Column::Attr { through, column },
+            Some(Via::Attribute { .. }) | None => Column::Attribute { through, column },
         };
         Some((column, cast))
     }
@@ -936,7 +938,7 @@ impl Walker {
     ) -> Option<(Ident, bool)> {
         match self.column(scope, expr)? {
             (Column::Fact(column), cast) => Some((column, cast)),
-            (Column::Attr { .. }, _) => {
+            (Column::Attribute { .. }, _) => {
                 self.error(
                     line(expr),
                     format!("{what} must be a {} column", scope.alias),
@@ -994,7 +996,7 @@ impl Walker {
 
     /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`, or
     /// `timestamp 'epoch'` for a column without a zone. The origin is fixed
-    /// so buckets start on midnight, as straum's do; which type it has, the
+    /// so buckets start on midnight, as Straum's do; which type it has, the
     /// catalog checks against the column.
     fn bucket(
         &mut self,
@@ -1023,14 +1025,14 @@ impl Walker {
             self.reject(at, "date_bin arguments", function);
             return None;
         };
-        let grain = match width {
+        let parsed = match width {
             sql::Expr::Value(sql::ValueWithSpan {
                 value: sql::Value::SingleQuotedString(s),
                 span: _,
-            }) => grain(s),
+            }) => parse_width(s),
             _ => None,
         };
-        if grain.is_none() {
+        if parsed.is_none() {
             self.error(
                 line(width),
                 format!("date_bin width {width}: use '<n> seconds|minutes|hours|days'"),
@@ -1062,8 +1064,8 @@ impl Walker {
         self.uncast(column_expr, cast, "the date_bin column")?;
         Some(Time {
             column,
-            grain: grain?,
-            buckets: Vec::new(),
+            width: parsed?,
+            wider: Vec::new(),
             origin: epoch?,
         })
     }
@@ -1162,7 +1164,7 @@ fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
     }
 }
 
-fn grain(s: &str) -> Option<Grain> {
+fn parse_width(s: &str) -> Option<Width> {
     let [count, unit] = s.split_whitespace().collect::<Vec<_>>()[..] else {
         return None;
     };
@@ -1177,10 +1179,10 @@ fn grain(s: &str) -> Option<Grain> {
         .parse::<u32>()
         .ok()?
         .checked_mul(scale)
-        .map(|seconds| Grain { seconds })
+        .map(|seconds| Width { seconds })
 }
 
-/// A column reference as straum SQL spells it: `sqlparser` prints the cast
+/// A column reference as Straum SQL spells it: `sqlparser` prints the cast
 /// as `::TEXT`.
 fn spelling(expr: &sql::Expr) -> String {
     match expr {

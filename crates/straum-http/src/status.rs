@@ -1,4 +1,4 @@
-//! `/status`: what straum has done, in plain text for people, as
+//! `/status`: what Straum has done, in plain text for people, as
 //! `straum status` prints it.
 
 use std::time::SystemTime;
@@ -69,7 +69,7 @@ pub(crate) fn write(status: &Status) -> String {
         ("applied", applied),
         ("as of", as_of),
         ("lag", lag),
-        ("WAL held", wal),
+        ("WAL retained", wal),
         ("starts", status.starts.to_string()),
         ("failures", status.failures.to_string()),
         ("last failure", last_failure),
@@ -133,7 +133,7 @@ ready:        yes
 applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
 as of:        2024-01-02T00:01:00Z, every commit before it applied
 lag:          1.3 s, at most 30 s
-WAL held:     256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
+WAL retained: 256.0 MiB, at most 4096.0 MiB; the server is at 16/C0000000
 starts:       2
 failures:     1
 last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
@@ -175,7 +175,7 @@ ready:        no, trips: one
 applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
-WAL held:     unknown until every table is loaded
+WAL retained: unknown until every table is loaded
 starts:       2
 failures:     1
 last failure: 1970-01-01T00:00:00Z: trips: one

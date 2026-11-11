@@ -30,6 +30,6 @@ pub trait Spill: Send + Sync {
 #[derive(Clone)]
 pub struct Spilling {
     pub spill: Arc<dyn Spill>,
-    /// A bucket is sealed once it ended this long ago, by straum's clock.
+    /// A bucket is sealed once it ended this long ago, by Straum's clock.
     pub seal_after: Duration,
 }

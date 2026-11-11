@@ -48,7 +48,7 @@ apps in the cluster ask at `http://straum:8080/ask`.
 | `dsn.key` | `dsn` | The key in that Secret. |
 | `publication` | `straum` | The publication Straum reads. |
 | `maxLag` | `30` | Seconds behind PostgreSQL before `/readyz` turns off. |
-| `maxRetainedWal` | `4Gi` | WAL held for the slot before Straum starts over. |
+| `maxRetainedWal` | `4Gi` | WAL retained for the slot before Straum starts over. |
 | `maxTransactionRows` | `100000` | Rows one transaction may change before Straum starts over instead of applying it. |
 | `replicaCount` | `1` | Pods. Each holds its own slot and loads every table. |
 | `service.port` | `8080` | The Service's port. |

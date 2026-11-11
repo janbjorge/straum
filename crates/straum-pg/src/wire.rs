@@ -126,7 +126,7 @@ impl Conn {
                     let offered: Vec<&str> = body.mechanisms().collect()?;
                     if !offered.contains(&SCRAM_SHA_256) {
                         return Err(Error::Protocol(format!(
-                            "SASL mechanisms {offered:?}; straum needs {SCRAM_SHA_256}"
+                            "SASL mechanisms {offered:?}; Straum needs {SCRAM_SHA_256}"
                         )));
                     }
                     let password = dsn
@@ -161,8 +161,8 @@ impl Conn {
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 _ => {
                     return Err(Error::Protocol(
-                        "an authentication request straum doesn't support; \
-                         straum signs in with SCRAM-SHA-256 or trust"
+                        "an authentication request Straum doesn't support; \
+                         Straum signs in with SCRAM-SHA-256 or trust"
                             .into(),
                     ));
                 }

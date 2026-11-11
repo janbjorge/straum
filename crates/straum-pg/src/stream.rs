@@ -1,7 +1,7 @@
 //! The commit stream, read by a thread that owns the replication socket.
 //! The thread decodes commits ahead of the writer, answers keepalives and
 //! reports the applied LSN while the writer applies, so PostgreSQL never
-//! times straum out for being busy.
+//! times Straum out for being busy.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -57,7 +57,7 @@ impl Stream {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
         });
-        let follower = Follower {
+        let thread = StreamThread {
             conn,
             decoder,
             commits,
@@ -68,7 +68,7 @@ impl Stream {
         };
         let thread = thread::Builder::new()
             .name("straum-stream".into())
-            .spawn(move || follower.run())?;
+            .spawn(move || thread.run())?;
         Ok(Stream {
             commits: receiver,
             shared,
@@ -107,7 +107,7 @@ impl Drop for Stream {
 }
 
 /// The thread's end: the socket, the decoder and what it has reported.
-struct Follower {
+struct StreamThread {
     conn: Conn,
     decoder: Decoder,
     commits: SyncSender<Result<Commit, Error>>,
@@ -120,7 +120,7 @@ struct Follower {
     last_status: Instant,
 }
 
-impl Follower {
+impl StreamThread {
     fn run(mut self) {
         if let Err(e) = self.serve() {
             // The writer may be gone, or the connection with it.
@@ -150,7 +150,7 @@ impl Follower {
     /// `false` once the writer is gone.
     fn copy_data(&mut self, data: &[u8]) -> Result<bool, Error> {
         let message = pgoutput::copy_message(data)
-            .map_err(|_| Error::protocol("a copy message straum doesn't know"))?;
+            .map_err(|_| Error::protocol("a copy message Straum doesn't know"))?;
         match message {
             CopyMessage::XLogData(bytes) => {
                 if let Some(commit) = self.decoder.feed(pgoutput::decode(bytes)?)? {

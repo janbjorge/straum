@@ -1,5 +1,5 @@
 //! TLS to PostgreSQL: rustls on graviola, which is pure Rust. The server's
-//! certificate must chain to a root straum trusts and name the host.
+//! certificate must chain to a root Straum trusts and name the host.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -16,7 +16,7 @@ use crate::error::Error;
 pub(crate) type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
 /// Asks PostgreSQL for TLS on `tcp` and shakes hands, so a certificate
-/// straum doesn't trust fails the connect. The roots are those in the PEM
+/// Straum doesn't trust fails the connect. The roots are those in the PEM
 /// file `root_cert`, else Mozilla's, built in.
 pub(crate) fn start(
     mut tcp: TcpStream,

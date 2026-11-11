@@ -32,16 +32,16 @@ a DSN the role is `straum` and the SQL says how to give it a password.
 For the [quick start](quick-start.md):
 
 ```sql
--- straum setup: run once, as an owner of the tables.
+-- Straum setup: run once, as an owner of the tables.
 -- wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
 CREATE PUBLICATION "straum" FOR TABLE "public"."customers", "public"."orders";
--- fact orders: straum needs the old row of every update and delete; inserts cost no more.
+-- fact orders: Straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
--- dim customers: straum holds its key and the columns the views read, and follows it.
+-- dim customers: Straum holds its key and the columns the views read, and follows it.
 ALTER TABLE "public"."customers" REPLICA IDENTITY FULL;
 ```
 
@@ -99,17 +99,17 @@ every problem at once, each with its fix, in its log, `/readyz` and
 after a wait. Some of the checks:
 
 ```text
-wal_level is replica; straum needs logical, which takes a restart
+wal_level is replica; Straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
 orders: publication straum leaves out public.orders: ALTER PUBLICATION straum ADD TABLE public.orders
-orders: straum's role can't read public.orders: GRANT SELECT ON public.orders
-orders: column amount of public.orders is double precision; straum needs an integer type or numeric(p, s) with p at most 18 there
+orders: Straum's role can't read public.orders: GRANT SELECT ON public.orders
+orders: column amount of public.orders is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
 orders: column status of public.orders is order_status, an enum; write status::text
 orders: column note of public.orders is text, not an enum; drop the ::text
-fact orders: measure paid compares status with 'payed', which is no label of order_status
-fact orders: straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
-dim customers: straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
-fact orders: ref customer joins customer_id (an integer) to id (text); they must read alike
+view orders: measure paid compares status with 'payed', which is no label of order_status
+fact orders: Straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
+dim customers: Straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
+view orders: join customer joins customer_id (an integer) to id (text); they must read alike
 ```
 
 ## What Straum costs the server

@@ -2,8 +2,8 @@ mod common;
 
 use common::{FEB, JAN, cond, id};
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attr, By, Grain, Literal, Origin, RefKind, Slot, Spec, SpecError,
-    Via,
+    Agg, Ask, AskError, AskKey, Attribute, By, KeyPart, Literal, Origin, RefKind, Spec, SpecError,
+    Via, Width,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -16,8 +16,8 @@ fn col(s: &str) -> By {
     }
 }
 
-fn attr(name: &str, column: &str) -> Attr {
-    Attr {
+fn attr(name: &str, column: &str) -> Attribute {
+    Attribute {
         name: id(name),
         column: id(column),
     }
@@ -37,13 +37,13 @@ fn spec_errors(src: &str) -> Vec<SpecError> {
 fn sql_errors(src: &str) -> Vec<SqlError> {
     match parse(src) {
         Err(Error::Sql(errors)) => errors,
-        other => panic!("expected straum SQL errors, got {other:?}"),
+        other => panic!("expected Straum SQL errors, got {other:?}"),
     }
 }
 
 fn ask_view_t(by: &[&str]) -> Ask {
     Ask {
-        fact: id("t"),
+        view: id("t"),
         measures: vec![id("n")],
         by: by.iter().map(|k| AskKey::Key(id(k))).collect(),
         filter: vec![],
@@ -56,11 +56,11 @@ fn ask_view_t(by: &[&str]) -> Ask {
 fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
     (spec.fact(fact).unwrap().rollup_key())
         .map(|slot| match slot {
-            Slot::Column(c) => c.to_string(),
-            Slot::IsNull { column, negated } => {
+            KeyPart::Column(c) => c.to_string(),
+            KeyPart::IsNull { column, negated } => {
                 format!("{column} is {}null", if negated { "not " } else { "" })
             }
-            Slot::Bucket => "bucket".into(),
+            KeyPart::Bucket => "bucket".into(),
         })
         .collect()
 }
@@ -69,9 +69,9 @@ fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
 fn taxi_parses() {
     let spec = taxi();
     let trips = spec.fact("trips").unwrap();
-    assert_eq!(trips.time.grain, Grain { seconds: 900 });
+    assert_eq!(trips.time.width, Width { seconds: 900 });
     assert_eq!(
-        spec.dim("taxi_zones").unwrap().attrs,
+        spec.dim("taxi_zones").unwrap().attributes,
         [id("borough"), id("zone"), id("service_zone")]
     );
     assert_eq!(
@@ -85,7 +85,7 @@ fn taxi_parses() {
         ]
     );
     assert_eq!(
-        trips.refs[0].attrs,
+        trips.refs[0].reads,
         [
             attr("borough", "borough"),
             attr("zone", "zone"),
@@ -127,12 +127,12 @@ fn base_parses() {
     assert_eq!(t.by, [col("a"), col("z_id")]);
     assert_eq!(t.refs[0].name, id("z"));
     assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
-    assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
-    assert!(t.time.buckets.is_empty());
+    assert_eq!(t.refs[0].reads, [attr("name", "name")]);
+    assert!(t.time.wider.is_empty());
     assert_eq!(t.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
     assert_eq!(
-        (&z.key[..], &z.attrs[..]),
+        (&z.key[..], &z.attributes[..]),
         (&[id("id")][..], &[id("name")][..])
     );
 }
@@ -165,7 +165,7 @@ fn keys_go_by_their_select_name() {
             }
         ]
     );
-    assert_eq!(t.refs[0].attrs, [attr("label", "name")]);
+    assert_eq!(t.refs[0].reads, [attr("label", "name")]);
     assert_eq!(
         t.measure("some").unwrap().filter,
         [
@@ -195,8 +195,8 @@ fn buckets_parse() {
     let src = base("buckets = '1 hour'", "buckets = '1 hour, 1 day,7 days'");
     let spec = parse(&src).unwrap();
     assert_eq!(
-        spec.fact("t").unwrap().time.buckets,
-        [Grain { seconds: 86_400 }, Grain { seconds: 604_800 }]
+        spec.fact("t").unwrap().time.wider,
+        [Width { seconds: 86_400 }, Width { seconds: 604_800 }]
     );
 
     let src = base(
@@ -221,7 +221,7 @@ fn buckets_are_required_and_start_at_the_grain() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
         errors[0].msg,
-        "view t needs WITH (buckets = '<n> <unit>, ...'): every width straum keeps, \
+        "view t needs WITH (buckets = '<n> <unit>, ...'): every width Straum keeps, \
          the date_bin width first"
     );
 
@@ -292,7 +292,7 @@ LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
     let t = spec.fact("t").unwrap();
-    assert_eq!(t.time.grain, Grain { seconds: 30 });
+    assert_eq!(t.time.width, Width { seconds: 30 });
     // A dim key column names the fact column joined to it.
     assert_eq!(t.by, [col("a"), col("z_id")]);
     let aggs: Vec<&Agg> = t.measures.iter().map(|m| &m.agg).collect();
@@ -308,11 +308,11 @@ GROUP BY 1, 2, 3, 4";
             &Agg::Sum(id("z_id")),
         ]
     );
-    assert_eq!(spec.dim("z").unwrap().attrs, [id("name")]);
+    assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
 
     for (width, seconds) in [("1 second", 1), ("5 minute", 300), ("1 day", 86_400)] {
         let spec = parse(&base("1 hour", width).replace("1 hour", width)).unwrap();
-        assert_eq!(spec.fact("t").unwrap().time.grain, Grain { seconds });
+        assert_eq!(spec.fact("t").unwrap().time.width, Width { seconds });
     }
 }
 
@@ -332,7 +332,7 @@ fn a_ref_on_two_columns() {
     assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
     let g = spec.dim("g").unwrap();
     assert_eq!(g.key, [id("org_id"), id("grp_id")]);
-    assert_eq!(g.attrs, [id("label")]);
+    assert_eq!(g.attributes, [id("label")]);
     // A dim key column names the fact column joined to it.
     let through = GROUPED.replace(
         "f.org AS org, f.grp AS grp",
@@ -378,7 +378,7 @@ fn a_ref_on_two_columns_rejected() {
     let t = without_grp.fact("t").unwrap();
     assert_eq!(t.by, [col("org")]);
     assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
-    assert_eq!(t.refs[0].attrs, [attr("label", "label")]);
+    assert_eq!(t.refs[0].reads, [attr("label", "label")]);
     let errors = sql_errors(
         &GROUPED
             .replace(
@@ -428,7 +428,7 @@ fn a_ref_reads_what_the_view_selects() {
     let t = spec.fact("t").unwrap();
     assert_eq!(t.by, [col("a")]);
     assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
-    assert_eq!(t.refs[0].attrs, [attr("name", "name")]);
+    assert_eq!(t.refs[0].reads, [attr("name", "name")]);
     // The via column keys the cells, selected or not.
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
     assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
@@ -436,7 +436,7 @@ fn a_ref_reads_what_the_view_selects() {
         t.measure("named").unwrap().filter,
         [cond("name", vec![Literal::Text("x".into())])]
     );
-    assert_eq!(spec.dim("z").unwrap().attrs, [id("name")]);
+    assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
 
     // Asks name the attribute as the view named it; the ref itself and
     // its unread columns are no keys.
@@ -455,7 +455,7 @@ fn a_ref_reads_what_the_view_selects() {
     let spec = parse(&both).unwrap();
     let u = spec.fact("u").unwrap();
     assert_eq!(u.by, [col("a"), col("z_id")]);
-    assert_eq!(u.refs[0].attrs, [attr("name", "name")]);
+    assert_eq!(u.refs[0].reads, [attr("name", "name")]);
     let errors = sql_errors(&ATTR_ONLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
     assert_eq!(
         errors,
@@ -544,7 +544,7 @@ fn null_ness_keys() {
     );
     // Asks name the key.
     let ask = Ask {
-        fact: id("t"),
+        view: id("t"),
         measures: vec![id("n")],
         by: vec![AskKey::Key(id("done"))],
         filter: vec![cond("open", vec![Literal::Bool(true)])],
@@ -622,7 +622,7 @@ fn views_share_a_dim() {
     );
     let spec = parse(&src).unwrap();
     assert_eq!(
-        spec.dim("z").unwrap().attrs,
+        spec.dim("z").unwrap().attributes,
         [id("name"), id("code"), id("kind")]
     );
     assert!(spec.fact("u").is_some());
@@ -654,7 +654,7 @@ fn spec_errors_pass_through() {
     assert_eq!(
         spec_errors(&src),
         [
-            SpecError::BadGrain {
+            SpecError::BadWidth {
                 fact: id("t"),
                 seconds: 420
             },
@@ -692,7 +692,7 @@ fn spec_errors_pass_through() {
     );
 }
 
-/// Every construct outside straum SQL is an error that names it; none is
+/// Every construct outside Straum SQL is an error that names it; none is
 /// ignored. `(from, to, line, message fragment)` edits to `BASE`.
 fn rejects(cases: &[(&str, &str, u64, &str)]) {
     let mut failed = Vec::new();
@@ -724,43 +724,43 @@ fn view_shapes_outside_the_subset_are_rejected() {
             "CREATE VIEW t",
             "CREATE MATERIALIZED VIEW t",
             1,
-            "MATERIALIZED is not in straum SQL",
+            "MATERIALIZED is not in Straum SQL",
         ),
         (
             "CREATE VIEW t",
             "CREATE TEMPORARY VIEW t",
             1,
-            "TEMPORARY is not in straum SQL",
+            "TEMPORARY is not in Straum SQL",
         ),
         (
             "CREATE VIEW t",
             "CREATE VIEW IF NOT EXISTS t",
             1,
-            "IF NOT EXISTS is not in straum SQL",
+            "IF NOT EXISTS is not in Straum SQL",
         ),
         (
             "CREATE VIEW t",
             "CREATE OR ALTER VIEW t",
             1,
-            "OR ALTER is not in straum SQL",
+            "OR ALTER is not in Straum SQL",
         ),
         (
             "CREATE VIEW t",
             "CREATE SECURE VIEW t",
             1,
-            "SECURE is not in straum SQL",
+            "SECURE is not in Straum SQL",
         ),
         (
             "WITH (buckets = '1 hour') AS",
             "COPY GRANTS AS",
             1,
-            "COPY GRANTS is not in straum SQL",
+            "COPY GRANTS is not in Straum SQL",
         ),
         (
             "VIEW t WITH",
             "VIEW t (a, b) WITH",
             1,
-            "a view column list is not in straum SQL",
+            "a view column list is not in Straum SQL",
         ),
         (
             "VIEW t WITH",
@@ -772,7 +772,7 @@ fn view_shapes_outside_the_subset_are_rejected() {
             "VIEW t WITH",
             "VIEW \"t\" WITH",
             1,
-            "quoted identifier `\"t\"` is not in straum SQL",
+            "quoted identifier `\"t\"` is not in Straum SQL",
         ),
     ]);
 }
@@ -786,20 +786,20 @@ fn view_options_other_than_buckets_are_rejected() {
             "WITH (buckets = '1 hour')",
             "WITH (key = id)",
             1,
-            "view option key = id is gone: straum reads the whole old row \
+            "view option key = id is gone: Straum reads the whole old row \
              under REPLICA IDENTITY FULL, so drop it",
         ),
         (
             "WITH (buckets = '1 hour')",
             "WITH (colour = 1)",
             1,
-            "view option `colour = 1` is not in straum SQL",
+            "view option `colour = 1` is not in Straum SQL",
         ),
         (
             "WITH (buckets = '1 hour')",
             "WITH (append = true)",
             1,
-            "view option `append = true` is not in straum SQL",
+            "view option `append = true` is not in Straum SQL",
         ),
         (
             "WITH (buckets = '1 hour')",
@@ -848,7 +848,7 @@ fn query_clauses_outside_the_subset_are_rejected() {
             "AS\nSELECT",
             "AS\nWITH c AS (SELECT 1) SELECT",
             2,
-            "WITH (a CTE) is not in straum SQL",
+            "WITH (a CTE) is not in Straum SQL",
         ),
         (
             "SELECT date_bin",
@@ -1460,7 +1460,7 @@ GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
     let t = spec.fact("t").unwrap();
     let shown: Vec<(String, RefKind, Vec<Via>, usize)> = (t.refs.iter())
-        .map(|r| (r.name.to_string(), r.kind, r.via.clone(), r.attrs.len()))
+        .map(|r| (r.name.to_string(), r.kind, r.via.clone(), r.reads.len()))
         .collect();
     assert_eq!(
         shown,
@@ -1469,7 +1469,7 @@ GROUP BY 1, 2, 3, 4";
             (
                 "w".into(),
                 RefKind::Left,
-                vec![Via::Attr {
+                vec![Via::Attribute {
                     through: 0,
                     column: id("w_id")
                 }],
@@ -1481,7 +1481,7 @@ GROUP BY 1, 2, 3, 4";
                 RefKind::Anti,
                 vec![
                     Via::Fact(id("a")),
-                    Via::Attr {
+                    Via::Attribute {
                         through: 0,
                         column: id("name")
                     }
@@ -1491,7 +1491,7 @@ GROUP BY 1, 2, 3, 4";
         ]
     );
     // The dim joined through carries the column read for the key.
-    assert_eq!(spec.dim("z").unwrap().attrs, [id("name"), id("w_id")]);
+    assert_eq!(spec.dim("z").unwrap().attributes, [id("name"), id("w_id")]);
     assert_eq!(spec.dim("b").unwrap().key, [id("x"), id("y")]);
     assert_eq!(
         t.filter,
@@ -1572,13 +1572,13 @@ fn other_statements_are_rejected() {
             SqlError {
                 line: 1,
                 msg:
-                    "statement `SELECT 1` is not in straum SQL, the PostgreSQL subset made only for straum"
+                    "statement `SELECT 1` is not in Straum SQL, the PostgreSQL subset made only for Straum"
                         .into()
             },
             SqlError {
                 line: 2,
-                msg: "statement `CREATE TABLE t (a INT)` is not in straum SQL, \
-                      the PostgreSQL subset made only for straum"
+                msg: "statement `CREATE TABLE t (a INT)` is not in Straum SQL, \
+                      the PostgreSQL subset made only for Straum"
                     .into()
             },
         ]

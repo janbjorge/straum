@@ -20,7 +20,7 @@ use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, Wa
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 
-use crate::catalog::{self, Table, Tables};
+use crate::catalog::{self, Checked, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -46,7 +46,7 @@ pub(crate) fn tasks_tables() -> (Spec, Tables) {
          GROUP BY 1, 2, 3, 4",
     )
     .unwrap();
-    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Table {
+    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Checked {
         enums: Vec::new(),
         name: id(name),
         schema: id("public"),
@@ -105,7 +105,7 @@ const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
 };
-/// Rows a transaction may change before straum starts over; no test but
+/// Rows a transaction may change before Straum starts over; no test but
 /// the one for it comes near.
 const MAX_ROWS: usize = 10_000;
 const READY: &str = "database system is ready to accept connections";
@@ -284,7 +284,7 @@ impl Drop for TempFile {
     }
 }
 
-/// CI sets `STRAUM_TEST_POSTGRES` to each major straum supports.
+/// CI sets `STRAUM_TEST_POSTGRES` to each major Straum supports.
 fn tag() -> String {
     std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
 }
@@ -421,7 +421,7 @@ fn id(s: &str) -> Ident {
 
 fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
-        fact: id(fact),
+        view: id(fact),
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by
             .iter()
@@ -664,8 +664,8 @@ fn picks_oracles() -> Vec<Oracle> {
     vec![by_bucket, window]
 }
 
-/// Asks straum what each oracle's SQL answers in PostgreSQL and compares the
-/// rows. `None` when straum isn't ready.
+/// Asks Straum what each oracle's SQL answers in PostgreSQL and compares the
+/// rows. `None` when Straum isn't ready.
 fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
     for Oracle { sql, ask, scales } in oracles {
         let answered = match app.ask(ask) {
@@ -674,12 +674,12 @@ fn compare(db: &mut Db, app: &App, oracles: &[Oracle]) -> Option<()> {
             Err(e) => panic!("{e}"),
         };
         let got_scales: Vec<u32> = answered.answer.columns.iter().map(|c| c.scale).collect();
-        assert_eq!(got_scales, *scales, "{}", ask.fact);
+        assert_eq!(got_scales, *scales, "{}", ask.view);
         let mut got = printed(&answered.answer, scales);
         let mut expected = db.rows(sql);
         got.sort();
         expected.sort();
-        assert_eq!(got, expected, "{}", ask.fact);
+        assert_eq!(got, expected, "{}", ask.view);
     }
     Some(())
 }
@@ -837,7 +837,7 @@ fn follows_the_database() {
         trips.push(next);
         next += 1;
         // The zones stand still: a fresh join in PostgreSQL is then what
-        // straum must hold. What a zone change does is settled in
+        // Straum must hold. What a zone change does is settled in
         // `attributes_are_as_of_ingest`.
         for _ in 0..rng.below(4) {
             let pick = trips[rng.below(trips.len() as u64) as usize];
@@ -920,7 +920,7 @@ fn follows_the_task_tables() {
     ));
     let spec = db.spec(TASKS_SPEC);
     assert!(crate::plan(&spec, "p", "r", None).contains(
-        "-- dim taskgroups: straum holds its key and the columns the views read, and follows it."
+        "-- dim taskgroups: Straum holds its key and the columns the views read, and follows it."
     ));
     let mut writer = Writer::new(App::new(spec, LIMITS, None), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
@@ -1000,7 +1000,7 @@ fn follows_the_task_tables() {
     );
 }
 
-/// A transaction at the cap applies; one past it starts straum over, and
+/// A transaction at the cap applies; one past it starts Straum over, and
 /// the new load holds its rows.
 #[test]
 fn a_transaction_past_the_cap_starts_over() {
@@ -1033,8 +1033,8 @@ fn a_transaction_past_the_cap_starts_over() {
     assert_eq!(
         err,
         format!(
-            "transaction {} changes more than {CAP} rows straum reads, the --max-transaction-rows \
-             cap; straum loads again from a snapshot after it",
+            "transaction {} changes more than {CAP} rows Straum reads, the --max-transaction-rows \
+             cap; Straum loads again from a snapshot after it",
             err.split(' ').nth(1).unwrap_or_default()
         ),
         "{err}"
@@ -1144,7 +1144,7 @@ fn a_dim_change_shows_at_once() {
     assert!(matches!(nulls, Some(Value::Int(n)) if n >= 2), "{nulls:?}");
 }
 
-/// A value straum can't read stops the load, or the stream, naming the
+/// A value Straum can't read stops the load, or the stream, naming the
 /// table and column it was in, so the row can be found and fixed.
 /// A shop with every join kind at once: orders joined to customers, which
 /// may hold a key twice and lack a key, through them to tiers, kept by a
@@ -1463,7 +1463,7 @@ fn an_unfit_change_starts_over() {
     );
     let err = writer.step().unwrap_err().to_string();
     assert!(
-        err.contains("fact logins: straum needs the whole old row of every update and delete"),
+        err.contains("fact logins: Straum needs the whole old row of every update and delete"),
         "{err}"
     );
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
@@ -1482,7 +1482,7 @@ fn an_unfit_change_starts_over() {
     assert_eq!(err, "a change no longer fits zones");
     let err = writer.step().unwrap_err().to_string();
     assert!(
-        err.contains("dim zones: straum needs the whole old row of every update and delete"),
+        err.contains("dim zones: Straum needs the whole old row of every update and delete"),
         "{err}"
     );
     db.run("ALTER TABLE $S.zones REPLICA IDENTITY FULL");
@@ -1621,7 +1621,7 @@ fn says_to_set_wal_level_logical() {
         let db = Db::new(&pg, "replica", TABLES);
         let err = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
         assert!(
-            err.contains("wal_level is replica; straum needs logical, which takes a restart"),
+            err.contains("wal_level is replica; Straum needs logical, which takes a restart"),
             "{tag}: {err}"
         );
     }
@@ -1753,7 +1753,7 @@ fn a_changed_column_type_starts_over() {
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(3)).expect("ready");
 
-    // A column straum reads is gone: straum stops and the setup check says why.
+    // A column Straum reads is gone: Straum stops and the setup check says why.
     db.run("ALTER TABLE $S.trips DROP COLUMN rider");
     db.run(
         "INSERT INTO $S.trips (id, at, kind, zone_id, fare, tip)
@@ -1827,7 +1827,7 @@ fn plan_sets_up_what_straum_needs() {
     let sql = crate::plan(&spec, "plan", "straum_plan", None);
     assert_eq!(
         sql,
-        "-- straum setup: run once, as an owner of the tables.
+        "-- Straum setup: run once, as an owner of the tables.
 -- wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
@@ -1835,11 +1835,11 @@ CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";
 GRANT SELECT ON \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\" TO \"straum_plan\";
 CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\";
--- fact trips: straum needs the old row of every update and delete; inserts cost no more.
+-- fact trips: Straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
--- fact logins: straum needs the old row of every update and delete; inserts cost no more.
+-- fact logins: Straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"logins\" REPLICA IDENTITY FULL;
--- dim zones: straum holds its key and the columns the views read, and follows it.
+-- dim zones: Straum holds its key and the columns the views read, and follows it.
 ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
 "
     );
@@ -1937,7 +1937,7 @@ fn setup_problems_say_what_to_fix() {
             "filtered",
             format!("{table} CREATE PUBLICATION $S FOR TABLE $S.f WHERE (x > 0);"),
             spec.clone(),
-            Some("f: publication filtered filters the rows of filtered.f; straum needs every row"),
+            Some("f: publication filtered filters the rows of filtered.f; Straum needs every row"),
         ),
         (
             "listed",
@@ -1965,7 +1965,7 @@ fn setup_problems_say_what_to_fix() {
             spec.clone(),
             Some(
                 "f: column x of float.f is double precision; \
-             straum needs an integer type or numeric(p, s) with p at most 18 there",
+             Straum needs an integer type or numeric(p, s) with p at most 18 there",
             ),
         ),
         (
@@ -2005,7 +2005,7 @@ fn setup_problems_say_what_to_fix() {
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some(
                 "f: column k of timekey.f is timestamp with time zone; \
-             straum needs an integer type, numeric(p, s), boolean or text there",
+             Straum needs an integer type, numeric(p, s), boolean or text there",
             ),
         ),
         (
@@ -2016,7 +2016,7 @@ fn setup_problems_say_what_to_fix() {
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some(
                 "f: column k of naivekey.f is timestamp without time zone; \
-             straum needs an integer type, numeric(p, s), boolean or text there",
+             Straum needs an integer type, numeric(p, s), boolean or text there",
             ),
         ),
         (
@@ -2024,7 +2024,7 @@ fn setup_problems_say_what_to_fix() {
             format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, x int); {publish}"),
             spec.clone(),
             Some(
-                "fact f: straum needs the whole old row of every update and delete: \
+                "fact f: Straum needs the whole old row of every update and delete: \
              ALTER TABLE identity.f REPLICA IDENTITY FULL",
             ),
         ),
@@ -2034,7 +2034,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            Some("fact f: measure n compares k (text) with 1"),
+            Some("view f: measure n compares k (text) with 1"),
         ),
         (
             "filtertext",
@@ -2042,7 +2042,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 'a') AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            Some("fact f: measure n compares k (an integer) with 'a'"),
+            Some("view f: measure n compares k (an integer) with 'a'"),
         ),
         (
             "filterbool",
@@ -2050,7 +2050,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = true) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            Some("fact f: measure n compares k (text) with true"),
+            Some("view f: measure n compares k (text) with true"),
         ),
         (
             "filterscale",
@@ -2058,7 +2058,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
                 .1
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            Some("fact f: measure n compares k (a numeric of scale 2) with 1"),
+            Some("view f: measure n compares k (a numeric of scale 2) with 1"),
         ),
         (
             "filterwhole",
@@ -2085,7 +2085,7 @@ fn setup_problems_say_what_to_fix() {
             fact("", "t.k AS k, count(*) AS n")
                 .1
                 .replace("AS t GROUP BY 1", "AS t WHERE t.k = 1 GROUP BY 1, 2"),
-            Some("fact f: WHERE compares k (text) with 1"),
+            Some("view f: WHERE compares k (text) with 1"),
         ),
         // An enum column is read as its label when written ::text (ADR-0037).
         (
@@ -2125,7 +2125,7 @@ fn setup_problems_say_what_to_fix() {
             )
             .1
             .replace("GROUP BY 1", "GROUP BY 1, 2"),
-            Some("fact f: measure n compares m with 'meh', which is no label of nolabel.mood"),
+            Some("view f: measure n compares m with 'meh', which is no label of nolabel.mood"),
         ),
     ];
     for (name, tables, spec, expected) in cases {
@@ -2167,7 +2167,7 @@ fn setup_problems_say_what_to_fix() {
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("ALTER TABLE $S.d REPLICA IDENTITY FULL;", ""),
             Some(
-                "dim d: straum needs the whole old row of every update and delete: \
+                "dim d: Straum needs the whole old row of every update and delete: \
              ALTER TABLE dimidentity.d REPLICA IDENTITY FULL",
             ),
         ),
@@ -2176,7 +2176,7 @@ fn setup_problems_say_what_to_fix() {
             dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("$S.f, $S.d;", "$S.f, $S.d WHERE (k > 0);"),
             Some(
-                "d: publication dimfiltered filters the rows of dimfiltered.d; straum needs every row",
+                "d: publication dimfiltered filters the rows of dimfiltered.d; Straum needs every row",
             ),
         ),
         (
@@ -2209,7 +2209,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "dimtype",
             dim("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
-            Some("fact f: ref d joins d_id (an integer) to k (text); they must read alike"),
+            Some("view f: join d joins d_id (an integer) to k (text); they must read alike"),
         ),
     ];
     for (name, tables, expected) in cases {
@@ -2230,7 +2230,7 @@ fn setup_problems_say_what_to_fix() {
     let mut source = Pg::new(Dsn::parse(&dsn).unwrap(), name, MAX_ROWS);
     assert_eq!(
         setup_problems(name, source.open(&db.spec(dim_spec))),
-        ["d: straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
+        ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
         "{name}"
     );
 
@@ -2299,7 +2299,7 @@ fn setup_problems_say_what_to_fix() {
                 "CREATE TABLE $S.d (x int, y text, name text, PRIMARY KEY (x, y));",
                 "int",
             ),
-            Some("fact f: ref d joins b (an integer) to y (text); they must read alike"),
+            Some("view f: join d joins b (an integer) to y (text); they must read alike"),
         ),
     ];
     for (name, tables, expected) in cases {
@@ -2335,7 +2335,7 @@ fn setup_problems_say_what_to_fix() {
         (
             "chaintype",
             chain("text", "$S.f, $S.d, $S.e, $S.s"),
-            Some("fact f: ref e joins d.e_id (an integer) to k (text); they must read alike"),
+            Some("view f: join e joins d.e_id (an integer) to k (text); they must read alike"),
         ),
         (
             "semiunpublished",
@@ -2403,7 +2403,7 @@ fn binary_copies_read_as_text_does() {
         })
         .collect();
     let mut binaries = Vec::new();
-    let every = Table {
+    let every = Checked {
         enums: Vec::new(),
         name: id("every"),
         schema: id("public"),
@@ -2447,7 +2447,7 @@ fn reports_wal_level_and_read_access() {
         catalog.wal_level = wal_level.into();
         let expected = needs.map(|needs| {
             vec![format!(
-                "wal_level is {wal_level}; straum needs {needs}, which takes a restart"
+                "wal_level is {wal_level}; Straum needs {needs}, which takes a restart"
             )]
         });
         assert_eq!(
@@ -2463,7 +2463,7 @@ fn reports_wal_level_and_read_access() {
     let err = reader.open(&spec).unwrap_err().to_string();
     for table in ["zones", "trips", "logins"] {
         let line =
-            format!("straum's role can't read access.{table}: GRANT SELECT ON access.{table}");
+            format!("Straum's role can't read access.{table}: GRANT SELECT ON access.{table}");
         assert!(err.contains(&line), "{err}");
     }
 }
@@ -2621,12 +2621,12 @@ fn sign_in_errors() {
     let cases = [
         (
             message(b'R', &3_i32.to_be_bytes()),
-            "PostgreSQL sent an authentication request straum doesn't support; \
-             straum signs in with SCRAM-SHA-256 or trust",
+            "PostgreSQL sent an authentication request Straum doesn't support; \
+             Straum signs in with SCRAM-SHA-256 or trust",
         ),
         (
             sasl("SCRAM-SHA-256-PLUS\0\0"),
-            "PostgreSQL sent SASL mechanisms [\"SCRAM-SHA-256-PLUS\"]; straum needs SCRAM-SHA-256",
+            "PostgreSQL sent SASL mechanisms [\"SCRAM-SHA-256-PLUS\"]; Straum needs SCRAM-SHA-256",
         ),
         (
             message(b'R', &11_i32.to_be_bytes()),
@@ -2654,7 +2654,7 @@ fn sign_in_errors() {
 
 #[test]
 fn query_errors() {
-    // CopyInResponse: straum never copies in.
+    // CopyInResponse: Straum never copies in.
     let mut conn = connect(
         vec![now(signed_in()), now(message(b'G', &[0, 0, 0]))],
         false,
@@ -2740,8 +2740,8 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
 }
 
 /// Two `int4` columns, `a` and `b` of `t`, as a stand-in copy sends.
-fn two_ints() -> Table {
-    Table {
+fn two_ints() -> Checked {
+    Checked {
         enums: Vec::new(),
         name: id("t"),
         schema: id("public"),
@@ -2928,11 +2928,11 @@ fn stream_errors() {
     let cases = [
         (
             copy_data(b"x"),
-            "PostgreSQL sent a copy message straum doesn't know",
+            "PostgreSQL sent a copy message Straum doesn't know",
         ),
         (
             copy_data(b"w"),
-            "PostgreSQL sent a copy message straum doesn't know",
+            "PostgreSQL sent a copy message Straum doesn't know",
         ),
         (
             error_response("57P01", "terminating connection"),
@@ -3190,7 +3190,7 @@ fn taxi_month() {
           GROUP BY 1"
     );
     let coarse_scales = [0, 0, 2, 2, 0, 0];
-    // straum's time is the time `ask` holds the read lock.
+    // Straum's time is the time `ask` holds the read lock.
     let compare =
         |sql: &mut Conn, app: &App, (ask, reference, scales): (&Ask, &str, &[u32]), when: &str| {
             let clock = Instant::now();
@@ -3205,14 +3205,14 @@ fn taxi_month() {
             let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
             assert!(
                 got.len() == expected.len() && differ.is_none(),
-                "{when}: {} rows from straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
+                "{when}: {} rows from Straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
                 got.len(),
                 expected.len(),
                 differ.map(|i| &got[i]),
                 differ.map(|i| &expected[i])
             );
             eprintln!(
-                "{when}: {} groups equal; straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
+                "{when}: {} groups equal; Straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
                 got.len()
             );
         };

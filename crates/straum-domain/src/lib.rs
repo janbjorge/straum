@@ -1,4 +1,4 @@
-//! No I/O and no dependencies. Adapters (straum SQL, PostgreSQL, HTTP) depend
+//! No I/O and no dependencies. Adapters (Straum SQL, PostgreSQL, HTTP) depend
 //! on this crate, never the other way round.
 
 #![forbid(unsafe_code)]
@@ -21,8 +21,8 @@ pub use ident::Ident;
 pub use rollup::RowError;
 pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 pub use spec::{
-    Attr, By, Cond, Dim, Fact, Grain, Key, Literal, Measure, Origin, Ref, RefKind, Slot, Spec,
-    SpecError, Table, Time, Via,
+    Attribute, By, Cond, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind, Spec,
+    SpecError, Table, Time, Via, Width,
 };
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
 pub use value::{ColumnType, Datum, Value, decimal};

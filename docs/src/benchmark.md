@@ -1,6 +1,6 @@
 # Benchmark
 
-Straum's benchmark asks Straum and PostgreSQL the same questions about
+Straum's benchmark sends Straum and PostgreSQL the same asks about
 one month of New York taxi trips, checks that the answers are equal, and
 times both.
 
@@ -122,7 +122,7 @@ SELECT date_trunc('hour', pickup_at), count(*)
  GROUP BY 1;
 ```
 
-Straum gets the same questions over the view, with every value a
+Straum gets the same asks over the view, with every value a
 parameter. Where the SQL has no range, the ask's is 2000 to 2030, which
 holds every trip:
 

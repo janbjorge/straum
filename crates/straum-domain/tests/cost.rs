@@ -8,8 +8,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Agg, Ask, AskKey, Attr, By, ColumnType, Datum, Dim, Fact, Grain, Ident, Measure, Origin, Ref,
-    RefKind, Spec, Store, Table, Time, TimeKey, Via,
+    Agg, Ask, AskKey, Attribute, By, ColumnType, Datum, Dim, Fact, Ident, Measure, Origin, Ref,
+    RefKind, Spec, Store, Table, Time, TimeKey, Via, Width,
 };
 
 thread_local! {
@@ -24,7 +24,7 @@ fn grow(bytes: usize, by: isize) {
 
 /// Counts the allocations of the thread that makes them, so tests running
 /// beside each other don't add to each other's counts. The one `unsafe`
-/// in straum, settled in ADR-0027: `GlobalAlloc` is an unsafe trait, so no
+/// in Straum, settled in ADR-0027: `GlobalAlloc` is an unsafe trait, so no
 /// safe allocator can count.
 struct Counting;
 
@@ -64,7 +64,7 @@ fn key(s: &str) -> AskKey {
     AskKey::Key(id(s))
 }
 
-/// The fact, with `buckets` (in hours) beside its one-hour grain.
+/// The fact, with `buckets` (in hours) beside its one-hour width.
 fn spec(buckets: &[u32]) -> Spec {
     let table = |name| Table {
         schema: id("public"),
@@ -80,7 +80,7 @@ fn spec(buckets: &[u32]) -> Spec {
         name: id("zones"),
         table: table("zones"),
         key: vec![id("id")],
-        attrs: vec![id("borough")],
+        attributes: vec![id("borough")],
     };
     let trips = Fact {
         as_text: Vec::new(),
@@ -88,10 +88,10 @@ fn spec(buckets: &[u32]) -> Spec {
         table: table("trips"),
         time: Time {
             column: id("at"),
-            grain: Grain { seconds: HOUR },
-            buckets: buckets
+            width: Width { seconds: HOUR },
+            wider: buckets
                 .iter()
-                .map(|h| Grain { seconds: h * HOUR })
+                .map(|h| Width { seconds: h * HOUR })
                 .collect(),
             origin: Origin::Timestamptz,
         },
@@ -100,7 +100,7 @@ fn spec(buckets: &[u32]) -> Spec {
             dim: id("zones"),
             via: vec![Via::Fact(id("pu"))],
             kind: RefKind::Left,
-            attrs: vec![Attr {
+            reads: vec![Attribute {
                 name: id("borough"),
                 column: id("borough"),
             }],
@@ -170,7 +170,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
 /// Every measure, by `by`, over the hours `from..to`.
 fn ask(by: &[&str], from: i64, to: i64) -> Ask {
     Ask {
-        fact: id("trips"),
+        view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         by: by.iter().map(|b| key(b)).collect(),
         filter: vec![],
@@ -205,7 +205,7 @@ fn an_ask_allocates_per_group_not_per_cell() {
 fn an_ask_reads_only_the_buckets_in_its_range() {
     let store = store(8_000);
     let mut unknown = ask(&[], 0, 1);
-    unknown.fact = id("nope");
+    unknown.view = id("nope");
     assert!(store.cells_read(&unknown).is_err());
     let per_hour = 2 * ZONES as usize;
     for (from, to) in [(24, 48), (99, 100), (0, 100)] {

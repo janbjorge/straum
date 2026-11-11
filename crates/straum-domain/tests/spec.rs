@@ -1,9 +1,9 @@
-//! `Spec::new` on hand-built declarations, including shapes straum SQL can't
+//! `Spec::new` on hand-built declarations, including shapes Straum SQL can't
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Agg, Ask, AskError, AskKey, Attr, By, Cond, Dim, Fact, Grain, Ident, Key, Literal, Measure,
-    Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via,
+    Agg, Ask, AskError, AskKey, Attribute, By, Cond, Dim, Fact, Ident, Key, Literal, Measure,
+    Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via, Width,
 };
 
 fn id(s: &str) -> Ident {
@@ -23,7 +23,7 @@ fn dim() -> Dim {
         name: id("z"),
         table: table("z"),
         key: vec![id("id")],
-        attrs: vec![id("name")],
+        attributes: vec![id("name")],
     }
 }
 
@@ -34,8 +34,8 @@ fn fact() -> Fact {
         table: table("t"),
         time: Time {
             column: id("at"),
-            grain: Grain { seconds: 3_600 },
-            buckets: vec![],
+            width: Width { seconds: 3_600 },
+            wider: vec![],
             origin: Origin::Timestamptz,
         },
         refs: vec![Ref {
@@ -43,7 +43,7 @@ fn fact() -> Fact {
             dim: id("z"),
             via: vec![Via::Fact(id("z_id"))],
             kind: RefKind::Left,
-            attrs: vec![attr("name", "name")],
+            reads: vec![attr("name", "name")],
         }],
         by: vec![col("a"), col("z_id")],
         filter: vec![],
@@ -62,8 +62,8 @@ fn col(s: &str) -> By {
     }
 }
 
-fn attr(name: &str, column: &str) -> Attr {
-    Attr {
+fn attr(name: &str, column: &str) -> Attribute {
+    Attribute {
         name: id(name),
         column: id(column),
     }
@@ -100,7 +100,7 @@ fn names_resolve_to_by_keys_and_attributes() {
     assert_eq!(t.resolve(&id("z_id")), Some(Key::By(&t.by[1])));
     assert_eq!(
         t.resolve(&id("name")),
-        Some(Key::Attr(&t.refs[0], &t.refs[0].attrs[0]))
+        Some(Key::Attribute(&t.refs[0], &t.refs[0].reads[0]))
     );
     for missing in ["r", "id", "nope", "b", "n"] {
         assert_eq!(t.resolve(&id(missing)), None, "{missing}");
@@ -121,7 +121,7 @@ fn columns_and_rollup_key() {
         filter: vec![],
     });
     assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
-    let attrs: Vec<String> = (t.attrs())
+    let attrs: Vec<String> = (t.attributes())
         .map(|(r, a)| format!("{}.{} AS {}", r.name, a.column, a.name))
         .collect();
     assert_eq!(attrs, ["r.name AS name"]);
@@ -149,26 +149,26 @@ fn tables_once_each_dims_first() {
 #[test]
 fn buckets_widen_by_whole_multiples() {
     let mut t = fact();
-    t.time.buckets = vec![
-        Grain { seconds: 7_200 },
-        Grain { seconds: 86_400 },
-        Grain { seconds: 604_800 },
+    t.time.wider = vec![
+        Width { seconds: 7_200 },
+        Width { seconds: 86_400 },
+        Width { seconds: 604_800 },
     ];
     assert!(Spec::new(vec![dim()], vec![t.clone()]).is_ok());
 
     // 1.5 hours over an hour, then a day that doesn't widen the day.
-    t.time.buckets = vec![
-        Grain { seconds: 5_400 },
-        Grain { seconds: 86_400 },
-        Grain { seconds: 86_400 },
+    t.time.wider = vec![
+        Width { seconds: 5_400 },
+        Width { seconds: 86_400 },
+        Width { seconds: 86_400 },
     ];
     let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
         shown,
         [
-            "fact t: bucket of 5400s is not a wider multiple of 3600s",
-            "fact t: bucket of 86400s is not a wider multiple of 86400s",
+            "view t: bucket of 5400s is not a wider multiple of 3600s",
+            "view t: bucket of 86400s is not a wider multiple of 86400s",
         ]
     );
 }
@@ -176,13 +176,13 @@ fn buckets_widen_by_whole_multiples() {
 #[test]
 fn every_error_is_reported_and_displayed() {
     let mut z = dim();
-    z.attrs = vec![id("name"), id("name")];
+    z.attributes = vec![id("name"), id("name")];
     let mut w = dim();
     w.name = id("w");
     w.key = vec![];
     let mut t = fact();
     t.name = id("z");
-    t.time.grain = Grain { seconds: 420 };
+    t.time.width = Width { seconds: 420 };
     t.by = vec![
         col("id"),
         col("at"),
@@ -222,28 +222,28 @@ fn every_error_is_reported_and_displayed() {
             dim: id("z"),
             via: vec![Via::Fact(id("z_id")), Via::Fact(id("b"))],
             kind: RefKind::Left,
-            attrs: vec![attr("r_name", "name")],
+            reads: vec![attr("r_name", "name")],
         },
         Ref {
             name: id("s"),
             dim: id("z"),
             via: vec![Via::Fact(id("a")), Via::Fact(id("a"))],
             kind: RefKind::Left,
-            attrs: vec![attr("s_name", "name")],
+            reads: vec![attr("s_name", "name")],
         },
         Ref {
             name: id("e"),
             dim: id("z"),
             via: vec![Via::Fact(id("a"))],
             kind: RefKind::Left,
-            attrs: vec![],
+            reads: vec![],
         },
         Ref {
             name: id("q"),
             dim: id("z"),
             via: vec![Via::Fact(id("b"))],
             kind: RefKind::Left,
-            attrs: vec![
+            reads: vec![
                 attr("nope", "nope"),
                 attr("q_name", "name"),
                 attr("a", "name"),
@@ -260,23 +260,23 @@ fn every_error_is_reported_and_displayed() {
             "z declared twice",
             "z: name declared twice",
             "dim w: no key columns",
-            "fact z: grain of 420s does not divide a day",
-            "fact z: at is the time column, so it can't be a by column too",
+            "view z: width of 420s does not divide a day",
+            "view z: at is the time column, so it can't be a by column too",
             "z: id declared twice",
-            "fact z: no_time asks whether the time column at is null, which no ask could see: \
+            "view z: no_time asks whether the time column at is null, which no ask could see: \
              a row with no time is never answered",
-            "fact z: ref r points at unknown dim nope",
+            "view z: join r points at unknown dim nope",
             "z: name declared twice",
-            "fact z: measure m filters on c, which names no key of the view",
+            "view z: measure m filters on c, which names no key of the view",
             "z: m declared twice",
-            "fact u: ref r joins on 2 columns, but the key of dim z has 1",
-            "fact u: ref s joins on a twice",
-            "fact u: ref s joins on 2 columns, but the key of dim z has 1",
-            "fact u: ref e reads no column of its dim",
-            "fact u: ref q reads nope, which dim z has no column of",
+            "view u: join r joins on 2 columns, but the key of dim z has 1",
+            "view u: join s joins on a twice",
+            "view u: join s joins on 2 columns, but the key of dim z has 1",
+            "view u: join e reads no column of its dim",
+            "view u: join q reads nope, which dim z has no column of",
             "q: name declared twice",
             "u: a declared twice",
-            "fact u: no measures",
+            "view u: no measures",
         ]
     );
     assert!(matches!(errors[7], SpecError::UnknownDim { .. }));
@@ -285,7 +285,7 @@ fn every_error_is_reported_and_displayed() {
 #[test]
 fn a_chained_via_used_twice_names_its_ref() {
     let mut t = fact();
-    let chained = Via::Attr {
+    let chained = Via::Attribute {
         through: 0,
         column: id("name"),
     };
@@ -294,18 +294,18 @@ fn a_chained_via_used_twice_names_its_ref() {
         dim: id("z"),
         via: vec![chained.clone(), chained],
         kind: RefKind::Left,
-        attrs: vec![attr("c_name", "name")],
+        reads: vec![attr("c_name", "name")],
     });
     let shown: Vec<String> = (Spec::new(vec![dim()], vec![t]).unwrap_err().iter())
         .map(ToString::to_string)
         .collect();
     assert!(
-        shown.contains(&"fact t: ref c joins on r.name twice".to_owned()),
+        shown.contains(&"view t: join c joins on r.name twice".to_owned()),
         "{shown:?}"
     );
 }
 
-/// Two refs under one alias, which straum SQL refuses before the spec
+/// Two refs under one alias, which Straum SQL refuses before the spec
 /// does; the spec refuses it too, for a spec built by hand.
 #[test]
 fn a_ref_name_used_twice_is_refused() {
@@ -322,7 +322,7 @@ fn a_ref_name_used_twice_is_refused() {
 /// and the bucket.
 fn ask() -> Ask {
     Ask {
-        fact: id("t"),
+        view: id("t"),
         measures: vec![id("n")],
         by: vec![
             AskKey::Key(id("a")),
@@ -372,7 +372,7 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
             AskError::AskedTwice("n".into()),
             AskError::RangeUnaligned {
                 at: 60,
-                grain: Grain { seconds: 3_600 },
+                width: Width { seconds: 3_600 },
             },
         ]
     );
@@ -382,12 +382,12 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
 fn an_ask_of_a_bad_shape_is_rejected() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let unknown = Ask {
-        fact: id("nope"),
+        view: id("nope"),
         ..ask()
     };
     assert_eq!(
         spec.check(&unknown).unwrap_err(),
-        [AskError::UnknownFact(id("nope"))]
+        [AskError::UnknownView(id("nope"))]
     );
 
     let empty = Ask {
@@ -411,7 +411,7 @@ fn an_ask_of_a_bad_shape_is_rejected() {
             },
             AskError::RangeUnaligned {
                 at: 60,
-                grain: Grain { seconds: 3_600 },
+                width: Width { seconds: 3_600 },
             },
         ]
     );
@@ -420,7 +420,7 @@ fn an_ask_of_a_bad_shape_is_rejected() {
 #[test]
 fn ask_errors_display() {
     let cases = [
-        (AskError::UnknownFact(id("nope")), "unknown fact nope"),
+        (AskError::UnknownView(id("nope")), "unknown view nope"),
         (AskError::UnknownMeasure(id("tips")), "unknown measure tips"),
         (
             AskError::UnknownKey(id("fare")),
@@ -436,7 +436,7 @@ fn ask_errors_display() {
         (
             AskError::RangeUnaligned {
                 at: 60,
-                grain: Grain { seconds: 900 },
+                width: Width { seconds: 900 },
             },
             "range end 60 is not on a 900s bucket edge",
         ),

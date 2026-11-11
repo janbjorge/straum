@@ -47,7 +47,7 @@ over HTTP.
 | `--publication NAME` | The publication `straum plan` made. |
 | `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
-| `--max-retained-wal BYTES` | WAL held for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#applying-a-commit) instead of applying it. |
 
 It logs to stderr, one line per event:
@@ -87,7 +87,7 @@ since Straum last caught up with a position the server had reached. It
 can overstate the true delay by up to one second, never understate it.
 
 Any failure leads to Waiting: a lost connection, a change Straum can't
-apply, a table altered under it, or too much WAL held for its slot.
+apply, a table altered under it, or too much WAL retained for its slot.
 Straum closes the connection, which drops the slot, and waits: 1 second
 after the first failure, twice as long after each failure in a row, up
 to 60 seconds. Then it loads every table again from a new slot. A load
@@ -108,7 +108,7 @@ ready:        yes
 applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
 as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
 lag:          0.0 s, at most 30 s
-WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
+WAL retained: 0.0 MiB, at most 4096.0 MiB; the server is at 0/17B2958
 starts:       1
 failures:     0
 last failure: none
@@ -120,7 +120,7 @@ sealed:       no spill
 - `as of`: every commit made before this time is applied, the same
   `as_of` answers carry. It keeps moving while the database is quiet.
 - `lag`: against `--max-lag`.
-- `WAL held`: what PostgreSQL keeps for the slot, against
+- `WAL retained`: what PostgreSQL keeps for the slot, against
   `--max-retained-wal`, and the server's current WAL position.
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.

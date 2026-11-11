@@ -115,7 +115,7 @@ fn login(key: i64, zone: i64) -> Write {
 
 fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
-        fact: id(fact),
+        view: id(fact),
         measures: measures.iter().map(|m| id(m)).collect(),
         by: by.iter().map(|k| ask_key(k)).collect(),
         filter: Vec::new(),
@@ -396,7 +396,7 @@ fn dim_changes_show_at_once() {
     assert_eq!(by_borough(writer.app(), "trips"), [row(Datum::Null, 3)]);
 }
 
-/// A second dim row under a key straum holds is a change like any other:
+/// A second dim row under a key Straum holds is a change like any other:
 /// the join finds both, so the trips count once under each borough, as
 /// PostgreSQL's join would repeat them.
 #[test]
@@ -490,7 +490,7 @@ fn altered_table_starts_over() {
     assert_eq!(db.borrow().loads.len(), 6);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
 
-    // A dim altered starts over too: straum holds its rows.
+    // A dim altered starts over too: Straum holds its rows.
     db.borrow_mut()
         .commit(vec![Write::Alter { table: "zones" }]);
     assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("zones")));
@@ -590,7 +590,7 @@ fn ready_only_within_the_lag_bound() {
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
 
-    // While it waits a second for a commit, straum reads the WAL again and
+    // While it waits a second for a commit, Straum reads the WAL again and
     // finds the slot caught up.
     db.borrow_mut().wal = Some(wal(200, 200));
     db.borrow_mut().waits = 1;
@@ -696,7 +696,7 @@ fn too_much_wal_starts_over() {
         confirmed: Lsn(100),
         restart: Lsn(100),
     };
-    let message = "PostgreSQL holds 5120.0 MiB of WAL for straum's slot, \
+    let message = "PostgreSQL holds 5120.0 MiB of WAL for Straum's slot, \
                    past the limit of 4096.0 MiB";
 
     db.borrow_mut().wal = Some(held(5 << 30));
@@ -736,7 +736,7 @@ fn a_row_that_does_not_fit_stops_straum() {
     assert_eq!(err.to_string(), "column fare is not an integer");
     assert!(!writer.app().status().ready);
 
-    // Once the row is fixed, straum starts again.
+    // Once the row is fixed, Straum starts again.
     row[3] = int(10);
     let lsn = db.borrow_mut().commit(vec![Write::Update {
         table: "trips",
@@ -754,7 +754,7 @@ fn a_change_that_does_not_fit_starts_over() {
     let never_added = || vec![int(0), int(9), int(9), int(9), text("zed")];
     let cases = [
         (
-            "fact update from a row straum never saw",
+            "fact update from a row Straum never saw",
             Change::Update {
                 table: id("trips"),
                 old: never_added(),
@@ -771,7 +771,7 @@ fn a_change_that_does_not_fit_starts_over() {
             },
         ),
         (
-            "fact delete of a row straum never saw",
+            "fact delete of a row Straum never saw",
             Change::Delete {
                 table: id("trips"),
                 old: never_added(),
@@ -785,7 +785,7 @@ fn a_change_that_does_not_fit_starts_over() {
             },
         ),
         (
-            "dim delete of a row straum never held",
+            "dim delete of a row Straum never held",
             Change::Delete {
                 table: id("zones"),
                 old: vec![int(7), text("Staten Island")],
@@ -1060,7 +1060,7 @@ fn answer_error_display() {
 }
 
 // Random writes, dropped connections and restarts, the zones moving too:
-// a fresh load at any LSN, dims and facts, is what straum must hold.
+// a fresh load at any LSN, dims and facts, is what Straum must hold.
 
 struct Rng(u64);
 
@@ -1169,7 +1169,7 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 key: new_key(),
                 row: random_login(rng),
             },
-            // Logins send no old rows; these make straum start over.
+            // Logins send no old rows; these make Straum start over.
             80..84 => match rng.pick(&existing(&keys, "logins")) {
                 Some(key) if rng.chance(50) => Write::Delete {
                     table: "logins",

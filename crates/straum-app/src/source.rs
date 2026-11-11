@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use straum_domain::{Datum, Ident, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
-/// is missing, a table no longer fits the spec. straum starts over after one.
+/// is missing, a table no longer fits the spec. Straum starts over after one.
 pub type SourceError = Box<dyn error::Error + Send + Sync>;
 
 /// A position in PostgreSQL's write-ahead log.
@@ -97,7 +97,7 @@ pub enum Change {
     /// can't read whole: an update or delete without the old row, or one
     /// that left out an unchanged TOASTed value with no old row to take it
     /// from.
-    Altered {
+    Unfit {
         table: Ident,
     },
 }
@@ -109,7 +109,7 @@ impl Change {
             | Change::Update { table, .. }
             | Change::Delete { table, .. }
             | Change::Truncate { table }
-            | Change::Altered { table } => table,
+            | Change::Unfit { table } => table,
         }
     }
 }

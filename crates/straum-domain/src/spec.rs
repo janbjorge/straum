@@ -5,7 +5,7 @@ use crate::agg::Agg;
 use crate::ident::Ident;
 use crate::value::ColumnType;
 
-/// Seconds per day. Every grain divides it, so buckets roll up to days.
+/// Seconds per day. Every width divides it, so buckets roll up to days.
 const DAY: u32 = 86_400;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub struct Dim {
     /// One column or more; a row is named by their values together.
     pub key: Vec<Ident>,
     /// Every column any ref reads of it.
-    pub attrs: Vec<Ident>,
+    pub attributes: Vec<Ident>,
     /// The columns written `alias.column::text`: read as the text
     /// PostgreSQL prints for them, whatever their type there.
     pub as_text: Vec<Ident>,
@@ -35,7 +35,7 @@ impl Dim {
     /// The columns a row of this dim carries, in order: the key columns,
     /// then the attributes.
     pub fn columns(&self) -> impl Iterator<Item = &Ident> {
-        self.key.iter().chain(&self.attrs)
+        self.key.iter().chain(&self.attributes)
     }
 }
 
@@ -85,12 +85,12 @@ impl By {
         }
     }
 
-    pub(crate) fn slot(&self) -> Slot<'_> {
+    pub(crate) fn key_part(&self) -> KeyPart<'_> {
         match self {
-            By::Column { column, .. } => Slot::Column(column),
+            By::Column { column, .. } => KeyPart::Column(column),
             By::IsNull {
                 column, negated, ..
-            } => Slot::IsNull {
+            } => KeyPart::IsNull {
                 column,
                 negated: *negated,
             },
@@ -101,17 +101,17 @@ impl By {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Time {
     pub column: Ident,
-    pub grain: Grain,
-    /// Wider bucket widths kept beside `grain`, narrowest first. Each is a
+    pub width: Width,
+    /// Wider bucket widths kept beside `width`, narrowest first. Each is a
     /// whole multiple of the width before it, so one of its buckets is made
     /// of whole buckets of every narrower width.
-    pub buckets: Vec<Grain>,
+    pub wider: Vec<Width>,
     pub origin: Origin,
 }
 
 /// The `date_bin` origin, which must be of the time column's type: with a
 /// `timestamp` column, PostgreSQL would cast a `timestamptz 'epoch'`
-/// through the session zone, and the view body would not mean what straum
+/// through the session zone, and the view body would not mean what Straum
 /// computes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -140,7 +140,7 @@ impl fmt::Display for Origin {
 
 /// A bucket width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grain {
+pub struct Width {
     pub seconds: u32,
 }
 
@@ -160,7 +160,7 @@ pub struct Ref {
     pub via: Vec<Via>,
     /// The dim columns this ref reads, each under the name asks use;
     /// none for a semi or anti join.
-    pub attrs: Vec<Attr>,
+    pub reads: Vec<Attribute>,
 }
 
 /// What the join keeps of a fact row, as SQL's join kinds do.
@@ -182,7 +182,7 @@ pub enum RefKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Via {
     Fact(Ident),
-    Attr {
+    Attribute {
         /// Index into [`Fact::refs`], before this ref.
         through: usize,
         column: Ident,
@@ -192,7 +192,7 @@ pub enum Via {
 /// `alias.column AS name`: a dim column a ref reads, and what asks call
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Attr {
+pub struct Attribute {
     pub name: Ident,
     pub column: Ident,
 }
@@ -225,13 +225,13 @@ pub enum Key<'a> {
     By(&'a By),
     /// An attribute a ref reads. A ref has no value of its own: asks name
     /// its attributes, or the fact columns it joins on.
-    Attr(&'a Ref, &'a Attr),
+    Attribute(&'a Ref, &'a Attribute),
 }
 
 /// One part of the rollup key: a fact column's value, whether a fact
 /// column is null, or the time bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Slot<'a> {
+pub enum KeyPart<'a> {
     Column(&'a Ident),
     IsNull { column: &'a Ident, negated: bool },
     Bucket,
@@ -239,17 +239,17 @@ pub enum Slot<'a> {
 
 impl Fact {
     /// The `by` keys, then every ref's fact-side via columns in ref
-    /// order, each slot once, then the time bucket.
-    pub fn rollup_key(&self) -> impl Iterator<Item = Slot<'_>> {
-        let mut slots: Vec<Slot<'_>> = Vec::new();
-        let vias = self.fact_vias().map(Slot::Column);
-        for slot in self.by.iter().map(By::slot).chain(vias) {
-            if !slots.contains(&slot) {
-                slots.push(slot);
+    /// order, each part once, then the time bucket.
+    pub fn rollup_key(&self) -> impl Iterator<Item = KeyPart<'_>> {
+        let mut parts: Vec<KeyPart<'_>> = Vec::new();
+        let vias = self.fact_vias().map(KeyPart::Column);
+        for part in self.by.iter().map(By::key_part).chain(vias) {
+            if !parts.contains(&part) {
+                parts.push(part);
             }
         }
-        slots.push(Slot::Bucket);
-        slots.into_iter()
+        parts.push(KeyPart::Bucket);
+        parts.into_iter()
     }
 
     /// The fact columns the refs join on, in ref order, a column as often
@@ -260,15 +260,15 @@ impl Fact {
             .flat_map(|r| &r.via)
             .filter_map(|v| match v {
                 Via::Fact(column) => Some(column),
-                Via::Attr { .. } => None,
+                Via::Attribute { .. } => None,
             })
     }
 
     /// Every ref's attributes, each with its ref, in ref order.
-    pub fn attrs(&self) -> impl Iterator<Item = (&Ref, &Attr)> {
+    pub fn attributes(&self) -> impl Iterator<Item = (&Ref, &Attribute)> {
         self.refs
             .iter()
-            .flat_map(|r| r.attrs.iter().map(move |a| (r, a)))
+            .flat_map(|r| r.reads.iter().map(move |a| (r, a)))
     }
 
     /// The columns a row of this fact is read from, in order: the time
@@ -298,14 +298,14 @@ impl Fact {
             return Some(Key::By(by));
         }
         self.refs.iter().find_map(|r| {
-            let attr = r.attrs.iter().find(|a| a.name == *name)?;
-            Some(Key::Attr(r, attr))
+            let attr = r.reads.iter().find(|a| a.name == *name)?;
+            Some(Key::Attribute(r, attr))
         })
     }
 
     /// Every name an ask may group or filter by, keys then attributes.
     pub fn keys(&self) -> impl Iterator<Item = &Ident> {
-        (self.by.iter().map(By::name)).chain(self.attrs().map(|(_, a)| &a.name))
+        (self.by.iter().map(By::name)).chain(self.attributes().map(|(_, a)| &a.name))
     }
 }
 
@@ -416,15 +416,15 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
 
 fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
     let name = &fact.name;
-    let seconds = fact.time.grain.seconds;
+    let seconds = fact.time.width.seconds;
     if seconds == 0 || !DAY.is_multiple_of(seconds) {
-        errors.push(SpecError::BadGrain {
+        errors.push(SpecError::BadWidth {
             fact: name.clone(),
             seconds,
         });
     }
-    let mut below = fact.time.grain;
-    for &bucket in &fact.time.buckets {
+    let mut below = fact.time.width;
+    for &bucket in &fact.time.wider {
         if bucket.seconds <= below.seconds || !bucket.seconds.is_multiple_of(below.seconds) {
             errors.push(SpecError::BadBucket {
                 fact: name.clone(),
@@ -481,11 +481,11 @@ fn check_ref<'a>(
                 column: via_name(column, &fact.refs),
             });
         }
-        if let Via::Attr { through, column } = column {
+        if let Via::Attribute { through, column } = column {
             let parent = (*through < position).then(|| &fact.refs[*through]);
             let carried = parent
                 .and_then(|p| dims.iter().find(|d| d.name == p.dim))
-                .is_some_and(|d| d.attrs.contains(column));
+                .is_some_and(|d| d.attributes.contains(column));
             if !carried {
                 errors.push(SpecError::ChainColumn {
                     fact: name.clone(),
@@ -503,7 +503,7 @@ fn check_ref<'a>(
             ref_name: r.name.clone(),
             dim: r.dim.clone(),
         }),
-        Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyWidth {
+        Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyLength {
             fact: name.clone(),
             ref_name: r.name.clone(),
             via: r.via.len(),
@@ -512,9 +512,9 @@ fn check_ref<'a>(
         }),
         Some(_) => {}
     }
-    let reads = !r.attrs.is_empty();
+    let reads = !r.reads.is_empty();
     match r.kind {
-        RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefNoAttrs {
+        RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefReadsNothing {
             fact: name.clone(),
             ref_name: r.name.clone(),
         }),
@@ -526,7 +526,7 @@ fn check_ref<'a>(
         _ => {}
     }
     let mut read = HashSet::new();
-    for attr in &r.attrs {
+    for attr in &r.reads {
         if !read.insert(&attr.column) {
             errors.push(SpecError::Duplicate {
                 scope: Some(r.name.clone()),
@@ -535,7 +535,7 @@ fn check_ref<'a>(
         } else if let Some(dim) = dim
             && !dim.columns().any(|c| *c == attr.column)
         {
-            errors.push(SpecError::UnknownAttr {
+            errors.push(SpecError::UnknownAttribute {
                 fact: name.clone(),
                 ref_name: r.name.clone(),
                 attr: attr.column.clone(),
@@ -593,7 +593,7 @@ fn check_measures<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mu
 fn via_name(via: &Via, refs: &[Ref]) -> String {
     match via {
         Via::Fact(column) => column.to_string(),
-        Via::Attr { through, column } => {
+        Via::Attribute { through, column } => {
             let through = refs.get(*through).map_or("?", |r| r.name.as_str());
             format!("{through}.{column}")
         }
@@ -608,7 +608,7 @@ pub enum SpecError {
         scope: Option<Ident>,
         name: Ident,
     },
-    BadGrain {
+    BadWidth {
         fact: Ident,
         seconds: u32,
     },
@@ -639,7 +639,7 @@ pub enum SpecError {
         column: String,
     },
     /// A ref joins on another number of columns than its dim's key has.
-    KeyWidth {
+    KeyLength {
         fact: Ident,
         ref_name: Ident,
         via: usize,
@@ -652,7 +652,7 @@ pub enum SpecError {
         dim: Ident,
     },
     /// A left or inner ref that reads nothing, so the join does nothing.
-    RefNoAttrs {
+    RefReadsNothing {
         fact: Ident,
         ref_name: Ident,
     },
@@ -670,7 +670,7 @@ pub enum SpecError {
         column: Ident,
     },
     /// A ref reads an attribute its dim has no column of.
-    UnknownAttr {
+    UnknownAttribute {
         fact: Ident,
         ref_name: Ident,
         attr: Ident,
@@ -705,8 +705,8 @@ impl fmt::Display for SpecError {
             } => {
                 write!(f, "{scope}: {name} declared twice")
             }
-            SpecError::BadGrain { fact, seconds } => {
-                write!(f, "fact {fact}: grain of {seconds}s does not divide a day")
+            SpecError::BadWidth { fact, seconds } => {
+                write!(f, "view {fact}: width of {seconds}s does not divide a day")
             }
             SpecError::BadBucket {
                 fact,
@@ -714,25 +714,25 @@ impl fmt::Display for SpecError {
                 below,
             } => write!(
                 f,
-                "fact {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
+                "view {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
             ),
             SpecError::TimeAsKey { fact, column } => {
                 write!(
                     f,
-                    "fact {fact}: {column} is the time column, so it can't be a by column too"
+                    "view {fact}: {column} is the time column, so it can't be a by column too"
                 )
             }
             SpecError::NullTime { fact, name, column } => write!(
                 f,
-                "fact {fact}: {name} asks whether the time column {column} is null, \
+                "view {fact}: {name} asks whether the time column {column} is null, \
                  which no ask could see: a row with no time is never answered"
             ),
             SpecError::ViaReused {
                 fact,
                 ref_name,
                 column,
-            } => write!(f, "fact {fact}: ref {ref_name} joins on {column} twice"),
-            SpecError::KeyWidth {
+            } => write!(f, "view {fact}: join {ref_name} joins on {column} twice"),
+            SpecError::KeyLength {
                 fact,
                 ref_name,
                 via,
@@ -740,10 +740,10 @@ impl fmt::Display for SpecError {
                 key,
             } => write!(
                 f,
-                "fact {fact}: ref {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
+                "view {fact}: join {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
             ),
-            SpecError::RefNoAttrs { fact, ref_name } => {
-                write!(f, "fact {fact}: ref {ref_name} reads no column of its dim")
+            SpecError::RefReadsNothing { fact, ref_name } => {
+                write!(f, "view {fact}: join {ref_name} reads no column of its dim")
             }
             SpecError::RefReads {
                 fact,
@@ -751,7 +751,7 @@ impl fmt::Display for SpecError {
                 kind,
             } => write!(
                 f,
-                "fact {fact}: ref {ref_name} is {kind} and reads columns, which it has none of"
+                "view {fact}: join {ref_name} is {kind} and reads columns, which it has none of"
             ),
             SpecError::ChainColumn {
                 fact,
@@ -760,17 +760,17 @@ impl fmt::Display for SpecError {
                 column,
             } => write!(
                 f,
-                "fact {fact}: ref {ref_name} joins through column {column} of ref {through}, \
-                 which no ref before it carries"
+                "view {fact}: join {ref_name} joins through column {column} of join {through}, \
+                 which no join before it carries"
             ),
-            SpecError::UnknownAttr {
+            SpecError::UnknownAttribute {
                 fact,
                 ref_name,
                 attr,
                 dim,
             } => write!(
                 f,
-                "fact {fact}: ref {ref_name} reads {attr}, which dim {dim} has no column of"
+                "view {fact}: join {ref_name} reads {attr}, which dim {dim} has no column of"
             ),
             SpecError::NoKey { dim } => write!(f, "dim {dim}: no key columns"),
             SpecError::UnknownDim {
@@ -778,7 +778,10 @@ impl fmt::Display for SpecError {
                 ref_name,
                 dim,
             } => {
-                write!(f, "fact {fact}: ref {ref_name} points at unknown dim {dim}")
+                write!(
+                    f,
+                    "view {fact}: join {ref_name} points at unknown dim {dim}"
+                )
             }
             SpecError::UnknownKey {
                 fact,
@@ -786,7 +789,7 @@ impl fmt::Display for SpecError {
                 key,
             } => write!(
                 f,
-                "fact {fact}: measure {measure} filters on {key}, which names no key of the view"
+                "view {fact}: measure {measure} filters on {key}, which names no key of the view"
             ),
             SpecError::UnknownKey {
                 fact,
@@ -794,13 +797,13 @@ impl fmt::Display for SpecError {
                 key,
             } => write!(
                 f,
-                "fact {fact}: WHERE filters on {key}, which names no key of the view"
+                "view {fact}: WHERE filters on {key}, which names no key of the view"
             ),
-            SpecError::NoMeasures { fact } => write!(f, "fact {fact}: no measures"),
+            SpecError::NoMeasures { fact } => write!(f, "view {fact}: no measures"),
             SpecError::NamedBucket { fact } => write!(
                 f,
-                "fact {fact}: bucket is what asks call the time bucket; \
-                 name the column, ref or measure otherwise"
+                "view {fact}: bucket is what asks call the time bucket; \
+                 name the column, join or measure otherwise"
             ),
         }
     }
@@ -819,7 +822,7 @@ impl fmt::Display for RefKind {
     }
 }
 
-impl fmt::Display for Grain {
+impl fmt::Display for Width {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}s", self.seconds)
     }

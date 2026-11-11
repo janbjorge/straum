@@ -18,7 +18,7 @@ pub struct SealedId {
 }
 
 /// A bucket's cells as plain data, for a spill to keep: cell `i` has key
-/// `keys[i * width..][..width]` with `width = keys.len() / rows.len()`,
+/// `keys[i * len..][..len]` with `len = keys.len() / rows.len()`,
 /// `rows[i]` rows and entry `i` of each column. Keys are codes, which mean
 /// something only to the store that sealed them.
 #[derive(Debug, Clone, PartialEq, Eq)]

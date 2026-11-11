@@ -1,16 +1,16 @@
-//! straum over HTTP: asks and health checks, on tokio and hyper. Asks
+//! Straum over HTTP: asks and health checks, on tokio and hyper. Asks
 //! run on tokio's blocking threads, since a big one reads every cell of a
 //! fact.
 //!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
-//!   the time went in `Server-Timing`. 400 for an ask straum can't answer,
+//!   the time went in `Server-Timing`. 400 for an ask Straum can't answer,
 //!   503 while a table it reads isn't ready.
 //! - `GET /livez`: 200 while the process serves.
-//! - `GET /readyz`: 200 when every table is loaded and straum is within its
-//!   lag bound, else 503 and why. Asks still answer while straum lags.
-//! - `GET /status`: what straum has done, in plain text for people; `straum
+//! - `GET /readyz`: 200 when every table is loaded and Straum is within its
+//!   lag bound, else 503 and why. Asks still answer while Straum lags.
+//! - `GET /status`: what Straum has done, in plain text for people; `straum
 //!   status` prints it.
 
 #![forbid(unsafe_code)]
@@ -43,7 +43,7 @@ use tokio::net::TcpListener;
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
-/// Where an answer's time went in straum, so a client can tell it from the
+/// Where an answer's time went in Straum, so a client can tell it from the
 /// network's.
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
@@ -162,7 +162,7 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
         Ok(Ok(timed)) => answered_response(timed, parse, start),
         Ok(Err(e)) => answer_error(&e),
         Err(_) => {
-            let error = "straum failed while answering; its log says why".to_owned();
+            let error = "Straum failed while answering; its log says why".to_owned();
             errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
         }
     }
@@ -253,7 +253,7 @@ fn respond(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Res
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
     // An answer is right as of its as_of and no later, so nothing between
-    // straum and a client may keep one.
+    // Straum and a client may keep one.
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }

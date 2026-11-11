@@ -1,4 +1,4 @@
-//! How far straum is behind the server, from readings of the server's WAL
+//! How far Straum is behind the server, from readings of the server's WAL
 //! position a second or so apart.
 
 use std::collections::VecDeque;

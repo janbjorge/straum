@@ -43,7 +43,7 @@ fn reads_every_part() {
     assert_eq!(
         ask,
         Ask {
-            fact: id("trips"),
+            view: id("trips"),
             measures: vec![id("trips"), id("fare")],
             by: vec![
                 AskKey::Time(TimeKey::Bucket),
@@ -72,7 +72,7 @@ fn both_bounds_are_required() {
     )
     .unwrap();
     assert_eq!(
-        (ask.fact, ask.measures, ask.by, ask.from, ask.to),
+        (ask.view, ask.measures, ask.by, ask.from, ask.to),
         (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
     );
     let missing = |bound: &str| format!("line 1: an ask writes both bounds; {bound} is missing");
@@ -114,7 +114,7 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t WHERE kind = 1 AND bucket >= $1 AND bucket < $2",
             &range(),
-            "value, use a parameter such as $1, `1` is not in straum SQL",
+            "value, use a parameter such as $1, `1` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE kind IN ($3, 'x') AND bucket >= $1 AND bucket < $2",
@@ -124,7 +124,7 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t WHERE kind IN ($3) AND bucket >= $1 AND bucket < $2",
             &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
-            "IN with one value, write =, `kind IN ($3)` is not in straum SQL",
+            "IN with one value, write =, `kind IN ($3)` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -222,17 +222,17 @@ fn every_error_names_what_is_wrong() {
         (
             "DELETE FROM t",
             &[],
-            "statement `DELETE FROM t` is not in straum SQL",
+            "statement `DELETE FROM t` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t JOIN u ON t.a = u.a WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "join in an ask, read FROM one view, `JOIN u ON t.a = u.a` is not in straum SQL",
+            "join in an ask, read FROM one view, `JOIN u ON t.a = u.a` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t x WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "alias in an ask, read FROM the view by name, `x` is not in straum SQL",
+            "alias in an ask, read FROM the view by name, `x` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t, u WHERE bucket >= $1 AND bucket < $2",
@@ -252,17 +252,17 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 ORDER BY trips",
             &range(),
-            "ORDER BY is not in straum SQL",
+            "ORDER BY is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 LIMIT 3",
             &range(),
-            "LIMIT or OFFSET is not in straum SQL",
+            "LIMIT or OFFSET is not in Straum SQL",
         ),
         (
             "WITH x AS (SELECT 1) SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "WITH (a CTE) is not in straum SQL",
+            "WITH (a CTE) is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t UNION SELECT trips FROM t",
@@ -272,22 +272,22 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT DISTINCT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "SELECT DISTINCT is not in straum SQL",
+            "SELECT DISTINCT is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING trips = $1",
             &range(),
-            "HAVING is not in straum SQL",
+            "HAVING is not in Straum SQL",
         ),
         (
             "SELECT trips AS n FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "SELECT item `trips AS n` is not in straum SQL",
+            "SELECT item `trips AS n` is not in Straum SQL",
         ),
         (
             "SELECT * FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "SELECT item `*` is not in straum SQL",
+            "SELECT item `*` is not in Straum SQL",
         ),
         (
             "SELECT count(*) FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -310,7 +310,7 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT \"Trips\" FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
-            "quoted identifier `\"Trips\"` is not in straum SQL",
+            "quoted identifier `\"Trips\"` is not in Straum SQL",
         ),
         (
             "SELECT bucket, trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -340,12 +340,12 @@ fn every_error_names_what_is_wrong() {
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY ALL",
             &range(),
-            "GROUP BY ALL is not in straum SQL",
+            "GROUP BY ALL is not in Straum SQL",
         ),
         (
             "SELECT kind, trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY ROLLUP (kind)",
             &range(),
-            "is not in straum SQL",
+            "is not in Straum SQL",
         ),
         ("SELECT trips FROM t WHERE", &[], "sql parser error"),
     ];

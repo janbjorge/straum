@@ -22,12 +22,12 @@ use crate::wire::Conn;
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
 
-/// straum's [`Source`] over PostgreSQL 18 with `wal_level = logical`.
+/// Straum's [`Source`] over PostgreSQL 18 with `wal_level = logical`.
 pub struct Pg {
     dsn: Dsn,
     publication: String,
     /// The most rows one transaction may change in the spec's tables; past
-    /// it straum starts over, so a bulk update costs a load and not the
+    /// it Straum starts over, so a bulk update costs a load and not the
     /// write lock for all of it.
     max_transaction_rows: usize,
     state: State,
@@ -35,7 +35,7 @@ pub struct Pg {
     slot: String,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
-    side: Option<Conn>,
+    plain: Option<Conn>,
 }
 
 enum State {
@@ -67,7 +67,7 @@ impl Pg {
             max_transaction_rows,
             state: State::Closed,
             slot: String::new(),
-            side: None,
+            plain: None,
         }
     }
 }
@@ -115,19 +115,19 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
     })
 }
 
-/// The side connection, made on first use and after a failure.
-fn side<'c>(side: &'c mut Option<Conn>, dsn: &Dsn) -> Result<&'c mut Conn, Error> {
-    if side.is_none() {
-        *side = Some(Conn::connect(dsn, false)?);
+/// The plain connection, made on first use and after a failure.
+fn plain<'c>(plain: &'c mut Option<Conn>, dsn: &Dsn) -> Result<&'c mut Conn, Error> {
+    if plain.is_none() {
+        *plain = Some(Conn::connect(dsn, false)?);
     }
-    Ok(side.as_mut().expect("connected just now"))
+    Ok(plain.as_mut().expect("connected just now"))
 }
 
 impl Source for Pg {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
-        self.side = None;
+        self.plain = None;
         let snapshot = snapshot(&self.dsn, spec, &self.publication)?;
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
@@ -162,9 +162,9 @@ impl Source for Pg {
         if matches!(self.state, State::Closed) {
             return Err(Error::Stopped.into());
         }
-        let wal = side(&mut self.side, &self.dsn).and_then(|conn| read_wal(conn, &self.slot));
+        let wal = plain(&mut self.plain, &self.dsn).and_then(|conn| read_wal(conn, &self.slot));
         if wal.is_err() {
-            self.side = None;
+            self.plain = None;
         }
         Ok(wal?)
     }

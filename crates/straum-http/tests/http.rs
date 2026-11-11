@@ -370,7 +370,7 @@ fn asks_straum_cant_answer() {
             ),
             concat!(
                 r#"{"errors":["line 1: value, use a parameter such as $1, `1` is not in "#,
-                r#"straum SQL, the PostgreSQL subset made only for straum"]}"#
+                r#"Straum SQL, the PostgreSQL subset made only for Straum"]}"#
             ),
         ),
         (
@@ -510,7 +510,7 @@ ready:        no, loading
 applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
-WAL held:     unknown until every table is loaded
+WAL retained: unknown until every table is loaded
 starts:       0
 failures:     0
 last failure: none
@@ -539,7 +539,7 @@ sealed:       no spill
     );
     assert_eq!(
         lines[4],
-        "WAL held:     0.0 MiB, at most 4096.0 MiB; the server is at 16/B374D848"
+        "WAL retained: 0.0 MiB, at most 4096.0 MiB; the server is at 16/B374D848"
     );
     assert_eq!(lines[5..7], ["starts:       1", "failures:     0"]);
     server.stop();
@@ -623,7 +623,7 @@ fn shutdown_finishes_requests_in_flight() {
 
 fn trips_from(from: i64) -> Ask {
     Ask {
-        fact: Ident::new("trips").unwrap(),
+        view: Ident::new("trips").unwrap(),
         measures: vec![Ident::new("trips").unwrap()],
         by: Vec::new(),
         filter: Vec::new(),

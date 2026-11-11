@@ -37,12 +37,12 @@ GROUP BY 1, 2, 3, 4, 5;
 | `WITH (buckets = '1 hour, 1 day')` | Every bucket width kept: hours, and days beside them. | [Time](#time) |
 | `date_bin('1 hour', orders.placed_at, ...) AS bucket` | The time bucket, one per view, named `bucket`. | [Time](#time) |
 | `orders.status AS status, orders.customer_id AS customer_id` | Keys: columns of the fact table, each named. | [Keys](#keys) |
-| `customers.country AS country` | A key from the joined table. | [Joining a lookup table](#joining-a-lookup-table) |
+| `customers.country AS country` | A key from the dim. | [Joining a dim](#joining-a-dim) |
 | `(orders.shipped_at IS NOT NULL) AS shipped` | A boolean key: does the row have a `shipped_at`? | [Null-ness keys](#null-ness-keys) |
 | `count(*)` to `avg(orders.amount)` | Measures, and what each cell holds. | [Measures](#measures) |
 | `count(*) FILTER (WHERE ...)` | Measures over some rows only. | [Measures](#measures) |
 | `FROM public.orders AS orders` | The fact table, whose rows are counted. | [The tables](#the-tables) |
-| `LEFT OUTER JOIN public.customers AS customers ON ...` | A dim: a lookup table joined. | [Joining a lookup table](#joining-a-lookup-table) |
+| `LEFT OUTER JOIN public.customers AS customers ON ...` | A dim: a table the view joins. | [Joining a dim](#joining-a-dim) |
 | `GROUP BY 1, 2, 3, 4, 5` | The keys again, by position, as PostgreSQL wants. | [Keys](#keys) |
 
 Straum keeps one cell per distinct hour, status, customer, country and
@@ -54,8 +54,8 @@ never reads a row.
 `FROM public.orders AS orders` names the fact table, the table whose
 rows the view counts. A table is always `schema.table AS alias`: no
 schema is assumed, no alias is taken from the table's name. A table the
-view joins is a dim, a lookup table. `straum plan` and the start checks
-call them fact and dim.
+view joins is a dim. `straum plan` and the setup check call them fact
+and dim.
 
 The fact table needs no primary key. Straum takes the old row of an
 update or delete from `REPLICA IDENTITY FULL`, which the [setup
@@ -121,7 +121,7 @@ from narrower ones, so it reads far fewer cells; both are drawn under
 only which cells an ask reads changes. Each width costs memory, under
 [Sizing memory](#memory).
 
-## Joining a lookup table
+## Joining a dim
 
 ```sql
 INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
@@ -284,12 +284,12 @@ No expressions, no joins other than to a dim's key, no subquery but the
 problem between declarations at once:
 
 ```text
-straum: orders.sql: line 5: JOIN, write INNER JOIN, `JOIN public.customers AS customers ON customers.id = orders.customer_id` is not in straum SQL, the PostgreSQL subset made only for straum
+straum: orders.sql: line 5: JOIN, write INNER JOIN, `JOIN public.customers AS customers ON customers.id = orders.customer_id` is not in Straum SQL, the PostgreSQL subset made only for Straum
 ```
 
 ```text
 straum: orders.sql: orders declared twice
-orders.sql: fact orders: grain of 420s does not divide a day
+orders.sql: view orders: width of 420s does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a

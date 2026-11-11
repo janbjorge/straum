@@ -8,7 +8,7 @@ use std::{mem, slice};
 use straum_app::{Change, Commit, Lsn};
 use straum_domain::{ColumnType, Datum, Ident};
 
-use crate::catalog::Table;
+use crate::catalog::Checked;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, Tuple};
 use crate::value::{read, type_of};
@@ -17,8 +17,8 @@ use crate::value::{read, type_of};
 /// it: `Fact::columns` or `Dim::columns`.
 pub(crate) struct Decoder {
     /// Each with its types as last loaded or announced. A Relation that
-    /// changes them changes what rows read as, so straum starts over.
-    tables: Vec<Table>,
+    /// changes them changes what rows read as, so Straum starts over.
+    tables: Vec<Checked>,
     /// By relation id. A table read by two members of the spec maps to
     /// both.
     relations: HashMap<u32, Vec<Mapping>>,
@@ -46,7 +46,7 @@ struct Mapping {
 impl Decoder {
     /// `tables` are the spec's tables, dims and facts; `max_rows` is the
     /// most changes to them one transaction may hold.
-    pub(crate) fn new(tables: Vec<Table>, max_rows: usize) -> Decoder {
+    pub(crate) fn new(tables: Vec<Checked>, max_rows: usize) -> Decoder {
         Decoder {
             tables,
             relations: HashMap::new(),
@@ -102,7 +102,7 @@ impl Decoder {
 
     /// Maps the relation's columns for each table of the spec it holds. A
     /// table whose columns now read differently is read again; one that
-    /// lost a column, or whose column turned to a type straum doesn't
+    /// lost a column, or whose column turned to a type Straum doesn't
     /// read, stops the stream, and the setup check on the next start says
     /// what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
@@ -168,7 +168,7 @@ fn mappings(relations: &HashMap<u32, Vec<Mapping>>, relation: u32) -> &[Mapping]
     relations.get(&relation).map_or(&[], Vec::as_slice)
 }
 
-fn changed(table: &Table, column: &Ident) -> Error {
+fn changed(table: &Checked, column: &Ident) -> Error {
     Error::Setup(vec![format!(
         "{}: column {column} of {} was dropped or changed type",
         table.name,
@@ -176,8 +176,8 @@ fn changed(table: &Table, column: &Ident) -> Error {
     )])
 }
 
-fn altered(table: &Table) -> Change {
-    Change::Altered {
+fn altered(table: &Checked) -> Change {
+    Change::Unfit {
         table: table.name.clone(),
     }
 }
@@ -185,7 +185,7 @@ fn altered(table: &Table) -> Change {
 impl Mapping {
     /// The change a row message makes to the table; `None` when it can't
     /// be read whole.
-    fn change(&self, table: &Table, message: &Message) -> Result<Option<Change>, Error> {
+    fn change(&self, table: &Checked, message: &Message) -> Result<Option<Change>, Error> {
         let name = || table.name.clone();
         Ok(match message {
             Message::Insert { new, .. } => {
@@ -221,7 +221,7 @@ impl Mapping {
     /// take it from.
     fn row(
         &self,
-        table: &Table,
+        table: &Checked,
         tuple: &Tuple,
         old: Option<&[Datum]>,
     ) -> Result<Option<Vec<Datum>>, Error> {
@@ -240,11 +240,11 @@ impl Mapping {
         Ok(Some(row))
     }
 
-    /// The old row of an update or delete as straum needs it; `None` when
+    /// The old row of an update or delete as Straum needs it; `None` when
     /// the change can't be read whole. A key-only old row is one: the table
-    /// no longer has `REPLICA IDENTITY FULL`, so straum starts over and the
+    /// no longer has `REPLICA IDENTITY FULL`, so Straum starts over and the
     /// setup check says so.
-    fn old(&self, table: &Table, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
+    fn old(&self, table: &Checked, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
         match old {
             pgoutput::Old::Row(tuple) => self.row(table, tuple, None),
             pgoutput::Old::Key(tuple) => {
@@ -287,7 +287,7 @@ mod tests {
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
     /// `visits`, reading `name` alone.
     fn decoder() -> Decoder {
-        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Table {
+        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Checked {
             name: id(name),
             schema: id("public"),
             table: id("zones"),
@@ -355,7 +355,7 @@ mod tests {
     /// catalog's list; another OID under the column's name is a change.
     #[test]
     fn an_enum_column_reads_as_its_label() {
-        let moods = Table {
+        let moods = Checked {
             name: id("moods"),
             schema: id("public"),
             table: id("zones"),
@@ -500,7 +500,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let altered = |t: &str| Change::Altered { table: id(t) };
+        let altered = |t: &str| Change::Unfit { table: id(t) };
         let pair = [altered("zones"), altered("visits")];
         let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
         assert_eq!(changes, expected);
@@ -560,7 +560,7 @@ mod tests {
                     table: id("visits"),
                     row: vec![text("Bronx")]
                 },
-                Change::Altered { table: id("zones") },
+                Change::Unfit { table: id("zones") },
             ]
         );
 

@@ -8,7 +8,7 @@ use crate::codes::Codes;
 use crate::hash::FastMap;
 use crate::ident::Ident;
 use crate::sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
-use crate::spec::{Fact, Slot};
+use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
 
 const TIME: usize = 0;
@@ -23,7 +23,7 @@ const COLUMNS: &str = "Fact::columns lists every measure input";
 pub(crate) struct Rollup {
     /// The columns a row is read from, as [`Fact::columns`].
     columns: Vec<Ident>,
-    /// What each rollup-key slot codes of a row, in [`Fact::rollup_key`]
+    /// What each rollup-key part codes of a row, in [`Fact::rollup_key`]
     /// order without the bucket.
     key_columns: Vec<Coded>,
     inputs: Vec<Input>,
@@ -42,7 +42,7 @@ pub(crate) struct Rollup {
     types: Vec<ColumnType>,
 }
 
-/// What a rollup-key slot codes of a row.
+/// What a rollup-key part codes of a row.
 #[derive(Debug, Clone, Copy)]
 enum Coded {
     /// The column's value.
@@ -137,11 +137,11 @@ impl Level {
 }
 
 /// The cells of one bucket, side by side: cell `i` has key
-/// `keys[i * width..][..width]`, `rows[i]` rows and entry `i` of each
+/// `keys[i * key_len..][..key_len]`, `rows[i]` rows and entry `i` of each
 /// column, so an ask reads each measure's states as one flat run.
 #[derive(Debug)]
 pub(crate) struct Cells {
-    width: usize,
+    key_len: usize,
     index: FastMap<Box<[u32]>, usize>,
     keys: Vec<u32>,
     rows: Vec<u64>,
@@ -150,9 +150,9 @@ pub(crate) struct Cells {
 }
 
 impl Cells {
-    fn new(width: usize, inputs: &[Input]) -> Cells {
+    fn new(key_len: usize, inputs: &[Input]) -> Cells {
         Cells {
-            width,
+            key_len,
             index: FastMap::default(),
             keys: Vec::new(),
             rows: Vec::new(),
@@ -165,11 +165,11 @@ impl Cells {
     }
 
     pub(crate) fn key(&self, i: usize) -> &[u32] {
-        &self.keys[i * self.width..][..self.width]
+        &self.keys[i * self.key_len..][..self.key_len]
     }
 
-    pub(crate) fn code(&self, i: usize, slot: usize) -> u32 {
-        self.keys[i * self.width + slot]
+    pub(crate) fn code(&self, i: usize, part: usize) -> u32 {
+        self.keys[i * self.key_len + part]
     }
 
     pub(crate) fn rows(&self) -> &[u64] {
@@ -195,17 +195,17 @@ impl Cells {
 
     fn swap_remove(&mut self, i: usize) {
         let last = self.len() - 1;
-        let width = self.width;
-        let key = |n: usize| n * width..(n + 1) * width;
+        let key_len = self.key_len;
+        let key = |n: usize| n * key_len..(n + 1) * key_len;
         self.index.remove(&self.keys[key(i)]);
         if i != last {
             *self
                 .index
                 .get_mut(&self.keys[key(last)])
                 .expect("every cell is indexed") = i;
-            self.keys.copy_within(key(last), i * width);
+            self.keys.copy_within(key(last), i * key_len);
         }
-        self.keys.truncate(last * width);
+        self.keys.truncate(last * key_len);
         self.rows.swap_remove(i);
         self.columns.iter_mut().for_each(|c| c.swap_remove(i));
     }
@@ -262,13 +262,13 @@ impl Rollup {
         let position = |name: &Ident| columns.iter().position(|c| c == name).expect(COLUMNS);
         let key_columns: Vec<Coded> = fact
             .rollup_key()
-            .filter_map(|slot| match slot {
-                Slot::Column(c) => Some(Coded::Value(position(c))),
-                Slot::IsNull { column, negated } => Some(Coded::IsNull {
+            .filter_map(|part| match part {
+                KeyPart::Column(c) => Some(Coded::Value(position(c))),
+                KeyPart::IsNull { column, negated } => Some(Coded::IsNull {
                     column: position(column),
                     negated,
                 }),
-                Slot::Bucket => None,
+                KeyPart::Bucket => None,
             })
             .collect();
         let mut inputs = Vec::new();
@@ -284,10 +284,10 @@ impl Rollup {
                 inputs.push(input);
             }
         }
-        let levels = iter::once(fact.time.grain)
-            .chain(fact.time.buckets.iter().copied())
-            .map(|grain| Level {
-                width: i64::from(grain.seconds),
+        let levels = iter::once(fact.time.width)
+            .chain(fact.time.wider.iter().copied())
+            .map(|width| Level {
+                width: i64::from(width.seconds),
                 buckets: BTreeMap::new(),
             })
             .collect();
@@ -305,7 +305,7 @@ impl Rollup {
     }
 
     /// Columns a row holds, as [`Fact::columns`].
-    fn width(&self) -> usize {
+    fn row_len(&self) -> usize {
         self.columns.len()
     }
 
@@ -335,8 +335,8 @@ impl Rollup {
         Ok(())
     }
 
-    pub(crate) fn key_type(&self, slot: usize) -> ColumnType {
-        self.key_columns[slot].column_type(&self.types)
+    pub(crate) fn key_type(&self, part: usize) -> ColumnType {
+        self.key_columns[part].column_type(&self.types)
     }
 
     pub(crate) fn time_type(&self) -> ColumnType {
@@ -370,14 +370,14 @@ impl Rollup {
     /// of cells on its own thread, since they share nothing but the rows.
     /// If a row fails [`Rollup::add`]'s checks, none is added.
     pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let width = self.width();
-        if !rows.len().is_multiple_of(width) {
+        let row_len = self.row_len();
+        if !rows.len().is_multiple_of(row_len) {
             return Err(RowError::Arity {
-                expected: width,
-                found: rows.len() % width,
+                expected: row_len,
+                found: rows.len() % row_len,
             });
         }
-        let rows: Vec<&[Datum]> = rows.chunks_exact(width).collect();
+        let rows: Vec<&[Datum]> = rows.chunks_exact(row_len).collect();
         for row in &rows {
             self.check(row)?;
         }
@@ -399,7 +399,7 @@ impl Rollup {
             let (first, wider) = self
                 .levels
                 .split_first_mut()
-                .expect("a rollup has its grain");
+                .expect("a rollup has its width");
             let threads: Vec<_> = wider.iter_mut().map(|l| scope.spawn(|| add(l))).collect();
             let new = add(first);
             for thread in threads {
@@ -602,18 +602,18 @@ impl Rollup {
         if self.level(bucket_width).is_none() {
             return Err("no such width");
         }
-        let width = self.key_columns.len();
+        let key_len = self.key_columns.len();
         if rows.is_empty() {
             return Err("no cells");
         }
         if rows.contains(&0) {
             return Err("a cell without rows");
         }
-        if Some(keys.len()) != rows.len().checked_mul(width) {
+        if Some(keys.len()) != rows.len().checked_mul(key_len) {
             return Err("keys don't fit the rollup key");
         }
         let unknown = (keys.iter().enumerate())
-            .any(|(i, &code)| code as usize >= self.codes[i % width].len());
+            .any(|(i, &code)| code as usize >= self.codes[i % key_len].len());
         if unknown {
             return Err("a code the store never gave");
         }
@@ -625,7 +625,7 @@ impl Rollup {
             .collect::<Option<_>>()
             .ok_or("columns don't fit the measures")?;
         Ok(Cells {
-            width,
+            key_len,
             index: FastMap::default(),
             keys,
             rows,
@@ -666,19 +666,19 @@ impl Rollup {
         self.levels.iter().find(|l| l.width == width)
     }
 
-    pub(crate) fn codes(&self, slot: usize) -> usize {
-        self.codes[slot].len()
+    pub(crate) fn codes(&self, part: usize) -> usize {
+        self.codes[part].len()
     }
 
-    pub(crate) fn value(&self, slot: usize, code: u32) -> &Datum {
-        self.codes[slot].value(code)
+    pub(crate) fn value(&self, part: usize, code: u32) -> &Datum {
+        self.codes[part].value(code)
     }
 
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.width() {
+        if row.len() != self.row_len() {
             return Err(RowError::Arity {
-                expected: self.width(),
+                expected: self.row_len(),
                 found: row.len(),
             });
         }

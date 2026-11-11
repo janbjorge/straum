@@ -2,12 +2,12 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::ident::Ident;
-use crate::spec::{Cond, Fact, Grain, Literal, Spec};
+use crate::spec::{Cond, Fact, Literal, Spec, Width};
 use crate::value::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
-    pub fact: Ident,
+    pub view: Ident,
     pub measures: Vec<Ident>,
     pub by: Vec<AskKey>,
     /// Every condition must hold.
@@ -31,19 +31,19 @@ pub enum TimeKey {
 }
 
 impl TimeKey {
-    pub fn start(self, t: i64, grain: Grain) -> i64 {
+    pub fn start(self, t: i64, width: Width) -> i64 {
         match self {
-            TimeKey::Bucket => t.div_euclid(i64::from(grain.seconds)) * i64::from(grain.seconds),
+            TimeKey::Bucket => t.div_euclid(i64::from(width.seconds)) * i64::from(width.seconds),
         }
     }
 }
 
 impl Spec {
     pub fn check(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
-        let Some(fact) = self.fact(ask.fact.as_str()) else {
-            return Err(vec![AskError::UnknownFact(ask.fact.clone())]);
+        let Some(fact) = self.fact(ask.view.as_str()) else {
+            return Err(vec![AskError::UnknownView(ask.view.clone())]);
         };
-        let grain = fact.time.grain;
+        let width = fact.time.width;
         let mut errors = Vec::new();
 
         if ask.measures.is_empty() {
@@ -94,8 +94,8 @@ impl Spec {
             });
         }
         for at in [ask.from, ask.to] {
-            if at.rem_euclid(i64::from(grain.seconds)) != 0 {
-                errors.push(AskError::RangeUnaligned { at, grain });
+            if at.rem_euclid(i64::from(width.seconds)) != 0 {
+                errors.push(AskError::RangeUnaligned { at, width });
             }
         }
 
@@ -109,7 +109,7 @@ impl Spec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskError {
-    UnknownFact(Ident),
+    UnknownView(Ident),
     UnknownMeasure(Ident),
     /// A name that is no key of the view: not a `by` key, not an
     /// attribute a ref reads.
@@ -131,14 +131,14 @@ pub enum AskError {
     /// A range end falls inside a bucket. Asks never read raw rows.
     RangeUnaligned {
         at: i64,
-        grain: Grain,
+        width: Width,
     },
 }
 
 impl fmt::Display for AskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AskError::UnknownFact(name) => write!(f, "unknown fact {name}"),
+            AskError::UnknownView(name) => write!(f, "unknown view {name}"),
             AskError::UnknownMeasure(name) => write!(f, "unknown measure {name}"),
             AskError::UnknownKey(name) => write!(f, "{name} is not a key of the view"),
             AskError::NoMeasures => write!(f, "no measures asked"),
@@ -153,8 +153,8 @@ impl fmt::Display for AskError {
                 write!(f, "{key} is {column}, so it can't be {value}")
             }
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
-            AskError::RangeUnaligned { at, grain } => {
-                write!(f, "range end {at} is not on a {grain} bucket edge")
+            AskError::RangeUnaligned { at, width } => {
+                write!(f, "range end {at} is not on a {width} bucket edge")
             }
         }
     }

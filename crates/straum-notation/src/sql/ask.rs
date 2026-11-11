@@ -135,7 +135,7 @@ impl Walker {
 
         let (filter, from, to) = self.ask_where(at, select.selection.as_ref(), params);
         Some(Ask {
-            fact: fact?,
+            view: fact?,
             measures,
             by,
             filter,
