@@ -969,9 +969,10 @@ fn run(seed: u64, chained: bool, changing: bool) {
             }
         }
         if step % 100 == 99 {
-            if !chained && !changing {
-                assert!(store.bound_cells("orders").is_some(), "seed {seed}");
-            }
+            // A ref through another dim keeps the fact unbound; without
+            // one, the bound cells hold until a dim changes.
+            let bound = store.bound_cells("orders").is_some();
+            assert_eq!(bound, !chained && (!changing || step < 99), "seed {seed}");
             for _ in 0..4 {
                 let ask = rng.random_ask();
                 assert_eq!(
