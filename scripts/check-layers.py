@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Reject workspace dependencies that violate Straum's crate layering."""
+"""Reject workspace dependencies that violate Straum's crate layering.
+
+Each crate must depend on exactly the workspace crates ALLOWED lists, so
+dropping one fails too: the table stays the true picture. Dev-dependencies
+are free.
+"""
 
 import json
 import pathlib

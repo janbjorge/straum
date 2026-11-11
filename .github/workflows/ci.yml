@@ -17,6 +17,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # As rust-toolchain.toml and the Dockerfile pin it.
+  RUST: 1.99.1
+
 jobs:
   format:
     runs-on: ubuntu-latest
@@ -24,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ env.RUST }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -34,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ env.RUST }}
           components: clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -44,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ env.RUST }}
       - run: python3 scripts/check-layers.py
 
   test:
@@ -52,15 +56,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 19rc1 until PostgreSQL 19 ships.
-        postgres: ["17", "18", "19rc1"]
+        # 19rc1 until PostgreSQL 19 ships. 18, the tests' default, runs in
+        # coverage.
+        postgres: ["17", "19rc1"]
     env:
       STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ env.RUST }}
       - run: cargo test --workspace
 
   coverage:
@@ -69,7 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ env.RUST }}
           components: llvm-tools-preview
       - run: cargo install cargo-llvm-cov --locked
       - run: cargo llvm-cov --workspace --all-targets --fail-under-lines 98
