@@ -406,7 +406,7 @@ fn run(args: Run) -> Result<(), String> {
         process::abort();
     }));
 
-    let app = App::new(spec, limits);
+    let app = App::new(spec, limits, None);
     let writer = Writer::new(
         app.clone(),
         Pg::new(dsn, &publication, max_transaction_rows),

@@ -3,7 +3,6 @@
 //! takes `&self`.
 
 use std::error;
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +12,7 @@ use straum_domain::{Sealed, SealedId};
 /// An ask that meets one fails; the writer starts over after one.
 pub type SpillError = Box<dyn error::Error + Send + Sync>;
 
-pub trait Spill: fmt::Debug + Send + Sync {
+pub trait Spill: Send + Sync {
     /// Keeps a bucket, replacing any kept under its id.
     fn put(&self, sealed: &Sealed) -> Result<(), SpillError>;
 
@@ -28,7 +27,7 @@ pub trait Spill: fmt::Debug + Send + Sync {
 }
 
 /// Where sealed buckets go, and when.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Spilling {
     pub spill: Arc<dyn Spill>,
     /// A bucket is sealed once it ended this long ago, by straum's clock.

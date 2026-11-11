@@ -13,7 +13,8 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use straum_app::{
-    AnswerError, Answered, App, Change, Error, Limits, Lsn, Spilling, Status, Step, Wal, Writer,
+    AnswerError, Answered, App, Change, Error, Limits, Lsn, Spill, Spilling, Status, Step, Wal,
+    Writer,
 };
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Cond, Datum, Ident, Literal, SealedId,
@@ -82,7 +83,7 @@ fn text(s: &str) -> Datum {
 
 fn setup(tables: &[(&'static str, bool)]) -> (Rc<RefCell<Database>>, Writer<Fake>) {
     let db = Database::new(tables).shared();
-    let writer = Writer::new(App::new(spec(), LIMITS), Fake::new(&db));
+    let writer = Writer::new(App::new(spec(), LIMITS, None), Fake::new(&db));
     (db, writer)
 }
 
@@ -558,7 +559,7 @@ fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
 #[test]
 fn asks_wait_while_the_tables_load() {
     let db = Database::new(&TABLES).shared();
-    let app = App::new(spec(), LIMITS);
+    let app = App::new(spec(), LIMITS, None);
     let mut fake = Fake::new(&db);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let (watch, log) = (app.clone(), Rc::clone(&seen));
@@ -605,7 +606,7 @@ fn ready_only_within_the_lag_bound() {
     let mut fake = Fake::new(&db);
     // Loading takes time, so WAL written meanwhile has an age.
     fake.on_load = Some(Box::new(|_| thread::sleep(Duration::from_millis(1))));
-    let mut writer = Writer::new(App::new(spec(), limits), fake);
+    let mut writer = Writer::new(App::new(spec(), limits, None), fake);
     assert_eq!(writer.app().status().lag, None);
 
     // WAL written during the load that the slot hasn't confirmed.
@@ -866,7 +867,7 @@ fn spilling(seal_after: Duration) -> (Rc<RefCell<Database>>, Writer<Fake>, Arc<M
         spill: spill.clone(),
         seal_after,
     };
-    let app = App::with_spilling(spec(), LIMITS, spilling);
+    let app = App::new(spec(), LIMITS, Some(spilling));
     (Rc::clone(&db), Writer::new(app, Fake::new(&db)), spill)
 }
 
@@ -1389,17 +1390,11 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
         .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
         .collect();
     db.borrow_mut().commit(zones);
-    let app = match spill {
-        None => App::new(spec(), LIMITS),
-        Some(spill) => {
-            let spill = Arc::clone(spill);
-            let spilling = Spilling {
-                spill,
-                seal_after: Duration::ZERO,
-            };
-            App::with_spilling(spec(), LIMITS, spilling)
-        }
-    };
+    let spilling = spill.map(|spill| Spilling {
+        spill: Arc::clone(spill) as Arc<dyn Spill>,
+        seal_after: Duration::ZERO,
+    });
+    let app = App::new(spec(), LIMITS, spilling);
     let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));
     let (watch, count) = (app.clone(), Rc::clone(&aside));

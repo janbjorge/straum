@@ -12,6 +12,6 @@ mod lag;
 mod source;
 mod spill;
 
-pub use app::{AnswerError, Answered, App, Error, Failure, Limits, Status, Step, Writer};
+pub use app::{AnswerError, Answered, App, Error, Failure, Limits, Status, Step, Writer, mib};
 pub use source::{Change, Commit, Lsn, Source, SourceError, Wal};
 pub use spill::{Spill, SpillError, Spilling};

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use straum_app::{Spill, SpillError};
 use straum_domain::{Sealed, SealedId};
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemorySpill {
     pub buckets: Mutex<BTreeMap<SealedId, Sealed>>,
     /// Every call fails while set.

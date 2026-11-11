@@ -4,7 +4,7 @@
 use std::time::SystemTime;
 
 use jiff::Timestamp;
-use straum_app::{Failure, Status};
+use straum_app::{Failure, Status, mib};
 
 /// Labels and values line up after this many characters.
 const LABEL: usize = 14;
@@ -87,10 +87,6 @@ pub(crate) fn write(status: &Status) -> String {
 fn timestamp(time: SystemTime) -> String {
     // Past jiff's year 9999, which only a broken clock gives.
     Timestamp::try_from(time).map_or_else(|_| "an unreadable time".to_owned(), |at| at.to_string())
-}
-
-fn mib(bytes: u64) -> String {
-    format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
 }
 
 #[cfg(test)]

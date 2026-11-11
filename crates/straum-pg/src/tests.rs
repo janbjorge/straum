@@ -404,7 +404,7 @@ impl Db {
     }
 
     fn writer(&self) -> Writer<Pg> {
-        Writer::new(App::new(self.spec(SPEC), LIMITS), self.pg())
+        Writer::new(App::new(self.spec(SPEC), LIMITS, None), self.pg())
     }
 }
 
@@ -914,7 +914,7 @@ fn follows_the_task_tables() {
     assert!(crate::plan(&spec, "p", "r", None).contains(
         "-- dim taskgroups: straum holds its key and the columns the views read, and follows it."
     ));
-    let mut writer = Writer::new(App::new(spec, LIMITS), db.pg());
+    let mut writer = Writer::new(App::new(spec, LIMITS, None), db.pg());
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
     let edges = Ask {
@@ -1003,7 +1003,7 @@ fn a_transaction_past_the_cap_starts_over() {
         db.run(&rng.trip(id));
     }
     let mut writer = Writer::new(
-        App::new(db.spec(SPEC), LIMITS),
+        App::new(db.spec(SPEC), LIMITS, None),
         Pg::new(db.dsn.clone(), &db.name, CAP),
     );
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
@@ -1069,8 +1069,8 @@ fn a_dim_change_shows_at_once() {
     for id in 0..200 {
         db.run(&rng.task(id));
     }
-    let mut picks = Writer::new(App::new(db.spec(PICKS_SPEC), LIMITS), db.pg());
-    let mut tasks = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS), db.pg());
+    let mut picks = Writer::new(App::new(db.spec(PICKS_SPEC), LIMITS, None), db.pg());
+    let mut tasks = Writer::new(App::new(db.spec(TASKS_SPEC), LIMITS, None), db.pg());
     assert!(matches!(picks.step(), Ok(Step::Started(_))));
     assert!(matches!(tasks.step(), Ok(Step::Started(_))));
     compare(&mut db, picks.app(), &picks_oracles()).expect("picks ready");
@@ -1292,8 +1292,8 @@ fn every_join_kind_matches_postgresql() {
         let sql = order(id, &mut rng);
         db.run(&sql);
     }
-    let mut paid = Writer::new(App::new(db.spec(PAID_SPEC), LIMITS), db.pg());
-    let mut offers = Writer::new(App::new(db.spec(OFFERS_SPEC), LIMITS), db.pg());
+    let mut paid = Writer::new(App::new(db.spec(PAID_SPEC), LIMITS, None), db.pg());
+    let mut offers = Writer::new(App::new(db.spec(OFFERS_SPEC), LIMITS, None), db.pg());
     assert!(matches!(paid.step(), Ok(Step::Started(_))));
     assert!(matches!(offers.step(), Ok(Step::Started(_))));
     let (paid_oracles, offers_oracles) = shop_oracles();
@@ -1846,7 +1846,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
     let pg = Pg::new(Dsn::parse(&dsn).unwrap(), "plan", MAX_ROWS);
-    let mut writer = Writer::new(App::new(spec, LIMITS), pg);
+    let mut writer = Writer::new(App::new(spec, LIMITS, None), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
     applied(&mut writer);
@@ -3167,7 +3167,10 @@ fn taxi_month() {
         );
     };
 
-    let mut writer = Writer::new(App::new(spec, LIMITS), Pg::new(dsn, "straum", MAX_ROWS));
+    let mut writer = Writer::new(
+        App::new(spec, LIMITS, None),
+        Pg::new(dsn, "straum", MAX_ROWS),
+    );
     let clock = Instant::now();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     eprintln!("loaded in {:.1?}", clock.elapsed());

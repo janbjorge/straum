@@ -134,7 +134,7 @@ fn script() -> Script {
 
 fn writer_with(limits: Limits, script: Script) -> Writer<Script> {
     let spec = straum_notation::parse(SPEC).unwrap();
-    Writer::new(App::new(spec, limits), script)
+    Writer::new(App::new(spec, limits, None), script)
 }
 
 fn writer() -> Writer<Script> {
@@ -286,7 +286,6 @@ fn answers_asks_as_json() {
 }
 
 /// Takes every bucket and gives none back.
-#[derive(Debug)]
 struct Lost;
 
 impl Spill for Lost {
@@ -314,7 +313,7 @@ fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
         spill: Arc::new(Lost),
         seal_after: Duration::ZERO,
     };
-    let mut writer = Writer::new(App::with_spilling(spec, LIMITS, spilling), script());
+    let mut writer = Writer::new(App::new(spec, LIMITS, Some(spilling)), script());
     writer.step().unwrap();
     let server = serve(writer.app().clone());
     let range = r#"["2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"]"#;

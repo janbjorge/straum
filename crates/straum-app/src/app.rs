@@ -10,7 +10,9 @@ use std::mem;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Ident, RowError, SealedError, SealedId, Spec, Store};
+use straum_domain::{
+    Answer, Ask, AskError, Datum, Ident, RowError, SealedError, SealedId, Spec, Store,
+};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
@@ -39,12 +41,11 @@ pub struct Limits {
 }
 
 /// The store as the writer last left it, for asks. Clones share it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct App {
     state: Arc<RwLock<State>>,
 }
 
-#[derive(Debug)]
 struct State {
     store: Store,
     /// `None` until every table is loaded, and again after a failure.
@@ -52,8 +53,6 @@ struct State {
     limits: Limits,
     /// `None` keeps every bucket in memory.
     spilling: Option<Spilling>,
-    /// The last failure, until the next start.
-    error: Option<String>,
     /// The last failure and when it came, kept across starts.
     last_failure: Option<Failure>,
     starts: u64,
@@ -77,11 +76,7 @@ struct Following {
 
 /// Reads the source and keeps an [`App`] in step with it: the loop that
 /// does the I/O. One writer per app.
-#[derive(Debug)]
 pub struct Writer<S> {
-    spec: Spec,
-    limits: Limits,
-    spilling: Option<Spilling>,
     source: S,
     app: App,
     /// When the server's WAL was last read.
@@ -151,29 +146,17 @@ pub struct Failure {
     pub error: String,
 }
 
-/// A change that no longer fits its table, so straum starts over.
-struct Stale;
-
 impl App {
     /// An empty store that answers not ready until a [`Writer`] has loaded
-    /// it.
-    pub fn new(spec: Spec, limits: Limits) -> App {
-        App::open(spec, limits, None)
-    }
-
-    /// As [`App::new`], with buckets sealed into a spill.
-    pub fn with_spilling(spec: Spec, limits: Limits, spilling: Spilling) -> App {
-        App::open(spec, limits, Some(spilling))
-    }
-
-    fn open(spec: Spec, limits: Limits, spilling: Option<Spilling>) -> App {
+    /// it. `spilling` seals buckets into a spill; `None` keeps them all in
+    /// memory.
+    pub fn new(spec: Spec, limits: Limits, spilling: Option<Spilling>) -> App {
         App {
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec),
                 following: None,
                 limits,
                 spilling,
-                error: None,
                 last_failure: None,
                 starts: 0,
                 failures: 0,
@@ -193,15 +176,19 @@ impl App {
         let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
         let store = &state.store;
         let ids = store.sealed_read(ask).map_err(AnswerError::Invalid)?;
-        let thawed = match (&state.spilling, ids.is_empty()) {
-            (_, true) => Vec::new(),
-            (None, false) => unreachable!("only a spilling writer seals"),
-            (Some(spilling), false) => (ids.iter())
+        let thawed = if ids.is_empty() {
+            Vec::new()
+        } else {
+            let spilling = state
+                .spilling
+                .as_ref()
+                .expect("only a spilling writer seals");
+            (ids.iter())
                 .map(|id| {
                     let sealed = spilling.spill.get(id).map_err(spill_error)?;
                     store.thaw(sealed).map_err(spill_error)
                 })
-                .collect::<Result<_, _>>()?,
+                .collect::<Result<_, _>>()?
         };
         let answer = store.ask_with(ask, &thawed).map_err(AnswerError::Invalid)?;
         Ok(Answered {
@@ -223,7 +210,9 @@ impl App {
             lag,
             wal: following.map(|f| f.wal),
             limits: state.limits,
-            error: state.error.clone(),
+            error: (state.last_failure.as_ref())
+                .filter(|_| following.is_none())
+                .map(|failure| failure.error.clone()),
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,
@@ -281,18 +270,18 @@ impl State {
     fn apply(&mut self, commit: Commit) -> Result<(), Ident> {
         let Commit { lsn, time, changes } = commit;
         for change in changes {
-            let table = change.table().clone();
+            let table = change.table().as_str();
             let spec = self.store.spec();
-            let applied = if spec.fact(table.as_str()).is_some() {
-                self.apply_change(change)
-            } else if spec.dim(table.as_str()).is_some() {
-                self.apply_dim_change(change)
+            let rows = if spec.fact(table).is_some() {
+                &FACT_ROWS
+            } else if spec.dim(table).is_some() {
+                &DIM_ROWS
             } else {
                 // The publication may carry tables the spec doesn't name.
                 continue;
             };
-            if applied.is_err() {
-                return Err(table);
+            if !apply_change(&mut self.store, &change, rows) {
+                return Err(change.table().clone());
             }
         }
         let following = self.following();
@@ -300,53 +289,48 @@ impl State {
         following.time = Some(time);
         Ok(())
     }
+}
 
-    /// A fact needs the whole old row to take it out of its cell.
-    fn apply_change(&mut self, change: Change) -> Result<(), Stale> {
-        match change {
-            Change::Insert { table, row } => self.store.add_fact_row(table.as_str(), &row)?,
-            Change::Update { table, old, new } => {
-                self.store.remove_fact_row(table.as_str(), &old)?;
-                self.store.add_fact_row(table.as_str(), &new)?;
-            }
-            Change::Delete { table, old } => self.store.remove_fact_row(table.as_str(), &old)?,
-            Change::Truncate { table } => self.store.clear_fact(table.as_str()),
-            Change::Altered { .. } => return Err(Stale),
-        }
-        Ok(())
-    }
+/// The store's row operations for one kind of table.
+struct Rows {
+    add: fn(&mut Store, &str, &[Datum]) -> Result<(), RowError>,
+    remove: fn(&mut Store, &str, &[Datum]) -> Result<(), RowError>,
+    clear: fn(&mut Store, &str),
+}
 
-    /// A dim needs the whole old row too: a key change is the old row out
-    /// and the new one in.
-    fn apply_dim_change(&mut self, change: Change) -> Result<(), Stale> {
-        match change {
-            Change::Insert { table, row } => self.store.add_dim_row(table.as_str(), &row)?,
-            Change::Update { table, old, new } => {
-                self.store.remove_dim_row(table.as_str(), &old)?;
-                self.store.add_dim_row(table.as_str(), &new)?;
-            }
-            Change::Delete { table, old } => self.store.remove_dim_row(table.as_str(), &old)?,
-            Change::Truncate { table } => self.store.clear_dim(table.as_str()),
-            Change::Altered { .. } => return Err(Stale),
+const FACT_ROWS: Rows = Rows {
+    add: Store::add_fact_row,
+    remove: Store::remove_fact_row,
+    clear: Store::clear_fact,
+};
+
+const DIM_ROWS: Rows = Rows {
+    add: Store::add_dim_row,
+    remove: Store::remove_dim_row,
+    clear: Store::clear_dim,
+};
+
+/// Applies one change; `false` when it no longer fits. Facts and dims need
+/// the whole old row: a fact to take it out of its cell, a dim because a
+/// key change is the old row out and the new one in.
+fn apply_change(store: &mut Store, change: &Change, rows: &Rows) -> bool {
+    match change {
+        Change::Insert { table, row } => (rows.add)(store, table.as_str(), row).is_ok(),
+        Change::Update { table, old, new } => (rows.remove)(store, table.as_str(), old)
+            .and_then(|()| (rows.add)(store, table.as_str(), new))
+            .is_ok(),
+        Change::Delete { table, old } => (rows.remove)(store, table.as_str(), old).is_ok(),
+        Change::Truncate { table } => {
+            (rows.clear)(store, table.as_str());
+            true
         }
-        Ok(())
+        Change::Altered { .. } => false,
     }
 }
 
 impl<S: Source> Writer<S> {
     pub fn new(app: App, source: S) -> Writer<S> {
-        let (spec, limits, spilling) = {
-            let state = app.read();
-            (
-                state.store.spec().clone(),
-                state.limits,
-                state.spilling.clone(),
-            )
-        };
         Writer {
-            spec,
-            limits,
-            spilling,
             source,
             app,
             measured: Instant::now(),
@@ -371,7 +355,6 @@ impl<S: Source> Writer<S> {
         if let Err(e) = &step {
             let mut state = self.app.write();
             state.following = None;
-            state.error = Some(e.to_string());
             state.last_failure = Some(Failure {
                 at: SystemTime::now(),
                 error: e.to_string(),
@@ -385,19 +368,22 @@ impl<S: Source> Writer<S> {
     /// swaps it in. The old store goes first, so the two never take memory
     /// at once.
     fn start(&mut self) -> Result<Lsn, Error> {
-        let empty = || Store::new(self.spec.clone());
-        drop(mem::replace(&mut self.app.write().store, empty()));
-        if let Some(spilling) = &self.spilling {
+        let spec = self.app.read().store.spec().clone();
+        drop(mem::replace(
+            &mut self.app.write().store,
+            Store::new(spec.clone()),
+        ));
+        if let Some(spilling) = self.spilling() {
             spilling.spill.clear().map_err(Error::Spill)?;
         }
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
-        let start = self.source.open(&self.spec)?;
-        let mut store = empty();
-        for dim in self.spec.dims() {
+        let start = self.source.open(&spec)?;
+        let mut store = Store::new(spec.clone());
+        for dim in spec.dims() {
             self.source.load_dim(dim, &mut store)?;
         }
-        for fact in self.spec.facts() {
+        for fact in spec.facts() {
             self.source.load_fact(fact, &mut store)?;
         }
         let wal = self.measure()?;
@@ -411,7 +397,6 @@ impl<S: Source> Writer<S> {
             lag,
             wal,
         });
-        state.error = None;
         state.starts += 1;
         drop(state);
         self.seal()?;
@@ -446,7 +431,7 @@ impl<S: Source> Writer<S> {
     /// the spill doesn't hold. Only the writer changes the store, so the
     /// copy is still the bucket when its cells go.
     fn seal(&mut self) -> Result<(), Error> {
-        let Some(spilling) = &self.spilling else {
+        let Some(spilling) = self.spilling() else {
             return Ok(());
         };
         let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
@@ -465,7 +450,7 @@ impl<S: Source> Writer<S> {
 
     /// Unseals the buckets the commit's fact rows fall in, so it applies.
     fn unseal(&mut self, commit: &Commit) -> Result<(), Error> {
-        let Some(spilling) = &self.spilling else {
+        let Some(spilling) = self.spilling() else {
             return Ok(());
         };
         let ids = touched(&self.app.read().store, commit);
@@ -490,13 +475,18 @@ impl<S: Source> Writer<S> {
     /// Removes buckets the store no longer holds sealed, so the spill
     /// holds what the store has sealed and no more.
     fn forget(&self, ids: &[SealedId]) -> Result<(), Error> {
-        let Some(spilling) = &self.spilling else {
+        let Some(spilling) = self.spilling() else {
             return Ok(());
         };
         for id in ids {
             spilling.spill.remove(id).map_err(Error::Spill)?;
         }
         Ok(())
+    }
+
+    /// The spill, read out of the state so no lock is held while it works.
+    fn spilling(&self) -> Option<Spilling> {
+        self.app.read().spilling.clone()
     }
 
     /// Reads the server's WAL, and fails once the slot holds more of it
@@ -506,7 +496,7 @@ impl<S: Source> Writer<S> {
         let at = Instant::now();
         let wal = self.source.wal()?;
         self.measured = at;
-        let (retained, limit) = (wal.retained(), self.limits.max_retained_wal);
+        let (retained, limit) = (wal.retained(), self.app.read().limits.max_retained_wal);
         if retained > limit {
             return Err(Error::Retained { retained, limit });
         }
@@ -553,12 +543,6 @@ fn truncated(store: &Store, commit: &Commit) -> Vec<SealedId> {
 /// Whole seconds, saturating.
 fn seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-}
-
-impl From<RowError> for Stale {
-    fn from(_: RowError) -> Stale {
-        Stale
-    }
 }
 
 #[derive(Debug)]
@@ -609,7 +593,8 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-fn mib(bytes: u64) -> String {
+/// Bytes as mebibytes, for messages.
+pub fn mib(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
 }
 
