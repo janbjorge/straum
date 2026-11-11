@@ -180,7 +180,7 @@ impl Projection {
         self.types[self.key_len + attr]
     }
 
-    fn check(&self, row: &[Datum]) -> Result<(), RowError> {
+    pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {
         if row.len() != self.row_len() {
             return Err(RowError::Arity {
                 expected: self.row_len(),

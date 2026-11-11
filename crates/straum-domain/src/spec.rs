@@ -247,15 +247,30 @@ impl Fact {
     /// The `by` keys, then every ref's fact-side via columns in ref
     /// order, each part once, then the time bucket.
     pub fn rollup_key(&self) -> impl Iterator<Item = KeyPart<'_>> {
-        let mut parts: Vec<KeyPart<'_>> = Vec::new();
-        let vias = self.fact_vias().map(KeyPart::Column);
-        for part in self.by_keys.iter().map(ByKey::key_part).chain(vias) {
+        let mut parts: Vec<KeyPart<'_>> = self.by_parts().collect();
+        for part in self.fact_vias().map(KeyPart::Column) {
             if !parts.contains(&part) {
                 parts.push(part);
             }
         }
         parts.push(KeyPart::Bucket);
         parts.into_iter()
+    }
+
+    /// The `by` keys' parts, each once.
+    pub fn by_parts(&self) -> impl Iterator<Item = KeyPart<'_>> {
+        let mut parts: Vec<KeyPart<'_>> = Vec::new();
+        for part in self.by_keys.iter().map(ByKey::key_part) {
+            if !parts.contains(&part) {
+                parts.push(part);
+            }
+        }
+        parts.into_iter()
+    }
+
+    /// Whether every ref joins on fact columns, none through another dim.
+    pub fn is_direct(&self) -> bool {
+        (self.refs.iter().flat_map(|r| &r.via)).all(|v| matches!(v, Via::Fact(_)))
     }
 
     /// The fact columns the refs join on, in ref order, a column as often

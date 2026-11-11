@@ -134,7 +134,8 @@ the key of a dim. The dim columns the view selects, here
 each cell by the join column, `customer_id`, and holds the dim projected
 to its key and the columns the views read, kept current from the stream;
 an ask reads `country` through the cell's `customer_id` as the customer
-rows are now.
+rows are now. Beside those cells it keeps bound cells keyed by
+`country` itself, which answer asks without the lookup.
 
 - The kind is spelled whole. `INNER JOIN` keeps a fact row only while a
   dim row matches it; `LEFT OUTER JOIN` keeps every fact row, with null

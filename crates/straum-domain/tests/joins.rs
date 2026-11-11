@@ -57,6 +57,13 @@ fn attr(name: &str) -> Attribute {
 /// customers which keep no column, each join of the kind given; `filter`
 /// is the view's `WHERE`.
 fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
+    spec_with(kinds, filter, true)
+}
+
+/// As [`spec`]; without `chained`, tiers are joined on the customer id
+/// itself, so every ref joins on a fact column and the fact keeps bound
+/// cells.
+fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec {
     let m = |name, aggregate| Measure {
         name: id(name),
         aggregate,
@@ -98,9 +105,13 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
             r(
                 TIERS,
                 "tiers",
-                Via::Attribute {
-                    through: CUSTOMERS,
-                    column: id("tier_id"),
+                if chained {
+                    Via::Attribute {
+                        through: CUSTOMERS,
+                        column: id("tier_id"),
+                    }
+                } else {
+                    Via::Fact(id("customer"))
                 },
                 vec![attr("label")],
             ),
@@ -237,7 +248,7 @@ type JoinRow = Vec<Option<Vec<Datum>>>;
 
 /// Every way an order's joins resolve under `kinds`, in ref order, as
 /// PostgreSQL would repeat the row.
-fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5]) -> Vec<JoinRow> {
+fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) -> Vec<JoinRow> {
     let matches = |dim: &str, key: &Datum| -> Vec<Vec<Datum>> {
         if *key == Datum::Null {
             return Vec::new();
@@ -257,7 +268,10 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5]) -> Vec<JoinRow> {
         for joined in &rows {
             let key = match i {
                 CUSTOMERS | BLOCKED => row[CUSTOMER].clone(),
-                TIERS => (joined[CUSTOMERS].as_ref()).map_or(Datum::Null, |c| c[1].clone()),
+                TIERS if chained => {
+                    (joined[CUSTOMERS].as_ref()).map_or(Datum::Null, |c| c[1].clone())
+                }
+                TIERS => row[CUSTOMER].clone(),
                 _ => row[PRODUCT].clone(),
             };
             let found = matches(dim, &key);
@@ -310,6 +324,7 @@ fn reference(
     kinds: &[RefKind; 5],
 ) -> Answer {
     let fact = spec.fact("orders").unwrap();
+    let chained = matches!(fact.refs[TIERS].via[0], Via::Attribute { .. });
     let mut groups: BTreeMap<Vec<Datum>, Vec<(&[Datum], JoinRow)>> = BTreeMap::new();
     if ask.keys.is_empty() {
         groups.insert(Vec::new(), Vec::new());
@@ -319,7 +334,7 @@ fn reference(
         if t < ask.from || t >= ask.to {
             continue;
         }
-        for joined in join_rows(row, dims, kinds) {
+        for joined in join_rows(row, dims, kinds, chained) {
             if !passes(row, &joined, &fact.filter) || !passes(row, &joined, &ask.filter) {
                 continue;
             }
@@ -845,8 +860,9 @@ impl Rng {
         )
     }
 
-    /// A random dim row: which dim, its key and its attributes.
-    fn dim_row(&mut self) -> (&'static str, Vec<Datum>, Vec<Datum>) {
+    /// A random dim row: which dim, its key and its attributes; tiers
+    /// are keyed as the spec joins them.
+    fn dim_row(&mut self, chained: bool) -> (&'static str, Vec<Datum>, Vec<Datum>) {
         match self.below(5) {
             0 => (
                 "customers",
@@ -855,7 +871,11 @@ impl Rng {
             ),
             1 => (
                 "tiers",
-                vec![Datum::Int(self.int(10, 13))],
+                vec![Datum::Int(if chained {
+                    self.int(10, 13)
+                } else {
+                    self.int(1, 6)
+                })],
                 vec![text(self.pick(&["gold", "silver"]))],
             ),
             2 => (
@@ -904,8 +924,10 @@ impl Rng {
 }
 
 /// Random kinds, rows, dims and changes to both, checked against the
-/// reference every few steps.
-fn run(seed: u64) {
+/// reference every few steps. Without `chained` the fact keeps bound
+/// cells, which answer until a dim changes under its rows; without
+/// `changing` none does, so they answer throughout.
+fn run(seed: u64, chained: bool, changing: bool) {
     let mut rng = Rng(seed);
     let kinds = rng.kinds();
     let filter = if rng.chance(50) {
@@ -913,22 +935,22 @@ fn run(seed: u64) {
     } else {
         Vec::new()
     };
-    let spec = spec(kinds, filter);
+    let spec = spec_with(kinds, filter, chained);
     let mut store = typed(&spec);
     let mut dims = Dims::new();
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     for _ in 0..rng.below(30) {
-        let (dim, key, attrs) = rng.dim_row();
+        let (dim, key, attrs) = rng.dim_row(chained);
         add_dim(&mut store, &mut dims, dim, key, attrs);
     }
     for step in 0..400 {
         match rng.below(10) {
-            0 | 1 => {
-                let (dim, key, attrs) = rng.dim_row();
+            0 | 1 if changing => {
+                let (dim, key, attrs) = rng.dim_row(chained);
                 add_dim(&mut store, &mut dims, dim, key, attrs);
             }
-            2 => {
-                let (dim, key, attrs) = rng.dim_row();
+            2 if changing => {
+                let (dim, key, attrs) = rng.dim_row(chained);
                 let held = (dims.get(dim))
                     .and_then(|d| d.get(&key))
                     .is_some_and(|rows| rows.contains(&attrs));
@@ -947,6 +969,9 @@ fn run(seed: u64) {
             }
         }
         if step % 100 == 99 {
+            if !chained && !changing {
+                assert!(store.bound_cells("orders").is_some(), "seed {seed}");
+            }
             for _ in 0..4 {
                 let ask = rng.random_ask();
                 assert_eq!(
@@ -962,6 +987,20 @@ fn run(seed: u64) {
 #[test]
 fn joins_match_the_naive_reference() {
     for seed in 0..8 {
-        run(seed);
+        run(seed, true, true);
+    }
+}
+
+#[test]
+fn direct_joins_match_the_naive_reference() {
+    for seed in 0..8 {
+        run(seed, false, true);
+    }
+}
+
+#[test]
+fn bound_joins_match_the_naive_reference() {
+    for seed in 0..8 {
+        run(seed, false, false);
     }
 }

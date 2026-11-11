@@ -66,7 +66,11 @@ transaction whole, nothing read from PostgreSQL in between:
 A dim change is in the stream like any other. Cells are keyed by the
 join column, so a dim row relabelled, moved, removed or added changes
 no cell: the next ask reads the dim as it is now, as [Writing a
-spec](spec.md#joining-a-dim) describes.
+spec](spec.md#joining-a-dim) describes. A view with a join also keeps
+bound cells, keyed by the dim columns it reads instead of the join
+column, which answer its asks without reading the dim. A change to a
+dim a view reads drops them, and its asks read the keyed cells through
+the dim until the next start.
 
 A change that no longer fits makes Straum [start over](running.md#states)
 from a new slot: an update without its old row, a row that doesn't fit
@@ -108,10 +112,11 @@ answer: NO 1 120.00, SE 2 380.50
    a filter value of another type than its column.
 2. It reads the cells of the buckets in the range: the widest the view
    keeps that fit, and narrower ones at the ends.
-3. A key the ask names is in the cell key or is a dim's column. A dim
-   column is read from the dim's projection through the join id in the
-   cell key, as the dim is now, so a customer who moved country moves
-   their orders with them.
+3. A key the ask names is in the cell key or is a dim's column. While
+   the view's bound cells hold, a dim column is a part of their key.
+   Else it is read from the dim's projection through the join id in
+   the cell key, as the dim is now, so a customer who moved country
+   moves their orders with them.
 4. It adds each cell to its group, and to each measure whose filter holds.
    Filters name only parts of the cell key, so a cell counts whole or
    not at all.

@@ -606,8 +606,10 @@ impl Spilled {
 
 /// Random changes and asks against the reference. With `sealing`,
 /// buckets are sealed and unsealed at random as they go, and the answers
-/// must not change; returns the sealed buckets asks read.
-fn run(seed: u64, sealing: bool) -> usize {
+/// must not change; returns the sealed buckets asks read. With
+/// `changing`, dims change as they go, so the bound cells go stale and
+/// the keyed cells answer; without, the bound cells answer throughout.
+fn run(seed: u64, sealing: bool, changing: bool) -> usize {
     let spec = spec();
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
@@ -622,7 +624,7 @@ fn run(seed: u64, sealing: bool) -> usize {
             spilled.seal(&mut rng, &mut store, before);
         }
         match rng.below(40) {
-            0..=3 => change_dim(&mut rng, &mut store, &mut dims),
+            0..=3 if changing => change_dim(&mut rng, &mut store, &mut dims),
             4..=8 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
                 spilled.unseal(&mut store, &row);
@@ -655,6 +657,7 @@ fn run(seed: u64, sealing: bool) -> usize {
             }
         }
         if step % 100 == 99 {
+            assert_eq!(store.bound_cells("trips").is_some(), !changing || step < 99);
             for _ in 0..10 {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
@@ -682,14 +685,108 @@ fn run(seed: u64, sealing: bool) -> usize {
 #[test]
 fn store_matches_naive_reference() {
     for seed in 0..16 {
-        assert_eq!(run(seed, false), 0);
+        assert_eq!(run(seed, false, true), 0);
     }
 }
 
 #[test]
 fn sealed_store_matches_naive_reference() {
-    let read: usize = (0..16).map(|seed| run(seed, true)).sum();
+    let read: usize = (0..16).map(|seed| run(seed, true, true)).sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
+}
+
+#[test]
+fn bound_store_matches_naive_reference() {
+    for seed in 0..16 {
+        assert_eq!(run(seed, false, false), 0);
+    }
+}
+
+/// A sealed bucket has no bound cells, so an ask over one reads the keyed
+/// cells, thawed; the rest read the bound cells.
+#[test]
+fn sealed_bound_store_matches_naive_reference() {
+    let read: usize = (0..16).map(|seed| run(seed, true, false)).sum();
+    assert!(read > 1_000, "asks read {read} sealed buckets");
+}
+
+/// The bound cells are keyed by the dim's column, so the zones' boroughs
+/// make fewer of them than the zone ids make keyed cells, and an ask
+/// reads the fewer. Once a zone changes they are gone, and the ask reads
+/// the keyed cells through the projection, to the same answer.
+#[test]
+fn bound_cells_follow_the_dim_column() {
+    let zones = Dim {
+        as_text: Vec::new(),
+        name: id("zones"),
+        table: table("zones"),
+        key: vec![id("id")],
+        attributes: vec![id("borough")],
+    };
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: WIDTH },
+            wider: Vec::new(),
+            origin: Origin::Timestamptz,
+        },
+        refs: vec![Ref {
+            alias: id("pickup"),
+            dim: id("zones"),
+            via: vec![Via::Fact(id("pu"))],
+            kind: RefKind::Left,
+            reads: vec![attr("borough", "borough")],
+        }],
+        by_keys: vec![col("pay")],
+        filter: vec![],
+        measures: vec![Measure {
+            name: id("trips"),
+            aggregate: Aggregate::Count,
+            filter: vec![],
+        }],
+    };
+    let spec = Spec::new(vec![zones], vec![trips]).unwrap();
+    let mut store = Store::new(spec);
+    for zone in 1..7 {
+        let borough = if zone < 4 { "m" } else { "q" };
+        store
+            .add_row("zones", &[Datum::Int(zone), text(borough)])
+            .unwrap();
+    }
+    for zone in 1..7 {
+        store
+            .add_row(
+                "trips",
+                &[Datum::Int(START), Datum::Int(1), Datum::Int(zone)],
+            )
+            .unwrap();
+    }
+    let by_borough = Ask {
+        view: id("trips"),
+        measures: vec![id("trips")],
+        keys: vec![AskKey::Key(id("borough"))],
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    let answer = store.ask(&by_borough).unwrap();
+    assert_eq!(store.cells("trips"), Some(6));
+    assert_eq!(store.bound_cells("trips"), Some(2));
+    assert_eq!(store.cells_read(&by_borough), Ok(2));
+
+    store
+        .remove_row("zones", &[Datum::Int(6), text("q")])
+        .unwrap();
+    store.add_row("zones", &[Datum::Int(6), text("m")]).unwrap();
+    assert_eq!(store.bound_cells("trips"), None);
+    assert_eq!(store.cells_read(&by_borough), Ok(6));
+    let moved = store.ask(&by_borough).unwrap();
+    assert_eq!(answer.rows[0].values, [Value::Int(3)]);
+    assert_eq!(moved.rows[0].values, [Value::Int(4)]);
+    assert_eq!(moved.columns, answer.columns);
 }
 
 #[test]
@@ -804,10 +901,12 @@ fn a_dim_change_moves_the_answer_at_once() {
     };
     assert_eq!(labels(&store), [text("v1")]);
     let cells = store.cells("trips");
+    assert_eq!(store.bound_cells("trips"), cells);
 
     store
         .remove_row("vendors", &[Datum::Int(1), text("v1")])
         .unwrap();
+    assert_eq!(store.bound_cells("trips"), None);
     assert_eq!(labels(&store), [Datum::Null]);
     store
         .add_row("vendors", &[Datum::Int(1), text("v2")])
@@ -825,6 +924,45 @@ fn a_dim_change_moves_the_answer_at_once() {
     // The fact row comes out as it went in, whatever the dim did.
     store.remove_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// An update of a dim row that reads the same changed no column the
+/// views read, so the bound cells stay; one that reads otherwise drops
+/// them, and the fact's rows then load and change through the keyed
+/// cells alone.
+#[test]
+fn a_dim_update_drops_the_bound_cells_only_when_it_reads_otherwise() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    let v1 = [Datum::Int(1), text("v1")];
+    let v2 = [Datum::Int(1), text("v2")];
+    store.add_row("vendors", &v1).unwrap();
+    let mut row = trip(&mut Rng(5));
+    row[AT] = Datum::Int(START);
+    row[VENDOR] = Datum::Int(1);
+    store.add_row("trips", &row).unwrap();
+    assert_eq!(store.bound_cells("trips"), Some(1));
+
+    store.update_row("vendors", &v1, &v1).unwrap();
+    assert_eq!(store.bound_cells("trips"), Some(1));
+    assert_eq!(
+        store.update_row("vendors", &v1[..1], &v1[..1]),
+        Err(RowError::Arity {
+            expected: 2,
+            found: 1
+        })
+    );
+    store.update_row("vendors", &v1, &v2).unwrap();
+    assert_eq!(store.bound_cells("trips"), None);
+
+    let mut other = trip(&mut Rng(6));
+    other[AT] = Datum::Int(START + i64::from(WIDTH));
+    store.update_row("trips", &row, &other).unwrap();
+    assert_eq!(store.cells("trips"), Some(1));
+    let flat: Vec<Datum> = [row.clone(), other.clone()].concat();
+    store.add_rows("trips", &flat).unwrap();
+    assert_eq!(store.cells("trips"), Some(2));
+    assert_eq!(store.bound_cells("trips"), None);
 }
 
 /// A dim keyed by several columns matches on all of them; a via that is

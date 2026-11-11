@@ -13,10 +13,12 @@ Keys that are nearly unique per row keep nearly a cell per row. Fewer
 key columns or wider buckets collapse more rows into each cell. A dim
 column collapses nothing beyond its join columns: the cells are keyed
 by the ids, and the column's few values are read at ask time, so a dim
-change moves answers without moving cells. `count(DISTINCT c)` adds an
-entry per distinct value in each cell. In the two runs below the
-resident set came to 177 and 104 bytes a cell, measures and
-projections included.
+change moves answers without moving cells. Beside them a view with a
+join keeps bound cells, keyed by the dim columns' values, one per
+distinct combination of those and the keys, which are few next to the
+ids. `count(DISTINCT c)` adds an entry per distinct value in each
+cell. In the two runs below the resident set came to 177 and 104 bytes
+a cell, measures and projections included, before bound cells.
 
 The rollup key, the columns in `GROUP BY`, decides how many cells there
 are. Measured on the taxi month under a wide key, and on a warehouse's

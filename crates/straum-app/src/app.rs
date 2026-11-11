@@ -287,10 +287,7 @@ impl State {
 fn apply_change(store: &mut Store, change: &Change) -> bool {
     match change {
         Change::Insert { table, row } => store.add_row(table.as_str(), row).is_ok(),
-        Change::Update { table, old, new } => store
-            .remove_row(table.as_str(), old)
-            .and_then(|()| store.add_row(table.as_str(), new))
-            .is_ok(),
+        Change::Update { table, old, new } => store.update_row(table.as_str(), old, new).is_ok(),
         Change::Delete { table, old } => store.remove_row(table.as_str(), old).is_ok(),
         Change::Truncate { table } => {
             store.clear(table.as_str());

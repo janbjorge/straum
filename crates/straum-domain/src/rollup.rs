@@ -36,10 +36,29 @@ pub(crate) struct Rollup {
     cells: usize,
     /// Sealed buckets, every width.
     sealed: usize,
+    /// Derived from other cells: a sealed bucket here is dropped, not
+    /// spilled, and takes no row until the next start, when it is made
+    /// again; asks read it from the cells it derives from.
+    derived: bool,
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
     types: Vec<ColumnType>,
+}
+
+/// What each part of a key codes of a row of `columns`, the bucket aside.
+fn coded<'a>(columns: &[Identifier], parts: impl Iterator<Item = KeyPart<'a>>) -> Vec<Coded> {
+    let position = |name: &Identifier| columns.iter().position(|c| c == name).expect(COLUMNS);
+    parts
+        .filter_map(|part| match part {
+            KeyPart::Column(c) => Some(Coded::Value(position(c))),
+            KeyPart::IsNull { column, negated } => Some(Coded::IsNull {
+                column: position(column),
+                negated,
+            }),
+            KeyPart::Bucket => None,
+        })
+        .collect()
 }
 
 /// What a rollup-key part codes of a row.
@@ -112,8 +131,12 @@ impl Level {
     }
 
     /// Adds a checked row under its key codes; whether its cell is new.
+    /// A sealed bucket, which only a derived rollup lets a row reach,
+    /// takes nothing.
     fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> bool {
-        let (cells, i, new) = self.cell(&row[TIME], key, inputs);
+        let Some((cells, i, new)) = self.cell(&row[TIME], key, inputs) else {
+            return false;
+        };
         cells.counts[i] += 1;
         for (column, input) in cells.states.iter_mut().zip(inputs) {
             column.add(i, &row[input.column]);
@@ -122,17 +145,22 @@ impl Level {
     }
 
     /// The cell `key` names in the bucket `time` falls in, made empty if
-    /// it's new, and whether it is.
-    fn cell(&mut self, time: &Datum, key: &[u32], inputs: &[Input]) -> (&mut Cells, usize, bool) {
+    /// it's new, and whether it is; none if the bucket is sealed.
+    fn cell(
+        &mut self,
+        time: &Datum,
+        key: &[u32],
+        inputs: &[Input],
+    ) -> Option<(&mut Cells, usize, bool)> {
         let bucket = self.bucket(time);
         let bucket = (self.buckets)
             .entry(bucket)
             .or_insert_with(|| Bucket::Hot(Cells::new(key.len(), inputs)));
         let Bucket::Hot(cells) = bucket else {
-            unreachable!("Rollup::check refuses rows of sealed buckets");
+            return None;
         };
         let (i, new) = cells.entry(key);
-        (cells, i, new)
+        Some((cells, i, new))
     }
 }
 
@@ -257,20 +285,32 @@ pub(crate) enum State {
 }
 
 impl Rollup {
+    /// Keyed as [`Fact::rollup_key`]: the cells an ask reads through the
+    /// projections.
     pub(crate) fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
+        let key_columns = coded(&columns, fact.rollup_key());
+        Rollup::build(fact, columns, key_columns)
+    }
+
+    /// Keyed by the `by` keys and every column the refs read, which a row
+    /// carries after the fact's columns, so an ask reads no projection
+    /// (ADR-0038). A column read is named as the view names it; a fact
+    /// column of that name comes first, so the measure inputs find theirs.
+    pub(crate) fn bound(fact: &Fact) -> Rollup {
+        let mut columns = fact.columns();
+        let mut key_columns = coded(&columns, fact.by_parts());
+        for (_, attribute) in fact.attributes() {
+            key_columns.push(Coded::Value(columns.len()));
+            columns.push(attribute.name.clone());
+        }
+        let mut rollup = Rollup::build(fact, columns, key_columns);
+        rollup.derived = true;
+        rollup
+    }
+
+    fn build(fact: &Fact, columns: Vec<Identifier>, key_columns: Vec<Coded>) -> Rollup {
         let position = |name: &Identifier| columns.iter().position(|c| c == name).expect(COLUMNS);
-        let key_columns: Vec<Coded> = fact
-            .rollup_key()
-            .filter_map(|part| match part {
-                KeyPart::Column(c) => Some(Coded::Value(position(c))),
-                KeyPart::IsNull { column, negated } => Some(Coded::IsNull {
-                    column: position(column),
-                    negated,
-                }),
-                KeyPart::Bucket => None,
-            })
-            .collect();
         let mut inputs = Vec::new();
         for m in &fact.measures {
             let Some((kind, name)) = m.aggregate.state() else {
@@ -298,6 +338,7 @@ impl Rollup {
             inputs,
             cells: 0,
             sealed: 0,
+            derived: false,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
             columns,
@@ -305,7 +346,7 @@ impl Rollup {
     }
 
     /// Columns a row holds, as [`Fact::columns`].
-    fn row_len(&self) -> usize {
+    pub(crate) fn row_len(&self) -> usize {
         self.columns.len()
     }
 
@@ -337,6 +378,10 @@ impl Rollup {
 
     pub(crate) fn key_type(&self, part: usize) -> ColumnType {
         self.key_columns[part].column_type(&self.types)
+    }
+
+    pub(crate) fn types(&self) -> &[ColumnType] {
+        &self.types
     }
 
     pub(crate) fn time_type(&self) -> ColumnType {
@@ -433,8 +478,10 @@ impl Rollup {
     fn remove_coded(&mut self, row: &[Datum], key: &[u32]) -> Result<(), RowError> {
         for (n, level) in self.levels.iter_mut().enumerate() {
             let bucket = level.bucket(&row[TIME]);
-            let Some(Bucket::Hot(cells)) = level.buckets.get_mut(&bucket) else {
-                return Err(RowError::Missing);
+            let cells = match level.buckets.get_mut(&bucket) {
+                Some(Bucket::Hot(cells)) => cells,
+                Some(Bucket::Sealed { .. }) if self.derived => continue,
+                _ => return Err(RowError::Missing),
             };
             let i = *cells.index.get(key).ok_or(RowError::Missing)?;
             for (column, input) in cells.states.iter_mut().zip(&self.inputs) {
@@ -694,7 +741,7 @@ impl Rollup {
                 });
             }
         }
-        if self.touched(&row[TIME]).next().is_some() {
+        if !self.derived && self.touched(&row[TIME]).next().is_some() {
             return Err(RowError::Sealed);
         }
         Ok(())
