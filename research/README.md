@@ -57,8 +57,8 @@ background in case a SQL door comes back.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the design. Spec, asks, rollups in
   memory, initial load and apply over logical replication, lifecycle.
 - [JOINS.md](JOINS.md): how a fact joins its dims. The data model, the
-  code, the join resolved in PostgreSQL at ingest, its semantics, what it
-  replaced, and the sources behind the choice.
+  code, the join bound at ask time over held projections, its semantics,
+  what it replaced, and the sources behind the choice.
 - [AKS.md](AKS.md): first target, AKS next to Azure Flexible Server 18. Chart
   shape, one-time database setup, risks, the pg_ivm baseline.
 - [POSTGRES-REPLICATION.md](POSTGRES-REPLICATION.md): logical replication
