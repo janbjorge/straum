@@ -443,7 +443,7 @@ impl<S: Source> Writer<S> {
                 continue;
             };
             spilling.spill.put(&sealed).map_err(Error::Spill)?;
-            self.app.write().store.seal(&id);
+            self.app.write().store.seal(&id)?;
         }
         Ok(())
     }

@@ -91,9 +91,14 @@ impl Projection {
     /// twice, as PostgreSQL's join would.
     pub(crate) fn add(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
+        self.add_checked(row);
+        Ok(())
+    }
+
+    fn add_checked(&mut self, row: &[Datum]) {
         let (key, attrs) = row.split_at(self.key_width);
         if key.contains(&Datum::Null) {
-            return Ok(());
+            return;
         }
         let codes: Box<[u32]> = (attrs.iter().zip(&mut self.codes))
             .map(|(value, codes)| codes.code(value))
@@ -104,7 +109,6 @@ impl Projection {
         if rows.len() == 2 {
             self.many += 1;
         }
-        Ok(())
     }
 
     /// Adds whole rows laid end to end, as a load reads them. If a row
@@ -121,7 +125,7 @@ impl Projection {
             self.check(row)?;
         }
         for row in rows.chunks_exact(width) {
-            self.add(row)?;
+            self.add_checked(row);
         }
         Ok(())
     }

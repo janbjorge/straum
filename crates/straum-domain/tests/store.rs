@@ -567,7 +567,7 @@ impl Spilled {
         for id in store.sealable(before) {
             if rng.chance(70) {
                 let sealed = store.sealed_copy(&id).unwrap();
-                assert!(store.seal(&id));
+                store.seal(&id).unwrap();
                 self.buckets.insert(id, sealed);
             }
         }
@@ -1489,7 +1489,7 @@ fn a_sealed_bucket_answers_as_before() {
     let id = sealed_id(i64::from(GRAIN), START);
     let sealed = store.sealed_copy(&id).unwrap();
     assert_eq!(sealed.rows, [2]);
-    assert!(store.seal(&id));
+    store.seal(&id).unwrap();
     assert_eq!(store.sealed_read(&ask).unwrap(), std::slice::from_ref(&id));
     assert_eq!(store.cells_read(&ask).unwrap(), cells);
     assert_eq!(store.cells("trips"), Some(2));
@@ -1514,21 +1514,23 @@ fn sealable_buckets_end_by_the_cutoff() {
         [sealed_id(grain, START), sealed_id(grain, START + grain)]
     );
     for id in &all {
-        assert!(store.seal(id));
+        store.seal(id).unwrap();
     }
     assert_eq!(store.sealable(START + 604_800 * 2), []);
     assert_eq!(store.sealed("trips"), all);
     store.clear_fact("trips");
     assert_eq!(store.sealed("trips"), []);
-    // Sealed already, or never there.
-    assert!(!store.seal(&all[0]));
-    assert_eq!(store.sealed_copy(&all[0]), None);
-    assert!(!store.seal(&sealed_id(grain, START - grain)));
-    assert!(!store.seal(&sealed_id(7, START)));
-    assert!(!store.seal(&SealedId {
+    // Gone with the truncate, or never there.
+    let mut reason = |id: &SealedId| store.seal(id).unwrap_err().reason;
+    assert_eq!(reason(&all[0]), "no such bucket");
+    assert_eq!(reason(&sealed_id(grain, START - grain)), "no such bucket");
+    assert_eq!(reason(&sealed_id(7, START)), "no such width");
+    let nope = SealedId {
         fact: id("nope"),
         ..all[0].clone()
-    }));
+    };
+    assert_eq!(reason(&nope), "unknown fact");
+    assert_eq!(store.sealed_copy(&all[0]), None);
 }
 
 #[test]
@@ -1536,7 +1538,7 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     let (mut store, rows) = three_rows();
     let id = sealed_id(86_400, START);
     let sealed = store.sealed_copy(&id).unwrap();
-    store.seal(&id);
+    store.seal(&id).unwrap();
     assert_eq!(
         store.sealed_touched("trips", &rows[2]),
         std::slice::from_ref(&id)
@@ -1569,7 +1571,7 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
     let (mut store, _) = three_rows();
     let bucket = sealed_id(i64::from(GRAIN), START);
     let good = store.sealed_copy(&bucket).unwrap();
-    store.seal(&bucket);
+    store.seal(&bucket).unwrap();
     let refused = |change: &Change<'_>| {
         let mut sealed = good.clone();
         change(&mut sealed);
@@ -1638,7 +1640,7 @@ fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
         .unseal(store.thaw(sealed.clone()).unwrap())
         .unwrap_err();
     assert_eq!(err.reason, "not sealed");
-    store.seal(&id);
+    store.seal(&id).unwrap();
     // Two cells under one key.
     sealed.keys.extend_from_slice(&sealed.keys.clone());
     sealed.rows.extend_from_slice(&sealed.rows.clone());

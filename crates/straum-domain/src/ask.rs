@@ -73,12 +73,12 @@ impl Spec {
         // An answer's columns go by name, so two can't share one.
         let mut names = HashSet::new();
         let keys = (ask.by.iter()).filter_map(|key| match key {
-            AskKey::Key(name) => Some(name.to_string()),
+            AskKey::Key(name) => Some(name.as_str()),
             AskKey::Time(_) => None,
         });
-        for name in keys.chain(ask.measures.iter().map(ToString::to_string)) {
-            if !names.insert(name.clone()) {
-                errors.push(AskError::AskedTwice(name));
+        for name in keys.chain(ask.measures.iter().map(Ident::as_str)) {
+            if !names.insert(name) {
+                errors.push(AskError::AskedTwice(name.to_owned()));
             }
         }
         for cond in &ask.filter {

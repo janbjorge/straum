@@ -392,8 +392,26 @@ fn check_dim(dim: &Dim, errors: &mut Vec<SpecError>) {
 }
 
 fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
-    let name = &fact.name;
+    check_time(fact, errors);
+    // `by` keys and the attributes refs read share one namespace, since
+    // an ask names either by its name alone.
+    let mut keys: HashSet<&Ident> = HashSet::new();
+    check_by(fact, &mut keys, errors);
+    let mut ref_names = HashSet::new();
+    for (position, r) in fact.refs.iter().enumerate() {
+        if !ref_names.insert(&r.name) {
+            errors.push(SpecError::Duplicate {
+                scope: Some(fact.name.clone()),
+                name: r.name.clone(),
+            });
+        }
+        check_ref(fact, position, dims, &mut keys, errors);
+    }
+    check_measures(fact, &mut keys, errors);
+}
 
+fn check_time(fact: &Fact, errors: &mut Vec<SpecError>) {
+    let name = &fact.name;
     let Grain(seconds) = fact.time.grain;
     if seconds == 0 || !DAY.is_multiple_of(seconds) {
         errors.push(SpecError::BadGrain {
@@ -412,10 +430,10 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
         }
         below = bucket;
     }
+}
 
-    // `by` keys and the attributes refs read share one namespace, since
-    // an ask names either by its name alone.
-    let mut keys: HashSet<&Ident> = HashSet::new();
+fn check_by<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mut Vec<SpecError>) {
+    let name = &fact.name;
     for by in &fact.by {
         match by {
             By::Column { column, .. } if *column == fact.time.column => {
@@ -442,93 +460,99 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
             });
         }
     }
-    let mut ref_names = HashSet::new();
-    for (i, r) in fact.refs.iter().enumerate() {
-        if !ref_names.insert(&r.name) {
-            errors.push(SpecError::Duplicate {
-                scope: Some(name.clone()),
-                name: r.name.clone(),
+}
+
+fn check_ref<'a>(
+    fact: &'a Fact,
+    position: usize,
+    dims: &[Dim],
+    keys: &mut HashSet<&'a Ident>,
+    errors: &mut Vec<SpecError>,
+) {
+    let name = &fact.name;
+    let r = &fact.refs[position];
+    let mut via = HashSet::new();
+    for column in &r.via {
+        if !via.insert(column) {
+            errors.push(SpecError::ViaReused {
+                fact: name.clone(),
+                ref_name: r.name.clone(),
+                column: via_name(column, &fact.refs),
             });
         }
-        let mut via = HashSet::new();
-        for column in &r.via {
-            if !via.insert(column) {
-                errors.push(SpecError::ViaReused {
+        if let Via::Attr { through, column } = column {
+            let parent = (*through < position).then(|| &fact.refs[*through]);
+            let carried = parent
+                .and_then(|p| dims.iter().find(|d| d.name == p.dim))
+                .is_some_and(|d| d.attrs.contains(column));
+            if !carried {
+                errors.push(SpecError::ChainColumn {
                     fact: name.clone(),
                     ref_name: r.name.clone(),
-                    column: via_name(column, &fact.refs),
-                });
-            }
-            if let Via::Attr { through, column } = column {
-                let parent = (*through < i).then(|| &fact.refs[*through]);
-                let carried = parent
-                    .and_then(|p| dims.iter().find(|d| d.name == p.dim))
-                    .is_some_and(|d| d.attrs.contains(column));
-                if !carried {
-                    errors.push(SpecError::ChainColumn {
-                        fact: name.clone(),
-                        ref_name: r.name.clone(),
-                        through: *through,
-                        column: column.clone(),
-                    });
-                }
-            }
-        }
-        let dim = dims.iter().find(|d| d.name == r.dim);
-        match dim {
-            None => errors.push(SpecError::UnknownDim {
-                fact: name.clone(),
-                ref_name: r.name.clone(),
-                dim: r.dim.clone(),
-            }),
-            Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyWidth {
-                fact: name.clone(),
-                ref_name: r.name.clone(),
-                via: r.via.len(),
-                dim: dim.name.clone(),
-                key: dim.key.len(),
-            }),
-            Some(_) => {}
-        }
-        let reads = !r.attrs.is_empty();
-        match r.kind {
-            RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefNoAttrs {
-                fact: name.clone(),
-                ref_name: r.name.clone(),
-            }),
-            RefKind::Semi | RefKind::Anti if reads => errors.push(SpecError::RefReads {
-                fact: name.clone(),
-                ref_name: r.name.clone(),
-                kind: r.kind,
-            }),
-            _ => {}
-        }
-        let mut read = HashSet::new();
-        for attr in &r.attrs {
-            if !read.insert(&attr.column) {
-                errors.push(SpecError::Duplicate {
-                    scope: Some(r.name.clone()),
-                    name: attr.column.clone(),
-                });
-            } else if let Some(dim) = dim
-                && !dim.columns().any(|c| *c == attr.column)
-            {
-                errors.push(SpecError::UnknownAttr {
-                    fact: name.clone(),
-                    ref_name: r.name.clone(),
-                    attr: attr.column.clone(),
-                    dim: dim.name.clone(),
-                });
-            }
-            if !keys.insert(&attr.name) {
-                errors.push(SpecError::Duplicate {
-                    scope: Some(name.clone()),
-                    name: attr.name.clone(),
+                    through: *through,
+                    column: column.clone(),
                 });
             }
         }
     }
+    let dim = dims.iter().find(|d| d.name == r.dim);
+    match dim {
+        None => errors.push(SpecError::UnknownDim {
+            fact: name.clone(),
+            ref_name: r.name.clone(),
+            dim: r.dim.clone(),
+        }),
+        Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyWidth {
+            fact: name.clone(),
+            ref_name: r.name.clone(),
+            via: r.via.len(),
+            dim: dim.name.clone(),
+            key: dim.key.len(),
+        }),
+        Some(_) => {}
+    }
+    let reads = !r.attrs.is_empty();
+    match r.kind {
+        RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefNoAttrs {
+            fact: name.clone(),
+            ref_name: r.name.clone(),
+        }),
+        RefKind::Semi | RefKind::Anti if reads => errors.push(SpecError::RefReads {
+            fact: name.clone(),
+            ref_name: r.name.clone(),
+            kind: r.kind,
+        }),
+        _ => {}
+    }
+    let mut read = HashSet::new();
+    for attr in &r.attrs {
+        if !read.insert(&attr.column) {
+            errors.push(SpecError::Duplicate {
+                scope: Some(r.name.clone()),
+                name: attr.column.clone(),
+            });
+        } else if let Some(dim) = dim
+            && !dim.columns().any(|c| *c == attr.column)
+        {
+            errors.push(SpecError::UnknownAttr {
+                fact: name.clone(),
+                ref_name: r.name.clone(),
+                attr: attr.column.clone(),
+                dim: dim.name.clone(),
+            });
+        }
+        if !keys.insert(&attr.name) {
+            errors.push(SpecError::Duplicate {
+                scope: Some(name.clone()),
+                name: attr.name.clone(),
+            });
+        }
+    }
+}
 
+/// Measures share the key namespace too: an ask names both alike.
+fn check_measures<'a>(fact: &'a Fact, keys: &mut HashSet<&'a Ident>, errors: &mut Vec<SpecError>) {
+    let name = &fact.name;
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
@@ -536,7 +560,6 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     if named.any(|n| n.as_str() == "bucket") {
         errors.push(SpecError::NamedBucket { fact: name.clone() });
     }
-    // Measures share the namespace too: an ask names both alike.
     for m in &fact.measures {
         if !keys.insert(&m.name) {
             errors.push(SpecError::Duplicate {

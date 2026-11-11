@@ -271,7 +271,7 @@ fn sealing_frees_the_cells_it_seals() {
     let before = hours * 9 / 10 * i64::from(HOUR);
     for id in store.sealable(before) {
         let spilled = store.sealed_copy(&id).unwrap();
-        assert!(store.seal(&id));
+        store.seal(&id).unwrap();
         drop(spilled);
     }
     let sealed = live() - empty;
