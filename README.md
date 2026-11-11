@@ -55,7 +55,8 @@ curl --json '{
 
 Every commit made before `as_of` is in the answer. The guide's [quick
 start](https://janbjorge.github.io/straum/quick-start.html) runs this
-against PostgreSQL in Docker in eight steps.
+from the `ghcr.io/janbjorge/straum` image against PostgreSQL in Docker,
+in eight steps.
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares. It needs PostgreSQL 17 or newer as

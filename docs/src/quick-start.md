@@ -1,24 +1,23 @@
 # Quick start
 
-Straum against PostgreSQL 18 in Docker, with two small tables. You need
-Docker, `curl` and a Rust toolchain ([rustup](https://rustup.rs)). Every
-other page uses these tables and this spec.
+Straum against PostgreSQL 18, both in Docker, with two small tables.
+You need Docker and `curl`. Every other page uses these tables and this
+spec.
 
-## 1. Install straum
+## 1. Pull straum
 
 ```sh
-git clone https://github.com/janbjorge/straum
-cd straum
-cargo install --locked --path crates/straum
+docker pull ghcr.io/janbjorge/straum
 ```
 
-`rust-toolchain.toml` picks the Rust version, and rustup fetches it.
+`latest` is built from every commit to `main` that passes CI.
 
 ## 2. Start PostgreSQL
 
 ```sh
-docker run -d --name straum-pg -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 postgres:18 -c wal_level=logical
+docker network create straum
+docker run -d --name straum-pg --network straum \
+  -e POSTGRES_PASSWORD=postgres postgres:18 -c wal_level=logical
 ```
 
 A few seconds later, make the tables:
@@ -75,8 +74,9 @@ and prints the SQL that makes that role with that password, lets it read
 the tables and publishes `orders`. Run the SQL as the tables' owner:
 
 ```sh
-export STRAUM_DSN='postgres://straum:straum@localhost:5432/postgres?sslmode=disable'
-straum plan --spec orders.sql | docker exec -i straum-pg psql -U postgres
+export STRAUM_DSN='postgres://straum:straum@straum-pg:5432/postgres?sslmode=disable'
+docker run --rm -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
+  plan --spec /spec/orders.sql | docker exec -i straum-pg psql -U postgres
 ```
 
 This container has no TLS, hence `sslmode=disable`. Otherwise Straum
@@ -85,7 +85,9 @@ always connects with TLS.
 ## 5. Run straum
 
 ```sh
-straum run --spec orders.sql
+docker run --rm --name straum --network straum -p 8080:8080 \
+  -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
+  run --spec /spec/orders.sql
 ```
 
 ```text
@@ -156,7 +158,7 @@ commit.
 answers carry, and it keeps moving while the tables are quiet:
 
 ```text
-$ straum status
+$ docker exec straum /straum status
 ready:        yes
 applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
 as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
@@ -167,8 +169,9 @@ failures:     0
 last failure: none
 ```
 
-Stop straum with Ctrl-C and remove the container:
+Stop straum with Ctrl-C and remove PostgreSQL and the network:
 
 ```sh
 docker rm -f straum-pg
+docker network rm straum
 ```
