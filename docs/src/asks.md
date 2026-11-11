@@ -101,6 +101,33 @@ answer reflects. `Server-Timing` says where the time went in Straum, in
 milliseconds: `parse`, `answer`, `json` and `total`; what a client
 measures beyond `total` is the network and the client itself.
 
+### Seeing your own write
+
+`Straum-LSN` is written as PostgreSQL writes a `pg_lsn`, such as
+`0/1A2B3C8`. A client that needs its own write in the answer can read
+`pg_current_wal_lsn()` on the same connection right after its commit,
+then ask until the header reaches it:
+
+```sql
+COMMIT;
+SELECT pg_current_wal_lsn();  -- 0/1A2B3C8
+```
+
+```sql
+SELECT '0/1A2B3D0'::pg_lsn >= '0/1A2B3C8'::pg_lsn;  -- Straum-LSN >= mine
+```
+
+Compare as `pg_lsn` or as two hexadecimal numbers, never as strings.
+Once the header is at or past the LSN read, the answer contains the
+write. Under `synchronous_commit = off` the commit may not be written
+yet, so read `pg_current_wal_insert_lsn()` instead.
+
+The test can only say yes. `pg_current_wal_lsn()` counts all WAL,
+including tables Straum doesn't follow, while the header moves only
+when Straum applies a commit. On a quiet database the header can stay
+below the LSN read even though the write is in, so give up after a
+timeout or fall back to `as_of`.
+
 ## Errors
 
 | Status | When |
