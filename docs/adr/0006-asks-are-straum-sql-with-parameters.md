@@ -1,6 +1,6 @@
 # ADR-0006: Asks are Straum SQL with parameters
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Accepted (retroactive), 2026-11-10; amended by ADR-0029
 
 ## Context
 

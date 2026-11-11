@@ -1,6 +1,6 @@
 # ADR-0005: A spec reads as PostgreSQL would
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Accepted (retroactive), 2026-11-10; amended by ADR-0029
 
 ## Context
 
