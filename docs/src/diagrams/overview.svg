@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="476" viewBox="0 0 880 476" role="img" aria-labelledby="t d">
   <title id="t">How Straum works</title>
-  <desc id="d">A table owner applies the setup SQL that straum plan prints. On every start Straum loads aggregates from a snapshot at LSN L into RAM, then applies every commit after L from a temporary logical slot. Apps ask over HTTP and each answer says when every commit before it was in.</desc>
+  <desc id="d">A table owner applies the setup SQL that straum plan prints. On every start Straum loads dims and facts from a snapshot at LSN L, projects dim rows and groups fact rows in RAM, then applies every commit after L from a temporary logical slot. Apps ask over HTTP and each answer says when every commit before it was in.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -132,13 +132,13 @@
   <text x="458" y="287" class="h">Rollup per fact</text>
   <text x="458" y="306" class="s ink2">cells by key and time bucket</text>
   <rect class="box" x="446" y="326" width="214" height="34" rx="5"/>
-  <text x="458" y="348" class="h">No dim rows: read from PostgreSQL</text>
+  <text x="458" y="348" class="h">Dim projections in RAM</text>
   <text x="446" y="384" class="s acc">RAM only, rebuilt on every start</text>
   <path class="a-cfg" d="M640 186 L640 224" marker-end="url(#m)"/>
   <text x="648" y="210" class="s muted">read at start</text>
   <path class="a-acc" d="M318 264 L426 264" marker-end="url(#m-acc)"/>
   <text x="372" y="256" class="s" text-anchor="middle">snapshot at L</text>
-  <text x="372" y="282" class="s muted" text-anchor="middle">GROUP BY per fact</text>
+  <text x="372" y="282" class="s muted" text-anchor="middle">binary COPY; group facts in Straum</text>
   <path class="a-acc" d="M318 364 L426 364" marker-end="url(#m-acc)"/>
   <text x="372" y="356" class="s" text-anchor="middle">commits after L</text>
   <text x="372" y="382" class="s muted" text-anchor="middle">one at a time</text>

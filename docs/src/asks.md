@@ -78,18 +78,19 @@ buckets: Straum never answers for part of a bucket.
 }
 ```
 
-- `as_of`: every commit made before this time, by Straum's clock, is in
-  the answer. It is the last time Straum knew it had applied all the WAL
+- `as_of`: every commit made before this time is in the answer. It is
+  Straum's wall time when it last confirmed that it had applied all WAL
   PostgreSQL had written, so it keeps moving on a quiet database. A
   transaction is applied whole, so an answer never sees half of one.
-  There is no "read your writes" barrier; `as_of` is how a client judges
-  whether an answer is fresh enough.
+  An answer can predate a client's commit. Retry until it contains the
+  change if the client needs to see its own write.
 - `rows`: one object per group, keyed by the names in `SELECT`, sorted by
   key, nulls first. An ask without keys answers one row even when
   nothing matches, as SQL does without `GROUP BY`: counts are 0, the
   rest null.
 
-Buckets are their start, in UTC. Measures print as the
+`timestamptz` buckets are their start in UTC. `timestamp` buckets are
+wall clock readings formatted with `Z`. Measures print as the
 [measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
 sum, `69.995` for its avg of 139.99 over 2. A row whose dim row does
 not exist has null dim columns, as a `LEFT OUTER JOIN` gives, until the
@@ -109,7 +110,7 @@ measures beyond `total` is the network and the client itself.
 | 405 | Not a `POST`. |
 | 413 | The ask is over 1 MiB. |
 | 500 | Straum failed while answering; its log says why. |
-| 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Ask again later. |
+| 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Retry after `/readyz` returns 200. |
 
 ```json
 {"errors": ["unknown measure x", "zip is not a key of the view"]}

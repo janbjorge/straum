@@ -1,9 +1,9 @@
 # Setting up PostgreSQL
 
-Straum needs PostgreSQL 17 or newer, self-hosted or managed; its tests
-run on 17, 18 and the 19 release candidate. It uses logical replication
-with `pgoutput`, a temporary slot and an exported snapshot, with no
-extension and no superuser. Setup is three steps, done once.
+Straum supports PostgreSQL 17 and newer, self-hosted or managed; its
+tests run on 17, 18 and the 19 release candidate. It uses logical
+replication with `pgoutput`, a temporary slot and an exported snapshot,
+with no extension and no superuser. Setup is three steps, done once.
 
 ## 1. Turn on logical decoding
 
@@ -19,10 +19,8 @@ the provider's parameter and restart there:
 | Google Cloud SQL | [`cloudsql.logical_decoding = on`](https://docs.cloud.google.com/sql/docs/postgres/replication/configure-logical-replication) |
 | Google AlloyDB | [`alloydb.logical_decoding = on`](https://docs.cloud.google.com/alloydb/docs/reference/database-flags) |
 | Azure Database for PostgreSQL | [`wal_level = logical`](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-logical) |
-| Neon | [Logical replication in the project settings](https://neon.com/docs/guides/logical-replication-neon); it can't be turned off again |
-| Crunchy Bridge | [On by default](https://docs.crunchybridge.com/how-to/logical-replication) |
-
-These are the providers' documented settings as of November 2026.
+| Neon | [Enable logical replication](https://neon.com/docs/guides/logical-replication-neon); it can't be turned off again |
+| Crunchy Bridge | [Logical replication is enabled by default](https://docs.crunchybridge.com/how-to/logical-replication) |
 
 ## 2. Run the setup SQL
 
@@ -82,7 +80,7 @@ every `sslmode` but `disable`:
 
 | `sslmode` | What Straum does |
 | --- | --- |
-| none, `require`, `verify-ca`, `verify-full` | TLS, checking the certificate and the host name |
+| omitted, `require`, `verify-ca`, `verify-full` | TLS, checking the certificate and the host name |
 | `disable` | Plain TCP. Use it only on a network you trust. |
 | `allow`, `prefer` | Refused, since they fall back to plain TCP |
 
@@ -128,5 +126,5 @@ fact orders: ref customer joins customer_id (an integer) to id (text); they must
   right after the last table loads.
 - One plain connection beside the replication connection, for the WAL
   position every second. Nothing else is read after the load.
-- WAL decoding per replication connection, so run one Straum per database
-  unless you need more.
+- WAL decoding per replication connection. Run one Straum per database; a
+  second needs another slot and load.

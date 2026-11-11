@@ -18,9 +18,9 @@ entry per distinct value in each cell. In the two runs below the
 resident set came to 177 and 104 bytes a cell, measures and
 projections included.
 
-The key decides how many cells there are. Measured on the taxi month
-under a wide key, and on a warehouse's tables under a narrow one whose
-dims carry the ids.
+The rollup key, the columns in `GROUP BY`, decides how many cells there
+are. Measured on the taxi month under a wide key, and on a warehouse's
+tables under a narrow one whose dims carry the ids.
 
 ## The taxi month under a wide key
 
@@ -111,8 +111,7 @@ until Straum had applied it:
 
 The last three change dims. Each is applied to the projection, no cell
 moves, and the next ask reads the new category or type; Straum never
-started over. The run right before applied the big task update in
-2.8 s, so that row is the noisier one.
+started over.
 
 The asks, PostgreSQL run twice on the loaded tables and Straum the better
 of two:

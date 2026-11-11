@@ -47,7 +47,8 @@ to a bucket no ask reads.
 
 *A row's time is floored to each width the view keeps, all aligned to
 1970-01-01, so it lands in one bucket per level in the same commit.
-Times are Unix seconds without a zone.*
+`timestamptz` bucket keys are UTC instants. `timestamp` bucket keys are
+wall-clock seconds.*
 
 ## Applying a commit
 

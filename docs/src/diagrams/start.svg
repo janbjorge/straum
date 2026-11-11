@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="900" viewBox="0 0 880 900" role="img" aria-labelledby="t d">
   <title id="t">How Straum starts and follows PostgreSQL</title>
-  <desc id="d">The writer thread opens a replication connection, starts a read-only repeatable-read transaction, creates a temporary logical slot that exports its snapshot at LSN L, checks the catalog, loads each fact joined to its dims in that snapshot and commits right after the last load. It then starts replication from L and hands the socket to a stream thread, which queues commits for the writer and reports the applied LSN every second.</desc>
+  <desc id="d">The writer thread opens a replication connection, starts a read-only repeatable-read transaction, creates a temporary logical slot that exports its snapshot at LSN L, checks the catalog, loads dims and facts with separate binary COPY operations, and commits after the last load. Straum projects dim rows and groups fact rows. It then starts replication from L and hands the socket to a stream thread, which queues commits for the writer and reports the applied LSN every second.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -122,7 +122,7 @@
   <text x="134" y="342">catalog checks: publication, privileges, column types,</text>
   <text x="134" y="358">dim keys, replica identity; each problem names its fix</text>
   <path class="a" d="M120 400 L636 400" marker-end="url(#m)"/>
-  <text x="134" y="392" xml:space="preserve"><tspan class="s muted">per fact: </tspan><tspan class="mono">COPY (SELECT columns … LEFT JOIN dims)</tspan></text>
+  <text x="134" y="392" xml:space="preserve"><tspan class="s muted">per dim and fact: </tspan><tspan class="mono">COPY (SELECT columns …)</tspan></text>
   <path class="a" d="M120 434 L636 434" marker-end="url(#m)"/>
   <text x="134" y="426" xml:space="preserve"><tspan class="s muted">rows grouped into </tspan><tspan class="mono">cells</tspan><tspan class="s muted"> as they come</tspan></text>
   <path class="a" d="M120 476 L636 476" marker-end="url(#m)"/>

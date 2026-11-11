@@ -33,7 +33,7 @@ sudo install -m 755 straum-x86_64-unknown-linux-musl /usr/local/bin/straum
 janbjorge/straum` checks it was built by this repository's CI, and
 `gh attestation verify oci://ghcr.io/janbjorge/straum:X.Y.Z --repo
 janbjorge/straum` does the same for an image. The image tagged `latest`
-is the newest release.
+is the newest stable release.
 
 ## straum run
 
@@ -69,7 +69,7 @@ flight and exits, and PostgreSQL drops the slot as the connection closes.
 
 ## States
 
-![The states of a running straum](diagrams/lifecycle.svg)
+![The states of a running Straum](diagrams/lifecycle.svg)
 
 *Loading turns Ready once every table is in. Ready turns Lagging past
 `--max-lag` and back when it catches up. Any failure leads to Waiting,
@@ -84,7 +84,7 @@ then Loading from a new slot. SIGTERM leads to Stopping.*
 
 Straum reads the server's WAL position every second. Lag is the time
 since Straum last caught up with a position the server had reached. It
-can say Straum is further behind than it is, never less.
+can overstate the true delay by up to one second, never understate it.
 
 Any failure leads to Waiting: a lost connection, a change Straum can't
 apply, a table altered under it, or too much WAL held for its slot.
@@ -126,6 +126,4 @@ sealed:       no spill
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
 - `last failure`: when, and the error.
-- `sealed`: `no spill`, or the buckets in the spill and how many a
-  change brought back since the process started. A count that keeps
-  climbing means old buckets keep changing.
+- `sealed`: `no spill`. The shipped binary has no spill configuration.

@@ -4,13 +4,13 @@ Straum against PostgreSQL 18, both in Docker, with two small tables.
 You need Docker and `curl`. Every other page uses these tables and this
 spec.
 
-## 1. Pull straum
+## 1. Pull the image
 
 ```sh
 docker pull ghcr.io/janbjorge/straum
 ```
 
-`latest` is the newest release.
+`latest` is the newest stable release.
 
 ## 2. Start PostgreSQL
 
@@ -123,9 +123,10 @@ parameters and the answer.
 
 ## 7. Change the data
 
-This is the point of Straum: change the tables and the answer is
-already new. Insert an order, refund another, and ask for paid orders
-per hour on that day. Every value in an ask is a parameter:
+Straum follows commits asynchronously, so the first answer after a write
+can predate it. Insert an order, refund another, and ask for paid orders
+per hour on that day. If its `as_of` predates the write, ask again.
+Every value in an ask is a parameter:
 
 ```sh
 docker exec straum-pg psql -U postgres -c "
@@ -148,11 +149,10 @@ curl --json '{
 ```
 
 The refund took the 10:00 order out of the paid rows and the new order
-added 11:00, both in one answer, with no cache to clear and no query to
-rerun: Straum applies a transaction whole, and `as_of` moved past the
-commit.
+added 11:00. Straum applies a transaction whole, and the shown `as_of`
+is after the commit.
 
-## 8. Look at straum, then clean up
+## 8. Check status, then clean up
 
 `straum status` shows what Straum has done. `as of` is the same time
 answers carry, and it keeps moving while the tables are quiet:
@@ -169,6 +169,9 @@ failures:     0
 last failure: none
 sealed:       no spill
 ```
+
+`sealed: no spill` is expected: the shipped image has no spill
+configuration.
 
 Stop straum with Ctrl-C and remove PostgreSQL and the network:
 

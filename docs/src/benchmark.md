@@ -9,12 +9,13 @@ the 265 rows of `taxi_zone_lookup.csv`.
 
 ## Results
 
-Six asks a dashboard would make, each sent to PostgreSQL as SQL over the
-raw tables and to Straum as an ask over HTTP. One run on an Apple M2 Pro
-with 16 GB, on 2026-11-11: PostgreSQL 18.6 in Docker Desktop with 10
-CPUs, and Straum's release build on the same machine. Each time is the
-median over at least a second, from one Python client: asyncpg for
-PostgreSQL, aiohttp and orjson for Straum. Rows are the answer's.
+Six fixed asks over the benchmark view, each sent to PostgreSQL as SQL
+over the raw tables and to Straum as an ask over HTTP. One run on an
+Apple M2 Pro with 16 GB, on 2026-11-11: PostgreSQL 18.6 in Docker
+Desktop with 10 CPUs, and Straum's release build on the same machine.
+Each time is the median over at least a second, from one Python client:
+asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
+answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
@@ -179,6 +180,6 @@ per 1,000 rows. Memory is what grows: the rows of a transaction wait in
 Straum until its commit, about 260 bytes each, so a million-row
 transaction holds six times the whole taxi view. That sets the
 default of `--max-transaction-rows` at 100,000: a transaction at the cap
-holds the lock for 30 ms and 28 MiB, and anything larger is cheaper as
-a [reload](how-it-works.md#applying-a-commit), which takes the rows in
+holds the lock for 30 ms and 28 MiB, and anything larger is cheaper to
+[start over](how-it-works.md#applying-a-commit), which takes the rows
 through the bulk `COPY` instead.
