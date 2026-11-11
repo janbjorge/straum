@@ -62,28 +62,22 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
             out.push(b',');
         }
         let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
-        let fields = (key_columns
-            .iter()
-            .zip(keys)
-            .map(|(c, k)| (c, Field::Key(k))))
-        .chain((measure_columns.iter().zip(values)).map(|(c, v)| (c, Field::Measure(v))))
-        .enumerate();
         out.push(b'{');
-        for (j, (column, field)) in fields {
-            if j > 0 {
-                out.push(b',');
-            }
-            string(&mut out, &column.name);
-            out.push(b':');
-            match field {
-                Field::Key(&Datum::Int(seconds)) if column.time => {
+        let mut first = true;
+        for (column, datum) in key_columns.iter().zip(keys) {
+            field(&mut out, &column.name, &mut first);
+            match datum {
+                &Datum::Int(seconds) if column.time => {
                     let at = Timestamp::from_second(seconds)
                         .expect("range_errors keeps time keys in range");
                     string(&mut out, &at.to_string());
                 }
-                Field::Key(datum) => write_datum(&mut out, datum, column.scale),
-                Field::Measure(value) => write_value(&mut out, value, column.scale),
+                datum => write_datum(&mut out, datum, column.scale),
             }
+        }
+        for (column, value) in measure_columns.iter().zip(values) {
+            field(&mut out, &column.name, &mut first);
+            write_value(&mut out, value, column.scale);
         }
         out.push(b'}');
     }
@@ -91,9 +85,15 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     out
 }
 
-enum Field<'a> {
-    Key(&'a Datum),
-    Measure(&'a Value),
+/// Starts a field of a row: a comma unless it is the first, then the name.
+fn field(out: &mut Vec<u8>, name: &str, first: &mut bool) {
+    if *first {
+        *first = false;
+    } else {
+        out.push(b',');
+    }
+    string(out, name);
+    out.push(b':');
 }
 
 fn write_datum(out: &mut Vec<u8>, datum: &Datum, scale: u32) {

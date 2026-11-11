@@ -37,7 +37,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
-use straum_app::{AnswerError, App};
+use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Literal};
 use tokio::net::TcpListener;
 
@@ -110,13 +110,12 @@ async fn handle(
     app: Arc<App>,
     read_ask: ReadAsk,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    let method = request.method().clone();
-    let path = request.uri().path().to_owned();
-    let response = match (method, path.as_str()) {
-        (Method::POST, "/ask") => ask(request, &app, read_ask).await,
-        (Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
-        (Method::GET, "/readyz") => readyz(&app),
-        (Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
+    let (parts, body) = request.into_parts();
+    let response = match (&parts.method, parts.uri.path()) {
+        (&Method::POST, "/ask") => ask(body, &app, read_ask).await,
+        (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
+        (&Method::GET, "/readyz") => readyz(&app),
+        (&Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status") => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
@@ -124,9 +123,9 @@ async fn handle(
     Ok(response)
 }
 
-async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Response<Full<Bytes>> {
+async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Bytes>> {
     let start = Instant::now();
-    let body = match Limited::new(request.into_body(), MAX_ASK).collect().await {
+    let body = match Limited::new(body, MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) if e.is::<LengthLimitError>() => {
             let error = format!("an ask is at most {MAX_ASK} bytes");
@@ -153,39 +152,56 @@ async fn ask(request: Request<Incoming>, app: &App, read_ask: ReadAsk) -> Respon
         let answered = app.ask(&request)?;
         let writing = Instant::now();
         let json = answer::write(&answered);
-        Ok((answered.lsn, json, writing - answering, writing.elapsed()))
+        Ok(Timed {
+            lsn: answered.lsn,
+            json,
+            answer: writing - answering,
+            write: writing.elapsed(),
+        })
     })
     .await;
     match answered {
-        Ok(Ok((lsn, json, answer, write))) => {
-            let mut response = respond(StatusCode::OK, "application/json", json);
-            let lsn = HeaderValue::try_from(lsn.to_string()).expect("an LSN is ASCII");
-            response.headers_mut().insert(LSN, lsn);
-            // total also holds reading the body and the hops to and from the
-            // blocking thread, which no phase covers.
-            let phases = [
-                ("parse", parse),
-                ("answer", answer),
-                ("json", write),
-                ("total", start.elapsed()),
-            ];
-            (response.headers_mut()).insert(SERVER_TIMING, server_timing(&phases));
-            response
-        }
-        Ok(Err(AnswerError::NotReady)) => {
-            errors(StatusCode::SERVICE_UNAVAILABLE, &["not ready".to_owned()])
-        }
-        Ok(Err(AnswerError::Invalid(invalid))) => {
-            let invalid: Vec<String> = invalid.iter().map(ToString::to_string).collect();
-            errors(StatusCode::BAD_REQUEST, &invalid)
-        }
-        Ok(Err(e @ AnswerError::Spill(_))) => {
-            errors(StatusCode::INTERNAL_SERVER_ERROR, &[e.to_string()])
-        }
+        Ok(Ok(timed)) => answered_response(timed, parse, start),
+        Ok(Err(e)) => answer_error(&e),
         Err(_) => {
             let error = "straum failed while answering; its log says why".to_owned();
             errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
         }
+    }
+}
+
+/// An answer written as JSON, with how long answering and writing took.
+struct Timed {
+    lsn: Lsn,
+    json: Vec<u8>,
+    answer: Duration,
+    write: Duration,
+}
+
+fn answered_response(timed: Timed, parse: Duration, start: Instant) -> Response<Full<Bytes>> {
+    let mut response = respond(StatusCode::OK, "application/json", timed.json);
+    let lsn = HeaderValue::try_from(timed.lsn.to_string()).expect("an LSN is ASCII");
+    response.headers_mut().insert(LSN, lsn);
+    // total also holds reading the body and the hops to and from the
+    // blocking thread, which no phase covers.
+    let phases = [
+        ("parse", parse),
+        ("answer", timed.answer),
+        ("json", timed.write),
+        ("total", start.elapsed()),
+    ];
+    (response.headers_mut()).insert(SERVER_TIMING, server_timing(&phases));
+    response
+}
+
+fn answer_error(e: &AnswerError) -> Response<Full<Bytes>> {
+    match e {
+        AnswerError::Invalid(invalid) => {
+            let invalid: Vec<String> = invalid.iter().map(ToString::to_string).collect();
+            errors(StatusCode::BAD_REQUEST, &invalid)
+        }
+        AnswerError::NotReady => errors(StatusCode::SERVICE_UNAVAILABLE, &[e.to_string()]),
+        AnswerError::Spill(_) => errors(StatusCode::INTERNAL_SERVER_ERROR, &[e.to_string()]),
     }
 }
 

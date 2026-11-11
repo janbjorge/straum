@@ -407,7 +407,12 @@ fn asks_straum_cant_answer() {
         let reply = call(server.addr, "POST", "/ask", &body);
         assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{body}");
     }
+    server.stop();
+}
 
+#[test]
+fn ask_bodies_too_big_or_broken_are_refused() {
+    let server = serve(writer().app().clone());
     let big = format!("{{\"query\": \"{}\"}}", "a".repeat(1 << 20));
     let reply = call(server.addr, "POST", "/ask", &big);
     assert_eq!(

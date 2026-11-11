@@ -24,9 +24,11 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
     };
     let mut errors = Vec::new();
     let (mut query, mut parameters) = (None, Vec::new());
-    for (field, value) in &fields {
+    let mut saw_query = false;
+    for (field, value) in fields {
+        saw_query |= field == "query";
         match (field.as_str(), value) {
-            ("query", Json::Text(text)) => query = Some(text.clone()),
+            ("query", Json::Text(text)) => query = Some(text),
             ("query", other) => {
                 errors.push(format!("\"query\" must be a string, not {}", other.kind()))
             }
@@ -42,7 +44,7 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
             (other, _) => errors.push(format!("unknown field {other:?}")),
         }
     }
-    if !fields.iter().any(|(field, _)| field == "query") {
+    if !saw_query {
         errors.push("\"query\" is missing".into());
     }
     match query {

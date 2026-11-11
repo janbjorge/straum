@@ -194,24 +194,11 @@ mod tests {
         string(&mut out, "a \"b\"\n\u{1}ø");
         assert_eq!(out, r#""a \"b\"\n\u0001ø""#.as_bytes());
 
-        let cases = [
-            (0, 0, "0"),
-            (-7, 0, "-7"),
-            (-1, 0, "-1"),
-            (-1, 2, "-0.01"),
-            (1250, 2, "12.50"),
-            (5, 2, "0.05"),
-            (-5, 2, "-0.05"),
-            (-1250, 3, "-1.250"),
-            (0, 3, "0.000"),
-            (i128::MIN, 0, "-170141183460469231731687303715884105728"),
-            (i128::MAX, 38, "1.70141183460469231731687303715884105727"),
-        ];
-        for (n, scale, text) in cases {
+        // The domain tests the digits; here, that they parse as JSON.
+        for (n, scale) in [(-1, 2), (i128::MIN, 0), (i128::MAX, 38)] {
             let mut out = Vec::new();
             decimal(&mut out, n, scale);
-            assert_eq!(out, text.as_bytes(), "{n} at {scale}");
-            assert!(Json::parse(&out).is_ok(), "{text}");
+            assert!(Json::parse(&out).is_ok(), "{n} at {scale}");
         }
     }
 }
