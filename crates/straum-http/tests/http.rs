@@ -282,6 +282,24 @@ fn answers_asks_as_json() {
 }
 
 #[test]
+fn no_reply_may_be_cached() {
+    let mut writer = writer();
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let answer = call(server.addr, "POST", "/ask", &first_hour());
+    let error = call(server.addr, "POST", "/ask", "{");
+    let status = call(server.addr, "GET", "/status", "");
+    for reply in [answer, error, status] {
+        assert!(
+            reply.head.contains("cache-control: no-store"),
+            "{}",
+            reply.head
+        );
+    }
+    server.stop();
+}
+
+#[test]
 fn asks_straum_cant_answer() {
     let mut writer = writer();
     let server = serve(writer.app().clone());

@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_TYPE, HeaderName, HeaderValue};
+use hyper::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -89,6 +89,9 @@ pub async fn serve(
                 continue;
             }
         };
+        // Nagle would hold an answer's second write until the client acks
+        // the first, which a client that delays acks makes 40 ms.
+        stream.set_nodelay(true).ok();
         let app = Arc::clone(&app);
         let service = service_fn(move |request| handle(request, Arc::clone(&app), read_ask));
         let connection = http1::Builder::new()
@@ -232,8 +235,10 @@ fn text(status: StatusCode, body: String) -> Response<Full<Bytes>> {
 fn respond(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from(body)));
     *response.status_mut() = status;
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    // An answer is right as of its as_of and no later, so nothing between
+    // straum and a client may keep one.
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
