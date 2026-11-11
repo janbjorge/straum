@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
@@ -133,7 +133,8 @@ impl Postgres {
     }
 
     fn expected_rows(&self) -> String {
-        self.psql(EXPECTED).replace(", ", ",").replace(" : ", ":")
+        let rows = self.psql(EXPECTED).replace(", ", ",").replace(" : ", ":");
+        format!("\"rows\":[{rows}]}}")
     }
 }
 
@@ -187,6 +188,7 @@ struct Running {
     child: Child,
     address: SocketAddr,
     log: Arc<Mutex<String>>,
+    gatherer: Option<JoinHandle<()>>,
 }
 
 fn run(args: &[&str], dsn: &str) -> Running {
@@ -198,25 +200,42 @@ fn run(args: &[&str], dsn: &str) -> Running {
     let log = Arc::new(Mutex::new(String::new()));
     let lines = BufReader::new(child.stderr.take().unwrap());
     let gathered = Arc::clone(&log);
-    thread::spawn(move || {
+    let gatherer = thread::spawn(move || {
         for line in lines.lines() {
             let mut log = gathered.lock().unwrap();
             log.push_str(&line.unwrap());
             log.push('\n');
         }
     });
-    let mut running = Running {
-        child,
-        address: "0.0.0.0:0".parse().unwrap(),
-        log,
+    let start = Instant::now();
+    while !log.lock().unwrap().contains("listening on ") {
+        wait(&mut child, &log, "straum to listen", start);
+    }
+    let address = {
+        let log = log.lock().unwrap();
+        let at = log.find("listening on ").unwrap() + "listening on ".len();
+        log[at..].lines().next().unwrap().parse().unwrap()
     };
-    running.wait_for("straum to listen", |straum| {
-        straum.log().contains("listening on ")
-    });
-    let log = running.log();
-    let at = log.find("listening on ").unwrap() + "listening on ".len();
-    running.address = log[at..].lines().next().unwrap().parse().unwrap();
-    running
+    Running {
+        child,
+        address,
+        log,
+        gatherer: Some(gatherer),
+    }
+}
+
+fn wait(child: &mut Child, log: &Mutex<String>, what: &str, start: Instant) {
+    assert!(
+        start.elapsed() < Duration::from_secs(60),
+        "waited a minute for {what}; straum's log:\n{}",
+        log.lock().unwrap()
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "straum exited; its log:\n{}",
+        log.lock().unwrap()
+    );
+    thread::sleep(Duration::from_millis(100));
 }
 
 impl Running {
@@ -224,21 +243,18 @@ impl Running {
         self.log.lock().unwrap().clone()
     }
 
-    fn wait_for(&mut self, what: &str, done: impl Fn(&mut Running) -> bool) {
+    fn wait_for(&mut self, what: &str, done: impl Fn(&Running) -> bool) {
         let start = Instant::now();
         while !done(self) {
-            assert!(
-                start.elapsed() < Duration::from_secs(60),
-                "waited a minute for {what}; straum's log:\n{}",
-                self.log()
-            );
-            assert!(
-                self.child.try_wait().unwrap().is_none(),
-                "straum exited; its log:\n{}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(100));
+            wait(&mut self.child, &self.log, what, start);
         }
+    }
+
+    fn wait_for_rows(&mut self, pg: &Postgres, what: &str) {
+        let rows = pg.expected_rows();
+        self.wait_for(what, |straum| {
+            straum.call("POST", "/ask", ASK).1.ends_with(&rows)
+        });
     }
 
     /// The status and body.
@@ -262,8 +278,8 @@ impl Running {
         let sent = Command::new("kill").args([signal, &pid]).status().unwrap();
         assert!(sent.success());
         let status = self.child.wait().unwrap();
-        // The log thread ends with the pipe.
-        thread::sleep(Duration::from_millis(100));
+        // The gatherer ends with the pipe, so the log is whole once it joins.
+        self.gatherer.take().unwrap().join().unwrap();
         (status.code(), self.log())
     }
 }
@@ -279,14 +295,14 @@ impl Drop for Running {
 /// can't run in a transaction, but those that start with `hold`, which it
 /// returns. The role `straum` gets its password from the DSN the plan
 /// reads, the one `straum run` connects with after.
-fn set_up(pg: &Postgres, spec: &str, hold: &str) -> Vec<String> {
+fn set_up(pg: &Postgres, spec: &str, hold: Option<&str>) -> Vec<String> {
     let mut plan = straum(&["plan", "--spec", spec]);
     plan.env("STRAUM_DSN", pg.dsn("straum"));
     let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));
     let mut held = Vec::new();
     for statement in plan.lines().filter(|l| !l.starts_with("--")) {
-        if statement.starts_with(hold) {
+        if hold.is_some_and(|hold| statement.starts_with(hold)) {
             held.push(statement.to_owned());
         } else {
             pg.psql(statement);
@@ -301,7 +317,7 @@ fn serves_asks_from_postgres() {
     pg.psql(TABLES);
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
-    assert_eq!(set_up(&pg, &spec, "nothing"), Vec::<String>::new());
+    assert_eq!(set_up(&pg, &spec, None), Vec::<String>::new());
     // From a file, as a mounted secret would give it.
     let dsn = scratch.file("dsn", &format!("{}\n", pg.dsn("straum")));
     let mut straum = run(
@@ -333,7 +349,7 @@ fn serves_asks_from_postgres() {
     assert_eq!(status, 200, "{body}");
     assert!(body.starts_with(r#"{"as_of":"20"#), "{body}");
     assert!(!body.contains("lsn"), "{body}");
-    let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
+    let rows = pg.expected_rows();
     assert!(body.ends_with(&rows), "{body}\nis not\n{rows}");
     let cab = r#"{"kind":"cab","borough":"Bronx","trips":1,"fare":12.50}"#;
     assert!(body.contains(cab), "{body}");
@@ -341,23 +357,14 @@ fn serves_asks_from_postgres() {
     pg.psql("INSERT INTO shop.trips VALUES (5, '2024-01-02 00:00Z', 'cab', 2, 1.25)");
     pg.psql("DELETE FROM shop.trips WHERE id = 3");
     pg.psql("UPDATE shop.trips SET fare = 10 WHERE id = 1");
-    let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
-    straum.wait_for("the changes", |straum| {
-        straum.call("POST", "/ask", ASK).1.ends_with(&rows)
-    });
+    straum.wait_for_rows(&pg, "the changes");
 
     // A zone renamed shows in the next answer: the dim is held and
     // followed, so nothing starts over.
     pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
-    let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
-    straum.wait_for("the dim change", |straum| {
-        straum.call("POST", "/ask", ASK).1.ends_with(&rows)
-    });
+    straum.wait_for_rows(&pg, "the dim change");
     pg.psql("UPDATE shop.trips SET fare = 20 WHERE id = 2");
-    let rows = format!("\"rows\":[{}]}}", pg.expected_rows());
-    straum.wait_for("the trip change", |straum| {
-        straum.call("POST", "/ask", ASK).1.ends_with(&rows)
-    });
+    straum.wait_for_rows(&pg, "the trip change");
     assert!(!straum.log().contains("no longer fits"), "{}", straum.log());
 
     let (code, log) = straum.stop("-TERM");
@@ -384,7 +391,7 @@ fn waits_for_the_setup() {
     pg.psql(TABLES);
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
-    let publication = set_up(&pg, &spec, "CREATE PUBLICATION");
+    let publication = set_up(&pg, &spec, Some("CREATE PUBLICATION"));
     let mut straum = run(
         &["run", "--spec", &spec, "--listen", "127.0.0.1:0"],
         &pg.dsn("straum"),
@@ -456,14 +463,7 @@ fn plan_prints_the_setup_sql() {
 }
 
 #[test]
-fn says_what_is_wrong() {
-    let scratch = Scratch::new();
-    let spec = scratch.file("spec.sql", SPEC);
-    let bad = scratch.file("bad.sql", "CREATE VIEW v AS SELECT 1;\n");
-    let missing = scratch.0.join("missing").to_str().unwrap().to_owned();
-    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
-    let taken = taken.local_addr().unwrap().to_string();
-
+fn prints_help_and_version() {
     let (code, stdout, _) = output(&mut straum(&["help"]));
     assert_eq!(code, Some(0));
     assert!(stdout.contains("usage: straum <command>"), "{stdout}");
@@ -476,7 +476,10 @@ fn says_what_is_wrong() {
         stdout.starts_with("usage: straum plan --spec FILE"),
         "{stdout}"
     );
+}
 
+#[test]
+fn rejects_bad_usage() {
     let (code, _, stderr) = output(&mut straum(&[]));
     assert_eq!(code, Some(2));
     assert!(stderr.contains("usage: straum <command>"), "{stderr}");
@@ -492,46 +495,53 @@ fn says_what_is_wrong() {
         stderr,
         "straum: unknown command \"serve\"\ntry: straum help\n"
     );
+}
 
-    let cases: [(Vec<&str>, Option<&str>, String); 7] = [
+#[test]
+fn says_what_is_wrong() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let bad = scratch.file("bad.sql", "CREATE VIEW v AS SELECT 1;\n");
+    let missing = scratch.0.join("missing").to_str().unwrap().to_owned();
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = taken.local_addr().unwrap().to_string();
+    let not_found = format!("straum: reading {missing}: No such file or directory (os error 2)\n");
+
+    let cases: &[(&[&str], Option<&str>, String)] = &[
+        (&["plan", "--spec", &missing], None, not_found.clone()),
         (
-            vec!["plan", "--spec", &missing],
-            None,
-            format!("straum: reading {missing}: No such file or directory (os error 2)\n"),
-        ),
-        (
-            vec!["plan", "--spec", &bad],
+            &["plan", "--spec", &bad],
             None,
             format!("straum: {bad}: line 1: "),
         ),
         (
-            vec!["run", "--spec", &spec],
+            &["run", "--spec", &spec],
             None,
             "straum: set STRAUM_DSN or pass --dsn-file\n".to_owned(),
         ),
         (
-            vec!["run", "--spec", &spec],
+            &["run", "--spec", &spec],
             Some("mysql://straum@db/straum"),
             "straum: DSN must start with postgres:// or postgresql://\n".to_owned(),
         ),
         (
-            vec!["run", "--spec", &spec, "--dsn-file", &missing],
+            &["run", "--spec", &spec, "--dsn-file", &missing],
             Some("postgres://straum@db/straum"),
-            format!("straum: reading {missing}: No such file or directory (os error 2)\n"),
+            not_found,
         ),
         (
-            vec!["run", "--spec", &spec, "--listen", "nowhere"],
+            &["run", "--spec", &spec, "--listen", "nowhere"],
             Some("postgres://straum@db/straum"),
             "straum: listening on nowhere: invalid socket address\n".to_owned(),
         ),
         (
-            vec!["run", "--spec", &spec, "--listen", &taken],
+            &["run", "--spec", &spec, "--listen", &taken],
             Some("postgres://straum:secret@db/straum"),
             format!("straum: listening on {taken}: Address already in use"),
         ),
     ];
     for (args, dsn, error) in cases {
-        let mut command = straum(&args);
+        let mut command = straum(args);
         if let Some(dsn) = dsn {
             command.env("STRAUM_DSN", dsn);
         }
@@ -539,7 +549,7 @@ fn says_what_is_wrong() {
         assert_eq!(code, Some(1), "{args:?}: {stderr}");
         assert_eq!(stdout, "");
         assert!(
-            stderr.starts_with(&error),
+            stderr.starts_with(error.as_str()),
             "{args:?}: {stderr:?} is not {error:?}"
         );
         assert!(!stderr.contains("secret"), "{stderr}");
