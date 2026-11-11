@@ -3200,22 +3200,33 @@ fn taxi_month() {
     // Dims change: a zone renamed, another moved to a new key, then a
     // trip in the renamed zone. Each is one commit applied; nothing
     // starts over.
-    let clock = Instant::now();
-    sql.execute("UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161")
-        .unwrap();
-    applied(&mut writer);
+    let change = |sql: &mut Conn, writer: &mut Writer<Pg>, what: &str, statement: &str| {
+        sql.execute(statement).unwrap();
+        let clock = Instant::now();
+        applied(writer);
+        eprintln!("applied {what} in {:.1?}", clock.elapsed());
+    };
+    change(
+        &mut sql,
+        &mut writer,
+        "a zone renamed",
+        "UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161",
+    );
     check(&mut sql, writer.app(), "after a zone was renamed");
-    sql.execute("UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264")
-        .unwrap();
-    applied(&mut writer);
+    change(
+        &mut sql,
+        &mut writer,
+        "a zone moved",
+        "UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264",
+    );
     check(&mut sql, writer.app(), "after a zone moved");
-    sql.execute(
+    change(
+        &mut sql,
+        &mut writer,
+        "a trip in the renamed zone",
         "UPDATE yellow_trips SET tip_amount = tip_amount + 1
           WHERE id = (SELECT min(id) FROM yellow_trips WHERE pu_location_id = 161)",
-    )
-    .unwrap();
-    applied(&mut writer);
-    eprintln!("followed the zone changes in {:.1?}", clock.elapsed());
+    );
     check(&mut sql, writer.app(), "after the zones changed");
     assert_eq!(writer.app().status().starts, 1);
 }
