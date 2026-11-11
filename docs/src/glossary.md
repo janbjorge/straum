@@ -2,7 +2,8 @@
 
 One name per thing, in the guide, the ADRs, the code and its errors.
 The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere. The clashes at the end are open.
+spellings still found elsewhere. JOINS.md and ARCHITECTURE.md are the
+notes under `research/`. The clashes at the end are open.
 
 ## Straum
 
@@ -52,8 +53,7 @@ its measures.
   holds a dim projected to its key and the columns the views read, and
   follows it from the stream like a fact. There is one dim per table,
   however many views join it, and it carries the table's name. Also
-  "joined table". ADR-0013 and JOINS.md say "dimension" when quoting
-  others.
+  "joined table". JOINS.md says "dimension" when quoting others.
 - **Dim key** (`Dim::key`): the dim's key columns, one or more, that a
   join's columns must equal. Any number of dim rows may share a key;
   no index is required. A dim key is not a view key.
@@ -116,7 +116,8 @@ keys that live in a dim.
 - **Join column** (`Via::Fact`): the fact column a join reads its key
   from, `orders.customer_id`. It keys the cells whether the view
   selects it or not, which is why memory follows distinct join ids
-  (sizing.md). In code a "via"; also "join id" (sizing.md, ADR-0030).
+  (ADR-0030). In code a "via"; also "join id" (how-it-works.md,
+  ADR-0030).
 - **Chain** (`Via::Attribute`): a join whose key comes from a dim
   joined before it, `tiers.id = customers.tier_id`. The earlier dim
   then carries that column in its projection. JOINS.md says "near
@@ -230,9 +231,10 @@ answer is the groups it asked for, with how current they are.
   `date_bin` buckets alone when grouped by bucket (how-it-works.md).
 - **Limit**: what a flag caps: `--max-lag`, `--max-retained-wal`
   (`Limits`) and `--max-transaction-rows` (`Transaction::limit`).
-- **Answer** (`Answer`): `{"as_of", "rows"}`. `Answered` adds the
-  applied LSN and `as_of` for the headers. The HTTP tests say "reply";
-  `straum-http` says "response" for the HTTP message around it.
+- **Answer**: the JSON `{"as_of", "rows"}`. `Answer` is its columns
+  and rows; `Answered` adds `as_of` and the applied LSN for the
+  `Straum-LSN` header. The HTTP tests say "reply"; `straum-http` says
+  "response" for the HTTP message around it.
 - **Row** (`AnswerRow`): one object of an answer's `rows`, keyed by
   the names in `SELECT`, sorted by key. A fact row and a dim row are
   rows too; the context says which.
@@ -248,7 +250,7 @@ answer is the groups it asked for, with how current they are.
   scale. A **value** (`Value`) is one measure's result: null, an
   integer, or an average kept as sum and count. The guide says "value"
   for both and for parameters. A datum PostgreSQL sent that doesn't
-  read as its type is a `DatumError`.
+  read as its type is a `ValueError`.
 - **Column type** (`ColumnType`): integer, numeric with a scale,
   boolean, text, or time with or without a zone. Only the load learns
   it, from the catalog. A filter value must fit it
@@ -331,8 +333,8 @@ store meanwhile. Any failure makes Straum start over from a new slot.
   Straum starts over, so a slow Straum can't fill the disk.
 - **Status** (`Status`): what `GET /status` and `straum status` show,
   read at one moment: ready or why not, applied, as of, lag, WAL
-  retained, starts, failures, sealed. Not telemetry (ADR-0023). The
-  stream thread reports the applied LSN to PostgreSQL
+  retained, starts, failures, last failure, sealed. Not telemetry
+  (ADR-0023). The stream thread reports the applied LSN to PostgreSQL
   (`StreamThread::report`), a different message.
 - **Health check**: `/livez`, up while the process serves, and
   `/readyz`, up while ready. Lag never fails `/livez`.
@@ -347,7 +349,8 @@ role and one publication. The setup is done once by a table owner.
   spec table. `straum plan` prints it. The **setup check**
   (`Error::Setup`, `catalog::check`) compares the catalog with the spec
   at every start and reports every problem with its fix. Also "start
-  checks" (spec.md), "catalog check" (ADR-0018, ADR-0037).
+  check" (ADR-0014, ADR-0024, ADR-0031), "catalog check" (ADR-0018,
+  ADR-0037).
 - **Problem**: one line of a failed setup check, naming what is wrong
   and what to run. `/readyz` and `straum status` show them.
 - **Role**: the PostgreSQL role Straum connects as, the DSN's user or
@@ -377,7 +380,7 @@ role and one publication. The setup is done once by a table owner.
   (ADR-0031).
 - **Label** (`EnumLabel`): an enum value's text. A spec reads an enum
   column as its label by writing `::text` (ADR-0037).
-- **Poison value** (`DatumError::at`): a value Straum can't read, such
+- **Poison value** (`ValueError::at`): a value Straum can't read, such
   as a `NaN`. It stops the load or the stream, naming its table and
   column so the row can be fixed.
 
@@ -392,8 +395,8 @@ one back before a change reaches it (ADR-0033, ADR-0035).
   in the level. A **sealed bucket** is `Bucket::Sealed`; one still in
   memory is **hot** (`Bucket::Hot`). ADR-0033's title says "cold".
 - **Spill** (`Spill`, `Spilling`): the port sealed buckets go to: put,
-  get, remove, clear by `SealedId`. Every start empties it. The flags
-  `--spill-dir` and `--seal-after` and the crate `straum-arrow` that
+  get and remove by `SealedId`, and clear. Every start empties it. The
+  flags `--spill-dir` and `--seal-after` and the crate `straum-arrow` that
   ADR-0033 and ADR-0034 name do not exist yet; `main.rs` passes `None`.
 - **Sealed** (`Sealed`, `SealedId`): a bucket's cells as plain data:
   keys as codes, counts, one `SealedColumn` per input. `SealedId` is
