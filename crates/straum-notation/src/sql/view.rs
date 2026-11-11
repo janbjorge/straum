@@ -941,40 +941,37 @@ impl Walker {
         let at = line(function);
         let name = function_name(function).map(str::to_ascii_lowercase);
         let (args, distinct) = self.call(function)?;
-        let agg: fn(Ident) -> Agg = match name.as_deref() {
-            Some("count") => {
-                if !distinct {
-                    if !matches!(
-                        args,
-                        [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
-                    ) {
-                        self.reject(
-                            at,
-                            "count, use count(*) or count(DISTINCT column),",
-                            function,
-                        );
-                        return None;
-                    }
-                    return Some((
-                        Agg::Count,
-                        self.key_conds(scope, function.filter.as_deref())?,
-                    ));
-                }
-                Agg::CountDistinct
+        let star = matches!(
+            args,
+            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
+        );
+        let agg: fn(Ident) -> Agg = match (name.as_deref(), distinct) {
+            (Some("count"), false) if star => {
+                let filter = self.key_conds(scope, function.filter.as_deref())?;
+                return Some((Agg::Count, filter));
             }
-            Some("sum") => Agg::Sum,
-            Some("min") => Agg::Min,
-            Some("max") => Agg::Max,
-            Some("avg") => Agg::Avg,
+            (Some("count"), false) => {
+                self.reject(
+                    at,
+                    "count, use count(*) or count(DISTINCT column),",
+                    function,
+                );
+                return None;
+            }
+            (Some("count"), true) => Agg::CountDistinct,
+            (Some("sum"), false) => Agg::Sum,
+            (Some("min"), false) => Agg::Min,
+            (Some("max"), false) => Agg::Max,
+            (Some("avg"), false) => Agg::Avg,
+            (Some("sum" | "min" | "max" | "avg"), true) => {
+                self.reject(at, "DISTINCT outside count", function);
+                return None;
+            }
             _ => {
                 self.reject(at, "aggregate", function);
                 return None;
             }
         };
-        if distinct && name.as_deref() != Some("count") {
-            self.reject(at, "DISTINCT outside count", function);
-            return None;
-        }
         let arg = self.single(function, args)?;
         let column = self.fact_column(scope, arg, "an aggregated column")?;
         Some((
