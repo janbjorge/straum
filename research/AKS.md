@@ -2,8 +2,8 @@
 
 jb, 2026-11-08: ship Straum as a Helm chart into the same Kubernetes cluster as
 the apps. First target: AKS, with PostgreSQL 18 on Azure Flexible Server
-outside the cluster. Design in ARCHITECTURE.md. Tags as in README.md (R, U,
-I).
+outside the cluster. Design in DOMAIN.md; PostgreSQL mechanics in
+ARCHITECTURE.md. Tags as in README.md (R, U, I).
 
 ## Assumed setup
 
@@ -29,83 +29,22 @@ I).
   commit the output and apply it with their existing pipeline. Azure Pipelines
   also has a `HelmDeploy` task (U).
 
-## Chart shape (I)
+## Chart shape
 
-Built in M7 as `deploy/helm/straum`; this is what it renders. Straum keeps
-no durable state and uses a temporary slot per pod, so the chart has a
-Deployment and no PVC. Each replica is its own slot and walsender, and the
-Azure HA standby uses slots and walsenders too, so the default is one
-replica.
-
-- **Deployment**, 1 replica, `maxSurge: 1`, `maxUnavailable: 0`: the new pod
-  loads before the old one stops.
-- **ConfigMap**: the spec. A checksum annotation rolls the Deployment when it
-  changes.
-- **Service**, ClusterIP: asks over HTTP/JSON, plus `/livez`, `/readyz` and
-  `/status`.
-- **Secret** (`dsn.existingSecret`): the DSN of the replication role, made
-  outside the chart and read as `STRAUM_DSN`. Key Vault through Secrets
-  Store CSI isn't wired in yet.
-- **ServiceAccount** with no token mounted, for Azure workload identity
-  later.
-
-Probes:
-- Readiness: Straum loads every fact before it turns ready, so readiness
-  stays off through the load and catch-up, and again past `maxLag`. Clients
-  must handle a Straum that isn't ready. No startup probe: `/livez` answers
-  during the load.
-- Liveness: process only. Failing liveness on lag would turn a slow catch-up
-  into a restart loop.
-
-Defaults: the Restricted Pod Security Standard (`runAsNonRoot`, uid 65532
-of the distroless `nonroot` image, seccomp `RuntimeDefault`, drop ALL
-capabilities), a read-only root filesystem, no `imagePullSecrets` (ACR pulls
-by managed identity). Telemetry is planned (ADR-0023); until then
-`kubectl exec deployment/straum -- /straum status` shows what Straum has
-done.
-
-Values (`values.yaml` documents them all):
-
-```yaml
-image:
-  repository: <acr>.azurecr.io/straum
-  tag: ""                            # the chart's appVersion when empty
-dsn:
-  existingSecret: straum-dsn         # key: dsn (role with REPLICATION)
-publication: straum                  # Straum creates a TEMPORARY slot per pod
-spec: |                              # Straum SQL (Straum-only subset), read at start
-  CREATE VIEW trips WITH (buckets = '15 minutes, 1 day, 7 days') AS
-  SELECT date_bin('15 minutes', f.pickup_at, timestamptz 'epoch') AS bucket,
-         f.pu_location_id, pickup.borough, pickup.zone,
-         count(*) AS trips
-  FROM public.yellow_trips f
-  LEFT JOIN public.taxi_zones pickup ON pickup.location_id = f.pu_location_id
-  GROUP BY 1, 2, 3, 4;
-maxLag: 30                           # seconds behind PostgreSQL before readiness turns off
-maxRetainedWal: 4Gi                  # past this, drop the connection and resync
-replicaCount: 1
-service:
-  port: 8080
-resources:
-  requests: {cpu: 250m, memory: 1Gi}
-  limits: {memory: 1Gi}
-```
+Built in M7 as `deploy/helm/straum`; `docs/src/kubernetes.md` describes
+what it renders and its values. Two choices made here: a Deployment
+with no PVC, since Straum keeps no durable state and uses a temporary
+slot per pod, and one replica by default, since each replica is its own
+slot and walsender and the Azure HA standby uses slots and walsenders
+too. Liveness is the process only: failing it on lag would turn a slow
+catch-up into a restart loop.
 
 ## One-time database setup on Flexible Server
 
-1. Set the server parameter `wal_level = logical` (Terraform or portal) and
-   restart. Slot sync settings aren't needed: temporary slots can't fail over,
-   and Straum resyncs after an HA failover (ARCHITECTURE.md §8).
-2. Run `straum plan` on the spec (ARCHITECTURE.md §4d). It reads only the
-   spec, never the server, and prints `CREATE ROLE straum LOGIN REPLICATION`,
-   `GRANT SELECT` on the spec's tables (the load reads them), `CREATE
-   PUBLICATION straum FOR TABLE ...` with the fact and dim tables, and
-   `REPLICA IDENTITY FULL` for each fact. A comment names the key each dim
-   needs.
-3. The table owner runs the printed SQL. Often the app's own role owns its
-   tables (I). `FOR ALL TABLES` needs superuser, which Azure doesn't give.
-4. Straum creates its own `TEMPORARY` slot on every start; PostgreSQL drops it
-   when the session ends.
+Set the server parameter `wal_level = logical` (Terraform or portal)
+and restart; slot sync settings aren't needed, since temporary slots
+can't fail over (ARCHITECTURE.md §6). Then the steps of
+`docs/src/postgresql.md`. Often the app's own role owns its tables (I).
 
 **Production risk (R).** Once a table is in a publication that publishes
 updates and deletes, PostgreSQL checks its replica identity on every UPDATE and
@@ -144,7 +83,7 @@ system against the same aggregates before committing to Straum.
    their execution time a spec can cover.
 2. Every fact has REPLICA IDENTITY FULL (PLAN.md, 2026-11-09), which writes
    the old row to WAL on every UPDATE and DELETE. Measure that on the
-   primary at the real write rate (ARCHITECTURE.md §4b).
+   primary at the real write rate (ARCHITECTURE.md §2).
 3. `helm template` output committed to the deploy repo, or a `HelmDeploy`
    step?
 4. HA: with temporary slots, a failover means a full resync. How long does the

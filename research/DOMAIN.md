@@ -1,13 +1,17 @@
 # Straum: domain model (2026-11-12)
 
-What Straum is made of and how the pieces depend on each other: the
-participants, the use cases, the runtime flows, the model with its
-dependencies and cardinalities, the state machines, and the decisions
-behind the shape. Read from the code on 2026-11-12; a line reference is
-where a rule is enforced. ARCHITECTURE.md says how Straum uses
-PostgreSQL, JOINS.md how a join runs, `docs/adr/` holds the decisions
-and `docs/src/glossary.md` the words. The glossary's words are used
-here; the code's name follows in parentheses where it differs.
+The core design document: what Straum is made of and how the pieces
+depend on each other. Participants, use cases, runtime flows, the
+model with its dependencies and cardinalities, the invariants, the
+state machines, and which ADR settled each part. Read from the code on
+2026-11-12; a line reference is where a rule is enforced.
+
+The other documents hold what this one doesn't: the user guide
+(`docs/src`) says how to write a spec, ask and run; `docs/adr/` holds
+each decision with its context; `docs/src/glossary.md` defines the
+words used here; ARCHITECTURE.md holds the PostgreSQL mechanics with
+their citations; JOINS.md the join semantics and their sources. The
+code's name follows a glossary word in parentheses where it differs.
 
 ## Overview
 
@@ -341,14 +345,11 @@ but count name one input column (`aggregate.rs:11`).
 
 - A **Spec** holds dims and facts in one namespace
   (`spec.rs:344`). `Spec::tables` lists each table once, dims first.
-- A **Dim** is a table: one per table however many views join it,
-  carrying the union of the columns any view reads (`Dim::attributes`).
-  Its key is one column or more, and any number of rows may share a
-  key.
-- A **Fact** is one view: a table, one **Time**, by keys, refs in join
-  order, measures, and the view's `WHERE` as a filter. A ref joined
-  through another dim comes after it (`Via::Attribute::through` is an
-  index into `Fact::refs` before it, `spec.rs:189`).
+- One **Dim** per table, whatever the number of views joining it;
+  `Dim::attributes` is the union of what they read.
+- A **Fact** holds its refs in join order: a ref joined through
+  another dim comes after it (`Via::Attribute::through` is an index
+  into `Fact::refs` before it, `spec.rs:189`).
 - A **Ref** points at a dim by name, with as many **Via** columns as
   the dim's key has (`SpecError::KeyLength`). Left and inner refs read
   at least one **Attribute**; semi and anti read none
@@ -406,14 +407,11 @@ dim name, the width and the bucket start.
 - **Cells** are columnar: keys, counts and one **State** per input
   column, side by side, with an index from key codes to position
   (`rollup.rs:171`). A cell goes with its last row (`rollup.rs:491`).
-- A **State** is shared by the measures that read its column: sum and
-  avg one `Sum`, min and max one `Extent`, count distinct a
-  `Distinct` (`aggregate.rs:29`). Filtered measures keep no state;
-  their conditions name keys only.
-- A **Projection** (`projection.rs:14`) is a dim as a map from key
-  values to the attribute codes of every row under it. A row with a
-  null in its key is never held (`projection.rs:100`). `Null` is code
-  0 in every attribute, so no row and a null read alike.
+  `Aggregate::state` (`aggregate.rs:29`) picks which **State** a
+  measure reads, so measures over one column share it.
+- A **Projection** (`projection.rs:14`) maps key values to the
+  attribute codes of every row under them. `Null` is code 0 in every
+  attribute, so no row and a null read alike.
 - **Bound** cells (`store.rs:41`, ADR-0038) are a second rollup of a
   fact whose refs are all direct: keyed by the by keys and the
   attributes' values, so an ask reads no projection. A fact row goes
@@ -601,13 +599,8 @@ tells Ready from Lagging (`App::status`, `app.rs:191`; `why_not`,
   SIGTERM or SIGINT from any state ──► Stopping ──► exit
 ```
 
-| State    | `/readyz`                               | Asks     |
-| -------- | --------------------------------------- | -------- |
-| Loading  | 503, `loading` or the last failure      | 503      |
-| Ready    | 200                                     | answered |
-| Lagging  | 503, `N s behind PostgreSQL`            | answered |
-| Waiting  | 503, the failure                        | 503      |
-| Stopping | connection refused once the listener closes | drained |
+What `/readyz` and asks answer in each state is the table under
+[States](../docs/src/running.md#states) in the guide.
 
 ### The source
 
@@ -652,60 +645,27 @@ A dim change while the fact holds no rows keeps them
 (`a_dim_change_under_no_rows_keeps_the_bound_cells`); a dim update
 that reads the same changes nothing (`store.rs:255`).
 
-## Key design decisions
+## Which decision shaped what
 
-Each is settled in an ADR; this is the shape they give the model.
+The reasoning and the tradeoffs are in the ADRs; this maps each part
+of the model to the records that settled it.
 
-1. **Cells and nothing else** (ADR-0002, amended by ADR-0030). No raw
-   rows, no column store. Memory follows distinct keys times buckets,
-   plus each dim projected to its key and the columns read.
-   Tradeoff: anything a cell can't be updated from in place must come
-   from PostgreSQL again, which is why updates and deletes need the
-   old row and why a start is a full load.
-2. **Crates inward, traits only at ports** (ADR-0003). The domain is
-   property-tested against a naive reference with no PostgreSQL; the
-   app against a scripted fake. Tradeoff: small test helpers are
-   copied per crate.
-3. **A spec is a `CREATE VIEW` subset that reads as PostgreSQL would**
-   (ADR-0004, ADR-0005, ADR-0029). The view body is the test oracle.
-   One spelling per meaning, nothing inferred. Tradeoff: verbose
-   specs, and a walker that must list every accepted construct.
-4. **Asks are Straum SQL with every value a parameter** (ADR-0006).
-   Values never become query text. Tradeoff: a client learns a small
-   grammar instead of a JSON shape.
-5. **Answers carry `as_of`, the LSN goes in a header** (ADR-0007,
-   ADR-0020). A client reasons about time; `as_of` keeps moving on a
-   quiet database and errs up to a second early, never late.
-6. **One store behind one `RwLock`** (ADR-0009). A load fills a new
-   store outside the lock. Tradeoff: a long ask delays the writer,
-   which shows as lag.
-7. **Straum is its own replication client on a temporary slot**
-   (ADR-0010, ADR-0012, ADR-0022). The load reads the snapshot of the
-   slot the stream comes from, on the same connection, so one port
-   covers both. A crash leaves no slot and no retained WAL. Tradeoff:
-   no slot failover; every start loads everything.
-8. **Every spec table has `REPLICA IDENTITY FULL`** (ADR-0014,
-   ADR-0031). Facts need the old row to leave a cell, dims to find the
-   projection entry. Tradeoff: WAL grows on update and delete, never
-   on insert.
-9. **A change that can't apply starts Straum over** (ADR-0015). One
-   recovery path. The new snapshot is after the failing commit, so its
-   rows come by `COPY` instead of under the write lock.
-   `--max-transaction-rows` and `--max-retained-wal` use the same
-   path.
-10. **Refs are bound at ask time, with bound cells beside**
-    (ADR-0030, ADR-0038). Cells are keyed by join columns and read
-    the dim as it is now, so a dim change moves every answer and
-    starts nothing over. Bound cells give an unjoined ask's cost
-    while they hold. Tradeoff: cells follow distinct join ids.
-11. **One level of cells per width the view lists** (ADR-0017,
-    ADR-0028). Levels are an index: answers don't change, memory grows
-    per width, a long range reads few cells.
-12. **Cold `date_bin` buckets seal through a port** (ADR-0033,
-    ADR-0035). The domain hands a bucket out as plain data and keeps
-    its place; the writer unseals before a change reaches it.
-    Tradeoff: an ask grouped by bucket over old time reads the spill
-    for every bucket.
+| Part of the model                              | ADRs                   |
+| ---------------------------------------------- | ---------------------- |
+| Cells only, no rows, projections beside them   | 0002, 0030             |
+| Crates inward, `Source` and `Spill` as ports   | 0003, 0033             |
+| Spec as a `CREATE VIEW` subset, one spelling   | 0004, 0005, 0028, 0029 |
+| Ask as parameterised Straum SQL                | 0006                   |
+| `Answered`: `as_of` in the body, LSN in a header | 0007, 0020           |
+| One `Store` behind one `RwLock`, `App` clones  | 0009                   |
+| Own replication client, temporary slot, one port for load and stream | 0010, 0012, 0022 |
+| Old row on every update and delete, dims too   | 0014, 0031             |
+| `Failure` and the start-over loop              | 0015                   |
+| Rollup key, levels per width, `None` bucket    | 0016, 0017, 0019, 0028 |
+| Refs bound at ask time, bound cells beside     | 0030, 0038             |
+| Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
+| `timestamp` as wall clock, enums as labels     | 0018, 0037             |
+| tokio only in `straum-http`                    | 0008                   |
 
 ## Where the code is
 
@@ -732,19 +692,15 @@ Each is settled in an ADR; this is the shape they give the model.
 | HTTP                         | `crates/straum-http/src/lib.rs`          |
 | Commands, writer thread      | `crates/straum/src/main.rs`              |
 
-## Deviations and open points
+## Where the code and the records differ
 
-1. **ADR-0038 describes a rebind pass the code doesn't have.** The ADR
-   says a dim change moves bound cells from the keyed ones in one pass
-   over them. The code drops the bound rollup instead
-   (`Store::stale`, `store.rs:298`) and reads the keyed cells until
-   the next start, which is what `docs/src/how-it-works.md` and the
-   tests say. Either the ADR gets an amendment or the pass gets
-   built.
-2. **No spill ships.** `--spill-dir` and `--seal-after` in ADR-0033
-   don't exist; `main.rs:477` passes `None`, so nothing seals outside
-   the tests.
-3. **A chained ref keeps no bound cells** (`store.rs:60`, ADR-0038).
-4. **The running states have no enum.** `Status` derives them each
-   time; a reader of the code finds them in `status.rs:12`.
-5. **Per-ask freshness barrier** stays open (ARCHITECTURE.md §4c).
+**ADR-0038 describes a rebind pass the code doesn't have.** The ADR
+says a dim change moves bound cells from the keyed ones in one pass
+over them. The code drops the bound rollup instead (`Store::stale`,
+`store.rs:298`) and reads the keyed cells until the next start, which
+is what `docs/src/how-it-works.md` and the tests say. Either the ADR
+gets an amendment or the pass gets built.
+
+The spill flags ADR-0033 names and the other open names are in the
+glossary's Clashes table; the open PostgreSQL questions are under
+ARCHITECTURE.md's open points.

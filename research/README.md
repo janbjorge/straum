@@ -32,7 +32,7 @@ allow, a wire proxy in front of all traffic, or Straum parsing SQL itself
 On 2026-11-08 jb dropped SQL. Aggregates are declared in a spec read at
 start, and asked for over HTTP. The spec was Straum's own notation at first and
 is now Straum SQL, a PostgreSQL `CREATE VIEW` subset made only for Straum specs
-and parsed by `sqlparser`. ARCHITECTURE.md describes that design; `docs/adr/` holds
+and parsed by `sqlparser`. DOMAIN.md describes that design; `docs/adr/` holds
 the decisions.
 
 What carried over from the research:
@@ -54,14 +54,13 @@ background in case a SQL door comes back.
 
 ## Files
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): the design. Spec, asks, rollups in
-  memory, initial load and apply over logical replication, lifecycle.
-- [DOMAIN.md](DOMAIN.md): the domain model. Participants, use cases,
-  runtime flows, the model with its dependencies and cardinalities,
-  invariants, state machines, and the decisions behind the shape.
-- [JOINS.md](JOINS.md): how a fact joins its dims. The data model, the
-  code, the join bound at ask time over held projections, its semantics,
-  what it replaced, and the sources behind the choice.
+- [DOMAIN.md](DOMAIN.md): the core design document. Participants, use
+  cases, runtime flows, the model with its dependencies and
+  cardinalities, invariants, state machines, which ADR shaped what.
+- [ARCHITECTURE.md](ARCHITECTURE.md): how Straum uses PostgreSQL, with
+  the citations. Load, apply, freshness, setup, RAM only, `wal_level`.
+- [JOINS.md](JOINS.md): a join's semantics at ask time, what it
+  replaced, the sources behind the choice, and the numbers.
 - [AKS.md](AKS.md): first target, AKS next to Azure Flexible Server 18. Chart
   shape, one-time database setup, risks, the pg_ivm baseline.
 - [POSTGRES-REPLICATION.md](POSTGRES-REPLICATION.md): logical replication

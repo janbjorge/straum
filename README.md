@@ -67,9 +67,10 @@ shipped, with stock logical replication, no extension and no superuser
 
 ![Straum between PostgreSQL and the apps that ask it](docs/src/diagrams/overview.svg)
 
-Every start opens a temporary logical slot, loads each view from the
-slot's snapshot at LSN L, then applies every commit after L. No commit is
-missed between the load and the stream, and none is applied twice.
+One writer loads every table from one snapshot and applies every
+commit after it; the guide's [How Straum
+works](https://janbjorge.github.io/straum/how-it-works.html) walks
+through a start, a commit and an ask.
 
 ## Development
 
@@ -79,10 +80,10 @@ need Docker.
 ## Documentation
 
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`
+- [Design: the domain model](research/DOMAIN.md)
 - [Decisions](docs/adr/)
-- [Architecture](research/ARCHITECTURE.md)
-- [Domain model](research/DOMAIN.md)
-- [Joins: data model, code and sources](research/JOINS.md)
+- [Straum and PostgreSQL](research/ARCHITECTURE.md)
+- [Joins: semantics, history and sources](research/JOINS.md)
 - [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)
 - [Managed PostgreSQL constraints](research/MANAGED-POSTGRES.md)
 - [AKS deployment design](research/AKS.md)

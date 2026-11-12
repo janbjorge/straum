@@ -2,8 +2,9 @@
 
 One name per thing, in the guide, the ADRs, the code and its errors.
 The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere. JOINS.md and ARCHITECTURE.md are the
-notes under `research/`. The clashes at the end are open.
+spellings still found elsewhere. DOMAIN.md, JOINS.md and
+ARCHITECTURE.md are the notes under `research/`. The clashes at the
+end are open.
 
 ## Straum
 
@@ -120,12 +121,10 @@ keys that live in a dim.
   ADR-0030).
 - **Chain** (`Via::Attribute`): a join whose key comes from a dim
   joined before it, `tiers.id = customers.tier_id`. The earlier dim
-  then carries that column in its projection. JOINS.md says "near
-  side" and "far dim".
+  then carries that column in its projection.
 - **Projection** (`Projection`): the shape Straum holds a dim in: a
   map from dim key to the coded columns of every row under it. An ask
-  maps a cell's join columns through it. ARCHITECTURE.md says
-  "multimap".
+  maps a cell's join columns through it.
 
 ## Time
 
@@ -220,7 +219,7 @@ answer is the groups it asked for, with how current they are.
 - **Condition** (`Condition`): `key = value`, `key IN (values)`, or in
   a view `column IS NULL` and `IS NOT NULL`. A **filter** is a list of
   conditions joined by `AND`: a measure's `FILTER`, the view's `WHERE`
-  (`Fact::filter`, JOINS.md "standing filter"), or an ask's `WHERE`.
+  (`Fact::filter`), or an ask's `WHERE`.
   `store.rs` evaluates one as a `Match`.
 - **Range** (`Ask::from`, `Ask::to`): the half-open `[from, to)` an
   ask reads, in Unix seconds on bucket edges. Its two **bounds** are
@@ -326,7 +325,6 @@ store meanwhile. Any failure makes Straum start over from a new slot.
 - **Plain connection** (`Postgres::plain`, `Connection`): the second,
   non-replication connection that reads the WAL position each second,
   since the replication connection is busy streaming (ADR-0010).
-  ARCHITECTURE.md says "side connection".
 - **WAL retained** (`Wal::retained`, `--max-retained-wal`,
   `maxRetainedWal`): the bytes PostgreSQL keeps for Straum's slot, its
   written position less the slot's `restart_lsn`. Past the limit
