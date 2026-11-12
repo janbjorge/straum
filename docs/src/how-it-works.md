@@ -43,6 +43,9 @@ needs:
 - `bool_and` and `bool_or` share the column's counts of true and of
   false, so deleting the last false turns a `bool_and` true.
 
+[Aggregates 101](aggregates.md) says why each keeps what it does, and
+why Straum has no median.
+
 A `FILTER` keeps nothing of its own: it names parts of the cell key,
 so a cell counts whole or not at all. A cell goes with its last row.
 

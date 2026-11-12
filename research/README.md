@@ -40,6 +40,9 @@ v1 doesn't build.
   the citations; what managed services allow; the AKS target.
 - [JOINS.md](JOINS.md): what was built before ask-time joins, the
   sources behind the choice, and the numbers.
+- [AGGREGATES.md](AGGREGATES.md): which aggregates merge and which
+  take a delete, the sources, what other systems do, and where
+  Straum's cell states sit.
 
 ## Tags
 

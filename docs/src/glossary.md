@@ -2,8 +2,9 @@
 
 One name per thing, in the guide, the ADRs, the code and its errors.
 The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere. JOINS.md and POSTGRESQL.md are the
-notes under `research/`. The clashes at the end are open.
+spellings still found elsewhere. AGGREGATES.md, JOINS.md and
+POSTGRESQL.md are the notes under `research/`. The clashes at the end
+are open.
 
 ## Straum
 
@@ -135,6 +136,14 @@ notes under `research/`. The clashes at the end are open.
   a sum and a count, a count per value for min and max (the code's
   "extent"), a count per distinct value, or the counts of true and
   false (ADR-0041). Filtered measures keep no state (ADR-0016).
+- **Merge**: what an ask does with the cells it reads: one answer per
+  group from their cell states. Every cell state merges.
+- **Distributive**, **algebraic**, **holistic**: what a part must keep
+  for its aggregate to merge: its own answer (`sum`, `min`), a fixed
+  few numbers (`avg`), or more as it holds more values (median,
+  `count(DISTINCT c)`). [Aggregates 101](aggregates.md).
+- **Sketch**: a small summary that merges and answers approximately.
+  Straum has none.
 - **Rollup** (`Rollup`): every cell of one fact, per width, with the
   codes of its key columns.
 - **Rollup key** (`Fact::rollup_key`): the by keys, then each join
