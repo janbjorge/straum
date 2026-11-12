@@ -2,7 +2,7 @@
 
 One name per thing, in the guide, the ADRs, the code and its errors.
 The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere. JOINS.md and ARCHITECTURE.md are the
+spellings still found elsewhere. JOINS.md and POSTGRESQL.md are the
 notes under `research/`. The clashes at the end are open.
 
 ## Straum
@@ -186,17 +186,9 @@ and never reads a row.
 - **Rollup key** (`Fact::rollup_key`): what a cell is keyed by: the by
   keys, then each join column once, then the bucket. The guide calls
   it "the cell key" or "keys, join columns and bucket".
-- **Key part** (`KeyPart`): one part of the rollup key: a column, a
-  null-ness test or the bucket. Code only. ADR-0037 says "slot".
-- **Codes** (`Codes`): each column's distinct values under small
-  integers, so a cell key and a projection entry are a few integers.
-  Codes mean something only to the store that gave them.
 - **Store** (`Store`): the rollups of every fact and the projection of
   every dim, behind one `RwLock`. A load fills a new store outside the
   lock and swaps it in (ADR-0009).
-- **Group** (`Groups`, `Partials`): one distinct combination of an
-  ask's keys, and so one row of its answer. An ask allocates per
-  group, never per cell.
 
 ## Asks and answers
 
@@ -243,12 +235,6 @@ answer is the groups it asked for, with how current they are.
 - **Straum-LSN** and **Server-Timing**: response headers. The first
   names the last commit the answer reflects, for "Seeing your own
   write" in asks.md. The second says where the time went.
-- **Datum** (`Datum`): one stored column value: null, boolean, integer
-  or text. Times are Unix seconds, numerics integers in the column's
-  scale. A **value** (`Value`) is one measure's result: null, an
-  integer, or an average kept as sum and count. The guide says "value"
-  for both and for parameters. A datum PostgreSQL sent that doesn't
-  read as its type is a `ValueError`.
 - **Column type** (`ColumnType`): integer, numeric with a scale,
   boolean, text, or time with or without a zone. Only the load learns
   it, from the catalog. A filter value must fit it
@@ -295,14 +281,6 @@ store meanwhile. Any failure makes Straum start over from a new slot.
   `Answered::applied`): the last commit in the store. **Committed**
   (`Commit::committed`, `Status::committed`): when that commit
   committed, by PostgreSQL's clock.
-- **Stream thread** (`StreamThread`, OS thread `straum-stream`): owns
-  the replication socket, decodes commits ahead of the writer, answers
-  keepalives and reports the applied LSN, so PostgreSQL never times
-  Straum out while the writer is busy (ADR-0008). The **reader
-  thread** is the load's: it decodes `COPY` batches.
-- **Writer** (`Writer`, OS thread `straum-writer`): the one loop that
-  loads and applies. It holds the write lock only to apply what it has
-  already read, never while it waits on PostgreSQL (ADR-0009).
 - **Step** (`Writer::step`): one turn of the writer: a start, or one
   commit applied. A step that fails is a **failure** (`Failure`,
   `Status::failure`, `last_failure`).
@@ -398,10 +376,6 @@ one back before a change reaches it (ADR-0033, ADR-0035).
 - **Sealed** (`Sealed`, `SealedId`): a bucket's cells as plain data:
   keys as codes, counts, one `SealedColumn` per input. `SealedId` is
   the fact, the width and `bucket_start`, the bucket's first second.
-- **Thaw** (`Store::thaw`): check a sealed bucket against the store so
-  nothing reading it can panic. **Unseal** (`Store::unseal`) puts the
-  thawed cells back so a change can reach them. A change touches the
-  sealed buckets its rows fall in (`sealed_touched`).
 
 ## Testing
 
@@ -426,8 +400,6 @@ one back before a change reaches it (ADR-0033, ADR-0035).
 | attribute / dim column | code, ADRs / guide | dim column in prose; attribute stays in code |
 | level / width | how-it-works.md, ADR-0017 / spec.md | level is the cells, width the duration |
 | state | `app::State`; `source::State`; cell state (`State`); running states | qualify in prose |
-| Member | `store::Member`, `catalog::Member`, one meaning in two private enums | left |
-| Table | `straum_domain::Table`; `fake::Table` | fine; test-only |
 | the crate for Straum SQL | `straum-notation` | `straum-sql` needs an `ALLOWED` change in `scripts/check-layers.py`; not done |
 | cold | ADR-0033 title | sealed, hot; ADR text stays |
 | spill flags | `--spill-dir`, `--seal-after`, `straum-arrow` in ADR-0033, ADR-0034 | not shipped; `main.rs` passes `None` |
