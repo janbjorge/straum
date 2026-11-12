@@ -28,31 +28,10 @@ Four participants:
 Six crates, dependencies inward only, enforced by
 `scripts/check-layers.py`. An arrow is "depends on".
 
-```text
-                 ┌─────────────────────────────────────────────┐
-                 │ straum: the binary, composition root        │
-                 │ run · plan · status · the writer thread     │
-                 └───┬───────────────┬────────────────┬────────┘
-                     │               │                │
-      ┌──────────────▼──┐   ┌────────▼───────┐   ┌────▼─────────────┐
-      │ straum-notation │   │   straum-pg    │   │   straum-http    │
-      │ Straum SQL text │   │ Source adapter │   │ /ask /livez      │
-      │ into Spec, Ask  │   │ slot, COPY,    │   │ /readyz /status  │
-      │                 │   │ pgoutput, WAL  │   │ tokio and hyper  │
-      └────────┬────────┘   └────────┬───────┘   └────┬─────────────┘
-               │                     │ Source         │ App
-               │            ┌────────▼────────────────▼────────┐
-               │            │            straum-app            │
-               │            │ App, Writer, Status, Lag,        │
-               │            │ ports Source and Spill           │
-               │            └────────────────┬─────────────────┘
-               │                             │
-               │            ┌────────────────▼─────────────────┐
-               └───────────►│          straum-domain           │
-                            │ Spec, Ask, Store, Rollup,        │
-                            │ Projection, Sealed, Answer       │
-                            └──────────────────────────────────┘
-```
+![The six crates and their dependencies, inward only](diagrams/crates.svg)
+
+*The binary depends on the three adapters, the adapters on the
+use cases, everything on the domain. An arrow is "depends on".*
 
 - `straum-domain` has no dependencies and no I/O. Everything an ask
   or a change needs is a plain struct, enum or function.
@@ -63,24 +42,11 @@ Six crates, dependencies inward only, enforced by
   the binary (`ReadAsk`, `straum-http/src/lib.rs:59`), so HTTP never
   knows Straum SQL.
 
-How data moves at run time, which is not the dependency direction:
-
-```text
-PostgreSQL ──snapshot COPY, pgoutput──► straum-pg ──Commit──► Writer
-                                                                │ apply
-Apps ──POST /ask──► straum-http ──Ask──► App ──read lock──► Store
-```
+Data moves the other way at run time: PostgreSQL feeds `straum-pg`,
+which hands commits to the writer, which applies them to the store;
+apps post asks to `straum-http`, which reads the store through the app.
 
 ## Use cases
-
-```text
-Run Straum ──includes──► Start ──includes──► Load a table
-           ──includes──► Follow ──includes──► Apply a commit
-           ──includes──► Start over
-           ──includes──► Stop
-Set up PostgreSQL          (before the first run)
-Answer an ask              (while Straum runs)
-```
 
 | Use case          | Actor       | Input                     | Output                 | Detail |
 | ----------------- | ----------- | ------------------------- | ---------------------- | ------ |
@@ -162,27 +128,11 @@ What the store holds, mutable, one per process, owned by **App**.
 Arrows denote dependency; a cardinality is how many of the pointed-at
 thing one of the pointing thing holds.
 
-```text
-┌───────┐ 1          ┌──────┐
-│ Store │───────────►│ Spec │
-│       │            └──────┘
-│       │ 1 per fact ┌────────┐ 1 per width ┌───────┐ 0..* ┌────────┐
-│       │───────────►│ Rollup │────────────►│ Level │─────►│ Bucket │
-│       │ 0..1 per   │ keyed  │             └───────┘      │ Hot |  │
-│       │ fact       │        │ 1 per key   ┌───────┐      │ Sealed │
-│       │───────────►│ Rollup │ column      │ Codes │      └───┬────┘
-│       │            │ bound  │────────────►│       │          │ 1 if hot
-│       │            └────────┘             └───────┘      ┌───▼────┐
-│       │ 1 per dim  ┌────────────┐ 1 per attribute ▲      │ Cells  │
-│       │───────────►│ Projection │─────────────────┘      └───┬────┘
-└───────┘            │ key -> rows│                            │ 1 per input
-                     └────────────┘                        ┌───▼────────┐
-                                                           │ State      │
-                                                           │ Sum |      │
-                                                           │ Extent |   │
-                                                           │ Distinct   │
-                                                           └────────────┘
-```
+![What the store holds, with cardinalities](diagrams/store.svg)
+
+*One keyed rollup per fact, a bound rollup for a fact whose joins all
+read fact columns, one projection per dim. A rollup is one level per
+width; a hot bucket is columnar cells with one state per input.*
 
 - A **Rollup** (`rollup.rs:23`) is every cell of one fact: one
   **Level** per width, the `date_bin` width first, and one **Codes**
@@ -252,20 +202,11 @@ the default.
 
 Following and answering go on at once:
 
-```text
-PostgreSQL      stream thread      Writer            App          Client
-  │ pgoutput       │                 │                │              │
-  │───────────────►│ decode until    │                │              │
-  │                │ Commit          │                │   POST /ask  │
-  │                │────Commit──────►│                │◄─────────────│
-  │◄──status r────│                 │ unseal touched │ read lock    │
-  │                │                 │ write lock     │ ask_with     │
-  │                │                 │ apply          │─────answer──►│
-  │                │                 │ unlock         │              │
-  │                │◄──applied LSN───│                │              │
-  │   every ~1 s   │                 │ wal() on the plain connection │
-  │◄───────────────────────────────── │ lag.read, seal pass          │
-```
+![Following and answering at once](diagrams/follow.svg)
+
+*The stream thread decodes ahead and answers keepalives. The writer
+unseals, applies under the write lock and reports the applied LSN.
+An ask reads under the read lock meanwhile.*
 
 The stream thread reads ahead of the writer, up to 64 commits, and
 answers keepalives while the writer is busy (`stream.rs:29`). One
@@ -338,38 +279,11 @@ Arrows denote dependency, not communication flow.
 Immutable once `Spec::new` has checked it. Every node is a value
 object compared by value.
 
-```text
-┌────────┐ 0..* ┌─────────┐ 1  ┌───────┐
-│  Spec  │─────►│   Dim   │───►│ Table │ schema, name
-│        │      │ key 1..*│    └───────┘
-│        │      │ attrs   │        ▲ 1
-│        │      │ 0..*    │        │
-│        │      └─────────┘        │
-│        │           ▲ 1 (by name) │
-│        │ 1..* ┌────┴────┐ 0..* ┌─┴───────┐ 1..* ┌─────┐
-│        │─────►│  Fact   │─────►│   Ref   │─────►│ Via │ Fact | Attribute
-└────────┘      │ (view)  │      │ kind:   │ 0..* ┌───────────┐
-                │         │      │ RefKind │─────►│ Attribute │ name, column
-                │         │      └─────────┘      └───────────┘
-                │         │ 1    ┌──────┐ 1   ┌───────┐
-                │         │─────►│ Time │────►│ Width │ seconds
-                │         │      │origin│ 0..*└───────┘ wider
-                │         │      └──────┘
-                │         │ 0..* ┌───────┐
-                │         │─────►│ ByKey │ Column | IsNull
-                │         │      └───────┘
-                │         │ 1..* ┌─────────┐ 1   ┌───────────┐
-                │         │─────►│ Measure │────►│ Aggregate │
-                │         │      │         │     └───────────┘
-                │         │      │         │ 0..* (FILTER)
-                │         │      └────┬────┘
-                │         │ 0..* (WHERE)│
-                │         │───────────┐│
-                └─────────┘           ▼▼
-                                 ┌───────────┐ 1..* ┌─────────┐
-                                 │ Condition │─────►│ Literal │
-                                 └───────────┘      └─────────┘
-```
+![What a spec declares, with cardinalities](diagrams/spec.svg)
+
+*A spec is dims and facts. A fact is one view: its table, one time,
+by keys, refs in join order, measures and the view's WHERE. A ref
+joins through one via per key column and reads attributes.*
 
 An **Aggregate** is count, sum, min, max, avg or count distinct; all
 but count name one input column (`aggregate.rs:11`).
@@ -402,18 +316,9 @@ Derived from a fact, not stored:
 
 ### The ask and the answer
 
-```text
-┌───────┐ 1 (by name) ┌──────┐          ┌────────┐ 1..* ┌──────────────┐
-│  Ask  │────────────►│ Fact │          │ Answer │─────►│ AnswerColumn │
-│       │ 1..*  ┌─────────┐  │          │        │ 0..* ┌───────────┐  │
-│       │──────►│ Measure │ (by name)   │        │─────►│ AnswerRow │  │
-│       │ 0..*  ┌────────┐               └────────┘      │ keys 0..*│  │
-│       │──────►│ AskKey │ Key(name) | Time(bucket)      │ values   │  │
-│       │ 0..*  ┌───────────┐                            │ 1..*     │  │
-│       │──────►│ Condition │                            └──────────┘  │
-│       │ from, to: bucket edges, from < to              Datum, Value  │
-└───────┘
-```
+An **Ask** names one fact and, by name, its measures, keys and
+conditions; its range is two bucket edges with `from < to`. An
+**Answer** is one column per key and measure and one row per group.
 
 - `Spec::check_ask` (`ask.rs:42`) resolves names, refuses two time
   keys, a name asked twice, an empty range and a bound off a bucket
@@ -424,25 +329,12 @@ Derived from a fact, not stored:
 
 ### The running system
 
-```text
-┌────────┐ 1   ┌─────┐ 1 (RwLock) ┌───────┐ 1    ┌───────┐
-│ Writer │────►│ App │───────────►│ State │─────►│ Store │
-│        │     └─────┘            │       │ 0..1 ┌───────────┐ 1   ┌─────┐
-│        │ 1     ▲ clones share   │       │─────►│ Following │────►│ Lag │
-│        │────► Source (port)     │       │      │ applied   │ 1   ┌─────┐
-│        │                        │       │      │ committed │────►│ Wal │
-└────────┘                        │       │ 0..1 ┌──────────┐      └─────┘
-                                  │       │─────►│ Spilling │──► Spill (port)
-                                  │       │ 1    ┌────────┐
-                                  │       │─────►│ Limits │
-                                  │       │ 0..1 ┌─────────┐
-                                  │       │─────►│ Failure │
-                                  └───────┘      └─────────┘
+![The running system, with cardinalities](diagrams/runtime.svg)
 
-Source ──► Commit 0..* ──► Change 1..* ──► Datum 0..*
-                                           Insert | Update | Delete |
-                                           Truncate | Unfit
-```
+*A writer owns the source port and an app. The app is a state behind
+a read-write lock: the store, a following while every table is
+loaded, the limits, the last failure, and a spilling with the spill
+port when one is configured.*
 
 - **App** is an `Arc<RwLock<State>>`; clones share it. Asks take the
   read lock, the writer the write lock only to apply a commit it has
@@ -516,42 +408,20 @@ is `None` while loading or waiting, `Failure` says which, and lag
 against `--max-lag` tells Ready from Lagging (`App::status`,
 `app.rs:191`; `why_not`, `status.rs:12`). Three smaller machines:
 
-The source. `Postgres` moves `Closed` to `Loading` on `open`, `Loading`
-to `Streaming` on the first `next_commit`, and back to `Closed` on the
-next `open` (`straum-pg/src/source.rs:41`). A `load` outside `Loading`
-and a `wal` while `Closed` are `Error::Stopped`.
+![Three small state machines](diagrams/machines.svg)
 
-```text
-  Closed ──open──► Loading ──next_commit──► Streaming
-    ▲                 │                         │
-    └───── open ──────┴──────── open ───────────┘
-```
+*The source connection, a `date_bin` bucket, and a fact's bound
+cells.*
 
-A bucket. Only `date_bin` buckets seal. A truncate drops every bucket
-of the fact, sealed ones from the spill too.
-
-```text
-  (new row)        seal pass, ended --seal-after ago
-     │                        │
-     ▼                        ▼
-   Hot ──────────────────────────────► Sealed
-    ▲                                    │
-    └──── a change touches it (unseal) ──┘
-    └──── last row removed ──► gone
-```
-
-The bound cells of a fact. A dim change while the fact holds no rows
-keeps them (`a_dim_change_under_no_rows_keeps_the_bound_cells`); a dim
-update that reads the same changes nothing (`store.rs:255`).
-
-```text
-  Store::new, fact with joins on fact columns only
-     │
-     ▼
-   Present ──── a dim it reads changes while the fact holds rows ───► Dropped
-     ▲                                                                   │
-     └──────────────────── next start (new Store) ───────────────────────┘
-```
+- The source: `Postgres` moves `Closed` to `Loading` on `open`,
+  `Loading` to `Streaming` on the first `next_commit`, and back to
+  `Closed` on the next `open` (`straum-pg/src/source.rs:41`). A `load`
+  outside `Loading` and a `wal` while `Closed` are `Error::Stopped`.
+- A bucket: only `date_bin` buckets seal. A truncate drops every
+  bucket of the fact, sealed ones from the spill too.
+- The bound cells of a fact: a dim change while the fact holds no rows
+  keeps them (`a_dim_change_under_no_rows_keeps_the_bound_cells`); a
+  dim update that reads the same changes nothing (`store.rs:255`).
 
 ## Which decision shaped what
 
