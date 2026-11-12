@@ -263,6 +263,8 @@ enum Purpose {
     Number,
     /// A value Straum groups, joins or counts distinct.
     Key,
+    /// A value Straum takes the bool_and or bool_or of.
+    Boolean,
     /// A column whose null-ness is a key or is counted: any type Straum
     /// reads.
     Nullness,
@@ -274,6 +276,7 @@ impl Purpose {
             Purpose::Time(origin) => column_type == origin.column_type(),
             Purpose::Number => matches!(column_type, ColumnType::Int | ColumnType::Numeric { .. }),
             Purpose::Key => !matches!(column_type, ColumnType::Time { .. }),
+            Purpose::Boolean => column_type == ColumnType::Bool,
             Purpose::Nullness => true,
         }
     }
@@ -298,6 +301,7 @@ impl Purpose {
             Purpose::Key => {
                 "Straum needs an integer type, numeric(p, s), boolean or text there".into()
             }
+            Purpose::Boolean => "Straum needs boolean there".into(),
             Purpose::Nullness => {
                 "straum needs a type it reads there: an integer type, numeric(p, s), \
                                boolean, text, timestamptz or timestamp"
@@ -375,6 +379,7 @@ fn fact_purposes(fact: &Fact) -> Vec<(&Identifier, Purpose)> {
             Reads::Numbers => Purpose::Number,
             Reads::Values => Purpose::Key,
             Reads::Nullness => Purpose::Nullness,
+            Reads::Booleans => Purpose::Boolean,
         };
         Some((m.aggregate.input()?, purpose))
     }));

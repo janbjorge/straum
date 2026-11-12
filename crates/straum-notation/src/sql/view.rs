@@ -1103,7 +1103,13 @@ impl Walker {
             (Some("min"), false) => Aggregate::Min,
             (Some("max"), false) => Aggregate::Max,
             (Some("avg"), false) => Aggregate::Avg,
-            (Some("sum" | "min" | "max" | "avg"), true) => {
+            (Some("bool_and"), false) => Aggregate::BoolAnd,
+            (Some("bool_or"), false) => Aggregate::BoolOr,
+            (Some("every"), _) => {
+                self.refuse(at, "every, write bool_and,", function);
+                return None;
+            }
+            (Some("sum" | "min" | "max" | "avg" | "bool_and" | "bool_or"), true) => {
                 self.refuse(at, "DISTINCT outside count", function);
                 return None;
             }

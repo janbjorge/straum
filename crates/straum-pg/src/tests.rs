@@ -442,6 +442,7 @@ fn text(value: &Value, scale: u32) -> Option<String> {
     match *value {
         Value::Null => None,
         Value::Int(n) => Some(decimal(n, scale)),
+        Value::Bool(b) => Some(if b { "t" } else { "f" }.to_owned()),
         // As `round(avg(c), 6)`: half away from zero.
         Value::Avg { sum, count } => {
             let numerator = sum * 10_i128.pow(6 - scale) * 2;
@@ -1164,7 +1165,8 @@ CREATE TABLE $S.orders (
     customer_id int,
     sku int,
     qty int,
-    status text
+    status text,
+    gift boolean
 );
 ALTER TABLE $S.customers REPLICA IDENTITY FULL;
 ALTER TABLE $S.tiers REPLICA IDENTITY FULL;
@@ -1185,7 +1187,9 @@ SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
        max(o.qty) AS qty_max,
        avg(o.qty) AS qty_avg,
        count(DISTINCT o.qty) AS sizes,
-       count(*) FILTER (WHERE c.country = 'NO') AS norwegian
+       count(*) FILTER (WHERE c.country = 'NO') AS norwegian,
+       bool_and(o.gift) AS all_gifts,
+       bool_or(o.gift) AS any_gift
 FROM $S.orders AS o
 INNER JOIN $S.customers AS c ON c.id = o.customer_id
 LEFT OUTER JOIN $S.tiers AS t ON t.id = c.tier_id
@@ -1203,7 +1207,8 @@ SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
        p.note AS note,
        count(*) AS orders,
        sum(o.qty) AS qty,
-       min(o.qty) AS qty_min
+       min(o.qty) AS qty_min,
+       bool_or(o.gift) FILTER (WHERE c.country = 'NO') AS norwegian_gift
 FROM $S.orders AS o
 LEFT OUTER JOIN $S.customers AS c ON c.id = o.customer_id
 LEFT OUTER JOIN $S.promos AS p ON p.sku = o.sku
@@ -1215,34 +1220,45 @@ GROUP BY 1, 2, 3;
 /// cuts the day bucket `START` begins, against the raw rows joined as the
 /// view says.
 fn shop_oracles() -> (Vec<Reference>, Vec<Reference>) {
-    const PAID: [&str; 6] = ["orders", "qty", "qty_max", "qty_avg", "sizes", "norwegian"];
+    const PAID: [&str; 8] = [
+        "orders",
+        "qty",
+        "qty_max",
+        "qty_avg",
+        "sizes",
+        "norwegian",
+        "all_gifts",
+        "any_gift",
+    ];
     let paid = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, status, country, label, orders, qty,
-                    qty_max, round(qty_avg, 6), sizes, norwegian
+                    qty_max, round(qty_avg, 6), sizes, norwegian, all_gifts, any_gift
                FROM ({}) v",
             body(PAID_SPEC, "paid")
         ),
         ask: ask("paid", &PAID, &["bucket", "status", "country", "label"]),
-        scales: vec![0; 10],
+        scales: vec![0; 12],
     };
     let offers = Reference {
         sql: format!(
-            "SELECT extract(epoch FROM bucket)::int8, country, note, orders, qty, qty_min
+            "SELECT extract(epoch FROM bucket)::int8, country, note, orders, qty, qty_min,
+                    norwegian_gift
                FROM ({}) v",
             body(OFFERS_SPEC, "offers")
         ),
         ask: ask(
             "offers",
-            &["orders", "qty", "qty_min"],
+            &["orders", "qty", "qty_min", "norwegian_gift"],
             &["bucket", "country", "note"],
         ),
-        scales: vec![0; 6],
+        scales: vec![0; 7],
     };
     let window = Reference {
         sql: format!(
             "SELECT c.country, t.label, count(*), sum(o.qty), max(o.qty), round(avg(o.qty), 6),
-                    count(DISTINCT o.qty), count(*) FILTER (WHERE c.country = 'NO')
+                    count(DISTINCT o.qty), count(*) FILTER (WHERE c.country = 'NO'),
+                    bool_and(o.gift), bool_or(o.gift)
                FROM $S.orders o
                JOIN $S.customers c ON c.id = o.customer_id
                LEFT JOIN $S.tiers t ON t.id = c.tier_id
@@ -1258,7 +1274,7 @@ fn shop_oracles() -> (Vec<Reference>, Vec<Reference>) {
             to: WINDOW_TO,
             ..ask("paid", &PAID, &["country", "label"])
         },
-        scales: vec![0; 8],
+        scales: vec![0; 10],
     };
     (vec![paid, window], vec![offers])
 }
@@ -1287,12 +1303,14 @@ fn every_join_kind_matches_postgresql() {
         let sku = (1 + rng.below(5)).to_string();
         let qty = rng.below(10).to_string();
         let status = format!("'{}'", rng.pick(&["paid", "shipped", "new", "cancelled"]));
+        let gift = rng.pick(&["true", "false"]).to_owned();
         format!(
-            "INSERT INTO $S.orders VALUES ({id}, to_timestamp({at}), {}, {}, {}, {})",
+            "INSERT INTO $S.orders VALUES ({id}, to_timestamp({at}), {}, {}, {}, {}, {})",
             rng.or_null(customer),
             rng.or_null(sku),
             rng.or_null(qty),
-            rng.or_null(status)
+            rng.or_null(status),
+            rng.or_null(gift)
         )
     };
     for id in 0..300 {
@@ -1327,6 +1345,9 @@ fn every_join_kind_matches_postgresql() {
             "DELETE FROM $S.blocked WHERE id = 3",
             // Fact rows move across the WHERE, the joins and out.
             "UPDATE $S.orders SET status = 'paid' WHERE id % 3 = 0",
+            // The last false of a cell goes, and a true comes to be null.
+            "UPDATE $S.orders SET gift = true WHERE id % 2 = 0 AND NOT gift",
+            "UPDATE $S.orders SET gift = NULL WHERE id % 5 = 0 AND gift",
             "UPDATE $S.orders SET customer_id = 8 WHERE id % 7 = 0",
             "UPDATE $S.orders SET sku = 1 WHERE id % 5 = 0",
             "DELETE FROM $S.orders WHERE id % 11 = 0",
@@ -2042,6 +2063,18 @@ fn setup_problems_say_what_to_fix() {
                 "f: column k of uncounted.f is double precision; straum needs a type it reads \
              there: an integer type, numeric(p, s), boolean, text, timestamptz or timestamp",
             ),
+        ),
+        (
+            "boolean",
+            format!("{} {publish}", fact("x int, k boolean", "").0),
+            fact("", "bool_and(t.k) AS every, bool_or(t.k) AS some").1,
+            None,
+        ),
+        (
+            "notboolean",
+            format!("{} {publish}", fact("x int, k int", "").0),
+            fact("", "bool_or(t.k) AS some").1,
+            Some("f: column k of notboolean.f is integer; Straum needs boolean there"),
         ),
         (
             "identity",

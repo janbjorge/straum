@@ -83,6 +83,7 @@ pub enum Value {
     Null,
     /// Sums keep the column's scale.
     Int(i128),
+    Bool(bool),
     /// avg, left as sum and count so the caller picks the rounding.
     Avg {
         sum: i128,

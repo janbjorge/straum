@@ -120,8 +120,9 @@ notes under `research/`. The clashes at the end are open.
 - **Measure** (`Measure`): a named aggregate in the view, with an
   optional `FILTER`. Asks name measures after the keys.
 - **Aggregate** (`Aggregate`): count, count of a column, sum, min,
-  max, avg, count distinct. The walker says "aggregate" for the
-  function and "an aggregated column" for its argument.
+  max, avg, count distinct, bool_and, bool_or. The walker says
+  "aggregate" for the function and "an aggregated column" for its
+  argument.
 - **Input column** (`Aggregate::input`, `Input`): the column an
   aggregate reads. Measures over one column share its state
   (ADR-0016). What the aggregate reads of it (`Reads`) decides the
@@ -132,8 +133,8 @@ notes under `research/`. The clashes at the end are open.
   every cell of one bucket, side by side.
 - **Cell state** (`State`, `StateKind`): a count of non-null values,
   a sum and a count, a count per value for min and max (the code's
-  "extent"), or a count per distinct value. Filtered measures keep no
-  state (ADR-0016).
+  "extent"), a count per distinct value, or the counts of true and
+  false (ADR-0041). Filtered measures keep no state (ADR-0016).
 - **Rollup** (`Rollup`): every cell of one fact, per width, with the
   codes of its key columns.
 - **Rollup key** (`Fact::rollup_key`): the by keys, then each join

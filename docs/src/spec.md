@@ -164,8 +164,9 @@ rows are now. Beside those cells it keeps bound cells keyed by
   refused: those keep no row to read through.
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
-  `count(c)` and `sum` double, `min`, `max` and `count(DISTINCT ...)`
-  don't, `avg` stays. A dim needs no index on its key.
+  `count(c)` and `sum` double, `min`, `max`, `count(DISTINCT ...)`,
+  `bool_and` and `bool_or` don't, `avg` stays. A dim needs no index on
+  its key.
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
@@ -251,12 +252,16 @@ Which types take the cast is listed here; today it is enums alone.
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean` or `text` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
 | `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
+| `bool_and(c)`, `bool_or(c)` | `boolean` | `true` or `false` |
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
 numeric values scaled by their column's scale. `count(*)` counts rows
 and `count(c)` the rows where `c` is not null. `count(*)` is the one
 spelling of a count of rows; a count of a constant, such as `count(1)`,
-is refused.
+is refused. `bool_and(c)` is true when every `c` that is not null is
+true, and `bool_or(c)` when any is; both are null when no `c` is.
+`every` is refused: write `bool_and`
+([ADR-0041](https://github.com/janbjorge/straum/blob/main/docs/adr/0041-bool-and-and-bool-or-keep-counts-of-true-and-false.md)).
 
 `FILTER` makes a measure count only some rows:
 

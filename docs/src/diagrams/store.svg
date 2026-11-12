@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="520" viewBox="0 0 880 520" role="img" aria-labelledby="t d">
   <title id="t">What the store holds</title>
-  <desc id="d">A Store holds the Spec, one keyed Rollup per fact, a bound Rollup for a fact whose joins all read fact columns, and one Projection per dim. A Rollup holds one Level per width and one Codes per key column; a Level holds buckets, hot or sealed; a hot Bucket holds Cells, columnar, with one State per input column: Count, Sum, Extent or Distinct. A Projection maps dim keys to attribute codes.</desc>
+  <desc id="d">A Store holds the Spec, one keyed Rollup per fact, a bound Rollup for a fact whose joins all read fact columns, and one Projection per dim. A Rollup holds one Level per width and one Codes per key column; a Level holds buckets, hot or sealed; a hot Bucket holds Cells, columnar, with one State per input column: Count, Sum, Extent, Distinct or Bools. A Projection maps dim keys to attribute codes.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -121,7 +121,7 @@
   <rect class="box" x="700" y="400" width="150" height="76" rx="8"/>
   <text x="712" y="422" class="h">State</text>
   <text x="712" y="440" class="s ink2">Count, Sum, Extent</text>
-  <text x="712" y="456" class="s ink2">or Distinct</text>
+  <text x="712" y="456" class="s ink2">Distinct or Bools</text>
   <path class="a" d="M170 123 L266 123" marker-end="url(#m)"/>
   <text x="218" y="117" class="s ink2 halo" text-anchor="middle">1</text>
   <path class="a" d="M170 218 L266 218" marker-end="url(#m)"/>

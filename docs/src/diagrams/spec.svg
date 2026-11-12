@@ -127,11 +127,12 @@
   <rect class="box" x="500" y="510" width="170" height="60" rx="8"/>
   <text x="512" y="532" class="h">Measure</text>
   <text x="512" y="550" class="s ink2">name, aggregate, FILTER</text>
-  <rect class="box" x="720" y="490" width="130" height="88" rx="8"/>
-  <text x="732" y="512" class="h">Aggregate</text>
-  <text x="732" y="530" class="s ink2">count, count of a</text>
-  <text x="732" y="546" class="s ink2">column, sum, min, max,</text>
-  <text x="732" y="562" class="s ink2">avg, count distinct</text>
+  <rect class="box" x="720" y="474" width="130" height="108" rx="8"/>
+  <text x="732" y="496" class="h">Aggregate</text>
+  <text x="732" y="514" class="s ink2">count, count of a</text>
+  <text x="732" y="530" class="s ink2">column, sum, min, max,</text>
+  <text x="732" y="546" class="s ink2">avg, count distinct,</text>
+  <text x="732" y="562" class="s ink2">bool_and, bool_or</text>
   <rect class="box" x="500" y="600" width="170" height="60" rx="8"/>
   <text x="512" y="622" class="h">Condition</text>
   <text x="512" y="640" class="s ink2">key = $, key IN (...)</text>

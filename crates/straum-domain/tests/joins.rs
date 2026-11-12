@@ -24,6 +24,7 @@ const AT: usize = 0;
 const CUSTOMER: usize = 1;
 const PRODUCT: usize = 2;
 const QTY: usize = 3;
+const EVEN: usize = 4;
 
 /// The refs, in join order, and what each is for.
 const CUSTOMERS: usize = 0;
@@ -33,7 +34,9 @@ const PROMOS: usize = 3;
 const BLOCKED: usize = 4;
 
 const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "bucket"];
-const MEASURES: [&str; 6] = ["n", "q", "q_max", "q_min", "products", "q_n"];
+const MEASURES: [&str; 8] = [
+    "n", "q", "q_max", "q_min", "products", "q_n", "all_even", "any_even",
+];
 
 fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
     Dim {
@@ -146,6 +149,8 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec
             m("q_min", Aggregate::Min(id("qty"))),
             m("products", Aggregate::CountDistinct(id("product"))),
             m("q_n", Aggregate::CountNotNull(id("qty"))),
+            m("all_even", Aggregate::BoolAnd(id("even"))),
+            m("any_even", Aggregate::BoolOr(id("even"))),
         ],
         filter,
     };
@@ -182,6 +187,7 @@ fn typed(spec: &Spec) -> Store {
                 ColumnType::Int,
                 ColumnType::Int,
                 ColumnType::Int,
+                ColumnType::Bool,
             ],
         )
         .unwrap();
@@ -240,8 +246,13 @@ fn remove_dim(
     }
 }
 
+/// `even` is whether `qty` is, a boolean for the bool_and and bool_or.
 fn order(at: i64, customer: Datum, product: Datum, qty: Datum) -> Vec<Datum> {
-    vec![Datum::Int(at), customer, product, qty]
+    let even = match qty {
+        Datum::Int(qty) => Datum::Bool(qty % 2 == 0),
+        _ => Datum::Null,
+    };
+    vec![Datum::Int(at), customer, product, qty, even]
 }
 
 /// One way an order's joins resolve: per ref, the dim row matched.
@@ -399,6 +410,15 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
             .collect()
     };
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
+    let bools = || -> Vec<bool> {
+        rows.iter()
+            .filter_map(|(r, _)| match r[EVEN] {
+                Datum::Bool(v) => Some(v),
+                _ => None,
+            })
+            .collect()
+    };
+    let or_null_bool = |v: Option<bool>| v.map_or(Value::Null, Value::Bool);
     match &m.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
         Aggregate::CountNotNull(_) => Value::Int(ints(QTY).len() as i128),
@@ -416,6 +436,8 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
                 .collect();
             Value::Int(seen.len() as i128)
         }
+        Aggregate::BoolAnd(_) => or_null_bool(bools().into_iter().min()),
+        Aggregate::BoolOr(_) => or_null_bool(bools().into_iter().max()),
         Aggregate::Avg(_) => unreachable!("no average here"),
     }
 }
@@ -579,6 +601,8 @@ fn many_matches_multiply_counts_and_sums_only() {
         Value::Int(5),
         Value::Int(1),
         Value::Int(2),
+        Value::Bool(false),
+        Value::Bool(false),
     ];
     assert_eq!(values(&store, &all), two);
     check(&store, &spec, &dims, &kinds, &orders, &all);
@@ -614,6 +638,8 @@ fn many_matches_multiply_counts_and_sums_only() {
             Value::Int(5),
             Value::Int(1),
             Value::Int(1),
+            Value::Bool(false),
+            Value::Bool(false),
         ]
     );
     check(&store, &spec, &dims, &kinds, &orders, &all);

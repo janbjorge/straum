@@ -80,6 +80,8 @@ fn what_each_measure_reads() {
         (Aggregate::Avg(x()), Some(Reads::Numbers)),
         (Aggregate::CountDistinct(x()), Some(Reads::Values)),
         (Aggregate::CountNotNull(x()), Some(Reads::Nullness)),
+        (Aggregate::BoolAnd(x()), Some(Reads::Booleans)),
+        (Aggregate::BoolOr(x()), Some(Reads::Booleans)),
         (Aggregate::Count, None),
     ];
     for (aggregate, reads) in cases {

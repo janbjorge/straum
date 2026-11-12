@@ -32,7 +32,8 @@ const FARE: usize = 7;
 const TIP: usize = 8;
 const DIST: usize = 9;
 const RIDER: usize = 10;
-const ROW_LEN: usize = 11;
+const TOLLED: usize = 11;
+const ROW_LEN: usize = 12;
 
 /// The dims as the projections key them: zones by `id`, combos by
 /// `(pu_id, vendor_id)`, vendors by `id`; each key to its attributes.
@@ -252,6 +253,13 @@ fn spec_joining(vend: RefKind) -> Spec {
                 Aggregate::CountNotNull(id("rider")),
                 vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
             ),
+            m("all_tolled", Aggregate::BoolAnd(id("tolled")), vec![]),
+            m("any_tolled", Aggregate::BoolOr(id("tolled")), vec![]),
+            m(
+                "card_tolled",
+                Aggregate::BoolOr(id("tolled")),
+                vec![cond("pay", vec![Literal::Int(1)])],
+            ),
         ],
     };
     Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
@@ -281,6 +289,11 @@ fn trip(rng: &mut Rng) -> Vec<Datum> {
     } else {
         text(rng.pick(&["ann", "bo", "cy", "di", "ed"]))
     };
+    let tolled = if rng.chance(20) {
+        Datum::Null
+    } else {
+        Datum::Bool(rng.chance(40))
+    };
     vec![
         rng.maybe(START, END, 2),
         rng.maybe(0, 4, 10),
@@ -293,6 +306,7 @@ fn trip(rng: &mut Rng) -> Vec<Datum> {
         rng.maybe(0, 300, 20),
         rng.maybe(0, 5_000, 5),
         rider,
+        tolled,
     ]
 }
 
@@ -493,6 +507,7 @@ fn trip_types() -> Vec<ColumnType> {
         numeric(TIP),
         numeric(DIST),
         ColumnType::Text,
+        ColumnType::Bool,
     ];
     assert_eq!(types.len(), ROW_LEN);
     types
@@ -529,6 +544,7 @@ fn column(name: &str) -> usize {
         "tip" => TIP,
         "dist" => DIST,
         "rider" => RIDER,
+        "tolled" => TOLLED,
         other => panic!("no column {other}"),
     }
 }
@@ -595,7 +611,11 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
     .chain(ask.measures.iter().map(|name| AnswerColumn {
         name: name.to_string(),
         scale: match &fact.measure(name.as_str()).unwrap().aggregate {
-            Aggregate::Count | Aggregate::CountNotNull(_) | Aggregate::CountDistinct(_) => 0,
+            Aggregate::Count
+            | Aggregate::CountNotNull(_)
+            | Aggregate::CountDistinct(_)
+            | Aggregate::BoolAnd(_)
+            | Aggregate::BoolOr(_) => 0,
             Aggregate::Sum(c) | Aggregate::Min(c) | Aggregate::Max(c) | Aggregate::Avg(c) => {
                 trip_types()[column(c.as_str())].scale()
             }
@@ -617,6 +637,15 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
             .collect()
     };
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
+    let bools = |c: &Identifier| -> Vec<bool> {
+        rows.iter()
+            .filter_map(|r| match r[column(c.as_str())] {
+                Datum::Bool(v) => Some(v),
+                _ => None,
+            })
+            .collect()
+    };
+    let or_null_bool = |v: Option<bool>| v.map_or(Value::Null, Value::Bool);
     match &m.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
         Aggregate::CountNotNull(c) => {
@@ -648,6 +677,8 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
                 .collect();
             Value::Int(seen.len() as i128)
         }
+        Aggregate::BoolAnd(c) => or_null_bool(bools(c).into_iter().min()),
+        Aggregate::BoolOr(c) => or_null_bool(bools(c).into_iter().max()),
     }
 }
 
@@ -1710,6 +1741,7 @@ fn columns_put_measure_inputs_after_the_key() {
         (TIP, "tip"),
         (DIST, "dist"),
         (RIDER, "rider"),
+        (TOLLED, "tolled"),
     ];
     assert_eq!(columns, expected.map(|(_, c)| c.to_owned()));
     for (pos, name) in expected {
@@ -1984,9 +2016,12 @@ fn ask_without_by_answers_one_row() {
                 null.clone(),
                 zero.clone(),
                 null.clone(),
-                null,
+                null.clone(),
                 zero.clone(),
                 zero,
+                null.clone(),
+                null.clone(),
+                null,
             ]
         }]
     );
@@ -2036,6 +2071,12 @@ fn row_errors() {
         store.remove_row("trips", &with(TIP, Datum::Bool(true))),
         Err(RowError::NotInt { column: id("tip") })
     );
+    assert_eq!(
+        store.add_row("trips", &with(TOLLED, Datum::Int(1))),
+        Err(RowError::NotBool {
+            column: id("tolled")
+        })
+    );
     // Count distinct takes any value.
     store
         .add_row("trips", &with(RIDER, Datum::Bool(true)))
@@ -2044,10 +2085,12 @@ fn row_errors() {
 
     // Each kind of state notices a value it never saw.
     let seen = with(FARE, Datum::Null);
+    let untolled = Datum::Bool(seen[TOLLED] != Datum::Bool(true));
     for (pos, v) in [
         (FARE, Datum::Int(1)),
         (TIP, Datum::Int(301)),
         (RIDER, text("zed")),
+        (TOLLED, untolled),
     ] {
         let mut store = fresh();
         store.add_row("trips", &seen).unwrap();
@@ -2083,6 +2126,12 @@ fn row_error_display() {
         (
             RowError::NotInt { column: id("tip") },
             "column tip is not an integer",
+        ),
+        (
+            RowError::NotBool {
+                column: id("tolled"),
+            },
+            "column tolled is not a boolean",
         ),
         (RowError::Missing, "removed row was never added"),
         (RowError::Sealed, "row falls in a sealed bucket"),
@@ -2240,7 +2289,12 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         .iter()
         .position(|c| matches!(c, SealedColumn::Count { .. }))
         .unwrap();
-    let cases: [(&str, &Change<'_>); 14] = [
+    let bools = good
+        .columns
+        .iter()
+        .position(|c| matches!(c, SealedColumn::Bools { .. }))
+        .unwrap();
+    let cases: [(&str, &Change<'_>); 15] = [
         ("unknown fact", &|s| s.id.fact = id("nope")),
         ("no such width", &|s| s.id.width = 7),
         ("no cells", &|s| s.counts.clear()),
@@ -2263,6 +2317,12 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[count] = SealedColumn::Count { counts: vec![] };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[bools] = SealedColumn::Bools {
+                trues: vec![0],
+                falses: vec![],
+            };
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[extent] = SealedColumn::Extent {
@@ -2309,6 +2369,10 @@ fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
             }
             SealedColumn::Extent { values } => values.extend_from_slice(&values.clone()),
             SealedColumn::Distinct { values } => values.extend_from_slice(&values.clone()),
+            SealedColumn::Bools { trues, falses } => {
+                trues.extend_from_slice(&trues.clone());
+                falses.extend_from_slice(&falses.clone());
+            }
         }
     }
     let err = store.unseal(store.thaw(sealed).unwrap()).unwrap_err();

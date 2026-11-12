@@ -213,9 +213,9 @@ object compared by value.
 by keys, refs in join order, measures and the view's WHERE. A ref
 joins through one via per key column and reads attributes.*
 
-An **Aggregate** is count, count of a column, sum, min, max, avg or
-count distinct; all but count name one input column
-(`Aggregate::input`).
+An **Aggregate** is count, count of a column, sum, min, max, avg,
+count distinct, bool_and or bool_or; all but count name one input
+column (`Aggregate::input`).
 
 - A **Spec** holds dims and facts in one namespace (`Spec::new`).
   `Spec::tables` lists each table once, dims first.
@@ -375,7 +375,7 @@ maps each part of the model to the records that settled it.
 | Own replication client, temporary slot, one port for load and stream | 0010, 0012, 0022 |
 | Old row on every update and delete, dims too   | 0014, 0031             |
 | `Failure` and the start-over loop              | 0015                   |
-| Rollup key, levels per width, `None` bucket    | 0016, 0017, 0019, 0028 |
+| Rollup key, cell states, levels per width, `None` bucket | 0016, 0017, 0019, 0028, 0041 |
 | Refs bound at ask time, bound cells beside     | 0030, 0038             |
 | Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
 | `timestamp` as wall clock, enums as labels     | 0018, 0037             |

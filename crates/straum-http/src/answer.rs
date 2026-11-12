@@ -137,7 +137,7 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
                 .zip(values)
                 .map(|(column, value)| Cell {
                     text: written(|out| write_value(out, value, column.scale)),
-                    number: *value != Value::Null,
+                    number: matches!(value, Value::Int(_) | Value::Avg { .. }),
                 });
             keys.chain(values).collect()
         });
@@ -203,6 +203,8 @@ fn write_value(out: &mut Vec<u8>, value: &Value, scale: u32) {
     match value {
         Value::Null => out.extend_from_slice(b"null"),
         Value::Int(n) => decimal(out, *n, scale),
+        Value::Bool(true) => out.extend_from_slice(b"true"),
+        Value::Bool(false) => out.extend_from_slice(b"false"),
         Value::Avg { sum, count } => {
             decimal(out, avg(*sum, *count), scale + AVG_PLACES);
             // The places past the column's scale are only as long as they
@@ -260,13 +262,15 @@ mod tests {
             (Value::Null, 2),
             (Value::Int(7), 2),
             (Value::Avg { sum: 15, count: 4 }, 1),
+            (Value::Bool(true), 0),
+            (Value::Bool(false), 0),
         ] {
             write_value(&mut out, &value, scale);
             out.push(b' ');
         }
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            r#"null true false -1.5 "a\"b" null 0.07 0.375 "#
+            r#"null true false -1.5 "a\"b" null 0.07 0.375 true false "#
         );
     }
 
@@ -320,6 +324,25 @@ bucket               | shared | fare
 ---------------------+--------+--------
 1970-01-02T00:00:00Z | true   | 1234.56
 1 of 2 rows, as of 1970-01-01T00:00:00Z
+"
+        );
+    }
+
+    #[test]
+    fn a_table_lines_a_boolean_measure_up_on_the_left() {
+        let row = |fare| AnswerRow {
+            keys: vec![Datum::Int(86_400), Datum::Null],
+            values: vec![fare],
+        };
+        let rows = vec![row(Value::Bool(true)), row(Value::Int(123_456))];
+        assert_eq!(
+            table(&answered(rows), None),
+            "\
+bucket               | shared | fare
+---------------------+--------+--------
+1970-01-02T00:00:00Z | null   | true
+1970-01-02T00:00:00Z | null   | 1234.56
+2 rows, as of 1970-01-01T00:00:00Z
 "
         );
     }

@@ -347,6 +347,16 @@ fn one_measure_and_condition_spelling() {
         ),
         (
             "count(*) AS orders",
+            "every(orders.id) AS orders",
+            "every, write bool_and, `every(orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
+            "bool_or(DISTINCT orders.id) AS orders",
+            "DISTINCT outside count `bool_or(DISTINCT orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
             "count(orders.id + 1) AS orders",
             "column, write alias.column, `orders.id + 1`",
         ),

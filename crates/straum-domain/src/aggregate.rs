@@ -17,6 +17,8 @@ pub enum Reads {
     Values,
     /// Whether there is a value, of any type.
     Nullness,
+    /// True or false.
+    Booleans,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,8 @@ pub enum Aggregate {
     Max(Identifier),
     Avg(Identifier),
     CountDistinct(Identifier),
+    BoolAnd(Identifier),
+    BoolOr(Identifier),
 }
 
 impl Aggregate {
@@ -46,6 +50,7 @@ impl Aggregate {
             Aggregate::Sum(c) | Aggregate::Avg(c) => Some((StateKind::Sum, c)),
             Aggregate::Min(c) | Aggregate::Max(c) => Some((StateKind::Extent, c)),
             Aggregate::CountDistinct(c) => Some((StateKind::Distinct, c)),
+            Aggregate::BoolAnd(c) | Aggregate::BoolOr(c) => Some((StateKind::Bools, c)),
         }
     }
 }
@@ -81,6 +86,12 @@ pub(crate) enum Partials {
         seen: Vec<bool>,
     },
     Distinct(Vec<HashSet<Datum>>),
+    /// A bool_and and a bool_or merge alike and part only when finished.
+    Bools {
+        trues: Vec<u64>,
+        falses: Vec<u64>,
+        all: bool,
+    },
 }
 
 impl Partials {
@@ -101,6 +112,11 @@ impl Partials {
                 seen: Vec::new(),
             },
             Aggregate::CountDistinct(_) => Partials::Distinct(Vec::new()),
+            Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Partials::Bools {
+                trues: Vec::new(),
+                falses: Vec::new(),
+                all: matches!(aggregate, Aggregate::BoolAnd(_)),
+            },
         }
     }
 
@@ -122,6 +138,10 @@ impl Partials {
             }
             // A set per lane would cost a merge of sets; one per group.
             Partials::Distinct(seen) => seen.resize_with(groups, HashSet::new),
+            Partials::Bools { trues, falses, .. } => {
+                trues.resize(lanes, 0);
+                falses.resize(lanes, 0);
+            }
         }
     }
 
@@ -173,6 +193,18 @@ impl Partials {
                     seen[g as usize].extend(counts.keys().cloned());
                 }
             }
+            (
+                Partials::Bools { trues, falses, .. },
+                Some(State::Bools {
+                    trues: cell_trues,
+                    falses: cell_falses,
+                }),
+            ) => {
+                for (g, (&t, &f)) in cells.zip(cell_trues.iter().zip(cell_falses)) {
+                    trues[g] += t;
+                    falses[g] += f;
+                }
+            }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
@@ -214,6 +246,16 @@ impl Partials {
                 seen[g as usize].extend(counts[i].keys().cloned());
             }
             (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            (
+                Partials::Bools { trues, falses, .. },
+                Some(State::Bools {
+                    trues: cell_trues,
+                    falses: cell_falses,
+                }),
+            ) => {
+                trues[at] += cell_trues[i];
+                falses[at] += cell_falses[i];
+            }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
@@ -249,6 +291,16 @@ impl Partials {
                 seen[g].extend(counts.iter().flat_map(|c| c.keys().cloned()));
             }
             (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            (
+                Partials::Bools { trues, falses, .. },
+                Some(State::Bools {
+                    trues: cell_trues,
+                    falses: cell_falses,
+                }),
+            ) => {
+                trues[at] += cell_trues.iter().sum::<u64>();
+                falses[at] += cell_falses.iter().sum::<u64>();
+            }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
     }
@@ -284,6 +336,15 @@ impl Partials {
                 Value::Int(values[lanes].iter().fold(i64::MIN, |a, &b| a.max(b)).into())
             }
             Partials::Distinct(seen) => Value::Int(seen[g].len() as i128),
+            Partials::Bools { trues, falses, all } => {
+                let any_true = trues[lanes.clone()].iter().any(|&n| n > 0);
+                let any_false = falses[lanes].iter().any(|&n| n > 0);
+                match (any_true, any_false) {
+                    (false, false) => Value::Null,
+                    _ if *all => Value::Bool(!any_false),
+                    _ => Value::Bool(any_true),
+                }
+            }
         }
     }
 }

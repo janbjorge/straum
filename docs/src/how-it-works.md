@@ -40,6 +40,8 @@ needs:
 - `min` and `max` keep a count per value, so deleting the smallest
   value reveals the next one.
 - `count(DISTINCT c)` keeps a count per value.
+- `bool_and` and `bool_or` share the column's counts of true and of
+  false, so deleting the last false turns a `bool_and` true.
 
 A `FILTER` keeps nothing of its own: it names parts of the cell key,
 so a cell counts whole or not at all. A cell goes with its last row.

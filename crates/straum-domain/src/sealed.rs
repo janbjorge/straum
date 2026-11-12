@@ -40,6 +40,8 @@ pub enum SealedColumn {
     Extent { values: Vec<Vec<(i64, u64)>> },
     /// Count per value, ascending by value.
     Distinct { values: Vec<Vec<(Datum, u64)>> },
+    /// Counts of true and of false.
+    Bools { trues: Vec<u64>, falses: Vec<u64> },
 }
 
 /// A sealed bucket checked against the store, ready for an ask to read.

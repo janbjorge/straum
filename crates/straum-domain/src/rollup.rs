@@ -295,6 +295,7 @@ pub(crate) enum StateKind {
     Sum,
     Extent,
     Distinct,
+    Bools,
 }
 
 impl StateKind {
@@ -303,6 +304,7 @@ impl StateKind {
             StateKind::Count => Reads::Nullness,
             StateKind::Sum | StateKind::Extent => Reads::Numbers,
             StateKind::Distinct => Reads::Values,
+            StateKind::Bools => Reads::Booleans,
         }
     }
 }
@@ -325,6 +327,9 @@ pub(crate) enum State {
     },
     /// Count per value.
     Distinct(Vec<FastMap<Datum, u64>>),
+    /// Counts of true and of false, so removing the last false turns a
+    /// bool_and true.
+    Bools { trues: Vec<u64>, falses: Vec<u64> },
 }
 
 impl Rollup {
@@ -857,14 +862,21 @@ impl Rollup {
                 found: row.len(),
             });
         }
-        let ints = self
-            .inputs
-            .iter()
-            .filter(|i| i.kind.reads() == Reads::Numbers)
-            .map(|i| i.column);
-        for column in iter::once(TIME).chain(ints) {
+        let reading = |reads: Reads| {
+            (self.inputs.iter())
+                .filter(move |i| i.kind.reads() == reads)
+                .map(|i| i.column)
+        };
+        for column in iter::once(TIME).chain(reading(Reads::Numbers)) {
             if !matches!(row[column], Datum::Null | Datum::Int(_)) {
                 return Err(RowError::NotInt {
+                    column: self.columns[column].clone(),
+                });
+            }
+        }
+        for column in reading(Reads::Booleans) {
+            if !matches!(row[column], Datum::Null | Datum::Bool(_)) {
+                return Err(RowError::NotBool {
                     column: self.columns[column].clone(),
                 });
             }
@@ -961,6 +973,10 @@ impl State {
                 counts: Vec::new(),
             },
             StateKind::Distinct => State::Distinct(Vec::new()),
+            StateKind::Bools => State::Bools {
+                trues: Vec::new(),
+                falses: Vec::new(),
+            },
         }
     }
 
@@ -977,6 +993,10 @@ impl State {
                 counts.push(ValueCounts::EMPTY);
             }
             State::Distinct(counts) => counts.push(FastMap::default()),
+            State::Bools { trues, falses } => {
+                trues.push(0);
+                falses.push(0);
+            }
         }
     }
 
@@ -993,6 +1013,10 @@ impl State {
                 counts.swap_remove(i);
             }
             State::Distinct(counts) => drop(counts.swap_remove(i)),
+            State::Bools { trues, falses } => {
+                trues.swap_remove(i);
+                falses.swap_remove(i);
+            }
         }
     }
 
@@ -1017,6 +1041,10 @@ impl State {
                         pairs
                     })
                     .collect(),
+            },
+            State::Bools { trues, falses } => SealedColumn::Bools {
+                trues: trues.clone(),
+                falses: falses.clone(),
             },
         }
     }
@@ -1052,6 +1080,11 @@ impl State {
                         .collect(),
                 ))
             }
+            (SealedColumn::Bools { trues, falses }, StateKind::Bools)
+                if trues.len() == len && falses.len() == len =>
+            {
+                Some(State::Bools { trues, falses })
+            }
             _ => None,
         }
     }
@@ -1071,7 +1104,9 @@ impl State {
                 counts[i].add(v);
             }
             (State::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += 1,
-            _ => unreachable!("Rollup::check lets only integers through"),
+            (State::Bools { trues, .. }, Datum::Bool(true)) => trues[i] += 1,
+            (State::Bools { falses, .. }, Datum::Bool(false)) => falses[i] += 1,
+            _ => unreachable!("Rollup::check lets through only what a state reads"),
         }
     }
 
@@ -1097,7 +1132,11 @@ impl State {
                     tree.remove(v);
                 }
             }
-            _ => unreachable!("Rollup::check lets only integers through"),
+            (State::Bools { trues: counts, .. }, Datum::Bool(true))
+            | (State::Bools { falses: counts, .. }, Datum::Bool(false)) => {
+                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
+            }
+            _ => unreachable!("Rollup::check lets through only what a state reads"),
         }
         Ok(())
     }
@@ -1109,6 +1148,7 @@ impl State {
                 | (State::Sum { .. }, State::Sum { .. })
                 | (State::Extent { .. }, State::Extent { .. })
                 | (State::Distinct(_), State::Distinct(_))
+                | (State::Bools { .. }, State::Bools { .. })
         )
     }
 
@@ -1131,6 +1171,13 @@ impl State {
             ) => counts[i].covers(&src_counts[src_i]),
             (State::Distinct(counts), State::Distinct(src_counts)) => (src_counts[src_i].iter())
                 .all(|(value, n)| counts[i].get(value).is_some_and(|have| have >= n)),
+            (
+                State::Bools { trues, falses },
+                State::Bools {
+                    trues: src_trues,
+                    falses: src_falses,
+                },
+            ) => trues[i] >= src_trues[src_i] && falses[i] >= src_falses[src_i],
             _ => false,
         }
     }
@@ -1161,6 +1208,16 @@ impl State {
                 for (value, n) in &src_counts[src_i] {
                     *counts[i].entry(value.clone()).or_default() += *n;
                 }
+            }
+            (
+                State::Bools { trues, falses },
+                State::Bools {
+                    trues: src_trues,
+                    falses: src_falses,
+                },
+            ) => {
+                trues[i] += src_trues[src_i];
+                falses[i] += src_falses[src_i];
             }
             _ => unreachable!("Cells::absorb checks the column kinds"),
         }
@@ -1196,6 +1253,16 @@ impl State {
                         counts[i].remove(value);
                     }
                 }
+            }
+            (
+                State::Bools { trues, falses },
+                State::Bools {
+                    trues: src_trues,
+                    falses: src_falses,
+                },
+            ) => {
+                trues[i] -= src_trues[src_i];
+                falses[i] -= src_falses[src_i];
             }
             _ => unreachable!("Cells::release checks the column kinds"),
         }
@@ -1353,6 +1420,10 @@ pub enum RowError {
     NotInt {
         column: Identifier,
     },
+    /// A bool_and or bool_or column holds a non-boolean.
+    NotBool {
+        column: Identifier,
+    },
     /// A removed row was never added.
     Missing,
     /// The row falls in a sealed bucket, which takes no change until it is
@@ -1367,6 +1438,7 @@ impl fmt::Display for RowError {
                 write!(f, "row has {found} columns, expected {expected}")
             }
             RowError::NotInt { column } => write!(f, "column {column} is not an integer"),
+            RowError::NotBool { column } => write!(f, "column {column} is not a boolean"),
             RowError::Missing => f.write_str("removed row was never added"),
             RowError::Sealed => f.write_str("row falls in a sealed bucket"),
         }
