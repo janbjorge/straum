@@ -24,6 +24,32 @@ PostgreSQL tests need Docker. For a change under `deploy/`, also run
 plugin and kubeconform. For a change under `docs/`, also run
 `mdbook build docs`; CI builds the book with mdBook 0.5.4.
 
+## Documents
+
+A change is not done until every document that describes it is true
+again. Fix the documents in the commit that changes the code, never in a
+follow-up, and without being asked.
+
+Before committing, search `docs/`, `README.md` and `deploy/` with `rg`
+for what the change touched: the old name, flag, message, default or
+number. Then check each of these:
+
+- The guide in `docs/src/`, whose pages `SUMMARY.md` lists: anything a
+  user sees or does, such as spec and ask syntax, error text, flags,
+  endpoints, PostgreSQL setup and limits.
+- The design pages and `docs/src/diagrams/`: the crates, the machines,
+  the store, and how a change moves through them.
+- `docs/src/glossary.md`: a term added, renamed or dropped.
+- `README.md`: what Straum does and how to start it.
+- `deploy/helm/straum/README.md` and `values.schema.json`: a chart value
+  added, renamed or given a new default.
+- `docs/adr/`: a change that goes against an accepted record needs a new
+  record that supersedes it (ADR-0001).
+- This file: a command, a tool or a rule changed.
+
+End the report with the documents that changed, or say that none
+describes the change.
+
 ## Rules
 
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
