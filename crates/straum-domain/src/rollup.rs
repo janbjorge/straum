@@ -36,10 +36,6 @@ pub(crate) struct Rollup {
     cells: usize,
     /// Sealed buckets, every width.
     sealed: usize,
-    /// Derived from other cells: a sealed bucket here is dropped, not
-    /// spilled, and takes no row until the next start, when it is made
-    /// again; asks read it from the cells it derives from.
-    derived: bool,
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
@@ -131,8 +127,8 @@ impl Level {
     }
 
     /// Adds a checked row under its key codes; whether its cell is new.
-    /// A sealed bucket, which only a derived rollup lets a row reach,
-    /// takes nothing.
+    /// [`Rollup::check`] turns away the rows of a sealed bucket, so none
+    /// reaches one.
     fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> bool {
         let Some((cells, i, new)) = self.cell(&row[TIME], key, inputs) else {
             return false;
@@ -208,7 +204,49 @@ impl Cells {
         &self.states[input]
     }
 
+    pub(crate) fn states(&self) -> &[State] {
+        &self.states
+    }
+
     /// The position of the cell with `key`, made empty if it's new.
+    /// Folds `src`'s cell `src_i` into cell `i`. False when the columns differ.
+    fn absorb(&mut self, i: usize, count: u64, src: &[State], src_i: usize) -> bool {
+        if self.states.len() != src.len()
+            || self
+                .states
+                .iter()
+                .zip(src)
+                .any(|(dest, src)| !dest.same_kind(src))
+        {
+            return false;
+        }
+        self.counts[i] += count;
+        for (dest, src) in self.states.iter_mut().zip(src) {
+            dest.add_from(i, src, src_i);
+        }
+        true
+    }
+
+    /// Takes `src`'s cell `src_i` back out of cell `i`. False when it was
+    /// never there, and the cell is left as it was.
+    fn release(&mut self, i: usize, count: u64, src: &[State], src_i: usize) -> bool {
+        if self.counts[i] < count || src.len() != self.states.len() {
+            return false;
+        }
+        if src
+            .iter()
+            .zip(&self.states)
+            .any(|(src, dest)| !dest.covers(i, src, src_i))
+        {
+            return false;
+        }
+        self.counts[i] -= count;
+        for (dest, src) in self.states.iter_mut().zip(src) {
+            dest.sub_from(i, src, src_i);
+        }
+        true
+    }
+
     fn entry(&mut self, key: &[u32]) -> (usize, bool) {
         if let Some(&i) = self.index.get(key) {
             return (i, false);
@@ -304,9 +342,7 @@ impl Rollup {
             key_columns.push(Coded::Value(columns.len()));
             columns.push(attribute.name.clone());
         }
-        let mut rollup = Rollup::build(fact, columns, key_columns);
-        rollup.derived = true;
-        rollup
+        Rollup::build(fact, columns, key_columns)
     }
 
     fn build(fact: &Fact, columns: Vec<Identifier>, key_columns: Vec<Coded>) -> Rollup {
@@ -338,7 +374,6 @@ impl Rollup {
             inputs,
             cells: 0,
             sealed: 0,
-            derived: false,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
             columns,
@@ -480,7 +515,6 @@ impl Rollup {
             let bucket = level.bucket(&row[TIME]);
             let cells = match level.buckets.get_mut(&bucket) {
                 Some(Bucket::Hot(cells)) => cells,
-                Some(Bucket::Sealed { .. }) if self.derived => continue,
                 _ => return Err(RowError::Missing),
             };
             let i = *cells.index.get(key).ok_or(RowError::Missing)?;
@@ -499,6 +533,82 @@ impl Rollup {
             }
         }
         Ok(())
+    }
+
+    /// Moves one keyed cell's aggregates into or out of the bound cell
+    /// `key` names, at every width.
+    pub(crate) fn adjust(
+        &mut self,
+        time: Option<i64>,
+        key: &[u32],
+        count: u64,
+        src: &[State],
+        src_i: usize,
+        add: bool,
+    ) -> Result<(), RowError> {
+        let time = match time {
+            Some(time) => Datum::Int(time),
+            None => Datum::Null,
+        };
+        let widths = self.levels.len();
+        let move_cell = MoveCell {
+            key,
+            count,
+            src,
+            src_i,
+            add,
+        };
+        for n in 0..widths {
+            let shift = adjust_level(&mut self.levels[n], &self.inputs, &time, move_cell)?;
+            if n == 0 {
+                match shift {
+                    Shift::New => self.cells += 1,
+                    Shift::Removed => self.cells -= 1,
+                    Shift::Same => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn code_part(&mut self, part: usize, datum: &Datum) -> u32 {
+        self.codes[part].code(datum)
+    }
+
+    /// The rollup-key part that codes the fact column, when one does.
+    pub(crate) fn part_of_column(&self, column: usize) -> Option<usize> {
+        (self.key_columns.iter()).position(|coded| match coded {
+            Coded::Value(c) => *c == column,
+            Coded::IsNull { .. } => false,
+        })
+    }
+
+    pub(crate) fn date_bin_width(&self) -> i64 {
+        self.levels[0].width
+    }
+
+    /// Hot `date_bin` buckets, oldest first. `None` is the null-time
+    /// bucket: no ask reads it, and a dim change still has to move it.
+    pub(crate) fn hot_date_bin_starts(&self) -> Vec<Option<i64>> {
+        let level = &self.levels[0];
+        (level.buckets.iter())
+            .filter_map(|(&start, bucket)| match bucket {
+                Bucket::Hot(_) => Some(start),
+                Bucket::Sealed { .. } => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn hot_date_bin(&self, start: Option<i64>) -> Option<&Cells> {
+        self.levels[0].buckets.get(&start).and_then(Bucket::cells)
+    }
+
+    /// A sealed `date_bin` bucket overlaps `[from, to)`. Asks are aligned
+    /// to that width, so a bucket in the range starts inside it.
+    pub(crate) fn overlaps_sealed(&self, from: i64, to: i64) -> bool {
+        let level = &self.levels[0];
+        (level.buckets.range(Some(from)..Some(to)))
+            .any(|(_, bucket)| matches!(bucket, Bucket::Sealed { .. }))
     }
 
     pub(crate) fn state_of(&self, aggregate: &Aggregate) -> Option<usize> {
@@ -741,7 +851,7 @@ impl Rollup {
                 });
             }
         }
-        if !self.derived && self.touched(&row[TIME]).next().is_some() {
+        if self.touched(&row[TIME]).next().is_some() {
             return Err(RowError::Sealed);
         }
         Ok(())
@@ -753,6 +863,70 @@ impl Rollup {
                 .map(|(&coded, codes)| codes.code(&coded.datum(row))),
         );
     }
+}
+
+enum Shift {
+    Same,
+    New,
+    Removed,
+}
+
+#[derive(Clone, Copy)]
+struct MoveCell<'a> {
+    key: &'a [u32],
+    count: u64,
+    src: &'a [State],
+    src_i: usize,
+    add: bool,
+}
+
+fn adjust_level(
+    level: &mut Level,
+    inputs: &[Input],
+    time: &Datum,
+    move_cell: MoveCell<'_>,
+) -> Result<Shift, RowError> {
+    let MoveCell {
+        key,
+        count,
+        src,
+        src_i,
+        add,
+    } = move_cell;
+    if add {
+        let Some((cells, i, new)) = level.cell(time, key, inputs) else {
+            return Err(RowError::Sealed);
+        };
+        if !cells.absorb(i, count, src, src_i) {
+            return Err(RowError::Missing);
+        }
+        return Ok(if new { Shift::New } else { Shift::Same });
+    }
+    let at = level.bucket(time);
+    let empty = {
+        let Some(bucket) = level.buckets.get_mut(&at) else {
+            return Err(RowError::Missing);
+        };
+        let cells = match bucket {
+            Bucket::Hot(cells) => cells,
+            Bucket::Sealed { .. } => return Err(RowError::Sealed),
+        };
+        let Some(i) = cells.index.get(key).copied() else {
+            return Err(RowError::Missing);
+        };
+        if !cells.release(i, count, src, src_i) {
+            return Err(RowError::Missing);
+        }
+        if cells.counts[i] != 0 {
+            return Ok(Shift::Same);
+        }
+        cells.swap_remove(i);
+        cells.len() == 0
+    };
+    if empty {
+        level.buckets.remove(&at);
+    }
+    Ok(Shift::Removed)
 }
 
 impl State {
@@ -896,6 +1070,101 @@ impl State {
         }
         Ok(())
     }
+
+    fn same_kind(&self, other: &State) -> bool {
+        matches!(
+            (self, other),
+            (State::Sum { .. }, State::Sum { .. })
+                | (State::Extent { .. }, State::Extent { .. })
+                | (State::Distinct(_), State::Distinct(_))
+        )
+    }
+
+    /// Whether cell `i` holds `src`'s cell `src_i`, so [`State::sub_from`]
+    /// can take it out.
+    fn covers(&self, i: usize, src: &State, src_i: usize) -> bool {
+        match (self, src) {
+            (
+                State::Sum { counts, .. },
+                State::Sum {
+                    counts: src_counts, ..
+                },
+            ) => counts[i] >= src_counts[src_i],
+            (
+                State::Extent { counts, .. },
+                State::Extent {
+                    counts: src_counts, ..
+                },
+            ) => counts[i].covers(&src_counts[src_i]),
+            (State::Distinct(counts), State::Distinct(src_counts)) => (src_counts[src_i].iter())
+                .all(|(value, n)| counts[i].get(value).is_some_and(|have| have >= n)),
+            _ => false,
+        }
+    }
+
+    fn add_from(&mut self, i: usize, src: &State, src_i: usize) {
+        match (self, src) {
+            (
+                State::Sum { sums, counts },
+                State::Sum {
+                    sums: src_sums,
+                    counts: src_counts,
+                },
+            ) => {
+                sums[i] += src_sums[src_i];
+                counts[i] += src_counts[src_i];
+            }
+            (
+                State::Extent { mins, maxs, counts },
+                State::Extent {
+                    counts: src_counts, ..
+                },
+            ) => {
+                counts[i].add_counts(&src_counts[src_i]);
+                (mins[i], maxs[i]) = counts[i].ends();
+            }
+            (State::Distinct(counts), State::Distinct(src_counts)) => {
+                for (value, n) in &src_counts[src_i] {
+                    *counts[i].entry(value.clone()).or_default() += *n;
+                }
+            }
+            _ => unreachable!("Cells::absorb checks the column kinds"),
+        }
+    }
+
+    fn sub_from(&mut self, i: usize, src: &State, src_i: usize) {
+        match (self, src) {
+            (
+                State::Sum { sums, counts },
+                State::Sum {
+                    sums: src_sums,
+                    counts: src_counts,
+                },
+            ) => {
+                sums[i] -= src_sums[src_i];
+                counts[i] -= src_counts[src_i];
+            }
+            (
+                State::Extent { mins, maxs, counts },
+                State::Extent {
+                    counts: src_counts, ..
+                },
+            ) => {
+                counts[i].sub_counts(&src_counts[src_i]);
+                (mins[i], maxs[i]) = counts[i].ends();
+            }
+            (State::Distinct(counts), State::Distinct(src_counts)) => {
+                for (value, n) in &src_counts[src_i] {
+                    let have = counts[i].get_mut(value).expect("covers checked");
+                    *have -= *n;
+                    if *have == 0 {
+                        counts[i].remove(value);
+                    }
+                }
+            }
+            _ => unreachable!("Cells::release checks the column kinds"),
+        }
+    }
 }
 
 /// One cell's count per value. Most cells hold a single value, kept here
@@ -908,6 +1177,81 @@ pub(crate) enum ValueCounts {
 
 impl ValueCounts {
     const EMPTY: ValueCounts = ValueCounts::Many(BTreeMap::new());
+
+    fn add_n(&mut self, v: i64, n: u64) {
+        if n == 0 {
+            return;
+        }
+        match self {
+            ValueCounts::One(w, c) if *w == v => *c += n,
+            ValueCounts::One(w, c) => {
+                *self = ValueCounts::Many(BTreeMap::from([(*w, *c), (v, n)]));
+            }
+            ValueCounts::Many(tree) if tree.is_empty() => *self = ValueCounts::One(v, n),
+            ValueCounts::Many(tree) => *tree.entry(v).or_default() += n,
+        }
+    }
+
+    fn sub_n(&mut self, v: i64, n: u64) {
+        if n == 0 {
+            return;
+        }
+        match self {
+            ValueCounts::One(w, c) if *w == v && *c >= n => {
+                *c -= n;
+                if *c == 0 {
+                    *self = ValueCounts::EMPTY;
+                }
+            }
+            ValueCounts::Many(tree) => {
+                let count = tree.get_mut(&v).expect("covers checked");
+                *count -= n;
+                if *count == 0 {
+                    tree.remove(&v);
+                }
+            }
+            ValueCounts::One(..) => unreachable!("covers checked"),
+        }
+    }
+
+    fn add_counts(&mut self, other: &ValueCounts) {
+        match other {
+            ValueCounts::One(v, n) => self.add_n(*v, *n),
+            ValueCounts::Many(tree) => {
+                for (&v, &n) in tree {
+                    self.add_n(v, n);
+                }
+            }
+        }
+    }
+
+    fn sub_counts(&mut self, other: &ValueCounts) {
+        match other {
+            ValueCounts::One(v, n) => self.sub_n(*v, *n),
+            ValueCounts::Many(tree) => {
+                for (&v, &n) in tree {
+                    self.sub_n(v, n);
+                }
+            }
+        }
+    }
+
+    fn covers(&self, other: &ValueCounts) -> bool {
+        match other {
+            ValueCounts::One(v, n) => self.has(*v, *n),
+            ValueCounts::Many(tree) => tree.iter().all(|(&v, &n)| self.has(v, n)),
+        }
+    }
+
+    fn has(&self, v: i64, n: u64) -> bool {
+        if n == 0 {
+            return true;
+        }
+        match self {
+            ValueCounts::One(w, c) => *w == v && *c >= n,
+            ValueCounts::Many(tree) => tree.get(&v).is_some_and(|c| *c >= n),
+        }
+    }
 
     fn add(&mut self, v: i64) {
         match self {

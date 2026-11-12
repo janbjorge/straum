@@ -84,6 +84,13 @@ fn attr(name: &str, column: &str) -> Attribute {
 }
 
 fn spec() -> Spec {
+    spec_joining(RefKind::Left)
+}
+
+/// As [`spec`], the vendors joined as `vend` says: an inner join drops
+/// the trips of a vendor with no row, so their buckets hold no bound
+/// cells.
+fn spec_joining(vend: RefKind) -> Spec {
     let m = |name, aggregate, filter| Measure {
         name: id(name),
         aggregate,
@@ -158,7 +165,7 @@ fn spec() -> Spec {
                 alias: id("vend"),
                 dim: id("vendors"),
                 via: vec![Via::Fact(id("vendor"))],
-                kind: RefKind::Left,
+                kind: vend,
                 reads: vec![attr("vend_label", "label")],
             },
         ],
@@ -303,8 +310,24 @@ fn load_dims(store: &mut Store, dims: &Dims) {
 }
 
 /// A random change to one dim, applied to the store and to `dims`: a row
-/// relabelled, removed or added.
+/// relabelled, removed or added, or now and then the dim truncated and
+/// loaded again.
 fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
+    if rng.chance(5) {
+        let dim = *rng.pick(&["zones", "combos", "vendors"]);
+        store.clear(dim);
+        let rows = if rng.chance(50) {
+            random_dims(rng).remove(dim).unwrap()
+        } else {
+            BTreeMap::new()
+        };
+        let flat: Vec<Datum> = (rows.iter())
+            .flat_map(|(key, attrs)| dim_row(key, attrs))
+            .collect();
+        store.add_rows(dim, &flat).unwrap();
+        dims.insert(dim, rows);
+        return;
+    }
     let (dim, key, attrs): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
         0 => (
             "zones",
@@ -473,9 +496,15 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
     if ask.keys.is_empty() {
         groups.insert(Vec::new(), Vec::new());
     }
+    let vend = (fact.refs.iter())
+        .find(|r| r.alias.as_str() == "vend")
+        .unwrap();
     for row in rows {
         let Datum::Int(t) = row[AT] else { continue };
         if t < ask.from || t >= ask.to || !passes(row, &ask.filter, dims) {
+            continue;
+        }
+        if vend.kind == RefKind::Inner && !dims["vendors"].contains_key(&row[VENDOR..=VENDOR]) {
             continue;
         }
         let key = ask
@@ -607,10 +636,11 @@ impl Spilled {
 /// Random changes and asks against the reference. With `sealing`,
 /// buckets are sealed and unsealed at random as they go, and the answers
 /// must not change; returns the sealed buckets asks read. With
-/// `changing`, dims change as they go, so the bound cells go stale and
-/// the keyed cells answer; without, the bound cells answer throughout.
-fn run(seed: u64, sealing: bool, changing: bool) -> usize {
-    let spec = spec();
+/// `changing`, dims change as they go and the bound cells move with
+/// them. An ask that overlaps a sealed bucket reads the keyed cells.
+/// `vend` is how the vendors join.
+fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
+    let spec = spec_joining(vend);
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
@@ -657,7 +687,10 @@ fn run(seed: u64, sealing: bool, changing: bool) -> usize {
             }
         }
         if step % 100 == 99 {
-            assert_eq!(store.bound_cells("trips").is_some(), !changing || step < 99);
+            assert!(
+                store.bound_cells("trips").is_some(),
+                "seed {seed}, step {step}: a dim change dropped the bound cells"
+            );
             for _ in 0..10 {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
@@ -685,20 +718,22 @@ fn run(seed: u64, sealing: bool, changing: bool) -> usize {
 #[test]
 fn store_matches_naive_reference() {
     for seed in 0..16 {
-        assert_eq!(run(seed, false, true), 0);
+        assert_eq!(run(seed, false, true, RefKind::Left), 0);
     }
 }
 
 #[test]
 fn sealed_store_matches_naive_reference() {
-    let read: usize = (0..16).map(|seed| run(seed, true, true)).sum();
+    let read: usize = (0..16)
+        .map(|seed| run(seed, true, true, RefKind::Left))
+        .sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
 #[test]
 fn bound_store_matches_naive_reference() {
     for seed in 0..16 {
-        assert_eq!(run(seed, false, false), 0);
+        assert_eq!(run(seed, false, false, RefKind::Left), 0);
     }
 }
 
@@ -706,13 +741,25 @@ fn bound_store_matches_naive_reference() {
 /// cells, thawed; the rest read the bound cells.
 #[test]
 fn sealed_bound_store_matches_naive_reference() {
-    let read: usize = (0..16).map(|seed| run(seed, true, false)).sum();
+    let read: usize = (0..16)
+        .map(|seed| run(seed, true, false, RefKind::Left))
+        .sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
-/// Trips by pay, joined to zones for the borough, or with no join at
-/// all.
-fn zones_spec(joined: bool) -> Spec {
+/// With an inner join a bucket whose trips name no vendor holds no bound
+/// cells when it is sealed, and gains them when the vendor's row comes.
+#[test]
+fn sealed_inner_store_matches_naive_reference() {
+    let read: usize = (0..16)
+        .map(|seed| run(seed, true, true, RefKind::Inner))
+        .sum();
+    assert!(read > 1_000, "asks read {read} sealed buckets");
+}
+
+/// Trips by pay, joined to zones for the borough as `pickup` says, or
+/// with no join at all.
+fn zones_spec(pickup: Option<RefKind>, hour: bool) -> Spec {
     let zones = Dim {
         as_text: Vec::new(),
         name: id("zones"),
@@ -720,13 +767,13 @@ fn zones_spec(joined: bool) -> Spec {
         key: vec![id("id")],
         attributes: vec![id("borough")],
     };
-    let pickup = Ref {
+    let pickup = pickup.map(|kind| Ref {
         alias: id("pickup"),
         dim: id("zones"),
         via: vec![Via::Fact(id("pu"))],
-        kind: RefKind::Left,
+        kind,
         reads: vec![attr("borough", "borough")],
-    };
+    });
     let trips = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -734,10 +781,14 @@ fn zones_spec(joined: bool) -> Spec {
         time: Time {
             column: id("at"),
             width: Width { seconds: WIDTH },
-            wider: Vec::new(),
+            wider: if hour {
+                vec![Width { seconds: 3_600 }]
+            } else {
+                Vec::new()
+            },
             origin: Origin::Timestamptz,
         },
-        refs: if joined { vec![pickup] } else { vec![] },
+        refs: pickup.into_iter().collect(),
         by_keys: vec![col("pay")],
         filter: vec![],
         measures: vec![Measure {
@@ -752,7 +803,7 @@ fn zones_spec(joined: bool) -> Spec {
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
 /// `START`.
 fn zoned_store() -> Store {
-    let mut store = Store::new(zones_spec(true));
+    let mut store = Store::new(zones_spec(Some(RefKind::Left), false));
     for zone in 1..7 {
         let borough = if zone < 4 { "m" } else { "q" };
         store
@@ -783,8 +834,8 @@ fn by_borough() -> Ask {
 
 /// The bound cells are keyed by the dim's column, so the zones' boroughs
 /// make fewer of them than the zone ids make keyed cells, and an ask
-/// reads the fewer. Once a zone changes they are gone, and the ask reads
-/// the keyed cells through the projection, to the same answer.
+/// reads the fewer. A zone change moves those cells and the ask still
+/// reads them.
 #[test]
 fn bound_cells_follow_the_dim_column() {
     let mut store = zoned_store();
@@ -798,8 +849,8 @@ fn bound_cells_follow_the_dim_column() {
         .remove_row("zones", &[Datum::Int(6), text("q")])
         .unwrap();
     store.add_row("zones", &[Datum::Int(6), text("m")]).unwrap();
-    assert_eq!(store.bound_cells("trips"), None);
-    assert_eq!(store.cells_read(&by_borough), Ok(6));
+    assert_eq!(store.bound_cells("trips"), Some(2));
+    assert_eq!(store.cells_read(&by_borough), Ok(2));
     let moved = store.ask(&by_borough).unwrap();
     assert_eq!(answer.rows[0].values, [Value::Int(3)]);
     assert_eq!(moved.rows[0].values, [Value::Int(4)]);
@@ -810,7 +861,7 @@ fn bound_cells_follow_the_dim_column() {
 /// answer.
 #[test]
 fn a_fact_without_refs_keeps_no_bound_cells() {
-    let mut store = Store::new(zones_spec(false));
+    let mut store = Store::new(zones_spec(None, false));
     // Without the join, a row carries no zone.
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(1)])
@@ -819,11 +870,51 @@ fn a_fact_without_refs_keeps_no_bound_cells() {
     assert_eq!(store.bound_cells("trips"), None);
 }
 
+/// Two rows in one cell, and a row with no time, still leave after the
+/// dims they join have changed.
+#[test]
+fn a_fact_row_still_comes_out_after_its_dim_changes() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    store
+        .add_row("zones", &[Datum::Int(1), text("m"), text("a")])
+        .unwrap();
+    store
+        .add_row("vendors", &[Datum::Int(1), text("v1")])
+        .unwrap();
+    store
+        .add_row("combos", &[Datum::Int(1), Datum::Int(1), text("x")])
+        .unwrap();
+    let mut row = trip(&mut Rng(1));
+    row[AT] = Datum::Int(START);
+    row[PU] = Datum::Int(1);
+    row[DRO] = Datum::Int(1);
+    row[VENDOR] = Datum::Int(1);
+    row[SHARED] = Datum::Null;
+    let mut other = row.clone();
+    other[FARE] = Datum::Int(99);
+    let mut untimed = row.clone();
+    untimed[AT] = Datum::Null;
+    store.add_row("trips", &row).unwrap();
+    store.add_row("trips", &other).unwrap();
+    store.add_row("trips", &untimed).unwrap();
+    store
+        .update_row(
+            "zones",
+            &[Datum::Int(1), text("m"), text("a")],
+            &[Datum::Int(1), text("q"), text("b")],
+        )
+        .unwrap();
+    store.remove_row("trips", &row).unwrap();
+    store.remove_row("trips", &other).unwrap();
+    store.remove_row("trips", &untimed).unwrap();
+}
+
 /// A dim change under a fact with no rows leaves nothing bound wrong, so
 /// the bound cells stay and bind the rows that come after it.
 #[test]
 fn a_dim_change_under_no_rows_keeps_the_bound_cells() {
-    let mut store = Store::new(zones_spec(true));
+    let mut store = Store::new(zones_spec(Some(RefKind::Left), false));
     store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
     store
         .remove_row("zones", &[Datum::Int(1), text("m")])
@@ -838,9 +929,9 @@ fn a_dim_change_under_no_rows_keeps_the_bound_cells() {
     assert_eq!(answer.rows[0].keys, [text("q")]);
 }
 
-/// Sealing a bucket drops its bound cells for good: once the keyed cells
-/// are back, a row of the bucket goes into them alone, and an ask over
-/// the bucket reads them, 6 cells for 2, to the same answer.
+/// Sealing a bucket takes its bound cells with it, so an ask over the
+/// bucket reads the keyed cells, 6 for 2. Once the keyed cells are back
+/// they are bound again, and a row of the bucket goes into both.
 #[test]
 fn a_sealed_bucket_is_read_through_its_keyed_cells() {
     let mut store = zoned_store();
@@ -849,6 +940,8 @@ fn a_sealed_bucket_is_read_through_its_keyed_cells() {
     let copy = store.sealed_copy(&id).unwrap();
     store.seal(&id).unwrap();
     assert_eq!(store.sealed_read(&by_borough), Ok(vec![id.clone()]));
+    assert_eq!(store.cells_read(&by_borough), Ok(6));
+    assert_eq!(store.bound_cells("trips"), Some(0));
     let thawed = store.thaw(copy).unwrap();
     store.unseal(thawed).unwrap();
     assert_eq!(store.sealed_read(&by_borough), Ok(vec![]));
@@ -856,7 +949,7 @@ fn a_sealed_bucket_is_read_through_its_keyed_cells() {
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
         .unwrap();
-    assert_eq!(store.cells_read(&by_borough), Ok(6));
+    assert_eq!(store.cells_read(&by_borough), Ok(2));
     assert_eq!(store.bound_cells("trips"), Some(2));
     let answer = store.ask(&by_borough).unwrap();
     assert_eq!(answer.rows[0].values, [Value::Int(4)]);
@@ -868,6 +961,172 @@ fn a_sealed_bucket_is_read_through_its_keyed_cells() {
         store.ask(&by_borough).unwrap().rows[0].values,
         [Value::Int(3)]
     );
+}
+
+/// A sealed quarter stays on the keyed cells, including the hour that
+/// contains it. The next quarter, which the seal does not cover, keeps
+/// its bound cells after a dim change.
+#[test]
+fn a_hot_quarter_keeps_bound_cells_beside_a_sealed_one() {
+    let spec = zones_spec(Some(RefKind::Left), true);
+    let load = |store: &mut Store| {
+        store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+        store.add_row("zones", &[Datum::Int(2), text("m")]).unwrap();
+        store.add_row("zones", &[Datum::Int(3), text("m")]).unwrap();
+        store
+            .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
+            .unwrap();
+        let later = START + i64::from(WIDTH);
+        store
+            .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(2)])
+            .unwrap();
+        store
+            .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(3)])
+            .unwrap();
+    };
+    let mut sealed = Store::new(spec.clone());
+    let mut reference = Store::new(spec);
+    load(&mut sealed);
+    load(&mut reference);
+    let sealed_id = sealed.sealable(START + i64::from(WIDTH)).remove(0);
+    let copy = sealed.sealed_copy(&sealed_id).unwrap();
+    sealed.seal(&sealed_id).unwrap();
+    let old = [Datum::Int(1), text("m")];
+    let new = [Datum::Int(1), text("q")];
+    sealed.update_row("zones", &old, &new).unwrap();
+    reference.update_row("zones", &old, &new).unwrap();
+
+    let ask = |from, to| Ask {
+        view: id("trips"),
+        measures: vec![id("trips")],
+        keys: vec![AskKey::Key(id("borough"))],
+        filter: Vec::new(),
+        from,
+        to,
+    };
+    let hot = ask(START + i64::from(WIDTH), START + 2 * i64::from(WIDTH));
+    let hour = ask(START, START + 3_600);
+    assert!(sealed.sealed_read(&hot).unwrap().is_empty());
+    // Two keyed cells, one borough: the bound cells answer.
+    assert_eq!(sealed.cells_read(&hot).unwrap(), 1);
+    assert_eq!(sealed.ask(&hot).unwrap(), reference.ask(&hot).unwrap());
+    // The hour also covers the sealed quarter. Its answer matches the
+    // reference, which has zone 1's new borough.
+    let thawed = sealed.thaw(copy).unwrap();
+    assert_eq!(
+        sealed.ask_with(&hour, &[thawed]).unwrap(),
+        reference.ask(&hour).unwrap()
+    );
+}
+
+/// Seals the bucket at `START`, hands it to `between`, puts it back and
+/// adds one more trip from zone 1 to it.
+fn through_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
+    let id = store.sealable(START + i64::from(WIDTH)).remove(0);
+    let copy = store.sealed_copy(&id).unwrap();
+    store.seal(&id).unwrap();
+    between(store);
+    let thawed = store.thaw(copy).unwrap();
+    store.unseal(thawed).unwrap();
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
+        .unwrap();
+}
+
+/// The same changes with the bucket hot throughout.
+fn without_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
+    between(store);
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
+        .unwrap();
+}
+
+/// A dim row that changes while a bucket is sealed reaches the bucket's
+/// trips once it is back: the bound cells answer, as they would had it
+/// never been sealed, and every trip still comes out.
+#[test]
+fn a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed() {
+    let change = |store: &mut Store| {
+        let old = [Datum::Int(6), text("q")];
+        let new = [Datum::Int(6), text("m")];
+        store.update_row("zones", &old, &new).unwrap();
+    };
+    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    through_a_seal(&mut sealed, change);
+    without_a_seal(&mut hot, change);
+    let by_borough = by_borough();
+    assert_eq!(sealed.cells_read(&by_borough), Ok(2));
+    let answer = sealed.ask(&by_borough).unwrap();
+    assert_eq!(answer, hot.ask(&by_borough).unwrap());
+    assert_eq!(answer.rows[0].values, [Value::Int(5)]);
+    assert_eq!(answer.rows[1].values, [Value::Int(2)]);
+    for zone in 1..7 {
+        let row = [Datum::Int(START), Datum::Int(1), Datum::Int(zone)];
+        sealed.remove_row("trips", &row).unwrap();
+    }
+    assert_eq!(sealed.cells("trips"), Some(1));
+    assert_eq!(sealed.bound_cells("trips"), Some(1));
+}
+
+/// A dim truncated while a bucket is sealed rebuilds the bound cells
+/// without the bucket. Once it is back its trips are bound again, not
+/// only the one that came after.
+#[test]
+fn a_dim_truncate_under_a_sealed_bucket_keeps_its_trips() {
+    let truncate = |store: &mut Store| store.clear("zones");
+    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    through_a_seal(&mut sealed, truncate);
+    without_a_seal(&mut hot, truncate);
+    let by_borough = by_borough();
+    let answer = sealed.ask(&by_borough).unwrap();
+    assert_eq!(answer, hot.ask(&by_borough).unwrap());
+    assert_eq!(answer.rows[0].keys, [Datum::Null]);
+    assert_eq!(answer.rows[0].values, [Value::Int(7)]);
+}
+
+/// As the truncate, for a dim loaded while the bucket is sealed.
+#[test]
+fn a_dim_load_under_a_sealed_bucket_keeps_its_trips() {
+    let load = |store: &mut Store| {
+        store.clear("zones");
+        let rows = [Datum::Int(1), text("b"), Datum::Int(2), text("b")];
+        store.add_rows("zones", &rows).unwrap();
+    };
+    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    through_a_seal(&mut sealed, load);
+    without_a_seal(&mut hot, load);
+    let by_borough = by_borough();
+    let answer = sealed.ask(&by_borough).unwrap();
+    assert_eq!(answer, hot.ask(&by_borough).unwrap());
+    assert_eq!(answer.rows[0].keys, [Datum::Null]);
+    assert_eq!(answer.rows[0].values, [Value::Int(4)]);
+    assert_eq!(answer.rows[1].values, [Value::Int(3)]);
+}
+
+/// An inner join that keeps no trip of a bucket leaves it no bound cells
+/// to seal. A zone that comes while it is sealed binds its trips once it
+/// is back, and both still come out.
+#[test]
+fn a_sealed_bucket_without_bound_cells_gains_them_from_a_dim_insert() {
+    let insert = |store: &mut Store| store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+    let first = [Datum::Int(START), Datum::Int(2), Datum::Int(1)];
+    let load = || {
+        let mut store = Store::new(zones_spec(Some(RefKind::Inner), false));
+        store.add_row("trips", &first).unwrap();
+        assert_eq!(store.bound_cells("trips"), Some(0));
+        store
+    };
+    let (mut sealed, mut hot) = (load(), load());
+    through_a_seal(&mut sealed, insert);
+    without_a_seal(&mut hot, insert);
+    let by_borough = by_borough();
+    let answer = sealed.ask(&by_borough).unwrap();
+    assert_eq!(answer, hot.ask(&by_borough).unwrap());
+    assert_eq!(answer.rows[0].values, [Value::Int(2)]);
+    sealed.remove_row("trips", &first).unwrap();
+    let second = [Datum::Int(START), Datum::Int(1), Datum::Int(1)];
+    sealed.remove_row("trips", &second).unwrap();
+    assert_eq!(sealed.bound_cells("trips"), Some(0));
 }
 
 #[test]
@@ -987,7 +1246,7 @@ fn a_dim_change_moves_the_answer_at_once() {
     store
         .remove_row("vendors", &[Datum::Int(1), text("v1")])
         .unwrap();
-    assert_eq!(store.bound_cells("trips"), None);
+    assert_eq!(store.bound_cells("trips"), cells);
     assert_eq!(labels(&store), [Datum::Null]);
     store
         .add_row("vendors", &[Datum::Int(1), text("v2")])
@@ -999,7 +1258,9 @@ fn a_dim_change_moves_the_answer_at_once() {
         .add_row("vendors", &[Datum::Int(2), text("v9")])
         .unwrap();
     assert_eq!(labels(&store), [text("v2")]);
+    assert_eq!(store.bound_cells("trips"), cells);
     store.clear("vendors");
+    assert_eq!(store.bound_cells("trips"), cells);
     assert_eq!(labels(&store), [Datum::Null]);
     assert_eq!(store.dim_rows("vendors"), Some(0));
     // The fact row comes out as it went in, whatever the dim did.
@@ -1008,11 +1269,10 @@ fn a_dim_change_moves_the_answer_at_once() {
 }
 
 /// An update of a dim row that reads the same changed no column the
-/// views read, so the bound cells stay; one that reads otherwise drops
-/// them, and the fact's rows then load and change through the keyed
-/// cells alone.
+/// views read, so the bound cells stay. One that reads otherwise moves
+/// them, and later fact rows bind through the new row.
 #[test]
-fn a_dim_update_drops_the_bound_cells_only_when_it_reads_otherwise() {
+fn a_dim_update_moves_the_bound_cells_when_it_reads_otherwise() {
     let spec = spec();
     let mut store = typed(&spec);
     let v1 = [Datum::Int(1), text("v1")];
@@ -1034,7 +1294,7 @@ fn a_dim_update_drops_the_bound_cells_only_when_it_reads_otherwise() {
         })
     );
     store.update_row("vendors", &v1, &v2).unwrap();
-    assert_eq!(store.bound_cells("trips"), None);
+    assert_eq!(store.bound_cells("trips"), Some(1));
 
     let mut other = trip(&mut Rng(6));
     other[AT] = Datum::Int(START + i64::from(WIDTH));
@@ -1043,7 +1303,7 @@ fn a_dim_update_drops_the_bound_cells_only_when_it_reads_otherwise() {
     let flat: Vec<Datum> = [row.clone(), other.clone()].concat();
     store.add_rows("trips", &flat).unwrap();
     assert_eq!(store.cells("trips"), Some(2));
-    assert_eq!(store.bound_cells("trips"), None);
+    assert_eq!(store.bound_cells("trips"), Some(2));
 }
 
 /// A dim keyed by several columns matches on all of them; a via that is

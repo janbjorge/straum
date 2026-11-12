@@ -72,6 +72,16 @@ impl Projection {
         self.held
     }
 
+    pub(crate) fn key_len(&self) -> usize {
+        self.key_len
+    }
+
+    /// The attribute codes of the rows under `key`, cloned so a dim change
+    /// can unbind them after the projection has moved on.
+    pub(crate) fn row_codes(&self, key: &[Datum]) -> Vec<Box<[u32]>> {
+        self.matches(key).to_vec()
+    }
+
     /// Every key holds one row at most, so a join through it never
     /// repeats a cell.
     pub(crate) fn is_unique(&self) -> bool {

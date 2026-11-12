@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" role="img" aria-labelledby="t d">
   <title id="t">Three small state machines</title>
-  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open. A bucket: Hot to Sealed by a seal pass once it ended seal_after ago, back to Hot when a change touches it, gone when its last row is removed. Bound cells: Present until a dim the fact reads changes under held rows, then Dropped until the next start.</desc>
+  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open. A bucket: Hot to Sealed by a seal pass once it ended seal_after ago, back to Hot when a change touches it, gone when its last row is removed. The bound cells of a bucket: Bound while the bucket is hot, Out once it is sealed, bound again as the dims are then when it is unsealed.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -88,7 +88,7 @@
   </defs>
   <rect class="canvas" x="0.5" y="0.5" width="879" height="339" rx="10"/>
   <text x="32" y="42" class="title">Three small state machines</text>
-  <text x="32" y="64" class="sub muted">The source connection, a date_bin bucket, and a fact's bound cells.</text>
+  <text x="32" y="64" class="sub muted">The source connection, a date_bin bucket, and a bucket's bound cells.</text>
   <text x="40" y="104" class="lbl muted" text-anchor="start">THE SOURCE</text>
   <rect class="box" x="40" y="120" width="90" height="40" rx="8"/>
   <text x="85.0" y="145" class="h" text-anchor="middle">Closed</text>
@@ -116,17 +116,17 @@
   <text x="410" y="236" class="s ink2" text-anchor="start">before the change applies</text>
   <text x="330" y="300" class="s muted" text-anchor="start">gone with its last row, or when</text>
   <text x="330" y="316" class="s muted" text-anchor="start">the fact is truncated</text>
-  <text x="600" y="104" class="lbl muted" text-anchor="start">BOUND CELLS OF A FACT</text>
+  <text x="600" y="104" class="lbl muted" text-anchor="start">BOUND CELLS OF A BUCKET</text>
   <rect class="accbox" x="600" y="120" width="100" height="40" rx="8"/>
-  <text x="650.0" y="145" class="h acc" text-anchor="middle">Present</text>
+  <text x="650.0" y="145" class="h acc" text-anchor="middle">Bound</text>
   <rect class="errbox" x="600" y="240" width="100" height="40" rx="8"/>
-  <text x="650.0" y="265" class="h err" text-anchor="middle">Dropped</text>
+  <text x="650.0" y="265" class="h err" text-anchor="middle">Out</text>
   <path class="a-err" d="M625 160 L625 236" marker-end="url(#m-err)"/>
   <path class="a" d="M675 236 L675 160" marker-end="url(#m)"/>
-  <text x="710" y="180" class="s ink2" text-anchor="start">down: a dim it reads</text>
-  <text x="710" y="196" class="s ink2" text-anchor="start">changes under held rows</text>
-  <text x="710" y="220" class="s ink2" text-anchor="start">up: made again at</text>
-  <text x="710" y="236" class="s ink2" text-anchor="start">the next start</text>
+  <text x="710" y="180" class="s ink2" text-anchor="start">down: its bucket</text>
+  <text x="710" y="196" class="s ink2" text-anchor="start">is sealed</text>
+  <text x="710" y="220" class="s ink2" text-anchor="start">up: it is unsealed, bound</text>
+  <text x="710" y="236" class="s ink2" text-anchor="start">as the dims are then</text>
   <text x="600" y="300" class="s muted" text-anchor="start">only a fact whose joins all read</text>
   <text x="600" y="316" class="s muted" text-anchor="start">fact columns has them</text>
 </svg>

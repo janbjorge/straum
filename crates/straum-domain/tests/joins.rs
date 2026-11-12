@@ -925,8 +925,7 @@ impl Rng {
 
 /// Random kinds, rows, dims and changes to both, checked against the
 /// reference every few steps. Without `chained` the fact keeps bound
-/// cells, which answer until a dim changes under its rows; without
-/// `changing` none does, so they answer throughout.
+/// cells through dim changes; a ref through another dim keeps it unbound.
 fn run(seed: u64, chained: bool, changing: bool) {
     let mut rng = Rng(seed);
     let kinds = rng.kinds();
@@ -969,10 +968,10 @@ fn run(seed: u64, chained: bool, changing: bool) {
             }
         }
         if step % 100 == 99 {
-            // A ref through another dim keeps the fact unbound; without
-            // one, the bound cells hold until a dim changes.
+            // A ref through another dim keeps the fact unbound. A direct
+            // fact keeps its bound cells through dim changes.
             let bound = store.bound_cells("orders").is_some();
-            assert_eq!(bound, !chained && (!changing || step < 99), "seed {seed}");
+            assert_eq!(bound, !chained, "seed {seed}, step {step}");
             for _ in 0..4 {
                 let ask = rng.random_ask();
                 assert_eq!(
