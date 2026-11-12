@@ -6,7 +6,8 @@ between the load and the stream, and none is applied twice. This page
 is the design: who takes part, what each use case does, how the pieces
 depend on each other, what the code holds true, and which decision
 shaped what. A line reference such as `app.rs:339` is where a rule is
-enforced, under `crates/`, as read on 2026-11-12.
+enforced, under `crates/`, as read on 2026-11-12; the
+[glossary](glossary.md) gives each name its type in the code.
 
 Four participants:
 
@@ -455,48 +456,6 @@ Source ──► Commit 0..* ──► Change 1..* ──► Datum 0..*
   record as LSN. The stream delivers nothing before the commit, and
   the store sees it as one.
 
-### Components
-
-| Component        | Type         | Description                            |
-| ---------------- | ------------ | -------------------------------------- |
-| Writer           | Service      | The one loop that loads and applies    |
-| App              | Service      | The store and how far it follows       |
-| Store            | Entity       | Rollups, projections, bound cells      |
-| Rollup           | Entity       | Every cell of one fact, per width      |
-| Level            | Entity       | The buckets of one width               |
-| Bucket           | Entity       | The cells of one span, hot or sealed   |
-| Cells            | Entity       | One bucket's cells, columnar           |
-| State            | Entity       | One input column's per-cell state      |
-| Projection       | Entity       | A dim as key to attribute codes        |
-| Codes            | Entity       | A column's values under small integers |
-| Lag              | Entity       | Unconfirmed WAL readings, caught up at |
-| Source           | Port         | Open, load, next commit, read WAL      |
-| Spill            | Port         | Put, get, remove, clear sealed buckets |
-| Postgres         | Adapter      | `Source` over a slot, `COPY`, pgoutput |
-| HTTP server      | Adapter      | `/ask`, `/livez`, `/readyz`, `/status` |
-| Straum SQL       | Adapter      | Text into **Spec** and **Ask**         |
-| Spec             | Value Object | Every dim and fact, checked            |
-| Fact, Dim        | Value Object | One view; one joined table             |
-| Ref, Via         | Value Object | A join and where its key comes from    |
-| Time, Width      | Value Object | The time column, origin and widths     |
-| ByKey            | Value Object | A fact column, or whether it is null   |
-| Measure          | Value Object | Name, aggregate, filter                |
-| Condition        | Value Object | `key = value` or `key IN (values)`     |
-| Literal          | Value Object | An integer, text or boolean            |
-| Identifier       | Value Object | Unquoted lowercase, at most 63 bytes   |
-| Ask              | Value Object | View, measures, keys, filter, range    |
-| Answer           | Value Object | Columns and rows                       |
-| Answered         | Value Object | Answer, applied LSN, `as_of`           |
-| Datum, Value     | Value Object | One stored value; one measure's result |
-| ColumnType       | Value Object | Int, numeric, bool, text, time         |
-| Commit, Change   | Value Object | One transaction; one row change        |
-| Lsn, Wal         | Value Object | A position; written/confirmed/restart  |
-| Following        | Value Object | Applied LSN, commit time, lag, WAL     |
-| Limits           | Value Object | `--max-lag`, `--max-retained-wal`      |
-| Status, Failure  | Value Object | What `/status` shows; one failed step  |
-| Sealed, SealedId | Value Object | A bucket as plain data; its name       |
-| Thawed           | Value Object | A sealed bucket checked by the store   |
-
 ## Invariants
 
 What the code holds true, and where. Planting a bug in any of these
@@ -619,34 +578,9 @@ maps each part of the model to the records that settled it.
 
 The PostgreSQL mechanics behind the load, the apply and the slot, with
 their citations, are in
-[research/ARCHITECTURE.md](https://github.com/janbjorge/straum/blob/main/research/ARCHITECTURE.md);
-a join's exact semantics, history and sources in
+[research/POSTGRESQL.md](https://github.com/janbjorge/straum/blob/main/research/POSTGRESQL.md);
+what joins replaced and the sources behind them in
 [research/JOINS.md](https://github.com/janbjorge/straum/blob/main/research/JOINS.md).
-
-## Where the code is
-
-| Concept                      | File                                     |
-| ---------------------------- | ---------------------------------------- |
-| Spec, Fact, Dim, Ref, checks | `crates/straum-domain/src/spec.rs`       |
-| Ask, `check_ask`             | `crates/straum-domain/src/ask.rs`        |
-| Aggregate, Partials          | `crates/straum-domain/src/aggregate.rs`  |
-| Rollup, Level, Bucket, Cells, State | `crates/straum-domain/src/rollup.rs` |
-| Projection                   | `crates/straum-domain/src/projection.rs` |
-| Store, Bound, ask loops      | `crates/straum-domain/src/store.rs`      |
-| Sealed, SealedId, Thawed     | `crates/straum-domain/src/sealed.rs`     |
-| Datum, Value, ColumnType     | `crates/straum-domain/src/value.rs`      |
-| App, State, Writer, Status   | `crates/straum-app/src/app.rs`           |
-| Source port, Commit, Change  | `crates/straum-app/src/source.rs`        |
-| Spill port, Spilling         | `crates/straum-app/src/spill.rs`         |
-| Lag                          | `crates/straum-app/src/lag.rs`           |
-| Straum SQL walker            | `crates/straum-notation/src/sql/`        |
-| Postgres source, Snapshot    | `crates/straum-pg/src/source.rs`         |
-| Setup check                  | `crates/straum-pg/src/catalog.rs`        |
-| Load                         | `crates/straum-pg/src/load.rs`           |
-| Stream thread                | `crates/straum-pg/src/stream.rs`         |
-| Decoder, Transaction         | `crates/straum-pg/src/decode.rs`         |
-| HTTP                         | `crates/straum-http/src/lib.rs`          |
-| Commands, writer thread      | `crates/straum/src/main.rs`              |
 
 ## Where the code and the records differ
 
