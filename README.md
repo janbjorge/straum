@@ -83,11 +83,8 @@ need Docker.
   [How Straum works](https://janbjorge.github.io/straum/how-it-works.html)
   is the design
 - [Decisions](docs/adr/)
-- [Straum and PostgreSQL](research/ARCHITECTURE.md)
-- [Joins: semantics, history and sources](research/JOINS.md)
-- [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)
-- [Managed PostgreSQL constraints](research/MANAGED-POSTGRES.md)
-- [AKS deployment design](research/AKS.md)
+- [Straum and PostgreSQL](research/POSTGRESQL.md)
+- [Joins: history and sources](research/JOINS.md)
 
 ## License
 
