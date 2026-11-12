@@ -90,7 +90,7 @@ async def measure(
     dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
     # The cap is out of the way: this measures what it would prevent.
     cap = str(10 * max(SIZES))
-    async with serve(straum, dsn, "--max-transaction-rows", cap) as (http, loaded, rss):
+    async with serve(straum, dsn, "--max-transaction-rows", cap) as (http, loaded, rss, _):
         log(f"straum ready in {loaded:.1f} s; asking while idle")
         idle = statistics.median(await asks(http, lambda: True, 1.0))
         process = straum_process()

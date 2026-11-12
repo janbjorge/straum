@@ -18,7 +18,10 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker.
+PostgreSQL tests need Docker. `scripts/try.sh` runs Straum against a
+throwaway PostgreSQL in Docker with the quick start's tables, shows
+`straum views` and `straum ask`, and at a terminal ends in `straum shell`.
+`scripts/try.sh taxi` does it on the taxi month.
 
 - Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
   helm, the helm-unittest plugin and kubeconform.

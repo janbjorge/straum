@@ -16,6 +16,9 @@ raw tables, and to `straum run` on bench/trips.sql as JSON over HTTP. The
 answers must be equal. Then each side is timed from this one client, over
 its own protocol, with a warm cache. The table goes to stdout.
 
+`bench/bench.py shell` sets up the same and then, in place of the asks,
+leaves you in `straum shell` at the month.
+
 Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 """
 
@@ -201,7 +204,11 @@ async def bench(
     )
     host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
     dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
-    async with serve(straum, dsn) as (http, loaded, rss):
+    async with serve(straum, dsn) as (http, loaded, rss, url):
+        if sys.argv[1:] == ["shell"]:
+            log(f"straum ready in {loaded:.1f} s")
+            shell = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
+            return await shell.wait()
         log("asking")
         results = [await compare(pg, http, *each) for each in ASKS]
     await pg.close()
@@ -274,7 +281,7 @@ def build() -> str:
 @contextlib.asynccontextmanager
 async def serve(straum: str, dsn: str, *flags: str):
     """`straum run` with `flags`, once ready: a session to ask it, how long
-    it took to load, and its resident set in bytes."""
+    it took to load, its resident set in bytes, and its URL."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -295,7 +302,8 @@ async def serve(straum: str, dsn: str, *flags: str):
         ) as http:
             await wait_ready(server, http)
             loaded = time.perf_counter() - started
-            yield http, loaded, psutil.Process(server.pid).memory_info().rss
+            rss = psutil.Process(server.pid).memory_info().rss
+            yield http, loaded, rss, f"http://127.0.0.1:{port}"
     finally:
         with contextlib.suppress(ProcessLookupError):
             server.terminate()

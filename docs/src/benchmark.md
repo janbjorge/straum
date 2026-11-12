@@ -50,6 +50,10 @@ take 363 MiB.
 bench/bench.py
 ```
 
+`bench/bench.py shell` sets up the same, then leaves you in
+[`straum shell`](running.md#straum-shell) at the month in place of
+running the asks. Leaving the shell removes PostgreSQL.
+
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
 month into `bench/data/`, which git ignores. Then it builds Straum,
