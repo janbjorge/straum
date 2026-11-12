@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Range;
 use std::{iter, mem, panic, thread};
 
 use crate::aggregate::Aggregate;
@@ -388,6 +389,17 @@ impl Rollup {
     /// At the `date_bin` width; a cell goes when its last row is removed.
     pub(crate) fn cells(&self) -> usize {
         self.cells
+    }
+
+    /// From the start of the first `date_bin` bucket to the end of the
+    /// last, sealed ones included. Rows without a time are in no bucket
+    /// an ask reads, so they count for nothing here.
+    pub(crate) fn range(&self) -> Option<Range<i64>> {
+        let level = &self.levels[0];
+        let mut starts = level.buckets.keys().flatten();
+        let first = *starts.next()?;
+        let last = starts.next_back().map_or(first, |&last| last);
+        Some(first..last + level.width)
     }
 
     /// The types stay.

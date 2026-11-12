@@ -21,6 +21,17 @@
 //!
 //! The LSN the answer reflects goes in the `Straum-LSN` header: a caller
 //! can't wait for one yet, so it is there for debugging.
+//!
+//! For people, the same answer as a table in plain text:
+//!
+//! ```text
+//! bucket               | pickup.borough | trips |    fare
+//! ---------------------+----------------+-------+--------
+//! 2024-01-01T00:00:00Z | Bronx          |   412 | 6234.50
+//! 1 row, as of 2024-01-31T22:59:59.123456Z
+//! ```
+
+use std::time::SystemTime;
 
 use jiff::Timestamp;
 use straum_app::Answered;
@@ -52,10 +63,7 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, as_of, .. } = answered;
     let mut out = Vec::new();
     out.extend_from_slice(b"{\"as_of\":");
-    // Past jiff's year 9999, which only a broken clock gives; 1970 is
-    // still a true lower bound.
-    let as_of = Timestamp::try_from(*as_of).unwrap_or(Timestamp::UNIX_EPOCH);
-    string(&mut out, &as_of.to_string());
+    string(&mut out, &as_of_text(*as_of));
     out.extend_from_slice(b",\"rows\":[");
     for (i, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
         if i > 0 {
@@ -67,11 +75,7 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         for (column, datum) in key_columns.iter().zip(keys) {
             field(&mut out, &column.name, &mut first);
             match datum {
-                &Datum::Int(seconds) if column.is_time => {
-                    let at = Timestamp::from_second(seconds)
-                        .expect("range_errors keeps time keys in range");
-                    string(&mut out, &at.to_string());
-                }
+                &Datum::Int(seconds) if column.is_time => string(&mut out, &time_key(seconds)),
                 datum => write_datum(&mut out, datum, column.scale),
             }
         }
@@ -83,6 +87,91 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     }
     out.extend_from_slice(b"]}");
     out
+}
+
+fn as_of_text(as_of: SystemTime) -> String {
+    // Past jiff's year 9999, which only a broken clock gives; 1970 is
+    // still a true lower bound.
+    (Timestamp::try_from(as_of).unwrap_or(Timestamp::UNIX_EPOCH)).to_string()
+}
+
+fn time_key(seconds: i64) -> String {
+    Timestamp::from_second(seconds)
+        .expect("range_errors keeps time keys in range")
+        .to_string()
+}
+
+struct Cell {
+    text: String,
+    /// Numbers line up on the right, as their digits do.
+    number: bool,
+}
+
+/// The answer as a table: the names, a rule, a line per row, then the
+/// row count and `as_of`. Values print as in the JSON, text without its
+/// quotes.
+pub(crate) fn table(answered: &Answered) -> String {
+    let Answered { answer, as_of, .. } = answered;
+    let names = (answer.columns.iter())
+        .map(|column| Cell {
+            text: column.name.clone(),
+            number: false,
+        })
+        .collect();
+    let rows = answer.rows.iter().map(|AnswerRow { keys, values }| {
+        let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
+        let keys = key_columns.iter().zip(keys).map(|(column, datum)| {
+            let text = match datum {
+                &Datum::Int(seconds) if column.is_time => time_key(seconds),
+                Datum::Text(text) => text.to_string(),
+                datum => written(|out| write_datum(out, datum, column.scale)),
+            };
+            let number = matches!(datum, Datum::Int(_)) && !column.is_time;
+            Cell { text, number }
+        });
+        let values = measure_columns
+            .iter()
+            .zip(values)
+            .map(|(column, value)| Cell {
+                text: written(|out| write_value(out, value, column.scale)),
+                number: *value != Value::Null,
+            });
+        keys.chain(values).collect()
+    });
+    let lines: Vec<Vec<Cell>> = std::iter::once(names).chain(rows).collect();
+    let widths: Vec<usize> = (0..answer.columns.len())
+        .map(|i| lines.iter().map(|line| line[i].text.chars().count()).max())
+        .map(|widest| widest.expect("the names are a line"))
+        .collect();
+
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let cells: Vec<String> = (line.iter().zip(&widths))
+            .map(|(Cell { text, number }, &width)| match number {
+                true => format!("{text:>width$}"),
+                false => format!("{text:<width$}"),
+            })
+            .collect();
+        out.push_str(cells.join(" | ").trim_end());
+        out.push('\n');
+        if i == 0 {
+            let rule: Vec<String> = widths.iter().map(|&width| "-".repeat(width)).collect();
+            out.push_str(&rule.join("-+-"));
+            out.push('\n');
+        }
+    }
+    let rows = match answer.rows.len() {
+        1 => "1 row".to_owned(),
+        rows => format!("{rows} rows"),
+    };
+    out.push_str(&format!("{rows}, as of {}\n", as_of_text(*as_of)));
+    out
+}
+
+fn written(write: impl FnOnce(&mut Vec<u8>)) -> String {
+    let mut out = Vec::new();
+    write(&mut out);
+    String::from_utf8(out).expect("numbers, null, true and false are ASCII")
 }
 
 /// Starts a field of a row: a comma unless it is the first, then the name.
@@ -143,6 +232,11 @@ fn avg(sum: i128, count: u64) -> i128 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
+    use straum_app::Lsn;
+    use straum_domain::{Answer, AnswerColumn};
+
     use super::*;
 
     #[test]
@@ -169,6 +263,63 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             r#"null true false -1.5 "a\"b" null 0.07 0.375 "#
+        );
+    }
+
+    fn column(name: &str, scale: u32, is_time: bool) -> AnswerColumn {
+        AnswerColumn {
+            name: name.to_owned(),
+            scale,
+            is_time,
+        }
+    }
+
+    fn answered(rows: Vec<AnswerRow>) -> Answered {
+        Answered {
+            answer: Answer {
+                columns: vec![
+                    column("bucket", 0, true),
+                    column("shared", 0, false),
+                    column("fare", 2, false),
+                ],
+                rows,
+            },
+            applied: Lsn(0),
+            as_of: UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn a_table_lines_numbers_up_on_the_right() {
+        let row = |shared, fare| AnswerRow {
+            keys: vec![Datum::Int(86_400), shared],
+            values: vec![fare],
+        };
+        let rows = vec![
+            row(Datum::Bool(true), Value::Int(123_456)),
+            row(Datum::Null, Value::Null),
+        ];
+        assert_eq!(
+            table(&answered(rows)),
+            "\
+bucket               | shared | fare
+---------------------+--------+--------
+1970-01-02T00:00:00Z | true   | 1234.56
+1970-01-02T00:00:00Z | null   | null
+2 rows, as of 1970-01-01T00:00:00Z
+"
+        );
+    }
+
+    #[test]
+    fn a_table_without_rows_keeps_its_names() {
+        assert_eq!(
+            table(&answered(Vec::new())),
+            "\
+bucket | shared | fare
+-------+--------+-----
+0 rows, as of 1970-01-01T00:00:00Z
+"
         );
     }
 

@@ -153,6 +153,22 @@ is after the commit.
 
 ## 8. Check status, then clean up
 
+`straum views` shows what Straum holds of each view, with the names
+and types an ask may use; [`straum ask`](running.md#straum-ask) prints
+an answer as a table:
+
+```text
+$ docker exec straum /straum views
+view orders
+  buckets:  3600s
+  holds:    4 cells and 4 bound cells, 2026-01-01T09:00:00Z to 2026-01-01T12:00:00Z
+  keys:     bucket timestamptz, status text, customer_id integer, country text
+  measures: orders, revenue, avg_amount
+
+dim public.customers
+  holds:    3 rows
+```
+
 `straum status` shows what Straum has done; [Running
 Straum](running.md#straum-status) explains each line. `as of` is the
 same time answers carry, and it keeps moving while the tables are

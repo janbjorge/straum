@@ -10,7 +10,7 @@ use std::env;
 use std::fmt::{self, Display};
 use std::fs;
 use std::future::poll_fn;
-use std::io;
+use std::io::{self, Write};
 use std::net::TcpListener;
 use std::panic;
 use std::process::{self, ExitCode};
@@ -31,6 +31,8 @@ usage: straum <command> [flags]
   run     load the spec's tables, follow their changes, answer asks
   plan    print the SQL that sets PostgreSQL up for the spec
   status  print what a running Straum has done
+  views   print the views a running Straum holds, and how much of each
+  ask     ask a running Straum and print the answer as a table
   version print Straum's version
   help    print this; straum help <command> prints its flags
 
@@ -84,6 +86,30 @@ kubectl exec deployment/straum -- /straum status
 Guide: https://janbjorge.github.io/straum/running.html#straum-status
 ";
 
+const VIEWS_HELP: &str = "\
+usage: straum views [flags]
+
+Prints every view of the Straum at URL: its bucket widths, the cells and
+the range of buckets it holds, its keys with their types and its measures.
+Then each dim and its rows.
+
+  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+
+Guide: https://janbjorge.github.io/straum/running.html#straum-views
+";
+
+const ASK_HELP: &str = "\
+usage: straum ask [flags] QUERY [PARAMETER...]
+
+Sends QUERY to the Straum at URL and prints the answer as a table. Each
+PARAMETER is the value of $1, $2 and on: 7 is an integer, true and false
+are booleans, anything else is a string, and '7' in quotes is the string 7.
+
+  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+
+Guide: https://janbjorge.github.io/straum/running.html#straum-ask
+";
+
 const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
 const ROLE: &str = "straum";
@@ -105,10 +131,12 @@ enum Name {
     Run,
     Plan,
     Status,
+    Views,
+    Ask,
 }
 
 impl Name {
-    const ALL: [Name; 3] = [Name::Run, Name::Plan, Name::Status];
+    const ALL: [Name; 5] = [Name::Run, Name::Plan, Name::Status, Name::Views, Name::Ask];
 
     fn parse(text: &str) -> Option<Name> {
         Name::ALL.into_iter().find(|name| name.as_str() == text)
@@ -119,6 +147,8 @@ impl Name {
             Name::Run => "run",
             Name::Plan => "plan",
             Name::Status => "status",
+            Name::Views => "views",
+            Name::Ask => "ask",
         }
     }
 
@@ -127,6 +157,8 @@ impl Name {
             Name::Run => RUN_HELP,
             Name::Plan => PLAN_HELP,
             Name::Status => STATUS_HELP,
+            Name::Views => VIEWS_HELP,
+            Name::Ask => ASK_HELP,
         }
     }
 
@@ -142,7 +174,7 @@ impl Name {
                 "--max-transaction-rows",
             ],
             Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
-            Name::Status => &["--url"],
+            Name::Status | Name::Views | Name::Ask => &["--url"],
         }
     }
 }
@@ -158,6 +190,15 @@ enum Command {
     },
     Status {
         url: String,
+    },
+    Views {
+        url: String,
+    },
+    Ask {
+        url: String,
+        query: String,
+        /// As written on the command line.
+        parameters: Vec<String>,
     },
     Help(Option<Name>),
     Version,
@@ -236,7 +277,22 @@ fn execute(command: Command) -> Result<(), String> {
             dsn_file,
         } => plan(&spec, &publication, role.as_deref(), dsn_file.as_deref()),
         Command::Run(args) => run(args),
-        Command::Status { url } => client::status(&url).map(|text| print!("{text}")),
+        Command::Status { url } => print(&client::status(&url)?),
+        Command::Views { url } => print(&client::views(&url)?),
+        Command::Ask {
+            url,
+            query,
+            parameters,
+        } => print(&client::ask(&url, &query, &parameters)?),
+    }
+}
+
+/// Writes an answer to stdout. A reader that has left, as `head` does
+/// after its lines, is no failure.
+fn print(text: &str) -> Result<(), String> {
+    match io::stdout().write_all(text.as_bytes()) {
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(format!("writing the answer: {e}")),
+        _ => Ok(()),
     }
 }
 
@@ -283,7 +339,27 @@ struct Given<'a> {
     value: &'a str,
 }
 
+/// Where an ask's flags end and its query begins: each flag takes one
+/// value, a call for help none.
+fn query_at(rest: &[String]) -> usize {
+    let mut at = 0;
+    while let Some(flag) = rest.get(at).filter(|arg| arg.starts_with('-')) {
+        at += if flag == "-h" || flag == "--help" {
+            1
+        } else {
+            2
+        };
+    }
+    at.min(rest.len())
+}
+
 fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
+    // The query and its parameters are read as written, so a parameter
+    // may be `-h` or a negative number.
+    let (rest, query) = match name {
+        Name::Ask => rest.split_at(query_at(rest)),
+        _ => (rest, &[][..]),
+    };
     // -h anywhere asks for help, whatever else is on the line.
     if rest.iter().any(|arg| arg == "-h" || arg == "--help") {
         return Ok(Command::Help(Some(name)));
@@ -303,9 +379,17 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     let text = |flag| value(&given, flag).map(str::to_owned);
     let spec = || text("--spec").ok_or_else(|| format!("straum {} needs --spec", name.as_str()));
     let publication = || text("--publication").unwrap_or_else(|| PUBLICATION.into());
+    let url = || text("--url").unwrap_or_else(|| URL.into());
     Ok(match name {
-        Name::Status => Command::Status {
-            url: text("--url").unwrap_or_else(|| URL.into()),
+        Name::Status => Command::Status { url: url() },
+        Name::Views => Command::Views { url: url() },
+        Name::Ask => match query {
+            [query, parameters @ ..] => Command::Ask {
+                url: url(),
+                query: query.clone(),
+                parameters: parameters.to_vec(),
+            },
+            [] => return Err("straum ask needs a query".into()),
         },
         Name::Plan => Command::Plan {
             spec: spec()?,
@@ -585,6 +669,29 @@ mod tests {
                 url: "http://straum:9".into()
             })
         );
+        assert_eq!(
+            command(&args("views --url http://straum:9")),
+            Ok(Command::Views {
+                url: "http://straum:9".into()
+            })
+        );
+        assert_eq!(
+            command(&args("ask SELECT")),
+            Ok(Command::Ask {
+                url: URL.into(),
+                query: "SELECT".into(),
+                parameters: Vec::new(),
+            })
+        );
+        // What follows the query is a parameter, whatever it looks like.
+        assert_eq!(
+            command(&args("ask --url http://straum:9 SELECT -h --url -7")),
+            Ok(Command::Ask {
+                url: "http://straum:9".into(),
+                query: "SELECT".into(),
+                parameters: args("-h --url -7"),
+            })
+        );
         for help in ["help", "--help", "-h"] {
             assert_eq!(command(&args(help)), Ok(Command::Help(None)));
         }
@@ -596,6 +703,9 @@ mod tests {
             ("run --spec s -h", Name::Run),
             ("plan --help", Name::Plan),
             ("status -h --url", Name::Status),
+            ("views -h", Name::Views),
+            ("ask --help", Name::Ask),
+            ("ask --url u -h SELECT", Name::Ask),
         ] {
             assert_eq!(
                 command(&args(line)),
@@ -688,6 +798,11 @@ mod tests {
             ),
             ("status --spec s", "straum status takes no \"--spec\""),
             ("status --url", "--url needs a value"),
+            ("views --spec s", "straum views takes no \"--spec\""),
+            ("ask", "straum ask needs a query"),
+            ("ask --url u", "straum ask needs a query"),
+            ("ask --url", "--url needs a value"),
+            ("ask --spec s SELECT", "straum ask takes no \"--spec\""),
         ];
         for (line, error) in cases {
             assert_eq!(usage(line), error, "{line}");

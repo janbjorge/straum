@@ -13,12 +13,12 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use straum_app::{
-    AnswerError, Answered, App, Change, Error, Limits, Lsn, Spill, Spilling, Status, Step, Wal,
-    Writer,
+    AnswerError, Answered, App, Change, Error, Held, HeldDim, HeldKey, HeldView, Limits, Lsn,
+    Spill, Spilling, Status, Step, Wal, Writer,
 };
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Literal, SealedId,
-    Spec, Store, TimeKey, Value,
+    Spec, Store, Table, TimeKey, Value, Width,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -243,6 +243,60 @@ fn not_ready_before_the_first_step() {
             "nope"
         ))]))
     );
+}
+
+#[test]
+fn held_says_what_the_store_holds_once_loaded() {
+    let (db, mut writer) = setup(&TABLES);
+    assert_eq!(writer.app().held(), None);
+
+    (db.borrow_mut()).commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    let key = |name: &str, column_type| HeldKey {
+        name: id(name),
+        column_type,
+    };
+    let zoned = [
+        key("zone_id", ColumnType::Int),
+        key("borough", ColumnType::Text),
+    ];
+    let held = Held {
+        views: vec![
+            HeldView {
+                name: id("trips"),
+                widths: vec![Width { seconds: 3_600 }],
+                bucket: ColumnType::Time { zoned: true },
+                keys: [&[key("kind", ColumnType::Int)], &zoned[..]].concat(),
+                measures: vec![id("trips"), id("fare"), id("fare_max"), id("riders")],
+                cells: 1,
+                bound_cells: Some(1),
+                range: Some(0..3_600),
+            },
+            HeldView {
+                name: id("logins"),
+                widths: vec![Width { seconds: 86_400 }],
+                bucket: ColumnType::Time { zoned: true },
+                keys: zoned.to_vec(),
+                measures: vec![id("logins")],
+                cells: 0,
+                bound_cells: Some(0),
+                range: None,
+            },
+        ],
+        dims: vec![HeldDim {
+            table: Table {
+                schema: id("public"),
+                name: id("zones"),
+            },
+            rows: 1,
+        }],
+    };
+    assert_eq!(writer.app().held(), Some(held));
+
+    // A failure leaves a store no ask reads, so nothing is held.
+    db.borrow_mut().drop_connection = true;
+    writer.step().unwrap_err();
+    assert_eq!(writer.app().held(), None);
 }
 
 #[test]

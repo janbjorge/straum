@@ -6,12 +6,15 @@
 //!   query read by the `ReadAsk` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer,
-//!   503 while a table it reads isn't ready.
+//!   503 while a table it reads isn't ready. With `Accept: text/plain` the
+//!   answer is a table and the errors are lines, for people (ADR-0039).
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its
 //!   lag bound, else 503 and why. Asks still answer while Straum lags.
 //! - `GET /status`: what Straum has done, in plain text for people; `straum
 //!   status` prints it.
+//! - `GET /views`: every view and how much of it Straum holds, in plain text
+//!   for people; `straum views` prints it. 503 until every table is loaded.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +22,7 @@ mod answer;
 mod ask;
 mod json;
 mod status;
+mod views;
 
 use std::convert::Infallible;
 use std::future::{Future, poll_fn};
@@ -31,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
+use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -48,6 +52,34 @@ const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 const MAX_ASK: usize = 1 << 20;
+
+const JSON: &str = "application/json";
+const TEXT: &str = "text/plain; charset=utf-8";
+
+/// How an ask is answered: JSON for programs, or plain text for the people
+/// who send `Accept: text/plain`.
+#[derive(Clone, Copy)]
+enum Format {
+    Json,
+    Text,
+}
+
+impl Format {
+    fn of(accept: Option<&HeaderValue>) -> Format {
+        match accept {
+            Some(accept) if accept == "text/plain" => Format::Text,
+            _ => Format::Json,
+        }
+    }
+
+    /// The `Server-Timing` name of the time spent writing the body.
+    fn phase(self) -> &'static str {
+        match self {
+            Format::Json => "json",
+            Format::Text => "text",
+        }
+    }
+}
 
 /// How long to wait before accepting again after an accept fails, as when
 /// the process is out of file descriptors.
@@ -110,19 +142,29 @@ async fn handle(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body) = request.into_parts();
     let response = match (&parts.method, parts.uri.path()) {
-        (&Method::POST, "/ask") => ask(body, &app, read_ask).await,
+        (&Method::POST, "/ask") => {
+            let format = Format::of(parts.headers.get(ACCEPT));
+            ask(body, &app, read_ask, format).await
+        }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => readyz(&app),
         (&Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
+        (&Method::GET, "/views") => views(&app),
         (_, "/ask") => not_allowed("POST"),
-        (_, "/livez" | "/readyz" | "/status") => not_allowed("GET"),
+        (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(response)
 }
 
-async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Bytes>> {
+async fn ask(
+    body: Incoming,
+    app: &App,
+    read_ask: ReadAsk,
+    format: Format,
+) -> Response<Full<Bytes>> {
     let start = Instant::now();
+    let errors = |status, errors: &[String]| errors_response(status, format, errors);
     let body = match Limited::new(body, MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) if e.is::<LengthLimitError>() => {
@@ -149,18 +191,21 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
         let answering = Instant::now();
         let answered = app.ask(&request)?;
         let writing = Instant::now();
-        let json = answer::write(&answered);
+        let body = match format {
+            Format::Json => answer::write(&answered),
+            Format::Text => answer::table(&answered).into_bytes(),
+        };
         Ok(Timed {
             applied: answered.applied,
-            json,
+            body,
             answer: writing - answering,
             write: writing.elapsed(),
         })
     })
     .await;
     match answered {
-        Ok(Ok(timed)) => answered_response(timed, parse, start),
-        Ok(Err(e)) => answer_error(&e),
+        Ok(Ok(timed)) => answered_response(timed, format, parse, start),
+        Ok(Err(e)) => answer_error(&e, format),
         Err(_) => {
             let error = "Straum failed while answering; its log says why".to_owned();
             errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
@@ -170,13 +215,22 @@ async fn ask(body: Incoming, app: &App, read_ask: ReadAsk) -> Response<Full<Byte
 
 struct Timed {
     applied: Lsn,
-    json: Vec<u8>,
+    body: Vec<u8>,
     answer: Duration,
     write: Duration,
 }
 
-fn answered_response(timed: Timed, parse: Duration, start: Instant) -> Response<Full<Bytes>> {
-    let mut response = respond(StatusCode::OK, "application/json", timed.json);
+fn answered_response(
+    timed: Timed,
+    format: Format,
+    parse: Duration,
+    start: Instant,
+) -> Response<Full<Bytes>> {
+    let content_type = match format {
+        Format::Json => JSON,
+        Format::Text => TEXT,
+    };
+    let mut response = respond(StatusCode::OK, content_type, timed.body);
     let lsn = HeaderValue::try_from(timed.applied.to_string()).expect("an LSN is ASCII");
     response.headers_mut().insert(LSN, lsn);
     // total also holds reading the body and the hops to and from the
@@ -184,22 +238,23 @@ fn answered_response(timed: Timed, parse: Duration, start: Instant) -> Response<
     let phases = [
         ("parse", parse),
         ("answer", timed.answer),
-        ("json", timed.write),
+        (format.phase(), timed.write),
         ("total", start.elapsed()),
     ];
     (response.headers_mut()).insert(SERVER_TIMING, server_timing(&phases));
     response
 }
 
-fn answer_error(e: &AnswerError) -> Response<Full<Bytes>> {
-    match e {
-        AnswerError::Invalid(invalid) => {
-            let invalid: Vec<String> = invalid.iter().map(ToString::to_string).collect();
-            errors(StatusCode::BAD_REQUEST, &invalid)
-        }
-        AnswerError::NotReady => errors(StatusCode::SERVICE_UNAVAILABLE, &[e.to_string()]),
-        AnswerError::Spill(_) => errors(StatusCode::INTERNAL_SERVER_ERROR, &[e.to_string()]),
-    }
+fn answer_error(e: &AnswerError, format: Format) -> Response<Full<Bytes>> {
+    let (status, errors) = match e {
+        AnswerError::Invalid(invalid) => (
+            StatusCode::BAD_REQUEST,
+            invalid.iter().map(ToString::to_string).collect(),
+        ),
+        AnswerError::NotReady => (StatusCode::SERVICE_UNAVAILABLE, vec![e.to_string()]),
+        AnswerError::Spill(_) => (StatusCode::INTERNAL_SERVER_ERROR, vec![e.to_string()]),
+    };
+    errors_response(status, format, &errors)
 }
 
 /// `name;dur=ms, ...`: the spec counts in milliseconds, and asks take
@@ -222,8 +277,25 @@ fn readyz(app: &App) -> Response<Full<Bytes>> {
     }
 }
 
-/// `{"errors": [...]}`.
-fn errors(status: StatusCode, errors: &[String]) -> Response<Full<Bytes>> {
+fn views(app: &App) -> Response<Full<Bytes>> {
+    match app.held() {
+        Some(held) => text(StatusCode::OK, views::write(&held)),
+        None => {
+            // A load can finish between the two reads.
+            let why = status::why_not(&app.status()).unwrap_or_else(|| "loading".to_owned());
+            text(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("not ready: {why}\n"),
+            )
+        }
+    }
+}
+
+/// `{"errors": [...]}`, or a line per error.
+fn errors_response(status: StatusCode, format: Format, errors: &[String]) -> Response<Full<Bytes>> {
+    if let Format::Text = format {
+        return text(status, errors.join("\n") + "\n");
+    }
     let mut body = b"{\"errors\":[".to_vec();
     for (i, error) in errors.iter().enumerate() {
         if i > 0 {
@@ -232,7 +304,7 @@ fn errors(status: StatusCode, errors: &[String]) -> Response<Full<Bytes>> {
         json::string(&mut body, error);
     }
     body.extend_from_slice(b"]}");
-    respond(status, "application/json", body)
+    respond(status, JSON, body)
 }
 
 fn not_allowed(allow: &'static str) -> Response<Full<Bytes>> {
@@ -244,7 +316,7 @@ fn not_allowed(allow: &'static str) -> Response<Full<Bytes>> {
 }
 
 fn text(status: StatusCode, body: String) -> Response<Full<Bytes>> {
-    respond(status, "text/plain; charset=utf-8", body.into_bytes())
+    respond(status, TEXT, body.into_bytes())
 }
 
 fn respond(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response<Full<Bytes>> {

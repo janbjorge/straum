@@ -6,10 +6,14 @@
 //! asks read sealed buckets from it (ADR-0033, ADR-0035).
 
 use std::fmt;
+use std::iter;
+use std::ops::Range;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_domain::{Answer, Ask, AskError, Identifier, SealedError, SealedId, Spec, Store};
+use straum_domain::{
+    Answer, Ask, AskError, ColumnType, Identifier, SealedError, SealedId, Spec, Store, Table, Width,
+};
 
 use crate::lag::Lag;
 use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
@@ -17,6 +21,8 @@ use crate::spill::{SpillError, Spilling};
 
 /// The store may be half updated, so nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
+
+const IN_SPEC: &str = "the store holds every view and dim of its spec";
 
 const STARTED: &str = "the writer applies commits only to a started stream";
 
@@ -140,6 +146,45 @@ pub struct Failure {
     pub error: String,
 }
 
+/// What [`App::held`] reports, read at one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub views: Vec<HeldView>,
+    pub dims: Vec<HeldDim>,
+}
+
+/// A view as asks may read it, and how much of it the store holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldView {
+    pub name: Identifier,
+    /// The `date_bin` width, then the wider ones.
+    pub widths: Vec<Width>,
+    /// The type of `bucket`.
+    pub bucket: ColumnType,
+    /// Every name an ask may group or filter by, `bucket` aside.
+    pub keys: Vec<HeldKey>,
+    pub measures: Vec<Identifier>,
+    /// Keyed cells at the `date_bin` width.
+    pub cells: usize,
+    /// Bound cells at the `date_bin` width, for a view that keeps them.
+    pub bound_cells: Option<usize>,
+    /// From the start of the first `date_bin` bucket to the end of the
+    /// last, in Unix seconds; `None` for a view with no bucket.
+    pub range: Option<Range<i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldKey {
+    pub name: Identifier,
+    pub column_type: ColumnType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldDim {
+    pub table: Table,
+    pub rows: usize,
+}
+
 impl App {
     /// An empty store that answers not ready until a [`Writer`] has loaded
     /// it. `spilling` seals buckets into a spill; `None` keeps them all in
@@ -213,6 +258,42 @@ impl App {
             }),
             unseals: state.unseals,
         }
+    }
+
+    /// `None` until every table is loaded: only a load knows the types.
+    pub fn held(&self) -> Option<Held> {
+        let state = self.read();
+        state.following.as_ref()?;
+        let store = &state.store;
+        let views = (store.spec().facts().iter())
+            .map(|fact| {
+                let name = fact.name.as_str();
+                HeldView {
+                    name: fact.name.clone(),
+                    widths: iter::once(fact.time.width)
+                        .chain(fact.time.wider.iter().copied())
+                        .collect(),
+                    bucket: fact.time.origin.column_type(),
+                    keys: (fact.keys())
+                        .map(|key| HeldKey {
+                            name: key.clone(),
+                            column_type: store.key_type(name, key).expect(IN_SPEC),
+                        })
+                        .collect(),
+                    measures: fact.measures.iter().map(|m| m.name.clone()).collect(),
+                    cells: store.cells(name).expect(IN_SPEC),
+                    bound_cells: store.bound_cells(name),
+                    range: store.range(name),
+                }
+            })
+            .collect();
+        let dims = (store.spec().dims().iter())
+            .map(|dim| HeldDim {
+                table: dim.table.clone(),
+                rows: store.dim_rows(dim.name.as_str()).expect(IN_SPEC),
+            })
+            .collect();
+        Some(Held { views, dims })
     }
 
     fn read(&self) -> RwLockReadGuard<'_, State> {

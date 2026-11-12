@@ -9,6 +9,8 @@ straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
            [--max-transaction-rows ROWS]
 straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
+straum views [--url URL]
+straum ask [--url URL] QUERY [PARAMETER...]
 straum version
 straum help
 ```
@@ -63,10 +65,11 @@ flight and exits, and PostgreSQL drops the slot as the connection closes.
 
 | Endpoint | Answers |
 | --- | --- |
-| `POST /ask` | An [ask](asks.md). |
+| `POST /ask` | An [ask](asks.md), as JSON; as a table with `Accept: text/plain`. |
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why. |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
 | `GET /status` | What `straum status` prints, in plain text. |
+| `GET /views` | What `straum views` prints, in plain text; 503 `not ready: ` and why until every table is loaded. |
 
 ## States
 
@@ -128,6 +131,81 @@ sealed:       no spill
 - `last failure`: when, and the error.
 - `sealed`: `no spill`. The shipped binary has no spill configuration.
 
+## straum views
+
+Prints every view of the Straum at `--url` and how much of it Straum
+holds, from its `GET /views`.
+
+```text
+$ straum views
+view orders
+  buckets:  3600s
+  holds:    4 cells and 4 bound cells, 2026-01-01T09:00:00Z to 2026-01-01T11:00:00Z
+  keys:     bucket timestamptz, status text, customer_id integer, country text
+  measures: orders, revenue, avg_amount
+
+dim public.customers
+  holds:    3 rows
+```
+
+- `buckets`: the view's bucket widths in seconds, narrowest first.
+- `holds`: the [cells](how-it-works.md#cells) at the narrowest width,
+  and the bound cells of a view that joins. Then the range of its
+  buckets: the start of the first and the end of the last, which are
+  the bounds an ask takes to read everything.
+- `keys`: every name an ask may group or filter by, each with the type
+  a parameter for it must have.
+- `measures`: the names an ask may select after the keys.
+- `dim`: a joined table and the rows Straum holds of it.
+
+Until every table is loaded it prints `not ready: ` and why, and exits
+with 1.
+
+## straum ask
+
+Sends a query to the Straum at `--url` and prints the answer as a
+table. The words after the query are the values of `$1`, `$2` and on:
+
+```text
+$ straum ask 'SELECT status, country, orders, revenue, avg_amount
+    FROM orders WHERE bucket >= $1 AND bucket < $2
+    GROUP BY status, country' 2026-01-01T00:00:00Z 2026-01-02T00:00:00Z
+status   | country | orders | revenue | avg_amount
+---------+---------+--------+---------+-----------
+paid     | NO      |      2 |  139.99 |     69.995
+paid     | SE      |      1 |   80.50 |       80.5
+refunded | NO      |      1 |   42.00 |         42
+3 rows, as of 2026-11-09T17:12:41.902318Z
+```
+
+Quote the query for the shell with single quotes, so `$1` reaches
+Straum as written. The query is an [ask](asks.md#the-query), and the
+table holds what the JSON answer holds: values print the same, text
+without its quotes, a null as `null`.
+
+A command line holds only text, so a parameter's type is read from it:
+
+| Written | Sent as |
+| --- | --- |
+| `7`, `-7` | An integer. |
+| `true`, `false` | A boolean. |
+| `'7'`, `'true'` | The string inside the single quotes. |
+| Anything else | A string, such as `paid` or `2026-01-01T00:00:00Z`. |
+
+The shell takes single quotes for itself, so the string 7 is written
+`"'7'"`. A parameter must still have its column's type: `straum views`
+lists them.
+
+An ask Straum can't answer prints the reply's first line and each
+error, and exits with 1:
+
+```text
+$ straum ask 'SELECT orders FROM orders WHERE customer_id = $1
+    AND bucket >= $2 AND bucket < $3' paid 0 3600
+straum: http://127.0.0.1:8080 answered "HTTP/1.1 400 Bad Request"
+customer_id is an integer, so it can't be the text "paid"
+```
+
 ## Kubernetes
 
 The repository's `Dockerfile` and Helm chart, `deploy/helm/straum`, run
@@ -156,6 +234,7 @@ helm upgrade --install straum deploy/helm/straum \
   --set dsn.existingSecret=straum-dsn \
   --set-file spec=spec.sql
 kubectl exec deployment/straum -- /straum status
+kubectl exec deployment/straum -- /straum views
 ```
 
 The chart makes a Deployment, a ConfigMap with the spec, a ClusterIP

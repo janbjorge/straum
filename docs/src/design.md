@@ -19,7 +19,7 @@ Four participants:
   join or a row, only the names a view gives its keys and measures.
 - **People**: a table owner, who runs the setup SQL `straum plan`
   prints once, and an operator, who runs the binary and reads
-  `/readyz`, `/status` and the log. In Kubernetes the chart is the
+  `/readyz`, `/status`, `/views` and the log. In Kubernetes the chart is the
   operator.
 
 ## Architecture
@@ -178,7 +178,13 @@ The HTTP handler in `straum-http` and `App::ask`:
    name only parts of the cell key, so a cell counts whole or not at
    all. Sort rows by key.
 7. Answer with `as_of` from the **Lag** and the applied LSN in the
-   `Straum-LSN` header, `Cache-Control: no-store`.
+   `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
+   plain text for an ask sent with `Accept: text/plain`.
+
+`GET /views` takes the read lock once and reports what the store holds
+(`App::held`): per view its widths, cells, range of buckets, keys with
+the types the load set, and measures; per dim its rows. `straum views`
+and `straum ask` print what the server wrote, as `straum status` does.
 
 ## Model
 
@@ -361,6 +367,7 @@ maps each part of the model to the records that settled it.
 | Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
 | `timestamp` as wall clock, enums as labels     | 0018, 0037             |
 | tokio only in `straum-http`                    | 0008                   |
+| `/status`, `/views` and text answers for people | 0023, 0039            |
 
 The PostgreSQL mechanics behind the load, the apply and the slot, with
 their citations, are in

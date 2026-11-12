@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ops::Range;
 
 use crate::aggregate::Partials;
 use crate::ask::{Ask, AskError, AskKey, TimeKey};
@@ -438,6 +439,28 @@ impl Store {
 
     pub fn dim_rows(&self, dim: &str) -> Option<usize> {
         Some(self.projections[self.dim_index(dim)?].len())
+    }
+
+    /// From the start of the fact's first `date_bin` bucket to the end of
+    /// its last, hot or sealed, in Unix seconds; none while it has no
+    /// bucket.
+    pub fn range(&self, fact: &str) -> Option<Range<i64>> {
+        self.rollup(fact)?.1.range()
+    }
+
+    /// The type of a key the view names, as the load set it.
+    pub fn key_type(&self, fact: &str, key: &Identifier) -> Option<ColumnType> {
+        let (fact, rollup) = self.rollup(fact)?;
+        Some(match fact.resolve(key)? {
+            Key::ByKey(by) => rollup.key_type(key_part_of(fact, by.key_part())),
+            Key::Attribute(r, attribute) => {
+                let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
+                let read = (dim.attributes.iter())
+                    .position(|a| *a == attribute.column)
+                    .expect(CHECKED);
+                self.projection(r.dim.as_str()).attribute_type(read)
+            }
+        })
     }
 
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {

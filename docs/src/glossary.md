@@ -149,7 +149,8 @@ notes under `research/`. The clashes at the end are open.
 - **Query**: the ask's `query` field, one `SELECT` over a view in
   Straum SQL (ADR-0006).
 - **Parameter** (`Literal`): a `$n` value of an ask: integer, string
-  or boolean, with its column's type and no conversion.
+  or boolean, with its column's type and no conversion. `straum ask`
+  reads each one's type from its text (ADR-0039).
 - **Literal** (`Literal`): a constant in a spec's `FILTER` or `WHERE`:
   an integer, `'text'`, `true` or `false`.
 - **Condition** (`Condition`): `key = value`, `key IN (values)`, or in
@@ -166,8 +167,10 @@ notes under `research/`. The clashes at the end are open.
   buckets alone when grouped by bucket.
 - **Limit**: what a flag caps: `--max-lag`, `--max-retained-wal`
   (`Limits`) and `--max-transaction-rows` (`Transaction::limit`).
-- **Answer**: the JSON `{"as_of", "rows"}`. `Answer` is its columns
-  and rows; `Answered` adds `as_of` and the applied LSN. The HTTP
+- **Answer**: the JSON `{"as_of", "rows"}`, or the same as a table in
+  plain text for `Accept: text/plain` and `straum ask` (ADR-0039).
+  `Answer` is its columns and rows; `Answered` adds `as_of` and the
+  applied LSN. The HTTP
   tests say "reply"; `straum-http` says "response" for the HTTP
   message around it.
 - **Row** (`AnswerRow`): one object of an answer's `rows`, sorted by
@@ -242,6 +245,10 @@ notes under `research/`. The clashes at the end are open.
   read at one moment. Not telemetry (ADR-0023). The stream thread's
   report of the applied LSN to PostgreSQL (`StreamThread::report`) is
   a different message.
+- **Held** (`Held`, `App::held`): what `GET /views` and `straum views`
+  show, read at one moment: per view its widths, cells, range of
+  buckets, keys with their types and measures; per dim its rows
+  (ADR-0039). None until every table is loaded.
 - **Health check**: `/livez`, up while the process serves, and
   `/readyz`, up while ready.
 

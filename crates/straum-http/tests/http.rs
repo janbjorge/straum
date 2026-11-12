@@ -208,6 +208,17 @@ fn call(addr: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
     )
 }
 
+/// An ask from a person, who reads plain text.
+fn call_as_text(addr: SocketAddr, body: &str) -> Reply {
+    send(
+        addr,
+        &format!(
+            "POST /ask HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: text/plain\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
 /// An ask as straum-http reads it: a query and its parameters.
 fn ask(query: &str, parameters: &str) -> String {
     format!(r#"{{"query": "{query}", "parameters": {parameters}}}"#)
@@ -279,6 +290,131 @@ fn answers_asks_as_json() {
     assert_eq!(
         rows_of(&reply.body),
         r#"[{"trips":5,"fare":15.95,"fare_avg":3.9875}]"#
+    );
+    server.stop();
+}
+
+#[test]
+fn answers_asks_as_a_table_to_those_who_accept_text() {
+    let mut writer = writer();
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+
+    let range = r#"["2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z"]"#;
+    let reply = call_as_text(server.addr, &ask(BY_BUCKET, range));
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    for header in [
+        "content-type: text/plain; charset=utf-8",
+        "straum-lsn: 16/B374D848",
+    ] {
+        assert!(reply.head.contains(header), "{}", reply.head);
+    }
+    let names: Vec<String> = (server_timing(&reply.head).unwrap().into_iter())
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, ["parse", "answer", "text", "total"]);
+    let (table, as_of) = reply.body.split_at(reply.body.find("4 rows").unwrap());
+    assert_eq!(
+        table,
+        "\
+bucket               | kind | borough    | trips | fare  | fare_avg | fare_max
+---------------------+------+------------+-------+-------+----------+---------
+2024-01-01T00:00:00Z |    1 | Bronx      |     1 | 12.50 |     12.5 |    12.50
+2024-01-01T01:00:00Z |    1 | Bronx      |     1 |  2.50 |      2.5 |     2.50
+2024-01-01T02:00:00Z |    2 | null       |     1 | null  | null     | null
+2024-01-01T23:00:00Z |    2 | Queens \"Q\" |     1 | -0.05 |    -0.05 |    -0.05
+"
+    );
+    assert!(
+        as_of.starts_with("4 rows, as of 2") && as_of.ends_with("Z\n"),
+        "{as_of}"
+    );
+
+    let reply = call_as_text(server.addr, &first_hour());
+    assert!(
+        reply.body.starts_with("trips\n-----\n    0\n1 row, as of "),
+        "{}",
+        reply.body
+    );
+
+    // Any other Accept is answered as JSON.
+    let request = first_hour();
+    let reply = send(
+        server.addr,
+        &format!(
+            "POST /ask HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: */*\r\ncontent-length: {}\r\n\r\n{request}",
+            request.len()
+        ),
+    );
+    assert_eq!(rows_of(&reply.body), r#"[{"trips":0}]"#);
+    server.stop();
+}
+
+#[test]
+fn errors_are_lines_to_those_who_accept_text() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call_as_text(server.addr, &first_hour());
+    assert_eq!((reply.status, reply.body.as_str()), (503, "not ready\n"));
+
+    writer.step().unwrap();
+    let twice = ask(
+        "SELECT kind, kind, trips, trips FROM trips \
+         WHERE bucket >= $1 AND bucket < $2 GROUP BY kind",
+        "[0, 3600]",
+    );
+    let cases = [
+        (twice, "kind asked twice\ntrips asked twice\n"),
+        (
+            "{".to_owned(),
+            "EOF while parsing an object at line 1 column 1\n",
+        ),
+    ];
+    for (body, errors) in cases {
+        let reply = call_as_text(server.addr, &body);
+        assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{body}");
+        assert!(
+            reply.head.contains("content-type: text/plain"),
+            "{}",
+            reply.head
+        );
+    }
+    server.stop();
+}
+
+#[test]
+fn views_say_what_straum_holds() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "GET", "/views", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, "not ready: loading\n")
+    );
+
+    writer.step().unwrap();
+    let reply = call(server.addr, "GET", "/views", "");
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.body,
+        "\
+view trips
+  buckets:  3600s
+  holds:    4 cells and 4 bound cells, 2024-01-01T00:00:00Z to 2024-01-02T00:00:00Z
+  keys:     bucket timestamptz, kind integer, zone_id integer, borough text
+  measures: trips, fare, fare_avg, fare_max
+
+dim public.zones
+  holds:    2 rows
+"
+    );
+
+    writer.step().unwrap();
+    writer.step().unwrap_err();
+    let reply = call(server.addr, "GET", "/views", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, "not ready: connection dropped\n")
     );
     server.stop();
 }
@@ -484,6 +620,7 @@ fn routes() {
         ("POST", "/livez", "GET"),
         ("DELETE", "/readyz", "GET"),
         ("POST", "/status", "GET"),
+        ("PUT", "/views", "GET"),
     ] {
         let reply = call(server.addr, method, path, "");
         assert_eq!(reply.status, 405, "{method} {path}");

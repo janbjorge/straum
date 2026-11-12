@@ -101,6 +101,25 @@ answer reflects. `Server-Timing` says where the time went in Straum, in
 milliseconds: `parse`, `answer`, `json` and `total`; what a client
 measures beyond `total` is the network and the client itself.
 
+### As a table
+
+An ask sent with `Accept: text/plain` is answered in plain text, for
+people: the same rows as a table, then the row count and `as_of`.
+[`straum ask`](running.md#straum-ask) sends one from the command line.
+
+```text
+bucket               | country | orders | revenue
+---------------------+---------+--------+--------
+2026-01-01T09:00:00Z | NO      |      1 |  120.00
+2026-01-01T09:00:00Z | SE      |      1 |   80.50
+2026-01-01T11:00:00Z | SE      |      1 |  300.00
+3 rows, as of 2026-11-09T17:12:57.861204Z
+```
+
+Its errors are plain text too, a line each, under the same statuses,
+and `Server-Timing` says `text` where it said `json`. The layout is
+for reading and may change; a program reads the JSON.
+
 ### Seeing your own write
 
 `Straum-LSN` is written as PostgreSQL writes a `pg_lsn`, such as

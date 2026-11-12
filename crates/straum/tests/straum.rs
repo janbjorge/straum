@@ -345,6 +345,50 @@ fn serves_asks_from_postgres() {
     let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\nsealed:       no spill\n";
     assert!(status.ends_with(counts), "{status}");
 
+    let (code, views, _) = output(Command::new(STRAUM).args(["views", "--url", &url]));
+    assert_eq!(code, Some(0), "{views}");
+    assert_eq!(
+        views,
+        "\
+view trips
+  buckets:  3600s
+  holds:    4 cells and 4 bound cells, 2024-01-01T00:00:00Z to 2024-01-01T04:00:00Z
+  keys:     bucket timestamptz, kind text, zone_id integer, borough text
+  measures: trips, fare
+
+dim shop.zones
+  holds:    2 rows
+"
+    );
+
+    // The range `straum views` gave, as `straum ask` takes it.
+    let query = "SELECT kind, borough, trips, fare FROM trips \
+                 WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough";
+    let range = ["2024-01-01T00:00:00Z", "2024-01-01T04:00:00Z"];
+    let (code, table, _) =
+        output(Command::new(STRAUM).args(["ask", "--url", &url, query, range[0], range[1]]));
+    assert_eq!(code, Some(0), "{table}");
+    let rows = "\
+kind | borough | trips | fare
+-----+---------+-------+------
+null | Bronx   |     1 | -2.25
+cab  | Bronx   |     1 | 12.50
+cab  | Queens  |     1 |  0.05
+van  | null    |     1 | null
+4 rows, as of 20";
+    assert!(table.starts_with(rows), "{table}");
+    let wrong = "SELECT trips FROM trips WHERE kind = $1 AND bucket >= $2 AND bucket < $3";
+    let (code, _, stderr) =
+        output(Command::new(STRAUM).args(["ask", "--url", &url, wrong, "7", "0", "3600"]));
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "straum: {url} answered \"HTTP/1.1 400 Bad Request\"\n\
+             kind is text, so it can't be the integer 7\n"
+        )
+    );
+
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
     assert!(body.starts_with(r#"{"as_of":"20"#), "{body}");
@@ -470,6 +514,14 @@ fn prints_help_and_version() {
     let (code, stdout, _) = output(&mut straum(&["version"]));
     assert_eq!(code, Some(0));
     assert_eq!(stdout, format!("straum {}\n", env!("CARGO_PKG_VERSION")));
+    for (command, usage) in [
+        ("views", "usage: straum views [flags]"),
+        ("ask", "usage: straum ask [flags] QUERY [PARAMETER...]"),
+    ] {
+        let (code, stdout, _) = output(&mut straum(&[command, "--help"]));
+        assert_eq!(code, Some(0));
+        assert!(stdout.starts_with(usage), "{stdout}");
+    }
     let (code, stdout, _) = output(&mut straum(&["plan", "--help"]));
     assert_eq!(code, Some(0));
     assert!(
@@ -488,6 +540,12 @@ fn rejects_bad_usage() {
     assert_eq!(
         stderr,
         "straum: straum run takes no \"--port\"\ntry: straum run --help\n"
+    );
+    let (code, _, stderr) = output(&mut straum(&["ask"]));
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        stderr,
+        "straum: straum ask needs a query\ntry: straum ask --help\n"
     );
     let (code, _, stderr) = output(&mut straum(&["serve"]));
     assert_eq!(code, Some(2));

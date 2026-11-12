@@ -887,6 +887,41 @@ fn a_fact_without_refs_keeps_no_bound_cells() {
     assert_eq!(store.bound_cells("trips"), None);
 }
 
+/// The range runs from the first `date_bin` bucket's start to the last
+/// one's end, and a row without a time is in neither.
+#[test]
+fn the_range_spans_the_buckets_held() {
+    let mut store = Store::new(zones_spec(None, true));
+    assert_eq!(store.range("trips"), None);
+    assert_eq!(store.range("zones"), None);
+    let width = i64::from(WIDTH);
+    let at = |time| [time, Datum::Int(1)];
+    store.add_row("trips", &at(Datum::Null)).unwrap();
+    assert_eq!(store.range("trips"), None);
+    store.add_row("trips", &at(Datum::Int(START + 1))).unwrap();
+    assert_eq!(store.range("trips"), Some(START..START + width));
+    store
+        .add_row("trips", &at(Datum::Int(START + 3 * width)))
+        .unwrap();
+    assert_eq!(store.range("trips"), Some(START..START + 4 * width));
+}
+
+/// A key has the type the load set: a fact column's, a boolean for a
+/// null-ness key, the dim's for a dim column. A measure is no key.
+#[test]
+fn a_key_has_the_type_the_load_set() {
+    let store = typed(&spec());
+    let key_type = |name: &str| store.key_type("trips", &id(name));
+    assert_eq!(key_type("pay"), Some(ColumnType::Int));
+    assert_eq!(key_type("shared"), Some(ColumnType::Bool));
+    assert_eq!(key_type("known"), Some(ColumnType::Bool));
+    assert_eq!(key_type("pickup_borough"), Some(ColumnType::Text));
+    assert_eq!(key_type("combo_label"), Some(ColumnType::Text));
+    assert_eq!(key_type("trips"), None);
+    assert_eq!(key_type("bucket"), None);
+    assert_eq!(store.key_type("zones", &id("pay")), None);
+}
+
 /// Two rows in one cell, and a row with no time, still leave after the
 /// dims they join have changed.
 #[test]
