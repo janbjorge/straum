@@ -2,9 +2,8 @@
 
 One name per thing, in the guide, the ADRs, the code and its errors.
 The code's name follows in parentheses where it differs; "also" lists
-spellings still found elsewhere. DOMAIN.md, JOINS.md and
-ARCHITECTURE.md are the notes under `research/`. The clashes at the
-end are open.
+spellings still found elsewhere. JOINS.md and ARCHITECTURE.md are the
+notes under `research/`. The clashes at the end are open.
 
 ## Straum
 

@@ -1,7 +1,7 @@
 # Joins: the data model, the code, and where it comes from (2026-11-11)
 
 Straum aggregates one fact table joined to dim tables. This note holds
-what DOMAIN.md leaves to it: the exact semantics of a join at ask
+what `docs/src/how-it-works.md` leaves to it: the exact semantics of a join at ask
 time, what was built before it (M9 to M12), the sources behind the
 choice (ADR-0030, 2026-11-11), and the numbers. Tags as in README.md
 (R, U, I).
@@ -27,7 +27,7 @@ ask ------------------------------------------+  Store::ask maps each cell's
 ```
 
 The pieces, their dependencies and where each lives in the code are in
-DOMAIN.md; the words are in `docs/src/glossary.md`. What a join adds:
+`docs/src/how-it-works.md`; the words are in `docs/src/glossary.md`. What a join adds:
 every key an ask can name is a select name of the view, and an
 attribute resolves to a lookup through the cell's via columns, so an
 ask looks nothing up outside Straum. Dim columns are as of now, always.

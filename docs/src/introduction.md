@@ -50,9 +50,9 @@ New York taxi trips, the [benchmark](benchmark.md) answers in 150 to
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 
-*A table owner runs the SQL `straum plan` prints, once. Every start of
-`straum run` loads a snapshot at LSN L and applies every commit after L.
-Apps ask over HTTP.*
+*A table owner runs the SQL `straum plan` prints, once. `straum run`
+loads the tables and follows them, as [How Straum
+works](how-it-works.md) describes. Apps ask over HTTP.*
 
 Straum supports PostgreSQL 17 and newer as shipped, with no extension
 and no superuser, so managed services work. The name is Nynorsk for a

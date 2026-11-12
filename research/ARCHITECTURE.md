@@ -1,7 +1,7 @@
 # Straum and PostgreSQL (2026-11-12)
 
 How Straum uses PostgreSQL, with the citations behind each claim. The
-design itself is DOMAIN.md; `docs/adr/` holds the decisions this
+design itself is `docs/src/how-it-works.md`; `docs/adr/` holds the decisions this
 follows; the user guide (`docs/`) says how to set PostgreSQL up and run
 Straum. First target: AKS next to Azure Database for PostgreSQL
 Flexible Server 18 (AKS.md). The constraints are the managed ones: no

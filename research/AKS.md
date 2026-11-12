@@ -2,8 +2,8 @@
 
 jb, 2026-11-08: ship Straum as a Helm chart into the same Kubernetes cluster as
 the apps. First target: AKS, with PostgreSQL 18 on Azure Flexible Server
-outside the cluster. Design in DOMAIN.md; PostgreSQL mechanics in
-ARCHITECTURE.md. Tags as in README.md (R, U, I).
+outside the cluster. Design in `docs/src/how-it-works.md`; PostgreSQL
+mechanics in ARCHITECTURE.md. Tags as in README.md (R, U, I).
 
 ## Assumed setup
 
