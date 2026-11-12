@@ -14,62 +14,42 @@ error that names the construct and says what to write.
 ## Synopsis
 
 ```text
-CREATE VIEW view WITH ( buckets = 'width [, ...]' ) AS
-SELECT item AS name [, ...]
+CREATE VIEW view WITH (buckets = 'width, ...') AS
+SELECT key AS name, ...
+       measure AS name, ...
 FROM schema.table AS alias
-[ { INNER JOIN | LEFT OUTER JOIN } schema.table AS alias
-    ON equality [ AND ... ] ] [ ... ]
-[ WHERE { condition | exists } [ AND ... ] ]
-GROUP BY position [, ...]
+[ INNER JOIN | LEFT OUTER JOIN
+    schema.table AS alias ON alias.column = alias.column [AND ...] ] ...
+[ WHERE condition [AND ...] ]
+GROUP BY position, ...
 
-where item is one of:
+key        date_bin('width', alias.column, timestamptz 'epoch')
+           alias.column
+           alias.column::text
+           (alias.column IS [NOT] NULL)
 
-    date_bin('width', alias.column, { timestamptz | timestamp } 'epoch')
-    column
-    ( column IS [ NOT ] NULL )
-    count(*) [ filter ]
-    count( [ DISTINCT ] alias.column ) [ filter ]
-    { sum | min | max | avg | bool_and | bool_or } ( alias.column ) [ filter ]
+measure    count(*)
+           count([DISTINCT] alias.column)
+           sum(alias.column)       min(alias.column)
+           max(alias.column)       avg(alias.column)
+           bool_and(alias.column)  bool_or(alias.column)
+           each of these [FILTER (WHERE condition [AND ...])]
 
-and filter is:
+condition  alias.column = literal
+           alias.column IN (literal, literal, ...)
+           alias.column IS [NOT] NULL
+           [NOT] EXISTS (SELECT 1 FROM schema.table AS alias
+                         WHERE alias.column = alias.column [AND ...])
 
-    FILTER ( WHERE condition [ AND ... ] )
-
-and condition is one of:
-
-    column = literal
-    column IN ( literal, literal [, ...] )
-    column IS [ NOT ] NULL
-
-and exists is:
-
-    [ NOT ] EXISTS ( SELECT 1 FROM schema.table AS alias
-                     WHERE equality [ AND ... ] )
-
-and equality is:
-
-    alias.column = alias.column
-
-and column is:
-
-    alias.column [ ::text ]
-
-and width is:
-
-    n { second | minute | hour | day }[s]
-
-and literal is one of:
-
-    [ - ] integer
-    'text'
-    true
-    false
+width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days
+literal    42, -7, 'text', true, false
 ```
 
-Brackets hold what may be left out, braces a choice, and `...` says
-the part before it repeats. A spec is one or more views, with `;`
-between them. Identifiers are unquoted: lowercase letters, digits and
-`_`, at most 63 bytes.
+Brackets hold what may be left out, `|` separates a choice, and `...`
+repeats what is before it. Keys and measures come in any order.
+`EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. A spec is
+one or more views, with `;` between them. Identifiers are unquoted:
+lowercase letters, digits and `_`, at most 63 bytes.
 
 This is the [quick start](quick-start.md) view with a wider bucket, a
 null-ness key and two filtered measures:

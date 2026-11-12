@@ -18,17 +18,13 @@ curl --json '{
 ## The query
 
 ```text
-SELECT [ key [, ...] , ] measure [, ...]
+SELECT [key, ...] measure, ...
 FROM view
-WHERE term [ AND ... ]
-[ GROUP BY key [, ...] ]
+WHERE [condition AND ...] bucket >= $n AND bucket < $n
+[GROUP BY key, ...]
 
-where term is one of:
-
-    key = $n
-    key IN ( $n, $n [, ...] )
-    bucket >= $n
-    bucket < $n
+condition  key = $n
+           key IN ($n, $n, ...)
 ```
 
 The notation is that of the [spec's synopsis](spec.md#synopsis), and
@@ -48,7 +44,8 @@ SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
   fields of each answer row. `GROUP BY` names exactly the selected
   keys.
 - `bucket >= $n` and `bucket < $n` bound the range, once each, and both
-  are written: an ask says what it reads.
+  are written: an ask says what it reads. They and the conditions come
+  in any order.
 
 ## Parameters
 
