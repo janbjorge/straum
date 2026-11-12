@@ -15,6 +15,10 @@
 //!   status` prints it.
 //! - `GET /views`: every view and how much of it Straum holds, in plain text
 //!   for people; `straum views` prints it. 503 until every table is loaded.
+//!   With `Accept: application/json` the same as JSON (see `views.rs`).
+//! - `GET /views/NAME`: the rows PostgreSQL would give for the view, the
+//!   first `MAX_ROWS` of them, as the table an ask gets; the `\rows` of
+//!   `straum shell`. 404 for a name no view has.
 
 #![forbid(unsafe_code)]
 
@@ -52,6 +56,12 @@ const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 const MAX_ASK: usize = 1 << 20;
+
+/// The rows `GET /views/NAME` writes. A view may hold millions, which no
+/// one reads.
+const MAX_ROWS: usize = 1000;
+
+const ROWS: &str = "/views/";
 
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -149,9 +159,11 @@ async fn handle(
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => readyz(&app),
         (&Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
-        (&Method::GET, "/views") => views(&app),
+        (&Method::GET, "/views") => views(&app, parts.headers.get(ACCEPT)),
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
+        (&Method::GET, path) if path.starts_with(ROWS) => rows(&app, &path[ROWS.len()..]).await,
+        (_, path) if path.starts_with(ROWS) => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(response)
@@ -181,11 +193,44 @@ async fn ask(
             Ok(ask) => ask,
             Err(e) => return errors(StatusCode::BAD_REQUEST, &e),
         };
+    answer(app, request, format, None, parsing.elapsed(), start).await
+}
+
+/// Every row of a view, as an ask for them is answered.
+async fn rows(app: &App, view: &str) -> Response<Full<Bytes>> {
+    let start = Instant::now();
+    match app.rows_ask(view) {
+        Some(ask) => {
+            answer(
+                app,
+                ask,
+                Format::Text,
+                Some(MAX_ROWS),
+                Duration::ZERO,
+                start,
+            )
+            .await
+        }
+        None => text(
+            StatusCode::NOT_FOUND,
+            format!("no view {view}; GET /views lists them\n"),
+        ),
+    }
+}
+
+async fn answer(
+    app: &App,
+    request: Ask,
+    format: Format,
+    limit: Option<usize>,
+    parse: Duration,
+    start: Instant,
+) -> Response<Full<Bytes>> {
+    let errors = |status, errors: &[String]| errors_response(status, format, errors);
     let range = answer::range_errors(&request);
     if !range.is_empty() {
         return errors(StatusCode::BAD_REQUEST, &range);
     }
-    let parse = parsing.elapsed();
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let answering = Instant::now();
@@ -193,7 +238,7 @@ async fn ask(
         let writing = Instant::now();
         let body = match format {
             Format::Json => answer::write(&answered),
-            Format::Text => answer::table(&answered).into_bytes(),
+            Format::Text => answer::table(&answered, limit).into_bytes(),
         };
         Ok(Timed {
             applied: answered.applied,
@@ -277,16 +322,19 @@ fn readyz(app: &App) -> Response<Full<Bytes>> {
     }
 }
 
-fn views(app: &App) -> Response<Full<Bytes>> {
-    match app.held() {
-        Some(held) => text(StatusCode::OK, views::write(&held)),
-        None => {
+fn views(app: &App, accept: Option<&HeaderValue>) -> Response<Full<Bytes>> {
+    let format = match accept {
+        Some(accept) if accept == JSON => Format::Json,
+        _ => Format::Text,
+    };
+    match (app.held(), format) {
+        (Some(held), Format::Text) => text(StatusCode::OK, views::write(&held)),
+        (Some(held), Format::Json) => respond(StatusCode::OK, JSON, views::json(&held)),
+        (None, _) => {
             // A load can finish between the two reads.
             let why = status::why_not(&app.status()).unwrap_or_else(|| "loading".to_owned());
-            text(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("not ready: {why}\n"),
-            )
+            let why = format!("not ready: {why}");
+            errors_response(StatusCode::SERVICE_UNAVAILABLE, format, &[why])
         }
     }
 }

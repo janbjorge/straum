@@ -155,7 +155,8 @@ is after the commit.
 
 `straum views` shows what Straum holds of each view, with the names
 and types an ask may use; [`straum ask`](running.md#straum-ask) prints
-an answer as a table:
+an answer as a table, and [`straum shell`](running.md#straum-shell) is
+a prompt for both, with Tab completion:
 
 ```text
 $ docker exec straum /straum views

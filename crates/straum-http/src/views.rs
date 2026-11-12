@@ -1,14 +1,91 @@
 //! `/views`: every view asks may read and how much of it Straum holds, in
-//! plain text for people, as `straum views` prints it.
+//! plain text for people, as `straum views` prints it, or as JSON for a
+//! program that sends `Accept: application/json`, as `straum shell` does
+//! to complete names:
+//!
+//! ```json
+//! {"views": [{"name": "trips", "buckets": [3600], "cells": 412,
+//!             "bound_cells": 9, "from": "2024-01-01T00:00:00Z",
+//!             "to": "2024-01-03T00:00:00Z",
+//!             "keys": [{"name": "bucket", "type": "timestamptz"},
+//!                      {"name": "fare", "type": "numeric", "scale": 2}],
+//!             "measures": ["trips"]}],
+//!  "dims": [{"table": "public.zones", "rows": 265}]}
+//! ```
+//!
+//! `bound_cells` is null for a view that keeps none; `from` and `to` are
+//! null for a view with no bucket. A type is `integer`, `numeric` with its
+//! `scale`, `boolean`, `text`, `timestamptz` or `timestamp`.
 
 use jiff::Timestamp;
 use straum_app::{Held, HeldDim, HeldView};
 use straum_domain::ColumnType;
 
+use crate::json::string;
+
 pub(crate) fn write(held: &Held) -> String {
     let views = held.views.iter().map(view);
     let dims = held.dims.iter().map(dim);
     views.chain(dims).collect::<Vec<_>>().join("\n")
+}
+
+pub(crate) fn json(held: &Held) -> Vec<u8> {
+    let views: Vec<String> = held.views.iter().map(view_json).collect();
+    let dims = held.dims.iter().map(|HeldDim { table, rows }| {
+        let table = quoted(&format!("{}.{}", table.schema, table.name));
+        format!("{{\"table\":{table},\"rows\":{rows}}}")
+    });
+    let dims: Vec<String> = dims.collect();
+    format!(
+        "{{\"views\":[{}],\"dims\":[{}]}}",
+        views.join(","),
+        dims.join(",")
+    )
+    .into_bytes()
+}
+
+fn view_json(view: &HeldView) -> String {
+    let widths: Vec<String> = view.widths.iter().map(|w| w.seconds.to_string()).collect();
+    let bound = view
+        .bound_cells
+        .map_or("null".to_owned(), |n| n.to_string());
+    let edge = |seconds: Option<i64>| {
+        (seconds.and_then(|seconds| Timestamp::from_second(seconds).ok()))
+            .map_or("null".to_owned(), |at| quoted(&at.to_string()))
+    };
+    let key = |name: &str, column: ColumnType| {
+        let scale = match column {
+            ColumnType::Numeric { scale } => format!(",\"scale\":{scale}"),
+            _ => String::new(),
+        };
+        format!(
+            "{{\"name\":{},\"type\":{}{scale}}}",
+            quoted(name),
+            quoted(type_name(column))
+        )
+    };
+    let keys = (view.keys.iter()).map(|k| key(k.name.as_str(), k.column_type));
+    let keys: Vec<String> = std::iter::once(key("bucket", view.bucket))
+        .chain(keys)
+        .collect();
+    let measures: Vec<String> = view.measures.iter().map(|m| quoted(m.as_str())).collect();
+    format!(
+        "{{\"name\":{},\"buckets\":[{}],\"cells\":{},\"bound_cells\":{bound},\
+         \"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
+        quoted(view.name.as_str()),
+        widths.join(","),
+        view.cells,
+        edge(view.range.as_ref().map(|range| range.start)),
+        edge(view.range.as_ref().map(|range| range.end)),
+        keys.join(","),
+        measures.join(",")
+    )
+}
+
+fn quoted(text: &str) -> String {
+    let mut out = Vec::new();
+    string(&mut out, text);
+    String::from_utf8(out).expect("JSON from a str is UTF-8")
 }
 
 fn view(view: &HeldView) -> String {
@@ -47,14 +124,22 @@ fn counted(count: usize, thing: &str) -> String {
     format!("{count} {thing}{plural}")
 }
 
+/// PostgreSQL's name for the type.
+fn type_name(column_type: ColumnType) -> &'static str {
+    match column_type {
+        ColumnType::Int => "integer",
+        ColumnType::Numeric { .. } => "numeric",
+        ColumnType::Bool => "boolean",
+        ColumnType::Text => "text",
+        ColumnType::Time { zoned: true } => "timestamptz",
+        ColumnType::Time { zoned: false } => "timestamp",
+    }
+}
+
 fn column_type(column_type: ColumnType) -> String {
     match column_type {
-        ColumnType::Int => "integer".to_owned(),
         ColumnType::Numeric { scale } => format!("numeric scale {scale}"),
-        ColumnType::Bool => "boolean".to_owned(),
-        ColumnType::Text => "text".to_owned(),
-        ColumnType::Time { zoned: true } => "timestamptz".to_owned(),
-        ColumnType::Time { zoned: false } => "timestamp".to_owned(),
+        other => type_name(other).to_owned(),
     }
 }
 
@@ -143,6 +228,53 @@ dim public.zones
   holds:    1 row
 "
         );
+    }
+
+    #[test]
+    fn writes_views_as_json() {
+        let held = Held {
+            views: vec![
+                trips(),
+                HeldView {
+                    keys: Vec::new(),
+                    bound_cells: None,
+                    range: None,
+                    ..trips()
+                },
+                HeldView {
+                    range: Some(0..i64::MAX),
+                    ..trips()
+                },
+            ],
+            dims: vec![HeldDim {
+                table: Table {
+                    schema: id("public"),
+                    name: id("zones"),
+                },
+                rows: 2,
+            }],
+        };
+        let keys = concat!(
+            r#"{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
+            r#"{"name":"fare","type":"numeric","scale":2},{"name":"shared","type":"boolean"},"#,
+            r#"{"name":"borough","type":"text"}"#
+        );
+        let start = r#"{"name":"trips","buckets":[900,86400],"cells":412,"#;
+        let measures = r#""measures":["trips","fare_sum"]}"#;
+        let expected = [
+            r#"{"views":["#,
+            start,
+            r#""bound_cells":1,"from":"2024-01-01T00:00:00Z","to":"2024-01-03T00:00:00Z","#,
+            &format!(r#""keys":[{keys}],{measures},"#),
+            start,
+            r#""bound_cells":null,"from":null,"to":null,"#,
+            &format!(r#""keys":[{{"name":"bucket","type":"timestamptz"}}],{measures},"#),
+            start,
+            r#""bound_cells":1,"from":"1970-01-01T00:00:00Z","to":null,"#,
+            &format!(r#""keys":[{keys}],{measures}"#),
+            r#"],"dims":[{"table":"public.zones","rows":2}]}"#,
+        ];
+        assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
     }
 
     #[test]

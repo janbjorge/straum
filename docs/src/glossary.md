@@ -248,7 +248,15 @@ notes under `research/`. The clashes at the end are open.
 - **Held** (`Held`, `App::held`): what `GET /views` and `straum views`
   show, read at one moment: per view its widths, cells, range of
   buckets, keys with their types and measures; per dim its rows
-  (ADR-0039). None until every table is loaded.
+  (ADR-0039). None until every table is loaded. As JSON for a program
+  that asks for it (ADR-0040).
+- **Shell** (`straum shell`): a prompt at a running Straum: `\d` for
+  the views, `\rows VIEW` for a view's rows, an ask as `QUERY;
+  PARAMETER...`, with Tab completion at a terminal (ADR-0040).
+- **A view's rows** (`App::rows_ask`, `GET /views/NAME`, `\rows`): the
+  rows PostgreSQL would give for the view, which is the answer to an
+  ask for every measure by the bucket and every key over the buckets
+  held.
 - **Health check**: `/livez`, up while the process serves, and
   `/readyz`, up while ready.
 

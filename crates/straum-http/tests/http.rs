@@ -409,6 +409,30 @@ dim public.zones
 "
     );
 
+    let as_json = |addr| {
+        send(
+            addr,
+            "GET /views HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: application/json\r\n\r\n",
+        )
+    };
+    let reply = as_json(server.addr);
+    assert!(
+        reply.head.contains("content-type: application/json"),
+        "{}",
+        reply.head
+    );
+    assert_eq!(
+        reply.body,
+        concat!(
+            r#"{"views":[{"name":"trips","buckets":[3600],"cells":4,"bound_cells":4,"#,
+            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","#,
+            r#""keys":[{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
+            r#"{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"#,
+            r#""measures":["trips","fare","fare_avg","fare_max"]}],"#,
+            r#""dims":[{"table":"public.zones","rows":2}]}"#
+        )
+    );
+
     writer.step().unwrap();
     writer.step().unwrap_err();
     let reply = call(server.addr, "GET", "/views", "");
@@ -416,6 +440,61 @@ dim public.zones
         (reply.status, reply.body.as_str()),
         (503, "not ready: connection dropped\n")
     );
+    let reply = as_json(server.addr);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, r#"{"errors":["not ready: connection dropped"]}"#)
+    );
+    server.stop();
+}
+
+#[test]
+fn a_view_shows_its_rows() {
+    let mut writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "GET", "/views/trips", "");
+    assert_eq!((reply.status, reply.body.as_str()), (503, "not ready\n"));
+    let reply = call(server.addr, "GET", "/views/zones", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (404, "no view zones; GET /views lists them\n")
+    );
+    let reply = call(server.addr, "POST", "/views/trips", "");
+    assert_eq!((reply.status, reply.body.as_str()), (405, "use GET\n"));
+
+    writer.step().unwrap();
+    let reply = call(server.addr, "GET", "/views/trips", "");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let (table, as_of) = reply.body.split_at(reply.body.find("4 rows").unwrap());
+    assert_eq!(
+        table,
+        "\
+bucket               | kind | zone_id | borough    | trips | fare  | fare_avg | fare_max
+---------------------+------+---------+------------+-------+-------+----------+---------
+2024-01-01T00:00:00Z |    1 |       1 | Bronx      |     1 | 12.50 |     12.5 |    12.50
+2024-01-01T01:00:00Z |    1 |       1 | Bronx      |     1 |  2.50 |      2.5 |     2.50
+2024-01-01T02:00:00Z |    2 |       3 | null       |     1 | null  | null     | null
+2024-01-01T23:00:00Z |    2 |       2 | Queens \"Q\" |     1 | -0.05 |    -0.05 |    -0.05
+"
+    );
+    assert!(as_of.starts_with("4 rows, as of 2"), "{as_of}");
+    server.stop();
+}
+
+/// More trips than a view shows, each in a cell of its own.
+#[test]
+fn a_view_shows_its_first_thousand_rows() {
+    let fake = Fake {
+        trips: (0..1_001).map(|kind| trip(0, kind, 1, int(100))).collect(),
+        ..fake()
+    };
+    let mut writer = writer_with(LIMITS, fake);
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let reply = call(server.addr, "GET", "/views/trips", "");
+    assert_eq!(reply.body.lines().count(), 1_003, "{}", reply.body);
+    let count = reply.body.lines().last().unwrap();
+    assert!(count.starts_with("1000 of 1001 rows, as of "), "{count}");
     server.stop();
 }
 

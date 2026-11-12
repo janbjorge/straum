@@ -5,12 +5,14 @@
 #![forbid(unsafe_code)]
 
 mod client;
+mod complete;
+mod shell;
 
 use std::env;
 use std::fmt::{self, Display};
 use std::fs;
 use std::future::poll_fn;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::net::TcpListener;
 use std::panic;
 use std::process::{self, ExitCode};
@@ -33,6 +35,7 @@ usage: straum <command> [flags]
   status  print what a running Straum has done
   views   print the views a running Straum holds, and how much of each
   ask     ask a running Straum and print the answer as a table
+  shell   a prompt at a running Straum: its views, their rows, asks
   version print Straum's version
   help    print this; straum help <command> prints its flags
 
@@ -110,6 +113,26 @@ are booleans, anything else is a string, and '7' in quotes is the string 7.
 Guide: https://janbjorge.github.io/straum/running.html#straum-ask
 ";
 
+const SHELL_HELP: &str = "\
+usage: straum shell [flags]
+
+Reads commands for the Straum at URL, a line each, until \\q or the end
+of input. At a terminal Tab completes views, keys, measures, conditions
+and the bounds of the buckets held.
+
+  \\d                    every view, as straum views prints them
+  \\rows VIEW            the rows PostgreSQL would give for VIEW, the
+                        first 1000
+  QUERY; PARAMETER...   an ask, as straum ask takes it: the query, a
+                        semicolon, then the values of $1, $2 and on
+  \\?                    these commands
+  \\q                    leave
+
+  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+
+Guide: https://janbjorge.github.io/straum/running.html#straum-shell
+";
+
 const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
 const ROLE: &str = "straum";
@@ -133,10 +156,18 @@ enum Name {
     Status,
     Views,
     Ask,
+    Shell,
 }
 
 impl Name {
-    const ALL: [Name; 5] = [Name::Run, Name::Plan, Name::Status, Name::Views, Name::Ask];
+    const ALL: [Name; 6] = [
+        Name::Run,
+        Name::Plan,
+        Name::Status,
+        Name::Views,
+        Name::Ask,
+        Name::Shell,
+    ];
 
     fn parse(text: &str) -> Option<Name> {
         Name::ALL.into_iter().find(|name| name.as_str() == text)
@@ -149,6 +180,7 @@ impl Name {
             Name::Status => "status",
             Name::Views => "views",
             Name::Ask => "ask",
+            Name::Shell => "shell",
         }
     }
 
@@ -159,6 +191,7 @@ impl Name {
             Name::Status => STATUS_HELP,
             Name::Views => VIEWS_HELP,
             Name::Ask => ASK_HELP,
+            Name::Shell => SHELL_HELP,
         }
     }
 
@@ -174,7 +207,7 @@ impl Name {
                 "--max-transaction-rows",
             ],
             Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
-            Name::Status | Name::Views | Name::Ask => &["--url"],
+            Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
         }
     }
 }
@@ -199,6 +232,9 @@ enum Command {
         query: String,
         /// As written on the command line.
         parameters: Vec<String>,
+    },
+    Shell {
+        url: String,
     },
     Help(Option<Name>),
     Version,
@@ -284,6 +320,19 @@ fn execute(command: Command) -> Result<(), String> {
             query,
             parameters,
         } => print(&client::ask(&url, &query, &parameters)?),
+        Command::Shell { url } => {
+            let (input, output) = (io::stdin(), io::stdout());
+            // A prompt is for a person at both ends: not for a script
+            // that feeds lines, nor for output that goes to a file.
+            if input.is_terminal() && output.is_terminal() {
+                return shell::interactive(&url);
+            }
+            match shell::piped(&url, input.lock(), output.lock(), io::stderr().lock()) {
+                Ok(0) => Ok(()),
+                Ok(failed) => Err(format!("lines that failed: {failed}")),
+                Err(e) => Err(format!("reading commands: {e}")),
+            }
+        }
     }
 }
 
@@ -383,6 +432,7 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     Ok(match name {
         Name::Status => Command::Status { url: url() },
         Name::Views => Command::Views { url: url() },
+        Name::Shell => Command::Shell { url: url() },
         Name::Ask => match query {
             [query, parameters @ ..] => Command::Ask {
                 url: url(),
@@ -676,6 +726,10 @@ mod tests {
             })
         );
         assert_eq!(
+            command(&args("shell")),
+            Ok(Command::Shell { url: URL.into() })
+        );
+        assert_eq!(
             command(&args("ask SELECT")),
             Ok(Command::Ask {
                 url: URL.into(),
@@ -705,6 +759,7 @@ mod tests {
             ("status -h --url", Name::Status),
             ("views -h", Name::Views),
             ("ask --help", Name::Ask),
+            ("shell -h", Name::Shell),
             ("ask --url u -h SELECT", Name::Ask),
         ] {
             assert_eq!(
@@ -799,6 +854,7 @@ mod tests {
             ("status --spec s", "straum status takes no \"--spec\""),
             ("status --url", "--url needs a value"),
             ("views --spec s", "straum views takes no \"--spec\""),
+            ("shell now", "straum shell takes no \"now\""),
             ("ask", "straum ask needs a query"),
             ("ask --url u", "straum ask needs a query"),
             ("ask --url", "--url needs a value"),

@@ -186,6 +186,18 @@ The HTTP handler in `straum-http` and `App::ask`:
 the types the load set, and measures; per dim its rows. `straum views`
 and `straum ask` print what the server wrote, as `straum status` does.
 
+`GET /views/NAME` answers an ask the app builds (`App::rows_ask`):
+every measure by the bucket and every key over the buckets the view
+holds, through the same steps as any ask, written as a table of at
+most 1000 rows. `straum shell` is a client of these endpoints: it
+reads the views as JSON to complete names and knows no Straum SQL.
+
+In the binary, `main.rs` reads the command line and wires the crates
+together. The commands that talk to a running Straum go through
+`client.rs`, one request on a plain socket. `complete.rs` is what Tab
+offers, plain functions over a line and the views, and `shell.rs` is
+the prompt around both, the only code that touches the terminal.
+
 ## Model
 
 Arrows denote dependency, not communication flow.
@@ -368,6 +380,7 @@ maps each part of the model to the records that settled it.
 | `timestamp` as wall clock, enums as labels     | 0018, 0037             |
 | tokio only in `straum-http`                    | 0008                   |
 | `/status`, `/views` and text answers for people | 0023, 0039            |
+| `straum shell`, a view's rows, views as JSON   | 0040                   |
 
 The PostgreSQL mechanics behind the load, the apply and the slot, with
 their citations, are in

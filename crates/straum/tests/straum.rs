@@ -389,6 +389,51 @@ van  | null    |     1 | null
         )
     );
 
+    // The same from `straum shell`, a line each, on a pipe.
+    let mut shell = Command::new(STRAUM)
+        .args(["shell", "--url", &url])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = "\\d\n\\rows trips\n\
+        SELECT trips FROM trips WHERE bucket >= $1 AND bucket < $2; 0 2024-01-01T04:00:00Z\n\
+        \\rows nope\n\\q\n\\d\n";
+    (shell.stdin.take().unwrap())
+        .write_all(lines.as_bytes())
+        .unwrap();
+    let shell = shell.wait_with_output().unwrap();
+    let shelled = String::from_utf8(shell.stdout).unwrap();
+    // A line that fails goes to stderr and the others still answer; the
+    // exit says one failed.
+    assert_eq!(shell.status.code(), Some(1), "{shelled}");
+    assert_eq!(
+        String::from_utf8(shell.stderr).unwrap(),
+        format!(
+            "straum: {url} answered \"HTTP/1.1 404 Not Found\"\n\
+             no view nope; GET /views lists them\n\
+             straum: lines that failed: 1\n"
+        )
+    );
+    let rows = "\
+bucket               | kind | zone_id | borough | trips | fare
+---------------------+------+---------+---------+-------+------
+2024-01-01T00:00:00Z | cab  |       1 | Bronx   |     1 | 12.50
+2024-01-01T01:00:00Z | cab  |       2 | Queens  |     1 |  0.05
+2024-01-01T02:00:00Z | van  |       3 | null    |     1 | null
+2024-01-01T03:00:00Z | null |       1 | Bronx   |     1 | -2.25
+4 rows, as of 20";
+    let (described, rest) = shelled.split_at(views.len());
+    assert_eq!(described, views);
+    assert!(rest.starts_with(rows), "{rest}");
+    let (_, rest) = rest.split_once("Z\n").unwrap();
+    assert!(
+        rest.starts_with("trips\n-----\n    4\n1 row, as of 20"),
+        "{rest}"
+    );
+    assert_eq!(rest.split_once("Z\n").unwrap().1, "");
+
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
     assert!(body.starts_with(r#"{"as_of":"20"#), "{body}");
@@ -517,6 +562,7 @@ fn prints_help_and_version() {
     for (command, usage) in [
         ("views", "usage: straum views [flags]"),
         ("ask", "usage: straum ask [flags] QUERY [PARAMETER...]"),
+        ("shell", "usage: straum shell [flags]"),
     ] {
         let (code, stdout, _) = output(&mut straum(&[command, "--help"]));
         assert_eq!(code, Some(0));

@@ -109,8 +109,8 @@ struct Cell {
 
 /// The answer as a table: the names, a rule, a line per row, then the
 /// row count and `as_of`. Values print as in the JSON, text without its
-/// quotes.
-pub(crate) fn table(answered: &Answered) -> String {
+/// quotes. Past `limit` rows the count says how many there are.
+pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
     let Answered { answer, as_of, .. } = answered;
     let names = (answer.columns.iter())
         .map(|column| Cell {
@@ -118,26 +118,29 @@ pub(crate) fn table(answered: &Answered) -> String {
             number: false,
         })
         .collect();
-    let rows = answer.rows.iter().map(|AnswerRow { keys, values }| {
-        let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
-        let keys = key_columns.iter().zip(keys).map(|(column, datum)| {
-            let text = match datum {
-                &Datum::Int(seconds) if column.is_time => time_key(seconds),
-                Datum::Text(text) => text.to_string(),
-                datum => written(|out| write_datum(out, datum, column.scale)),
-            };
-            let number = matches!(datum, Datum::Int(_)) && !column.is_time;
-            Cell { text, number }
-        });
-        let values = measure_columns
-            .iter()
-            .zip(values)
-            .map(|(column, value)| Cell {
-                text: written(|out| write_value(out, value, column.scale)),
-                number: *value != Value::Null,
+    let shown = limit.map_or(answer.rows.len(), |limit| limit.min(answer.rows.len()));
+    let rows = answer.rows[..shown]
+        .iter()
+        .map(|AnswerRow { keys, values }| {
+            let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
+            let keys = key_columns.iter().zip(keys).map(|(column, datum)| {
+                let text = match datum {
+                    &Datum::Int(seconds) if column.is_time => time_key(seconds),
+                    Datum::Text(text) => text.to_string(),
+                    datum => written(|out| write_datum(out, datum, column.scale)),
+                };
+                let number = matches!(datum, Datum::Int(_)) && !column.is_time;
+                Cell { text, number }
             });
-        keys.chain(values).collect()
-    });
+            let values = measure_columns
+                .iter()
+                .zip(values)
+                .map(|(column, value)| Cell {
+                    text: written(|out| write_value(out, value, column.scale)),
+                    number: *value != Value::Null,
+                });
+            keys.chain(values).collect()
+        });
     let lines: Vec<Vec<Cell>> = std::iter::once(names).chain(rows).collect();
     let widths: Vec<usize> = (0..answer.columns.len())
         .map(|i| lines.iter().map(|line| line[i].text.chars().count()).max())
@@ -162,6 +165,7 @@ pub(crate) fn table(answered: &Answered) -> String {
     }
     let rows = match answer.rows.len() {
         1 => "1 row".to_owned(),
+        rows if rows > shown => format!("{shown} of {rows} rows"),
         rows => format!("{rows} rows"),
     };
     out.push_str(&format!("{rows}, as of {}\n", as_of_text(*as_of)));
@@ -300,7 +304,7 @@ mod tests {
             row(Datum::Null, Value::Null),
         ];
         assert_eq!(
-            table(&answered(rows)),
+            table(&answered(rows.clone()), Some(2)),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -309,12 +313,21 @@ bucket               | shared | fare
 2 rows, as of 1970-01-01T00:00:00Z
 "
         );
+        assert_eq!(
+            table(&answered(rows), Some(1)),
+            "\
+bucket               | shared | fare
+---------------------+--------+--------
+1970-01-02T00:00:00Z | true   | 1234.56
+1 of 2 rows, as of 1970-01-01T00:00:00Z
+"
+        );
     }
 
     #[test]
     fn a_table_without_rows_keeps_its_names() {
         assert_eq!(
-            table(&answered(Vec::new())),
+            table(&answered(Vec::new()), None),
             "\
 bucket | shared | fare
 -------+--------+-----

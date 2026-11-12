@@ -12,7 +12,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
-    Answer, Ask, AskError, ColumnType, Identifier, SealedError, SealedId, Spec, Store, Table, Width,
+    Answer, Ask, AskError, AskKey, ColumnType, Identifier, SealedError, SealedId, Spec, Store,
+    Table, TimeKey, Width,
 };
 
 use crate::lag::Lag;
@@ -294,6 +295,26 @@ impl App {
             })
             .collect();
         Some(Held { views, dims })
+    }
+
+    /// The ask for every row PostgreSQL would give for the view: each
+    /// measure by the bucket and every key, over the buckets the store
+    /// holds. `None` for a name no view has.
+    pub fn rows_ask(&self, view: &str) -> Option<Ask> {
+        let state = self.read();
+        let fact = state.store.spec().fact(view)?;
+        // A view with no bucket is asked for one, and answers no rows.
+        let range = (state.store.range(view)).unwrap_or(0..i64::from(fact.time.width.seconds));
+        Some(Ask {
+            view: fact.name.clone(),
+            measures: fact.measures.iter().map(|m| m.name.clone()).collect(),
+            keys: iter::once(AskKey::Time(TimeKey::Bucket))
+                .chain(fact.keys().cloned().map(AskKey::Key))
+                .collect(),
+            filter: Vec::new(),
+            from: range.start,
+            to: range.end,
+        })
     }
 
     fn read(&self) -> RwLockReadGuard<'_, State> {

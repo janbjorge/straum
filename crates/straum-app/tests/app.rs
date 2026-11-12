@@ -300,6 +300,40 @@ fn held_says_what_the_store_holds_once_loaded() {
 }
 
 #[test]
+fn the_rows_ask_reads_the_whole_view() {
+    let (db, mut writer) = setup(&TABLES);
+    let app = writer.app().clone();
+    assert_eq!(app.rows_ask("zones"), None);
+    assert_eq!(app.rows_ask("nope"), None);
+    // Before a load the view holds no bucket; the ask is still a whole one.
+    let empty = app.rows_ask("logins").unwrap();
+    assert_eq!((empty.from, empty.to), (0, DAY));
+    assert_eq!(app.ask(&empty), Err(AnswerError::NotReady));
+
+    (db.borrow_mut()).commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 2, 1, 5)]);
+    writer.step().unwrap();
+    let rows = app.rows_ask("trips").unwrap();
+    assert_eq!(
+        rows,
+        Ask {
+            from: 0,
+            to: 3_600,
+            ..ask(
+                "trips",
+                &["trips", "fare", "fare_max", "riders"],
+                &["bucket", "kind", "zone_id", "borough"]
+            )
+        }
+    );
+    let row = |kind, fare: i128| AnswerRow {
+        keys: vec![int(0), int(kind), int(1), text("Bronx")],
+        values: [1, fare, fare, 1].map(Value::Int).to_vec(),
+    };
+    assert_eq!(app.ask(&rows).unwrap().answer.rows, [row(1, 10), row(2, 5)]);
+    assert_eq!(app.ask(&empty).unwrap().answer.rows, []);
+}
+
+#[test]
 fn a_failed_start_is_tried_again() {
     let (db, mut writer) = setup(&TABLES);
     db.borrow_mut().drop_connection = true;

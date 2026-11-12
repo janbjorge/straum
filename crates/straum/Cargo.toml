@@ -8,6 +8,13 @@ license.workspace = true
 [dependencies]
 # Runs the HTTP server and waits for signals (ADR-0008).
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
+# Raw terminal mode for `straum shell`: line editing, history kept in a
+# file and Tab completion, which std lacks and which needs unsafe to write
+# by hand.
+rustyline = { version = "19.0.0", default-features = false, features = ["with-file-history"] }
+# Reads the views `straum shell` completes from; straum-http already
+# builds it.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
 straum-http = { path = "../straum-http" }

@@ -11,6 +11,7 @@ straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
 straum views [--url URL]
 straum ask [--url URL] QUERY [PARAMETER...]
+straum shell [--url URL]
 straum version
 straum help
 ```
@@ -69,7 +70,8 @@ flight and exits, and PostgreSQL drops the slot as the connection closes.
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why. |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
 | `GET /status` | What `straum status` prints, in plain text. |
-| `GET /views` | What `straum views` prints, in plain text; 503 `not ready: ` and why until every table is loaded. |
+| `GET /views` | What `straum views` prints, in plain text; 503 `not ready: ` and why until every table is loaded. As JSON with `Accept: application/json`. |
+| `GET /views/NAME` | The rows PostgreSQL would give for the view, the first 1000, as a table in plain text; 404 for a name no view has. |
 
 ## States
 
@@ -206,6 +208,77 @@ straum: http://127.0.0.1:8080 answered "HTTP/1.1 400 Bad Request"
 customer_id is an integer, so it can't be the text "paid"
 ```
 
+## straum shell
+
+A prompt at the Straum at `--url`. Each line is a command:
+
+| Line | Prints |
+| --- | --- |
+| `\d` | Every view, as `straum views` does. |
+| `\rows VIEW` | The rows PostgreSQL would give for the view: every measure by the bucket and every key, over the buckets held. The first 1000. |
+| `QUERY; PARAMETER...` | The answer to an ask, as `straum ask` does: the query, a semicolon, then the values of `$1`, `$2` and on. |
+| `\?` | These commands. |
+| `\q` | Nothing; it leaves, as the end of input does. |
+
+```text
+$ straum shell
+Straum at http://127.0.0.1:8080. Tab completes; \? lists the commands, \q leaves.
+straum> \rows orders
+bucket               | status   | customer_id | country | orders | revenue | avg_amount
+---------------------+----------+-------------+---------+--------+---------+-----------
+2026-01-01T09:00:00Z | paid     |           1 | NO      |      1 |  120.00 |        120
+2026-01-01T09:00:00Z | paid     |           2 | SE      |      1 |   80.50 |       80.5
+2026-01-01T10:00:00Z | paid     |           3 | NO      |      1 |   19.99 |      19.99
+2026-01-01T10:00:00Z | refunded |           3 | NO      |      1 |   42.00 |         42
+4 rows, as of 2026-11-09T17:12:41.902318Z
+straum> SELECT status, orders FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status; 2026-01-01T09:00:00Z 2026-01-01T11:00:00Z
+status   | orders
+---------+-------
+paid     |      3
+refunded |      1
+2 rows, as of 2026-11-09T17:12:43.118250Z
+```
+
+`\rows` reads every cell of the view, as an ask over all its buckets
+does, so on a large view it takes as long as that ask.
+
+At a terminal the line is edited as in a shell, the arrows walk the
+lines entered before, and Tab completes by where the cursor is:
+
+| After | Tab offers |
+| --- | --- |
+| Nothing | `SELECT` and the commands. |
+| `SELECT` | The keys and measures not yet listed, then `FROM`. |
+| `FROM` | The views, then `WHERE`. |
+| `WHERE`, `AND` | A whole condition with the next free parameter: `bucket >= $1 AND bucket < $2`, `status = $3`. |
+| A condition | `AND`, and once both bounds are written `GROUP BY` with the selected keys. |
+| `;` | For a bound, the start or the end of the buckets held; for a boolean, `true` and `false`. |
+| `\rows` | The views. |
+
+Past the semicolon the line also shows, dimmed, which parameter comes
+next and its type. The ask above is `SEL` Tab `st` Tab `, o` Tab ` F`
+Tab `o` Tab `W` Tab `bu` Tab ` G` Tab Tab Tab. Completion offers what
+is likely next, not only what is valid: Straum still checks the ask.
+
+The lines entered are kept between sessions in
+`$XDG_STATE_HOME/straum/history`, which is
+`~/.local/state/straum/history` unless that variable is set; without a
+home directory, as in the image, they are not kept. With `NO_COLOR`
+set, or on a terminal that can't, the next parameter is not dimmed.
+
+The prompt is for a terminal at both ends. With its input or its
+output anywhere else, the shell prints no prompt and completes
+nothing, so a script can drive it:
+
+```sh
+printf '%s\n' '\d' '\rows orders' | straum shell
+```
+
+Answers go to stdout. A line that fails says why on stderr and the
+next line is read, as in psql; if any failed the shell exits with 1
+after the last. `straum shell | head` ends quietly when `head` has
+its lines, as `straum views` and `straum ask` do.
+
 ## Kubernetes
 
 The repository's `Dockerfile` and Helm chart, `deploy/helm/straum`, run
@@ -235,6 +308,7 @@ helm upgrade --install straum deploy/helm/straum \
   --set-file spec=spec.sql
 kubectl exec deployment/straum -- /straum status
 kubectl exec deployment/straum -- /straum views
+kubectl exec -it deployment/straum -- /straum shell
 ```
 
 The chart makes a Deployment, a ConfigMap with the spec, a ClusterIP
