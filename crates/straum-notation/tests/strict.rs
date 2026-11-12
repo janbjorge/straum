@@ -405,10 +405,32 @@ fn one_measure_and_condition_spelling() {
     ]);
 }
 
-/// A condition is never put in parentheses: AND needs none.
+/// A parenthesis is written where the canon has one, around a null-ness
+/// key, and nowhere else: AND needs none, and neither does a column.
 #[test]
 fn parentheses_are_written_where_the_canon_has_them() {
     check(&[
+        (
+            "(orders.shipped_at IS NOT NULL) AS shipped",
+            "orders.shipped_at IS NOT NULL AS shipped",
+            "null-ness key without parentheses, write (orders.shipped_at IS NOT NULL),",
+        ),
+        (
+            "(orders.shipped_at IS NOT NULL) AS shipped",
+            "orders.shipped_at IS NULL AS shipped",
+            "null-ness key without parentheses, write (orders.shipped_at IS NULL),",
+        ),
+        (
+            "(orders.shipped_at IS NOT NULL) AS shipped",
+            "((orders.shipped_at IS NOT NULL)) AS shipped",
+            "parentheses, write alias.column or (alias.column IS NULL), \
+             `((orders.shipped_at IS NOT NULL))`",
+        ),
+        (
+            "orders.status AS status",
+            "(orders.status) AS status",
+            "parentheses, write alias.column or (alias.column IS NULL), `(orders.status)`",
+        ),
         (
             "FILTER (WHERE orders.status = 'paid')",
             "FILTER (WHERE (orders.status = 'paid'))",

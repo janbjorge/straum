@@ -515,6 +515,24 @@ impl Walker {
         attrs: &mut [Vec<Attribute>],
     ) {
         let name = self.ident(alias);
+        if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expr {
+            self.refuse(
+                line(expr),
+                &format!("null-ness key without parentheses, write ({expr}),"),
+                expr,
+            );
+            return;
+        }
+        if let sql::Expr::Nested(_) = expr
+            && null_test(expr).is_none()
+        {
+            self.refuse(
+                line(expr),
+                "parentheses, write alias.column or (alias.column IS NULL),",
+                expr,
+            );
+            return;
+        }
         let (spelled, read) = match null_test(expr) {
             Some((inner, negated)) => (
                 inner,
@@ -1166,11 +1184,13 @@ impl Walker {
     }
 }
 
-/// `column IS NULL` or `column IS NOT NULL`, in any parentheses, and
-/// whether it is the `NOT` one.
+/// `(column IS NULL)` or `(column IS NOT NULL)`, in its one pair of
+/// parentheses, and whether it is the `NOT` one.
 fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
-    match expr {
-        sql::Expr::Nested(inner) => null_test(inner),
+    let sql::Expr::Nested(inner) = expr else {
+        return None;
+    };
+    match inner.as_ref() {
         sql::Expr::IsNull(column) => Some((column, false)),
         sql::Expr::IsNotNull(column) => Some((column, true)),
         _ => None,

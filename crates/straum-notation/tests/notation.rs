@@ -482,7 +482,7 @@ const NULLS: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a,
        (f.done_at IS NOT NULL) AS done,
-       f.gone_at IS NULL AS open,
+       (f.gone_at IS NULL) AS open,
        count(*) AS n,
        count(*) FILTER (WHERE f.done_at IS NOT NULL AND f.gone_at IS NOT NULL) AS closed,
        count(*) FILTER (WHERE f.done_at IS NULL) AS pending
