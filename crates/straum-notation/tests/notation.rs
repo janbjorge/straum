@@ -289,7 +289,8 @@ fn every_agg_grain_unit_and_key_form() {
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a, z.id AS z_id, z.name AS name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
-       avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids
+       avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids,
+       count(f.x) AS known
 FROM public.t AS f
 LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
@@ -309,6 +310,7 @@ GROUP BY 1, 2, 3, 4";
             &Aggregate::Avg(id("x")),
             &Aggregate::CountDistinct(id("x")),
             &Aggregate::Sum(id("z_id")),
+            &Aggregate::CountNotNull(id("x")),
         ]
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);

@@ -338,12 +338,17 @@ fn one_measure_and_condition_spelling() {
         (
             "count(*) AS orders",
             "count(1) AS orders",
-            "count, use count(*) or count(DISTINCT column),",
+            "count of a constant, use count(*), `count(1)`",
         ),
         (
             "count(*) AS orders",
-            "count(orders.id) AS orders",
-            "count, use count(*) or count(DISTINCT column),",
+            "count('x') AS orders",
+            "count of a constant, use count(*), `count('x')`",
+        ),
+        (
+            "count(*) AS orders",
+            "count(orders.id + 1) AS orders",
+            "column, write alias.column, `orders.id + 1`",
         ),
         (
             "customers.country IN ('NO', 'SE')",

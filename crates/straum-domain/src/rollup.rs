@@ -291,6 +291,7 @@ struct Input {
 /// A form of [`State`], which [`Aggregate::state`] picks per measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StateKind {
+    Count,
     Sum,
     Extent,
     Distinct,
@@ -299,6 +300,7 @@ pub(crate) enum StateKind {
 impl StateKind {
     pub(crate) fn reads(self) -> Reads {
         match self {
+            StateKind::Count => Reads::Nullness,
             StateKind::Sum | StateKind::Extent => Reads::Numbers,
             StateKind::Distinct => Reads::Values,
         }
@@ -307,6 +309,8 @@ impl StateKind {
 
 #[derive(Debug)]
 pub(crate) enum State {
+    /// Count of the non-null values.
+    Count(Vec<u64>),
     /// Sum and count of the non-null values.
     Sum { sums: Vec<i128>, counts: Vec<u64> },
     /// Count per value, so removing the min or max reveals the next one.
@@ -946,6 +950,7 @@ fn adjust_level(
 impl State {
     fn new(kind: StateKind) -> State {
         match kind {
+            StateKind::Count => State::Count(Vec::new()),
             StateKind::Sum => State::Sum {
                 sums: Vec::new(),
                 counts: Vec::new(),
@@ -961,6 +966,7 @@ impl State {
 
     fn push(&mut self) {
         match self {
+            State::Count(counts) => counts.push(0),
             State::Sum { sums, counts } => {
                 sums.push(0);
                 counts.push(0);
@@ -976,6 +982,7 @@ impl State {
 
     fn swap_remove(&mut self, i: usize) {
         match self {
+            State::Count(counts) => drop(counts.swap_remove(i)),
             State::Sum { sums, counts } => {
                 sums.swap_remove(i);
                 counts.swap_remove(i);
@@ -991,6 +998,9 @@ impl State {
 
     fn sealed(&self) -> SealedColumn {
         match self {
+            State::Count(counts) => SealedColumn::Count {
+                counts: counts.clone(),
+            },
             State::Sum { sums, counts } => SealedColumn::Sum {
                 sums: sums.clone(),
                 counts: counts.clone(),
@@ -1016,6 +1026,9 @@ impl State {
     fn thaw(column: SealedColumn, kind: StateKind, len: usize) -> Option<State> {
         let counted = |n: &u64| *n > 0;
         match (column, kind) {
+            (SealedColumn::Count { counts }, StateKind::Count) if counts.len() == len => {
+                Some(State::Count(counts))
+            }
             (SealedColumn::Sum { sums, counts }, StateKind::Sum)
                 if sums.len() == len && counts.len() == len =>
             {
@@ -1047,6 +1060,7 @@ impl State {
     fn add(&mut self, i: usize, value: &Datum) {
         match (self, value) {
             (_, Datum::Null) => {}
+            (State::Count(counts), _) => counts[i] += 1,
             (State::Sum { sums, counts }, &Datum::Int(v)) => {
                 sums[i] += i128::from(v);
                 counts[i] += 1;
@@ -1064,6 +1078,9 @@ impl State {
     fn remove(&mut self, i: usize, value: &Datum) -> Result<(), RowError> {
         match (self, value) {
             (_, Datum::Null) => {}
+            (State::Count(counts), _) => {
+                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
+            }
             (State::Sum { sums, counts }, &Datum::Int(v)) => {
                 counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
                 sums[i] -= i128::from(v);
@@ -1088,7 +1105,8 @@ impl State {
     fn same_kind(&self, other: &State) -> bool {
         matches!(
             (self, other),
-            (State::Sum { .. }, State::Sum { .. })
+            (State::Count(_), State::Count(_))
+                | (State::Sum { .. }, State::Sum { .. })
                 | (State::Extent { .. }, State::Extent { .. })
                 | (State::Distinct(_), State::Distinct(_))
         )
@@ -1098,6 +1116,7 @@ impl State {
     /// can take it out.
     fn covers(&self, i: usize, src: &State, src_i: usize) -> bool {
         match (self, src) {
+            (State::Count(counts), State::Count(src_counts)) => counts[i] >= src_counts[src_i],
             (
                 State::Sum { counts, .. },
                 State::Sum {
@@ -1118,6 +1137,7 @@ impl State {
 
     fn add_from(&mut self, i: usize, src: &State, src_i: usize) {
         match (self, src) {
+            (State::Count(counts), State::Count(src_counts)) => counts[i] += src_counts[src_i],
             (
                 State::Sum { sums, counts },
                 State::Sum {
@@ -1148,6 +1168,7 @@ impl State {
 
     fn sub_from(&mut self, i: usize, src: &State, src_i: usize) {
         match (self, src) {
+            (State::Count(counts), State::Count(src_counts)) => counts[i] -= src_counts[src_i],
             (
                 State::Sum { sums, counts },
                 State::Sum {

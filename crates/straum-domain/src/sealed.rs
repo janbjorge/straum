@@ -32,6 +32,8 @@ pub struct Sealed {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedColumn {
+    /// Count of the non-null values.
+    Count { counts: Vec<u64> },
     /// Sum and count of the non-null values.
     Sum { sums: Vec<i128>, counts: Vec<u64> },
     /// Count per value, ascending by value.

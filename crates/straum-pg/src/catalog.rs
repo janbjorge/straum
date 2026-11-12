@@ -263,7 +263,8 @@ enum Purpose {
     Number,
     /// A value Straum groups, joins or counts distinct.
     Key,
-    /// A column whose null-ness is a key: any type Straum reads.
+    /// A column whose null-ness is a key or is counted: any type Straum
+    /// reads.
     Nullness,
 }
 
@@ -373,6 +374,7 @@ fn fact_purposes(fact: &Fact) -> Vec<(&Identifier, Purpose)> {
         let purpose = match m.aggregate.reads()? {
             Reads::Numbers => Purpose::Number,
             Reads::Values => Purpose::Key,
+            Reads::Nullness => Purpose::Nullness,
         };
         Some((m.aggregate.input()?, purpose))
     }));

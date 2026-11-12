@@ -1082,19 +1082,22 @@ impl Walker {
             args,
             [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
         );
+        let constant = matches!(
+            args,
+            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(
+                sql::Expr::Value(_)
+            ))]
+        );
         let aggregate: fn(Identifier) -> Aggregate = match (name.as_deref(), distinct) {
             (Some("count"), false) if star => {
                 let filter = self.key_conds(scope, function.filter.as_deref())?;
                 return Some((Aggregate::Count, filter));
             }
-            (Some("count"), false) => {
-                self.refuse(
-                    at,
-                    "count, use count(*) or count(DISTINCT column),",
-                    function,
-                );
+            (Some("count"), false) if constant => {
+                self.refuse(at, "count of a constant, use count(*),", function);
                 return None;
             }
+            (Some("count"), false) => Aggregate::CountNotNull,
             (Some("count"), true) => Aggregate::CountDistinct,
             (Some("sum"), false) => Aggregate::Sum,
             (Some("min"), false) => Aggregate::Min,

@@ -15,11 +15,14 @@ pub enum Reads {
     Numbers,
     /// Values told apart, of any type but a time.
     Values,
+    /// Whether there is a value, of any type.
+    Nullness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Aggregate {
     Count,
+    CountNotNull(Identifier),
     Sum(Identifier),
     Min(Identifier),
     Max(Identifier),
@@ -39,6 +42,7 @@ impl Aggregate {
     pub(crate) fn state(&self) -> Option<(StateKind, &Identifier)> {
         match self {
             Aggregate::Count => None,
+            Aggregate::CountNotNull(c) => Some((StateKind::Count, c)),
             Aggregate::Sum(c) | Aggregate::Avg(c) => Some((StateKind::Sum, c)),
             Aggregate::Min(c) | Aggregate::Max(c) => Some((StateKind::Extent, c)),
             Aggregate::CountDistinct(c) => Some((StateKind::Distinct, c)),
@@ -82,7 +86,7 @@ pub(crate) enum Partials {
 impl Partials {
     pub(crate) fn new(aggregate: &Aggregate) -> Partials {
         match aggregate {
-            Aggregate::Count => Partials::Count(Vec::new()),
+            Aggregate::Count | Aggregate::CountNotNull(_) => Partials::Count(Vec::new()),
             Aggregate::Sum(_) | Aggregate::Avg(_) => Partials::Sum {
                 sums: Vec::new(),
                 counts: Vec::new(),
@@ -134,6 +138,11 @@ impl Partials {
                     counts[g] += n;
                 }
             }
+            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
+                for (g, &n) in cells.zip(cell_counts) {
+                    counts[g] += n;
+                }
+            }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {
@@ -180,6 +189,9 @@ impl Partials {
         let at = lane(i, g);
         match (self, state) {
             (Partials::Count(counts), None) => counts[at] += cell_counts[i],
+            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
+                counts[at] += cell_counts[i];
+            }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {
@@ -212,6 +224,9 @@ impl Partials {
         let (at, g) = (lane(0, g), g as usize);
         match (self, state) {
             (Partials::Count(counts), None) => counts[at] += cell_counts.iter().sum::<u64>(),
+            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
+                counts[at] += cell_counts.iter().sum::<u64>();
+            }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {

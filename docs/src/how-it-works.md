@@ -34,6 +34,7 @@ For the [quick start](quick-start.md) view that is one cell per hour,
 status and customer. A cell holds its row count and what each measure
 needs:
 
+- `count(c)` keeps the column's count of non-null values.
 - `sum` and `avg` share the column's sum and its count of non-null
   values.
 - `min` and `max` keep a count per value, so deleting the smallest

@@ -79,6 +79,7 @@ fn what_each_measure_reads() {
         (Aggregate::Max(x()), Some(Reads::Numbers)),
         (Aggregate::Avg(x()), Some(Reads::Numbers)),
         (Aggregate::CountDistinct(x()), Some(Reads::Values)),
+        (Aggregate::CountNotNull(x()), Some(Reads::Nullness)),
         (Aggregate::Count, None),
     ];
     for (aggregate, reads) in cases {

@@ -33,7 +33,7 @@ const PROMOS: usize = 3;
 const BLOCKED: usize = 4;
 
 const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "bucket"];
-const MEASURES: [&str; 5] = ["n", "q", "q_max", "q_min", "products"];
+const MEASURES: [&str; 6] = ["n", "q", "q_max", "q_min", "products", "q_n"];
 
 fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
     Dim {
@@ -145,6 +145,7 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec
             m("q_max", Aggregate::Max(id("qty"))),
             m("q_min", Aggregate::Min(id("qty"))),
             m("products", Aggregate::CountDistinct(id("product"))),
+            m("q_n", Aggregate::CountNotNull(id("qty"))),
         ],
         filter,
     };
@@ -400,6 +401,7 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
     match &m.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
+        Aggregate::CountNotNull(_) => Value::Int(ints(QTY).len() as i128),
         Aggregate::Sum(_) => {
             let v = ints(QTY);
             or_null((!v.is_empty()).then(|| v.iter().sum()))
@@ -576,6 +578,7 @@ fn many_matches_multiply_counts_and_sums_only() {
         Value::Int(5),
         Value::Int(5),
         Value::Int(1),
+        Value::Int(2),
     ];
     assert_eq!(values(&store, &all), two);
     check(&store, &spec, &dims, &kinds, &orders, &all);
@@ -609,7 +612,8 @@ fn many_matches_multiply_counts_and_sums_only() {
             Value::Int(5),
             Value::Int(5),
             Value::Int(5),
-            Value::Int(1)
+            Value::Int(1),
+            Value::Int(1),
         ]
     );
     check(&store, &spec, &dims, &kinds, &orders, &all);

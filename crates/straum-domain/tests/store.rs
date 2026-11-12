@@ -245,6 +245,13 @@ fn spec_joining(vend: RefKind) -> Spec {
                 Aggregate::Avg(id("dist")),
                 vec![cond("pu", vec![Literal::Int(4)])],
             ),
+            m("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
+            // Over text: a count reads no value, only that there is one.
+            m(
+                "far_riders",
+                Aggregate::CountNotNull(id("rider")),
+                vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
+            ),
         ],
     };
     Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
@@ -588,7 +595,7 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
     .chain(ask.measures.iter().map(|name| AnswerColumn {
         name: name.to_string(),
         scale: match &fact.measure(name.as_str()).unwrap().aggregate {
-            Aggregate::Count | Aggregate::CountDistinct(_) => 0,
+            Aggregate::Count | Aggregate::CountNotNull(_) | Aggregate::CountDistinct(_) => 0,
             Aggregate::Sum(c) | Aggregate::Min(c) | Aggregate::Max(c) | Aggregate::Avg(c) => {
                 trip_types()[column(c.as_str())].scale()
             }
@@ -612,6 +619,10 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
     let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
     match &m.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
+        Aggregate::CountNotNull(c) => {
+            let values = rows.iter().filter(|r| r[column(c.as_str())] != Datum::Null);
+            Value::Int(values.count() as i128)
+        }
         Aggregate::Sum(c) => {
             let v = ints(c);
             or_null((!v.is_empty()).then(|| v.iter().sum()))
@@ -1971,9 +1982,11 @@ fn ask_without_by_answers_one_row() {
                 zero.clone(),
                 null.clone(),
                 null.clone(),
-                zero,
+                zero.clone(),
                 null.clone(),
                 null,
+                zero.clone(),
+                zero,
             ]
         }]
     );
@@ -2222,7 +2235,12 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         .iter()
         .position(|c| matches!(c, SealedColumn::Distinct { .. }))
         .unwrap();
-    let cases: [(&str, &Change<'_>); 13] = [
+    let count = good
+        .columns
+        .iter()
+        .position(|c| matches!(c, SealedColumn::Count { .. }))
+        .unwrap();
+    let cases: [(&str, &Change<'_>); 14] = [
         ("unknown fact", &|s| s.id.fact = id("nope")),
         ("no such width", &|s| s.id.width = 7),
         ("no cells", &|s| s.counts.clear()),
@@ -2242,6 +2260,9 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
                 sums: Vec::new(),
                 counts: vec![0],
             };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[count] = SealedColumn::Count { counts: vec![] };
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[extent] = SealedColumn::Extent {
@@ -2281,6 +2302,7 @@ fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
     sealed.counts.extend_from_slice(&sealed.counts.clone());
     for column in &mut sealed.columns {
         match column {
+            SealedColumn::Count { counts } => counts.extend_from_slice(&counts.clone()),
             SealedColumn::Sum { sums, counts } => {
                 sums.extend_from_slice(&sums.clone());
                 counts.extend_from_slice(&counts.clone());

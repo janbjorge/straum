@@ -130,6 +130,7 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        max(f.fare) AS fare_max,
        avg(f.fare) AS fare_avg,
        count(DISTINCT f.rider) AS riders,
+       count(f.rider) AS named,
        sum(f.tip) AS tips,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan,
        count(*) FILTER (WHERE f.zone_id IN (1, 2)) AS near
@@ -484,12 +485,13 @@ struct Reference {
 /// hours at either end, against the raw rows. `fare_scale` follows `fare`'s
 /// type.
 fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
-    const MEASURES: [&str; 8] = [
+    const MEASURES: [&str; 9] = [
         "trips",
         "fare",
         "fare_max",
         "fare_avg",
         "riders",
+        "named",
         "tips",
         "manhattan",
         "near",
@@ -497,7 +499,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
     let trips = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
-                    fare_max, round(fare_avg, 6), riders, tips, manhattan, near
+                    fare_max, round(fare_avg, 6), riders, named, tips, manhattan, near
                FROM ({}) v",
             body(SPEC, "trips")
         ),
@@ -507,7 +509,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             &["bucket", "kind", "zone_id", "borough"],
         ),
         scales: vec![
-            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0,
         ],
     };
     let logins = Reference {
@@ -521,7 +523,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
     let window = Reference {
         sql: format!(
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
-                    round(avg(f.fare), 6), count(DISTINCT f.rider), sum(f.tip),
+                    round(avg(f.fare), 6), count(DISTINCT f.rider), count(f.rider), sum(f.tip),
                     count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
                     count(*) FILTER (WHERE f.zone_id IN (1, 2))
                FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
@@ -533,7 +535,9 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             to: WINDOW_TO,
             ..ask("trips", &MEASURES, &["kind", "zone_id", "borough"])
         },
-        scales: vec![0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0],
+        scales: vec![
+            0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0,
+        ],
     };
     vec![trips, logins, window]
 }
@@ -2022,6 +2026,21 @@ fn setup_problems_say_what_to_fix() {
             Some(
                 "f: column k of naivekey.f is timestamp without time zone; \
              Straum needs an integer type, numeric(p, s), boolean or text there",
+            ),
+        ),
+        (
+            "counted",
+            format!("{} {publish}", fact("x int, k timestamptz", "").0),
+            fact("", "count(t.k) AS n").1,
+            None,
+        ),
+        (
+            "uncounted",
+            format!("{} {publish}", fact("x int, k float8", "").0),
+            fact("", "count(t.k) AS n").1,
+            Some(
+                "f: column k of uncounted.f is double precision; straum needs a type it reads \
+             there: an integer type, numeric(p, s), boolean, text, timestamptz or timestamp",
             ),
         ),
         (
