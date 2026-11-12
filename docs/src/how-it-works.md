@@ -153,9 +153,11 @@ width; a hot bucket is columnar cells with one state per input.*
   joins all read fact columns: keyed by the keys and the dim columns'
   values, so an ask reads no projection. A fact row goes into both
   rollups; into the bound one once per way its joins resolve now
-  (`Bound::rows`). A change to a dim the fact reads
-  drops them while the fact holds rows (`Store::stale`); the next
-  start makes them again.
+  (`Bound::rows`). A change to a dim the fact reads moves the ones
+  whose join columns name the changed key (`Store::retarget`); a dim
+  truncate or load makes them again from the keyed cells
+  (`Store::rebuild_dim`). They hold the hot buckets only: a seal takes
+  its bucket out of them and an unseal binds it back.
 
 ## Applying a commit
 
