@@ -70,7 +70,8 @@ shipped, with stock logical replication, no extension and no superuser
 One writer loads every table from one snapshot and applies every
 commit after it, and asks read meanwhile. The guide's [How Straum
 works](https://janbjorge.github.io/straum/how-it-works.html) is the
-design: the use cases, the model and what the code holds true.
+model; [Design](https://janbjorge.github.io/straum/design.html) is
+the same model with the code's names, for contributors.
 
 ## Development
 
@@ -80,8 +81,8 @@ need Docker.
 ## Documentation
 
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`;
-  [How Straum works](https://janbjorge.github.io/straum/how-it-works.html)
-  is the design
+  [Design](https://janbjorge.github.io/straum/design.html) is the
+  design
 - [Decisions](docs/adr/)
 - [Straum and PostgreSQL](research/POSTGRESQL.md)
 - [Joins: history and sources](research/JOINS.md)

@@ -63,9 +63,8 @@ GROUP BY 1, 2, 3, 4;
 PostgreSQL would give the same rows for this view. Straum never creates
 it; it keeps one cell per hour, status, customer and country in memory.
 `WITH (buckets = '1 hour')` lists every bucket width it keeps, here the
-hour of the `date_bin` alone. Every table, column and output name is
-written in full: Straum SQL has one spelling per meaning and infers
-nothing. [Writing a spec](spec.md) explains each line.
+hour of the `date_bin` alone. [Writing a spec](spec.md) explains each
+line.
 
 ## 4. Set up PostgreSQL
 
@@ -154,8 +153,10 @@ is after the commit.
 
 ## 8. Check status, then clean up
 
-`straum status` shows what Straum has done. `as of` is the same time
-answers carry, and it keeps moving while the tables are quiet:
+`straum status` shows what Straum has done; [Running
+Straum](running.md#straum-status) explains each line. `as of` is the
+same time answers carry, and it keeps moving while the tables are
+quiet:
 
 ```text
 $ docker exec straum /straum status
@@ -169,9 +170,6 @@ failures:     0
 last failure: none
 sealed:       no spill
 ```
-
-`sealed: no spill` is expected: the shipped image has no spill
-configuration.
 
 Stop straum with Ctrl-C and remove PostgreSQL and the network:
 

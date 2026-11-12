@@ -61,6 +61,12 @@ stream or current: Straum's input is PostgreSQL's replication stream.
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
 
+The guide is in reading order. The [quick start](quick-start.md) runs
+this example in Docker. [How Straum works](how-it-works.md) is the
+one idea behind it, cells, and is enough to read the rest: the
+[spec](spec.md), the [asks](asks.md), then [PostgreSQL](postgresql.md)
+and [running](running.md) for production.
+
 ## What it is not
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
