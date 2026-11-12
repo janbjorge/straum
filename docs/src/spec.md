@@ -82,8 +82,7 @@ PostgreSQL does.
 
 A key column is an integer type, `numeric(p, s)`, `boolean` or `text`,
 or an [enum written `::text`](#enum-columns). Fewer keys, or keys with
-fewer values, mean fewer cells; see
-[Sizing memory](#memory).
+fewer values, mean fewer cells ([Memory](#memory)).
 
 ## Time
 
@@ -116,10 +115,9 @@ place while the body stays what PostgreSQL runs. Each wider width is a
 whole multiple of the one before and starts at the epoch, so `7 days`
 buckets start on Thursdays. Answers don't change. An ask over a long
 range reads its middle from the widest buckets that fit and its ends
-from narrower ones, so it reads far fewer cells; both are drawn under
-[How it works](how-it-works.md#cells). Aggregate values stay the same;
-only which cells an ask reads changes. Each width costs memory, under
-[Sizing memory](#memory).
+from narrower ones, so it reads far fewer cells; both are drawn under [How Straum
+works](how-it-works.md#answering-an-ask). Aggregate values stay the same;
+only which cells an ask reads changes. Each width costs memory ([Memory](#memory)).
 
 ## Joining a dim
 
@@ -302,6 +300,6 @@ Memory follows cells: one per distinct combination of keys, join
 columns and bucket, per width, plus one entry per dim row for the
 columns the views read. Fewer keys, keys with fewer values and wider
 buckets mean fewer cells; a join to a dim with many rows means many
-cells, one per distinct join-column value in the fact.
-[Sizing memory](sizing.md) has the formula and what real tables
-measured.
+cells, one per distinct join-column value in the fact. [How Straum
+works](how-it-works.md#cells) has the formula and the
+[benchmark](benchmark.md#memory) what real tables measured.

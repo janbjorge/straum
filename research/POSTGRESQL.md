@@ -320,7 +320,7 @@ render cleanly with `helm template`.
 
 Every path already exists in the cluster: Straum reaches PostgreSQL the
 way the apps do, and apps reach Straum in-cluster. The chart is
-described in `docs/src/kubernetes.md`; the choices made for Azure are a
+described in `docs/src/running.md`; the choices made for Azure are a
 Deployment with no PVC, one replica by default, and liveness on the
 process only, since failing it on lag would turn a slow catch-up into
 a restart loop. Setup on Flexible Server is one restart with
@@ -344,7 +344,7 @@ views.
 4. What REPLICA IDENTITY FULL costs the primary at the real write rate
    (§6).
 5. Low collapse: warn in `straum plan`, or leave it to the spec author
-   (`docs/src/sizing.md`).
+   (`docs/src/benchmark.md`).
 6. What clients do while Straum is not ready: retry, or ask PostgreSQL.
 7. Long asks delay the writer while they hold the read lock (ADR-0009).
 8. `helm template` output committed to the deploy repo, or a

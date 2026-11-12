@@ -3,7 +3,7 @@
 Runs straum on Kubernetes: a Deployment, the spec in a ConfigMap, a
 ClusterIP Service and a ServiceAccount. No volume claims; straum keeps
 everything in memory and loads every table again when its pod starts.
-The [user guide](https://janbjorge.github.io/straum/kubernetes.html) has
+The [user guide](https://janbjorge.github.io/straum/running.html#kubernetes) has
 more.
 
 ## Before you install

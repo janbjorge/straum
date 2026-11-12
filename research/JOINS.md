@@ -132,7 +132,7 @@ the source says and what Straum took from it.
 ## 3. Numbers
 
 Re-measured on 2026-11-11 after ADR-0030, on the warehouse copy of
-`docs/src/sizing.md`: 13,116,878 tasks, 5,690,651 task groups, 851,964
+`docs/src/benchmark.md`: 13,116,878 tasks, 5,690,651 task groups, 851,964
 storage locations; the view keyed by organization, live-ness, the
 group's category and the location's type.
 
@@ -155,4 +155,4 @@ week reads that week's hour cells and maps each through the
 projections, so it costs 100 times what it did. In
 exchange no dim change starts Straum over, and every ask equalled
 PostgreSQL after each of the seven changes. The full tables are in
-`docs/src/sizing.md`.
+`docs/src/benchmark.md`.
