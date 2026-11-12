@@ -498,6 +498,24 @@ fn altered_table_starts_over() {
     assert_eq!(db.borrow().loads.len(), 9);
 }
 
+/// The insert before the unfit change is in the store, and not in any
+/// answer: the stream is cleared before the write lock drops. The next
+/// start loads the commit whole, from the snapshot.
+#[test]
+fn a_commit_that_stops_fitting_is_not_answered() {
+    let (db, mut writer) = setup(&TABLES);
+    db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    db.borrow_mut()
+        .commit(vec![trip(2, 1, 1, 20), Write::Alter { table: "trips" }]);
+    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
+    assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
+    assert_eq!(writer.app().status().applied, None);
+    writer.step().unwrap();
+    assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
+    assert!(writer.app().status().ready);
+}
+
 #[test]
 fn tables_outside_the_spec_are_skipped() {
     let (db, mut writer) = setup(&TABLES);

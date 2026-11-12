@@ -271,6 +271,10 @@ impl State {
                 continue;
             }
             if !apply_change(&mut self.store, &change) {
+                // The earlier changes of this commit are in the store.
+                // Clear the stream before the write guard drops, so an ask
+                // waiting on it cannot read them.
+                self.following = None;
                 return Err(table.clone());
             }
         }
@@ -591,3 +595,111 @@ impl fmt::Display for AnswerError {
 }
 
 impl std::error::Error for AnswerError {}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Instant, SystemTime};
+
+    use straum_domain::{Ask, Datum, Identifier, Value};
+
+    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Wal};
+    use crate::lag::Lag;
+
+    fn id(name: &str) -> Identifier {
+        Identifier::new(name).unwrap()
+    }
+
+    fn spec() -> straum_domain::Spec {
+        straum_notation::parse(
+            "CREATE VIEW trips WITH (buckets = '1 hour') AS
+             SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+                    count(*) AS trips
+             FROM public.trips AS t
+             GROUP BY 1;",
+        )
+        .unwrap()
+    }
+
+    fn app() -> App {
+        App::new(
+            spec(),
+            Limits {
+                max_lag: std::time::Duration::from_secs(30),
+                max_retained_wal: 4 << 30,
+            },
+            None,
+        )
+    }
+
+    fn follow(app: &App) {
+        let mut state = app.write();
+        state.following = Some(Following {
+            applied: Lsn(1),
+            committed: None,
+            lag: Lag::new(Instant::now()),
+            wal: Wal {
+                written: Lsn(1),
+                confirmed: Lsn(1),
+                restart: Lsn(1),
+            },
+        });
+    }
+
+    fn count() -> Ask {
+        Ask {
+            view: id("trips"),
+            measures: vec![id("trips")],
+            keys: Vec::new(),
+            filter: Vec::new(),
+            from: 0,
+            to: 3_600,
+        }
+    }
+
+    #[test]
+    fn a_failed_apply_hides_the_commit_before_the_lock_drops() {
+        let app = app();
+        follow(&app);
+        let mut state = app.write();
+        let err = state.apply(Commit {
+            lsn: Lsn(2),
+            committed: SystemTime::UNIX_EPOCH,
+            changes: vec![
+                Change::Insert {
+                    table: id("trips"),
+                    row: vec![Datum::Int(0)],
+                },
+                Change::Unfit { table: id("trips") },
+            ],
+        });
+        assert!(err.is_err());
+        assert!(state.following.is_none());
+        // The insert landed. Nothing can answer it: the stream is already clear.
+        assert!(state.store.cells("trips").unwrap() > 0);
+        drop(state);
+        assert!(matches!(app.ask(&count()), Err(AnswerError::NotReady)));
+    }
+
+    #[test]
+    fn a_commit_that_fits_stays_readable() {
+        let app = app();
+        follow(&app);
+        {
+            let mut state = app.write();
+            state
+                .apply(Commit {
+                    lsn: Lsn(2),
+                    committed: SystemTime::UNIX_EPOCH,
+                    changes: vec![Change::Insert {
+                        table: id("trips"),
+                        row: vec![Datum::Int(0)],
+                    }],
+                })
+                .unwrap();
+            assert_eq!(state.following.as_ref().map(|f| f.applied), Some(Lsn(2)));
+        }
+        let answered = app.ask(&count()).unwrap();
+        assert_eq!(answered.applied, Lsn(2));
+        assert_eq!(answered.answer.rows[0].values[0], Value::Int(1));
+    }
+}
