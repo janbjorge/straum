@@ -933,6 +933,39 @@ fn each_start_empties_the_spill() {
     assert_eq!(spill.clears(), 2);
 }
 
+/// The old store goes before the new load, so the two never take memory
+/// at once: while the tables load again, nothing of what the old store
+/// had sealed is left to count.
+#[test]
+fn the_old_store_goes_before_the_new_load() {
+    let db = Database::new(&TABLES).shared();
+    let spilling = Spilling {
+        spill: Arc::new(MemorySpill::default()),
+        seal_after: Duration::ZERO,
+    };
+    let app = App::new(spec(), LIMITS, Some(spilling));
+    let mut fake = Fake::new(&db);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (watch, log) = (app.clone(), Rc::clone(&seen));
+    fake.on_load = Some(Box::new(move |_| {
+        log.borrow_mut().push(watch.status().sealed);
+    }));
+    let mut writer = Writer::new(app, fake);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
+    writer.step().unwrap();
+    assert_eq!(writer.app().status().sealed, Some(2));
+
+    db.borrow_mut().drop_connection = true;
+    writer.step().unwrap_err();
+    // The failure leaves the store as it was until the next start.
+    assert_eq!(writer.app().status().sealed, Some(2));
+    seen.borrow_mut().clear();
+    writer.step().unwrap();
+    assert_eq!(*seen.borrow(), [Some(0); 3]);
+    assert_eq!(writer.app().status().sealed, Some(2));
+}
+
 /// A bucket no store sealed: a cell keyed by codes it never gave.
 fn stale_bucket() -> straum_domain::Sealed {
     straum_domain::Sealed {
