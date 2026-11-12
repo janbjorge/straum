@@ -1,10 +1,10 @@
 # Straum: guide for AI coding agents
 
-`docs/adr/` holds the settled decisions. They win over this file.
+`docs/adr/` holds settled decisions. They win over this file.
 
 ## Commands
 
-Scope every run to the crates you touch. CI runs the whole workspace.
+Scope every run to crates you touch. CI runs the whole workspace.
 
 ```sh
 cargo fmt --all
@@ -14,78 +14,73 @@ cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
 python3 scripts/check-layers.py
 ```
 
-Coverage runs over the touched crates and the crates whose tests exercise
-them (`straum-notation` tests much of `straum-domain`). Without rustup,
-set `LLVM_COV` and `LLVM_PROFDATA` to the tools in
-`$(brew --prefix llvm)/bin`.
+Coverage: touched crates plus crates whose tests exercise them
+(`straum-notation` tests much of `straum-domain`). No rustup? Set
+`LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. For a change under `deploy/`, also run
-`python3 scripts/check-chart.py`, which needs helm, the helm-unittest
-plugin and kubeconform. For a change under `docs/`, also run
-`mdbook build docs`; CI builds the book with mdBook 0.5.4.
+PostgreSQL tests need Docker.
+
+- Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
+  helm, the helm-unittest plugin and kubeconform.
+- Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 
 ## Documents
 
-A change is not done until every document that describes it is true
-again. Fix the documents in the commit that changes the code, never in a
-follow-up, and without being asked.
+A change is not done until every document describing it is true again.
+Fix documents in the same commit as the code. No follow-up commit. Do
+not wait to be asked.
 
-Before committing, search `docs/`, `README.md` and `deploy/` with `rg`
-for what the change touched: the old name, flag, message, default or
-number. Then check each of these:
+Before commit, `rg` `docs/`, `README.md` and `deploy/` for what changed:
+old name, flag, message, default, number. Then check:
 
-- The guide in `docs/src/`, whose pages `SUMMARY.md` lists: anything a
-  user sees or does, such as spec and ask syntax, error text, flags,
-  endpoints, PostgreSQL setup and limits.
-- The design pages and `docs/src/diagrams/`: the crates, the machines,
-  the store, and how a change moves through them.
-- `docs/src/glossary.md`: a term added, renamed or dropped.
-- `README.md`: what Straum does and how to start it.
-- `deploy/helm/straum/README.md` and `values.schema.json`: a chart value
+- `docs/src/` guide (pages in `SUMMARY.md`): what a user sees or does.
+  Spec and ask syntax, error text, flags, endpoints, PostgreSQL setup,
+  limits.
+- Design pages, `docs/src/diagrams/`: crates, machines, store, how a
+  change moves through them.
+- `docs/src/glossary.md`: term added, renamed or dropped.
+- `README.md`: what Straum does, how to start it.
+- `deploy/helm/straum/README.md`, `values.schema.json`: chart value
   added, renamed or given a new default.
-- `docs/adr/`: a change that goes against an accepted record needs a new
-  record that supersedes it (ADR-0001).
-- This file: a command, a tool or a rule changed.
+- `docs/adr/`: a change against an accepted record needs a new record
+  superseding it (ADR-0001).
+- This file: command, tool or rule changed.
 
-End the report with the documents that changed, or say that none
-describes the change.
+End the report with the documents changed, or say none describes the
+change.
 
 ## Rules
 
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
-- No `unsafe`, no macros of our own, traits only at ports. The one
-  exception is the counting allocator in `straum-domain/tests/cost.rs`
+- No `unsafe`, no macros of our own, traits only at ports. One
+  exception: the counting allocator in `straum-domain/tests/cost.rs`
   (ADR-0027).
-- Plain structs, enums and functions. Named fields over tuples, whole
-  words over abbreviations. Names and signatures follow the
+- Plain structs, enums, functions. Named fields over tuples, whole words
+  over abbreviations. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
-- Errors are hand-written enums with `Display` and `From` impls, no
-  `thiserror` or `anyhow`. Input never panics.
+- Errors: hand-written enums with `Display` and `From` impls. No
+  `thiserror`, no `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the
-  construct, and holds one spelling per meaning with nothing inferred
-  (ADR-0029).
+  construct. One spelling per meaning, nothing inferred (ADR-0029).
 - Only `straum-http` runs tokio.
-- Before adding a direct dependency, check `std` first. Add a crate only
-  for a capability `std` lacks or a measured material gain. State why
-  beside the dependency in `Cargo.toml`, or in an ADR for an
-  architectural decision. Do not add convenience crates for small
-  helpers. Review dependency changes with
-  `cargo tree --workspace -e normal`.
+- Dependencies: check `std` first. Add a crate only for a capability
+  `std` lacks or a measured material gain. State why beside it in
+  `Cargo.toml`, or in an ADR if architectural. No convenience crates for
+  small helpers. Review with `cargo tree --workspace -e normal`.
 - `docs/src/glossary.md` names each thing once. Use its terms in docs,
-  comments and error text; its Clashes table lists the renames still
-  open.
-- No doc comments by default; names and types carry the what. Write a
-  comment only for a why the code can't show: a constraint, an
-  invariant, a PostgreSQL quirk, a rejected alternative. Never reference
-  callers or tickets, and never leave `TODO` or commented-out code.
+  comments and error text. Its Clashes table lists renames still open.
+- No doc comments by default; names and types carry the what. Comment
+  only a why the code can't show: constraint, invariant, PostgreSQL
+  quirk, rejected alternative. Never reference callers or tickets. Never
+  leave `TODO` or commented-out code.
 - Every behaviour gets a positive and a negative test. State that
-  changes over time gets a property test against a reference;
-  planting a bug must make it fail.
+  changes over time gets a property test against a reference; a planted
+  bug must make it fail.
 - A settled decision gets a record in `docs/adr/`; ADR-0001 says how.
-- Commit straight to `main`, one change per commit, with a short
-  imperative subject. No branches, no PRs. Releases and their tags are
-  made by the maintainer on the release page (ADR-0036). Code goes in
-  with the commit that first uses it.
+- Commit straight to `main`. One change per commit, short imperative
+  subject. No branches, no PRs. The maintainer makes releases and tags
+  on the release page (ADR-0036). Code goes in with the commit that
+  first uses it.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
-- Wrap markdown at about 78 columns. Don't use em dashes.
+- Wrap markdown at about 78 columns. No em dashes.
