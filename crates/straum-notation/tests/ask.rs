@@ -27,7 +27,7 @@ fn reads_every_part() {
     let ask = parse_ask(
         "SELECT bucket, payment_type, pu_location_id, borough, trips, fare
          FROM trips
-         WHERE (borough IN ($1, $2) AND payment_type = $3)
+         WHERE borough IN ($1, $2) AND payment_type = $3
            AND bucket >= $4 AND shared = $5 AND vendor_id = $3 AND bucket < $6
          GROUP BY borough, bucket, pu_location_id, payment_type",
         &[
@@ -172,9 +172,19 @@ fn every_error_names_what_is_wrong() {
             "filter condition, write = or IN joined by AND, `bucket > $1`",
         ),
         (
-            "SELECT trips FROM t WHERE (kind = $1 OR kind = $1) AND bucket >= $1 AND bucket < $2",
+            "SELECT trips FROM t WHERE kind = $1 OR kind = $1 AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, write = or IN joined by AND, `kind = $1 OR kind = $1`",
+            "filter condition, write = or IN joined by AND, `kind = $1 OR kind = $1",
+        ),
+        (
+            "SELECT trips FROM t WHERE (kind = $1) AND bucket >= $1 AND bucket < $2",
+            &range(),
+            "parentheses, write the condition without them, `(kind = $1)`",
+        ),
+        (
+            "SELECT trips FROM t WHERE kind = $1 AND (bucket >= $1 AND bucket < $2)",
+            &range(),
+            "parentheses, write the condition without them, `(bucket >= $1 AND bucket < $2)`",
         ),
         (
             "SELECT trips FROM t WHERE kind NOT IN ($1, $2) AND bucket >= $1 AND bucket < $2",

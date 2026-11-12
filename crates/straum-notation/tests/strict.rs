@@ -405,6 +405,56 @@ fn one_measure_and_condition_spelling() {
     ]);
 }
 
+/// A condition is never put in parentheses: AND needs none.
+#[test]
+fn parentheses_are_written_where_the_canon_has_them() {
+    check(&[
+        (
+            "FILTER (WHERE orders.status = 'paid')",
+            "FILTER (WHERE (orders.status = 'paid'))",
+            "parentheses, write the condition without them, `(orders.status = 'paid')`",
+        ),
+        (
+            "WHERE orders.shipped_at IS NOT NULL AND",
+            "WHERE (orders.shipped_at IS NOT NULL) AND",
+            "parentheses, write the condition without them, `(orders.shipped_at IS NOT NULL)`",
+        ),
+        (
+            "WHERE orders.shipped_at IS NOT NULL AND customers.country IN ('NO', 'SE')",
+            "WHERE (orders.shipped_at IS NOT NULL AND customers.country IN ('NO', 'SE'))",
+            "parentheses, write the condition without them, `(orders.shipped_at IS NOT NULL AND",
+        ),
+        (
+            "WHERE orders.shipped_at IS NOT NULL AND customers.country IN ('NO', 'SE')",
+            "WHERE orders.shipped_at IS NOT NULL AND (customers.country IN ('NO', 'SE'))",
+            "parentheses, write the condition without them, `(customers.country IN ('NO', 'SE'))`",
+        ),
+        (
+            "ON customers.id = orders.customer_id",
+            "ON (customers.id = orders.customer_id)",
+            "the joined table's column on the left, one or more joined by AND; found \
+             (customers.id = orders.customer_id)",
+        ),
+        (
+            "GROUP BY",
+            "WHERE (orders.status = 'paid') GROUP BY",
+            "parentheses, write the condition without them, `(orders.status = 'paid')`",
+        ),
+        (
+            "GROUP BY",
+            "WHERE (EXISTS (SELECT 1 FROM shop.promos AS promos WHERE promos.id = orders.id)) \
+             GROUP BY",
+            "parentheses, write the condition without them, `(EXISTS (SELECT 1 FROM",
+        ),
+        (
+            "GROUP BY",
+            "WHERE EXISTS (SELECT 1 FROM shop.promos AS promos WHERE (promos.id = orders.id)) \
+             GROUP BY",
+            "one or more joined by AND; found (promos.id = orders.id)",
+        ),
+    ]);
+}
+
 /// An enum column is read as its label by writing `alias.column::text`
 /// (ADR-0037): on a key, its null-ness, or a FILTER column, spelled alike
 /// everywhere the view reads the column, and nowhere else.

@@ -266,7 +266,7 @@ fn comments_and_empty_file() {
 fn literals_and_filters() {
     let src = base(
         "count(*) AS n",
-        "count(*) FILTER (WHERE f.a IN (-1, 2) AND (z.name = 'it''s' AND f.z_id = 3) \
+        "count(*) FILTER (WHERE f.a IN (-1, 2) AND z.name = 'it''s' AND f.z_id = 3 \
          AND z.id = 4 AND f.a = true) AS n",
     );
     let spec = parse(&src).unwrap();

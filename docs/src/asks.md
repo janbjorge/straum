@@ -45,7 +45,7 @@ SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
   keys.
 - `bucket >= $n` and `bucket < $n` bound the range, once each, and both
   are written: an ask says what it reads. They and the conditions come
-  in any order.
+  in any order. No condition is put in parentheses.
 
 ## Parameters
 

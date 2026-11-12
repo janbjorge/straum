@@ -45,6 +45,7 @@ fn line(node: &impl Spanned) -> u64 {
 }
 
 const CONDITION: &str = "filter condition, write = or IN joined by AND,";
+const PARENTHESES: &str = "parentheses, write the condition without them,";
 
 #[derive(Default)]
 struct Walker {
@@ -400,6 +401,7 @@ impl Walker {
                         conds.push(Condition { key, values });
                     }
                 }
+                sql::Expr::Nested(_) => self.refuse(line(part), PARENTHESES, part),
                 other => self.refuse(line(other), CONDITION, other),
             }
         }
@@ -450,10 +452,10 @@ impl Walker {
     }
 }
 
-/// The parts of a condition joined by AND.
+/// The parts of a condition joined by AND. A parenthesis is a part of its
+/// own, which every caller refuses: AND needs none.
 fn and_parts<'a>(expr: &'a sql::Expr, parts: &mut Vec<&'a sql::Expr>) {
     match expr {
-        sql::Expr::Nested(inner) => and_parts(inner, parts),
         sql::Expr::BinaryOp {
             left,
             op: sql::BinaryOperator::And,

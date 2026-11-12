@@ -47,9 +47,10 @@ literal    42, -7, 'text', true, false
 
 Brackets hold what may be left out, `|` separates a choice, and `...`
 repeats what is before it. Keys and measures come in any order.
-`EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. A spec is
-one or more views, with `;` between them. Identifiers are unquoted:
-lowercase letters, digits and `_`, at most 63 bytes.
+`EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. No
+condition is put in parentheses. A spec is one or more views, with `;`
+between them. Identifiers are unquoted: lowercase letters, digits and
+`_`, at most 63 bytes.
 
 This is the [quick start](quick-start.md) view with a wider bucket, a
 null-ness key and two filtered measures:
