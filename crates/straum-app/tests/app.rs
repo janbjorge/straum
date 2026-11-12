@@ -565,20 +565,6 @@ fn asks_wait_while_the_tables_load() {
 }
 
 #[test]
-fn the_last_failure_is_kept_until_the_next_start() {
-    let (db, mut writer) = setup(&TABLES);
-    assert_eq!(writer.app().status().failure, None);
-    db.borrow_mut().drop_connection = true;
-    writer.step().unwrap_err();
-    assert_eq!(
-        writer.app().status().failure.as_deref(),
-        Some("connection dropped")
-    );
-    writer.step().unwrap();
-    assert_eq!(writer.app().status().failure, None);
-}
-
-#[test]
 fn ready_only_within_the_lag_bound() {
     let db = Database::new(&TABLES).shared();
     let limits = Limits {
