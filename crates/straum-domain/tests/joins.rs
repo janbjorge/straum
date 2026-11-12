@@ -1,13 +1,13 @@
 //! Every join kind, any cardinality, a join through another dim and the
 //! view's `WHERE`, each against a reference that joins the live rows
 //! to the dims as they are: hand-made cases first, then random rows, dims
-//! and changes to both.
+//! and changes to both, with buckets sealed under them.
 
 use std::collections::{BTreeMap, HashSet};
 
 mod common;
 
-use common::{Rng, cond, dim_row, holds, id, lit, table, text};
+use common::{Rng, Spilled, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, Literal, Measure, Origin, Ref, RefKind, Spec, Store,
@@ -838,59 +838,71 @@ fn null_keys_join_nothing() {
     check(&store, &spec, &dims, &kinds, &orders, &all);
 }
 
-impl Rng {
-    fn kinds(&mut self) -> [RefKind; 5] {
-        let any = [RefKind::Left, RefKind::Inner, RefKind::Semi, RefKind::Anti];
-        let reads = [RefKind::Left, RefKind::Inner];
-        [
-            *self.pick(&reads),
-            *self.pick(&reads),
-            *self.pick(&reads),
-            *self.pick(&any),
-            *self.pick(&any),
-        ]
-    }
+/// The kinds a seed runs with. Over eight seeds: every way the three
+/// joins that read a column are left or inner, and each kind twice for
+/// each of the two that may read none.
+fn kinds_of(seed: u64) -> [RefKind; 5] {
+    let reads = |bit: u64| match seed >> bit & 1 {
+        0 => RefKind::Left,
+        _ => RefKind::Inner,
+    };
+    let any = [RefKind::Left, RefKind::Inner, RefKind::Semi, RefKind::Anti];
+    [
+        reads(0),
+        reads(1),
+        reads(2),
+        any[(seed % 4) as usize],
+        any[((seed / 2 + 1) % 4) as usize],
+    ]
+}
 
+impl Rng {
+    /// An order in the two days, or now and then one without a time.
     fn random_order(&mut self) -> Vec<Datum> {
-        order(
+        let mut order = order(
             START + HOUR * self.int(0, 48),
             self.maybe(1, 6, 5),
             self.maybe(1, 5, 5),
             self.maybe(0, 10, 10),
-        )
+        );
+        if self.chance(3) {
+            order[AT] = Datum::Null;
+        }
+        order
     }
 
     /// A random dim row: which dim, its key and its attributes; tiers
-    /// are keyed as the spec joins them.
+    /// are keyed as the spec joins them. Now and then the key is null,
+    /// which nothing joins.
     fn dim_row(&mut self, chained: bool) -> (&'static str, Vec<Datum>, Vec<Datum>) {
         match self.below(5) {
             0 => (
                 "customers",
-                vec![Datum::Int(self.int(1, 6))],
+                vec![self.maybe(1, 6, 5)],
                 vec![text(self.pick(&["NO", "SE", "DK"])), self.maybe(10, 13, 30)],
             ),
             1 => (
                 "tiers",
-                vec![Datum::Int(if chained {
-                    self.int(10, 13)
+                vec![if chained {
+                    self.maybe(10, 13, 5)
                 } else {
-                    self.int(1, 6)
-                })],
+                    self.maybe(1, 6, 5)
+                }],
                 vec![text(self.pick(&["gold", "silver"]))],
             ),
             2 => (
                 "tags",
-                vec![Datum::Int(self.int(1, 5))],
+                vec![self.maybe(1, 5, 5)],
                 vec![text(self.pick(&["red", "big", "new"]))],
             ),
             3 => (
                 "promos",
-                vec![Datum::Int(self.int(1, 5))],
+                vec![self.maybe(1, 5, 5)],
                 vec![text(self.pick(&["x", "x2"]))],
             ),
             _ => (
                 "blocked",
-                vec![Datum::Int(self.int(1, 6))],
+                vec![self.maybe(1, 6, 5)],
                 vec![text(self.pick(&["y", "y2"]))],
             ),
         }
@@ -923,12 +935,24 @@ impl Rng {
     }
 }
 
-/// Random kinds, rows, dims and changes to both, checked against the
-/// reference every few steps. Without `chained` the fact keeps bound
-/// cells through dim changes; a ref through another dim keeps it unbound.
-fn run(seed: u64, chained: bool, changing: bool) {
+/// The rows of a dim the store holds: those under a key that is not
+/// null.
+fn held(dims: &Dims, dim: &str) -> usize {
+    let rows = dims.get(dim).into_iter().flatten();
+    rows.filter(|(key, _)| !key.contains(&Datum::Null))
+        .map(|(_, rows)| rows.len())
+        .sum()
+}
+
+/// Random rows, dims and changes to both under joins of `kinds`,
+/// checked against the reference every few steps. A ref through another
+/// dim, with `chained`, keeps the fact unbound, so its asks read the
+/// keyed cells through the projections; a direct fact answers from its
+/// bound cells. With `sealing`, buckets are sealed and unsealed as they
+/// go, and an ask over one reads the keyed cells, thawed; returns the
+/// sealed buckets asks read.
+fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
     let mut rng = Rng(seed);
-    let kinds = rng.kinds();
     let filter = if rng.chance(50) {
         vec![cond("country", vec![lit("NO"), lit("SE")])]
     } else {
@@ -938,17 +962,22 @@ fn run(seed: u64, chained: bool, changing: bool) {
     let mut store = typed(&spec);
     let mut dims = Dims::new();
     let mut rows: Vec<Vec<Datum>> = Vec::new();
+    let mut spilled = Spilled::new("orders");
     for _ in 0..rng.below(30) {
         let (dim, key, attrs) = rng.dim_row(chained);
         add_dim(&mut store, &mut dims, dim, key, attrs);
     }
     for step in 0..400 {
-        match rng.below(10) {
-            0 | 1 if changing => {
+        if sealing && rng.chance(10) {
+            let before = START + HOUR * rng.int(0, 60);
+            spilled.seal(&mut rng, &mut store, before);
+        }
+        match rng.below(40) {
+            0..=7 => {
                 let (dim, key, attrs) = rng.dim_row(chained);
                 add_dim(&mut store, &mut dims, dim, key, attrs);
             }
-            2 if changing => {
+            8..=11 => {
                 let (dim, key, attrs) = rng.dim_row(chained);
                 let held = (dims.get(dim))
                     .and_then(|d| d.get(&key))
@@ -957,50 +986,113 @@ fn run(seed: u64, chained: bool, changing: bool) {
                     remove_dim(&mut store, &mut dims, dim, &key, &attrs);
                 }
             }
-            3 if !rows.is_empty() => {
+            // A dim or the orders truncated.
+            12 if rng.chance(20) => {
+                let (dim, _, _) = rng.dim_row(chained);
+                store.clear(dim);
+                dims.remove(dim);
+            }
+            13 if rng.chance(10) => {
+                store.clear("orders");
+                spilled.forget();
+                rows.clear();
+            }
+            14..=17 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
+                spilled.unseal(&mut store, &row);
                 store.remove_row("orders", &row).unwrap();
+            }
+            18..=21 if !rows.is_empty() => {
+                let i = rng.below(rows.len());
+                let new = rng.random_order();
+                spilled.unseal(&mut store, &rows[i]);
+                spilled.unseal(&mut store, &new);
+                store.update_row("orders", &rows[i], &new).unwrap();
+                rows[i] = new;
             }
             _ => {
                 let row = rng.random_order();
+                spilled.unseal(&mut store, &row);
                 store.add_row("orders", &row).unwrap();
                 rows.push(row);
             }
         }
-        if step % 100 == 99 {
-            // A ref through another dim keeps the fact unbound. A direct
-            // fact keeps its bound cells through dim changes.
+        if step % 50 == 49 {
             let bound = store.bound_cells("orders").is_some();
             assert_eq!(bound, !chained, "seed {seed}, step {step}");
-            for _ in 0..4 {
+            for dim in ["customers", "tiers", "tags", "promos", "blocked"] {
+                assert_eq!(
+                    store.dim_rows(dim),
+                    Some(held(&dims, dim)),
+                    "seed {seed}, step {step}: {dim} holds a row with a null key"
+                );
+            }
+            for _ in 0..6 {
                 let ask = rng.random_ask();
                 assert_eq!(
-                    store.ask(&ask).unwrap(),
+                    spilled.ask(&store, &ask),
                     reference(&spec, &ask, &rows, &dims, &kinds),
                     "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
                 );
             }
         }
     }
+    for row in rows {
+        spilled.unseal(&mut store, &row);
+        store.remove_row("orders", &row).unwrap();
+    }
+    assert_eq!(
+        store.cells("orders"),
+        Some(0),
+        "seed {seed}: a cell outlived its rows"
+    );
+    if !chained {
+        assert_eq!(
+            store.bound_cells("orders"),
+            Some(0),
+            "seed {seed}: a bound cell outlived its rows"
+        );
+    }
+    spilled.read
 }
 
 #[test]
 fn joins_match_the_naive_reference() {
     for seed in 0..8 {
-        run(seed, true, true);
+        assert_eq!(run(seed, kinds_of(seed), true, false), 0);
     }
 }
 
 #[test]
 fn direct_joins_match_the_naive_reference() {
     for seed in 0..8 {
-        run(seed, false, true);
+        assert_eq!(run(seed, kinds_of(seed), false, false), 0);
     }
 }
 
 #[test]
-fn bound_joins_match_the_naive_reference() {
-    for seed in 0..8 {
-        run(seed, false, false);
-    }
+fn sealed_joins_match_the_naive_reference() {
+    let read: usize = (0..8)
+        .map(|seed| run(seed, kinds_of(seed), true, true))
+        .sum();
+    assert!(read > 500, "asks read {read} sealed buckets");
+}
+
+#[test]
+fn sealed_direct_joins_match_the_naive_reference() {
+    let read: usize = (0..8)
+        .map(|seed| run(seed, kinds_of(seed), false, true))
+        .sum();
+    assert!(read > 500, "asks read {read} sealed buckets");
+}
+
+/// Left joins alone count a cell once while every dim key holds one
+/// row. A key with several rows repeats the cell, in a sealed bucket's
+/// keyed cells as in the bound cells.
+#[test]
+fn sealed_left_joins_match_the_naive_reference() {
+    let read: usize = (0..8)
+        .map(|seed| run(seed, [RefKind::Left; 5], false, true))
+        .sum();
+    assert!(read > 500, "asks read {read} sealed buckets");
 }

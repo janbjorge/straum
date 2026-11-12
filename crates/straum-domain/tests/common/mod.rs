@@ -1,6 +1,10 @@
 //! Helpers the store and join tests share.
 
-use straum_domain::{Condition, Datum, Identifier, Literal, Table};
+use std::collections::HashMap;
+
+use straum_domain::{
+    Answer, Ask, Condition, Datum, Identifier, Literal, Sealed, SealedId, Store, Table,
+};
 
 pub fn id(s: &str) -> Identifier {
     Identifier::new(s).unwrap()
@@ -78,5 +82,62 @@ impl Rng {
 
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
+    }
+}
+
+/// The sealed buckets of one fact kept aside, as a spill keeps them.
+pub struct Spilled {
+    fact: &'static str,
+    buckets: HashMap<SealedId, Sealed>,
+    /// Sealed buckets asks read.
+    pub read: usize,
+}
+
+impl Spilled {
+    pub fn new(fact: &'static str) -> Spilled {
+        Spilled {
+            fact,
+            buckets: HashMap::new(),
+            read: 0,
+        }
+    }
+
+    /// Seals every bucket that ends by `before`, or some of them.
+    pub fn seal(&mut self, rng: &mut Rng, store: &mut Store, before: i64) {
+        for id in store.sealable(before) {
+            if rng.chance(70) {
+                let sealed = store.sealed_copy(&id).unwrap();
+                store.seal(&id).unwrap();
+                self.buckets.insert(id, sealed);
+            }
+        }
+    }
+
+    /// Unseals the buckets a row falls in, as the writer does before it
+    /// applies a change.
+    pub fn unseal(&mut self, store: &mut Store, row: &[Datum]) {
+        for id in store.sealed_touched(self.fact, row) {
+            let thawed = store.thaw(self.buckets.remove(&id).unwrap()).unwrap();
+            store.unseal(thawed).unwrap();
+        }
+    }
+
+    /// Forgets every bucket, as the writer does when the fact is
+    /// truncated.
+    pub fn forget(&mut self) {
+        self.buckets.clear();
+    }
+
+    /// The answer, and that the buckets kept are the ones the store has
+    /// sealed and no more.
+    pub fn ask(&mut self, store: &Store, ask: &Ask) -> Answer {
+        let mut kept: Vec<&SealedId> = self.buckets.keys().collect();
+        kept.sort();
+        assert_eq!(kept, store.sealed(self.fact).iter().collect::<Vec<_>>());
+        let thawed: Vec<_> = (store.sealed_read(ask).unwrap().iter())
+            .map(|id| store.thaw(self.buckets[id].clone()).unwrap())
+            .collect();
+        self.read += thawed.len();
+        store.ask_with(ask, &thawed).unwrap()
     }
 }

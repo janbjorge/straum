@@ -3,11 +3,11 @@
 //! deletes of trips and of dim rows. Rows hold the fact's columns only; a
 //! dim's values come through its projection when asked.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 mod common;
 
-use common::{Rng, cond, dim_row, holds, id, lit, table, text};
+use common::{Rng, Spilled, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attribute, ByKey,
     ColumnType, Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref,
@@ -27,11 +27,12 @@ const VENDOR: usize = 2;
 const SHARED: usize = 3;
 const PU: usize = 4;
 const DRO: usize = 5;
-const FARE: usize = 6;
-const TIP: usize = 7;
-const DIST: usize = 8;
-const RIDER: usize = 9;
-const ROW_LEN: usize = 10;
+const HOME: usize = 6;
+const FARE: usize = 7;
+const TIP: usize = 8;
+const DIST: usize = 9;
+const RIDER: usize = 10;
+const ROW_LEN: usize = 11;
 
 /// The dims as the projections key them: zones by `id`, combos by
 /// `(pu_id, vendor_id)`, vendors by `id`; each key to its attributes.
@@ -54,7 +55,7 @@ const DIM_TYPES: [(&str, &[ColumnType]); 3] = [
 /// differs, so an answer that takes a scale from the wrong column shows.
 const TRIP_SCALES: u32 = 20;
 
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 14] = [
     "pay",
     "vendor",
     "shared",
@@ -66,7 +67,9 @@ const KEYS: [&str; 12] = [
     "dropoff_zone",
     "combo_label",
     "known",
+    "unpaid",
     "vend_label",
+    "home_borough",
 ];
 
 fn col(s: &str) -> ByKey {
@@ -168,6 +171,16 @@ fn spec_joining(vend: RefKind) -> Spec {
                 kind: vend,
                 reads: vec![attr("vend_label", "label")],
             },
+            // On a column that is no by key: trips from several home
+            // zones of one borough share a bound cell, so a zone that
+            // moves takes its trips out of a cell the others stay in.
+            Ref {
+                alias: id("home"),
+                dim: id("zones"),
+                via: vec![Via::Fact(id("home"))],
+                kind: RefKind::Left,
+                reads: vec![attr("home_borough", "borough")],
+            },
         ],
         by_keys: vec![
             col("pay"),
@@ -175,11 +188,17 @@ fn spec_joining(vend: RefKind) -> Spec {
             col("shared"),
             col("pu"),
             col("dro"),
-            // Over a by column, which the row carries once.
+            // Over by columns, which the row carries once: one key for
+            // each way round.
             ByKey::IsNull {
                 column: id("shared"),
                 name: id("known"),
                 negated: true,
+            },
+            ByKey::IsNull {
+                column: id("pay"),
+                name: id("unpaid"),
+                negated: false,
             },
         ],
         filter: vec![],
@@ -262,6 +281,7 @@ fn trip(rng: &mut Rng) -> Vec<Datum> {
         shared,
         rng.maybe(1, 7, 5),
         rng.maybe(1, 7, 5),
+        rng.maybe(1, 7, 5),
         rng.maybe(-500, 10_000, 5),
         rng.maybe(0, 300, 20),
         rng.maybe(0, 5_000, 5),
@@ -269,8 +289,9 @@ fn trip(rng: &mut Rng) -> Vec<Datum> {
     ]
 }
 
-/// Random dims over the keys trips point at: `pu` and `dro` in 1..7,
-/// `vendor` in 1..3. Some keys have no row, so some joins find nothing.
+/// Random dims over the keys trips point at: `pu`, `dro` and `home` in
+/// 1..7, `vendor` in 1..3. Some keys have no row, so some joins find
+/// nothing, and some rows have a null in their key, which nothing joins.
 fn random_dims(rng: &mut Rng) -> Dims {
     let mut dims = Dims::new();
     let zones = dims.entry("zones").or_default();
@@ -283,6 +304,9 @@ fn random_dims(rng: &mut Rng) -> Dims {
             zones.insert(vec![Datum::Int(id)], attrs);
         }
     }
+    if rng.chance(50) {
+        zones.insert(vec![Datum::Null], vec![text("m"), text("a")]);
+    }
     let combos = dims.entry("combos").or_default();
     for pu in 1..7 {
         for vendor in 1..3 {
@@ -292,11 +316,21 @@ fn random_dims(rng: &mut Rng) -> Dims {
             }
         }
     }
+    if rng.chance(50) {
+        combos.insert(vec![Datum::Null, Datum::Int(1)], vec![text("x")]);
+    }
     let vendors = dims.entry("vendors").or_default();
     for id in 1..3 {
         vendors.insert(vec![Datum::Int(id)], vec![rng.attr(&["v1", "v2"], 50)]);
     }
     dims
+}
+
+/// The rows of a dim the store holds: those with no null in their key.
+fn held(rows: &BTreeMap<Vec<Datum>, Vec<Datum>>) -> usize {
+    (rows.keys())
+        .filter(|key| !key.contains(&Datum::Null))
+        .count()
 }
 
 /// Loads every dim, as a load does, rows laid end to end.
@@ -310,8 +344,8 @@ fn load_dims(store: &mut Store, dims: &Dims) {
 }
 
 /// A random change to one dim, applied to the store and to `dims`: a row
-/// relabelled, removed or added, or now and then the dim truncated and
-/// loaded again.
+/// relabelled, removed or added, under a key with a null now and then,
+/// or the dim truncated and loaded again.
 fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     if rng.chance(5) {
         let dim = *rng.pick(&["zones", "combos", "vendors"]);
@@ -331,7 +365,7 @@ fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     let (dim, key, attrs): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
         0 => (
             "zones",
-            vec![Datum::Int(rng.int(1, 7))],
+            vec![rng.maybe(1, 7, 5)],
             vec![
                 rng.attr(&["m", "q", "b"], 25),
                 rng.attr(&["a", "b", "c"], 25),
@@ -339,23 +373,27 @@ fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
         ),
         1 => (
             "combos",
-            vec![Datum::Int(rng.int(1, 7)), Datum::Int(rng.int(1, 3))],
+            vec![rng.maybe(1, 7, 5), rng.maybe(1, 3, 5)],
             vec![rng.attr(&["x", "y"], 50)],
         ),
         _ => (
             "vendors",
-            vec![Datum::Int(rng.int(1, 3))],
+            vec![rng.maybe(1, 3, 5)],
             vec![rng.attr(&["v1", "v2"], 50)],
         ),
     };
     let rows = dims.get_mut(dim).unwrap();
-    if let Some(old) = rows.remove(&key) {
-        store.remove_row(dim, &dim_row(&key, &old)).unwrap();
-        if rng.chance(40) {
+    match rows.remove(&key) {
+        Some(old) if rng.chance(40) => {
+            store.remove_row(dim, &dim_row(&key, &old)).unwrap();
             return;
         }
+        // Now and then to the row it was, which changes nothing.
+        Some(old) => store
+            .update_row(dim, &dim_row(&key, &old), &dim_row(&key, &attrs))
+            .unwrap(),
+        None => store.add_row(dim, &dim_row(&key, &attrs)).unwrap(),
     }
-    store.add_row(dim, &dim_row(&key, &attrs)).unwrap();
     rows.insert(key, attrs);
 }
 
@@ -379,7 +417,9 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         cond("pu", vec![Literal::Int(1), Literal::Int(3)]),
         cond("combo_label", vec![lit("x")]),
         cond("known", vec![Literal::Bool(true)]),
+        cond("unpaid", vec![Literal::Bool(false)]),
         cond("vend_label", vec![lit("v1")]),
+        cond("home_borough", vec![lit("q"), lit("b")]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -404,7 +444,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     }
 }
 
-/// A key's value for a row: a column, the null-ness key, or a dim value
+/// A key's value for a row: a column, a null-ness key, or a dim value
 /// joined as the dims are now, null when the join finds no row.
 fn value(row: &[Datum], key: &Identifier, dims: &Dims) -> Datum {
     let joined = |dim: &str, key: Vec<Datum>, attr: usize| -> Datum {
@@ -417,6 +457,8 @@ fn value(row: &[Datum], key: &Identifier, dims: &Dims) -> Datum {
     };
     match key.as_str() {
         "known" => Datum::Bool(row[SHARED] != Datum::Null),
+        "unpaid" => Datum::Bool(row[PAY] == Datum::Null),
+        "home_borough" => joined("zones", vec![row[HOME].clone()], 0),
         "pickup_borough" => joined("zones", vec![row[PU].clone()], 0),
         "pickup_zone" => joined("zones", vec![row[PU].clone()], 1),
         "dropoff_borough" => joined("zones", vec![row[DRO].clone()], 0),
@@ -437,6 +479,7 @@ fn trip_types() -> Vec<ColumnType> {
         ColumnType::Int,
         ColumnType::Int,
         ColumnType::Bool,
+        ColumnType::Int,
         ColumnType::Int,
         ColumnType::Int,
         numeric(FARE),
@@ -461,8 +504,8 @@ fn typed(spec: &Spec) -> Store {
 /// The scale a key's values print in: the dims' attributes are all text.
 fn scale(key: &Identifier) -> u32 {
     match key.as_str() {
-        "known" | "pickup_borough" | "pickup_zone" | "dropoff_borough" | "dropoff_zone"
-        | "combo_label" | "vend_label" => 0,
+        "known" | "unpaid" | "pickup_borough" | "pickup_zone" | "dropoff_borough"
+        | "dropoff_zone" | "combo_label" | "vend_label" | "home_borough" => 0,
         name => trip_types()[column(name)].scale(),
     }
 }
@@ -504,7 +547,9 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
         if t < ask.from || t >= ask.to || !passes(row, &ask.filter, dims) {
             continue;
         }
-        if vend.kind == RefKind::Inner && !dims["vendors"].contains_key(&row[VENDOR..=VENDOR]) {
+        let vendor = &row[VENDOR..=VENDOR];
+        let joins = vendor[0] != Datum::Null && dims["vendors"].contains_key(vendor);
+        if vend.kind == RefKind::Inner && !joins {
             continue;
         }
         let key = ask
@@ -595,57 +640,27 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
     }
 }
 
-/// Sealed buckets kept aside, as a spill keeps them, when `run` seals.
-#[derive(Default)]
-struct Spilled {
-    buckets: HashMap<SealedId, Sealed>,
-    /// Sealed buckets asks read.
-    read: usize,
+/// Makes `row` fall in the cell of `other`, or beside it: the same keys
+/// from another home zone, which the bound cells hold as one cell when
+/// the two zones are of one borough.
+fn near(rng: &mut Rng, row: &mut [Datum], other: &[Datum]) {
+    let same = if rng.chance(50) { HOME } else { DRO };
+    row[..=same].clone_from_slice(&other[..=same]);
 }
 
-impl Spilled {
-    /// Seals every bucket that ends by `before`, or some of them.
-    fn seal(&mut self, rng: &mut Rng, store: &mut Store, before: i64) {
-        for id in store.sealable(before) {
-            if rng.chance(70) {
-                let sealed = store.sealed_copy(&id).unwrap();
-                store.seal(&id).unwrap();
-                self.buckets.insert(id, sealed);
-            }
-        }
-    }
-
-    /// Unseals the buckets a row falls in, as the writer does before it
-    /// applies a change.
-    fn unseal(&mut self, store: &mut Store, row: &[Datum]) {
-        for id in store.sealed_touched("trips", row) {
-            let thawed = store.thaw(self.buckets.remove(&id).unwrap()).unwrap();
-            store.unseal(thawed).unwrap();
-        }
-    }
-
-    fn ask(&mut self, store: &Store, ask: &Ask) -> Answer {
-        let thawed: Vec<_> = (store.sealed_read(ask).unwrap().iter())
-            .map(|id| store.thaw(self.buckets[id].clone()).unwrap())
-            .collect();
-        self.read += thawed.len();
-        store.ask_with(ask, &thawed).unwrap()
-    }
-}
-
-/// Random changes and asks against the reference. With `sealing`,
-/// buckets are sealed and unsealed at random as they go, and the answers
-/// must not change; returns the sealed buckets asks read. With
-/// `changing`, dims change as they go and the bound cells move with
-/// them. An ask that overlaps a sealed bucket reads the keyed cells.
-/// `vend` is how the vendors join.
-fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
+/// Random changes to trips and dims, and asks against the reference.
+/// With `sealing`, buckets are sealed and unsealed at random as they go,
+/// and the answers must not change; returns the sealed buckets asks
+/// read. An ask that overlaps a sealed bucket reads the keyed cells, the
+/// rest the bound cells, which move with the dims. Halfway the trips
+/// are truncated. `vend` is how the vendors join.
+fn run(seed: u64, sealing: bool, vend: RefKind) -> usize {
     let spec = spec_joining(vend);
     let mut store = typed(&spec);
     let mut rng = Rng(seed);
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     let mut dims = random_dims(&mut rng);
-    let mut spilled = Spilled::default();
+    let mut spilled = Spilled::new("trips");
     load_dims(&mut store, &dims);
 
     for step in 0..2_000 {
@@ -653,33 +668,38 @@ fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
             let before = rng.int(START, END + 7 * 86_400);
             spilled.seal(&mut rng, &mut store, before);
         }
+        if step == 1_000 {
+            store.clear("trips");
+            spilled.forget();
+            rows.clear();
+            assert_eq!(store.cells("trips"), Some(0), "seed {seed}");
+            assert_eq!(store.bound_cells("trips"), Some(0), "seed {seed}");
+        }
         match rng.below(40) {
-            0..=3 if changing => change_dim(&mut rng, &mut store, &mut dims),
+            0..=3 => change_dim(&mut rng, &mut store, &mut dims),
             4..=8 if !rows.is_empty() => {
                 let row = rows.swap_remove(rng.below(rows.len()));
                 spilled.unseal(&mut store, &row);
                 store.remove_row("trips", &row).unwrap();
             }
             9..=14 if !rows.is_empty() => {
-                // An update: the old row out, a new one in, often in the
-                // same cell.
+                // Often into the same cell, or the one beside it.
                 let i = rng.below(rows.len());
                 let mut new = trip(&mut rng);
                 if rng.chance(50) {
-                    new[..=DRO].clone_from_slice(&rows[i][..=DRO]);
+                    near(&mut rng, &mut new, &rows[i]);
                 }
                 spilled.unseal(&mut store, &rows[i]);
-                store.remove_row("trips", &rows[i]).unwrap();
                 spilled.unseal(&mut store, &new);
-                store.add_row("trips", &new).unwrap();
+                store.update_row("trips", &rows[i], &new).unwrap();
                 rows[i] = new;
             }
             _ => {
                 let mut row = trip(&mut rng);
-                // Often into a cell that already holds rows.
+                // Often into a cell that already holds rows, or beside it.
                 if !rows.is_empty() && rng.chance(40) {
                     let other = rng.below(rows.len());
-                    row[..=DRO].clone_from_slice(&rows[other][..=DRO]);
+                    near(&mut rng, &mut row, &rows[other]);
                 }
                 spilled.unseal(&mut store, &row);
                 store.add_row("trips", &row).unwrap();
@@ -687,10 +707,13 @@ fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
             }
         }
         if step % 100 == 99 {
-            assert!(
-                store.bound_cells("trips").is_some(),
-                "seed {seed}, step {step}: a dim change dropped the bound cells"
-            );
+            for (dim, rows) in &dims {
+                assert_eq!(
+                    store.dim_rows(dim),
+                    Some(held(rows)),
+                    "seed {seed}, step {step}: {dim} holds a row with a null key"
+                );
+            }
             for _ in 0..10 {
                 let ask = random_ask(&mut rng, &spec);
                 assert_eq!(
@@ -703,6 +726,11 @@ fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
     }
 
     assert!(store.cells("trips").unwrap() > 0);
+    // Home zones of one borough share bound cells, so these are fewer.
+    if !sealing {
+        let (keyed, bound) = (store.cells("trips"), store.bound_cells("trips"));
+        assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
+    }
     for row in rows {
         spilled.unseal(&mut store, &row);
         store.remove_row("trips", &row).unwrap();
@@ -712,38 +740,26 @@ fn run(seed: u64, sealing: bool, changing: bool, vend: RefKind) -> usize {
         0,
         "seed {seed}: a cell outlived its rows"
     );
+    assert_eq!(
+        store.bound_cells("trips"),
+        Some(0),
+        "seed {seed}: a bound cell outlived its rows"
+    );
     spilled.read
 }
 
 #[test]
 fn store_matches_naive_reference() {
     for seed in 0..16 {
-        assert_eq!(run(seed, false, true, RefKind::Left), 0);
-    }
-}
-
-#[test]
-fn sealed_store_matches_naive_reference() {
-    let read: usize = (0..16)
-        .map(|seed| run(seed, true, true, RefKind::Left))
-        .sum();
-    assert!(read > 1_000, "asks read {read} sealed buckets");
-}
-
-#[test]
-fn bound_store_matches_naive_reference() {
-    for seed in 0..16 {
-        assert_eq!(run(seed, false, false, RefKind::Left), 0);
+        assert_eq!(run(seed, false, RefKind::Left), 0);
     }
 }
 
 /// A sealed bucket has no bound cells, so an ask over one reads the keyed
 /// cells, thawed; the rest read the bound cells.
 #[test]
-fn sealed_bound_store_matches_naive_reference() {
-    let read: usize = (0..16)
-        .map(|seed| run(seed, true, false, RefKind::Left))
-        .sum();
+fn sealed_store_matches_naive_reference() {
+    let read: usize = (0..16).map(|seed| run(seed, true, RefKind::Left)).sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
@@ -751,9 +767,7 @@ fn sealed_bound_store_matches_naive_reference() {
 /// cells when it is sealed, and gains them when the vendor's row comes.
 #[test]
 fn sealed_inner_store_matches_naive_reference() {
-    let read: usize = (0..16)
-        .map(|seed| run(seed, true, true, RefKind::Inner))
-        .sum();
+    let read: usize = (0..16).map(|seed| run(seed, true, RefKind::Inner)).sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
@@ -858,7 +872,7 @@ fn bound_cells_follow_the_dim_column() {
 }
 
 /// A fact without refs has nothing to bind: its keyed cells are its
-/// answer.
+/// answer, however its rows come.
 #[test]
 fn a_fact_without_refs_keeps_no_bound_cells() {
     let mut store = Store::new(zones_spec(None, false));
@@ -866,7 +880,10 @@ fn a_fact_without_refs_keeps_no_bound_cells() {
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(1)])
         .unwrap();
-    assert_eq!(store.cells("trips"), Some(1));
+    store
+        .add_rows("trips", &[Datum::Int(START), Datum::Int(2)])
+        .unwrap();
+    assert_eq!(store.cells("trips"), Some(2));
     assert_eq!(store.bound_cells("trips"), None);
 }
 
@@ -1212,6 +1229,82 @@ fn a_range_cuts_at_both_ends() {
     );
 }
 
+/// The count of trips, by bucket or not, over a range.
+fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
+    Ask {
+        view: id("trips"),
+        measures: vec![id("trips")],
+        keys,
+        filter: Vec::new(),
+        from,
+        to,
+    }
+}
+
+/// A time before 1970 falls in the bucket that starts below it, at every
+/// width: buckets floor, they don't round toward the epoch.
+#[test]
+fn a_time_before_the_epoch_floors_to_its_bucket() {
+    let mut store = typed(&spec());
+    let width = i64::from(WIDTH);
+    let mut row = trip(&mut Rng(2));
+    row[AT] = Datum::Int(-1);
+    store.add_row("trips", &row).unwrap();
+    let by_bucket = vec![AskKey::Time(TimeKey::Bucket)];
+    let below = trips_over(-width, 0, by_bucket.clone());
+    assert_eq!(
+        store.ask(&below).unwrap().rows,
+        [AnswerRow {
+            keys: vec![Datum::Int(-width)],
+            values: vec![Value::Int(1)]
+        }]
+    );
+    assert_eq!(
+        store.ask(&trips_over(0, width, by_bucket)).unwrap().rows,
+        []
+    );
+    // The week before 1970 holds it, the one after does not.
+    let week = 604_800;
+    assert_eq!(store.cells_read(&trips_over(-week, 0, Vec::new())), Ok(1));
+    assert_eq!(store.cells_read(&trips_over(0, week, Vec::new())), Ok(0));
+    store.remove_row("trips", &row).unwrap();
+    assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// A row without a time is kept, and no ask reads it, however wide its
+/// range; it comes out as it went in.
+#[test]
+fn a_row_without_a_time_is_kept_and_never_answered() {
+    let mut store = typed(&spec());
+    let width = i64::from(WIDTH);
+    let mut timed = trip(&mut Rng(2));
+    timed[AT] = Datum::Int(START);
+    let mut untimed = timed.clone();
+    untimed[AT] = Datum::Null;
+    store.add_row("trips", &timed).unwrap();
+    store.add_row("trips", &untimed).unwrap();
+    assert_eq!(store.cells("trips"), Some(2));
+    assert_eq!(store.bound_cells("trips"), Some(2));
+
+    // The widest range on bucket edges.
+    let (from, to) = (i64::MIN / width * width, i64::MAX / width * width);
+    let all = store.ask(&trips_over(from, to, Vec::new())).unwrap();
+    assert_eq!(all.rows[0].values, [Value::Int(1)]);
+    let by_bucket = trips_over(from, to, vec![AskKey::Time(TimeKey::Bucket)]);
+    assert_eq!(
+        store.ask(&by_bucket).unwrap().rows,
+        [AnswerRow {
+            keys: vec![Datum::Int(START)],
+            values: vec![Value::Int(1)]
+        }]
+    );
+
+    // Held once, so it comes out once.
+    store.remove_row("trips", &untimed).unwrap();
+    assert_eq!(store.cells("trips"), Some(1));
+    assert_eq!(store.remove_row("trips", &untimed), Err(RowError::Missing));
+}
+
 /// A cell is keyed by the join column, not the dim's value, so a dim row
 /// relabelled, removed or added moves the answer at once and moves no
 /// cell. A key with no dim row reads null, as the join gives.
@@ -1481,6 +1574,26 @@ fn dim_row_errors() {
     assert_eq!(store.dim_rows("trips"), None);
 }
 
+/// A dim row with a null in its key joins nothing, so it is never held:
+/// its insert and its delete are nothing, and neither is an error. An
+/// update that fills the key in adds the row; one that nulls it takes
+/// the row out.
+#[test]
+fn a_dim_row_with_a_null_key_is_never_held() {
+    let mut store = typed(&spec());
+    let unkeyed = [Datum::Null, Datum::Int(2), text("z")];
+    let keyed = [Datum::Int(1), Datum::Int(2), text("z")];
+    store.add_row("combos", &unkeyed).unwrap();
+    assert_eq!(store.dim_rows("combos"), Some(0));
+    store.update_row("combos", &unkeyed, &keyed).unwrap();
+    assert_eq!(store.dim_rows("combos"), Some(1));
+    store.update_row("combos", &keyed, &unkeyed).unwrap();
+    assert_eq!(store.dim_rows("combos"), Some(0));
+    store.remove_row("combos", &unkeyed).unwrap();
+    // A row with its key whole is missed when it is not held.
+    assert_eq!(store.remove_row("combos", &keyed), Err(RowError::Missing));
+}
+
 #[test]
 fn dim_rows_added_together_match_rows_added_one_by_one() {
     let spec = spec();
@@ -1546,6 +1659,7 @@ fn columns_put_measure_inputs_after_the_key() {
         (SHARED, "shared"),
         (PU, "pu"),
         (DRO, "dro"),
+        (HOME, "home"),
         (FARE, "fare"),
         (TIP, "tip"),
         (DIST, "dist"),
@@ -1558,7 +1672,7 @@ fn columns_put_measure_inputs_after_the_key() {
 }
 
 /// The refs' via columns follow the by keys in the rollup key, each slot
-/// once: here every via is a by column already.
+/// once: here `home` is the one via that is no by column.
 #[test]
 fn rollup_key_puts_via_columns_after_the_by_keys_each_once() {
     let spec = spec();
@@ -1580,6 +1694,8 @@ fn rollup_key_puts_via_columns_after_the_by_keys_each_once() {
             "pu",
             "dro",
             "shared is not null",
+            "pay is null",
+            "home",
             "bucket",
         ]
     );
@@ -2002,6 +2118,7 @@ fn sealable_buckets_end_by_the_cutoff() {
     for id in &all {
         store.seal(id).unwrap();
     }
+    assert_eq!(store.seal(&all[0]).unwrap_err().reason, "sealed already");
     assert_eq!(store.sealable(START + 604_800 * 2), []);
     assert_eq!(store.sealed("trips"), all);
     store.clear("trips");
