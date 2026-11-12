@@ -318,6 +318,81 @@ fn a_ref_name_used_twice_is_refused() {
     assert_eq!(shown, ["t: r declared twice", "t: name declared twice"]);
 }
 
+/// A semi join that reads nothing, a join through a column the dim
+/// before it carries, and a `WHERE` on a key.
+fn chained() -> Fact {
+    let mut t = fact();
+    t.refs.push(Ref {
+        alias: id("through"),
+        dim: id("z"),
+        via: vec![Via::Attribute {
+            through: 0,
+            column: id("name"),
+        }],
+        kind: RefKind::Semi,
+        reads: vec![],
+    });
+    t.filter = vec![Condition {
+        key: id("name"),
+        values: vec![Literal::Text("x".into())],
+    }];
+    t
+}
+
+/// What Straum SQL refuses in its own words before the spec sees it: a
+/// semi or anti join that reads a column, a join through a column no
+/// join before it carries, and a `WHERE` on something that is no key.
+#[test]
+fn joins_and_filters_straum_sql_cannot_write_are_refused() {
+    assert!(Spec::new(vec![dim()], vec![chained()]).is_ok());
+
+    let refused = |change: &dyn Fn(&mut Fact)| -> Vec<String> {
+        let mut t = chained();
+        change(&mut t);
+        let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
+        errors.iter().map(ToString::to_string).collect()
+    };
+    let reads = vec![attr("through_name", "name")];
+    assert_eq!(
+        refused(&|t| t.refs[1].reads.clone_from(&reads)),
+        ["view t: join through is a semi join and reads columns, which it has none of"]
+    );
+    assert_eq!(
+        refused(&|t| {
+            t.refs[1].kind = RefKind::Anti;
+            t.refs[1].reads.clone_from(&reads);
+        }),
+        ["view t: join through is an anti join and reads columns, which it has none of"]
+    );
+    let through = |through, column| {
+        move |t: &mut Fact| {
+            t.refs[1].via = vec![Via::Attribute {
+                through,
+                column: id(column),
+            }];
+        }
+    };
+    // A column the dim before it doesn't carry, then the join itself
+    // and one that isn't there.
+    assert_eq!(
+        refused(&through(0, "id")),
+        ["view t: join through joins through column id of join 0, which no join before it carries"]
+    );
+    for not_before in [1, 7] {
+        assert_eq!(
+            refused(&through(not_before, "name")),
+            [format!(
+                "view t: join through joins through column name of join {not_before}, \
+                 which no join before it carries"
+            )]
+        );
+    }
+    assert_eq!(
+        refused(&|t| t.filter[0].key = id("n")),
+        ["view t: WHERE filters on n, which names no key of the view"]
+    );
+}
+
 /// One day of `t` by every key form: by keys, an attribute a ref reads
 /// and the bucket.
 fn ask() -> Ask {
@@ -414,6 +489,25 @@ fn an_ask_of_a_bad_shape_is_rejected() {
                 width: Width { seconds: 3_600 },
             },
         ]
+    );
+
+    // One bucket is the narrowest range; none is empty.
+    let narrowest = Ask {
+        from: 3_600,
+        to: 7_200,
+        ..ask()
+    };
+    assert!(spec.check_ask(&narrowest).is_ok());
+    let none = Ask {
+        to: 3_600,
+        ..narrowest
+    };
+    assert_eq!(
+        spec.check_ask(&none).unwrap_err(),
+        [AskError::RangeEmpty {
+            from: 3_600,
+            to: 3_600,
+        }]
     );
 }
 
