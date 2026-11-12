@@ -836,9 +836,8 @@ fn follows_the_database() {
         let mut sql = vec!["BEGIN;".to_owned(), rng.trip(next)];
         trips.push(next);
         next += 1;
-        // The zones stand still: a fresh join in PostgreSQL is then what
-        // Straum must hold. What a zone change does is settled in
-        // `attributes_are_as_of_ingest`.
+        // The zones stand still here; `a_dim_change_shows_at_once` and
+        // `follows_the_task_tables` move a dim.
         for _ in 0..rng.below(4) {
             let pick = trips[rng.below(trips.len() as u64) as usize];
             let statement = match rng.below(8) {
