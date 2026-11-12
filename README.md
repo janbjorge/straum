@@ -81,6 +81,7 @@ need Docker.
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`
 - [Decisions](docs/adr/)
 - [Architecture](research/ARCHITECTURE.md)
+- [Domain model](research/DOMAIN.md)
 - [Joins: data model, code and sources](research/JOINS.md)
 - [PostgreSQL replication research](research/POSTGRES-REPLICATION.md)
 - [Managed PostgreSQL constraints](research/MANAGED-POSTGRES.md)

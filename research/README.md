@@ -56,6 +56,9 @@ background in case a SQL door comes back.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): the design. Spec, asks, rollups in
   memory, initial load and apply over logical replication, lifecycle.
+- [DOMAIN.md](DOMAIN.md): the domain model. Participants, use cases,
+  runtime flows, the model with its dependencies and cardinalities,
+  invariants, state machines, and the decisions behind the shape.
 - [JOINS.md](JOINS.md): how a fact joins its dims. The data model, the
   code, the join bound at ask time over held projections, its semantics,
   what it replaced, and the sources behind the choice.
