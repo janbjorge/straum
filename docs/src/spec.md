@@ -7,12 +7,72 @@ in the spec runs in PostgreSQL: to load a view, Straum copies only the
 columns it reads.
 
 Straum SQL has one spelling per meaning and infers nothing
-([ADR-0029](https://github.com/janbjorge/straum/blob/main/docs/adr/0029-straum-sql-has-one-spelling-per-meaning.md)):
-every schema, alias, column owner and output name is written. Anything
-else is an error that names the construct and says what to write.
+([ADR-0029](https://github.com/janbjorge/straum/blob/main/docs/adr/0029-straum-sql-has-one-spelling-per-meaning.md)).
+The synopsis is the whole language: anything it does not show is an
+error that names the construct and says what to write.
 
-This is the [quick start](quick-start.md) view with everything the
-subset adds: a wider bucket, a null-ness key and two filtered measures.
+## Synopsis
+
+```text
+CREATE VIEW view WITH ( buckets = 'width [, ...]' ) AS
+SELECT item AS name [, ...]
+FROM schema.table AS alias
+[ { INNER JOIN | LEFT OUTER JOIN } schema.table AS alias
+    ON equality [ AND ... ] ] [ ... ]
+[ WHERE { condition | exists } [ AND ... ] ]
+GROUP BY position [, ...]
+
+where item is one of:
+
+    date_bin('width', alias.column, { timestamptz | timestamp } 'epoch')
+    column
+    ( column IS [ NOT ] NULL )
+    count(*) [ filter ]
+    count( [ DISTINCT ] alias.column ) [ filter ]
+    { sum | min | max | avg | bool_and | bool_or } ( alias.column ) [ filter ]
+
+and filter is:
+
+    FILTER ( WHERE condition [ AND ... ] )
+
+and condition is one of:
+
+    column = literal
+    column IN ( literal, literal [, ...] )
+    column IS [ NOT ] NULL
+
+and exists is:
+
+    [ NOT ] EXISTS ( SELECT 1 FROM schema.table AS alias
+                     WHERE equality [ AND ... ] )
+
+and equality is:
+
+    alias.column = alias.column
+
+and column is:
+
+    alias.column [ ::text ]
+
+and width is:
+
+    n { second | minute | hour | day }[s]
+
+and literal is one of:
+
+    [ - ] integer
+    'text'
+    true
+    false
+```
+
+Brackets hold what may be left out, braces a choice, and `...` says
+the part before it repeats. A spec is one or more views, with `;`
+between them. Identifiers are unquoted: lowercase letters, digits and
+`_`, at most 63 bytes.
+
+This is the [quick start](quick-start.md) view with a wider bucket, a
+null-ness key and two filtered measures:
 
 ```sql
 CREATE VIEW orders WITH (buckets = '1 hour, 1 day') AS
@@ -31,54 +91,32 @@ LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-| Line | What it declares | Where |
-| --- | --- | --- |
-| `CREATE VIEW orders` | The name asks read `FROM`. | [The tables](#the-tables) |
-| `WITH (buckets = '1 hour, 1 day')` | Every bucket width kept: hours, and days beside them. | [Time](#time) |
-| `date_bin('1 hour', orders.placed_at, ...) AS bucket` | The time bucket, one per view, named `bucket`. | [Time](#time) |
-| `orders.status AS status, orders.customer_id AS customer_id` | Keys: columns of the fact table, each named. | [Keys](#keys) |
-| `customers.country AS country` | A key from the dim. | [Joining a dim](#joining-a-dim) |
-| `(orders.shipped_at IS NOT NULL) AS shipped` | A boolean key: does the row have a `shipped_at`? | [Null-ness keys](#null-ness-keys) |
-| `count(*)` to `avg(orders.amount)` | Measures, and what each cell holds. | [Measures](#measures) |
-| `count(*) FILTER (WHERE ...)` | Measures over some rows only. | [Measures](#measures) |
-| `FROM public.orders AS orders` | The fact table, whose rows are counted. | [The tables](#the-tables) |
-| `LEFT OUTER JOIN public.customers AS customers ON ...` | A dim: a table the view joins. | [Joining a dim](#joining-a-dim) |
-| `GROUP BY 1, 2, 3, 4, 5` | The keys again, by position, as PostgreSQL wants. | [Keys](#keys) |
-
 Straum keeps one cell per distinct hour, status, customer, country and
 shipped-ness, holding what the measures need. An ask merges cells and
 never reads a row.
 
 ## The tables
 
-`FROM public.orders AS orders` names the fact table, the table whose
-rows the view counts. A table is always `schema.table AS alias`: no
-schema is assumed, no alias is taken from the table's name. A table the
-view joins is a dim. `straum plan` and the setup check call them fact
-and dim.
+`FROM` names the fact table, the table whose rows the view counts. A
+table the view joins is a dim. `straum plan` and the setup check call
+them fact and dim.
 
 The fact table needs no primary key. Straum takes the old row of an
 update or delete from `REPLICA IDENTITY FULL`, which the [setup
 SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
 
-Every column is written `alias.column`, the fact's included: no table
-is anyone's default. Identifiers are unquoted: lowercase letters, digits
-and `_`, at most 63 bytes.
-
 ## Keys
 
-Every selected column that is not a measure is a key, and each cell is
+Every `SELECT` item that is not a measure is a key, and each cell is
 one distinct combination of the keys. A key is a column of the fact
 table (`orders.status`), a column of a dim (`customers.country`), a
 [null-ness key](#null-ness-keys) or the [time bucket](#time).
 
-Every `SELECT` item carries `AS name`. The name is what asks use, and
-it is the only way an ask reaches the key: it says `country`, never
-`customers.country`. Names are unique within a view. `GROUP BY` lists
-the keys by their positions in `SELECT`, in order: a position is what
-PostgreSQL resolves without a lookup, where an output name it may read
-as an input column. Inside the view, a `FILTER` names columns, as
-PostgreSQL does.
+The `AS name` is what asks use, and it is the only way an ask reaches
+the item: it says `country`, never `customers.country`. Names are
+unique within a view. `GROUP BY` lists the keys by their positions in
+`SELECT`, in order: a position is what PostgreSQL resolves without a
+lookup, where an output name it may read as an input column.
 
 A key column is an integer type, `numeric(p, s)`, `boolean` or `text`,
 or an [enum written `::text`](#enum-columns). Fewer keys, or keys with
@@ -97,8 +135,8 @@ date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket
   origin of the other type, since PostgreSQL would then cast the column
   through the session zone and the view would not mean what Straum
   computes.
-- The width is `<n> seconds`, `minutes`, `hours` or `days`, at most
-  `1 day`, and divides a day: `15 minutes` does, `7 minutes` doesn't.
+- The width is at most `1 day` and divides a day: `15 minutes` does,
+  `7 minutes` doesn't.
 - The name is `bucket`, which is what asks call it, so nothing else in
   the view may be named `bucket`.
 - A `timestamp` has no zone, and Straum never gives it one. Its buckets
@@ -108,9 +146,8 @@ date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket
   answered. Any other value Straum can't read, such as a `NaN`, stops
   the load or the stream with the table and column named.
 
-`WITH (buckets = '1 hour, 1 day')` is required and is the only view
-option. It lists every bucket width Straum keeps, narrowest first, and
-the first must be the `date_bin` width, so the whole list is in one
+`WITH (buckets = '1 hour, 1 day')` lists every bucket width Straum
+keeps, narrowest first, and the first must be the `date_bin` width, so the whole list is in one
 place while the body stays what PostgreSQL runs. Each wider width is a
 whole multiple of the one before and starts at the epoch, so `7 days`
 buckets start on Thursdays. Answers don't change. An ask over a long
@@ -135,24 +172,14 @@ an ask reads `country` through the cell's `customer_id` as the customer
 rows are now. Beside those cells it keeps bound cells keyed by
 `country` itself, which answer asks without the lookup.
 
-- The kind is spelled whole. `INNER JOIN` keeps a fact row only while a
-  dim row matches it; `LEFT OUTER JOIN` keeps every fact row, with null
-  dim columns while none matches. `LEFT JOIN`, bare `JOIN`, `RIGHT`,
-  `FULL`, `CROSS`, `NATURAL` and `USING` are refused, each naming the
-  spelling to write. A `RIGHT` or `FULL` join would add dim rows no
-  fact row points at, whose bucket is null and which no ask reads, so
-  it answers as `INNER` or `LEFT OUTER`; write that.
-- `ON` holds equalities, the joined table's column on the left, joined
-  by `AND` for a key of several columns:
-
-  ```sql
-  LEFT OUTER JOIN public.prices AS prices
-    ON prices.sku = orders.sku AND prices.currency = orders.currency
-  ```
-
-  A literal in `ON` is refused.
-- The right side names the fact's alias or the alias of a dim joined
-  before it, a chain:
+- `INNER JOIN` keeps a fact row only while a dim row matches it;
+  `LEFT OUTER JOIN` keeps every fact row, with null dim columns while
+  none matches. A `RIGHT` or `FULL` join would add dim rows no fact row
+  points at, whose bucket is null and which no ask reads, so it answers
+  as `INNER` or `LEFT OUTER`; write that.
+- An `ON` equality has the joined table's column on the left. Its right
+  side names the fact's alias or the alias of a dim joined before it, a
+  chain:
 
   ```sql
   INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
@@ -194,11 +221,10 @@ WHERE EXISTS (SELECT 1 FROM public.promos AS promos WHERE promos.sku = orders.sk
 ```
 
 `EXISTS` keeps a fact row while at least one dim row matches it, once
-however many match; `NOT EXISTS` keeps it while none does. The subquery
-is exactly `SELECT 1 FROM schema.table AS alias WHERE` equalities as in
-`ON`, and nothing else: no column of it can be selected, filtered on or
-joined through. `IN (SELECT ...)` and `NOT IN` are refused naming
-these. Both follow the dim as it is now, like any join.
+however many match; `NOT EXISTS` keeps it while none does. Its
+equalities are those of `ON`. No column of the subquery's table can be
+selected, filtered on or joined through. Both follow the dim as it is
+now, like any join.
 
 ## The view's WHERE
 
@@ -256,11 +282,9 @@ Which types take the cast is listed here; today it is enums alone.
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
 numeric values scaled by their column's scale. `count(*)` counts rows
-and `count(c)` the rows where `c` is not null. `count(*)` is the one
-spelling of a count of rows; a count of a constant, such as `count(1)`,
-is refused. `bool_and(c)` is true when every `c` that is not null is
-true, and `bool_or(c)` when any is; both are null when no `c` is.
-`every` is refused: write `bool_and`
+and `count(c)` the rows where `c` is not null. `bool_and(c)` is true
+when every `c` that is not null is true, and `bool_or(c)` when any is;
+both are null when no `c` is
 ([ADR-0041](https://github.com/janbjorge/straum/blob/main/docs/adr/0041-bool-and-and-bool-or-keep-counts-of-true-and-false.md)).
 
 `FILTER` makes a measure count only some rows:
@@ -270,19 +294,10 @@ count(*) FILTER (WHERE orders.status = 'paid') AS paid
 count(*) FILTER (WHERE orders.shipped_at IS NOT NULL) AS shipped_orders
 ```
 
-The condition is `alias.column = literal` or `alias.column IN (two or
-more literals)` on columns the view selects as keys, or `IS NULL` or
-`IS NOT NULL` on a column with a null-ness key, joined by `AND`. The
-second filter is why the view needs the `shipped` key: Straum keeps
-nothing else about `shipped_at`. Literals are integers, `'text'`,
-`true` or `false`, and must fit their column. `IN` with one value is
-refused: write `=`.
-
-## What a spec can't say
-
-No expressions, no joins other than to a dim's key, no subquery but the
-`EXISTS` above, no `OR`, no window functions, no `HAVING`, no `ROLLUP`,
-`CUBE` or `GROUPING SETS`. Ask PostgreSQL for those.
+`=` and `IN` take a column the view selects as a key, `IS NULL` and
+`IS NOT NULL` a column with a null-ness key. The second filter is why
+the view needs the `shipped` key: Straum keeps nothing else about
+`shipped_at`. A literal must fit its column.
 
 ## Checking a spec
 

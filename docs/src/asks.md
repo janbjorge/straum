@@ -17,36 +17,38 @@ curl --json '{
 
 ## The query
 
-```sql
-SELECT <keys>, <measures>
-FROM <view>
-WHERE <conditions> AND bucket >= $n AND bucket < $m
-GROUP BY <keys>
+```text
+SELECT [ key [, ...] , ] measure [, ...]
+FROM view
+WHERE term [ AND ... ]
+[ GROUP BY key [, ...] ]
+
+where term is one of:
+
+    key = $n
+    key IN ( $n, $n [, ...] )
+    bucket >= $n
+    bucket < $n
 ```
 
-`SELECT`, `FROM` and the two bounds are always there; conditions and
-keys may be left out:
+The notation is that of the [spec's synopsis](spec.md#synopsis), and
+this is the whole language: anything it does not show is an error that
+names the construct and says what to write. The shortest ask:
 
 ```sql
 SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
 ```
 
-- `FROM` names one view, with no schema, alias or join.
 - A key or a measure goes by the name the view gives it with `AS`:
   `country`, `shipped`, `customer_id`, `revenue`. `customers.country`
   is not a name an ask can use; neither is `customers`, the join.
-  `bucket` is the view's time bucket.
-- Keys come first in `SELECT`, then measures. Each goes by name and at
-  most once, since the names become the fields of each answer row.
-  `GROUP BY` names exactly the selected keys. Without keys there is no
-  `GROUP BY`.
-- `WHERE` joins conditions with `AND`. A condition is `key = $n` or
-  `key IN ($n, $m)`, two values or more. `bucket >= $n` and
-  `bucket < $m` bound the range, once each, and both are written: an
-  ask says what it reads.
-- No `ORDER BY`, `LIMIT`, `HAVING`, `OR`, `NOT`, expressions or aliases.
-  Anything outside the subset is an error that names the construct and
-  says what to write.
+  `bucket` is the view's time bucket, and a key like any other in
+  `SELECT` and `GROUP BY`.
+- Each name is selected at most once, since the names become the
+  fields of each answer row. `GROUP BY` names exactly the selected
+  keys.
+- `bucket >= $n` and `bucket < $n` bound the range, once each, and both
+  are written: an ask says what it reads.
 
 ## Parameters
 
