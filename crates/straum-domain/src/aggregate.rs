@@ -7,6 +7,16 @@ use crate::ident::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
 
+/// What a measure reads of its input column, which decides the types the
+/// column may have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reads {
+    /// Integers, which a load makes of a numeric by its scale.
+    Numbers,
+    /// Values told apart, of any type but a time.
+    Values,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Aggregate {
     Count,
@@ -22,8 +32,8 @@ impl Aggregate {
         self.state().map(|(_, column)| column)
     }
 
-    pub fn reads_numbers(&self) -> bool {
-        self.state().is_some_and(|(kind, _)| kind.numeric())
+    pub fn reads(&self) -> Option<Reads> {
+        self.state().map(|(kind, _)| kind.reads())
     }
 
     pub(crate) fn state(&self) -> Option<(StateKind, &Identifier)> {

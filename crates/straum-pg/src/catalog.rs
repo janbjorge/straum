@@ -3,7 +3,9 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_domain::{ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Spec, Via};
+use straum_domain::{
+    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via,
+};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -367,17 +369,13 @@ fn fact_purposes(fact: &Fact) -> Vec<(&Identifier, Purpose)> {
     }));
     // A ref's fact-side via columns key the cells, selected or not.
     purposes.extend(fact.fact_vias().map(|v| (v, Purpose::Key)));
-    for m in &fact.measures {
-        let Some(column) = m.aggregate.input() else {
-            continue;
+    purposes.extend(fact.measures.iter().filter_map(|m| {
+        let purpose = match m.aggregate.reads()? {
+            Reads::Numbers => Purpose::Number,
+            Reads::Values => Purpose::Key,
         };
-        let purpose = if m.aggregate.reads_numbers() {
-            Purpose::Number
-        } else {
-            Purpose::Key
-        };
-        purposes.push((column, purpose));
-    }
+        Some((m.aggregate.input()?, purpose))
+    }));
     purposes
 }
 

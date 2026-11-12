@@ -3,7 +3,8 @@
 
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, Attribute, ByKey, Condition, Dim, Fact, Identifier, Key,
-    Literal, Measure, Origin, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via, Width,
+    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via,
+    Width,
 };
 
 fn id(s: &str) -> Identifier {
@@ -70,18 +71,18 @@ fn attr(name: &str, column: &str) -> Attribute {
 }
 
 #[test]
-fn which_measures_read_numbers() {
+fn what_each_measure_reads() {
     let x = || id("x");
     let cases = [
-        (Aggregate::Sum(x()), true),
-        (Aggregate::Min(x()), true),
-        (Aggregate::Max(x()), true),
-        (Aggregate::Avg(x()), true),
-        (Aggregate::CountDistinct(x()), false),
-        (Aggregate::Count, false),
+        (Aggregate::Sum(x()), Some(Reads::Numbers)),
+        (Aggregate::Min(x()), Some(Reads::Numbers)),
+        (Aggregate::Max(x()), Some(Reads::Numbers)),
+        (Aggregate::Avg(x()), Some(Reads::Numbers)),
+        (Aggregate::CountDistinct(x()), Some(Reads::Values)),
+        (Aggregate::Count, None),
     ];
-    for (aggregate, numbers) in cases {
-        assert_eq!(aggregate.reads_numbers(), numbers, "{aggregate:?}");
+    for (aggregate, reads) in cases {
+        assert_eq!(aggregate.reads(), reads, "{aggregate:?}");
     }
 }
 

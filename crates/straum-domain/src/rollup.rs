@@ -4,7 +4,7 @@ use std::fmt;
 use std::ops::Range;
 use std::{iter, mem, panic, thread};
 
-use crate::aggregate::Aggregate;
+use crate::aggregate::{Aggregate, Reads};
 use crate::codes::Codes;
 use crate::hash::FastMap;
 use crate::ident::Identifier;
@@ -297,10 +297,10 @@ pub(crate) enum StateKind {
 }
 
 impl StateKind {
-    pub(crate) fn numeric(self) -> bool {
+    pub(crate) fn reads(self) -> Reads {
         match self {
-            StateKind::Sum | StateKind::Extent => true,
-            StateKind::Distinct => false,
+            StateKind::Sum | StateKind::Extent => Reads::Numbers,
+            StateKind::Distinct => Reads::Values,
         }
     }
 }
@@ -438,7 +438,9 @@ impl Rollup {
     /// A measure over numbers keeps its column's scale; a count has none.
     pub(crate) fn scale_of(&self, aggregate: &Aggregate) -> u32 {
         match aggregate.state() {
-            Some((kind, c)) if kind.numeric() => self.types[self.column(c).expect(COLUMNS)].scale(),
+            Some((kind, c)) if kind.reads() == Reads::Numbers => {
+                self.types[self.column(c).expect(COLUMNS)].scale()
+            }
             _ => 0,
         }
     }
@@ -854,7 +856,7 @@ impl Rollup {
         let ints = self
             .inputs
             .iter()
-            .filter(|i| i.kind.numeric())
+            .filter(|i| i.kind.reads() == Reads::Numbers)
             .map(|i| i.column);
         for column in iter::once(TIME).chain(ints) {
             if !matches!(row[column], Datum::Null | Datum::Int(_)) {

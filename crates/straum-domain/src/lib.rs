@@ -15,7 +15,7 @@ mod spec;
 mod store;
 mod value;
 
-pub use aggregate::Aggregate;
+pub use aggregate::{Aggregate, Reads};
 pub use ask::{Ask, AskError, AskKey, TimeKey};
 pub use ident::Identifier;
 pub use rollup::RowError;

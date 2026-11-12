@@ -124,7 +124,9 @@ notes under `research/`. The clashes at the end are open.
   aggregated column" for its argument.
 - **Input column** (`Aggregate::input`, `Input`): the column an
   aggregate reads. Measures over one column share its state
-  (ADR-0016). Also `Purpose::Number`.
+  (ADR-0016). What the aggregate reads of it (`Reads`) decides the
+  types the column may have, and the setup check's `Purpose` follows
+  it. Also `Purpose::Number`.
 - **Cell**: one distinct combination of the rollup key and bucket,
   holding its row count and one state per input column. `Cells` is
   every cell of one bucket, side by side.
