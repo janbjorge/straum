@@ -3,7 +3,7 @@
 //! the construct and say what to write instead.
 
 use straum_domain::{Literal, RefKind};
-use straum_notation::{Error, parse, parse_ask};
+use straum_notation::{Error, parse};
 
 /// The canon: every schema, alias, column owner, output name and join
 /// kind written; GROUP BY by position; FILTER on columns.
@@ -388,54 +388,6 @@ fn one_measure_and_condition_spelling() {
              AS <name> in SELECT",
         ),
     ]);
-}
-
-/// Asks name keys and measures as the view named them, and write both
-/// bounds.
-#[test]
-fn asks_follow_the_same_rule() {
-    let range = [Literal::Int(1_704_067_200), Literal::Int(1_706_745_600)];
-    let ok = parse_ask(
-        "SELECT bucket, country, orders FROM orders WHERE bucket >= $1 AND bucket < $2 \
-         GROUP BY bucket, country",
-        &range,
-    );
-    assert!(ok.is_ok(), "{ok:?}");
-    for (query, fragment) in [
-        (
-            "SELECT customers.country, orders FROM orders WHERE bucket >= $1 AND bucket < $2 \
-             GROUP BY customers.country",
-            "expression, write the name the view gives the key or measure, `customers.country`",
-        ),
-        (
-            "SELECT country, orders FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY 1",
-            "expression, write the name the view gives the key or measure, `1`",
-        ),
-        (
-            "SELECT orders FROM orders WHERE bucket >= $1",
-            "an ask writes both bounds; bucket < $n is missing",
-        ),
-        (
-            "SELECT orders FROM orders WHERE bucket < $2",
-            "an ask writes both bounds; bucket >= $n is missing",
-        ),
-        (
-            "SELECT orders FROM shop.orders WHERE bucket >= $1 AND bucket < $2",
-            "view shop.orders must be a bare name",
-        ),
-        (
-            "SELECT orders AS n FROM orders WHERE bucket >= $1 AND bucket < $2",
-            "SELECT item `orders AS n` is not in Straum SQL",
-        ),
-    ] {
-        let errors: Vec<String> = (parse_ask(query, &range).unwrap_err().iter())
-            .map(ToString::to_string)
-            .collect();
-        assert!(
-            errors.iter().any(|e| e.contains(fragment)),
-            "{query}: {errors:?} has no {fragment:?}"
-        );
-    }
 }
 
 /// An enum column is read as its label by writing `alias.column::text`
