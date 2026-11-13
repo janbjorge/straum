@@ -31,7 +31,7 @@ disk: every start loads every table again.
 
 A cell is one distinct combination of a view's keys and its bucket.
 For the [quick start](quick-start.md) view that is one cell per hour,
-status and customer. A cell holds its row count and what each measure
+payment type and pickup zone. A cell holds its row count and what each measure
 needs:
 
 - `count(c)` keeps the column's count of non-null values.
@@ -74,17 +74,17 @@ measured.
 ## Dims
 
 A view that joins a dim keys its cells by the join column,
-`orders.customer_id`, not by the dim column, `customers.country`.
+`trips.pu_location_id`, not by the dim column, `pickup.borough`.
 Beside the cells Straum holds a projection of the dim: its key and
 the columns the views read, nothing else, kept current from the
-stream. An ask reads `country` through each cell's `customer_id`, as
-the customer rows are now.
+stream. An ask reads `borough` through each cell's `pu_location_id`,
+as the zone rows are now.
 
-So a dim change moves no cell. A customer who moves from NO to SE
-moves every order of theirs to SE in the next answer, as PostgreSQL's
-view would, and nothing starts over. It also means a join to a dim
-with many rows means many cells, one per distinct join id in the
-fact.
+So a dim change moves no cell. A zone moved from Queens to Airports
+moves every trip from it to Airports in the next answer, as
+PostgreSQL's view would, and nothing starts over. It also means a
+join to a dim with many rows means many cells, one per distinct join
+id in the fact.
 
 For a view whose joins all read fact columns, Straum also keeps bound
 cells: the same cells keyed by the dim columns' values, which are few
@@ -132,27 +132,31 @@ every table again ([States](running.md#states)).
 
 ## Answering an ask
 
-The quick start after step 7 holds five orders in four cells. This
-ask reads paid orders by country over the day:
+After step 8 of the quick start, this ask reads card trips from the
+airports and Newark over the hour from noon in New York:
 
 ```sql
-SELECT country, orders, revenue FROM orders
-WHERE status = $1 AND bucket >= $2 AND bucket < $3
-GROUP BY country
+SELECT borough, trips, fare FROM trips
+WHERE payment_type = $1 AND borough IN ($2, $3)
+  AND bucket >= $4 AND bucket < $5
+GROUP BY borough
 ```
 
 ```text
-cells of orders, one per hour, status and customer_id
+some cells of trips at 2024-01-17T17:00:00Z, one per hour,
+payment type and pickup zone
 
-  hour   status    customer_id | orders  revenue
-  09:00  paid      1           |   1     120.00   customer 1 is NO -> NO
-  09:00  paid      2           |   1      80.50   customer 2 is SE -> SE
-  10:00  refunded  3           |   2      61.99   status is not paid
-  11:00  paid      2           |   1     300.00   customer 2 is SE -> SE
+  payment_type  pu_location_id | trips  fare
+  1             1              |     2   220.00   zone 1 is EWR -> EWR
+  3             1              |     1     1.00   payment type is not 1
+  1             18             |     2    70.00   zone 18 is Bronx, not asked for
+  1             132            |   101  7111.19   zone 132 is Airports -> Airports
+  2             132            |    45  2229.10   payment type is not 1
+  1             138            |   172  7658.10   zone 138 is Airports -> Airports
 
-customers, projected: 1 -> NO, 2 -> SE, 3 -> NO
+taxi_zones, projected: 1 -> EWR, 18 -> Bronx, 132 -> Airports, 138 -> Airports, ...
 
-answer: NO 1 120.00, SE 2 380.50
+answer: Airports 273 14769.29, EWR 2 220.00
 ```
 
 An ask reads the cells of the buckets in its range, adds each to its

@@ -37,12 +37,12 @@ For the [quick start](quick-start.md):
 ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
-GRANT SELECT ON "public"."customers", "public"."orders" TO "straum";
-CREATE PUBLICATION "straum" FOR TABLE "public"."customers", "public"."orders";
--- fact orders: Straum needs the old row of every update and delete; inserts cost no more.
-ALTER TABLE "public"."orders" REPLICA IDENTITY FULL;
--- dim customers: Straum holds its key and the columns the views read, and follows it.
-ALTER TABLE "public"."customers" REPLICA IDENTITY FULL;
+GRANT SELECT ON "public"."taxi_zones", "public"."yellow_trips" TO "straum";
+CREATE PUBLICATION "straum" FOR TABLE "public"."taxi_zones", "public"."yellow_trips";
+-- fact trips: Straum needs the old row of every update and delete; inserts cost no more.
+ALTER TABLE "public"."yellow_trips" REPLICA IDENTITY FULL;
+-- dim taxi_zones: Straum holds its key and the columns the views read, and follows it.
+ALTER TABLE "public"."taxi_zones" REPLICA IDENTITY FULL;
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
@@ -101,15 +101,15 @@ after a wait. Some of the checks:
 ```text
 wal_level is replica; Straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
-orders: publication straum leaves out public.orders: ALTER PUBLICATION straum ADD TABLE public.orders
-orders: Straum's role can't read public.orders: GRANT SELECT ON public.orders
-orders: column amount of public.orders is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
-orders: column status of public.orders is order_status, an enum; write status::text
-orders: column note of public.orders is text, not an enum; drop the ::text
-view orders: measure paid compares status with 'payed', which is no label of order_status
-fact orders: Straum needs the whole old row of every update and delete: ALTER TABLE public.orders REPLICA IDENTITY FULL
-dim customers: Straum needs the whole old row of every update and delete: ALTER TABLE public.customers REPLICA IDENTITY FULL
-view orders: join customer joins customer_id (an integer) to id (text); they must read alike
+trips: publication straum leaves out public.yellow_trips: ALTER PUBLICATION straum ADD TABLE public.yellow_trips
+trips: Straum's role can't read public.yellow_trips: GRANT SELECT ON public.yellow_trips
+trips: column fare_amount of public.yellow_trips is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
+trips: column payment_type of public.yellow_trips is payment, an enum; write payment_type::text
+trips: column borough of public.taxi_zones is text, not an enum; drop the ::text
+view trips: measure card compares payment_type with 'crad', which is no label of payment
+fact trips: Straum needs the whole old row of every update and delete: ALTER TABLE public.yellow_trips REPLICA IDENTITY FULL
+dim taxi_zones: Straum needs the whole old row of every update and delete: ALTER TABLE public.taxi_zones REPLICA IDENTITY FULL
+view trips: join pickup joins pu_location_id (an integer) to location_id (text); they must read alike
 ```
 
 ## What Straum costs the server

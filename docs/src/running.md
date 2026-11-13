@@ -140,14 +140,14 @@ holds, from its `GET /views`.
 
 ```text
 $ straum views
-view orders
-  buckets:  3600s
-  holds:    4 cells and 4 bound cells, 2026-01-01T09:00:00Z to 2026-01-01T11:00:00Z
-  keys:     bucket timestamptz, status text, customer_id integer, country text
-  measures: orders, revenue, avg_amount
+view trips
+  buckets:  3600s, 86400s, 604800s
+  holds:    173660 cells and 173660 bound cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
+  keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
+  measures: trips, fare, avg_fare
 
-dim public.customers
-  holds:    3 rows
+dim public.taxi_zones
+  holds:    265 rows
 ```
 
 - `buckets`: the view's bucket widths in seconds, narrowest first.
@@ -169,15 +169,20 @@ Sends a query to the Straum at `--url` and prints the answer as a
 table. The words after the query are the values of `$1`, `$2` and on:
 
 ```text
-$ straum ask 'SELECT status, country, orders, revenue, avg_amount
-    FROM orders WHERE bucket >= $1 AND bucket < $2
-    GROUP BY status, country' 2026-01-01T00:00:00Z 2026-01-02T00:00:00Z
-status   | country | orders | revenue | avg_amount
----------+---------+--------+---------+-----------
-paid     | NO      |      2 |  139.99 |     69.995
-paid     | SE      |      1 |   80.50 |       80.5
-refunded | NO      |      1 |   42.00 |         42
-3 rows, as of 2026-11-09T17:12:41.902318Z
+$ straum ask 'SELECT borough, trips, fare, avg_fare
+    FROM trips WHERE bucket >= $1 AND bucket < $2
+    GROUP BY borough' 2024-01-17T05:00:00Z 2024-01-18T05:00:00Z
+borough       | trips | fare       | avg_fare
+--------------+-------+------------+----------
+Bronx         |   220 |    7196.07 | 32.709409
+Brooklyn      |   924 |   27585.30 | 29.854221
+EWR           |    10 |    1001.50 |    100.15
+Manhattan     | 99225 | 1502063.48 | 15.137954
+N/A           |    68 |    6436.59 | 94.655735
+Queens        |  9388 |  454949.34 | 48.460731
+Staten Island |     3 |     107.40 |      35.8
+Unknown       |   527 |    9738.86 |  18.47981
+8 rows, as of 2026-11-13T07:52:57.7760555Z
 ```
 
 Quote the query for the shell with single quotes, so `$1` reaches
@@ -192,7 +197,7 @@ A command line holds only text, so a parameter's type is read from it:
 | `7`, `-7` | An integer. |
 | `true`, `false` | A boolean. |
 | `'7'`, `'true'` | The string inside the single quotes. |
-| Anything else | A string, such as `paid` or `2026-01-01T00:00:00Z`. |
+| Anything else | A string, such as `Queens` or `2024-01-17T05:00:00Z`. |
 
 The shell takes single quotes for itself, so the string 7 is written
 `"'7'"`. A parameter must still have its column's type: `straum views`
@@ -202,10 +207,10 @@ An ask Straum can't answer prints the reply's first line and each
 error, and exits with 1:
 
 ```text
-$ straum ask 'SELECT orders FROM orders WHERE customer_id = $1
-    AND bucket >= $2 AND bucket < $3' paid 0 3600
+$ straum ask 'SELECT trips FROM trips WHERE payment_type = $1
+    AND bucket >= $2 AND bucket < $3' card 0 3600
 straum: http://127.0.0.1:8080 answered "HTTP/1.1 400 Bad Request"
-customer_id is an integer, so it can't be the text "paid"
+payment_type is an integer, so it can't be the text "card"
 ```
 
 ## straum shell
@@ -223,20 +228,24 @@ A prompt at the Straum at `--url`. Each line is a command:
 ```text
 $ straum shell
 Straum at http://127.0.0.1:8080. Tab completes; \? lists the commands, \q leaves.
-straum> \rows orders
-bucket               | status   | customer_id | country | orders | revenue | avg_amount
----------------------+----------+-------------+---------+--------+---------+-----------
-2026-01-01T09:00:00Z | paid     |           1 | NO      |      1 |  120.00 |        120
-2026-01-01T09:00:00Z | paid     |           2 | SE      |      1 |   80.50 |       80.5
-2026-01-01T10:00:00Z | paid     |           3 | NO      |      1 |   19.99 |      19.99
-2026-01-01T10:00:00Z | refunded |           3 | NO      |      1 |   42.00 |         42
-4 rows, as of 2026-11-09T17:12:41.902318Z
-straum> SELECT status, orders FROM orders WHERE bucket >= $1 AND bucket < $2 GROUP BY status; 2026-01-01T09:00:00Z 2026-01-01T11:00:00Z
-status   | orders
----------+-------
-paid     |      3
-refunded |      1
-2 rows, as of 2026-11-09T17:12:43.118250Z
+straum> \rows trips
+bucket               | payment_type | pu_location_id | borough       | trips | fare    | avg_fare
+---------------------+--------------+----------------+---------------+-------+---------+-----------
+2003-01-01T03:00:00Z |            3 |            170 | Manhattan     |     2 |    0.00 |          0
+2009-01-01T05:00:00Z |            2 |            138 | Airports      |     1 |   50.60 |       50.6
+2009-01-02T04:00:00Z |            2 |            137 | Manhattan     |     1 |    4.40 |        4.4
+...
+2024-01-01T07:00:00Z |            2 |             87 | Manhattan     |     4 |  104.40 |       26.1
+1000 of 173660 rows, as of 2026-11-13T07:58:59.965466167Z
+straum> SELECT payment_type, trips FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY payment_type; 2003-01-01T03:00:00Z 2024-02-01T06:00:00Z
+payment_type | trips
+-------------+--------
+           0 |  140162
+           1 | 2319047
+           2 |  439191
+           3 |   19597
+           4 |   46628
+5 rows, as of 2026-11-13T07:59:07.988040041Z
 ```
 
 `\rows` reads every cell of the view, as an ask over all its buckets
@@ -250,14 +259,14 @@ lines entered before, and Tab completes by where the cursor is:
 | Nothing | `SELECT` and the commands. |
 | `SELECT` | The keys and measures not yet listed, then `FROM`. |
 | `FROM` | The views, then `WHERE`. |
-| `WHERE`, `AND` | A whole condition with the next free parameter: `bucket >= $1 AND bucket < $2`, `status = $3`. |
+| `WHERE`, `AND` | A whole condition with the next free parameter: `bucket >= $1 AND bucket < $2`, `borough = $3`. |
 | A condition | `AND`, and once both bounds are written `GROUP BY` with the selected keys. |
 | `;` | For a bound, the start or the end of the buckets held; for a boolean, `true` and `false`. |
 | `\rows` | The views. |
 
 Past the semicolon the line also shows, dimmed, which parameter comes
-next and its type. The ask above is `SEL` Tab `st` Tab `, o` Tab ` F`
-Tab `o` Tab `W` Tab `bu` Tab ` G` Tab Tab Tab. Completion offers what
+next and its type. The ask above is `SEL` Tab `pa` Tab `, t` Tab ` FR`
+Tab `t` Tab `W` Tab `bu` Tab ` G` Tab Tab Tab. Completion offers what
 is likely next, not only what is valid: Straum still checks the ask.
 
 The lines entered are kept between sessions in
@@ -271,7 +280,7 @@ output anywhere else, the shell prints no prompt and completes
 nothing, so a script can drive it:
 
 ```sh
-printf '%s\n' '\d' '\rows orders' | straum shell
+printf '%s\n' '\d' '\rows trips' | straum shell
 ```
 
 Answers go to stdout. A line that fails says why on stderr and the

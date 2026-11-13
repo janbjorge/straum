@@ -53,29 +53,29 @@ around a null-ness key, never around a condition or a column. A spec is
 one or more views, with `;` between them. Identifiers are unquoted:
 lowercase letters, digits and `_`, at most 63 bytes.
 
-This is the [quick start](quick-start.md) view with a wider bucket, a
-null-ness key and two filtered measures:
+This is the [quick start](quick-start.md) view with a null-ness key
+and two filtered measures:
 
 ```sql
-CREATE VIEW orders WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket,
-       orders.status AS status,
-       orders.customer_id AS customer_id,
-       customers.country AS country,
-       (orders.shipped_at IS NOT NULL) AS shipped,
-       count(*) AS orders,
-       sum(orders.amount) AS revenue,
-       avg(orders.amount) AS avg_amount,
-       count(*) FILTER (WHERE orders.status = 'paid') AS paid,
-       count(*) FILTER (WHERE orders.shipped_at IS NOT NULL) AS shipped_orders
-FROM public.orders AS orders
-LEFT OUTER JOIN public.customers AS customers ON customers.id = orders.customer_id
+CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
+SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
+       trips.payment_type AS payment_type,
+       trips.pu_location_id AS pu_location_id,
+       pickup.borough AS borough,
+       (trips.do_location_id IS NOT NULL) AS has_dropoff,
+       count(*) AS trips,
+       sum(trips.fare_amount) AS fare,
+       avg(trips.fare_amount) AS avg_fare,
+       count(*) FILTER (WHERE trips.payment_type = 1) AS card,
+       count(*) FILTER (WHERE trips.do_location_id IS NOT NULL) AS dropoffs
+FROM public.yellow_trips AS trips
+LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Straum keeps one cell per distinct hour, status, customer, country and
-shipped-ness, holding what the measures need. An ask merges cells and
-never reads a row.
+Straum keeps one cell per distinct hour, payment type, pickup zone,
+borough and `has_dropoff`, holding what the measures need. An ask
+merges cells and never reads a row.
 
 ## The tables
 
@@ -91,11 +91,11 @@ SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
 
 Every `SELECT` item that is not a measure is a key, and each cell is
 one distinct combination of the keys. A key is a column of the fact
-table (`orders.status`), a column of a dim (`customers.country`), a
+table (`trips.payment_type`), a column of a dim (`pickup.borough`), a
 [null-ness key](#null-ness-keys) or the [time bucket](#time).
 
 The `AS name` is what asks use, and it is the only way an ask reaches
-the item: it says `country`, never `customers.country`. Names are
+the item: it says `borough`, never `pickup.borough`. Names are
 unique within a view. `GROUP BY` lists the keys by their positions in
 `SELECT`, in order: a position is what PostgreSQL resolves without a
 lookup, where an output name it may read as an input column.
@@ -109,7 +109,7 @@ fewer values, mean fewer cells ([Memory](#memory)).
 Every view has exactly one bucket, named `bucket`:
 
 ```sql
-date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket
+date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket
 ```
 
 - The column is a `timestamptz` or a `timestamp`. The origin is `'epoch'`
@@ -128,7 +128,7 @@ date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket
   answered. Any other value Straum can't read, such as a `NaN`, stops
   the load or the stream with the table and column named.
 
-`WITH (buckets = '1 hour, 1 day')` lists every bucket width Straum
+`WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width Straum
 keeps, narrowest first, and the first must be the `date_bin` width, so the whole list is in one
 place while the body stays what PostgreSQL runs. Each wider width is a
 whole multiple of the one before and starts at the epoch, so `7 days`
@@ -141,18 +141,18 @@ only which cells an ask reads changes. Each width costs memory ([Memory](#memory
 ## Joining a dim
 
 ```sql
-INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
-LEFT OUTER JOIN public.products AS products ON products.id = orders.product_id
+INNER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
+LEFT OUTER JOIN public.taxi_zones AS dropoff ON dropoff.location_id = trips.do_location_id
 ```
 
 A join points from a column of the fact, or of a dim already joined, to
 the key of a dim. The dim columns the view selects, here
-`customers.country AS country`, are keys like any other. Straum keys
-each cell by the join column, `customer_id`, and holds the dim projected
+`pickup.borough AS borough`, are keys like any other. Straum keys each
+cell by the join column, `pu_location_id`, and holds the dim projected
 to its key and the columns the views read, kept current from the stream;
-an ask reads `country` through the cell's `customer_id` as the customer
+an ask reads `borough` through the cell's `pu_location_id` as the zone
 rows are now. Beside those cells it keeps bound cells keyed by
-`country` itself, which answer asks without the lookup.
+`borough` itself, which answer asks without the lookup.
 
 - `INNER JOIN` keeps a fact row only while a dim row matches it;
   `LEFT OUTER JOIN` keeps every fact row, with null dim columns while
@@ -164,12 +164,13 @@ rows are now. Beside those cells it keeps bound cells keyed by
   chain:
 
   ```sql
-  INNER JOIN public.customers AS customers ON customers.id = orders.customer_id
-  LEFT OUTER JOIN public.tiers AS tiers ON tiers.id = customers.tier_id
+  INNER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
+  LEFT OUTER JOIN public.boroughs AS boroughs ON boroughs.name = pickup.borough
   ```
 
-  Straum then holds `tier_id` in its projection of `customers` and
-  reads `tiers` through it. A chain through a semi or anti join is
+  With a `boroughs` table beside the month's, Straum then holds
+  `borough` in its projection of `taxi_zones` and reads `boroughs`
+  through it. A chain through a semi or anti join is
   refused: those keep no row to read through.
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
@@ -179,31 +180,31 @@ rows are now. Beside those cells it keeps bound cells keyed by
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
-  `orders.customer_id`, may be selected too or left out; either way it
+  `trips.pu_location_id`, may be selected too or left out; either way it
   keys the cells, so a view with a join has one cell per distinct join
   id, bucket and other keys ([Memory](#memory)).
-- Two joins can point at one dim table, each reading its own columns. A
-  dim table is one dim however many views join it, and all must join it
-  on the same key columns.
-- The join itself has no value: asks group and filter by `country` or
-  `customer_id`, never by `customers`.
+- Two joins can point at one dim table, each reading its own columns,
+  as `pickup` and `dropoff` do above. A dim table is one dim however
+  many views join it, and all must join it on the same key columns.
+- The join itself has no value: asks group and filter by `borough` or
+  `pu_location_id`, never by `pickup`.
 
 Dim columns are as of now. The setup publishes the dims too, and a
-change to a customer row is one entry in Straum's projection of
-`customers`: a customer who moves from NO to SE moves every order of
-theirs to SE in the next answer, as PostgreSQL's view would. Nothing
-starts over and no cell moves, since cells are keyed by `customer_id`,
-not by the country.
+change to a zone row is one entry in Straum's projection of
+`taxi_zones`: a zone moved from Queens to Airports moves every trip
+from it to Airports in the next answer, as PostgreSQL's view would.
+Nothing starts over and no cell moves, since cells are keyed by
+`pu_location_id`, not by the borough.
 
 ## Semi and anti joins
 
 ```sql
-WHERE EXISTS (SELECT 1 FROM public.promos AS promos WHERE promos.sku = orders.sku)
-  AND NOT EXISTS (SELECT 1 FROM public.blocked AS blocked WHERE blocked.id = orders.customer_id)
+WHERE EXISTS (SELECT 1 FROM public.taxi_zones AS known WHERE known.location_id = trips.do_location_id)
 ```
 
 `EXISTS` keeps a fact row while at least one dim row matches it, once
-however many match; `NOT EXISTS` keeps it while none does. Its
+however many match: here a trip whose dropoff zone is in `taxi_zones`.
+`NOT EXISTS` keeps it while none does. Its
 equalities are those of `ON`. No column of the subquery's table can be
 selected, filtered on or joined through. Both follow the dim as it is
 now, like any join.
@@ -211,7 +212,7 @@ now, like any join.
 ## The view's WHERE
 
 ```sql
-WHERE orders.status IN ('paid', 'shipped') AND customers.country = 'NO'
+WHERE trips.payment_type IN (1, 2) AND pickup.borough = 'Manhattan'
 ```
 
 `WHERE` drops rows from every answer, as the view's `WHERE` does in
@@ -222,10 +223,10 @@ dim. A `FILTER` that every measure repeats is refused: write it here.
 ## Null-ness keys
 
 ```sql
-(orders.shipped_at IS NOT NULL) AS shipped
+(trips.do_location_id IS NOT NULL) AS has_dropoff
 ```
 
-A null-ness key is a boolean, true for the rows with a `shipped_at`,
+A null-ness key is a boolean, true for the rows with a `do_location_id`,
 grouped and filtered like a column under its name. `IS NULL` makes the
 opposite key. The column may be of any type Straum reads, a time
 included, but not the view's time column: a row with no time is never
@@ -235,12 +236,13 @@ PostgreSQL runs, since the key's name is no column there.
 ## Enum columns
 
 ```sql
-orders.status::text AS status
+trips.payment_type::text AS payment_type
 ```
 
-An enum column is read as its label, the text PostgreSQL prints for
-it, by writing `::text` wherever the view reads the column: on a key,
-in a null-ness key, `(orders.status::text IS NULL)`, in a `FILTER` and
+Had `payment_type` been an enum, the view would read it so. An enum
+column is read as its label, the text PostgreSQL prints for it, by
+writing `::text` wherever the view reads the column: on a key, in a
+null-ness key, `(trips.payment_type::text IS NULL)`, in a `FILTER` and
 in `WHERE`, spelled alike in every place and in every view that reads
 the column. `::text` is the one cast, and it goes nowhere else: not in
 `ON`, `EXISTS`, `date_bin` or a measure. Straum refuses an enum column
@@ -272,14 +274,14 @@ both are null when no `c` is
 `FILTER` makes a measure count only some rows:
 
 ```sql
-count(*) FILTER (WHERE orders.status = 'paid') AS paid
-count(*) FILTER (WHERE orders.shipped_at IS NOT NULL) AS shipped_orders
+count(*) FILTER (WHERE trips.payment_type = 1) AS card
+count(*) FILTER (WHERE trips.do_location_id IS NOT NULL) AS dropoffs
 ```
 
 `=` and `IN` take a column the view selects as a key, `IS NULL` and
 `IS NOT NULL` a column with a null-ness key. The second filter is why
-the view needs the `shipped` key: Straum keeps nothing else about
-`shipped_at`. A literal must fit its column.
+the view needs the `has_dropoff` key: Straum keeps nothing else about
+`do_location_id`. A literal must fit its column.
 
 ## Checking a spec
 
@@ -288,12 +290,13 @@ the view needs the `shipped` key: Straum keeps nothing else about
 problem between declarations at once:
 
 ```text
-straum: orders.sql: line 5: JOIN, write INNER JOIN, `JOIN public.customers AS customers ON customers.id = orders.customer_id` is not in Straum SQL, the PostgreSQL subset made only for Straum
+straum: trips.sql: line 6: JOIN, write INNER JOIN, `JOIN public.taxi_zones AS pickup ON pickup.location_id = tri...` is not in Straum SQL, the PostgreSQL subset made only for Straum
+trips.sql: line 3: unknown table alias pickup
 ```
 
 ```text
-straum: orders.sql: orders declared twice
-orders.sql: view orders: width of 420s does not divide a day
+straum: trips.sql: trips declared twice
+trips.sql: view trips: width of 420s does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a

@@ -88,7 +88,7 @@
   </defs>
   <rect class="canvas" x="0.5" y="0.5" width="879" height="485" rx="10"/>
   <text x="24.00" y="34.00" class="title">Where a row's time puts it</text>
-  <text x="24.00" y="56.00" class="sub muted">orders WITH (buckets = '1 hour, 1 day, 7 days'); one row with time 2024-01-17 09:41:07Z, t = 1705484467</text>
+  <text x="24.00" y="56.00" class="sub muted">trips WITH (buckets = '1 hour, 1 day, 7 days'); one row with time 2024-01-17 09:41:07Z, t = 1705484467</text>
   <text x="24.00" y="117.00" class="h">7 days</text>
   <text x="24.00" y="133.00" class="s muted">level 2</text>
   <rect class="accbox" x="160.00" y="92.00" width="693.00" height="40.00" rx="4"/>

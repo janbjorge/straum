@@ -1,12 +1,14 @@
 # Asking
 
 An ask is a JSON object sent to `POST /ask`: a query and its parameters.
-The examples use the [quick start](quick-start.md) after step 7.
+The examples use the [quick start](quick-start.md) after step 8.
+This one asks for card trips from Brooklyn and Queens per hour, from
+8:00 to 11:00 in New York:
 
 ```sh
 curl --json '{
-  "query": "SELECT bucket, country, orders, revenue FROM orders WHERE status = $1 AND country IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, country",
-  "parameters": ["paid", "NO", "SE", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]
+  "query": "SELECT bucket, borough, trips, fare FROM trips WHERE payment_type = $1 AND borough IN ($2, $3) AND bucket >= $4 AND bucket < $5 GROUP BY bucket, borough",
+  "parameters": [1, "Brooklyn", "Queens", "2024-01-17T08:00:00-05:00", "2024-01-17T11:00:00-05:00"]
 }' http://localhost:8080/ask
 ```
 
@@ -32,12 +34,12 @@ this is the whole language: anything it does not show is an error that
 names the construct and says what to write. The shortest ask:
 
 ```sql
-SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
+SELECT trips, fare FROM trips WHERE bucket >= $1 AND bucket < $2
 ```
 
 - A key or a measure goes by the name the view gives it with `AS`:
-  `country`, `shipped`, `customer_id`, `revenue`. `customers.country`
-  is not a name an ask can use; neither is `customers`, the join.
+  `borough`, `payment_type`, `pu_location_id`, `fare`. `pickup.borough`
+  is not a name an ask can use; neither is `pickup`, the join.
   `bucket` is the view's time bucket, and a key like any other in
   `SELECT` and `GROUP BY`.
 - Each name is selected at most once, since the names become the
@@ -50,17 +52,17 @@ SELECT orders, revenue FROM orders WHERE bucket >= $1 AND bucket < $2
 ## Parameters
 
 Every value is a parameter: a value written into the query, such as
-`status = 'paid'`, is an error, so a value can never change what the
+`borough = 'Queens'`, is an error, so a value can never change what the
 query says. Parameters are integers, strings or booleans, `$1` first.
 Each must be used, and one can be used more than once.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
-for a boolean or a null-ness key. `customer_id = $1` with `"7"` is an
+for a boolean or a null-ness key. `payment_type = $1` with `"1"` is an
 error, not an answer with no rows. A `numeric` with a scale above 0
 can't be filtered on: at scale 2, `1` could mean 1 or 0.01.
 
-The `bucket` bounds are RFC 3339 times, such as `"2026-01-01T00:00:00Z"`,
+The `bucket` bounds are RFC 3339 times, such as `"2024-01-17T00:00:00-05:00"`,
 or Unix seconds. Both must fall on an edge of the view's `date_bin`
 buckets: Straum never answers for part of a bucket.
 
@@ -68,11 +70,14 @@ buckets: Straum never answers for part of a bucket.
 
 ```json
 {
-  "as_of": "2026-11-09T17:12:57.861204Z",
+  "as_of": "2026-11-13T07:58:16.834219708Z",
   "rows": [
-    {"bucket": "2026-01-01T09:00:00Z", "country": "NO", "orders": 1, "revenue": 120.00},
-    {"bucket": "2026-01-01T09:00:00Z", "country": "SE", "orders": 1, "revenue": 80.50},
-    {"bucket": "2026-01-01T11:00:00Z", "country": "SE", "orders": 1, "revenue": 300.00}
+    {"bucket": "2024-01-17T13:00:00Z", "borough": "Brooklyn", "trips": 63, "fare": 1875.70},
+    {"bucket": "2024-01-17T13:00:00Z", "borough": "Queens", "trips": 41, "fare": 1429.90},
+    {"bucket": "2024-01-17T14:00:00Z", "borough": "Brooklyn", "trips": 51, "fare": 1728.30},
+    {"bucket": "2024-01-17T14:00:00Z", "borough": "Queens", "trips": 62, "fare": 2589.80},
+    {"bucket": "2024-01-17T15:00:00Z", "borough": "Brooklyn", "trips": 38, "fare": 1177.90},
+    {"bucket": "2024-01-17T15:00:00Z", "borough": "Queens", "trips": 75, "fare": 3118.70}
   ]
 }
 ```
@@ -90,10 +95,11 @@ buckets: Straum never answers for part of a bucket.
 
 `timestamptz` buckets are their start in UTC. `timestamp` buckets are
 wall clock readings formatted with `Z`. Measures print as the
-[measures table](spec.md#measures) says: `120.00` for a `numeric(10, 2)`
-sum, `69.995` for its avg of 139.99 over 2. A row whose dim row does
-not exist has null dim columns, as a `LEFT OUTER JOIN` gives, until the
-dim row arrives.
+[measures table](spec.md#measures) says: `1875.70` for a
+`numeric(12, 2)` sum, and `29.854221` for the quick start's Brooklyn
+`avg_fare`, 27585.30 over 924 trips, at four places past the scale. A
+row whose dim row does not exist has null dim columns, as a `LEFT OUTER
+JOIN` gives, until the dim row arrives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
 answer reflects. `Server-Timing` says where the time went in Straum, in
@@ -107,12 +113,15 @@ people: the same rows as a table, then the row count and `as_of`.
 [`straum ask`](running.md#straum-ask) sends one from the command line.
 
 ```text
-bucket               | country | orders | revenue
----------------------+---------+--------+--------
-2026-01-01T09:00:00Z | NO      |      1 |  120.00
-2026-01-01T09:00:00Z | SE      |      1 |   80.50
-2026-01-01T11:00:00Z | SE      |      1 |  300.00
-3 rows, as of 2026-11-09T17:12:57.861204Z
+bucket               | borough  | trips | fare
+---------------------+----------+-------+--------
+2024-01-17T13:00:00Z | Brooklyn |    63 | 1875.70
+2024-01-17T13:00:00Z | Queens   |    41 | 1429.90
+2024-01-17T14:00:00Z | Brooklyn |    51 | 1728.30
+2024-01-17T14:00:00Z | Queens   |    62 | 2589.80
+2024-01-17T15:00:00Z | Brooklyn |    38 | 1177.90
+2024-01-17T15:00:00Z | Queens   |    75 | 3118.70
+6 rows, as of 2026-11-13T07:58:12.818010833Z
 ```
 
 Its errors are plain text too, a line each, under the same statuses,
@@ -161,7 +170,7 @@ timeout or fall back to `as_of`.
 {"errors": ["unknown measure x", "zip is not a key of the view"]}
 {"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
 {"errors": ["unknown field \"tz\""]}
-{"errors": ["line 1: value, use a parameter such as $1, `'paid'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
-{"errors": ["bound 1767227400 is not on a 3600s bucket edge"]}
-{"errors": ["customer_id is an integer, so it can't be the text \"7\""]}
+{"errors": ["line 1: value, use a parameter such as $1, `'Queens'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
+{"errors": ["bound 1705469400 is not on a 3600s bucket edge"]}
+{"errors": ["payment_type is an integer, so it can't be the text \"1\""]}
 ```
