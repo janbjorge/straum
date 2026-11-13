@@ -40,8 +40,8 @@ the repository:
 cargo build --release -p straum-parquet
 ```
 
-`bench/taxi.py --feed` does all of this for the
-[benchmark](benchmark.md#without-postgresql)'s taxi trips.
+`bench/taxi.py` does all of this for the
+[benchmark](benchmark.md#running-it-yourself)'s taxi trips.
 
 ## The manifest
 

@@ -9,15 +9,17 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Straum and PostgreSQL 18 on six months of New York taxi trips.
+"""Straum on six months of New York taxi trips, alone or beside PostgreSQL 18.
 
-Every mode loads the trips into a throwaway PostgreSQL and starts
-`straum run` on bench/trips.sql. Then:
+Every mode starts `straum run` on bench/trips.sql. By default straum-parquet
+feeds it the TLC's Parquet files as downloaded, with no PostgreSQL. With
+--postgres the trips go into a throwaway PostgreSQL, which Straum loads
+from and follows. Then:
 
-asks: each ask goes to PostgreSQL as the SQL anyone would write over the raw
-tables and to Straum as JSON over HTTP. The answers must be equal. Then each
-side is timed from this one client, over its own protocol, with a warm
-cache. The table goes to stdout.
+asks: each ask goes to Straum as JSON over HTTP and is timed from this one
+client with a warm cache. With --postgres it also goes to PostgreSQL as the
+SQL anyone would write over the raw tables, the answers must be equal, and
+both are timed, each over its own protocol. The table goes to stdout.
 
 transactions: Straum holds a transaction until its commit and applies it
 whole under its write lock, so every ask waits for it, and the rows wait in
@@ -25,16 +27,13 @@ memory. This changes N rows in one transaction for several N while asking
 Straum back to back, and reports the time from the commit until Straum had
 applied it, the longest ask meanwhile, which is the lock hold as a client
 feels it, and how much Straum's resident set grew. --max-transaction-rows
-takes its default from this table.
+takes its default from this table. A feed carries no changes, so this mode
+always runs on PostgreSQL.
 
 shell: leaves you in `straum shell` at the trips.
 
---feed takes PostgreSQL out: straum-parquet feeds Straum the TLC's Parquet
-files as downloaded. asks then times Straum alone, with nothing to check
-its answers against, and shell opens at the fed trips.
-
-Needs Docker, cargo and uv; with --feed, no Docker. Downloads go to
-bench/data, which git ignores.
+Needs cargo and uv; with --postgres or transactions, Docker too. Downloads
+go to bench/data, which git ignores.
 """
 
 import argparse
@@ -117,7 +116,7 @@ INDEXES = [
 ]
 LOADERS = 8
 
-# What straum-parquet reads for --feed: the TLC's own files, each column
+# What straum-parquet reads: the TLC's own files, each column
 # as the type SCHEMA gives it. The TLC's pickup time is New York's clock.
 ZONES = {
     "LocationID": "location_id",
@@ -230,30 +229,29 @@ DASHBOARD_ASK = orjson.dumps(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
-        epilog="Needs Docker, cargo and uv; with --feed, no Docker. "
-        "Downloads go to bench/data.",
+        epilog="Needs cargo and uv; with --postgres or transactions, Docker "
+        "too. Downloads go to bench/data.",
     )
     parser.add_argument(
         "mode",
         nargs="?",
         choices=["asks", "transactions", "shell"],
         default="asks",
-        help="asks: time the asks on both sides (default); "
+        help="asks: time the asks (default); "
         "transactions: what one large transaction costs Straum; "
         "shell: open straum shell at the trips",
     )
     parser.add_argument(
-        "--feed",
+        "--postgres",
         action="store_true",
-        help="no PostgreSQL: straum-parquet feeds Straum the Parquet files, "
-        "and asks times Straum alone",
+        help="load the trips into PostgreSQL, have Straum follow it, and "
+        "check and time each ask on both sides; transactions implies it",
     )
     args = parser.parse_args()
-    if args.feed and args.mode == "transactions":
-        parser.error("transactions changes rows in PostgreSQL; drop --feed")
-    fetch(args.feed)
-    straum, feeder = build(args.feed)
-    if args.feed:
+    feed = not args.postgres and args.mode != "transactions"
+    fetch(feed)
+    straum, feeder = build(feed)
+    if feed:
         return asyncio.run(fed(straum, feeder, args.mode))
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
     # Docker publishes the port on every interface while this runs.
@@ -490,7 +488,7 @@ def write_feed(zones: pathlib.Path) -> None:
         ]
 
     lines = [
-        "# Written by bench/taxi.py --feed for straum-parquet.",
+        "# Written by bench/taxi.py for straum-parquet.",
         "table public.taxi_zones",
         "file taxi_zones.parquet",
         *columns(ZONES),

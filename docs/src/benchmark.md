@@ -52,47 +52,47 @@ take 2,474 MiB.
 bench/taxi.py
 ```
 
-`bench/taxi.py shell` sets up the same, then leaves you in
-[`straum shell`](running.md#straum-shell) at the trips in place of
-running the asks. Leaving the shell removes PostgreSQL.
-
-It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
-which fetches the script's Python packages. The first run downloads the
-six months into `bench/data/`, which git ignores. Then it builds
-Straum, starts a throwaway `postgres:18`, loads the months eight at a
-time on their own connections, runs the SQL `straum plan` prints and
-starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
-tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
-the first answer that differs. A run takes about 80 seconds once the
-data is there.
-
-`bench/taxi.py transactions` does the same setup, then one transaction of
-1,000 to 1,000,000 changed rows while a client asks Straum back to back,
-under [Transactions](#transactions).
-
-### Without PostgreSQL
-
-```sh
-bench/taxi.py --feed
-```
-
-`--feed` takes PostgreSQL out, for measuring Straum alone. It needs no
-Docker, and a C compiler for the Zstandard that `straum-parquet`
-reads. Straum starts with [`--feed`](feed.md) and `straum-parquet`
-feeds it the TLC's Parquet files as downloaded: the pickup times read
-on New York's clock, the fares rounded to `numeric(12,2)`. No trip is
-written as CSV, and nothing is copied into PostgreSQL and out again.
-The manifest it writes is `bench/data/taxi.manifest`.
-
-The asks are then timed on Straum only, with no PostgreSQL to check
-the answers against. `bench/taxi.py shell --feed` opens `straum shell`
-at the fed trips. `transactions` changes rows, which a feed does not
-carry, so it takes no `--feed`.
+By default Straum runs alone, for measuring Straum and nothing else.
+It needs a Rust toolchain, a C compiler for the Zstandard that
+`straum-parquet` reads, and [uv](https://docs.astral.sh/uv/), which
+fetches the script's Python packages. The first run downloads the six
+months into `bench/data/`, which git ignores. Then it builds Straum and
+`straum-parquet`, starts Straum with [`--feed`](feed.md) and has
+`straum-parquet` feed it the TLC's Parquet files as downloaded: the
+pickup times read on New York's clock, the fares rounded to
+`numeric(12,2)`. The manifest it writes is `bench/data/taxi.manifest`.
+The asks are timed on Straum only, with nothing to check the answers
+against.
 
 One run on 2026-11-13, on the machine of the [Results](#results):
 Straum was ready 6.5 s after it started, where it takes 12.9 s to
-load from PostgreSQL, in a run of about 80 seconds. It held the same
-cells: 1,157,581 in `trips` and 713,457 in `dropoffs`.
+load from PostgreSQL. It held the same cells: 1,157,581 in `trips` and
+713,457 in `dropoffs`.
+
+`bench/taxi.py shell` sets up the same, then leaves you in
+[`straum shell`](running.md#straum-shell) at the trips in place of
+running the asks.
+
+### Beside PostgreSQL
+
+```sh
+bench/taxi.py --postgres
+```
+
+`--postgres` gives the [Results](#results). It needs Docker as well.
+It writes each month as CSV, starts a throwaway `postgres:18`, loads
+the months eight at a time on their own connections, runs the SQL
+`straum plan` prints and starts `straum run` against it. Each ask goes
+to PostgreSQL as SQL over the raw tables and to Straum as an
+[ask](asks.md) over HTTP, and a run stops at the first answer that
+differs. A run takes about 80 seconds once the data is there.
+`bench/taxi.py shell --postgres` opens the shell at the trips in
+PostgreSQL, and leaving it removes PostgreSQL.
+
+`bench/taxi.py transactions` always runs beside PostgreSQL, since a
+feed carries no changes: the same setup, then one transaction of 1,000
+to 1,000,000 changed rows while a client asks Straum back to back,
+under [Transactions](#transactions).
 
 ## The views
 
@@ -224,7 +224,7 @@ bytes a cell.
 cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It needs the data `bench/taxi.py` fetches. It loads the month with
+It needs the CSV `bench/taxi.py --postgres` writes. It loads the month with
 `crates/straum-notation/tests/taxi.sql`, a wider view than the
 benchmark's: 15 minute buckets with day and week widths, keyed by
 payment type, vendor, pickup zone, dropoff zone and the pickup zone's
