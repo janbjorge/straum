@@ -91,9 +91,7 @@ need Docker.
 
 ## Documentation
 
-- [User guide](https://janbjorge.github.io/straum/), built from `docs/`;
-  [Design](https://janbjorge.github.io/straum/design.html) is the
-  design
+- [User guide](https://janbjorge.github.io/straum/), built from `docs/`
 - [Decisions](docs/adr/)
 - [Straum and PostgreSQL](research/POSTGRESQL.md)
 - [Joins: history and sources](research/JOINS.md)

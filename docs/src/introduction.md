@@ -4,11 +4,11 @@ Straum keeps aggregates of PostgreSQL tables in memory and answers
 asks about them over HTTP in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
-PostgreSQL reads the rows again each time. Straum reads them once, from
-a snapshot, keeps each group as a cell in memory, and follows every
-commit through logical replication. Every answer reports how current it
-is. You declare what to keep as a view, in a small subset of PostgreSQL's
-`CREATE VIEW`, here over New York taxi trips and their pickup zones:
+PostgreSQL reads the rows again each time. Straum reads them once,
+keeps each group as a cell in memory, and follows every commit through
+logical replication. You declare what to keep as a view, in a small
+subset of PostgreSQL's `CREATE VIEW`, here over New York taxi trips and
+their pickup zones:
 
 ```sql
 CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
@@ -51,16 +51,37 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer. An ask never touches
-PostgreSQL; its cost follows the number of cells it reads. On six months
-of New York taxi trips, the [benchmark](benchmark.md) answers in 125 to
-324 µs where PostgreSQL takes 28.1 to 1,750.8 ms, from 65 MiB of memory.
+Every commit made before `as_of` is in the answer, and an ask never
+touches PostgreSQL. On six months of New York taxi trips, the
+[benchmark](benchmark.md) answers in 125 to 324 µs where PostgreSQL
+takes 28.1 to 1,750.8 ms, from 65 MiB of memory.
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 
 *A table owner runs the SQL `straum plan` prints, once. `straum run`
-loads the tables and follows them, as [How Straum
-works](how-it-works.md) describes. Apps ask over HTTP.*
+loads the tables and follows them. Apps ask over HTTP.*
+
+## What it is good for
+
+A question asked often, about tables that keep changing, whose answer
+is counts, sums, averages, minima or maxima by a few keys over time:
+
+- Dashboard tiles and charts: trips per hour, fares by borough, the
+  same `GROUP BY` on every page load.
+- Numbers an app shows its own users, such as usage this month or
+  orders today. Make the tenant a key and each ask filters on it.
+- A summary you maintain by hand today: a materialized view refreshed
+  on a schedule, or a rollup table kept by triggers. Straum follows
+  inserts, updates and deletes itself, and every answer is exact.
+
+## What it is not
+
+Straum is not a SQL engine, a replica, a cache or a durable store. It
+answers only what its spec declares, so it has no ad hoc queries, no
+rows and [no median](aggregates.md#median-and-percentiles). It keeps
+nothing on disk: every start loads every table again, and a crash
+leaves no slot behind holding WAL. PostgreSQL stays the source of
+truth.
 
 Straum supports PostgreSQL 17 and newer as shipped, with no extension
 and no superuser, so managed services work. The name is Nynorsk for a
@@ -69,15 +90,6 @@ stream or current: Straum's input is PostgreSQL's replication stream.
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
 
-The guide is in reading order. The [quick start](quick-start.md) runs
-this example in Docker. [How Straum works](how-it-works.md) is the
-one idea behind it, cells, and is enough to read the rest: the
-[spec](spec.md), the [asks](asks.md), then [PostgreSQL](postgresql.md)
-and [running](running.md) for production.
-
-## What it is not
-
-Straum is not a SQL engine, a replica, a cache or a durable store. It
-answers only what its spec declares, and it keeps nothing on disk: every
-start loads every table again, and a crash leaves no slot behind holding
-WAL. PostgreSQL stays the source of truth.
+The [quick start](quick-start.md) runs this example in Docker in four
+steps. After it, a [spec](spec.md) and an [ask](asks.md) are the two
+things you write.
