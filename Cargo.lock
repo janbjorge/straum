@@ -1827,6 +1827,7 @@ dependencies = [
  "serde_json",
  "straum-app",
  "straum-domain",
+ "straum-feed",
  "straum-http",
  "straum-notation",
  "straum-pg",
@@ -1845,6 +1846,15 @@ dependencies = [
 [[package]]
 name = "straum-domain"
 version = "0.0.0"
+
+[[package]]
+name = "straum-feed"
+version = "0.0.0"
+dependencies = [
+ "straum-app",
+ "straum-domain",
+ "straum-notation",
+]
 
 [[package]]
 name = "straum-http"

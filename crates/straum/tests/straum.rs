@@ -1,6 +1,7 @@
 //! The Straum binary end to end: `straum plan` sets up PostgreSQL 18 in Docker,
 //! `straum run` loads and follows it as the role the plan made, and asks over
-//! HTTP answer what the view body answers in PostgreSQL.
+//! HTTP answer what the view body answers in PostgreSQL. With `--feed` the
+//! same rows come from a feeder, and no PostgreSQL runs.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -12,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use straum_domain::{ColumnType, Datum};
+use straum_feed::{Feeder, Request};
 use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
@@ -192,11 +195,12 @@ struct Running {
 }
 
 fn run(args: &[&str], dsn: &str) -> Running {
-    let mut child = straum(args)
-        .env("STRAUM_DSN", dsn)
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    started(straum(args).env("STRAUM_DSN", dsn))
+}
+
+/// Starts `straum run` and waits until it listens.
+fn started(command: &mut Command) -> Running {
+    let mut child = command.stderr(Stdio::piped()).spawn().unwrap();
     let log = Arc::new(Mutex::new(String::new()));
     let lines = BufReader::new(child.stderr.take().unwrap());
     let gathered = Arc::clone(&log);
@@ -658,4 +662,176 @@ fn says_what_is_wrong() {
         );
         assert!(!stderr.contains("secret"), "{stderr}");
     }
+}
+
+/// The rows of `TABLES`, as a feeder holds them: each table's columns
+/// with their types, and its rows.
+type Held = (
+    &'static str,
+    Vec<(&'static str, ColumnType)>,
+    Vec<Vec<Datum>>,
+);
+
+fn shop() -> Vec<Held> {
+    let text = |text: &str| Datum::Text(text.into());
+    let (int, null) = (Datum::Int, Datum::Null);
+    // 2024-01-01 00:10 UTC, and fares in cents as a numeric(8, 2) reads.
+    let at = |hour: i64| int(1_704_067_800 + hour * 3_600);
+    vec![
+        (
+            "zones",
+            vec![("id", ColumnType::Int), ("borough", ColumnType::Text)],
+            vec![vec![int(1), text("Bronx")], vec![int(2), text("Queens")]],
+        ),
+        (
+            "trips",
+            vec![
+                ("id", ColumnType::Int),
+                ("at", ColumnType::Time { zoned: true }),
+                ("kind", ColumnType::Text),
+                ("zone_id", ColumnType::Int),
+                ("fare", ColumnType::Numeric { scale: 2 }),
+            ],
+            vec![
+                vec![int(1), at(0), text("cab"), int(1), int(1_250)],
+                vec![int(2), at(1), text("cab"), int(2), int(5)],
+                vec![int(3), at(2), text("van"), int(3), null.clone()],
+                vec![int(4), at(3), null, int(1), int(-225)],
+            ],
+        ),
+    ]
+}
+
+/// Connects to the feed and answers every table asked for from `held`.
+fn feed(socket: &str, held: &[Held]) -> Result<(), straum_feed::Error> {
+    let mut feeder = Feeder::connect(socket)?;
+    loop {
+        let (table, columns) = match feeder.next_request()? {
+            Request::Done => return Ok(()),
+            Request::Load { table, columns } => (table, columns),
+        };
+        let Some((_, typed, rows)) = held.iter().find(|held| held.0 == table.name.as_str()) else {
+            return feeder.fail(&format!("no table {}.{}", table.schema, table.name));
+        };
+        let at: Vec<usize> = (columns.iter())
+            .map(|column| typed.iter().position(|c| c.0 == column.as_str()).unwrap())
+            .collect();
+        feeder.types(&at.iter().map(|&at| typed[at].1).collect::<Vec<_>>())?;
+        for row in rows {
+            feeder.rows(&at.iter().map(|&at| row[at].clone()).collect::<Vec<_>>())?;
+        }
+        feeder.end()?;
+    }
+}
+
+/// What `ASK` answers for the rows of `TABLES`.
+const FED_ROWS: &str = concat!(
+    r#""rows":[{"kind":null,"borough":"Bronx","trips":1,"fare":-2.25},"#,
+    r#"{"kind":"cab","borough":"Bronx","trips":1,"fare":12.50},"#,
+    r#"{"kind":"cab","borough":"Queens","trips":1,"fare":0.05},"#,
+    r#"{"kind":"van","borough":null,"trips":1,"fare":null}]}"#
+);
+
+#[test]
+fn serves_asks_from_a_feed() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let socket = scratch.0.join("feed").to_str().unwrap().to_owned();
+    let args = [
+        "run",
+        "--spec",
+        &spec,
+        "--listen",
+        "127.0.0.1:0",
+        "--feed",
+        &socket,
+    ];
+    // A DSN in the environment is PostgreSQL's, and a feed needs none.
+    let mut straum = started(straum(&args).env("STRAUM_DSN", "postgres://nobody@127.0.0.1:1/x"));
+    assert!(
+        straum
+            .log()
+            .contains(&format!("waiting for a feeder on {socket}"))
+    );
+    assert_eq!(
+        straum.call("GET", "/readyz", ""),
+        (503, "not ready: loading\n".to_owned())
+    );
+    assert_eq!(straum.call("POST", "/ask", ASK).0, 503);
+
+    // A feeder without the trips: Straum says why it is not ready, and
+    // waits for the next one.
+    feed(&socket, &shop()[..1]).unwrap();
+    straum.wait_for("the failure", |straum| {
+        straum.call("GET", "/readyz", "").1 == "not ready: the feeder: no table shop.trips\n"
+    });
+
+    feed(&socket, &shop()).unwrap();
+    straum.wait_for("the load", |straum| {
+        straum.call("GET", "/readyz", "").0 == 200
+    });
+    let (code, body) = straum.call("POST", "/ask", ASK);
+    assert_eq!(code, 200);
+    assert!(body.ends_with(FED_ROWS), "{body}");
+    assert!(straum.log().contains("loaded every table from the feed"));
+
+    let url = format!("http://{}", straum.address);
+    let (code, status, _) = output(&mut self::straum(&["status", "--url", &url]));
+    assert_eq!(code, Some(0));
+    assert!(
+        status.starts_with("ready:        yes\napplied:      0/0"),
+        "{status}"
+    );
+    assert!(
+        status.contains("\nstarts:       1\nfailures:     1\n"),
+        "{status}"
+    );
+    let (code, views, _) = output(&mut self::straum(&["views", "--url", &url]));
+    assert_eq!(code, Some(0));
+    assert!(views.contains("holds:    4 cells"), "{views}");
+    assert!(
+        views.contains("dim shop.zones\n  holds:    2 rows"),
+        "{views}"
+    );
+
+    let (code, log) = straum.stop("-TERM");
+    assert_eq!(code, Some(0));
+    assert!(log.ends_with("straum: stopped\n"), "{log}");
+
+    // The socket the first left behind is no one's, so the next takes it.
+    let straum = started(&mut self::straum(&args));
+    feed(&socket, &shop()).unwrap();
+    assert_eq!(straum.call("GET", "/livez", "").0, 200);
+}
+
+#[test]
+fn a_feed_that_cannot_listen_stops_straum() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let socket = scratch.0.join("no/such/directory/feed");
+    let socket = socket.to_str().unwrap();
+    let mut run = straum(&[
+        "run",
+        "--spec",
+        &spec,
+        "--listen",
+        "127.0.0.1:0",
+        "--feed",
+        socket,
+    ]);
+    let (code, _, stderr) = output(&mut run);
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!("straum: listening on {socket}: ")),
+        "{stderr}"
+    );
+
+    let mut run = straum(&["run", "--spec", &spec, "--feed", socket, "--max-lag", "5"]);
+    let (code, _, stderr) = output(&mut run);
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        stderr,
+        "straum: --feed takes PostgreSQL's place, so --max-lag does not apply\n\
+         try: straum run --help\n"
+    );
 }

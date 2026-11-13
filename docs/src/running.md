@@ -7,6 +7,7 @@
 straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
            [--max-lag SECONDS] [--max-retained-wal BYTES]
            [--max-transaction-rows ROWS]
+straum run --spec FILE [--listen ADDRESS] --feed SOCKET
 straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
 straum views [--url URL]
@@ -53,6 +54,7 @@ over HTTP.
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#following) instead of applying it. |
+| `--feed SOCKET` | Take the tables from a [feeder](feed.md) that connects to this Unix socket, in place of PostgreSQL. With it only `--spec` and `--listen` apply, and no DSN is read. |
 
 It logs to stderr, one line per event:
 
@@ -91,6 +93,11 @@ then Loading from a new slot. SIGTERM leads to Stopping.*
 Straum reads the server's WAL position every second. Lag is the time
 since Straum last caught up with a position the server had reached. It
 can overstate the true delay by up to one second, never understate it.
+
+With `--feed`, Loading lasts until a [feeder](feed.md) has connected
+and fed every table; then Straum is Ready and never Lagging, since
+nothing follows a feed. After a failure it waits for a feeder to
+connect again.
 
 Any failure leads to Waiting: a lost connection, a change Straum can't
 apply, a table altered under it, or too much WAL retained for its slot.
