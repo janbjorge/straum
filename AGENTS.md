@@ -18,14 +18,20 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. `scripts/try.sh` runs Straum against a
-throwaway PostgreSQL in Docker with the quick start's tables, shows
-`straum views` and `straum ask`, and at a terminal ends in `straum shell`.
-`scripts/try.sh taxi` does it on the taxi month.
+PostgreSQL tests need Docker. `bench/bench.py shell` runs Straum against
+a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
+Demo and try-out data is always the taxi trips, never a hand-written
+dataset.
 
 - Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
   helm, the helm-unittest plugin and kubeconform.
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
+
+The `justfile` wraps these commands for convenience: `just check <crate>`,
+`just cov <crate>`, `just docs` (live preview), `just docs-build`,
+`just chart`, `just try`, `just bench`, `just bench-transaction`,
+`just taxi-month`. Nothing depends on it; the commands here and in
+`docs/src/benchmark.md` stay the reference. Keep them in step.
 
 ## Documents
 
