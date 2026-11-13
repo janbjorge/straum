@@ -22,6 +22,7 @@ leaves you in `straum shell` at the month.
 Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 """
 
+import argparse
 import asyncio
 import contextlib
 import datetime
@@ -158,6 +159,19 @@ ASKS = [
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog="Needs Docker, cargo and uv. Downloads go to bench/data.",
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=["bench", "shell"],
+        default="bench",
+        help="bench: time the asks on both sides (default); "
+        "shell: open straum shell at the month instead",
+    )
+    args = parser.parse_args()
     fetch()
     straum = build()
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
@@ -179,11 +193,11 @@ def main() -> int:
     )
     log("starting PostgreSQL")
     with postgres:
-        return asyncio.run(bench(postgres, straum, plan, password))
+        return asyncio.run(bench(postgres, straum, plan, password, args.mode))
 
 
 async def bench(
-    postgres: PostgresContainer, straum: str, plan: str, password: str
+    postgres: PostgresContainer, straum: str, plan: str, password: str, mode: str
 ) -> int:
     pg = await asyncpg.connect(
         postgres.get_connection_url(),
@@ -205,7 +219,7 @@ async def bench(
     host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
     dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
     async with serve(straum, dsn) as (http, loaded, rss, url):
-        if sys.argv[1:] == ["shell"]:
+        if mode == "shell":
             log(f"straum ready in {loaded:.1f} s")
             shell = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
             return await shell.wait()
