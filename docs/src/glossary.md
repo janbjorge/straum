@@ -335,10 +335,11 @@ ADR-0035).
 - **Fake** (`Fake`): a scripted PostgreSQL in the app and HTTP tests.
   `PostgresContainer` is a real one in Docker. `MemorySpill` and
   `Lost` are spills.
-- **Taxi month**: the January 2024 TLC yellow trips, `bench/data`,
-  `taxi.sql`, the benchmark and the ignored `taxi_month` test. The
-  **warehouse copy** is the benchmark's production-shaped tables, not
-  in the repository.
+- **Taxi trips**: the TLC yellow trips of January to June 2024 in
+  `bench/data`, which the benchmark loads. The **taxi month** is their
+  January, which the quick start, `taxi.sql` and the ignored
+  `taxi_month` test load. The **warehouse copy** is the benchmark's
+  production-shaped tables, not in the repository.
 
 ## Clashes
 

@@ -9,11 +9,11 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""What one transaction costs Straum, on the taxi month.
+"""What one transaction costs Straum, on six months of taxi trips.
 
 Straum holds a transaction until its commit and applies it whole under its
 write lock, so every ask waits for it, and the rows wait in memory. This
-script loads the month as bench.py does, then changes N rows in one
+script loads the trips as bench.py does, then changes N rows in one
 transaction for several N while asking Straum every few milliseconds. For
 each N it reports the time from the commit until Straum had applied it, the
 longest ask seen meanwhile, which is the lock hold as a client feels it, and
@@ -36,7 +36,7 @@ import psutil
 import tabulate
 from testcontainers.community.postgres import PostgresContainer
 
-from bench import DATA, LOAD, SPEC, build, duration, fetch, log, serve
+from bench import SPEC, build, container, duration, fetch, load, log, serve
 
 SIZES = [1_000, 10_000, 100_000, 1_000_000]
 
@@ -55,18 +55,7 @@ def main() -> int:
     straum = build()
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
     password = secrets.token_hex(16)
-    postgres = (
-        PostgresContainer(
-            "postgres:18",
-            username="postgres",
-            password=password,
-            dbname="postgres",
-            driver=None,
-        )
-        .with_command("-c wal_level=logical -c shared_buffers=2GB")
-        .with_volume_mapping(DATA, "/data")
-        .with_kwargs(shm_size="1g")
-    )
+    postgres = container(password)
     log("starting PostgreSQL")
     with postgres:
         return asyncio.run(measure(postgres, straum, plan, password))
@@ -79,9 +68,7 @@ async def measure(
         postgres.get_connection_url(),
         server_settings={"timezone": "America/New_York"},
     )
-    log("loading the month")
-    await pg.execute(LOAD)
-    await pg.execute("VACUUM ANALYZE")
+    await load(postgres.get_connection_url())
     for line in plan.splitlines():
         if line and not line.startswith("--"):
             await pg.execute(line)

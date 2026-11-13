@@ -1,18 +1,18 @@
 # Benchmark
 
 Straum's benchmark sends Straum and PostgreSQL the same asks about
-one month of New York taxi trips, checks that the answers are equal, and
+six months of New York taxi trips, checks that the answers are equal, and
 times both. [Memory](#memory) at the end is what two real tables
 measured.
 
-The data is the TLC yellow trips of January 2024, 2,964,624 trips, and
-the 265 rows of `taxi_zone_lookup.csv`.
+The data is the TLC yellow trips of January to June 2024, 20,332,093
+trips, and the 265 rows of `taxi_zone_lookup.csv`.
 
 ## Results
 
 Six fixed asks over the benchmark view, each sent to PostgreSQL as SQL
 over the raw tables and to Straum as an ask over HTTP. One run on an
-Apple M2 Pro with 16 GB, on 2026-11-11: PostgreSQL 18.6 in Docker
+Apple M2 Pro with 16 GB, on 2026-11-13: PostgreSQL 18.6 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
 Each time is the median over at least a second, from one Python client:
 asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
@@ -20,19 +20,20 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 36.3 ms | 150 µs | 241x |
-| Card trips | 1 | 62.9 ms | 179 µs | 351x |
-| Trips by pickup borough | 8 | 168.3 ms | 198 µs | 852x |
-| Fares by payment type | 5 | 134.7 ms | 211 µs | 637x |
-| Manhattan pickups, one week | 1 | 74.0 ms | 228 µs | 325x |
-| Trips per hour, one day | 24 | 22.1 ms | 181 µs | 122x |
+| Trips | 1 | 221.5 ms | 144 µs | 1,540x |
+| Card trips | 1 | 389.6 ms | 251 µs | 1,551x |
+| Trips by pickup borough | 8 | 1,071.8 ms | 230 µs | 4,651x |
+| Fares by payment type | 6 | 809.5 ms | 349 µs | 2,317x |
+| Manhattan pickups, one week | 1 | 51.8 ms | 162 µs | 320x |
+| Trips per hour, one day | 24 | 17.6 ms | 155 µs | 114x |
 
-Straum was ready 1.0 s after it started and held 38 MiB, the 265 zone
+Straum was ready 8.3 s after it started and held 362 MiB, the 265 zone
 rows' projection included. In PostgreSQL the table and its indexes
-take 363 MiB.
+take 2,474 MiB.
 
-- PostgreSQL runs with its defaults, two parallel workers per query,
-  except `shared_buffers`: 2 GB, so the table stays in its cache.
+- Reads run with PostgreSQL's defaults, two parallel workers per query,
+  except `shared_buffers`: 2 GB. The rest of the table comes from the
+  OS cache. The other settings in `bench/bench.py` only speed the load.
   `yellow_trips` has an index on `pickup_at`, which the week and day
   asks use, and the gap is smallest there, where PostgreSQL reads least.
 - PostgreSQL's time follows the rows it reads: every trip for the first
@@ -51,17 +52,18 @@ bench/bench.py
 ```
 
 `bench/bench.py shell` sets up the same, then leaves you in
-[`straum shell`](running.md#straum-shell) at the month in place of
+[`straum shell`](running.md#straum-shell) at the trips in place of
 running the asks. Leaving the shell removes PostgreSQL.
 
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
-month into `bench/data/`, which git ignores. Then it builds Straum,
-starts a throwaway `postgres:18`, loads the tables, runs the SQL `straum
-plan` prints and starts `straum run`. Each ask goes to PostgreSQL as SQL
-over the raw tables and to Straum as an [ask](asks.md) over HTTP, and a
-run stops at the first answer that differs. A run takes under half a
-minute once the data is there.
+six months into `bench/data/`, which git ignores. Then it builds
+Straum, starts a throwaway `postgres:18`, loads the months eight at a
+time on their own connections, runs the SQL `straum plan` prints and
+starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
+tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
+the first answer that differs. A run takes about a minute once the data
+is there.
 
 `bench/transaction.py` does the same setup, then one transaction of
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
@@ -87,8 +89,8 @@ LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = f.pu_locatio
 GROUP BY 1, 2, 3, 4;
 ```
 
-The view keeps 173,660 hour cells for the 2,964,624 trips, 17.1 trips
-a cell, and 25,739 day and week cells.
+The view keeps 1,157,581 cells over its three widths for the
+20,332,093 trips.
 
 ## The asks
 
@@ -168,24 +170,24 @@ one transaction while a client asks for one day of hour buckets as fast
 as the answers come. It measures three things: the time from the commit
 until Straum has applied it, the longest ask meanwhile, which is the
 lock hold as a client feels it, and how much Straum's resident set grew.
-One run on 2026-11-11, the machine, build and PostgreSQL of the
-[Results](#results); Straum held 38 MiB after the load and an idle ask
-took 178 µs:
+One run on 2026-11-13, the machine, build and PostgreSQL of the
+[Results](#results); Straum held 365 MiB after the load and an idle ask
+took 136 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
-| 1,000 | 8.5 ms | 575 µs | 1 MiB |
-| 10,000 | 59.4 ms | 3.5 ms | 3 MiB |
-| 100,000 | 501 ms | 31.2 ms | 28 MiB |
-| 1,000,000 | 5.7 s | 324 ms | 251 MiB |
+| 1,000 | 310.9 ms | 1.0 ms | 1 MiB |
+| 10,000 | 251.3 ms | 9.4 ms | 3 MiB |
+| 100,000 | 635.1 ms | 90.5 ms | 0 MiB |
+| 1,000,000 | 4.8 s | 908.8 ms | 144 MiB |
 
 Most of the time goes to PostgreSQL decoding the transaction and Straum
-reading it, outside the lock; the lock itself is held for about 0.3 ms
+reading it, outside the lock; the lock itself is held for about 0.9 ms
 per 1,000 rows. Memory is what grows: the rows of a transaction wait in
-Straum until its commit, about 260 bytes each, so a million-row
-transaction holds six times the whole taxi view. That sets the
+Straum until its commit, about 150 bytes each, so a million-row
+transaction holds two fifths of the whole taxi view. That sets the
 default of `--max-transaction-rows` at 100,000: a transaction at the limit
-holds the lock for 30 ms and 28 MiB, and anything larger is cheaper to
+holds the lock for 90 ms, and anything larger is cheaper to
 [start over](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 

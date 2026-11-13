@@ -9,7 +9,7 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Straum against PostgreSQL 18 on a month of New York taxi trips.
+"""Straum against PostgreSQL 18 on six months of New York taxi trips.
 
 Each ask goes to both: to PostgreSQL as the SQL anyone would write over the
 raw tables, and to `straum run` on bench/trips.sql as JSON over HTTP. The
@@ -17,7 +17,7 @@ answers must be equal. Then each side is timed from this one client, over
 its own protocol, with a warm cache. The table goes to stdout.
 
 `bench/bench.py shell` sets up the same and then, in place of the asks,
-leaves you in `straum shell` at the month.
+leaves you in `straum shell` at the trips.
 
 Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 """
@@ -50,7 +50,7 @@ from testcontainers.community.postgres import PostgresContainer
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DATA = ROOT / "bench" / "data"
 SPEC = ROOT / "bench" / "trips.sql"
-MONTH = "2024-01"
+MONTHS = [f"2024-{month:02}" for month in range(1, 7)]
 TLC = "https://d37ci6vzurychx.cloudfront.net"
 
 # TLC name -> yellow_trips column. straum-pg's taxi_month test reads the CSV
@@ -68,7 +68,7 @@ COLUMNS = {
 
 # Money and distance are numeric, so sums are exact on both sides. The
 # session runs in New York time, the TLC's wall clock.
-LOAD = f"""
+SCHEMA = """
 CREATE TABLE taxi_zones (
     location_id int PRIMARY KEY,
     borough text,
@@ -76,7 +76,7 @@ CREATE TABLE taxi_zones (
     service_zone text
 );
 CREATE TABLE yellow_trips (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id bigint GENERATED ALWAYS AS IDENTITY,
     vendor_id int,
     pickup_at timestamptz,
     pu_location_id int,
@@ -87,10 +87,18 @@ CREATE TABLE yellow_trips (
     trip_distance numeric(12, 2)
 );
 COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
-COPY yellow_trips ({", ".join(COLUMNS.values())})
-    FROM '/data/trips_{MONTH}.csv' WITH (format csv, header);
-CREATE INDEX ON yellow_trips (pickup_at);
 """
+COPIES = [
+    f"COPY yellow_trips ({', '.join(COLUMNS.values())}) "
+    f"FROM '/data/trips_{month}.csv' WITH (format csv, header)"
+    for month in MONTHS
+]
+# Built once the rows are in, which is faster than row by row.
+INDEXES = [
+    "ALTER TABLE yellow_trips ADD PRIMARY KEY (id)",
+    "CREATE INDEX ON yellow_trips (pickup_at)",
+]
+LOADERS = 8
 
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
 # matches SQL without one.
@@ -169,7 +177,7 @@ def main() -> int:
         choices=["bench", "shell"],
         default="bench",
         help="bench: time the asks on both sides (default); "
-        "shell: open straum shell at the month instead",
+        "shell: open straum shell at the trips instead",
     )
     args = parser.parse_args()
     fetch()
@@ -177,20 +185,7 @@ def main() -> int:
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
     # Docker publishes the port on every interface while the bench runs.
     password = secrets.token_hex(16)
-    # Defaults but for shared_buffers: at 128MB the 248MB table is read
-    # through the OS cache on every scan, which no sized server does.
-    postgres = (
-        PostgresContainer(
-            "postgres:18",
-            username="postgres",
-            password=password,
-            dbname="postgres",
-            driver=None,
-        )
-        .with_command("-c wal_level=logical -c shared_buffers=2GB")
-        .with_volume_mapping(DATA, "/data")
-        .with_kwargs(shm_size="1g")
-    )
+    postgres = container(password)
     log("starting PostgreSQL")
     with postgres:
         return asyncio.run(bench(postgres, straum, plan, password, args.mode))
@@ -203,9 +198,7 @@ async def bench(
         postgres.get_connection_url(),
         server_settings={"timezone": "America/New_York"},
     )
-    log("loading the month")
-    await pg.execute(LOAD)
-    await pg.execute("VACUUM ANALYZE")
+    await load(postgres.get_connection_url())
     # The plan writes a statement a line, and ALTER SYSTEM can't share a
     # query string with others.
     for line in plan.splitlines():
@@ -253,26 +246,86 @@ async def bench(
     return 0
 
 
+def container(password: str) -> PostgresContainer:
+    # Reads see the defaults but for shared_buffers, sized as a server
+    # would be. The rest only speed the load: no checkpoint midway, no page
+    # images or flush per commit, which a throwaway server never needs, and
+    # memory for the index builds.
+    settings = {
+        "wal_level": "logical",
+        "shared_buffers": "2GB",
+        "max_wal_size": "16GB",
+        "checkpoint_timeout": "1h",
+        "full_page_writes": "off",
+        "synchronous_commit": "off",
+        "maintenance_work_mem": "1GB",
+        "max_parallel_maintenance_workers": "4",
+    }
+    return (
+        PostgresContainer(
+            "postgres:18",
+            username="postgres",
+            password=password,
+            dbname="postgres",
+            driver=None,
+        )
+        .with_command(
+            " ".join(f"-c {name}={value}" for name, value in settings.items())
+        )
+        .with_volume_mapping(DATA, "/data")
+        .with_kwargs(shm_size="1g")
+    )
+
+
+async def load(url: str) -> None:
+    """The tables, each month's trips on a connection of its own. The CSV
+    times have no offset, so each session reads them in New York time."""
+    async with asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=LOADERS,
+        server_settings={"timezone": "America/New_York"},
+    ) as pool:
+        await pool.execute(SCHEMA)
+        log(f"loading {len(MONTHS)} months, {LOADERS} at a time")
+        await asyncio.gather(*(pool.execute(copy) for copy in COPIES))
+        log("indexing")
+        for index in INDEXES:
+            await pool.execute(index)
+        log("vacuuming")
+        await pool.execute("VACUUM ANALYZE")
+
+
 def fetch() -> None:
     DATA.mkdir(exist_ok=True)
-    parquet = DATA / f"yellow_tripdata_{MONTH}.parquet"
-    for path, url in [
-        (parquet, f"{TLC}/trip-data/{parquet.name}"),
-        (DATA / "taxi_zone_lookup.csv", f"{TLC}/misc/taxi_zone_lookup.csv"),
-    ]:
-        if not path.exists():
-            log(f"fetching {url}")
-            part = path.with_suffix(".part")
-            urllib.request.urlretrieve(url, part)
-            part.rename(path)
-    csv = DATA / f"trips_{MONTH}.csv"
-    if not csv.exists():
+    download(DATA / "taxi_zone_lookup.csv", f"{TLC}/misc/taxi_zone_lookup.csv")
+    for month in MONTHS:
+        csv = DATA / f"trips_{month}.csv"
+        if csv.exists():
+            continue
+        parquet = DATA / f"yellow_tripdata_{month}.parquet"
+        download(parquet, f"{TLC}/trip-data/{parquet.name}")
         log(f"writing {csv.name}")
         table = pyarrow.parquet.read_table(parquet, columns=list(COLUMNS))
         table = table.select(list(COLUMNS)).rename_columns(list(COLUMNS.values()))
-        part = csv.with_suffix(".part")
+        part = partial(csv)
         pyarrow.csv.write_csv(table, part)
         part.rename(csv)
+
+
+def download(path: pathlib.Path, url: str) -> None:
+    if path.exists():
+        return
+    log(f"fetching {url}")
+    part = partial(path)
+    urllib.request.urlretrieve(url, part)
+    part.rename(path)
+
+
+def partial(path: pathlib.Path) -> pathlib.Path:
+    """Where `path` is written before its rename: per process, so two runs
+    fetching at once never take each other's file."""
+    return path.with_name(f"{path.name}.{os.getpid()}.part")
 
 
 def build() -> str:
