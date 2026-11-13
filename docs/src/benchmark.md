@@ -10,7 +10,7 @@ trips, and the 265 rows of `taxi_zone_lookup.csv`.
 
 ## Results
 
-Six fixed asks over the benchmark view, each sent to PostgreSQL as SQL
+Seven fixed asks over the benchmark's two views, each sent to PostgreSQL as SQL
 over the raw tables and to Straum as an ask over HTTP. One run on an
 Apple M2 Pro with 16 GB, on 2026-11-13: PostgreSQL 18.6 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
@@ -20,14 +20,15 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 221.5 ms | 144 µs | 1,540x |
-| Card trips | 1 | 389.6 ms | 251 µs | 1,551x |
-| Trips by pickup borough | 8 | 1,071.8 ms | 230 µs | 4,651x |
-| Fares by payment type | 6 | 809.5 ms | 349 µs | 2,317x |
-| Manhattan pickups, one week | 1 | 51.8 ms | 162 µs | 320x |
-| Trips per hour, one day | 24 | 17.6 ms | 155 µs | 114x |
+| Trips | 1 | 269.8 ms | 194 µs | 1,389x |
+| Card trips | 1 | 492.2 ms | 385 µs | 1,280x |
+| Trips by pickup borough | 8 | 1,431.0 ms | 348 µs | 4,107x |
+| Fares by payment type | 6 | 1,073.4 ms | 449 µs | 2,392x |
+| Manhattan pickups, one week | 1 | 67.5 ms | 214 µs | 316x |
+| Trips per hour, one day | 24 | 24.5 ms | 185 µs | 132x |
+| Tips by dropoff borough | 8 | 2,351.1 ms | 268 µs | 8,760x |
 
-Straum was ready 8.3 s after it started and held 362 MiB, the 265 zone
+Straum was ready 17.2 s after it started and held 480 MiB, the 265 zone
 rows' projection included. In PostgreSQL the table and its indexes
 take 2,474 MiB.
 
@@ -36,11 +37,11 @@ take 2,474 MiB.
   OS cache. The other settings in `bench/taxi.py` only speed the load.
   `yellow_trips` has an index on `pickup_at`, which the week and day
   asks use, and the gap is smallest there, where PostgreSQL reads least.
-- PostgreSQL's time follows the rows it reads: every trip for the first
-  four asks, a week's or a day's for the last two. Straum's hardly
+- PostgreSQL's time follows the rows it reads: every trip, but for
+  the week and day asks, which read a week's or a day's. Straum's hardly
   changes from ask to ask: most of it is the HTTP round trip, reading
   the query and writing JSON.
-- Straum answers only what the view keeps: these keys, on hour edges.
+- Straum answers only what the views keep: these keys, on hour edges.
   PostgreSQL answers any query over the raw rows. Straum keeps its
   cells current as trips change; a summary table in PostgreSQL would
   have to be rebuilt or maintained.
@@ -69,9 +70,9 @@ is there.
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
 under [Transactions](#transactions).
 
-## The view
+## The views
 
-`bench/trips.sql` is the [quick start](quick-start.md)'s spec, what a
+`bench/trips.sql` opens with the [quick start](quick-start.md)'s view, what a
 dashboard over these trips would declare: trips, fares and the average
 fare per hour, payment type and pickup zone, with day and week buckets
 for long ranges.
@@ -90,8 +91,27 @@ LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_loc
 GROUP BY 1, 2, 3, 4;
 ```
 
-The view keeps 1,157,581 cells over its three widths for the
-20,332,093 trips.
+`dropoffs` is the other end of the same trips: tips, the average
+distance and fares per hour and dropoff zone.
+
+```sql
+CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
+SELECT date_bin('1 hour', dropoffs.pickup_at, timestamptz 'epoch') AS bucket,
+       dropoffs.do_location_id AS do_location_id,
+       dropoff.borough AS borough,
+       count(*) AS trips,
+       sum(dropoffs.tip_amount) AS tips,
+       avg(dropoffs.trip_distance) AS avg_distance,
+       sum(dropoffs.fare_amount) AS fare
+FROM public.yellow_trips AS dropoffs
+LEFT OUTER JOIN public.taxi_zones AS dropoff ON dropoff.location_id = dropoffs.do_location_id
+GROUP BY 1, 2, 3;
+```
+
+Over the 20,332,093 trips, `trips` keeps 1,157,581 cells over its
+three widths and `dropoffs` 713,457. Each also keeps as many
+[bound cells](https://github.com/janbjorge/straum/blob/main/docs/adr/0038-a-view-with-refs-keeps-bound-cells-beside-its-keyed-cells.md),
+since its join column is one of its keys.
 
 ## The asks
 
@@ -128,9 +148,16 @@ SELECT date_trunc('hour', pickup_at), count(*)
   FROM yellow_trips
  WHERE pickup_at >= '2024-01-17' AND pickup_at < '2024-01-18'
  GROUP BY 1;
+
+-- Tips by dropoff borough
+SELECT z.borough, count(*), sum(t.tip_amount), avg(t.trip_distance),
+       sum(t.fare_amount)
+  FROM yellow_trips t
+  LEFT JOIN taxi_zones z ON z.location_id = t.do_location_id
+ GROUP BY z.borough;
 ```
 
-Straum gets the same asks over the view, with every value a
+Straum gets the same asks over the views, with every value a
 parameter. Where the SQL has no range, the ask's is 2000 to 2030, which
 holds every trip:
 
@@ -160,35 +187,41 @@ SELECT trips FROM trips
 SELECT bucket, trips FROM trips
  WHERE bucket >= $1 AND bucket < $2
  GROUP BY bucket
+
+-- Tips by dropoff borough
+SELECT borough, trips, tips, avg_distance, fare FROM dropoffs
+ WHERE bucket >= $1 AND bucket < $2
+ GROUP BY borough
 ```
 
 ## Transactions
 
 Straum holds a transaction until its commit and applies it whole under
 its write lock, so its rows wait in memory and every ask waits for the
-apply. `bench/taxi.py transactions` updates the fare of the first N trips in
-one transaction while a client asks for one day of hour buckets as fast
+apply. `bench/taxi.py transactions` updates the fare of the first N trips,
+which both views follow, in one transaction while a client asks for one
+day of hour buckets as fast
 as the answers come. It measures three things: the time from the commit
 until Straum has applied it, the longest ask meanwhile, which is the
 lock hold as a client feels it, and how much Straum's resident set grew.
 One run on 2026-11-13, the machine, build and PostgreSQL of the
-[Results](#results); Straum held 365 MiB after the load and an idle ask
-took 136 µs:
+[Results](#results); Straum held 467 MiB after the load and an idle ask
+took 180 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
-| 1,000 | 310.9 ms | 1.0 ms | 1 MiB |
-| 10,000 | 251.3 ms | 9.4 ms | 3 MiB |
-| 100,000 | 635.1 ms | 90.5 ms | 0 MiB |
-| 1,000,000 | 4.8 s | 908.8 ms | 144 MiB |
+| 1,000 | 335.0 ms | 3.2 ms | 0 MiB |
+| 10,000 | 273.4 ms | 27.8 ms | 6 MiB |
+| 100,000 | 941.0 ms | 273.4 ms | 55 MiB |
+| 1,000,000 | 8.7 s | 2,859.4 ms | 390 MiB |
 
 Most of the time goes to PostgreSQL decoding the transaction and Straum
-reading it, outside the lock; the lock itself is held for about 0.9 ms
+reading it, outside the lock; the lock itself is held for about 2.9 ms
 per 1,000 rows. Memory is what grows: the rows of a transaction wait in
-Straum until its commit, about 150 bytes each, so a million-row
-transaction holds two fifths of the whole taxi view. That sets the
+Straum until its commit, about 400 bytes each, so a million-row
+transaction holds nearly as much as both views. That sets the
 default of `--max-transaction-rows` at 100,000: a transaction at the limit
-holds the lock for 90 ms, and anything larger is cheaper to
+holds the lock for 273 ms, and anything larger is cheaper to
 [start over](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 

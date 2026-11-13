@@ -175,6 +175,18 @@ ASKS = [
             GROUP BY bucket""",
         ONE_DAY,
     ),
+    (
+        "Tips by dropoff borough",
+        """SELECT z.borough, count(*), sum(t.tip_amount), avg(t.trip_distance),
+                  sum(t.fare_amount)
+             FROM yellow_trips t
+             LEFT JOIN taxi_zones z ON z.location_id = t.do_location_id
+            GROUP BY z.borough""",
+        """SELECT borough, trips, tips, avg_distance, fare FROM dropoffs
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY borough""",
+        ALL_TIME,
+    ),
 ]
 
 SIZES = [1_000, 10_000, 100_000, 1_000_000]

@@ -13,3 +13,15 @@ SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
 FROM public.yellow_trips AS trips
 LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
 GROUP BY 1, 2, 3, 4;
+
+CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
+SELECT date_bin('1 hour', dropoffs.pickup_at, timestamptz 'epoch') AS bucket,
+       dropoffs.do_location_id AS do_location_id,
+       dropoff.borough AS borough,
+       count(*) AS trips,
+       sum(dropoffs.tip_amount) AS tips,
+       avg(dropoffs.trip_distance) AS avg_distance,
+       sum(dropoffs.fare_amount) AS fare
+FROM public.yellow_trips AS dropoffs
+LEFT OUTER JOIN public.taxi_zones AS dropoff ON dropoff.location_id = dropoffs.do_location_id
+GROUP BY 1, 2, 3;
