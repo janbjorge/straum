@@ -96,27 +96,10 @@ cells: 1,157,581 in `trips` and 713,457 in `dropoffs`.
 
 ## The views
 
-`bench/trips.sql` opens with the [quick start](quick-start.md)'s view, what a
-dashboard over these trips would declare: trips, fares and the average
-fare per hour, payment type and pickup zone, with day and week buckets
-for long ranges.
-
-```sql
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
-       trips.payment_type AS payment_type,
-       trips.pu_location_id AS pu_location_id,
-       pickup.borough AS borough,
-       count(*) AS trips,
-       sum(trips.fare_amount) AS fare,
-       avg(trips.fare_amount) AS avg_fare
-FROM public.yellow_trips AS trips
-LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
-GROUP BY 1, 2, 3, 4;
-```
-
-`dropoffs` is the other end of the same trips: tips, the average
-distance and fares per hour and dropoff zone.
+`bench/trips.sql` opens with the [quick start's
+view](quick-start.md#2-write-a-spec), `trips`: what a dashboard over
+these trips would declare. `dropoffs` is the other end of the same
+trips: tips, the average distance and fares per hour and dropoff zone.
 
 ```sql
 CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
@@ -182,38 +165,12 @@ SELECT z.borough, count(*), sum(t.tip_amount), avg(t.trip_distance),
 ```
 
 Straum gets the same asks over the views, with every value a
-parameter. Where the SQL has no range, the ask's is 2000 to 2030, which
-holds every trip:
+parameter; `bench/taxi.py` holds both. Where the SQL has no range, the
+ask's is 2000 to 2030, which holds every trip:
 
 ```sql
--- Trips
-SELECT trips FROM trips WHERE bucket >= $1 AND bucket < $2
-
--- Card trips
-SELECT trips FROM trips
- WHERE payment_type = $1 AND bucket >= $2 AND bucket < $3
-
 -- Trips by pickup borough
 SELECT borough, trips FROM trips
- WHERE bucket >= $1 AND bucket < $2
- GROUP BY borough
-
--- Fares by payment type
-SELECT payment_type, trips, fare, avg_fare FROM trips
- WHERE bucket >= $1 AND bucket < $2
- GROUP BY payment_type
-
--- Manhattan pickups, one week
-SELECT trips FROM trips
- WHERE borough = $1 AND bucket >= $2 AND bucket < $3
-
--- Trips per hour, one day
-SELECT bucket, trips FROM trips
- WHERE bucket >= $1 AND bucket < $2
- GROUP BY bucket
-
--- Tips by dropoff borough
-SELECT borough, trips, tips, avg_distance, fare FROM dropoffs
  WHERE bucket >= $1 AND bucket < $2
  GROUP BY borough
 ```
