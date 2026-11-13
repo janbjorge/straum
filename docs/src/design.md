@@ -24,19 +24,28 @@ Four participants:
 
 ## Architecture
 
-Six crates, dependencies inward only, enforced by
+Eight crates, dependencies inward only, enforced by
 `scripts/check-layers.py`.
 
-![The six crates and their dependencies, inward only](diagrams/crates.svg)
+![The eight crates and their dependencies, inward only](diagrams/crates.svg)
 
-*The binary depends on the three adapters, the adapters on the
-use cases, everything on the domain. An arrow is "depends on".*
+*The `straum` binary depends on the four adapters, the adapters on
+the use cases, everything on the domain. `straum-parquet`, a second
+binary, depends on `straum-feed`. An arrow is "depends on".*
 
 - `straum-domain` has no dependencies and no I/O. Everything an ask
   or a change needs is a plain struct, enum or function.
 - `straum-app` holds the use cases and the two ports. `Source` is the
   one trait PostgreSQL sits behind; `Spill` is where sealed buckets
   go. No adapter for `Spill` ships; the binary passes `None`.
+- `Source` has two adapters. `straum-pg` is PostgreSQL. `straum-feed`
+  is a [feed](feed.md): a Unix socket a feeder connects to, which
+  carries loads and no commits (`Feed`, ADR-0045). It holds both ends
+  of the frames, so a feeder in Rust depends on it (`Feeder`) and on
+  nothing of Straum's inside.
+- `straum-parquet` is a feeder and a composition root of its own: a
+  manifest, the Parquet reader and the zone rules, none of which the
+  `straum` binary links.
 - The adapters never meet: `straum-http` is handed a query reader by
   the binary (`ReadAsk` in `straum-http`), so HTTP never knows Straum
   SQL.
@@ -59,8 +68,9 @@ apps post asks to `straum-http`, which reads the store through the app.
 
 Run Straum is `run` in the binary: read the spec and the DSN, bind the
 listener, make an **App** with an empty **Store** and the **Limits**,
-make a **Writer** over a **Postgres** source, spawn the writer thread,
-serve HTTP until a signal. A panic aborts the process (the hook `run`
+make a **Writer** over a **Postgres** source, or over a **Feed** with
+`--feed` and no DSN, spawn the writer thread, serve HTTP until a
+signal. A panic aborts the process (the hook `run`
 sets), since the store may be half written. Start over is
 `Writer::step` and `run_writer`: the failure is recorded and
 **Following** removed, so asks answer 503; the thread sleeps the

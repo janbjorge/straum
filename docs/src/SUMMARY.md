@@ -9,6 +9,7 @@
 - [Asking](asks.md)
 - [Setting up PostgreSQL](postgresql.md)
 - [Running Straum](running.md)
+- [Feeding from Parquet](feed.md)
 - [Benchmark](benchmark.md)
 
 # Contributing

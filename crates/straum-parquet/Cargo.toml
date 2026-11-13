@@ -1,0 +1,21 @@
+[package]
+name = "straum-parquet"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Reads Parquet files, which std lacks: the format, its encodings and its
+# compression. Without arrow; snap and zstd are the codecs the TLC writes.
+parquet = { version = "60.1.0", default-features = false, features = ["snap", "zstd"] }
+# Time zone rules, which std lacks: a Parquet timestamp may be a wall
+# clock, and a timestamptz is an instant. The rules are built in, so a
+# file reads the same on every machine.
+jiff = { version = "0.2.41", default-features = false, features = ["std", "tzdb-bundle-always"] }
+straum-domain = { path = "../straum-domain" }
+straum-feed = { path = "../straum-feed" }
+
+[dev-dependencies]
+straum-app = { path = "../straum-app" }
+straum-notation = { path = "../straum-notation" }

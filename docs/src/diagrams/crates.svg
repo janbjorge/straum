@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="600" viewBox="0 0 880 600" role="img" aria-labelledby="t d">
   <title id="t">Crates depend inward only</title>
-  <desc id="d">Six crates: the straum binary on top depends on three adapters, straum-notation, straum-pg and straum-http; the adapters depend on straum-app, which holds the use cases and the ports Source and Spill; everything depends on straum-domain, which has no I/O and no dependencies.</desc>
+  <desc id="d">Eight crates: the straum binary on top depends on four adapters, straum-notation, straum-pg, straum-http and straum-feed; a second binary, straum-parquet, depends on straum-feed; the adapters depend on straum-app, which holds the use cases and the ports Source and Spill; everything depends on straum-domain, which has no I/O and no dependencies.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -89,22 +89,30 @@
   <rect class="canvas" x="0.5" y="0.5" width="879" height="599" rx="10"/>
   <text x="32" y="42" class="title">Crates depend inward only</text>
   <text x="32" y="64" class="sub muted">An arrow is “depends on”. scripts/check-layers.py refuses any other edge.</text>
-  <rect class="box" x="290" y="92" width="300" height="66" rx="8"/>
-  <text x="302" y="114" class="h">straum</text>
-  <text x="302" y="132" class="s ink2">the binary, the composition root</text>
-  <text x="302" y="148" class="s ink2">run · plan · status · the writer thread</text>
-  <rect class="box" x="40" y="220" width="240" height="86" rx="8"/>
-  <text x="52" y="242" class="h">straum-notation</text>
-  <text x="52" y="260" class="s ink2">Straum SQL text into Spec and Ask</text>
-  <text x="52" y="276" class="s ink2">walks the sqlparser AST</text>
-  <rect class="box" x="320" y="220" width="240" height="86" rx="8"/>
-  <text x="332" y="242" class="h">straum-pg</text>
-  <text x="332" y="260" class="s ink2">Source adapter: temporary slot,</text>
-  <text x="332" y="276" class="s ink2">binary COPY, pgoutput, WAL readings</text>
-  <rect class="box" x="600" y="220" width="240" height="86" rx="8"/>
-  <text x="612" y="242" class="h">straum-http</text>
-  <text x="612" y="260" class="s ink2">POST /ask, /livez, /readyz, /status</text>
-  <text x="612" y="276" class="s ink2">tokio and hyper, the only async</text>
+  <rect class="box" x="150" y="92" width="320" height="66" rx="8"/>
+  <text x="162" y="114" class="h">straum</text>
+  <text x="162" y="132" class="s ink2">the binary, the composition root</text>
+  <text x="162" y="148" class="s ink2">run · plan · status · the writer thread</text>
+  <rect class="box" x="600" y="92" width="256" height="66" rx="8"/>
+  <text x="612" y="114" class="h">straum-parquet</text>
+  <text x="612" y="132" class="s ink2">a second binary, a feeder:</text>
+  <text x="612" y="148" class="s ink2">Parquet files and their manifest</text>
+  <rect class="box" x="24" y="220" width="196" height="86" rx="8"/>
+  <text x="36" y="242" class="h">straum-notation</text>
+  <text x="36" y="260" class="s ink2">Straum SQL into Spec and Ask</text>
+  <text x="36" y="276" class="s ink2">walks the sqlparser AST</text>
+  <rect class="box" x="236" y="220" width="196" height="86" rx="8"/>
+  <text x="248" y="242" class="h">straum-pg</text>
+  <text x="248" y="260" class="s ink2">Source: temporary slot,</text>
+  <text x="248" y="276" class="s ink2">binary COPY, pgoutput, WAL</text>
+  <rect class="box" x="448" y="220" width="196" height="86" rx="8"/>
+  <text x="460" y="242" class="h">straum-http</text>
+  <text x="460" y="260" class="s ink2">POST /ask, /readyz, /status</text>
+  <text x="460" y="276" class="s ink2">tokio and hyper, only async</text>
+  <rect class="box" x="660" y="220" width="196" height="86" rx="8"/>
+  <text x="672" y="242" class="h">straum-feed</text>
+  <text x="672" y="260" class="s ink2">Source: a Unix socket and</text>
+  <text x="672" y="276" class="s ink2">its frames, both ends</text>
   <rect class="accbox" x="320" y="370" width="240" height="86" rx="8"/>
   <text x="332" y="392" class="h acc">straum-app</text>
   <text x="332" y="410" class="s ink2">App, Writer, Status, Lag</text>
@@ -113,18 +121,24 @@
   <text x="302" y="532" class="h">straum-domain</text>
   <text x="302" y="550" class="s ink2">Spec, Ask, Store, Rollup, Projection,</text>
   <text x="302" y="566" class="s ink2">Sealed, Answer; no I/O, no dependencies</text>
-  <path class="a" d="M380 158 L160 216" marker-end="url(#m)"/>
-  <path class="a" d="M440 158 L440 216" marker-end="url(#m)"/>
-  <path class="a" d="M500 158 L720 216" marker-end="url(#m)"/>
-  <path class="a-acc" d="M440 306 L440 366" marker-end="url(#m-acc)"/>
-  <text x="450" y="340" class="s acc" text-anchor="start">Source</text>
-  <path class="a-acc" d="M720 306 L560 396" marker-end="url(#m-acc)"/>
-  <text x="650" y="344" class="s acc" text-anchor="start">App</text>
+  <path class="a" d="M230 158 L122 216" marker-end="url(#m)"/>
+  <path class="a" d="M310 158 L334 216" marker-end="url(#m)"/>
+  <path class="a" d="M390 158 L546 216" marker-end="url(#m)"/>
+  <path class="a" d="M450 158 L700 216" marker-end="url(#m)"/>
+  <path class="a" d="M760 158 L790 216" marker-end="url(#m)"/>
+  <path class="a-acc" d="M334 306 L400 366" marker-end="url(#m-acc)"/>
+  <text x="318" y="344" class="s acc" text-anchor="end">Source</text>
+  <path class="a-acc" d="M546 306 L500 366" marker-end="url(#m-acc)"/>
+  <text x="534" y="344" class="s acc" text-anchor="start">App</text>
+  <path class="a-acc" d="M758 306 L564 398" marker-end="url(#m-acc)"/>
+  <text x="690" y="358" class="s acc" text-anchor="start">Source</text>
   <path class="a" d="M440 456 L440 506" marker-end="url(#m)"/>
-  <path class="a" d="M160 306 L160 543 L286 543" marker-end="url(#m)"/>
-  <text x="172" y="420" class="s ink2" text-anchor="start">Spec, Ask</text>
+  <path class="a" d="M122 306 L122 543 L286 543" marker-end="url(#m)"/>
+  <text x="134" y="420" class="s ink2" text-anchor="start">Spec, Ask</text>
   <text x="600" y="420" class="s muted" text-anchor="start">straum-http never sees Straum SQL:</text>
   <text x="600" y="436" class="s muted" text-anchor="start">the binary hands it a query reader.</text>
-  <text x="600" y="452" class="s muted" text-anchor="start">The binary also depends on app and</text>
-  <text x="600" y="468" class="s muted" text-anchor="start">domain directly; those edges are left out.</text>
+  <text x="600" y="452" class="s muted" text-anchor="start">straum-parquet meets Straum only over</text>
+  <text x="600" y="468" class="s muted" text-anchor="start">the feed. Edges from a binary or an</text>
+  <text x="600" y="484" class="s muted" text-anchor="start">adapter straight to app or domain are</text>
+  <text x="600" y="500" class="s muted" text-anchor="start">left out.</text>
 </svg>
