@@ -14,6 +14,7 @@ mod sealed;
 mod spec;
 mod store;
 mod value;
+mod value_counts;
 
 pub use aggregate::{Aggregate, Reads};
 pub use ask::{Ask, AskError, AskKey, TimeKey};

@@ -11,6 +11,7 @@ use crate::ident::Identifier;
 use crate::sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
+use crate::value_counts::ValueCounts;
 
 const TIME: usize = 0;
 
@@ -1068,8 +1069,10 @@ impl State {
                     && values.iter().all(ascending)
                     && values.iter().flatten().all(|(_, n)| counted(n)) =>
             {
-                let counts: Vec<ValueCounts> =
-                    values.into_iter().map(ValueCounts::from_pairs).collect();
+                let counts: Vec<ValueCounts> = values
+                    .iter()
+                    .map(|pairs| ValueCounts::from_pairs(pairs))
+                    .collect();
                 let (mins, maxs) = counts.iter().map(ValueCounts::ends).unzip();
                 Some(State::Extent { mins, maxs, counts })
             }
@@ -1127,7 +1130,9 @@ impl State {
                 if !counts[i].sub(v, 1) {
                     return Err(RowError::Missing);
                 }
-                (mins[i], maxs[i]) = counts[i].ends();
+                if v == mins[i] || v == maxs[i] {
+                    (mins[i], maxs[i]) = counts[i].ends();
+                }
             }
             (State::Distinct(counts), v) => {
                 let tree = &mut counts[i];
@@ -1271,160 +1276,6 @@ impl State {
             }
             _ => unreachable!("Cells::release checks the column kinds"),
         }
-    }
-}
-
-/// Most values a cell keeps in one run. Adding a value moves half the
-/// run on average, 8 KiB of it at this many.
-const SORTED_MAX: usize = 1024;
-
-/// One cell's count per value. Most cells hold a single value, kept here
-/// without allocating: a tree per cell was half of a load. A cell of a few
-/// values keeps them in one run, ascending, at 16 bytes a value, half of
-/// what a tree's nodes cost. A run moves to take a new value, so one that
-/// outgrows [`SORTED_MAX`] becomes a tree.
-#[derive(Debug)]
-pub(crate) enum ValueCounts {
-    One(i64, u64),
-    Sorted(Vec<(i64, u64)>),
-    Tree(BTreeMap<i64, u64>),
-}
-
-impl ValueCounts {
-    const EMPTY: ValueCounts = ValueCounts::Sorted(Vec::new());
-
-    /// Counts `n` more of `v`, `n` above zero.
-    fn add(&mut self, v: i64, n: u64) {
-        match self {
-            ValueCounts::One(w, c) if *w == v => *c += n,
-            ValueCounts::One(w, c) => {
-                let (held, new) = ((*w, *c), (v, n));
-                *self = ValueCounts::Sorted(vec![held.min(new), held.max(new)]);
-            }
-            ValueCounts::Sorted(pairs) if pairs.is_empty() => *self = ValueCounts::One(v, n),
-            ValueCounts::Sorted(pairs) => match pairs.binary_search_by_key(&v, |&(w, _)| w) {
-                Ok(at) => pairs[at].1 += n,
-                Err(_) if pairs.len() == SORTED_MAX => {
-                    let mut tree: BTreeMap<i64, u64> = mem::take(pairs).into_iter().collect();
-                    tree.insert(v, n);
-                    *self = ValueCounts::Tree(tree);
-                }
-                Err(at) => {
-                    // A `Vec` doubles when full, which would leave a run
-                    // half empty.
-                    if pairs.len() == pairs.capacity() {
-                        pairs.reserve_exact(1 + pairs.len() / 8);
-                    }
-                    pairs.insert(at, (v, n));
-                }
-            },
-            ValueCounts::Tree(tree) => *tree.entry(v).or_default() += n,
-        }
-    }
-
-    /// Takes `n` of `v` back out. False, with nothing taken, when fewer
-    /// are held.
-    fn sub(&mut self, v: i64, n: u64) -> bool {
-        if !self.has(v, n) {
-            return false;
-        }
-        let emptied = match self {
-            ValueCounts::One(_, c) => {
-                *c -= n;
-                *c == 0
-            }
-            ValueCounts::Sorted(pairs) => {
-                let at = (pairs.binary_search_by_key(&v, |&(w, _)| w)).expect("has it");
-                pairs[at].1 -= n;
-                if pairs[at].1 == 0 {
-                    pairs.remove(at);
-                    if pairs.len() <= pairs.capacity() / 2 {
-                        pairs.shrink_to_fit();
-                    }
-                }
-                pairs.is_empty()
-            }
-            ValueCounts::Tree(tree) => {
-                let count = tree.get_mut(&v).expect("has it");
-                *count -= n;
-                if *count == 0 {
-                    tree.remove(&v);
-                }
-                tree.is_empty()
-            }
-        };
-        if emptied {
-            *self = ValueCounts::EMPTY;
-        }
-        true
-    }
-
-    fn add_counts(&mut self, other: &ValueCounts) {
-        for (v, n) in other.iter() {
-            self.add(v, n);
-        }
-    }
-
-    /// Takes out what [`ValueCounts::covers`] found held.
-    fn sub_counts(&mut self, other: &ValueCounts) {
-        for (v, n) in other.iter() {
-            let held = self.sub(v, n);
-            assert!(held, "covers checked");
-        }
-    }
-
-    fn covers(&self, other: &ValueCounts) -> bool {
-        other.iter().all(|(v, n)| self.has(v, n))
-    }
-
-    fn has(&self, v: i64, n: u64) -> bool {
-        match self {
-            ValueCounts::One(w, c) => *w == v && *c >= n,
-            ValueCounts::Sorted(pairs) => {
-                (pairs.binary_search_by_key(&v, |&(w, _)| w)).is_ok_and(|at| pairs[at].1 >= n)
-            }
-            ValueCounts::Tree(tree) => tree.get(&v).is_some_and(|c| *c >= n),
-        }
-    }
-
-    /// Each value and its count, ascending by value.
-    fn iter(&self) -> impl Iterator<Item = (i64, u64)> + '_ {
-        let (one, sorted, tree) = match self {
-            ValueCounts::One(v, n) => (Some((*v, *n)), None, None),
-            ValueCounts::Sorted(pairs) => (None, Some(pairs), None),
-            ValueCounts::Tree(tree) => (None, None, Some(tree)),
-        };
-        (one.into_iter())
-            .chain(sorted.into_iter().flatten().copied())
-            .chain(tree.into_iter().flatten().map(|(&v, &n)| (v, n)))
-    }
-
-    /// `pairs` ascend by value, each counted once at least.
-    fn from_pairs(mut pairs: Vec<(i64, u64)>) -> ValueCounts {
-        match pairs[..] {
-            [(v, n)] => ValueCounts::One(v, n),
-            _ if pairs.len() <= SORTED_MAX => {
-                pairs.shrink_to_fit();
-                ValueCounts::Sorted(pairs)
-            }
-            _ => ValueCounts::Tree(pairs.into_iter().collect()),
-        }
-    }
-
-    /// The least and greatest value, `i64::MAX` and `i64::MIN` if none.
-    fn ends(&self) -> (i64, i64) {
-        let (least, greatest) = match self {
-            ValueCounts::One(v, _) => (Some(*v), Some(*v)),
-            ValueCounts::Sorted(pairs) => (
-                pairs.first().map(|&(v, _)| v),
-                pairs.last().map(|&(v, _)| v),
-            ),
-            ValueCounts::Tree(tree) => (
-                tree.first_key_value().map(|(&v, _)| v),
-                tree.last_key_value().map(|(&v, _)| v),
-            ),
-        };
-        (least.unwrap_or(i64::MAX), greatest.unwrap_or(i64::MIN))
     }
 }
 

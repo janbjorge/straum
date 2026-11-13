@@ -303,18 +303,23 @@ fn a_join_on_a_by_key_keeps_one_set_of_cells() {
     assert!(joined - plain < 16 << 10, "{joined} bytes against {plain}");
 }
 
-/// A min or max keeps a cell's values in one run: 16 bytes a value, and
-/// an eighth of that to grow into. A tree's nodes cost twice that or
-/// more, and so does a run left to double.
+/// A min or max keeps a cell's values in the cell itself while they are
+/// few, and more of them in a run of as many bytes as they need: one or
+/// two each for tips this close, and an eighth of the run to grow into. A
+/// run left to double would be half as long again, a pair of integers a
+/// value is 16 bytes, and a tree's nodes twice that or more.
 #[test]
 fn a_min_or_max_costs_a_cell_a_run_of_its_values() {
     const CELLS: i64 = 2_000;
     let one = held(|| store_of(spec(&[]), CELLS, 1));
-    for tips in [4, 40] {
+    for (tips, most) in [(4, 0), (40, 180), (520, 260)] {
         let several = held(|| store_of(spec(&[]), CELLS, tips));
-        let a_value = (several - one) / (CELLS * tips) as isize;
-        eprintln!("{tips} tips a cell: {a_value} bytes a value");
-        assert!(a_value <= 18, "{tips} tips a cell: {a_value} bytes a value");
+        let a_value = (several - one) * 100 / (CELLS * tips) as isize;
+        eprintln!("{tips} tips a cell: {a_value} hundredths of a byte a value");
+        assert!(
+            a_value <= most,
+            "{tips} tips a cell: {a_value} hundredths of a byte a value"
+        );
     }
 }
 

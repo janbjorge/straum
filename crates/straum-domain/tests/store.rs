@@ -1842,11 +1842,11 @@ fn removing_an_extreme_reveals_the_next() {
     assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
 }
 
-/// One cell through every form its count per value takes: a single value,
-/// a run of them, and past what a run holds a tree, then back down as the
-/// rows leave. All the way the min and max of every width are the
-/// reference's: in the bound cells, and with the bucket sealed in the
-/// keyed cells and the thawed bucket.
+/// One cell through every form its count per value takes: a few values in
+/// the cell itself, a run of them, and past what a run holds several, then
+/// back down as the rows leave. All the way the min and max of every width
+/// are the reference's: in the bound cells, and with the bucket sealed in
+/// the keyed cells and the thawed bucket.
 #[test]
 fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
     const VALUES: i64 = 3_000;
@@ -1920,7 +1920,7 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
             row[TIP] = Datum::Int(tip);
             store.add_row("trips", &row).unwrap();
             *held.entry(tip).or_default() += 1;
-            // One value, a few, a run nearly full, and a tree.
+            // One value, a few, a run more than half full, and several.
             if [0, 3, 900, tips.len() - 1].contains(&n) {
                 through_a_seal(&mut store, &held);
             } else if n % 97 == 0 {
@@ -1939,7 +1939,7 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
             if *count == 0 {
                 held.remove(&tip);
             }
-            // A tree thinned, one down to a few values, and the last.
+            // Runs thinned, one down to a few values, and the last.
             let left = tips.len() - 1 - n;
             if [2_000, 3, 1].contains(&left) {
                 through_a_seal(&mut store, &held);
@@ -1952,10 +1952,10 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
 }
 
 /// A row whose tip its cell doesn't hold was never added, whichever form
-/// the cell's count per value has: one value, a run or a tree.
+/// the cell's count per value has: in the cell, a run or several.
 #[test]
 fn a_tip_its_cell_lacks_is_missing() {
-    for values in [1, 5, 2_000] {
+    for values in [1, 5, 300, 3_000] {
         let mut store = typed(&spec());
         let mut row = trip(&mut Rng(7));
         row[AT] = Datum::Int(START);

@@ -95,8 +95,11 @@ Two things follow that a spec's author can see:
 
 - **Memory.** The first three rows cost a few numbers a cell. `min`,
   `max` and `count(DISTINCT c)` cost by the distinct values in each
-  cell. A `count(DISTINCT c)` over a column with many values holds
-  every one of them.
+  cell. A `min` or `max` keeps a value in as few bytes as its cell's
+  values need: `max(fare_amount)` per hour and dropoff zone keeps
+  14,943,826 fares of the [taxi trips](benchmark.md) in 76 MiB. A
+  `count(DISTINCT c)` over a column with many values holds every one
+  of them.
 - **Rows counted twice.** A join whose dim holds a key twice counts the
   fact row twice ([Joining a dim](spec.md#joining-a-dim)). `count` and
   `sum` double,

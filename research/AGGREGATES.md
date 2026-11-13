@@ -182,8 +182,9 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
   a count per value, so it is not fixed size: in Gray's terms Straum
   stores them as holistic to make them delete-safe. Memory follows
   distinct values per cell (ADR-0016's open question for count
-  distinct). `ValueCounts` keeps the common single-value cell in
-  place, a few values in one sorted run, and only many in a tree.
+  distinct). `ValueCounts` keeps each value in as many bytes as its
+  cell's values need: a few values in the cell itself, more in one
+  sorted run, and only many in several (ADR-0043).
 - **An ask merges cheaper than it stores.** min and max read the two
   ends mirrored beside the counts, so a merge is one comparison a cell.
   Count distinct has no such mirror: a merge unions the value sets, so
