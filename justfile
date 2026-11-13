@@ -33,22 +33,12 @@ docs:
 docs-build:
     mdbook build docs
 
-# straum shell on the taxi trips in a throwaway PostgreSQL
-[group('run')]
-try:
-    bench/bench.py shell
+# Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
+[group('taxi')]
+taxi mode="asks":
+    bench/taxi.py {{mode}}
 
-# Taxi trips benchmark, Straum against PostgreSQL
-[group('bench')]
-bench *args:
-    bench/bench.py {{args}}
-
-# Cost of one large transaction
-[group('bench')]
-bench-transaction:
-    bench/transaction.py
-
-# taxi.sql view against PostgreSQL (needs bench data)
-[group('bench')]
+# taxi.sql view against PostgreSQL (needs the taxi data)
+[group('taxi')]
 taxi-month:
     cargo test -p straum-pg --release taxi_month -- --ignored --nocapture

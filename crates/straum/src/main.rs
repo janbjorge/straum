@@ -142,7 +142,7 @@ const LIMITS: Limits = Limits {
     max_retained_wal: 4 << 30,
 };
 /// Rows one transaction may change before Straum loads again instead of
-/// applying it; `bench/transaction.py` measures what a transaction this
+/// applying it; `bench/taxi.py transactions` measures what a transaction this
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
 

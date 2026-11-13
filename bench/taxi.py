@@ -9,15 +9,25 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Straum against PostgreSQL 18 on six months of New York taxi trips.
+"""Straum and PostgreSQL 18 on six months of New York taxi trips.
 
-Each ask goes to both: to PostgreSQL as the SQL anyone would write over the
-raw tables, and to `straum run` on bench/trips.sql as JSON over HTTP. The
-answers must be equal. Then each side is timed from this one client, over
-its own protocol, with a warm cache. The table goes to stdout.
+Every mode loads the trips into a throwaway PostgreSQL and starts
+`straum run` on bench/trips.sql. Then:
 
-`bench/bench.py shell` sets up the same and then, in place of the asks,
-leaves you in `straum shell` at the trips.
+asks: each ask goes to PostgreSQL as the SQL anyone would write over the raw
+tables and to Straum as JSON over HTTP. The answers must be equal. Then each
+side is timed from this one client, over its own protocol, with a warm
+cache. The table goes to stdout.
+
+transactions: Straum holds a transaction until its commit and applies it
+whole under its write lock, so every ask waits for it, and the rows wait in
+memory. This changes N rows in one transaction for several N while asking
+Straum back to back, and reports the time from the commit until Straum had
+applied it, the longest ask meanwhile, which is the lock hold as a client
+feels it, and how much Straum's resident set grew. --max-transaction-rows
+takes its default from this table.
+
+shell: leaves you in `straum shell` at the trips.
 
 Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 """
@@ -52,6 +62,7 @@ DATA = ROOT / "bench" / "data"
 SPEC = ROOT / "bench" / "trips.sql"
 MONTHS = [f"2024-{month:02}" for month in range(1, 7)]
 TLC = "https://d37ci6vzurychx.cloudfront.net"
+NEW_YORK = {"timezone": "America/New_York"}
 
 # TLC name -> yellow_trips column. straum-pg's taxi_month test reads the CSV
 # too.
@@ -103,6 +114,7 @@ LOADERS = 8
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
 # matches SQL without one.
 ALL_TIME = ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]
+ONE_DAY = ["2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"]
 
 # Each ask as PostgreSQL SQL over the raw tables, then as a Straum SQL ask
 # over the view, whose values must be parameters.
@@ -161,9 +173,19 @@ ASKS = [
         """SELECT bucket, trips FROM trips
             WHERE bucket >= $1 AND bucket < $2
             GROUP BY bucket""",
-        ["2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"],
+        ONE_DAY,
     ),
 ]
+
+SIZES = [1_000, 10_000, 100_000, 1_000_000]
+# One day of hour buckets: the ask a dashboard refreshes.
+DASHBOARD_ASK = orjson.dumps(
+    {
+        "query": """SELECT bucket, trips FROM trips
+                     WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket""",
+        "parameters": ONE_DAY,
+    }
+)
 
 
 def main() -> int:
@@ -174,51 +196,66 @@ def main() -> int:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=["bench", "shell"],
-        default="bench",
-        help="bench: time the asks on both sides (default); "
-        "shell: open straum shell at the trips instead",
+        choices=["asks", "transactions", "shell"],
+        default="asks",
+        help="asks: time the asks on both sides (default); "
+        "transactions: what one large transaction costs Straum; "
+        "shell: open straum shell at the trips",
     )
     args = parser.parse_args()
     fetch()
     straum = build()
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
-    # Docker publishes the port on every interface while the bench runs.
+    # Docker publishes the port on every interface while this runs.
     password = secrets.token_hex(16)
     postgres = container(password)
     log("starting PostgreSQL")
     with postgres:
-        return asyncio.run(bench(postgres, straum, plan, password, args.mode))
+        return asyncio.run(run(postgres, straum, plan, password, args.mode))
 
 
-async def bench(
+async def run(
     postgres: PostgresContainer, straum: str, plan: str, password: str, mode: str
 ) -> int:
-    pg = await asyncpg.connect(
-        postgres.get_connection_url(),
-        server_settings={"timezone": "America/New_York"},
-    )
-    await load(postgres.get_connection_url())
-    # The plan writes a statement a line, and ALTER SYSTEM can't share a
-    # query string with others.
-    for line in plan.splitlines():
-        if line and not line.startswith("--"):
-            await pg.execute(line)
-    await pg.execute(f"ALTER ROLE straum PASSWORD '{password}'")
+    url = postgres.get_connection_url()
+    await load(url)
+    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
+    try:
+        # The plan writes a statement a line, and ALTER SYSTEM can't share a
+        # query string with others.
+        for line in plan.splitlines():
+            if line and not line.startswith("--"):
+                await pg.execute(line)
+        await pg.execute(f"ALTER ROLE straum PASSWORD '{password}'")
+        host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
+        dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
+        match mode:
+            case "shell":
+                return await shell(straum, dsn)
+            case "transactions":
+                return await transactions(pg, straum, dsn)
+            case _:
+                return await asks(pg, straum, dsn)
+    finally:
+        await pg.close()
+
+
+async def shell(straum: str, dsn: str) -> int:
+    async with serve(straum, dsn) as (_, loaded, _, url):
+        log(f"straum ready in {loaded:.1f} s")
+        process = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
+        return await process.wait()
+
+
+async def asks(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
     version = (await pg.fetchval("SHOW server_version")).split()[0]
     trips, size = await pg.fetchrow(
         "SELECT count(*), pg_total_relation_size('yellow_trips') FROM yellow_trips"
     )
-    host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
-    dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
-    async with serve(straum, dsn) as (http, loaded, rss, url):
-        if mode == "shell":
-            log(f"straum ready in {loaded:.1f} s")
-            shell = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
-            return await shell.wait()
+    async with serve(straum, dsn) as (http, loaded, process, _):
+        rss = process.memory_info().rss
         log("asking")
         results = [await compare(pg, http, *each) for each in ASKS]
-    await pg.close()
 
     print(f"PostgreSQL {version}: {trips:,} trips, {size / 2**20:,.0f} MiB.")
     print(f"Straum: ready in {loaded:.1f} s, {rss / 2**20:,.0f} MiB resident.")
@@ -233,17 +270,61 @@ async def bench(
         )
         for name, rows, pg_time, straum_time in results
     ]
+    print_table(table, ["Ask", "Rows", "PostgreSQL", "Straum", "Faster"], "lrrrr")
+    return 0
+
+
+async def transactions(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
+    # The cap is out of the way: this measures what it would prevent.
+    cap = str(10 * max(SIZES))
+    async with serve(straum, dsn, "--max-transaction-rows", cap) as (
+        http,
+        loaded,
+        process,
+        _,
+    ):
+        rss = process.memory_info().rss
+        log(f"straum ready in {loaded:.1f} s; asking while idle")
+        idle = statistics.median(await ask_until(http, lambda: True, 1.0))
+        rows = []
+        for n in SIZES:
+            log(f"updating {n:,} rows in one transaction")
+            applied, stall, peak = await transaction(pg, http, process, n)
+            grew = max(0, peak - rss)
+            rows.append(
+                (
+                    f"{n:,}",
+                    duration(applied),
+                    duration(stall),
+                    f"{grew / 2**20:,.0f} MiB",
+                )
+            )
+    print(
+        f"An idle ask takes {duration(idle)}; "
+        f"Straum held {rss / 2**20:,.0f} MiB after the load."
+    )
+    print()
+    headers = [
+        "Rows changed",
+        "Commit to applied",
+        "Longest ask meanwhile",
+        "Memory grown",
+    ]
+    print_table(rows, headers, "rrrr")
+    return 0
+
+
+def print_table(rows: list, headers: list[str], align: str) -> None:
     # Pipe keeps the alignment colons that GitHub's format drops.
     print(
         tabulate.tabulate(
-            table,
-            headers=["Ask", "Rows", "PostgreSQL", "Straum", "Faster"],
+            rows,
+            headers=headers,
             tablefmt="pipe",
-            colalign=["left", "right", "right", "right", "right"],
+            colalign=["left" if side == "l" else "right" for side in align],
             disable_numparse=True,
         )
     )
-    return 0
 
 
 def container(password: str) -> PostgresContainer:
@@ -281,10 +362,7 @@ async def load(url: str) -> None:
     """The tables, each month's trips on a connection of its own. The CSV
     times have no offset, so each session reads them in New York time."""
     async with asyncpg.create_pool(
-        url,
-        min_size=1,
-        max_size=LOADERS,
-        server_settings={"timezone": "America/New_York"},
+        url, min_size=1, max_size=LOADERS, server_settings=NEW_YORK
     ) as pool:
         await pool.execute(SCHEMA)
         log(f"loading {len(MONTHS)} months, {LOADERS} at a time")
@@ -348,7 +426,7 @@ def build() -> str:
 @contextlib.asynccontextmanager
 async def serve(straum: str, dsn: str, *flags: str):
     """`straum run` with `flags`, once ready: a session to ask it, how long
-    it took to load, its resident set in bytes, and its URL."""
+    it took to load, its process, and its URL."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -369,8 +447,7 @@ async def serve(straum: str, dsn: str, *flags: str):
         ) as http:
             await wait_ready(server, http)
             loaded = time.perf_counter() - started
-            rss = psutil.Process(server.pid).memory_info().rss
-            yield http, loaded, rss, f"http://127.0.0.1:{port}"
+            yield http, loaded, psutil.Process(server.pid), f"http://127.0.0.1:{port}"
     finally:
         with contextlib.suppress(ProcessLookupError):
             server.terminate()
@@ -387,14 +464,14 @@ async def wait_ready(
                 if response.status == 200:
                     return
         await asyncio.sleep(0.05)
-    raise SystemExit("bench: straum did not get ready")
+    raise SystemExit("taxi: straum did not get ready")
 
 
 async def ask(http: aiohttp.ClientSession, body: bytes) -> list:
     async with http.post("/ask", data=body) as response:
         answer = orjson.loads(await response.read())
     if response.status != 200:
-        raise SystemExit(f"bench: straum answered {response.status}: {answer}")
+        raise SystemExit(f"taxi: straum answered {response.status}: {answer}")
     return answer["rows"]
 
 
@@ -411,7 +488,7 @@ async def compare(
     expected = await pg.fetch(sql)
     got = await ask(http, body)
     if Counter(map(plain, got)) != Counter(map(plain, expected)):
-        raise SystemExit(f"bench: {name}: Straum answered {got}, PostgreSQL {expected}")
+        raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
     pg_time = await median(lambda: pg.fetch(sql))
     return name, len(got), pg_time, await median(lambda: ask(http, body))
 
@@ -444,6 +521,60 @@ async def median(run) -> float:
     return statistics.median(times)
 
 
+async def ask_until(http: aiohttp.ClientSession, done, at_least: float) -> list[float]:
+    """Asks back to back until `done()` holds and `at_least` seconds have
+    passed; each ask's seconds."""
+    times = []
+    end = time.perf_counter() + at_least
+    while not done() or time.perf_counter() < end:
+        start = time.perf_counter()
+        async with http.post("/ask", data=DASHBOARD_ASK) as response:
+            await response.read()
+            if response.status != 200:
+                raise SystemExit(f"taxi: straum answered {response.status}")
+        times.append(time.perf_counter() - start)
+    return times
+
+
+async def transaction(
+    pg: asyncpg.Connection, http: aiohttp.ClientSession, process: psutil.Process, n: int
+) -> tuple[float, float, int]:
+    """Changes `n` rows in one transaction: seconds from its commit until
+    Straum had applied it, the longest ask meanwhile, and Straum's largest
+    resident set meanwhile, in bytes."""
+    before = await pg.fetchval("SELECT pg_current_wal_lsn()::text")
+    finished = False
+    asker = asyncio.create_task(ask_until(http, lambda: finished, 0))
+    peak = 0
+    await pg.execute(
+        f"UPDATE yellow_trips SET fare_amount = fare_amount + 1 WHERE id <= {n}"
+    )
+    committed = time.perf_counter()
+    # The update is the next commit after `before`, so Straum is past it
+    # once its applied position is. The rows wait in Straum meanwhile.
+    while await applied(http) <= lsn(before):
+        peak = max(peak, process.memory_info().rss)
+        await asyncio.sleep(0.002)
+    took = time.perf_counter() - committed
+    finished = True
+    return took, max(await asker), max(peak, process.memory_info().rss)
+
+
+async def applied(http: aiohttp.ClientSession) -> int:
+    async with http.get("/status") as response:
+        text = await response.text()
+    for line in text.splitlines():
+        if line.startswith("applied:"):
+            position = line.split(":", 1)[1].strip().split(",")[0]
+            return lsn(position) if "/" in position else 0
+    return 0
+
+
+def lsn(text: str) -> int:
+    high, low = text.split("/")
+    return (int(high, 16) << 32) | int(low, 16)
+
+
 def duration(seconds: float) -> str:
     if seconds >= 1e-3:
         return f"{seconds * 1e3:.1f} ms"
@@ -451,7 +582,7 @@ def duration(seconds: float) -> str:
 
 
 def log(message: str) -> None:
-    print(f"bench: {message}", file=sys.stderr, flush=True)
+    print(f"taxi: {message}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

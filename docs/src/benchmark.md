@@ -33,7 +33,7 @@ take 2,474 MiB.
 
 - Reads run with PostgreSQL's defaults, two parallel workers per query,
   except `shared_buffers`: 2 GB. The rest of the table comes from the
-  OS cache. The other settings in `bench/bench.py` only speed the load.
+  OS cache. The other settings in `bench/taxi.py` only speed the load.
   `yellow_trips` has an index on `pickup_at`, which the week and day
   asks use, and the gap is smallest there, where PostgreSQL reads least.
 - PostgreSQL's time follows the rows it reads: every trip for the first
@@ -48,10 +48,10 @@ take 2,474 MiB.
 ## Running it yourself
 
 ```sh
-bench/bench.py
+bench/taxi.py
 ```
 
-`bench/bench.py shell` sets up the same, then leaves you in
+`bench/taxi.py shell` sets up the same, then leaves you in
 [`straum shell`](running.md#straum-shell) at the trips in place of
 running the asks. Leaving the shell removes PostgreSQL.
 
@@ -65,7 +65,7 @@ tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
 the first answer that differs. A run takes about a minute once the data
 is there.
 
-`bench/transaction.py` does the same setup, then one transaction of
+`bench/taxi.py transactions` does the same setup, then one transaction of
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
 under [Transactions](#transactions).
 
@@ -165,7 +165,7 @@ SELECT bucket, trips FROM trips
 
 Straum holds a transaction until its commit and applies it whole under
 its write lock, so its rows wait in memory and every ask waits for the
-apply. `bench/transaction.py` updates the fare of the first N trips in
+apply. `bench/taxi.py transactions` updates the fare of the first N trips in
 one transaction while a client asks for one day of hour buckets as fast
 as the answers come. It measures three things: the time from the commit
 until Straum has applied it, the longest ask meanwhile, which is the
@@ -206,7 +206,7 @@ and projections included, before bound cells.
 cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It needs the data `bench/bench.py` fetches. It loads the month with
+It needs the data `bench/taxi.py` fetches. It loads the month with
 `crates/straum-notation/tests/taxi.sql`, a wider view than the
 benchmark's: 15 minute buckets with day and week widths, keyed by
 payment type, vendor, pickup zone, dropoff zone and the pickup zone's

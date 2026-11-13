@@ -18,7 +18,7 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. `bench/bench.py shell` runs Straum against
+PostgreSQL tests need Docker. `bench/taxi.py shell` runs Straum against
 a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
 Demo and try-out data is always the taxi trips, never a hand-written
 dataset.
@@ -29,7 +29,7 @@ dataset.
 
 The `justfile` wraps these commands for convenience: `just check <crate>`,
 `just cov <crate>`, `just docs` (live preview), `just docs-build`,
-`just chart`, `just try`, `just bench`, `just bench-transaction`,
+`just chart`, `just taxi [asks|transactions|shell]`,
 `just taxi-month`. Nothing depends on it; the commands here and in
 `docs/src/benchmark.md` stay the reference. Keep them in step.
 

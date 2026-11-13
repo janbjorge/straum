@@ -28,6 +28,6 @@ row.
   `/readyz` says why.
 - A load that takes longer than the WAL cap allows starts over again
   and again, which the log shows.
-- The default cap comes from `bench/transaction.py`, which measures
+- The default cap comes from `bench/taxi.py transactions`, which measures
   how long a transaction of that size holds the lock on the taxi month.
 - Per-table reload and a chunked apply are open, not planned.
