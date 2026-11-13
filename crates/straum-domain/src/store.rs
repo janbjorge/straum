@@ -378,7 +378,7 @@ impl Store {
                 if old_keys == new_keys {
                     continue;
                 }
-                let count = cells.counts()[i];
+                let count = cells.rows().get(i);
                 for key in &old_keys {
                     bound
                         .rollup
@@ -939,7 +939,7 @@ fn ask_once<'s>(
                 &measure_groups
             };
             m.partials
-                .merge(read, cells.counts(), m.state.map(|i| cells.state(i)));
+                .merge(read, cells.rows(), m.state.map(|i| cells.state(i)));
         }
     }
 }
@@ -971,7 +971,7 @@ fn ask_expanded<'s>(
                     m.partials.grow(groups.len());
                     if m.filter.iter_mut().all(|t| t.holds(rollup, cells, i, row)) {
                         let column = m.state.map(|s| cells.state(s));
-                        m.partials.merge_cell(g, i, cells.counts(), column);
+                        m.partials.merge_cell(g, i, cells.rows(), column);
                     }
                 }
             }
@@ -1130,7 +1130,7 @@ fn pour(
     add: bool,
 ) -> Result<(), RowError> {
     for i in 0..cells.len() {
-        let count = cells.counts()[i];
+        let count = cells.rows().get(i);
         for key in &bound_keys(bound, keyed, cells, i, projections, None) {
             (bound.rollup).adjust(start, key, count, cells.states(), i, add)?;
         }

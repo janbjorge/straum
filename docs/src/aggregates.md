@@ -80,8 +80,8 @@ count of false for the same reason.
 | Measure | A cell keeps | Cells merge by | A row leaves by |
 | --- | --- | --- | --- |
 | `count(*)` | its row count | adding | subtracting one |
-| `count(c)` | a count of non-null values | adding | subtracting one |
-| `sum(c)`, `avg(c)` | a sum and a count of non-null values | adding both | subtracting both |
+| `count(c)` | a count of the nulls among its rows | adding | subtracting one |
+| `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
 | `count(DISTINCT c)` | a count per value | uniting the values | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |

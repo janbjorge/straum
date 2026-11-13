@@ -1951,6 +1951,84 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
     }
 }
 
+/// A count of a column that nothing else reads: no sum, min or max is
+/// there to notice a value its cell lacks, so the count has to. It counts
+/// the nulls among a cell's rows, and tells from them both a null the
+/// cell never held and a value where it holds only nulls.
+#[test]
+fn a_count_alone_notices_a_value_its_cell_lacks() {
+    let measure = |name, aggregate| Measure {
+        name: id(name),
+        aggregate,
+        filter: vec![],
+    };
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: WIDTH },
+            wider: vec![Width { seconds: 3600 }],
+            origin: Origin::Timestamptz,
+        },
+        refs: Vec::new(),
+        by_keys: vec![col("pay")],
+        filter: vec![],
+        measures: vec![
+            measure("trips", Aggregate::Count),
+            measure("tipped", Aggregate::CountNotNull(id("tip"))),
+        ],
+    };
+    let spec = Spec::new(Vec::new(), vec![trips]).unwrap();
+    // The fact's columns: its time, its key, the column it counts.
+    let row = |pay: i64, tip: Datum| vec![Datum::Int(START), Datum::Int(pay), tip];
+    let counted = |store: &Store, keys: Vec<AskKey>| -> Vec<Vec<Value>> {
+        let ask = Ask {
+            view: id("trips"),
+            measures: vec![id("trips"), id("tipped")],
+            keys,
+            filter: Vec::new(),
+            from: START,
+            to: START + 3600,
+        };
+        let rows = store.ask(&ask).unwrap().rows;
+        rows.into_iter().map(|row| row.values).collect()
+    };
+    let pair = |trips: i128, tipped: i128| vec![Value::Int(trips), Value::Int(tipped)];
+    // What the count makes of a row that holds each of the two.
+    for (held, lacked, of_held, of_lacked) in [
+        (Datum::Null, Datum::Int(5), 0, 1),
+        (Datum::Int(5), Datum::Null, 1, 0),
+    ] {
+        let mut store = Store::new(spec.clone());
+        // Two cells, so an ask merges them into one group and into two.
+        for pay in [1, 1, 2] {
+            store.add_row("trips", &row(pay, held.clone())).unwrap();
+        }
+        store.add_row("trips", &row(2, lacked.clone())).unwrap();
+        assert_eq!(
+            counted(&store, Vec::new()),
+            [pair(4, 3 * of_held + of_lacked)]
+        );
+        assert_eq!(
+            counted(&store, vec![AskKey::Key(id("pay"))]),
+            [pair(2, 2 * of_held), pair(2, of_held + of_lacked)]
+        );
+        assert_eq!(
+            store.remove_row("trips", &row(1, lacked)),
+            Err(RowError::Missing),
+            "{held:?} held"
+        );
+        // What a cell holds leaves it. The store above missed a row, so
+        // it no longer matches its table.
+        let mut store = Store::new(spec.clone());
+        store.add_row("trips", &row(1, held.clone())).unwrap();
+        assert_eq!(store.remove_row("trips", &row(1, held)), Ok(()));
+        assert_eq!(store.cells("trips"), Some(0));
+    }
+}
+
 /// A row whose tip its cell doesn't hold was never added, whichever form
 /// the cell's count per value has: in the cell, a run or several.
 #[test]
@@ -2234,6 +2312,30 @@ fn row_errors() {
         );
     }
 
+    // A null is a value where a sum or a count reads the column, so one
+    // the cell never held is noticed too.
+    let mut full = with(FARE, Datum::Int(5));
+    (full[TIP], full[RIDER]) = (Datum::Int(3), text("ann"));
+    for pos in [FARE, TIP, RIDER] {
+        let mut store = fresh();
+        store.add_row("trips", &full).unwrap();
+        let mut other = full.clone();
+        other[pos] = Datum::Null;
+        assert_eq!(
+            store.remove_row("trips", &other),
+            Err(RowError::Missing),
+            "a null at {pos}"
+        );
+        // One it does hold leaves. A store that missed a row no longer
+        // matches its table, so this is another.
+        let mut store = fresh();
+        store.add_row("trips", &full).unwrap();
+        store.add_row("trips", &other).unwrap();
+        assert_eq!(store.remove_row("trips", &other), Ok(()), "a null at {pos}");
+        assert_eq!(store.remove_row("trips", &full), Ok(()), "{pos}");
+        assert_eq!(store.cells("trips"), Some(0), "{pos}");
+    }
+
     let mut store = fresh();
     assert_eq!(
         store.set_types("trips", &[ColumnType::Int; ROW_LEN + 1]),
@@ -2425,7 +2527,12 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         .iter()
         .position(|c| matches!(c, SealedColumn::Bools { .. }))
         .unwrap();
-    let cases: [(&str, &Change<'_>); 17] = [
+    let sum = good
+        .columns
+        .iter()
+        .position(|c| matches!(c, SealedColumn::Sum { .. }))
+        .unwrap();
+    let cases: [(&str, &Change<'_>); 19] = [
         ("unknown fact", &|s| s.id.fact = id("nope")),
         ("no such width", &|s| s.id.width = 7),
         ("no cells", &|s| s.counts.clear()),
@@ -2448,6 +2555,18 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[count] = SealedColumn::Count { counts: vec![] };
+        }),
+        // More values than the cell has rows.
+        ("columns don't fit the measures", &|s| {
+            s.columns[count] = SealedColumn::Count {
+                counts: s.counts.iter().map(|rows| rows + 1).collect(),
+            };
+        }),
+        ("columns don't fit the measures", &|s| {
+            let SealedColumn::Sum { counts, .. } = &mut s.columns[sum] else {
+                panic!("a sum");
+            };
+            counts[0] = s.counts[0] + 1;
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[bools] = SealedColumn::Bools {

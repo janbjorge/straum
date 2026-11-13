@@ -174,10 +174,11 @@ second is open to it.
 All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
 `add`, `remove`) and `aggregate.rs` (`Partials`).
 
-- **Every cell state is a count or a sum.** A non-null count; a sum
-  and a count; a count per value; counts of true and false. Each
-  merges by adding and takes a delete by subtracting. Straum has no
-  state that only merges.
+- **Every cell state is a count or a sum.** A count of nulls, which
+  the row count less gives the non-null count; a sum and that count;
+  a count per value; counts of true and false. Each merges by adding
+  and takes a delete by subtracting. Straum has no state that only
+  merges.
 - **min, max and count distinct are bought with size.** Their state is
   a count per value, so it is not fixed size: in Gray's terms Straum
   stores them as holistic to make them delete-safe. Memory follows

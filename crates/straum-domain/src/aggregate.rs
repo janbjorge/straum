@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use crate::column::Counts;
 use crate::ident::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
@@ -145,35 +146,34 @@ impl Partials {
         }
     }
 
-    pub(crate) fn merge(&mut self, groups: &[u32], cell_counts: &[u64], state: Option<&State>) {
+    /// `rows` are the cells' rows, which a count is and which a column's
+    /// nulls are taken from.
+    pub(crate) fn merge(&mut self, groups: &[u32], rows: &Counts, state: Option<&State>) {
         if let Some(&g) = groups.first()
             && groups.iter().all(|&h| h == g)
         {
-            return self.merge_into(g, cell_counts, state);
+            return self.merge_into(g, rows, state);
         }
         let cells = groups.iter().enumerate().map(|(i, &g)| lane(i, g));
         match (self, state) {
-            (Partials::Count(counts), None) => {
-                for (g, &n) in cells.zip(cell_counts) {
-                    counts[g] += n;
-                }
-            }
-            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
-                for (g, &n) in cells.zip(cell_counts) {
-                    counts[g] += n;
-                }
+            (Partials::Count(counts), None) => rows.each(groups, |i, g, n| counts[lane(i, g)] += n),
+            (Partials::Count(counts), Some(State::Count { nulls })) => {
+                rows.each(groups, |i, g, n| counts[lane(i, g)] += n);
+                nulls.each(groups, |i, g, n| counts[lane(i, g)] -= n);
             }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {
                     sums: cell_sums,
-                    counts: cell_counts,
+                    nulls,
                 }),
             ) => {
-                for (g, (&sum, &count)) in cells.zip(cell_sums.iter().zip(cell_counts)) {
-                    sums[g] += sum;
-                    counts[g] += count;
-                }
+                cell_sums.each(rows, groups, |i, g, sum, n| {
+                    let at = lane(i, g);
+                    sums[at] += sum;
+                    counts[at] += n;
+                });
+                nulls.each(groups, |i, g, n| counts[lane(i, g)] -= n);
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 for (g, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
@@ -200,10 +200,8 @@ impl Partials {
                     falses: cell_falses,
                 }),
             ) => {
-                for (g, (&t, &f)) in cells.zip(cell_trues.iter().zip(cell_falses)) {
-                    trues[g] += t;
-                    falses[g] += f;
-                }
+                cell_trues.each(groups, |i, g, n| trues[lane(i, g)] += n);
+                cell_falses.each(groups, |i, g, n| falses[lane(i, g)] += n);
             }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
@@ -211,28 +209,22 @@ impl Partials {
 
     /// One cell into one group, for a cell that counts more than once or
     /// under several groups.
-    pub(crate) fn merge_cell(
-        &mut self,
-        g: u32,
-        i: usize,
-        cell_counts: &[u64],
-        state: Option<&State>,
-    ) {
+    pub(crate) fn merge_cell(&mut self, g: u32, i: usize, rows: &Counts, state: Option<&State>) {
         let at = lane(i, g);
         match (self, state) {
-            (Partials::Count(counts), None) => counts[at] += cell_counts[i],
-            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
-                counts[at] += cell_counts[i];
+            (Partials::Count(counts), None) => counts[at] += rows.get(i),
+            (Partials::Count(counts), Some(State::Count { nulls })) => {
+                counts[at] += rows.get(i) - nulls.get(i);
             }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {
                     sums: cell_sums,
-                    counts: cell_counts,
+                    nulls,
                 }),
             ) => {
-                sums[at] += cell_sums[i];
-                counts[at] += cell_counts[i];
+                sums[at] += cell_sums.get(i);
+                counts[at] += rows.get(i) - nulls.get(i);
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = values[at].min(mins[i]);
@@ -253,8 +245,8 @@ impl Partials {
                     falses: cell_falses,
                 }),
             ) => {
-                trues[at] += cell_trues[i];
-                falses[at] += cell_falses[i];
+                trues[at] += cell_trues.get(i);
+                falses[at] += cell_falses.get(i);
             }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }
@@ -262,22 +254,22 @@ impl Partials {
 
     /// Folding in registers beats adding to one place in memory, each add
     /// waiting on the last.
-    fn merge_into(&mut self, g: u32, cell_counts: &[u64], state: Option<&State>) {
+    fn merge_into(&mut self, g: u32, rows: &Counts, state: Option<&State>) {
         let (at, g) = (lane(0, g), g as usize);
         match (self, state) {
-            (Partials::Count(counts), None) => counts[at] += cell_counts.iter().sum::<u64>(),
-            (Partials::Count(counts), Some(State::Count(cell_counts))) => {
-                counts[at] += cell_counts.iter().sum::<u64>();
+            (Partials::Count(counts), None) => counts[at] += rows.total(),
+            (Partials::Count(counts), Some(State::Count { nulls })) => {
+                counts[at] += rows.total() - nulls.total();
             }
             (
                 Partials::Sum { sums, counts, .. },
                 Some(State::Sum {
                     sums: cell_sums,
-                    counts: cell_counts,
+                    nulls,
                 }),
             ) => {
-                sums[at] += cell_sums.iter().sum::<i128>();
-                counts[at] += cell_counts.iter().sum::<u64>();
+                sums[at] += cell_sums.total();
+                counts[at] += rows.total() - nulls.total();
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = mins.iter().fold(values[at], |a, &b| a.min(b));
@@ -298,8 +290,8 @@ impl Partials {
                     falses: cell_falses,
                 }),
             ) => {
-                trues[at] += cell_trues.iter().sum::<u64>();
-                falses[at] += cell_falses.iter().sum::<u64>();
+                trues[at] += cell_trues.total();
+                falses[at] += cell_falses.total();
             }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }

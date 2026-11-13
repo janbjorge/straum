@@ -6,8 +6,10 @@
 mod aggregate;
 mod ask;
 mod codes;
+mod column;
 mod hash;
 mod ident;
+mod index;
 mod projection;
 mod rollup;
 mod sealed;

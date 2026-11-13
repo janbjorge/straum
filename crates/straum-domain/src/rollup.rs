@@ -6,8 +6,10 @@ use std::{iter, mem, panic, thread};
 
 use crate::aggregate::{Aggregate, Reads};
 use crate::codes::Codes;
+use crate::column::{Counts, Sums, grow, put};
 use crate::hash::FastMap;
 use crate::ident::Identifier;
+use crate::index::{Index, Keys};
 use crate::sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
@@ -135,7 +137,7 @@ impl Level {
         let Some((cells, i, new)) = self.cell(&row[TIME], key, inputs) else {
             return false;
         };
-        cells.counts[i] += 1;
+        cells.rows.add(i, 1);
         for (column, input) in cells.states.iter_mut().zip(inputs) {
             column.add(i, &row[input.column]);
         }
@@ -168,9 +170,9 @@ impl Level {
 #[derive(Debug)]
 pub(crate) struct Cells {
     key_len: usize,
-    index: FastMap<Box<[u32]>, usize>,
+    index: Index,
     keys: Vec<u32>,
-    counts: Vec<u64>,
+    rows: Counts,
     /// One per input, in [`Rollup`] input order.
     states: Vec<State>,
 }
@@ -179,15 +181,27 @@ impl Cells {
     fn new(key_len: usize, inputs: &[Input]) -> Cells {
         Cells {
             key_len,
-            index: FastMap::default(),
+            index: Index::default(),
             keys: Vec::new(),
-            counts: Vec::new(),
+            rows: Counts::Zero(0),
             states: inputs.iter().map(|i| State::new(i.kind)).collect(),
         }
     }
 
+    fn keys(&self) -> Keys<'_> {
+        Keys {
+            codes: &self.keys,
+            len: self.key_len,
+        }
+    }
+
+    /// The position of the cell with `key`.
+    fn find(&self, key: &[u32]) -> Option<usize> {
+        self.index.get(key, self.keys())
+    }
+
     pub(crate) fn len(&self) -> usize {
-        self.counts.len()
+        self.rows.len()
     }
 
     pub(crate) fn key(&self, i: usize) -> &[u32] {
@@ -198,8 +212,8 @@ impl Cells {
         self.keys[i * self.key_len + part]
     }
 
-    pub(crate) fn counts(&self) -> &[u64] {
-        &self.counts
+    pub(crate) fn rows(&self) -> &Counts {
+        &self.rows
     }
 
     pub(crate) fn state(&self, input: usize) -> &State {
@@ -222,7 +236,7 @@ impl Cells {
         {
             return false;
         }
-        self.counts[i] += count;
+        self.rows.add(i, count);
         for (dest, src) in self.states.iter_mut().zip(src) {
             dest.add_from(i, src, src_i);
         }
@@ -232,17 +246,18 @@ impl Cells {
     /// Takes `src`'s cell `src_i` back out of cell `i`. False when it was
     /// never there, and the cell is left as it was.
     fn release(&mut self, i: usize, count: u64, src: &[State], src_i: usize) -> bool {
-        if self.counts[i] < count || src.len() != self.states.len() {
+        let rows = self.rows.get(i);
+        if rows < count || src.len() != self.states.len() {
             return false;
         }
         if src
             .iter()
             .zip(&self.states)
-            .any(|(src, dest)| !dest.covers(i, src, src_i))
+            .any(|(src, dest)| !dest.covers((i, rows), src, (src_i, count)))
         {
             return false;
         }
-        self.counts[i] -= count;
+        self.rows.sub(i, count);
         for (dest, src) in self.states.iter_mut().zip(src) {
             dest.sub_from(i, src, src_i);
         }
@@ -250,31 +265,37 @@ impl Cells {
     }
 
     fn entry(&mut self, key: &[u32]) -> (usize, bool) {
-        if let Some(&i) = self.index.get(key) {
+        if let Some(i) = self.find(key) {
             return (i, false);
         }
         let i = self.len();
-        self.index.insert(key.into(), i);
+        grow(&mut self.keys, self.key_len);
         self.keys.extend_from_slice(key);
-        self.counts.push(0);
+        self.rows.push();
         self.states.iter_mut().for_each(State::push);
+        let keys = Keys {
+            codes: &self.keys,
+            len: self.key_len,
+        };
+        self.index.insert(i, keys);
         (i, true)
     }
 
     fn swap_remove(&mut self, i: usize) {
         let last = self.len() - 1;
         let key_len = self.key_len;
-        let key = |n: usize| n * key_len..(n + 1) * key_len;
-        self.index.remove(&self.keys[key(i)]);
+        let keys = Keys {
+            codes: &self.keys,
+            len: key_len,
+        };
+        self.index.remove(i, keys);
         if i != last {
-            *self
-                .index
-                .get_mut(&self.keys[key(last)])
-                .expect("every cell is indexed") = i;
-            self.keys.copy_within(key(last), i * key_len);
+            self.index.moved(last, i, keys);
+            self.keys
+                .copy_within(last * key_len..(last + 1) * key_len, i * key_len);
         }
         self.keys.truncate(last * key_len);
-        self.counts.swap_remove(i);
+        self.rows.swap_remove(i);
         self.states.iter_mut().for_each(|c| c.swap_remove(i));
     }
 }
@@ -312,10 +333,11 @@ impl StateKind {
 
 #[derive(Debug)]
 pub(crate) enum State {
-    /// Count of the non-null values.
-    Count(Vec<u64>),
-    /// Sum and count of the non-null values.
-    Sum { sums: Vec<i128>, counts: Vec<u64> },
+    /// The nulls among each cell's rows: its count is the rows that are
+    /// not. Most columns hold none, and then this holds nothing.
+    Count { nulls: Counts },
+    /// Each cell's sum, and the nulls among its rows as for a count.
+    Sum { sums: Sums, nulls: Counts },
     /// Count per value, so removing the min or max reveals the next one.
     /// `mins` and `maxs` mirror each cell's ends, so an ask reads them
     /// without walking a tree. An empty cell's are `i64::MAX` and
@@ -330,7 +352,7 @@ pub(crate) enum State {
     Distinct(Vec<FastMap<Datum, u64>>),
     /// Counts of true and of false, so removing the last false turns a
     /// bool_and true.
-    Bools { trues: Vec<u64>, falses: Vec<u64> },
+    Bools { trues: Counts, falses: Counts },
 }
 
 impl Rollup {
@@ -541,12 +563,13 @@ impl Rollup {
                 Some(Bucket::Hot(cells)) => cells,
                 _ => return Err(RowError::Missing),
             };
-            let i = *cells.index.get(key).ok_or(RowError::Missing)?;
+            let i = cells.find(key).ok_or(RowError::Missing)?;
+            let rows = cells.rows.get(i);
             for (column, input) in cells.states.iter_mut().zip(&self.inputs) {
-                column.remove(i, &row[input.column])?;
+                column.remove(i, rows, &row[input.column])?;
             }
-            cells.counts[i] -= 1;
-            if cells.counts[i] == 0 {
+            cells.rows.sub(i, 1);
+            if rows == 1 {
                 cells.swap_remove(i);
                 if n == 0 {
                     self.cells -= 1;
@@ -711,8 +734,10 @@ impl Rollup {
         Some(Sealed {
             id: id.clone(),
             keys: cells.keys.clone(),
-            counts: cells.counts.clone(),
-            columns: cells.states.iter().map(State::sealed).collect(),
+            counts: cells.rows.iter().collect(),
+            columns: (cells.states.iter())
+                .map(|state| state.sealed(&cells.rows))
+                .collect(),
         })
     }
 
@@ -802,14 +827,14 @@ impl Rollup {
             return Err("columns don't fit the measures");
         }
         let columns = (columns.into_iter().zip(&self.inputs))
-            .map(|(column, input)| State::thaw(column, input.kind, counts.len()))
+            .map(|(column, input)| State::thaw(column, input.kind, &counts))
             .collect::<Option<_>>()
             .ok_or("columns don't fit the measures")?;
         Ok(Cells {
             key_len,
-            index: FastMap::default(),
+            index: Index::default(),
             keys,
-            counts,
+            rows: Counts::of(&counts),
             states: columns,
         })
     }
@@ -828,11 +853,12 @@ impl Rollup {
         let Some(bucket @ Bucket::Sealed { .. }) = bucket else {
             return Err("not sealed");
         };
-        for i in 0..cells.len() {
-            let key = cells.key(i).into();
-            if cells.index.insert(key, i).is_some() {
-                return Err("a key held twice");
-            }
+        let keys = Keys {
+            codes: &cells.keys,
+            len: cells.key_len,
+        };
+        if !cells.index.fill(cells.rows.len(), keys) {
+            return Err("a key held twice");
         }
         *bucket = Bucket::Hot(cells);
         self.sealed -= 1;
@@ -942,13 +968,13 @@ fn adjust_level(
             Bucket::Hot(cells) => cells,
             Bucket::Sealed { .. } => return Err(RowError::Sealed),
         };
-        let Some(i) = cells.index.get(key).copied() else {
+        let Some(i) = cells.find(key) else {
             return Err(RowError::Missing);
         };
         if !cells.release(i, count, src, src_i) {
             return Err(RowError::Missing);
         }
-        if cells.counts[i] != 0 {
+        if cells.rows.get(i) != 0 {
             return Ok(Shift::Same);
         }
         cells.swap_remove(i);
@@ -963,10 +989,12 @@ fn adjust_level(
 impl State {
     fn new(kind: StateKind) -> State {
         match kind {
-            StateKind::Count => State::Count(Vec::new()),
+            StateKind::Count => State::Count {
+                nulls: Counts::Zero(0),
+            },
             StateKind::Sum => State::Sum {
-                sums: Vec::new(),
-                counts: Vec::new(),
+                sums: Sums::new(),
+                nulls: Counts::Zero(0),
             },
             StateKind::Extent => State::Extent {
                 mins: Vec::new(),
@@ -975,38 +1003,38 @@ impl State {
             },
             StateKind::Distinct => State::Distinct(Vec::new()),
             StateKind::Bools => State::Bools {
-                trues: Vec::new(),
-                falses: Vec::new(),
+                trues: Counts::Zero(0),
+                falses: Counts::Zero(0),
             },
         }
     }
 
     fn push(&mut self) {
         match self {
-            State::Count(counts) => counts.push(0),
-            State::Sum { sums, counts } => {
-                sums.push(0);
-                counts.push(0);
+            State::Count { nulls } => nulls.push(),
+            State::Sum { sums, nulls } => {
+                sums.push();
+                nulls.push();
             }
             State::Extent { mins, maxs, counts } => {
-                mins.push(i64::MAX);
-                maxs.push(i64::MIN);
-                counts.push(ValueCounts::EMPTY);
+                put(mins, i64::MAX);
+                put(maxs, i64::MIN);
+                put(counts, ValueCounts::EMPTY);
             }
-            State::Distinct(counts) => counts.push(FastMap::default()),
+            State::Distinct(counts) => put(counts, FastMap::default()),
             State::Bools { trues, falses } => {
-                trues.push(0);
-                falses.push(0);
+                trues.push();
+                falses.push();
             }
         }
     }
 
     fn swap_remove(&mut self, i: usize) {
         match self {
-            State::Count(counts) => drop(counts.swap_remove(i)),
-            State::Sum { sums, counts } => {
+            State::Count { nulls } => nulls.swap_remove(i),
+            State::Sum { sums, nulls } => {
                 sums.swap_remove(i);
-                counts.swap_remove(i);
+                nulls.swap_remove(i);
             }
             State::Extent { mins, maxs, counts } => {
                 mins.swap_remove(i);
@@ -1021,14 +1049,21 @@ impl State {
         }
     }
 
-    fn sealed(&self) -> SealedColumn {
+    /// The column as a spill keeps it; `rows` are the cells' rows.
+    fn sealed(&self, rows: &Counts) -> SealedColumn {
+        // A cell's values that are not null.
+        let present = |nulls: &Counts| -> Vec<u64> {
+            (rows.iter().zip(nulls.iter()))
+                .map(|(rows, nulls)| rows - nulls)
+                .collect()
+        };
         match self {
-            State::Count(counts) => SealedColumn::Count {
-                counts: counts.clone(),
+            State::Count { nulls } => SealedColumn::Count {
+                counts: present(nulls),
             },
-            State::Sum { sums, counts } => SealedColumn::Sum {
-                sums: sums.clone(),
-                counts: counts.clone(),
+            State::Sum { sums, nulls } => SealedColumn::Sum {
+                sums: sums.iter().collect(),
+                counts: present(nulls),
             },
             State::Extent { counts, .. } => SealedColumn::Extent {
                 values: counts.iter().map(|c| c.iter().collect()).collect(),
@@ -1044,25 +1079,37 @@ impl State {
                     .collect(),
             },
             State::Bools { trues, falses } => SealedColumn::Bools {
-                trues: trues.clone(),
-                falses: falses.clone(),
+                trues: trues.iter().collect(),
+                falses: falses.iter().collect(),
             },
         }
     }
 
-    /// `None` unless the column is of `kind`, `len` long, and counts each
-    /// value it holds at least once, an extent's values ascending.
-    fn thaw(column: SealedColumn, kind: StateKind, len: usize) -> Option<State> {
+    /// `None` unless the column is of `kind`, holds an entry for each of
+    /// the cells `rows` counts and no more values than a cell has rows,
+    /// and counts each value it holds at least once, an extent's values
+    /// ascending.
+    fn thaw(column: SealedColumn, kind: StateKind, rows: &[u64]) -> Option<State> {
+        let len = rows.len();
         let counted = |n: &u64| *n > 0;
         let ascending = |pairs: &Vec<(i64, u64)>| pairs.is_sorted_by(|a, b| a.0 < b.0);
+        // The nulls among each cell's rows, from its values that are not.
+        let nulls = |counts: &[u64]| {
+            let fit = counts.len() == len && counts.iter().zip(rows).all(|(n, rows)| n <= rows);
+            fit.then(|| {
+                let nulls: Vec<u64> = rows.iter().zip(counts).map(|(rows, n)| rows - n).collect();
+                Counts::of(&nulls)
+            })
+        };
         match (column, kind) {
-            (SealedColumn::Count { counts }, StateKind::Count) if counts.len() == len => {
-                Some(State::Count(counts))
-            }
-            (SealedColumn::Sum { sums, counts }, StateKind::Sum)
-                if sums.len() == len && counts.len() == len =>
-            {
-                Some(State::Sum { sums, counts })
+            (SealedColumn::Count { counts }, StateKind::Count) => Some(State::Count {
+                nulls: nulls(&counts)?,
+            }),
+            (SealedColumn::Sum { sums, counts }, StateKind::Sum) if sums.len() == len => {
+                Some(State::Sum {
+                    sums: Sums::of(&sums),
+                    nulls: nulls(&counts)?,
+                })
             }
             (SealedColumn::Extent { values }, StateKind::Extent)
                 if values.len() == len
@@ -1089,47 +1136,51 @@ impl State {
             (SealedColumn::Bools { trues, falses }, StateKind::Bools)
                 if trues.len() == len && falses.len() == len =>
             {
-                Some(State::Bools { trues, falses })
+                Some(State::Bools {
+                    trues: Counts::of(&trues),
+                    falses: Counts::of(&falses),
+                })
             }
             _ => None,
         }
     }
 
-    /// Nulls are skipped, as in SQL.
+    /// A null is counted where a count or a sum reads the column, and
+    /// passed over elsewhere, as in SQL.
     fn add(&mut self, i: usize, value: &Datum) {
         match (self, value) {
-            (_, Datum::Null) => {}
-            (State::Count(counts), _) => counts[i] += 1,
-            (State::Sum { sums, counts }, &Datum::Int(v)) => {
-                sums[i] += i128::from(v);
-                counts[i] += 1;
-            }
+            (State::Count { nulls } | State::Sum { nulls, .. }, Datum::Null) => nulls.add(i, 1),
+            (_, Datum::Null) | (State::Count { .. }, _) => {}
+            (State::Sum { sums, .. }, &Datum::Int(v)) => sums.add(i, v.into()),
             (State::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
                 mins[i] = mins[i].min(v);
                 maxs[i] = maxs[i].max(v);
                 counts[i].add(v, 1);
             }
             (State::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += 1,
-            (State::Bools { trues, .. }, Datum::Bool(true)) => trues[i] += 1,
-            (State::Bools { falses, .. }, Datum::Bool(false)) => falses[i] += 1,
+            (State::Bools { trues, .. }, Datum::Bool(true)) => trues.add(i, 1),
+            (State::Bools { falses, .. }, Datum::Bool(false)) => falses.add(i, 1),
             _ => unreachable!("Rollup::check lets through only what a state reads"),
         }
     }
 
-    fn remove(&mut self, i: usize, value: &Datum) -> Result<(), RowError> {
+    /// `rows` are the cell's rows, the one that leaves among them.
+    fn remove(&mut self, i: usize, rows: u64, value: &Datum) -> Result<(), RowError> {
+        let held = |held: bool| held.then_some(()).ok_or(RowError::Missing);
         match (self, value) {
-            (_, Datum::Null) => {}
-            (State::Count(counts), _) => {
-                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
+            (State::Count { nulls } | State::Sum { nulls, .. }, Datum::Null) => {
+                held(nulls.get(i) > 0)?;
+                nulls.sub(i, 1);
             }
-            (State::Sum { sums, counts }, &Datum::Int(v)) => {
-                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
-                sums[i] -= i128::from(v);
+            (_, Datum::Null) => {}
+            // A value that is not null leaves only a cell that holds one.
+            (State::Count { nulls }, _) => held(nulls.get(i) < rows)?,
+            (State::Sum { sums, nulls }, &Datum::Int(v)) => {
+                held(nulls.get(i) < rows)?;
+                sums.add(i, -i128::from(v));
             }
             (State::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
-                if !counts[i].sub(v, 1) {
-                    return Err(RowError::Missing);
-                }
+                held(counts[i].sub(v, 1))?;
                 if v == mins[i] || v == maxs[i] {
                     (mins[i], maxs[i]) = counts[i].ends();
                 }
@@ -1144,7 +1195,8 @@ impl State {
             }
             (State::Bools { trues: counts, .. }, Datum::Bool(true))
             | (State::Bools { falses: counts, .. }, Datum::Bool(false)) => {
-                counts[i] = counts[i].checked_sub(1).ok_or(RowError::Missing)?;
+                held(counts.get(i) > 0)?;
+                counts.sub(i, 1);
             }
             _ => unreachable!("Rollup::check lets through only what a state reads"),
         }
@@ -1154,7 +1206,7 @@ impl State {
     fn same_kind(&self, other: &State) -> bool {
         matches!(
             (self, other),
-            (State::Count(_), State::Count(_))
+            (State::Count { .. }, State::Count { .. })
                 | (State::Sum { .. }, State::Sum { .. })
                 | (State::Extent { .. }, State::Extent { .. })
                 | (State::Distinct(_), State::Distinct(_))
@@ -1162,17 +1214,26 @@ impl State {
         )
     }
 
-    /// Whether cell `i` holds `src`'s cell `src_i`, so [`State::sub_from`]
-    /// can take it out.
-    fn covers(&self, i: usize, src: &State, src_i: usize) -> bool {
+    /// Whether a cell holds `src`'s, so [`State::sub_from`] can take it
+    /// out. Each cell is its place and its rows.
+    fn covers(
+        &self,
+        (i, rows): (usize, u64),
+        src: &State,
+        (src_i, src_rows): (usize, u64),
+    ) -> bool {
         match (self, src) {
-            (State::Count(counts), State::Count(src_counts)) => counts[i] >= src_counts[src_i],
-            (
-                State::Sum { counts, .. },
+            (State::Count { nulls }, State::Count { nulls: src_nulls })
+            | (
+                State::Sum { nulls, .. },
                 State::Sum {
-                    counts: src_counts, ..
+                    nulls: src_nulls, ..
                 },
-            ) => counts[i] >= src_counts[src_i],
+            ) => {
+                // As many nulls, and as many values that are not.
+                let (nulls, src_nulls) = (nulls.get(i), src_nulls.get(src_i));
+                nulls >= src_nulls && rows - nulls >= src_rows - src_nulls
+            }
             (
                 State::Extent { counts, .. },
                 State::Extent {
@@ -1187,23 +1248,25 @@ impl State {
                     trues: src_trues,
                     falses: src_falses,
                 },
-            ) => trues[i] >= src_trues[src_i] && falses[i] >= src_falses[src_i],
+            ) => trues.get(i) >= src_trues.get(src_i) && falses.get(i) >= src_falses.get(src_i),
             _ => false,
         }
     }
 
     fn add_from(&mut self, i: usize, src: &State, src_i: usize) {
         match (self, src) {
-            (State::Count(counts), State::Count(src_counts)) => counts[i] += src_counts[src_i],
+            (State::Count { nulls }, State::Count { nulls: src_nulls }) => {
+                nulls.add(i, src_nulls.get(src_i));
+            }
             (
-                State::Sum { sums, counts },
+                State::Sum { sums, nulls },
                 State::Sum {
                     sums: src_sums,
-                    counts: src_counts,
+                    nulls: src_nulls,
                 },
             ) => {
-                sums[i] += src_sums[src_i];
-                counts[i] += src_counts[src_i];
+                sums.add(i, src_sums.get(src_i));
+                nulls.add(i, src_nulls.get(src_i));
             }
             (
                 State::Extent { mins, maxs, counts },
@@ -1226,8 +1289,8 @@ impl State {
                     falses: src_falses,
                 },
             ) => {
-                trues[i] += src_trues[src_i];
-                falses[i] += src_falses[src_i];
+                trues.add(i, src_trues.get(src_i));
+                falses.add(i, src_falses.get(src_i));
             }
             _ => unreachable!("Cells::absorb checks the column kinds"),
         }
@@ -1235,16 +1298,18 @@ impl State {
 
     fn sub_from(&mut self, i: usize, src: &State, src_i: usize) {
         match (self, src) {
-            (State::Count(counts), State::Count(src_counts)) => counts[i] -= src_counts[src_i],
+            (State::Count { nulls }, State::Count { nulls: src_nulls }) => {
+                nulls.sub(i, src_nulls.get(src_i));
+            }
             (
-                State::Sum { sums, counts },
+                State::Sum { sums, nulls },
                 State::Sum {
                     sums: src_sums,
-                    counts: src_counts,
+                    nulls: src_nulls,
                 },
             ) => {
-                sums[i] -= src_sums[src_i];
-                counts[i] -= src_counts[src_i];
+                sums.add(i, -src_sums.get(src_i));
+                nulls.sub(i, src_nulls.get(src_i));
             }
             (
                 State::Extent { mins, maxs, counts },
@@ -1271,8 +1336,8 @@ impl State {
                     falses: src_falses,
                 },
             ) => {
-                trues[i] -= src_trues[src_i];
-                falses[i] -= src_falses[src_i];
+                trues.sub(i, src_trues.get(src_i));
+                falses.sub(i, src_falses.get(src_i));
             }
             _ => unreachable!("Cells::release checks the column kinds"),
         }
@@ -1315,3 +1380,52 @@ impl fmt::Display for RowError {
 }
 
 impl std::error::Error for RowError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cell gives back only a cell it holds: as many rows, as many of
+    /// them null in each column a count or a sum reads, and as many not.
+    /// A store never asks for more, so this is asked here.
+    #[test]
+    fn a_cell_gives_back_only_what_it_holds() {
+        let inputs = [StateKind::Count, StateKind::Sum].map(|kind| Input { kind, column: 1 });
+        let cell = |values: &[Datum]| {
+            let mut cells = Cells::new(1, &inputs);
+            let (i, new) = cells.entry(&[7]);
+            assert!(new && i == 0);
+            for value in values {
+                cells.rows.add(i, 1);
+                cells.states.iter_mut().for_each(|s| s.add(i, value));
+            }
+            cells
+        };
+        let held = [Datum::Int(4), Datum::Int(9), Datum::Null];
+        let rows = |cells: &Cells| (cells.rows.get(0), cells.states[0].sealed(&cells.rows));
+        for (others, gives) in [
+            // More nulls than the one it holds, and more values than two.
+            (&[Datum::Null, Datum::Null][..], false),
+            (&[Datum::Int(4), Datum::Int(9), Datum::Int(1)], false),
+            (&[Datum::Int(4), Datum::Null, Datum::Null], false),
+            (&[Datum::Int(9), Datum::Null], true),
+            (&[Datum::Int(4)], true),
+            (&held, true),
+        ] {
+            let mut cells = cell(&held);
+            let other = cell(others);
+            let before = rows(&cells);
+            let count = others.len() as u64;
+            assert_eq!(
+                cells.release(0, count, &other.states, 0),
+                gives,
+                "{others:?}"
+            );
+            let left = if gives { 3 - count } else { 3 };
+            assert_eq!(cells.rows.get(0), left, "{others:?}");
+            // What it gave it takes in again, and is as it was either way.
+            assert!(!gives || cells.absorb(0, count, &other.states, 0));
+            assert_eq!(rows(&cells), before, "{others:?}");
+        }
+    }
+}

@@ -11,6 +11,7 @@ const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 
 pub(crate) type FastMap<K, V> = HashMap<K, V, Seeded>;
 
+#[derive(Debug)]
 pub(crate) struct Seeded(u64);
 
 impl Default for Seeded {
@@ -47,6 +48,10 @@ impl Hasher for Folded {
     }
 
     fn write_u8(&mut self, n: u8) {
+        self.write_u64(n.into());
+    }
+
+    fn write_u32(&mut self, n: u32) {
         self.write_u64(n.into());
     }
 

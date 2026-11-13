@@ -1,8 +1,8 @@
 //! What an ask costs: it allocates per group, never per cell, reads only
 //! the cells of the buckets in its range, and stays within a time per cell.
-//! What a store holds: one set of cells for a join on a key, and a few
-//! bytes a value for a min or max. And what sealing saves: the heap a
-//! sealed bucket's cells held.
+//! What a store holds: one set of cells for a join on a key, the bytes a
+//! cell's numbers need and no more, and a few bytes a value for a min or
+//! max. And what sealing saves: the heap a sealed bucket's cells held.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -301,6 +301,19 @@ fn a_join_on_a_by_key_keeps_one_set_of_cells() {
     let joined = held(|| store_of(spec_of(&[24], true), 20_000, 4));
     eprintln!("{plain} bytes without the join, {joined} with it");
     assert!(joined - plain < 16 << 10, "{joined} bytes against {plain}");
+}
+
+/// A cell costs the bytes its numbers need and a slot to find it by: here
+/// two keys of four bytes, a row count of one, a sum of four, a min and a
+/// max of eight each with their values' 32, and four for the slot, with an
+/// eighth more to grow into. A count and a sum at their widest, a count
+/// beside every sum and a map from keys made it twice that.
+#[test]
+fn a_cell_costs_the_bytes_its_numbers_need() {
+    const CELLS: i64 = 80_000;
+    let a_cell = held(|| store_of(spec(&[]), CELLS, 1)) / CELLS as isize;
+    eprintln!("{a_cell} bytes a cell");
+    assert!(a_cell <= 80, "{a_cell} bytes a cell");
 }
 
 /// A min or max keeps a cell's values in the cell itself while they are

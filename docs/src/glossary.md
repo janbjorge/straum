@@ -132,10 +132,11 @@ are open.
 - **Cell**: one distinct combination of the rollup key and bucket,
   holding its row count and one state per input column. `Cells` is
   every cell of one bucket, side by side.
-- **Cell state** (`State`, `StateKind`): a count of non-null values,
-  a sum and a count, a count per value for min and max (the code's
-  "extent"), a count per distinct value, or the counts of true and
-  false (ADR-0041). Filtered measures keep no state (ADR-0016).
+- **Cell state** (`State`, `StateKind`): a count of the nulls among
+  a cell's rows, a sum and that count, a count per value for min and
+  max (the code's "extent"), a count per distinct value, or the
+  counts of true and false (ADR-0041). Filtered measures keep no
+  state (ADR-0016).
 - **Merge**: what an ask does with the cells it reads: one answer per
   group from their cell states. Every cell state merges.
 - **Distributive**, **algebraic**, **holistic**: what a part must keep

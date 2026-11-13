@@ -28,7 +28,7 @@ disk, and PostgreSQL remains authoritative. It needs PostgreSQL 17+ and
 logical replication, but no extension or superuser.
 
 On six months of NYC taxi trips, 20 million rows, it answered seven
-aggregate queries in 126-326 µs versus 17-1,708 ms for PostgreSQL over
+aggregate queries in 125-324 µs versus 28-1,751 ms for PostgreSQL over
 the raw tables. The
 repo has the runnable Docker example and benchmark details.
 
