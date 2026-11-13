@@ -87,8 +87,8 @@ buckets: Straum never answers for part of a bucket.
   Straum's wall time when it last confirmed that it had applied all WAL
   PostgreSQL had written, so it keeps moving on a quiet database. A
   transaction is applied whole, so an answer never sees half of one.
-  An answer can predate a client's commit. Retry until it contains the
-  change if the client needs to see its own write.
+  An answer can predate a client's commit ([Seeing your own
+  write](#seeing-your-own-write)).
 - `rows`: one object per group, keyed by the names in `SELECT`, sorted by
   key, nulls first. An ask without keys answers one row even when
   nothing matches, as SQL does without `GROUP BY`: counts are 0, the
@@ -110,24 +110,10 @@ measures beyond `total` is the network and the client itself.
 ### As a table
 
 An ask sent with `Accept: text/plain` is answered in plain text, for
-people: the same rows as a table, then the row count and `as_of`.
-[`straum ask`](running.md#straum-ask) sends one from the command line.
-
-```text
-bucket               | borough  | trips | fare
----------------------+----------+-------+--------
-2024-01-17T13:00:00Z | Brooklyn |    63 | 1875.70
-2024-01-17T13:00:00Z | Queens   |    41 | 1429.90
-2024-01-17T14:00:00Z | Brooklyn |    51 | 1728.30
-2024-01-17T14:00:00Z | Queens   |    62 | 2589.80
-2024-01-17T15:00:00Z | Brooklyn |    38 | 1177.90
-2024-01-17T15:00:00Z | Queens   |    75 | 3118.70
-6 rows, as of 2026-11-13T07:58:12.818010833Z
-```
-
-Its errors are plain text too, a line each, under the same statuses,
-and `Server-Timing` says `text` where it said `json`. The layout is
-for reading and may change; a program reads the JSON.
+people: the same rows as a table, then the row count and `as_of`, as
+[`straum ask`](running.md#straum-ask) prints it. Its errors are plain
+text too, a line each, under the same statuses. The layout is for
+reading and may change; a program reads the JSON.
 
 ### Seeing your own write
 

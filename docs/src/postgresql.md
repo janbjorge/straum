@@ -56,8 +56,7 @@ superuser. The setup lives in the catalog and survives restarts.
 - `--publication NAME` names the publication; give `straum run` the same
   name.
 - Dims are published and get `REPLICA IDENTITY FULL` like facts, since
-  Straum holds and follows them. A dim needs no index on its key: a key
-  may match any number of rows, as in PostgreSQL.
+  Straum holds and follows them.
 
 ## 3. Connect
 

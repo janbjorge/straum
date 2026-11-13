@@ -102,7 +102,8 @@ lookup, where an output name it may read as an input column.
 
 A key column is an integer type, `numeric(p, s)`, `boolean` or `text`,
 or an [enum written `::text`](#enum-columns). Fewer keys, or keys with
-fewer values, mean fewer cells ([Memory](#memory)).
+fewer values, mean fewer cells, and memory follows cells
+([Cells](how-it-works.md#cells)).
 
 ## Time
 
@@ -128,15 +129,14 @@ date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket
   answered. Any other value Straum can't read, such as a `NaN`, stops
   the load or the stream with the table and column named.
 
-`WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width Straum
-keeps, narrowest first, and the first must be the `date_bin` width, so the whole list is in one
-place while the body stays what PostgreSQL runs. Each wider width is a
-whole multiple of the one before and starts at the epoch, so `7 days`
-buckets start on Thursdays. Answers don't change. An ask over a long
-range reads its middle from the widest buckets that fit and its ends
-from narrower ones, so it reads far fewer cells; both are drawn under [How Straum
-works](how-it-works.md#answering-an-ask). Aggregate values stay the same;
-only which cells an ask reads changes. Each width costs memory ([Memory](#memory)).
+`WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width
+Straum keeps, narrowest first, and the first must be the `date_bin`
+width. Each wider width is a whole multiple of the one before and
+starts at the epoch, so `7 days` buckets start on Thursdays. An ask
+over a long range reads its middle from the widest buckets that fit
+and its ends from narrower ones, so it reads far fewer cells, as drawn
+under [How Straum works](how-it-works.md#answering-an-ask). Answers
+stay the same, and each width costs memory.
 
 ## Joining a dim
 
@@ -147,14 +147,10 @@ LEFT OUTER JOIN public.taxi_zones AS dropoff ON dropoff.location_id = trips.do_l
 
 A join points from a column of the fact, or of a dim already joined, to
 the key of a dim. The dim columns the view selects, here
-`pickup.borough AS borough`, are keys like any other. Straum keys each
-cell by the join column, `pu_location_id`, and holds the dim projected
-to its key and the columns the views read, kept current from the stream;
-an ask reads `borough` through the cell's `pu_location_id` as the zone
-rows are now. For a view whose joins all read fact columns, one of them
-a column the view does not select as a key, Straum also keeps bound
-cells keyed by the dim columns themselves, which answer asks without
-the lookup.
+`pickup.borough AS borough`, are keys like any other, read as the dim
+is now: a zone moved from Queens to Airports moves every trip from it
+to Airports in the next answer, as PostgreSQL's view would, and
+nothing starts over ([Dims](how-it-works.md#dims)).
 
 - `INNER JOIN` keeps a fact row only while a dim row matches it;
   `LEFT OUTER JOIN` keeps every fact row, with null dim columns while
@@ -184,19 +180,13 @@ the lookup.
 - A join must select at least one dim column. The fact column joined on,
   `trips.pu_location_id`, may be selected too or left out; either way it
   keys the cells, so a view with a join has one cell per distinct join
-  id, bucket and other keys ([Memory](#memory)).
+  id, bucket and other keys, and a dim with many rows means many
+  cells.
 - Two joins can point at one dim table, each reading its own columns,
   as `pickup` and `dropoff` do above. A dim table is one dim however
   many views join it, and all must join it on the same key columns.
 - The join itself has no value: asks group and filter by `borough` or
   `pu_location_id`, never by `pickup`.
-
-Dim columns are as of now. The setup publishes the dims too, and a
-change to a zone row is one entry in Straum's projection of
-`taxi_zones`: a zone moved from Queens to Airports moves every trip
-from it to Airports in the next answer, as PostgreSQL's view would.
-Nothing starts over and no cell moves, since cells are keyed by
-`pu_location_id`, not by the borough.
 
 ## Semi and anti joins
 
@@ -303,13 +293,3 @@ trips.sql: view trips: width of 420s does not divide a day
 
 `straum run` checks the tables themselves, such as a missing column or a
 wrong type, [when it starts](postgresql.md#what-straum-checks-at-start).
-
-## Memory
-
-Memory follows cells: one per distinct combination of keys, join
-columns and bucket, per width, plus one entry per dim row for the
-columns the views read. Fewer keys, keys with fewer values and wider
-buckets mean fewer cells; a join to a dim with many rows means many
-cells, one per distinct join-column value in the fact. [How Straum
-works](how-it-works.md#cells) has the formula and the
-[benchmark](benchmark.md#memory) what real tables measured.
