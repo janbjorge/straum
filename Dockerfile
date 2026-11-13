@@ -2,7 +2,7 @@
 # nothing else: no shell, no package manager, user 65532. The Rust version
 # is the one rust-toolchain.toml pins. Images are pinned by digest; a
 # platform other than the build machine's builds under emulation.
-FROM rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS build
+FROM rust:1.100.0-alpine@sha256:de1e0058543a81ed7b046629167db587c67a94bdf37cce14eb27f0ec83baaffb AS build
 WORKDIR /src
 # The version straum prints, from git; unset, it is Cargo.toml's.
 ARG STRAUM_VERSION

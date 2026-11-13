@@ -19,7 +19,7 @@ concurrency:
 
 env:
   # As rust-toolchain.toml and the Dockerfile pin it.
-  RUST: 1.99.1
+  RUST: 1.100.0
 
 jobs:
   format:
