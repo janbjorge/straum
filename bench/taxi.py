@@ -29,7 +29,12 @@ takes its default from this table.
 
 shell: leaves you in `straum shell` at the trips.
 
-Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
+--feed takes PostgreSQL out: straum-parquet feeds Straum the TLC's Parquet
+files as downloaded. asks then times Straum alone, with nothing to check
+its answers against, and shell opens at the fed trips.
+
+Needs Docker, cargo and uv; with --feed, no Docker. Downloads go to
+bench/data, which git ignores.
 """
 
 import argparse
@@ -44,6 +49,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from collections import Counter
@@ -110,6 +116,27 @@ INDEXES = [
     "CREATE INDEX ON yellow_trips (pickup_at)",
 ]
 LOADERS = 8
+
+# What straum-parquet reads for --feed: the TLC's own files, each column
+# as the type SCHEMA gives it. The TLC's pickup time is New York's clock.
+ZONES = {
+    "LocationID": "location_id",
+    "Borough": "borough",
+    "Zone": "zone",
+    "service_zone": "service_zone",
+}
+FEED_TYPES = {
+    "location_id": "int",
+    "vendor_id": "int",
+    "pickup_at": "timestamptz",
+    "pu_location_id": "int",
+    "do_location_id": "int",
+    "payment_type": "int",
+    "fare_amount": "numeric(12,2)",
+    "tip_amount": "numeric(12,2)",
+    "trip_distance": "numeric(12,2)",
+}
+MANIFEST = DATA / "taxi.manifest"
 
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
 # matches SQL without one.
@@ -203,7 +230,8 @@ DASHBOARD_ASK = orjson.dumps(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
-        epilog="Needs Docker, cargo and uv. Downloads go to bench/data.",
+        epilog="Needs Docker, cargo and uv; with --feed, no Docker. "
+        "Downloads go to bench/data.",
     )
     parser.add_argument(
         "mode",
@@ -214,9 +242,19 @@ def main() -> int:
         "transactions: what one large transaction costs Straum; "
         "shell: open straum shell at the trips",
     )
+    parser.add_argument(
+        "--feed",
+        action="store_true",
+        help="no PostgreSQL: straum-parquet feeds Straum the Parquet files, "
+        "and asks times Straum alone",
+    )
     args = parser.parse_args()
-    fetch()
-    straum = build()
+    if args.feed and args.mode == "transactions":
+        parser.error("transactions changes rows in PostgreSQL; drop --feed")
+    fetch(args.feed)
+    straum, feeder = build(args.feed)
+    if args.feed:
+        return asyncio.run(fed(straum, feeder, args.mode))
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
     # Docker publishes the port on every interface while this runs.
     password = secrets.token_hex(16)
@@ -254,9 +292,29 @@ async def run(
 
 async def shell(straum: str, dsn: str) -> int:
     async with serve(straum, dsn) as (_, loaded, _, url):
-        log(f"straum ready in {loaded:.1f} s")
-        process = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
-        return await process.wait()
+        return await prompt(straum, loaded, url)
+
+
+async def prompt(straum: str, loaded: float, url: str) -> int:
+    log(f"straum ready in {loaded:.1f} s")
+    process = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
+    return await process.wait()
+
+
+async def fed(straum: str, feeder: str, mode: str) -> int:
+    """asks or shell with the trips fed from Parquet and no PostgreSQL."""
+    async with serve(straum, None, feeder=feeder) as (http, loaded, process, url):
+        if mode == "shell":
+            return await prompt(straum, loaded, url)
+        rss = process.memory_info().rss
+        log("asking")
+        results = [await alone(http, *each) for each in ASKS]
+    print(f"Straum, fed from Parquet: ready in {loaded:.1f} s, ", end="")
+    print(f"{rss / 2**20:,.0f} MiB resident.")
+    print()
+    table = [(name, rows, duration(seconds)) for name, rows, seconds in results]
+    print_table(table, ["Ask", "Rows", "Straum"], "lrr")
+    return 0
 
 
 async def asks(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
@@ -386,14 +444,20 @@ async def load(url: str) -> None:
         await pool.execute("VACUUM ANALYZE")
 
 
-def fetch() -> None:
+def fetch(feed: bool) -> None:
+    """The zones and the months: as CSV for PostgreSQL's COPY, or for a
+    feed the Parquet files alone, with a manifest that says how they read."""
     DATA.mkdir(exist_ok=True)
-    download(DATA / "taxi_zone_lookup.csv", f"{TLC}/misc/taxi_zone_lookup.csv")
+    zones = DATA / "taxi_zone_lookup.csv"
+    download(zones, f"{TLC}/misc/taxi_zone_lookup.csv")
     for month in MONTHS:
         csv = DATA / f"trips_{month}.csv"
+        parquet = DATA / f"yellow_tripdata_{month}.parquet"
+        if feed:
+            download(parquet, f"{TLC}/trip-data/{parquet.name}")
+            continue
         if csv.exists():
             continue
-        parquet = DATA / f"yellow_tripdata_{month}.parquet"
         download(parquet, f"{TLC}/trip-data/{parquet.name}")
         log(f"writing {csv.name}")
         table = pyarrow.parquet.read_table(parquet, columns=list(COLUMNS))
@@ -401,6 +465,43 @@ def fetch() -> None:
         part = partial(csv)
         pyarrow.csv.write_csv(table, part)
         part.rename(csv)
+
+    if feed:
+        write_feed(zones)
+
+
+def write_feed(zones: pathlib.Path) -> None:
+    """The zones as Parquet, since the TLC has them only as CSV, and the
+    manifest. Both are small and written anew, so they follow this file."""
+    text = pyarrow.string()
+    types = {name: text for name in ZONES} | {"LocationID": pyarrow.int64()}
+    table = pyarrow.csv.read_csv(
+        zones, convert_options=pyarrow.csv.ConvertOptions(column_types=types)
+    )
+    part = partial(DATA / "taxi_zones.parquet")
+    pyarrow.parquet.write_table(table, part)
+    part.rename(DATA / "taxi_zones.parquet")
+
+    def columns(names: dict[str, str]) -> list[str]:
+        return [
+            f"column {column} {FEED_TYPES.get(column, 'text')} from {name}"
+            + (" in America/New_York" if column == "pickup_at" else "")
+            for name, column in names.items()
+        ]
+
+    lines = [
+        "# Written by bench/taxi.py --feed for straum-parquet.",
+        "table public.taxi_zones",
+        "file taxi_zones.parquet",
+        *columns(ZONES),
+        "",
+        "table public.yellow_trips",
+        *(f"file yellow_tripdata_{month}.parquet" for month in MONTHS),
+        *columns(COLUMNS),
+    ]
+    part = partial(MANIFEST)
+    part.write_text("\n".join(lines) + "\n")
+    part.rename(MANIFEST)
 
 
 def download(path: pathlib.Path, url: str) -> None:
@@ -418,52 +519,92 @@ def partial(path: pathlib.Path) -> pathlib.Path:
     return path.with_name(f"{path.name}.{os.getpid()}.part")
 
 
-def build() -> str:
+def build(feed: bool) -> tuple[str, str | None]:
+    """Builds straum, and straum-parquet for a feed; where each binary
+    is."""
     log("building straum")
+    packages = ["straum", "straum-parquet"] if feed else ["straum"]
     messages = subprocess.run(
-        ["cargo", "build", "--release", "--locked", "-p", "straum"]
+        ["cargo", "build", "--release", "--locked"]
+        + [flag for package in packages for flag in ("-p", package)]
         + ["--message-format=json-render-diagnostics"],
         cwd=ROOT,
         check=True,
         stdout=subprocess.PIPE,
         text=True,
     ).stdout
-    return next(
-        message["executable"]
+    built = {
+        message["target"]["name"]: message["executable"]
         for message in map(orjson.loads, messages.splitlines())
         if message.get("executable")
-    )
+    }
+    return built["straum"], built.get("straum-parquet")
 
 
 @contextlib.asynccontextmanager
-async def serve(straum: str, dsn: str, *flags: str):
+async def serve(straum: str, dsn: str | None, *flags: str, feeder: str | None = None):
     """`straum run` with `flags`, once ready: a session to ask it, how long
-    it took to load, its process, and its URL."""
+    it took to load, its process, and its URL. It loads from PostgreSQL at
+    `dsn`, or with `feeder` from the Parquet files straum-parquet feeds
+    it."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    started = time.perf_counter()
-    server = await asyncio.create_subprocess_exec(
-        straum,
-        "run",
-        "--spec",
-        SPEC,
-        "--listen",
-        f"127.0.0.1:{port}",
-        *flags,
-        env=os.environ | {"STRAUM_DSN": dsn},
+    env = dict(os.environ)
+    with contextlib.ExitStack() as stack:
+        if feeder:
+            # Short, since a socket's path holds about a hundred bytes.
+            directory = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="straum-")
+            )
+            feed = pathlib.Path(directory) / "feed"
+            flags = (*flags, "--feed", str(feed))
+            env.pop("STRAUM_DSN", None)
+        else:
+            env["STRAUM_DSN"] = dsn
+        started = time.perf_counter()
+        server = await asyncio.create_subprocess_exec(
+            straum,
+            "run",
+            "--spec",
+            SPEC,
+            "--listen",
+            f"127.0.0.1:{port}",
+            *flags,
+            env=env,
+        )
+        try:
+            if feeder:
+                await run_feeder(server, feeder, feed)
+            async with aiohttp.ClientSession(
+                f"http://127.0.0.1:{port}",
+                headers={"Content-Type": "application/json"},
+            ) as http:
+                await wait_ready(server, http)
+                loaded = time.perf_counter() - started
+                url = f"http://127.0.0.1:{port}"
+                yield http, loaded, psutil.Process(server.pid), url
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                server.terminate()
+            await server.wait()
+
+
+async def run_feeder(
+    server: asyncio.subprocess.Process, feeder: str, feed: pathlib.Path
+) -> None:
+    """Runs straum-parquet against the feed, once Straum listens on it,
+    until Straum has every table."""
+    while not feed.exists():
+        if server.returncode is not None:
+            raise SystemExit("taxi: straum stopped before it listened on its feed")
+        await asyncio.sleep(0.01)
+    log(f"feeding {len(MONTHS)} months from Parquet")
+    process = await asyncio.create_subprocess_exec(
+        feeder, "--manifest", MANIFEST, "--feed", feed
     )
-    try:
-        async with aiohttp.ClientSession(
-            f"http://127.0.0.1:{port}", headers={"Content-Type": "application/json"}
-        ) as http:
-            await wait_ready(server, http)
-            loaded = time.perf_counter() - started
-            yield http, loaded, psutil.Process(server.pid), f"http://127.0.0.1:{port}"
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            server.terminate()
-        await server.wait()
+    if await process.wait() != 0:
+        raise SystemExit("taxi: straum-parquet failed")
 
 
 async def wait_ready(
@@ -503,6 +644,15 @@ async def compare(
         raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
     pg_time = await median(lambda: pg.fetch(sql))
     return name, len(got), pg_time, await median(lambda: ask(http, body))
+
+
+async def alone(
+    http: aiohttp.ClientSession, name: str, _sql: str, query: str, parameters: list
+) -> tuple[str, int, float]:
+    """Times an ask on Straum, with no PostgreSQL to check it against."""
+    body = orjson.dumps({"query": query, "parameters": parameters})
+    rows = await ask(http, body)
+    return name, len(rows), await median(lambda: ask(http, body))
 
 
 def plain(row) -> tuple:

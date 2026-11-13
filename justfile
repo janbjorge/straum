@@ -33,10 +33,10 @@ docs:
 docs-build:
     mdbook build docs
 
-# Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
+# Taxi trips in a throwaway PostgreSQL: asks, transactions or shell; --feed for no PostgreSQL
 [group('taxi')]
-taxi mode="asks":
-    bench/taxi.py {{mode}}
+taxi mode="asks" *flags:
+    bench/taxi.py {{mode}} {{flags}}
 
 # taxi.sql view against PostgreSQL (needs the taxi data)
 [group('taxi')]

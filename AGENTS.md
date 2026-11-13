@@ -20,8 +20,10 @@ Coverage: touched crates plus crates whose tests exercise them
 
 PostgreSQL tests need Docker. `bench/taxi.py shell` runs Straum against
 a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
-Demo and try-out data is always the taxi trips, never a hand-written
-dataset.
+With `--feed` it needs no Docker and no PostgreSQL: `straum-parquet`
+feeds Straum the trips' Parquet files, in seconds, which is the way to
+measure a change to Straum alone. Demo and try-out data is always the
+taxi trips, never a hand-written dataset.
 
 - Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
   helm, the helm-unittest plugin and kubeconform.
@@ -29,7 +31,7 @@ dataset.
 
 The `justfile` wraps these commands for convenience: `just check <crate>`,
 `just cov <crate>`, `just docs` (live preview), `just docs-build`,
-`just chart`, `just taxi [asks|transactions|shell]`,
+`just chart`, `just taxi [asks|transactions|shell] [--feed]`,
 `just taxi-month`. Nothing depends on it; the commands here and in
 `docs/src/benchmark.md` stay the reference. Keep them in step.
 

@@ -70,6 +70,30 @@ data is there.
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
 under [Transactions](#transactions).
 
+### Without PostgreSQL
+
+```sh
+bench/taxi.py --feed
+```
+
+`--feed` takes PostgreSQL out, for measuring Straum alone. It needs no
+Docker, and a C compiler for the Zstandard that `straum-parquet`
+reads. Straum starts with [`--feed`](feed.md) and `straum-parquet`
+feeds it the TLC's Parquet files as downloaded: the pickup times read
+on New York's clock, the fares rounded to `numeric(12,2)`. No trip is
+written as CSV, and nothing is copied into PostgreSQL and out again.
+The manifest it writes is `bench/data/taxi.manifest`.
+
+The asks are then timed on Straum only, with no PostgreSQL to check
+the answers against. `bench/taxi.py shell --feed` opens `straum shell`
+at the fed trips. `transactions` changes rows, which a feed does not
+carry, so it takes no `--feed`.
+
+One run on 2026-11-13, on the machine of the [Results](#results):
+Straum was ready 6.5 s after it started, where it takes 12.9 s to
+load from PostgreSQL, in a run of about 80 seconds. It held the same
+cells: 1,157,581 in `trips` and 713,457 in `dropoffs`.
+
 ## The views
 
 `bench/trips.sql` opens with the [quick start](quick-start.md)'s view, what a
