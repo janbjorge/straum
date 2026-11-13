@@ -135,8 +135,9 @@ every table again ([States](running.md#states)).
 
 ## Answering an ask
 
-After step 8 of the quick start, this ask reads card trips from the
-airports and Newark over the hour from noon in New York:
+After the quick start has [changed the
+data](quick-start.md#change-the-data), this ask reads card trips from
+the airports and Newark over the hour from noon in New York:
 
 ```sql
 SELECT borough, trips, fare FROM trips

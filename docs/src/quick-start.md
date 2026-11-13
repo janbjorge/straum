@@ -2,35 +2,23 @@
 
 Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
-and the 265 taxi zones. You need Docker and `curl`. Every other page
-uses these tables and this spec.
+and the 265 taxi zones. You need Docker and `curl`, and the download is
+50 MB. Four steps end in an answer. Every other page uses these tables
+and this spec.
 
-## 1. Pull the image
-
-```sh
-docker pull ghcr.io/janbjorge/straum
-```
-
-`latest` is the newest stable release.
-
-## 2. Get the month
+## 1. Start PostgreSQL with the trips
 
 The TLC publishes the trips as Parquet, which PostgreSQL can't read, so
-a Python container writes the columns the tables use to CSV. Each
-step is skipped when its file is already in `data/`, so a second run
-downloads nothing:
+a Python container writes the columns the tables use to CSV:
 
 ```sh
 mkdir -p data
 TLC=https://d37ci6vzurychx.cloudfront.net
-test -f data/yellow_tripdata_2024-01.parquet ||
-  curl -fL -o data/yellow_tripdata_2024-01.parquet $TLC/trip-data/yellow_tripdata_2024-01.parquet
-test -f data/taxi_zone_lookup.csv ||
-  curl -fL -o data/taxi_zone_lookup.csv $TLC/misc/taxi_zone_lookup.csv
-test -f data/trips_2024-01.csv ||
-  docker run --rm -i -v "$PWD/data:/data" python:3.13-slim sh -c '
-    pip install --quiet --disable-pip-version-check --root-user-action=ignore pyarrow &&
-    python -' <<'PY'
+curl -fL -o data/yellow_tripdata_2024-01.parquet $TLC/trip-data/yellow_tripdata_2024-01.parquet
+curl -fL -o data/taxi_zone_lookup.csv $TLC/misc/taxi_zone_lookup.csv
+docker run --rm -i -v "$PWD/data:/data" python:3.13-slim sh -c '
+  pip install --quiet --disable-pip-version-check --root-user-action=ignore pyarrow &&
+  python -' <<'PY'
 import pyarrow.csv, pyarrow.parquet
 columns = ["VendorID", "tpep_pickup_datetime", "PULocationID", "DOLocationID",
            "payment_type", "fare_amount", "tip_amount", "trip_distance"]
@@ -39,10 +27,7 @@ pyarrow.csv.write_csv(table.select(columns), "/data/trips_2024-01.csv")
 PY
 ```
 
-The download is 50 MB. `bench/taxi.py` keeps the same files in
-`bench/data/`.
-
-## 3. Start PostgreSQL and load the month
+Start PostgreSQL:
 
 ```sh
 docker network create straum
@@ -82,7 +67,7 @@ SQL
 The TLC's times are New York wall clock, hence the time zone. Money
 and distance are `numeric`, so sums are exact.
 
-## 4. Write a spec
+## 2. Write a spec
 
 Save as `trips.sql`:
 
@@ -106,7 +91,7 @@ in memory. `WITH (buckets = ...)` lists every bucket width it keeps:
 the hour of the `date_bin`, then days and weeks for long ranges.
 [Writing a spec](spec.md) explains each line.
 
-## 5. Set up PostgreSQL
+## 3. Set up PostgreSQL and run Straum
 
 Straum connects as the user in `STRAUM_DSN`. `straum plan` reads it too,
 and prints the SQL that makes that role with that password, lets it read
@@ -119,9 +104,7 @@ docker run --rm -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
 ```
 
 This container has no TLS, hence `sslmode=disable`. Otherwise Straum
-always connects with TLS.
-
-## 6. Run straum
+always connects with TLS. Then run it:
 
 ```sh
 docker run --rm --name straum --network straum -p 8080:8080 \
@@ -136,7 +119,7 @@ straum: loaded every table; streaming from 0/1933EF18
 
 The load takes about a second.
 
-## 7. Ask
+## 4. Ask
 
 In another terminal, ask for trips and fares by pickup borough on
 Wednesday 17 January, New York time:
@@ -164,17 +147,15 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer, and every ask says
-which buckets it reads. [Asking](asks.md) explains the query, the
+Every commit made before `as_of` is in the answer, and every value in
+an ask is a parameter. [Asking](asks.md) explains the query, the
 parameters and the answer.
 
-## 8. Change the data
+## Change the data
 
-Straum follows commits asynchronously, so the first answer after a write
-can predate it. Add a card trip from Newark Airport at noon, and move
-JFK and LaGuardia, zones 132 and 138, out of Queens into a borough of
-their own, then ask for the day again. If its `as_of` predates the
-write, ask once more. Every value in an ask is a parameter:
+Add a card trip from Newark Airport at noon, and move JFK and
+LaGuardia, zones 132 and 138, out of Queens into a borough of their
+own, then ask for the day again:
 
 ```sh
 docker exec straum-pg psql -U postgres -c "
@@ -205,50 +186,18 @@ curl --json '{
 }
 ```
 
-The new trip added one to EWR. The two airports' trips of the day left
-Queens for Airports, as PostgreSQL's view would show them: Straum
-reads the borough through each trip's zone as the zones are now, so
-the update moved no cell ([How Straum works](how-it-works.md#dims)).
-Straum applies a transaction whole, and the shown `as_of` is after the
-commit.
+The new trip added one to EWR, and the two airports' trips of the day
+left Queens for Airports, as PostgreSQL's view would show them
+([Dims](how-it-works.md#dims)). Straum follows commits asynchronously,
+so if the answer's `as_of` predates the write, ask once more.
 
-## 9. Check status, then clean up
+## Look around, then clean up
 
-`straum views` shows what Straum holds of each view, with the names
-and types an ask may use; [`straum ask`](running.md#straum-ask) prints
-an answer as a table, and [`straum shell`](running.md#straum-shell) is
-a prompt for both, with Tab completion:
-
-```text
-$ docker exec straum /straum views
-view trips
-  buckets:  3600s, 86400s, 604800s
-  holds:    173660 cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
-  keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
-  measures: trips, fare, avg_fare
-
-dim public.taxi_zones
-  holds:    265 rows
-```
-
-A few trips in the month carry a wrong year, hence the range from
-2003. `straum status` shows what Straum has done; [Running
-Straum](running.md#straum-status) explains each line. `as of` is the
-same time answers carry, and it keeps moving while the tables are
-quiet:
-
-```text
-$ docker exec straum /straum status
-ready:        yes
-applied:      0/19440240, committed 2026-11-13T07:53:14.559406Z
-as of:        2026-11-13T07:55:38.289348625Z, every commit before it applied
-lag:          0.0 s, at most 30 s
-WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/19599048
-starts:       1
-failures:     0
-last failure: none
-sealed:       no spill
-```
+`docker exec -it straum /straum shell` is a prompt at the running
+Straum, with Tab completion: `\d` lists the views with the names and
+types an ask may use, and `\rows trips` prints a view's rows. [Running
+Straum](running.md#straum-shell) has the shell and the `straum status`,
+`straum views` and `straum ask` commands beside it.
 
 Stop straum with Ctrl-C and remove PostgreSQL and the network:
 
@@ -257,4 +206,18 @@ docker rm -f straum-pg
 docker network rm straum
 ```
 
-`data/` stays, so the next run starts at step 3.
+## Your own tables
+
+The same steps work on a database you have:
+
+1. Take the `GROUP BY` your app runs most and write it as a view: the
+   time column in `date_bin`, the columns it filters and groups by as
+   keys, its aggregates as measures ([Writing a spec](spec.md)).
+2. `straum plan --spec FILE` prints the setup SQL, or what is wrong
+   with the spec. A table owner runs the SQL once. PostgreSQL 17 and
+   18 also need `wal_level = logical`, which takes a restart ([Setting
+   up PostgreSQL](postgresql.md)).
+3. `straum run --spec FILE` with `STRAUM_DSN` set, then ask.
+
+Start with few keys. Memory follows cells, one per distinct
+combination of keys and bucket ([Cells](how-it-works.md#cells)).

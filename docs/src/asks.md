@@ -1,7 +1,8 @@
 # Asking
 
 An ask is a JSON object sent to `POST /ask`: a query and its parameters.
-The examples use the [quick start](quick-start.md) after step 8.
+The examples use the [quick start](quick-start.md) after its [data
+change](quick-start.md#change-the-data).
 This one asks for card trips from Brooklyn and Queens per hour, from
 8:00 to 11:00 in New York:
 
