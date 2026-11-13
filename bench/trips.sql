@@ -1,5 +1,6 @@
--- The view bench.py asks: NYC TLC yellow trips per hour, payment type and
--- pickup zone, the keys its asks group and filter by.
+-- The views bench/taxi.py asks: NYC TLC yellow trips per hour, payment
+-- type and pickup zone, and per hour and dropoff zone, the keys its asks
+-- group and filter by.
 -- Straum SQL: a PostgreSQL subset made only for Straum specs.
 
 CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS

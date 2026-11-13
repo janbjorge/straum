@@ -10,9 +10,9 @@ trips, and the 265 rows of `taxi_zone_lookup.csv`.
 
 ## Results
 
-Seven fixed asks over the benchmark's two views, each sent to PostgreSQL as SQL
-over the raw tables and to Straum as an ask over HTTP. One run on an
-Apple M2 Pro with 16 GB, on 2026-11-13: PostgreSQL 18.6 in Docker
+Seven fixed asks over the benchmark's two views, each sent to PostgreSQL
+as SQL over the raw tables and to Straum as an ask over HTTP. One run on
+an Apple M2 Pro with 16 GB, on 2026-11-13: PostgreSQL 18.6 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
 Each time is the median over at least a second, from one Python client:
 asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
@@ -63,8 +63,8 @@ Straum, starts a throwaway `postgres:18`, loads the months eight at a
 time on their own connections, runs the SQL `straum plan` prints and
 starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
 tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
-the first answer that differs. A run takes about a minute once the data
-is there.
+the first answer that differs. A run takes about two minutes once the
+data is there.
 
 `bench/taxi.py transactions` does the same setup, then one transaction of
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
@@ -198,12 +198,12 @@ SELECT borough, trips, tips, avg_distance, fare FROM dropoffs
 
 Straum holds a transaction until its commit and applies it whole under
 its write lock, so its rows wait in memory and every ask waits for the
-apply. `bench/taxi.py transactions` updates the fare of the first N trips,
-which both views follow, in one transaction while a client asks for one
-day of hour buckets as fast
-as the answers come. It measures three things: the time from the commit
-until Straum has applied it, the longest ask meanwhile, which is the
-lock hold as a client feels it, and how much Straum's resident set grew.
+apply. `bench/taxi.py transactions` updates the fare of the first N
+trips, which both views follow, in one transaction while a client asks
+for one day of hour buckets as fast as the answers come. It measures
+three things: the time from the commit until Straum has applied it, the
+longest ask meanwhile, which is the lock hold as a client feels it, and
+how much Straum's resident set grew.
 One run on 2026-11-13, the machine, build and PostgreSQL of the
 [Results](#results); Straum held 234 MiB after the load and an idle ask
 took 136 µs:

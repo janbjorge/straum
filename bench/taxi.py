@@ -117,7 +117,7 @@ ALL_TIME = ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]
 ONE_DAY = ["2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"]
 
 # Each ask as PostgreSQL SQL over the raw tables, then as a Straum SQL ask
-# over the view, whose values must be parameters.
+# over one of the views, whose values must be parameters.
 ASKS = [
     (
         "Trips",
