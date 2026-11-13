@@ -1842,6 +1842,137 @@ fn removing_an_extreme_reveals_the_next() {
     assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
 }
 
+/// One cell through every form its count per value takes: a single value,
+/// a run of them, and past what a run holds a tree, then back down as the
+/// rows leave. All the way the min and max of every width are the
+/// reference's: in the bound cells, and with the bucket sealed in the
+/// keyed cells and the thawed bucket.
+#[test]
+fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
+    const VALUES: i64 = 3_000;
+    let mut store = typed(&spec());
+    // The one bucket of each width that holds START.
+    let week = START.div_euclid(604_800) * 604_800;
+    let ranges = [
+        (START, START + i64::from(WIDTH)),
+        (START, START + 3_600),
+        (START, START + 86_400),
+        (week, week + 604_800),
+    ];
+    let mut rng = Rng(7);
+    let mut row = trip(&mut rng);
+    row[AT] = Datum::Int(START);
+    // Each value once, every third twice.
+    let mut tips: Vec<i64> = (0..VALUES)
+        .flat_map(|v| vec![v * 3 - VALUES; if v % 3 == 0 { 2 } else { 1 }])
+        .collect();
+    let mut held: BTreeMap<i64, usize> = BTreeMap::new();
+    let check = |store: &Store, held: &BTreeMap<i64, usize>, sealed: Option<&Sealed>| {
+        let end = |end: Option<(&i64, &usize)>| {
+            end.map_or(Value::Null, |(&tip, _)| Value::Int(tip.into()))
+        };
+        let rows = held.values().sum::<usize>() as i128;
+        let expected = [
+            Value::Int(rows),
+            end(held.first_key_value()),
+            end(held.last_key_value()),
+        ];
+        for (from, to) in ranges {
+            let ask = Ask {
+                view: id("trips"),
+                measures: vec![id("trips"), id("tip_min"), id("tip_max")],
+                keys: Vec::new(),
+                filter: Vec::new(),
+                from,
+                to,
+            };
+            let thawed: Vec<_> = (store.sealed_read(&ask).unwrap().iter())
+                .map(|_| store.thaw(sealed.unwrap().clone()).unwrap())
+                .collect();
+            // Only the narrowest width is sealed, so only its ask thaws.
+            let narrowest = to - from == i64::from(WIDTH);
+            assert_eq!(thawed.len(), usize::from(sealed.is_some() && narrowest));
+            assert_eq!(
+                store.ask_with(&ask, &thawed).unwrap().rows[0].values,
+                expected,
+                "{} values, {} s wide",
+                held.len(),
+                to - from
+            );
+        }
+    };
+    // Sealed, an ask reads the keyed cells: the thawed bucket at the
+    // narrowest width, the hot wider ones above it.
+    let bucket = sealed_id(i64::from(WIDTH), START);
+    let through_a_seal = |store: &mut Store, held: &BTreeMap<i64, usize>| {
+        check(store, held, None);
+        let sealed = store.sealed_copy(&bucket).unwrap();
+        store.seal(&bucket).unwrap();
+        check(store, held, Some(&sealed));
+        store.unseal(store.thaw(sealed).unwrap()).unwrap();
+        check(store, held, None);
+    };
+    for round in 0..2 {
+        for at in (1..tips.len()).rev() {
+            tips.swap(at, rng.below(at + 1));
+        }
+        for (n, &tip) in tips.iter().enumerate() {
+            row[TIP] = Datum::Int(tip);
+            store.add_row("trips", &row).unwrap();
+            *held.entry(tip).or_default() += 1;
+            // One value, a few, a run nearly full, and a tree.
+            if [0, 3, 900, tips.len() - 1].contains(&n) {
+                through_a_seal(&mut store, &held);
+            } else if n % 97 == 0 {
+                check(&store, &held, None);
+            }
+        }
+        assert_eq!(store.cells("trips"), Some(1));
+        for at in (1..tips.len()).rev() {
+            tips.swap(at, rng.below(at + 1));
+        }
+        for (n, &tip) in tips.iter().enumerate() {
+            row[TIP] = Datum::Int(tip);
+            store.remove_row("trips", &row).unwrap();
+            let count = held.get_mut(&tip).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&tip);
+            }
+            // A tree thinned, one down to a few values, and the last.
+            let left = tips.len() - 1 - n;
+            if [2_000, 3, 1].contains(&left) {
+                through_a_seal(&mut store, &held);
+            } else if n % 97 == 0 {
+                check(&store, &held, None);
+            }
+        }
+        assert_eq!(store.cells("trips"), Some(0), "round {round}");
+    }
+}
+
+/// A row whose tip its cell doesn't hold was never added, whichever form
+/// the cell's count per value has: one value, a run or a tree.
+#[test]
+fn a_tip_its_cell_lacks_is_missing() {
+    for values in [1, 5, 2_000] {
+        let mut store = typed(&spec());
+        let mut row = trip(&mut Rng(7));
+        row[AT] = Datum::Int(START);
+        for tip in 0..values {
+            row[TIP] = Datum::Int(tip);
+            store.add_row("trips", &row).unwrap();
+        }
+        assert_eq!(store.cells("trips"), Some(1));
+        row[TIP] = Datum::Int(-1);
+        assert_eq!(
+            store.remove_row("trips", &row),
+            Err(RowError::Missing),
+            "{values} values"
+        );
+    }
+}
+
 #[test]
 fn clear_drops_every_row() {
     let mut store = Store::new(spec());
@@ -2294,7 +2425,7 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         .iter()
         .position(|c| matches!(c, SealedColumn::Bools { .. }))
         .unwrap();
-    let cases: [(&str, &Change<'_>); 15] = [
+    let cases: [(&str, &Change<'_>); 17] = [
         ("unknown fact", &|s| s.id.fact = id("nope")),
         ("no such width", &|s| s.id.width = 7),
         ("no cells", &|s| s.counts.clear()),
@@ -2331,6 +2462,16 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[extent] = SealedColumn::Extent { values: vec![] };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[extent] = SealedColumn::Extent {
+                values: vec![vec![(9, 1), (4, 1)]],
+            };
+        }),
+        ("columns don't fit the measures", &|s| {
+            s.columns[extent] = SealedColumn::Extent {
+                values: vec![vec![(4, 1), (4, 1)]],
+            };
         }),
         ("columns don't fit the measures", &|s| {
             s.columns[distinct] = SealedColumn::Distinct {

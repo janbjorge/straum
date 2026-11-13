@@ -182,10 +182,10 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
   a count per value, so it is not fixed size: in Gray's terms Straum
   stores them as holistic to make them delete-safe. Memory follows
   distinct values per cell (ADR-0016's open question for count
-  distinct). `ValueCounts::One` keeps the common single-value cell
-  from costing a tree.
+  distinct). `ValueCounts` keeps the common single-value cell in
+  place, a few values in one sorted run, and only many in a tree.
 - **An ask merges cheaper than it stores.** min and max read the two
-  ends mirrored beside the tree, so a merge is one comparison a cell.
+  ends mirrored beside the counts, so a merge is one comparison a cell.
   Count distinct has no such mirror: a merge unions the value sets, so
   its ask cost follows values, not cells.
 - **The duplicate rule is idempotence.** `spec.md` says a dim key held
@@ -193,7 +193,7 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
   `count(DISTINCT)`, `bool_and` and `bool_or`. Those five are the ones
   whose merge gives the same answer when a row is merged twice.
 - **Exact median, percentile and mode fit the state min and max
-  keep.** The count per value is ordered. Merging the trees of the
+  keep.** The count per value is ordered. Merging the counts of the
   cells in range and walking to the middle gives an exact answer and
   takes a delete as min does. The costs: ask time follows distinct
   values in range, as count distinct's does, and there is no mirror to

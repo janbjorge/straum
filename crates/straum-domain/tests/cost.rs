@@ -1,7 +1,8 @@
 //! What an ask costs: it allocates per group, never per cell, reads only
 //! the cells of the buckets in its range, and stays within a time per cell.
-//! What a store holds: one set of cells for a join on a key. And what
-//! sealing saves: the heap a sealed bucket's cells held.
+//! What a store holds: one set of cells for a join on a key, and a few
+//! bytes a value for a min or max. And what sealing saves: the heap a
+//! sealed bucket's cells held.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -300,6 +301,21 @@ fn a_join_on_a_by_key_keeps_one_set_of_cells() {
     let joined = held(|| store_of(spec_of(&[24], true), 20_000, 4));
     eprintln!("{plain} bytes without the join, {joined} with it");
     assert!(joined - plain < 16 << 10, "{joined} bytes against {plain}");
+}
+
+/// A min or max keeps a cell's values in one run: 16 bytes a value, and
+/// an eighth of that to grow into. A tree's nodes cost twice that or
+/// more, and so does a run left to double.
+#[test]
+fn a_min_or_max_costs_a_cell_a_run_of_its_values() {
+    const CELLS: i64 = 2_000;
+    let one = held(|| store_of(spec(&[]), CELLS, 1));
+    for tips in [4, 40] {
+        let several = held(|| store_of(spec(&[]), CELLS, tips));
+        let a_value = (several - one) / (CELLS * tips) as isize;
+        eprintln!("{tips} tips a cell: {a_value} bytes a value");
+        assert!(a_value <= 18, "{tips} tips a cell: {a_value} bytes a value");
+    }
 }
 
 /// Sealing 90% of the hours, with their copies gone to a spill, frees
