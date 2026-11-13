@@ -122,14 +122,15 @@ width; a hot bucket is columnar cells with one state per input.*
   row under them. `Null` is code 0 in every attribute, so no row and
   a null read alike.
 - **Bound** cells are a second rollup of a fact whose joins all read
-  fact columns: keyed by the keys and the dim columns' values, so an
-  ask reads no projection. A fact row goes into both rollups; into
-  the bound one once per way its joins resolve now (`Bound::rows`). A
-  change to a dim the fact reads moves the ones whose join columns
-  name the changed key (`Store::retarget`); a dim truncate or load
-  makes them again from the keyed cells (`Store::rebuild_dim`). They
-  hold the hot buckets only: a seal takes its bucket out of them and
-  an unseal binds it back.
+  fact columns, one of them a column no key reads: keyed by the keys
+  and the dim columns' values, so they are fewer than the fact's
+  cells and an ask reads no projection. A fact row goes into both
+  rollups; into the bound one once per way its joins resolve now
+  (`Bound::rows`). A change to a dim the fact reads moves the ones
+  whose join columns name the changed key (`Store::retarget`); a dim
+  truncate or load makes them again from the keyed cells
+  (`Store::rebuild_dim`). They hold the hot buckets only: a seal
+  takes its bucket out of them and an unseal binds it back.
 
 ## Applying a commit
 
@@ -173,10 +174,11 @@ The HTTP handler in `straum-http` and `App::ask`:
    (`Rollup::cover`). A key the ask names is in the cell key or is a
    dim's column: while the view's bound cells hold, a dim column is a
    part of their key, else it is read from the dim's projection
-   through the join id in the cell key, as the dim is now. Add each
-   cell to its group, and to each measure whose filter holds; filters
-   name only parts of the cell key, so a cell counts whole or not at
-   all. Sort rows by key.
+   through the join id in the cell key, as the dim is now, and a cell
+   whose join keeps no row is passed over. Add each cell to its group,
+   and to each measure whose filter holds; filters name only parts of
+   the cell key, so a cell counts whole or not at all. Sort rows by
+   key.
 7. Answer with `as_of` from the **Lag** and the applied LSN in the
    `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
    plain text for an ask sent with `Accept: text/plain`.
@@ -320,10 +322,11 @@ makes a property test fail.
     (`Writer::forget`), cleared at every start (`Writer::start`).
 12. **Bound cells are the hot keyed cells, bound as the dims are
     now.** They exist only for a fact whose joins all read fact
-    columns (`Bound::new`). A dim change moves the ones that name its
-    key (`Store::retarget`) and a dim truncate or load makes them
-    again (`Store::rebuild_dim`). An ask whose range holds a sealed
-    `date_bin` bucket reads the keyed cells (`Store::reading`).
+    columns, one of them no key: any other fact's would be as many as
+    its keyed cells (`Bound::new`). A dim change moves the ones that
+    name its key (`Store::retarget`) and a dim truncate or load makes
+    them again (`Store::rebuild_dim`). An ask whose range holds a
+    sealed `date_bin` bucket reads the keyed cells (`Store::reading`).
 13. **Lag never understates.** Readings merge only toward older
     (`Lag::read`); `matches_every_reading_kept` checks it against a
     reference that keeps every reading.
@@ -376,7 +379,7 @@ maps each part of the model to the records that settled it.
 | Old row on every update and delete, dims too   | 0014, 0031             |
 | `Failure` and the start-over loop              | 0015                   |
 | Rollup key, cell states, levels per width, `None` bucket | 0016, 0017, 0019, 0028, 0041 |
-| Refs bound at ask time, bound cells beside     | 0030, 0038             |
+| Refs bound at ask time, bound cells beside     | 0030, 0038, 0042       |
 | Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
 | `timestamp` as wall clock, enums as labels     | 0018, 0037             |
 | tokio only in `straum-http`                    | 0008                   |

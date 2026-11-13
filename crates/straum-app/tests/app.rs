@@ -49,12 +49,11 @@ GROUP BY 1, 2, 3, 4;
 
 CREATE VIEW logins WITH (buckets = '1 day') AS
 SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
-       l.zone_id AS zone_id,
        zone.borough AS borough,
        count(*) AS logins
 FROM public.logins AS l
 LEFT OUTER JOIN public.zones AS zone ON zone.id = l.zone_id
-GROUP BY 1, 2, 3;
+GROUP BY 1, 2;
 ";
 
 /// `audit` is published but not in the spec. Only zones and trips have
@@ -256,27 +255,29 @@ fn held_says_what_the_store_holds_once_loaded() {
         name: id(name),
         column_type,
     };
-    let zoned = [
-        key("zone_id", ColumnType::Int),
-        key("borough", ColumnType::Text),
-    ];
+    // The trips join on a key of theirs, so bound cells would be as many
+    // as their cells; the logins join on a column that is no key.
     let held = Held {
         views: vec![
             HeldView {
                 name: id("trips"),
                 widths: vec![Width { seconds: 3_600 }],
                 bucket: ColumnType::Time { zoned: true },
-                keys: [&[key("kind", ColumnType::Int)], &zoned[..]].concat(),
+                keys: vec![
+                    key("kind", ColumnType::Int),
+                    key("zone_id", ColumnType::Int),
+                    key("borough", ColumnType::Text),
+                ],
                 measures: vec![id("trips"), id("fare"), id("fare_max"), id("riders")],
                 cells: 1,
-                bound_cells: Some(1),
+                bound_cells: None,
                 range: Some(0..3_600),
             },
             HeldView {
                 name: id("logins"),
                 widths: vec![Width { seconds: 86_400 }],
                 bucket: ColumnType::Time { zoned: true },
-                keys: zoned.to_vec(),
+                keys: vec![key("borough", ColumnType::Text)],
                 measures: vec![id("logins")],
                 cells: 0,
                 bound_cells: Some(0),
@@ -424,7 +425,7 @@ fn fact_change_without_the_old_row_starts_over() {
     }]);
     assert!(writer.step().is_err());
     writer.step().unwrap();
-    let by_bucket = ask("logins", &["logins"], &["bucket", "zone_id"]);
+    let by_bucket = ask("logins", &["logins"], &["bucket", "borough"]);
     assert_eq!(
         writer.app().ask(&by_bucket).unwrap().answer,
         reference_answer(&db.borrow(), &by_bucket)
@@ -1393,7 +1394,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
             &["kind", "zone_id", "borough"],
         )
     } else {
-        ("logins", &["logins"], &["zone_id", "borough"])
+        ("logins", &["logins"], &["borough"])
     };
     let mut chosen: Vec<&str> = measures
         .iter()
@@ -1444,7 +1445,7 @@ struct Seen {
 /// waiting on the writer.
 fn check_aside(app: &App) -> usize {
     for fact in ["trips", "logins"] {
-        let ask = ask(fact, &[fact], &["zone_id"]);
+        let ask = ask(fact, &[fact], &["borough"]);
         assert_eq!(aside(app, ask), Err(AnswerError::NotReady), "{fact}");
     }
     2

@@ -142,7 +142,7 @@ holds, from its `GET /views`.
 $ straum views
 view trips
   buckets:  3600s, 86400s, 604800s
-  holds:    173660 cells and 173660 bound cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
+  holds:    173660 cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
   keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
   measures: trips, fare, avg_fare
 
@@ -152,7 +152,7 @@ dim public.taxi_zones
 
 - `buckets`: the view's bucket widths in seconds, narrowest first.
 - `holds`: the [cells](how-it-works.md#cells) at the narrowest width,
-  and the bound cells of a view that joins. Then the range of its
+  and the bound cells of a view that keeps them. Then the range of its
   buckets: the start of the first and the end of the last, which are
   the bounds an ask takes to read everything.
 - `keys`: every name an ask may group or filter by, each with the type

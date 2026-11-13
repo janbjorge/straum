@@ -132,6 +132,24 @@ fn columns_and_rollup_key() {
     assert_eq!(t.rollup_key().count(), 3);
 }
 
+/// A via column adds a part to the rollup key unless a `by` key reads the
+/// column itself; whether the column is null is another part.
+#[test]
+fn a_via_column_adds_a_part_unless_a_by_key_reads_it() {
+    let mut t = fact();
+    assert!(!t.vias_add_parts());
+    t.by_keys = vec![col("a")];
+    assert!(t.vias_add_parts());
+    t.by_keys.push(ByKey::IsNull {
+        column: id("z_id"),
+        name: id("unzoned"),
+        negated: false,
+    });
+    assert!(t.vias_add_parts());
+    t.refs.clear();
+    assert!(!t.vias_add_parts());
+}
+
 #[test]
 fn tables_once_each_dims_first() {
     let mut zones = dim();

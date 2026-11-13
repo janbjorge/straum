@@ -27,8 +27,8 @@ It is intentionally narrow: one declared view, restricted queries, no
 disk, and PostgreSQL remains authoritative. It needs PostgreSQL 17+ and
 logical replication, but no extension or superuser.
 
-On six months of NYC taxi trips, 20 million rows, it answered six
-aggregate queries in 144-349 µs versus 18-1,072 ms for PostgreSQL over
+On six months of NYC taxi trips, 20 million rows, it answered seven
+aggregate queries in 126-326 µs versus 17-1,708 ms for PostgreSQL over
 the raw tables. The
 repo has the runnable Docker example and benchmark details.
 

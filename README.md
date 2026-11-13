@@ -7,7 +7,7 @@
 Straum keeps the aggregates a spec declares as cells in memory, loaded
 from a snapshot and kept current by every commit after it, and answers
 asks about them over HTTP. On six months of New York taxi trips its asks
-answer in 144 to 349 µs where PostgreSQL takes 18 to 1,072 ms, from 362 MiB
+answer in 126 to 326 µs where PostgreSQL takes 16.9 to 1,708.2 ms, from 296 MiB
 ([benchmark](https://janbjorge.github.io/straum/benchmark.html)).
 PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 

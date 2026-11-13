@@ -8,7 +8,9 @@ use crate::ident::Identifier;
 use crate::projection::{NULL, Projection};
 use crate::rollup::{Bucket, Cells, Rollup, RowError};
 use crate::sealed::{Sealed, SealedError, SealedId, Thawed};
-use crate::spec::{Condition, Fact, Key, KeyPart, Literal, Measure, RefKind, Spec, Via, Width};
+use crate::spec::{
+    Condition, Fact, Key, KeyPart, Literal, Measure, Ref, RefKind, Spec, Via, Width,
+};
 use crate::value::{ColumnType, Datum, Value};
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
@@ -22,16 +24,19 @@ type ThawedCells<'t> = FastMap<(i64, i64), &'t Cells>;
 /// The cells of every fact, and every dim projected to its key and the
 /// columns the views read. Nothing else: a cell is keyed by the fact's
 /// join columns, and an ask reads a dim's rows through them, as the dim
-/// is now. A fact with refs keeps bound cells beside them, keyed by the
-/// dim columns themselves, which answer its asks (ADR-0038). A dim change
-/// moves the bound cells whose join columns name the changed key.
+/// is now. A fact that joins on a column no `by` key reads keeps bound
+/// cells beside them, keyed by the dim columns themselves, which are
+/// fewer and answer its asks (ADR-0038, ADR-0042). A dim change moves
+/// the bound cells whose join columns name the changed key.
 #[derive(Debug)]
 pub struct Store {
     spec: Spec,
     rollups: Vec<Rollup>,
     projections: Vec<Projection>,
     /// Per fact. None for a fact without refs, whose keyed cells are
-    /// bound already, and for one with a ref through another dim.
+    /// bound already, for one whose refs all join on `by` keys, whose
+    /// bound cells would be as many as its keyed cells, and for one with
+    /// a ref through another dim.
     bound: Vec<Option<Bound>>,
 }
 
@@ -60,7 +65,7 @@ struct BoundRef {
 
 impl Bound {
     fn new(spec: &Spec, fact: &Fact) -> Option<Bound> {
-        if fact.refs.is_empty() || !fact.is_direct() {
+        if fact.refs.is_empty() || !fact.is_direct() || !fact.vias_add_parts() {
             return None;
         }
         let columns = fact.columns();
@@ -575,9 +580,10 @@ impl Store {
     /// Every key is a part of the rollup key or a dim value reached
     /// through the parts of a ref's via columns, so the cell loop only
     /// looks up what each code maps to, once per code. A view whose joins
-    /// are all left and one row a key walks the cells once each; one with
-    /// another kind of join, or a key with several rows, walks each cell
-    /// once per row its joins find, as PostgreSQL repeats the fact row.
+    /// find one row a key at most walks the cells once each, passing over
+    /// those an inner, semi or anti join drops; one with a key of several
+    /// rows, or a join through another dim, walks each cell once per row
+    /// its joins find, as PostgreSQL repeats the fact row.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
         self.ask_with(ask, &[])
     }
@@ -631,7 +637,14 @@ impl Store {
             Read::Keyed(_) => self.expander(fact),
         };
         match expander {
-            None => ask_once(&mut each, cover(rollup, ask, &loaded)),
+            None => {
+                // The bound cells hold only what the joins keep.
+                let mut joins = match read {
+                    Read::Bound(_) => Vec::new(),
+                    Read::Keyed(_) => self.presences(fact, rollup),
+                };
+                ask_once(&mut each, &mut joins, cover(rollup, ask, &loaded));
+            }
             Some(mut expander) => {
                 ask_expanded(&mut each, cover(rollup, ask, &loaded), &mut expander)
             }
@@ -671,9 +684,10 @@ impl Store {
         if wrong.is_empty() { Ok(()) } else { Err(wrong) }
     }
 
-    /// How a cell's joins repeat it, when any can: a join not left, a key
-    /// with several rows, or a join through another dim. `None` when every
-    /// cell counts once.
+    /// How a cell's joins repeat it, when any can: a key with several rows
+    /// under a left or inner join, or a join through another dim. `None`
+    /// when every cell counts once or not at all, which
+    /// [`Store::presences`] tells apart.
     fn expander(&self, fact: &Fact) -> Option<Expander<'_>> {
         let plans: Vec<RefPlan<'_>> = (fact.refs.iter())
             .map(|r| {
@@ -699,9 +713,11 @@ impl Store {
             })
             .collect();
         let once = plans.iter().all(|p| {
-            p.kind == RefKind::Left
-                && p.projection.is_unique()
-                && p.via.iter().all(|v| matches!(v, ViaFrom::KeyPart(_)))
+            let repeats = match p.kind {
+                RefKind::Left | RefKind::Inner => !p.projection.is_unique(),
+                RefKind::Semi | RefKind::Anti => false,
+            };
+            !repeats && p.via.iter().all(|v| matches!(v, ViaFrom::KeyPart(_)))
         });
         if once {
             return None;
@@ -719,6 +735,40 @@ impl Store {
             parts,
             memo: FastMap::default(),
         })
+    }
+
+    /// The joins that keep or drop a whole cell, for a view that counts
+    /// each cell once: every ref but the left ones, which keep them all.
+    fn presences<'s>(&'s self, fact: &Fact, rollup: &Rollup) -> Vec<Presence<'s>> {
+        (fact.refs.iter())
+            .filter(|r| r.kind != RefKind::Left)
+            .map(|r| Presence {
+                joined: self.joined(fact, r, rollup),
+                keeps_found: r.kind != RefKind::Anti,
+            })
+            .collect()
+    }
+
+    /// How a cell's key finds a ref's dim rows, through the rollup-key
+    /// parts of its fact-side via columns.
+    fn joined<'s>(&'s self, fact: &Fact, r: &Ref, rollup: &Rollup) -> Joined<'s> {
+        let via: Vec<usize> = (r.via.iter())
+            .filter_map(|v| match v {
+                Via::Fact(column) => Some(key_part_of(fact, KeyPart::Column(column))),
+                Via::Attribute { .. } => None,
+            })
+            .collect();
+        let memo = match via[..] {
+            [part] => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
+            _ => Memo::Sparse(FastMap::default()),
+        };
+        Joined {
+            projection: self.projection(r.dim.as_str()),
+            via,
+            key: Vec::new(),
+            tuple: Vec::new(),
+            memo,
+        }
     }
 
     fn fact_index(&self, name: &str) -> Option<usize> {
@@ -780,16 +830,6 @@ impl Store {
             Key::ByKey(by) => Lookup::KeyPart(key_part_of(fact, by.key_part())),
             Key::Attribute(r, attr) => {
                 let dim = self.spec.dim(r.dim.as_str()).expect(CHECKED);
-                let via: Vec<usize> = (r.via.iter())
-                    .filter_map(|v| match v {
-                        Via::Fact(column) => Some(key_part_of(fact, KeyPart::Column(column))),
-                        Via::Attribute { .. } => None,
-                    })
-                    .collect();
-                let memo = match via[..] {
-                    [part] => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
-                    _ => Memo::Sparse(FastMap::default()),
-                };
                 Lookup::Attribute(AttributeLookup {
                     r: fact
                         .refs
@@ -801,11 +841,7 @@ impl Store {
                         .iter()
                         .position(|a| *a == attr.column)
                         .expect(CHECKED),
-                    projection: self.projection(r.dim.as_str()),
-                    via,
-                    key: Vec::new(),
-                    tuple: Vec::new(),
-                    memo,
+                    joined: self.joined(fact, r, rollup),
                 })
             }
         }
@@ -867,9 +903,14 @@ struct Each<'e, 's, 'a> {
     measures: &'e mut [Asked<'s, 'a>],
 }
 
-/// The cell loop for a view that counts each cell once: every join left
-/// and one row a key, none joined through another.
-fn ask_once<'s>(each: &mut Each<'_, 's, '_>, cover: impl Iterator<Item = (i64, &'s Cells)>) {
+/// The cell loop for a view that counts each cell once or not at all:
+/// one row a key at most, none joined through another dim. `joins` drop
+/// the cells an inner, semi or anti join does.
+fn ask_once<'s>(
+    each: &mut Each<'_, 's, '_>,
+    joins: &mut [Presence<'s>],
+    cover: impl Iterator<Item = (i64, &'s Cells)>,
+) {
     let rollup = each.rollup;
     // Per cell of a bucket: 1 while it may pass, then its group; 0 for
     // cells passed over. Again per measure with a filter of its own.
@@ -879,6 +920,9 @@ fn ask_once<'s>(each: &mut Each<'_, 's, '_>, cover: impl Iterator<Item = (i64, &
         each.by.iter_mut().for_each(|p| p.enter(bucket));
         cell_groups.clear();
         cell_groups.resize(cells.len(), 1);
+        for join in joins.iter_mut() {
+            join.pass(rollup, cells, &mut cell_groups);
+        }
         for t in each.filter.iter_mut() {
             t.pass(rollup, cells, &mut cell_groups);
         }
@@ -1237,9 +1281,16 @@ struct AttributeLookup<'s> {
     r: usize,
     /// Into the dim's attributes.
     attr: usize,
+    joined: Joined<'s>,
+}
+
+/// A ref's dim rows as a cell's key finds them, in a view that counts
+/// each cell once: what is read of them is worked out once per tuple of
+/// the cell's via codes.
+struct Joined<'s> {
     projection: &'s Projection,
     /// The rollup-key parts of the ref's fact-side via columns, in the
-    /// dim's key order, for a view that counts each cell once.
+    /// dim's key order.
     via: Vec<usize>,
     /// The key of one lookup, kept to spare an allocation per lookup.
     key: Vec<Datum>,
@@ -1251,17 +1302,22 @@ struct AttributeLookup<'s> {
 /// A via code not looked up yet.
 const UNKNOWN: u32 = u32::MAX;
 
-/// Attribute code per via code tuple: by the one code when the ref joins
+/// What was read per via code tuple: by the one code when the ref joins
 /// on one column, else by the tuple.
 enum Memo {
     Dense(Vec<u32>),
     Sparse(FastMap<Box<[u32]>, u32>),
 }
 
-impl AttributeLookup<'_> {
-    /// The attribute's code for the cell with `key`: the one row under the
-    /// key, or [`NULL`].
-    fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
+impl Joined<'_> {
+    /// What `read` makes of the rows under the key of the cell with
+    /// `key`, below [`UNKNOWN`].
+    fn read(
+        &mut self,
+        rollup: &Rollup,
+        key: &[u32],
+        read: impl FnOnce(&[Box<[u32]>]) -> u32,
+    ) -> u32 {
         let known = match &mut self.memo {
             Memo::Dense(codes) => &mut codes[key[self.via[0]] as usize],
             Memo::Sparse(map) => {
@@ -1281,10 +1337,41 @@ impl AttributeLookup<'_> {
                     .iter()
                     .map(|&part| rollup.value(part, key[part]).clone()),
             );
-            let found = self.projection.matches(&self.key).first();
-            *known = found.map_or(NULL, |row| row[self.attr]);
+            *known = read(self.projection.matches(&self.key));
         }
         *known
+    }
+}
+
+/// A join that keeps or drops a whole cell, in a view that counts each
+/// cell once: an inner or semi join keeps the cells whose key finds a
+/// row, an anti join the ones whose key finds none.
+struct Presence<'s> {
+    joined: Joined<'s>,
+    keeps_found: bool,
+}
+
+impl Presence<'_> {
+    /// Selects, not branches, as [`Match::pass`] does.
+    fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
+        let keeps_found = self.keeps_found;
+        for (i, g) in groups.iter_mut().enumerate() {
+            let kept = (self.joined).read(rollup, cells.key(i), |rows| {
+                u32::from(rows.is_empty() != keeps_found)
+            });
+            *g = if kept == 1 { *g } else { 0 };
+        }
+    }
+}
+
+impl AttributeLookup<'_> {
+    /// The attribute's code for the cell with `key`: the one row under the
+    /// key, or [`NULL`].
+    fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
+        let attr = self.attr;
+        (self.joined).read(rollup, key, |rows| {
+            rows.first().map_or(NULL, |row| row[attr])
+        })
     }
 
     /// The attribute's code under one way the joins resolved.
@@ -1319,7 +1406,7 @@ impl<'s> Lookup<'s> {
     {
         match self {
             Lookup::KeyPart(part) => rollup.value(*part, code),
-            Lookup::Attribute(attr) => attr.projection.attribute_value(attr.attr, code),
+            Lookup::Attribute(attr) => attr.joined.projection.attribute_value(attr.attr, code),
         }
     }
 
@@ -1327,14 +1414,14 @@ impl<'s> Lookup<'s> {
     fn bound(&self, rollup: &Rollup) -> usize {
         match self {
             Lookup::KeyPart(part) => rollup.codes(*part),
-            Lookup::Attribute(attr) => attr.projection.attribute_codes(attr.attr),
+            Lookup::Attribute(attr) => attr.joined.projection.attribute_codes(attr.attr),
         }
     }
 
     fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
             Lookup::KeyPart(part) => rollup.key_type(*part),
-            Lookup::Attribute(attr) => attr.projection.attribute_type(attr.attr),
+            Lookup::Attribute(attr) => attr.joined.projection.attribute_type(attr.attr),
         }
     }
 }

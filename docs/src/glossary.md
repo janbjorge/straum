@@ -150,8 +150,9 @@ are open.
   column once, then the bucket. The guide says "the cell key" or
   "keys, join columns and bucket".
 - **Bound cells** (`Bound`): a second rollup of a fact whose joins all
-  read fact columns, keyed by the dim columns' values, so an ask reads
-  no projection (ADR-0038).
+  read fact columns, one of them a column no key reads, keyed by the
+  dim columns' values: fewer than its cells, and an ask reads no
+  projection (ADR-0038, ADR-0042).
 - **Store** (`Store`): the rollups of every fact and the projection of
   every dim, behind one `RwLock` (ADR-0009).
 

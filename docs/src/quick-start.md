@@ -223,7 +223,7 @@ a prompt for both, with Tab completion:
 $ docker exec straum /straum views
 view trips
   buckets:  3600s, 86400s, 604800s
-  holds:    173660 cells and 173660 bound cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
+  holds:    173660 cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
   keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
   measures: trips, fare, avg_fare
 

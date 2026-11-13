@@ -1,7 +1,8 @@
 //! Every join kind, any cardinality, a join through another dim and the
 //! view's `WHERE`, each against a reference that joins the live rows
 //! to the dims as they are: hand-made cases first, then random rows, dims
-//! and changes to both, with buckets sealed under them.
+//! and changes to both, with buckets sealed under them, over each of the
+//! cells an ask may read.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -37,6 +38,8 @@ const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "buck
 const MEASURES: [&str; 8] = [
     "n", "q", "q_max", "q_min", "products", "q_n", "all_even", "any_even",
 ];
+/// A measure with a filter of its own, over a column a join reads.
+const FILTERED: &str = "q_no";
 
 fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
     Dim {
@@ -55,18 +58,34 @@ fn attr(name: &str) -> Attribute {
     }
 }
 
+/// How the orders are keyed and joined, which sets the cells an ask
+/// reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// Tiers are joined through the customers, so the fact keeps no bound
+    /// cells and an ask walks each keyed cell once per row its joins find.
+    Chained,
+    /// Every ref joins on a `by` key, so bound cells would be as many as
+    /// the keyed cells: the fact keeps none, and an ask reads the keyed
+    /// cells through the projections.
+    ByKeys,
+    /// The product is no `by` key, so the joins on it make the keyed cells
+    /// finer than the `by` keys, and the fact keeps bound cells.
+    Bound,
+}
+
 /// Orders by customer and product, joined to customers (and through them
 /// to tiers), to tags of any cardinality, and to promos and blocked
 /// customers which keep no column, each join of the kind given; `filter`
 /// is the view's `WHERE`.
 fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
-    spec_with(kinds, filter, true)
+    spec_with(kinds, filter, Shape::Chained)
 }
 
-/// As [`spec`]; without `chained`, tiers are joined on the customer id
-/// itself, so every ref joins on a fact column and the fact keeps bound
-/// cells.
-fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec {
+/// As [`spec`], in the `shape` given; unless chained, tiers are joined on
+/// the customer id itself, so every ref joins on a fact column.
+fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec {
+    let chained = shape == Shape::Chained;
     let m = |name, aggregate| Measure {
         name: id(name),
         aggregate,
@@ -132,16 +151,13 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec
                 vec![attr("reason")],
             ),
         ],
-        by_keys: vec![
-            ByKey::Column {
-                column: id("customer"),
-                name: id("customer"),
-            },
-            ByKey::Column {
-                column: id("product"),
-                name: id("product"),
-            },
-        ],
+        by_keys: (["customer", "product"].into_iter())
+            .filter(|key| shape != Shape::Bound || *key != "product")
+            .map(|key| ByKey::Column {
+                column: id(key),
+                name: id(key),
+            })
+            .collect(),
         measures: vec![
             m("n", Aggregate::Count),
             m("q", Aggregate::Sum(id("qty"))),
@@ -151,6 +167,10 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, chained: bool) -> Spec
             m("q_n", Aggregate::CountNotNull(id("qty"))),
             m("all_even", Aggregate::BoolAnd(id("even"))),
             m("any_even", Aggregate::BoolOr(id("even"))),
+            Measure {
+                filter: vec![cond("country", vec![lit("NO")])],
+                ..m(FILTERED, Aggregate::Sum(id("qty")))
+            },
         ],
         filter,
     };
@@ -495,14 +515,25 @@ fn small(
     filter: Vec<Condition>,
     orders: &[Vec<Datum>],
 ) -> (Store, Spec, Dims) {
-    let spec = spec(kinds, filter);
+    small_in(spec(kinds, filter), small_dims(), orders)
+}
+
+/// A store of `spec` over `dims` and the orders given.
+fn small_in(spec: Spec, dims: Dims, orders: &[Vec<Datum>]) -> (Store, Spec, Dims) {
     let mut store = typed(&spec);
-    let dims = small_dims();
     load_dims(&mut store, &dims);
     for row in orders {
         store.add_row("orders", row).unwrap();
     }
     (store, spec, dims)
+}
+
+/// [`small_dims`] with one row a key: product 1 has the one tag.
+fn one_row_dims() -> Dims {
+    let mut dims = small_dims();
+    let tags = dims.get_mut("tags").unwrap();
+    tags.get_mut(&vec![Datum::Int(1)]).unwrap().truncate(1);
+    dims
 }
 
 fn check(
@@ -868,6 +899,140 @@ fn null_keys_join_nothing() {
     check(&store, &spec, &dims, &kinds, &orders, &all);
 }
 
+/// Joined on its `by` keys alone, a fact keeps no bound cells: they
+/// would be as many as its keyed cells. An ask reads the keyed cells
+/// through the dims as they are, once each while every key holds one row,
+/// passing over the cells an inner, semi or anti join drops.
+#[test]
+fn joins_on_by_keys_keep_no_bound_cells() {
+    let orders = [
+        order(START, Datum::Int(1), Datum::Int(1), Datum::Int(5)),
+        order(START, Datum::Int(1), Datum::Int(2), Datum::Int(7)),
+        order(START, Datum::Int(2), Datum::Int(1), Datum::Int(9)),
+    ];
+    let spec = spec_with(KINDS, vec![], Shape::ByKeys);
+    let (mut store, spec, mut dims) = small_in(spec, one_row_dims(), &orders);
+    assert_eq!(store.cells("orders"), Some(3));
+    assert_eq!(store.bound_cells("orders"), None);
+    // Product 2 has no tag and is on no promo; customer 2 is blocked.
+    let by_tag = ask(&["n", "q"], &["tag"], vec![]);
+    let row = |tag: &str, n: i128, q: i128| AnswerRow {
+        keys: vec![text(tag)],
+        values: vec![Value::Int(n), Value::Int(q)],
+    };
+    assert_eq!(store.ask(&by_tag).unwrap().rows, [row("red", 1, 5)]);
+    check(&store, &spec, &dims, &KINDS, &orders, &by_tag);
+    // The next ask reads the dims as they are then.
+    for (dim, attr) in [("tags", "big"), ("promos", "x")] {
+        add_dim(
+            &mut store,
+            &mut dims,
+            dim,
+            vec![Datum::Int(2)],
+            vec![text(attr)],
+        );
+    }
+    assert_eq!(
+        store.ask(&by_tag).unwrap().rows,
+        [row("big", 1, 7), row("red", 1, 5)]
+    );
+    remove_dim(
+        &mut store,
+        &mut dims,
+        "blocked",
+        &[Datum::Int(2)],
+        &[text("y")],
+    );
+    assert_eq!(
+        store.ask(&by_tag).unwrap().rows,
+        [row("big", 1, 7), row("red", 2, 14)]
+    );
+    check(&store, &spec, &dims, &KINDS, &orders, &by_tag);
+    assert_eq!(store.bound_cells("orders"), None);
+}
+
+/// A max and a min in a view joined on its `by` keys, which answers from
+/// its keyed cells: the largest order leaving reveals the next, and a
+/// customer who moves takes their orders' ends to the new country.
+#[test]
+fn a_max_over_joined_keys_follows_deletes_and_dims() {
+    let mut orders = vec![
+        order(START, Datum::Int(1), Datum::Int(1), Datum::Int(5)),
+        order(START, Datum::Int(1), Datum::Int(1), Datum::Int(9)),
+        order(START, Datum::Int(1), Datum::Int(2), Datum::Int(7)),
+        order(START, Datum::Int(2), Datum::Int(1), Datum::Int(3)),
+    ];
+    let kinds = [RefKind::Left; 5];
+    let spec = spec_with(kinds, vec![], Shape::ByKeys);
+    let (mut store, spec, mut dims) = small_in(spec, one_row_dims(), &orders);
+    assert_eq!(store.bound_cells("orders"), None);
+    let ends = ask(&["q_max", "q_min"], &["country"], vec![]);
+    let row = |country: &str, max: i128, min: i128| AnswerRow {
+        keys: vec![text(country)],
+        values: vec![Value::Int(max), Value::Int(min)],
+    };
+    assert_eq!(
+        store.ask(&ends).unwrap().rows,
+        [row("NO", 9, 5), row("SE", 3, 3)]
+    );
+    check(&store, &spec, &dims, &kinds, &orders, &ends);
+
+    let largest = orders.remove(1);
+    store.remove_row("orders", &largest).unwrap();
+    assert_eq!(
+        store.ask(&ends).unwrap().rows,
+        [row("NO", 7, 5), row("SE", 3, 3)]
+    );
+    check(&store, &spec, &dims, &kinds, &orders, &ends);
+
+    let home = [text("NO"), Datum::Int(10)];
+    remove_dim(&mut store, &mut dims, "customers", &[Datum::Int(1)], &home);
+    add_dim(
+        &mut store,
+        &mut dims,
+        "customers",
+        vec![Datum::Int(1)],
+        vec![text("SE"), Datum::Int(10)],
+    );
+    assert_eq!(store.ask(&ends).unwrap().rows, [row("SE", 7, 3)]);
+    check(&store, &spec, &dims, &kinds, &orders, &ends);
+}
+
+/// Joined on a column no `by` key reads, a fact keeps bound cells, fewer
+/// than its keyed cells where dim rows read alike.
+#[test]
+fn a_join_off_the_by_keys_keeps_fewer_bound_cells() {
+    let orders: Vec<Vec<Datum>> = (1..=3)
+        .map(|product| order(START, Datum::Int(1), Datum::Int(product), Datum::Int(5)))
+        .collect();
+    let kinds = [RefKind::Left; 5];
+    let mut dims = one_row_dims();
+    for (product, tag) in [(2, "red"), (3, "big")] {
+        (dims.get_mut("tags").unwrap()).insert(vec![Datum::Int(product)], vec![vec![text(tag)]]);
+    }
+    dims.remove("promos");
+    let spec = spec_with(kinds, vec![], Shape::Bound);
+    let (store, spec, dims) = small_in(spec, dims, &orders);
+    // A cell a product; products 1 and 2 are both red.
+    assert_eq!(store.cells("orders"), Some(3));
+    assert_eq!(store.bound_cells("orders"), Some(2));
+    let by_tag = ask(&["n"], &["tag"], vec![]);
+    assert_eq!(
+        store.ask(&by_tag).unwrap().rows,
+        [
+            AnswerRow {
+                keys: vec![text("big")],
+                values: vec![Value::Int(1)]
+            },
+            AnswerRow {
+                keys: vec![text("red")],
+                values: vec![Value::Int(2)]
+            },
+        ]
+    );
+    check(&store, &spec, &dims, &kinds, &orders, &by_tag);
+}
+
 /// The kinds a seed runs with. Over eight seeds: every way the three
 /// joins that read a column are left or inner, and each kind twice for
 /// each of the two that may read none.
@@ -938,11 +1103,15 @@ impl Rng {
         }
     }
 
-    fn random_ask(&mut self) -> Ask {
-        let by: Vec<&str> = KEYS.iter().copied().filter(|_| self.chance(30)).collect();
-        let mut measures: Vec<&str> = MEASURES
-            .iter()
-            .copied()
+    /// An ask of the keys the view has: the product is one unless the
+    /// view is [`Shape::Bound`].
+    fn random_ask(&mut self, shape: Shape) -> Ask {
+        let keyed = |key: &str| shape != Shape::Bound || key != "product";
+        let by: Vec<&str> = (KEYS.iter().copied())
+            .filter(|key| self.chance(30) && keyed(key))
+            .collect();
+        let mut measures: Vec<&str> = (MEASURES.iter().copied())
+            .chain([FILTERED])
             .filter(|_| self.chance(50))
             .collect();
         if measures.is_empty() {
@@ -955,7 +1124,9 @@ impl Rng {
             cond("customer", vec![Literal::Int(1), Literal::Int(2)]),
             cond("product", vec![Literal::Int(3)]),
         ];
-        let filter = pool.into_iter().filter(|_| self.chance(20)).collect();
+        let filter = (pool.into_iter())
+            .filter(|cond| self.chance(20) && keyed(cond.key.as_str()))
+            .collect();
         let mut ask = ask(&measures, &by, filter);
         if self.chance(30) {
             ask.from = START + HOUR * self.int(0, 24);
@@ -974,28 +1145,49 @@ fn held(dims: &Dims, dim: &str) -> usize {
         .sum()
 }
 
-/// Random rows, dims and changes to both under joins of `kinds`,
-/// checked against the reference every few steps. A ref through another
-/// dim, with `chained`, keeps the fact unbound, so its asks read the
-/// keyed cells through the projections; a direct fact answers from its
-/// bound cells. With `sealing`, buckets are sealed and unsealed as they
-/// go, and an ask over one reads the keyed cells, thawed; returns the
-/// sealed buckets asks read.
-fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
+/// What a random run goes through.
+#[derive(Clone, Copy)]
+struct Run {
+    kinds: [RefKind; 5],
+    shape: Shape,
+    /// Buckets are sealed and unsealed as the run goes, and an ask over
+    /// one reads the keyed cells, thawed.
+    sealing: bool,
+    /// No dim key holds a second row, so no join repeats a cell.
+    one_row_a_key: bool,
+}
+
+/// Random rows, dims and changes to both, checked against the reference
+/// every few steps; returns the sealed buckets asks read. Only a
+/// [`Shape::Bound`] fact answers from bound cells; the others read the
+/// keyed cells through the projections.
+fn run(seed: u64, run: Run) -> usize {
+    let Run {
+        kinds,
+        shape,
+        sealing,
+        one_row_a_key,
+    } = run;
+    let chained = shape == Shape::Chained;
     let mut rng = Rng(seed);
     let filter = if rng.chance(50) {
         vec![cond("country", vec![lit("NO"), lit("SE")])]
     } else {
         Vec::new()
     };
-    let spec = spec_with(kinds, filter, chained);
+    let spec = spec_with(kinds, filter, shape);
     let mut store = typed(&spec);
     let mut dims = Dims::new();
     let mut rows: Vec<Vec<Datum>> = Vec::new();
     let mut spilled = Spilled::new("orders");
+    let taken = |dims: &Dims, dim: &str, key: &Vec<Datum>| {
+        one_row_a_key && dims.get(dim).is_some_and(|rows| rows.contains_key(key))
+    };
     for _ in 0..rng.below(30) {
         let (dim, key, attrs) = rng.dim_row(chained);
-        add_dim(&mut store, &mut dims, dim, key, attrs);
+        if !taken(&dims, dim, &key) {
+            add_dim(&mut store, &mut dims, dim, key, attrs);
+        }
     }
     for step in 0..400 {
         if sealing && rng.chance(10) {
@@ -1005,7 +1197,9 @@ fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
         match rng.below(40) {
             0..=7 => {
                 let (dim, key, attrs) = rng.dim_row(chained);
-                add_dim(&mut store, &mut dims, dim, key, attrs);
+                if !taken(&dims, dim, &key) {
+                    add_dim(&mut store, &mut dims, dim, key, attrs);
+                }
             }
             8..=11 => {
                 let (dim, key, attrs) = rng.dim_row(chained);
@@ -1049,7 +1243,7 @@ fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
         }
         if step % 50 == 49 {
             let bound = store.bound_cells("orders").is_some();
-            assert_eq!(bound, !chained, "seed {seed}, step {step}");
+            assert_eq!(bound, shape == Shape::Bound, "seed {seed}, step {step}");
             for dim in ["customers", "tiers", "tags", "promos", "blocked"] {
                 assert_eq!(
                     store.dim_rows(dim),
@@ -1058,7 +1252,7 @@ fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
                 );
             }
             for _ in 0..6 {
-                let ask = rng.random_ask();
+                let ask = rng.random_ask(shape);
                 assert_eq!(
                     spilled.ask(&store, &ask),
                     reference(&spec, &ask, &rows, &dims, &kinds),
@@ -1076,7 +1270,7 @@ fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
         Some(0),
         "seed {seed}: a cell outlived its rows"
     );
-    if !chained {
+    if shape == Shape::Bound {
         assert_eq!(
             store.bound_cells("orders"),
             Some(0),
@@ -1086,33 +1280,69 @@ fn run(seed: u64, kinds: [RefKind; 5], chained: bool, sealing: bool) -> usize {
     spilled.read
 }
 
-#[test]
-fn joins_match_the_naive_reference() {
-    for seed in 0..8 {
-        assert_eq!(run(seed, kinds_of(seed), true, false), 0);
-    }
+/// Eight seeds of [`run`], each with the kinds [`kinds_of`] gives it;
+/// returns the sealed buckets asks read.
+fn runs(shape: Shape, sealing: bool, one_row_a_key: bool) -> usize {
+    (0..8)
+        .map(|seed| {
+            let kinds = kinds_of(seed);
+            run(
+                seed,
+                Run {
+                    kinds,
+                    shape,
+                    sealing,
+                    one_row_a_key,
+                },
+            )
+        })
+        .sum()
 }
 
 #[test]
-fn direct_joins_match_the_naive_reference() {
-    for seed in 0..8 {
-        assert_eq!(run(seed, kinds_of(seed), false, false), 0);
-    }
+fn joins_match_the_naive_reference() {
+    assert_eq!(runs(Shape::Chained, false, false), 0);
+}
+
+#[test]
+fn by_key_joins_match_the_naive_reference() {
+    assert_eq!(runs(Shape::ByKeys, false, false), 0);
+}
+
+/// With one row a key no join repeats a cell, so an ask over the keyed
+/// cells walks them once each and passes over those an inner, semi or
+/// anti join drops.
+#[test]
+fn one_row_a_key_joins_match_the_naive_reference() {
+    assert_eq!(runs(Shape::ByKeys, false, true), 0);
+}
+
+#[test]
+fn bound_joins_match_the_naive_reference() {
+    assert_eq!(runs(Shape::Bound, false, false), 0);
 }
 
 #[test]
 fn sealed_joins_match_the_naive_reference() {
-    let read: usize = (0..8)
-        .map(|seed| run(seed, kinds_of(seed), true, true))
-        .sum();
+    let read = runs(Shape::Chained, true, false);
     assert!(read > 500, "asks read {read} sealed buckets");
 }
 
 #[test]
-fn sealed_direct_joins_match_the_naive_reference() {
-    let read: usize = (0..8)
-        .map(|seed| run(seed, kinds_of(seed), false, true))
-        .sum();
+fn sealed_by_key_joins_match_the_naive_reference() {
+    let read = runs(Shape::ByKeys, true, false);
+    assert!(read > 500, "asks read {read} sealed buckets");
+}
+
+#[test]
+fn sealed_one_row_a_key_joins_match_the_naive_reference() {
+    let read = runs(Shape::ByKeys, true, true);
+    assert!(read > 500, "asks read {read} sealed buckets");
+}
+
+#[test]
+fn sealed_bound_joins_match_the_naive_reference() {
+    let read = runs(Shape::Bound, true, false);
     assert!(read > 500, "asks read {read} sealed buckets");
 }
 
@@ -1122,7 +1352,17 @@ fn sealed_direct_joins_match_the_naive_reference() {
 #[test]
 fn sealed_left_joins_match_the_naive_reference() {
     let read: usize = (0..8)
-        .map(|seed| run(seed, [RefKind::Left; 5], false, true))
+        .map(|seed| {
+            run(
+                seed,
+                Run {
+                    kinds: [RefKind::Left; 5],
+                    shape: Shape::Bound,
+                    sealing: true,
+                    one_row_a_key: false,
+                },
+            )
+        })
         .sum();
     assert!(read > 500, "asks read {read} sealed buckets");
 }

@@ -53,8 +53,8 @@ curl --json '{
 
 Every commit made before `as_of` is in the answer. An ask never touches
 PostgreSQL; its cost follows the number of cells it reads. On six months
-of New York taxi trips, the [benchmark](benchmark.md) answers in 144 to
-349 µs where PostgreSQL takes 18 to 1,072 ms, from 362 MiB of memory.
+of New York taxi trips, the [benchmark](benchmark.md) answers in 126 to
+326 µs where PostgreSQL takes 16.9 to 1,708.2 ms, from 296 MiB of memory.
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 

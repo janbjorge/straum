@@ -273,6 +273,13 @@ impl Fact {
         (self.refs.iter().flat_map(|r| &r.via)).all(|v| matches!(v, Via::Fact(_)))
     }
 
+    /// Whether a ref's via column is a part of the rollup key that no
+    /// `by` key is. Only then are the cells finer than the `by` keys, and
+    /// cells keyed by the dim columns fewer (ADR-0042).
+    pub fn vias_add_parts(&self) -> bool {
+        self.rollup_key().count() > self.by_parts().count() + 1
+    }
+
     /// The fact columns the refs join on, in ref order, a column as often
     /// as it is joined on.
     pub fn fact_vias(&self) -> impl Iterator<Item = &Identifier> {

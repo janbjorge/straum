@@ -86,10 +86,13 @@ PostgreSQL's view would, and nothing starts over. It also means a
 join to a dim with many rows means many cells, one per distinct join
 id in the fact.
 
-For a view whose joins all read fact columns, Straum also keeps bound
-cells: the same cells keyed by the dim columns' values, which are few
-next to the ids, so an ask reads no projection. A dim change moves
-the bound cells that name its key.
+For a view whose joins all read fact columns, one of them a column
+that is not a key of the view, Straum also keeps bound cells: the
+same cells keyed by the dim columns' values, which are few next to
+the ids, so an ask reads no projection. A dim change moves the bound
+cells that name its key. A view that keeps its join columns as keys,
+as the quick start's does, has none: they would be as many as its
+cells.
 
 ## Following
 

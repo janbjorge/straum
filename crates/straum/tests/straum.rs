@@ -352,7 +352,7 @@ fn serves_asks_from_postgres() {
         "\
 view trips
   buckets:  3600s
-  holds:    4 cells and 4 bound cells, 2024-01-01T00:00:00Z to 2024-01-01T04:00:00Z
+  holds:    4 cells, 2024-01-01T00:00:00Z to 2024-01-01T04:00:00Z
   keys:     bucket timestamptz, kind text, zone_id integer, borough text
   measures: trips, fare
 
