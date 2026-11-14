@@ -167,6 +167,13 @@ fn serve_with(app: App, read_ask: ReadAsk) -> Server {
     Server { addr, stop, thread }
 }
 
+/// Loads every table, then serves the app.
+fn started(mut writer: Writer<Fake>) -> (Writer<Fake>, Server) {
+    assert_eq!(writer.step().unwrap(), Step::Started(START));
+    let server = serve(writer.app().clone());
+    (writer, server)
+}
+
 impl Server {
     fn stop(self) {
         self.stop.send(()).unwrap();
@@ -236,9 +243,7 @@ const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fa
 
 #[test]
 fn answers_asks_as_json() {
-    let mut writer = writer();
-    assert_eq!(writer.step().unwrap(), Step::Started(START));
-    let server = serve(writer.app().clone());
+    let (mut writer, server) = started(writer());
 
     let range = r#"["2024-01-01T01:00:00+01:00", "2024-01-03T00:00:00Z"]"#;
     let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
@@ -295,9 +300,7 @@ fn answers_asks_as_json() {
 
 #[test]
 fn answers_asks_as_a_table_to_those_who_accept_text() {
-    let mut writer = writer();
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer());
 
     let range = r#"["2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z"]"#;
     let reply = call_as_text(server.addr, &ask(BY_BUCKET, range));
@@ -344,9 +347,7 @@ bucket               | kind | borough    | trips | fare  | fare_avg | fare_max
 
 #[test]
 fn accept_picks_the_format_and_each_route_its_default() {
-    let mut writer = writer();
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer());
     let content_type = |method: &str, path: &str, accept: Option<&str>, body: &str| {
         let reply = request(server.addr, method, path, accept, body);
         assert_eq!(reply.status, 200, "{}", reply.body);
@@ -503,9 +504,7 @@ fn a_view_shows_its_first_thousand_rows() {
         trips: (0..1_001).map(|kind| trip(0, kind, 1, int(100))).collect(),
         ..fake()
     };
-    let mut writer = writer_with(LIMITS, fake);
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer_with(LIMITS, fake));
     let reply = call(server.addr, "GET", "/views/trips", "");
     assert_eq!(reply.body.lines().count(), 1_003, "{}", reply.body);
     let count = reply.body.lines().last().unwrap();
@@ -541,9 +540,7 @@ fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
         spill: Arc::new(Lost),
         seal_after: Duration::ZERO,
     };
-    let mut writer = Writer::new(App::new(spec, LIMITS, Some(spilling)), fake());
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(Writer::new(App::new(spec, LIMITS, Some(spilling)), fake()));
     let range = r#"["2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"]"#;
     let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
     let error = r#"{"errors":["reading a sealed bucket failed: lost trips bucket of 3600s at 1704067200"]}"#;
@@ -553,9 +550,7 @@ fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
 
 #[test]
 fn no_reply_may_be_cached() {
-    let mut writer = writer();
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer());
     let answer = call(server.addr, "POST", "/ask", &first_hour());
     let error = call(server.addr, "POST", "/ask", "{");
     let status = call(server.addr, "GET", "/status", "");
@@ -809,9 +804,7 @@ fn readiness_says_how_far_behind() {
         max_lag: Duration::ZERO,
         ..LIMITS
     };
-    let mut writer = writer_with(limits, fake);
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer_with(limits, fake));
     let reply = call(server.addr, "GET", "/readyz", "");
     assert_eq!(
         (reply.status, reply.body.as_str()),
@@ -824,9 +817,7 @@ fn readiness_says_how_far_behind() {
 
 #[test]
 fn shutdown_finishes_requests_in_flight() {
-    let mut writer = writer();
-    writer.step().unwrap();
-    let server = serve(writer.app().clone());
+    let (_writer, server) = started(writer());
     let ask = first_hour();
 
     // An idle keep-alive connection doesn't hold the shutdown up, and a
