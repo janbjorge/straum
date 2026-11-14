@@ -594,9 +594,15 @@ impl Walker {
         }
     }
 
-    /// A column that can't be `::text`: the cast goes on a key or a
+    /// A fact column that can't be `::text`: the cast goes on a key or a
     /// FILTER column, where the text is what Straum keeps.
-    fn uncast(&mut self, expr: &sql::Expr, cast: bool, what: &str) -> Option<()> {
+    fn uncast_fact_column(
+        &mut self,
+        scope: &Scope,
+        expr: &sql::Expr,
+        what: &str,
+    ) -> Option<Identifier> {
+        let (column, cast) = self.fact_column(scope, expr, what)?;
         if cast {
             self.error(
                 line(expr),
@@ -607,7 +613,7 @@ impl Walker {
             );
             return None;
         }
-        Some(())
+        Some(column)
     }
 
     fn measure(
@@ -1078,8 +1084,7 @@ impl Walker {
                 format!("date_bin origin {origin}: use timestamptz 'epoch' or timestamp 'epoch'"),
             );
         }
-        let (column, cast) = self.fact_column(scope, column_expr, "the date_bin column")?;
-        self.uncast(column_expr, cast, "the date_bin column")?;
+        let column = self.uncast_fact_column(scope, column_expr, "the date_bin column")?;
         Some(Time {
             column,
             width: parsed?,
@@ -1137,8 +1142,7 @@ impl Walker {
             }
         };
         let arg = self.single(function, args)?;
-        let (column, cast) = self.fact_column(scope, arg, "an aggregated column")?;
-        self.uncast(arg, cast, "an aggregated column")?;
+        let column = self.uncast_fact_column(scope, arg, "an aggregated column")?;
         Some((
             aggregate(column),
             self.key_conds(scope, function.filter.as_deref())?,
