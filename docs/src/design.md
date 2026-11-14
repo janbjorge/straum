@@ -98,10 +98,8 @@ PostgreSQL; they answer 503 until step 5.
 ## The store
 
 What the store holds, mutable, one per process, owned by **App**.
-Arrows denote dependency; a cardinality is how many of the pointed-at
-thing one of the pointing thing holds.
 
-![What the store holds, with cardinalities](diagrams/store.svg)
+![What the store holds](diagrams/store.svg)
 
 *One keyed rollup per fact, a bound rollup for a fact whose joins all
 read fact columns, one projection per dim. A rollup is one level per
