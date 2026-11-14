@@ -72,9 +72,7 @@ impl Bound {
         let position = |column: &Identifier| columns.iter().position(|c| c == column);
         let refs = (fact.refs.iter())
             .map(|r| {
-                let dim = (spec.dims().iter())
-                    .position(|d| d.name == r.dim)
-                    .expect(CHECKED);
+                let dim = dim_index(spec, r.dim.as_str()).expect(CHECKED);
                 let attributes = &spec.dims()[dim].attributes;
                 BoundRef {
                     dim,
@@ -776,10 +774,7 @@ impl Store {
     }
 
     fn dim_index(&self, name: &str) -> Option<usize> {
-        self.spec
-            .dims()
-            .iter()
-            .position(|d| d.name.as_str() == name)
+        dim_index(&self.spec, name)
     }
 
     fn rollup(&self, fact: &str) -> Option<(&Fact, &Rollup)> {
@@ -983,6 +978,10 @@ fn sealed_ids(fact: &Fact, buckets: impl Iterator<Item = (i64, i64)>) -> Vec<Sea
             bucket_start: start,
         })
         .collect()
+}
+
+fn dim_index(spec: &Spec, name: &str) -> Option<usize> {
+    spec.dims().iter().position(|d| d.name.as_str() == name)
 }
 
 fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> usize {
