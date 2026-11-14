@@ -33,8 +33,15 @@ pub(crate) fn load_views(url: &str) -> Option<Vec<View>> {
     read_views(&json)
 }
 
-pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<String, String> {
-    let parameters: Vec<String> = parameters.iter().map(|text| parameter(text)).collect();
+pub(crate) fn ask(
+    url: &str,
+    query: &str,
+    parameters: &[impl AsRef<str>],
+) -> Result<String, String> {
+    let parameters: Vec<String> = parameters
+        .iter()
+        .map(|text| parameter(text.as_ref()))
+        .collect();
     let ask = format!(
         "{{\"query\":{},\"parameters\":[{}]}}",
         json_string(query),
@@ -215,7 +222,7 @@ pub(crate) mod tests {
             Err(refused)
         );
         // Nothing listens on port 1.
-        let err = ask("http://127.0.0.1:1", "SELECT", &[]).unwrap_err();
+        let err = ask("http://127.0.0.1:1", "SELECT", &args("")).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for an answer: ";
         assert!(err.starts_with(asking), "{err}");
     }

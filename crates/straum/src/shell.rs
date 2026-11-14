@@ -43,8 +43,7 @@ fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
         }
         _ => {
             let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
-            let parameters: Vec<String> =
-                parameters.split_whitespace().map(str::to_owned).collect();
+            let parameters: Vec<&str> = parameters.split_whitespace().collect();
             ask(url, query.trim_end(), &parameters)
         }
     })
