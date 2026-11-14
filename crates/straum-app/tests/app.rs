@@ -86,6 +86,19 @@ fn setup(tables: &[(&'static str, bool)]) -> (Rc<RefCell<Database>>, Writer<Fake
     (db, writer)
 }
 
+/// A writer whose loads call `on_load` with the app and the table, in the
+/// middle of each load.
+fn watched(
+    app: App,
+    mut on_load: impl FnMut(&App, &str) + 'static,
+) -> (Rc<RefCell<Database>>, Writer<Fake>) {
+    let db = Database::new(&TABLES).shared();
+    let mut fake = Fake::new(&db);
+    let watch = app.clone();
+    fake.on_load = Some(Box::new(move |table| on_load(&watch, table)));
+    (db, Writer::new(app, fake))
+}
+
 fn insert(table: &'static str, key: i64, row: Row) -> Write {
     Write::Insert {
         table,
@@ -610,19 +623,15 @@ fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
 
 #[test]
 fn asks_wait_while_the_tables_load() {
-    let db = Database::new(&TABLES).shared();
-    let app = App::new(spec(), LIMITS, None);
-    let mut fake = Fake::new(&db);
     let seen = Rc::new(RefCell::new(Vec::new()));
-    let (watch, log) = (app.clone(), Rc::clone(&seen));
-    fake.on_load = Some(Box::new(move |table| {
-        let count = |fact| {
-            aside(&watch, ask(fact, &[fact], &[])).map(|a| a.answer.rows[0].values[0].clone())
-        };
+    let log = Rc::clone(&seen);
+    let app = App::new(spec(), LIMITS, None);
+    let (db, mut writer) = watched(app, move |app, table| {
+        let count =
+            |fact| aside(app, ask(fact, &[fact], &[])).map(|a| a.answer.rows[0].values[0].clone());
         log.borrow_mut()
             .push((table.to_owned(), count("trips"), count("logins")));
-    }));
-    let mut writer = Writer::new(app, fake);
+    });
     db.borrow_mut()
         .commit(vec![login(1, 1), login(2, 1), trip(1, 1, 1, 10)]);
     writer.step().unwrap();
@@ -636,15 +645,13 @@ fn asks_wait_while_the_tables_load() {
 
 #[test]
 fn ready_only_within_the_lag_bound() {
-    let db = Database::new(&TABLES).shared();
     let limits = Limits {
         max_lag: Duration::ZERO,
         ..LIMITS
     };
-    let mut fake = Fake::new(&db);
+    let app = App::new(spec(), limits, None);
     // Loading takes time, so WAL written meanwhile has an age.
-    fake.on_load = Some(Box::new(|_| thread::sleep(Duration::from_millis(1))));
-    let mut writer = Writer::new(App::new(spec(), limits, None), fake);
+    let (db, mut writer) = watched(app, |_, _| thread::sleep(Duration::from_millis(1)));
     assert_eq!(writer.app().status().lag, None);
 
     // WAL written during the load that the slot hasn't confirmed.
@@ -991,19 +998,16 @@ fn each_start_empties_the_spill() {
 /// had sealed is left to count.
 #[test]
 fn the_old_store_goes_before_the_new_load() {
-    let db = Database::new(&TABLES).shared();
     let spilling = Spilling {
         spill: Arc::new(MemorySpill::default()),
         seal_after: Duration::ZERO,
     };
-    let app = App::new(spec(), LIMITS, Some(spilling));
-    let mut fake = Fake::new(&db);
     let seen = Rc::new(RefCell::new(Vec::new()));
-    let (watch, log) = (app.clone(), Rc::clone(&seen));
-    fake.on_load = Some(Box::new(move |_| {
-        log.borrow_mut().push(watch.status().sealed);
-    }));
-    let mut writer = Writer::new(app, fake);
+    let log = Rc::clone(&seen);
+    let app = App::new(spec(), LIMITS, Some(spilling));
+    let (db, mut writer) = watched(app, move |app, _| {
+        log.borrow_mut().push(app.status().sealed);
+    });
     db.borrow_mut()
         .commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), login(1, 1)]);
     writer.step().unwrap();
@@ -1447,23 +1451,20 @@ fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
 /// bucket is sealed on each start, so changes unseal them as they come.
 fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
     let mut rng = Rng(seed);
-    let db = Database::new(&TABLES).shared();
-    let zones: Vec<Write> = (1..=6)
-        .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
-        .collect();
-    db.borrow_mut().commit(zones);
     let spilling = spill.map(|spill| Spilling {
         spill: Arc::clone(spill) as Arc<dyn Spill>,
         seal_after: Duration::ZERO,
     });
-    let app = App::new(spec(), LIMITS, spilling);
-    let mut fake = Fake::new(&db);
     let aside = Rc::new(RefCell::new(0));
-    let (watch, count) = (app.clone(), Rc::clone(&aside));
-    fake.on_load = Some(Box::new(move |_| {
-        *count.borrow_mut() += check_aside(&watch);
-    }));
-    let mut writer = Writer::new(app, fake);
+    let count = Rc::clone(&aside);
+    let app = App::new(spec(), LIMITS, spilling);
+    let (db, mut writer) = watched(app, move |app, _| {
+        *count.borrow_mut() += check_aside(app);
+    });
+    let zones: Vec<Write> = (1..=6)
+        .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
+        .collect();
+    db.borrow_mut().commit(zones);
     let mut next_key = 0;
     let mut position = None;
     for _ in 0..150 {
