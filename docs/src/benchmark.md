@@ -31,6 +31,10 @@ answer's.
 | Trips per hour, one day | 24 | 23.7 ms | 185 µs | 128x |
 | Tips by dropoff borough | 8 | 2,428.1 ms | 254 µs | 9,556x |
 
+The target is under 1 ms for every ask
+([ADR-0050](https://github.com/janbjorge/straum/blob/main/docs/adr/0050-every-benchmark-ask-answers-in-under-1-ms.md));
+the three percentile asks miss it.
+
 Straum was ready 16.5 s after it started and held 116 MiB, the 265 zone
 rows' projection included. In PostgreSQL the table and its indexes
 take 2,474 MiB.
