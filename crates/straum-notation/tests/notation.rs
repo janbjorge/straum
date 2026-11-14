@@ -1663,4 +1663,12 @@ fn error_display() {
     );
     let src = base("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(parse(&src).unwrap_err().to_string(), "t: n declared twice");
+    let src = base(
+        "count(*) AS n",
+        "count(*) AS n, count(*) AS n, count(*) AS m, count(*) AS m",
+    );
+    assert_eq!(
+        parse(&src).unwrap_err().to_string(),
+        "t: n declared twice\nt: m declared twice"
+    );
 }

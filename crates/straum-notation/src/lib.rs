@@ -43,12 +43,21 @@ impl fmt::Display for SqlError {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lines: Vec<String> = match self {
-            Error::Sql(errors) => errors.iter().map(ToString::to_string).collect(),
-            Error::Spec(errors) => errors.iter().map(ToString::to_string).collect(),
-        };
-        write!(f, "{}", lines.join("\n"))
+        match self {
+            Error::Sql(errors) => write_lines(f, errors),
+            Error::Spec(errors) => write_lines(f, errors),
+        }
     }
+}
+
+fn write_lines(f: &mut fmt::Formatter<'_>, lines: &[impl fmt::Display]) -> fmt::Result {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            f.write_str("\n")?;
+        }
+        write!(f, "{line}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for Error {}
