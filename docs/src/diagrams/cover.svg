@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="452" viewBox="0 0 880 452" role="img" aria-labelledby="t d">
-  <title id="t">How an ask range is read</title>
-  <desc id="d">An ask from Tuesday 2024-01-16 06:00 to Friday 2024-01-26 00:00 over a view keeping 1 hour, 1 day and 7 day buckets. The 7-day level takes the one whole bucket inside the range, Thursday 18 to Thursday 25. What is left at each end falls to the day level, Wednesday 17 and Thursday 25, and the rest to the hour level, 18 buckets from 06:00 on Tuesday 16. 21 buckets are read instead of 234 hour buckets. An ask grouped by bucket reads the hour level only.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="336" viewBox="0 0 720 336" role="img" aria-labelledby="t d">
+  <title id="t">An ask reads 21 buckets instead of 234</title>
+  <desc id="d">An ask from Tuesday 2026-11-17 06:00 to Friday 2026-11-27 00:00 over a view keeping 1 hour, 1 day and 7 day buckets. The 7-day width takes the one whole bucket inside the range, Thursday 19 to Thursday 26. What is left at each end falls to the day width, Wednesday 18 and Thursday 26, and the rest to the hour width, 18 buckets from 06:00 on Tuesday 17. 21 buckets are read instead of 234 hour buckets.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,74 +86,45 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="451" rx="10"/>
-  <text x="24.00" y="34.00" class="title">How an ask range is read</text>
-  <text x="24.00" y="56.00" class="sub muted">bucket &gt;= $1 AND bucket &lt; $2, $1 = 2024-01-16T06:00:00Z, $2 = 2024-01-26T00:00:00Z, over buckets '1 hour, 1 day, 7 days'</text>
-  <path class="a-acc" d="M177.25 96.00 L850.00 96.00"/>
-  <path class="a-acc" d="M177.25 90.00 L177.25 102.00"/>
-  <path class="a-acc" d="M850.00 90.00 L850.00 102.00"/>
-  <text x="177.25" y="84.00" class="s acc">from Tue 2024-01-16 06:00</text>
-  <text x="850.00" y="84.00" class="s acc" text-anchor="end">to Fri 2024-01-26 00:00</text>
-  <text x="24.00" y="100.00" class="h">the range</text>
-  <text x="24.00" y="149.00" class="h">7 days</text>
-  <text x="24.00" y="165.00" class="s muted">level 2</text>
-  <rect class="box" x="160.00" y="124.00" width="136.00" height="40.00" rx="4"/>
-  <text x="168.00" y="149.00" class="s ink2">… to Thu 18</text>
-  <rect class="accbox" x="298.00" y="124.00" width="481.00" height="40.00" rx="4"/>
-  <text x="539.50" y="149.00" class="b" text-anchor="middle">Thu 2024-01-18 00:00 to Thu 2024-01-25 00:00: 1 bucket</text>
-  <rect class="box" x="781.00" y="124.00" width="69.00" height="40.00" rx="4"/>
-  <text x="789.00" y="149.00" class="s ink2">Thu 25 to …</text>
-  <text x="24.00" y="223.00" class="h">1 day</text>
-  <text x="24.00" y="239.00" class="s muted">level 1</text>
-  <rect class="box" x="160.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="193.50" y="223.00" class="s ink2" text-anchor="middle">Tue 16</text>
-  <rect class="accbox" x="229.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="262.50" y="223.00" class="b" text-anchor="middle">Wed 17</text>
-  <rect class="box" x="298.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="331.50" y="223.00" class="s ink2" text-anchor="middle">Thu 18</text>
-  <rect class="box" x="367.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="400.50" y="223.00" class="s ink2" text-anchor="middle">Fri 19</text>
-  <rect class="box" x="436.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="469.50" y="223.00" class="s ink2" text-anchor="middle">Sat 20</text>
-  <rect class="box" x="505.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="538.50" y="223.00" class="s ink2" text-anchor="middle">Sun 21</text>
-  <rect class="box" x="574.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="607.50" y="223.00" class="s ink2" text-anchor="middle">Mon 22</text>
-  <rect class="box" x="643.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="676.50" y="223.00" class="s ink2" text-anchor="middle">Tue 23</text>
-  <rect class="box" x="712.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="745.50" y="223.00" class="s ink2" text-anchor="middle">Wed 24</text>
-  <rect class="accbox" x="781.00" y="198.00" width="67.00" height="40.00" rx="4"/>
-  <text x="814.50" y="223.00" class="b" text-anchor="middle">Thu 25</text>
-  <text x="24.00" y="297.00" class="h">1 hour</text>
-  <text x="24.00" y="313.00" class="s muted">level 0, date_bin</text>
-  <rect class="frame" x="160.00" y="272.00" width="690.00" height="40.00" rx="4"/>
-  <rect class="accbox" x="177.25" y="272.00" width="49.75" height="40.00" rx="3"/>
-  <path class="rule" d="M180.12 302.00 L180.12 312.00"/>
-  <path class="rule" d="M183.00 302.00 L183.00 312.00"/>
-  <path class="rule" d="M185.88 302.00 L185.88 312.00"/>
-  <path class="rule" d="M188.75 302.00 L188.75 312.00"/>
-  <path class="rule" d="M191.62 302.00 L191.62 312.00"/>
-  <path class="rule" d="M194.50 302.00 L194.50 312.00"/>
-  <path class="rule" d="M197.38 302.00 L197.38 312.00"/>
-  <path class="rule" d="M200.25 302.00 L200.25 312.00"/>
-  <path class="rule" d="M203.12 302.00 L203.12 312.00"/>
-  <path class="rule" d="M206.00 302.00 L206.00 312.00"/>
-  <path class="rule" d="M208.88 302.00 L208.88 312.00"/>
-  <path class="rule" d="M211.75 302.00 L211.75 312.00"/>
-  <path class="rule" d="M214.62 302.00 L214.62 312.00"/>
-  <path class="rule" d="M217.50 302.00 L217.50 312.00"/>
-  <path class="rule" d="M220.38 302.00 L220.38 312.00"/>
-  <path class="rule" d="M223.25 302.00 L223.25 312.00"/>
-  <path class="rule" d="M226.12 302.00 L226.12 312.00"/>
-  <text x="237.00" y="297.00" class="b">18 buckets, Tue 16 06:00 to Wed 17 00:00</text>
-  <text x="203.12" y="266.00" class="lbl acc" text-anchor="middle">read 1</text>
-  <text x="262.50" y="192.00" class="lbl acc" text-anchor="middle">read 2</text>
-  <text x="539.50" y="118.00" class="lbl acc" text-anchor="middle">read 3</text>
-  <text x="814.50" y="192.00" class="lbl acc" text-anchor="middle">read 4</text>
-  <text x="24.00" y="356.00" class="b">21 buckets read instead of 234 hour buckets</text>
-  <text x="24.00" y="378.00" class="s">A level takes the whole buckets inside what is left: the start rounded up to its edge, the end rounded down.</text>
-  <text x="24.00" y="396.00" class="s">What is left at either end falls to the next narrower level, down to the date_bin level, in time order.</text>
-  <text x="24.00" y="414.00" class="s">GROUP BY bucket reads the date_bin level only: 234 hour buckets, one group each. Both bounds must be on hour edges.</text>
-  <text x="24.00" y="436.00" class="s muted">Every ask bound is a parameter in Unix seconds or RFC 3339, so values never become query text.</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="335" rx="10"/>
+  <text x="24" y="38" class="title">An ask reads 21 buckets instead of 234</text>
+  <text x="24" y="62" class="s muted">bucket &gt;= Tue 2026-11-17 06:00 AND bucket &lt; Fri 2026-11-27 00:00</text>
+  <text x="24" y="110" class="h" text-anchor="start">range</text>
+  <path class="a-acc" d="M105.8 98 V112 M105.8 105 H696 M696 98 V112"/>
+  <text x="24" y="160" class="h" text-anchor="start">7 days</text>
+  <rect class="box" x="92" y="138" width="116.0" height="38" rx="6"/>
+  <text x="102" y="162" class="s muted" text-anchor="start">… to Thu 19</text>
+  <rect class="accbox" x="214.0" y="138" width="421.0" height="38" rx="6"/>
+  <text x="424.5" y="162" class="b acc" text-anchor="middle">Thu 19 to Thu 26</text>
+  <text x="424.5" y="131" class="lbl acc" text-anchor="middle">read 3</text>
+  <rect class="box" x="641.0" y="138" width="55.0" height="38" rx="6"/>
+  <text x="668.5" y="162" class="s muted" text-anchor="middle">…</text>
+  <text x="24" y="228" class="h" text-anchor="start">1 day</text>
+  <rect class="box" x="92.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="119.5" y="230" class="s ink2" text-anchor="middle">Tue 17</text>
+  <rect class="accbox" x="153.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="180.5" y="230" class="b acc" text-anchor="middle">Wed 18</text>
+  <rect class="box" x="214.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="241.5" y="230" class="s ink2" text-anchor="middle">Thu 19</text>
+  <rect class="box" x="275.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="302.5" y="230" class="s ink2" text-anchor="middle">Fri 20</text>
+  <rect class="box" x="336.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="363.5" y="230" class="s ink2" text-anchor="middle">Sat 21</text>
+  <rect class="box" x="397.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="424.5" y="230" class="s ink2" text-anchor="middle">Sun 22</text>
+  <rect class="box" x="458.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="485.5" y="230" class="s ink2" text-anchor="middle">Mon 23</text>
+  <rect class="box" x="519.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="546.5" y="230" class="s ink2" text-anchor="middle">Tue 24</text>
+  <rect class="box" x="580.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="607.5" y="230" class="s ink2" text-anchor="middle">Wed 25</text>
+  <rect class="accbox" x="641.0" y="206" width="55.0" height="38" rx="6"/>
+  <text x="668.5" y="230" class="b acc" text-anchor="middle">Thu 26</text>
+  <text x="180.5" y="199" class="lbl acc" text-anchor="middle">read 2</text>
+  <text x="668.5" y="199" class="lbl acc" text-anchor="middle">read 4</text>
+  <text x="24" y="296" class="h" text-anchor="start">1 hour</text>
+  <rect class="box" x="92" y="274" width="604" height="38" rx="6"/>
+  <rect class="accbox" x="105.8" y="274" width="41.2" height="38" rx="4"/>
+  <text x="126.4" y="267" class="lbl acc" text-anchor="middle">read 1</text>
+  <text x="157.0" y="298" class="b" text-anchor="start">18 buckets, Tue 17 06:00 to Wed 18 00:00</text>
 </svg>
