@@ -12,7 +12,7 @@ use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use straum_domain::{Condition, Identifier, Literal, Table};
+use straum_domain::{Condition, Identifier, Literal};
 
 mod ask;
 mod view;
@@ -143,20 +143,6 @@ impl Walker {
         self.name_part(name, part)
     }
 
-    fn schema_table(&mut self, name: &sql::ObjectName) -> Option<Table> {
-        let sql::ObjectName(parts) = name;
-        let [schema, table] = parts.as_slice() else {
-            self.error(line(name), format!("table {name} must be schema.table"));
-            return None;
-        };
-        let schema = self.name_part(name, schema)?;
-        let table = self.name_part(name, table)?;
-        Some(Table {
-            schema,
-            name: table,
-        })
-    }
-
     fn name_part(
         &mut self,
         name: &sql::ObjectName,
@@ -203,50 +189,6 @@ impl Walker {
         self.absent(at, sample.is_some(), "TABLESAMPLE");
         self.absent(at, !index_hints.is_empty(), "an index hint");
         Some((name, alias.as_ref()))
-    }
-
-    /// The arguments of a plain call `name(args)`, or `None` after rejecting
-    /// anything else about the call.
-    fn call<'a>(&mut self, function: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
-        let sql::Function {
-            name: _,
-            uses_odbc_syntax,
-            parameters,
-            args,
-            within_group,
-            filter: _,
-            null_treatment,
-            over,
-        } = function;
-        let at = line(function);
-        self.absent(at, *uses_odbc_syntax, "ODBC call syntax");
-        self.absent(
-            at,
-            !matches!(parameters, sql::FunctionArguments::None),
-            "function parameters",
-        );
-        self.absent(at, !within_group.is_empty(), "WITHIN GROUP");
-        self.absent(at, null_treatment.is_some(), "IGNORE or RESPECT NULLS");
-        self.absent(at, over.is_some(), "a window function (OVER)");
-        let sql::FunctionArguments::List(sql::FunctionArgumentList {
-            duplicate_treatment,
-            args,
-            clauses,
-        }) = args
-        else {
-            self.refuse(at, "function call", function);
-            return None;
-        };
-        self.absent(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
-        let distinct = match duplicate_treatment {
-            None => false,
-            Some(sql::DuplicateTreatment::Distinct) => true,
-            Some(sql::DuplicateTreatment::All) => {
-                self.not_in_subset(at, "ALL inside a call");
-                false
-            }
-        };
-        Some((args, distinct))
     }
 
     /// The one `SELECT` of a query, after rejecting every clause around it.
@@ -412,36 +354,6 @@ impl Walker {
             Names::Ask(params) => self.parameter(expr, params),
         }
     }
-
-    fn literal(&mut self, expr: &sql::Expr) -> Option<Literal> {
-        let (negative, value) = match expr {
-            sql::Expr::UnaryOp {
-                op: sql::UnaryOperator::Minus,
-                expr: inner,
-            } => (true, inner.as_ref()),
-            other => (false, other),
-        };
-        let literal = match value {
-            sql::Expr::Value(sql::ValueWithSpan { value, span: _ }) => match value {
-                sql::Value::Number(n, false) => {
-                    let n = if negative { format!("-{n}") } else { n.clone() };
-                    n.parse().ok().map(Literal::Int)
-                }
-                sql::Value::SingleQuotedString(s) if !negative => Some(Literal::Text(s.clone())),
-                sql::Value::Boolean(b) if !negative => Some(Literal::Bool(*b)),
-                _ => None,
-            },
-            _ => None,
-        };
-        if literal.is_none() {
-            self.refuse(
-                line(expr),
-                "literal, use an integer, 'text', true or false,",
-                expr,
-            );
-        }
-        literal
-    }
 }
 
 /// The parts of a condition joined by AND. A parenthesis is a part of its
@@ -457,12 +369,5 @@ fn and_parts<'a>(expr: &'a sql::Expr, parts: &mut Vec<&'a sql::Expr>) {
             and_parts(right, parts);
         }
         other => parts.push(other),
-    }
-}
-
-fn function_name(function: &sql::Function) -> Option<&str> {
-    match function.name.0.as_slice() {
-        [sql::ObjectNamePart::Identifier(id)] if id.quote_style.is_none() => Some(&id.value),
-        _ => None,
     }
 }

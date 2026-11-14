@@ -6,7 +6,7 @@ use straum_domain::{
     RefKind, Table, Time, Via, Width,
 };
 
-use super::{Names, SqlError, Walker, and_parts, function_name, line, statements};
+use super::{Names, SqlError, Walker, and_parts, line, statements};
 
 pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
     let statements = statements(src)?;
@@ -855,6 +855,94 @@ impl Walker {
         self.joined(scope, kind, table, alias, on)
     }
 
+    fn schema_table(&mut self, name: &sql::ObjectName) -> Option<Table> {
+        let sql::ObjectName(parts) = name;
+        let [schema, table] = parts.as_slice() else {
+            self.error(line(name), format!("table {name} must be schema.table"));
+            return None;
+        };
+        let schema = self.name_part(name, schema)?;
+        let table = self.name_part(name, table)?;
+        Some(Table {
+            schema,
+            name: table,
+        })
+    }
+
+    /// The arguments of a plain call `name(args)`, or `None` after rejecting
+    /// anything else about the call.
+    fn call<'a>(&mut self, function: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
+        let sql::Function {
+            name: _,
+            uses_odbc_syntax,
+            parameters,
+            args,
+            within_group,
+            filter: _,
+            null_treatment,
+            over,
+        } = function;
+        let at = line(function);
+        self.absent(at, *uses_odbc_syntax, "ODBC call syntax");
+        self.absent(
+            at,
+            !matches!(parameters, sql::FunctionArguments::None),
+            "function parameters",
+        );
+        self.absent(at, !within_group.is_empty(), "WITHIN GROUP");
+        self.absent(at, null_treatment.is_some(), "IGNORE or RESPECT NULLS");
+        self.absent(at, over.is_some(), "a window function (OVER)");
+        let sql::FunctionArguments::List(sql::FunctionArgumentList {
+            duplicate_treatment,
+            args,
+            clauses,
+        }) = args
+        else {
+            self.refuse(at, "function call", function);
+            return None;
+        };
+        self.absent(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
+        let distinct = match duplicate_treatment {
+            None => false,
+            Some(sql::DuplicateTreatment::Distinct) => true,
+            Some(sql::DuplicateTreatment::All) => {
+                self.not_in_subset(at, "ALL inside a call");
+                false
+            }
+        };
+        Some((args, distinct))
+    }
+
+    pub(super) fn literal(&mut self, expr: &sql::Expr) -> Option<Literal> {
+        let (negative, value) = match expr {
+            sql::Expr::UnaryOp {
+                op: sql::UnaryOperator::Minus,
+                expr: inner,
+            } => (true, inner.as_ref()),
+            other => (false, other),
+        };
+        let literal = match value {
+            sql::Expr::Value(sql::ValueWithSpan { value, span: _ }) => match value {
+                sql::Value::Number(n, false) => {
+                    let n = if negative { format!("-{n}") } else { n.clone() };
+                    n.parse().ok().map(Literal::Int)
+                }
+                sql::Value::SingleQuotedString(s) if !negative => Some(Literal::Text(s.clone())),
+                sql::Value::Boolean(b) if !negative => Some(Literal::Bool(*b)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if literal.is_none() {
+            self.refuse(
+                line(expr),
+                "literal, use an integer, 'text', true or false,",
+                expr,
+            );
+        }
+        literal
+    }
+
     /// `alias.column`, or `alias.column::text` to read an enum column as
     /// the label PostgreSQL prints (ADR-0037). `true` when cast.
     fn reference(&mut self, expr: &sql::Expr) -> Option<(Identifier, Identifier, bool)> {
@@ -1226,4 +1314,11 @@ fn comma_list(items: &[impl fmt::Display]) -> String {
     (items.iter().map(ToString::to_string))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn function_name(function: &sql::Function) -> Option<&str> {
+    match function.name.0.as_slice() {
+        [sql::ObjectNamePart::Identifier(id)] if id.quote_style.is_none() => Some(&id.value),
+        _ => None,
+    }
 }
