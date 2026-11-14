@@ -2393,14 +2393,8 @@ fn binary_copies_read_as_text_does() {
         })
         .collect();
     let mut binaries = Vec::new();
-    let every = Checked {
-        enums: Vec::new(),
-        name: id("every"),
-        schema: id("public"),
-        table: id("every"),
-        columns: columns.split(", ").map(id).collect(),
-        types: types.to_vec(),
-    };
+    let names: Vec<&str> = columns.split(", ").collect();
+    let every = Checked::public("every", "every", &names, types.to_vec());
     load::copy(&mut conn, &every, |batch| {
         binaries.extend(batch.chunks(types.len()).map(<[Datum]>::to_vec));
         Ok(())
@@ -2732,14 +2726,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
 
 /// Two `int4` columns, `a` and `b` of `t`, as a fake copy sends.
 fn two_ints() -> Checked {
-    Checked {
-        enums: Vec::new(),
-        name: id("t"),
-        schema: id("public"),
-        table: id("t"),
-        columns: vec![id("a"), id("b")],
-        types: vec![ColumnType::Int; 2],
-    }
+    Checked::public("t", "t", &["a", "b"], vec![ColumnType::Int; 2])
 }
 
 fn copy_done() -> Vec<u8> {

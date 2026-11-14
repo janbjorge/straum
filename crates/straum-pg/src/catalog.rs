@@ -35,6 +35,25 @@ impl Checked {
     pub(crate) fn qualified(&self) -> String {
         format!("{}.{}", self.schema, self.table)
     }
+
+    /// `name`, reading `columns` of `public.table`, none an enum.
+    #[cfg(test)]
+    pub(crate) fn public(
+        name: &str,
+        table: &str,
+        columns: &[&str],
+        types: Vec<ColumnType>,
+    ) -> Checked {
+        let id = |s: &str| Identifier::new(s).unwrap();
+        Checked {
+            name: id(name),
+            schema: id("public"),
+            table: id(table),
+            columns: columns.iter().map(|c| id(c)).collect(),
+            types,
+            enums: Vec::new(),
+        }
+    }
 }
 
 /// `"schema"."table"`, quoted for SQL.

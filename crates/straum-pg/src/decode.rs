@@ -283,14 +283,8 @@ mod tests {
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
     /// `visits`, reading `name` alone.
     fn decoder() -> Decoder {
-        let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Checked {
-            name: id(name),
-            schema: id("public"),
-            table: id("zones"),
-            columns: columns.iter().map(|c| id(c)).collect(),
-            types,
-            enums: Vec::new(),
-        };
+        let table =
+            |name: &str, columns: &[&str], types| Checked::public(name, "zones", columns, types);
         Decoder::new(
             vec![
                 table(
@@ -356,12 +350,8 @@ mod tests {
     #[test]
     fn an_enum_column_reads_as_its_label() {
         let moods = Checked {
-            name: id("moods"),
-            schema: id("public"),
-            table: id("zones"),
-            columns: vec![id("mood")],
-            types: vec![ColumnType::Text],
             enums: vec![777],
+            ..Checked::public("moods", "zones", &["mood"], vec![ColumnType::Text])
         };
         let mut d = Decoder::new(vec![moods], LIMIT);
         let changes = feed(
