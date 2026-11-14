@@ -124,7 +124,7 @@ impl Walker {
                 ),
             );
         }
-        let body = self.query(query);
+        let body = (self.one_select(query, "view body")).and_then(|select| self.select(select));
         // An empty bucket list is always an error already reported.
         let (Some(name), Some(body), Some([first, wider @ ..])) =
             (fact_name, body, buckets.as_deref())
@@ -345,11 +345,6 @@ impl Walker {
                 Some(Vec::new())
             }
         }
-    }
-
-    fn query(&mut self, query: &sql::Query) -> Option<Body> {
-        let select = self.one_select(query, "view body")?;
-        self.select(select)
     }
 
     fn select(&mut self, select: &sql::Select) -> Option<Body> {
@@ -1105,12 +1100,11 @@ impl Walker {
             args,
             [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
         );
-        let constant = matches!(
-            args,
-            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(
-                sql::Expr::Value(_)
-            ))]
-        );
+        let single = match args {
+            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => Some(expr),
+            _ => None,
+        };
+        let constant = matches!(single, Some(sql::Expr::Value(_)));
         // `None` is count(*), the one aggregate over no column.
         let of_column: Option<fn(Identifier) -> Aggregate> = match (name.as_deref(), distinct) {
             (Some("count"), false) if star => None,
@@ -1142,7 +1136,10 @@ impl Walker {
         let aggregate = match of_column {
             None => Aggregate::Count,
             Some(of_column) => {
-                let arg = self.single(function, args)?;
+                let Some(arg) = single else {
+                    self.refuse(at, "arguments", function);
+                    return None;
+                };
                 of_column(self.uncast_fact_column(scope, arg, "an aggregated column")?)
             }
         };

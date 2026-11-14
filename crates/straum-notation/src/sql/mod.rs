@@ -242,21 +242,6 @@ impl Walker {
         Some((args, distinct))
     }
 
-    /// The one plain expression argument of a call.
-    fn single<'a>(
-        &mut self,
-        function: &'a sql::Function,
-        args: &'a [sql::FunctionArg],
-    ) -> Option<&'a sql::Expr> {
-        match args {
-            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => Some(expr),
-            _ => {
-                self.refuse(line(function), "arguments", function);
-                None
-            }
-        }
-    }
-
     /// The one `SELECT` of a query, after rejecting every clause around it.
     fn one_select<'a>(&mut self, query: &'a sql::Query, what: &str) -> Option<&'a sql::Select> {
         let sql::Query {
