@@ -10,7 +10,9 @@ SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
        pickup.borough AS borough,
        count(*) AS trips,
        sum(trips.fare_amount) AS fare,
-       avg(trips.fare_amount) AS avg_fare
+       avg(trips.fare_amount) AS avg_fare,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY trips.fare_amount) AS median_fare,
+       percentile_disc(0.99) WITHIN GROUP (ORDER BY trips.fare_amount) AS p99_fare
 FROM public.yellow_trips AS trips
 LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
 GROUP BY 1, 2, 3, 4;

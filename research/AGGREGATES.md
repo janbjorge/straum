@@ -210,9 +210,9 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
 
 - Exact median over the min and max state, built as `percentile_disc`
   (ADR-0048): over six months of taxi trips the median fare takes
-  49.1 ms against PostgreSQL's 6,588 ms, where a sum takes under half a
-  millisecond. A running count per run would make it a binary search on
-  value; unbuilt.
+  50.0 ms against PostgreSQL's 6,637.1 ms, where a sum takes under half
+  a millisecond (benchmark.md, 2026-11-14). A running count per run
+  would make it a binary search on value; unbuilt.
 - Count distinct's memory (ADR-0016) is the same question as a
   percentile's.
 - Variance and standard deviation are algebraic and invertible over

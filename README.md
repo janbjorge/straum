@@ -7,9 +7,10 @@
 Straum keeps the aggregates a spec declares as cells in memory, loaded
 from a snapshot and kept current by every commit after it, and answers
 asks about them over HTTP. In the
-[benchmark](https://janbjorge.github.io/straum/benchmark.html) its asks
-answer in 125 to 324 µs where PostgreSQL takes 28.1 to 1,750.8 ms, from
-65 MiB. PostgreSQL stays the source of truth; Straum keeps nothing on
+[benchmark](https://janbjorge.github.io/straum/benchmark.html) its counts
+and sums answer in 160 to 413 µs where PostgreSQL takes 23.7 to 2,428.1
+ms, and a median fare in 50 ms where it takes 6.6 s, from 116 MiB.
+PostgreSQL stays the source of truth; Straum keeps nothing on
 disk.
 
 **Not stable.** The spec, the asks and the flags may change.

@@ -10,9 +10,9 @@ trips, and the 265 rows of `taxi_zone_lookup.csv`.
 
 ## Results
 
-Seven fixed asks over the benchmark's two views, each sent to PostgreSQL
+Ten fixed asks over the benchmark's two views, each sent to PostgreSQL
 as SQL over the raw tables and to Straum as an ask over HTTP. One run on
-an Apple M2 Pro with 16 GB, on 2026-11-13: PostgreSQL 18.6 in Docker
+an Apple M2 Pro with 16 GB, on 2026-11-14: PostgreSQL 18.6 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
 Each time is the median over at least a second, from one Python client:
 asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
@@ -20,15 +20,18 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 220.9 ms | 125 µs | 1,768x |
-| Card trips | 1 | 381.8 ms | 232 µs | 1,645x |
-| Trips by pickup borough | 8 | 1,067.5 ms | 239 µs | 4,465x |
-| Fares by payment type | 6 | 790.1 ms | 324 µs | 2,441x |
-| Manhattan pickups, one week | 1 | 48.7 ms | 182 µs | 268x |
-| Trips per hour, one day | 24 | 28.1 ms | 152 µs | 185x |
-| Tips by dropoff borough | 8 | 1,750.8 ms | 192 µs | 9,117x |
+| Trips | 1 | 266.0 ms | 160 µs | 1,662x |
+| Card trips | 1 | 490.9 ms | 364 µs | 1,350x |
+| Trips by pickup borough | 8 | 1,457.1 ms | 372 µs | 3,921x |
+| Fares by payment type | 6 | 1,091.1 ms | 413 µs | 2,643x |
+| Median fare | 1 | 6,637.1 ms | 50.0 ms | 133x |
+| p99 fare by payment type | 6 | 10,884.6 ms | 43.1 ms | 253x |
+| Median fare per hour, one day | 24 | 63.0 ms | 1.2 ms | 53x |
+| Manhattan pickups, one week | 1 | 84.9 ms | 238 µs | 356x |
+| Trips per hour, one day | 24 | 23.7 ms | 185 µs | 128x |
+| Tips by dropoff borough | 8 | 2,428.1 ms | 254 µs | 9,556x |
 
-Straum was ready 12.9 s after it started and held 65 MiB, the 265 zone
+Straum was ready 16.5 s after it started and held 116 MiB, the 265 zone
 rows' projection included. In PostgreSQL the table and its indexes
 take 2,474 MiB.
 
@@ -41,6 +44,10 @@ take 2,474 MiB.
   the week and day asks, which read a week's or a day's. Straum's hardly
   changes from ask to ask: most of it is the HTTP round trip, reading
   the query and writing JSON.
+- The percentile asks are the exception: Straum gathers and sorts every
+  fare of the cells in range, so their time follows the fares the range
+  holds, as [Median and percentiles](aggregates.md#median-and-percentiles)
+  says.
 - Straum answers only what the views keep: these keys, on hour edges.
   PostgreSQL answers any query over the raw rows. Straum keeps its
   cells current as trips change; a summary table in PostgreSQL would
@@ -72,10 +79,11 @@ under [Transactions](#transactions).
 
 ## The views
 
-`bench/trips.sql` opens with the [quick start's
-view](quick-start.md#2-write-a-spec), `trips`: what a dashboard over
-these trips would declare. `dropoffs` is the other end of the same
-trips: tips, the average distance and fares per hour and dropoff zone.
+`bench/trips.sql` opens with `trips`, the [quick start's
+view](quick-start.md#2-write-a-spec) with a median and a p99 fare
+added: what a dashboard over these trips would declare. `dropoffs` is
+the other end of the same trips: tips, the average distance and fares
+per hour and dropoff zone.
 
 ```sql
 CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
@@ -119,6 +127,22 @@ SELECT payment_type, count(*), sum(fare_amount), avg(fare_amount)
   FROM yellow_trips
  GROUP BY payment_type;
 
+-- Median fare
+SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY fare_amount) FROM yellow_trips;
+
+-- p99 fare by payment type
+SELECT payment_type,
+       percentile_disc(0.99) WITHIN GROUP (ORDER BY fare_amount)
+  FROM yellow_trips
+ GROUP BY payment_type;
+
+-- Median fare per hour, one day
+SELECT date_trunc('hour', pickup_at),
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY fare_amount)
+  FROM yellow_trips
+ WHERE pickup_at >= '2024-01-17' AND pickup_at < '2024-01-18'
+ GROUP BY 1;
+
 -- Manhattan pickups, one week
 SELECT count(*)
   FROM yellow_trips t
@@ -161,24 +185,25 @@ for one day of hour buckets as fast as the answers come. It measures
 three things: the time from the commit until Straum has applied it, the
 longest ask meanwhile, which is the lock hold as a client feels it, and
 how much Straum's resident set grew.
-One run on 2026-11-13, the machine, build and PostgreSQL of the
-[Results](#results); Straum held 67 MiB after the load and an idle ask
-took 137 µs:
+One run on 2026-11-14, the machine, build and PostgreSQL of the
+[Results](#results); Straum held 114 MiB after the load and an idle ask
+took 177 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
-| 1,000 | 345.5 ms | 0.7 ms | 2 MiB |
-| 10,000 | 247.9 ms | 5.1 ms | 7 MiB |
-| 100,000 | 766.7 ms | 55.1 ms | 62 MiB |
-| 1,000,000 | 4.7 s | 585.3 ms | 579 MiB |
+| 1,000 | 360.0 ms | 1.6 ms | 2 MiB |
+| 10,000 | 263.7 ms | 10.7 ms | 7 MiB |
+| 100,000 | 915.5 ms | 107.5 ms | 61 MiB |
+| 1,000,000 | 10.1 s | 1,222.1 ms | 600 MiB |
 
 Most of the time goes to PostgreSQL decoding the transaction and Straum
-reading it, outside the lock; the lock itself is held for about 0.6 ms
-per 1,000 rows. Memory is what grows: the rows of a transaction wait in
-Straum until its commit, about 610 bytes each, so a million-row
-transaction holds nearly nine times what both views do. That sets the
-default of `--max-transaction-rows` at 100,000: a transaction at the limit
-holds the lock for 55 ms, and anything larger is cheaper to
+reading it, outside the lock; the lock itself is held for about 1.1 ms
+per 1,000 rows, half of it moving each changed fare between the
+percentiles' value counts. Memory is what grows: the rows of a
+transaction wait in Straum until its commit, about 630 bytes each, so a
+million-row transaction holds over five times what both views do. That
+sets the default of `--max-transaction-rows` at 100,000: a transaction
+at the limit holds the lock for 108 ms, and anything larger is cheaper to
 [start over](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 
@@ -191,8 +216,9 @@ wide key, and a warehouse's tables under a narrow one whose dims carry
 the ids. The resident set came to 177 and 104 bytes a cell, measures
 and projections included, before bound cells. A cell has taken fewer
 bytes since ([ADR-0044](https://github.com/janbjorge/straum/blob/main/docs/adr/0044-a-cell-takes-the-bytes-its-numbers-need.md)):
-the benchmark's two views hold 65 MiB for their 2,078,586 cells, 33
-bytes a cell.
+the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
+bytes a cell, before `trips` kept its fares for the percentiles; with
+them they hold 116 MiB.
 
 ### The taxi month under a wide key
 
