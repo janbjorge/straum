@@ -59,12 +59,14 @@ struct BoundRef {
     kind: RefKind,
     /// Positions in a fact row, in the dim's key order.
     via: Vec<usize>,
+    /// The keyed rollup-key part of each of `via`.
+    via_parts: Vec<usize>,
     /// Into the dim's attributes, in the order the ref reads them.
     attrs: Vec<usize>,
 }
 
 impl Bound {
-    fn new(spec: &Spec, fact: &Fact) -> Option<Bound> {
+    fn new(spec: &Spec, fact: &Fact, keyed: &Rollup) -> Option<Bound> {
         if fact.refs.is_empty() || !fact.is_direct() || !fact.vias_add_parts() {
             return None;
         }
@@ -74,15 +76,19 @@ impl Bound {
             .map(|r| {
                 let dim = dim_index(spec, r.dim.as_str()).expect(CHECKED);
                 let attributes = &spec.dims()[dim].attributes;
+                let via: Vec<usize> = (r.via.iter())
+                    .map(|v| match v {
+                        Via::Fact(column) => position(column).expect(CHECKED),
+                        Via::Attribute { .. } => unreachable!("every ref is direct"),
+                    })
+                    .collect();
                 BoundRef {
                     dim,
                     kind: r.kind,
-                    via: (r.via.iter())
-                        .map(|v| match v {
-                            Via::Fact(column) => position(column).expect(CHECKED),
-                            Via::Attribute { .. } => unreachable!("every ref is direct"),
-                        })
+                    via_parts: (via.iter())
+                        .map(|&column| keyed.part_of_column(column).expect(CHECKED))
                         .collect(),
+                    via,
                     attrs: (r.reads.iter())
                         .map(|a| {
                             attributes
@@ -176,12 +182,13 @@ pub struct AnswerColumn {
 
 impl Store {
     pub fn new(spec: Spec) -> Store {
+        let rollups: Vec<Rollup> = spec.facts().iter().map(Rollup::new).collect();
         Store {
-            rollups: spec.facts().iter().map(Rollup::new).collect(),
             projections: spec.dims().iter().map(Projection::new).collect(),
-            bound: (spec.facts().iter())
-                .map(|fact| Bound::new(&spec, fact))
+            bound: (spec.facts().iter().zip(&rollups))
+                .map(|(fact, keyed)| Bound::new(&spec, fact, keyed))
                 .collect(),
+            rollups,
             spec,
         }
     }
@@ -1066,10 +1073,8 @@ fn cell_hits(
     bound.refs.iter().any(|r| {
         r.dim == d
             && r.via.len() == key.len()
-            && (r.via.iter().zip(key)).all(|(&column, datum)| {
-                let part = keyed.part_of_column(column).expect(CHECKED);
-                keyed.value(part, cells.code(i, part)) == datum
-            })
+            && (r.via_parts.iter().zip(key))
+                .all(|(&part, datum)| keyed.value(part, cells.code(i, part)) == datum)
     })
 }
 
@@ -1104,11 +1109,8 @@ fn bound_keys(
 ) -> Vec<Vec<u32>> {
     let via_keys: Vec<Vec<Datum>> = (bound.refs.iter())
         .map(|r| {
-            (r.via.iter())
-                .map(|&column| {
-                    let part = keyed.part_of_column(column).expect(CHECKED);
-                    keyed.value(part, cells.code(i, part)).clone()
-                })
+            (r.via_parts.iter())
+                .map(|&part| keyed.value(part, cells.code(i, part)).clone())
                 .collect()
         })
         .collect();
