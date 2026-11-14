@@ -85,10 +85,10 @@ are open.
   guide say join.
 - **Join kind** (`RefKind`): left, inner, semi or anti.
 - **Join column** (`Via::Fact`): the fact column a join reads its key
-  from, `trips.pu_location_id`. It keys the cells whether selected or
+  from, `e.account_id`. It keys the cells whether selected or
   not (ADR-0030). In code a "via"; also "join id" (ADR-0030).
 - **Chain** (`Via::Attribute`): a join whose key comes from a dim
-  joined before it, `boroughs.name = pickup.borough`.
+  joined before it, `r.name = a.region`.
 - **Projection** (`Projection`): the shape Straum holds a dim in: a
   map from dim key to the coded columns of every row under it.
 

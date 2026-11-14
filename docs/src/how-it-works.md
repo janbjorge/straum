@@ -30,8 +30,8 @@ disk: every start loads every table again.
 ## Cells
 
 A cell is one distinct combination of a view's keys and its bucket.
-For the [quick start](quick-start.md) view that is one cell per hour,
-payment type and pickup zone. Each width in `WITH (buckets = ...)`
+For the `usage` view of the [introduction](introduction.md) that is
+one cell per hour, kind and account. Each width in `WITH (buckets = ...)`
 keeps cells of its own, so a view with hours and days holds every row
 in two cells.
 
@@ -64,14 +64,14 @@ measured.
 ## Dims
 
 A view that joins a dim keys its cells by the join column,
-`trips.pu_location_id`, not by the dim column, `pickup.borough`.
+`e.account_id`, not by the dim column, `a.region`.
 Beside the cells Straum holds a projection of the dim: its key and
 the columns the views read, nothing else, kept current from the
-stream. An ask reads `borough` through each cell's `pu_location_id`,
-as the zone rows are now.
+stream. An ask reads `region` through each cell's `account_id`, as
+the account rows are now.
 
-So a dim change moves no cell. A zone moved from Queens to Airports
-moves every trip from it to Airports in the next answer, as
+So a dim change moves no cell. An account moved from `eu` to `us`
+moves all its events to `us` in the next answer, as
 PostgreSQL's view would, and nothing starts over. It also means a
 join to a dim with many rows means many cells, one per distinct join
 id in the fact.
@@ -81,7 +81,7 @@ that is not a key of the view, Straum also keeps bound cells: the
 same cells keyed by the dim columns' values, which are few next to
 the ids, so an ask reads no projection. A dim change moves the bound
 cells that name its key. A view that keeps its join columns as keys,
-as the quick start's does, has none: they would be as many as its
+as `usage` does, has none: they would be as many as its
 cells.
 
 ## Following
@@ -123,32 +123,31 @@ connection or WAL past `--max-retained-wal` starts Straum over too
 
 ## Answering an ask
 
-After the quick start has [changed the
-data](quick-start.md#change-the-data), this ask reads card trips from
-the airports and Newark over the hour from noon in New York:
+This ask reads the purchases of two regions over the hour from 9:00
+UTC:
 
 ```sql
-SELECT borough, trips, fare FROM trips
-WHERE payment_type = $1 AND borough IN ($2, $3)
+SELECT region, events, amount FROM usage
+WHERE kind = $1 AND region IN ($2, $3)
   AND bucket >= $4 AND bucket < $5
-GROUP BY borough
+GROUP BY region
 ```
 
 ```text
-some cells of trips at 2024-01-17T17:00:00Z, one per hour,
-payment type and pickup zone
+some cells of usage at 2026-11-13T09:00:00Z, one per hour,
+kind and account
 
-  payment_type  pu_location_id | trips  fare
-  1             1              |     2   220.00   zone 1 is EWR -> EWR
-  3             1              |     1     1.00   payment type is not 1
-  1             18             |     2    70.00   zone 18 is Bronx, not asked for
-  1             132            |   101  7111.19   zone 132 is Airports -> Airports
-  2             132            |    45  2229.10   payment type is not 1
-  1             138            |   172  7658.10   zone 138 is Airports -> Airports
+  kind      account_id | events   amount
+  purchase  7          |      2   220.00   account 7 is eu -> eu
+  signup    7          |      1     0.00   kind is not purchase
+  purchase  18         |      2    70.00   account 18 is apac, not asked for
+  purchase  132        |    101  7111.19   account 132 is us -> us
+  refund    132        |     45  2229.10   kind is not purchase
+  purchase  138        |    172  7658.10   account 138 is us -> us
 
-taxi_zones, projected: 1 -> EWR, 18 -> Bronx, 132 -> Airports, 138 -> Airports, ...
+accounts, projected: 7 -> eu, 18 -> apac, 132 -> us, 138 -> us, ...
 
-answer: Airports 273 14769.29, EWR 2 220.00
+answer: eu 2 220.00, us 273 14769.29
 ```
 
 An ask reads the cells of the buckets in its range, adds each to its

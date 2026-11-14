@@ -53,28 +53,28 @@ around a null-ness key, never around a condition or a column. A spec is
 one or more views, with `;` between them. Identifiers are unquoted:
 lowercase letters, digits and `_`, at most 63 bytes.
 
-This is the [quick start](quick-start.md) view with a null-ness key
-and two filtered measures:
+A view over an `events` table and the `accounts` it belongs to, with
+a null-ness key and two filtered measures:
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
-       trips.payment_type AS payment_type,
-       trips.pu_location_id AS pu_location_id,
-       pickup.borough AS borough,
-       (trips.do_location_id IS NOT NULL) AS has_dropoff,
-       count(*) AS trips,
-       sum(trips.fare_amount) AS fare,
-       avg(trips.fare_amount) AS avg_fare,
-       count(*) FILTER (WHERE trips.payment_type = 1) AS card,
-       count(*) FILTER (WHERE trips.do_location_id IS NOT NULL) AS dropoffs
-FROM public.yellow_trips AS trips
-LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
+CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
+SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+       e.kind AS kind,
+       e.account_id AS account_id,
+       a.region AS region,
+       (e.device_id IS NOT NULL) AS has_device,
+       count(*) AS events,
+       sum(e.amount) AS amount,
+       avg(e.amount) AS avg_amount,
+       count(*) FILTER (WHERE e.kind = 'purchase') AS purchases,
+       count(*) FILTER (WHERE e.device_id IS NOT NULL) AS from_devices
+FROM public.events AS e
+LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Straum keeps one cell per distinct hour, payment type, pickup zone,
-borough and `has_dropoff`, holding what the measures need. An ask
+Straum keeps one cell per distinct hour, kind, account, region and
+`has_device`, holding what the measures need. An ask
 merges cells and never reads a row.
 
 ## The tables
@@ -82,6 +82,20 @@ merges cells and never reads a row.
 `FROM` names the fact table, the table whose rows the view counts. A
 table the view joins is a dim. `straum plan` and the setup check call
 them fact and dim.
+
+Each name goes through three layers, and each layer uses only its own:
+
+| Where | Written | Example |
+| --- | --- | --- |
+| `FROM`, `JOIN`, `EXISTS` | `schema.table AS alias`, always both | `public.events AS e` |
+| The rest of the view | `alias.column` | `e.amount`, `a.region` |
+| Asks | the `AS name` of a key or measure | `region`, `amount` |
+
+The schema is never left out, even for `public`: Straum has no search
+path, and `FROM events` is refused with `table events must be
+schema.table`. The alias is never left out either, so every column says
+which table it is from. Setup SQL and start checks print tables as
+`public.events`, the way PostgreSQL resolves them.
 
 The fact table needs no primary key. Straum takes the old row of an
 update or delete from `REPLICA IDENTITY FULL`, which the [setup
@@ -91,11 +105,11 @@ SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
 
 Every `SELECT` item that is not a measure is a key, and each cell is
 one distinct combination of the keys. A key is a column of the fact
-table (`trips.payment_type`), a column of a dim (`pickup.borough`), a
+table (`e.kind`), a column of a dim (`a.region`), a
 [null-ness key](#null-ness-keys) or the [time bucket](#time).
 
 The `AS name` is what asks use, and it is the only way an ask reaches
-the item: it says `borough`, never `pickup.borough`. Names are
+the item: it says `region`, never `a.region`. Names are
 unique within a view. `GROUP BY` lists the keys by their positions in
 `SELECT`, in order: a position is what PostgreSQL resolves without a
 lookup, where an output name it may read as an input column.
@@ -110,7 +124,7 @@ fewer values, mean fewer cells, and memory follows cells
 Every view has exactly one bucket, named `bucket`:
 
 ```sql
-date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket
+date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
 ```
 
 - The column is a `timestamptz` or a `timestamp`. The origin is `'epoch'`
@@ -141,16 +155,16 @@ stay the same, and each width costs memory.
 ## Joining a dim
 
 ```sql
-INNER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
-LEFT OUTER JOIN public.taxi_zones AS dropoff ON dropoff.location_id = trips.do_location_id
+INNER JOIN public.accounts AS a ON a.id = e.account_id
+LEFT OUTER JOIN public.accounts AS referrer ON referrer.id = e.referrer_id
 ```
 
 A join points from a column of the fact, or of a dim already joined, to
 the key of a dim. The dim columns the view selects, here
-`pickup.borough AS borough`, are keys like any other, read as the dim
-is now: a zone moved from Queens to Airports moves every trip from it
-to Airports in the next answer, as PostgreSQL's view would, and
-nothing starts over ([Dims](how-it-works.md#dims)).
+`a.region AS region`, are keys like any other, read as the dim is now:
+an account moved from `eu` to `us` moves all its events to `us` in the
+next answer, as PostgreSQL's view would, and nothing starts over
+([Dims](how-it-works.md#dims)).
 
 - `INNER JOIN` keeps a fact row only while a dim row matches it;
   `LEFT OUTER JOIN` keeps every fact row, with null dim columns while
@@ -162,13 +176,12 @@ nothing starts over ([Dims](how-it-works.md#dims)).
   chain:
 
   ```sql
-  INNER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
-  LEFT OUTER JOIN public.boroughs AS boroughs ON boroughs.name = pickup.borough
+  INNER JOIN public.accounts AS a ON a.id = e.account_id
+  LEFT OUTER JOIN public.regions AS r ON r.name = a.region
   ```
 
-  With a `boroughs` table beside the month's, Straum then holds
-  `borough` in its projection of `taxi_zones` and reads `boroughs`
-  through it. A chain through a semi or anti join is
+  Straum then holds `region` in its projection of `accounts` and reads
+  `regions` through it. A chain through a semi or anti join is
   refused: those keep no row to read through.
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
@@ -178,24 +191,24 @@ nothing starts over ([Dims](how-it-works.md#dims)).
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
-  `trips.pu_location_id`, may be selected too or left out; either way it
+  `e.account_id`, may be selected too or left out; either way it
   keys the cells, so a view with a join has one cell per distinct join
   id, bucket and other keys, and a dim with many rows means many
   cells.
 - Two joins can point at one dim table, each reading its own columns,
-  as `pickup` and `dropoff` do above. A dim table is one dim however
+  as `a` and `referrer` do above. A dim table is one dim however
   many views join it, and all must join it on the same key columns.
-- The join itself has no value: asks group and filter by `borough` or
-  `pu_location_id`, never by `pickup`.
+- The join itself has no value: asks group and filter by `region` or
+  `account_id`, never by `a`.
 
 ## Semi and anti joins
 
 ```sql
-WHERE EXISTS (SELECT 1 FROM public.taxi_zones AS known WHERE known.location_id = trips.do_location_id)
+WHERE EXISTS (SELECT 1 FROM public.accounts AS known WHERE known.id = e.account_id)
 ```
 
 `EXISTS` keeps a fact row while at least one dim row matches it, once
-however many match: here a trip whose dropoff zone is in `taxi_zones`.
+however many match: here an event whose account is in `accounts`.
 `NOT EXISTS` keeps it while none does. Its
 equalities are those of `ON`. No column of the subquery's table can be
 selected, filtered on or joined through. Both follow the dim as it is
@@ -204,7 +217,7 @@ now, like any join.
 ## The view's WHERE
 
 ```sql
-WHERE trips.payment_type IN (1, 2) AND pickup.borough = 'Manhattan'
+WHERE e.kind IN ('purchase', 'refund') AND a.region = 'eu'
 ```
 
 `WHERE` drops rows from every answer, as the view's `WHERE` does in
@@ -215,10 +228,10 @@ dim. A `FILTER` that every measure repeats is refused: write it here.
 ## Null-ness keys
 
 ```sql
-(trips.do_location_id IS NOT NULL) AS has_dropoff
+(e.device_id IS NOT NULL) AS has_device
 ```
 
-A null-ness key is a boolean, true for the rows with a `do_location_id`,
+A null-ness key is a boolean, true for the rows with a `device_id`,
 grouped and filtered like a column under its name. `IS NULL` makes the
 opposite key. The column may be of any type Straum reads, a time
 included, but not the view's time column: a row with no time is never
@@ -228,13 +241,13 @@ PostgreSQL runs, since the key's name is no column there.
 ## Enum columns
 
 ```sql
-trips.payment_type::text AS payment_type
+e.kind::text AS kind
 ```
 
-Had `payment_type` been an enum, the view would read it so. An enum
+Had `kind` been an enum, the view would read it so. An enum
 column is read as its label, the text PostgreSQL prints for it, by
 writing `::text` wherever the view reads the column: on a key, in a
-null-ness key, `(trips.payment_type::text IS NULL)`, in a `FILTER` and
+null-ness key, `(e.kind::text IS NULL)`, in a `FILTER` and
 in `WHERE`, spelled alike in every place and in every view that reads
 the column. `::text` is the one cast, and it goes nowhere else: not in
 `ON`, `EXISTS`, `date_bin` or a measure. Straum refuses an enum column
@@ -266,14 +279,14 @@ both are null when no `c` is
 `FILTER` makes a measure count only some rows:
 
 ```sql
-count(*) FILTER (WHERE trips.payment_type = 1) AS card
-count(*) FILTER (WHERE trips.do_location_id IS NOT NULL) AS dropoffs
+count(*) FILTER (WHERE e.kind = 'purchase') AS purchases
+count(*) FILTER (WHERE e.device_id IS NOT NULL) AS from_devices
 ```
 
 `=` and `IN` take a column the view selects as a key, `IS NULL` and
 `IS NOT NULL` a column with a null-ness key. The second filter is why
-the view needs the `has_dropoff` key: Straum keeps nothing else about
-`do_location_id`. A literal must fit its column.
+the view needs the `has_device` key: Straum keeps nothing else about
+`device_id`. A literal must fit its column.
 
 ## Checking a spec
 
@@ -282,13 +295,13 @@ the view needs the `has_dropoff` key: Straum keeps nothing else about
 problem between declarations at once:
 
 ```text
-straum: trips.sql: line 6: JOIN, write INNER JOIN, `JOIN public.taxi_zones AS pickup ON pickup.location_id = tri...` is not in Straum SQL, the PostgreSQL subset made only for Straum
-trips.sql: line 3: unknown table alias pickup
+straum: usage.sql: line 6: JOIN, write INNER JOIN, `JOIN public.accounts AS a ON a.id = e.account_id` is not in Straum SQL, the PostgreSQL subset made only for Straum
+usage.sql: line 3: unknown table alias a
 ```
 
 ```text
-straum: trips.sql: trips declared twice
-trips.sql: view trips: width of 420s does not divide a day
+straum: usage.sql: usage declared twice
+usage.sql: view usage: width of 420s does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a

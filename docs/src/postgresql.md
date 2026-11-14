@@ -29,7 +29,7 @@ tables. With `STRAUM_DSN` or `--dsn-file` set, the role is the DSN's
 user, and its password goes in as a SCRAM-SHA-256 verifier, so the
 password itself appears in neither the SQL nor the server's log. Without
 a DSN the role is `straum` and the SQL says how to give it a password.
-For the [quick start](quick-start.md):
+For the `usage` view of [Writing a spec](spec.md#synopsis):
 
 ```sql
 -- Straum setup: run once, as an owner of the tables.
@@ -37,12 +37,12 @@ For the [quick start](quick-start.md):
 ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
-GRANT SELECT ON "public"."taxi_zones", "public"."yellow_trips" TO "straum";
-CREATE PUBLICATION "straum" FOR TABLE "public"."taxi_zones", "public"."yellow_trips";
--- fact trips: Straum needs the old row of every update and delete; inserts cost no more.
-ALTER TABLE "public"."yellow_trips" REPLICA IDENTITY FULL;
--- dim taxi_zones: Straum holds its key and the columns the views read, and follows it.
-ALTER TABLE "public"."taxi_zones" REPLICA IDENTITY FULL;
+GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
+CREATE PUBLICATION "straum" FOR TABLE "public"."accounts", "public"."events";
+-- fact usage: Straum needs the old row of every update and delete; inserts cost no more.
+ALTER TABLE "public"."events" REPLICA IDENTITY FULL;
+-- dim accounts: Straum holds its key and the columns the views read, and follows it.
+ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
@@ -100,15 +100,15 @@ after a wait. Some of the checks:
 ```text
 wal_level is replica; Straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
-trips: publication straum leaves out public.yellow_trips: ALTER PUBLICATION straum ADD TABLE public.yellow_trips
-trips: Straum's role can't read public.yellow_trips: GRANT SELECT ON public.yellow_trips
-trips: column fare_amount of public.yellow_trips is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
-trips: column payment_type of public.yellow_trips is payment, an enum; write payment_type::text
-trips: column borough of public.taxi_zones is text, not an enum; drop the ::text
-view trips: measure card compares payment_type with 'crad', which is no label of payment
-fact trips: Straum needs the whole old row of every update and delete: ALTER TABLE public.yellow_trips REPLICA IDENTITY FULL
-dim taxi_zones: Straum needs the whole old row of every update and delete: ALTER TABLE public.taxi_zones REPLICA IDENTITY FULL
-view trips: join pickup joins pu_location_id (an integer) to location_id (text); they must read alike
+usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD TABLE public.events
+usage: Straum's role can't read public.events: GRANT SELECT ON public.events
+usage: column amount of public.events is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
+usage: column kind of public.events is event_kind, an enum; write kind::text
+usage: column region of public.accounts is text, not an enum; drop the ::text
+view usage: measure purchases compares kind with 'purchse', which is no label of event_kind
+fact usage: Straum needs the whole old row of every update and delete: ALTER TABLE public.events REPLICA IDENTITY FULL
+dim accounts: Straum needs the whole old row of every update and delete: ALTER TABLE public.accounts REPLICA IDENTITY FULL
+view usage: join a joins account_id (an integer) to id (text); they must read alike
 ```
 
 ## What Straum costs the server

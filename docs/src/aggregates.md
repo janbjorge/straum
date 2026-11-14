@@ -14,11 +14,11 @@ from these two questions.
 
 ## Merging
 
-Take the fares of two hours of trips:
+Take the amounts of two hours of events:
 
 ```text
               09:00         10:00                 both hours
-fares         10 20 30      40 50 60 70 500
+amounts       10 20 30      40 50 60 70 500
 
 min           10            40                    10
 max           30            500                   500
@@ -56,7 +56,7 @@ per value.
 
 ## Removing a row
 
-Delete the trip with a fare of 10 from the first hour.
+Delete the event with an amount of 10 from the first hour.
 
 - `sum` and `count` subtract: 60 less 10 is 50, 3 less 1 is 2. The
   cell needs nothing it does not already hold.

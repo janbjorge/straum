@@ -6,64 +6,59 @@
 
 Straum keeps the aggregates a spec declares as cells in memory, loaded
 from a snapshot and kept current by every commit after it, and answers
-asks about them over HTTP. On six months of New York taxi trips its asks
-answer in 125 to 324 µs where PostgreSQL takes 28.1 to 1,750.8 ms, from 65 MiB
-([benchmark](https://janbjorge.github.io/straum/benchmark.html)).
-PostgreSQL stays the source of truth; Straum keeps nothing on disk.
+asks about them over HTTP. In the
+[benchmark](https://janbjorge.github.io/straum/benchmark.html) its asks
+answer in 125 to 324 µs where PostgreSQL takes 28.1 to 1,750.8 ms, from
+65 MiB. PostgreSQL stays the source of truth; Straum keeps nothing on
+disk.
 
 **Not stable.** The spec, the asks and the flags may change.
 
 ## What it looks like
 
 A spec is a view in a small subset of PostgreSQL's `CREATE VIEW`, here
-over New York taxi trips and their pickup zones. Straum never creates
-it; PostgreSQL would give the same rows.
+over an `events` table and the `accounts` it belongs to. Straum never
+creates it; PostgreSQL would give the same rows.
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
-       trips.payment_type AS payment_type,
-       trips.pu_location_id AS pu_location_id,
-       pickup.borough AS borough,
-       count(*) AS trips,
-       sum(trips.fare_amount) AS fare,
-       avg(trips.fare_amount) AS avg_fare
-FROM public.yellow_trips AS trips
-LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
+CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
+SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+       e.kind AS kind,
+       e.account_id AS account_id,
+       a.region AS region,
+       count(*) AS events,
+       sum(e.amount) AS amount,
+       avg(e.amount) AS avg_amount
+FROM public.events AS e
+LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4;
 ```
 
 `straum plan` prints the SQL a table owner runs once; `straum run` loads
 the view and follows it. An ask is a `SELECT` over the view, every value
-a parameter, here card trips by pickup borough on one day:
+a parameter, here purchases by region on one day:
 
 ```sh
 curl --json '{
-  "query": "SELECT borough, trips, fare FROM trips WHERE payment_type = $1 AND bucket >= $2 AND bucket < $3 GROUP BY borough",
-  "parameters": [1, "2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"]
+  "query": "SELECT region, events, amount FROM usage WHERE kind = $1 AND bucket >= $2 AND bucket < $3 GROUP BY region",
+  "parameters": ["purchase", "2026-11-13T00:00:00Z", "2026-11-14T00:00:00Z"]
 }' http://localhost:8080/ask
 ```
 
 ```json
 {
-  "as_of": "2026-11-13T07:52:38.699696541Z",
+  "as_of": "2026-11-14T09:12:40.118204573Z",
   "rows": [
-    {"borough": "Bronx", "trips": 180, "fare": 6422.60},
-    {"borough": "Brooklyn", "trips": 551, "fare": 16799.70},
-    {"borough": "EWR", "trips": 9, "fare": 1000.50},
-    {"borough": "Manhattan", "trips": 77355, "fare": 1169745.83},
-    {"borough": "N/A", "trips": 36, "fare": 5089.44},
-    {"borough": "Queens", "trips": 6785, "fare": 361261.11},
-    {"borough": "Staten Island", "trips": 1, "fare": 100.00},
-    {"borough": "Unknown", "trips": 415, "fare": 8095.09}
+    {"region": "eu", "events": 412, "amount": 18240.50},
+    {"region": "us", "events": 655, "amount": 30117.25}
   ]
 }
 ```
 
 Every commit made before `as_of` is in the answer. The guide's [quick
-start](https://janbjorge.github.io/straum/quick-start.html) runs this
+start](https://janbjorge.github.io/straum/quick-start.html) runs Straum
 from the `ghcr.io/janbjorge/straum` image against PostgreSQL in Docker,
-in four steps, on the full month.
+in four steps, on a month of New York taxi trips.
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares. It needs PostgreSQL 16 or newer as
