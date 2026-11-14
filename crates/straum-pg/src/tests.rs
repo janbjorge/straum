@@ -3155,7 +3155,7 @@ fn taxi_month() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
-    let (_container, port) = start(
+    let (container, port) = start(
         image("18")
             .with_shm_size(1 << 30)
             .with_cmd(["-c", "wal_level=logical"]),
@@ -3163,12 +3163,19 @@ fn taxi_month() {
     let url = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     let dsn = Dsn::parse(&url).unwrap();
     let clock = Instant::now();
-    let loaded = process::Command::new(root.join("bench/load_taxi_trips.py"))
-        .arg(&url)
+    let mut loader = process::Command::new(root.join("bench/load_taxi_trips.py"))
         .arg("--data")
         .arg(root.join("bench/data"))
-        .status()
+        .stdout(process::Stdio::piped())
+        .spawn()
         .expect("bench/load_taxi_trips.py runs with uv");
+    let psql = process::Command::new("docker")
+        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
+        .stdin(loader.stdout.take().unwrap())
+        .status()
+        .unwrap();
+    assert!(psql.success(), "psql: {psql}");
+    let loaded = loader.wait().unwrap();
     assert!(loaded.success(), "bench/load_taxi_trips.py: {loaded}");
     let mut sql = Connection::connect(&dsn, false).unwrap();
     sql.execute(

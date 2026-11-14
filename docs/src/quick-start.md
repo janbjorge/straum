@@ -10,22 +10,22 @@ Every other page uses these tables and this spec.
 
 ```sh
 docker network create straum
-docker run -d --name straum-pg --network straum -p 5432:5432 \
+docker run -d --name straum-pg --network straum \
   -e POSTGRES_PASSWORD=postgres postgres:18 -c wal_level=logical
 ```
 
 A few seconds later, load the trips:
 
 ```sh
-uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py \
-  postgres://postgres:postgres@localhost:5432/postgres
+uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py |
+  docker exec -i straum-pg psql -U postgres -q
 ```
 
 [`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
-downloads the trips into `data/`, makes `taxi_zones` and
-`yellow_trips`, and copies the rows in. The TLC's times are New York
-wall clock, so it reads them in that time zone. Money and distance are
-`numeric`, so sums are exact.
+downloads the trips into `data/` and prints them as SQL: the tables
+`taxi_zones` and `yellow_trips`, then their rows. The TLC's times are
+New York wall clock, so it reads them in that time zone. Money and
+distance are `numeric`, so sums are exact.
 
 ## 2. Write a spec
 

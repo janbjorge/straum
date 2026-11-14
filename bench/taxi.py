@@ -52,13 +52,13 @@ import asyncpg
 import orjson
 import psutil
 import tabulate
-from load_taxi_trips import NEW_YORK, load
 from testcontainers.community.postgres import PostgresContainer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
 MONTHS = 6
 DATA = ROOT / "bench" / "data"
+NEW_YORK = {"timezone": "America/New_York"}
 
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
 # matches SQL without one.
@@ -179,7 +179,7 @@ async def run(
 ) -> int:
     url = postgres.get_connection_url()
     log(f"loading {MONTHS} months")
-    await load(url, MONTHS, DATA)
+    load(postgres)
     pg = await asyncpg.connect(url, server_settings=NEW_YORK)
     try:
         # The asks over a week or a day read this index.
@@ -289,6 +289,27 @@ def print_table(rows: list, headers: list[str], align: str) -> None:
             disable_numparse=True,
         )
     )
+
+
+def load(postgres: PostgresContainer) -> None:
+    loader = subprocess.Popen(
+        [
+            ROOT / "bench" / "load_taxi_trips.py",
+            "--months",
+            str(MONTHS),
+            "--data",
+            DATA,
+        ],
+        stdout=subprocess.PIPE,
+    )
+    psql = ["psql", "-U", "postgres", "-q"]
+    container = postgres.get_wrapped_container().id
+    subprocess.run(
+        ["docker", "exec", "-i", container, *psql], stdin=loader.stdout, check=True
+    )
+    loader.stdout.close()
+    if loader.wait():
+        raise SystemExit("load_taxi_trips.py failed")
 
 
 def container(password: str) -> PostgresContainer:
