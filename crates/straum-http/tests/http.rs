@@ -198,25 +198,24 @@ fn read_reply(stream: &mut TcpStream) -> Reply {
     }
 }
 
-fn call(addr: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
+fn request(addr: SocketAddr, method: &str, path: &str, accept: Option<&str>, body: &str) -> Reply {
+    let accept = accept.map_or(String::new(), |accept| format!("accept: {accept}\r\n"));
     send(
         addr,
         &format!(
-            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{accept}content-length: {}\r\n\r\n{body}",
             body.len()
         ),
     )
 }
 
+fn call(addr: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
+    request(addr, method, path, None, body)
+}
+
 /// An ask from a person, who reads plain text.
 fn call_as_text(addr: SocketAddr, body: &str) -> Reply {
-    send(
-        addr,
-        &format!(
-            "POST /ask HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: text/plain\r\ncontent-length: {}\r\n\r\n{body}",
-            body.len()
-        ),
-    )
+    request(addr, "POST", "/ask", Some("text/plain"), body)
 }
 
 /// An ask as straum-http reads it: a query and its parameters.
@@ -338,14 +337,7 @@ bucket               | kind | borough    | trips | fare  | fare_avg | fare_max
     );
 
     // Any other Accept is answered as JSON.
-    let request = first_hour();
-    let reply = send(
-        server.addr,
-        &format!(
-            "POST /ask HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: */*\r\ncontent-length: {}\r\n\r\n{request}",
-            request.len()
-        ),
-    );
+    let reply = request(server.addr, "POST", "/ask", Some("*/*"), &first_hour());
     assert_eq!(rows_of(&reply.body), r#"[{"trips":0}]"#);
     server.stop();
 }
@@ -356,14 +348,7 @@ fn accept_picks_the_format_and_each_route_its_default() {
     writer.step().unwrap();
     let server = serve(writer.app().clone());
     let content_type = |method: &str, path: &str, accept: Option<&str>, body: &str| {
-        let accept = accept.map_or(String::new(), |accept| format!("accept: {accept}\r\n"));
-        let reply = send(
-            server.addr,
-            &format!(
-                "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{accept}content-length: {}\r\n\r\n{body}",
-                body.len()
-            ),
-        );
+        let reply = request(server.addr, method, path, accept, body);
         assert_eq!(reply.status, 200, "{}", reply.body);
         let content_type = reply
             .head
@@ -445,12 +430,7 @@ dim public.zones
 "
     );
 
-    let as_json = |addr| {
-        send(
-            addr,
-            "GET /views HTTP/1.1\r\nhost: straum\r\nconnection: close\r\naccept: application/json\r\n\r\n",
-        )
-    };
+    let as_json = |addr| request(addr, "GET", "/views", Some("application/json"), "");
     let reply = as_json(server.addr);
     assert!(
         reply.head.contains("content-type: application/json"),
