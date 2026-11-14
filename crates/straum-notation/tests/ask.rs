@@ -1,6 +1,6 @@
 mod common;
 
-use common::{FEB, JAN, cond, id};
+use common::{FEB, JAN, cond, id, strings};
 use straum_domain::{Ask, AskKey, Literal, TimeKey};
 use straum_notation::parse_ask;
 
@@ -18,8 +18,7 @@ fn range() -> Vec<Literal> {
 }
 
 fn errors(query: &str, parameters: &[Literal]) -> Vec<String> {
-    let errors = parse_ask(query, parameters).unwrap_err();
-    errors.iter().map(ToString::to_string).collect()
+    strings(&parse_ask(query, parameters).unwrap_err())
 }
 
 #[test]

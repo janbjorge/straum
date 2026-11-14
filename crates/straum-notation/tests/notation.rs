@@ -1,6 +1,6 @@
 mod common;
 
-use common::{FEB, JAN, cond, id};
+use common::{FEB, JAN, cond, edit, error_lines, id};
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, Attribute, ByKey, KeyPart, Literal, Origin, RefKind, Spec,
     SpecError, Via, Width,
@@ -115,8 +115,7 @@ LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
 
 fn base(from: &str, to: &str) -> String {
-    assert!(BASE.contains(from), "{from}");
-    BASE.replacen(from, to, 1)
+    edit(BASE, from, to)
 }
 
 #[test]
@@ -1572,8 +1571,7 @@ GROUP BY 1, 2, 3";
             "every measure has the same FILTER; write it as the view's WHERE",
         ),
     ] {
-        assert!(base.contains(from), "{from}");
-        let src = base.replacen(from, to, 1).replace(
+        let src = edit(base, from, to).replace(
             "GROUP BY 1, 2, 3",
             if to.is_empty() {
                 "GROUP BY 1, 2"
@@ -1581,11 +1579,7 @@ GROUP BY 1, 2, 3";
                 "GROUP BY 1, 2, 3"
             },
         );
-        let errors = match parse(&src) {
-            Err(Error::Sql(errors)) => errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            Err(Error::Spec(errors)) => errors.iter().map(ToString::to_string).collect(),
-            Ok(_) => panic!("{to}: parsed"),
-        };
+        let errors = error_lines(&src);
         assert!(
             errors.iter().any(|e| e.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"

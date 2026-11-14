@@ -2,8 +2,11 @@
 //! is one other spelling PostgreSQL would take, and the error must name
 //! the construct and say what to write instead.
 
+mod common;
+
+use common::{edit, error_lines};
 use straum_domain::{Literal, RefKind};
-use straum_notation::{Error, parse};
+use straum_notation::parse;
 
 /// The canon: every schema, alias, column owner, output name and join
 /// kind written; GROUP BY by position; FILTER on columns.
@@ -22,21 +25,12 @@ LEFT OUTER JOIN shop.customers AS customers ON customers.id = orders.customer_id
 GROUP BY 1, 2, 3, 4, 5";
 
 fn canon(from: &str, to: &str) -> String {
-    assert!(CANON.contains(from), "{from}");
-    CANON.replacen(from, to, 1)
-}
-
-fn errors(src: &str) -> Vec<String> {
-    match parse(src) {
-        Err(Error::Sql(errors)) => errors.iter().map(ToString::to_string).collect(),
-        Err(Error::Spec(errors)) => errors.iter().map(ToString::to_string).collect(),
-        Ok(_) => panic!("parsed:\n{src}"),
-    }
+    edit(CANON, from, to)
 }
 
 fn check(cases: &[(&str, &str, &str)]) {
     for (from, to, fragment) in cases {
-        let errors = errors(&canon(from, to));
+        let errors = error_lines(&canon(from, to));
         assert!(
             errors.iter().any(|e| e.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
@@ -115,7 +109,7 @@ fn one_join_spelling() {
         ),
     ];
     for (to, fragment) in cases {
-        let errors = errors(&canon(join, &to));
+        let errors = error_lines(&canon(join, &to));
         assert!(
             errors.iter().any(|e| e.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
@@ -159,7 +153,7 @@ fn inner_join_and_exists_parse() {
             "join ON promos.<key> = orders.<column>",
         ),
     ] {
-        let errors = errors(&canon(
+        let errors = error_lines(&canon(
             "GROUP BY 1, 2, 3, 4, 5",
             &format!("{to} GROUP BY 1, 2, 3, 4, 5"),
         ));
@@ -522,7 +516,7 @@ fn enum_columns_are_cast_to_text() {
         "{cast};\n{}",
         CANON.replace("VIEW orders", "VIEW orders_again")
     );
-    assert!(errors(&two).iter().any(|e| e.contains(
+    assert!(error_lines(&two).iter().any(|e| e.contains(
         "shop.customers.country is read without ::text here and with it in another view; \
          write it alike"
     )));
