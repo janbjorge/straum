@@ -149,9 +149,7 @@ impl StreamThread {
 
     /// `false` once the writer is gone.
     fn copy_data(&mut self, data: &[u8]) -> Result<bool, Error> {
-        let message = pgoutput::copy_message(data)
-            .map_err(|_| Error::protocol("a copy message Straum doesn't know"))?;
-        match message {
+        match pgoutput::copy_message(data)? {
             CopyMessage::XLogData(bytes) => {
                 if let Some(commit) = self.decoder.feed(pgoutput::decode(bytes)?)? {
                     self.sent = commit.lsn.0;

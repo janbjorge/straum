@@ -2983,14 +2983,8 @@ fn scripted_stream(parts: Vec<(Duration, Vec<u8>)>) -> (Stream, thread::JoinHand
 #[test]
 fn stream_errors() {
     let cases = [
-        (
-            copy_data(b"x"),
-            "PostgreSQL sent a copy message Straum doesn't know",
-        ),
-        (
-            copy_data(b"w"),
-            "PostgreSQL sent a copy message Straum doesn't know",
-        ),
+        (copy_data(b"x"), "unknown pgoutput tag 'x'"),
+        (copy_data(b"w"), "pgoutput message ends early"),
         (
             error_response("57P01", "terminating connection"),
             "PostgreSQL: terminating connection (57P01)",
