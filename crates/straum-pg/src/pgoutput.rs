@@ -289,7 +289,7 @@ impl<'a> Reader<'a> {
 
 /// pgoutput sent bytes Straum can't read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecodeError {
+pub(crate) enum DecodeError {
     /// The message ends early.
     Short,
     /// Bytes are left after the message.

@@ -26,8 +26,5 @@ mod value;
 mod wire;
 
 pub use dsn::{Dsn, DsnError};
-pub use error::Error;
-pub use pgoutput::DecodeError;
 pub use plan::plan;
 pub use source::Postgres;
-pub use value::ValueError;

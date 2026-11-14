@@ -254,7 +254,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 
 /// A value PostgreSQL sent that doesn't read as its column's type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValueError {
+pub(crate) struct ValueError {
     column_type: ColumnType,
     text: String,
     /// Set by the reader that knows it.

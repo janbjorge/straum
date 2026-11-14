@@ -9,7 +9,7 @@ use crate::value::ValueError;
 
 /// Whatever stops straum-pg. Straum starts over from a new stream after one.
 #[derive(Debug)]
-pub enum Error {
+pub(crate) enum Error {
     Io(io::Error),
     /// An error PostgreSQL sent.
     Server {
