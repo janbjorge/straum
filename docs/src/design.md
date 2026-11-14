@@ -29,8 +29,9 @@ Six crates, dependencies inward only, enforced by
 
 ![The six crates and their dependencies, inward only](diagrams/crates.svg)
 
-*The binary depends on the three adapters, the adapters on the
-use cases, everything on the domain. An arrow is "depends on".*
+*The binary depends on the three adapters. `straum-pg` and
+`straum-http` depend on the use cases in `straum-app`;
+`straum-notation` needs only the domain.*
 
 - `straum-domain` has no dependencies and no I/O. Everything an ask
   or a change needs is a plain struct, enum or function.
