@@ -1,6 +1,6 @@
 use crate::codes::Codes;
 use crate::hash::FastMap;
-use crate::rollup::RowError;
+use crate::rollup::{RowError, arity, split_rows};
 use crate::spec::Dim;
 use crate::value::{ColumnType, Datum};
 
@@ -56,12 +56,7 @@ impl Projection {
 
     /// Only the source knows the row's types, so a load sets them.
     pub(crate) fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        if types.len() != self.row_len() {
-            return Err(RowError::Arity {
-                expected: self.row_len(),
-                found: types.len(),
-            });
-        }
+        arity(self.row_len(), types.len())?;
         self.types.copy_from_slice(types);
         Ok(())
     }
@@ -124,17 +119,11 @@ impl Projection {
     /// Adds whole rows laid end to end, as a load reads them. If a row
     /// fails the checks, none is added.
     pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let row_len = self.row_len();
-        if !rows.len().is_multiple_of(row_len) {
-            return Err(RowError::Arity {
-                expected: row_len,
-                found: rows.len() % row_len,
-            });
-        }
-        for row in rows.chunks_exact(row_len) {
+        let rows = split_rows(rows, self.row_len())?;
+        for row in rows.clone() {
             self.check(row)?;
         }
-        for row in rows.chunks_exact(row_len) {
+        for row in rows {
             self.add_checked(row);
         }
         Ok(())
@@ -191,12 +180,6 @@ impl Projection {
     }
 
     pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.row_len() {
-            return Err(RowError::Arity {
-                expected: self.row_len(),
-                found: row.len(),
-            });
-        }
-        Ok(())
+        arity(self.row_len(), row.len())
     }
 }

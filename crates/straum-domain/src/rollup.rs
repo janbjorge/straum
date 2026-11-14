@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Range;
+use std::slice::ChunksExact;
 use std::{iter, mem, panic, thread};
 
 use crate::aggregate::{Aggregate, Reads};
@@ -445,12 +446,7 @@ impl Rollup {
     /// Only the source knows the row's types, so a load sets them; they are
     /// integers until then.
     pub(crate) fn set_types(&mut self, types: &[ColumnType]) -> Result<(), RowError> {
-        if types.len() != self.types.len() {
-            return Err(RowError::Arity {
-                expected: self.types.len(),
-                found: types.len(),
-            });
-        }
+        arity(self.types.len(), types.len())?;
         self.types.copy_from_slice(types);
         Ok(())
     }
@@ -496,14 +492,7 @@ impl Rollup {
     /// of cells on its own thread, since they share nothing but the rows.
     /// If a row fails [`Rollup::add`]'s checks, none is added.
     pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let row_len = self.row_len();
-        if !rows.len().is_multiple_of(row_len) {
-            return Err(RowError::Arity {
-                expected: row_len,
-                found: rows.len() % row_len,
-            });
-        }
-        let rows: Vec<&[Datum]> = rows.chunks_exact(row_len).collect();
+        let rows: Vec<&[Datum]> = split_rows(rows, self.row_len())?.collect();
         for row in &rows {
             self.check(row)?;
         }
@@ -883,12 +872,7 @@ impl Rollup {
 
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        if row.len() != self.row_len() {
-            return Err(RowError::Arity {
-                expected: self.row_len(),
-                found: row.len(),
-            });
-        }
+        arity(self.row_len(), row.len())?;
         let reading = |reads: Reads| {
             (self.inputs.iter())
                 .filter(move |i| i.kind.reads() == reads)
@@ -1380,6 +1364,29 @@ impl fmt::Display for RowError {
 }
 
 impl std::error::Error for RowError {}
+
+pub(crate) fn arity(expected: usize, found: usize) -> Result<(), RowError> {
+    if found == expected {
+        Ok(())
+    } else {
+        Err(RowError::Arity { expected, found })
+    }
+}
+
+/// Rows laid end to end, as a load reads them, cut `row_len` wide. A
+/// last row cut short is an error naming the columns it has.
+pub(crate) fn split_rows(
+    rows: &[Datum],
+    row_len: usize,
+) -> Result<ChunksExact<'_, Datum>, RowError> {
+    if !rows.len().is_multiple_of(row_len) {
+        return Err(RowError::Arity {
+            expected: row_len,
+            found: rows.len() % row_len,
+        });
+    }
+    Ok(rows.chunks_exact(row_len))
+}
 
 #[cfg(test)]
 mod tests {
