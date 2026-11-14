@@ -870,6 +870,19 @@ fn reads_asks_with_the_reader_it_is_given() {
     );
     server.stop();
 
+    let server = serve_with(writer.app().clone(), |_, _| {
+        Err(vec!["a \"quote\", a \\ and\na line in Zürich".to_owned()])
+    });
+    let reply = call(server.addr, "POST", "/ask", body);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            400,
+            r#"{"errors":["a \"quote\", a \\ and\na line in Zürich"]}"#
+        )
+    );
+    server.stop();
+
     // A reader that lets through a range jiff can't print gets a 400, not
     // a panic while the answer is written.
     let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(i64::MIN)));

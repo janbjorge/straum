@@ -21,7 +21,7 @@ use jiff::Timestamp;
 use straum_app::{Held, HeldDim, HeldView};
 use straum_domain::ColumnType;
 
-use crate::json::string;
+use crate::json::quoted;
 
 pub(crate) fn write(held: &Held) -> String {
     let views = held.views.iter().map(view);
@@ -80,12 +80,6 @@ fn view_json(view: &HeldView) -> String {
         keys.join(","),
         measures.join(",")
     )
-}
-
-fn quoted(text: &str) -> String {
-    let mut out = Vec::new();
-    string(&mut out, text);
-    String::from_utf8(out).expect("JSON from a str is UTF-8")
 }
 
 fn view(view: &HeldView) -> String {

@@ -35,9 +35,9 @@ use std::time::SystemTime;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{AnswerRow, Ask, Datum, Value};
+use straum_domain::{AnswerRow, Ask, Datum, Value, decimal};
 
-use crate::json::{decimal, string};
+use crate::json::quoted;
 
 /// How far an ask's range stays clear of the earliest time jiff can write,
 /// so a time key that starts up to a month before it still prints.
@@ -61,32 +61,34 @@ const AVG_PLACES: u32 = 4;
 /// The body; the LSN is the caller's to send.
 pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, as_of, .. } = answered;
-    let mut out = Vec::new();
-    out.extend_from_slice(b"{\"as_of\":");
-    string(&mut out, &as_of_text(*as_of));
-    out.extend_from_slice(b",\"rows\":[");
+    let names: Vec<String> = (answer.columns.iter())
+        .map(|column| quoted(&column.name))
+        .collect();
+    let mut out = format!("{{\"as_of\":{},\"rows\":[", quoted(&as_of_text(*as_of)));
     for (i, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
         if i > 0 {
-            out.push(b',');
+            out.push(',');
         }
         let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
-        out.push(b'{');
-        let mut first = true;
-        for (column, datum) in key_columns.iter().zip(keys) {
-            field(&mut out, &column.name, &mut first);
-            match datum {
-                &Datum::Int(seconds) if column.is_time => string(&mut out, &time_key(seconds)),
-                datum => write_datum(&mut out, datum, column.scale),
+        let keys = key_columns.iter().zip(keys).map(|(column, key)| match key {
+            &Datum::Int(seconds) if column.is_time => quoted(&time_key(seconds)),
+            key => datum_json(key, column.scale),
+        });
+        let values = (measure_columns.iter().zip(values))
+            .map(|(column, value)| value_json(value, column.scale));
+        out.push('{');
+        for (j, (name, cell)) in names.iter().zip(keys.chain(values)).enumerate() {
+            if j > 0 {
+                out.push(',');
             }
+            out.push_str(name);
+            out.push(':');
+            out.push_str(&cell);
         }
-        for (column, value) in measure_columns.iter().zip(values) {
-            field(&mut out, &column.name, &mut first);
-            write_value(&mut out, value, column.scale);
-        }
-        out.push(b'}');
+        out.push('}');
     }
-    out.extend_from_slice(b"]}");
-    out
+    out.push_str("]}");
+    out.into_bytes()
 }
 
 fn as_of_text(as_of: SystemTime) -> String {
@@ -127,7 +129,7 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
                 let text = match datum {
                     &Datum::Int(seconds) if column.is_time => time_key(seconds),
                     Datum::Text(text) => text.to_string(),
-                    datum => written(|out| write_datum(out, datum, column.scale)),
+                    datum => datum_json(datum, column.scale),
                 };
                 let number = matches!(datum, Datum::Int(_)) && !column.is_time;
                 Cell { text, number }
@@ -136,7 +138,7 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
                 .iter()
                 .zip(values)
                 .map(|(column, value)| Cell {
-                    text: written(|out| write_value(out, value, column.scale)),
+                    text: value_json(value, column.scale),
                     number: matches!(value, Value::Int(_) | Value::Avg { .. }),
                 });
             keys.chain(values).collect()
@@ -172,49 +174,26 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
     out
 }
 
-fn written(write: impl FnOnce(&mut Vec<u8>)) -> String {
-    let mut out = Vec::new();
-    write(&mut out);
-    String::from_utf8(out).expect("numbers, null, true and false are ASCII")
-}
-
-/// Starts a field of a row: a comma unless it is the first, then the name.
-fn field(out: &mut Vec<u8>, name: &str, first: &mut bool) {
-    if *first {
-        *first = false;
-    } else {
-        out.push(b',');
-    }
-    string(out, name);
-    out.push(b':');
-}
-
-fn write_datum(out: &mut Vec<u8>, datum: &Datum, scale: u32) {
+fn datum_json(datum: &Datum, scale: u32) -> String {
     match datum {
-        Datum::Null => out.extend_from_slice(b"null"),
-        Datum::Bool(true) => out.extend_from_slice(b"true"),
-        Datum::Bool(false) => out.extend_from_slice(b"false"),
-        Datum::Int(n) => decimal(out, i128::from(*n), scale),
-        Datum::Text(s) => string(out, s),
+        Datum::Null => "null".to_owned(),
+        Datum::Bool(b) => b.to_string(),
+        Datum::Int(n) => decimal(i128::from(*n), scale),
+        Datum::Text(text) => quoted(text),
     }
 }
 
-fn write_value(out: &mut Vec<u8>, value: &Value, scale: u32) {
+fn value_json(value: &Value, scale: u32) -> String {
     match value {
-        Value::Null => out.extend_from_slice(b"null"),
-        Value::Int(n) => decimal(out, *n, scale),
-        Value::Bool(true) => out.extend_from_slice(b"true"),
-        Value::Bool(false) => out.extend_from_slice(b"false"),
+        Value::Null => "null".to_owned(),
+        Value::Int(n) => decimal(*n, scale),
+        Value::Bool(b) => b.to_string(),
         Value::Avg { sum, count } => {
-            decimal(out, avg(*sum, *count), scale + AVG_PLACES);
+            let digits = decimal(avg(*sum, *count), scale + AVG_PLACES);
             // The places past the column's scale are only as long as they
-            // need to be.
-            while out.last() == Some(&b'0') {
-                out.pop();
-            }
-            if out.last() == Some(&b'.') {
-                out.pop();
-            }
+            // need to be. AVG_PLACES puts a point in every average.
+            let digits = digits.trim_end_matches('0');
+            digits.strip_suffix('.').unwrap_or(digits).to_owned()
         }
     }
 }
@@ -247,7 +226,7 @@ mod tests {
 
     #[test]
     fn writes_values() {
-        let mut out = Vec::new();
+        let mut out = String::new();
         for (datum, scale) in [
             (Datum::Null, 0),
             (Datum::Bool(true), 0),
@@ -255,8 +234,8 @@ mod tests {
             (Datum::Int(-15), 1),
             (Datum::Text("a\"b".into()), 0),
         ] {
-            write_datum(&mut out, &datum, scale);
-            out.push(b' ');
+            out.push_str(&datum_json(&datum, scale));
+            out.push(' ');
         }
         for (value, scale) in [
             (Value::Null, 2),
@@ -265,11 +244,11 @@ mod tests {
             (Value::Bool(true), 0),
             (Value::Bool(false), 0),
         ] {
-            write_value(&mut out, &value, scale);
-            out.push(b' ');
+            out.push_str(&value_json(&value, scale));
+            out.push(' ');
         }
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            out,
             r#"null true false -1.5 "a\"b" null 0.07 0.375 true false "#
         );
     }
@@ -361,11 +340,7 @@ bucket | shared | fare
 
     #[test]
     fn rounds_avg_half_to_even() {
-        let written = |sum, count, scale| {
-            let mut out = Vec::new();
-            write_value(&mut out, &Value::Avg { sum, count }, scale);
-            String::from_utf8(out).unwrap()
-        };
+        let written = |sum, count, scale| value_json(&Value::Avg { sum, count }, scale);
         assert_eq!(written(2, 3, 0), "0.6667");
         assert_eq!(written(-1, 3, 2), "-0.003333");
         // Ties go to the even last place, either way.

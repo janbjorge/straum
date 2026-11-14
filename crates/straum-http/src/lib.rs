@@ -344,15 +344,9 @@ fn errors_response(status: StatusCode, format: Format, errors: &[String]) -> Res
     if let Format::Text = format {
         return text(status, errors.join("\n") + "\n");
     }
-    let mut body = b"{\"errors\":[".to_vec();
-    for (i, error) in errors.iter().enumerate() {
-        if i > 0 {
-            body.push(b',');
-        }
-        json::string(&mut body, error);
-    }
-    body.extend_from_slice(b"]}");
-    respond(status, JSON, body)
+    let errors: Vec<String> = errors.iter().map(|error| json::quoted(error)).collect();
+    let body = format!("{{\"errors\":[{}]}}", errors.join(","));
+    respond(status, JSON, body.into_bytes())
 }
 
 fn not_allowed(allow: &'static str) -> Response<Full<Bytes>> {

@@ -97,14 +97,8 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 }
 
-pub(crate) fn string(out: &mut Vec<u8>, s: &str) {
-    serde_json::to_writer(out, s).expect("a Vec takes every write");
-}
-
-/// Appends `n` in units of `10^-scale` as a JSON number, exactly: `1250`
-/// at scale 2 is `12.50`.
-pub(crate) fn decimal(out: &mut Vec<u8>, n: i128, scale: u32) {
-    out.extend_from_slice(straum_domain::decimal(n, scale).as_bytes());
+pub(crate) fn quoted(text: &str) -> String {
+    serde_json::to_string(text).expect("a str is a JSON string")
 }
 
 #[cfg(test)]
@@ -189,15 +183,12 @@ mod tests {
 
     #[test]
     fn writes_strings_and_decimals() {
-        let mut out = Vec::new();
-        string(&mut out, "a \"b\"\n\u{1}ø");
-        assert_eq!(out, r#""a \"b\"\n\u0001ø""#.as_bytes());
+        assert_eq!(quoted("a \"b\"\n\u{1}ø"), r#""a \"b\"\n\u0001ø""#);
 
         // The domain tests the digits; here, that they parse as JSON.
         for (n, scale) in [(-1, 2), (i128::MIN, 0), (i128::MAX, 38)] {
-            let mut out = Vec::new();
-            decimal(&mut out, n, scale);
-            assert!(Json::parse(&out).is_ok(), "{n} at {scale}");
+            let decimal = straum_domain::decimal(n, scale);
+            assert!(Json::parse(decimal.as_bytes()).is_ok(), "{n} at {scale}");
         }
     }
 }
