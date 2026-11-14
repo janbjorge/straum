@@ -245,13 +245,7 @@ impl Store {
             self.rollups[f].add(row)?;
             return self.bind(f, row, true);
         }
-        let d = self.dim_index(table).expect(IN_SPEC);
-        let key_len = self.projections[d].key_len();
-        let key = row.get(..key_len).unwrap_or(&[]);
-        let old = self.projections[d].row_codes(key);
-        self.projections[d].add(row)?;
-        let new_rows = self.projections[d].row_codes(key);
-        self.retarget(d, key, &old, &new_rows)
+        self.change_dim(table, row, Projection::add)
     }
 
     /// Removes one row equal to the one given. A row never added is not
@@ -261,13 +255,29 @@ impl Store {
             self.rollups[f].remove(row)?;
             return self.bind(f, row, false);
         }
+        self.change_dim(table, row, Projection::remove)
+    }
+
+    fn change_dim(
+        &mut self,
+        table: &str,
+        row: &[Datum],
+        change: fn(&mut Projection, &[Datum]) -> Result<(), RowError>,
+    ) -> Result<(), RowError> {
         let d = self.dim_index(table).expect(IN_SPEC);
         let key_len = self.projections[d].key_len();
         let key = row.get(..key_len).unwrap_or(&[]);
-        let old = self.projections[d].row_codes(key);
-        self.projections[d].remove(row)?;
-        let new_rows = self.projections[d].row_codes(key);
-        self.retarget(d, key, &old, &new_rows)
+        // Owned, so the bound cells can leave the rows the key held after
+        // the projection has moved on.
+        let old = self.projections[d].matches(key).to_vec();
+        change(&mut self.projections[d], row)?;
+        if old == self.projections[d].matches(key) {
+            return Ok(());
+        }
+        for f in self.facts_reading(d) {
+            self.retarget(f, d, key, &old)?;
+        }
+        Ok(())
     }
 
     /// An update: the old row out and the new one in. A dim row that
@@ -320,30 +330,17 @@ impl Store {
         Ok(())
     }
 
-    /// Dim `d`'s `key` changed from `old` attribute rows to the ones it
-    /// holds now. Bound cells whose join columns name `key` move; the
-    /// rest stay.
-    fn retarget(
-        &mut self,
-        d: usize,
-        key: &[Datum],
-        old: &[Box<[u32]>],
-        new_rows: &[Box<[u32]>],
-    ) -> Result<(), RowError> {
-        if old == new_rows {
-            return Ok(());
-        }
-        let facts: Vec<usize> = (self.bound.iter().enumerate())
+    /// The facts whose bound cells read dim `d`.
+    fn facts_reading(&self, d: usize) -> Vec<usize> {
+        (self.bound.iter().enumerate())
             .filter(|(_, bound)| bound.as_ref().is_some_and(|bound| bound.reads(d)))
             .map(|(f, _)| f)
-            .collect();
-        for f in facts {
-            self.retarget_fact(f, d, key, old)?;
-        }
-        Ok(())
+            .collect()
     }
 
-    fn retarget_fact(
+    /// Dim `d`'s `key` held the `old` attribute rows before it changed.
+    /// Bound cells whose join columns name `key` move; the rest stay.
+    fn retarget(
         &mut self,
         f: usize,
         d: usize,
@@ -397,11 +394,7 @@ impl Store {
     /// The dim was replaced wholesale: pour the hot keyed cells into a
     /// fresh bound rollup.
     fn rebuild_dim(&mut self, d: usize) {
-        let facts: Vec<usize> = (self.bound.iter().enumerate())
-            .filter(|(_, bound)| bound.as_ref().is_some_and(|bound| bound.reads(d)))
-            .map(|(f, _)| f)
-            .collect();
-        for f in facts {
+        for f in self.facts_reading(d) {
             if self.rollups[f].cells() == 0 {
                 continue;
             }
