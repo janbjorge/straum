@@ -244,11 +244,7 @@ impl App {
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,
-            sealed: self.spilling.as_ref().map(|_| {
-                (state.store.spec().facts().iter())
-                    .map(|fact| state.store.sealed(fact.name.as_str()).len())
-                    .sum()
-            }),
+            sealed: self.spilling.as_ref().map(|_| state.store.sealed_count()),
             unseals: state.unseals,
         }
     }

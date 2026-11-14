@@ -444,6 +444,11 @@ impl Store {
         Some(self.bound[f].as_ref()?.rollup.cells())
     }
 
+    /// Sealed buckets, every fact and width.
+    pub fn sealed_count(&self) -> usize {
+        self.rollups.iter().map(Rollup::sealed_count).sum()
+    }
+
     pub fn dim_rows(&self, dim: &str) -> Option<usize> {
         Some(self.projections[self.dim_index(dim)?].len())
     }

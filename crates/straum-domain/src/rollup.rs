@@ -425,6 +425,10 @@ impl Rollup {
         self.cells
     }
 
+    pub(crate) fn sealed_count(&self) -> usize {
+        self.sealed
+    }
+
     /// From the start of the first `date_bin` bucket to the end of the
     /// last, sealed ones included. Rows without a time are in no bucket
     /// an ask reads, so they count for nothing here.

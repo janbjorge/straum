@@ -2414,8 +2414,10 @@ fn a_sealed_bucket_answers_as_before() {
     let thawed = store.thaw(sealed.clone()).unwrap();
     assert_eq!(store.ask_with(&ask, &[thawed]).unwrap(), before);
 
+    assert_eq!(store.sealed_count(), 1);
     store.unseal(store.thaw(sealed).unwrap()).unwrap();
     assert_eq!(store.sealed_read(&ask).unwrap(), []);
+    assert_eq!(store.sealed_count(), 0);
     assert_eq!(store.ask(&ask).unwrap(), before);
 }
 
@@ -2431,14 +2433,17 @@ fn sealable_buckets_end_by_the_cutoff() {
         all,
         [sealed_id(width, START), sealed_id(width, START + width)]
     );
+    assert_eq!(store.sealed_count(), 0);
     for id in &all {
         store.seal(id).unwrap();
     }
     assert_eq!(store.seal(&all[0]).unwrap_err().reason, "sealed already");
     assert_eq!(store.sealable(START + 604_800 * 2), []);
     assert_eq!(store.sealed("trips"), all);
+    assert_eq!(store.sealed_count(), 2);
     store.clear("trips");
     assert_eq!(store.sealed("trips"), []);
+    assert_eq!(store.sealed_count(), 0);
     // Gone with the truncate, or never there.
     let mut reason = |id: &SealedId| store.seal(id).unwrap_err().reason;
     assert_eq!(reason(&all[0]), "no such bucket");
