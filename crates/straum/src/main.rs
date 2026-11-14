@@ -1,7 +1,6 @@
 //! The Straum binary, where Straum SQL, the PostgreSQL source, the use cases and
 //! HTTP meet. One thread writes: it loads every table, then applies the
 //! stream, and starts over after a failure. tokio serves asks meanwhile.
-//! With `--feed` the feed takes PostgreSQL's place as the source.
 
 #![forbid(unsafe_code)]
 
@@ -21,9 +20,8 @@ use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{App, Limits, Lsn, Source, Step, Writer};
+use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
-use straum_feed::Feed;
 use straum_pg::{Dsn, Postgres};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -59,9 +57,6 @@ HTTP. SIGTERM or SIGINT stops it.
                                over (4Gi; takes Ki, Mi, Gi or Ti)
   --max-transaction-rows ROWS  rows one transaction may change before
                                Straum starts over (100000)
-  --feed SOCKET                take the tables from a feeder that connects
-                               to this Unix socket, in place of PostgreSQL;
-                               then only --spec and --listen apply
 
 Guide: https://janbjorge.github.io/straum/running.html#straum-run
 ";
@@ -210,7 +205,6 @@ impl Name {
                 "--max-lag",
                 "--max-retained-wal",
                 "--max-transaction-rows",
-                "--feed",
             ],
             Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
@@ -254,18 +248,7 @@ struct Run {
     dsn_file: Option<String>,
     limits: Limits,
     max_transaction_rows: usize,
-    /// The Unix socket of the feed that takes PostgreSQL's place.
-    feed: Option<String>,
 }
-
-/// What `straum run` takes only for PostgreSQL.
-const POSTGRESQL_FLAGS: [&str; 5] = [
-    "--publication",
-    "--dsn-file",
-    "--max-lag",
-    "--max-retained-wal",
-    "--max-transaction-rows",
-];
 
 #[derive(Debug, PartialEq, Eq)]
 enum Exit {
@@ -446,13 +429,6 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     let spec = || text("--spec").ok_or_else(|| format!("straum {} needs --spec", name.as_str()));
     let publication = || text("--publication").unwrap_or_else(|| PUBLICATION.into());
     let url = || text("--url").unwrap_or_else(|| URL.into());
-    if text("--feed").is_some()
-        && let Some(flag) = (POSTGRESQL_FLAGS.iter()).find(|flag| value(&given, flag).is_some())
-    {
-        return Err(format!(
-            "--feed takes PostgreSQL's place, so {flag} does not apply"
-        ));
-    }
     Ok(match name {
         Name::Status => Command::Status { url: url() },
         Name::Views => Command::Views { url: url() },
@@ -499,7 +475,6 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
                 count,
                 "a count of rows above 0",
             )?,
-            feed: text("--feed"),
         }),
     })
 }
@@ -594,13 +569,9 @@ fn run(args: Run) -> Result<(), String> {
         dsn_file,
         limits,
         max_transaction_rows,
-        feed,
     } = args;
     let spec = read_spec(&spec)?;
-    let dsn = match feed {
-        Some(_) => None,
-        None => Some(read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?),
-    };
+    let dsn = read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?;
     let listening = |e: io::Error| format!("listening on {listen}: {e}");
     let listener = TcpListener::bind(&listen).map_err(listening)?;
     let address = listener.local_addr().map_err(listening)?;
@@ -614,22 +585,14 @@ fn run(args: Run) -> Result<(), String> {
     }));
 
     let app = App::new(spec, limits, None);
-    match (feed, dsn) {
-        (Some(socket), _) => {
-            let feed = Feed::bind(&socket).map_err(|e| format!("listening on {socket}: {e}"))?;
-            log(format!("waiting for a feeder on {socket}"));
-            spawn_writer(Writer::new(app.clone(), feed), |_| {
-                "loaded every table from the feed".into()
-            })?;
-        }
-        (None, dsn) => {
-            let dsn = dsn.expect("read above when there is no feed");
-            let postgres = Postgres::new(dsn, &publication, max_transaction_rows);
-            spawn_writer(Writer::new(app.clone(), postgres), |lsn| {
-                format!("loaded every table; streaming from {lsn}")
-            })?;
-        }
-    }
+    let writer = Writer::new(
+        app.clone(),
+        Postgres::new(dsn, &publication, max_transaction_rows),
+    );
+    thread::Builder::new()
+        .name("straum-writer".into())
+        .spawn(move || run_writer(writer))
+        .map_err(|e| format!("starting the writer: {e}"))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -668,26 +631,13 @@ fn run(args: Run) -> Result<(), String> {
     Ok(())
 }
 
-/// Starts the one thread that writes the store. `started` is what it
-/// logs after each load.
-fn spawn_writer<S: Source + Send + 'static>(
-    writer: Writer<S>,
-    started: fn(Lsn) -> String,
-) -> Result<(), String> {
-    thread::Builder::new()
-        .name("straum-writer".into())
-        .spawn(move || run_writer(writer, started))
-        .map(drop)
-        .map_err(|e| format!("starting the writer: {e}"))
-}
-
-fn run_writer<S: Source>(mut writer: Writer<S>, started: fn(Lsn) -> String) {
+fn run_writer(mut writer: Writer<Postgres>) {
     let mut backoff = FIRST_BACKOFF;
     loop {
         match writer.step() {
             Ok(Step::Started(lsn)) => {
                 backoff = FIRST_BACKOFF;
-                log(started(lsn));
+                log(format!("loaded every table; streaming from {lsn}"));
             }
             Ok(Step::Applied(_)) => {}
             Err(e) => {
@@ -722,21 +672,6 @@ mod tests {
                 dsn_file: None,
                 limits: LIMITS,
                 max_transaction_rows: MAX_TRANSACTION_ROWS,
-                feed: None,
-            }))
-        );
-        assert_eq!(
-            command(&args(
-                "run --feed /run/straum/feed --spec s.sql --listen 127.0.0.1:9"
-            )),
-            Ok(Command::Run(Run {
-                spec: "s.sql".into(),
-                listen: "127.0.0.1:9".into(),
-                publication: PUBLICATION.into(),
-                dsn_file: None,
-                limits: LIMITS,
-                max_transaction_rows: MAX_TRANSACTION_ROWS,
-                feed: Some("/run/straum/feed".into()),
             }))
         );
         assert_eq!(
@@ -754,7 +689,6 @@ mod tests {
                     max_retained_wal: 536_870_912,
                 },
                 max_transaction_rows: 2500,
-                feed: None,
             }))
         );
         assert_eq!(
@@ -929,17 +863,6 @@ mod tests {
         for (line, error) in cases {
             assert_eq!(usage(line), error, "{line}");
         }
-        for flag in POSTGRESQL_FLAGS {
-            let line = format!("run --spec s {flag} 1 --feed f");
-            let error = format!("--feed takes PostgreSQL's place, so {flag} does not apply");
-            assert_eq!(usage(&line), error, "{flag}");
-            assert!(Name::Run.flags().contains(&flag), "{flag}");
-        }
-        assert_eq!(usage("run --spec s --feed"), "--feed needs a value");
-        assert_eq!(
-            usage("plan --spec s --feed f"),
-            "straum plan takes no \"--feed\""
-        );
         for lag in ["0", "-1", "1.5", "30s", ""] {
             let line = format!("run --spec s --max-lag {lag}");
             let error = format!("--max-lag takes whole seconds above 0, not {lag:?}");

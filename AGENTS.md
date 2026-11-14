@@ -18,12 +18,10 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. `bench/taxi.py shell` has `straum-parquet`
-feed Straum the taxi trips' Parquet files and ends in `straum shell`. It
-needs no Docker and no PostgreSQL and loads in seconds, which is the way
-to measure a change to Straum alone. With `--postgres` it runs Straum
-against a throwaway PostgreSQL holding the trips. Demo and try-out data
-is always the taxi trips, never a hand-written dataset.
+PostgreSQL tests need Docker. `bench/taxi.py shell` runs Straum against
+a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
+Demo and try-out data is always the taxi trips, never a hand-written
+dataset.
 
 - Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
   helm, the helm-unittest plugin and kubeconform.
@@ -31,7 +29,7 @@ is always the taxi trips, never a hand-written dataset.
 
 The `justfile` wraps these commands for convenience: `just check <crate>`,
 `just cov <crate>`, `just docs` (live preview), `just docs-build`,
-`just chart`, `just taxi [asks|transactions|shell] [--postgres]`,
+`just chart`, `just taxi [asks|transactions|shell]`,
 `just taxi-month`. Nothing depends on it; the commands here and in
 `docs/src/benchmark.md` stay the reference. Keep them in step.
 

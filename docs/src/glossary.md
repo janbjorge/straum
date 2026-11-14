@@ -22,9 +22,9 @@ are open.
   reused (ADR-0001). ADRs win over the guide and this glossary; one
   written before a rename keeps its old words.
 - **Port** and **adapter**: a port is a trait at the edge of
-  `straum-app`: `Source` for PostgreSQL or a feed, `Spill` for sealed
-  buckets. An adapter is the crate that implements one: `straum-pg`,
-  `straum-feed`, `straum-http` (ADR-0003).
+  `straum-app`: `Source` for PostgreSQL, `Spill` for sealed buckets.
+  An adapter is the crate that implements one: `straum-pg`,
+  `straum-http` (ADR-0003).
 
 ## Spec
 
@@ -247,21 +247,9 @@ are open.
   fits"; ADR-0015 says "can't apply".
 - **Apply** (`State::apply`): putting a commit into the store under
   the write lock.
-- **Source** (`Source`, `Postgres`, `Feed`): the port to PostgreSQL:
-  open a stream, load a table, next commit, WAL reading. A feed sits
-  behind it too. "Source of truth" means PostgreSQL itself.
-- **Feed** (`Feed`, `--feed SOCKET`): the Unix socket a fed Straum
-  listens on in place of PostgreSQL, and the frames it carries: loads
-  only, with no commit after and no lag (ADR-0045). Its LSN is always
-  `0/0`.
-- **Feeder** (`Feeder`, `straum-parquet`): a program that connects to
-  a feed and answers each table Straum asks for. `straum-parquet`
-  feeds Parquet files.
-- **Frame** (`Frame`): one message of a feed: hello, load, types,
-  rows, end, done or failed.
-- **Manifest** (`Manifest`, `--manifest FILE`): the file that tells
-  `straum-parquet` which Parquet files hold which table, and each
-  column's type, its name in the file and, for a clock, its zone.
+- **Source** (`Source`, `Postgres`): the port to PostgreSQL: open a
+  stream, load a table, next commit, WAL reading. "Source of truth"
+  means PostgreSQL itself.
 - **Plain connection** (`Postgres::plain`, `Connection`): the second,
   non-replication connection that reads the WAL position each second
   (ADR-0010).

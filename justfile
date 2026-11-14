@@ -33,12 +33,12 @@ docs:
 docs-build:
     mdbook build docs
 
-# Taxi trips fed from Parquet: asks, transactions or shell; --postgres beside PostgreSQL
+# Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
 [group('taxi')]
-taxi mode="asks" *flags:
-    bench/taxi.py {{mode}} {{flags}}
+taxi mode="asks":
+    bench/taxi.py {{mode}}
 
-# taxi.sql view against PostgreSQL (needs the CSV taxi --postgres writes)
+# taxi.sql view against PostgreSQL (needs the taxi data)
 [group('taxi')]
 taxi-month:
     cargo test -p straum-pg --release taxi_month -- --ignored --nocapture

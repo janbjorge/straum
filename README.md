@@ -68,11 +68,7 @@ in four steps, on the full month.
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares. It needs PostgreSQL 16 or newer as
 shipped, with stock logical replication, no extension and no superuser
-([setup](https://janbjorge.github.io/straum/postgresql.html)). To try
-a spec or measure Straum with no PostgreSQL, `straum run --feed` takes
-its tables from Parquet files through `straum-parquet`
-([feed](https://janbjorge.github.io/straum/feed.html)); nothing is
-followed then.
+([setup](https://janbjorge.github.io/straum/postgresql.html)).
 
 ## How it works
 

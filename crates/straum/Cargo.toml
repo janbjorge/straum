@@ -17,7 +17,6 @@ rustyline = { version = "19.0.0", default-features = false, features = ["with-fi
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
-straum-feed = { path = "../straum-feed" }
 straum-http = { path = "../straum-http" }
 straum-notation = { path = "../straum-notation" }
 straum-pg = { path = "../straum-pg" }

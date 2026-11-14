@@ -18,13 +18,10 @@ ALLOWED = {
     "straum-app": {"straum-domain"},
     "straum-notation": {"straum-domain"},
     "straum-pg": {"straum-app", "straum-domain"},
-    "straum-feed": {"straum-app", "straum-domain"},
     "straum-http": {"straum-app", "straum-domain"},
-    "straum-parquet": {"straum-domain", "straum-feed"},
     "straum": {
         "straum-app",
         "straum-domain",
-        "straum-feed",
         "straum-http",
         "straum-notation",
         "straum-pg",

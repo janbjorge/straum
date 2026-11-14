@@ -1,6 +1,6 @@
 # ADR-0045: Tables can come from a feed in place of PostgreSQL
 
-Status: Accepted, 2026-11-13
+Status: Superseded by ADR-0047, 2026-11-14
 
 ## Context
 
