@@ -70,8 +70,7 @@ fn json_string(text: &str) -> String {
     json
 }
 
-/// The body of the reply to one request, in the form `accept` names. A
-/// plain socket, since Straum's image holds nothing else to ask with.
+/// The body of the reply to one request, in the form `accept` names.
 fn fetch(
     url: &str,
     what: &str,
