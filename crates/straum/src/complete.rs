@@ -260,7 +260,7 @@ fn condition_candidates(
 struct Slot<'v> {
     number: usize,
     key: &'v Key,
-    operator: String,
+    operator: &'v str,
     view: &'v View,
 }
 
@@ -268,7 +268,7 @@ impl Slot<'_> {
     /// The values Tab can give: the buckets held for a bound, both
     /// booleans for a boolean.
     fn values(&self) -> Vec<String> {
-        let bound = match (self.key.name.as_str(), self.operator.as_str()) {
+        let bound = match (self.key.name.as_str(), self.operator) {
             (BUCKET, ">=") => self.view.from.as_ref(),
             (BUCKET, "<") => self.view.to.as_ref(),
             _ => None,
@@ -283,7 +283,7 @@ impl Slot<'_> {
 }
 
 /// The slot of the parameter after those `given`, by the `$n` it is.
-fn slot<'v>(views: &'v [View], query: &str, given: &str) -> Option<Slot<'v>> {
+fn slot<'v>(views: &'v [View], query: &'v str, given: &str) -> Option<Slot<'v>> {
     let number = given.split_whitespace().count() + 1;
     let query = words(query);
     let name = after(&query, "FROM")?.first()?;
@@ -298,7 +298,7 @@ fn slot<'v>(views: &'v [View], query: &str, given: &str) -> Option<Slot<'v>> {
             return Some(Slot {
                 number,
                 key: key?,
-                operator: operator.to_owned(),
+                operator,
                 view,
             });
         }
