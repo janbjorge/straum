@@ -732,11 +732,7 @@ impl Rollup {
 
     /// Drops a bucket's cells and keeps its place.
     pub(crate) fn seal(&mut self, width: i64, start: i64) -> Result<(), &'static str> {
-        let level = (self.levels.iter_mut())
-            .find(|l| l.width == width)
-            .ok_or("no such width")?;
-        let bucket = level
-            .buckets
+        let bucket = (self.level_mut(width)?.buckets)
             .get_mut(&Some(start))
             .ok_or("no such bucket")?;
         if let Bucket::Sealed { .. } = bucket {
@@ -835,10 +831,7 @@ impl Rollup {
         start: i64,
         mut cells: Cells,
     ) -> Result<(), &'static str> {
-        let level = (self.levels.iter_mut())
-            .find(|l| l.width == width)
-            .ok_or("no such width")?;
-        let bucket = level.buckets.get_mut(&Some(start));
+        let bucket = self.level_mut(width)?.buckets.get_mut(&Some(start));
         let Some(bucket @ Bucket::Sealed { .. }) = bucket else {
             return Err("not sealed");
         };
@@ -860,6 +853,12 @@ impl Rollup {
 
     fn level(&self, width: i64) -> Option<&Level> {
         self.levels.iter().find(|l| l.width == width)
+    }
+
+    fn level_mut(&mut self, width: i64) -> Result<&mut Level, &'static str> {
+        (self.levels.iter_mut())
+            .find(|l| l.width == width)
+            .ok_or("no such width")
     }
 
     pub(crate) fn codes(&self, part: usize) -> usize {
