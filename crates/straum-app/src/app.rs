@@ -234,9 +234,9 @@ impl App {
     pub fn status(&self) -> Status {
         let state = self.read();
         let following = state.following.as_ref();
-        let lag = state.behind();
+        let lag = following.map(|f| f.lag.behind(Instant::now()));
         Status {
-            ready: self.ready(lag),
+            ready: lag.is_some_and(|lag| lag <= self.limits.max_lag),
             applied: following.map(|f| f.applied),
             committed: following.and_then(|f| f.committed),
             as_of: following.map(Following::as_of),
@@ -314,10 +314,6 @@ impl App {
         })
     }
 
-    fn ready(&self, lag: Option<Duration>) -> bool {
-        lag.is_some_and(|lag| lag <= self.limits.max_lag)
-    }
-
     fn read(&self) -> RwLockReadGuard<'_, State> {
         self.state.read().expect(POISONED)
     }
@@ -332,10 +328,6 @@ fn spill_error(e: impl fmt::Display) -> AnswerError {
 }
 
 impl Following {
-    fn behind(&self) -> Duration {
-        self.lag.behind(Instant::now())
-    }
-
     /// As [`Answered::as_of`].
     fn as_of(&self) -> SystemTime {
         let since = Instant::now().saturating_duration_since(self.lag.caught_up());
@@ -346,10 +338,6 @@ impl Following {
 }
 
 impl State {
-    fn behind(&self) -> Option<Duration> {
-        self.following.as_ref().map(Following::behind)
-    }
-
     fn following(&mut self) -> &mut Following {
         self.following.as_mut().expect(STARTED)
     }
