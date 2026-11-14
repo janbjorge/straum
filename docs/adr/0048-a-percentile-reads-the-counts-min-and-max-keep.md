@@ -29,15 +29,15 @@ and an exact answer would differ from PostgreSQL's in the last digits.
 ## Consequences
 
 - A percentile holds no byte beyond a `min` or `max` on its column. A
-  view without one pays for the values: with two percentiles on
-  `fare_amount` added to the benchmark's `trips` view, Straum held 109
-  MiB resident where it holds 65 without them.
-- An ask costs by the values in its range, not a number a cell. Over
-  the 20,332,093 taxi trips the median fare took 49.1 ms against
-  PostgreSQL's 6,588 ms, and one day by hour 1.2 ms against 60.8 ms;
-  the other asks take under half a millisecond.
+  view without one pays for every distinct value a cell holds, as a
+  `min` or `max` would.
+- An ask costs by the values in its range, not a number a cell: a long
+  range over many values takes milliseconds where a sum takes
+  microseconds. The benchmark's percentile asks track it.
 - If that is too slow, a running count per run makes the pick a binary
   search on value. That changes ADR-0043's records and gets a record
   of its own.
+- A change to the column moves a value between counts under the write
+  lock, as for a `min` or `max`.
 - A dim key held twice counts its rows' values twice, as it does
   `count`.
