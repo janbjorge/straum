@@ -258,7 +258,7 @@ impl Fact {
     }
 
     /// The `by` keys' parts, each once.
-    pub fn by_parts(&self) -> impl Iterator<Item = KeyPart<'_>> {
+    pub(crate) fn by_parts(&self) -> impl Iterator<Item = KeyPart<'_>> {
         let mut parts: Vec<KeyPart<'_>> = Vec::new();
         for part in self.by_keys.iter().map(ByKey::key_part) {
             if !parts.contains(&part) {
@@ -269,7 +269,7 @@ impl Fact {
     }
 
     /// Whether every ref joins on fact columns, none through another dim.
-    pub fn is_direct(&self) -> bool {
+    pub(crate) fn is_direct(&self) -> bool {
         (self.refs.iter().flat_map(|r| &r.via)).all(|v| matches!(v, Via::Fact(_)))
     }
 
