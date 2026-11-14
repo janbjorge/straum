@@ -1111,23 +1111,21 @@ impl Walker {
                 sql::Expr::Value(_)
             ))]
         );
-        let aggregate: fn(Identifier) -> Aggregate = match (name.as_deref(), distinct) {
-            (Some("count"), false) if star => {
-                let filter = self.key_conds(scope, function.filter.as_deref())?;
-                return Some((Aggregate::Count, filter));
-            }
+        // `None` is count(*), the one aggregate over no column.
+        let of_column: Option<fn(Identifier) -> Aggregate> = match (name.as_deref(), distinct) {
+            (Some("count"), false) if star => None,
             (Some("count"), false) if constant => {
                 self.refuse(at, "count of a constant, use count(*),", function);
                 return None;
             }
-            (Some("count"), false) => Aggregate::CountNotNull,
-            (Some("count"), true) => Aggregate::CountDistinct,
-            (Some("sum"), false) => Aggregate::Sum,
-            (Some("min"), false) => Aggregate::Min,
-            (Some("max"), false) => Aggregate::Max,
-            (Some("avg"), false) => Aggregate::Avg,
-            (Some("bool_and"), false) => Aggregate::BoolAnd,
-            (Some("bool_or"), false) => Aggregate::BoolOr,
+            (Some("count"), false) => Some(Aggregate::CountNotNull),
+            (Some("count"), true) => Some(Aggregate::CountDistinct),
+            (Some("sum"), false) => Some(Aggregate::Sum),
+            (Some("min"), false) => Some(Aggregate::Min),
+            (Some("max"), false) => Some(Aggregate::Max),
+            (Some("avg"), false) => Some(Aggregate::Avg),
+            (Some("bool_and"), false) => Some(Aggregate::BoolAnd),
+            (Some("bool_or"), false) => Some(Aggregate::BoolOr),
             (Some("every"), _) => {
                 self.refuse(at, "every, write bool_and,", function);
                 return None;
@@ -1141,12 +1139,15 @@ impl Walker {
                 return None;
             }
         };
-        let arg = self.single(function, args)?;
-        let column = self.uncast_fact_column(scope, arg, "an aggregated column")?;
-        Some((
-            aggregate(column),
-            self.key_conds(scope, function.filter.as_deref())?,
-        ))
+        let aggregate = match of_column {
+            None => Aggregate::Count,
+            Some(of_column) => {
+                let arg = self.single(function, args)?;
+                of_column(self.uncast_fact_column(scope, arg, "an aggregated column")?)
+            }
+        };
+        let filter = self.key_conds(scope, function.filter.as_deref())?;
+        Some((aggregate, filter))
     }
 
     /// GROUP BY lists the keys by their SELECT positions, in order, so the

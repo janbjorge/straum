@@ -284,6 +284,30 @@ fn literals_and_filters() {
 }
 
 #[test]
+fn a_column_measure_takes_a_filter() {
+    let src = base(
+        "count(*) AS n",
+        "count(*) AS n, sum(f.v) FILTER (WHERE f.a = 1) AS s",
+    );
+    let spec = parse(&src).unwrap();
+    assert_eq!(
+        spec.fact("t").unwrap().measure("s").unwrap().filter,
+        [cond("a", vec![Literal::Int(1)])]
+    );
+    let errors = sql_errors(&base(
+        "count(*) AS n",
+        "count(*) AS n, sum(f.v) FILTER (WHERE f.a > 1) AS s",
+    ));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0]
+            .msg
+            .starts_with("filter condition, write = or IN joined by AND, `f.a > 1`"),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn every_agg_grain_unit_and_key_form() {
     let src = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
