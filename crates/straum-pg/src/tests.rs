@@ -66,7 +66,9 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        count(f.rider) AS named,
        sum(f.tip) AS tips,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan,
-       count(*) FILTER (WHERE f.zone_id IN (1, 2)) AS near
+       count(*) FILTER (WHERE f.zone_id IN (1, 2)) AS near,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY f.fare) AS fare_median,
+       percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip) AS tip_p90
 FROM $S.trips AS f
 LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
@@ -419,7 +421,7 @@ struct Reference {
 /// hours at either end, against the raw rows. `fare_scale` follows `fare`'s
 /// type.
 fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
-    const MEASURES: [&str; 9] = [
+    const MEASURES: [&str; 11] = [
         "trips",
         "fare",
         "fare_max",
@@ -429,11 +431,14 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
         "tips",
         "manhattan",
         "near",
+        "fare_median",
+        "tip_p90",
     ];
     let trips = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
-                    fare_max, round(fare_avg, 6), riders, named, tips, manhattan, near
+                    fare_max, round(fare_avg, 6), riders, named, tips, manhattan, near,
+                    fare_median, tip_p90
                FROM ({}) v",
             body(SPEC, "trips")
         ),
@@ -443,7 +448,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             &["bucket", "kind", "zone_id", "borough"],
         ),
         scales: vec![
-            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
         ],
     };
     let logins = Reference {
@@ -459,7 +464,9 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
                     round(avg(f.fare), 6), count(DISTINCT f.rider), count(f.rider), sum(f.tip),
                     count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
-                    count(*) FILTER (WHERE f.zone_id IN (1, 2))
+                    count(*) FILTER (WHERE f.zone_id IN (1, 2)),
+                    percentile_disc(0.5) WITHIN GROUP (ORDER BY f.fare),
+                    percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip)
                FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
               WHERE f.at >= to_timestamp({WINDOW_FROM}) AND f.at < to_timestamp({WINDOW_TO})
               GROUP BY 1, 2, 3"
@@ -470,7 +477,7 @@ fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             ..ask("trips", &MEASURES, &["kind", "zone_id", "borough"])
         },
         scales: vec![
-            0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
         ],
     };
     vec![trips, logins, window]

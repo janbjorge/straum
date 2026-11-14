@@ -138,8 +138,21 @@ the 500 and p99 is the 7th of 7, 70.
 
 The rank is taken in float8, as PostgreSQL takes it, so the answer is
 PostgreSQL's to the row: 0.07 of 100 values is the 8th there, not the
-7th. `percentile_cont`, which interpolates, is refused, and so is an
-array of fractions: write one measure per fraction.
+7th. Nulls are skipped, no values give null, and the answer keeps the
+column's type.
+
+Where PostgreSQL takes more, Straum refuses the spec:
+
+- **Column**: an integer type or `numeric(p, s)`, `p` at most 18; not
+  text, times or floats.
+- **Fraction**: digits from 0 to 1, such as `0.5`; not `.5`, `5e-1`, a
+  parameter or an expression.
+- **One fraction**: no array; write one measure per fraction.
+- **Order**: `ORDER BY alias.column` only; no `DESC`, `USING`, `NULLS`
+  or expression.
+- **Others**: no `percentile_cont`, `mode` or hypothetical-set
+  aggregates.
+- **`FILTER`**: the conditions every measure takes.
 
 The cost is in the ask. A `sum` merges a number a cell; a percentile
 gathers every value of every cell in its range and sorts them, so an
