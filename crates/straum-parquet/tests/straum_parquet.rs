@@ -421,7 +421,11 @@ fn a_straum_that_leaves_stops_the_feeder() {
     let socket = scratch.socket();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let feeder = feed(&socket, &manifest);
-    drop(listener.accept().unwrap());
+    // Gone once the feeder's hello is in, so the feeder has connected.
+    let (mut straum, _) = listener.accept().unwrap();
+    let mut hello = [0; 64];
+    assert!(std::io::Read::read(&mut straum, &mut hello).unwrap() > 0);
+    drop(straum);
     let (code, _, stderr) = finished(feeder.wait_with_output().unwrap());
     assert_eq!(code, Some(1));
     assert_eq!(
