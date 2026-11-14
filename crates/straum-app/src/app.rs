@@ -125,8 +125,6 @@ pub struct Status {
     /// The last reading of the server's WAL, while a stream runs.
     pub wal: Option<Wal>,
     pub limits: Limits,
-    /// The last failure, until the next start.
-    pub failure: Option<String>,
     /// The last failure and when it came, kept across starts.
     pub last_failure: Option<Failure>,
     /// Streams started, each with every table loaded.
@@ -243,9 +241,6 @@ impl App {
             lag,
             wal: following.map(|f| f.wal),
             limits: self.limits,
-            failure: (state.last_failure.as_ref())
-                .filter(|_| following.is_none())
-                .map(|failure| failure.error.clone()),
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,

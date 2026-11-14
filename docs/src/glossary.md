@@ -236,7 +236,7 @@ are open.
   PostgreSQL's clock.
 - **Step** (`Writer::step`): one turn of the writer: a start, or one
   commit applied. A step that fails is a **failure** (`Failure`,
-  `Status::failure`, `last_failure`).
+  `Status::last_failure`).
 - **Commit** (`Commit`): one transaction's changes, delivered and
   applied whole. "Transaction" only where PostgreSQL's word is needed,
   as in `--max-transaction-rows`.

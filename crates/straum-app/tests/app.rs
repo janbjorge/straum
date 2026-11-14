@@ -679,7 +679,7 @@ fn ready_only_within_the_lag_bound() {
     // Answers are as of before the load, not the reading after it.
     let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(behind.as_of + Duration::from_millis(2) <= SystemTime::now());
-    assert_eq!(writer.app().status().failure, None);
+    assert_eq!(writer.app().status().last_failure, None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
 
@@ -714,7 +714,6 @@ fn status_reports_what_straum_did() {
             lag: None,
             wal: None,
             limits: LIMITS,
-            failure: None,
             last_failure: None,
             starts: 0,
             failures: 0,
@@ -768,17 +767,15 @@ fn status_reports_what_straum_did() {
     assert!(!status.ready);
     assert_eq!((status.applied, status.lag, status.wal), (None, None, None));
     assert_eq!(status.as_of, None);
-    assert_eq!(status.failure.as_deref(), Some("connection dropped"));
     let failure = status.last_failure.clone().unwrap();
     assert_eq!(failure.error, "connection dropped");
     assert_eq!((status.starts, status.failures), (1, 1));
 
-    // The next start clears the error but keeps the last failure.
+    // The next start keeps the last failure.
     db.borrow_mut().wal = None;
     writer.step().unwrap();
     let after = writer.app().status();
     assert!(after.ready);
-    assert_eq!(after.failure, None);
     assert_eq!(after.last_failure, status.last_failure);
     assert_eq!((after.starts, after.failures), (2, 1));
 }
@@ -802,7 +799,7 @@ fn too_much_wal_starts_over() {
     );
     assert_eq!(err.to_string(), message);
     assert!(!writer.app().status().ready);
-    assert_eq!(writer.app().status().failure.as_deref(), Some(message));
+    assert_eq!(writer.app().status().last_failure.unwrap().error, message);
 
     // Up to the limit is fine.
     db.borrow_mut().wal = Some(held(limit));

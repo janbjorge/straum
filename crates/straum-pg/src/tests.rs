@@ -983,7 +983,7 @@ fn a_transaction_past_the_limit_starts_over() {
         parse_lsn(named).unwrap() <= parse_lsn(&lsn).unwrap(),
         "transaction {named} is past the server at {lsn}"
     );
-    assert_eq!(writer.app().status().failure.as_deref(), Some(err.as_str()));
+    assert_eq!(writer.app().status().last_failure.unwrap().error, err);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run(&rng.trip(300));
@@ -1314,7 +1314,7 @@ fn a_poison_value_names_its_column() {
             && err.ends_with("as a numeric of scale 2 in column fare of poison.trips"),
         "{err}"
     );
-    assert_eq!(writer.app().status().failure.as_deref(), Some(err.as_str()));
+    assert_eq!(writer.app().status().last_failure.unwrap().error, err);
     db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");

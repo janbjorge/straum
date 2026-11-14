@@ -13,9 +13,10 @@ pub(crate) fn why_not(status: &Status) -> Option<String> {
     if status.ready {
         return None;
     }
-    Some(match (&status.failure, status.lag) {
-        (Some(error), _) => error.clone(),
-        (None, Some(lag)) => format!("{} s behind PostgreSQL", lag.as_secs()),
+    // No lag means no stream: the last failure, if any, is why.
+    Some(match (status.lag, &status.last_failure) {
+        (Some(lag), _) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        (None, Some(failure)) => failure.error.clone(),
         (None, None) => "loading".to_owned(),
     })
 }
@@ -112,7 +113,6 @@ mod tests {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: 4 << 30,
             },
-            failure: None,
             last_failure: Some(Failure {
                 at: UNIX_EPOCH + Duration::from_secs(1_704_067_200),
                 error: "a change no longer fits trips".to_owned(),
@@ -159,7 +159,6 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
             as_of: None,
             lag: None,
             wal: None,
-            failure: Some("trips: one\ntrips: two".to_owned()),
             last_failure: Some(Failure {
                 at: UNIX_EPOCH,
                 error: "trips: one\ntrips: two".to_owned(),
@@ -185,7 +184,7 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
         );
 
         let loading = Status {
-            failure: None,
+            last_failure: None,
             ..failed
         };
         assert_eq!(why_not(&loading).as_deref(), Some("loading"));
