@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="900" viewBox="0 0 880 900" role="img" aria-labelledby="t d">
-  <title id="t">How Straum starts and follows PostgreSQL</title>
-  <desc id="d">The writer thread opens a replication connection, starts a read-only repeatable-read transaction, creates a temporary logical slot that exports its snapshot at LSN L, checks the catalog, loads dims and facts with separate binary COPY operations, and commits after the last load. Straum projects dim rows and groups fact rows. It then starts replication from L and hands the socket to a stream thread, which queues commits for the writer and reports the applied LSN every second.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="312" viewBox="0 0 720 312" role="img" aria-labelledby="t d">
+  <title id="t">The load and the stream meet at one point, L</title>
+  <desc id="d">A timeline of commits in PostgreSQL's WAL. Straum opens a temporary slot at L. Every commit up to L is in the snapshot, which Straum loads with one COPY per table while asks get 503. Every commit after L comes through the slot and is applied whole and in order, and asks are answered. No commit is missed and none is applied twice.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,81 +86,43 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="899" rx="10"/>
-  <text x="32" y="42" class="title">Load and stream meet at one LSN, L</text>
-  <text x="32" y="64" class="sub muted">Writer, stream thread and the replication connection, from Source::open to steady state.</text>
-  <rect class="box2" x="40" y="88" width="160" height="46" rx="6"/>
-  <text x="120" y="108" class="h" text-anchor="middle">writer thread</text>
-  <text x="120" y="125" class="s muted" text-anchor="middle">straum-app Writer</text>
-  <rect class="box2" x="560" y="88" width="160" height="46" rx="6"/>
-  <text x="640" y="108" class="h" text-anchor="middle">PostgreSQL</text>
-  <text x="640" y="125" class="s muted" text-anchor="middle">replication connection</text>
-  <path class="life" d="M120 134L120 876"/>
-  <path class="life" d="M640 134L640 876"/>
-  <rect class="band" x="32" y="146" width="816" height="26" rx="4"/>
-  <text x="44" y="163" class="lbl muted">LOAD</text>
-  <text x="112" y="163" class="s muted">asks answer 503 not ready</text>
-  <rect class="errbox" x="635" y="214" width="10" height="270" rx="2"/>
-  <text x="668" y="222" class="lbl err">SNAPSHOT TRANSACTION</text>
-  <text x="668" y="242" class="s ink2">Sees the database as of L.</text>
-  <text x="668" y="259" class="s ink2">Pins xmin for the whole</text>
-  <text x="668" y="276" class="s ink2">database and locks every</text>
-  <text x="668" y="293" class="s ink2">table it reads, so it ends</text>
-  <text x="668" y="310" class="s ink2">with the last load.</text>
-  <path class="a" d="M120 198 L636 198" marker-end="url(#m)"/>
-  <text x="134" y="190">connect with replication=database, TLS, TimeZone=UTC</text>
-  <path class="a" d="M120 232 L636 232" marker-end="url(#m)"/>
-  <text x="134" y="224" class="mono">BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ</text>
-  <path class="a" d="M120 282 L636 282" marker-end="url(#m)"/>
-  <text x="134" y="258" class="mono">CREATE_REPLICATION_SLOT straum_&lt;pid&gt;_&lt;ns&gt;_&lt;n&gt;</text>
-  <text x="134" y="274" class="mono" xml:space="preserve">  TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')</text>
-  <path class="a-acc" d="M640 316 L124 316" marker-end="url(#m-acc)"/>
-  <text x="134" y="308" xml:space="preserve"><tspan class="mono acc">consistent_point </tspan><tspan class="mono b acc">L</tspan></text>
-  <rect class="accbox" x="627" y="304" width="26" height="22" rx="11"/>
-  <text x="640" y="320" class="b acc" text-anchor="middle">L</text>
-  <path class="a" d="M120 366 L636 366" marker-end="url(#m)"/>
-  <text x="134" y="342">catalog checks: publication, privileges, column types,</text>
-  <text x="134" y="358">dim keys, replica identity; each problem names its fix</text>
-  <path class="a" d="M120 400 L636 400" marker-end="url(#m)"/>
-  <text x="134" y="392" xml:space="preserve"><tspan class="s muted">per dim and fact: </tspan><tspan class="mono">COPY (SELECT columns …)</tspan></text>
-  <path class="a" d="M120 434 L636 434" marker-end="url(#m)"/>
-  <text x="134" y="426" xml:space="preserve"><tspan class="s muted">rows grouped into </tspan><tspan class="mono">cells</tspan><tspan class="s muted"> as they come</tspan></text>
-  <path class="a" d="M120 476 L636 476" marker-end="url(#m)"/>
-  <text x="134" y="468" xml:space="preserve"><tspan class="mono">COMMIT</tspan><tspan class="s muted">  right after the last load</tspan></text>
-  <rect class="accbox" x="32" y="494" width="176" height="48" rx="5"/>
-  <text x="120" y="516" class="s b" text-anchor="middle">swap the loaded store in</text>
-  <text x="120" y="533" class="s" text-anchor="middle">position = L, /readyz 200</text>
-  <rect class="band" x="32" y="552" width="816" height="26" rx="4"/>
-  <text x="44" y="569" class="lbl muted">STREAM</text>
-  <text x="112" y="569" class="s muted">asks answer at the applied LSN</text>
-  <path class="a" d="M120 620 L636 620" marker-end="url(#m)"/>
-  <text x="134" y="596" class="mono">START_REPLICATION SLOT straum_&lt;pid&gt;_&lt;ns&gt;_&lt;n&gt; LOGICAL L</text>
-  <text x="134" y="612" class="mono" xml:space="preserve">  (proto_version '1', publication_names '"straum"')</text>
-  <path class="a" d="M120 660 L306 660" marker-end="url(#m)"/>
-  <text x="134" y="652" class="s">hand over the socket</text>
-  <rect class="box2" x="310" y="640" width="160" height="40" rx="6"/>
-  <text x="390" y="665" class="h" text-anchor="middle">stream thread</text>
-  <path class="life" d="M390 680L390 876"/>
-  <rect class="frame" x="84" y="694" width="590" height="172" rx="6"/>
-  <rect class="box2" x="84" y="694" width="132" height="20" rx="6"/>
-  <text x="96" y="708" class="lbl muted">each transaction</text>
-  <path class="a" d="M640 744 L394 744" marker-end="url(#m)"/>
-  <text x="404" y="720">XLogData: Begin, Relation,</text>
-  <text x="404" y="736">changes, Commit</text>
-  <path class="a" d="M390 778 L124 778" marker-end="url(#m)"/>
-  <text x="134" y="770">Commit, via a queue of 64</text>
-  <rect class="accbox" x="115" y="784" width="10" height="34" rx="2"/>
-  <text x="134" y="806" class="s">apply under the write lock;</text>
-  <text x="134" y="822" class="s muted">position = end of the commit</text>
-  <path class="a" d="M390 816 L636 816" marker-end="url(#m)"/>
-  <text x="404" y="792">status every 1 s:</text>
-  <text x="404" y="808">written = flushed = applied</text>
-  <path class="a-cfg" d="M120 850 L386 850" marker-end="url(#m)"/>
-  <text x="224" y="842">applied LSN, an atomic</text>
-  <text x="688" y="744" class="lbl acc">STREAM THREAD</text>
-  <text x="688" y="764" class="s ink2">Answers keepalives while</text>
-  <text x="688" y="781" class="s ink2">the writer is busy, so the</text>
-  <text x="688" y="798" class="s ink2">server never times it out.</text>
-  <text x="688" y="815" class="s ink2">WAL up to the applied LSN</text>
-  <text x="688" y="832" class="s ink2">can be recycled.</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="311" rx="10"/>
+  <text x="24" y="38" class="title">The load and the stream meet at one point, L</text>
+  <text x="24" y="62" class="s muted">Each dot is a commit in PostgreSQL, oldest first.</text>
+  <path class="rule" d="M24 150 L692 150"/>
+  <circle class="fillink" cx="44" cy="150" r="5"/>
+  <circle class="fillink" cx="76" cy="150" r="5"/>
+  <circle class="fillink" cx="108" cy="150" r="5"/>
+  <circle class="fillink" cx="140" cy="150" r="5"/>
+  <circle class="fillink" cx="172" cy="150" r="5"/>
+  <circle class="fillink" cx="204" cy="150" r="5"/>
+  <circle class="fillink" cx="236" cy="150" r="5"/>
+  <circle class="fillink" cx="268" cy="150" r="5"/>
+  <circle class="fillink" cx="300" cy="150" r="5"/>
+  <circle class="fillacc" cx="396" cy="150" r="5"/>
+  <circle class="fillacc" cx="428" cy="150" r="5"/>
+  <circle class="fillacc" cx="460" cy="150" r="5"/>
+  <circle class="fillacc" cx="492" cy="150" r="5"/>
+  <circle class="fillacc" cx="524" cy="150" r="5"/>
+  <circle class="fillacc" cx="556" cy="150" r="5"/>
+  <circle class="fillacc" cx="588" cy="150" r="5"/>
+  <circle class="fillacc" cx="620" cy="150" r="5"/>
+  <circle class="fillacc" cx="652" cy="150" r="5"/>
+  <circle class="fillacc" cx="684" cy="150" r="5"/>
+  <path class="rule" d="M34 116 V108 H334 V116"/>
+  <text x="184" y="100" class="s ink2" text-anchor="middle">commits up to L: in the snapshot</text>
+  <path class="rule" d="M354 116 V108 H686 V116"/>
+  <text x="520" y="100" class="s acc" text-anchor="middle">commits after L: through the slot</text>
+  <path class="life" d="M344 120 V292"/>
+  <circle class="accbox" cx="344" cy="150" r="14"/>
+  <text x="344" y="155" class="b acc" text-anchor="middle">L</text>
+  <text x="344" y="186" class="s ink2 halo" text-anchor="middle">the slot opens here</text>
+  <rect class="box" x="24" y="206" width="310" height="82" rx="8"/>
+  <text x="38" y="231" class="h">Load</text>
+  <text x="38" y="252" class="s ink2">one COPY per table, from the</text>
+  <text x="38" y="271" class="s ink2">snapshot; asks answer 503</text>
+  <rect class="accbox" x="354" y="206" width="342" height="82" rx="8"/>
+  <text x="368" y="231" class="h acc">Follow</text>
+  <text x="368" y="252" class="s ink2">each commit after L, whole and</text>
+  <text x="368" y="271" class="s ink2">in order; asks are answered</text>
 </svg>

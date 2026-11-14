@@ -15,11 +15,10 @@ snapshot, then streams every commit after L through the slot. No
 commit is missed between the load and the stream, and none is applied
 twice.
 
-![How a start goes from connect to streaming](diagrams/start.svg)
+![The load and the stream split the commits at L](diagrams/start.svg)
 
-*The writer opens the slot, checks the catalog against the spec,
-loads every table in the snapshot, then streams from L. A stream
-thread hands each commit to the writer.*
+*Every commit up to L comes in with the load, every commit after it
+through the slot. None comes in both ways, and none in neither.*
 
 A load is one binary `COPY` of the columns the spec names, grouped
 into cells as the rows come, so Straum never holds a fact table.
