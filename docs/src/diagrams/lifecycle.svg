@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="648" viewBox="0 0 880 648" role="img" aria-labelledby="t d">
-  <title id="t">Straum lifecycle and readiness</title>
-  <desc id="d">Writer states: Loading turns Ready when every table is loaded. Ready and Lagging both stream and answer asks; Lagging means more than --max-lag behind, and /readyz is 503. Any failure, including retained WAL over --max-retained-wal, clears readiness and waits with backoff before loading again from a new slot. SIGTERM stops Straum. A memory budget is planned.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="376" viewBox="0 0 720 376" role="img" aria-labelledby="t d">
+  <title id="t">/readyz is 200 only while Straum keeps up</title>
+  <desc id="d">Straum starts in Loading. Loading turns Ready once every table is loaded. Ready turns Lagging past --max-lag behind and back when it catches up; both answer asks. A failure in any of them leads to Waiting: 1 s, doubling, up to 60 s, then Loading from a new slot. SIGTERM, in any state, leads to Stopping, which drains asks and exits.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,68 +86,46 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="647" rx="10"/>
-  <text x="32" y="42" class="title">/readyz is 200 only while Straum streams and keeps up</text>
-  <text x="32" y="64" class="sub muted">Writer states, readiness in each, and what moves Straum between them.</text>
-  <rect class="frame" x="414" y="154" width="234" height="350" rx="10"/>
-  <text x="430" y="494" class="lbl acc">STREAMING, ASKS ANSWER</text>
-  <circle class="fillink" cx="48" cy="224" r="7"/>
-  <path class="a" d="M55 224 L80 224" marker-end="url(#m)"/>
-  <rect class="box" x="84" y="170" width="206" height="108" rx="8"/>
-  <text x="98" y="196" class="h">Loading</text>
-  <text x="98" y="216" class="s ink2">new temporary slot, catalog</text>
-  <text x="98" y="232" class="s ink2">checks, dims then facts</text>
-  <path class="rule" d="M84 248H290"/>
-  <text x="98" y="268" xml:space="preserve"><tspan class="mono muted">/readyz </tspan><tspan class="mono b err">503</tspan><tspan class="mono"> loading</tspan></text>
-  <rect class="accbox" x="432" y="170" width="206" height="108" rx="8"/>
-  <text x="446" y="196" class="h acc">Ready</text>
-  <text x="446" y="216" class="s ink2">applies commits; at most</text>
-  <text x="446" y="232" class="s ink2">--max-lag behind</text>
-  <path class="rule" d="M432 248H638"/>
-  <text x="446" y="268" xml:space="preserve"><tspan class="mono muted">/readyz </tspan><tspan class="mono b acc">200</tspan><tspan class="mono"> ready</tspan></text>
-  <rect class="box" x="432" y="366" width="206" height="108" rx="8"/>
-  <text x="446" y="392" class="h">Lagging</text>
-  <text x="446" y="412" class="s ink2">more than --max-lag behind,</text>
-  <text x="446" y="428" class="s ink2">30 s by default</text>
-  <path class="rule" d="M432 444H638"/>
-  <text x="446" y="464" xml:space="preserve"><tspan class="mono muted">/readyz </tspan><tspan class="mono b err">503</tspan><tspan class="mono"> &lt;n&gt; s behind</tspan></text>
-  <rect class="errbox" x="84" y="366" width="206" height="108" rx="8"/>
-  <text x="98" y="392" class="h err">Waiting</text>
-  <text x="98" y="412" class="s ink2">1 s, doubling after each</text>
-  <text x="98" y="428" class="s ink2">failure in a row, up to 60 s</text>
-  <path class="rule" d="M84 444H290"/>
-  <text x="98" y="464" xml:space="preserve"><tspan class="mono muted">/readyz </tspan><tspan class="mono b err">503</tspan><tspan class="mono"> &lt;the error&gt;</tspan></text>
-  <rect class="box" x="704" y="170" width="144" height="108" rx="8"/>
-  <text x="718" y="196" class="h">Stopping</text>
-  <text x="718" y="216" class="s ink2">stops accepting,</text>
-  <text x="718" y="232" class="s ink2">drains asks, exits</text>
-  <path class="rule" d="M704 248H848"/>
-  <text x="718" y="268" xml:space="preserve"><tspan class="s muted">PG drops the slot</tspan></text>
-  <path class="a-acc" d="M290 210 L428 210" marker-end="url(#m-acc)"/>
-  <text x="352" y="202" class="s" text-anchor="middle">every table</text>
-  <text x="352" y="228" class="s" text-anchor="middle">loaded</text>
-  <path class="a-acc" d="M560 170 C560 140 616 140 616 166" marker-end="url(#m-acc)"/>
-  <text x="588" y="136" class="s acc halo" text-anchor="middle">commit applied</text>
-  <path class="a" d="M470 278 L470 362" marker-end="url(#m)"/>
-  <path class="a" d="M600 362 L600 278" marker-end="url(#m)"/>
-  <text x="480" y="312" class="s ink2">falls behind</text>
-  <text x="590" y="336" class="s ink2" text-anchor="end">catches up</text>
-  <path class="a-err" d="M150 278 L150 362" marker-end="url(#m-err)"/>
-  <text x="140" y="324" class="s err" text-anchor="end">failure</text>
-  <path class="a" d="M230 362 L230 282" marker-end="url(#m)"/>
-  <text x="240" y="324" class="s ink2">new slot</text>
-  <path class="a-err" d="M414 420 L294 420" marker-end="url(#m-err)"/>
-  <text x="354" y="412" class="s err halo" text-anchor="middle">any failure</text>
-  <path class="a" d="M648 210 L700 210" marker-end="url(#m)"/>
-  <text x="674" y="202" class="s halo" text-anchor="middle">SIGTERM</text>
-  <path class="a-plan" d="M648 420 L700 420" marker-end="url(#m-plan)"/>
-  <rect class="planbox" x="704" y="392" width="144" height="56" rx="8"/>
-  <text x="718" y="415" class="h plantext">Failed</text>
-  <text x="836" y="415" class="s plantext" text-anchor="end">planned</text>
-  <text x="718" y="434" class="s plantext">memory over budget</text>
-  <path class="rule" d="M32 524H848"/>
-  <text x="32" y="548" xml:space="preserve"><tspan class="s b err">Failures: </tspan><tspan class="s ink2">setup missing, a load or source error, a lost connection or failover, a change that doesn’t fit,</tspan></text>
-  <text x="32" y="568" xml:space="preserve"><tspan class="s ink2">and the slot holding more WAL than </tspan><tspan class="mono">--max-retained-wal</tspan><tspan class="s ink2"> (4Gi by default), so a Straum that can’t keep up never fills the disk.</tspan></text>
-  <text x="32" y="588" xml:space="preserve"><tspan class="mono">/livez</tspan><tspan class="s ink2"> answers 200 in every state, so lag never restarts the pod. </tspan><tspan class="s muted">After a failure, /readyz keeps the error until a load succeeds.</tspan></text>
-  <text x="32" y="608" xml:space="preserve"><tspan class="s ink2">A panic aborts the process, since the store may be half written; Kubernetes restarts the pod.</tspan></text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="375" rx="10"/>
+  <text x="24" y="38" class="title">/readyz is 200 only while Straum keeps up</text>
+  <rect class="frame" x="270" y="80" width="220" height="276" rx="10"/>
+  <text x="380" y="344" class="lbl acc" text-anchor="middle">ASKS ANSWERED</text>
+  <circle class="fillink" cx="107" cy="70" r="6"/>
+  <path class="a" d="M107 76 L107 92" marker-end="url(#m)"/>
+  <rect class="box" x="24" y="96" width="166" height="74" rx="8"/>
+  <text x="38" y="121" class="h">Loading</text>
+  <text x="38" y="142" class="s ink2">every table, from</text>
+  <text x="38" y="161" class="s ink2">a new slot</text>
+  <rect class="accbox" x="286" y="96" width="188" height="74" rx="8"/>
+  <text x="300" y="121" class="h acc">Ready</text>
+  <text x="300" y="142" class="s ink2">applies commits</text>
+  <text x="300" y="161" class="s ink2">and keeps up</text>
+  <rect class="box" x="286" y="250" width="188" height="74" rx="8"/>
+  <text x="300" y="275" class="h">Lagging</text>
+  <text x="300" y="296" class="s ink2">more than</text>
+  <text x="300" y="315" class="mono ink2">--max-lag behind</text>
+  <rect class="errbox" x="24" y="250" width="166" height="74" rx="8"/>
+  <text x="38" y="275" class="h err">Waiting</text>
+  <text x="38" y="296" class="s ink2">1 s, doubling,</text>
+  <text x="38" y="315" class="s ink2">up to 60 s</text>
+  <rect class="box" x="556" y="172" width="140" height="74" rx="8"/>
+  <text x="570" y="197" class="h">Stopping</text>
+  <text x="570" y="218" class="s ink2">drains asks,</text>
+  <text x="570" y="237" class="s ink2">then exits</text>
+  <text x="626" y="268" class="s muted" text-anchor="middle">from any state</text>
+  <path class="a-acc" d="M190 133 L282 133" marker-end="url(#m-acc)"/>
+  <text x="230" y="125" class="s ink2 halo" text-anchor="middle">loaded</text>
+  <path class="a" d="M340 170 L340 246" marker-end="url(#m)"/>
+  <text x="346" y="200" class="s ink2 halo" text-anchor="start">behind</text>
+  <path class="a" d="M420 250 L420 174" marker-end="url(#m)"/>
+  <text x="414" y="226" class="s ink2 halo" text-anchor="end">caught up</text>
+  <path class="a-err" d="M80 170 L80 246" marker-end="url(#m-err)"/>
+  <text x="72" y="212" class="s err halo" text-anchor="end">failure</text>
+  <path class="a" d="M140 250 L140 174" marker-end="url(#m)"/>
+  <text x="146" y="216" class="s ink2 halo" text-anchor="start">after</text>
+  <text x="146" y="234" class="s ink2 halo" text-anchor="start">the wait</text>
+  <path class="a-err" d="M270 300 L194 300" marker-end="url(#m-err)"/>
+  <text x="232" y="292" class="s err halo" text-anchor="middle">failure</text>
+  <path class="a" d="M490 209 L552 209" marker-end="url(#m)"/>
+  <text x="521" y="201" class="mono ink2 halo" text-anchor="middle">SIGTERM</text>
 </svg>
