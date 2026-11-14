@@ -10,9 +10,13 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Datum, Dim, Fact, Identifier, Measure,
-    Origin, Ref, RefKind, Spec, Store, Table, Time, TimeKey, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Datum, Dim, Fact, Measure, Origin, Ref,
+    RefKind, Spec, Store, Time, TimeKey, Via, Width,
 };
+
+mod common;
+
+use common::{id, table};
 
 thread_local! {
     static ALLOCS: Cell<usize> = const { Cell::new(0) };
@@ -58,10 +62,6 @@ const HOUR: u32 = 3600;
 const ZONES: i64 = 40;
 const BOROUGHS: [&str; 4] = ["m", "q", "b", "x"];
 
-fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
-}
-
 fn key(s: &str) -> AskKey {
     AskKey::Key(id(s))
 }
@@ -74,10 +74,6 @@ fn spec(buckets: &[u32]) -> Spec {
 
 /// As [`spec`]; unless `joined`, without the zones.
 fn spec_of(buckets: &[u32], joined: bool) -> Spec {
-    let table = |name| Table {
-        schema: id("public"),
-        name: id(name),
-    };
     let m = |name, aggregate| Measure {
         name: id(name),
         aggregate,

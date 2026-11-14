@@ -7,12 +7,12 @@ use std::collections::{BTreeMap, HashSet};
 
 mod common;
 
-use common::{Rng, Spilled, cond, dim_row, holds, id, lit, table, text};
+use common::{Rng, Spilled, attr, col, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
-    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, Attribute, ByKey,
-    ColumnType, Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref,
-    RefKind, RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey,
-    Value, Via, Width,
+    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
+    Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref, RefKind,
+    RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey, Value, Via,
+    Width,
 };
 
 const WIDTH: u32 = 900;
@@ -72,20 +72,6 @@ const KEYS: [&str; 14] = [
     "vend_label",
     "home_borough",
 ];
-
-fn col(s: &str) -> ByKey {
-    ByKey::Column {
-        column: id(s),
-        name: id(s),
-    }
-}
-
-fn attr(name: &str, column: &str) -> Attribute {
-    Attribute {
-        name: id(name),
-        column: id(column),
-    }
-}
 
 fn spec() -> Spec {
     spec_joining(RefKind::Left)

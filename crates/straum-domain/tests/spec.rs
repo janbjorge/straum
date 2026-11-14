@@ -2,21 +2,13 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, Attribute, ByKey, Condition, Dim, Fact, Identifier, Key,
-    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Table, Time, TimeKey, Via,
-    Width,
+    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Identifier, Key, Literal,
+    Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, TimeKey, Via, Width,
 };
 
-fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
-}
+mod common;
 
-fn table(name: &str) -> Table {
-    Table {
-        schema: id("public"),
-        name: id(name),
-    }
-}
+use common::{attr, col, id, table};
 
 fn dim() -> Dim {
     Dim {
@@ -53,20 +45,6 @@ fn fact() -> Fact {
             aggregate: Aggregate::Count,
             filter: vec![],
         }],
-    }
-}
-
-fn col(s: &str) -> ByKey {
-    ByKey::Column {
-        column: id(s),
-        name: id(s),
-    }
-}
-
-fn attr(name: &str, column: &str) -> Attribute {
-    Attribute {
-        name: id(name),
-        column: id(column),
     }
 }
 

@@ -1,13 +1,31 @@
-//! Helpers the store and join tests share.
+//! Helpers the tests share.
+
+// Every test binary compiles this module and uses only some of it.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 
 use straum_domain::{
-    Answer, Ask, Condition, Datum, Identifier, Literal, Sealed, SealedId, Store, Table,
+    Answer, Ask, Attribute, ByKey, Condition, Datum, Identifier, Literal, Sealed, SealedId, Store,
+    Table,
 };
 
 pub fn id(s: &str) -> Identifier {
     Identifier::new(s).unwrap()
+}
+
+pub fn col(s: &str) -> ByKey {
+    ByKey::Column {
+        column: id(s),
+        name: id(s),
+    }
+}
+
+pub fn attr(name: &str, column: &str) -> Attribute {
+    Attribute {
+        name: id(name),
+        column: id(column),
+    }
 }
 
 pub fn text(s: &str) -> Datum {
