@@ -558,17 +558,19 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
             .chain(std::iter::once(("WHERE".to_owned(), &fact.filter)));
         for (what, conds) in filters {
             for cond in conds {
-                let (table, column) = match fact.resolve(&cond.key).expect("checked by Spec::new") {
-                    Key::ByKey(ByKey::Column { column, .. }) => (facts, column),
-                    Key::ByKey(ByKey::IsNull { .. }) => (facts, &fact.time.column),
-                    Key::Attribute(r, attr) => (tables.dim(&r.dim), &attr.column),
-                };
-                let column_type = match fact.resolve(&cond.key).expect("checked by Spec::new") {
-                    Key::ByKey(ByKey::IsNull { .. }) => ColumnType::Bool,
-                    Key::ByKey(ByKey::Column { .. }) | Key::Attribute(..) => {
-                        table.column_type(column)
-                    }
-                };
+                let (table, column, column_type) =
+                    match fact.resolve(&cond.key).expect("checked by Spec::new") {
+                        Key::ByKey(ByKey::Column { column, .. }) => {
+                            (facts, column, facts.column_type(column))
+                        }
+                        Key::ByKey(ByKey::IsNull { .. }) => {
+                            (facts, &fact.time.column, ColumnType::Bool)
+                        }
+                        Key::Attribute(r, attr) => {
+                            let dim = tables.dim(&r.dim);
+                            (dim, &attr.column, dim.column_type(&attr.column))
+                        }
+                    };
                 let labels = catalog.labels(table, column);
                 for value in &cond.values {
                     // The rule asks follow too.
