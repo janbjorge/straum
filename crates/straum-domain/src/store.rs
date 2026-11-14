@@ -123,21 +123,21 @@ impl Bound {
         }
     }
 
-    /// One owned join per way the refs resolve `via_keys`. `overlay`
-    /// stands in for one dim key, so a change can expand the rows it
-    /// held before the projection moved.
-    fn ways(
+    /// One join per way the refs resolve `via_keys`. `overlay` stands in
+    /// for one dim key, so a change can expand the rows it held before the
+    /// projection moved.
+    fn ways<'a>(
         &self,
-        projections: &[Projection],
+        projections: &'a [Projection],
         via_keys: &[Vec<Datum>],
-        overlay: Option<Overlay<'_>>,
-    ) -> Vec<Way> {
-        let mut joined: Vec<Way> = vec![Vec::new()];
+        overlay: Option<Overlay<'a>>,
+    ) -> Vec<JoinRow<'a>> {
+        let mut joined: Vec<JoinRow<'a>> = vec![Vec::new()];
         for (r, via) in self.refs.iter().zip(via_keys) {
             let matches = matched(projections, r, via, overlay);
             let mut next = Vec::new();
             for way in &joined {
-                keep_owned(r.kind, matches, way, &mut next);
+                keep(r.kind, matches, way, &mut next);
             }
             joined = next;
         }
@@ -1056,10 +1056,6 @@ fn cover<'r>(
 /// no row.
 type JoinRow<'s> = Vec<Option<&'s [u32]>>;
 
-/// As [`JoinRow`], owning its codes so a dim change can expand the rows
-/// a key held before the projection moved.
-type Way = Vec<Option<Box<[u32]>>>;
-
 /// The attribute rows one dim key held, used in place of the projection.
 #[derive(Clone, Copy)]
 struct Overlay<'a> {
@@ -1081,23 +1077,6 @@ fn matched<'a>(
         return overlay.rows;
     }
     projections[r.dim].matches(via)
-}
-
-fn keep_owned(kind: RefKind, matches: &[Box<[u32]>], way: &Way, next: &mut Vec<Way>) {
-    let with = |found: Option<&[u32]>| {
-        let mut way = way.clone();
-        way.push(found.map(|codes| codes.to_vec().into_boxed_slice()));
-        way
-    };
-    match kind {
-        RefKind::Left if matches.is_empty() => next.push(with(None)),
-        RefKind::Left | RefKind::Inner => {
-            next.extend(matches.iter().map(|codes| with(Some(codes))));
-        }
-        RefKind::Semi if !matches.is_empty() => next.push(with(None)),
-        RefKind::Anti if matches.is_empty() => next.push(with(None)),
-        RefKind::Semi | RefKind::Anti => {}
-    }
 }
 
 /// Whether cell `i` joins `key` of dim `d` through any ref.
