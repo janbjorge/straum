@@ -21,11 +21,7 @@ pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
             other => walker.refuse(line(other), "statement", other),
         }
     }
-    if walker.errors.is_empty() {
-        Ok((dims, facts))
-    } else {
-        Err(walker.errors)
-    }
+    walker.finish(Some((dims, facts)))
 }
 
 struct Body {

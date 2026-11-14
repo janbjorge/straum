@@ -65,6 +65,13 @@ impl Walker {
         self.errors.push(SqlError { line, msg });
     }
 
+    fn finish<T>(self, value: Option<T>) -> Result<T, Vec<SqlError>> {
+        match value {
+            Some(value) if self.errors.is_empty() => Ok(value),
+            _ => Err(self.errors),
+        }
+    }
+
     fn refuse(&mut self, line: u64, what: &str, node: &impl fmt::Display) {
         let text = node.to_string();
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");

@@ -42,10 +42,7 @@ pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<
             walker.error(0, format!("parameter ${} is not used", i + 1));
         }
     }
-    match ask {
-        Some(ask) if walker.errors.is_empty() => Ok(ask),
-        _ => Err(walker.errors),
-    }
+    walker.finish(ask)
 }
 
 pub(super) struct Params<'a> {
