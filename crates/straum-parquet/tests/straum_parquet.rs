@@ -78,6 +78,8 @@ struct Scratch(PathBuf);
 
 static SCRATCH: AtomicUsize = AtomicUsize::new(0);
 
+static SOCKET: AtomicUsize = AtomicUsize::new(0);
+
 impl Scratch {
     fn new() -> Scratch {
         let n = SCRATCH.fetch_add(1, Ordering::Relaxed);
@@ -88,6 +90,13 @@ impl Scratch {
 
     fn path(&self, name: &str) -> String {
         self.0.join(name).to_str().unwrap().to_owned()
+    }
+
+    /// A path no feed has bound. A feed leaves its socket behind, and a
+    /// child another test is spawning holds the closed listener until it
+    /// execs, so the same path can still read as in use.
+    fn socket(&self) -> String {
+        self.path(&format!("feed-{}", SOCKET.fetch_add(1, Ordering::Relaxed)))
     }
 
     fn file(&self, name: &str, text: &str) -> String {
@@ -197,16 +206,15 @@ fn output(args: &[&str]) -> (Option<i32>, String, String) {
     finished(feeder(args).output().unwrap())
 }
 
-/// Straum's writer over a feed at the scratch directory's socket.
-fn writer(scratch: &Scratch) -> Writer<Feed> {
-    let feed = Feed::bind(scratch.path("feed")).unwrap();
+/// Straum's writer over a feed at `socket`.
+fn writer(socket: &str) -> Writer<Feed> {
+    let feed = Feed::bind(socket).unwrap();
     let spec = straum_notation::parse(SPEC).unwrap();
     Writer::new(App::new(spec, LIMITS, None), feed)
 }
 
-fn feed(scratch: &Scratch, manifest: &str) -> Child {
-    let socket = scratch.path("feed");
-    feeder(&["--manifest", manifest, "--feed", &socket])
+fn feed(socket: &str, manifest: &str) -> Child {
+    feeder(&["--manifest", manifest, "--feed", socket])
         .spawn()
         .unwrap()
 }
@@ -216,8 +224,9 @@ fn start(
     scratch: &Scratch,
     manifest: &str,
 ) -> (Result<Step, String>, (Option<i32>, String, String)) {
-    let mut writer = writer(scratch);
-    let feeder = feed(scratch, manifest);
+    let socket = scratch.socket();
+    let mut writer = writer(&socket);
+    let feeder = feed(&socket, manifest);
     let step = writer.step().map_err(|e| e.to_string());
     (step, finished(feeder.wait_with_output().unwrap()))
 }
@@ -282,8 +291,9 @@ fn feeds_the_taxi_trips_from_parquet() {
 fn asks_answer_what_the_files_hold() {
     let scratch = Scratch::new();
     let manifest = taxi(&scratch);
-    let mut writer = writer(&scratch);
-    let feeder = feed(&scratch, &manifest);
+    let socket = scratch.socket();
+    let mut writer = writer(&socket);
+    let feeder = feed(&socket, &manifest);
     writer.step().unwrap();
     assert!(feeder.wait_with_output().unwrap().status.success());
     let app = writer.app();
@@ -408,9 +418,9 @@ fn straum_refusing_a_table_stops_the_feeder() {
 fn a_straum_that_leaves_stops_the_feeder() {
     let scratch = Scratch::new();
     let manifest = taxi(&scratch);
-    let socket = scratch.path("feed");
+    let socket = scratch.socket();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    let feeder = feed(&scratch, &manifest);
+    let feeder = feed(&socket, &manifest);
     drop(listener.accept().unwrap());
     let (code, _, stderr) = finished(feeder.wait_with_output().unwrap());
     assert_eq!(code, Some(1));
@@ -424,8 +434,9 @@ fn a_straum_that_leaves_stops_the_feeder() {
 fn a_straum_that_leaves_mid_table_stops_the_feeder() {
     let scratch = Scratch::new();
     let manifest = taxi(&scratch);
-    let listener = std::os::unix::net::UnixListener::bind(scratch.path("feed")).unwrap();
-    let feeder = feed(&scratch, &manifest);
+    let socket = scratch.socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let feeder = feed(&socket, &manifest);
     let (mut straum, _) = listener.accept().unwrap();
     // A load of the trips' fares, as Straum asks for one, and then gone.
     let text = |text: &str| [&(text.len() as u32).to_be_bytes()[..], text.as_bytes()].concat();
