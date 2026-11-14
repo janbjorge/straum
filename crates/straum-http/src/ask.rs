@@ -33,9 +33,12 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
                 errors.push(format!("\"query\" must be a string, not {}", other.kind()))
             }
             ("parameters", Json::Array(items)) => {
-                parameters = (items.iter().enumerate())
-                    .filter_map(|(i, item)| literal(i, item, &mut errors))
-                    .collect();
+                for (i, item) in items.iter().enumerate() {
+                    match literal(i, item) {
+                        Ok(literal) => parameters.push(literal),
+                        Err(error) => errors.push(error),
+                    }
+                }
             }
             ("parameters", other) => errors.push(format!(
                 "\"parameters\" must be an array, not {}",
@@ -53,22 +56,18 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
     }
 }
 
-fn literal(i: usize, value: &Json, errors: &mut Vec<String>) -> Option<Literal> {
-    let literal = match value {
-        Json::Int(n) => Literal::Int(*n),
-        Json::Text(s) => Literal::Text(s.clone()),
-        Json::Bool(b) => Literal::Bool(*b),
+fn literal(i: usize, value: &Json) -> Result<Literal, String> {
+    match value {
+        Json::Int(n) => Ok(Literal::Int(*n)),
+        Json::Text(s) => Ok(Literal::Text(s.clone())),
+        Json::Bool(b) => Ok(Literal::Bool(*b)),
         // `= NULL` matches nothing in SQL, so it can only be a mistake.
-        other => {
-            errors.push(format!(
-                "\"parameters[{i}]\" (${}) must be an integer, a string or a boolean, not {}",
-                i + 1,
-                other.kind()
-            ));
-            return None;
-        }
-    };
-    Some(literal)
+        other => Err(format!(
+            "\"parameters[{i}]\" (${}) must be an integer, a string or a boolean, not {}",
+            i + 1,
+            other.kind()
+        )),
+    }
 }
 
 #[cfg(test)]
