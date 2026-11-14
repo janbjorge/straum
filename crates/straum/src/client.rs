@@ -86,17 +86,15 @@ fn fetch(
     let failed = |e: io::Error| format!("asking {url} for {what}: {e}");
     let mut stream = TcpStream::connect(address).map_err(failed)?;
     stream.set_read_timeout(Some(TIMEOUT)).map_err(failed)?;
-    let mut request = format!(
-        "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\naccept: {accept}\r\n"
-    );
-    if let Some(ask) = ask {
+    let body_headers = ask.map_or_else(String::new, |ask| {
         let length = ask.len();
-        request.push_str(&format!(
-            "content-type: application/json\r\ncontent-length: {length}\r\n"
-        ));
-    }
-    request.push_str("\r\n");
-    request.push_str(ask.unwrap_or_default());
+        format!("content-type: application/json\r\ncontent-length: {length}\r\n")
+    });
+    let body = ask.unwrap_or_default();
+    let request = format!(
+        "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\naccept: {accept}\r\n\
+         {body_headers}\r\n{body}"
+    );
     stream.write_all(request.as_bytes()).map_err(failed)?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply).map_err(failed)?;
