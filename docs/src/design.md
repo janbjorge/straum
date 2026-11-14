@@ -263,7 +263,7 @@ conditions; its range is two bucket edges with `from < to`. An
 
 ### The running system
 
-![The running system, with cardinalities](diagrams/runtime.svg)
+![The running system](diagrams/runtime.svg)
 
 *A writer owns the source port and an app. The app holds the limits,
 a spilling with the spill port when one is configured, and a state

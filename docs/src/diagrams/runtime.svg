@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="590" viewBox="0 0 880 590" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="470" viewBox="0 0 720 470" role="img" aria-labelledby="t d">
   <title id="t">The running system</title>
-  <desc id="d">A Writer owns the Source port and an App. App holds the Limits, an optional Spilling with the Spill port, and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded with its applied LSN, commit time, Lag and last WAL reading, and the last Failure. The Source hands the Writer commits, each a transaction's changes.</desc>
+  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Limits, an optional Spilling with the Spill port, and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded, with the applied LSN, Lag and last WAL reading, and the last Failure.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,74 +86,57 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="589" rx="10"/>
-  <text x="32" y="42" class="title">The running system</text>
-  <text x="32" y="64" class="sub muted">Arrows are dependency. Following exists only while every table is loaded.</text>
-  <rect class="box" x="40" y="100" width="140" height="60" rx="8"/>
-  <text x="52" y="122" class="h">Writer</text>
-  <text x="52" y="140" class="s ink2">one per app</text>
-  <rect class="box" x="250" y="100" width="140" height="60" rx="8"/>
-  <text x="262" y="122" class="h">App</text>
-  <text x="262" y="140" class="s ink2">clones share it</text>
-  <rect class="box" x="460" y="100" width="140" height="60" rx="8"/>
-  <text x="472" y="122" class="h">State</text>
-  <text x="472" y="140" class="s ink2">behind an RwLock</text>
-  <rect class="box2" x="720" y="100" width="130" height="46" rx="8"/>
-  <text x="732" y="122" class="h">Store</text>
-  <rect class="box" x="500" y="200" width="150" height="76" rx="8"/>
-  <text x="512" y="222" class="h">Following</text>
-  <text x="512" y="240" class="s ink2">applied LSN,</text>
-  <text x="512" y="256" class="s ink2">committed at</text>
-  <rect class="box2" x="720" y="200" width="130" height="46" rx="8"/>
-  <text x="732" y="222" class="h">Lag</text>
-  <rect class="box2" x="720" y="260" width="130" height="46" rx="8"/>
-  <text x="732" y="282" class="h">Wal</text>
-  <rect class="box" x="500" y="330" width="150" height="60" rx="8"/>
-  <text x="512" y="352" class="h">Failure</text>
-  <text x="512" y="370" class="s ink2">the last one, kept</text>
-  <text x="512" y="386" class="s ink2">across starts</text>
-  <rect class="box" x="500" y="420" width="150" height="46" rx="8"/>
-  <text x="512" y="442" class="h">Spilling</text>
-  <rect class="planbox" x="720" y="420" width="130" height="46" rx="8"/>
-  <text x="732" y="442" class="h plantext">Spill (port)</text>
-  <rect class="box" x="500" y="500" width="150" height="60" rx="8"/>
-  <text x="512" y="522" class="h">Limits</text>
-  <text x="512" y="538" class="mono muted" text-anchor="start">--max-lag,</text>
-  <text x="512" y="552" class="mono muted" text-anchor="start">--max-retained-wal</text>
-  <rect class="planbox" x="40" y="200" width="140" height="46" rx="8"/>
-  <text x="52" y="222" class="h plantext">Source (port)</text>
-  <rect class="box" x="40" y="330" width="140" height="60" rx="8"/>
-  <text x="52" y="352" class="h">Commit</text>
-  <text x="52" y="370" class="s ink2">one transaction, whole</text>
-  <rect class="box" x="250" y="330" width="160" height="76" rx="8"/>
-  <text x="262" y="352" class="h">Change</text>
-  <text x="262" y="370" class="s ink2">insert, update, delete,</text>
-  <text x="262" y="386" class="s ink2">truncate, unfit</text>
-  <path class="a" d="M180 130 L246 130" marker-end="url(#m)"/>
-  <text x="213" y="124" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M390 130 L456 130" marker-end="url(#m)"/>
-  <text x="423" y="124" class="s ink2 halo" text-anchor="middle">1, RwLock</text>
-  <path class="a" d="M600 123 L716 123" marker-end="url(#m)"/>
-  <text x="658" y="117" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M478 160 L478 360"/>
-  <path class="a" d="M478 238 L496 238" marker-end="url(#m)"/>
-  <text x="470" y="242" class="s ink2 halo" text-anchor="end">0..1</text>
-  <path class="a" d="M478 360 L496 360" marker-end="url(#m)"/>
-  <text x="470" y="364" class="s ink2 halo" text-anchor="end">0..1</text>
-  <path class="a" d="M370 160 L370 300 L440 300 L440 530"/>
-  <path class="a" d="M440 443 L496 443" marker-end="url(#m)"/>
-  <text x="432" y="447" class="s ink2 halo" text-anchor="end">0..1</text>
-  <path class="a" d="M440 530 L496 530" marker-end="url(#m)"/>
-  <text x="432" y="534" class="s ink2 halo" text-anchor="end">1</text>
-  <path class="a" d="M650 223 L716 223" marker-end="url(#m)"/>
-  <text x="683" y="217" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M650 253 L690 253 L690 283 L716 283" marker-end="url(#m)"/>
-  <text x="696" y="275" class="s ink2 halo" text-anchor="start">1</text>
-  <path class="a-plan" d="M650 443 L716 443" marker-end="url(#m-plan)"/>
-  <path class="a" d="M110 160 L110 196" marker-end="url(#m)"/>
-  <text x="118" y="182" class="s ink2 halo" text-anchor="start">1</text>
-  <path class="a-plan" d="M110 246 L110 326" marker-end="url(#m-plan)"/>
-  <text x="118" y="290" class="s ink2 halo" text-anchor="start">0..*, one at a time</text>
-  <path class="a" d="M180 360 L246 360" marker-end="url(#m)"/>
-  <text x="213" y="354" class="s ink2 halo" text-anchor="middle">1..*</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="469" rx="10"/>
+  <text x="24" y="38" class="title">The running system</text>
+  <text x="24" y="62" class="s muted">An arrow points at what a thing holds; each box says how many.</text>
+  <rect class="box2" x="24" y="84" width="160" height="80" rx="8"/>
+  <text x="38" y="109" class="h">Writer</text>
+  <text x="38" y="130" class="s ink2">one, on its</text>
+  <text x="38" y="149" class="s ink2">own thread</text>
+  <rect class="planbox" x="24" y="194" width="160" height="80" rx="8"/>
+  <text x="38" y="219" class="h">Source</text>
+  <text x="38" y="240" class="s ink2">the port; Postgres</text>
+  <text x="38" y="259" class="s ink2">behind it</text>
+  <rect class="box" x="24" y="304" width="160" height="80" rx="8"/>
+  <text x="38" y="329" class="h">Commit</text>
+  <text x="38" y="350" class="s ink2">one at a time,</text>
+  <text x="38" y="369" class="s ink2">one transaction</text>
+  <rect class="box" x="220" y="84" width="216" height="80" rx="8"/>
+  <text x="234" y="109" class="h">App</text>
+  <text x="234" y="130" class="s ink2">clones share it</text>
+  <rect class="box" x="250" y="194" width="186" height="80" rx="8"/>
+  <text x="264" y="219" class="h">Limits</text>
+  <text x="264" y="240" class="mono ink2">--max-lag</text>
+  <text x="264" y="259" class="mono ink2">--max-retained-wal</text>
+  <rect class="box" x="250" y="304" width="186" height="80" rx="8"/>
+  <text x="264" y="329" class="h">Spilling</text>
+  <text x="264" y="350" class="s ink2">0 or 1, with</text>
+  <text x="264" y="369" class="s ink2">the Spill port</text>
+  <rect class="box" x="470" y="84" width="226" height="80" rx="8"/>
+  <text x="484" y="109" class="h">State</text>
+  <text x="484" y="130" class="s ink2">one, behind the</text>
+  <text x="484" y="149" class="s ink2">read-write lock</text>
+  <rect class="box" x="500" y="184" width="196" height="60" rx="8"/>
+  <text x="514" y="209" class="h">Store</text>
+  <text x="514" y="230" class="s ink2">one</text>
+  <rect class="box" x="500" y="264" width="196" height="80" rx="8"/>
+  <text x="514" y="289" class="h">Following</text>
+  <text x="514" y="310" class="s ink2">0 or 1: applied LSN,</text>
+  <text x="514" y="329" class="s ink2">Lag, WAL reading</text>
+  <rect class="box" x="500" y="364" width="196" height="80" rx="8"/>
+  <text x="514" y="389" class="h">Failure</text>
+  <text x="514" y="410" class="s ink2">0 or 1: the last one,</text>
+  <text x="514" y="429" class="s ink2">kept across starts</text>
+  <path class="a" d="M184 124 H216" marker-end="url(#m)"/>
+  <path class="a" d="M436 124 H466" marker-end="url(#m)"/>
+  <path class="a" d="M104 164 V190" marker-end="url(#m)"/>
+  <path class="a-plan" d="M104 274 V300" marker-end="url(#m-plan)"/>
+  <text x="112" y="292" class="s muted halo" text-anchor="start">hands over</text>
+  <path class="a" d="M234 164 V344"/>
+  <path class="a" d="M234 234 H246" marker-end="url(#m)"/>
+  <path class="a" d="M234 344 H246" marker-end="url(#m)"/>
+  <path class="a" d="M484 164 V404"/>
+  <path class="a" d="M484 214 H496" marker-end="url(#m)"/>
+  <path class="a" d="M484 304 H496" marker-end="url(#m)"/>
+  <path class="a" d="M484 404 H496" marker-end="url(#m)"/>
 </svg>
