@@ -85,7 +85,8 @@ impl Decoder {
             Message::Other => &[],
         };
         for &relation in relations {
-            for m in mappings(&self.relations, relation) {
+            // A relation outside the spec holds none of its tables.
+            for m in self.relations.get(&relation).into_iter().flatten() {
                 let table = &self.tables[m.table];
                 let change = m.change(table, &message)?;
                 self.transaction
@@ -161,11 +162,6 @@ impl Transaction {
         self.changes.push(change);
         Ok(())
     }
-}
-
-/// The tables a relation holds; none for a relation outside the spec.
-fn mappings(relations: &HashMap<u32, Vec<Mapping>>, relation: u32) -> &[Mapping] {
-    relations.get(&relation).map_or(&[], Vec::as_slice)
 }
 
 fn changed(table: &Checked, column: &Identifier) -> Error {
