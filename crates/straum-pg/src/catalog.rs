@@ -163,13 +163,11 @@ pub(crate) fn query(
     let classes = conn.rows(&format!(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
-                (SELECT array_to_string(p.attnames, ',') FROM pg_publication_tables p
-                  WHERE p.pubname = {publication}
-                    AND p.schemaname = n.nspname AND p.tablename = c.relname),
-                (SELECT p.rowfilter IS NOT NULL FROM pg_publication_tables p
-                  WHERE p.pubname = {publication}
-                    AND p.schemaname = n.nspname AND p.tablename = c.relname)
+                array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+           LEFT JOIN pg_publication_tables p
+                  ON p.pubname = {publication}
+                 AND p.schemaname = n.nspname AND p.tablename = c.relname
           WHERE (n.nspname, c.relname) IN (VALUES {tables})"
     ))?;
     for row in classes {
