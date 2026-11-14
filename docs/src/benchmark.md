@@ -58,13 +58,13 @@ running the asks. Leaving the shell removes PostgreSQL.
 
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
-six months into `bench/data/`, which git ignores. Then it builds
-Straum, starts a throwaway `postgres:18`, loads the months eight at a
-time on their own connections, runs the SQL `straum plan` prints and
-starts `straum run`. Each ask goes to PostgreSQL as SQL over the raw
-tables and to Straum as an [ask](asks.md) over HTTP, and a run stops at
-the first answer that differs. A run takes about 80 seconds once the
-data is there.
+six months into `bench/data/`, which git ignores. Then it builds Straum,
+starts a throwaway `postgres:18`, streams the months in from Parquet
+with `bench/load_taxi_trips.py`, a connection each, runs the SQL
+`straum plan` prints and starts `straum run`. Each ask goes to PostgreSQL as SQL
+over the raw tables and to Straum as an [ask](asks.md) over HTTP, and a
+run stops at the first answer that differs. A run takes about 80 seconds
+once the data is there.
 
 `bench/taxi.py transactions` does the same setup, then one transaction of
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
@@ -200,9 +200,9 @@ bytes a cell.
 cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
 ```
 
-It needs the data `bench/taxi.py` fetches. It loads the month with
-`crates/straum-notation/tests/taxi.sql`, a wider view than the
-benchmark's: 15 minute buckets with day and week widths, keyed by
+It loads the month with `bench/load_taxi_trips.py`, so it needs uv, and
+reads it with `crates/straum-notation/tests/taxi.sql`, a wider view than
+the benchmark's: 15 minute buckets with day and week widths, keyed by
 payment type, vendor, pickup zone, dropoff zone and the pickup zone's
 borough, zone and service zone, with two filtered counts. The test
 compares asks with the view body in PostgreSQL six times: after the

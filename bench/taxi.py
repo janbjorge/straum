@@ -45,71 +45,20 @@ import statistics
 import subprocess
 import sys
 import time
-import urllib.request
 from collections import Counter
 
 import aiohttp
 import asyncpg
 import orjson
 import psutil
-import pyarrow.csv
-import pyarrow.parquet
 import tabulate
+from load_taxi_trips import NEW_YORK, load
 from testcontainers.community.postgres import PostgresContainer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-DATA = ROOT / "bench" / "data"
 SPEC = ROOT / "bench" / "trips.sql"
 MONTHS = [f"2024-{month:02}" for month in range(1, 7)]
-TLC = "https://d37ci6vzurychx.cloudfront.net"
-NEW_YORK = {"timezone": "America/New_York"}
-
-# TLC name -> yellow_trips column. straum-pg's taxi_month test reads the CSV
-# too.
-COLUMNS = {
-    "VendorID": "vendor_id",
-    "tpep_pickup_datetime": "pickup_at",
-    "PULocationID": "pu_location_id",
-    "DOLocationID": "do_location_id",
-    "payment_type": "payment_type",
-    "fare_amount": "fare_amount",
-    "tip_amount": "tip_amount",
-    "trip_distance": "trip_distance",
-}
-
-# Money and distance are numeric, so sums are exact on both sides. The
-# session runs in New York time, the TLC's wall clock.
-SCHEMA = """
-CREATE TABLE taxi_zones (
-    location_id int PRIMARY KEY,
-    borough text,
-    zone text,
-    service_zone text
-);
-CREATE TABLE yellow_trips (
-    id bigint GENERATED ALWAYS AS IDENTITY,
-    vendor_id int,
-    pickup_at timestamptz,
-    pu_location_id int,
-    do_location_id int,
-    payment_type int,
-    fare_amount numeric(12, 2),
-    tip_amount numeric(12, 2),
-    trip_distance numeric(12, 2)
-);
-COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
-"""
-COPIES = [
-    f"COPY yellow_trips ({', '.join(COLUMNS.values())}) "
-    f"FROM '/data/trips_{month}.csv' WITH (format csv, header)"
-    for month in MONTHS
-]
-# Built once the rows are in, which is faster than row by row.
-INDEXES = [
-    "ALTER TABLE yellow_trips ADD PRIMARY KEY (id)",
-    "CREATE INDEX ON yellow_trips (pickup_at)",
-]
-LOADERS = 8
+DATA = ROOT / "bench" / "data"
 
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
 # matches SQL without one.
@@ -215,7 +164,6 @@ def main() -> int:
         "shell: open straum shell at the trips",
     )
     args = parser.parse_args()
-    fetch()
     straum = build()
     plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
     # Docker publishes the port on every interface while this runs.
@@ -230,7 +178,7 @@ async def run(
     postgres: PostgresContainer, straum: str, plan: str, password: str, mode: str
 ) -> int:
     url = postgres.get_connection_url()
-    await load(url)
+    await load(url, MONTHS, DATA)
     pg = await asyncpg.connect(url, server_settings=NEW_YORK)
     try:
         # The plan writes a statement a line, and ALTER SYSTEM can't share a
@@ -365,57 +313,8 @@ def container(password: str) -> PostgresContainer:
         .with_command(
             " ".join(f"-c {name}={value}" for name, value in settings.items())
         )
-        .with_volume_mapping(DATA, "/data")
         .with_kwargs(shm_size="1g")
     )
-
-
-async def load(url: str) -> None:
-    """The tables, each month's trips on a connection of its own. The CSV
-    times have no offset, so each session reads them in New York time."""
-    async with asyncpg.create_pool(
-        url, min_size=1, max_size=LOADERS, server_settings=NEW_YORK
-    ) as pool:
-        await pool.execute(SCHEMA)
-        log(f"loading {len(MONTHS)} months, {LOADERS} at a time")
-        await asyncio.gather(*(pool.execute(copy) for copy in COPIES))
-        log("indexing")
-        for index in INDEXES:
-            await pool.execute(index)
-        log("vacuuming")
-        await pool.execute("VACUUM ANALYZE")
-
-
-def fetch() -> None:
-    DATA.mkdir(exist_ok=True)
-    download(DATA / "taxi_zone_lookup.csv", f"{TLC}/misc/taxi_zone_lookup.csv")
-    for month in MONTHS:
-        csv = DATA / f"trips_{month}.csv"
-        if csv.exists():
-            continue
-        parquet = DATA / f"yellow_tripdata_{month}.parquet"
-        download(parquet, f"{TLC}/trip-data/{parquet.name}")
-        log(f"writing {csv.name}")
-        table = pyarrow.parquet.read_table(parquet, columns=list(COLUMNS))
-        table = table.select(list(COLUMNS)).rename_columns(list(COLUMNS.values()))
-        part = partial(csv)
-        pyarrow.csv.write_csv(table, part)
-        part.rename(csv)
-
-
-def download(path: pathlib.Path, url: str) -> None:
-    if path.exists():
-        return
-    log(f"fetching {url}")
-    part = partial(path)
-    urllib.request.urlretrieve(url, part)
-    part.rename(path)
-
-
-def partial(path: pathlib.Path) -> pathlib.Path:
-    """Where `path` is written before its rename: per process, so two runs
-    fetching at once never take each other's file."""
-    return path.with_name(f"{path.name}.{os.getpid()}.part")
 
 
 def build() -> str:

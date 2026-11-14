@@ -16,7 +16,7 @@ use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Literal,
     Spec, Store, TimeKey, Value, decimal,
 };
-use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
+use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 
@@ -3144,53 +3144,35 @@ fn a_commit_handed_out_is_not_yet_applied() {
     assert!(reported.iter().all(|r| *r == 0x10), "{reported:x?}");
 }
 
-/// The taxi month of `bench/data` through straum: load, stream inserts and
-/// dim changes, read the fact again after an update, and every time compare
-/// the whole `taxi.sql` view with PostgreSQL. Slow, so ignored; fetch the
-/// data with `bench/taxi.py`, then run
+/// The taxi month through straum: load, stream inserts and dim changes, read
+/// the fact again after an update, and every time compare the whole
+/// `taxi.sql` view with PostgreSQL. `bench/load_taxi_trips.py` puts the month
+/// in PostgreSQL, so it needs uv. Slow, so ignored; run
 /// `cargo test -p straum-pg --release taxi_month -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn taxi_month() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let data = root
-        .join("bench/data")
-        .canonicalize()
-        .expect("bench/data, from bench/taxi.py");
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
     let (_container, port) = start(
         image("18")
-            .with_mount(
-                Mount::bind_mount(data.to_str().unwrap(), "/data")
-                    .with_access_mode(AccessMode::ReadOnly),
-            )
             .with_shm_size(1 << 30)
             .with_cmd(["-c", "wal_level=logical"]),
     );
-    let dsn = Dsn::parse(&format!(
-        "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable"
-    ))
-    .unwrap();
-    let mut sql = Connection::connect(&dsn, false).unwrap();
+    let url = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
+    let dsn = Dsn::parse(&url).unwrap();
     let clock = Instant::now();
+    let loaded = process::Command::new(root.join("bench/load_taxi_trips.py"))
+        .arg(&url)
+        .status()
+        .expect("bench/load_taxi_trips.py runs with uv");
+    assert!(loaded.success(), "bench/load_taxi_trips.py: {loaded}");
+    let mut sql = Connection::connect(&dsn, false).unwrap();
     sql.execute(
-        "CREATE TABLE taxi_zones (location_id int PRIMARY KEY, borough text, zone text, service_zone text);
-         CREATE TABLE yellow_trips (
-             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-             vendor_id int, pickup_at timestamptz, pu_location_id int, do_location_id int,
-             payment_type int, fare_amount numeric(12, 2), tip_amount numeric(12, 2),
-             trip_distance numeric(12, 2));
-                  ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
+        "ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
          ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
-         SET timezone = 'America/New_York';
-         COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
-         COPY yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id, payment_type,
-                            fare_amount, tip_amount, trip_distance)
-           FROM '/data/trips_2024-01.csv' WITH (format csv, header);
-         SET timezone = 'UTC';
-         ANALYZE;
-                  CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
+         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
     )
     .unwrap();
     let rows = |sql: &mut Connection, q: &str| sql.rows(q).unwrap();

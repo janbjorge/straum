@@ -2,70 +2,30 @@
 
 Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
-and the 265 taxi zones. You need Docker and `curl`, and the download is
-50 MB. Four steps end in an answer. Every other page uses these tables
-and this spec.
+and the 265 taxi zones. You need Docker, [uv](https://docs.astral.sh/uv/)
+and `curl`, and the download is 50 MB. Four steps end in an answer.
+Every other page uses these tables and this spec.
 
 ## 1. Start PostgreSQL with the trips
 
-The TLC publishes the trips as Parquet, which PostgreSQL can't read, so
-a Python container writes the columns the tables use to CSV:
-
-```sh
-mkdir -p data
-TLC=https://d37ci6vzurychx.cloudfront.net
-curl -fL -o data/yellow_tripdata_2024-01.parquet $TLC/trip-data/yellow_tripdata_2024-01.parquet
-curl -fL -o data/taxi_zone_lookup.csv $TLC/misc/taxi_zone_lookup.csv
-docker run --rm -i -v "$PWD/data:/data" python:3.13-slim sh -c '
-  pip install --quiet --disable-pip-version-check --root-user-action=ignore pyarrow &&
-  python -' <<'PY'
-import pyarrow.csv, pyarrow.parquet
-columns = ["VendorID", "tpep_pickup_datetime", "PULocationID", "DOLocationID",
-           "payment_type", "fare_amount", "tip_amount", "trip_distance"]
-table = pyarrow.parquet.read_table("/data/yellow_tripdata_2024-01.parquet", columns=columns)
-pyarrow.csv.write_csv(table.select(columns), "/data/trips_2024-01.csv")
-PY
-```
-
-Start PostgreSQL:
-
 ```sh
 docker network create straum
-docker run -d --name straum-pg --network straum -v "$PWD/data:/data" \
+docker run -d --name straum-pg --network straum -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres postgres:18 -c wal_level=logical
 ```
 
-A few seconds later, make the tables and load them:
+A few seconds later, load the trips:
 
 ```sh
-docker exec -i straum-pg psql -U postgres <<'SQL'
-SET timezone = 'America/New_York';
-CREATE TABLE taxi_zones (
-  location_id int PRIMARY KEY,
-  borough text,
-  zone text,
-  service_zone text
-);
-CREATE TABLE yellow_trips (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  vendor_id int,
-  pickup_at timestamptz,
-  pu_location_id int,
-  do_location_id int,
-  payment_type int,
-  fare_amount numeric(12, 2),
-  tip_amount numeric(12, 2),
-  trip_distance numeric(12, 2)
-);
-COPY taxi_zones FROM '/data/taxi_zone_lookup.csv' WITH (format csv, header);
-COPY yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
-                   payment_type, fare_amount, tip_amount, trip_distance)
-  FROM '/data/trips_2024-01.csv' WITH (format csv, header);
-SQL
+uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py \
+  postgres://postgres:postgres@localhost:5432/postgres --data data
 ```
 
-The TLC's times are New York wall clock, hence the time zone. Money
-and distance are `numeric`, so sums are exact.
+[`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
+downloads the TLC's Parquet file and zone list into `data/`, makes
+`taxi_zones` and `yellow_trips`, and streams the rows in with `COPY`.
+The TLC's times are New York wall clock, so it loads them in that
+time zone. Money and distance are `numeric`, so sums are exact.
 
 ## 2. Write a spec
 

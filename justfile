@@ -38,7 +38,7 @@ docs-build:
 taxi mode="asks":
     bench/taxi.py {{mode}}
 
-# taxi.sql view against PostgreSQL (needs the taxi data)
+# taxi.sql view against PostgreSQL (loads the taxi month, needs uv)
 [group('taxi')]
 taxi-month:
     cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
