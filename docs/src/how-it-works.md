@@ -46,6 +46,12 @@ what it does, and how a median reads the counts `min` and `max` keep. A `FILTER`
 of its own: it names parts of the cell key, so a cell counts whole or
 not at all.
 
+![A row adds to its cell](diagrams/cell.svg)
+
+*The bucket and the keys pick the cell, and the row's count and amount
+add to it. The row is not kept, so a delete subtracts the same
+numbers. Each width the view keeps gets the same add.*
+
 A row whose time is null or infinite is kept in a bucket no ask
 reads. A cell goes with its last row.
 
