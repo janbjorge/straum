@@ -9,13 +9,13 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
-use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
+use straum_domain::{ColumnType, Datum, Identifier, RowError, Spec, Store};
 
 pub type Row = Vec<Datum>;
 
 /// A column's type, as the catalog gives it: every table here names its
 /// columns alike.
-pub fn type_of(column: &Identifier) -> ColumnType {
+fn type_of(column: &Identifier) -> ColumnType {
     match column.as_str() {
         "at" => ColumnType::Time { zoned: true },
         "borough" | "rider" => ColumnType::Text,
@@ -25,7 +25,7 @@ pub fn type_of(column: &Identifier) -> ColumnType {
 
 /// Sets the types a load sets: a fact's columns, or a dim's key and then
 /// its attributes.
-pub fn set_types(table: &Identifier, store: &mut Store) {
+fn set_types(table: &Identifier, store: &mut Store) {
     let spec = store.spec();
     let types: Vec<ColumnType> = match (spec.fact(table.as_str()), spec.dim(table.as_str())) {
         (Some(fact), _) => fact.columns().iter().map(type_of).collect(),
@@ -35,6 +35,15 @@ pub fn set_types(table: &Identifier, store: &mut Store) {
     store
         .set_types(table.as_str(), &types)
         .expect("one type per column");
+}
+
+/// Loads a table's rows into the store, types first, as a load does.
+fn fill(table: &Identifier, rows: &[Row], store: &mut Store) -> Result<(), RowError> {
+    set_types(table, store);
+    for row in rows {
+        store.add_row(table.as_str(), row)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -157,9 +166,22 @@ impl Database {
 
     /// A table's rows after every commit up to `lsn`: what a load at
     /// `lsn` reads. A dim row starts with its key, as [`Dim::columns`].
-    pub fn rows_at(&self, lsn: Lsn, table: &str) -> Vec<Row> {
+    fn rows_at(&self, lsn: Lsn, table: &str) -> Vec<Row> {
         let tables = self.tables_at(lsn);
         tables[table].rows.values().cloned().collect()
+    }
+
+    /// A store loaded from the tables as they were at `lsn`, dims first,
+    /// as the writer loads them.
+    pub fn store_at(&self, spec: &Spec, lsn: Lsn) -> Store {
+        let mut store = Store::new(spec.clone());
+        let dims = spec.dims().iter().map(|dim| &dim.name);
+        let facts = spec.facts().iter().map(|fact| &fact.name);
+        for table in dims.chain(facts) {
+            let rows = self.rows_at(lsn, table.as_str());
+            fill(table, &rows, &mut store).expect("a row the store takes");
+        }
+        store
     }
 
     pub fn keys(&self, table: &str) -> Vec<Datum> {
@@ -286,11 +308,8 @@ impl Source for Fake {
     }
 
     fn load(&mut self, table: &Identifier, store: &mut Store) -> Result<(), SourceError> {
-        set_types(table, store);
-        for row in self.read(table)? {
-            store.add_row(table.as_str(), &row)?;
-        }
-        Ok(())
+        let rows = self.read(table)?;
+        Ok(fill(table, &rows, store)?)
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {

@@ -18,7 +18,7 @@ use straum_app::{
 };
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Literal, SealedId,
-    Spec, Store, Table, TimeKey, Value, Width,
+    Spec, Table, TimeKey, Value, Width,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -136,27 +136,8 @@ fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
     Ok(answered.answer.rows[0].values[0].clone())
 }
 
-/// A store loaded from the database as it was at `lsn`, dims and facts.
-fn reference(db: &Database, lsn: Lsn) -> Store {
-    let spec = spec();
-    let mut store = Store::new(spec.clone());
-    for dim in spec.dims() {
-        fake::set_types(&dim.name, &mut store);
-        for row in db.rows_at(lsn, dim.name.as_str()) {
-            store.add_row(dim.name.as_str(), &row).unwrap();
-        }
-    }
-    for fact in spec.facts() {
-        fake::set_types(&fact.name, &mut store);
-        for row in db.rows_at(lsn, fact.name.as_str()) {
-            store.add_row(fact.name.as_str(), &row).unwrap();
-        }
-    }
-    store
-}
-
 fn reference_answer(db: &Database, ask: &Ask) -> Answer {
-    reference(db, db.lsn()).ask(ask).unwrap()
+    db.store_at(&spec(), db.lsn()).ask(ask).unwrap()
 }
 
 /// The rows an ask by borough answers.
@@ -1450,7 +1431,7 @@ fn check_aside(app: &App) -> usize {
 
 /// Asks against a fresh load of the database at `lsn`.
 fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
-    let reference = reference(db, lsn);
+    let reference = db.store_at(&spec(), lsn);
     for _ in 0..4 {
         let ask = random_ask(rng);
         let answered = app
