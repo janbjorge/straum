@@ -3165,6 +3165,8 @@ fn taxi_month() {
     let clock = Instant::now();
     let loaded = process::Command::new(root.join("bench/load_taxi_trips.py"))
         .arg(&url)
+        .arg("--data")
+        .arg(root.join("bench/data"))
         .status()
         .expect("bench/load_taxi_trips.py runs with uv");
     assert!(loaded.success(), "bench/load_taxi_trips.py: {loaded}");
@@ -3172,7 +3174,8 @@ fn taxi_month() {
     sql.execute(
         "ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
          ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
-         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;",
+         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;
+         ANALYZE;",
     )
     .unwrap();
     let rows = |sql: &mut Connection, q: &str| sql.rows(q).unwrap();

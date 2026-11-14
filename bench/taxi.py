@@ -57,7 +57,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
-MONTHS = [f"2024-{month:02}" for month in range(1, 7)]
+MONTHS = 6
 DATA = ROOT / "bench" / "data"
 
 # A Straum ask always names its range; 2000 to 2030 holds every trip, so it
@@ -178,9 +178,13 @@ async def run(
     postgres: PostgresContainer, straum: str, plan: str, password: str, mode: str
 ) -> int:
     url = postgres.get_connection_url()
+    log(f"loading {MONTHS} months")
     await load(url, MONTHS, DATA)
     pg = await asyncpg.connect(url, server_settings=NEW_YORK)
     try:
+        # The asks over a week or a day read this index.
+        await pg.execute("CREATE INDEX ON yellow_trips (pickup_at)")
+        await pg.execute("VACUUM ANALYZE")
         # The plan writes a statement a line, and ALTER SYSTEM can't share a
         # query string with others.
         for line in plan.splitlines():

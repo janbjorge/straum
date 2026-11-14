@@ -18,14 +18,14 @@ A few seconds later, load the trips:
 
 ```sh
 uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py \
-  postgres://postgres:postgres@localhost:5432/postgres --data data
+  postgres://postgres:postgres@localhost:5432/postgres
 ```
 
 [`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
-downloads the TLC's Parquet file and zone list into `data/`, makes
-`taxi_zones` and `yellow_trips`, and streams the rows in with `COPY`.
-The TLC's times are New York wall clock, so it loads them in that
-time zone. Money and distance are `numeric`, so sums are exact.
+downloads the trips into `data/`, makes `taxi_zones` and
+`yellow_trips`, and copies the rows in. The TLC's times are New York
+wall clock, so it reads them in that time zone. Money and distance are
+`numeric`, so sums are exact.
 
 ## 2. Write a spec
 
