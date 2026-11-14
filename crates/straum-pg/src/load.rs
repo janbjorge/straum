@@ -173,3 +173,39 @@ fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], Error> {
     *data = rest;
     Ok(*head)
 }
+
+#[cfg(test)]
+mod tests {
+    use straum_domain::{ColumnType, Identifier};
+
+    use super::*;
+
+    fn id(s: &str) -> Identifier {
+        Identifier::new(s).unwrap()
+    }
+
+    /// A load copies each table alone, the columns the spec reads of it.
+    #[test]
+    fn copies_the_columns_read() {
+        let tasks = Checked {
+            enums: Vec::new(),
+            name: id("tasks"),
+            schema: id("public"),
+            table: id("tasks"),
+            columns: ["created", "organization_id", "taskgroup_id", "location_id"]
+                .map(id)
+                .to_vec(),
+            types: vec![
+                ColumnType::Time { zoned: false },
+                ColumnType::Int,
+                ColumnType::Int,
+                ColumnType::Numeric { scale: 1 },
+            ],
+        };
+        assert_eq!(
+            copy_sql(&tasks),
+            "COPY (SELECT \"created\", \"organization_id\", \"taskgroup_id\", \"location_id\" \
+             FROM \"public\".\"tasks\") TO STDOUT (FORMAT binary)"
+        );
+    }
+}

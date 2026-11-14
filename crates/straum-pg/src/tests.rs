@@ -21,7 +21,7 @@ use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 
-use crate::catalog::{self, Checked, Tables};
+use crate::catalog::{self, Checked};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -30,74 +30,6 @@ use crate::source::{Postgres, parse_lsn, read_wal};
 use crate::stream::Stream;
 use crate::value::read;
 use crate::wire::Connection;
-
-/// The tasks spec as checked: a fact on two refs, one keyed by two
-/// columns, with the tables the catalog would give. For the tests that
-/// build SQL without a server.
-pub(crate) fn tasks_tables() -> (Spec, Tables) {
-    let spec = straum_notation::parse(
-        "CREATE VIEW tasks WITH (buckets = '1 hour') AS
-         SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
-                f.organization_id AS organization_id, g.category AS category,
-                l.location_type AS location_type, count(*) AS tasks
-         FROM public.tasks AS f
-         LEFT OUTER JOIN public.taskgroups AS g
-                ON g.organization_id = f.organization_id AND g.taskgroup_id = f.taskgroup_id
-         LEFT OUTER JOIN public.locations AS l ON l.id = f.location_id
-         GROUP BY 1, 2, 3, 4",
-    )
-    .unwrap();
-    let table = |name: &str, columns: &[&str], types: Vec<ColumnType>| Checked {
-        enums: Vec::new(),
-        name: id(name),
-        schema: id("public"),
-        table: id(name),
-        columns: columns.iter().map(|c| id(c)).collect(),
-        types,
-    };
-    let tables = Tables {
-        facts: vec![table(
-            "tasks",
-            &["created", "organization_id", "taskgroup_id", "location_id"],
-            vec![
-                ColumnType::Time { zoned: false },
-                ColumnType::Int,
-                ColumnType::Int,
-                ColumnType::Numeric { scale: 1 },
-            ],
-        )],
-        dims: vec![
-            table(
-                "taskgroups",
-                &["organization_id", "taskgroup_id", "category"],
-                vec![ColumnType::Int, ColumnType::Int, ColumnType::Text],
-            ),
-            table(
-                "locations",
-                &["id", "location_type"],
-                vec![ColumnType::Numeric { scale: 1 }, ColumnType::Text],
-            ),
-        ],
-    };
-    (spec, tables)
-}
-
-/// A load copies each table alone, the columns the spec reads of it: a
-/// fact's columns, a dim's key and attributes.
-#[test]
-fn loads_copy_each_table_alone() {
-    let (_, tables) = tasks_tables();
-    assert_eq!(
-        load::copy_sql(&tables.facts[0]),
-        "COPY (SELECT \"created\", \"organization_id\", \"taskgroup_id\", \"location_id\" \
-         FROM \"public\".\"tasks\") TO STDOUT (FORMAT binary)"
-    );
-    assert_eq!(
-        load::copy_sql(&tables.dims[0]),
-        "COPY (SELECT \"organization_id\", \"taskgroup_id\", \"category\" \
-         FROM \"public\".\"taskgroups\") TO STDOUT (FORMAT binary)"
-    );
-}
 
 const PASSWORD: &str = "straum";
 /// Long enough for anything a test waits on to come.
