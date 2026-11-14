@@ -192,26 +192,30 @@ impl Store {
     /// a dim's [`Dim::columns`]. Only the source knows them, so a load
     /// sets them.
     pub fn set_types(&mut self, table: &str, types: &[ColumnType]) -> Result<(), RowError> {
-        match self.member_mut(table) {
-            Member::Rollup(rollup) => rollup.set_types(types),
-            Member::Projection(projection) => projection.set_types(types),
-        }?;
+        match self.fact_index(table) {
+            Some(f) => self.rollups[f].set_types(types)?,
+            None => {
+                let d = self.dim_index(table).expect(IN_SPEC);
+                self.projections[d].set_types(types)?;
+            }
+        }
         // A bound row's types are the fact's and its dims', whichever
         // came last.
         let Store {
-            spec,
             rollups,
             projections,
             bound,
+            ..
         } = self;
-        for ((fact, rollup), bound) in (spec.facts().iter().zip(rollups)).zip(bound) {
+        for (rollup, bound) in rollups.iter().zip(bound) {
             let Some(bound) = bound else { continue };
             let mut types = rollup.types().to_vec();
-            for (r, attr) in (fact.attributes()).map(|(r, _)| r).zip(bound_attrs(bound)) {
-                let dim = (spec.dims().iter())
-                    .position(|d| d.name == r.dim)
-                    .expect(CHECKED);
-                types.push(projections[dim].attribute_type(attr));
+            for r in &bound.refs {
+                types.extend(
+                    r.attrs
+                        .iter()
+                        .map(|&a| projections[r.dim].attribute_type(a)),
+                );
             }
             (bound.rollup.set_types(&types)).expect("a bound row is as wide as its types");
         }
@@ -787,16 +791,6 @@ impl Store {
         &self.projections[self.dim_index(dim).expect(IN_SPEC)]
     }
 
-    /// A fact's rollup or a dim's projection: dims and facts share one
-    /// namespace, so the name says which.
-    fn member_mut(&mut self, table: &str) -> Member<'_> {
-        if let Some(i) = self.fact_index(table) {
-            return Member::Rollup(&mut self.rollups[i]);
-        }
-        let i = self.dim_index(table).expect(IN_SPEC);
-        Member::Projection(&mut self.projections[i])
-    }
-
     /// The ask's fact and the cells that answer it: the bound cells,
     /// unless a sealed `date_bin` bucket overlaps the range. The bound
     /// cells hold nothing of a sealed bucket at any width, so that ask
@@ -860,11 +854,6 @@ impl Store {
     }
 }
 
-enum Member<'s> {
-    Rollup(&'s mut Rollup),
-    Projection(&'s mut Projection),
-}
-
 /// The cells an ask reads: a fact's bound cells, where every key the
 /// view names is a part of the cell key, or its keyed cells, where a dim
 /// column is read through the projection.
@@ -879,12 +868,6 @@ impl<'s> Read<'s> {
             Read::Bound(rollup) | Read::Keyed(rollup) => rollup,
         }
     }
-}
-
-/// The dim attribute each of a fact's bound refs reads, in
-/// [`Fact::attributes`] order.
-fn bound_attrs(bound: &Bound) -> impl Iterator<Item = usize> + '_ {
-    bound.refs.iter().flat_map(|r| r.attrs.iter().copied())
 }
 
 /// What the cell loops fill in.
