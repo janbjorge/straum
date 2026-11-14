@@ -215,12 +215,7 @@ impl Name {
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
     Run(Run),
-    Plan {
-        spec: String,
-        publication: String,
-        role: Option<String>,
-        dsn_file: Option<String>,
-    },
+    Plan(Plan),
     Status {
         url: String,
     },
@@ -248,6 +243,14 @@ struct Run {
     dsn_file: Option<String>,
     limits: Limits,
     max_transaction_rows: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    spec: String,
+    publication: String,
+    role: Option<String>,
+    dsn_file: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -306,12 +309,7 @@ fn execute(command: Command) -> Result<(), String> {
             println!("straum {version}");
             Ok(())
         }
-        Command::Plan {
-            spec,
-            publication,
-            role,
-            dsn_file,
-        } => plan(&spec, &publication, role.as_deref(), dsn_file.as_deref()),
+        Command::Plan(args) => plan(args),
         Command::Run(args) => run(args),
         Command::Status { url } => print(&client::status(&url)?),
         Command::Views { url } => print(&client::views(&url)?),
@@ -441,12 +439,12 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
             },
             [] => return Err("straum ask needs a query".into()),
         },
-        Name::Plan => Command::Plan {
+        Name::Plan => Command::Plan(Plan {
             spec: spec()?,
             publication: publication(),
             role: text("--role"),
             dsn_file: text("--dsn-file"),
-        },
+        }),
         Name::Run => Command::Run(Run {
             spec: spec()?,
             listen: text("--listen").unwrap_or_else(|| LISTEN.into()),
@@ -536,16 +534,20 @@ fn read_spec(path: &str) -> Result<Spec, String> {
 /// The role and its password come from the DSN when there is one, so the
 /// setup and `straum run` agree on them without being told twice.
 fn plan(
-    spec: &str,
-    publication: &str,
-    role: Option<&str>,
-    dsn_file: Option<&str>,
+    Plan {
+        spec,
+        publication,
+        role,
+        dsn_file,
+    }: Plan,
 ) -> Result<(), String> {
-    let spec = read_spec(spec)?;
-    let dsn = read_dsn(dsn_file)?;
-    let role = role.or_else(|| dsn.as_ref().map(Dsn::user)).unwrap_or(ROLE);
+    let spec = read_spec(&spec)?;
+    let dsn = read_dsn(dsn_file.as_deref())?;
+    let role = (role.as_deref())
+        .or_else(|| dsn.as_ref().map(Dsn::user))
+        .unwrap_or(ROLE);
     let password = dsn.as_ref().and_then(Dsn::password);
-    print!("{}", straum_pg::plan(&spec, publication, role, password));
+    print!("{}", straum_pg::plan(&spec, &publication, role, password));
     Ok(())
 }
 
@@ -565,15 +567,16 @@ fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, String> {
     Dsn::parse(text.trim()).map(Some).map_err(|e| e.to_string())
 }
 
-fn run(args: Run) -> Result<(), String> {
-    let Run {
+fn run(
+    Run {
         spec,
         listen,
         publication,
         dsn_file,
         limits,
         max_transaction_rows,
-    } = args;
+    }: Run,
+) -> Result<(), String> {
     let spec = read_spec(&spec)?;
     let dsn = read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?;
     let listening = |e: io::Error| format!("listening on {listen}: {e}");
@@ -697,21 +700,21 @@ mod tests {
         );
         assert_eq!(
             command(&args("plan --spec s")),
-            Ok(Command::Plan {
+            Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 publication: PUBLICATION.into(),
                 role: None,
                 dsn_file: None,
-            })
+            }))
         );
         assert_eq!(
             command(&args("plan --role r --spec s --dsn-file d")),
-            Ok(Command::Plan {
+            Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 publication: PUBLICATION.into(),
                 role: Some("r".into()),
                 dsn_file: Some("d".into()),
-            })
+            }))
         );
         assert_eq!(
             command(&args("status")),
