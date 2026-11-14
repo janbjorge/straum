@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="690" viewBox="0 0 880 690" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="578" viewBox="0 0 720 578" role="img" aria-labelledby="t d">
   <title id="t">What a spec declares</title>
-  <desc id="d">A Spec holds dims and facts. A Dim names a table, its key columns and the attributes views read. A Fact, one view, names a table, one Time with a width and wider widths, by keys, refs in join order, measures with an aggregate and a filter, and the view's WHERE as conditions over literals. A Ref points at a Dim by name, joins through one Via per key column and reads attributes.</desc>
+  <desc id="d">A spec holds dims and facts. A dim names a table, its key and the attributes views read. A fact, one view, holds refs in join order, one time with its widths, by keys, measures and conditions. A ref points at a dim by name, joins through one via per key column and reads attributes. A measure has an aggregate and a filter; conditions are the view's WHERE and each FILTER.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,89 +86,49 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="689" rx="10"/>
-  <text x="32" y="42" class="title">What a spec declares</text>
-  <text x="32" y="64" class="sub muted">Arrows are dependency. A label says how many of the pointed-at thing one holds.</text>
-  <rect class="box" x="40" y="110" width="130" height="60" rx="8"/>
-  <text x="52" y="132" class="h">Spec</text>
-  <text x="52" y="150" class="s ink2">dims, facts</text>
-  <rect class="box" x="260" y="100" width="170" height="76" rx="8"/>
-  <text x="272" y="122" class="h">Dim</text>
-  <text x="272" y="140" class="s ink2">table, key 1..*,</text>
-  <text x="272" y="156" class="s ink2">attributes 0..*</text>
-  <rect class="box2" x="500" y="100" width="130" height="46" rx="8"/>
-  <text x="512" y="122" class="h">Table</text>
-  <rect class="box" x="260" y="230" width="150" height="410" rx="8"/>
-  <text x="272" y="252" class="h">Fact</text>
-  <text x="272" y="270" class="s ink2">one view:</text>
-  <text x="272" y="286" class="s ink2">table, time, by keys,</text>
-  <text x="272" y="302" class="s ink2">refs in join order,</text>
-  <text x="272" y="318" class="s ink2">measures, WHERE</text>
-  <rect class="box" x="500" y="220" width="170" height="76" rx="8"/>
-  <text x="512" y="242" class="h">Ref</text>
-  <text x="512" y="260" class="s ink2">alias, kind: left, inner,</text>
-  <text x="512" y="276" class="s ink2">semi, anti</text>
-  <rect class="box" x="720" y="200" width="130" height="60" rx="8"/>
-  <text x="732" y="222" class="h">Via</text>
-  <text x="732" y="240" class="s ink2">fact column, or chain</text>
-  <rect class="box" x="720" y="280" width="130" height="60" rx="8"/>
-  <text x="732" y="302" class="h">Attribute</text>
-  <text x="732" y="320" class="s ink2">name, column</text>
-  <rect class="box" x="500" y="350" width="170" height="60" rx="8"/>
-  <text x="512" y="372" class="h">Time</text>
-  <text x="512" y="390" class="s ink2">column, origin</text>
-  <rect class="box" x="720" y="340" width="130" height="76" rx="8"/>
-  <text x="732" y="362" class="h">Width</text>
-  <text x="732" y="380" class="s ink2">the date_bin width,</text>
-  <text x="732" y="396" class="s ink2">then the wider ones</text>
-  <rect class="box" x="500" y="440" width="170" height="46" rx="8"/>
-  <text x="512" y="462" class="h">ByKey</text>
-  <text x="512" y="478" class="s ink2" text-anchor="start">column, or column IS NULL</text>
-  <rect class="box" x="500" y="510" width="170" height="60" rx="8"/>
-  <text x="512" y="532" class="h">Measure</text>
-  <text x="512" y="550" class="s ink2">name, aggregate, FILTER</text>
-  <rect class="box" x="720" y="474" width="130" height="108" rx="8"/>
-  <text x="732" y="496" class="h">Aggregate</text>
-  <text x="732" y="514" class="s ink2">count, count of a</text>
-  <text x="732" y="530" class="s ink2">column, sum, min, max,</text>
-  <text x="732" y="546" class="s ink2">avg, count distinct,</text>
-  <text x="732" y="562" class="s ink2">bool_and, bool_or</text>
-  <rect class="box" x="500" y="600" width="170" height="60" rx="8"/>
-  <text x="512" y="622" class="h">Condition</text>
-  <text x="512" y="640" class="s ink2">key = $, key IN (...)</text>
-  <rect class="box" x="720" y="600" width="130" height="60" rx="8"/>
-  <text x="732" y="622" class="h">Literal</text>
-  <text x="732" y="640" class="s ink2">int, text, bool</text>
-  <path class="a" d="M170 132 L256 132" marker-end="url(#m)"/>
-  <text x="213" y="126" class="s ink2 halo" text-anchor="middle">0..*</text>
-  <path class="a" d="M170 150 L213 150 L213 262 L256 262" marker-end="url(#m)"/>
-  <text x="226" y="256" class="s ink2 halo" text-anchor="start">1..*</text>
-  <path class="a" d="M430 123 L496 123" marker-end="url(#m)"/>
-  <text x="463" y="117" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M410 250 L478 250 L478 146 L496 146" marker-end="url(#m)"/>
-  <text x="486" y="170" class="s ink2 halo" text-anchor="start">1</text>
-  <path class="a" d="M585 220 L585 176" marker-end="url(#m)"/>
-  <text x="593" y="202" class="s ink2 halo" text-anchor="start">1, by name</text>
-  <path class="a" d="M410 276 L496 276" marker-end="url(#m)"/>
-  <text x="445" y="270" class="s ink2 halo" text-anchor="middle">0..*</text>
-  <path class="a" d="M670 240 L700 240 L700 230 L716 230" marker-end="url(#m)"/>
-  <text x="694" y="224" class="s ink2 halo" text-anchor="end">1..*</text>
-  <path class="a" d="M670 280 L700 280 L700 310 L716 310" marker-end="url(#m)"/>
-  <text x="694" y="304" class="s ink2 halo" text-anchor="end">0..*</text>
-  <path class="a" d="M410 380 L496 380" marker-end="url(#m)"/>
-  <text x="453" y="374" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M670 380 L716 380" marker-end="url(#m)"/>
-  <text x="693" y="374" class="s ink2 halo" text-anchor="middle">1..*</text>
-  <path class="a" d="M410 463 L496 463" marker-end="url(#m)"/>
-  <text x="453" y="457" class="s ink2 halo" text-anchor="middle">0..*</text>
-  <path class="a" d="M410 540 L496 540" marker-end="url(#m)"/>
-  <text x="453" y="534" class="s ink2 halo" text-anchor="middle">1..*</text>
-  <path class="a" d="M670 528 L716 528" marker-end="url(#m)"/>
-  <text x="693" y="522" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M585 570 L585 596" marker-end="url(#m)"/>
-  <text x="593" y="588" class="s ink2 halo" text-anchor="start">0..*  FILTER</text>
-  <path class="a" d="M410 630 L496 630" marker-end="url(#m)"/>
-  <text x="453" y="622" class="s ink2 halo" text-anchor="middle">0..* WHERE</text>
-  <path class="a" d="M670 630 L716 630" marker-end="url(#m)"/>
-  <text x="693" y="624" class="s ink2 halo" text-anchor="middle">1..*</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="577" rx="10"/>
+  <text x="24" y="38" class="title">What a spec declares</text>
+  <text x="24" y="62" class="s muted">An arrow points at what a thing holds; each box says how many.</text>
+  <rect class="box2" x="24" y="84" width="130" height="72" rx="8"/>
+  <text x="38" y="109" class="h">Spec</text>
+  <text x="38" y="130" class="s ink2">the whole file</text>
+  <rect class="box" x="190" y="84" width="160" height="80" rx="8"/>
+  <text x="204" y="109" class="h">Dim</text>
+  <text x="204" y="130" class="s ink2">0 or more: a table,</text>
+  <text x="204" y="149" class="s ink2">its key, attributes</text>
+  <rect class="box" x="190" y="214" width="160" height="80" rx="8"/>
+  <text x="204" y="239" class="h">Fact</text>
+  <text x="204" y="260" class="s ink2">1 or more: one</text>
+  <text x="204" y="279" class="s ink2">view, its table</text>
+  <rect class="box" x="406" y="76" width="290" height="118" rx="8"/>
+  <text x="420" y="101" class="h">Ref</text>
+  <text x="420" y="122" class="s ink2">0 or more, in join order:</text>
+  <text x="420" y="141" class="s ink2">alias; left, inner, semi or anti;</text>
+  <text x="420" y="160" class="s ink2">a Via per key column of the</text>
+  <text x="420" y="179" class="s ink2">Dim; the Attributes it reads</text>
+  <rect class="box" x="406" y="214" width="290" height="60" rx="8"/>
+  <text x="420" y="239" class="h">Time</text>
+  <text x="420" y="260" class="s ink2">one: column, origin, widths</text>
+  <rect class="box" x="406" y="294" width="290" height="60" rx="8"/>
+  <text x="420" y="319" class="h">ByKey</text>
+  <text x="420" y="340" class="s ink2">0 or more: column, or IS NULL</text>
+  <rect class="box" x="406" y="374" width="290" height="80" rx="8"/>
+  <text x="420" y="399" class="h">Measure</text>
+  <text x="420" y="420" class="s ink2">1 or more: name, aggregate,</text>
+  <text x="420" y="439" class="s ink2">FILTER as Conditions</text>
+  <rect class="box" x="406" y="474" width="290" height="80" rx="8"/>
+  <text x="420" y="499" class="h">Condition</text>
+  <text x="420" y="520" class="s ink2">the view's WHERE, each FILTER:</text>
+  <text x="420" y="539" class="s ink2">on keys, such as key IN (…)</text>
+  <path class="a" d="M154 116 H186" marker-end="url(#m)"/>
+  <path class="a" d="M89 156 V254 H186" marker-end="url(#m)"/>
+  <path class="a-cfg" d="M406 120 H354" marker-end="url(#m)"/>
+  <text x="378" y="112" class="s ink2 halo" text-anchor="middle">names</text>
+  <path class="a" d="M350 254 H402" marker-end="url(#m)"/>
+  <path class="a" d="M388 254 V514"/>
+  <path class="a" d="M388 160 V254"/>
+  <path class="a" d="M388 160 H402" marker-end="url(#m)"/>
+  <path class="a" d="M388 324 H402" marker-end="url(#m)"/>
+  <path class="a" d="M388 414 H402" marker-end="url(#m)"/>
+  <path class="a" d="M388 514 H402" marker-end="url(#m)"/>
 </svg>

@@ -212,7 +212,7 @@ Arrows denote dependency, not communication flow.
 Immutable once `Spec::new` has checked it. Every node is a value
 object compared by value.
 
-![What a spec declares, with cardinalities](diagrams/spec.svg)
+![What a spec declares](diagrams/spec.svg)
 
 *A spec is dims and facts. A fact is one view: its table, one time,
 by keys, refs in join order, measures and the view's WHERE. A ref
