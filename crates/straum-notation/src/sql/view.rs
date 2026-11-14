@@ -271,9 +271,7 @@ impl Walker {
         Some(dim)
     }
 
-    /// `WITH (buckets = '1 hour, 1 day, 7 days')`. The `key` option of
-    /// earlier specs is refused by name, since a spec that still has it was
-    /// written for a Straum that needed it.
+    /// `WITH (buckets = '1 hour, 1 day, 7 days')`.
     fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Width>> {
         let mut buckets = None;
         let list = match options {
@@ -293,22 +291,9 @@ impl Walker {
             let Some(name) = self.ident(name) else {
                 continue;
             };
-            match name.as_str() {
-                "buckets" => {}
-                "key" => {
-                    self.error(
-                        at,
-                        format!(
-                            "view option {option} is gone: Straum reads the whole old row \
-                             under REPLICA IDENTITY FULL, so drop it"
-                        ),
-                    );
-                    continue;
-                }
-                _ => {
-                    self.refuse(at, "view option", option);
-                    continue;
-                }
+            if name.as_str() != "buckets" {
+                self.refuse(at, "view option", option);
+                continue;
             }
             if buckets.is_some() {
                 self.error(at, format!("view option {name} given twice"));

@@ -811,8 +811,7 @@ fn view_shapes_outside_the_subset_are_rejected() {
     ]);
 }
 
-/// Every view option but buckets. `key` was required once; a spec that
-/// still has it says so.
+/// Every view option but buckets.
 #[test]
 fn view_options_other_than_buckets_are_rejected() {
     rejects(&[
@@ -820,8 +819,7 @@ fn view_options_other_than_buckets_are_rejected() {
             "WITH (buckets = '1 hour')",
             "WITH (key = id)",
             1,
-            "view option key = id is gone: Straum reads the whole old row \
-             under REPLICA IDENTITY FULL, so drop it",
+            "view option `key = id` is not in Straum SQL",
         ),
         (
             "WITH (buckets = '1 hour')",
