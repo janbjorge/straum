@@ -351,6 +351,42 @@ bucket               | kind | borough    | trips | fare  | fare_avg | fare_max
 }
 
 #[test]
+fn accept_picks_the_format_and_each_route_its_default() {
+    let mut writer = writer();
+    writer.step().unwrap();
+    let server = serve(writer.app().clone());
+    let content_type = |method: &str, path: &str, accept: Option<&str>, body: &str| {
+        let accept = accept.map_or(String::new(), |accept| format!("accept: {accept}\r\n"));
+        let reply = send(
+            server.addr,
+            &format!(
+                "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{accept}content-length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let content_type = reply
+            .head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-type: "));
+        content_type.unwrap().to_owned()
+    };
+    let (json, text) = ("application/json", "text/plain; charset=utf-8");
+    for (accept, ask, views) in [
+        (Some("application/json"), json, json),
+        (Some("text/plain"), text, text),
+        (Some("*/*"), json, text),
+        (None, json, text),
+    ] {
+        let got = content_type("POST", "/ask", accept, &first_hour());
+        assert_eq!(got, ask, "/ask {accept:?}");
+        let got = content_type("GET", "/views", accept, "");
+        assert_eq!(got, views, "/views {accept:?}");
+    }
+    server.stop();
+}
+
+#[test]
 fn errors_are_lines_to_those_who_accept_text() {
     let mut writer = writer();
     let server = serve(writer.app().clone());

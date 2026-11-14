@@ -66,8 +66,7 @@ const ROWS: &str = "/views/";
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
 
-/// How an ask is answered: JSON for programs, or plain text for the people
-/// who send `Accept: text/plain`.
+/// How a reply is written: JSON for programs, or plain text for people.
 #[derive(Clone, Copy)]
 enum Format {
     Json,
@@ -75,10 +74,19 @@ enum Format {
 }
 
 impl Format {
-    fn of(accept: Option<&HeaderValue>) -> Format {
+    /// The format `Accept` names, else the route's own.
+    fn of(accept: Option<&HeaderValue>, default: Format) -> Format {
         match accept {
+            Some(accept) if accept == JSON => Format::Json,
             Some(accept) if accept == "text/plain" => Format::Text,
-            _ => Format::Json,
+            _ => default,
+        }
+    }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Format::Json => JSON,
+            Format::Text => TEXT,
         }
     }
 
@@ -151,15 +159,15 @@ async fn handle(
     read_ask: ReadAsk,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body) = request.into_parts();
+    let accept = parts.headers.get(ACCEPT);
     let response = match (&parts.method, parts.uri.path()) {
         (&Method::POST, "/ask") => {
-            let format = Format::of(parts.headers.get(ACCEPT));
-            ask(body, &app, read_ask, format).await
+            ask(body, &app, read_ask, Format::of(accept, Format::Json)).await
         }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => readyz(&app),
         (&Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
-        (&Method::GET, "/views") => views(&app, parts.headers.get(ACCEPT)),
+        (&Method::GET, "/views") => views(&app, Format::of(accept, Format::Text)),
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (&Method::GET, path) if path.starts_with(ROWS) => rows(&app, &path[ROWS.len()..]).await,
@@ -271,11 +279,7 @@ fn answered_response(
     parse: Duration,
     start: Instant,
 ) -> Response<Full<Bytes>> {
-    let content_type = match format {
-        Format::Json => JSON,
-        Format::Text => TEXT,
-    };
-    let mut response = respond(StatusCode::OK, content_type, timed.body);
+    let mut response = respond(StatusCode::OK, format.content_type(), timed.body);
     let lsn = HeaderValue::try_from(timed.applied.to_string()).expect("an LSN is ASCII");
     response.headers_mut().insert(LSN, lsn);
     // total also holds reading the body and the hops to and from the
@@ -322,11 +326,7 @@ fn readyz(app: &App) -> Response<Full<Bytes>> {
     }
 }
 
-fn views(app: &App, accept: Option<&HeaderValue>) -> Response<Full<Bytes>> {
-    let format = match accept {
-        Some(accept) if accept == JSON => Format::Json,
-        _ => Format::Text,
-    };
+fn views(app: &App, format: Format) -> Response<Full<Bytes>> {
     match (app.held(), format) {
         (Some(held), Format::Text) => text(StatusCode::OK, views::write(&held)),
         (Some(held), Format::Json) => respond(StatusCode::OK, JSON, views::json(&held)),
