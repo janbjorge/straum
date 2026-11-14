@@ -137,9 +137,9 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     let before = words(before);
     let all = words(line);
     let Some(first) = before.first() else {
-        let commands = COMMANDS.iter().map(|command| (*command).to_owned());
-        return std::iter::once("SELECT ".to_owned())
-            .chain(commands)
+        return std::iter::once("SELECT ")
+            .chain(COMMANDS)
+            .map(str::to_owned)
             .collect();
     };
     if is(first, "\\rows") && before.len() == 1 {
