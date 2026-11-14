@@ -519,8 +519,12 @@ fn bytes(text: &str) -> Option<u64> {
     positive(count)?.checked_mul(1 << shift)
 }
 
+fn read_file(path: &str) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))
+}
+
 fn read_spec(path: &str) -> Result<Spec, String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let text = read_file(path)?;
     straum_notation::parse(&text).map_err(|e| {
         let lines: Vec<String> = (e.to_string().lines())
             .map(|line| format!("{path}: {line}"))
@@ -554,7 +558,7 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
 /// other users of the machine can read it.
 fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, String> {
     let text = match (file, env::var("STRAUM_DSN")) {
-        (Some(path), _) => fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?,
+        (Some(path), _) => read_file(path)?,
         (None, Ok(text)) => text,
         (None, Err(_)) => return Ok(None),
     };
