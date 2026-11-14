@@ -55,5 +55,5 @@ version `20devel` (`meson.build:11`), master `0f3b42ce806`
 (2026-10-19). Line numbers are from master, not the REL_18 or REL_19
 branches. Versions are placed by ancestry against the stamp commits
 `2652835d3ef` (19devel, the PG18 branch point) and `a281a3e6dbb`
-(20devel, the PG19 branch point). PostgreSQL 17 and newer is the
-target (jb, 2026-11-09); CI tests 17, 18 and 19rc1.
+(20devel, the PG19 branch point). PostgreSQL 16 and newer is the
+target (jb, 2026-11-14); CI tests 16, 17, 18 and 19rc1.

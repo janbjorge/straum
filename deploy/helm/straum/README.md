@@ -8,7 +8,7 @@ more.
 
 ## Before you install
 
-1. PostgreSQL 17 or newer. 17 and 18 need `wal_level = logical`, which
+1. PostgreSQL 16 or newer. 16 to 18 need `wal_level = logical`, which
    takes a restart; on a managed service, set the provider's parameter for
    logical decoding. From 19, `replica`, the default, is enough.
 2. The setup SQL that `straum plan --spec spec.sql` prints, run by the

@@ -1,6 +1,6 @@
 # ADR-0024: Straum runs on PostgreSQL 17 and newer
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Superseded by ADR-0046
 
 ## Context
 

@@ -1,13 +1,13 @@
 # Setting up PostgreSQL
 
-Straum supports PostgreSQL 17 and newer, self-hosted or managed; its
-tests run on 17, 18 and the 19 release candidate. It uses logical
+Straum supports PostgreSQL 16 and newer, self-hosted or managed; its
+tests run on 16, 17, 18 and the 19 release candidate. It uses logical
 replication with `pgoutput`, a temporary slot and an exported snapshot,
 with no extension and no superuser. Setup is three steps, done once.
 
 ## 1. Turn on logical decoding
 
-PostgreSQL 17 and 18 need `wal_level = logical`, which takes a restart.
+PostgreSQL 16 to 18 need `wal_level = logical`, which takes a restart.
 On your own server, run `ALTER SYSTEM SET wal_level = logical;` and
 restart. From PostgreSQL 19, `replica`, the default, is enough: a logical
 slot turns logical decoding on while it exists. On a managed service, set

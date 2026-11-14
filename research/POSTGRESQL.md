@@ -10,7 +10,7 @@ of [upstream PostgreSQL](https://github.com/postgres/postgres/tree/0f3b42ce806),
 `src/backend` unless stated; the replication tree was read on
 2026-11-08 and the load-bearing citations re-read by hand that day.
 
-Everything Straum needs ships in stock PostgreSQL 17 and newer and
+Everything Straum needs ships in stock PostgreSQL 16 and newer and
 works on Azure: pgoutput, temporary logical slots, exported snapshots,
 SQL on a replication connection.
 
@@ -213,9 +213,9 @@ fill the server's disk. The costs:
 
 ## 6. `wal_level` and the cost on the primary
 
-PostgreSQL 17 is the floor (jb, 2026-11-09). CI tests 17, 18 and 19rc1.
+PostgreSQL 16 is the floor (jb, 2026-11-14). CI tests 16, 17, 18 and 19rc1.
 
-- PostgreSQL 17 and 18 with `wal_level = logical`: pgoutput and a
+- PostgreSQL 16 to 18 with `wal_level = logical`: pgoutput and a
   temporary slot. With `replica`, Straum refuses to start and says to
   set `logical` and restart; it checks before it makes the slot, since
   a logical slot fails with "logical decoding requires \"wal_level\" >=

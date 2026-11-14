@@ -83,7 +83,7 @@ nothing on disk: every start loads every table again, and a crash
 leaves no slot behind holding WAL. PostgreSQL stays the source of
 truth.
 
-Straum supports PostgreSQL 17 and newer as shipped, with no extension
+Straum supports PostgreSQL 16 and newer as shipped, with no extension
 and no superuser, so managed services work. The name is Nynorsk for a
 stream or current: Straum's input is PostgreSQL's replication stream.
 

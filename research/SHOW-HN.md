@@ -24,7 +24,7 @@ the same LSN. Each answer includes `as_of`, the time through which commits
 are applied.
 
 It is intentionally narrow: one declared view, restricted queries, no
-disk, and PostgreSQL remains authoritative. It needs PostgreSQL 17+ and
+disk, and PostgreSQL remains authoritative. It needs PostgreSQL 16+ and
 logical replication, but no extension or superuser.
 
 On six months of NYC taxi trips, 20 million rows, it answered seven

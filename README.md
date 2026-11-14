@@ -66,7 +66,7 @@ from the `ghcr.io/janbjorge/straum` image against PostgreSQL in Docker,
 in four steps, on the full month.
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
-answers only what its spec declares. It needs PostgreSQL 17 or newer as
+answers only what its spec declares. It needs PostgreSQL 16 or newer as
 shipped, with stock logical replication, no extension and no superuser
 ([setup](https://janbjorge.github.io/straum/postgresql.html)). To try
 a spec or measure Straum with no PostgreSQL, `straum run --feed` takes
