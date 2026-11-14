@@ -19,7 +19,7 @@ mod value;
 mod value_counts;
 
 pub use aggregate::{Aggregate, Reads};
-pub use ask::{Ask, AskError, AskKey, TimeKey};
+pub use ask::{Ask, AskError, AskKey};
 pub use ident::Identifier;
 pub use rollup::RowError;
 pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};

@@ -3,7 +3,7 @@
 
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Identifier, Key, Literal,
-    Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, TimeKey, Via, Width,
+    Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -403,7 +403,7 @@ fn ask() -> Ask {
             AskKey::Key(id("a")),
             AskKey::Key(id("z_id")),
             AskKey::Key(id("name")),
-            AskKey::Time(TimeKey::Bucket),
+            AskKey::Bucket,
         ],
         filter: vec![Condition {
             key: id("name"),
@@ -430,8 +430,8 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
             AskKey::Key(id("colour")),
             AskKey::Key(id("name")),
             AskKey::Key(id("name")),
-            AskKey::Time(TimeKey::Bucket),
-            AskKey::Time(TimeKey::Bucket),
+            AskKey::Bucket,
+            AskKey::Bucket,
         ],
         from: 60,
         ..ask()
@@ -538,5 +538,5 @@ fn ask_errors_display() {
     for (error, shown) in cases {
         assert_eq!(error.to_string(), shown);
     }
-    assert_eq!(TimeKey::Bucket.to_string(), "bucket");
+    assert_eq!(AskKey::Bucket.to_string(), "bucket");
 }

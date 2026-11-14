@@ -147,6 +147,13 @@ pub struct Width {
     pub seconds: u32,
 }
 
+/// Buckets are UTC.
+impl Width {
+    pub fn bucket_start(self, t: i64) -> i64 {
+        t.div_euclid(i64::from(self.seconds)) * i64::from(self.seconds)
+    }
+}
+
 /// A join from the fact, or from a dim already joined, to a dim's key,
 /// column for column, of any cardinality. The fact-side via columns are
 /// rollup keys, so a cell is keyed by the dim rows it points at; the

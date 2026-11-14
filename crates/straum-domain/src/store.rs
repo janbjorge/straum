@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::aggregate::Partials;
-use crate::ask::{Ask, AskError, AskKey, TimeKey};
+use crate::ask::{Ask, AskError, AskKey};
 use crate::hash::FastMap;
 use crate::ident::Identifier;
 use crate::projection::{NULL, Projection};
@@ -609,7 +609,7 @@ impl Store {
         let mut by: Vec<Grouping> = (ask.keys.iter())
             .map(|key| match key {
                 AskKey::Key(name) => Grouping::lookup(self.lookup(fact, &read, name), rollup),
-                AskKey::Time(t) => Grouping::time(*t, fact.time.width, buckets),
+                AskKey::Bucket => Grouping::time(fact.time.width, buckets),
             })
             .collect();
         let mut groups = Groups::new(&by);
@@ -972,7 +972,7 @@ fn answer_columns(
     let keys = (ask.keys.iter().zip(by)).map(|(key, p)| AnswerColumn {
         name: key.to_string(),
         scale: p.column_type(rollup).scale(),
-        is_time: matches!(key, AskKey::Time(_)),
+        is_time: matches!(key, AskKey::Bucket),
     });
     let values = (ask.measures.iter().zip(measures)).map(|(name, m)| AnswerColumn {
         name: name.to_string(),
@@ -1018,7 +1018,7 @@ fn bound_part_of(fact: &Fact, name: &Identifier) -> usize {
 }
 
 fn buckets<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, i64, &'r Bucket)> {
-    let each_bucket = ask.keys.iter().any(|key| matches!(key, AskKey::Time(_)));
+    let each_bucket = ask.keys.iter().any(|key| matches!(key, AskKey::Bucket));
     rollup.cover(ask.from, ask.to, each_bucket)
 }
 
@@ -1447,7 +1447,6 @@ enum Grouping<'s> {
         bound: usize,
     },
     Time {
-        key: TimeKey,
         width: Width,
         /// The start of each time-key bucket met so far, the one at hand last.
         bucket_starts: Vec<i64>,
@@ -1464,9 +1463,8 @@ impl<'s> Grouping<'s> {
         }
     }
 
-    fn time(key: TimeKey, width: Width, buckets: usize) -> Grouping<'s> {
+    fn time(width: Width, buckets: usize) -> Grouping<'s> {
         Grouping::Time {
-            key,
             width,
             bucket_starts: Vec::new(),
             bound: buckets,
@@ -1491,13 +1489,12 @@ impl<'s> Grouping<'s> {
     /// together.
     fn enter(&mut self, bucket: i64) {
         if let Grouping::Time {
-            key,
             width,
             bucket_starts,
             ..
         } = self
         {
-            let start = key.bucket_start(bucket, *width);
+            let start = width.bucket_start(bucket);
             if bucket_starts.last() != Some(&start) {
                 bucket_starts.push(start);
             }

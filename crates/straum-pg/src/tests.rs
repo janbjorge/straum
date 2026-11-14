@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 use straum_app::{AnswerError, App, Limits, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Literal,
-    Spec, Store, TimeKey, Value, decimal,
+    Spec, Store, Value, decimal,
 };
 use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
 use testcontainers::runners::SyncRunner;
@@ -360,7 +360,7 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         keys: by
             .iter()
             .map(|k| match *k {
-                "bucket" => AskKey::Time(TimeKey::Bucket),
+                "bucket" => AskKey::Bucket,
                 k => AskKey::Key(id(k)),
             })
             .collect(),
@@ -1457,7 +1457,7 @@ fn asks_take_values_of_the_types_the_load_read() {
         filter: vec![Condition {
             key: match ask(fact, &[], &[key]).keys.remove(0) {
                 AskKey::Key(name) => name,
-                AskKey::Time(_) => unreachable!("cases filter on keys"),
+                AskKey::Bucket => unreachable!("cases filter on keys"),
             },
             values: vec![value],
         }],

@@ -12,7 +12,7 @@ use common::{Rng, Spilled, cond, dim_row, holds, id, lit, table, text};
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, Literal, Measure, Origin, Ref, RefKind, Spec, Store,
-    TimeKey, Value, Via, Width,
+    Value, Via, Width,
 };
 
 const HOUR: i64 = 3_600;
@@ -375,12 +375,12 @@ fn reference(
                 .iter()
                 .map(|k| match k {
                     AskKey::Key(name) => value(row, &joined, name),
-                    AskKey::Time(tk) => Datum::Int(tk.bucket_start(
-                        t,
+                    AskKey::Bucket => Datum::Int(
                         Width {
                             seconds: HOUR as u32,
-                        },
-                    )),
+                        }
+                        .bucket_start(t),
+                    ),
                 })
                 .collect();
             groups.entry(key).or_default().push((row, joined));
@@ -401,8 +401,8 @@ fn reference(
             scale: 0,
             is_time: false,
         },
-        AskKey::Time(t) => AnswerColumn {
-            name: t.to_string(),
+        AskKey::Bucket => AnswerColumn {
+            name: k.to_string(),
             scale: 0,
             is_time: true,
         },
@@ -469,7 +469,7 @@ fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
         keys: by
             .iter()
             .map(|k| match *k {
-                "bucket" => AskKey::Time(TimeKey::Bucket),
+                "bucket" => AskKey::Bucket,
                 k => AskKey::Key(id(k)),
             })
             .collect(),

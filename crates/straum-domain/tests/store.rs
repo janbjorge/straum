@@ -11,8 +11,7 @@ use common::{Rng, Spilled, attr, col, cond, dim_row, holds, id, lit, table, text
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref, RefKind,
-    RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, TimeKey, Value, Via,
-    Width,
+    RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, Value, Via, Width,
 };
 
 const WIDTH: u32 = 900;
@@ -412,7 +411,7 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         .collect();
     if rng.chance(60) {
         let at = rng.below(by.len() + 1);
-        by.insert(at, AskKey::Time(TimeKey::Bucket));
+        by.insert(at, AskKey::Bucket);
     }
     let pool = [
         cond("pay", vec![Literal::Int(1), Literal::Int(2)]),
@@ -566,7 +565,7 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
             .iter()
             .map(|k| match k {
                 AskKey::Key(p) => value(row, p, dims),
-                AskKey::Time(tk) => Datum::Int(tk.bucket_start(t, Width { seconds: WIDTH })),
+                AskKey::Bucket => Datum::Int(Width { seconds: WIDTH }.bucket_start(t)),
             })
             .collect();
         groups.entry(key).or_default().push(row);
@@ -588,8 +587,8 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
             scale: scale(p),
             is_time: false,
         },
-        AskKey::Time(t) => AnswerColumn {
-            name: t.to_string(),
+        AskKey::Bucket => AnswerColumn {
+            name: k.to_string(),
             scale: 0,
             is_time: true,
         },
@@ -1313,7 +1312,7 @@ fn a_time_before_the_epoch_floors_to_its_bucket() {
     let mut row = trip(&mut Rng(2));
     row[AT] = Datum::Int(-1);
     store.add_row("trips", &row).unwrap();
-    let by_bucket = vec![AskKey::Time(TimeKey::Bucket)];
+    let by_bucket = vec![AskKey::Bucket];
     let below = trips_over(-width, 0, by_bucket.clone());
     assert_eq!(
         store.ask(&below).unwrap().rows,
@@ -1353,7 +1352,7 @@ fn a_row_without_a_time_is_kept_and_never_answered() {
     let (from, to) = (i64::MIN / width * width, i64::MAX / width * width);
     let all = store.ask(&trips_over(from, to, Vec::new())).unwrap();
     assert_eq!(all.rows[0].values, [Value::Int(1)]);
-    let by_bucket = trips_over(from, to, vec![AskKey::Time(TimeKey::Bucket)]);
+    let by_bucket = trips_over(from, to, vec![AskKey::Bucket]);
     assert_eq!(
         store.ask(&by_bucket).unwrap().rows,
         [AnswerRow {
@@ -2136,10 +2135,7 @@ fn columns_name_keys_and_measures_as_asked() {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("fare"), id("trips")],
-        keys: vec![
-            AskKey::Key(id("pickup_zone")),
-            AskKey::Time(TimeKey::Bucket),
-        ],
+        keys: vec![AskKey::Key(id("pickup_zone")), AskKey::Bucket],
         filter: Vec::new(),
         from: START,
         to: END,
@@ -2168,7 +2164,7 @@ fn time_key_start() {
         (-1, -900),
     ];
     for (t, start) in cases {
-        assert_eq!(TimeKey::Bucket.bucket_start(t, width), start, "{t}");
+        assert_eq!(width.bucket_start(t), start, "{t}");
     }
 }
 
@@ -2400,7 +2396,7 @@ fn whole_range(by: Vec<AskKey>) -> Ask {
 #[test]
 fn a_sealed_bucket_answers_as_before() {
     let (mut store, _) = three_rows();
-    let ask = whole_range(vec![AskKey::Time(TimeKey::Bucket)]);
+    let ask = whole_range(vec![AskKey::Bucket]);
     let before = store.ask(&ask).unwrap();
     let cells = store.cells_read(&ask).unwrap();
 

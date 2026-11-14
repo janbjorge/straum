@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::mem;
 
 use crate::ident::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec, Width};
@@ -21,21 +22,7 @@ pub struct Ask {
 pub enum AskKey {
     /// A key by the name the view gives it.
     Key(Identifier),
-    Time(TimeKey),
-}
-
-/// Buckets are UTC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeKey {
     Bucket,
-}
-
-impl TimeKey {
-    pub fn bucket_start(self, t: i64, width: Width) -> i64 {
-        match self {
-            TimeKey::Bucket => t.div_euclid(i64::from(width.seconds)) * i64::from(width.seconds),
-        }
-    }
 }
 
 impl Spec {
@@ -55,7 +42,7 @@ impl Spec {
             }
         }
 
-        let mut time = None;
+        let mut bucket = false;
         for key in &ask.keys {
             match key {
                 AskKey::Key(name) => {
@@ -63,8 +50,8 @@ impl Spec {
                         errors.push(AskError::UnknownKey(name.clone()));
                     }
                 }
-                AskKey::Time(t) => {
-                    if time.replace(*t).is_some() {
+                AskKey::Bucket => {
+                    if mem::replace(&mut bucket, true) {
                         errors.push(AskError::TimeKeyTwice);
                     }
                 }
@@ -74,7 +61,7 @@ impl Spec {
         let mut names = HashSet::new();
         let keys = (ask.keys.iter()).filter_map(|key| match key {
             AskKey::Key(name) => Some(name.as_str()),
-            AskKey::Time(_) => None,
+            AskKey::Bucket => None,
         });
         for name in keys.chain(ask.measures.iter().map(Identifier::as_str)) {
             if !names.insert(name) {
@@ -167,15 +154,7 @@ impl fmt::Display for AskKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AskKey::Key(name) => write!(f, "{name}"),
-            AskKey::Time(t) => write!(f, "{t}"),
+            AskKey::Bucket => f.write_str("bucket"),
         }
-    }
-}
-
-impl fmt::Display for TimeKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            TimeKey::Bucket => "bucket",
-        })
     }
 }

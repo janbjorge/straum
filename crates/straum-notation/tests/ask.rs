@@ -1,7 +1,7 @@
 mod common;
 
 use common::{FEB, JAN, cond, id, strings};
-use straum_domain::{Ask, AskKey, Literal, TimeKey};
+use straum_domain::{Ask, AskKey, Literal};
 use straum_notation::parse_ask;
 
 fn key(name: &str) -> AskKey {
@@ -45,7 +45,7 @@ fn reads_every_part() {
             view: id("trips"),
             measures: vec![id("trips"), id("fare")],
             keys: vec![
-                AskKey::Time(TimeKey::Bucket),
+                AskKey::Bucket,
                 key("payment_type"),
                 key("pu_location_id"),
                 key("borough"),

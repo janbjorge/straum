@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Datum, Dim, Fact, Measure, Origin, Ref,
-    RefKind, Spec, Store, Time, TimeKey, Via, Width,
+    RefKind, Spec, Store, Time, Via, Width,
 };
 
 mod common;
@@ -269,7 +269,7 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
         (19 + 6 + 3 + 1 + 4) * per_hour
     );
     let mut by_bucket = ask(&[], 5, 700);
-    by_bucket.keys = vec![AskKey::Time(TimeKey::Bucket)];
+    by_bucket.keys = vec![AskKey::Bucket];
     assert_eq!(store.cells_read(&by_bucket).unwrap(), 695 * per_hour);
 }
 

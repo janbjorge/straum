@@ -18,7 +18,7 @@ use straum_app::{
 };
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Literal, SealedId,
-    Spec, Table, TimeKey, Value, Width,
+    Spec, Table, Value, Width,
 };
 
 use fake::{Database, Fake, Row, Write, id, time};
@@ -138,7 +138,7 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
 
 fn ask_key(s: &str) -> AskKey {
     match s {
-        "bucket" => AskKey::Time(TimeKey::Bucket),
+        "bucket" => AskKey::Bucket,
         _ => AskKey::Key(id(s)),
     }
 }

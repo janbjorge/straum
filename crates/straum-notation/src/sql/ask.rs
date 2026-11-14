@@ -15,7 +15,7 @@
 
 use jiff::Timestamp;
 use sqlparser::ast as sql;
-use straum_domain::{Ask, AskKey, Condition, Identifier, Literal, TimeKey};
+use straum_domain::{Ask, AskKey, Condition, Identifier, Literal};
 
 use super::{Names, SqlError, Walker, and_parts, line, statements};
 
@@ -119,7 +119,7 @@ impl Walker {
             }
             match key {
                 AskKey::Key(name) => measures.push(name),
-                AskKey::Time(_) => self.error(
+                AskKey::Bucket => self.error(
                     line(expr),
                     format!("{expr} is selected but not in GROUP BY"),
                 ),
@@ -177,7 +177,7 @@ impl Walker {
             sql::Expr::Identifier(id) => {
                 let name = self.ident(id)?;
                 if name.as_str() == "bucket" {
-                    return Some(AskKey::Time(TimeKey::Bucket));
+                    return Some(AskKey::Bucket);
                 }
                 Some(AskKey::Key(name))
             }
@@ -240,7 +240,7 @@ impl Walker {
     pub(super) fn ask_name(&mut self, expr: &sql::Expr) -> Option<Identifier> {
         match self.ask_key(expr)? {
             AskKey::Key(name) => Some(name),
-            AskKey::Time(_) => {
+            AskKey::Bucket => {
                 self.error(
                     line(expr),
                     "bucket takes only bucket >= $n AND bucket < $m".into(),

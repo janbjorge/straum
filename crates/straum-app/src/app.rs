@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
     Answer, Ask, AskError, AskKey, ColumnType, Identifier, SealedError, SealedId, Spec, Store,
-    Table, TimeKey, Width,
+    Table, Width,
 };
 
 use crate::lag::Lag;
@@ -296,7 +296,7 @@ impl App {
         Some(Ask {
             view: fact.name.clone(),
             measures: fact.measures.iter().map(|m| m.name.clone()).collect(),
-            keys: iter::once(AskKey::Time(TimeKey::Bucket))
+            keys: iter::once(AskKey::Bucket)
                 .chain(fact.keys().cloned().map(AskKey::Key))
                 .collect(),
             filter: Vec::new(),
