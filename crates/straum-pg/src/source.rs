@@ -22,7 +22,8 @@ use crate::wire::Connection;
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
 
-/// Straum's [`Source`] over PostgreSQL 18 with `wal_level = logical`.
+/// Straum's [`Source`] over PostgreSQL 16 and newer with
+/// `wal_level = logical`, or `replica` from 19 (ADR-0046).
 pub struct Postgres {
     dsn: Dsn,
     publication: String,

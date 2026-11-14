@@ -1,5 +1,6 @@
-//! straum-pg against PostgreSQL 18 in Docker, one container per test. Every
-//! answer is checked against the view body of the spec, run in PostgreSQL.
+//! straum-pg against PostgreSQL in Docker, one container per test: 18, or
+//! the major `STRAUM_TEST_POSTGRES` names. Every answer is checked against
+//! the view body of the spec, run in PostgreSQL.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -2492,6 +2493,7 @@ fn reports_wal_level_and_read_access() {
         major.parse::<u32>().unwrap()
     );
     for (version, wal_level, needs) in [
+        (160_000, "replica", Some("logical")),
         (170_000, "replica", Some("logical")),
         (180_000, "replica", Some("logical")),
         (180_000, "logical", None),
