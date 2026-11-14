@@ -11,9 +11,9 @@ use straum_domain::{Sealed, SealedId};
 pub struct MemorySpill {
     pub buckets: Mutex<BTreeMap<SealedId, Sealed>>,
     /// Every call fails while set.
-    pub broken: AtomicBool,
-    pub gets: AtomicUsize,
-    pub clears: AtomicUsize,
+    broken: AtomicBool,
+    gets: AtomicUsize,
+    clears: AtomicUsize,
 }
 
 impl MemorySpill {
