@@ -19,7 +19,8 @@ use straum_domain::{Ask, AskKey, Condition, Identifier, Literal, TimeKey};
 
 use super::{Names, SqlError, Walker, and_parts, line, statements};
 
-pub(crate) fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
+/// An ask, its values taken from `parameters` by `$n`.
+pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
     let statements = statements(query)?;
     let mut walker = Walker::default();
     let mut params = Params {

@@ -18,7 +18,7 @@ mod ask;
 mod view;
 
 use ask::Params;
-pub(crate) use ask::parse_ask;
+pub use ask::parse_ask;
 use view::Scope;
 pub(crate) use view::parse;
 

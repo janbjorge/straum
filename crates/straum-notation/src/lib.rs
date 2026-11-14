@@ -11,9 +11,9 @@ mod sql;
 
 use std::fmt;
 
-use straum_domain::{Ask, Literal, Spec, SpecError};
+use straum_domain::{Spec, SpecError};
 
-pub use sql::SqlError;
+pub use sql::{SqlError, parse_ask};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -24,11 +24,6 @@ pub enum Error {
 pub fn parse(src: &str) -> Result<Spec, Error> {
     let (dims, facts) = sql::parse(src).map_err(Error::Sql)?;
     Spec::new(dims, facts).map_err(Error::Spec)
-}
-
-/// An ask, its values taken from `parameters` by `$n`.
-pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
-    sql::parse_ask(query, parameters)
 }
 
 impl fmt::Display for SqlError {
