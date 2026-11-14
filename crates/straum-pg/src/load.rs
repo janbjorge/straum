@@ -59,12 +59,11 @@ pub(crate) fn copy(
     // A fact has its time column, a dim its key.
     debug_assert!(!table.types.is_empty());
     let width = table.types.len();
-    let sql = copy_sql(table);
     let (full, filled) = mpsc::sync_channel::<Vec<Datum>>(IN_FLIGHT);
     let (spent, empty) = mpsc::channel::<Vec<Datum>>();
     thread::scope(|scope| {
         let reader = scope.spawn(move || {
-            read(conn, &sql, table, |batch| {
+            read(conn, table, |batch| {
                 let next = empty
                     .try_recv()
                     .unwrap_or_else(|_| Vec::with_capacity(BATCH * width));
@@ -89,11 +88,11 @@ pub(crate) fn copy(
     })
 }
 
-/// Runs a binary `COPY`, decoding rows into a batch and calling `hand_over`
-/// with each full one and the last, which it swaps for an empty one.
+/// Runs a binary `COPY` of the table, decoding rows into a batch and
+/// calling `hand_over` with each full one and the last, which it swaps for
+/// an empty one.
 fn read(
     conn: &mut Connection,
-    sql: &str,
     table: &Checked,
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -101,7 +100,7 @@ fn read(
     let mut batch = Vec::with_capacity(BATCH * types.len());
     let mut started = false;
     let mut ended = false;
-    conn.copy_out(sql, |mut data| {
+    conn.copy_out(&copy_sql(table), |mut data| {
         if !started {
             data = header(data)?;
             started = true;
