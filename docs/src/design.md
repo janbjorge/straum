@@ -135,6 +135,25 @@ width; a hot bucket is columnar cells with one state per input.*
   (`Store::rebuild_dim`). They hold the hot buckets only: a seal
   takes its bucket out of them and an unseal binds it back.
 
+`Rollup::add` puts a row in its cells, here the row of
+[Cells](how-it-works.md#cells):
+
+![How a row finds its cell](diagrams/cells.svg)
+
+*The key values become codes, the time picks a bucket per level, and
+the bucket's index finds the cell, which adds the row.*
+
+1. Each key value gets the code of its column's first add of it
+   (`Codes::code`), so a cell key is a few integers.
+2. Each level floors the time to its width (`Level::bucket`) and finds
+   the bucket in its `BTreeMap`, making a hot one if there is none.
+3. The bucket's **Index** hashes the codes to a home slot and walks on
+   until the cell with those keys, or appends a new cell
+   (`Cells::entry`).
+4. The cell adds the row: one more row, and each **State** its input.
+
+Steps 2 to 4 repeat for every level.
+
 ## Applying a commit
 
 `Writer::apply_next`, one step:
