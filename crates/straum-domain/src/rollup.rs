@@ -1338,7 +1338,8 @@ pub enum RowError {
         expected: usize,
         found: usize,
     },
-    /// The time column or a sum, avg, min or max column holds a non-integer.
+    /// The time column or a sum, avg, min, max or percentile column holds
+    /// a non-integer.
     NotInt {
         column: Identifier,
     },

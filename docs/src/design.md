@@ -238,8 +238,8 @@ by keys, refs in join order, measures and the view's WHERE. A ref
 joins through one via per key column and reads attributes.*
 
 An **Aggregate** is count, count of a column, sum, min, max, avg,
-count distinct, bool_and or bool_or; all but count name one input
-column (`Aggregate::input`).
+count distinct, bool_and, bool_or or percentile_disc; all but count
+name one input column (`Aggregate::input`).
 
 - A **Spec** holds dims and facts in one namespace (`Spec::new`).
   `Spec::tables` lists each table once, dims first.
