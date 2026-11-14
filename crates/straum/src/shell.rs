@@ -32,8 +32,8 @@ fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
         [] => Ok(String::new()),
         ["\\q"] => return None,
         ["\\?"] => {
-            let commands = SHELL_HELP.lines().filter(|line| line.starts_with("  "));
-            let commands = commands.filter(|line| !line.starts_with("  --"));
+            let commands = (SHELL_HELP.lines())
+                .filter(|line| line.starts_with("  ") && !line.starts_with("  --"));
             Ok(commands.map(|line| format!("{line}\n")).collect())
         }
         ["\\d"] => views(url),
