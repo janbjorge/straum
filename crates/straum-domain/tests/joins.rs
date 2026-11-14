@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, HashSet};
 
 mod common;
 
-use common::{Rng, Spilled, cond, dim_row, holds, id, lit, table, text};
+use common::{
+    Rng, Spilled, cond, dim_row, holds, id, lit, percentile, percentile_disc, table, text,
+};
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, Literal, Measure, Origin, Ref, RefKind, Spec, Store,
@@ -35,8 +37,8 @@ const PROMOS: usize = 3;
 const BLOCKED: usize = 4;
 
 const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "bucket"];
-const MEASURES: [&str; 8] = [
-    "n", "q", "q_max", "q_min", "products", "q_n", "all_even", "any_even",
+const MEASURES: [&str; 9] = [
+    "n", "q", "q_max", "q_min", "q_median", "products", "q_n", "all_even", "any_even",
 ];
 /// A measure with a filter of its own, over a column a join reads.
 const FILTERED: &str = "q_no";
@@ -163,6 +165,7 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
             m("q", Aggregate::Sum(id("qty"))),
             m("q_max", Aggregate::Max(id("qty"))),
             m("q_min", Aggregate::Min(id("qty"))),
+            m("q_median", percentile(5, 1, "qty")),
             m("products", Aggregate::CountDistinct(id("product"))),
             m("q_n", Aggregate::CountNotNull(id("qty"))),
             m("all_even", Aggregate::BoolAnd(id("even"))),
@@ -448,6 +451,7 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
         }
         Aggregate::Max(_) => or_null(ints(QTY).into_iter().max()),
         Aggregate::Min(_) => or_null(ints(QTY).into_iter().min()),
+        Aggregate::PercentileDisc { fraction, .. } => percentile_disc(ints(QTY), *fraction),
         Aggregate::CountDistinct(_) => {
             let seen: HashSet<_> = rows
                 .iter()
@@ -616,7 +620,7 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
 }
 
 /// Several dim rows under one key multiply a count and a sum, and leave a
-/// min, a max and a count distinct as they were.
+/// min, a max, a median of one value and a count distinct as they were.
 #[test]
 fn many_matches_multiply_counts_and_sums_only() {
     let orders = [order(START, Datum::Int(1), Datum::Int(1), Datum::Int(5))];
@@ -628,6 +632,7 @@ fn many_matches_multiply_counts_and_sums_only() {
     let two = vec![
         Value::Int(2),
         Value::Int(10),
+        Value::Int(5),
         Value::Int(5),
         Value::Int(5),
         Value::Int(1),
@@ -664,6 +669,7 @@ fn many_matches_multiply_counts_and_sums_only() {
         values(&store, &all),
         [
             Value::Int(1),
+            Value::Int(5),
             Value::Int(5),
             Value::Int(5),
             Value::Int(5),

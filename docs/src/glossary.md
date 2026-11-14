@@ -121,7 +121,7 @@ are open.
 - **Measure** (`Measure`): a named aggregate in the view, with an
   optional `FILTER`. Asks name measures after the keys.
 - **Aggregate** (`Aggregate`): count, count of a column, sum, min,
-  max, avg, count distinct, bool_and, bool_or. The walker says
+  max, avg, count distinct, bool_and, bool_or, percentile_disc. The walker says
   "aggregate" for the function and "an aggregated column" for its
   argument.
 - **Input column** (`Aggregate::input`, `Input`): the column an
@@ -133,8 +133,8 @@ are open.
   holding its row count and one state per input column. `Cells` is
   every cell of one bucket, side by side.
 - **Cell state** (`State`, `StateKind`): a count of the nulls among
-  a cell's rows, a sum and that count, a count per value for min and
-  max (the code's "extent"), a count per distinct value, or the
+  a cell's rows, a sum and that count, a count per value for min, max
+  and percentile_disc (the code's "extent"), a count per distinct value, or the
   counts of true and false (ADR-0041). Filtered measures keep no
   state (ADR-0016).
 - **Merge**: what an ask does with the cells it reads: one answer per
@@ -143,6 +143,10 @@ are open.
   for its aggregate to merge: its own answer (`sum`, `min`), a fixed
   few numbers (`avg`), or more as it holds more values (median,
   `count(DISTINCT c)`). [Aggregates 101](aggregates.md).
+- **Fraction** (`Fraction`): the `f` of `percentile_disc(f)`, from 0
+  to 1, kept as its digits and places.
+- **Rank**: the position, counting from 1, of the value a percentile
+  answers among the values in its range: `ceil(f * n)` in float8.
 - **Sketch**: a small summary that merges and answers approximately.
   Straum has none.
 - **Rollup** (`Rollup`): every cell of one fact, per width, with the

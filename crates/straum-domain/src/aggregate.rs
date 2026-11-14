@@ -33,6 +33,37 @@ pub enum Aggregate {
     CountDistinct(Identifier),
     BoolAnd(Identifier),
     BoolOr(Identifier),
+    PercentileDisc {
+        fraction: Fraction,
+        column: Identifier,
+    },
+}
+
+/// A fraction from 0 to 1 as written: its digits and how many follow the
+/// point, so a spec compares exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fraction {
+    pub units: u64,
+    pub places: u32,
+}
+
+impl Fraction {
+    /// `None` above 1.
+    pub fn new(units: u64, places: u32) -> Option<Fraction> {
+        let one = 10u64.checked_pow(places)?;
+        (units <= one).then_some(Fraction { units, places })
+    }
+
+    /// The 1-based position of the value `percentile_disc` gives among
+    /// `n`. PostgreSQL takes `ceil(fraction * n)` in float8, which differs
+    /// from exact math where the product falls near a whole number: 0.07
+    /// of 100 is rank 8 there, not 7.
+    pub(crate) fn rank(self, n: u64) -> u64 {
+        let fraction: f64 = format!("{}e-{}", self.units, self.places)
+            .parse()
+            .expect("digits and an exponent parse as f64");
+        ((fraction * n as f64).ceil() as u64).clamp(1, n)
+    }
 }
 
 impl Aggregate {
@@ -49,7 +80,9 @@ impl Aggregate {
             Aggregate::Count => None,
             Aggregate::CountNotNull(c) => Some((StateKind::Count, c)),
             Aggregate::Sum(c) | Aggregate::Avg(c) => Some((StateKind::Sum, c)),
-            Aggregate::Min(c) | Aggregate::Max(c) => Some((StateKind::Extent, c)),
+            Aggregate::Min(c) | Aggregate::Max(c) | Aggregate::PercentileDisc { column: c, .. } => {
+                Some((StateKind::Extent, c))
+            }
             Aggregate::CountDistinct(c) => Some((StateKind::Distinct, c)),
             Aggregate::BoolAnd(c) | Aggregate::BoolOr(c) => Some((StateKind::Bools, c)),
         }
@@ -87,6 +120,12 @@ pub(crate) enum Partials {
         seen: Vec<bool>,
     },
     Distinct(Vec<HashSet<Datum>>),
+    /// Each group's values with their counts, one pair per cell a value is
+    /// in, sorted only when finished.
+    Percentile {
+        fraction: Fraction,
+        values: Vec<Vec<(i64, u64)>>,
+    },
     /// A bool_and and a bool_or merge alike and part only when finished.
     Bools {
         trues: Vec<u64>,
@@ -113,6 +152,10 @@ impl Partials {
                 seen: Vec::new(),
             },
             Aggregate::CountDistinct(_) => Partials::Distinct(Vec::new()),
+            &Aggregate::PercentileDisc { fraction, .. } => Partials::Percentile {
+                fraction,
+                values: Vec::new(),
+            },
             Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Partials::Bools {
                 trues: Vec::new(),
                 falses: Vec::new(),
@@ -139,6 +182,7 @@ impl Partials {
             }
             // A set per lane would cost a merge of sets; one per group.
             Partials::Distinct(seen) => seen.resize_with(groups, HashSet::new),
+            Partials::Percentile { values, .. } => values.resize_with(groups, Vec::new),
             Partials::Bools { trues, falses, .. } => {
                 trues.resize(lanes, 0);
                 falses.resize(lanes, 0);
@@ -193,6 +237,11 @@ impl Partials {
                     seen[g as usize].extend(counts.keys().cloned());
                 }
             }
+            (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) => {
+                for (&g, counts) in groups.iter().zip(counts).filter(|&(&g, _)| g != 0) {
+                    values[g as usize].extend(counts.iter());
+                }
+            }
             (
                 Partials::Bools { trues, falses, .. },
                 Some(State::Bools {
@@ -238,6 +287,10 @@ impl Partials {
                 seen[g as usize].extend(counts[i].keys().cloned());
             }
             (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) if g != 0 => {
+                values[g as usize].extend(counts[i].iter());
+            }
+            (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
                 Some(State::Bools {
@@ -283,6 +336,10 @@ impl Partials {
                 seen[g].extend(counts.iter().flat_map(|c| c.keys().cloned()));
             }
             (Partials::Distinct(_), Some(State::Distinct(_))) => {}
+            (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) if g != 0 => {
+                values[g].extend(counts.iter().flat_map(|c| c.iter()));
+            }
+            (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
                 Some(State::Bools {
@@ -297,7 +354,7 @@ impl Partials {
         }
     }
 
-    pub(crate) fn finish(&self, g: usize) -> Value {
+    pub(crate) fn finish(&mut self, g: usize) -> Value {
         let lanes = g * LANES..(g + 1) * LANES;
         match self {
             Partials::Count(counts) => Value::Int(counts[lanes].iter().sum::<u64>().into()),
@@ -328,6 +385,23 @@ impl Partials {
                 Value::Int(values[lanes].iter().fold(i64::MIN, |a, &b| a.max(b)).into())
             }
             Partials::Distinct(seen) => Value::Int(seen[g].len() as i128),
+            Partials::Percentile { fraction, values } => {
+                let values = &mut values[g];
+                values.sort_unstable_by_key(|&(v, _)| v);
+                let n: u64 = values.iter().map(|&(_, count)| count).sum();
+                if n == 0 {
+                    return Value::Null;
+                }
+                let rank = fraction.rank(n);
+                let mut seen = 0;
+                let (v, _) = (values.iter())
+                    .find(|&&(_, count)| {
+                        seen += count;
+                        seen >= rank
+                    })
+                    .expect("rank is at most the values' count");
+                Value::Int((*v).into())
+            }
             Partials::Bools { trues, falses, all } => {
                 let any_true = trues[lanes.clone()].iter().any(|&n| n > 0);
                 let any_false = falses[lanes].iter().any(|&n| n > 0);

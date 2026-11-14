@@ -33,6 +33,7 @@ measure    count(*)
            sum(alias.column)       min(alias.column)
            max(alias.column)       avg(alias.column)
            bool_and(alias.column)  bool_or(alias.column)
+           percentile_disc(fraction) WITHIN GROUP (ORDER BY alias.column)
            each of these [FILTER (WHERE condition [AND ...])]
 
 condition  alias.column = literal
@@ -43,6 +44,7 @@ condition  alias.column = literal
 
 width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days
 literal    42, -7, 'text', true, false
+fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point
 ```
 
 Brackets hold what may be left out, `|` separates a choice, and `...`
@@ -186,8 +188,8 @@ next answer, as PostgreSQL's view would, and nothing starts over
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
   `count(c)` and `sum` double, `min`, `max`, `count(DISTINCT ...)`,
-  `bool_and` and `bool_or` don't, `avg` stays. A dim needs no index on
-  its key.
+  `bool_and` and `bool_or` don't, `avg` stays, and `percentile_disc`
+  counts the row's value twice. A dim needs no index on its key.
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - A join must select at least one dim column. The fact column joined on,
@@ -267,6 +269,7 @@ Which types take the cast is listed here; today it is enums alone.
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean` or `text` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
 | `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
+| `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
 | `bool_and(c)`, `bool_or(c)` | `boolean` | `true` or `false` |
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
@@ -275,6 +278,10 @@ and `count(c)` the rows where `c` is not null. `bool_and(c)` is true
 when every `c` that is not null is true, and `bool_or(c)` when any is;
 both are null when no `c` is
 ([ADR-0041](https://github.com/janbjorge/straum/blob/main/docs/adr/0041-bool-and-and-bool-or-keep-counts-of-true-and-false.md)).
+`percentile_disc(f)` is the value at rank `ceil(f * n)` of the `n`
+values that are not null, at least the first, and null when there are
+none; ascending is its one order, so `ASC` and `DESC` are not written
+([Median and percentiles](aggregates.md#median-and-percentiles)).
 
 `FILTER` makes a measure count only some rows:
 

@@ -664,7 +664,7 @@ impl Store {
         let mut rows: Vec<AnswerRow> = (1..=groups.made)
             .map(|g| AnswerRow {
                 keys: keys.by_ref().take(by.len()).collect(),
-                values: measures.iter().map(|m| m.partials.finish(g)).collect(),
+                values: measures.iter_mut().map(|m| m.partials.finish(g)).collect(),
             })
             .collect();
         rows.sort_by(|a, b| a.keys.cmp(&b.keys));

@@ -42,7 +42,7 @@ in two cells.
 A cell holds its row count and what each measure needs, always
 counts and sums, so cells merge and a row can leave one as exactly as
 it came. [Aggregates 101](aggregates.md) says why each measure keeps
-what it does, and why Straum has no median. A `FILTER` keeps nothing
+what it does, and how a median reads the counts `min` and `max` keep. A `FILTER` keeps nothing
 of its own: it names parts of the cell key, so a cell counts whole or
 not at all.
 

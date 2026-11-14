@@ -2,8 +2,8 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Aggregate, Attribute, ByKey, Condition, Dim, Fact, Identifier, Literal, Measure, Origin, Ref,
-    RefKind, Table, Time, Via, Width,
+    Aggregate, Attribute, ByKey, Condition, Dim, Fact, Fraction, Identifier, Literal, Measure,
+    Origin, Ref, RefKind, Table, Time, Via, Width,
 };
 
 use super::{Names, SqlError, Walker, and_parts, line, statements};
@@ -872,6 +872,17 @@ impl Walker {
     /// The arguments of a plain call `name(args)`, or `None` after rejecting
     /// anything else about the call.
     fn call<'a>(&mut self, function: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
+        let (args, distinct, within_group) = self.ordered_call(function)?;
+        self.absent(line(function), !within_group.is_empty(), "WITHIN GROUP");
+        Some((args, distinct))
+    }
+
+    /// As [`Walker::call`], with what `WITHIN GROUP (ORDER BY ...)` lists,
+    /// for the one aggregate that takes it.
+    fn ordered_call<'a>(
+        &mut self,
+        function: &'a sql::Function,
+    ) -> Option<(&'a [sql::FunctionArg], bool, &'a [sql::OrderByExpr])> {
         let sql::Function {
             name: _,
             uses_odbc_syntax,
@@ -889,7 +900,6 @@ impl Walker {
             !matches!(parameters, sql::FunctionArguments::None),
             "function parameters",
         );
-        self.absent(at, !within_group.is_empty(), "WITHIN GROUP");
         self.absent(at, null_treatment.is_some(), "IGNORE or RESPECT NULLS");
         self.absent(at, over.is_some(), "a window function (OVER)");
         let sql::FunctionArguments::List(sql::FunctionArgumentList {
@@ -910,7 +920,7 @@ impl Walker {
                 false
             }
         };
-        Some((args, distinct))
+        Some((args, distinct, within_group))
     }
 
     pub(super) fn literal(&mut self, expr: &sql::Expr) -> Option<Literal> {
@@ -1175,7 +1185,19 @@ impl Walker {
     ) -> Option<(Aggregate, Vec<Condition>)> {
         let at = line(function);
         let name = function_name(function).map(str::to_ascii_lowercase);
-        let (args, distinct) = self.call(function)?;
+        let (args, distinct, within_group) = self.ordered_call(function)?;
+        match name.as_deref() {
+            Some("percentile_disc") => {
+                let aggregate = self.percentile_disc(scope, function, args, distinct, within_group);
+                let filter = self.key_conds(scope, function.filter.as_deref())?;
+                return Some((aggregate?, filter));
+            }
+            Some("percentile_cont") => {
+                self.refuse(at, "percentile_cont, use percentile_disc,", function);
+                return None;
+            }
+            _ => self.absent(at, !within_group.is_empty(), "WITHIN GROUP"),
+        }
         let star = matches!(
             args,
             [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)]
@@ -1225,6 +1247,77 @@ impl Walker {
         };
         let filter = self.key_conds(scope, function.filter.as_deref())?;
         Some((aggregate, filter))
+    }
+
+    /// `percentile_disc(fraction) WITHIN GROUP (ORDER BY alias.column)`,
+    /// ascending as written: PostgreSQL's only spelling of one percentile.
+    fn percentile_disc(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+        args: &[sql::FunctionArg],
+        distinct: bool,
+        within_group: &[sql::OrderByExpr],
+    ) -> Option<Aggregate> {
+        let at = line(function);
+        self.absent(at, distinct, "DISTINCT outside count");
+        let fraction = match args {
+            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => self.fraction(expr),
+            _ => {
+                self.refuse(at, "arguments, write one fraction,", function);
+                None
+            }
+        };
+        let [order] = within_group else {
+            let what = match within_group {
+                [] => "percentile_disc without WITHIN GROUP (ORDER BY alias.column)",
+                _ => "WITHIN GROUP of more than one column",
+            };
+            self.refuse(at, what, function);
+            return None;
+        };
+        let sql::OrderByExpr {
+            expr,
+            options: sql::OrderByOptions { sort, nulls_first },
+            with_fill,
+        } = order;
+        // Ascending is the only order, so it is never written.
+        self.absent(at, sort.is_some(), "ASC, DESC or USING in WITHIN GROUP");
+        self.absent(at, nulls_first.is_some(), "NULLS FIRST or LAST");
+        self.absent(at, with_fill.is_some(), "WITH FILL");
+        let column = self.uncast_fact_column(scope, expr, "an aggregated column");
+        Some(Aggregate::PercentileDisc {
+            fraction: fraction?,
+            column: column?,
+        })
+    }
+
+    /// A fraction from 0 to 1 as digits, with places after a point or
+    /// none: exactly as written, never through a float.
+    fn fraction(&mut self, expr: &sql::Expr) -> Option<Fraction> {
+        let at = line(expr);
+        let text = match expr {
+            sql::Expr::Value(sql::ValueWithSpan {
+                value: sql::Value::Number(text, false),
+                span: _,
+            }) => text.as_str(),
+            _ => "",
+        };
+        let (whole, places) = text.split_once('.').unwrap_or((text, ""));
+        let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+        if whole.is_empty() || !digits(whole) || !digits(places) || text.ends_with('.') {
+            self.refuse(at, "fraction, write a number from 0 to 1,", expr);
+            return None;
+        }
+        let fraction = (format!("{whole}{places}").parse().ok())
+            .and_then(|units| Fraction::new(units, u32::try_from(places.len()).ok()?));
+        if fraction.is_none() {
+            self.error(
+                at,
+                format!("fraction {text}: write a number from 0 to 1 in at most 19 places"),
+            );
+        }
+        fraction
     }
 
     /// GROUP BY lists the keys by their SELECT positions, in order, so the

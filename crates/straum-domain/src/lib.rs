@@ -18,7 +18,7 @@ mod store;
 mod value;
 mod value_counts;
 
-pub use aggregate::{Aggregate, Reads};
+pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey};
 pub use ident::Identifier;
 pub use rollup::RowError;

@@ -84,6 +84,7 @@ count of false for the same reason.
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
 | `count(DISTINCT c)` | a count per value | uniting the values | lowering the value's count |
+| `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
 Every state is a count or a sum, so every one both merges and takes a
@@ -94,8 +95,9 @@ can't be subtracted from exactly, so Straum refuses float columns.
 Two things follow that a spec's author can see:
 
 - **Memory.** The first three rows cost a few numbers a cell. `min`,
-  `max` and `count(DISTINCT c)` cost by the distinct values in each
-  cell. A `min` or `max` keeps a value in as few bytes as its cell's
+  `max`, `percentile_disc` and `count(DISTINCT c)` cost by the
+  distinct values in each cell; a percentile beside a `min` or `max`
+  on its column costs nothing more. A `min` or `max` keeps a value in as few bytes as its cell's
   values need: `max(fare_amount)` per hour and dropoff zone keeps
   14,943,826 fares of the [taxi trips](benchmark.md) in 76 MiB. A
   `count(DISTINCT c)` over a column with many values holds every one
@@ -103,22 +105,54 @@ Two things follow that a spec's author can see:
 - **Rows counted twice.** A join whose dim holds a key twice counts the
   fact row twice ([Joining a dim](spec.md#joining-a-dim)). `count` and
   `sum` double,
-  because adding a row twice adds it twice. `min`, `max`,
+  because adding a row twice adds it twice, and `percentile_disc`
+  counts the row's value twice, as PostgreSQL does over the joined
+  rows. `min`, `max`,
   `count(DISTINCT c)`, `bool_and` and `bool_or` stay, because the same
   value merged twice changes nothing.
 
 ## Median and percentiles
 
-Straum has none, and a spec that names one is refused. An exact median
-needs each cell's values or a count per value, as `min` and `max`
-already keep, and an ask would have to merge those counts over its
-whole range instead of adding a number a cell.
+An exact median needs each cell's values or a count per value, and a
+`min` or `max` already keeps the counts. So Straum has
+`percentile_disc`, exact and following deletes:
+
+```sql
+CREATE VIEW usage WITH (buckets = '1 hour, 1 day') AS
+SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+       e.region AS region,
+       max(e.amount) AS top_amount,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY e.amount) AS median_amount,
+       percentile_disc(0.99) WITHIN GROUP (ORDER BY e.amount) AS p99_amount
+FROM public.events AS e
+GROUP BY 1, 2;
+```
+
+`max` and both percentiles read one count per value of `e.amount`.
+Take the two hours above. An ask over both gathers the counts of their
+cells, `10 20 30 40 50 60 70 500`, and counts up to rank
+`ceil(fraction * n)`: the median is the 4th of 8, 40, and p99 the 8th,
+500. That 40 is a value the rows hold, where the 45 in the table
+above, which `percentile_cont` would give, lies between two. Delete
+the 500 and p99 is the 7th of 7, 70.
+
+The rank is taken in float8, as PostgreSQL takes it, so the answer is
+PostgreSQL's to the row: 0.07 of 100 values is the 8th there, not the
+7th. `percentile_cont`, which interpolates, is refused, and so is an
+array of fractions: write one measure per fraction.
+
+The cost is in the ask. A `sum` merges a number a cell; a percentile
+gathers every value of every cell in its range and sorts them, so an
+ask over a long range of many values takes milliseconds where the
+others take microseconds: the median fare over the six months of
+[benchmark](benchmark.md) trips takes about 50 ms.
 
 Other systems answer with a sketch: a small summary that merges and
 gives an approximate answer, t-digest, KLL and DDSketch for
 percentiles, HyperLogLog for distinct counts. The common sketches
 merge but can't take a delete, and their answers are estimates.
-Straum's answers are exact and follow deletes, so it has no sketch.
+Straum's answers are exact and follow deletes, so it has no sketch
+([ADR-0048](https://github.com/janbjorge/straum/blob/main/docs/adr/0048-a-percentile-reads-the-counts-min-and-max-keep.md)).
 
 The sources behind this page, and how PostgreSQL and other systems
 handle the same two questions, are in

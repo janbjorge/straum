@@ -71,7 +71,7 @@ is counts, sums, averages, minima or maxima by a few keys over time:
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares, so it has no ad hoc queries, no
-rows and [no median](aggregates.md#median-and-percentiles). It keeps
+rows and [no sketch](aggregates.md#median-and-percentiles). It keeps
 nothing on disk: every start loads every table again, and a crash
 leaves no slot behind holding WAL. PostgreSQL stays the source of
 truth.

@@ -6,9 +6,28 @@
 use std::collections::HashMap;
 
 use straum_domain::{
-    Answer, Ask, Attribute, ByKey, Condition, Datum, Identifier, Literal, Sealed, SealedId, Store,
-    Table,
+    Aggregate, Answer, Ask, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal,
+    Sealed, SealedId, Store, Table, Value,
 };
+
+pub fn percentile(units: u64, places: u32, column: &str) -> Aggregate {
+    Aggregate::PercentileDisc {
+        fraction: Fraction::new(units, places).unwrap(),
+        column: id(column),
+    }
+}
+
+/// PostgreSQL's `percentile_disc`: of the values sorted, the one at
+/// `ceil(fraction * n)` counting from 1, the product in float8.
+pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
+    values.sort_unstable();
+    let fraction = fraction.units as f64 / 10f64.powi(fraction.places as i32);
+    let rank = (fraction * values.len() as f64).ceil() as usize;
+    match values.get(rank.max(1) - 1) {
+        Some(&v) => Value::Int(v),
+        None => Value::Null,
+    }
+}
 
 pub fn id(s: &str) -> Identifier {
     Identifier::new(s).unwrap()

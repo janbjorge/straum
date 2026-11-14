@@ -3,6 +3,8 @@
 //! What a store holds: one set of cells for a join on a key, the bytes a
 //! cell's numbers need and no more, and a few bytes a value for a min or
 //! max. And what sealing saves: the heap a sealed bucket's cells held.
+//! A percentile holds nothing beyond its column's min or max, and its ask
+//! holds the values of its range, however many cells lie outside it.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -16,16 +18,22 @@ use straum_domain::{
 
 mod common;
 
-use common::{id, table};
+use common::{id, percentile, table};
 
 thread_local! {
     static ALLOCS: Cell<usize> = const { Cell::new(0) };
     /// Bytes allocated and not yet freed by this thread.
     static LIVE: Cell<isize> = const { Cell::new(0) };
+    /// The most `LIVE` has been since last set.
+    static PEAK: Cell<isize> = const { Cell::new(0) };
 }
 
 fn grow(bytes: usize, by: isize) {
-    LIVE.with(|n| n.set(n.get() + by * bytes as isize));
+    let live = LIVE.with(|n| {
+        n.set(n.get() + by * bytes as isize);
+        n.get()
+    });
+    PEAK.with(|n| n.set(n.get().max(live)));
 }
 
 /// Counts the allocations of the thread that makes them, so tests running
@@ -72,13 +80,25 @@ fn spec(buckets: &[u32]) -> Spec {
     spec_of(buckets, true)
 }
 
-/// As [`spec`]; unless `joined`, without the zones.
-fn spec_of(buckets: &[u32], joined: bool) -> Spec {
-    let m = |name, aggregate| Measure {
+fn m(name: &str, aggregate: Aggregate) -> Measure {
+    Measure {
         name: id(name),
         aggregate,
         filter: vec![],
-    };
+    }
+}
+
+/// As [`spec`]; unless `joined`, without the zones.
+fn spec_of(buckets: &[u32], joined: bool) -> Spec {
+    let measures = vec![
+        m("trips", Aggregate::Count),
+        m("fare", Aggregate::Sum(id("fare"))),
+        m("tip_max", Aggregate::Max(id("tip"))),
+    ];
+    spec_measuring(buckets, joined, measures)
+}
+
+fn spec_measuring(buckets: &[u32], joined: bool, measures: Vec<Measure>) -> Spec {
     let zones = Dim {
         as_text: Vec::new(),
         name: id("zones"),
@@ -120,11 +140,7 @@ fn spec_of(buckets: &[u32], joined: bool) -> Spec {
             },
         ],
         filter: vec![],
-        measures: vec![
-            m("trips", Aggregate::Count),
-            m("fare", Aggregate::Sum(id("fare"))),
-            m("tip_max", Aggregate::Max(id("tip"))),
-        ],
+        measures,
     };
     Spec::new(Vec::from_iter(joined.then_some(zones)), vec![trips]).unwrap()
 }
@@ -200,6 +216,8 @@ fn allocs(store: &Store, by: &[&str]) -> usize {
     after - before
 }
 
+/// The spec has no percentile: it gathers the values of its range, which
+/// grow with the cells. Its own tests are below.
 #[test]
 fn an_ask_allocates_per_group_not_per_cell() {
     let small = store(1_000);
@@ -352,4 +370,93 @@ fn sealing_frees_the_cells_it_seals() {
     eprintln!("store held {held} bytes, {sealed} after sealing, {dropped} after drop");
     assert!(sealed * 100 < held * 20, "{sealed} of {held} bytes");
     assert_eq!(dropped, 0);
+}
+
+fn tip_max() -> Measure {
+    m("tip_max", Aggregate::Max(id("tip")))
+}
+
+fn tip_median() -> Measure {
+    m("tip_median", percentile(5, 1, "tip"))
+}
+
+/// A percentile reads the values a min or max on its column keeps: beside
+/// one, or in its place, it holds no byte more than a max but its name in
+/// the spec. A second set of values would be over 100 KiB here.
+#[test]
+fn a_percentile_holds_what_a_max_holds() {
+    const CELLS: i64 = 2_000;
+    // The measures are made inside, so the store frees all it took.
+    let held_by = |measures: fn() -> Vec<Measure>| {
+        held(|| store_of(spec_measuring(&[], false, measures()), CELLS, 40))
+    };
+    let alone = held_by(|| vec![tip_max()]);
+    let beside = held_by(|| vec![tip_max(), tip_median()]);
+    let instead = held_by(|| vec![tip_median()]);
+    eprintln!("max {alone} bytes, max and median {beside}, median {instead}");
+    assert!(beside - alone < 256, "{beside} bytes against {alone}");
+    assert!(
+        instead.abs_diff(alone) < 256,
+        "{instead} bytes against {alone}"
+    );
+}
+
+/// The heap an ask of the median by `by` over hours `from..to` reaches
+/// at its most, the answer dropped.
+fn peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {
+    let mut ask = ask(by, from, to);
+    ask.measures = vec![id("tip_median")];
+    let before = live();
+    PEAK.with(|n| n.set(before));
+    drop(store.ask(&ask).unwrap());
+    PEAK.with(Cell::get) - before
+}
+
+/// An ask of a percentile gathers each value of its range once a cell,
+/// a pair of 16 bytes, in a list that may have doubled past them: here 80
+/// cells an hour, 4 tips each. Cells outside the range add nothing.
+#[test]
+fn a_percentile_ask_holds_the_values_of_its_range() {
+    const HOURS: i64 = 100;
+    const TIPS: i64 = 4;
+    let per_hour = 2 * ZONES;
+    let spec = || spec_measuring(&[], true, vec![tip_median()]);
+    let small = store_of(spec(), HOURS * per_hour, TIPS);
+    let big = store_of(spec(), 8 * HOURS * per_hour, TIPS);
+    for (by, from, to) in [(&[][..], 24, 48), (&["pay"], 0, 100), (&["pu"], 99, 100)] {
+        let values = (to - from) * per_hour * TIPS;
+        let most = (2 * 16 * values + (4 << 10)) as isize;
+        let (small, big) = (peak(&small, by, from, to), peak(&big, by, from, to));
+        eprintln!("by {by:?}, hours {from}..{to}: {small} bytes, {big} with 8x the cells");
+        assert!(small <= most, "{small} bytes for {values} values");
+        assert_eq!(small, big, "by {by:?}: cells outside the range cost");
+    }
+}
+
+/// An ask of a percentile allocates once more each time a group's list
+/// of values doubles, not once a value: 8 times the values add about 3
+/// allocations a group.
+#[test]
+fn a_percentile_ask_allocates_per_doubling_of_its_values() {
+    const CELLS: i64 = 4_000;
+    let spec = || spec_measuring(&[], true, vec![tip_median()]);
+    let allocs = |store: &Store, by: &[&str]| {
+        let mut ask = ask(by, 0, 1000);
+        ask.measures = vec![id("tip_median")];
+        let before = ALLOCS.with(Cell::get);
+        drop(store.ask(&ask).unwrap());
+        ALLOCS.with(Cell::get) - before
+    };
+    let few = store_of(spec(), CELLS, 2);
+    let many = store_of(spec(), CELLS, 16);
+    for (by, groups) in [
+        (&[][..], 1),
+        (&["pay"], 2),
+        (&["borough"], 4),
+        (&["pu"], 40),
+    ] {
+        let (few, many) = (allocs(&few, by), allocs(&many, by));
+        eprintln!("by {by:?}: {few} allocations, {many} with 8x the values");
+        assert!(many - few <= 3 * groups, "by {by:?}: {few} then {many}");
+    }
 }

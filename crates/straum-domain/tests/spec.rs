@@ -2,13 +2,13 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Identifier, Key, Literal,
-    Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Identifier, Key,
+    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
 
-use common::{attr, col, id, table};
+use common::{attr, col, id, percentile, table};
 
 fn dim() -> Dim {
     Dim {
@@ -55,6 +55,7 @@ fn what_each_measure_reads() {
         (Aggregate::Sum(x()), Some(Reads::Numbers)),
         (Aggregate::Min(x()), Some(Reads::Numbers)),
         (Aggregate::Max(x()), Some(Reads::Numbers)),
+        (percentile(5, 1, "x"), Some(Reads::Numbers)),
         (Aggregate::Avg(x()), Some(Reads::Numbers)),
         (Aggregate::CountDistinct(x()), Some(Reads::Values)),
         (Aggregate::CountNotNull(x()), Some(Reads::Nullness)),
@@ -65,6 +66,18 @@ fn what_each_measure_reads() {
     for (aggregate, reads) in cases {
         assert_eq!(aggregate.reads(), reads, "{aggregate:?}");
     }
+}
+
+/// A fraction is from 0 to 1, however many places it is written in.
+#[test]
+fn a_fraction_is_at_most_one() {
+    assert!(Fraction::new(0, 0).is_some());
+    assert!(Fraction::new(1, 0).is_some());
+    assert!(Fraction::new(1000, 3).is_some());
+    assert!(Fraction::new(99, 2).is_some());
+    assert!(Fraction::new(1001, 3).is_none());
+    assert!(Fraction::new(2, 0).is_none());
+    assert!(Fraction::new(1, 20).is_none());
 }
 
 #[test]

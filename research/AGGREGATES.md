@@ -208,10 +208,13 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
 
 ## Open points
 
-- Exact median over the min and max state: ask cost on a wide range
-  with many values is unmeasured.
+- Exact median over the min and max state, built as `percentile_disc`
+  (ADR-0048): over six months of taxi trips the median fare takes
+  49.1 ms against PostgreSQL's 6,588 ms, where a sum takes under half a
+  millisecond. A running count per run would make it a binary search on
+  value; unbuilt.
 - Count distinct's memory (ADR-0016) is the same question as a
-  percentile's would be.
+  percentile's.
 - Variance and standard deviation are algebraic and invertible over
   integers: a sum of squares beside the sum. `i128` overflow of the
   squares is unchecked.

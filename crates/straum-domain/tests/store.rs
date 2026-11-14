@@ -7,7 +7,10 @@ use std::collections::{BTreeMap, HashSet};
 
 mod common;
 
-use common::{Rng, Spilled, attr, col, cond, dim_row, holds, id, lit, table, text};
+use common::{
+    Rng, Spilled, attr, col, cond, dim_row, holds, id, lit, percentile, percentile_disc, table,
+    text,
+};
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref, RefKind,
@@ -193,6 +196,17 @@ fn spec_joining(vend: RefKind) -> Spec {
             m("fare", Aggregate::Sum(id("fare")), vec![]),
             m("tip_min", Aggregate::Min(id("tip")), vec![]),
             m("tip_max", Aggregate::Max(id("tip")), vec![]),
+            m("tip_median", percentile(5, 1, "tip"), vec![]),
+            m("tip_lowest", percentile(0, 0, "tip"), vec![]),
+            m("tip_highest", percentile(1, 0, "tip"), vec![]),
+            // A rank PostgreSQL's float8 puts one past exact math's at
+            // every hundred values.
+            m("fare_p07", percentile(7, 2, "fare"), vec![]),
+            m(
+                "card_tip_p90",
+                percentile(90, 2, "tip"),
+                vec![cond("pay", vec![Literal::Int(1)])],
+            ),
             // A sum over a column the load groups by.
             m("tip_avg", Aggregate::Avg(id("tip")), vec![]),
             m("distance", Aggregate::Avg(id("dist")), vec![]),
@@ -601,7 +615,11 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
             | Aggregate::CountDistinct(_)
             | Aggregate::BoolAnd(_)
             | Aggregate::BoolOr(_) => 0,
-            Aggregate::Sum(c) | Aggregate::Min(c) | Aggregate::Max(c) | Aggregate::Avg(c) => {
+            Aggregate::Sum(c)
+            | Aggregate::Min(c)
+            | Aggregate::Max(c)
+            | Aggregate::Avg(c)
+            | Aggregate::PercentileDisc { column: c, .. } => {
                 trip_types()[column(c.as_str())].scale()
             }
         },
@@ -664,6 +682,7 @@ fn measure(m: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
         }
         Aggregate::BoolAnd(c) => or_null_bool(bools(c).into_iter().min()),
         Aggregate::BoolOr(c) => or_null_bool(bools(c).into_iter().max()),
+        Aggregate::PercentileDisc { fraction, column } => percentile_disc(ints(column), *fraction),
     }
 }
 
@@ -896,6 +915,105 @@ fn bound_cells_follow_the_dim_column() {
     assert_eq!(answer.rows[0].values, [Value::Int(3)]);
     assert_eq!(moved.rows[0].values, [Value::Int(4)]);
     assert_eq!(moved.columns, answer.columns);
+}
+
+fn percentile_spec() -> Spec {
+    let m = |name: &str, aggregate| Measure {
+        name: id(name),
+        aggregate,
+        filter: vec![],
+    };
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: WIDTH },
+            wider: Vec::new(),
+            origin: Origin::Timestamptz,
+        },
+        refs: Vec::new(),
+        by_keys: vec![col("pay")],
+        filter: vec![],
+        measures: vec![
+            m("top", Aggregate::Max(id("fare"))),
+            m("median", percentile(5, 1, "fare")),
+            m("p99", percentile(99, 2, "fare")),
+            m("lowest", percentile(0, 0, "fare")),
+            m("highest", percentile(1, 0, "fare")),
+            m("p07", percentile(7, 2, "fare")),
+        ],
+    };
+    Spec::new(vec![], vec![trips]).unwrap()
+}
+
+fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
+    let ask = Ask {
+        view: id("trips"),
+        measures: measures.iter().map(|m| id(m)).collect(),
+        keys: vec![AskKey::Key(id("pay"))],
+        filter: Vec::new(),
+        from: START,
+        to: END,
+    };
+    (store.ask(&ask).unwrap().rows.into_iter())
+        .map(|row| row.values)
+        .collect()
+}
+
+/// Pay 1 holds 10 and 20 in one bucket, 20, 40 and 90 in the next; pay 2
+/// one row of 5. Five values put the median at rank 3 and p99 at 5; a
+/// delete moves p99 to the next value down.
+#[test]
+fn a_percentile_picks_the_value_at_its_rank() {
+    let mut store = Store::new(percentile_spec());
+    let width = i64::from(WIDTH);
+    let row = |at: i64, pay: i64, fare: i64| [Datum::Int(at), Datum::Int(pay), Datum::Int(fare)];
+    for (at, fare) in [(0, 10), (0, 20), (width, 20), (width, 40), (width, 90)] {
+        store.add_row("trips", &row(START + at, 1, fare)).unwrap();
+    }
+    store.add_row("trips", &row(START, 2, 5)).unwrap();
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(2), Datum::Null])
+        .unwrap();
+    let asked = ["median", "p99", "lowest", "highest"];
+    let int = Value::Int;
+    assert_eq!(
+        percentiles(&store, &asked),
+        [
+            vec![int(20), int(90), int(10), int(90)],
+            vec![int(5), int(5), int(5), int(5)],
+        ]
+    );
+
+    store
+        .remove_row("trips", &row(START + width, 1, 90))
+        .unwrap();
+    store.remove_row("trips", &row(START, 2, 5)).unwrap();
+    assert_eq!(
+        percentiles(&store, &asked),
+        [
+            vec![int(20), int(40), int(10), int(40)],
+            vec![Value::Null, Value::Null, Value::Null, Value::Null],
+        ]
+    );
+}
+
+/// PostgreSQL ranks in float8: 0.07 of 100 is 7.000000000000001 there,
+/// so it gives the 8th value where exact math gives the 7th.
+#[test]
+fn a_percentile_ranks_in_float8_as_postgresql_does() {
+    let mut store = Store::new(percentile_spec());
+    for fare in 1..=100 {
+        store
+            .add_row(
+                "trips",
+                &[Datum::Int(START), Datum::Int(1), Datum::Int(fare)],
+            )
+            .unwrap();
+    }
+    assert_eq!(percentiles(&store, &["p07"]), [vec![Value::Int(8)]]);
 }
 
 /// A fact without refs has nothing to bind: its keyed cells are its
@@ -2195,6 +2313,12 @@ fn ask_without_by_answers_one_row() {
             keys: Vec::new(),
             values: vec![
                 zero.clone(),
+                null.clone(),
+                null.clone(),
+                null.clone(),
+                // The five percentiles: of no values, none.
+                null.clone(),
+                null.clone(),
                 null.clone(),
                 null.clone(),
                 null.clone(),

@@ -2,8 +2,8 @@ mod common;
 
 use common::{FEB, JAN, cond, edit, error_lines, id};
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, Attribute, ByKey, KeyPart, Literal, Origin, RefKind, Spec,
-    SpecError, Via, Width,
+    Aggregate, Ask, AskError, AskKey, Attribute, ByKey, Fraction, KeyPart, Literal, Origin,
+    RefKind, Spec, SpecError, Via, Width,
 };
 use straum_notation::{Error, SqlError, parse};
 
@@ -344,6 +344,39 @@ GROUP BY 1, 2, 3, 4";
         let spec = parse(&base("1 hour", width).replace("1 hour", width)).unwrap();
         assert_eq!(spec.fact("t").unwrap().time.width, Width { seconds });
     }
+}
+
+/// The fraction as written, digits and places: `1.0` is not `1`, and
+/// both are the whole.
+#[test]
+fn percentile_disc_takes_a_fraction_and_one_column() {
+    let cases = [
+        ("0.5", 5, 1),
+        ("0.99", 99, 2),
+        ("0", 0, 0),
+        ("1", 1, 0),
+        ("1.0", 10, 1),
+        ("0.0000000000000000001", 1, 19),
+    ];
+    for (written, units, places) in cases {
+        let measure = format!("percentile_disc({written}) WITHIN GROUP (ORDER BY f.x) AS n");
+        let spec = parse(&base("count(*) AS n", &measure)).unwrap();
+        assert_eq!(
+            spec.fact("t").unwrap().measures[0].aggregate,
+            Aggregate::PercentileDisc {
+                fraction: Fraction::new(units, places).unwrap(),
+                column: id("x"),
+            },
+            "{written}"
+        );
+    }
+    let filtered = "percentile_disc(0.9) WITHIN GROUP (ORDER BY f.x) \
+                    FILTER (WHERE f.a = 1) AS n";
+    let spec = parse(&base("count(*) AS n", filtered)).unwrap();
+    assert_eq!(
+        spec.fact("t").unwrap().measures[0].filter,
+        [cond("a", vec![Literal::Int(1)])]
+    );
 }
 
 /// One dim keyed by two columns, joined by two views in either order.
@@ -1291,7 +1324,109 @@ fn aggregates_outside_the_subset_are_rejected() {
             "count(*) AS n",
             "percentile_cont(0.5) WITHIN GROUP (ORDER BY f.x) AS n",
             3,
+            "percentile_cont, use percentile_disc, `percentile_cont(0.5) WITHIN GROUP",
+        ),
+        (
+            "count(*) AS n",
+            "sum(f.x) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
             "WITHIN GROUP is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) AS n",
+            3,
+            "percentile_disc without WITHIN GROUP (ORDER BY alias.column) `percentile_disc(0.5)` is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x, f.a) AS n",
+            3,
+            "WITHIN GROUP of more than one column",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x DESC) AS n",
+            3,
+            "ASC, DESC or USING in WITHIN GROUP is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x ASC) AS n",
+            3,
+            "ASC, DESC or USING in WITHIN GROUP is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x NULLS LAST) AS n",
+            3,
+            "NULLS FIRST or LAST is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(DISTINCT 0.5) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "DISTINCT outside count is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5, 0.9) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "arguments, write one fraction,",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(ARRAY[0.5, 0.9]) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction, write a number from 0 to 1, `ARRAY[0.5, 0.9]` is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(-0.5) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction, write a number from 0 to 1, `-0.5` is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(.5) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction, write a number from 0 to 1, `.5` is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(5e-1) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction, write a number from 0 to 1,",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(f.a) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction, write a number from 0 to 1, `f.a` is not",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(1.5) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "fraction 1.5: write a number from 0 to 1 in at most 19 places",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.00000000000000000001) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "in at most 19 places",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY z.name) AS n",
+            3,
+            "an aggregated column must be a f column",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x) FILTER (WHERE f.a > 1) AS n",
+            3,
+            "filter condition",
         ),
         (
             "count(*) AS n",
