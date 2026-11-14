@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="448" viewBox="0 0 720 448" role="img" aria-labelledby="t d">
   <title id="t">Three small state machines</title>
-  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open. A bucket: Hot to Sealed by a seal pass once it ended seal_after ago, back to Hot when a change touches it, gone when its last row is removed. The bound cells of a bucket: Bound while the bucket is hot, Out once it is sealed, bound again as the dims are then when it is unsealed.</desc>
+  <desc id="d">The source: Closed to Loading on open, Loading to Streaming on the first next_commit, back to Closed on the next open, which closes it first. A date_bin bucket: Hot to Sealed by a seal pass, back to Hot when a change touches it; either goes with its last row or a truncate. A bucket's bound cells: Bound while it is hot, Out once it is sealed, bound again as the dims are then when it is unsealed.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,47 +86,43 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="339" rx="10"/>
-  <text x="32" y="42" class="title">Three small state machines</text>
-  <text x="32" y="64" class="sub muted">The source connection, a date_bin bucket, and a bucket's bound cells.</text>
-  <text x="40" y="104" class="lbl muted" text-anchor="start">THE SOURCE</text>
-  <rect class="box" x="40" y="120" width="90" height="40" rx="8"/>
-  <text x="85.0" y="145" class="h" text-anchor="middle">Closed</text>
-  <rect class="box" x="40" y="200" width="90" height="40" rx="8"/>
-  <text x="85.0" y="225" class="h" text-anchor="middle">Loading</text>
-  <rect class="box" x="40" y="280" width="110" height="40" rx="8"/>
-  <text x="95.0" y="305" class="h" text-anchor="middle">Streaming</text>
-  <path class="a" d="M85 160 L85 196" marker-end="url(#m)"/>
-  <text x="93" y="182" class="s ink2 halo" text-anchor="start">open</text>
-  <path class="a" d="M85 240 L85 276" marker-end="url(#m)"/>
-  <text x="93" y="262" class="mono ink2" text-anchor="start">next_commit</text>
-  <path class="a" d="M150 300 L190 300 L190 140 L134 140" marker-end="url(#m)"/>
-  <text x="196" y="176" class="s ink2 halo" text-anchor="start">open</text>
-  <path class="a" d="M130 220 L190 220"/>
-  <text x="330" y="104" class="lbl muted" text-anchor="start">A DATE_BIN BUCKET</text>
-  <rect class="accbox" x="330" y="120" width="90" height="40" rx="8"/>
-  <text x="375.0" y="145" class="h acc" text-anchor="middle">Hot</text>
-  <rect class="box" x="330" y="240" width="90" height="40" rx="8"/>
-  <text x="375.0" y="265" class="h" text-anchor="middle">Sealed</text>
-  <path class="a" d="M352 160 L352 236" marker-end="url(#m)"/>
-  <path class="a" d="M398 236 L398 160" marker-end="url(#m)"/>
-  <text x="410" y="180" class="s ink2" text-anchor="start">down: a seal pass, once it</text>
-  <text x="410" y="196" class="s ink2" text-anchor="start">ended --seal-after ago</text>
-  <text x="410" y="220" class="s ink2" text-anchor="start">up: a change touches it,</text>
-  <text x="410" y="236" class="s ink2" text-anchor="start">before the change applies</text>
-  <text x="330" y="300" class="s muted" text-anchor="start">gone with its last row, or when</text>
-  <text x="330" y="316" class="s muted" text-anchor="start">the fact is truncated</text>
-  <text x="600" y="104" class="lbl muted" text-anchor="start">BOUND CELLS OF A BUCKET</text>
-  <rect class="accbox" x="600" y="120" width="100" height="40" rx="8"/>
-  <text x="650.0" y="145" class="h acc" text-anchor="middle">Bound</text>
-  <rect class="errbox" x="600" y="240" width="100" height="40" rx="8"/>
-  <text x="650.0" y="265" class="h err" text-anchor="middle">Out</text>
-  <path class="a-err" d="M625 160 L625 236" marker-end="url(#m-err)"/>
-  <path class="a" d="M675 236 L675 160" marker-end="url(#m)"/>
-  <text x="710" y="180" class="s ink2" text-anchor="start">down: its bucket</text>
-  <text x="710" y="196" class="s ink2" text-anchor="start">is sealed</text>
-  <text x="710" y="220" class="s ink2" text-anchor="start">up: it is unsealed, bound</text>
-  <text x="710" y="236" class="s ink2" text-anchor="start">as the dims are then</text>
-  <text x="600" y="300" class="s muted" text-anchor="start">only a fact whose joins all read</text>
-  <text x="600" y="316" class="s muted" text-anchor="start">fact columns has them</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="447" rx="10"/>
+  <text x="24" y="38" class="title">Three small state machines</text>
+  <text x="24" y="82" class="lbl muted" text-anchor="start">THE SOURCE CONNECTION</text>
+  <rect class="box" x="24" y="96" width="140" height="46" rx="8"/>
+  <text x="94.0" y="124.0" class="h" text-anchor="middle">Closed</text>
+  <rect class="box" x="250" y="96" width="140" height="46" rx="8"/>
+  <text x="320.0" y="124.0" class="h" text-anchor="middle">Loading</text>
+  <rect class="accbox" x="540" y="96" width="140" height="46" rx="8"/>
+  <text x="610.0" y="124.0" class="h acc" text-anchor="middle">Streaming</text>
+  <path class="a" d="M164 119 H246" marker-end="url(#m)"/>
+  <text x="207" y="111" class="mono ink2 halo" text-anchor="middle">open</text>
+  <path class="a" d="M390 119 H536" marker-end="url(#m)"/>
+  <text x="465" y="111" class="mono ink2 halo" text-anchor="middle">next_commit</text>
+  <text x="465" y="137" class="s muted halo" text-anchor="middle">the first</text>
+  <path class="a" d="M610 142 V166 H94 V146" marker-end="url(#m)"/>
+  <path class="a" d="M320 142 V166"/>
+  <text x="352" y="186" class="s ink2 halo" text-anchor="middle">open again: it closes the stream first</text>
+  <text x="24" y="230" class="lbl muted" text-anchor="start">A DATE_BIN BUCKET</text>
+  <rect class="accbox" x="24" y="244" width="140" height="46" rx="8"/>
+  <text x="94.0" y="272.0" class="h acc" text-anchor="middle">Hot</text>
+  <rect class="box" x="376" y="244" width="140" height="46" rx="8"/>
+  <text x="446.0" y="272.0" class="h" text-anchor="middle">Sealed</text>
+  <path class="a" d="M164 258 H372" marker-end="url(#m)"/>
+  <text x="268" y="250" class="s ink2 halo" text-anchor="middle">a seal pass, once it is old</text>
+  <path class="a" d="M376 278 H168" marker-end="url(#m)"/>
+  <text x="268" y="298" class="s ink2 halo" text-anchor="middle">a change touches it</text>
+  <text x="536" y="262" class="s muted" text-anchor="start">either goes with its</text>
+  <text x="536" y="281" class="s muted" text-anchor="start">last row or a truncate</text>
+  <text x="24" y="344" class="lbl muted" text-anchor="start">A BUCKET'S BOUND CELLS</text>
+  <rect class="accbox" x="24" y="358" width="140" height="46" rx="8"/>
+  <text x="94.0" y="386.0" class="h acc" text-anchor="middle">Bound</text>
+  <rect class="box" x="376" y="358" width="140" height="46" rx="8"/>
+  <text x="446.0" y="386.0" class="h" text-anchor="middle">Out</text>
+  <path class="a" d="M164 372 H372" marker-end="url(#m)"/>
+  <text x="268" y="364" class="s ink2 halo" text-anchor="middle">its bucket is sealed</text>
+  <path class="a" d="M376 392 H168" marker-end="url(#m)"/>
+  <text x="268" y="412" class="s ink2 halo" text-anchor="middle">unsealed: bound again</text>
+  <text x="536" y="376" class="s muted" text-anchor="start">only for a view whose</text>
+  <text x="536" y="395" class="s muted" text-anchor="start">joins read fact columns</text>
 </svg>
