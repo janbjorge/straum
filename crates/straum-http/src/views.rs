@@ -1,21 +1,19 @@
 //! `/views`: every view asks may read and how much of it Straum holds, in
-//! plain text for people, as `straum views` prints it, or as JSON for a
-//! program that sends `Accept: application/json`, as `straum shell` does
-//! to complete names:
+//! plain text for people, as `straum views` prints it. A program that
+//! sends `Accept: application/json`, as `straum shell` does to complete
+//! names, gets each view's names and the range of buckets it holds:
 //!
 //! ```json
-//! {"views": [{"name": "trips", "buckets": [3600], "cells": 412,
-//!             "bound_cells": 9, "from": "2024-01-01T00:00:00Z",
+//! {"views": [{"name": "trips", "from": "2024-01-01T00:00:00Z",
 //!             "to": "2024-01-03T00:00:00Z",
 //!             "keys": [{"name": "bucket", "type": "timestamptz"},
 //!                      {"name": "fare", "type": "numeric", "scale": 2}],
-//!             "measures": ["trips"]}],
-//!  "dims": [{"table": "public.zones", "rows": 265}]}
+//!             "measures": ["trips"]}]}
 //! ```
 //!
-//! `bound_cells` is null for a view that keeps none; `from` and `to` are
-//! null for a view with no bucket. A type is `integer`, `numeric` with its
-//! `scale`, `boolean`, `text`, `timestamptz` or `timestamp`.
+//! `from` and `to` are null for a view with no bucket. A type is
+//! `integer`, `numeric` with its `scale`, `boolean`, `text`,
+//! `timestamptz` or `timestamp`.
 
 use straum_app::{Held, HeldDim, HeldView};
 use straum_domain::ColumnType;
@@ -31,24 +29,10 @@ pub(crate) fn write(held: &Held) -> String {
 
 pub(crate) fn json(held: &Held) -> Vec<u8> {
     let views: Vec<String> = held.views.iter().map(view_json).collect();
-    let dims = held.dims.iter().map(|HeldDim { table, rows }| {
-        let table = quoted(&format!("{}.{}", table.schema, table.name));
-        format!("{{\"table\":{table},\"rows\":{rows}}}")
-    });
-    let dims: Vec<String> = dims.collect();
-    format!(
-        "{{\"views\":[{}],\"dims\":[{}]}}",
-        views.join(","),
-        dims.join(",")
-    )
-    .into_bytes()
+    format!("{{\"views\":[{}]}}", views.join(",")).into_bytes()
 }
 
 fn view_json(view: &HeldView) -> String {
-    let widths: Vec<String> = view.widths.iter().map(|w| w.seconds.to_string()).collect();
-    let bound = view
-        .bound_cells
-        .map_or("null".to_owned(), |n| n.to_string());
     let edge = |seconds: Option<i64>| {
         (seconds.and_then(rfc3339)).map_or("null".to_owned(), |at| quoted(&at))
     };
@@ -69,11 +53,8 @@ fn view_json(view: &HeldView) -> String {
         .collect();
     let measures: Vec<String> = view.measures.iter().map(|m| quoted(m.as_str())).collect();
     format!(
-        "{{\"name\":{},\"buckets\":[{}],\"cells\":{},\"bound_cells\":{bound},\
-         \"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
+        "{{\"name\":{},\"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
-        widths.join(","),
-        view.cells,
         edge(view.range.as_ref().map(|range| range.start)),
         edge(view.range.as_ref().map(|range| range.end)),
         keys.join(","),
@@ -147,6 +128,7 @@ mod tests {
     use straum_domain::{Identifier, Table, Width};
 
     use super::*;
+    use crate::json::Json;
 
     fn id(name: &str) -> Identifier {
         Identifier::new(name).unwrap()
@@ -251,22 +233,54 @@ dim public.zones
             r#"{"name":"fare","type":"numeric","scale":2},{"name":"shared","type":"boolean"},"#,
             r#"{"name":"borough","type":"text"}"#
         );
-        let start = r#"{"name":"trips","buckets":[900,86400],"cells":412,"#;
+        let start = r#"{"name":"trips","#;
         let measures = r#""measures":["trips","fare_sum"]}"#;
         let expected = [
             r#"{"views":["#,
             start,
-            r#""bound_cells":1,"from":"2024-01-01T00:00:00Z","to":"2024-01-03T00:00:00Z","#,
+            r#""from":"2024-01-01T00:00:00Z","to":"2024-01-03T00:00:00Z","#,
             &format!(r#""keys":[{keys}],{measures},"#),
             start,
-            r#""bound_cells":null,"from":null,"to":null,"#,
+            r#""from":null,"to":null,"#,
             &format!(r#""keys":[{{"name":"bucket","type":"timestamptz"}}],{measures},"#),
             start,
-            r#""bound_cells":1,"from":"1970-01-01T00:00:00Z","to":null,"#,
+            r#""from":"1970-01-01T00:00:00Z","to":null,"#,
             &format!(r#""keys":[{keys}],{measures}"#),
-            r#"],"dims":[{"table":"public.zones","rows":2}]}"#,
+            r#"]}"#,
         ];
         assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
+    }
+
+    #[test]
+    fn views_as_json_hold_only_what_the_shell_reads() {
+        let held = Held {
+            views: vec![trips()],
+            dims: vec![HeldDim {
+                table: Table {
+                    schema: id("public"),
+                    name: id("zones"),
+                },
+                rows: 2,
+            }],
+        };
+        let names = |fields: &[(String, Json)]| -> Vec<String> {
+            fields.iter().map(|(name, _)| name.clone()).collect()
+        };
+        let Ok(Json::Object(top)) = Json::parse(&json(&held)) else {
+            panic!("not an object");
+        };
+        assert_eq!(names(&top), ["views"]);
+        let Json::Array(views) = &top[0].1 else {
+            panic!("views is not an array");
+        };
+        let Json::Object(view) = &views[0] else {
+            panic!("a view is not an object");
+        };
+        let view = names(view);
+        assert_eq!(view, ["name", "from", "to", "keys", "measures"]);
+        for dropped in ["buckets", "cells", "bound_cells", "dims"] {
+            assert!(!view.iter().chain(&names(&top)).any(|name| name == dropped));
+        }
     }
 
     #[test]

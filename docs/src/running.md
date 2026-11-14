@@ -64,7 +64,7 @@ drops the slot as the connection closes.
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why. |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
 | `GET /status` | What `straum status` prints, in plain text. |
-| `GET /views` | What `straum views` prints, in plain text; 503 `not ready: ` and why until every table is loaded. As JSON with `Accept: application/json`. |
+| `GET /views` | What `straum views` prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names and range of buckets as JSON, which `straum shell` completes from. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, the first 1000, as a table in plain text; 404 for a name no view has. |
 
 ## States

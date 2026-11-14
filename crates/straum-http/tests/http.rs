@@ -460,12 +460,11 @@ dim public.zones
     assert_eq!(
         reply.body,
         concat!(
-            r#"{"views":[{"name":"trips","buckets":[3600],"cells":4,"bound_cells":null,"#,
+            r#"{"views":[{"name":"trips","#,
             r#""from":"2024-01-01T00:00:00Z","to":"2024-01-02T00:00:00Z","#,
             r#""keys":[{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
             r#"{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"#,
-            r#""measures":["trips","fare","fare_avg","fare_max"]}],"#,
-            r#""dims":[{"table":"public.zones","rows":2}]}"#
+            r#""measures":["trips","fare","fare_avg","fare_max"]}]}"#
         )
     );
 

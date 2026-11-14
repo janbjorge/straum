@@ -333,16 +333,15 @@ mod tests {
     use super::*;
 
     const VIEWS: &str = r#"{"views":[
-        {"name":"orders","buckets":[3600],"cells":4,"bound_cells":4,
+        {"name":"orders",
          "from":"2026-01-01T09:00:00Z","to":"2026-01-01T11:00:00Z",
          "keys":[{"name":"bucket","type":"timestamptz"},{"name":"status","type":"text"},
                  {"name":"shipped","type":"boolean"},{"name":"country","type":"text"}],
          "measures":["orders","revenue"]},
-        {"name":"logins","buckets":[86400],"cells":0,"bound_cells":null,
+        {"name":"logins",
          "from":null,"to":null,
          "keys":[{"name":"bucket","type":"timestamp"},{"name":"country","type":"text"}],
-         "measures":["logins"]}],
-        "dims":[{"table":"public.customers","rows":3}]}"#;
+         "measures":["logins"]}]}"#;
 
     fn held() -> Vec<View> {
         read_views(VIEWS).unwrap()

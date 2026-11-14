@@ -15,7 +15,8 @@
 //!   status` prints it.
 //! - `GET /views`: every view and how much of it Straum holds, in plain text
 //!   for people; `straum views` prints it. 503 until every table is loaded.
-//!   With `Accept: application/json` the same as JSON (see `views.rs`).
+//!   With `Accept: application/json` each view's names and range as JSON,
+//!   which `straum shell` completes from (see `views.rs`).
 //! - `GET /views/NAME`: the rows PostgreSQL would give for the view, the
 //!   first `MAX_ROWS` of them, as the table an ask gets; the `\rows` of
 //!   `straum shell`. 404 for a name no view has.
