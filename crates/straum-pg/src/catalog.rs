@@ -3,9 +3,7 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_domain::{
-    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via,
-};
+use straum_domain::{ByKey, ColumnType, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via};
 
 use crate::error::Error;
 use crate::value::type_of;
@@ -348,11 +346,26 @@ pub(crate) fn check(
     };
     // Both kinds are loaded whole and followed through the publication.
     for dim in spec.dims() {
-        let checked = check_table(Member::Dim(dim), catalog, publication, &mut problems);
+        let member = Member {
+            name: &dim.name,
+            kind: "dim",
+            table: &dim.table,
+            // The key columns come first.
+            purposes: dim.columns().map(|c| (c, Purpose::Key)).collect(),
+            as_text: &dim.as_text,
+        };
+        let checked = check_table(member, catalog, publication, &mut problems);
         tables.dims.extend(checked);
     }
     for fact in spec.facts() {
-        let checked = check_table(Member::Fact(fact), catalog, publication, &mut problems);
+        let member = Member {
+            name: &fact.name,
+            kind: "fact",
+            table: &fact.table,
+            purposes: fact_purposes(fact),
+            as_text: &fact.as_text,
+        };
+        let checked = check_table(member, catalog, publication, &mut problems);
         tables.facts.extend(checked);
     }
     if problems.is_empty() {
@@ -388,62 +401,30 @@ fn fact_purposes(fact: &Fact) -> Vec<(&Identifier, Purpose)> {
 
 /// A spec table as the spec reads it: what it is called, which columns it
 /// reads for what, and which of them are written `::text`.
-#[derive(Clone, Copy)]
-enum Member<'a> {
-    Dim(&'a Dim),
-    Fact(&'a Fact),
-}
-
-impl<'a> Member<'a> {
-    fn name(self) -> &'a Identifier {
-        match self {
-            Member::Dim(dim) => &dim.name,
-            Member::Fact(fact) => &fact.name,
-        }
-    }
-
-    fn kind(self) -> &'static str {
-        match self {
-            Member::Dim(_) => "dim",
-            Member::Fact(_) => "fact",
-        }
-    }
-
-    fn table(self) -> &'a straum_domain::Table {
-        match self {
-            Member::Dim(dim) => &dim.table,
-            Member::Fact(fact) => &fact.table,
-        }
-    }
-
+struct Member<'a> {
+    name: &'a Identifier,
+    kind: &'static str,
+    table: &'a straum_domain::Table,
     /// Every column read, with what it is for; a column may come twice.
-    fn purposes(self) -> Vec<(&'a Identifier, Purpose)> {
-        match self {
-            // The key columns come first.
-            Member::Dim(dim) => dim.columns().map(|c| (c, Purpose::Key)).collect(),
-            Member::Fact(fact) => fact_purposes(fact),
-        }
-    }
-
+    purposes: Vec<(&'a Identifier, Purpose)>,
     /// The columns written `::text`: enums, read as their labels
     /// (ADR-0037).
-    fn as_text(self) -> &'a [Identifier] {
-        match self {
-            Member::Dim(dim) => &dim.as_text,
-            Member::Fact(fact) => &fact.as_text,
-        }
-    }
+    as_text: &'a [Identifier],
 }
 
 /// The checks every table gets.
 fn check_table(
-    member: Member<'_>,
+    Member {
+        name,
+        kind,
+        table,
+        purposes,
+        as_text,
+    }: Member<'_>,
     catalog: &Catalog,
     publication: &str,
     problems: &mut Vec<String>,
 ) -> Option<Checked> {
-    let (name, kind, table) = (member.name(), member.kind(), member.table());
-    let (purposes, as_text) = (member.purposes(), member.as_text());
     let qualified = format!("{}.{}", table.schema, table.name);
     let Some(class) = catalog
         .classes
