@@ -97,6 +97,16 @@ impl Format {
             Format::Text => "text",
         }
     }
+
+    /// `{"errors": [...]}`, or a line per error.
+    fn errors(self, status: StatusCode, errors: &[String]) -> Response<Full<Bytes>> {
+        if let Format::Text = self {
+            return text(status, errors.join("\n") + "\n");
+        }
+        let errors: Vec<String> = errors.iter().map(|error| json::quoted(error)).collect();
+        let body = format!("{{\"errors\":[{}]}}", errors.join(","));
+        respond(status, JSON, body.into_bytes())
+    }
 }
 
 /// How long to wait before accepting again after an accept fails, as when
@@ -184,22 +194,22 @@ async fn ask(
     format: Format,
 ) -> Response<Full<Bytes>> {
     let start = Instant::now();
-    let errors = |status, errors: &[String]| errors_response(status, format, errors);
     let body = match Limited::new(body, MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) if e.is::<LengthLimitError>() => {
             let error = format!("an ask is at most {MAX_ASK} bytes");
-            return errors(StatusCode::PAYLOAD_TOO_LARGE, &[error]);
+            return format.errors(StatusCode::PAYLOAD_TOO_LARGE, &[error]);
         }
         Err(e) => {
-            return errors(StatusCode::BAD_REQUEST, &[format!("reading the ask: {e}")]);
+            let error = format!("reading the ask: {e}");
+            return format.errors(StatusCode::BAD_REQUEST, &[error]);
         }
     };
     let parsing = Instant::now();
     let request =
         match ask::read(&body).and_then(|(query, parameters)| read_ask(&query, &parameters)) {
             Ok(ask) => ask,
-            Err(e) => return errors(StatusCode::BAD_REQUEST, &e),
+            Err(e) => return format.errors(StatusCode::BAD_REQUEST, &e),
         };
     answer(app, request, format, None, parsing.elapsed(), start).await
 }
@@ -234,10 +244,9 @@ async fn answer(
     parse: Duration,
     start: Instant,
 ) -> Response<Full<Bytes>> {
-    let errors = |status, errors: &[String]| errors_response(status, format, errors);
     let range = answer::range_errors(&request);
     if !range.is_empty() {
-        return errors(StatusCode::BAD_REQUEST, &range);
+        return format.errors(StatusCode::BAD_REQUEST, &range);
     }
     let app = app.clone();
     let answered = tokio::task::spawn_blocking(move || {
@@ -261,7 +270,7 @@ async fn answer(
         Ok(Err(e)) => answer_error(&e, format),
         Err(_) => {
             let error = "Straum failed while answering; its log says why".to_owned();
-            errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
+            format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
         }
     }
 }
@@ -303,7 +312,7 @@ fn answer_error(e: &AnswerError, format: Format) -> Response<Full<Bytes>> {
         AnswerError::NotReady => (StatusCode::SERVICE_UNAVAILABLE, vec![e.to_string()]),
         AnswerError::Spill(_) => (StatusCode::INTERNAL_SERVER_ERROR, vec![e.to_string()]),
     };
-    errors_response(status, format, &errors)
+    format.errors(status, &errors)
 }
 
 /// `name;dur=ms, ...`: the spec counts in milliseconds, and asks take
@@ -334,19 +343,9 @@ fn views(app: &App, format: Format) -> Response<Full<Bytes>> {
             // A load can finish between the two reads.
             let why = status::why_not(&app.status()).unwrap_or_else(|| "loading".to_owned());
             let why = format!("not ready: {why}");
-            errors_response(StatusCode::SERVICE_UNAVAILABLE, format, &[why])
+            format.errors(StatusCode::SERVICE_UNAVAILABLE, &[why])
         }
     }
-}
-
-/// `{"errors": [...]}`, or a line per error.
-fn errors_response(status: StatusCode, format: Format, errors: &[String]) -> Response<Full<Bytes>> {
-    if let Format::Text = format {
-        return text(status, errors.join("\n") + "\n");
-    }
-    let errors: Vec<String> = errors.iter().map(|error| json::quoted(error)).collect();
-    let body = format!("{{\"errors\":[{}]}}", errors.join(","));
-    respond(status, JSON, body.into_bytes())
 }
 
 fn not_allowed(allow: &'static str) -> Response<Full<Bytes>> {
