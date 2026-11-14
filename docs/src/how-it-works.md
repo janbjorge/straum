@@ -99,9 +99,9 @@ PostgreSQL in between:
 
 ![Following and answering at once](diagrams/follow.svg)
 
-*The stream thread decodes ahead and answers keepalives. The writer
-applies under the write lock. An ask reads under the read lock
-meanwhile.*
+*The stream thread hands the writer whole commits and tells
+PostgreSQL what the writer has applied. The writer holds the write
+lock for one commit at a time; asks read under the read lock.*
 
 Asks share the store with the writer behind a read-write lock, which
 the writer takes only to apply a commit it has already read. A long

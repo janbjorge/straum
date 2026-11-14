@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="600" viewBox="0 0 880 600" role="img" aria-labelledby="t d">
-  <title id="t">Following and answering at once</title>
-  <desc id="d">Sequence: PostgreSQL streams pgoutput to the stream thread, which decodes until a Commit and hands it to the Writer. The Writer unseals touched buckets, takes the write lock, applies the commit and unlocks, then tells the stream thread the applied LSN, which it reports to PostgreSQL. Meanwhile a client posts an ask; the App answers it under the read lock. About every second the Writer reads the WAL position on the plain connection, feeds the lag and runs a seal pass.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="336" viewBox="0 0 720 336" role="img" aria-labelledby="t d">
+  <title id="t">One writer applies commits; asks read meanwhile</title>
+  <desc id="d">PostgreSQL sends changes through the slot to the stream thread, which decodes up to 64 commits ahead and answers keepalives. It hands whole commits to the writer, which applies each under the write lock and reports what it applied; the stream thread confirms that to PostgreSQL. Apps post asks, which read the store under the read lock and get rows with as_of.</desc>
   <style>
-  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
-  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
-  .title{font-size:17px;font-weight:600;letter-spacing:-0.01em}
-  .sub{font-size:13px}
-  .h{font-size:14px;font-weight:600}
+  text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
+  .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
+  .title{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .sub{font-size:15px}
+  .h{font-size:16px;font-weight:600}
   .b{font-weight:600}
-  .s{font-size:12px}
-  .lbl{font-size:11px;font-weight:600;letter-spacing:0.08em}
+  .s{font-size:14px}
+  .lbl{font-size:13px;font-weight:600;letter-spacing:0.08em}
   .num{font-variant-numeric:tabular-nums}
   .it{font-style:italic}
   .halo{stroke-width:5px;stroke-linejoin:round;paint-order:stroke}
@@ -18,7 +18,7 @@
   .frame{stroke-dasharray:none}
   .rule,.life{stroke-width:1px;fill:none}
   .life{stroke-dasharray:3 4}
-  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}
+  .a,.a-acc,.a-err,.a-plan,.a-cfg{fill:none;stroke-width:1.6px;stroke-linecap:round;stroke-linejoin:round}
   .a-plan{stroke-dasharray:5 4}
   .a-cfg{stroke-dasharray:1.5 4;stroke-width:1.6px}
   .canvas{fill:#fbfcfc;stroke:#dfe3e8}
@@ -86,49 +86,38 @@
   <marker id="m-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillerr" d="M1 1.5 9 5 1 8.5z"/></marker>
   <marker id="m-plan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="fillplan" d="M1 1.5 9 5 1 8.5z"/></marker>
   </defs>
-  <rect class="canvas" x="0.5" y="0.5" width="879" height="599" rx="10"/>
-  <text x="32" y="42" class="title">Following and answering at once</text>
-  <text x="32" y="64" class="sub muted">One writer applies the stream; asks read meanwhile. They share the store behind one read-write lock.</text>
-  <rect class="box2" x="30" y="88" width="140" height="40" rx="6"/>
-  <text x="100" y="113" class="h" text-anchor="middle">PostgreSQL</text>
-  <path class="life" d="M100 128L100 560"/>
-  <rect class="box2" x="205" y="88" width="140" height="40" rx="6"/>
-  <text x="275" y="113" class="h" text-anchor="middle">stream thread</text>
-  <path class="life" d="M275 128L275 560"/>
-  <rect class="box2" x="380" y="88" width="140" height="40" rx="6"/>
-  <text x="450" y="113" class="h" text-anchor="middle">Writer</text>
-  <path class="life" d="M450 128L450 560"/>
-  <rect class="box2" x="555" y="88" width="140" height="40" rx="6"/>
-  <text x="625" y="113" class="h" text-anchor="middle">App</text>
-  <path class="life" d="M625 128L625 560"/>
-  <rect class="box2" x="730" y="88" width="140" height="40" rx="6"/>
-  <text x="800" y="113" class="h" text-anchor="middle">Client</text>
-  <path class="life" d="M800 128L800 560"/>
-  <path class="a" d="M100 170 L271 170" marker-end="url(#m)"/>
-  <text x="110" y="162" class="s ink2 halo" text-anchor="start">pgoutput changes</text>
-  <text x="285" y="196" class="s ink2" text-anchor="start">decode until Commit;</text>
-  <text x="285" y="212" class="s ink2" text-anchor="start">up to 64 read ahead</text>
-  <path class="a" d="M275 240 L446 240" marker-end="url(#m)"/>
-  <text x="285" y="232" class="s ink2 halo" text-anchor="start">Commit</text>
-  <path class="a-acc" d="M800 240 L629 240" marker-end="url(#m-acc)"/>
-  <text x="790" y="232" class="s acc" text-anchor="end">POST /ask</text>
-  <text x="460" y="266" class="s ink2" text-anchor="start">unseal touched buckets</text>
-  <rect class="accbox" x="614" y="280" width="22" height="90" rx="4"/>
-  <text x="645" y="296" class="s acc" text-anchor="start">read lock</text>
-  <text x="645" y="312" class="mono acc" text-anchor="start">ask_with</text>
-  <rect class="errbox" x="439" y="300" width="22" height="70" rx="4"/>
-  <text x="470" y="318" class="s err" text-anchor="start">write lock,</text>
-  <text x="470" y="334" class="s err" text-anchor="start">apply, unlock</text>
-  <text x="470" y="356" class="s muted" text-anchor="start">waits for the read</text>
-  <path class="a-acc" d="M625 390 L796 390" marker-end="url(#m-acc)"/>
-  <text x="635" y="382" class="s acc" text-anchor="start">answer, as_of, Straum-LSN</text>
-  <path class="a" d="M450 420 L279 420" marker-end="url(#m)"/>
-  <text x="440" y="412" class="s ink2 halo" text-anchor="end">applied LSN</text>
-  <path class="a" d="M275 450 L104 450" marker-end="url(#m)"/>
-  <text x="265" y="442" class="s ink2 halo" text-anchor="end">status update r</text>
-  <path class="a-cfg" d="M450 490 L104 490" marker-end="url(#m)"/>
-  <text x="440" y="482" class="s ink2 halo" text-anchor="end">wal() on the plain connection, every ~1 s</text>
-  <text x="460" y="516" class="s ink2" text-anchor="start">lag.read, then a seal pass</text>
-  <path class="rule" d="M32 548H848"/>
-  <text x="32" y="572" class="s muted" text-anchor="start">A long ask holds the read lock and delays the writer, which shows as lag. Keepalives are answered by the stream thread, so a busy writer never times out.</text>
+  <rect class="canvas" x="0.5" y="0.5" width="719" height="335" rx="10"/>
+  <text x="24" y="38" class="title">One writer applies commits; asks read meanwhile</text>
+  <rect class="box2" x="24" y="76" width="140" height="90" rx="8"/>
+  <text x="38" y="101" class="h">PostgreSQL</text>
+  <text x="38" y="122" class="s ink2">the slot</text>
+  <rect class="box" x="254" y="76" width="170" height="90" rx="8"/>
+  <text x="268" y="101" class="h">stream thread</text>
+  <text x="268" y="122" class="s ink2">decodes up to 64</text>
+  <text x="268" y="141" class="s ink2">commits ahead,</text>
+  <text x="268" y="160" class="s ink2">answers keepalives</text>
+  <rect class="box" x="514" y="76" width="182" height="90" rx="8"/>
+  <text x="528" y="101" class="h">writer</text>
+  <text x="528" y="122" class="s ink2">applies a commit</text>
+  <text x="528" y="141" class="s ink2">whole, in order</text>
+  <path class="a-acc" d="M164 104 L250 104" marker-end="url(#m-acc)"/>
+  <text x="209" y="96" class="s ink2 halo" text-anchor="middle">changes</text>
+  <path class="a" d="M254 140 L168 140" marker-end="url(#m)"/>
+  <text x="209" y="158" class="s ink2 halo" text-anchor="middle">confirmed</text>
+  <path class="a-acc" d="M424 104 L510 104" marker-end="url(#m-acc)"/>
+  <text x="469" y="96" class="s ink2 halo" text-anchor="middle">commits</text>
+  <path class="a" d="M514 140 L428 140" marker-end="url(#m)"/>
+  <text x="469" y="158" class="s ink2 halo" text-anchor="middle">applied</text>
+  <rect class="box" x="254" y="236" width="170" height="76" rx="8"/>
+  <text x="268" y="261" class="h">Your app</text>
+  <text x="268" y="282" class="mono ink2">POST /ask</text>
+  <rect class="accbox" x="514" y="236" width="182" height="76" rx="8"/>
+  <text x="528" y="261" class="h acc">The store</text>
+  <text x="528" y="282" class="s ink2">cells, projections</text>
+  <path class="a-acc" d="M605 166 L605 232" marker-end="url(#m-acc)"/>
+  <text x="597" y="204" class="s ink2 halo" text-anchor="end">write lock, one commit at a time</text>
+  <path class="a" d="M424 262 L510 262" marker-end="url(#m)"/>
+  <text x="469" y="254" class="s ink2 halo" text-anchor="middle">read lock</text>
+  <path class="a" d="M514 292 L428 292" marker-end="url(#m)"/>
+  <text x="469" y="310" class="s ink2 halo" text-anchor="middle">rows, as_of</text>
 </svg>
