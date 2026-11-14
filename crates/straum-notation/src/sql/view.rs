@@ -972,15 +972,13 @@ impl Walker {
     /// is no column there.
     pub(super) fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Identifier> {
         let (column, cast) = self.column(scope, expr)?;
-        let key = (scope.keys.iter()).find(|k| k.column == column && k.is_null.is_none());
-        let Some(key) = key else {
+        let Some(key) = self.filter_key(scope, expr, &column, cast, false) else {
             self.error(
                 line(expr),
                 format!("FILTER on {expr} needs {expr} AS <name> in SELECT"),
             );
             return None;
         };
-        self.same_spelling(scope, expr, &column, cast);
         Some(key.name.clone())
     }
 
@@ -990,27 +988,40 @@ impl Walker {
         &mut self,
         scope: &Scope,
         test: &sql::Expr,
-        column: &sql::Expr,
+        expr: &sql::Expr,
         is_null: bool,
     ) -> Option<Condition> {
-        let expr = column;
         let (column, cast) = self.fact_column(scope, expr, "the IS NULL column")?;
-        let column = Column::Fact(column);
-        let key = (scope.keys.iter()).find(|k| k.column == column && k.is_null.is_some());
-        let Some(key) = key else {
+        let Some(key) = self.filter_key(scope, expr, &Column::Fact(column), cast, true) else {
             self.error(
                 line(test),
                 format!("FILTER (WHERE {test}) needs the key ({expr} IS NULL) AS <name> in SELECT"),
             );
             return None;
         };
-        self.same_spelling(scope, expr, &column, cast);
         Some(Condition {
             key: key.name.clone(),
             values: vec![Literal::Bool(
                 is_null == key.is_null.expect("a null-ness key"),
             )],
         })
+    }
+
+    /// The key over a FILTER's column, a null-ness key or not, spelled as
+    /// SELECT spells it; `None` when SELECT has none, which the caller
+    /// reports in its own words.
+    fn filter_key<'s>(
+        &mut self,
+        scope: &'s Scope,
+        expr: &sql::Expr,
+        column: &Column,
+        cast: bool,
+        null_ness: bool,
+    ) -> Option<&'s ScopedKey> {
+        let key = (scope.keys.iter())
+            .find(|k| k.column == *column && k.is_null.is_some() == null_ness)?;
+        self.same_spelling(scope, expr, column, cast);
+        Some(key)
     }
 
     /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`, or
