@@ -26,6 +26,7 @@ mod answer;
 mod ask;
 mod json;
 mod status;
+mod time;
 mod views;
 
 use std::convert::Infallible;

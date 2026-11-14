@@ -38,6 +38,7 @@ use straum_app::Answered;
 use straum_domain::{AnswerRow, Ask, Datum, Value, decimal};
 
 use crate::json::quoted;
+use crate::time::{rfc3339, rfc3339_of};
 
 /// How far an ask's range stays clear of the earliest time jiff can write,
 /// so a time key that starts up to a month before it still prints.
@@ -94,13 +95,11 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
 fn as_of_text(as_of: SystemTime) -> String {
     // Past jiff's year 9999, which only a broken clock gives; 1970 is
     // still a true lower bound.
-    (Timestamp::try_from(as_of).unwrap_or(Timestamp::UNIX_EPOCH)).to_string()
+    rfc3339_of(as_of).unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
 }
 
 fn time_key(seconds: i64) -> String {
-    Timestamp::from_second(seconds)
-        .expect("range_errors keeps time keys in range")
-        .to_string()
+    rfc3339(seconds).expect("range_errors keeps time keys in range")
 }
 
 struct Cell {
@@ -336,6 +335,27 @@ bucket | shared | fare
 0 rows, as of 1970-01-01T00:00:00Z
 "
         );
+    }
+
+    #[test]
+    fn an_as_of_past_jiff_is_1970() {
+        let answered = Answered {
+            as_of: UNIX_EPOCH + std::time::Duration::from_secs(400_000_000_000),
+            ..answered(Vec::new())
+        };
+        let json = String::from_utf8(write(&answered)).unwrap();
+        assert_eq!(json, r#"{"as_of":"1970-01-01T00:00:00Z","rows":[]}"#);
+        let text = table(&answered, None);
+        assert!(
+            text.ends_with("0 rows, as of 1970-01-01T00:00:00Z\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "range_errors keeps time keys in range")]
+    fn a_time_key_past_jiff_is_a_bug() {
+        time_key(i64::MAX);
     }
 
     #[test]

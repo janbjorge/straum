@@ -17,11 +17,11 @@
 //! null for a view with no bucket. A type is `integer`, `numeric` with its
 //! `scale`, `boolean`, `text`, `timestamptz` or `timestamp`.
 
-use jiff::Timestamp;
 use straum_app::{Held, HeldDim, HeldView};
 use straum_domain::ColumnType;
 
 use crate::json::quoted;
+use crate::time::rfc3339;
 
 pub(crate) fn write(held: &Held) -> String {
     let views = held.views.iter().map(view);
@@ -50,8 +50,7 @@ fn view_json(view: &HeldView) -> String {
         .bound_cells
         .map_or("null".to_owned(), |n| n.to_string());
     let edge = |seconds: Option<i64>| {
-        (seconds.and_then(|seconds| Timestamp::from_second(seconds).ok()))
-            .map_or("null".to_owned(), |at| quoted(&at.to_string()))
+        (seconds.and_then(rfc3339)).map_or("null".to_owned(), |at| quoted(&at))
     };
     let key = |name: &str, column: ColumnType| {
         let scale = match column {
@@ -139,8 +138,7 @@ fn column_type(column_type: ColumnType) -> String {
 
 fn time(seconds: i64) -> String {
     // PostgreSQL keeps times past jiff's year 9999.
-    Timestamp::from_second(seconds)
-        .map_or_else(|_| format!("Unix second {seconds}"), |at| at.to_string())
+    rfc3339(seconds).unwrap_or_else(|| format!("Unix second {seconds}"))
 }
 
 #[cfg(test)]
