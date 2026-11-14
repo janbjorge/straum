@@ -266,12 +266,13 @@ conditions; its range is two bucket edges with `from < to`. An
 
 ![The running system, with cardinalities](diagrams/runtime.svg)
 
-*A writer owns the source port and an app. The app is a state behind
-a read-write lock: the store, a following while every table is
-loaded, the limits, the last failure, and a spilling with the spill
-port when one is configured.*
+*A writer owns the source port and an app. The app holds the limits,
+a spilling with the spill port when one is configured, and a state
+behind a read-write lock: the store, a following while every table
+is loaded, and the last failure.*
 
-- **App** is an `Arc<RwLock<State>>`; clones share it. Asks take the
+- **App** is an `Arc<RwLock<State>>` beside the limits and the
+  spilling, which never change; clones share it. Asks take the
   read lock, the writer the write lock only to apply a commit it has
   read or to swap a store in (`State::apply`, `Writer::start`).
 - **Following** exists only while every table is loaded; a failure

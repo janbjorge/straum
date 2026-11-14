@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="590" viewBox="0 0 880 590" role="img" aria-labelledby="t d">
   <title id="t">The running system</title>
-  <desc id="d">A Writer owns the Source port and an App. App is a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded with its applied LSN, commit time, Lag and last WAL reading, an optional Spilling with the Spill port, the Limits and the last Failure. The Source hands the Writer commits, each a transaction's changes.</desc>
+  <desc id="d">A Writer owns the Source port and an App. App holds the Limits, an optional Spilling with the Spill port, and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded with its applied LSN, commit time, Lag and last WAL reading, and the last Failure. The Source hands the Writer commits, each a transaction's changes.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:13px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:12px}
@@ -108,18 +108,18 @@
   <text x="732" y="222" class="h">Lag</text>
   <rect class="box2" x="720" y="260" width="130" height="46" rx="8"/>
   <text x="732" y="282" class="h">Wal</text>
-  <rect class="box" x="500" y="330" width="150" height="46" rx="8"/>
-  <text x="512" y="352" class="h">Spilling</text>
-  <rect class="planbox" x="720" y="330" width="130" height="46" rx="8"/>
-  <text x="732" y="352" class="h plantext">Spill (port)</text>
-  <rect class="box" x="500" y="410" width="150" height="60" rx="8"/>
-  <text x="512" y="432" class="h">Limits</text>
-  <text x="512" y="448" class="mono muted" text-anchor="start">--max-lag,</text>
-  <text x="512" y="462" class="mono muted" text-anchor="start">--max-retained-wal</text>
+  <rect class="box" x="500" y="330" width="150" height="60" rx="8"/>
+  <text x="512" y="352" class="h">Failure</text>
+  <text x="512" y="370" class="s ink2">the last one, kept</text>
+  <text x="512" y="386" class="s ink2">across starts</text>
+  <rect class="box" x="500" y="420" width="150" height="46" rx="8"/>
+  <text x="512" y="442" class="h">Spilling</text>
+  <rect class="planbox" x="720" y="420" width="130" height="46" rx="8"/>
+  <text x="732" y="442" class="h plantext">Spill (port)</text>
   <rect class="box" x="500" y="500" width="150" height="60" rx="8"/>
-  <text x="512" y="522" class="h">Failure</text>
-  <text x="512" y="540" class="s ink2">the last one, kept</text>
-  <text x="512" y="556" class="s ink2">across starts</text>
+  <text x="512" y="522" class="h">Limits</text>
+  <text x="512" y="538" class="mono muted" text-anchor="start">--max-lag,</text>
+  <text x="512" y="552" class="mono muted" text-anchor="start">--max-retained-wal</text>
   <rect class="planbox" x="40" y="200" width="140" height="46" rx="8"/>
   <text x="52" y="222" class="h plantext">Source (port)</text>
   <rect class="box" x="40" y="330" width="140" height="60" rx="8"/>
@@ -135,20 +135,21 @@
   <text x="423" y="124" class="s ink2 halo" text-anchor="middle">1, RwLock</text>
   <path class="a" d="M600 123 L716 123" marker-end="url(#m)"/>
   <text x="658" y="117" class="s ink2 halo" text-anchor="middle">1</text>
-  <path class="a" d="M478 160 L478 530"/>
+  <path class="a" d="M478 160 L478 360"/>
   <path class="a" d="M478 238 L496 238" marker-end="url(#m)"/>
   <text x="470" y="242" class="s ink2 halo" text-anchor="end">0..1</text>
-  <path class="a" d="M478 353 L496 353" marker-end="url(#m)"/>
-  <text x="470" y="357" class="s ink2 halo" text-anchor="end">0..1</text>
-  <path class="a" d="M478 440 L496 440" marker-end="url(#m)"/>
-  <text x="470" y="444" class="s ink2 halo" text-anchor="end">1</text>
-  <path class="a" d="M478 530 L496 530" marker-end="url(#m)"/>
-  <text x="470" y="534" class="s ink2 halo" text-anchor="end">0..1</text>
+  <path class="a" d="M478 360 L496 360" marker-end="url(#m)"/>
+  <text x="470" y="364" class="s ink2 halo" text-anchor="end">0..1</text>
+  <path class="a" d="M370 160 L370 300 L440 300 L440 530"/>
+  <path class="a" d="M440 443 L496 443" marker-end="url(#m)"/>
+  <text x="432" y="447" class="s ink2 halo" text-anchor="end">0..1</text>
+  <path class="a" d="M440 530 L496 530" marker-end="url(#m)"/>
+  <text x="432" y="534" class="s ink2 halo" text-anchor="end">1</text>
   <path class="a" d="M650 223 L716 223" marker-end="url(#m)"/>
   <text x="683" y="217" class="s ink2 halo" text-anchor="middle">1</text>
   <path class="a" d="M650 253 L690 253 L690 283 L716 283" marker-end="url(#m)"/>
   <text x="696" y="275" class="s ink2 halo" text-anchor="start">1</text>
-  <path class="a-plan" d="M650 353 L716 353" marker-end="url(#m-plan)"/>
+  <path class="a-plan" d="M650 443 L716 443" marker-end="url(#m-plan)"/>
   <path class="a" d="M110 160 L110 196" marker-end="url(#m)"/>
   <text x="118" y="182" class="s ink2 halo" text-anchor="start">1</text>
   <path class="a-plan" d="M110 246 L110 326" marker-end="url(#m-plan)"/>

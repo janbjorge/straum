@@ -46,15 +46,15 @@ pub struct Limits {
 #[derive(Clone)]
 pub struct App {
     state: Arc<RwLock<State>>,
+    limits: Limits,
+    /// `None` keeps every bucket in memory.
+    spilling: Option<Spilling>,
 }
 
 struct State {
     store: Store,
     /// `None` until every table is loaded, and again after a failure.
     following: Option<Following>,
-    limits: Limits,
-    /// `None` keeps every bucket in memory.
-    spilling: Option<Spilling>,
     /// The last failure and when it came, kept across starts.
     last_failure: Option<Failure>,
     starts: u64,
@@ -195,13 +195,13 @@ impl App {
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec),
                 following: None,
-                limits,
-                spilling,
                 last_failure: None,
                 starts: 0,
                 failures: 0,
                 unseals: 0,
             })),
+            limits,
+            spilling,
         }
     }
 
@@ -215,10 +215,7 @@ impl App {
         let thawed = if ids.is_empty() {
             Vec::new()
         } else {
-            let spilling = state
-                .spilling
-                .as_ref()
-                .expect("only a spilling writer seals");
+            let spilling = (self.spilling.as_ref()).expect("only a spilling writer seals");
             (ids.iter())
                 .map(|id| {
                     let sealed = spilling.spill.get(id).map_err(spill_error)?;
@@ -239,20 +236,20 @@ impl App {
         let following = state.following.as_ref();
         let lag = state.behind();
         Status {
-            ready: state.ready(lag),
+            ready: self.ready(lag),
             applied: following.map(|f| f.applied),
             committed: following.and_then(|f| f.committed),
             as_of: following.map(Following::as_of),
             lag,
             wal: following.map(|f| f.wal),
-            limits: state.limits,
+            limits: self.limits,
             failure: (state.last_failure.as_ref())
                 .filter(|_| following.is_none())
                 .map(|failure| failure.error.clone()),
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,
-            sealed: state.spilling.as_ref().map(|_| {
+            sealed: self.spilling.as_ref().map(|_| {
                 (state.store.spec().facts().iter())
                     .map(|fact| state.store.sealed(fact.name.as_str()).len())
                     .sum()
@@ -317,6 +314,10 @@ impl App {
         })
     }
 
+    fn ready(&self, lag: Option<Duration>) -> bool {
+        lag.is_some_and(|lag| lag <= self.limits.max_lag)
+    }
+
     fn read(&self) -> RwLockReadGuard<'_, State> {
         self.state.read().expect(POISONED)
     }
@@ -351,10 +352,6 @@ impl State {
 
     fn following(&mut self) -> &mut Following {
         self.following.as_mut().expect(STARTED)
-    }
-
-    fn ready(&self, lag: Option<Duration>) -> bool {
-        lag.is_some_and(|lag| lag <= self.limits.max_lag)
     }
 
     /// Applies the commit to every fact and dim, or names the first table
@@ -445,7 +442,7 @@ impl<S: Source> Writer<S> {
     fn start(&mut self) -> Result<Lsn, Error> {
         let spec = self.app.read().store.spec().clone();
         self.app.write().store = Store::new(spec.clone());
-        if let Some(spilling) = self.spilling() {
+        if let Some(spilling) = &self.app.spilling {
             spilling.spill.clear().map_err(Error::Spill)?;
         }
         // WAL the server writes from here on waits for the load.
@@ -502,7 +499,7 @@ impl<S: Source> Writer<S> {
     /// the spill doesn't hold. Only the writer changes the store, so the
     /// copy is still the bucket when its cells go.
     fn seal(&mut self) -> Result<(), Error> {
-        let Some(spilling) = self.spilling() else {
+        let Some(spilling) = &self.app.spilling else {
             return Ok(());
         };
         let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
@@ -521,7 +518,7 @@ impl<S: Source> Writer<S> {
 
     /// Unseals the buckets the commit's fact rows fall in, so it applies.
     fn unseal(&mut self, commit: &Commit) -> Result<(), Error> {
-        let Some(spilling) = self.spilling() else {
+        let Some(spilling) = &self.app.spilling else {
             return Ok(());
         };
         let ids = touched(&self.app.read().store, commit);
@@ -546,18 +543,13 @@ impl<S: Source> Writer<S> {
     /// Removes buckets the store no longer holds sealed, so the spill
     /// holds what the store has sealed and no more.
     fn forget(&self, ids: &[SealedId]) -> Result<(), Error> {
-        let Some(spilling) = self.spilling() else {
+        let Some(spilling) = &self.app.spilling else {
             return Ok(());
         };
         for id in ids {
             spilling.spill.remove(id).map_err(Error::Spill)?;
         }
         Ok(())
-    }
-
-    /// The spill, read out of the state so no lock is held while it works.
-    fn spilling(&self) -> Option<Spilling> {
-        self.app.read().spilling.clone()
     }
 
     /// Reads the server's WAL, and fails once the slot retains more of it
@@ -567,7 +559,7 @@ impl<S: Source> Writer<S> {
         let at = Instant::now();
         let wal = self.source.wal()?;
         self.wal_read_at = at;
-        let (retained, limit) = (wal.retained(), self.app.read().limits.max_retained_wal);
+        let (retained, limit) = (wal.retained(), self.app.limits.max_retained_wal);
         if retained > limit {
             return Err(Error::Retained { retained, limit });
         }
