@@ -225,7 +225,6 @@ impl Cells {
         &self.states
     }
 
-    /// The position of the cell with `key`, made empty if it's new.
     /// Folds `src`'s cell `src_i` into cell `i`. False when the columns differ.
     fn absorb(&mut self, i: usize, count: u64, src: &[State], src_i: usize) -> bool {
         if self.states.len() != src.len()
@@ -265,6 +264,8 @@ impl Cells {
         true
     }
 
+    /// The position of the cell with `key`, made empty if it's new, and
+    /// whether it is.
     fn entry(&mut self, key: &[u32]) -> (usize, bool) {
         if let Some(i) = self.find(key) {
             return (i, false);

@@ -176,7 +176,7 @@ pub struct AnswerColumn {
     pub name: String,
     /// Numeric values are integers in units of `10^-scale`.
     pub scale: u32,
-    /// A time key, whose values are the second its bucket bucket_starts.
+    /// A time key, whose values are the second its bucket starts.
     pub is_time: bool,
 }
 
