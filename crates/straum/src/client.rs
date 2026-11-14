@@ -6,6 +6,8 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use crate::complete::{View, read_views};
+
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) fn status(url: &str) -> Result<String, String> {
@@ -14,6 +16,21 @@ pub(crate) fn status(url: &str) -> Result<String, String> {
 
 pub(crate) fn views(url: &str) -> Result<String, String> {
     fetch(url, "its views", "GET /views", "text/plain", None)
+}
+
+pub(crate) fn rows(url: &str, view: &str) -> Result<String, String> {
+    // The name goes into the request line as it is.
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    if !view.chars().all(named) {
+        return Err(format!("{view:?} is not a view's name"));
+    }
+    let request = format!("GET /views/{view}");
+    fetch(url, "its rows", &request, "text/plain", None)
+}
+
+pub(crate) fn load_views(url: &str) -> Option<Vec<View>> {
+    let json = fetch(url, "its views", "GET /views", "application/json", None).ok()?;
+    read_views(&json)
 }
 
 pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<String, String> {
@@ -55,7 +72,7 @@ fn json_string(text: &str) -> String {
 
 /// The body of the reply to one request, in the form `accept` names. A
 /// plain socket, since Straum's image holds nothing else to ask with.
-pub(crate) fn fetch(
+fn fetch(
     url: &str,
     what: &str,
     request: &str,
@@ -149,6 +166,28 @@ pub(crate) mod tests {
         let answered =
             format!("{url} answered \"HTTP/1.1 503 Service Unavailable\"\nnot ready: loading");
         assert_eq!(status(&url), Err(answered));
+    }
+
+    pub(crate) const GET_ROWS: &str = "GET /views/trips HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: text/plain\r\n\r\n";
+
+    #[test]
+    fn asks_for_a_views_rows() {
+        let url = answering(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\ntrips\n");
+        assert_eq!(rows(&url, "trips"), Ok("trips\n".to_owned()));
+        for name in ["trips HTTP/1.1", "a/b", "tri\rps", "trips;"] {
+            let error = format!("{name:?} is not a view's name");
+            assert_eq!(rows("http://127.0.0.1:1", name), Err(error));
+        }
+    }
+
+    #[test]
+    fn loads_the_views_as_json() {
+        let url = answering(
+            "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n{\"views\":[],\"dims\":[]}",
+        );
+        assert_eq!(load_views(&url), Some(Vec::new()));
+        assert_eq!(load_views("http://127.0.0.1:1"), None);
     }
 
     pub(crate) const POST_ASK: &str = "POST /ask HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\n\
