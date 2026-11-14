@@ -12,7 +12,7 @@ const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
 const BUCKET: &str = "bucket";
 
 /// A view as `GET /views` describes it in JSON: what a line may name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct View {
     name: String,
     /// `bucket` first.
@@ -23,7 +23,7 @@ pub(crate) struct View {
     to: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Key {
     name: String,
     column_type: String,
@@ -59,7 +59,6 @@ pub(crate) fn read_views(json: &str) -> Option<Vec<View>> {
 
 /// What Tab offers: each candidate replaces the line from `start` to the
 /// cursor.
-#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Completion {
     pub(crate) start: usize,
     pub(crate) candidates: Vec<String>,
@@ -258,7 +257,6 @@ fn condition_candidates(
 }
 
 /// What a parameter is the value of: the key a query compares `$n` with.
-#[derive(Debug, PartialEq, Eq)]
 struct Slot<'v> {
     number: usize,
     key: &'v Key,
