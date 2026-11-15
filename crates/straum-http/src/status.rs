@@ -149,7 +149,7 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
     }
 
     #[test]
-    fn says_why_not_ready() {
+    fn says_how_far_behind() {
         let behind = Status {
             ready: false,
             lag: Some(Duration::from_secs(45)),
@@ -157,8 +157,12 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
         };
         assert_eq!(why_not(&behind).as_deref(), Some("45 s behind PostgreSQL"));
         assert!(write(&behind).starts_with("ready:        no, 45 s behind PostgreSQL\n"));
+        assert_eq!(why_not(&status()), None);
+    }
 
-        let failed = Status {
+    /// No stream, after a failure of two lines.
+    fn failed() -> Status {
+        Status {
             ready: false,
             applied: None,
             committed: None,
@@ -170,7 +174,12 @@ sealed:       12 buckets in the spill, 3 unsealed by a change
                 error: "trips: one\ntrips: two".to_owned(),
             }),
             ..status()
-        };
+        }
+    }
+
+    #[test]
+    fn says_the_last_failure_without_a_stream() {
+        let failed = failed();
         assert_eq!(why_not(&failed).as_deref(), Some("trips: one\ntrips: two"));
         assert_eq!(
             write(&failed),
@@ -188,10 +197,13 @@ last failure: 1970-01-01T00:00:00Z: trips: one
 sealed:       12 buckets in the spill, 3 unsealed by a change
 "
         );
+    }
 
+    #[test]
+    fn says_loading_before_a_stream_or_a_failure() {
         let loading = Status {
             last_failure: None,
-            ..failed
+            ..failed()
         };
         assert_eq!(why_not(&loading).as_deref(), Some("loading"));
         assert_eq!(why_not(&status()), None);

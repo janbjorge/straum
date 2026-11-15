@@ -49,7 +49,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Literal};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
@@ -140,29 +140,34 @@ pub async fn serve(
             Poll::Pending => listener.poll_accept(cx).map(Some),
         })
         .await;
-        let stream = match accepted {
+        match accepted {
             None => break,
-            Some(Ok((stream, _))) => stream,
-            Some(Err(_)) => {
-                tokio::time::sleep(ACCEPT_BACKOFF).await;
-                continue;
-            }
-        };
-        // Nagle would hold an answer's second write until the client acks
-        // the first, which a client that delays acks makes 40 ms.
-        stream.set_nodelay(true).ok();
-        let app = Arc::clone(&app);
-        let service = service_fn(move |request| handle(request, Arc::clone(&app), read_ask));
-        let connection = http1::Builder::new()
-            .timer(TokioTimer::new())
-            .serve_connection(TokioIo::new(stream), service);
-        let connection = graceful.watch(connection);
-        // A client that hangs up mid-request is its own problem.
-        tokio::spawn(async move { connection.await.ok() });
+            Some(Ok((stream, _))) => spawn_connection(stream, &app, read_ask, &graceful),
+            Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+        }
     }
     drop(listener);
     graceful.shutdown().await;
     Ok(())
+}
+
+fn spawn_connection(
+    stream: TcpStream,
+    app: &Arc<App>,
+    read_ask: ReadAsk,
+    graceful: &GracefulShutdown,
+) {
+    // Nagle would hold an answer's second write until the client acks
+    // the first, which a client that delays acks makes 40 ms.
+    stream.set_nodelay(true).ok();
+    let app = Arc::clone(app);
+    let service = service_fn(move |request| handle(request, Arc::clone(&app), read_ask));
+    let connection = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .serve_connection(TokioIo::new(stream), service);
+    let connection = graceful.watch(connection);
+    // A client that hangs up mid-request is its own problem.
+    tokio::spawn(async move { connection.await.ok() });
 }
 
 async fn handle(
@@ -208,11 +213,10 @@ async fn ask(
         }
     };
     let parsing = Instant::now();
-    let request =
-        match ask::read(&body).and_then(|(query, parameters)| read_ask(&query, &parameters)) {
-            Ok(ask) => ask,
-            Err(errors) => return format.errors(StatusCode::BAD_REQUEST, &errors),
-        };
+    let request = match ask::read(&body).and_then(|sent| read_ask(&sent.query, &sent.parameters)) {
+        Ok(ask) => ask,
+        Err(errors) => return format.errors(StatusCode::BAD_REQUEST, &errors),
+    };
     answer(app, request, format, None, parsing.elapsed(), start).await
 }
 
@@ -251,22 +255,8 @@ async fn answer(
         return format.errors(StatusCode::BAD_REQUEST, &range);
     }
     let app = app.clone();
-    let answered = tokio::task::spawn_blocking(move || {
-        let answering = Instant::now();
-        let answered = app.ask(&request)?;
-        let writing = Instant::now();
-        let body = match format {
-            Format::Json => answer::write(&answered),
-            Format::Text => answer::table(&answered, limit).into_bytes(),
-        };
-        Ok(Timed {
-            applied: answered.applied,
-            body,
-            answer: writing - answering,
-            write: writing.elapsed(),
-        })
-    })
-    .await;
+    let answered =
+        tokio::task::spawn_blocking(move || answer_timed(&app, &request, format, limit)).await;
     match answered {
         Ok(Ok(timed)) => answered_response(timed, format, parse, start),
         Ok(Err(error)) => answer_error(&error, format),
@@ -284,6 +274,33 @@ struct Timed {
     write: Duration,
 }
 
+fn answer_timed(
+    app: &App,
+    request: &Ask,
+    format: Format,
+    limit: Option<usize>,
+) -> Result<Timed, AnswerError> {
+    let answering = Instant::now();
+    let answered = app.ask(request)?;
+    let writing = Instant::now();
+    let body = match format {
+        Format::Json => answer::write(&answered),
+        Format::Text => answer::table(&answered, limit).into_bytes(),
+    };
+    Ok(Timed {
+        applied: answered.applied,
+        body,
+        answer: writing - answering,
+        write: writing.elapsed(),
+    })
+}
+
+/// A part of answering an ask, and how long it took.
+struct Phase {
+    name: &'static str,
+    took: Duration,
+}
+
 fn answered_response(
     timed: Timed,
     format: Format,
@@ -296,10 +313,22 @@ fn answered_response(
     // total also holds reading the body and the hops to and from the
     // blocking thread, which no phase covers.
     let phases = [
-        ("parse", parse),
-        ("answer", timed.answer),
-        (format.phase(), timed.write),
-        ("total", start.elapsed()),
+        Phase {
+            name: "parse",
+            took: parse,
+        },
+        Phase {
+            name: "answer",
+            took: timed.answer,
+        },
+        Phase {
+            name: format.phase(),
+            took: timed.write,
+        },
+        Phase {
+            name: "total",
+            took: start.elapsed(),
+        },
     ];
     (response.headers_mut()).insert(SERVER_TIMING, server_timing(&phases));
     response
@@ -319,12 +348,15 @@ fn answer_error(error: &AnswerError, format: Format) -> Response<Full<Bytes>> {
 
 /// `name;dur=ms, ...`: the spec counts in milliseconds, and asks take
 /// microseconds.
-fn server_timing(phases: &[(&str, Duration)]) -> HeaderValue {
-    let phases: Vec<String> = phases
-        .iter()
-        .map(|(name, took)| format!("{name};dur={:.3}", took.as_secs_f64() * 1e3))
-        .collect();
+fn server_timing(phases: &[Phase]) -> HeaderValue {
+    let phases: Vec<String> = phases.iter().map(timing_entry).collect();
     HeaderValue::try_from(phases.join(", ")).expect("names and numbers are ASCII")
+}
+
+fn timing_entry(phase: &Phase) -> String {
+    const MILLISECONDS_PER_SECOND: f64 = 1e3;
+    let took_ms = phase.took.as_secs_f64() * MILLISECONDS_PER_SECOND;
+    format!("{};dur={took_ms:.3}", phase.name)
 }
 
 fn readyz(app: &App) -> Response<Full<Bytes>> {

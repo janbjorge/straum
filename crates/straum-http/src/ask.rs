@@ -16,14 +16,22 @@ use straum_domain::Literal;
 
 use crate::json::Json;
 
+/// An ask as sent, before the `ReadAsk` reads its query.
+#[derive(Debug, PartialEq)]
+pub(crate) struct AskBody {
+    pub(crate) query: String,
+    pub(crate) parameters: Vec<Literal>,
+}
+
 /// Every error found, each naming its field.
-pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
+pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<String>> {
     let json = Json::parse(body).map_err(|error| vec![error])?;
     let Json::Object(fields) = json else {
         return Err(vec![format!("an ask is an object, not {}", json.kind())]);
     };
     let mut errors = Vec::new();
-    let (mut query, mut parameters) = (None, Vec::new());
+    let mut query = None;
+    let mut parameters = Vec::new();
     let mut saw_query = false;
     for (field, value) in fields {
         saw_query |= field == "query";
@@ -51,7 +59,7 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
         errors.push("\"query\" is missing".into());
     }
     match query {
-        Some(query) if errors.is_empty() => Ok((query, parameters)),
+        Some(query) if errors.is_empty() => Ok(AskBody { query, parameters }),
         _ => Err(errors),
     }
 }
@@ -74,7 +82,7 @@ fn literal(index: usize, value: &Json) -> Result<Literal, String> {
 mod tests {
     use super::*;
 
-    fn read_str(body: &str) -> Result<(String, Vec<Literal>), Vec<String>> {
+    fn read_str(body: &str) -> Result<AskBody, Vec<String>> {
         read(body.as_bytes())
     }
 
@@ -82,18 +90,21 @@ mod tests {
     fn reads_the_query_and_its_parameters() {
         assert_eq!(
             read_str(r#"{"parameters": [2, "x", false], "query": "SELECT"}"#).unwrap(),
-            (
-                "SELECT".to_owned(),
-                vec![
+            AskBody {
+                query: "SELECT".to_owned(),
+                parameters: vec![
                     Literal::Int(2),
                     Literal::Text("x".into()),
                     Literal::Bool(false)
                 ]
-            )
+            }
         );
         assert_eq!(
             read_str(r#"{"query": "SELECT"}"#).unwrap(),
-            ("SELECT".to_owned(), Vec::new())
+            AskBody {
+                query: "SELECT".to_owned(),
+                parameters: Vec::new()
+            }
         );
     }
 

@@ -35,24 +35,10 @@ pub(crate) fn json(held: &Held) -> Vec<u8> {
 }
 
 fn view_json(view: &HeldView) -> String {
-    let edge = |seconds: Option<i64>| {
-        (seconds.and_then(rfc3339)).map_or("null".to_owned(), |at| quoted(&at))
-    };
-    let key = |name: &str, column: ColumnType| {
-        let scale = match column {
-            ColumnType::Numeric { scale } => format!(",\"scale\":{scale}"),
-            _ => String::new(),
-        };
-        format!(
-            "{{\"name\":{},\"type\":{}{scale}}}",
-            quoted(name),
-            quoted(type_name(column))
-        )
-    };
-    let keys = (view.keys.iter()).map(|held| key(held.name.as_str(), held.column_type));
-    let keys: Vec<String> = std::iter::once(key("bucket", view.bucket))
-        .chain(keys)
-        .collect();
+    let mut keys = vec![key_json("bucket", view.bucket)];
+    for key in &view.keys {
+        keys.push(key_json(key.name.as_str(), key.column_type));
+    }
     let measures: Vec<String> = view
         .measures
         .iter()
@@ -61,10 +47,31 @@ fn view_json(view: &HeldView) -> String {
     format!(
         "{{\"name\":{},\"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
-        edge(view.range.as_ref().map(|range| range.start)),
-        edge(view.range.as_ref().map(|range| range.end)),
+        edge_json(view.range.as_ref().map(|range| range.start)),
+        edge_json(view.range.as_ref().map(|range| range.end)),
         keys.join(","),
         measures.join(",")
+    )
+}
+
+fn edge_json(seconds: Option<i64>) -> String {
+    // A time past jiff's year 9999 is null too, as it has no RFC 3339
+    // form here.
+    let Some(at) = seconds.and_then(rfc3339) else {
+        return "null".to_owned();
+    };
+    quoted(&at)
+}
+
+fn key_json(name: &str, column: ColumnType) -> String {
+    let scale = match column {
+        ColumnType::Numeric { scale } => format!(",\"scale\":{scale}"),
+        _ => String::new(),
+    };
+    format!(
+        "{{\"name\":{},\"type\":{}{scale}}}",
+        quoted(name),
+        quoted(type_name(column))
     )
 }
 
@@ -257,6 +264,10 @@ dim public.zones
         assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
     }
 
+    fn names(fields: &[(String, Json)]) -> Vec<String> {
+        fields.iter().map(|(name, _)| name.clone()).collect()
+    }
+
     #[test]
     fn views_as_json_hold_only_what_the_shell_reads() {
         let held = Held {
@@ -268,9 +279,6 @@ dim public.zones
                 },
                 rows: 2,
             }],
-        };
-        let names = |fields: &[(String, Json)]| -> Vec<String> {
-            fields.iter().map(|(name, _)| name.clone()).collect()
         };
         let Ok(Json::Object(top)) = Json::parse(&json(&held)) else {
             panic!("not an object");
