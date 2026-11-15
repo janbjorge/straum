@@ -175,12 +175,12 @@ impl<'s> Groups<'s> {
     pub(super) fn new(by: &[Grouping<'_>]) -> Groups<'s> {
         let mut strides = Vec::with_capacity(by.len());
         let mut size = Some(1_usize);
+        // Past an overflow the table is sparse, which reads no stride.
         for grouping in by {
-            let Some(so_far) = size else {
-                break;
-            };
-            strides.push(so_far);
-            size = so_far.checked_mul(grouping.bound());
+            if let Some(so_far) = size {
+                strides.push(so_far);
+                size = so_far.checked_mul(grouping.bound());
+            }
         }
         let index = match size {
             Some(size) if size <= DENSE => GroupIndex::Dense(vec![0; size]),
@@ -216,7 +216,13 @@ impl<'s> Groups<'s> {
         // Known groups in one tight pass, the rest after: few cells start
         // a group.
         let new = match &self.index {
-            GroupIndex::Dense(_) => self.assign_known(by, rollup, cells, groups),
+            GroupIndex::Dense(table) => {
+                let places = Places {
+                    strides: &self.strides,
+                    at: &mut self.at,
+                };
+                assign_known(table, places, by, rollup, cells, groups)
+            }
             GroupIndex::Sparse(_) => {
                 for group in groups.iter_mut() {
                     if *group != 0 {
@@ -239,35 +245,6 @@ impl<'s> Groups<'s> {
                 _ => self.make(by, rollup, cells, cell),
             };
         }
-    }
-
-    /// With a dense table: the group of each cell whose group is known,
-    /// [`NEW`] for the rest; whether any is new.
-    fn assign_known(
-        &mut self,
-        by: &mut [Grouping<'s>],
-        rollup: &Rollup,
-        cells: &Cells,
-        groups: &mut [u32],
-    ) -> bool {
-        let GroupIndex::Dense(table) = &self.index else {
-            unreachable!("called with a dense table");
-        };
-        self.at.clear();
-        self.at.resize(groups.len(), 0);
-        for (grouping, &stride) in by.iter_mut().zip(&self.strides) {
-            grouping.offsets(rollup, cells, stride, &mut self.at);
-        }
-        // Selects, not branches: under a filter, whether a cell passed is
-        // as likely as not. `at` is in the table for every cell.
-        let mut new = false;
-        for (group, &at) in groups.iter_mut().zip(&self.at) {
-            let known = table[at];
-            new |= known == 0 && *group != 0;
-            let found = if known == 0 { NEW } else { known };
-            *group = if *group != 0 { found } else { 0 };
-        }
-        new
     }
 
     /// The group of `cell`, made if new.
@@ -317,4 +294,40 @@ impl<'s> Groups<'s> {
         }
         group
     }
+}
+
+/// Where each cell of a bucket lies in the dense group table: its key's
+/// numbers times their strides.
+struct Places<'g> {
+    // Borrowed from `Groups`, beside its table.
+    strides: &'g [usize],
+    at: &'g mut Vec<usize>,
+}
+
+/// With a dense table: the group of each cell whose group is known,
+/// [`NEW`] for the rest; whether any is new.
+fn assign_known(
+    table: &[u32],
+    places: Places<'_>,
+    by: &mut [Grouping<'_>],
+    rollup: &Rollup,
+    cells: &Cells,
+    groups: &mut [u32],
+) -> bool {
+    let Places { strides, at } = places;
+    at.clear();
+    at.resize(groups.len(), 0);
+    for (grouping, &stride) in by.iter_mut().zip(strides) {
+        grouping.offsets(rollup, cells, stride, at);
+    }
+    // Selects, not branches: under a filter, whether a cell passed is
+    // as likely as not. `at` is in the table for every cell.
+    let mut new = false;
+    for (group, &place) in groups.iter_mut().zip(at.iter()) {
+        let known = table[place];
+        new |= known == 0 && *group != 0;
+        let found = if known == 0 { NEW } else { known };
+        *group = if *group != 0 { found } else { 0 };
+    }
+    new
 }

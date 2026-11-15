@@ -489,12 +489,14 @@ impl Spec {
 
     /// The dim of that name, if the spec has one.
     pub fn dim(&self, name: &str) -> Option<&Dim> {
+        let mut found = None;
         for dim in &self.dims {
             if dim.name.as_str() == name {
-                return Some(dim);
+                found = Some(dim);
+                break;
             }
         }
-        None
+        found
     }
 
     /// The view of that name, if the spec has one.

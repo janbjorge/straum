@@ -58,10 +58,7 @@ where
     u64: From<Entry>,
 {
     let entry = &mut column[cell];
-    let Ok(left) = Entry::try_from(u64::from(*entry) - number) else {
-        unreachable!("less than it was");
-    };
-    *entry = left;
+    *entry = (Entry::try_from(u64::from(*entry) - number).ok()).expect("less than it was");
 }
 
 /// `length` numbers a wider column held, in a type that holds them all.
@@ -73,10 +70,8 @@ fn held<Entry: TryFrom<Wide>, Wide>(
 ) -> Vec<Entry> {
     let mut column = Vec::with_capacity(length);
     for number in numbers {
-        let Ok(entry) = Entry::try_from(number) else {
-            unreachable!("the type was picked to hold them");
-        };
-        column.push(entry);
+        let entry = Entry::try_from(number).ok();
+        column.push(entry.expect("the type was picked to hold them"));
     }
     column
 }

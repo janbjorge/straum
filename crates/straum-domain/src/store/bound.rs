@@ -112,15 +112,11 @@ impl BoundRef {
 
     /// Whether `cell` joins `key` of this ref's dim.
     fn hits(&self, keyed: &Rollup, cell: KeyedCell<'_>, key: &[Datum]) -> bool {
-        if self.via.len() != key.len() {
-            return false;
-        }
+        let mut hits = self.via.len() == key.len();
         for (&part, datum) in self.via_parts.iter().zip(key) {
-            if keyed.value(part, cell.cells.code(cell.cell, part)) != datum {
-                return false;
-            }
+            hits = hits && keyed.value(part, cell.cells.code(cell.cell, part)) == datum;
         }
-        true
+        hits
     }
 }
 
@@ -195,12 +191,11 @@ impl Bound {
 
     /// Whether a ref reads `dim`.
     pub(super) fn reads(&self, dim: DimIndex) -> bool {
+        let mut reads = false;
         for reference in &self.refs {
-            if reference.dim == dim {
-                return true;
-            }
+            reads = reads || reference.dim == dim;
         }
-        false
+        reads
     }
 
     /// Whether `cell` joins `key` of `dim` through any ref.

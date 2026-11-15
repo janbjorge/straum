@@ -172,12 +172,14 @@ fn coded(columns: &[Identifier], parts: &[KeyPart<'_>]) -> Vec<Coded> {
 }
 
 fn position_of(columns: &[Identifier], name: &Identifier) -> ColumnIndex {
+    let mut found = None;
     for (position, column) in columns.iter().enumerate() {
         if column == name {
-            return ColumnIndex(position);
+            found = Some(ColumnIndex(position));
+            break;
         }
     }
-    panic!("{COLUMNS}")
+    found.expect(COLUMNS)
 }
 
 impl Rollup {
@@ -443,14 +445,16 @@ impl Rollup {
 
     /// The rollup-key part that codes the fact column, when one does.
     pub(crate) fn part_of_column(&self, column: ColumnIndex) -> Option<PartIndex> {
+        let mut found = None;
         for (part, coded) in self.key_columns.iter().enumerate() {
             if let Coded::Value(value_column) = coded
                 && *value_column == column
             {
-                return Some(PartIndex(part));
+                found = Some(PartIndex(part));
+                break;
             }
         }
-        None
+        found
     }
 
     /// The `date_bin` width, in seconds.
@@ -496,21 +500,25 @@ impl Rollup {
         let kind = aggregate.state_kind()?;
         let column = self.column(aggregate.input()?)?;
         let wanted = Input { kind, column };
+        let mut found = None;
         for (position, input) in self.inputs.iter().enumerate() {
             if *input == wanted {
-                return Some(InputIndex(position));
+                found = Some(InputIndex(position));
+                break;
             }
         }
-        None
+        found
     }
 
     fn column(&self, name: &Identifier) -> Option<ColumnIndex> {
+        let mut found = None;
         for (position, column) in self.columns.iter().enumerate() {
             if column == name {
-                return Some(ColumnIndex(position));
+                found = Some(ColumnIndex(position));
+                break;
             }
         }
-        None
+        found
     }
 
     /// How many codes a rollup-key part has given.

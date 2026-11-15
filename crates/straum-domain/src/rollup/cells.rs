@@ -86,15 +86,11 @@ impl Cells {
     }
 
     fn same_kinds(&self, source: &[State]) -> bool {
-        if self.states.len() != source.len() {
-            return false;
-        }
+        let mut same = self.states.len() == source.len();
         for (destination, source) in self.states.iter().zip(source) {
-            if !destination.same_kind(source) {
-                return false;
-            }
+            same = same && destination.same_kind(source);
         }
-        true
+        same
     }
 
     /// Folds cell `source_cell` of `source`, which holds `count` rows,

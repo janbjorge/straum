@@ -154,9 +154,7 @@ impl Level {
         let Some(Bucket::Hot(cells)) = self.buckets.get_mut(&bucket) else {
             return Err(RowError::Missing);
         };
-        let Some(cell) = cells.find(key) else {
-            return Err(RowError::Missing);
-        };
+        let cell = cells.find(key).ok_or(RowError::Missing)?;
         let rows = cells.rows.get(cell);
         for (state, input) in cells.states.iter_mut().zip(inputs) {
             state.remove(cell, rows, &row[input.column.0])?;

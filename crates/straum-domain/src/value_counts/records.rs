@@ -142,10 +142,12 @@ impl<'bytes> Records<'bytes> {
         // Up to four bytes never wrap, so `value` is sought as what a record
         // holds of it: less the base.
         let Some(offset) = value.checked_sub(self.base) else {
-            if value < self.base {
-                return Search::Absent(0);
-            }
-            return Search::Absent(self.record_count);
+            let place = if value < self.base {
+                0
+            } else {
+                self.record_count
+            };
+            return Search::Absent(place);
         };
         let field = Field::Narrow {
             first: self.start + value_width - 4,

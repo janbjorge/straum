@@ -298,12 +298,14 @@ impl Store {
 
 /// Where `reference` is among the fact's refs.
 fn ref_position(fact: &Fact, reference: &Ref) -> usize {
+    let mut found = None;
     for (position, other) in fact.refs.iter().enumerate() {
         if other.alias == reference.alias {
-            return position;
+            found = Some(position);
+            break;
         }
     }
-    panic!("{CHECKED}")
+    found.expect(CHECKED)
 }
 
 /// The thawed buckets of `fact`, by bucket.

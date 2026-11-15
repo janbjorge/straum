@@ -194,31 +194,37 @@ impl Store {
 
 /// Where `name` is among `names`, which the spec checked it is.
 fn position_of(names: &[Identifier], name: &Identifier) -> usize {
+    let mut found = None;
     for (position, each) in names.iter().enumerate() {
         if each == name {
-            return position;
+            found = Some(position);
+            break;
         }
     }
-    panic!("{CHECKED}")
+    found.expect(CHECKED)
 }
 
 fn dim_index(spec: &Spec, name: &str) -> Option<DimIndex> {
+    let mut found = None;
     for (position, dim) in spec.dims().iter().enumerate() {
         if dim.name.as_str() == name {
-            return Some(DimIndex(position));
+            found = Some(DimIndex(position));
+            break;
         }
     }
-    None
+    found
 }
 
 /// The part of a fact's keyed rollup key that `part` is.
 fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> PartIndex {
+    let mut found = None;
     for (position, key) in fact.rollup_key().enumerate() {
         if key == part {
-            return PartIndex(position);
+            found = Some(PartIndex(position));
+            break;
         }
     }
-    panic!("{CHECKED}")
+    found.expect(CHECKED)
 }
 
 /// The part of the bound cell key the view names so: the `by` keys'
@@ -227,21 +233,25 @@ fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> PartIndex {
 fn bound_part_of(fact: &Fact, name: &Identifier) -> PartIndex {
     match fact.resolve(name).expect(CHECKED) {
         Key::ByKey(by) => {
+            let mut found = None;
             for (position, part) in fact.by_parts().enumerate() {
                 if part == by.key_part() {
-                    return PartIndex(position);
+                    found = Some(PartIndex(position));
+                    break;
                 }
             }
-            panic!("{CHECKED}")
+            found.expect(CHECKED)
         }
         Key::Attribute(reference, attribute) => {
             let by_parts = fact.by_parts().count();
+            let mut found = None;
             for (position, (other, read)) in fact.attributes().enumerate() {
                 if other.alias == reference.alias && read.name == attribute.name {
-                    return PartIndex(by_parts + position);
+                    found = Some(PartIndex(by_parts + position));
+                    break;
                 }
             }
-            panic!("{CHECKED}")
+            found.expect(CHECKED)
         }
     }
 }

@@ -195,10 +195,7 @@ impl ValueCounts {
 
     fn has(&self, value: i64, count: u64) -> bool {
         let records = match self {
-            ValueCounts::Runs(runs) => match runs.get(&key_of(runs, value)) {
-                Some(run) => Records::of(run),
-                None => return false,
-            },
+            ValueCounts::Runs(runs) => Records::of(&runs[&key_of(runs, value)]),
             ValueCounts::Inline(cell) => Records::in_cell(cell),
             ValueCounts::Run(run) => Records::of(run),
         };
@@ -208,52 +205,35 @@ impl ValueCounts {
         records.count(record) >= count
     }
 
-    /// The records of a cell that holds them in itself or in one run.
-    fn flat(&self) -> Option<Records<'_>> {
-        match self {
-            ValueCounts::Inline(cell) => Some(Records::in_cell(cell)),
-            ValueCounts::Run(run) => Some(Records::of(run)),
-            ValueCounts::Runs(_) => None,
-        }
-    }
-
     /// Each value and its count, ascending by value.
     pub(crate) fn iter(&self) -> Entries<'_> {
-        match self {
-            ValueCounts::Runs(runs) => Entries {
-                records: None,
-                next_record: 0,
-                runs: Some(runs.values()),
-            },
-            _ => Entries {
-                records: self.flat(),
-                next_record: 0,
-                runs: None,
-            },
+        let (records, runs) = match self {
+            ValueCounts::Inline(cell) => (Some(Records::in_cell(cell)), None),
+            ValueCounts::Run(run) => (Some(Records::of(run)), None),
+            ValueCounts::Runs(runs) => (None, Some(runs.values())),
+        };
+        Entries {
+            records,
+            next_record: 0,
+            runs,
         }
     }
 
     /// The least and greatest value held.
     pub(crate) fn ends(&self) -> Ends {
-        let ValueCounts::Runs(runs) = self else {
-            let records = self.flat();
-            return Ends {
-                least: least_in(records),
-                greatest: greatest_in(records),
-            };
+        let (first, last) = match self {
+            ValueCounts::Inline(cell) => (Records::in_cell(cell), Records::in_cell(cell)),
+            ValueCounts::Run(run) => (Records::of(run), Records::of(run)),
+            ValueCounts::Runs(runs) => {
+                let first = runs.values().next().expect("a tree holds runs");
+                let last = runs.values().next_back().expect("a tree holds runs");
+                (Records::of(first), Records::of(last))
+            }
         };
-        let (first, last) = (runs.values().next(), runs.values().next_back());
         Ends {
-            least: least_in(run_records(first)),
-            greatest: greatest_in(run_records(last)),
+            least: least_in(first),
+            greatest: greatest_in(last),
         }
-    }
-}
-
-fn run_records(run: Option<&Vec<u8>>) -> Option<Records<'_>> {
-    match run {
-        Some(run) => Some(Records::of(run)),
-        None => None,
     }
 }
 
@@ -352,16 +332,16 @@ fn sub_in_cell(cell: &mut [u8; CELL_HEADER + INLINE], value: i64, count: u64) ->
     Taken::Last
 }
 
-fn least_in(records: Option<Records<'_>>) -> i64 {
-    match records {
-        Some(records) if records.record_count > 0 => records.value(0),
-        _ => i64::MAX,
+fn least_in(records: Records<'_>) -> i64 {
+    if records.record_count == 0 {
+        return i64::MAX;
     }
+    records.value(0)
 }
 
-fn greatest_in(records: Option<Records<'_>>) -> i64 {
-    match records {
-        Some(records) if records.record_count > 0 => records.value(records.record_count - 1),
-        _ => i64::MIN,
+fn greatest_in(records: Records<'_>) -> i64 {
+    if records.record_count == 0 {
+        return i64::MIN;
     }
+    records.value(records.record_count - 1)
 }
