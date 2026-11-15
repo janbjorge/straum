@@ -1,17 +1,11 @@
-//! The rows on the heap pages of the tables Straum reads, kept as redo
-//! keeps them, so a delete or an update that names only a slot on a page
-//! finds the row it changes. A heap is PostgreSQL's table storage: pages
-//! of rows. Each record that touches a tracked page comes in here and
-//! leaves as row changes, which go on to be held by transaction. Layouts:
-//! `src/include/access/heapam_xlog.h` and `htup_details.h`, applied as
-//! `heap_redo` and `heap2_redo` in `src/backend/access/heap/heapam_xlog.c`
-//! do. A change shares its row's bytes with the page (`Arc<[u8]>`), so
-//! a row is stored once however many changes and pages name it.
-//!
-//! Every page comes in whole the first time it changes after the redo
-//! point Straum starts from: as a full-page image, or as a page the record
-//! starts afresh. So a page Straum has nothing of is an error, never a
-//! guess.
+//! The rows on the heap pages of the tables Straum reads: a heap is
+//! PostgreSQL's table storage, pages of rows. Each record that touches a
+//! tracked page comes in and leaves as row changes, held next by
+//! transaction. Pages are kept as redo keeps them (`heap_redo` in
+//! `heapam_xlog.c`), so a delete or update naming only a slot finds its
+//! row. A page comes whole the first time it changes after the redo point,
+//! so one Straum lacks is an error. A change shares its row's bytes with
+//! the page (`Arc<[u8]>`): a row is stored once.
 
 mod edit;
 mod page;
