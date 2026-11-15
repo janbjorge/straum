@@ -1,5 +1,8 @@
-//! Every match on `Aggregate` is here, so a new aggregate is one variant and the
-//! arms the compiler asks for.
+//! The aggregates a measure may name, and how an ask merges cells into
+//! one answer per group. An ask hands each bucket's cell states to
+//! [`Partials`], which keeps one running partial per group and turns it
+//! into a [`Value`] at the end. Every match on `Aggregate` is here, so a
+//! new aggregate is one variant and the arms the compiler asks for.
 
 use std::collections::HashSet;
 
@@ -8,7 +11,6 @@ use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::sealed::ValueCount;
 use crate::value::{Datum, Value};
-use crate::value_counts::ValueCounts;
 
 /// What a measure reads of its input column, which decides the types the
 /// column may have.
@@ -24,6 +26,7 @@ pub enum Reads {
     Booleans,
 }
 
+/// The aggregate function of a measure, and the column it reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Aggregate {
     Count,
@@ -53,7 +56,10 @@ impl Fraction {
     /// `None` above 1.
     pub fn new(units: u64, places: u32) -> Option<Fraction> {
         let one = 10u64.checked_pow(places)?;
-        (units <= one).then_some(Fraction { units, places })
+        if units > one {
+            return None;
+        }
+        Some(Fraction { units, places })
     }
 
     /// The 1-based position of the value `percentile_disc` gives among
@@ -75,14 +81,20 @@ impl Fraction {
 }
 
 impl Aggregate {
+    /// The column the aggregate reads; none for `count(*)`.
     pub fn input(&self) -> Option<&Identifier> {
-        self.state().map(|(_, column)| column)
+        let (_, column) = self.state()?;
+        Some(column)
     }
 
+    /// What the aggregate reads of its column; none for `count(*)`.
     pub fn reads(&self) -> Option<Reads> {
-        self.state().map(|(kind, _)| kind.reads())
+        let (kind, _) = self.state()?;
+        Some(kind.reads())
     }
 
+    /// The cell state the aggregate keeps, and of which column; none for
+    /// `count(*)`, which reads the cell's row count.
     pub(crate) fn state(&self) -> Option<(StateKind, &Identifier)> {
         match self {
             Aggregate::Count => None,
@@ -105,16 +117,13 @@ impl Aggregate {
 /// overlap.
 const LANES: usize = 4;
 
+/// Where cell `cell` of group `group` merges among the partials.
 fn lane(cell: usize, group: u32) -> usize {
     group as usize * LANES + cell % LANES
 }
 
-fn cell_lanes(groups: &[u32]) -> impl Iterator<Item = usize> + '_ {
-    groups
-        .iter()
-        .enumerate()
-        .map(|(cell, &group)| lane(cell, group))
-}
+// The closures below are visitors: the column walks its cells in the
+// width it keeps them in, and hands each count over.
 
 fn add_counts(partials: &mut [u64], groups: &[u32], counts: &Counts) {
     counts.each(groups, |cell, group, count| {
@@ -126,6 +135,37 @@ fn take_counts(partials: &mut [u64], groups: &[u32], counts: &Counts) {
     counts.each(groups, |cell, group, count| {
         partials[lane(cell, group)] -= count;
     });
+}
+
+/// The one group every cell of a bucket falls in, if they all fall in one.
+fn single_group(groups: &[u32]) -> Option<u32> {
+    let first = *groups.first()?;
+    for &group in groups {
+        if group != first {
+            return None;
+        }
+    }
+    Some(first)
+}
+
+/// Whether any cell holds a value: an empty cell's min lies above its max.
+fn any_value(mins: &[i64], maxs: &[i64]) -> bool {
+    for (min, max) in mins.iter().zip(maxs) {
+        if min <= max {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether any count is above zero.
+fn any_counted(counts: &[u64]) -> bool {
+    for &count in counts {
+        if count > 0 {
+            return true;
+        }
+    }
+    false
 }
 
 /// One measure merged over cells, per group: entries `group * LANES..`
@@ -150,8 +190,8 @@ pub(crate) enum Partials {
         seen: Vec<bool>,
     },
     Distinct(Vec<HashSet<Datum>>),
-    /// Each group's values with their counts, one pair per cell a value is
-    /// in, sorted only when finished.
+    /// Each group's values with their counts, one entry per cell a value
+    /// is in, sorted only when finished.
     Percentile {
         fraction: Fraction,
         values: Vec<Vec<ValueCount>>,
@@ -165,6 +205,7 @@ pub(crate) enum Partials {
 }
 
 impl Partials {
+    /// No group yet, for the measure's aggregate.
     pub(crate) fn new(aggregate: &Aggregate) -> Partials {
         match aggregate {
             Aggregate::Count | Aggregate::CountNotNull(_) => Partials::Count(Vec::new()),
@@ -194,6 +235,7 @@ impl Partials {
         }
     }
 
+    /// Makes room for `groups` groups, group 0 counted.
     pub(crate) fn grow(&mut self, groups: usize) {
         let lanes = groups * LANES;
         match self {
@@ -220,13 +262,12 @@ impl Partials {
         }
     }
 
-    /// `rows` are the cells' rows, which a count is and which a column's
-    /// nulls are taken from.
+    /// Merges every cell of a bucket into its group, `groups` giving each
+    /// cell's. `rows` are the cells' rows, which a count is and which a
+    /// column's nulls are taken from.
     pub(crate) fn merge(&mut self, groups: &[u32], rows: &Counts, state: Option<&State>) {
-        if let Some(&first) = groups.first()
-            && groups.iter().all(|&group| group == first)
-        {
-            return self.merge_into(first, rows, state);
+        if let Some(group) = single_group(groups) {
+            return self.merge_into(group, rows, state);
         }
         match (self, state) {
             (Partials::Count(counts), None) => add_counts(counts, groups, rows),
@@ -249,17 +290,29 @@ impl Partials {
                 take_counts(counts, groups, nulls);
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                for (at, (&min, &max)) in cell_lanes(groups).zip(mins.iter().zip(maxs)) {
+                let cells = groups.iter().zip(mins).zip(maxs);
+                for (cell, ((&group, &min), &max)) in cells.enumerate() {
+                    let at = lane(cell, group);
                     values[at] = values[at].min(min);
                     seen[at] |= min <= max;
                 }
             }
             (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                for (at, (&min, &max)) in cell_lanes(groups).zip(mins.iter().zip(maxs)) {
+                let cells = groups.iter().zip(mins).zip(maxs);
+                for (cell, ((&group, &min), &max)) in cells.enumerate() {
+                    let at = lane(cell, group);
                     values[at] = values[at].max(max);
                     seen[at] |= min <= max;
                 }
             }
+            (partials, state) => partials.merge_collected(groups, state),
+        }
+    }
+
+    /// The rest of [`Partials::merge`]: the aggregates that collect values
+    /// rather than add them, and the booleans.
+    fn merge_collected(&mut self, groups: &[u32], state: Option<&State>) {
+        match (self, state) {
             (Partials::Distinct(seen), Some(State::Distinct(counts))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
                 for (&group, counts) in groups.iter().zip(counts) {
@@ -347,8 +400,8 @@ impl Partials {
         }
     }
 
-    /// Folding in registers beats adding to one place in memory, each add
-    /// waiting on the last.
+    /// Every cell of a bucket into one group. Folding in registers beats
+    /// adding to one place in memory, each add waiting on the last.
     fn merge_into(&mut self, group: u32, rows: &Counts, state: Option<&State>) {
         let at = lane(0, group);
         let group = group as usize;
@@ -368,20 +421,28 @@ impl Partials {
                 counts[at] += rows.total() - nulls.total();
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                values[at] = mins.iter().fold(values[at], |least, &min| least.min(min));
-                seen[at] |= mins.iter().zip(maxs).any(|(min, max)| min <= max);
+                for &min in mins {
+                    values[at] = values[at].min(min);
+                }
+                seen[at] |= any_value(mins, maxs);
             }
             (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                values[at] = maxs.iter().fold(values[at], |most, &max| most.max(max));
-                seen[at] |= mins.iter().zip(maxs).any(|(min, max)| min <= max);
+                for &max in maxs {
+                    values[at] = values[at].max(max);
+                }
+                seen[at] |= any_value(mins, maxs);
             }
             (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
-                seen[group].extend(counts.iter().flat_map(|cell| cell.keys().cloned()));
+                for cell in counts {
+                    seen[group].extend(cell.keys().cloned());
+                }
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
-                values[group].extend(counts.iter().flat_map(ValueCounts::iter));
+                for cell in counts {
+                    values[group].extend(cell.iter());
+                }
             }
             // Group 0 is never finished, and a value set or list costs its merge.
             (Partials::Distinct(_), Some(State::Distinct(_)))
@@ -400,6 +461,7 @@ impl Partials {
         }
     }
 
+    /// The answer of group `group`, from its partials.
     pub(crate) fn finish(&mut self, group: usize) -> Value {
         let lanes = group * LANES..(group + 1) * LANES;
         match self {
@@ -424,42 +486,25 @@ impl Partials {
             {
                 Value::Null
             }
-            Partials::Min { values, .. } => Value::Int(
-                values[lanes]
-                    .iter()
-                    .fold(i64::MAX, |least, &value| least.min(value))
-                    .into(),
-            ),
-            Partials::Max { values, .. } => Value::Int(
-                values[lanes]
-                    .iter()
-                    .fold(i64::MIN, |most, &value| most.max(value))
-                    .into(),
-            ),
-            Partials::Distinct(seen) => Value::Int(seen[group].len() as i128),
-            Partials::Percentile { fraction, values } => {
-                let values = &mut values[group];
-                values.sort_unstable_by_key(|entry| entry.value);
-                let mut total: u64 = 0;
-                for entry in values.iter() {
-                    total += entry.count;
+            Partials::Min { values, .. } => {
+                let mut least = i64::MAX;
+                for &value in &values[lanes] {
+                    least = least.min(value);
                 }
-                if total == 0 {
-                    return Value::Null;
-                }
-                let rank = fraction.rank(total);
-                let mut seen = 0;
-                for entry in values.iter() {
-                    seen += entry.count;
-                    if seen >= rank {
-                        return Value::Int(entry.value.into());
-                    }
-                }
-                unreachable!("rank is at most the values' count")
+                Value::Int(least.into())
             }
+            Partials::Max { values, .. } => {
+                let mut most = i64::MIN;
+                for &value in &values[lanes] {
+                    most = most.max(value);
+                }
+                Value::Int(most.into())
+            }
+            Partials::Distinct(seen) => Value::Int(seen[group].len() as i128),
+            Partials::Percentile { fraction, values } => percentile(*fraction, &mut values[group]),
             Partials::Bools { trues, falses, all } => {
-                let any_true = trues[lanes.clone()].iter().any(|&count| count > 0);
-                let any_false = falses[lanes].iter().any(|&count| count > 0);
+                let any_true = any_counted(&trues[lanes.clone()]);
+                let any_false = any_counted(&falses[lanes]);
                 match (any_true, any_false) {
                     (false, false) => Value::Null,
                     _ if *all => Value::Bool(!any_false),
@@ -468,4 +513,26 @@ impl Partials {
             }
         }
     }
+}
+
+/// The value at `fraction`'s rank among `values`, as `percentile_disc`
+/// gives it.
+fn percentile(fraction: Fraction, values: &mut [ValueCount]) -> Value {
+    values.sort_unstable_by_key(|entry| entry.value);
+    let mut total: u64 = 0;
+    for entry in values.iter() {
+        total += entry.count;
+    }
+    if total == 0 {
+        return Value::Null;
+    }
+    let rank = fraction.rank(total);
+    let mut seen = 0;
+    for entry in values.iter() {
+        seen += entry.count;
+        if seen >= rank {
+            return Value::Int(entry.value.into());
+        }
+    }
+    unreachable!("rank is at most the values' count")
 }
