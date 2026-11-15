@@ -20,6 +20,7 @@ mod value_counts;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey};
+pub use hash::{FastMap, FastSet, Seeded};
 pub use ident::Identifier;
 pub use rollup::RowError;
 pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};

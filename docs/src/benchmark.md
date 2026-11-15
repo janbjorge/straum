@@ -238,11 +238,11 @@ thread, PostgreSQL 18:
 
 | Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| copy | 128.1 MiB | 1,044,746 | 12 | 2.1 s | 2,382 MiB/s | 177 MiB/s | 1,383,617 | 2.9x |
-| insert | 173.3 MiB | 2,033,148 | 3 | 1.5 s | 1,699 MiB/s | 194 MiB/s | 1,121,882 | 1.7x |
-| update | 356.9 MiB | 3,008,774 | 13,447 | 3.0 s | 1,900 MiB/s | 225 MiB/s | 631,592 | 1.9x |
-| delete | 137.7 MiB | 1,010,911 | 10,712 | 529.0 ms | 2,389 MiB/s | 179 MiB/s | 1,298,208 | 0.7x |
-| all | 795.9 MiB | | | 7.1 s | 1,984 MiB/s | 201 MiB/s | 1,008,142 | 1.8x |
+| copy | 128.1 MiB | 1,044,746 | 12 | 2.2 s | 2,381 MiB/s | 201 MiB/s | 1,566,438 | 3.4x |
+| insert | 173.3 MiB | 2,033,148 | 3 | 1.5 s | 1,725 MiB/s | 247 MiB/s | 1,425,352 | 2.2x |
+| update | 356.9 MiB | 3,008,774 | 13,447 | 3.0 s | 1,940 MiB/s | 283 MiB/s | 793,956 | 2.3x |
+| delete | 137.7 MiB | 1,010,911 | 10,712 | 544.8 ms | 2,358 MiB/s | 221 MiB/s | 1,607,464 | 0.9x |
+| all | 795.9 MiB | | | 7.2 s | 2,007 MiB/s | 247 MiB/s | 1,241,625 | 2.2x |
 
 "Against PostgreSQL" divides the time PostgreSQL took to write a
 phase's WAL by the time the pipeline took to read it. Below 1x, as for

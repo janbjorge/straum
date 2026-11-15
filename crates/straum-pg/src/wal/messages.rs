@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use straum_app::Commit;
-use straum_domain::Datum;
+use straum_domain::{Datum, FastMap};
 
 use super::heap::{Change, Tuple};
 use super::transactions::Committed;
@@ -37,7 +37,7 @@ pub(crate) struct Table {
 }
 
 pub(crate) struct Publisher {
-    tables: HashMap<RelationFile, Table>,
+    tables: FastMap<RelationFile, Table>,
     /// Enum labels by `pg_enum` OID.
     labels: HashMap<u32, String>,
     /// Tables whose `Relation` the decoder has.

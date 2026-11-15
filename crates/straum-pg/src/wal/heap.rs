@@ -9,7 +9,9 @@
 //! starts afresh. So a page Straum has nothing of is an error, never a
 //! guess.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use straum_domain::{FastMap, FastSet};
 
 use super::compress;
 use super::{
@@ -175,8 +177,8 @@ impl Page {
 
 /// The pages of the tracked relations, and how to read prune records.
 pub(crate) struct Heap {
-    tracked: HashSet<RelationFile>,
-    pages: HashMap<PageId, Page>,
+    tracked: FastSet<RelationFile>,
+    pages: FastMap<PageId, Page>,
     /// The pages' footprints, summed.
     bytes: usize,
     /// 19 drops the reason byte before the prune flags and widens them to
@@ -187,8 +189,8 @@ pub(crate) struct Heap {
 impl Heap {
     pub(crate) fn new(tracked: HashSet<RelationFile>, major: u32) -> Heap {
         Heap {
-            tracked,
-            pages: HashMap::new(),
+            tracked: tracked.into_iter().collect(),
+            pages: FastMap::default(),
             bytes: 0,
             prune_flags_first: major >= 19,
         }

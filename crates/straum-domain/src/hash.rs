@@ -1,18 +1,20 @@
-//! The hasher of the maps a row probes on its way into a rollup. Std's
-//! SipHash was a fifth of a load. A folded multiply, as `foldhash` does,
+//! The hasher of the maps a row probes on its way into a rollup, and of
+//! the physical stream's pages and transactions. Std's SipHash was a fifth
+//! of a load. A folded multiply, as `foldhash` does,
 //! with a seed per map from std's random keys, so values from the source
 //! can't be picked to collide without knowing it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher, RandomState};
 
 /// From the fractional digits of pi, as `foldhash` takes them.
 const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 
-pub(crate) type FastMap<K, V> = HashMap<K, V, Seeded>;
+pub type FastMap<K, V> = HashMap<K, V, Seeded>;
+pub type FastSet<K> = HashSet<K, Seeded>;
 
 #[derive(Debug)]
-pub(crate) struct Seeded(u64);
+pub struct Seeded(u64);
 
 impl Default for Seeded {
     fn default() -> Seeded {
@@ -28,7 +30,7 @@ impl BuildHasher for Seeded {
     }
 }
 
-pub(crate) struct Folded(u64);
+pub struct Folded(u64);
 
 fn fold(a: u64, b: u64) -> u64 {
     let product = u128::from(a) * u128::from(b);

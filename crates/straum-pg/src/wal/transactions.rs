@@ -11,7 +11,9 @@
 //! ends the transaction for snapshots, and waits for synchronous standbys
 //! in between, so the dropped xids are kept for the load to check.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use straum_domain::FastMap;
 
 use super::heap::Change;
 use super::xact::{Ending, Event, Invalidated, Running};
@@ -50,7 +52,7 @@ pub(crate) struct TooBig {
 
 pub(crate) struct Transactions {
     /// By xid, top-level or sub, with the LSN of each change's record.
-    held: HashMap<u32, Held>,
+    held: FastMap<u32, Held>,
     /// The held changes' footprints, summed.
     bytes: usize,
     /// The most changes one xid keeps; past it, only that it had more.
@@ -84,7 +86,7 @@ enum Start {
 impl Transactions {
     pub(crate) fn new(limit: usize) -> Transactions {
         Transactions {
-            held: HashMap::new(),
+            held: FastMap::default(),
             bytes: 0,
             limit,
             start: Start::Unknown {
