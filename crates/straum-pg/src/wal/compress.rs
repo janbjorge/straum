@@ -1,7 +1,9 @@
-//! The decompressors for full-page images `wal_compression` writes. pglz
-//! as `pglz_decompress` in `src/common/pg_lzcompress.c` reads it; lz4 as a
-//! bare LZ4 block, as `LZ4_decompress_safe` reads it. Both refuse input
-//! that does not come out at exactly `size` bytes.
+//! The two decompressors PostgreSQL uses, for full-page images that
+//! `wal_compression` compresses and for values TOAST compresses: pglz,
+//! PostgreSQL's own, as `pglz_decompress` in `src/common/pg_lzcompress.c`
+//! reads it, and lz4, as a bare LZ4 block that `LZ4_decompress_safe`
+//! reads. Compressed bytes go in, the page or value comes out. Both refuse
+//! input that does not come out at exactly `size` bytes.
 
 /// A pglz copy tag's first byte: the high nibble is the top of a 12-bit
 /// offset, the low one the length less 3. A nibble of 15 (a length of 18)

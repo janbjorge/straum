@@ -1,8 +1,10 @@
-//! Committed transactions as the pgoutput messages a logical slot sends
-//! for them, so the physical stream feeds the same [`Decoder`]: `Begin`,
-//! `Relation` before a table's first change, `Insert`, `Update` and
-//! `Delete` with the whole old row, as under `REPLICA IDENTITY FULL`, and
-//! `Commit`.
+//! The last step of the physical stream: a committed transaction goes in,
+//! the pgoutput messages a logical slot would send for it come out, fed to
+//! the same [`Decoder`] the logical stream uses. pgoutput is the plugin
+//! that writes logical decoding's messages: `Begin`, `Relation` before a
+//! table's first change, `Insert`, `Update` and `Delete` with the whole
+//! old row, as under `REPLICA IDENTITY FULL`, and `Commit`. `tuple.rs`
+//! reads each row's values.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +46,7 @@ pub(crate) struct Layouts {
     pub(crate) labels: HashMap<Oid, String>,
 }
 
+/// Turns commits into messages for the tables Straum reads.
 pub(crate) struct Publisher {
     tables: FastMap<RelationFile, Layout>,
     /// Enum labels by `pg_enum` OID.
@@ -55,6 +58,7 @@ pub(crate) struct Publisher {
 }
 
 impl Publisher {
+    /// A publisher of `layouts`' tables, none announced yet.
     pub(crate) fn new(layouts: Layouts) -> Publisher {
         let mut tables = FastMap::default();
         for table in layouts.tables {
@@ -68,6 +72,7 @@ impl Publisher {
         }
     }
 
+    /// The relation files of the tables it publishes.
     pub(crate) fn files(&self) -> HashSet<RelationFile> {
         self.tables.keys().copied().collect()
     }
@@ -200,6 +205,8 @@ fn invalidates(message: Invalidated, table: &Layout) -> bool {
 }
 
 /// The relation's columns of `tuple`, as a message holds them.
+// `Field<'static>`: each value is owned, not borrowed from the row, so
+// the message outlives the change it came from.
 fn fields(
     table: &Layout,
     tuple: &HeapTuple,
@@ -225,6 +232,7 @@ fn fields(
     Ok(fields)
 }
 
+/// The stream's error for `problem` at `lsn`.
 fn problem(lsn: u64, problem: Problem) -> Error {
     Error::Wal(WalError::At { lsn, problem })
 }

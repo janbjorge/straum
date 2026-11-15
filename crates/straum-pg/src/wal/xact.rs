@@ -1,7 +1,11 @@
-//! How transactions end, and which run, as the WAL says it. Layouts:
-//! `src/include/access/xact.h` and `standbydefs.h`, read as
-//! `ParseCommitRecord`, `ParseAbortRecord` in
-//! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
+//! How transactions end, and which run, as the WAL says it: the commit
+//! and abort records of the transaction resource manager, and the
+//! standby's `RUNNING_XACTS`, which lists the transactions running when it
+//! was written. A record goes in, an `Event` comes out for
+//! `transactions.rs`. A commit also names the tables whose relcache, the
+//! catalog cache of a table's layout, it invalidates: what DDL leaves.
+//! Layouts: `src/include/access/xact.h` and `standbydefs.h`, read as
+//! `ParseCommitRecord` and `ParseAbortRecord` in `xactdesc.c` do.
 
 use super::{
     Oid, Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
@@ -9,11 +13,14 @@ use super::{
 };
 
 const XACT_OPERATION: u8 = 0x70;
+/// `XLOG_XACT_HAS_INFO`: an `xl_xact_xinfo` says which parts follow.
 pub(super) const XACT_HAS_INFO: u8 = 0x80;
+/// `XLOG_XACT_COMMIT`.
 pub(super) const XACT_COMMIT: u8 = 0x00;
 const XACT_ABORT: u8 = 0x20;
 const XACT_COMMIT_PREPARED: u8 = 0x30;
 const XACT_ABORT_PREPARED: u8 = 0x40;
+/// `XLOG_RUNNING_XACTS`, a record of the standby resource manager.
 pub(super) const STANDBY_RUNNING_XACTS: u8 = 0x10;
 
 const HAS_DATABASE: u32 = 1 << 0;
@@ -59,6 +66,7 @@ enum Outcome {
     Abort,
 }
 
+/// What a transaction or standby record says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
     Commit(Ending),
@@ -130,6 +138,7 @@ pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalErr
     }
 }
 
+/// The transaction a commit or abort record ends, with its parts.
 fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
     let data = record.main_data();
     let time = i64::from_le_bytes(*data.first_chunk()?);
@@ -199,6 +208,7 @@ fn dropped_stat_size(major: u32) -> usize {
     }
 }
 
+/// The `xl_running_xacts` in `data`.
 fn running(data: &[u8]) -> Option<Running> {
     let count = usize::try_from(u32_at(data, RUNNING_COUNT)?).ok()?;
     let next_xid = u32_at(data, RUNNING_NEXT_XID)?;
@@ -214,6 +224,7 @@ fn running(data: &[u8]) -> Option<Running> {
     })
 }
 
+/// Test builders `pipeline.rs`'s tests share.
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

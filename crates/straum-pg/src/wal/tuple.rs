@@ -1,11 +1,11 @@
-//! The values of a row as Straum reads them, the same [`Datum`]s the
-//! logical stream reads from pgoutput's text. The row is walked as
-//! `heap_deform_tuple` in `src/backend/access/common/heaptuple.c` walks
-//! it; layouts from `src/include/varatt.h` and
-//! `src/backend/utils/adt/numeric.c`.
-//!
-//! Values are read little-endian: PostgreSQL writes them in the server's
-//! byte order, and the servers Straum meets are x86 or ARM.
+//! The values of a row as Straum reads them, the same [`Datum`]s the load
+//! reads: a heap change's row goes in, one value per column comes out, for
+//! `messages.rs`. The row is walked as `heap_deform_tuple` in `heaptuple.c`
+//! walks it. A variable-length value is a varlena, with a header holding
+//! its length; TOAST may compress it (pglz or lz4) or keep it out of line
+//! in another table, which the page doesn't hold. Layouts from `varatt.h`
+//! and `numeric.c`. Values are read little-endian: PostgreSQL writes them
+//! in the server's byte order, and the servers Straum meets are x86 or ARM.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -92,6 +92,7 @@ pub(crate) enum Kind {
     Other,
 }
 
+/// One column's value in a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Value {
     /// Null too for a column of a [`Kind::Other`] type.
@@ -197,7 +198,9 @@ fn varlena_size(bytes: &[u8]) -> Option<usize> {
 }
 
 /// What a varlena holds: its bytes, decompressed, or `None` for a value
-/// TOAST keeps out of line. Only a compressed one is copied.
+/// TOAST keeps out of line.
+// `Cow`, borrowed or owned: a plain value is read where it lies in the
+// row, and only a compressed one is copied out, decompressed.
 fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     let first = bytes[0];
     if first == VARLENA_EXTERNAL {
@@ -233,6 +236,7 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     }
 }
 
+/// The value `bytes` hold, read as `attribute` says.
 fn value(
     attribute: &Attribute,
     bytes: &[u8],

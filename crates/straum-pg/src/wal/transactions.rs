@@ -1,15 +1,11 @@
-//! Changes held by transaction until it ends, as logical decoding's
-//! reorder buffer holds them (`reorderbuffer.c`), and the point from
-//! which every commit's changes are all in the WAL Straum reads, as
-//! `snapbuild.c` finds it.
-//!
-//! Straum starts at a redo point, so a transaction running there may have
-//! changed rows before it. The first `RUNNING_XACTS` names what runs;
-//! once all of those end, every later transaction began after it, whole.
-//! Commits of transactions before that point are dropped: the load,
-//! taken after it, must see them. PostgreSQL logs a commit before it
-//! ends the transaction for snapshots, and waits for synchronous standbys
-//! in between, so the dropped xids are kept for the load to check.
+//! Row changes held by transaction until it ends, the step between heap
+//! changes and commits: record, heap change, transaction, commit. A
+//! transaction is named by its xid, its transaction id; a savepoint gets a
+//! subtransaction with an xid of its own, which commits with its top one.
+//! Changes wait here as logical decoding's reorder buffer holds them
+//! (`reorderbuffer.c`), and come out merged by LSN when the commit record
+//! comes. This file also finds the point from which every commit is whole
+//! in the WAL Straum reads, as `snapbuild.c` finds it.
 
 use std::collections::HashSet;
 
@@ -55,6 +51,8 @@ pub(crate) struct TooBig {
     pub(crate) lsn: u64,
 }
 
+/// The changes of every open transaction, and how far the stream is from
+/// where every commit is whole.
 pub(crate) struct Transactions {
     /// By xid, top-level or sub, with the LSN of each change's record.
     held: FastMap<TransactionId, Held>,
@@ -68,13 +66,25 @@ pub(crate) struct Transactions {
     dropped: Option<HashSet<TransactionId>>,
 }
 
+/// What one xid holds: its changes with the LSN of each one's record.
 #[derive(Default)]
 struct Held {
     changes: Vec<(u64, HeapChange)>,
+    /// The changes' footprints, summed.
     bytes: usize,
+    /// It made more changes than the limit; none of them is kept.
     over: bool,
 }
 
+// Straum starts at a redo point, so a transaction running there may have
+// changed rows before it. The first `RUNNING_XACTS` names what runs; once
+// all of those end, every later transaction began after it, whole.
+// Commits of transactions before that point are dropped: the load, taken
+// after it, must see them. PostgreSQL logs a commit before it ends the
+// transaction for snapshots, and waits for synchronous standbys in
+// between, so the dropped xids are kept for the load to check.
+
+/// What the stream knows of where every commit is whole.
 enum Start {
     /// No `RUNNING_XACTS` yet; the xids that ended so far.
     Unknown { ended: HashSet<TransactionId> },
@@ -89,6 +99,8 @@ enum Start {
 }
 
 impl Transactions {
+    /// Nothing held, the start not yet known; `limit` is the most changes
+    /// one xid keeps.
     pub(crate) fn new(limit: usize) -> Transactions {
         Transactions {
             held: FastMap::default(),
@@ -101,6 +113,7 @@ impl Transactions {
         }
     }
 
+    /// Holds `changes`, made by `xid` in the record at `lsn`, until it ends.
     pub(crate) fn hold(&mut self, xid: TransactionId, lsn: u64, changes: Vec<HeapChange>) {
         if changes.is_empty() {
             return;
@@ -161,6 +174,8 @@ impl Transactions {
         }
     }
 
+    /// Ends `ending`'s transaction as committed: what it changed, if the
+    /// commit is whole and changed or invalidated a table.
     fn commit(&mut self, ending: Ending, lsn: u64, end: u64) -> Result<Option<Committed>, TooBig> {
         let whole = match &self.start {
             Start::From { next_xid, .. } => follows(ending.xid, *next_xid),
@@ -201,6 +216,8 @@ impl Transactions {
         }))
     }
 
+    /// Reads a `RUNNING_XACTS`: the first sets the start, every one lets
+    /// go of what transactions a crash ended.
     fn running(&mut self, running: &Running) {
         if let Start::Unknown { ended } = &self.start {
             // The record lists what ran when PostgreSQL looked, and goes
@@ -343,6 +360,7 @@ pub(crate) struct TransactionSnapshot {
 }
 
 impl TransactionSnapshot {
+    /// Reads `pg_current_snapshot()`'s text; `None` if it isn't one.
     pub(crate) fn parse(text: &str) -> Option<TransactionSnapshot> {
         let mut parts = text.split(':');
         let xmin: u64 = parts.next()?.parse().ok()?;

@@ -1,10 +1,11 @@
-//! The physical stream's path from WAL records to commits: the rows of
-//! the tables' pages, the changes each transaction holds, then the
-//! messages the decoder both streams share. Reads no socket and no
-//! catalog: a table's layout, read again after DDL, comes from the caller.
-//!
-//! Commits wait until the load's snapshot is known, and only those it
-//! doesn't see go on: the load has the rest.
+//! The physical stream's path from WAL records to commits, run in order
+//! for each record: `heap/` applies it to the tables' pages and gives row
+//! changes, `transactions.rs` holds them by transaction, `xact.rs` says
+//! when one ends, and `messages.rs` turns a commit into the messages the
+//! decoder both streams share. Reads no socket and no catalog: a table's
+//! layout, read again after DDL, comes from the caller. Commits wait until
+//! the load's snapshot is known, and only those it doesn't see go on: the
+//! load has the rest.
 
 use std::mem;
 
@@ -29,6 +30,7 @@ pub(crate) enum Sight {
     Blind(Vec<TransactionId>),
 }
 
+/// The pages, held transactions, publisher and decoder of one stream.
 pub(crate) struct Pipeline {
     major: u32,
     limit: usize,
@@ -87,6 +89,8 @@ impl Pipeline {
 
     /// Reads one record. `layouts` reads the tables' layouts again, after
     /// a commit that may have changed them.
+    // `impl FnMut`: the caller passes a closure over its own catalog
+    // connection, which this file must not know.
     pub(crate) fn record(
         &mut self,
         record: &Record,
@@ -103,6 +107,7 @@ impl Pipeline {
         Ok(commits)
     }
 
+    // `impl FnMut`, as for `record`: the caller's closure reads the catalog.
     fn read(
         &mut self,
         record: &Record,
@@ -156,6 +161,7 @@ impl Pipeline {
         }
     }
 
+    /// The stream's error for a transaction past the limit.
     fn too_big(&self, too_big: TooBig) -> Error {
         Error::Transaction {
             lsn: Lsn(too_big.lsn),
