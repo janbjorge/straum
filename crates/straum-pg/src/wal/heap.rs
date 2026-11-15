@@ -10,13 +10,15 @@
 //! guess.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::Arc;
 
 use straum_domain::{FastMap, FastSet};
 
 use super::compress;
 use super::{
-    BLOCK_SIZE, Block, Compression, Image, Record, RelationFile, WalError, le_u16, le_u32,
+    BLOCK_SIZE, Block, Compression, Image, RESOURCE_MANAGER_INFO, Record, RelationFile, WalError,
+    le_u16, le_u32,
 };
 
 const RM_XLOG: u8 = 0;
@@ -56,12 +58,72 @@ const PRUNE_HAS_REDIRECTIONS: u8 = 1 << 5;
 const PRUNE_HAS_DEAD_ITEMS: u8 = 1 << 6;
 const PRUNE_HAS_NOW_UNUSED_ITEMS: u8 = 1 << 7;
 const FREEZE_PLAN: usize = 12;
+/// `xlhp_freeze_plans`: `nplans`, then plans aligned for their xids.
+const FREEZE_PLANS_HEADER: usize = 4;
+/// `xlhp_prune_items`: `ntargets`, then the offset numbers.
+const PRUNE_ITEMS_COUNT: usize = 2;
+/// `OffsetNumber`, a slot on a page.
+const OFFSET_NUMBER: usize = 2;
 
+/// `xl_heap_insert`: `offnum`, then `flags`.
+const INSERT_SIZE: usize = 3;
+const INSERT_OFFNUM: Range<usize> = 0..2;
+const INSERT_FLAGS: usize = 2;
+/// `xl_heap_confirm`: `offnum`.
+const CONFIRM_SIZE: usize = 2;
+const CONFIRM_OFFNUM: Range<usize> = 0..2;
+/// `xl_heap_delete`: `xmax`, `offnum`, `infobits_set`, `flags`.
+const DELETE_SIZE: usize = 8;
+const DELETE_OFFNUM: Range<usize> = 4..6;
+const DELETE_FLAGS: usize = 7;
+/// `xl_heap_update`: `old_xmax`, `old_offnum`, `old_infobits_set`,
+/// `flags`, `new_xmax`, `new_offnum`.
+const UPDATE_SIZE: usize = 14;
+const UPDATE_OLD_OFFNUM: Range<usize> = 4..6;
+const UPDATE_FLAGS: usize = 7;
+const UPDATE_NEW_OFFNUM: Range<usize> = 12..14;
+/// The update's prefix and suffix lengths, each a `uint16`.
+const UPDATE_SHARED_LENGTH: usize = 2;
+/// `xl_heap_multi_insert`: `flags`, `ntuples`, then the offsets when the
+/// page isn't started afresh.
+const MULTI_INSERT_SIZE: usize = 4;
+const MULTI_INSERT_COUNT: Range<usize> = 2..4;
+/// `xl_multi_insert_tuple`: `datalen`, then the `xl_heap_header` fields,
+/// each at a 2-byte boundary.
+const MULTI_INSERT_TUPLE: usize = 7;
+const MULTI_INSERT_TUPLE_LENGTH: Range<usize> = 0..2;
+const MULTI_INSERT_TUPLE_ALIGNMENT: usize = 2;
+/// `xl_smgr_truncate`: `blkno`, `rlocator`, `flags`.
+const TRUNCATE_SIZE: usize = 20;
+const TRUNCATE_BLOCK: Range<usize> = 0..4;
+const TRUNCATE_TABLESPACE: Range<usize> = 4..8;
+const TRUNCATE_DATABASE: Range<usize> = 8..12;
+const TRUNCATE_RELATION: Range<usize> = 12..16;
+const TRUNCATE_FLAGS: Range<usize> = 16..20;
+
+/// `xl_heap_header`: `t_infomask2`, `t_infomask`, `t_hoff`, the fields of
+/// a row's header the WAL logs.
+const HEAP_HEADER: usize = 5;
+const HEADER_INFOMASK2: Range<usize> = 0..2;
+const HEADER_INFOMASK: Range<usize> = 2..4;
+const HEADER_HOFF: usize = 4;
 /// `SizeofHeapTupleHeader`: what comes before the null bitmap.
 const TUPLE_HEADER: usize = 23;
+/// Where `t_infomask2`, the first field `xl_heap_header` logs, lies in
+/// `HeapTupleHeaderData`.
+const TUPLE_LOGGED_HEADER: usize = 18;
+/// `SizeOfPageHeaderData`, and its `pd_lower`, where the line pointers end.
 const PAGE_HEADER: usize = 24;
+const PAGE_LOWER: Range<usize> = 12..14;
+/// `ItemIdData`: `lp_off` in 15 bits, `lp_flags` in 2, `lp_len` in 15.
 const LINE_POINTER: usize = 4;
+const LP_OFFSET_MASK: u32 = 0x7FFF;
+const LP_FLAGS_SHIFT: u32 = 15;
+const LP_FLAGS_MASK: u32 = 0b11;
+const LP_LENGTH_SHIFT: u32 = 17;
 const LP_NORMAL: u32 = 1;
+/// `MAIN_FORKNUM`: the table's rows, not its free space or visibility maps.
+const MAIN_FORK: u8 = 0;
 
 /// A row as it is on its page, without the fixed header, whose
 /// transaction fields Straum does not need.
@@ -216,10 +278,8 @@ impl Heap {
     /// The bytes the pages hold, counted afresh.
     #[cfg(test)]
     pub(crate) fn recount(&self) -> usize {
-        let rows =
-            |page: &Page| -> usize { (page.tuples.iter().flatten()).map(|t| t.body.len()).sum() };
         (self.pages.values())
-            .map(|page| page.footprint() - page.rows + rows(page))
+            .map(|page| page.footprint() - page.rows + rows_counted(page))
             .sum()
     }
 
@@ -258,13 +318,14 @@ impl Heap {
             }
         }
         if record.resource_manager == RM_XLOG
-            && let XLOG_CHECKPOINT_SHUTDOWN | XLOG_CHECKPOINT_ONLINE = record.info & 0xF0
+            && let XLOG_CHECKPOINT_SHUTDOWN | XLOG_CHECKPOINT_ONLINE =
+                record.info & RESOURCE_MANAGER_INFO
         {
-            let redo = record
-                .main_data()
-                .get(..8)
-                .ok_or(problem(lsn, "a checkpoint without its redo point"))?;
-            self.evict(u64::from_le_bytes(redo.try_into().unwrap_or_default()));
+            // `CheckPoint` opens with `redo`.
+            let Some(redo) = record.main_data().first_chunk() else {
+                return Err(problem(lsn, "a checkpoint without its redo point"));
+            };
+            self.evict(u64::from_le_bytes(*redo));
         }
         Ok(changes)
     }
@@ -317,15 +378,22 @@ impl Heap {
                 HEAP2_PRUNE | HEAP2_VACUUM | HEAP2_PRUNE_CLEANUP => edit.prune()?,
                 _ => {}
             },
-            RM_SMGR if operation & 0xF0 == SMGR_TRUNCATE => edit.truncate()?,
+            RM_SMGR if operation & RESOURCE_MANAGER_INFO == SMGR_TRUNCATE => edit.truncate()?,
             _ => {}
         }
         Ok(edit.changes)
     }
 
     fn is_tracked(&self, block: &Block) -> bool {
-        block.fork == 0 && self.tracked.contains(&block.file)
+        block.fork == MAIN_FORK && self.tracked.contains(&block.file)
     }
+}
+
+#[cfg(test)]
+fn rows_counted(page: &Page) -> usize {
+    (page.tuples.iter().flatten())
+        .map(|tuple| tuple.body.len())
+        .sum()
 }
 
 fn page_id(block: &Block) -> PageId {
@@ -398,9 +466,9 @@ impl<'a> Edit<'a> {
     }
 
     fn insert(&mut self) -> Result<(), WalError> {
-        let main = self.main(3)?;
-        let offnum = le_u16(&main[0..2]);
-        let flags = main[2];
+        let main = self.main(INSERT_SIZE)?;
+        let offnum = le_u16(&main[INSERT_OFFNUM]);
+        let flags = main[INSERT_FLAGS];
         let Some(block) = self.block(0)? else {
             return Ok(());
         };
@@ -422,7 +490,7 @@ impl<'a> Edit<'a> {
     /// A speculative insert stands: `INSERT ... ON CONFLICT` found no
     /// conflict, and the row it put in counts.
     fn confirm(&mut self) -> Result<(), WalError> {
-        let offnum = le_u16(&self.main(2)?[0..2]);
+        let offnum = le_u16(&self.main(CONFIRM_SIZE)?[CONFIRM_OFFNUM]);
         let Some(block) = self.block(0)? else {
             return Ok(());
         };
@@ -436,9 +504,9 @@ impl<'a> Edit<'a> {
 
     /// A delete only marks the row, so it stays on the page until a prune.
     fn delete(&mut self) -> Result<(), WalError> {
-        let main = self.main(8)?;
-        let offnum = le_u16(&main[4..6]);
-        let flags = main[7];
+        let main = self.main(DELETE_SIZE)?;
+        let offnum = le_u16(&main[DELETE_OFFNUM]);
+        let flags = main[DELETE_FLAGS];
         let Some(block) = self.block(0)? else {
             return Ok(());
         };
@@ -456,10 +524,10 @@ impl<'a> Edit<'a> {
     /// Block 0 is the new row's page, block 1 the old row's when it is
     /// another.
     fn update(&mut self) -> Result<(), WalError> {
-        let main = self.main(14)?;
-        let old_offnum = le_u16(&main[4..6]);
-        let flags = main[7];
-        let new_offnum = le_u16(&main[12..14]);
+        let main = self.main(UPDATE_SIZE)?;
+        let old_offnum = le_u16(&main[UPDATE_OLD_OFFNUM]);
+        let flags = main[UPDATE_FLAGS];
+        let new_offnum = le_u16(&main[UPDATE_NEW_OFFNUM]);
         let Some(new_block) = self.block(0)? else {
             return Ok(());
         };
@@ -483,19 +551,19 @@ impl<'a> Edit<'a> {
 
     /// `COPY` and other bulk inserts: many rows into one page.
     fn multi_insert(&mut self) -> Result<(), WalError> {
-        let main = self.main(4)?;
-        let count = le_u16(&main[2..4]);
+        let main = self.main(MULTI_INSERT_SIZE)?;
+        let count = le_u16(&main[MULTI_INSERT_COUNT]);
         let offnums: Vec<u16> = if self.record.info & INIT_PAGE != 0 {
             (1..=count).collect()
         } else {
-            let listed = main
-                .get(4..4 + 2 * usize::from(count))
-                .ok_or_else(|| self.short())?;
-            listed
-                .as_chunks::<2>()
-                .0
+            let end = MULTI_INSERT_SIZE + OFFSET_NUMBER * usize::from(count);
+            let Some(listed) = main.get(MULTI_INSERT_SIZE..end) else {
+                return Err(self.short());
+            };
+            let (offsets, _) = listed.as_chunks::<OFFSET_NUMBER>();
+            offsets
                 .iter()
-                .map(|n| u16::from_le_bytes(*n))
+                .map(|offnum| u16::from_le_bytes(*offnum))
                 .collect()
         };
         let Some(block) = self.block(0)? else {
@@ -520,6 +588,7 @@ impl<'a> Edit<'a> {
 
     /// Pruning, vacuuming and freezing: the slots whose rows go.
     fn prune(&mut self) -> Result<(), WalError> {
+        // The reason and flags bytes, in either order.
         let main = self.main(2)?;
         let Some(block) = self.block(0)? else {
             return Ok(());
@@ -538,14 +607,14 @@ impl<'a> Edit<'a> {
 
     /// `VACUUM` cut empty pages off the end of a relation.
     fn truncate(&mut self) -> Result<(), WalError> {
-        let main = self.main(20)?;
-        let first_gone = le_u32(&main[0..4]);
+        let main = self.main(TRUNCATE_SIZE)?;
+        let first_gone = le_u32(&main[TRUNCATE_BLOCK]);
         let file = RelationFile {
-            tablespace: le_u32(&main[4..8]),
-            database: le_u32(&main[8..12]),
-            relation: le_u32(&main[12..16]),
+            tablespace: le_u32(&main[TRUNCATE_TABLESPACE]),
+            database: le_u32(&main[TRUNCATE_DATABASE]),
+            relation: le_u32(&main[TRUNCATE_RELATION]),
         };
-        if le_u32(&main[16..20]) & SMGR_TRUNCATE_HEAP != 0 {
+        if le_u32(&main[TRUNCATE_FLAGS]) & SMGR_TRUNCATE_HEAP != 0 {
             (self.heap).forget(|id, _| id.file == file && id.block >= first_gone);
         }
         Ok(())
@@ -556,38 +625,46 @@ impl<'a> Edit<'a> {
 /// alignment of their transaction ids, then redirected, dead and now
 /// unused slots, each list there only if its flag says so.
 fn prune_slots(data: &[u8], flags: u8) -> Option<Vec<u16>> {
-    let count = |at: usize| data.get(at..at + 2).map(|n| usize::from(le_u16(n)));
     let mut at = 0;
     if flags & PRUNE_HAS_FREEZE_PLANS != 0 {
-        at += 4 + FREEZE_PLAN * count(at)?;
+        at += FREEZE_PLANS_HEADER + FREEZE_PLAN * count_at(data, at)?;
     }
     let mut gone = Vec::new();
-    for (flag, width) in [
+    // A redirection is two slots, from and to; Straum keeps the first.
+    for (flag, slots_each) in [
         (PRUNE_HAS_REDIRECTIONS, 2),
         (PRUNE_HAS_DEAD_ITEMS, 1),
         (PRUNE_HAS_NOW_UNUSED_ITEMS, 1),
     ] {
         if flags & flag != 0 {
-            let list = data.get(at + 2..at + 2 + 2 * width * count(at)?)?;
-            gone.extend(list.chunks_exact(2 * width).map(le_u16));
-            at += 2 + list.len();
+            let item = OFFSET_NUMBER * slots_each;
+            let start = at + PRUNE_ITEMS_COUNT;
+            let list = data.get(start..start + item * count_at(data, at)?)?;
+            gone.extend(list.chunks_exact(item).map(le_u16));
+            at = start + list.len();
         }
     }
     Some(gone)
 }
 
+/// The `uint16` count at `at`.
+fn count_at(data: &[u8], at: usize) -> Option<usize> {
+    let count = data.get(at..at + 2)?;
+    Some(usize::from(le_u16(count)))
+}
+
 /// `xl_heap_header` then the tuple from its null bitmap on.
 fn header_and_body(data: &[u8]) -> Option<Tuple> {
-    Some(tuple(data.get(..5)?, &data[5..]))
+    Some(tuple(data.get(..HEAP_HEADER)?, &data[HEAP_HEADER..]))
 }
 
 /// A row from the five header bytes the WAL and the page share,
 /// `t_infomask2`, `t_infomask` and `t_hoff`, and what follows them.
 fn tuple(header: &[u8], body: &[u8]) -> Tuple {
     Tuple {
-        infomask2: le_u16(&header[0..2]),
-        infomask: le_u16(&header[2..4]),
-        hoff: header[4],
+        infomask2: le_u16(&header[HEADER_INFOMASK2]),
+        infomask: le_u16(&header[HEADER_INFOMASK]),
+        hoff: header[HEADER_HOFF],
         body: body.into(),
     }
 }
@@ -597,19 +674,19 @@ fn tuple(header: &[u8], body: &[u8]) -> Tuple {
 /// taken from that.
 fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
     let mut at = 0;
-    let mut length = |flag: u8| {
-        if flags & flag == 0 {
-            return Some(0);
-        }
-        let n = usize::from(le_u16(data.get(at..at + 2)?));
-        at += 2;
-        Some(n)
-    };
-    let prefix = length(UPDATE_PREFIX_FROM_OLD)?;
-    let suffix = length(UPDATE_SUFFIX_FROM_OLD)?;
-    let header = data.get(at..at + 5)?;
-    let hoff = header[4];
-    let logged = &data[at + 5..];
+    let mut prefix = 0;
+    if flags & UPDATE_PREFIX_FROM_OLD != 0 {
+        prefix = count_at(data, at)?;
+        at += UPDATE_SHARED_LENGTH;
+    }
+    let mut suffix = 0;
+    if flags & UPDATE_SUFFIX_FROM_OLD != 0 {
+        suffix = count_at(data, at)?;
+        at += UPDATE_SHARED_LENGTH;
+    }
+    let header = data.get(at..at + HEAP_HEADER)?;
+    let hoff = header[HEADER_HOFF];
+    let logged = &data[at + HEAP_HEADER..];
     let mut body = Vec::with_capacity(logged.len() + prefix + suffix);
     if prefix > 0 {
         let bitmap = usize::from(hoff).checked_sub(TUPLE_HEADER)?;
@@ -635,11 +712,12 @@ fn multi_insert_tuples(data: &[u8], count: usize) -> Option<Vec<Tuple>> {
     let mut at = 0;
     let mut tuples = Vec::with_capacity(count);
     for _ in 0..count {
-        at += at % 2;
-        let header = data.get(at..at + 7)?;
-        let length = usize::from(le_u16(&header[0..2]));
-        at += 7;
-        tuples.push(tuple(&header[2..], data.get(at..at + length)?));
+        at += at % MULTI_INSERT_TUPLE_ALIGNMENT;
+        let header = data.get(at..at + MULTI_INSERT_TUPLE)?;
+        let length = usize::from(le_u16(&header[MULTI_INSERT_TUPLE_LENGTH]));
+        at += MULTI_INSERT_TUPLE;
+        let heap_header = &header[MULTI_INSERT_TUPLE_LENGTH.end..];
+        tuples.push(tuple(heap_header, data.get(at..at + length)?));
         at += length;
     }
     (at == data.len()).then_some(tuples)
@@ -674,7 +752,7 @@ fn restore(record: &Record, image: &Image) -> Result<Vec<u8>, WalError> {
 
 /// The rows of a heap page: each normal line pointer's tuple.
 fn page_from_image(bytes: &[u8]) -> Option<Page> {
-    let lower = usize::from(le_u16(bytes.get(12..14)?));
+    let lower = usize::from(le_u16(bytes.get(PAGE_LOWER)?));
     let mut page = Page::default();
     // A new page is all zeros.
     if lower == 0 {
@@ -683,16 +761,17 @@ fn page_from_image(bytes: &[u8]) -> Option<Page> {
     let pointers = bytes.get(PAGE_HEADER..lower)?;
     for (offnum, pointer) in (1u16..).zip(pointers.as_chunks::<LINE_POINTER>().0) {
         let pointer = u32::from_le_bytes(*pointer);
-        if (pointer >> 15) & 3 != LP_NORMAL {
+        if (pointer >> LP_FLAGS_SHIFT) & LP_FLAGS_MASK != LP_NORMAL {
             continue;
         }
-        let offset = (pointer & 0x7FFF) as usize;
-        let length = (pointer >> 17) as usize;
+        let offset = (pointer & LP_OFFSET_MASK) as usize;
+        let length = (pointer >> LP_LENGTH_SHIFT) as usize;
         let row = bytes.get(offset..offset.checked_add(length)?)?;
         if length < TUPLE_HEADER {
             return None;
         }
-        page.set(offnum, tuple(&row[18..TUPLE_HEADER], &row[TUPLE_HEADER..]))?;
+        let header = &row[TUPLE_LOGGED_HEADER..TUPLE_HEADER];
+        page.set(offnum, tuple(header, &row[TUPLE_HEADER..]))?;
     }
     Some(page)
 }
@@ -728,20 +807,27 @@ mod tests {
         let mut page = vec![0; BLOCK_SIZE];
         let slots = rows.iter().map(|(offnum, _)| *offnum).max().unwrap_or(0);
         let lower = PAGE_HEADER + LINE_POINTER * usize::from(slots);
-        page[12..14].copy_from_slice(&(lower as u16).to_le_bytes());
+        page[PAGE_LOWER].copy_from_slice(&u16::try_from(lower).unwrap().to_le_bytes());
         let mut upper = BLOCK_SIZE;
         for (offnum, tuple) in rows {
             let length = TUPLE_HEADER + tuple.body.len();
             upper -= length;
-            page[upper + 18..upper + 20].copy_from_slice(&tuple.infomask2.to_le_bytes());
-            page[upper + 20..upper + 22].copy_from_slice(&tuple.infomask.to_le_bytes());
-            page[upper + 22] = tuple.hoff;
+            let header = upper + TUPLE_LOGGED_HEADER;
+            page[header..header + 2].copy_from_slice(&tuple.infomask2.to_le_bytes());
+            page[header + 2..header + 4].copy_from_slice(&tuple.infomask.to_le_bytes());
+            page[header + 4] = tuple.hoff;
             page[upper + TUPLE_HEADER..upper + length].copy_from_slice(&tuple.body);
-            let pointer = upper as u32 | LP_NORMAL << 15 | (length as u32) << 17;
             let at = PAGE_HEADER + LINE_POINTER * usize::from(offnum - 1);
-            page[at..at + 4].copy_from_slice(&pointer.to_le_bytes());
+            page[at..at + LINE_POINTER].copy_from_slice(&line_pointer(upper, length));
         }
         page
+    }
+
+    /// A normal `ItemIdData` for the row at `offset`.
+    fn line_pointer(offset: usize, length: usize) -> [u8; LINE_POINTER] {
+        let offset = u32::try_from(offset).unwrap();
+        let length = u32::try_from(length).unwrap();
+        (offset | LP_NORMAL << LP_FLAGS_SHIFT | length << LP_LENGTH_SHIFT).to_le_bytes()
     }
 
     fn image(bytes: Vec<u8>) -> ImageSpec {
@@ -964,7 +1050,7 @@ mod tests {
             if data.len() % 2 == 1 {
                 data.push(0xEE);
             }
-            data.extend((row.body.len() as u16).to_le_bytes());
+            data.extend(u16::try_from(row.body.len()).unwrap().to_le_bytes());
             data.extend(row.infomask2.to_le_bytes());
             data.extend(row.infomask.to_le_bytes());
             data.push(row.hoff);
@@ -1164,7 +1250,7 @@ mod tests {
         let lz4 = [
             &[0xF0u8][..],
             &[255; 0],
-            &(kept.len() as u32 - 15).to_le_bytes()[..1],
+            &[u8::try_from(kept.len() - 15).unwrap()],
             &kept,
         ]
         .concat();
@@ -1199,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_what_it_can_not_apply() {
+    fn refuses_changes_to_what_it_lacks() {
         let mut heap = heap(18);
         let row = tuple(b"x");
         let no_page = record(
@@ -1230,6 +1316,13 @@ mod tests {
             vec![block(0, 0, logged(&row), None)],
         );
         assert_eq!(error(&mut heap, &slot_zero), "a row in slot 0");
+    }
+
+    #[test]
+    fn refuses_heap_records_cut_short() {
+        let mut heap = heap(18);
+        five_rows(&mut heap);
+        let row = tuple(b"x");
         let short = record(
             RM_HEAP,
             HEAP_UPDATE,
@@ -1287,7 +1380,13 @@ mod tests {
             error(&mut heap, &broken_prune),
             "a heap record shorter than its kind"
         );
-        let page = page_bytes(&[(1, &row)]);
+    }
+
+    #[test]
+    fn refuses_page_images_it_can_not_read() {
+        let mut heap = heap(18);
+        five_rows(&mut heap);
+        let page = page_bytes(&[(1, &tuple(b"x"))]);
         let zstd = ImageSpec {
             compression: Some(Compression::Zstd),
             ..image(page[..100].to_vec())
@@ -1312,7 +1411,8 @@ mod tests {
             "a page image that doesn't decompress"
         );
         let mut bad_pointer = page.clone();
-        bad_pointer[24..28].copy_from_slice(&(8190u32 | LP_NORMAL << 15 | 100 << 17).to_le_bytes());
+        bad_pointer[PAGE_HEADER..PAGE_HEADER + LINE_POINTER]
+            .copy_from_slice(&line_pointer(8190, 100));
         let bad = record(
             RM_XLOG,
             0xB0,
@@ -1321,7 +1421,7 @@ mod tests {
         );
         assert_eq!(error(&mut heap, &bad), "a page image Straum can't read");
         let mut tiny = page;
-        tiny[24..28].copy_from_slice(&(100u32 | LP_NORMAL << 15 | 10 << 17).to_le_bytes());
+        tiny[PAGE_HEADER..PAGE_HEADER + LINE_POINTER].copy_from_slice(&line_pointer(100, 10));
         let tiny = record(
             RM_XLOG,
             0xB0,
