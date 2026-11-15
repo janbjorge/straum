@@ -86,6 +86,33 @@ tests:
           path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
           value: url
 
+  - it: reads the physical WAL with its memory limit
+    template: deployment.yaml
+    set:
+      wal: physical
+      maxPageMemory: 256Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run
+            - --spec
+            - /etc/straum/spec.sql
+            - --listen
+            - 0.0.0.0:8080
+            - --publication
+            - straum
+            - --max-lag
+            - "30"
+            - --max-retained-wal
+            - 4Gi
+            - --max-transaction-rows
+            - "100000"
+            - --wal
+            - physical
+            - --max-page-memory
+            - 256Mi
+
   - it: takes the image's tag
     template: deployment.yaml
     set:

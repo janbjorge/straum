@@ -516,10 +516,22 @@ fn plan_prints_the_setup_sql() {
     let parsed = straum_notation::parse(SPEC).unwrap();
     let (code, stdout, stderr) = output(&mut straum(&["plan", "--spec", &spec]));
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
-    assert_eq!(stdout, straum_pg::plan(&parsed, "straum", "straum", None));
+    assert_eq!(
+        stdout,
+        straum_pg::plan(
+            &parsed,
+            "straum",
+            "straum",
+            None,
+            straum_pg::Replication::Logical
+        )
+    );
     let mut custom = straum(&["plan", "--publication", "p", "--spec", &spec, "--role", "r"]);
     let (_, stdout, _) = output(&mut custom);
-    assert_eq!(stdout, straum_pg::plan(&parsed, "p", "r", None));
+    assert_eq!(
+        stdout,
+        straum_pg::plan(&parsed, "p", "r", None, straum_pg::Replication::Logical)
+    );
 
     // With a DSN the role is its user, with its password as a verifier;
     // --role still names the role. The password has a hyphen, which no

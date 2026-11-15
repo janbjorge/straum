@@ -39,6 +39,21 @@ tests:
       - failedTemplate:
           errorPattern: "maxRetainedWal"
 
+  - it: refuses a WAL Straum can't read
+    set:
+      wal: both
+    asserts:
+      - failedTemplate:
+          errorPattern: "wal"
+
+  - it: refuses a page memory limit Straum can't read
+    set:
+      wal: physical
+      maxPageMemory: 1GB
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxPageMemory"
+
   - it: refuses a WAL limit of nothing
     set:
       maxRetainedWal: "0"

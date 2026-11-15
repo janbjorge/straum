@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
-use straum_pg::{Dsn, Postgres};
+use straum_pg::{Dsn, Postgres, Replication};
 use tokio::signal::unix::{SignalKind, signal};
 
 const HELP: &str = "\
@@ -50,6 +50,9 @@ HTTP. SIGTERM or SIGINT stops it.
 
   --spec FILE                  the spec; required
   --listen ADDRESS             where to serve HTTP (0.0.0.0:8080)
+  --wal logical|physical       logical decoding through the publication, or
+                               the physical WAL wal_level replica writes
+                               (logical)
   --publication NAME           the publication straum plan made (straum)
   --dsn-file FILE              a file holding the DSN; else STRAUM_DSN
   --max-lag SECONDS            lag before /readyz turns off (30)
@@ -57,6 +60,8 @@ HTTP. SIGTERM or SIGINT stops it.
                                over (4Gi; takes Ki, Mi, Gi or Ti)
   --max-transaction-rows ROWS  rows one transaction may change before
                                Straum starts over (100000)
+  --max-page-memory BYTES      with --wal physical: rows held from the WAL
+                               before Straum starts over (1Gi)
 
 Guide: https://janbjorge.github.io/straum/running.html#straum-run
 ";
@@ -65,10 +70,13 @@ const PLAN_HELP: &str = "\
 usage: straum plan --spec FILE [flags]
 
 Prints the SQL that sets PostgreSQL up for FILE: logical decoding, the
-role, its grants and the publication. With a DSN the role is its user and
-gets its password, as a SCRAM-SHA-256 verifier.
+role, its grants and the publication. With --wal physical only the role and
+its grants. With a DSN the role is its user and gets its password, as a
+SCRAM-SHA-256 verifier.
 
   --spec FILE         the spec; required
+  --wal logical|physical
+                      the WAL straum run reads (logical)
   --publication NAME  the publication to make (straum)
   --role NAME         the role straum run connects as (the DSN's user,
                       else straum)
@@ -145,6 +153,9 @@ const LIMITS: Limits = Limits {
 /// applying it; `bench/taxi.py transactions` measures what a transaction this
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
+/// Rows a physical stream holds before starting over: a guard, far above
+/// what a checkpoint cycle's pages and open transactions take.
+const MAX_PAGE_MEMORY: usize = 1 << 30;
 
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -200,13 +211,15 @@ impl Name {
             Name::Run => &[
                 "--spec",
                 "--listen",
+                "--wal",
                 "--publication",
                 "--dsn-file",
                 "--max-lag",
                 "--max-retained-wal",
                 "--max-transaction-rows",
+                "--max-page-memory",
             ],
-            Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
+            Name::Plan => &["--spec", "--wal", "--publication", "--role", "--dsn-file"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
         }
     }
@@ -239,6 +252,7 @@ enum Command {
 struct Run {
     spec: String,
     listen: String,
+    replication: Replication,
     publication: String,
     dsn_file: Option<String>,
     limits: Limits,
@@ -248,6 +262,7 @@ struct Run {
 #[derive(Debug, PartialEq, Eq)]
 struct Plan {
     spec: String,
+    replication: Replication,
     publication: String,
     role: Option<String>,
     dsn_file: Option<String>,
@@ -426,6 +441,19 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     let text = |flag| value(&given, flag).map(str::to_owned);
     let spec = || text("--spec").ok_or_else(|| format!("straum {} needs --spec", name.as_str()));
     let publication = || text("--publication").unwrap_or_else(|| PUBLICATION.into());
+    let replication = || match value(&given, "--wal") {
+        None | Some("logical") => Ok(Replication::Logical),
+        Some("physical") => Ok(Replication::Physical {
+            max_page_memory: parsed(
+                &given,
+                "--max-page-memory",
+                MAX_PAGE_MEMORY,
+                memory,
+                "bytes above 0, as 1073741824 or 1Gi",
+            )?,
+        }),
+        Some(other) => Err(format!("--wal takes logical or physical, not {other:?}")),
+    };
     let url = || text("--url").unwrap_or_else(|| URL.into());
     Ok(match name {
         Name::Status => Command::Status { url: url() },
@@ -441,13 +469,21 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
         },
         Name::Plan => Command::Plan(Plan {
             spec: spec()?,
+            replication: replication()?,
             publication: publication(),
             role: text("--role"),
             dsn_file: text("--dsn-file"),
         }),
+        Name::Run
+            if value(&given, "--max-page-memory").is_some()
+                && !matches!(replication()?, Replication::Physical { .. }) =>
+        {
+            return Err("--max-page-memory takes --wal physical".into());
+        }
         Name::Run => Command::Run(Run {
             spec: spec()?,
             listen: text("--listen").unwrap_or_else(|| LISTEN.into()),
+            replication: replication()?,
             publication: publication(),
             dsn_file: text("--dsn-file"),
             limits: Limits {
@@ -508,6 +544,10 @@ fn count(text: &str) -> Option<usize> {
     usize::try_from(positive(text)?).ok()
 }
 
+fn memory(text: &str) -> Option<usize> {
+    usize::try_from(bytes(text)?).ok()
+}
+
 // The suffixes are Kubernetes' own, so a chart's `4Gi` passes as written.
 fn bytes(text: &str) -> Option<u64> {
     let (count, shift) = [("Ki", 10), ("Mi", 20), ("Gi", 30), ("Ti", 40)]
@@ -536,6 +576,7 @@ fn read_spec(path: &str) -> Result<Spec, String> {
 fn plan(
     Plan {
         spec,
+        replication,
         publication,
         role,
         dsn_file,
@@ -547,7 +588,8 @@ fn plan(
         .or_else(|| dsn.as_ref().map(Dsn::user))
         .unwrap_or(ROLE);
     let password = dsn.as_ref().and_then(Dsn::password);
-    print!("{}", straum_pg::plan(&spec, &publication, role, password));
+    let sql = straum_pg::plan(&spec, &publication, role, password, replication);
+    print!("{sql}");
     Ok(())
 }
 
@@ -571,6 +613,7 @@ fn run(
     Run {
         spec,
         listen,
+        replication,
         publication,
         dsn_file,
         limits,
@@ -594,7 +637,7 @@ fn run(
     let app = App::new(spec, limits, None);
     let writer = Writer::new(
         app.clone(),
-        Postgres::new(dsn, &publication, max_transaction_rows),
+        Postgres::new(dsn, &publication, max_transaction_rows, replication),
     );
     thread::Builder::new()
         .name("straum-writer".into())
@@ -675,6 +718,7 @@ mod tests {
             Ok(Command::Run(Run {
                 spec: "s.sql".into(),
                 listen: LISTEN.into(),
+                replication: Replication::Logical,
                 publication: PUBLICATION.into(),
                 dsn_file: None,
                 limits: LIMITS,
@@ -684,11 +728,15 @@ mod tests {
         assert_eq!(
             command(&args(
                 "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s \
-                 --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500"
+                 --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
+                 --max-page-memory 256Mi"
             )),
             Ok(Command::Run(Run {
                 spec: "s".into(),
                 listen: "127.0.0.1:9".into(),
+                replication: Replication::Physical {
+                    max_page_memory: 256 << 20,
+                },
                 publication: "p".into(),
                 dsn_file: Some("d".into()),
                 limits: Limits {
@@ -702,15 +750,19 @@ mod tests {
             command(&args("plan --spec s")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
+                replication: Replication::Logical,
                 publication: PUBLICATION.into(),
                 role: None,
                 dsn_file: None,
             }))
         );
         assert_eq!(
-            command(&args("plan --role r --spec s --dsn-file d")),
+            command(&args("plan --role r --spec s --dsn-file d --wal physical")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
+                replication: Replication::Physical {
+                    max_page_memory: MAX_PAGE_MEMORY,
+                },
                 publication: PUBLICATION.into(),
                 role: Some("r".into()),
                 dsn_file: Some("d".into()),
@@ -854,6 +906,35 @@ mod tests {
             ("run --spec=s", "straum run takes no \"--spec=s\""),
             ("run", "straum run needs --spec"),
             ("plan --role r", "straum plan needs --spec"),
+            (
+                "run --spec s --wal Physical",
+                "--wal takes logical or physical, not \"Physical\"",
+            ),
+            (
+                "plan --spec s --wal both",
+                "--wal takes logical or physical, not \"both\"",
+            ),
+            ("run --spec s --wal", "--wal needs a value"),
+            (
+                "run --spec s --max-page-memory 1Gi",
+                "--max-page-memory takes --wal physical",
+            ),
+            (
+                "run --spec s --wal logical --max-page-memory 1Gi",
+                "--max-page-memory takes --wal physical",
+            ),
+            (
+                "run --spec s --wal physical --max-page-memory 0",
+                "--max-page-memory takes bytes above 0, as 1073741824 or 1Gi, not \"0\"",
+            ),
+            (
+                "run --spec s --wal physical --max-page-memory 1Pi",
+                "--max-page-memory takes bytes above 0, as 1073741824 or 1Gi, not \"1Pi\"",
+            ),
+            (
+                "plan --spec s --max-page-memory 1Gi",
+                "straum plan takes no \"--max-page-memory\"",
+            ),
             (
                 "plan --spec s --max-lag 5",
                 "straum plan takes no \"--max-lag\"",

@@ -4,6 +4,8 @@ Straum supports PostgreSQL 16 and newer, self-hosted or managed; its
 tests run on 16, 17, 18 and the 19 release candidate. It uses logical
 replication with `pgoutput`, a temporary slot and an exported snapshot,
 with no extension and no superuser. Setup is three steps, done once.
+Where `wal_level = logical` can't be had, Straum can read the physical
+WAL instead: see [Without logical decoding](#without-logical-decoding).
 
 ## 1. Turn on logical decoding
 
@@ -130,3 +132,73 @@ view usage: join a joins account_id (an integer) to id (text); they must read al
   position every second. Nothing else is read after the load.
 - WAL decoding per replication connection. Run one Straum per database; a
   second needs another slot and load.
+
+## Without logical decoding
+
+PostgreSQL 16 to 18 refuse a logical slot under `wal_level = replica`,
+the default, and changing it takes a restart. `straum run --wal physical`
+needs neither: it streams the physical WAL through a temporary physical
+slot and rebuilds each change from the pages it holds (ADR-0049). The
+commits it yields equal the logical stream's; the tests check that on a
+server with both.
+
+`straum plan --wal physical --spec FILE` prints the setup: the role and
+its grants, with no `wal_level` change, publication or `REPLICA
+IDENTITY FULL`:
+
+```sql
+-- Straum setup: run once, as an owner of the tables.
+-- --wal physical: wal_level replica and full_page_writes on, the defaults.
+CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
+GRANT USAGE ON SCHEMA "public" TO "straum";
+GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
+-- Lets Straum start without waiting for the next checkpoint; a superuser grants it.
+GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO "straum";
+```
+
+The server needs `full_page_writes = on` and a `wal_compression` of
+`off`, `pglz` or `lz4`; the start says so when it isn't:
+
+```text
+full_page_writes is off; --wal physical needs on
+wal_compression is zstd; --wal physical reads off, pglz and lz4
+```
+
+A start waits until every transaction open when it began has ended, as a
+logical slot's creation does, and for PostgreSQL to log which
+transactions run. The last checkpoint logs that, so the wait is short,
+except on a server that just restarted, where `pg_log_standby_snapshot()`
+logs it at once if the role may run it. After a minute Straum says what
+it waits for and tries again:
+
+```text
+--wal physical waited 60 s for PostgreSQL to log which transactions run; GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role
+--wal physical waited 60 s for transactions open before it started to end: xid 7512; a long or prepared one (pg_prepared_xacts) holds the start back
+--wal physical waited 60 s for transactions it read the commits of to end: xid 7512; a synchronous standby that doesn't answer holds them
+```
+
+The last one: PostgreSQL logs a commit, waits for its synchronous
+standbys, then lets snapshots see it. Straum's load must see every
+commit it read before its start, so it takes the snapshot again until
+then.
+
+What it costs beyond the logical stream:
+
+- The stream carries the whole server's WAL, every database, though
+  Straum reads only its tables' pages.
+- Memory: the rows of every page of the spec's tables changed since the
+  last checkpoint, and the changes of transactions not yet ended. A
+  page goes at the next checkpoint, since its next change brings it
+  whole. A shorter `checkpoint_timeout` lowers it and raises the WAL.
+  Past `--max-page-memory` (1 GiB by default) Straum starts over.
+
+What starts Straum over in physical mode, besides what starts the
+logical stream over:
+
+- A value of a column the spec reads that PostgreSQL stored out of line
+  in its TOAST table: the page holds only a pointer. Values over about
+  2 KB go there. Each change to such a row starts Straum over.
+- `TRUNCATE`, `VACUUM FULL`, `CLUSTER` and an `ALTER TABLE` that
+  rewrites one of the spec's tables: its rows move to a new file.
+  `ADD COLUMN`, `DROP COLUMN` and other DDL that keeps the file are
+  followed.

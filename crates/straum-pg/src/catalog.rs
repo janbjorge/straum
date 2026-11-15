@@ -6,6 +6,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_domain::{ByKey, ColumnType, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via};
 
 use crate::error::Error;
+use crate::source::Replication;
 use crate::value::type_of;
 use crate::wire::Connection;
 
@@ -98,6 +99,8 @@ impl Tables {
 pub(crate) struct Catalog {
     pub(crate) server_version: u32,
     pub(crate) wal_level: String,
+    pub(crate) full_page_writes: String,
+    pub(crate) wal_compression: String,
     /// Whether the publication publishes inserts, updates, deletes and
     /// truncates; `None` when it doesn't exist.
     pub(crate) publication: Option<bool>,
@@ -140,9 +143,14 @@ pub(crate) struct Column {
 }
 
 /// Reads the catalog and checks it against the spec.
-pub(crate) fn read(conn: &mut Connection, spec: &Spec, publication: &str) -> Result<Tables, Error> {
+pub(crate) fn read(
+    conn: &mut Connection,
+    spec: &Spec,
+    publication: &str,
+    replication: Replication,
+) -> Result<Tables, Error> {
     let catalog = query(conn, spec, publication)?;
-    check(spec, &catalog, publication).map_err(Error::Setup)
+    check(spec, &catalog, publication, replication).map_err(Error::Setup)
 }
 
 pub(crate) fn query(
@@ -165,10 +173,17 @@ pub(crate) fn query(
 
     let settings = conn.rows(&format!(
         "SELECT current_setting('server_version_num'), current_setting('wal_level'),
+                current_setting('full_page_writes'), current_setting('wal_compression'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
     ))?;
-    let [version, wal_level, published] = settings
+    let [
+        version,
+        wal_level,
+        full_page_writes,
+        wal_compression,
+        published,
+    ] = settings
         .into_iter()
         .next()
         .and_then(|r| r.try_into().ok())
@@ -177,6 +192,8 @@ pub(crate) fn query(
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| shape("settings"))?;
     catalog.wal_level = wal_level.unwrap_or_default();
+    catalog.full_page_writes = full_page_writes.unwrap_or_default();
+    catalog.wal_compression = wal_compression.unwrap_or_default();
     catalog.publication = published.map(|p| p == "t");
 
     let classes = conn.rows(&format!(
@@ -332,13 +349,14 @@ pub(crate) fn check(
     spec: &Spec,
     catalog: &Catalog,
     publication: &str,
+    replication: Replication,
 ) -> Result<Tables, Vec<String>> {
     let mut problems = Vec::new();
     // From 19, a logical slot turns logical decoding on under replica.
-    let enough: &[&str] = if catalog.server_version >= 190_000 {
-        &["replica", "logical"]
-    } else {
-        &["logical"]
+    // The physical WAL holds every change from replica on (ADR-0049).
+    let enough: &[&str] = match replication {
+        Replication::Logical if catalog.server_version < 190_000 => &["logical"],
+        _ => &["replica", "logical"],
     };
     if !enough.contains(&catalog.wal_level.as_str()) {
         problems.push(format!(
@@ -347,14 +365,31 @@ pub(crate) fn check(
             enough.join(" or ")
         ));
     }
-    match catalog.publication {
-        None => problems.push(format!(
-            "publication {publication} does not exist; run the SQL straum plan prints"
-        )),
-        Some(false) => problems.push(format!(
-            "publication {publication} must publish insert, update, delete and truncate"
-        )),
-        Some(true) => {}
+    match replication {
+        Replication::Logical => match catalog.publication {
+            None => problems.push(format!(
+                "publication {publication} does not exist; run the SQL straum plan prints"
+            )),
+            Some(false) => problems.push(format!(
+                "publication {publication} must publish insert, update, delete and truncate"
+            )),
+            Some(true) => {}
+        },
+        Replication::Physical { .. } => {
+            // The first change to a page after a checkpoint must bring
+            // the page whole: deletes and updates name only a slot on it.
+            if catalog.full_page_writes != "on" {
+                problems.push(format!(
+                    "full_page_writes is {}; --wal physical needs on",
+                    catalog.full_page_writes
+                ));
+            }
+            if catalog.wal_compression == "zstd" {
+                problems.push(
+                    "wal_compression is zstd; --wal physical reads off, pglz and lz4".to_owned(),
+                );
+            }
+        }
     }
 
     let mut tables = Tables {
@@ -371,7 +406,7 @@ pub(crate) fn check(
             purposes: dim.columns().map(|c| (c, Purpose::Key)).collect(),
             as_text: &dim.as_text,
         };
-        let checked = check_table(member, catalog, publication, &mut problems);
+        let checked = check_table(member, catalog, publication, replication, &mut problems);
         tables.dims.extend(checked);
     }
     for fact in spec.facts() {
@@ -382,7 +417,7 @@ pub(crate) fn check(
             purposes: fact_purposes(fact),
             as_text: &fact.as_text,
         };
-        let checked = check_table(member, catalog, publication, &mut problems);
+        let checked = check_table(member, catalog, publication, replication, &mut problems);
         tables.facts.extend(checked);
     }
     if problems.is_empty() {
@@ -440,8 +475,10 @@ fn check_table(
     }: Member<'_>,
     catalog: &Catalog,
     publication: &str,
+    replication: Replication,
     problems: &mut Vec<String>,
 ) -> Option<Checked> {
+    let logical = replication == Replication::Logical;
     let qualified = format!("{}.{}", table.schema, table.name);
     let Some(class) = catalog
         .classes
@@ -461,7 +498,7 @@ fn check_table(
             "{name}: Straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
         ));
     }
-    if class.row_filter {
+    if logical && class.row_filter {
         problems.push(format!(
             "{name}: publication {publication} filters the rows of {qualified}; \
              Straum needs every row"
@@ -469,6 +506,8 @@ fn check_table(
     }
     // A missing publication is reported once, not per table.
     let published = match (&class.published, catalog.publication) {
+        // The physical WAL holds every table, every column.
+        _ if !logical => None,
         (Some(published), _) => Some(published),
         (None, None) => None,
         (None, Some(_)) => {
@@ -528,7 +567,8 @@ fn check_table(
     if problems.len() > before {
         return None;
     }
-    if class.identity != "f" {
+    // The physical stream keeps old rows from the pages.
+    if logical && class.identity != "f" {
         problems.push(format!(
             "{kind} {name}: Straum needs the whole old row of every update and delete: \
              ALTER TABLE {qualified} REPLICA IDENTITY FULL"

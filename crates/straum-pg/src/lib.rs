@@ -16,6 +16,7 @@ mod dsn;
 mod error;
 mod load;
 mod pgoutput;
+mod physical;
 mod plan;
 mod source;
 mod stream;
@@ -23,8 +24,9 @@ mod stream;
 mod tests;
 mod tls;
 mod value;
+mod wal;
 mod wire;
 
 pub use dsn::{Dsn, DsnError};
 pub use plan::plan;
-pub use source::Postgres;
+pub use source::{Postgres, Replication};

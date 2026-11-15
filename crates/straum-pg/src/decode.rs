@@ -96,6 +96,15 @@ impl Decoder {
         Ok(None)
     }
 
+    /// Every table of the spec `relation` holds no longer reads as
+    /// loaded, though no message says how: the physical stream's tables
+    /// rewritten or dropped. Between a Begin and its Commit.
+    pub(crate) fn unfit(&mut self, relation: u32) {
+        for m in self.relations.get(&relation).into_iter().flatten() {
+            self.transaction.changes.push(unfit(&self.tables[m.table]));
+        }
+    }
+
     /// Between a Begin and its Commit.
     pub(crate) fn in_transaction(&self) -> bool {
         self.transaction.lsn.is_some()
@@ -494,6 +503,24 @@ mod tests {
         let pair = [unfit("zones"), unfit("visits")];
         let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
         assert_eq!(changes, expected);
+    }
+
+    #[test]
+    fn a_relation_made_unfit_unfits_its_tables() {
+        let mut d = decoder();
+        let begin = Message::Begin { final_lsn: 0x10 };
+        let commit = Message::Commit {
+            end_lsn: 0x20,
+            committed: UNIX_EPOCH,
+        };
+        d.feed(zones()).unwrap();
+        d.feed(begin).unwrap();
+        // Not a relation the decoder knows: nothing to say.
+        d.unfit(8);
+        d.unfit(7);
+        let got = d.feed(commit).unwrap().unwrap();
+        let unfit = |name: &str| Change::Unfit { table: id(name) };
+        assert_eq!(got.changes, [unfit("zones"), unfit("visits")]);
     }
 
     #[test]

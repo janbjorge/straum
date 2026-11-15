@@ -6,6 +6,7 @@ use straum_domain::RowError;
 
 use crate::pgoutput::DecodeError;
 use crate::value::ValueError;
+use crate::wal::WalError;
 
 /// Whatever stops straum-pg. Straum starts over from a new stream after one.
 #[derive(Debug)]
@@ -20,6 +21,7 @@ pub(crate) enum Error {
     Protocol(String),
     Decode(DecodeError),
     Value(ValueError),
+    Wal(WalError),
     /// A loaded row that doesn't fit its table in straum.
     Row(RowError),
     /// TLS didn't start: the server has it off, or Straum doesn't trust its
@@ -35,6 +37,13 @@ pub(crate) enum Error {
     /// write lock.
     Transaction {
         lsn: Lsn,
+        limit: usize,
+    },
+    /// The physical stream holds more rows than `--max-page-memory`
+    /// allows: pages, and changes of transactions not ended. Starting over
+    /// lets go of them all.
+    Memory {
+        held: usize,
         limit: usize,
     },
     /// The thread reading the stream has stopped.
@@ -65,6 +74,12 @@ impl From<ValueError> for Error {
     }
 }
 
+impl From<WalError> for Error {
+    fn from(e: WalError) -> Error {
+        Error::Wal(e)
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -73,6 +88,7 @@ impl fmt::Display for Error {
             Error::Protocol(what) => write!(f, "PostgreSQL sent {what}"),
             Error::Decode(e) => write!(f, "{e}"),
             Error::Value(e) => write!(f, "{e}"),
+            Error::Wal(e) => write!(f, "{e}"),
             Error::Row(e) => write!(f, "loaded {e}"),
             Error::Tls(e) => write!(f, "TLS to PostgreSQL: {e}"),
             Error::Setup(problems) => f.write_str(&problems.join("\n")),
@@ -80,6 +96,11 @@ impl fmt::Display for Error {
                 f,
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
                  the --max-transaction-rows limit; Straum starts over from a snapshot after it"
+            ),
+            Error::Memory { held, limit } => write!(
+                f,
+                "the physical stream holds {held} bytes of rows, past the --max-page-memory \
+                 limit of {limit}; Straum starts over"
             ),
             Error::Stopped => f.write_str("the replication stream stopped"),
         }
@@ -108,6 +129,14 @@ mod tests {
                 "PostgreSQL: relation \"x\" does not exist (42P01)",
             ),
             (Error::Protocol("bytes".into()), "PostgreSQL sent bytes"),
+            (
+                Error::Memory {
+                    held: 2048,
+                    limit: 1024,
+                },
+                "the physical stream holds 2048 bytes of rows, past the --max-page-memory \
+                 limit of 1024; Straum starts over",
+            ),
             (
                 Error::from(DecodeError::Short),
                 "pgoutput message ends early",

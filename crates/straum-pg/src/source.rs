@@ -1,23 +1,49 @@
-//! [`Postgres`], the [`Source`] over PostgreSQL: a temporary slot, loads in its
-//! snapshot on the same connection, then the stream from its consistent
-//! point. A plain connection on the side reads the server's WAL position.
+//! [`Postgres`], the [`Source`] over PostgreSQL. Logical: a temporary slot,
+//! loads in its snapshot on the same connection, then the stream from its
+//! consistent point. Physical: a temporary physical slot streams from the
+//! last redo point while the loads run in a snapshot taken once every
+//! later commit is whole in what it read. A plain connection on the side
+//! reads the server's WAL position.
 
 use std::mem;
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
-use crate::catalog::{self, Tables};
+use crate::catalog::{self, Checked, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
-use crate::stream::Stream;
+use crate::physical::{self, Physical};
+use crate::stream::{Reader, Sight, Stream};
+use crate::wal::pipeline::Pipeline;
+use crate::wal::transactions::{Consistency, Snapshot as Seen};
 use crate::wire::Connection;
+
+/// Which WAL Straum streams: logical decoding's, through a publication,
+/// or the physical WAL, which `wal_level = replica` writes (ADR-0049).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Replication {
+    Logical,
+    /// Past `max_page_memory` bytes of rows held, Straum starts over.
+    Physical {
+        max_page_memory: usize,
+    },
+}
+
+/// How long a physical stream waits for PostgreSQL to log which
+/// transactions run, which the background writer does every 15 seconds
+/// while the WAL moves, and `pg_log_standby_snapshot()` at once.
+const CONSISTENT_WAIT: Duration = Duration::from_secs(60);
+/// How long a physical start waits before it takes the load's snapshot
+/// again.
+const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
 
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +57,9 @@ pub struct Postgres {
     /// it Straum starts over, so a bulk update costs a load and not the
     /// write lock for all of it.
     max_transaction_rows: usize,
+    replication: Replication,
+    /// How long a physical start waits for a consistent point.
+    pub(crate) consistent_wait: Duration,
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
@@ -47,8 +76,9 @@ enum State {
     Streaming(Stream),
 }
 
-/// A replication connection in a read-only, repeatable-read transaction
-/// that sees the database as of a new temporary slot's consistent point.
+/// A connection in a read-only, repeatable-read transaction that sees the
+/// database as of where the stream starts: the logical slot's own
+/// connection, or a plain one beside a physical stream already reading.
 struct Snapshot {
     conn: Connection,
     slot: String,
@@ -57,15 +87,24 @@ struct Snapshot {
     /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Identifier>,
+    /// The physical stream, which reads on while the tables load.
+    stream: Option<Stream>,
 }
 
 impl Postgres {
     /// Nothing connects until [`Source::open`].
-    pub fn new(dsn: Dsn, publication: &str, max_transaction_rows: usize) -> Postgres {
+    pub fn new(
+        dsn: Dsn,
+        publication: &str,
+        max_transaction_rows: usize,
+        replication: Replication,
+    ) -> Postgres {
         Postgres {
             dsn,
             publication: publication.to_owned(),
             max_transaction_rows,
+            replication,
+            consistent_wait: CONSISTENT_WAIT,
             state: State::Closed,
             slot: String::new(),
             plain: None,
@@ -78,14 +117,7 @@ impl Postgres {
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
     let mut conn = Connection::connect(dsn, true)?;
     conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
-    let slot = format!(
-        "straum_{}_{}_{}",
-        process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos()),
-        SLOTS.fetch_add(1, Ordering::Relaxed)
-    );
+    let slot = slot_name();
     let created = match conn.rows(&format!(
         "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')"
     )) {
@@ -94,7 +126,7 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
         // names no fix; the setup check says what to change.
         Err(e) => {
             conn.execute("ROLLBACK")?;
-            catalog::read(&mut conn, spec, publication)?;
+            catalog::read(&mut conn, spec, publication, Replication::Logical)?;
             return Err(e);
         }
     };
@@ -103,17 +135,133 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
         .and_then(|row| row.get(1))
         .and_then(|point| parse_lsn(point.as_deref()?))
         .ok_or_else(|| Error::protocol("a slot without a consistent point"))?;
-    let tables = catalog::read(&mut conn, spec, publication)?;
-    let unloaded = (tables.dims.iter().chain(&tables.facts))
-        .map(|t| t.name.clone())
-        .collect();
+    let tables = catalog::read(&mut conn, spec, publication, Replication::Logical)?;
+    let unloaded = unloaded(&tables);
     Ok(Snapshot {
         conn,
         slot,
         at,
         tables,
         unloaded,
+        stream: None,
     })
+}
+
+/// A physical stream reading from the last redo point, and a transaction
+/// on a plain connection whose snapshot is taken once every transaction
+/// committing after it is whole in the WAL the stream read (ADR-0049).
+fn physical_snapshot(
+    dsn: &Dsn,
+    spec: &Spec,
+    publication: &str,
+    limit: usize,
+    max_page_memory: usize,
+    wait: Duration,
+) -> Result<Snapshot, Error> {
+    let physical = Replication::Physical { max_page_memory };
+    let mut conn = Connection::connect(dsn, false)?;
+    let tables = catalog::read(&mut conn, spec, publication, physical)?;
+    let checked = checked(tables);
+    // After the slot: a rewrite between the two would be in neither the
+    // layouts nor the WAL read.
+    let (stream, start) = Physical::start(dsn)?;
+    let (layouts, labels) = physical::tables(&mut conn, &checked)?;
+    let slot = stream.slot().to_owned();
+    let pipeline = Pipeline::new(
+        checked.clone(),
+        layouts,
+        labels,
+        stream.major(),
+        limit,
+        max_page_memory,
+    );
+    let layouts_conn = Connection::connect(dsn, false)?;
+    let (replication, replay) = stream.into_replay(pipeline, layouts_conn, checked);
+    let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
+    // Logs which transactions run now, rather than at the next checkpoint
+    // or background writer round. Superusers, and roles granted it, may.
+    let _ = conn.execute("SELECT pg_log_standby_snapshot()");
+    let waited = wait.as_secs();
+    match stream.wait_consistent(wait)? {
+        Consistency::Consistent => {}
+        Consistency::Unknown => {
+            return Err(Error::Setup(vec![format!(
+                "--wal physical waited {waited} s for PostgreSQL to log which transactions run; \
+                 GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role"
+            )]));
+        }
+        Consistency::Waiting(xids) => {
+            let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
+            return Err(Error::Setup(vec![format!(
+                "--wal physical waited {waited} s for transactions open before it started to end: \
+                 xid {}; a long or prepared one (pg_prepared_xacts) holds the start back",
+                xids.join(", ")
+            )]));
+        }
+    }
+    // PostgreSQL logs a commit before snapshots see it, and waits for
+    // synchronous standbys in between: a snapshot blind to one the stream
+    // read as before its start would lose it, so another is taken.
+    let deadline = Instant::now() + wait;
+    let at = loop {
+        conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+        let taken = conn.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
+        let field = |i: usize| taken.first().and_then(|row| row.get(i)?.as_deref());
+        let seen = field(0)
+            .and_then(Seen::parse)
+            .ok_or_else(|| Error::protocol("a snapshot of an unknown shape"))?;
+        let written = field(1)
+            .and_then(parse_lsn)
+            .ok_or_else(|| Error::protocol("no WAL position"))?;
+        match stream.see(seen, written)? {
+            Sight::Through(at) => break at,
+            Sight::Blind(xids) => {
+                conn.execute("ROLLBACK")?;
+                if Instant::now() >= deadline {
+                    let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
+                    return Err(Error::Setup(vec![format!(
+                        "--wal physical waited {waited} s for transactions it read the commits of \
+                         to end: xid {}; a synchronous standby that doesn't answer holds them",
+                        xids.join(", ")
+                    )]));
+                }
+                thread::sleep(SNAPSHOT_AGAIN);
+            }
+        }
+    };
+    let tables = catalog::read(&mut conn, spec, publication, physical)?;
+    let unloaded = unloaded(&tables);
+    Ok(Snapshot {
+        conn,
+        slot,
+        at,
+        tables,
+        unloaded,
+        stream: Some(stream),
+    })
+}
+
+fn unloaded(tables: &Tables) -> Vec<Identifier> {
+    (tables.dims.iter().chain(&tables.facts))
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+/// The facts, then the dims, as the decoder takes them.
+fn checked(tables: Tables) -> Vec<Checked> {
+    tables.facts.into_iter().chain(tables.dims).collect()
+}
+
+/// A slot name no other Straum process or slot of this one has.
+pub(crate) fn slot_name() -> String {
+    format!(
+        "straum_{}_{}_{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+        SLOTS.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// The plain connection, made on first use and after a failure.
@@ -129,7 +277,17 @@ impl Source for Postgres {
         // The old stream goes first, and its slot with it.
         self.state = State::Closed;
         self.plain = None;
-        let snapshot = snapshot(&self.dsn, spec, &self.publication)?;
+        let snapshot = match self.replication {
+            Replication::Logical => snapshot(&self.dsn, spec, &self.publication)?,
+            Replication::Physical { max_page_memory } => physical_snapshot(
+                &self.dsn,
+                spec,
+                &self.publication,
+                self.max_transaction_rows,
+                max_page_memory,
+                self.consistent_wait,
+            )?,
+        };
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
         self.state = State::Loading(snapshot);
@@ -184,7 +342,7 @@ fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), SourceError
 /// WAL.
 pub(crate) fn read_wal(conn: &mut Connection, slot: &str) -> Result<Wal, Error> {
     let rows = conn.rows(&format!(
-        "SELECT pg_current_wal_lsn(), confirmed_flush_lsn, restart_lsn \
+        "SELECT pg_current_wal_lsn(), coalesce(confirmed_flush_lsn, restart_lsn), restart_lsn \
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
     ))?;
@@ -207,15 +365,16 @@ fn stream(mut snapshot: Snapshot, publication: &str, limit: usize) -> Result<Str
     if !snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;
     }
+    if let Some(stream) = snapshot.stream {
+        return Ok(stream);
+    }
     let names = escape_literal(&escape_identifier(publication));
     snapshot.conn.copy_both(&format!(
         "START_REPLICATION SLOT {} LOGICAL {} (proto_version '1', publication_names {names})",
         snapshot.slot, snapshot.at
     ))?;
-    let tables = (snapshot.tables.facts.into_iter())
-        .chain(snapshot.tables.dims)
-        .collect();
-    Stream::start(snapshot.conn, Decoder::new(tables, limit), snapshot.at)
+    let reader = Reader::Logical(Decoder::new(checked(snapshot.tables), limit));
+    Stream::start(snapshot.conn, reader, snapshot.at)
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.

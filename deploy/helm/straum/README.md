@@ -10,9 +10,12 @@ more.
 
 1. PostgreSQL 16 or newer. 16 to 18 need `wal_level = logical`, which
    takes a restart; on a managed service, set the provider's parameter for
-   logical decoding. From 19, `replica`, the default, is enough.
+   logical decoding. From 19, `replica`, the default, is enough. Where the
+   restart can't be had, `wal: physical` reads the WAL `replica` writes.
 2. The setup SQL that `straum plan --spec spec.sql` prints, run by the
-   tables' owner: the role, its grants and the publication.
+   tables' owner: the role, its grants and the publication. With
+   `wal: physical`, `straum plan --wal physical --spec spec.sql`: the role
+   and its grants.
 3. The image, built from the repository's `Dockerfile` and pushed to your
    registry.
 4. A Secret holding the DSN of the role `straum plan` made:
