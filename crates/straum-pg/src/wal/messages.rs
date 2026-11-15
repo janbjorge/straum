@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use straum_app::Commit;
 use straum_domain::{Datum, FastMap};
 
-use super::heap::{Change, Tuple};
+use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
 use super::tuple::{self, Attribute, Value};
 use super::xact::Invalidated;
@@ -137,9 +137,9 @@ impl Publisher {
         }
         for change in &committed.changes {
             let file = match change {
-                Change::Insert { file, .. }
-                | Change::Update { file, .. }
-                | Change::Delete { file, .. } => file,
+                HeapChange::Insert { file, .. }
+                | HeapChange::Update { file, .. }
+                | HeapChange::Delete { file, .. } => file,
             };
             let table = self
                 .tables
@@ -151,16 +151,16 @@ impl Publisher {
             let (labels, lsn) = (&self.labels, committed.lsn);
             let relation = table.relation.id;
             decoder.feed(&match change {
-                Change::Insert { new, .. } => Message::Insert {
+                HeapChange::Insert { new, .. } => Message::Insert {
                     relation,
                     new: fields(table, new, labels, lsn)?,
                 },
-                Change::Update { old, new, .. } => Message::Update {
+                HeapChange::Update { old, new, .. } => Message::Update {
                     relation,
                     old: Some(Old::Row(fields(table, old, labels, lsn)?)),
                     new: fields(table, new, labels, lsn)?,
                 },
-                Change::Delete { old, .. } => Message::Delete {
+                HeapChange::Delete { old, .. } => Message::Delete {
                     relation,
                     old: Old::Row(fields(table, old, labels, lsn)?),
                 },
@@ -183,7 +183,7 @@ fn invalidates(message: Invalidated, table: &Table) -> bool {
 /// The relation's columns of `tuple`, as a message holds them.
 fn fields(
     table: &Table,
-    tuple: &Tuple,
+    tuple: &HeapTuple,
     labels: &HashMap<u32, String>,
     lsn: u64,
 ) -> Result<Vec<Field<'static>>, Error> {
@@ -212,7 +212,7 @@ fn problem(lsn: u64, problem: &'static str) -> Error {
 mod tests {
     use std::collections::HashMap;
 
-    use straum_app::Change as Applied;
+    use straum_app::Change;
     use straum_domain::{ColumnType, Datum, Identifier};
 
     use super::*;
@@ -285,14 +285,14 @@ mod tests {
 
     /// A row of the first four attributes: `name` as given, its varlena
     /// header included.
-    fn row(id: i32, name: &[u8]) -> Tuple {
+    fn row(id: i32, name: &[u8]) -> HeapTuple {
         let mut body = vec![0];
         body.extend(id.to_le_bytes());
         body.extend(9i32.to_le_bytes());
         body.extend(name);
         body.resize(body.len().next_multiple_of(8) + 1, 0);
         body.extend([1; 16]);
-        Tuple {
+        HeapTuple {
             infomask2: 4,
             infomask: 0,
             hoff: 24,
@@ -306,7 +306,7 @@ mod tests {
         bytes
     }
 
-    fn committed(changes: Vec<Change>) -> Committed {
+    fn committed(changes: Vec<HeapChange>) -> Committed {
         Committed {
             xid: 700,
             lsn: 0x100,
@@ -331,7 +331,7 @@ mod tests {
         }
     }
 
-    fn publish(changes: Vec<Change>) -> Result<Option<straum_app::Commit>, Error> {
+    fn publish(changes: Vec<HeapChange>) -> Result<Option<straum_app::Commit>, Error> {
         let mut publisher = Publisher::new(layouts(vec![table()]));
         publisher.publish(&committed(changes), &mut decoder())
     }
@@ -349,16 +349,16 @@ mod tests {
         let first = row(1, &short("a"));
         let second = row(1, &short("b"));
         let changes = vec![
-            Change::Insert {
+            HeapChange::Insert {
                 file: FILE,
                 new: first.clone(),
             },
-            Change::Update {
+            HeapChange::Update {
                 file: FILE,
                 old: first.clone(),
                 new: second.clone(),
             },
-            Change::Delete {
+            HeapChange::Delete {
                 file: FILE,
                 old: second,
             },
@@ -369,16 +369,16 @@ mod tests {
         assert_eq!(
             commit.changes,
             [
-                Applied::Insert {
+                Change::Insert {
                     table: zones(),
                     row: zone_row("a"),
                 },
-                Applied::Update {
+                Change::Update {
                     table: zones(),
                     old: zone_row("a"),
                     new: zone_row("b"),
                 },
-                Applied::Delete {
+                Change::Delete {
                     table: zones(),
                     old: zone_row("b"),
                 },
@@ -395,7 +395,7 @@ mod tests {
         let mut pointer = vec![0x01, 18];
         pointer.extend([0; 16]);
         let toasted = row(1, &pointer);
-        let changes = vec![Change::Update {
+        let changes = vec![HeapChange::Update {
             file: FILE,
             old: toasted.clone(),
             new: toasted,
@@ -403,7 +403,7 @@ mod tests {
         let commit = publish(changes).unwrap().unwrap();
         // Unchanged in the old row too: there is nothing to take it from.
         assert!(
-            matches!(commit.changes[..], [Applied::Unfit { .. }]),
+            matches!(commit.changes[..], [Change::Unfit { .. }]),
             "{commit:?}"
         );
     }
@@ -413,7 +413,7 @@ mod tests {
     }
 
     fn insert_of_a() -> Committed {
-        committed(vec![Change::Insert {
+        committed(vec![HeapChange::Insert {
             file: FILE,
             new: row(1, &short("a")),
         }])
@@ -425,7 +425,7 @@ mod tests {
             relation: 1,
             ..FILE
         };
-        let elsewhere = vec![Change::Insert {
+        let elsewhere = vec![HeapChange::Insert {
             file: other,
             new: row(1, &short("a")),
         }];
@@ -436,7 +436,7 @@ mod tests {
         let mut cut = row(1, &short("a"));
         cut.body = cut.body[..6].into();
         assert_eq!(
-            message(publish(vec![Change::Insert {
+            message(publish(vec![HeapChange::Insert {
                 file: FILE,
                 new: cut
             }])),
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn reads_a_column_added_without_a_default_as_null() {
         let mut publisher = Publisher::new(layouts(vec![table()]));
-        let changes = vec![Change::Insert {
+        let changes = vec![HeapChange::Insert {
             file: FILE,
             new: row(2, &short("z")),
         }];
@@ -458,7 +458,7 @@ mod tests {
         let row = vec![Datum::Int(2), Datum::Text("z".into())];
         assert_eq!(
             commit.changes,
-            [Applied::Insert {
+            [Change::Insert {
                 table: zones(),
                 row,
             }]
@@ -478,7 +478,7 @@ mod tests {
         );
         let mut decoder = Decoder::new(vec![checked], 10);
         let mut publisher = Publisher::new(layouts(vec![table]));
-        let changes = vec![Change::Insert {
+        let changes = vec![HeapChange::Insert {
             file: FILE,
             new: row(3, &short("c")),
         }];
@@ -486,7 +486,7 @@ mod tests {
         let row = vec![Datum::Int(3), Datum::Int(7)];
         assert_eq!(
             commit.unwrap().unwrap().changes,
-            [Applied::Insert {
+            [Change::Insert {
                 table: zones(),
                 row,
             }]
@@ -522,7 +522,7 @@ mod tests {
         let commit = (publisher.publish(&insert_of_a(), &mut decoder))
             .unwrap()
             .unwrap();
-        assert!(matches!(commit.changes[..], [Applied::Insert { .. }]));
+        assert!(matches!(commit.changes[..], [Change::Insert { .. }]));
         // `name` now reads as another type: the decoder says unfit.
         let mut retyped = table();
         retyped.relation.columns[1].type_oid = INT8;
@@ -538,9 +538,9 @@ mod tests {
         body.extend([0; 4]);
         body.extend(5i64.to_le_bytes());
         body.extend([1; 16]);
-        changes.push(Change::Insert {
+        changes.push(HeapChange::Insert {
             file: FILE,
-            new: Tuple {
+            new: HeapTuple {
                 infomask2: 4,
                 infomask: 0,
                 hoff: 24,
@@ -550,7 +550,7 @@ mod tests {
         let commit = publisher.publish(&committed(changes), &mut decoder);
         let commit = commit.unwrap().unwrap();
         assert!(
-            matches!(commit.changes[0], Applied::Unfit { .. }),
+            matches!(commit.changes[0], Change::Unfit { .. }),
             "{commit:?}"
         );
         // An OID it doesn't read: nothing.
@@ -579,7 +579,7 @@ mod tests {
             // Said even by a commit that changed no row.
             let commit = publisher.publish(&invalidating(5, 77), &mut decoder);
             let commit = commit.unwrap().unwrap();
-            assert_eq!(commit.changes, [Applied::Unfit { table: zones() }]);
+            assert_eq!(commit.changes, [Change::Unfit { table: zones() }]);
             // Said once.
             assert_eq!(
                 publisher

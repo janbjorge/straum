@@ -128,7 +128,7 @@ const MAIN_FORK: u8 = 0;
 /// A row as it is on its page, without the fixed header, whose
 /// transaction fields Straum does not need.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Tuple {
+pub(crate) struct HeapTuple {
     pub(crate) infomask2: u16,
     pub(crate) infomask: u16,
     /// Where the columns start, counted from the start of the header.
@@ -138,7 +138,7 @@ pub(crate) struct Tuple {
     pub(crate) body: Arc<[u8]>,
 }
 
-impl Tuple {
+impl HeapTuple {
     /// The columns, after the null bitmap and its padding.
     pub(crate) fn columns(&self) -> Option<&[u8]> {
         self.body
@@ -148,31 +148,31 @@ impl Tuple {
 
 /// A change to a row of a table Straum reads, in WAL order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Change {
+pub(crate) enum HeapChange {
     Insert {
         file: RelationFile,
-        new: Tuple,
+        new: HeapTuple,
     },
     Update {
         file: RelationFile,
-        old: Tuple,
-        new: Tuple,
+        old: HeapTuple,
+        new: HeapTuple,
     },
     Delete {
         file: RelationFile,
-        old: Tuple,
+        old: HeapTuple,
     },
 }
 
-impl Change {
+impl HeapChange {
     /// The bytes the change holds, near enough to bound memory by.
     pub(crate) fn footprint(&self) -> usize {
         let rows = match self {
-            Change::Insert { new, .. } => new.body.len(),
-            Change::Update { old, new, .. } => old.body.len() + new.body.len(),
-            Change::Delete { old, .. } => old.body.len(),
+            HeapChange::Insert { new, .. } => new.body.len(),
+            HeapChange::Update { old, new, .. } => old.body.len() + new.body.len(),
+            HeapChange::Delete { old, .. } => old.body.len(),
         };
-        size_of::<Change>() + rows
+        size_of::<HeapChange>() + rows
     }
 }
 
@@ -185,7 +185,7 @@ pub(crate) struct PageId {
 /// The rows of a page by slot: `tuples[offnum - 1]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Page {
-    tuples: Vec<Option<Tuple>>,
+    tuples: Vec<Option<HeapTuple>>,
     /// The rows' bytes, kept as they change: summing them per record cost
     /// a walk over the page.
     rows: usize,
@@ -201,24 +201,24 @@ const PAGE_OVERHEAD: usize = 64 + size_of::<Page>();
 impl Page {
     /// The bytes the page holds, near enough to bound memory by.
     fn footprint(&self) -> usize {
-        let slots = self.tuples.capacity() * size_of::<Option<Tuple>>();
+        let slots = self.tuples.capacity() * size_of::<Option<HeapTuple>>();
         PAGE_OVERHEAD + slots + self.rows
     }
 
-    pub(crate) fn get(&self, offnum: u16) -> Option<&Tuple> {
+    pub(crate) fn get(&self, offnum: u16) -> Option<&HeapTuple> {
         self.tuples
             .get(usize::from(offnum).checked_sub(1)?)?
             .as_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn rows(&self) -> impl Iterator<Item = (u16, &Tuple)> {
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (u16, &HeapTuple)> {
         (1u16..)
             .zip(&self.tuples)
             .filter_map(|(offnum, tuple)| Some((offnum, tuple.as_ref()?)))
     }
 
-    fn set(&mut self, offnum: u16, tuple: Tuple) -> Option<()> {
+    fn set(&mut self, offnum: u16, tuple: HeapTuple) -> Option<()> {
         let slot = usize::from(offnum).checked_sub(1)?;
         if self.tuples.len() <= slot {
             self.tuples.resize(slot + 1, None);
@@ -285,7 +285,7 @@ impl Heap {
 
     /// Applies the record to the tracked pages, and returns the changes it
     /// makes to their rows.
-    pub(crate) fn apply(&mut self, record: &Record) -> Result<Vec<Change>, WalError> {
+    pub(crate) fn apply(&mut self, record: &Record) -> Result<Vec<HeapChange>, WalError> {
         let lsn = record.lsn;
         let mut restored = Vec::new();
         for block in &record.blocks {
@@ -357,7 +357,7 @@ impl Heap {
         self.bytes -= freed;
     }
 
-    fn edit(&mut self, record: &Record, restored: &[u8]) -> Result<Vec<Change>, WalError> {
+    fn edit(&mut self, record: &Record, restored: &[u8]) -> Result<Vec<HeapChange>, WalError> {
         let mut edit = Edit {
             heap: self,
             record,
@@ -414,7 +414,7 @@ struct Edit<'a> {
     /// Blocks a full-page image already set: the image is the page after
     /// the record, so redo leaves them be.
     restored: &'a [u8],
-    changes: Vec<Change>,
+    changes: Vec<HeapChange>,
 }
 
 impl<'a> Edit<'a> {
@@ -454,13 +454,13 @@ impl<'a> Edit<'a> {
             .ok_or(problem(lsn, "a change to a page Straum has no image of"))
     }
 
-    fn row(&mut self, block: &Block, offnum: u16) -> Result<Tuple, WalError> {
+    fn row(&mut self, block: &Block, offnum: u16) -> Result<HeapTuple, WalError> {
         let lsn = self.record.lsn;
         (self.page(block)?.get(offnum).cloned())
             .ok_or(problem(lsn, "a change to a row Straum doesn't have"))
     }
 
-    fn put(&mut self, block: &Block, offnum: u16, tuple: Tuple) -> Result<(), WalError> {
+    fn put(&mut self, block: &Block, offnum: u16, tuple: HeapTuple) -> Result<(), WalError> {
         let lsn = self.record.lsn;
         (self.page(block)?.set(offnum, tuple)).ok_or(problem(lsn, "a row in slot 0"))
     }
@@ -479,7 +479,7 @@ impl<'a> Edit<'a> {
         }
         if flags & INSERT_IS_SPECULATIVE == 0 {
             let new = self.row(block, offnum)?;
-            self.changes.push(Change::Insert {
+            self.changes.push(HeapChange::Insert {
                 file: block.file,
                 new,
             });
@@ -495,7 +495,7 @@ impl<'a> Edit<'a> {
             return Ok(());
         };
         let new = self.row(block, offnum)?;
-        self.changes.push(Change::Insert {
+        self.changes.push(HeapChange::Insert {
             file: block.file,
             new,
         });
@@ -513,7 +513,7 @@ impl<'a> Edit<'a> {
         let old = self.row(block, offnum)?;
         // A super-delete takes back a speculative insert no one saw.
         if flags & DELETE_IS_SUPER == 0 {
-            self.changes.push(Change::Delete {
+            self.changes.push(HeapChange::Delete {
                 file: block.file,
                 old,
             });
@@ -541,7 +541,7 @@ impl<'a> Edit<'a> {
             self.put(new_block, new_offnum, new)?;
         }
         let new = self.row(new_block, new_offnum)?;
-        self.changes.push(Change::Update {
+        self.changes.push(HeapChange::Update {
             file: new_block.file,
             old,
             new,
@@ -578,7 +578,7 @@ impl<'a> Edit<'a> {
         }
         for offnum in offnums {
             let new = self.row(block, offnum)?;
-            self.changes.push(Change::Insert {
+            self.changes.push(HeapChange::Insert {
                 file: block.file,
                 new,
             });
@@ -654,14 +654,14 @@ fn count_at(data: &[u8], at: usize) -> Option<usize> {
 }
 
 /// `xl_heap_header` then the tuple from its null bitmap on.
-fn header_and_body(data: &[u8]) -> Option<Tuple> {
+fn header_and_body(data: &[u8]) -> Option<HeapTuple> {
     Some(tuple(data.get(..HEAP_HEADER)?, &data[HEAP_HEADER..]))
 }
 
 /// A row from the five header bytes the WAL and the page share,
 /// `t_infomask2`, `t_infomask` and `t_hoff`, and what follows them.
-fn tuple(header: &[u8], body: &[u8]) -> Tuple {
-    Tuple {
+fn tuple(header: &[u8], body: &[u8]) -> HeapTuple {
+    HeapTuple {
         infomask2: le_u16(&header[HEADER_INFOMASK2]),
         infomask: le_u16(&header[HEADER_INFOMASK]),
         hoff: header[HEADER_HOFF],
@@ -672,7 +672,7 @@ fn tuple(header: &[u8], body: &[u8]) -> Tuple {
 /// The new row of an update, as `heap_xlog_update` puts it together: the
 /// logged bytes, with the prefix and suffix it shares with the old row
 /// taken from that.
-fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
+fn updated(data: &[u8], flags: u8, old: &HeapTuple) -> Option<HeapTuple> {
     let mut at = 0;
     let mut prefix = 0;
     if flags & UPDATE_PREFIX_FROM_OLD != 0 {
@@ -700,7 +700,7 @@ fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
         let from = old.body.len().checked_sub(suffix)?;
         body.extend_from_slice(&old.body[from..]);
     }
-    Some(Tuple {
+    Some(HeapTuple {
         body: body.into(),
         ..tuple(header, &[])
     })
@@ -708,7 +708,7 @@ fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
 
 /// `count` rows, each an `xl_multi_insert_tuple` at a 2-byte boundary
 /// and then its bytes from the null bitmap on.
-fn multi_insert_tuples(data: &[u8], count: usize) -> Option<Vec<Tuple>> {
+fn multi_insert_tuples(data: &[u8], count: usize) -> Option<Vec<HeapTuple>> {
     let mut at = 0;
     let mut tuples = Vec::with_capacity(count);
     for _ in 0..count {
@@ -793,8 +793,8 @@ mod tests {
         relation: 16_999,
     };
 
-    fn tuple(columns: &[u8]) -> Tuple {
-        Tuple {
+    fn tuple(columns: &[u8]) -> HeapTuple {
+        HeapTuple {
             infomask2: 2,
             infomask: 0,
             hoff: 24,
@@ -803,7 +803,7 @@ mod tests {
     }
 
     /// A heap page holding `rows` in its slots, as PostgreSQL lays it out.
-    fn page_bytes(rows: &[(u16, &Tuple)]) -> Vec<u8> {
+    fn page_bytes(rows: &[(u16, &HeapTuple)]) -> Vec<u8> {
         let mut page = vec![0; BLOCK_SIZE];
         let slots = rows.iter().map(|(offnum, _)| *offnum).max().unwrap_or(0);
         let lower = PAGE_HEADER + LINE_POINTER * usize::from(slots);
@@ -867,7 +867,7 @@ mod tests {
     }
 
     /// `xl_heap_header` and the tuple from its null bitmap on.
-    fn logged(tuple: &Tuple) -> Vec<u8> {
+    fn logged(tuple: &HeapTuple) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend(tuple.infomask2.to_le_bytes());
         data.extend(tuple.infomask.to_le_bytes());
@@ -903,8 +903,8 @@ mod tests {
         heap.page(PageId { file: FILE, block }).unwrap()
     }
 
-    fn insert(file: RelationFile, new: Tuple) -> Change {
-        Change::Insert { file, new }
+    fn insert(file: RelationFile, new: HeapTuple) -> HeapChange {
+        HeapChange::Insert { file, new }
     }
 
     fn checkpoint(redo: u64) -> Record {
@@ -990,7 +990,7 @@ mod tests {
         );
         assert_eq!(
             heap.apply(&update),
-            Ok(vec![Change::Update {
+            Ok(vec![HeapChange::Update {
                 file: FILE,
                 old: first.clone(),
                 new: new.clone(),
@@ -1005,12 +1005,12 @@ mod tests {
         );
         assert_eq!(
             heap.apply(&delete),
-            Ok(vec![Change::Delete {
+            Ok(vec![HeapChange::Delete {
                 file: FILE,
                 old: second.clone(),
             }])
         );
-        let rows: Vec<(u16, &Tuple)> = at(&heap, 0).rows().collect();
+        let rows: Vec<(u16, &HeapTuple)> = at(&heap, 0).rows().collect();
         assert_eq!(rows, vec![(1, &first), (2, &second), (3, &new)]);
     }
 
@@ -1033,7 +1033,7 @@ mod tests {
         );
         assert_eq!(
             heap.apply(&update),
-            Ok(vec![Change::Update {
+            Ok(vec![HeapChange::Update {
                 file: FILE,
                 old,
                 new: new.clone(),
@@ -1067,7 +1067,7 @@ mod tests {
                 ..block(0, 0, data.clone(), None)
             }],
         );
-        let inserts: Vec<Change> = rows.iter().map(|row| insert(FILE, row.clone())).collect();
+        let inserts: Vec<HeapChange> = rows.iter().map(|row| insert(FILE, row.clone())).collect();
         assert_eq!(heap.apply(&fresh), Ok(inserts.clone()));
         // Into slots 4 to 6 of the same page, listed.
         let listed = [
@@ -1123,8 +1123,8 @@ mod tests {
 
     /// Five rows on page 0, slots 1 to 5.
     fn five_rows(heap: &mut Heap) {
-        let rows: Vec<Tuple> = (0..5u8).map(|i| tuple(&[i])).collect();
-        let page: Vec<(u16, &Tuple)> = (1..).zip(&rows).collect();
+        let rows: Vec<HeapTuple> = (0..5u8).map(|i| tuple(&[i])).collect();
+        let page: Vec<(u16, &HeapTuple)> = (1..).zip(&rows).collect();
         let fpi = record(
             RM_XLOG,
             0xB0,

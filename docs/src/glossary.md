@@ -251,7 +251,9 @@ are open.
   applied whole. "Transaction" only where PostgreSQL's word is needed,
   as in `--max-transaction-rows`.
 - **Change** (`Change`): one insert, update, delete or truncate of a
-  spec table, or `Unfit`.
+  spec table, or `Unfit`. The physical stream reads a `HeapChange`
+  first: the change as the WAL holds it, of a `HeapTuple`, a row as it
+  lies on its page.
 - **Unfit** (`Change::Unfit`, `Error::Unfit`): a change the store
   can't take, which starts Straum over. The error says "no longer
   fits"; ADR-0015 says "can't apply".

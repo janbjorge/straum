@@ -14,7 +14,7 @@ use std::ops::Range;
 use straum_domain::{ColumnType, Datum};
 
 use super::compress;
-use super::heap::Tuple;
+use super::heap::HeapTuple;
 use crate::value::{scaled, time};
 
 const HAS_NULL: u16 = 0x0001;
@@ -85,7 +85,7 @@ pub(crate) enum Value {
 /// The values of `tuple`, one per attribute. `labels` holds the label of
 /// each enum value by its `pg_enum` OID, which is what a row stores.
 pub(crate) fn values(
-    tuple: &Tuple,
+    tuple: &HeapTuple,
     attributes: &[Attribute],
     labels: &HashMap<u32, String>,
 ) -> Result<Vec<Value>, &'static str> {
@@ -280,7 +280,7 @@ mod tests {
 
     /// A row of `columns`, nulls where `None`, as `heap_form_tuple` lays
     /// it out with a 24-byte header.
-    fn row(attributes: &[Attribute], columns: &[Option<&[u8]>]) -> Tuple {
+    fn row(attributes: &[Attribute], columns: &[Option<&[u8]>]) -> HeapTuple {
         let nulls = columns.iter().any(Option::is_none);
         let bitmap = if nulls { columns.len().div_ceil(8) } else { 0 };
         let hoff = (23 + bitmap).next_multiple_of(8);
@@ -300,7 +300,7 @@ mod tests {
             data.extend_from_slice(bytes);
         }
         body.extend(data);
-        Tuple {
+        HeapTuple {
             infomask2: u16::try_from(columns.len()).unwrap(),
             infomask: u16::from(nulls),
             hoff: u8::try_from(hoff).unwrap(),
@@ -443,11 +443,11 @@ mod tests {
         assert_eq!(got, Err("a value compressed in a way Straum can't read"));
     }
 
-    fn check(tuple: &Tuple, attributes: &[Attribute], problem: &str) {
+    fn check(tuple: &HeapTuple, attributes: &[Attribute], problem: &str) {
         assert_eq!(values(tuple, attributes, &HashMap::new()), Err(problem));
     }
 
-    fn four_byte_row() -> Tuple {
+    fn four_byte_row() -> HeapTuple {
         row(&[attribute(4, 4, INT)], &[Some(&1i32.to_le_bytes())])
     }
 

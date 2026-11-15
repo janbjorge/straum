@@ -11,7 +11,7 @@ use std::mem;
 use straum_app::{Commit, Lsn};
 
 use super::Record;
-use super::heap::{Change, Heap};
+use super::heap::{Heap, HeapChange};
 use super::messages::{Layouts, Publisher};
 use super::transactions::{Committed, Consistency, Snapshot, TooBig, Transactions};
 use super::xact;
@@ -142,7 +142,7 @@ impl Pipeline {
                 self.held_bytes += committed
                     .changes
                     .iter()
-                    .map(Change::footprint)
+                    .map(HeapChange::footprint)
                     .sum::<usize>();
                 self.held.push(committed);
                 Ok(Vec::new())
@@ -207,7 +207,7 @@ mod tests {
     use std::cell::Cell;
     use std::collections::HashMap;
 
-    use straum_app::Change as Applied;
+    use straum_app::Change;
     use straum_domain::{ColumnType, Datum, Identifier};
 
     use super::*;
@@ -345,7 +345,7 @@ mod tests {
     fn ids(commits: &[Commit]) -> Vec<i64> {
         let mut ids = Vec::new();
         for change in commits.iter().flat_map(|commit| &commit.changes) {
-            let Applied::Insert { row, .. } = change else {
+            let Change::Insert { row, .. } = change else {
                 unreachable!()
             };
             let [Datum::Int(id)] = row[..] else {
@@ -490,7 +490,7 @@ mod tests {
         // The table is gone now: its tables are unfit.
         let commits = pipeline.record(&ddl, layouts).unwrap();
         assert_eq!(calls.get(), 1);
-        let unfit = Applied::Unfit {
+        let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
         };
         assert_eq!(

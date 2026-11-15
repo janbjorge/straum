@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use straum_domain::FastMap;
 
-use super::heap::Change;
+use super::heap::HeapChange;
 use super::xact::{Ending, Event, Invalidated, Running};
 
 /// A transaction that committed, with every change it made to the
@@ -28,7 +28,7 @@ pub(crate) struct Committed {
     pub(crate) end: u64,
     /// Microseconds since 2000-01-01 UTC.
     pub(crate) time: i64,
-    pub(crate) changes: Vec<Change>,
+    pub(crate) changes: Vec<HeapChange>,
     /// Tables whose layout may have changed with the commit.
     pub(crate) invalidated: Vec<Invalidated>,
 }
@@ -65,7 +65,7 @@ pub(crate) struct Transactions {
 
 #[derive(Default)]
 struct Held {
-    changes: Vec<(u64, Change)>,
+    changes: Vec<(u64, HeapChange)>,
     bytes: usize,
     over: bool,
 }
@@ -96,7 +96,7 @@ impl Transactions {
         }
     }
 
-    pub(crate) fn hold(&mut self, xid: u32, lsn: u64, changes: Vec<Change>) {
+    pub(crate) fn hold(&mut self, xid: u32, lsn: u64, changes: Vec<HeapChange>) {
         if changes.is_empty() {
             return;
         }
@@ -179,7 +179,7 @@ impl Transactions {
                 }
                 // Each xid's changes are in WAL order; together they
                 // merge by LSN, as the reorder buffer replays them.
-                let mut changes: Vec<(u64, Change)> =
+                let mut changes: Vec<(u64, HeapChange)> =
                     held.into_iter().flat_map(|part| part.changes).collect();
                 changes.sort_by_key(|(lsn, _)| *lsn);
                 Ok(Some(Committed {
@@ -323,7 +323,7 @@ impl Snapshot {
 mod tests {
     use super::*;
     use crate::wal::RelationFile;
-    use crate::wal::heap::Tuple;
+    use crate::wal::heap::HeapTuple;
 
     const FILE: RelationFile = RelationFile {
         tablespace: 1663,
@@ -348,10 +348,10 @@ mod tests {
         }
     }
 
-    fn change(number: u64) -> Change {
-        Change::Insert {
+    fn change(number: u64) -> HeapChange {
+        HeapChange::Insert {
             file: FILE,
-            new: Tuple {
+            new: HeapTuple {
                 infomask2: 1,
                 infomask: 0,
                 hoff: 24,
@@ -612,10 +612,10 @@ mod tests {
     }
 
     /// The numbers `change` made `changes` of.
-    fn numbers(changes: Vec<Change>) -> Vec<u64> {
+    fn numbers(changes: Vec<HeapChange>) -> Vec<u64> {
         let mut numbers = Vec::new();
         for change in changes {
-            let Change::Insert { new, .. } = change else {
+            let HeapChange::Insert { new, .. } = change else {
                 unreachable!()
             };
             numbers.push(u64::from_le_bytes(new.body[..].try_into().unwrap()));

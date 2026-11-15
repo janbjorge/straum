@@ -32,7 +32,7 @@ use crate::source::{Postgres, Replication, parse_lsn, read_wal};
 use crate::stream::{Reader, Stream};
 use crate::value::{self, read};
 use crate::wal::RelationFile;
-use crate::wal::heap::{Heap, PageId, Tuple};
+use crate::wal::heap::{Heap, HeapTuple, PageId};
 use crate::wal::messages::{Layouts, Table};
 use crate::wal::transactions::{Committed, Snapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
@@ -3612,9 +3612,9 @@ fn insert_and_delete_until(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> threa
 fn net_rows(committed: &Committed) -> i64 {
     (committed.changes.iter())
         .map(|change| match change {
-            crate::wal::heap::Change::Insert { .. } => 1,
-            crate::wal::heap::Change::Update { .. } => 0,
-            crate::wal::heap::Change::Delete { .. } => -1,
+            crate::wal::heap::HeapChange::Insert { .. } => 1,
+            crate::wal::heap::HeapChange::Update { .. } => 0,
+            crate::wal::heap::HeapChange::Delete { .. } => -1,
         })
         .sum()
 }
@@ -3649,7 +3649,7 @@ const NULL_BITMAP_OFFSET: usize = 23;
 
 /// A row as `heap_page_items` shows it: slot, `t_hoff`, the number of
 /// columns, the null bitmap as bits and the columns in hex.
-fn page_item(offnum: u16, tuple: &Tuple) -> String {
+fn page_item(offnum: u16, tuple: &HeapTuple) -> String {
     let columns = tuple.infomask2 & COLUMN_COUNT_MASK;
     let bitmap_bytes = usize::from(tuple.hoff) - NULL_BITMAP_OFFSET;
     let mut bits = String::new();
