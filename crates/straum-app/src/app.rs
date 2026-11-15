@@ -530,11 +530,9 @@ impl<S: Source> Writer<S> {
         let Some(spilling) = &self.app.spilling else {
             return Ok(());
         };
-        // A clock set before 1970 seals as if it were 1970.
-        let now = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(since_epoch) => seconds(since_epoch),
-            Err(_) => 0,
-        };
+        // A clock set before 1970 seals as if it were 1970: zero seconds.
+        let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
+        let now = seconds(since_epoch.unwrap_or_default());
         let before = now.saturating_sub(seconds(spilling.seal_after));
         let ids = self.app.read().store.sealable(before);
         for id in ids {
