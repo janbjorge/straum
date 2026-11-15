@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::ops::Range;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
@@ -36,6 +37,8 @@ GROUP BY 1, 2, 3, 4;
 const JAN_1: i64 = 1_704_067_200;
 const HOUR: i64 = 3_600;
 const START: Lsn = Lsn(0x16_B374_D848);
+/// The LSN of the one commit the fake streams.
+const COMMIT: Lsn = Lsn(0x17_0000_0000);
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 << 30,
@@ -114,7 +117,7 @@ fn fake() -> Fake {
             trip(23, 2, 2, int(-5)),
         ],
         commits: VecDeque::from([Commit {
-            lsn: Lsn(0x17_0000_0000),
+            lsn: COMMIT,
             committed: UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456),
             changes: vec![Change::Insert {
                 table: Identifier::new("trips").unwrap(),
@@ -194,12 +197,15 @@ fn send(addr: SocketAddr, request: &str) -> Reply {
     read_reply(&mut stream)
 }
 
+/// Where the code sits in a status line such as `HTTP/1.1 200 OK`.
+const STATUS_CODE: Range<usize> = 9..12;
+
 fn read_reply(stream: &mut TcpStream) -> Reply {
     let mut reply = String::new();
     stream.read_to_string(&mut reply).unwrap();
     let (head, body) = reply.split_once("\r\n\r\n").unwrap();
     Reply {
-        status: head[9..12].parse().unwrap(),
+        status: head[STATUS_CODE].parse().unwrap(),
         head: head.to_owned(),
         body: body.to_owned(),
     }
@@ -241,9 +247,16 @@ fn first_hour() -> String {
 const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
     FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY bucket, kind, borough";
 
+/// One trip's group as JSON, keyed by the names `BY_BUCKET` selects.
+fn json_row(bucket: &str, kind: i64, borough: &str, fare: &str, avg: &str) -> String {
+    format!(
+        r#"{{"bucket":"{bucket}","kind":{kind},"borough":{borough},"trips":1,"fare":{fare},"fare_avg":{avg},"fare_max":{fare}}}"#
+    )
+}
+
 #[test]
 fn answers_asks_as_json() {
-    let (mut writer, server) = started(writer());
+    let (_writer, server) = started(writer());
 
     let range = r#"["2024-01-01T01:00:00+01:00", "2024-01-03T00:00:00Z"]"#;
     let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
@@ -258,16 +271,11 @@ fn answers_asks_as_json() {
         "{}",
         reply.head
     );
-    let row = |bucket, kind, borough, fare, avg| {
-        format!(
-            r#"{{"bucket":"{bucket}","kind":{kind},"borough":{borough},"trips":1,"fare":{fare},"fare_avg":{avg},"fare_max":{fare}}}"#
-        )
-    };
     let rows = [
-        row("2024-01-01T00:00:00Z", 1, r#""Bronx""#, "12.50", "12.5"),
-        row("2024-01-01T01:00:00Z", 1, r#""Bronx""#, "2.50", "2.5"),
-        row("2024-01-01T02:00:00Z", 2, "null", "null", "null"),
-        row(
+        json_row("2024-01-01T00:00:00Z", 1, r#""Bronx""#, "12.50", "12.5"),
+        json_row("2024-01-01T01:00:00Z", 1, r#""Bronx""#, "2.50", "2.5"),
+        json_row("2024-01-01T02:00:00Z", 2, "null", "null", "null"),
+        json_row(
             "2024-01-01T23:00:00Z",
             2,
             r#""Queens \"Q\"""#,
@@ -276,14 +284,27 @@ fn answers_asks_as_json() {
         ),
     ];
     assert_eq!(rows_of(&reply.body), format!("[{}]", rows.join(",")));
+    server.stop();
+}
 
-    // The same range in Unix seconds.
+#[test]
+fn a_range_in_unix_seconds_answers_as_one_in_rfc_3339() {
+    let (_writer, server) = started(writer());
+    let range = r#"["2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z"]"#;
+    let reply = call(server.addr, "POST", "/ask", &ask(BY_BUCKET, range));
     let seconds = ask(BY_BUCKET, "[1704067200, 1704240000]");
     let again = call(server.addr, "POST", "/ask", &seconds);
     assert_eq!(rows_of(&again.body), rows_of(&reply.body));
+    let later = ask(BY_BUCKET, "[1704070800, 1704240000]");
+    let fewer = call(server.addr, "POST", "/ask", &later);
+    assert_ne!(rows_of(&fewer.body), rows_of(&reply.body));
+    server.stop();
+}
 
-    // After a commit, answers carry its LSN.
-    assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(0x17_0000_0000)));
+#[test]
+fn answers_after_a_commit_carry_its_lsn() {
+    let (mut writer, server) = started(writer());
+    assert_eq!(writer.step().unwrap(), Step::Applied(COMMIT));
     let totals = ask(
         "SELECT trips, fare, fare_avg FROM trips WHERE bucket >= $1 AND bucket < $2",
         "[0, 1704240000]",
@@ -311,9 +332,8 @@ fn answers_asks_as_a_table_to_those_who_accept_text() {
     ] {
         assert!(reply.head.contains(header), "{}", reply.head);
     }
-    let names: Vec<String> = (server_timing(&reply.head).unwrap().into_iter())
-        .map(|(name, _)| name)
-        .collect();
+    let phases = server_timing(&reply.head).unwrap();
+    let names: Vec<&str> = phases.iter().map(|phase| phase.name.as_str()).collect();
     assert_eq!(names, ["parse", "answer", "text", "total"]);
     let (table, as_of) = reply.body.split_at(reply.body.find("4 rows").unwrap());
     assert_eq!(
@@ -332,41 +352,53 @@ bucket               | kind | borough    | trips | fare  | fare_avg | fare_max
         "{as_of}"
     );
 
+    server.stop();
+}
+
+#[test]
+fn a_table_of_one_row_says_so_and_any_other_accept_gets_json() {
+    let (_writer, server) = started(writer());
     let reply = call_as_text(server.addr, &first_hour());
     assert!(
         reply.body.starts_with("trips\n-----\n    0\n1 row, as of "),
         "{}",
         reply.body
     );
-
-    // Any other Accept is answered as JSON.
     let reply = request(server.addr, "POST", "/ask", Some("*/*"), &first_hour());
     assert_eq!(rows_of(&reply.body), r#"[{"trips":0}]"#);
     server.stop();
 }
 
+/// The content type of a 200 reply.
+fn content_type(addr: SocketAddr, method: &str, path: &str, accept: Option<&str>) -> String {
+    let body = if method == "POST" {
+        first_hour()
+    } else {
+        String::new()
+    };
+    let reply = request(addr, method, path, accept, &body);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let content_type = reply
+        .head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-type: "));
+    content_type.unwrap().to_owned()
+}
+
 #[test]
 fn accept_picks_the_format_and_each_route_its_default() {
     let (_writer, server) = started(writer());
-    let content_type = |method: &str, path: &str, accept: Option<&str>, body: &str| {
-        let reply = request(server.addr, method, path, accept, body);
-        assert_eq!(reply.status, 200, "{}", reply.body);
-        let content_type = reply
-            .head
-            .lines()
-            .find_map(|line| line.strip_prefix("content-type: "));
-        content_type.unwrap().to_owned()
-    };
-    let (json, text) = ("application/json", "text/plain; charset=utf-8");
+    let json = "application/json";
+    let text = "text/plain; charset=utf-8";
     for (accept, ask, views) in [
         (Some("application/json"), json, json),
         (Some("text/plain"), text, text),
         (Some("*/*"), json, text),
         (None, json, text),
     ] {
-        let got = content_type("POST", "/ask", accept, &first_hour());
+        let got = content_type(server.addr, "POST", "/ask", accept);
         assert_eq!(got, ask, "/ask {accept:?}");
-        let got = content_type("GET", "/views", accept, "");
+        let got = content_type(server.addr, "GET", "/views", accept);
         assert_eq!(got, views, "/views {accept:?}");
     }
     server.stop();
@@ -404,8 +436,12 @@ fn errors_are_lines_to_those_who_accept_text() {
     server.stop();
 }
 
+fn views_as_json(addr: SocketAddr) -> Reply {
+    request(addr, "GET", "/views", Some("application/json"), "")
+}
+
 #[test]
-fn views_say_what_straum_holds() {
+fn views_wait_for_every_table() {
     let mut writer = writer();
     let server = serve(writer.app().clone());
     let reply = call(server.addr, "GET", "/views", "");
@@ -415,6 +451,24 @@ fn views_say_what_straum_holds() {
     );
 
     writer.step().unwrap();
+    writer.step().unwrap();
+    writer.step().unwrap_err();
+    let reply = call(server.addr, "GET", "/views", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, "not ready: connection dropped\n")
+    );
+    let reply = views_as_json(server.addr);
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (503, r#"{"errors":["not ready: connection dropped"]}"#)
+    );
+    server.stop();
+}
+
+#[test]
+fn views_say_what_straum_holds() {
+    let (_writer, server) = started(writer());
     let reply = call(server.addr, "GET", "/views", "");
     assert_eq!(reply.status, 200);
     assert_eq!(
@@ -430,9 +484,13 @@ dim public.zones
   holds:    2 rows
 "
     );
+    server.stop();
+}
 
-    let as_json = |addr| request(addr, "GET", "/views", Some("application/json"), "");
-    let reply = as_json(server.addr);
+#[test]
+fn views_as_json_name_each_views_keys_and_measures() {
+    let (_writer, server) = started(writer());
+    let reply = views_as_json(server.addr);
     assert!(
         reply.head.contains("content-type: application/json"),
         "{}",
@@ -447,19 +505,6 @@ dim public.zones
             r#"{"name":"zone_id","type":"integer"},{"name":"borough","type":"text"}],"#,
             r#""measures":["trips","fare","fare_avg","fare_max"]}]}"#
         )
-    );
-
-    writer.step().unwrap();
-    writer.step().unwrap_err();
-    let reply = call(server.addr, "GET", "/views", "");
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (503, "not ready: connection dropped\n")
-    );
-    let reply = as_json(server.addr);
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (503, r#"{"errors":["not ready: connection dropped"]}"#)
     );
     server.stop();
 }
@@ -497,16 +542,23 @@ bucket               | kind | zone_id | borough    | trips | fare  | fare_avg | 
     server.stop();
 }
 
+/// The rows `GET /views/NAME` shows at most.
+const SHOWN_ROWS: i64 = 1_000;
+
 /// More trips than a view shows, each in a cell of its own.
 #[test]
 fn a_view_shows_its_first_thousand_rows() {
     let fake = Fake {
-        trips: (0..1_001).map(|kind| trip(0, kind, 1, int(100))).collect(),
+        trips: (0..=SHOWN_ROWS)
+            .map(|kind| trip(0, kind, 1, int(100)))
+            .collect(),
         ..fake()
     };
     let (_writer, server) = started(writer_with(LIMITS, fake));
     let reply = call(server.addr, "GET", "/views/trips", "");
-    assert_eq!(reply.body.lines().count(), 1_003, "{}", reply.body);
+    // The names, the rule, the rows, then the count.
+    let lines = usize::try_from(SHOWN_ROWS + 3).unwrap();
+    assert_eq!(reply.body.lines().count(), lines, "{}", reply.body);
     let count = reply.body.lines().last().unwrap();
     assert!(count.starts_with("1000 of 1001 rows, as of "), "{count}");
     server.stop();
@@ -657,16 +709,26 @@ fn ask_bodies_too_big_or_broken_are_refused() {
     server.stop();
 }
 
+#[derive(Debug, PartialEq)]
+struct TimingPhase {
+    name: String,
+    took_ms: f64,
+}
+
 /// The phases of `Server-Timing`, if the reply has one.
-fn server_timing(head: &str) -> Option<Vec<(String, f64)>> {
+fn server_timing(head: &str) -> Option<Vec<TimingPhase>> {
     let value = head
         .lines()
         .find_map(|line| line.strip_prefix("server-timing: "))?;
-    let phases = value.split(", ").map(|phase| {
-        let (name, dur) = phase.split_once(";dur=").unwrap();
-        (name.to_owned(), dur.parse().unwrap())
-    });
-    Some(phases.collect())
+    let mut phases = Vec::new();
+    for phase in value.split(", ") {
+        let (name, took_ms) = phase.split_once(";dur=").unwrap();
+        phases.push(TimingPhase {
+            name: name.to_owned(),
+            took_ms: took_ms.parse().unwrap(),
+        });
+    }
+    Some(phases)
 }
 
 #[test]
@@ -681,11 +743,14 @@ fn says_where_the_time_went() {
     let reply = call(server.addr, "POST", "/ask", &first_hour());
     assert_eq!(reply.status, 200, "{}", reply.body);
     let phases = server_timing(&reply.head).expect("a Server-Timing header");
-    let names: Vec<&str> = phases.iter().map(|(name, _)| name.as_str()).collect();
+    let names: Vec<&str> = phases.iter().map(|phase| phase.name.as_str()).collect();
     assert_eq!(names, ["parse", "answer", "json", "total"]);
-    let total = phases[3].1;
-    for (name, ms) in &phases {
-        assert!((0.0..=total).contains(ms), "{name} took {ms} ms of {total}");
+    let total = phases[3].took_ms;
+    for TimingPhase { name, took_ms } in &phases {
+        assert!(
+            (0.0..=total).contains(took_ms),
+            "{name} took {took_ms} ms of {total}"
+        );
     }
 
     let reply = call(server.addr, "POST", "/ask", &ask("SELECT", "[]"));
@@ -724,9 +789,8 @@ fn routes() {
 }
 
 #[test]
-fn status_says_what_straum_did() {
-    let mut writer = writer();
-    let server = serve(writer.app().clone());
+fn status_before_a_load_says_nothing_yet() {
+    let server = serve(writer().app().clone());
     let reply = call(server.addr, "GET", "/status", "");
     assert_eq!(reply.status, 200);
     assert_eq!(
@@ -743,8 +807,12 @@ last failure: none
 sealed:       no spill
 "
     );
+    server.stop();
+}
 
-    writer.step().unwrap();
+#[test]
+fn status_says_what_the_stream_applied() {
+    let (mut writer, server) = started(writer());
     writer.step().unwrap();
     let reply = call(server.addr, "GET", "/status", "");
     let lines: Vec<&str> = reply.body.lines().collect();
@@ -815,6 +883,13 @@ fn readiness_says_how_far_behind() {
     server.stop();
 }
 
+/// Long enough for the server to read what was sent, or to begin a
+/// shutdown, before the test goes on.
+const SETTLE: Duration = Duration::from_millis(200);
+
+/// How much of the ask's body is sent before the shutdown begins.
+const SENT_BEFORE_SHUTDOWN: usize = 10;
+
 #[test]
 fn shutdown_finishes_requests_in_flight() {
     let (_writer, server) = started(writer());
@@ -829,12 +904,13 @@ fn shutdown_finishes_requests_in_flight() {
         ask.len()
     );
     busy.write_all(head.as_bytes()).unwrap();
-    busy.write_all(&ask.as_bytes()[..10]).unwrap();
-    thread::sleep(Duration::from_millis(200));
+    let (sent, rest) = ask.as_bytes().split_at(SENT_BEFORE_SHUTDOWN);
+    busy.write_all(sent).unwrap();
+    thread::sleep(SETTLE);
     let addr = server.addr;
     let stopping = thread::spawn(move || server.stop());
-    thread::sleep(Duration::from_millis(200));
-    busy.write_all(&ask.as_bytes()[10..]).unwrap();
+    thread::sleep(SETTLE);
+    busy.write_all(rest).unwrap();
     let reply = read_reply(&mut busy);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(reply.head.contains("connection: close"), "{}", reply.head);
@@ -854,22 +930,32 @@ fn trips_from(from: i64) -> Ask {
     }
 }
 
-#[test]
-fn reads_asks_with_the_reader_it_is_given() {
+/// A query no reader in Straum reads, for readers that ignore it.
+const ANY_QUERY: &str = r#"{"query": "not an ask in any syntax"}"#;
+
+fn loaded() -> Writer<Fake> {
     let mut writer = writer();
     writer.step().unwrap();
-    let body = r#"{"query": "not an ask in any syntax"}"#;
+    writer
+}
 
+#[test]
+fn reads_asks_with_the_reader_it_is_given() {
+    let writer = loaded();
     let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(JAN_1)));
-    let reply = call(server.addr, "POST", "/ask", body);
+    let reply = call(server.addr, "POST", "/ask", ANY_QUERY);
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(rows_of(&reply.body), r#"[{"trips":4}]"#);
     server.stop();
+}
 
+#[test]
+fn a_readers_errors_are_the_replys() {
+    let writer = loaded();
     let server = serve_with(writer.app().clone(), |_, _| {
         Err(vec!["no".to_owned(), "never".to_owned()])
     });
-    let reply = call(server.addr, "POST", "/ask", body);
+    let reply = call(server.addr, "POST", "/ask", ANY_QUERY);
     assert_eq!(
         (reply.status, reply.body.as_str()),
         (400, r#"{"errors":["no","never"]}"#)
@@ -879,7 +965,7 @@ fn reads_asks_with_the_reader_it_is_given() {
     let server = serve_with(writer.app().clone(), |_, _| {
         Err(vec!["a \"quote\", a \\ and\na line in Zürich".to_owned()])
     });
-    let reply = call(server.addr, "POST", "/ask", body);
+    let reply = call(server.addr, "POST", "/ask", ANY_QUERY);
     assert_eq!(
         (reply.status, reply.body.as_str()),
         (
@@ -888,11 +974,15 @@ fn reads_asks_with_the_reader_it_is_given() {
         )
     );
     server.stop();
+}
 
-    // A reader that lets through a range jiff can't print gets a 400, not
-    // a panic while the answer is written.
+/// A reader that lets through a range jiff can't print gets a 400, not a
+/// panic while the answer is written.
+#[test]
+fn a_range_past_jiff_from_a_reader_is_refused() {
+    let writer = loaded();
     let server = serve_with(writer.app().clone(), |_, _| Ok(trips_from(i64::MIN)));
-    let reply = call(server.addr, "POST", "/ask", body);
+    let reply = call(server.addr, "POST", "/ask", ANY_QUERY);
     assert_eq!(reply.status, 400, "{}", reply.body);
     assert!(
         reply
@@ -907,10 +997,13 @@ fn reads_asks_with_the_reader_it_is_given() {
 /// An answer's rows, once its `as_of` is checked to be a time from the last
 /// minute.
 fn rows_of(body: &str) -> &str {
-    let fields = (body.strip_prefix(r#"{"as_of":""#))
-        .and_then(|rest| rest.strip_suffix('}'))
-        .and_then(|rest| rest.split_once(r#"","rows":"#));
-    let Some((as_of, rows)) = fields else {
+    let Some(fields) = body.strip_prefix(r#"{"as_of":""#) else {
+        panic!("not an answer: {body}");
+    };
+    let Some(fields) = fields.strip_suffix('}') else {
+        panic!("not an answer: {body}");
+    };
+    let Some((as_of, rows)) = fields.split_once(r#"","rows":"#) else {
         panic!("not an answer: {body}");
     };
     let as_of: Timestamp = as_of.parse().unwrap();
