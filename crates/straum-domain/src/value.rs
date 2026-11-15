@@ -70,9 +70,9 @@ impl Datum {
     /// SQL `=`: null matches nothing.
     pub(crate) fn matches(&self, lit: &Literal) -> bool {
         match (self, lit) {
-            (Datum::Bool(a), Literal::Bool(b)) => a == b,
-            (Datum::Int(a), Literal::Int(b)) => a == b,
-            (Datum::Text(a), Literal::Text(b)) => **a == **b,
+            (Datum::Bool(held), Literal::Bool(wanted)) => held == wanted,
+            (Datum::Int(held), Literal::Int(wanted)) => held == wanted,
+            (Datum::Text(held), Literal::Text(wanted)) => **held == **wanted,
             _ => false,
         }
     }
@@ -174,7 +174,7 @@ mod tests {
             ColumnType::Time { zoned: true },
             ColumnType::Time { zoned: false },
         ]
-        .map(|t| t.to_string());
+        .map(|column_type| column_type.to_string());
         assert_eq!(
             shown,
             [

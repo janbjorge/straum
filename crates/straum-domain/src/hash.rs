@@ -32,8 +32,8 @@ impl BuildHasher for Seeded {
 
 pub struct Folded(u64);
 
-fn fold(a: u64, b: u64) -> u64 {
-    let product = u128::from(a) * u128::from(b);
+fn fold(left: u64, right: u64) -> u64 {
+    let product = u128::from(left) * u128::from(right);
     (product as u64) ^ ((product >> 64) as u64)
 }
 
@@ -49,20 +49,20 @@ impl Hasher for Folded {
         self.write_u64(u64::from_le_bytes(last) ^ (rest.len() as u64) << 56);
     }
 
-    fn write_u8(&mut self, n: u8) {
-        self.write_u64(n.into());
+    fn write_u8(&mut self, byte: u8) {
+        self.write_u64(byte.into());
     }
 
-    fn write_u32(&mut self, n: u32) {
-        self.write_u64(n.into());
+    fn write_u32(&mut self, word: u32) {
+        self.write_u64(word.into());
     }
 
-    fn write_u64(&mut self, n: u64) {
-        self.0 = fold(self.0 ^ n, MULTIPLE);
+    fn write_u64(&mut self, word: u64) {
+        self.0 = fold(self.0 ^ word, MULTIPLE);
     }
 
-    fn write_usize(&mut self, n: usize) {
-        self.write_u64(n as u64);
+    fn write_usize(&mut self, word: usize) {
+        self.write_u64(word as u64);
     }
 
     fn finish(&self) -> u64 {

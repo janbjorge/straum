@@ -70,8 +70,8 @@ const HOUR: u32 = 3600;
 const ZONES: i64 = 40;
 const BOROUGHS: [&str; 4] = ["m", "q", "b", "x"];
 
-fn key(s: &str) -> AskKey {
-    AskKey::Key(id(s))
+fn key(name: &str) -> AskKey {
+    AskKey::Key(id(name))
 }
 
 /// The fact, with `buckets` (in hours) beside its one-hour width, joined
@@ -80,7 +80,7 @@ fn spec(buckets: &[u32]) -> Spec {
     spec_of(buckets, true)
 }
 
-fn m(name: &str, aggregate: Aggregate) -> Measure {
+fn measure(name: &str, aggregate: Aggregate) -> Measure {
     Measure {
         name: id(name),
         aggregate,
@@ -91,9 +91,9 @@ fn m(name: &str, aggregate: Aggregate) -> Measure {
 /// As [`spec`]; unless `joined`, without the zones.
 fn spec_of(buckets: &[u32], joined: bool) -> Spec {
     let measures = vec![
-        m("trips", Aggregate::Count),
-        m("fare", Aggregate::Sum(id("fare"))),
-        m("tip_max", Aggregate::Max(id("tip"))),
+        measure("trips", Aggregate::Count),
+        measure("fare", Aggregate::Sum(id("fare"))),
+        measure("tip_max", Aggregate::Max(id("tip"))),
     ];
     spec_measuring(buckets, joined, measures)
 }
@@ -115,7 +115,9 @@ fn spec_measuring(buckets: &[u32], joined: bool, measures: Vec<Measure>) -> Spec
             width: Width { seconds: HOUR },
             wider: buckets
                 .iter()
-                .map(|h| Width { seconds: h * HOUR })
+                .map(|hours| Width {
+                    seconds: hours * HOUR,
+                })
                 .collect(),
             origin: Origin::Timestamptz,
         },
@@ -180,7 +182,7 @@ fn store_of(spec: Spec, cells: i64, tips: i64) -> Store {
         let zone = n / 2 % ZONES;
         let row: Vec<_> = columns
             .iter()
-            .map(|c| match c.as_str() {
+            .map(|column| match column.as_str() {
                 "at" => Datum::Int(n / (2 * ZONES) * i64::from(HOUR)),
                 "pay" => Datum::Int(n % 2),
                 "pu" => Datum::Int(zone),
@@ -200,7 +202,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        keys: by.iter().map(|b| key(b)).collect(),
+        keys: by.iter().map(|name| key(name)).collect(),
         filter: vec![],
         from: from * i64::from(HOUR),
         to: to * i64::from(HOUR),
@@ -373,11 +375,11 @@ fn sealing_frees_the_cells_it_seals() {
 }
 
 fn tip_max() -> Measure {
-    m("tip_max", Aggregate::Max(id("tip")))
+    measure("tip_max", Aggregate::Max(id("tip")))
 }
 
 fn tip_median() -> Measure {
-    m("tip_median", percentile(5, 1, "tip"))
+    measure("tip_median", percentile(5, 1, "tip"))
 }
 
 /// A percentile reads the values a min or max on its column keeps: beside

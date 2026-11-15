@@ -8,13 +8,15 @@ const MAX_LEN: usize = 63;
 pub struct Identifier(String);
 
 impl Identifier {
-    pub fn new(s: &str) -> Option<Identifier> {
-        let mut chars = s.chars();
+    pub fn new(text: &str) -> Option<Identifier> {
+        let mut chars = text.chars();
         let first = chars.next()?;
-        let ok = s.len() <= MAX_LEN
+        let ok = text.len() <= MAX_LEN
             && (first.is_ascii_lowercase() || first == '_')
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-        ok.then(|| Identifier(s.to_owned()))
+            && chars.all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+            });
+        ok.then(|| Identifier(text.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {

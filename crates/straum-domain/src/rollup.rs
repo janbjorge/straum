@@ -49,10 +49,15 @@ pub(crate) struct Rollup {
 
 /// What each part of a key codes of a row of `columns`, the bucket aside.
 fn coded<'a>(columns: &[Identifier], parts: impl Iterator<Item = KeyPart<'a>>) -> Vec<Coded> {
-    let position = |name: &Identifier| columns.iter().position(|c| c == name).expect(COLUMNS);
+    let position = |name: &Identifier| {
+        columns
+            .iter()
+            .position(|column| column == name)
+            .expect(COLUMNS)
+    };
     parts
         .filter_map(|part| match part {
-            KeyPart::Column(c) => Some(Coded::Value(position(c))),
+            KeyPart::Column(column) => Some(Coded::Value(position(column))),
             KeyPart::IsNull { column, negated } => Some(Coded::IsNull {
                 column: position(column),
                 negated,
@@ -126,7 +131,7 @@ impl Bucket {
 impl Level {
     fn bucket(&self, time: &Datum) -> Option<i64> {
         match *time {
-            Datum::Int(t) => Some(t.div_euclid(self.width) * self.width),
+            Datum::Int(seconds) => Some(seconds.div_euclid(self.width) * self.width),
             _ => None,
         }
     }
@@ -298,7 +303,9 @@ impl Cells {
         }
         self.keys.truncate(last * key_len);
         self.rows.swap_remove(i);
-        self.states.iter_mut().for_each(|c| c.swap_remove(i));
+        self.states
+            .iter_mut()
+            .for_each(|state| state.swap_remove(i));
     }
 }
 
@@ -381,10 +388,15 @@ impl Rollup {
     }
 
     fn build(fact: &Fact, columns: Vec<Identifier>, key_columns: Vec<Coded>) -> Rollup {
-        let position = |name: &Identifier| columns.iter().position(|c| c == name).expect(COLUMNS);
+        let position = |name: &Identifier| {
+            columns
+                .iter()
+                .position(|column| column == name)
+                .expect(COLUMNS)
+        };
         let mut inputs = Vec::new();
-        for m in &fact.measures {
-            let Some((kind, name)) = m.aggregate.state() else {
+        for measure in &fact.measures {
+            let Some((kind, name)) = measure.aggregate.state() else {
                 continue;
             };
             let input = Input {
@@ -442,8 +454,12 @@ impl Rollup {
 
     /// The types stay.
     pub(crate) fn clear(&mut self) {
-        self.levels.iter_mut().for_each(|l| l.buckets.clear());
-        self.codes.iter_mut().for_each(|c| *c = Codes::default());
+        self.levels
+            .iter_mut()
+            .for_each(|level| level.buckets.clear());
+        self.codes
+            .iter_mut()
+            .for_each(|codes| *codes = Codes::default());
         self.cells = 0;
         self.sealed = 0;
     }
@@ -471,8 +487,8 @@ impl Rollup {
     /// A measure over numbers keeps its column's scale; a count has none.
     pub(crate) fn scale_of(&self, aggregate: &Aggregate) -> u32 {
         match aggregate.state() {
-            Some((kind, c)) if kind.reads() == Reads::Numbers => {
-                self.types[self.column(c).expect(COLUMNS)].scale()
+            Some((kind, column)) if kind.reads() == Reads::Numbers => {
+                self.types[self.column(column).expect(COLUMNS)].scale()
             }
             _ => 0,
         }
@@ -509,8 +525,8 @@ impl Rollup {
         let (key_len, inputs) = (self.key_columns.len(), &self.inputs);
         let add = |level: &mut Level| {
             (rows.iter().enumerate())
-                .map(|(r, row)| {
-                    let key = &keys[r * key_len..][..key_len];
+                .map(|(row_index, row)| {
+                    let key = &keys[row_index * key_len..][..key_len];
                     usize::from(level.add(row, key, inputs))
                 })
                 .sum::<usize>()
@@ -520,10 +536,15 @@ impl Rollup {
                 .levels
                 .split_first_mut()
                 .expect("a rollup has its width");
-            let threads: Vec<_> = wider.iter_mut().map(|l| scope.spawn(|| add(l))).collect();
+            let threads: Vec<_> = wider
+                .iter_mut()
+                .map(|level| scope.spawn(|| add(level)))
+                .collect();
             let new = add(first);
             for thread in threads {
-                thread.join().unwrap_or_else(|e| panic::resume_unwind(e));
+                thread
+                    .join()
+                    .unwrap_or_else(|payload| panic::resume_unwind(payload));
             }
             new
         });
@@ -619,7 +640,7 @@ impl Rollup {
     /// The rollup-key part that codes the fact column, when one does.
     pub(crate) fn part_of_column(&self, column: usize) -> Option<usize> {
         (self.key_columns.iter()).position(|coded| match coded {
-            Coded::Value(c) => *c == column,
+            Coded::Value(value_column) => *value_column == column,
             Coded::IsNull { .. } => false,
         })
     }
@@ -853,16 +874,16 @@ impl Rollup {
     }
 
     fn column(&self, name: &Identifier) -> Option<usize> {
-        self.columns.iter().position(|c| c == name)
+        self.columns.iter().position(|column| column == name)
     }
 
     fn level(&self, width: i64) -> Option<&Level> {
-        self.levels.iter().find(|l| l.width == width)
+        self.levels.iter().find(|level| level.width == width)
     }
 
     fn level_mut(&mut self, width: i64) -> Result<&mut Level, &'static str> {
         (self.levels.iter_mut())
-            .find(|l| l.width == width)
+            .find(|level| level.width == width)
             .ok_or("no such width")
     }
 
@@ -1054,13 +1075,18 @@ impl State {
                 counts: present(nulls),
             },
             State::Extent { counts, .. } => SealedColumn::Extent {
-                values: counts.iter().map(|c| c.iter().collect()).collect(),
+                values: counts
+                    .iter()
+                    .map(|value_counts| value_counts.iter().collect())
+                    .collect(),
             },
             State::Distinct(counts) => SealedColumn::Distinct {
                 values: (counts.iter())
                     .map(|counts| {
-                        let mut pairs: Vec<(Datum, u64)> =
-                            counts.iter().map(|(v, &n)| (v.clone(), n)).collect();
+                        let mut pairs: Vec<(Datum, u64)> = counts
+                            .iter()
+                            .map(|(value, &count)| (value.clone(), count))
+                            .collect();
                         pairs.sort();
                         pairs
                     })
@@ -1080,7 +1106,8 @@ impl State {
     fn thaw(column: SealedColumn, kind: StateKind, rows: &[u64]) -> Option<State> {
         let len = rows.len();
         let counted = |n: &u64| *n > 0;
-        let ascending = |pairs: &Vec<(i64, u64)>| pairs.is_sorted_by(|a, b| a.0 < b.0);
+        let ascending =
+            |pairs: &Vec<(i64, u64)>| pairs.is_sorted_by(|earlier, later| earlier.0 < later.0);
         // The nulls among each cell's rows, from its values that are not.
         let nulls = |counts: &[u64]| {
             let fit = counts.len() == len && counts.iter().zip(rows).all(|(n, rows)| n <= rows);
@@ -1117,7 +1144,7 @@ impl State {
                 Some(State::Distinct(
                     values
                         .into_iter()
-                        .map(|v| v.into_iter().collect())
+                        .map(|counts| counts.into_iter().collect())
                         .collect(),
                 ))
             }
@@ -1139,13 +1166,13 @@ impl State {
         match (self, value) {
             (State::Count { nulls } | State::Sum { nulls, .. }, Datum::Null) => nulls.add(i, 1),
             (_, Datum::Null) | (State::Count { .. }, _) => {}
-            (State::Sum { sums, .. }, &Datum::Int(v)) => sums.add(i, v.into()),
-            (State::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
-                mins[i] = mins[i].min(v);
-                maxs[i] = maxs[i].max(v);
-                counts[i].add(v, 1);
+            (State::Sum { sums, .. }, &Datum::Int(number)) => sums.add(i, number.into()),
+            (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
+                mins[i] = mins[i].min(number);
+                maxs[i] = maxs[i].max(number);
+                counts[i].add(number, 1);
             }
-            (State::Distinct(counts), v) => *counts[i].entry(v.clone()).or_default() += 1,
+            (State::Distinct(counts), _) => *counts[i].entry(value.clone()).or_default() += 1,
             (State::Bools { trues, .. }, Datum::Bool(true)) => trues.add(i, 1),
             (State::Bools { falses, .. }, Datum::Bool(false)) => falses.add(i, 1),
             _ => unreachable!("Rollup::check lets through only what a state reads"),
@@ -1163,22 +1190,22 @@ impl State {
             (_, Datum::Null) => {}
             // A value that is not null leaves only a cell that holds one.
             (State::Count { nulls }, _) => held(nulls.get(i) < rows)?,
-            (State::Sum { sums, nulls }, &Datum::Int(v)) => {
+            (State::Sum { sums, nulls }, &Datum::Int(number)) => {
                 held(nulls.get(i) < rows)?;
-                sums.add(i, -i128::from(v));
+                sums.add(i, -i128::from(number));
             }
-            (State::Extent { mins, maxs, counts }, &Datum::Int(v)) => {
-                held(counts[i].sub(v, 1))?;
-                if v == mins[i] || v == maxs[i] {
+            (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
+                held(counts[i].sub(number, 1))?;
+                if number == mins[i] || number == maxs[i] {
                     (mins[i], maxs[i]) = counts[i].ends();
                 }
             }
-            (State::Distinct(counts), v) => {
+            (State::Distinct(counts), _) => {
                 let tree = &mut counts[i];
-                let count = tree.get_mut(v).ok_or(RowError::Missing)?;
+                let count = tree.get_mut(value).ok_or(RowError::Missing)?;
                 *count -= 1;
                 if *count == 0 {
-                    tree.remove(v);
+                    tree.remove(value);
                 }
             }
             (State::Bools { trues: counts, .. }, Datum::Bool(true))
@@ -1409,7 +1436,10 @@ mod tests {
             assert!(new && i == 0);
             for value in values {
                 cells.rows.add(i, 1);
-                cells.states.iter_mut().for_each(|s| s.add(i, value));
+                cells
+                    .states
+                    .iter_mut()
+                    .for_each(|state| state.add(i, value));
             }
             cells
         };

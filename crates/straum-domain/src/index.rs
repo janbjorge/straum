@@ -33,8 +33,10 @@ pub(crate) struct Index {
 
 /// Whether two keys of a bucket are one. Compared as slices, two or three
 /// codes are a call.
-fn same(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b).all(|(a, b)| a == b)
+fn same(left: &[u32], right: &[u32]) -> bool {
+    left.iter()
+        .zip(right)
+        .all(|(left_code, right_code)| left_code == right_code)
 }
 
 impl Index {
@@ -99,8 +101,8 @@ impl Index {
         // A cell is looked for from its home on, so none may lie past an
         // empty slot: each that the hole would cut off moves into it.
         while self.slots[slot] != EMPTY {
-            let home = self.home(keys.of(self.slots[slot] as usize));
-            if slot.wrapping_sub(home) & mask >= slot.wrapping_sub(hole) & mask {
+            let home_slot = self.home(keys.of(self.slots[slot] as usize));
+            if slot.wrapping_sub(home_slot) & mask >= slot.wrapping_sub(hole) & mask {
                 self.slots[hole] = self.slots[slot];
                 hole = slot;
             }
@@ -166,8 +168,8 @@ mod tests {
                 };
                 assert_eq!(index.get(&key, keys), held.get(&key).copied(), "{at}");
                 // More come than go until most keys are held, then as many.
-                let comes = rng.below(100) < if step < 8_000 { 70 } else { 45 };
-                match (held.get(&key).copied(), comes) {
+                let arrives = rng.below(100) < if step < 8_000 { 70 } else { 45 };
+                match (held.get(&key).copied(), arrives) {
                     (None, true) => {
                         let cell = held.len();
                         codes.extend(&key);

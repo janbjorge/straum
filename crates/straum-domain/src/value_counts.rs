@@ -95,8 +95,8 @@ impl<'a> Records<'a> {
         unsigned(self.bytes, self.at(i + 1), self.count_width) + 1
     }
 
-    /// Where `v` is, or where it would go.
-    fn find(self, v: i64) -> Result<usize, usize> {
+    /// Where `value` is, or where it would go.
+    fn find(self, value: i64) -> Result<usize, usize> {
         let Records {
             base, bytes, len, ..
         } = self;
@@ -104,14 +104,14 @@ impl<'a> Records<'a> {
         // By width outside the halving, so a step is one load and a shift.
         if self.value_width > 4 {
             let (first, unused) = (self.start + self.value_width - 8, 64 - 8 * self.value_width);
-            return halve(len, size, v, |at| {
+            return halve(len, size, value, |at| {
                 base.wrapping_add(i64::from_le_bytes(word(bytes, first + at)) >> unused)
             });
         }
-        // Up to four bytes never wrap, so `v` is sought as what a record
+        // Up to four bytes never wrap, so `value` is sought as what a record
         // holds of it: less the base.
-        let Some(offset) = v.checked_sub(base) else {
-            return Err(if v < base { 0 } else { len });
+        let Some(offset) = value.checked_sub(base) else {
+            return Err(if value < base { 0 } else { len });
         };
         let (first, unused) = (self.start + self.value_width - 4, 32 - 8 * self.value_width);
         halve(len, size, offset, |at| {
@@ -123,24 +123,24 @@ impl<'a> Records<'a> {
         (0..self.len).map(move |i| (self.value(i), self.count(i)))
     }
 
-    /// Whether a record of these widths holds `v` counted `n` times.
-    fn holds(self, v: i64, n: u64) -> bool {
+    /// Whether a record of these widths holds `value` counted `count` times.
+    fn holds(self, value: i64, count: u64) -> bool {
         // A value further from the base than an `i64` holds wraps, which
         // eight bytes take.
-        let value_width = v.checked_sub(self.base).map_or(8, signed_width);
-        value_width <= self.value_width && unsigned_width(n - 1) <= self.count_width
+        let value_width = value.checked_sub(self.base).map_or(8, signed_width);
+        value_width <= self.value_width && unsigned_width(count - 1) <= self.count_width
     }
 
-    /// How `n` more of `v` goes in: the record that counts it and its new
+    /// How `count` more of `value` goes in: the record that counts it and its new
     /// count, or where a record of it goes. `None` when these widths don't
     /// hold that.
-    fn place(self, v: i64, n: u64) -> Option<Result<(usize, u64), usize>> {
-        match self.find(v) {
+    fn place(self, value: i64, count: u64) -> Option<Result<(usize, u64), usize>> {
+        match self.find(value) {
             Ok(i) => {
-                let count = self.count(i) + n;
-                self.holds(v, count).then_some(Ok((i, count)))
+                let new_count = self.count(i) + count;
+                self.holds(value, new_count).then_some(Ok((i, new_count)))
             }
-            Err(i) => self.holds(v, n).then_some(Err(i)),
+            Err(i) => self.holds(value, count).then_some(Err(i)),
         }
     }
 
@@ -153,44 +153,49 @@ impl<'a> Records<'a> {
         (pairs, self.len)
     }
 
-    /// The pairs with `n` more of `v`.
-    fn with(self, v: i64, n: u64) -> Vec<(i64, u64)> {
+    /// The pairs with `count` more of `value`.
+    fn with(self, value: i64, count: u64) -> Vec<(i64, u64)> {
         let mut pairs = Vec::with_capacity(self.len + 1);
         pairs.extend(self.iter());
-        match self.find(v) {
-            Ok(i) => pairs[i].1 += n,
-            Err(i) => pairs.insert(i, (v, n)),
+        match self.find(value) {
+            Ok(i) => pairs[i].1 += count,
+            Err(i) => pairs.insert(i, (value, count)),
         }
         pairs
     }
 }
 
-/// Where `v` is among `len` ascending values, or where it would go;
+/// Where `sought` is among `len` ascending values, or where it would go;
 /// `value` reads the one `size` bytes times its place from the first.
 ///
-/// Halved without a branch on a value read: which half holds `v` is a coin
+/// Halved without a branch on a value read: which half holds `sought` is a coin
 /// toss, and a processor that guesses it wrong pays more than the read
 /// costs. And by powers of two, after one step that leaves such a count,
 /// so the next place is an addition away, with no product to wait for.
-fn halve(len: usize, size: usize, v: i64, value: impl Fn(usize) -> i64) -> Result<usize, usize> {
+fn halve(
+    len: usize,
+    size: usize,
+    sought: i64,
+    value: impl Fn(usize) -> i64,
+) -> Result<usize, usize> {
     if len == 0 {
         return Err(0);
     }
-    // The last value that is `v` or less is among `width` from `low` on, if
+    // The last value that is `sought` or less is among `width` from `low` on, if
     // there is one at all.
     let mut width = 1 << len.ilog2();
     let mut step = width * size;
-    let above = value((len - width) * size) > v;
+    let above = value((len - width) * size) > sought;
     let mut low = hint::select_unpredictable(above, 0, len - width);
     let mut at = low * size;
     while width > 1 {
         width /= 2;
         step /= 2;
-        let above = value(at + step) > v;
+        let above = value(at + step) > sought;
         low = hint::select_unpredictable(above, low, low + width);
         at = hint::select_unpredictable(above, at, at + step);
     }
-    match value(at).cmp(&v) {
+    match value(at).cmp(&sought) {
         Ordering::Equal => Ok(low),
         Ordering::Less => Err(low + 1),
         Ordering::Greater => Err(low),
@@ -209,7 +214,7 @@ fn unsigned_width(n: u64) -> usize {
 }
 
 fn count_width(pairs: &[(i64, u64)]) -> usize {
-    unsigned_width(pairs.iter().map(|&(_, n)| n - 1).max().unwrap_or(0))
+    unsigned_width(pairs.iter().map(|&(_, count)| count - 1).max().unwrap_or(0))
 }
 
 fn byte(width: usize) -> u8 {
@@ -266,19 +271,19 @@ fn set_len(run: &mut [u8], len: usize) {
     run[2..4].copy_from_slice(&len.to_le_bytes());
 }
 
-/// Counts `n` more of `v` in the run. False, with nothing counted, when
+/// Counts `count` more of `value` in the run. False, with nothing counted, when
 /// the run's widths don't hold that or the run is full.
-fn put(run: &mut Vec<u8>, v: i64, n: u64) -> bool {
+fn put(run: &mut Vec<u8>, value: i64, count: u64) -> bool {
     let records = Records::of(run);
     let (size, widths) = (records.size(), (records.value_width, records.count_width));
     let len = run.len();
-    match records.place(v, n) {
-        Some(Ok((i, count))) => {
+    match records.place(value, count) {
+        Some(Ok((i, new_count))) => {
             let end = records.at(i + 1);
-            write(run, end, widths.1, count - 1);
+            write(run, end, widths.1, new_count - 1);
         }
         Some(Err(i)) if len + size <= RUN_MAX => {
-            let (at, offset, held) = (records.at(i), v.wrapping_sub(records.base), records.len);
+            let (at, offset, held) = (records.at(i), value.wrapping_sub(records.base), records.len);
             if len + size > run.capacity() {
                 // A `Vec` doubles when full, which would leave a run half
                 // empty. An allocator hands out sixteens.
@@ -286,7 +291,7 @@ fn put(run: &mut Vec<u8>, v: i64, n: u64) -> bool {
             }
             run.resize(len + size, 0);
             run.copy_within(at..len, at + size);
-            record(run, at, widths, offset, n);
+            record(run, at, widths, offset, count);
             set_len(run, held + 1);
         }
         _ => return false,
@@ -294,23 +299,23 @@ fn put(run: &mut Vec<u8>, v: i64, n: u64) -> bool {
     true
 }
 
-/// Takes `n` of `v` back out of the run: whether that was the last of
-/// `v`. `None`, with nothing taken, when fewer are held.
-fn take(run: &mut Vec<u8>, v: i64, n: u64) -> Option<bool> {
+/// Takes `count` of `value` back out of the run: whether that was the last of
+/// `value`. `None`, with nothing taken, when fewer are held.
+fn take(run: &mut Vec<u8>, value: i64, count: u64) -> Option<bool> {
     let records = Records::of(run);
-    let i = records.find(v).ok()?;
-    let (count, at, size) = (records.count(i), records.at(i), records.size());
+    let i = records.find(value).ok()?;
+    let (held_count, at, size) = (records.count(i), records.at(i), records.size());
     let (width, held, len) = (records.count_width, records.len, run.len());
-    match count.cmp(&n) {
+    match held_count.cmp(&count) {
         Ordering::Less => return None,
         Ordering::Equal => {
             run.copy_within(at + size..len, at);
             run.truncate(len - size);
             set_len(run, held - 1);
         }
-        Ordering::Greater => write(run, at + size, width, count - n - 1),
+        Ordering::Greater => write(run, at + size, width, held_count - count - 1),
     }
-    Some(count == n)
+    Some(held_count == count)
 }
 
 /// `pairs`, which ascend and are not empty, as runs of at most
@@ -337,16 +342,22 @@ fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
     run[1] = byte(widths.1);
     set_len(&mut run, pairs.len());
     run[4..HEADER].copy_from_slice(&base.to_le_bytes());
-    for (i, &(v, n)) in pairs.iter().enumerate() {
-        record(&mut run, HEADER + i * size, widths, v.wrapping_sub(base), n);
+    for (i, &(value, count)) in pairs.iter().enumerate() {
+        record(
+            &mut run,
+            HEADER + i * size,
+            widths,
+            value.wrapping_sub(base),
+            count,
+        );
     }
     runs.insert(least, run);
 }
 
-/// The key of the run that holds `v` if any does: the last key that is
-/// `v` or less, or the first, whose run holds what is below every key.
-fn key_of(runs: &BTreeMap<i64, Vec<u8>>, v: i64) -> i64 {
-    let run = (runs.range(..=v).next_back()).or_else(|| runs.iter().next());
+/// The key of the run that holds `value` if any does: the last key that is
+/// `value` or less, or the first, whose run holds what is below every key.
+fn key_of(runs: &BTreeMap<i64, Vec<u8>>, value: i64) -> i64 {
+    let run = (runs.range(..=value).next_back()).or_else(|| runs.iter().next());
     *run.expect("runs hold a run").0
 }
 
@@ -388,8 +399,8 @@ impl ValueCounts {
                 byte(widths.0),
                 byte(widths.1),
             ]);
-            for (i, &(v, n)) in pairs.iter().enumerate() {
-                record(&mut cell, CELL_HEADER + i * size, widths, v, n);
+            for (i, &(value, count)) in pairs.iter().enumerate() {
+                record(&mut cell, CELL_HEADER + i * size, widths, value, count);
             }
             return ValueCounts::Inline(cell);
         }
@@ -401,33 +412,33 @@ impl ValueCounts {
         ValueCounts::Run(runs.pop_first().expect("pairs make a run").1)
     }
 
-    /// Counts `n` more of `v`, `n` above zero.
-    pub(crate) fn add(&mut self, v: i64, n: u64) {
+    /// Counts `count` more of `value`, `count` above zero.
+    pub(crate) fn add(&mut self, value: i64, count: u64) {
         match self {
             ValueCounts::Inline(cell) => {
                 let held = Records::in_cell(cell);
                 let (size, widths) = (held.size(), (held.value_width, held.count_width));
                 let end = held.at(held.len);
-                match held.place(v, n) {
-                    Some(Ok((i, count))) => {
+                match held.place(value, count) {
+                    Some(Ok((i, new_count))) => {
                         let end = held.at(i + 1);
-                        write(cell, end, widths.1, count - 1);
+                        write(cell, end, widths.1, new_count - 1);
                     }
                     Some(Err(i)) if end + size <= cell.len() => {
                         let at = held.at(i);
                         cell.copy_within(at..end, at + size);
-                        record(cell, at, widths, v, n);
+                        record(cell, at, widths, value, count);
                         cell[0] += 1;
                     }
                     // Too many or too wide for the cell as it is: encoded
                     // anew they may fit it yet.
                     _ => {
                         let (mut pairs, mut len) = held.few();
-                        match held.find(v) {
-                            Ok(i) => pairs[i].1 += n,
+                        match held.find(value) {
+                            Ok(i) => pairs[i].1 += count,
                             Err(i) => {
                                 pairs.copy_within(i..len, i + 1);
-                                pairs[i] = (v, n);
+                                pairs[i] = (value, count);
                                 len += 1;
                             }
                         }
@@ -436,36 +447,36 @@ impl ValueCounts {
                 }
             }
             ValueCounts::Run(run) => {
-                if !put(run, v, n) {
-                    *self = ValueCounts::from_pairs(&Records::of(run).with(v, n));
+                if !put(run, value, count) {
+                    *self = ValueCounts::from_pairs(&Records::of(run).with(value, count));
                 }
             }
             ValueCounts::Runs(runs) => {
-                let key = key_of(runs, v);
-                if !put(runs.get_mut(&key).expect("its key"), v, n) {
+                let key = key_of(runs, value);
+                if !put(runs.get_mut(&key).expect("its key"), value, count) {
                     let run = runs.remove(&key).expect("its key");
-                    runs_into(&Records::of(&run).with(v, n), runs);
+                    runs_into(&Records::of(&run).with(value, count), runs);
                 }
             }
         }
     }
 
-    /// Takes `n` of `v` back out. False, with nothing taken, when fewer
+    /// Takes `count` of `value` back out. False, with nothing taken, when fewer
     /// are held.
-    pub(crate) fn sub(&mut self, v: i64, n: u64) -> bool {
+    pub(crate) fn sub(&mut self, value: i64, count: u64) -> bool {
         match self {
             ValueCounts::Inline(cell) => {
                 let held = Records::in_cell(cell);
                 let (size, width, end) = (held.size(), held.count_width, held.at(held.len));
-                let Some((i, count)) = (held.find(v).ok())
+                let Some((i, held_count)) = (held.find(value).ok())
                     .map(|i| (i, held.count(i)))
-                    .filter(|&(_, count)| count >= n)
+                    .filter(|&(_, held_count)| held_count >= count)
                 else {
                     return false;
                 };
                 let at = held.at(i);
-                if count > n {
-                    write(cell, at + size, width, count - n - 1);
+                if held_count > count {
+                    write(cell, at + size, width, held_count - count - 1);
                 } else if held.len > 1 {
                     cell.copy_within(at + size..end, at);
                     cell[0] -= 1;
@@ -475,7 +486,7 @@ impl ValueCounts {
                 }
             }
             ValueCounts::Run(run) => {
-                let Some(last) = take(run, v, n) else {
+                let Some(last) = take(run, value, count) else {
                     return false;
                 };
                 if let Some(moved) = last.then(|| settled(run)).flatten() {
@@ -483,9 +494,9 @@ impl ValueCounts {
                 }
             }
             ValueCounts::Runs(runs) => {
-                let key = key_of(runs, v);
+                let key = key_of(runs, value);
                 let run = runs.get_mut(&key).expect("its key");
-                let Some(last) = take(run, v, n) else {
+                let Some(last) = take(run, value, count) else {
                     return false;
                 };
                 if run.len() == HEADER {
@@ -502,29 +513,29 @@ impl ValueCounts {
     }
 
     pub(crate) fn add_counts(&mut self, other: &ValueCounts) {
-        for (v, n) in other.iter() {
-            self.add(v, n);
+        for (value, count) in other.iter() {
+            self.add(value, count);
         }
     }
 
     /// Takes out what [`ValueCounts::covers`] found held.
     pub(crate) fn sub_counts(&mut self, other: &ValueCounts) {
-        for (v, n) in other.iter() {
-            let held = self.sub(v, n);
+        for (value, count) in other.iter() {
+            let held = self.sub(value, count);
             assert!(held, "covers checked");
         }
     }
 
     pub(crate) fn covers(&self, other: &ValueCounts) -> bool {
-        other.iter().all(|(v, n)| self.has(v, n))
+        other.iter().all(|(value, count)| self.has(value, count))
     }
 
-    fn has(&self, v: i64, n: u64) -> bool {
+    fn has(&self, value: i64, count: u64) -> bool {
         let records = match self {
-            ValueCounts::Runs(runs) => runs.get(&key_of(runs, v)).map(|run| Records::of(run)),
+            ValueCounts::Runs(runs) => runs.get(&key_of(runs, value)).map(|run| Records::of(run)),
             _ => self.flat(),
         };
-        records.is_some_and(|records| records.find(v).is_ok_and(|i| records.count(i) >= n))
+        records.is_some_and(|records| records.find(value).is_ok_and(|i| records.count(i) >= count))
     }
 
     /// The records of a cell that holds them in itself or in one run.
@@ -588,7 +599,7 @@ mod tests {
     }
 
     fn pairs_of(held: &BTreeMap<i64, u64>) -> Vec<(i64, u64)> {
-        held.iter().map(|(&v, &n)| (v, n)).collect()
+        held.iter().map(|(&value, &count)| (value, count)).collect()
     }
 
     fn ends_of(held: &BTreeMap<i64, u64>) -> (i64, i64) {
@@ -629,8 +640,8 @@ mod tests {
     }
 
     impl Shape {
-        fn value(&self, k: u64) -> i64 {
-            (self.least).wrapping_add(self.step.wrapping_mul(k).cast_signed())
+        fn value(&self, index: u64) -> i64 {
+            (self.least).wrapping_add(self.step.wrapping_mul(index).cast_signed())
         }
     }
 
@@ -687,26 +698,36 @@ mod tests {
                 let adds = if step < grow { 80 } else { 10 };
                 let value = shape.value(rng.below(shape.values));
                 if rng.below(100) < adds {
-                    let n = 1 + rng.below(shape.most);
-                    counts.add(value, n);
-                    *held.entry(value).or_default() += n;
+                    let count = 1 + rng.below(shape.most);
+                    counts.add(value, count);
+                    *held.entry(value).or_default() += count;
                 } else {
                     let near = held.range(value..).next().or_else(|| held.iter().next());
-                    let (v, n) = match (near, rng.below(20)) {
+                    let (target, count) = match (near, rng.below(20)) {
                         // More than is held, and a value that isn't.
-                        (Some((&v, &n)), 0) => (v, n + 1),
+                        (Some((&near_value, &near_count)), 0) => (near_value, near_count + 1),
                         (None, _) | (_, 1) => (value.wrapping_sub(1), 1),
-                        (Some((&v, &n)), 2..=7) => (v, n),
-                        (Some((&v, &n)), _) => (v, 1 + rng.below(n)),
+                        (Some((&near_value, &near_count)), 2..=7) => (near_value, near_count),
+                        (Some((&near_value, &near_count)), _) => {
+                            (near_value, 1 + rng.below(near_count))
+                        }
                     };
-                    let has = held.get(&v).is_some_and(|&have| have >= n);
-                    assert_eq!(counts.has(v, n), has, "{at}: has {n} of {v}");
-                    assert_eq!(counts.sub(v, n), has, "{at}: takes {n} of {v}");
+                    let has = held.get(&target).is_some_and(|&have| have >= count);
+                    assert_eq!(
+                        counts.has(target, count),
+                        has,
+                        "{at}: has {count} of {target}"
+                    );
+                    assert_eq!(
+                        counts.sub(target, count),
+                        has,
+                        "{at}: takes {count} of {target}"
+                    );
                     if has {
-                        let have = held.get_mut(&v).unwrap();
-                        *have -= n;
+                        let have = held.get_mut(&target).unwrap();
+                        *have -= count;
                         if *have == 0 {
-                            held.remove(&v);
+                            held.remove(&target);
                         }
                     }
                 }
@@ -737,19 +758,23 @@ mod tests {
         for descending in [false, true] {
             let mut counts = ValueCounts::EMPTY;
             let mut held = BTreeMap::new();
-            for k in 0..20_000_i64 {
-                let v = if descending { -k * 1_000 } else { k * 1_000 };
-                counts.add(v, 1);
-                held.insert(v, 1);
-                assert_eq!(counts.ends(), ends_of(&held), "{v}");
+            for index in 0..20_000_i64 {
+                let value = if descending {
+                    -index * 1_000
+                } else {
+                    index * 1_000
+                };
+                counts.add(value, 1);
+                held.insert(value, 1);
+                assert_eq!(counts.ends(), ends_of(&held), "{value}");
             }
             assert_eq!(form(&counts), "runs");
             check(&counts, &held, "in order");
             // Out again from the least: every run's key leaves ahead of its run.
-            for (v, n) in pairs_of(&held) {
-                assert!(counts.sub(v, n), "{v}");
-                held.remove(&v);
-                assert_eq!(counts.ends(), ends_of(&held), "{v}");
+            for (value, count) in pairs_of(&held) {
+                assert!(counts.sub(value, count), "{value}");
+                held.remove(&value);
+                assert_eq!(counts.ends(), ends_of(&held), "{value}");
             }
             assert_eq!(form(&counts), "cell");
         }
@@ -770,22 +795,22 @@ mod tests {
                 }
                 held
             };
-            let (a, b) = (draw(ours), draw(theirs));
-            let mut counts = ValueCounts::from_pairs(&pairs_of(&a));
-            let other = ValueCounts::from_pairs(&pairs_of(&b));
+            let (our_held, their_held) = (draw(ours), draw(theirs));
+            let mut counts = ValueCounts::from_pairs(&pairs_of(&our_held));
+            let other = ValueCounts::from_pairs(&pairs_of(&their_held));
             counts.add_counts(&other);
-            let mut both = a.clone();
-            for (&v, &n) in &b {
-                *both.entry(v).or_default() += n;
+            let mut both = our_held.clone();
+            for (&value, &count) in &their_held {
+                *both.entry(value).or_default() += count;
             }
             check(&counts, &both, "folded in");
             assert!(counts.covers(&other));
             counts.sub_counts(&other);
-            check(&counts, &a, "taken out");
+            check(&counts, &our_held, "taken out");
             // One more of a value than is left, and a value never held.
-            let (&v, &n) = b.iter().next().unwrap();
-            let more = a.get(&v).copied().unwrap_or(0) + n + 1;
-            assert!(!counts.covers(&ValueCounts::from_pairs(&[(v, more)])));
+            let (&value, &count) = their_held.iter().next().unwrap();
+            let more = our_held.get(&value).copied().unwrap_or(0) + count + 1;
+            assert!(!counts.covers(&ValueCounts::from_pairs(&[(value, more)])));
             assert!(!counts.covers(&ValueCounts::from_pairs(&[(-7, 1)])));
         }
     }
@@ -795,11 +820,17 @@ mod tests {
     #[test]
     fn a_cell_gives_only_what_it_holds() {
         for values in [0, 3, 400, 20_000] {
-            let pairs: Vec<(i64, u64)> = (0..values).map(|v| (v * 70, 2)).collect();
+            let pairs: Vec<(i64, u64)> = (0..values).map(|index| (index * 70, 2)).collect();
             let mut counts = ValueCounts::from_pairs(&pairs);
-            for (v, n) in [(-70, 1), (35, 1), (values * 70, 1), (0, 3), (70, u64::MAX)] {
-                assert!(!counts.has(v, n), "{values} values: has {n} of {v}");
-                assert!(!counts.sub(v, n), "{values} values: gave {n} of {v}");
+            for (value, count) in [(-70, 1), (35, 1), (values * 70, 1), (0, 3), (70, u64::MAX)] {
+                assert!(
+                    !counts.has(value, count),
+                    "{values} values: has {count} of {value}"
+                );
+                assert!(
+                    !counts.sub(value, count),
+                    "{values} values: gave {count} of {value}"
+                );
             }
             assert!(counts.iter().eq(pairs.iter().copied()), "{values} values");
         }
@@ -819,7 +850,7 @@ mod tests {
         assert_eq!(shape(&[(1280, 2), (1350, 1), (1420, 1)]), ("cell", 3, 2, 1));
         assert_eq!(shape(&[]), ("cell", 0, 1, 0));
         let once = |values: i64, least: i64, step: i64| -> Vec<(i64, u64)> {
-            (0..values).map(|v| (least + v * step, 1)).collect()
+            (0..values).map(|index| (least + index * step, 1)).collect()
         };
         // What a cell holds itself, and one value more.
         assert_eq!(shape(&once(28, 0, 1)), ("cell", 28, 1, 0));
@@ -856,8 +887,8 @@ mod tests {
                 let counts = ValueCounts::from_pairs(&pairs);
                 assert!(counts.iter().eq(pairs.iter().copied()), "{at}");
                 let mut added = ValueCounts::EMPTY;
-                for &(v, n) in pairs.iter().rev() {
-                    added.add(v, n);
+                for &(value, count) in pairs.iter().rev() {
+                    added.add(value, count);
                 }
                 assert!(added.iter().eq(pairs.iter().copied()), "{at}: added");
                 assert_eq!(added.ends(), (pairs[0].0, pairs[pairs.len() - 1].0), "{at}");
@@ -868,8 +899,8 @@ mod tests {
     /// A run widens when a value or a count outgrows it, whatever it holds.
     #[test]
     fn a_run_widens_for_a_value_or_a_count_it_cannot_hold() {
-        let narrow: Vec<(i64, u64)> = (0..100).map(|v| (v, 1)).collect();
-        for (v, n) in [
+        let narrow: Vec<(i64, u64)> = (0..100).map(|value| (value, 1)).collect();
+        for (value, count) in [
             (1 << 20, 1),
             (-(1 << 40), 1),
             (i64::MAX, 1),
@@ -880,13 +911,13 @@ mod tests {
         ] {
             let mut counts = ValueCounts::from_pairs(&narrow);
             let mut held: BTreeMap<i64, u64> = narrow.iter().copied().collect();
-            counts.add(v, n);
-            *held.entry(v).or_default() += n;
-            check(&counts, &held, &format!("{n} of {v}"));
-            assert!(counts.sub(v, n));
-            *held.get_mut(&v).unwrap() -= n;
-            held.retain(|_, n| *n > 0);
-            check(&counts, &held, &format!("{n} of {v} taken"));
+            counts.add(value, count);
+            *held.entry(value).or_default() += count;
+            check(&counts, &held, &format!("{count} of {value}"));
+            assert!(counts.sub(value, count));
+            *held.get_mut(&value).unwrap() -= count;
+            held.retain(|_, left| *left > 0);
+            check(&counts, &held, &format!("{count} of {value} taken"));
         }
     }
 }

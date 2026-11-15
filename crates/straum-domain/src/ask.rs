@@ -36,9 +36,9 @@ impl Spec {
         if ask.measures.is_empty() {
             errors.push(AskError::NoMeasures);
         }
-        for m in &ask.measures {
-            if fact.measure(m.as_str()).is_none() {
-                errors.push(AskError::UnknownMeasure(m.clone()));
+        for measure in &ask.measures {
+            if fact.measure(measure.as_str()).is_none() {
+                errors.push(AskError::UnknownMeasure(measure.clone()));
             }
         }
 
@@ -133,9 +133,9 @@ impl fmt::Display for AskError {
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
             AskError::WrongType { key, column, value } => {
                 let value = match value {
-                    Literal::Int(n) => format!("the integer {n}"),
-                    Literal::Text(s) => format!("the text {s:?}"),
-                    Literal::Bool(b) => format!("the boolean {b}"),
+                    Literal::Int(integer) => format!("the integer {integer}"),
+                    Literal::Text(text) => format!("the text {text:?}"),
+                    Literal::Bool(boolean) => format!("the boolean {boolean}"),
                 };
                 write!(f, "{key} is {column}, so it can't be {value}")
             }

@@ -24,19 +24,19 @@ pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
     let fraction = fraction.units as f64 / 10f64.powi(fraction.places as i32);
     let rank = (fraction * values.len() as f64).ceil() as usize;
     match values.get(rank.max(1) - 1) {
-        Some(&v) => Value::Int(v),
+        Some(&value) => Value::Int(value),
         None => Value::Null,
     }
 }
 
-pub fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
+pub fn id(name: &str) -> Identifier {
+    Identifier::new(name).unwrap()
 }
 
-pub fn col(s: &str) -> ByKey {
+pub fn col(name: &str) -> ByKey {
     ByKey::Column {
-        column: id(s),
-        name: id(s),
+        column: id(name),
+        name: id(name),
     }
 }
 
@@ -47,12 +47,12 @@ pub fn attr(name: &str, column: &str) -> Attribute {
     }
 }
 
-pub fn text(s: &str) -> Datum {
-    Datum::Text(s.into())
+pub fn text(value: &str) -> Datum {
+    Datum::Text(value.into())
 }
 
-pub fn lit(s: &str) -> Literal {
-    Literal::Text(s.into())
+pub fn lit(value: &str) -> Literal {
+    Literal::Text(value.into())
 }
 
 pub fn cond(key: &str, values: Vec<Literal>) -> Condition {
@@ -76,10 +76,10 @@ pub fn dim_row(key: &[Datum], attrs: &[Datum]) -> Vec<Datum> {
 
 /// SQL `=`: null matches nothing.
 pub fn holds(value: &Datum, values: &[Literal]) -> bool {
-    values.iter().any(|l| match (value, l) {
-        (Datum::Int(a), Literal::Int(b)) => a == b,
-        (Datum::Text(a), Literal::Text(b)) => **a == **b,
-        (Datum::Bool(a), Literal::Bool(b)) => a == b,
+    values.iter().any(|literal| match (value, literal) {
+        (Datum::Int(found), Literal::Int(wanted)) => found == wanted,
+        (Datum::Text(found), Literal::Text(wanted)) => **found == **wanted,
+        (Datum::Bool(found), Literal::Bool(wanted)) => found == wanted,
         _ => false,
     })
 }

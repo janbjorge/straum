@@ -48,8 +48,8 @@ fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
         as_text: Vec::new(),
         name: id(name),
         table: table(name),
-        key: key.iter().map(|k| id(k)).collect(),
-        attributes: attrs.iter().map(|a| id(a)).collect(),
+        key: key.iter().map(|column| id(column)).collect(),
+        attributes: attrs.iter().map(|column| id(column)).collect(),
     }
 }
 
@@ -88,19 +88,19 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
 /// the customer id itself, so every ref joins on a fact column.
 fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec {
     let chained = shape == Shape::Chained;
-    let m = |name, aggregate| Measure {
+    let measure = |name, aggregate| Measure {
         name: id(name),
         aggregate,
         filter: vec![],
     };
     // A semi or anti join reads nothing; the same ref as a left or inner
     // join reads the dim's one column.
-    let r = |i: usize, name: &str, via: Via, attrs: Vec<Attribute>| Ref {
+    let join = |index: usize, name: &str, via: Via, attrs: Vec<Attribute>| Ref {
         alias: id(name),
         dim: id(name),
-        kind: kinds[i],
+        kind: kinds[index],
         via: vec![via],
-        reads: match kinds[i] {
+        reads: match kinds[index] {
             RefKind::Left | RefKind::Inner => attrs,
             RefKind::Semi | RefKind::Anti => vec![],
         },
@@ -120,13 +120,13 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
             origin: Origin::Timestamptz,
         },
         refs: vec![
-            r(
+            join(
                 CUSTOMERS,
                 "customers",
                 Via::Fact(id("customer")),
                 vec![attr("country")],
             ),
-            r(
+            join(
                 TIERS,
                 "tiers",
                 if chained {
@@ -139,14 +139,14 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
                 },
                 vec![attr("label")],
             ),
-            r(TAGS, "tags", Via::Fact(id("product")), vec![attr("tag")]),
-            r(
+            join(TAGS, "tags", Via::Fact(id("product")), vec![attr("tag")]),
+            join(
                 PROMOS,
                 "promos",
                 Via::Fact(id("product")),
                 vec![attr("note")],
             ),
-            r(
+            join(
                 BLOCKED,
                 "blocked",
                 Via::Fact(id("customer")),
@@ -161,18 +161,18 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
             })
             .collect(),
         measures: vec![
-            m("n", Aggregate::Count),
-            m("q", Aggregate::Sum(id("qty"))),
-            m("q_max", Aggregate::Max(id("qty"))),
-            m("q_min", Aggregate::Min(id("qty"))),
-            m("q_median", percentile(5, 1, "qty")),
-            m("products", Aggregate::CountDistinct(id("product"))),
-            m("q_n", Aggregate::CountNotNull(id("qty"))),
-            m("all_even", Aggregate::BoolAnd(id("even"))),
-            m("any_even", Aggregate::BoolOr(id("even"))),
+            measure("n", Aggregate::Count),
+            measure("q", Aggregate::Sum(id("qty"))),
+            measure("q_max", Aggregate::Max(id("qty"))),
+            measure("q_min", Aggregate::Min(id("qty"))),
+            measure("q_median", percentile(5, 1, "qty")),
+            measure("products", Aggregate::CountDistinct(id("product"))),
+            measure("q_n", Aggregate::CountNotNull(id("qty"))),
+            measure("all_even", Aggregate::BoolAnd(id("even"))),
+            measure("any_even", Aggregate::BoolOr(id("even"))),
             Measure {
                 filter: vec![cond("country", vec![lit("NO")])],
-                ..m(FILTERED, Aggregate::Sum(id("qty")))
+                ..measure(FILTERED, Aggregate::Sum(id("qty")))
             },
         ],
         filter,
@@ -262,8 +262,8 @@ fn remove_dim(
 ) {
     store.remove_row(dim, &dim_row(key, attrs)).unwrap();
     let rows = dims.get_mut(dim).unwrap().get_mut(key).unwrap();
-    let i = rows.iter().position(|a| a == attrs).unwrap();
-    rows.remove(i);
+    let index = rows.iter().position(|held| held == attrs).unwrap();
+    rows.remove(index);
     if rows.is_empty() {
         dims.get_mut(dim).unwrap().remove(key);
     }
@@ -294,31 +294,31 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) ->
             .unwrap_or_default()
     };
     let mut rows: Vec<JoinRow> = vec![Vec::new()];
-    for (i, (dim, kind)) in ["customers", "tiers", "tags", "promos", "blocked"]
+    for (index, (dim, kind)) in ["customers", "tiers", "tags", "promos", "blocked"]
         .into_iter()
         .zip(kinds)
         .enumerate()
     {
         let mut next = Vec::new();
         for joined in &rows {
-            let key = match i {
+            let key = match index {
                 CUSTOMERS | BLOCKED => row[CUSTOMER].clone(),
                 TIERS if chained => {
-                    (joined[CUSTOMERS].as_ref()).map_or(Datum::Null, |c| c[1].clone())
+                    (joined[CUSTOMERS].as_ref()).map_or(Datum::Null, |customer| customer[1].clone())
                 }
                 TIERS => row[CUSTOMER].clone(),
                 _ => row[PRODUCT].clone(),
             };
             let found = matches(dim, &key);
-            let with = |m: Option<Vec<Datum>>| {
+            let with = |matched: Option<Vec<Datum>>| {
                 let mut joined = joined.clone();
-                joined.push(m);
+                joined.push(matched);
                 joined
             };
             match kind {
                 RefKind::Left if found.is_empty() => next.push(with(None)),
                 RefKind::Left | RefKind::Inner => {
-                    next.extend(found.into_iter().map(|m| with(Some(m))))
+                    next.extend(found.into_iter().map(|matched| with(Some(matched))))
                 }
                 RefKind::Semi if !found.is_empty() => next.push(with(None)),
                 RefKind::Anti if found.is_empty() => next.push(with(None)),
@@ -332,7 +332,9 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) ->
 
 /// A key's value for one order under one way its joins resolved.
 fn value(row: &[Datum], joined: &JoinRow, key: &Identifier) -> Datum {
-    let attr = |r: usize, i: usize| (joined[r].as_ref()).map_or(Datum::Null, |m| m[i].clone());
+    let attr = |join: usize, column: usize| {
+        (joined[join].as_ref()).map_or(Datum::Null, |matched| matched[column].clone())
+    };
     match key.as_str() {
         "customer" => row[CUSTOMER].clone(),
         "product" => row[PRODUCT].clone(),
@@ -346,7 +348,7 @@ fn value(row: &[Datum], joined: &JoinRow, key: &Identifier) -> Datum {
 fn passes(row: &[Datum], joined: &JoinRow, conds: &[Condition]) -> bool {
     conds
         .iter()
-        .all(|c| holds(&value(row, joined, &c.key), &c.values))
+        .all(|condition| holds(&value(row, joined, &condition.key), &condition.values))
 }
 
 /// The reference answer: the ask over the raw rows joined as the dims are: every way each row's
@@ -365,8 +367,8 @@ fn reference(
         groups.insert(Vec::new(), Vec::new());
     }
     for row in rows {
-        let Datum::Int(t) = row[AT] else { continue };
-        if t < ask.from || t >= ask.to {
+        let Datum::Int(at) = row[AT] else { continue };
+        if at < ask.from || at >= ask.to {
             continue;
         }
         for joined in join_rows(row, dims, kinds, chained) {
@@ -376,13 +378,13 @@ fn reference(
             let key = ask
                 .keys
                 .iter()
-                .map(|k| match k {
+                .map(|key| match key {
                     AskKey::Key(name) => value(row, &joined, name),
                     AskKey::Bucket => Datum::Int(
                         Width {
                             seconds: HOUR as u32,
                         }
-                        .bucket_start(t),
+                        .bucket_start(at),
                     ),
                 })
                 .collect();
@@ -398,14 +400,14 @@ fn reference(
             AnswerRow { keys, values }
         })
         .collect();
-    let columns = (ask.keys.iter().map(|k| match k {
-        AskKey::Key(p) => AnswerColumn {
-            name: p.to_string(),
+    let columns = (ask.keys.iter().map(|key| match key {
+        AskKey::Key(name) => AnswerColumn {
+            name: name.to_string(),
             scale: 0,
             is_time: false,
         },
         AskKey::Bucket => AnswerColumn {
-            name: k.to_string(),
+            name: key.to_string(),
             scale: 0,
             is_time: true,
         },
@@ -419,35 +421,35 @@ fn reference(
     Answer { columns, rows }
 }
 
-fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
+fn measure(measure: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
     let rows: Vec<_> = rows
         .iter()
-        .filter(|(r, j)| passes(r, j, &m.filter))
+        .filter(|(row, joined)| passes(row, joined, &measure.filter))
         .collect();
     let ints = |pos: usize| -> Vec<i128> {
         rows.iter()
-            .filter_map(|(r, _)| match r[pos] {
-                Datum::Int(v) => Some(i128::from(v)),
+            .filter_map(|(row, _)| match row[pos] {
+                Datum::Int(value) => Some(i128::from(value)),
                 _ => None,
             })
             .collect()
     };
-    let or_null = |v: Option<i128>| v.map_or(Value::Null, Value::Int);
+    let or_null = |value: Option<i128>| value.map_or(Value::Null, Value::Int);
     let bools = || -> Vec<bool> {
         rows.iter()
-            .filter_map(|(r, _)| match r[EVEN] {
-                Datum::Bool(v) => Some(v),
+            .filter_map(|(row, _)| match row[EVEN] {
+                Datum::Bool(value) => Some(value),
                 _ => None,
             })
             .collect()
     };
-    let or_null_bool = |v: Option<bool>| v.map_or(Value::Null, Value::Bool);
-    match &m.aggregate {
+    let or_null_bool = |value: Option<bool>| value.map_or(Value::Null, Value::Bool);
+    match &measure.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
         Aggregate::CountNotNull(_) => Value::Int(ints(QTY).len() as i128),
         Aggregate::Sum(_) => {
-            let v = ints(QTY);
-            or_null((!v.is_empty()).then(|| v.iter().sum()))
+            let values = ints(QTY);
+            or_null((!values.is_empty()).then(|| values.iter().sum()))
         }
         Aggregate::Max(_) => or_null(ints(QTY).into_iter().max()),
         Aggregate::Min(_) => or_null(ints(QTY).into_iter().min()),
@@ -455,8 +457,8 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
         Aggregate::CountDistinct(_) => {
             let seen: HashSet<_> = rows
                 .iter()
-                .map(|(r, _)| &r[PRODUCT])
-                .filter(|d| **d != Datum::Null)
+                .map(|(row, _)| &row[PRODUCT])
+                .filter(|product| **product != Datum::Null)
                 .collect();
             Value::Int(seen.len() as i128)
         }
@@ -469,12 +471,12 @@ fn measure(m: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
 fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
     Ask {
         view: id("orders"),
-        measures: measures.iter().map(|m| id(m)).collect(),
+        measures: measures.iter().map(|name| id(name)).collect(),
         keys: by
             .iter()
-            .map(|k| match *k {
+            .map(|key| match *key {
                 "bucket" => AskKey::Bucket,
-                k => AskKey::Key(id(k)),
+                name => AskKey::Key(id(name)),
             })
             .collect(),
         filter,
@@ -759,7 +761,7 @@ fn a_chain_reads_through_the_first_dim() {
     let by_label = ask(&["q"], &["label"], vec![]);
     let labels = |store: &Store| -> Vec<(Datum, Value)> {
         (store.ask(&by_label).unwrap().rows.into_iter())
-            .map(|r| (r.keys[0].clone(), r.values[0].clone()))
+            .map(|row| (row.keys[0].clone(), row.values[0].clone()))
             .collect()
     };
     // Customer 1 is gold; 2 has no tier; 3 has no row. Product 1 has two
@@ -922,9 +924,9 @@ fn joins_on_by_keys_keep_no_bound_cells() {
     assert_eq!(store.bound_cells("orders"), None);
     // Product 2 has no tag and is on no promo; customer 2 is blocked.
     let by_tag = ask(&["n", "q"], &["tag"], vec![]);
-    let row = |tag: &str, n: i128, q: i128| AnswerRow {
+    let row = |tag: &str, count: i128, quantity: i128| AnswerRow {
         keys: vec![text(tag)],
-        values: vec![Value::Int(n), Value::Int(q)],
+        values: vec![Value::Int(count), Value::Int(quantity)],
     };
     assert_eq!(store.ask(&by_tag).unwrap().rows, [row("red", 1, 5)]);
     check(&store, &spec, &dims, &KINDS, &orders, &by_tag);
@@ -1210,7 +1212,7 @@ fn run(seed: u64, run: Run) -> usize {
             8..=11 => {
                 let (dim, key, attrs) = rng.dim_row(chained);
                 let held = (dims.get(dim))
-                    .and_then(|d| d.get(&key))
+                    .and_then(|by_key| by_key.get(&key))
                     .is_some_and(|rows| rows.contains(&attrs));
                 if held {
                     remove_dim(&mut store, &mut dims, dim, &key, &attrs);

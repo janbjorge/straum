@@ -56,9 +56,13 @@ fn held<T: TryFrom<N>, N>(each: impl Iterator<Item = N>) -> Vec<T> {
     .collect()
 }
 
-fn walk<T: Copy, N: From<T>, G: Copy>(column: &[T], beside: &[G], mut f: impl FnMut(usize, G, N)) {
-    for (i, (&n, &g)) in column.iter().zip(beside).enumerate() {
-        f(i, g, n.into());
+fn walk<T: Copy, N: From<T>, G: Copy>(
+    column: &[T],
+    beside: &[G],
+    mut visit: impl FnMut(usize, G, N),
+) {
+    for (cell, (&entry, &beside_entry)) in column.iter().zip(beside).enumerate() {
+        visit(cell, beside_entry, entry.into());
     }
 }
 
@@ -68,12 +72,14 @@ fn walk_both<T: Copy, N: From<T>, C: Copy, G: Copy>(
     column: &[T],
     counts: &[C],
     beside: &[G],
-    mut f: impl FnMut(usize, G, N, u64),
+    mut visit: impl FnMut(usize, G, N, u64),
 ) where
     u64: From<C>,
 {
-    for (i, ((&n, &count), &g)) in column.iter().zip(counts).zip(beside).enumerate() {
-        f(i, g, n.into(), count.into());
+    for (cell, ((&entry, &count), &beside_entry)) in
+        column.iter().zip(counts).zip(beside).enumerate()
+    {
+        visit(cell, beside_entry, entry.into(), count.into());
     }
 }
 
@@ -82,14 +88,16 @@ fn walk_with<T: Copy, N: From<T>, G: Copy>(
     column: &[T],
     counts: &Counts,
     beside: &[G],
-    mut f: impl FnMut(usize, G, N, u64),
+    mut visit: impl FnMut(usize, G, N, u64),
 ) {
     match counts {
-        Counts::Zero(_) => walk(column, beside, |i, g, n| f(i, g, n, 0)),
-        Counts::U8(counts) => walk_both(column, counts, beside, f),
-        Counts::U16(counts) => walk_both(column, counts, beside, f),
-        Counts::U32(counts) => walk_both(column, counts, beside, f),
-        Counts::U64(counts) => walk_both(column, counts, beside, f),
+        Counts::Zero(_) => walk(column, beside, |cell, beside_entry, entry| {
+            visit(cell, beside_entry, entry, 0);
+        }),
+        Counts::U8(counts) => walk_both(column, counts, beside, visit),
+        Counts::U16(counts) => walk_both(column, counts, beside, visit),
+        Counts::U32(counts) => walk_both(column, counts, beside, visit),
+        Counts::U64(counts) => walk_both(column, counts, beside, visit),
     }
 }
 
@@ -215,16 +223,16 @@ impl Counts {
         }
     }
 
-    /// Calls `f` with each cell's place, its entry of `beside` and its
+    /// Calls `visit` with each cell's place, its entry of `beside` and its
     /// count. Not once for a column of zeros: every caller adds what it
     /// is given.
-    pub(crate) fn each<G: Copy>(&self, beside: &[G], f: impl FnMut(usize, G, u64)) {
+    pub(crate) fn each<G: Copy>(&self, beside: &[G], visit: impl FnMut(usize, G, u64)) {
         match self {
             Counts::Zero(_) => {}
-            Counts::U8(column) => walk(column, beside, f),
-            Counts::U16(column) => walk(column, beside, f),
-            Counts::U32(column) => walk(column, beside, f),
-            Counts::U64(column) => walk(column, beside, f),
+            Counts::U8(column) => walk(column, beside, visit),
+            Counts::U16(column) => walk(column, beside, visit),
+            Counts::U32(column) => walk(column, beside, visit),
+            Counts::U64(column) => walk(column, beside, visit),
         }
     }
 }
@@ -319,18 +327,18 @@ impl Sums {
         }
     }
 
-    /// Calls `f` with each cell's place, its entry of `beside`, its sum
+    /// Calls `visit` with each cell's place, its entry of `beside`, its sum
     /// and its count among `counts`.
     pub(crate) fn each<G: Copy>(
         &self,
         counts: &Counts,
         beside: &[G],
-        f: impl FnMut(usize, G, i128, u64),
+        visit: impl FnMut(usize, G, i128, u64),
     ) {
         match self {
-            Sums::I32(column) => walk_with(column, counts, beside, f),
-            Sums::I64(column) => walk_with(column, counts, beside, f),
-            Sums::I128(column) => walk_with(column, counts, beside, f),
+            Sums::I32(column) => walk_with(column, counts, beside, visit),
+            Sums::I64(column) => walk_with(column, counts, beside, visit),
+            Sums::I128(column) => walk_with(column, counts, beside, visit),
         }
     }
 }
@@ -377,7 +385,7 @@ mod tests {
     /// What a column of counts read beside `beside` gives each cell.
     fn read(counts: &Counts, beside: &[u8]) -> Vec<(usize, u8, u64)> {
         let mut seen = Vec::new();
-        counts.each(beside, |i, g, n| seen.push((i, g, n)));
+        counts.each(beside, |cell, group, count| seen.push((cell, group, count)));
         seen
     }
 
@@ -500,7 +508,9 @@ mod tests {
                     for counts in [0, 9, 300, 70_000, 5_000_000_000] {
                         let rows = Counts::of(&vec![counts; list.len()]);
                         let mut seen = Vec::new();
-                        sums.each(&rows, &beside, |i, g, sum, n| seen.push((i, g, sum, n)));
+                        sums.each(&rows, &beside, |cell, group, sum, count| {
+                            seen.push((cell, group, sum, count));
+                        });
                         let all: Vec<_> = (list.iter().enumerate())
                             .map(|(i, &sum)| (i, i as u8, sum, counts))
                             .collect();

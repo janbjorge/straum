@@ -90,17 +90,20 @@ fn valid() {
 #[test]
 fn names_resolve_to_by_keys_and_attributes() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!(t.resolve(&id("a")), Some(Key::ByKey(&t.by_keys[0])));
-    assert_eq!(t.resolve(&id("z_id")), Some(Key::ByKey(&t.by_keys[1])));
+    let view = spec.fact("t").unwrap();
+    assert_eq!(view.resolve(&id("a")), Some(Key::ByKey(&view.by_keys[0])));
     assert_eq!(
-        t.resolve(&id("name")),
-        Some(Key::Attribute(&t.refs[0], &t.refs[0].reads[0]))
+        view.resolve(&id("z_id")),
+        Some(Key::ByKey(&view.by_keys[1]))
+    );
+    assert_eq!(
+        view.resolve(&id("name")),
+        Some(Key::Attribute(&view.refs[0], &view.refs[0].reads[0]))
     );
     for missing in ["r", "id", "nope", "b", "n"] {
-        assert_eq!(t.resolve(&id(missing)), None, "{missing}");
+        assert_eq!(view.resolve(&id(missing)), None, "{missing}");
     }
-    let keys: Vec<&Identifier> = t.keys().collect();
+    let keys: Vec<&Identifier> = view.keys().collect();
     assert_eq!(keys, [&id("a"), &id("z_id"), &id("name")]);
 }
 
@@ -108,37 +111,39 @@ fn names_resolve_to_by_keys_and_attributes() {
 /// the measure inputs, each once, and then holds the ref attributes.
 #[test]
 fn columns_and_rollup_key() {
-    let mut t = fact();
-    t.by_keys = vec![col("a")];
-    t.measures.push(Measure {
+    let mut view = fact();
+    view.by_keys = vec![col("a")];
+    view.measures.push(Measure {
         name: id("s"),
         aggregate: Aggregate::Sum(id("z_id")),
         filter: vec![],
     });
-    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
-    let attrs: Vec<String> = (t.attributes())
-        .map(|(r, a)| format!("{}.{} AS {}", r.alias, a.column, a.name))
+    assert_eq!(view.columns(), [id("at"), id("a"), id("z_id")]);
+    let attrs: Vec<String> = (view.attributes())
+        .map(|(join, attribute)| {
+            format!("{}.{} AS {}", join.alias, attribute.column, attribute.name)
+        })
         .collect();
     assert_eq!(attrs, ["r.name AS name"]);
-    assert_eq!(t.rollup_key().count(), 3);
+    assert_eq!(view.rollup_key().count(), 3);
 }
 
 /// A via column adds a part to the rollup key unless a `by` key reads the
 /// column itself; whether the column is null is another part.
 #[test]
 fn a_via_column_adds_a_part_unless_a_by_key_reads_it() {
-    let mut t = fact();
-    assert!(!t.vias_add_parts());
-    t.by_keys = vec![col("a")];
-    assert!(t.vias_add_parts());
-    t.by_keys.push(ByKey::IsNull {
+    let mut view = fact();
+    assert!(!view.vias_add_parts());
+    view.by_keys = vec![col("a")];
+    assert!(view.vias_add_parts());
+    view.by_keys.push(ByKey::IsNull {
         column: id("z_id"),
         name: id("unzoned"),
         negated: false,
     });
-    assert!(t.vias_add_parts());
-    t.refs.clear();
-    assert!(!t.vias_add_parts());
+    assert!(view.vias_add_parts());
+    view.refs.clear();
+    assert!(!view.vias_add_parts());
 }
 
 #[test]
@@ -154,28 +159,28 @@ fn tables_once_each_dims_first() {
     other.table.schema = id("other");
     let spec = Spec::new(vec![dim(), other, zones], vec![fact(), log]).unwrap();
     let tables: Vec<String> = (spec.tables().iter())
-        .map(|t| format!("{}.{}", t.schema, t.name))
+        .map(|table| format!("{}.{}", table.schema, table.name))
         .collect();
     assert_eq!(tables, ["public.z", "other.z", "public.t"]);
 }
 
 #[test]
 fn buckets_widen_by_whole_multiples() {
-    let mut t = fact();
-    t.time.wider = vec![
+    let mut view = fact();
+    view.time.wider = vec![
         Width { seconds: 7_200 },
         Width { seconds: 86_400 },
         Width { seconds: 604_800 },
     ];
-    assert!(Spec::new(vec![dim()], vec![t.clone()]).is_ok());
+    assert!(Spec::new(vec![dim()], vec![view.clone()]).is_ok());
 
     // 1.5 hours over an hour, then a day that doesn't widen the day.
-    t.time.wider = vec![
+    view.time.wider = vec![
         Width { seconds: 5_400 },
         Width { seconds: 86_400 },
         Width { seconds: 86_400 },
     ];
-    let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
+    let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
         shown,
@@ -188,15 +193,15 @@ fn buckets_widen_by_whole_multiples() {
 
 #[test]
 fn every_error_is_reported_and_displayed() {
-    let mut z = dim();
-    z.attributes = vec![id("name"), id("name")];
-    let mut w = dim();
-    w.name = id("w");
-    w.key = vec![];
-    let mut t = fact();
-    t.name = id("z");
-    t.time.width = Width { seconds: 420 };
-    t.by_keys = vec![
+    let mut twice = dim();
+    twice.attributes = vec![id("name"), id("name")];
+    let mut keyless = dim();
+    keyless.name = id("w");
+    keyless.key = vec![];
+    let mut view = fact();
+    view.name = id("z");
+    view.time.width = Width { seconds: 420 };
+    view.by_keys = vec![
         col("id"),
         col("at"),
         col("name"),
@@ -207,8 +212,8 @@ fn every_error_is_reported_and_displayed() {
             negated: false,
         },
     ];
-    t.refs[0].dim = id("nope");
-    t.measures = vec![
+    view.refs[0].dim = id("nope");
+    view.measures = vec![
         Measure {
             name: id("m"),
             aggregate: Aggregate::Count,
@@ -226,10 +231,10 @@ fn every_error_is_reported_and_displayed() {
     // A ref on two columns to a key of one, one joining on a column twice,
     // one reading nothing, and one reading an attribute the dim lacks and
     // another twice.
-    let mut u = fact();
-    u.name = id("u");
-    u.by_keys = vec![col("a"), col("z_id"), col("b")];
-    u.refs = vec![
+    let mut joins = fact();
+    joins.name = id("u");
+    joins.by_keys = vec![col("a"), col("z_id"), col("b")];
+    joins.refs = vec![
         Ref {
             alias: id("r"),
             dim: id("z"),
@@ -263,9 +268,9 @@ fn every_error_is_reported_and_displayed() {
             ],
         },
     ];
-    u.measures = vec![];
+    joins.measures = vec![];
 
-    let errors = Spec::new(vec![z, w], vec![t, u]).unwrap_err();
+    let errors = Spec::new(vec![twice, keyless], vec![view, joins]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
         shown,
@@ -297,19 +302,19 @@ fn every_error_is_reported_and_displayed() {
 
 #[test]
 fn a_chained_via_used_twice_names_its_ref() {
-    let mut t = fact();
+    let mut view = fact();
     let chained = Via::Attribute {
         through: 0,
         column: id("name"),
     };
-    t.refs.push(Ref {
+    view.refs.push(Ref {
         alias: id("c"),
         dim: id("z"),
         via: vec![chained.clone(), chained],
         kind: RefKind::Left,
         reads: vec![attr("c_name", "name")],
     });
-    let shown: Vec<String> = (Spec::new(vec![dim()], vec![t]).unwrap_err().iter())
+    let shown: Vec<String> = (Spec::new(vec![dim()], vec![view]).unwrap_err().iter())
         .map(ToString::to_string)
         .collect();
     assert!(
@@ -322,10 +327,10 @@ fn a_chained_via_used_twice_names_its_ref() {
 /// does; the spec refuses it too, for a spec built by hand.
 #[test]
 fn a_ref_name_used_twice_is_refused() {
-    let mut t = fact();
-    let again = t.refs[0].clone();
-    t.refs.push(again);
-    let shown: Vec<String> = (Spec::new(vec![dim()], vec![t]).unwrap_err().iter())
+    let mut view = fact();
+    let again = view.refs[0].clone();
+    view.refs.push(again);
+    let shown: Vec<String> = (Spec::new(vec![dim()], vec![view]).unwrap_err().iter())
         .map(ToString::to_string)
         .collect();
     assert_eq!(shown, ["t: r declared twice", "t: name declared twice"]);
@@ -334,8 +339,8 @@ fn a_ref_name_used_twice_is_refused() {
 /// A semi join that reads nothing, a join through a column the dim
 /// before it carries, and a `WHERE` on a key.
 fn chained() -> Fact {
-    let mut t = fact();
-    t.refs.push(Ref {
+    let mut view = fact();
+    view.refs.push(Ref {
         alias: id("through"),
         dim: id("z"),
         via: vec![Via::Attribute {
@@ -345,11 +350,11 @@ fn chained() -> Fact {
         kind: RefKind::Semi,
         reads: vec![],
     });
-    t.filter = vec![Condition {
+    view.filter = vec![Condition {
         key: id("name"),
         values: vec![Literal::Text("x".into())],
     }];
-    t
+    view
 }
 
 /// What Straum SQL refuses in its own words before the spec sees it: a
@@ -360,26 +365,26 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     assert!(Spec::new(vec![dim()], vec![chained()]).is_ok());
 
     let refused = |change: &dyn Fn(&mut Fact)| -> Vec<String> {
-        let mut t = chained();
-        change(&mut t);
-        let errors = Spec::new(vec![dim()], vec![t]).unwrap_err();
+        let mut view = chained();
+        change(&mut view);
+        let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
         errors.iter().map(ToString::to_string).collect()
     };
     let reads = vec![attr("through_name", "name")];
     assert_eq!(
-        refused(&|t| t.refs[1].reads.clone_from(&reads)),
+        refused(&|view| view.refs[1].reads.clone_from(&reads)),
         ["view t: join through is a semi join and reads columns, which it has none of"]
     );
     assert_eq!(
-        refused(&|t| {
-            t.refs[1].kind = RefKind::Anti;
-            t.refs[1].reads.clone_from(&reads);
+        refused(&|view| {
+            view.refs[1].kind = RefKind::Anti;
+            view.refs[1].reads.clone_from(&reads);
         }),
         ["view t: join through is an anti join and reads columns, which it has none of"]
     );
     let through = |through, column| {
-        move |t: &mut Fact| {
-            t.refs[1].via = vec![Via::Attribute {
+        move |view: &mut Fact| {
+            view.refs[1].via = vec![Via::Attribute {
                 through,
                 column: id(column),
             }];
@@ -401,7 +406,7 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
         );
     }
     assert_eq!(
-        refused(&|t| t.filter[0].key = id("n")),
+        refused(&|view| view.filter[0].key = id("n")),
         ["view t: WHERE filters on n, which names no key of the view"]
     );
 }

@@ -82,7 +82,9 @@ impl Projection {
         self.rows.clear();
         self.held = 0;
         self.many = 0;
-        self.codes.iter_mut().for_each(|c| *c = Codes::default());
+        self.codes
+            .iter_mut()
+            .for_each(|codes| *codes = Codes::default());
         self.code_null();
     }
 

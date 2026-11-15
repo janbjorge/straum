@@ -149,8 +149,8 @@ pub struct Width {
 
 /// Buckets are UTC.
 impl Width {
-    pub fn bucket_start(self, t: i64) -> i64 {
-        t.div_euclid(i64::from(self.seconds)) * i64::from(self.seconds)
+    pub fn bucket_start(self, seconds: i64) -> i64 {
+        seconds.div_euclid(i64::from(self.seconds)) * i64::from(self.seconds)
     }
 }
 
@@ -277,7 +277,7 @@ impl Fact {
 
     /// Whether every ref joins on fact columns, none through another dim.
     pub(crate) fn is_direct(&self) -> bool {
-        (self.refs.iter().flat_map(|r| &r.via)).all(|v| matches!(v, Via::Fact(_)))
+        (self.refs.iter().flat_map(|join| &join.via)).all(|via| matches!(via, Via::Fact(_)))
     }
 
     /// Whether a ref's via column is a part of the rollup key that no
@@ -292,8 +292,8 @@ impl Fact {
     pub fn fact_vias(&self) -> impl Iterator<Item = &Identifier> {
         self.refs
             .iter()
-            .flat_map(|r| &r.via)
-            .filter_map(|v| match v {
+            .flat_map(|join| &join.via)
+            .filter_map(|via| match via {
                 Via::Fact(column) => Some(column),
                 Via::Attribute { .. } => None,
             })
@@ -303,7 +303,7 @@ impl Fact {
     pub fn attributes(&self) -> impl Iterator<Item = (&Ref, &Attribute)> {
         self.refs
             .iter()
-            .flat_map(|r| r.reads.iter().map(move |a| (r, a)))
+            .flat_map(|join| join.reads.iter().map(move |attribute| (join, attribute)))
     }
 
     /// The columns a row of this fact is read from, in order: the time
@@ -313,7 +313,11 @@ impl Fact {
         let mut columns: Vec<Identifier> = vec![self.time.column.clone()];
         let read = (self.by_keys.iter().map(ByKey::column))
             .chain(self.fact_vias())
-            .chain(self.measures.iter().filter_map(|m| m.aggregate.input()));
+            .chain(
+                self.measures
+                    .iter()
+                    .filter_map(|measure| measure.aggregate.input()),
+            );
         for column in read {
             if !columns.contains(column) {
                 columns.push(column.clone());
@@ -323,24 +327,30 @@ impl Fact {
     }
 
     pub fn measure(&self, name: &str) -> Option<&Measure> {
-        self.measures.iter().find(|m| m.name.as_str() == name)
+        self.measures
+            .iter()
+            .find(|measure| measure.name.as_str() == name)
     }
 
     /// The key the view names so: a `by` key, or an attribute a ref
     /// reads. Keys and attributes share one namespace.
     pub fn resolve(&self, name: &Identifier) -> Option<Key<'_>> {
-        if let Some(by) = self.by_keys.iter().find(|b| b.name() == name) {
+        if let Some(by) = self.by_keys.iter().find(|by| by.name() == name) {
             return Some(Key::ByKey(by));
         }
-        self.refs.iter().find_map(|r| {
-            let attr = r.reads.iter().find(|a| a.name == *name)?;
-            Some(Key::Attribute(r, attr))
+        self.refs.iter().find_map(|join| {
+            let attr = join
+                .reads
+                .iter()
+                .find(|attribute| attribute.name == *name)?;
+            Some(Key::Attribute(join, attr))
         })
     }
 
     /// Every name an ask may group or filter by, keys then attributes.
     pub fn keys(&self) -> impl Iterator<Item = &Identifier> {
-        (self.by_keys.iter().map(ByKey::name)).chain(self.attributes().map(|(_, a)| &a.name))
+        (self.by_keys.iter().map(ByKey::name))
+            .chain(self.attributes().map(|(_, attribute)| &attribute.name))
     }
 }
 
@@ -358,8 +368,8 @@ impl Spec {
         let mut names = HashSet::new();
         for name in dims
             .iter()
-            .map(|d| &d.name)
-            .chain(facts.iter().map(|f| &f.name))
+            .map(|dim| &dim.name)
+            .chain(facts.iter().map(|fact| &fact.name))
         {
             if !names.insert(name) {
                 errors.push(SpecError::Duplicate {
@@ -395,7 +405,8 @@ impl Spec {
     /// declaration order.
     pub fn tables(&self) -> Vec<&Table> {
         let mut tables: Vec<&Table> = Vec::new();
-        let all = (self.dims.iter().map(|d| &d.table)).chain(self.facts.iter().map(|f| &f.table));
+        let dim_tables = self.dims.iter().map(|dim| &dim.table);
+        let all = dim_tables.chain(self.facts.iter().map(|fact| &fact.table));
         for table in all {
             if !tables.contains(&table) {
                 tables.push(table);
@@ -405,11 +416,11 @@ impl Spec {
     }
 
     pub fn dim(&self, name: &str) -> Option<&Dim> {
-        self.dims.iter().find(|d| d.name.as_str() == name)
+        self.dims.iter().find(|dim| dim.name.as_str() == name)
     }
 
     pub fn fact(&self, name: &str) -> Option<&Fact> {
-        self.facts.iter().find(|f| f.name.as_str() == name)
+        self.facts.iter().find(|fact| fact.name.as_str() == name)
     }
 }
 
@@ -437,11 +448,11 @@ fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     let mut keys: HashSet<&Identifier> = HashSet::new();
     check_by(fact, &mut keys, errors);
     let mut ref_names = HashSet::new();
-    for (position, r) in fact.refs.iter().enumerate() {
-        if !ref_names.insert(&r.alias) {
+    for (position, join) in fact.refs.iter().enumerate() {
+        if !ref_names.insert(&join.alias) {
             errors.push(SpecError::Duplicate {
                 scope: Some(fact.name.clone()),
-                name: r.alias.clone(),
+                name: join.alias.clone(),
             });
         }
         check_ref(fact, position, dims, &mut keys, errors);
@@ -506,73 +517,73 @@ fn check_ref<'a>(
     errors: &mut Vec<SpecError>,
 ) {
     let name = &fact.name;
-    let r = &fact.refs[position];
+    let join = &fact.refs[position];
     let mut via = HashSet::new();
-    for column in &r.via {
+    for column in &join.via {
         if !via.insert(column) {
             errors.push(SpecError::ViaReused {
                 fact: name.clone(),
-                ref_name: r.alias.clone(),
+                ref_name: join.alias.clone(),
                 column: via_name(column, &fact.refs),
             });
         }
         if let Via::Attribute { through, column } = column {
             let parent = (*through < position).then(|| &fact.refs[*through]);
             let carried = parent
-                .and_then(|p| dims.iter().find(|d| d.name == p.dim))
-                .is_some_and(|d| d.attributes.contains(column));
+                .and_then(|parent| dims.iter().find(|dim| dim.name == parent.dim))
+                .is_some_and(|dim| dim.attributes.contains(column));
             if !carried {
                 errors.push(SpecError::ChainColumn {
                     fact: name.clone(),
-                    ref_name: r.alias.clone(),
+                    ref_name: join.alias.clone(),
                     through: *through,
                     column: column.clone(),
                 });
             }
         }
     }
-    let dim = dims.iter().find(|d| d.name == r.dim);
+    let dim = dims.iter().find(|dim| dim.name == join.dim);
     match dim {
         None => errors.push(SpecError::UnknownDim {
             fact: name.clone(),
-            ref_name: r.alias.clone(),
-            dim: r.dim.clone(),
+            ref_name: join.alias.clone(),
+            dim: join.dim.clone(),
         }),
-        Some(dim) if dim.key.len() != r.via.len() => errors.push(SpecError::KeyLength {
+        Some(dim) if dim.key.len() != join.via.len() => errors.push(SpecError::KeyLength {
             fact: name.clone(),
-            ref_name: r.alias.clone(),
-            via: r.via.len(),
+            ref_name: join.alias.clone(),
+            via: join.via.len(),
             dim: dim.name.clone(),
             key: dim.key.len(),
         }),
         Some(_) => {}
     }
-    let reads = !r.reads.is_empty();
-    match r.kind {
+    let reads = !join.reads.is_empty();
+    match join.kind {
         RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefReadsNothing {
             fact: name.clone(),
-            ref_name: r.alias.clone(),
+            ref_name: join.alias.clone(),
         }),
         RefKind::Semi | RefKind::Anti if reads => errors.push(SpecError::RefReads {
             fact: name.clone(),
-            ref_name: r.alias.clone(),
-            kind: r.kind,
+            ref_name: join.alias.clone(),
+            kind: join.kind,
         }),
         _ => {}
     }
     let mut read = HashSet::new();
-    for attr in &r.reads {
+    for attr in &join.reads {
         if !read.insert(&attr.column) {
             errors.push(SpecError::Duplicate {
-                scope: Some(r.alias.clone()),
+                scope: Some(join.alias.clone()),
                 name: attr.column.clone(),
             });
         } else if let Some(dim) = dim
-            && !dim.columns().any(|c| *c == attr.column)
+            && !dim.columns().any(|column| *column == attr.column)
         {
             errors.push(SpecError::UnknownAttribute {
                 fact: name.clone(),
-                ref_name: r.alias.clone(),
+                ref_name: join.alias.clone(),
                 attr: attr.column.clone(),
                 dim: dim.name.clone(),
             });
@@ -596,22 +607,24 @@ fn check_measures<'a>(
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
-    let mut named = fact.keys().chain(fact.measures.iter().map(|m| &m.name));
-    if named.any(|n| n.as_str() == "bucket") {
+    let mut named = fact
+        .keys()
+        .chain(fact.measures.iter().map(|measure| &measure.name));
+    if named.any(|declared| declared.as_str() == "bucket") {
         errors.push(SpecError::NamedBucket { fact: name.clone() });
     }
-    for m in &fact.measures {
-        if !keys.insert(&m.name) {
+    for measure in &fact.measures {
+        if !keys.insert(&measure.name) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
-                name: m.name.clone(),
+                name: measure.name.clone(),
             });
         }
-        for cond in &m.filter {
+        for cond in &measure.filter {
             if fact.resolve(&cond.key).is_none() {
                 errors.push(SpecError::UnknownKey {
                     fact: name.clone(),
-                    measure: Some(m.name.clone()),
+                    measure: Some(measure.name.clone()),
                     key: cond.key.clone(),
                 });
             }
@@ -633,7 +646,7 @@ fn via_name(via: &Via, refs: &[Ref]) -> String {
     match via {
         Via::Fact(column) => column.to_string(),
         Via::Attribute { through, column } => {
-            let through = refs.get(*through).map_or("?", |r| r.alias.as_str());
+            let through = refs.get(*through).map_or("?", |join| join.alias.as_str());
             format!("{through}.{column}")
         }
     }
