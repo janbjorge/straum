@@ -96,6 +96,8 @@ fn read_rows(read: JoinRead, rows: &[Box<[u32]>]) -> u32 {
 impl Joined<'_> {
     /// What `read` makes of the rows under the key of the cell with
     /// `key`, below [`UNKNOWN`].
+    // Benchmark: see `Lookup::code`.
+    #[inline]
     fn read(&mut self, rollup: &Rollup, key: &[u32], read: JoinRead) -> u32 {
         let known = match &mut self.memo {
             Memo::Dense(codes) => &mut codes[key[self.via[0].0] as usize],
@@ -144,6 +146,8 @@ impl JoinCheck<'_> {
 impl AttributeLookup<'_> {
     /// The attribute's code for the cell with `key`: the one row under the
     /// key, or [`NULL`].
+    // Benchmark: see `Lookup::code`.
+    #[inline]
     fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
         let read = JoinRead::Attribute(self.attribute);
         self.joined.read(rollup, key, read)
@@ -161,6 +165,12 @@ impl AttributeLookup<'_> {
 impl<'s> Lookup<'s> {
     /// The code of the key's value for `cell`, in a view that counts each
     /// cell once.
+    // Benchmark: tests/cost.rs an_ask_stays_within_its_time_per_cell, by
+    // borough, least of 6 runs: 10.0 ns a cell without `#[inline]` on
+    // this, `AttributeLookup::code`, `Joined::read` and
+    // `Grouping::offsets`, 9.0 ns with it, as before the store was split
+    // into files. Each runs once per cell.
+    #[inline]
     pub(super) fn code(&mut self, rollup: &Rollup, cells: &Cells, cell: usize) -> u32 {
         match self {
             Lookup::KeyPart(part) => cells.code(cell, *part),

@@ -91,6 +91,8 @@ impl<'s> Grouping<'s> {
 
     /// Adds to each cell's place in the dense table this key's number
     /// times `stride`.
+    // Benchmark: see `Lookup::code`.
+    #[inline]
     fn offsets(&mut self, rollup: &Rollup, cells: &Cells, stride: usize, at: &mut [usize]) {
         match self {
             Grouping::Time { bucket_starts, .. } => {

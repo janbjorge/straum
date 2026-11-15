@@ -215,4 +215,6 @@ when they had to be changed, such as decompressed, owned
 
 **Dense code.** Where a loop would be slower in a way a benchmark
 measured, the code keeps a denser form and a comment names the
-benchmark. Everywhere else it is a plain `for` loop.
+benchmark. Everywhere else it is a plain `for` loop. `#[inline]` above a
+function is such a case: it asks the compiler to copy the function into
+each caller, which four functions an ask calls per cell need.
