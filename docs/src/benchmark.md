@@ -12,7 +12,7 @@ trips, and the 265 rows of `taxi_zone_lookup.csv`.
 
 Ten fixed asks over the benchmark's two views, each sent to PostgreSQL
 as SQL over the raw tables and to Straum as an ask over HTTP. One run on
-an Apple M2 Pro with 16 GB, on 2026-11-14: PostgreSQL 18.6 in Docker
+an Apple M2 Pro with 16 GB, on 2026-11-15: PostgreSQL 18.6 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
 Each time is the median over at least a second, from one Python client:
 asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
@@ -20,24 +20,24 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 266.0 ms | 160 µs | 1,662x |
-| Card trips | 1 | 490.9 ms | 364 µs | 1,350x |
-| Trips by pickup borough | 8 | 1,457.1 ms | 372 µs | 3,921x |
-| Fares by payment type | 6 | 1,091.1 ms | 413 µs | 2,643x |
-| Median fare | 1 | 6,637.1 ms | 50.0 ms | 133x |
-| p99 fare by payment type | 6 | 10,884.6 ms | 43.1 ms | 253x |
-| Median fare per hour, one day | 24 | 63.0 ms | 1.2 ms | 53x |
-| Manhattan pickups, one week | 1 | 84.9 ms | 238 µs | 356x |
-| Trips per hour, one day | 24 | 23.7 ms | 185 µs | 128x |
-| Tips by dropoff borough | 8 | 2,428.1 ms | 254 µs | 9,556x |
+| Trips | 1 | 270.8 ms | 166 µs | 1,636x |
+| Card trips | 1 | 489.6 ms | 261 µs | 1,872x |
+| Trips by pickup borough | 8 | 1,501.8 ms | 377 µs | 3,986x |
+| Fares by payment type | 6 | 1,086.1 ms | 413 µs | 2,632x |
+| Median fare | 1 | 6,584.6 ms | 32.3 ms | 204x |
+| p99 fare by payment type | 6 | 11,057.6 ms | 29.5 ms | 375x |
+| Median fare per hour, one day | 24 | 62.6 ms | 807 µs | 78x |
+| Manhattan pickups, one week | 1 | 86.5 ms | 239 µs | 362x |
+| Trips per hour, one day | 24 | 22.3 ms | 184 µs | 121x |
+| Tips by dropoff borough | 8 | 2,376.2 ms | 250 µs | 9,492x |
 
 The target is under 1 ms for every ask
 ([ADR-0050](https://github.com/janbjorge/straum/blob/main/docs/adr/0050-every-benchmark-ask-answers-in-under-1-ms.md));
-the three percentile asks miss it.
+the two percentile asks over every trip miss it.
 
-Straum was ready 16.5 s after it started and held 116 MiB, the 265 zone
+Straum was ready 16.8 s after it started and held 113 MiB, the 265 zone
 rows' projection included. In PostgreSQL the table and its indexes
-take 2,474 MiB.
+take 2,475 MiB.
 
 - Reads run with PostgreSQL's defaults, two parallel workers per query,
   except `shared_buffers`: 2 GB. The rest of the table comes from the
@@ -269,7 +269,7 @@ and projections included, before bound cells. A cell has taken fewer
 bytes since ([ADR-0044](https://github.com/janbjorge/straum/blob/main/docs/adr/0044-a-cell-takes-the-bytes-its-numbers-need.md)):
 the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
 bytes a cell, before `trips` kept its fares for the percentiles; with
-them they hold 116 MiB.
+them they hold 113 MiB.
 
 ### The taxi month under a wide key
 

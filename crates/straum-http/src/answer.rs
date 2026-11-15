@@ -38,7 +38,7 @@ use std::time::SystemTime;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{AnswerColumn, AnswerRow, Ask, Datum, Value, decimal};
+use straum_domain::{AnswerColumn, AnswerRow, Ask, Datum, Value, decimal, push_decimal};
 
 use crate::json::quoted;
 use crate::time::{rfc3339, rfc3339_of};
@@ -110,25 +110,47 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         names.push(quoted(&column.name));
     }
     let mut out = format!("{{\"as_of\":{},\"rows\":[", quoted(&as_of_text(*as_of)));
+    let mut last_time = LastTime::default();
     for (row_index, row) in answer.rows.iter().enumerate() {
         if row_index > 0 {
             out.push(',');
         }
-        push_row_json(&mut out, &names, &answer.columns, row);
+        let start = out.len();
+        push_row_json(&mut out, &names, &answer.columns, row, &mut last_time);
+        if row_index == 0 {
+            // The rows to come, at about the first one's length: growing
+            // by doubling copies the answer written so far each time.
+            out.reserve((out.len() - start + 1) * (answer.rows.len() - 1));
+        }
     }
     out.push_str("]}");
     out.into_bytes()
 }
 
+/// The time key written last, quoted: the rows of a bucket follow one
+/// another, so most rows write the time the one before did.
+#[derive(Default)]
+struct LastTime {
+    seconds: Option<i64>,
+    quoted: String,
+}
+
 /// One row as an object: the keys first, then the measures, each under
 /// its column's quoted name.
-fn push_row_json(out: &mut String, names: &[String], columns: &[AnswerColumn], row: &AnswerRow) {
+fn push_row_json(
+    out: &mut String,
+    names: &[String],
+    columns: &[AnswerColumn],
+    row: &AnswerRow,
+    last_time: &mut LastTime,
+) {
     out.push('{');
     for (index, key) in row.keys.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        push_member(out, &names[index], &key_json(&columns[index], key));
+        push_name(out, &names[index]);
+        push_key_json(out, &columns[index], key, last_time);
     }
     let key_count = row.keys.len();
     for (offset, value) in row.values.iter().enumerate() {
@@ -136,21 +158,28 @@ fn push_row_json(out: &mut String, names: &[String], columns: &[AnswerColumn], r
         if index > 0 {
             out.push(',');
         }
-        push_member(out, &names[index], &value_json(value, columns[index].scale));
+        push_name(out, &names[index]);
+        push_value_json(out, value, columns[index].scale);
     }
     out.push('}');
 }
 
-fn push_member(out: &mut String, name: &str, cell: &str) {
+fn push_name(out: &mut String, name: &str) {
     out.push_str(name);
     out.push(':');
-    out.push_str(cell);
 }
 
-fn key_json(column: &AnswerColumn, key: &Datum) -> String {
+fn push_key_json(out: &mut String, column: &AnswerColumn, key: &Datum, last_time: &mut LastTime) {
     match key {
-        &Datum::Int(seconds) if column.is_time => quoted(&time_key(seconds)),
-        key => datum_json(key, column.scale),
+        &Datum::Int(seconds) if column.is_time => {
+            if last_time.seconds != Some(seconds) {
+                last_time.quoted = quoted(&time_key(seconds));
+                last_time.seconds = Some(seconds);
+            }
+            out.push_str(&last_time.quoted);
+        }
+        Datum::Int(integer) => push_decimal(out, i128::from(*integer), column.scale),
+        key => out.push_str(&datum_json(key, column.scale)),
     }
 }
 
@@ -309,16 +338,28 @@ fn datum_json(datum: &Datum, scale: u32) -> String {
 }
 
 fn value_json(value: &Value, scale: u32) -> String {
+    let mut text = String::new();
+    push_value_json(&mut text, value, scale);
+    text
+}
+
+fn push_value_json(out: &mut String, value: &Value, scale: u32) {
     match value {
-        Value::Null => "null".to_owned(),
-        Value::Int(integer) => decimal(*integer, scale),
-        Value::Bool(boolean) => boolean.to_string(),
+        Value::Null => out.push_str("null"),
+        Value::Int(integer) => push_decimal(out, *integer, scale),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
         Value::Avg { sum, count } => {
-            let digits = decimal(avg(*sum, *count), scale + AVG_PLACES);
+            push_decimal(out, avg(*sum, *count), scale + AVG_PLACES);
             // The places past the column's scale are only as long as they
-            // need to be. AVG_PLACES puts a point in every average.
-            let digits = digits.trim_end_matches('0');
-            digits.strip_suffix('.').unwrap_or(digits).to_owned()
+            // need to be. AVG_PLACES puts a point in every average, so
+            // the zeros end at it.
+            while out.ends_with('0') {
+                out.pop();
+            }
+            if out.ends_with('.') {
+                out.pop();
+            }
         }
     }
 }

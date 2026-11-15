@@ -46,8 +46,8 @@ curl --json '{
 
 Every commit made before `as_of` is in the answer, and an ask never
 touches PostgreSQL. In the [benchmark](benchmark.md) counts and sums
-answer in 160 to 413 µs where PostgreSQL takes 23.7 to 2,428.1 ms, and
-a median fare in 50 ms where it takes 6.6 s, from 116 MiB of memory.
+answer in 166 to 413 µs where PostgreSQL takes 22.3 to 2,376.2 ms, and
+a median fare in 32 ms where it takes 6.6 s, from 113 MiB of memory.
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 

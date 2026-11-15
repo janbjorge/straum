@@ -255,15 +255,67 @@ impl Ratio {
 /// `units` in units of `10^-scale`, exactly, as PostgreSQL prints a
 /// numeric: `1250` at scale 2 is `12.50`.
 pub fn decimal(units: i128, scale: u32) -> String {
-    let digits = units.unsigned_abs().to_string();
-    let sign = if units < 0 { "-" } else { "" };
+    let mut text = String::new();
+    push_decimal(&mut text, units, scale);
+    text
+}
+
+/// Digits an `i128` has at most.
+const I128_DIGITS: usize = 39;
+
+/// [`decimal`] onto the end of `out`, without a string of its own.
+// Benchmark: `bench/taxi.py`'s ask by hour and zone over six months,
+// 509,200 rows: written in place, with no string a value, its JSON took
+// 55 ms where it took 252.
+pub fn push_decimal(out: &mut String, units: i128, scale: u32) {
+    let mut digits = [0; I128_DIGITS];
+    let mut first = digits.len();
+    let magnitude = units.unsigned_abs();
+    // Dividing a u128 is a call; most magnitudes fit a u64.
+    if let Ok(mut rest) = u64::try_from(magnitude) {
+        loop {
+            first -= 1;
+            digits[first] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+    } else {
+        let mut rest = magnitude;
+        while rest > 0 {
+            first -= 1;
+            digits[first] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+        }
+    }
+    let digits = &digits[first..];
+    if units < 0 {
+        out.push('-');
+    }
     let scale = scale as usize;
     if scale == 0 {
-        return format!("{sign}{digits}");
+        push_digits(out, digits);
+        return;
     }
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - scale);
-    format!("{sign}{whole}.{fraction}")
+    if digits.len() <= scale {
+        out.push_str("0.");
+        for _ in digits.len()..scale {
+            out.push('0');
+        }
+        push_digits(out, digits);
+        return;
+    }
+    let (whole, fraction) = digits.split_at(digits.len() - scale);
+    push_digits(out, whole);
+    out.push('.');
+    push_digits(out, fraction);
+}
+
+fn push_digits(out: &mut String, digits: &[u8]) {
+    for &digit in digits {
+        out.push(char::from(digit));
+    }
 }
 
 #[cfg(test)]
