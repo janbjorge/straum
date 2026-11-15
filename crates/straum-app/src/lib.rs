@@ -14,7 +14,7 @@ mod spill;
 
 pub use app::{
     AnswerError, Answered, App, Error, Failure, Held, HeldDim, HeldKey, HeldView, Limits, Status,
-    Step, Writer, mib,
+    Step, Writer, format_mebibytes,
 };
 pub use source::{Change, Commit, Lsn, Source, SourceError, Wal};
 pub use spill::{Spill, SpillError, Spilling};

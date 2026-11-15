@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
-use straum_app::{Failure, Status, mib};
+use straum_app::{Failure, Status, format_mebibytes};
 
 use crate::time::rfc3339_of;
 
@@ -50,8 +50,8 @@ pub(crate) fn write(status: &Status) -> String {
         None => UNKNOWN.to_owned(),
         Some(wal) => format!(
             "{}, at most {}; PostgreSQL is at {}",
-            mib(wal.retained()),
-            mib(status.limits.max_retained_wal),
+            format_mebibytes(wal.retained()),
+            format_mebibytes(status.limits.max_retained_wal),
             wal.written
         ),
     };

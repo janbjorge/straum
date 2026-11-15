@@ -648,8 +648,8 @@ impl fmt::Display for Error {
             Error::Retained { retained, limit } => write!(
                 formatter,
                 "PostgreSQL holds {} of WAL for Straum's slot, past the limit of {}",
-                mib(*retained),
-                mib(*limit)
+                format_mebibytes(*retained),
+                format_mebibytes(*limit)
             ),
             Error::Spill(error) => write!(formatter, "spill: {error}"),
             Error::Sealed(error) => write!(formatter, "{error}"),
@@ -664,7 +664,7 @@ impl std::error::Error for Error {}
     clippy::cast_precision_loss,
     reason = "f64 is exact up to 2^53 bytes, and the message shows one decimal"
 )]
-pub fn mib(bytes: u64) -> String {
+pub fn format_mebibytes(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / f64::from(BYTES_PER_MIB))
 }
 
