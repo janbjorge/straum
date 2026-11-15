@@ -2500,7 +2500,7 @@ fn datums_layouts(dsn: &Dsn) -> Layouts {
         types: Vec::new(),
         enums: Vec::new(),
     };
-    physical::tables(&mut conn, &[checked]).unwrap()
+    physical::read_layouts(&mut conn, &[checked]).unwrap()
 }
 
 /// The `SELECT` list of `table`'s live columns, named `names`, with a
@@ -3336,7 +3336,7 @@ impl Pipeline {
         let mut conn = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
         let tables = catalog::read(&mut conn, spec, publication, PHYSICAL).unwrap();
         let checked: Vec<Checked> = tables.facts.into_iter().chain(tables.dims).collect();
-        let layouts = physical::tables(&mut conn, &checked).unwrap();
+        let layouts = physical::read_layouts(&mut conn, &checked).unwrap();
         let mut inner = crate::wal::pipeline::Pipeline::new(
             checked.clone(),
             layouts,
@@ -3356,7 +3356,7 @@ impl Pipeline {
     fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
         let (conn, checked) = (&mut self.conn, &self.checked);
         (self.inner)
-            .record(record, || physical::tables(conn, checked))
+            .record(record, || physical::read_layouts(conn, checked))
             .unwrap()
     }
 

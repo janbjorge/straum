@@ -19,7 +19,7 @@ use testcontainers::{Container, GenericImage, ImageExt};
 use crate::catalog::{self, Checked};
 use crate::dsn::Dsn;
 use crate::pgoutput::{self, CopyMessage};
-use crate::physical::tables;
+use crate::physical::read_layouts;
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::{POLL, status_update};
 use crate::wal::messages::Layouts;
@@ -206,7 +206,7 @@ fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
     );
     let major = number(sql, "SELECT current_setting('server_version_num')") / 10_000;
     let major = u32::try_from(major).unwrap();
-    let layouts = tables(sql, &checked).unwrap();
+    let layouts = read_layouts(sql, &checked).unwrap();
     sql.execute("SELECT pg_log_standby_snapshot()").unwrap();
     let snapshot = sql.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
         .clone()

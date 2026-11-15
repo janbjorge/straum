@@ -199,8 +199,10 @@ impl Replay {
         self.records.feed(start, bytes)?;
         let mut commits = Vec::new();
         while let Some(record) = self.records.next_record()? {
-            let read_layouts = || tables(&mut self.catalog, &self.checked);
-            commits.extend(self.pipeline.record(record, read_layouts)?);
+            commits.extend(
+                self.pipeline
+                    .record(record, || read_layouts(&mut self.catalog, &self.checked))?,
+            );
             self.read = record.next();
         }
         Ok(commits)
@@ -212,7 +214,7 @@ impl Replay {
 }
 
 /// The layout of each of `checked`'s tables, and their enums' labels.
-pub(crate) fn tables(conn: &mut Connection, checked: &[Checked]) -> Result<Layouts, Error> {
+pub(crate) fn read_layouts(conn: &mut Connection, checked: &[Checked]) -> Result<Layouts, Error> {
     let names = table_names(checked);
     // A dropped column has no type, and its bytes stay in older rows, so
     // the join to pg_type keeps it. A missing value is a one-element

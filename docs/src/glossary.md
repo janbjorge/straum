@@ -335,7 +335,7 @@ are open.
 - **Page state** (`Heap`, `Page`): the rows Straum keeps of each page of
   the spec's tables changed since the last redo point, by slot. A page
   goes at a checkpoint record whose redo point is past its last change.
-- **Layout** (`wal::messages::Table`, `physical::tables`): how a
+- **Layout** (`wal::messages::Table`, `physical::read_layouts`): how a
   table's rows lie on its pages: its file, every attribute by `attnum`
   with dropped ones, and each column added with a default's value.
 - **Pipeline** (`wal::pipeline::Pipeline`): the physical stream's pure

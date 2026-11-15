@@ -163,7 +163,7 @@ fn physical_snapshot(
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
     let (stream, start) = Physical::start(dsn)?;
-    let layouts = physical::tables(&mut conn, &checked)?;
+    let layouts = physical::read_layouts(&mut conn, &checked)?;
     let slot = stream.slot().to_owned();
     let pipeline = Pipeline::new(
         checked.clone(),
