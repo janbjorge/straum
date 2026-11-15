@@ -312,7 +312,7 @@ fn null_ness_keys_rejected() {
 
 #[test]
 fn views_share_a_dim() {
-    let src = format!(
+    let text = format!(
         "{BASE};\n{}",
         BASE.replace("VIEW t", "VIEW u")
             .replace("z.name AS name", "z.code AS code, z.kind AS kind")
@@ -322,7 +322,7 @@ fn views_share_a_dim() {
                 "count(*) AS n, count(*) FILTER (WHERE z.kind = 'x') AS m"
             )
     );
-    let spec = parse(&src).unwrap();
+    let spec = parse(&text).unwrap();
     assert_eq!(
         spec.dim("z").unwrap().attributes,
         [id("name"), id("code"), id("kind")]
@@ -345,16 +345,16 @@ fn views_share_a_dim() {
 
 #[test]
 fn spec_errors_pass_through() {
-    let src = base("'1 hour'", "'7 minutes'")
+    let text = base("'1 hour'", "'7 minutes'")
         .replace("date_bin('1 hour'", "date_bin('7 minutes'")
         .replace("f.a AS a,", "f.id AS id, f.z_id AS z,");
-    assert!(matches!(parse(&src), Err(Error::Sql(_))));
+    assert!(matches!(parse(&text), Err(Error::Sql(_))));
 
-    let src = base("'1 hour'", "'7 minutes'")
+    let text = base("'1 hour'", "'7 minutes'")
         .replace("date_bin('1 hour'", "date_bin('7 minutes'")
         .replace("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(
-        spec_errors(&src),
+        spec_errors(&text),
         [
             SpecError::BadWidth {
                 fact: id("t"),
@@ -376,15 +376,15 @@ fn spec_errors_pass_through() {
         }]
     );
 
-    for src in [
+    for text in [
         base("f.a AS a,", "f.a AS bucket,"),
         base("count(*) AS n", "count(*) AS bucket"),
         base("z.name AS name", "z.name AS bucket"),
     ] {
         assert_eq!(
-            spec_errors(&src),
+            spec_errors(&text),
             [SpecError::NamedBucket { fact: id("t") }],
-            "{src}"
+            "{text}"
         );
     }
     assert_eq!(

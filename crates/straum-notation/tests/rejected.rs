@@ -920,7 +920,7 @@ GROUP BY 1, 2, 3";
             "every measure has the same FILTER; write it as the view's WHERE",
         ),
     ] {
-        let src = edit(base, from, to).replace(
+        let text = edit(base, from, to).replace(
             "GROUP BY 1, 2, 3",
             if to.is_empty() {
                 "GROUP BY 1, 2"
@@ -928,7 +928,7 @@ GROUP BY 1, 2, 3";
                 "GROUP BY 1, 2, 3"
             },
         );
-        let errors = error_lines(&src);
+        let errors = error_lines(&text);
         assert!(
             any_contains(&errors, fragment),
             "{to}: {errors:?} has no {fragment:?}"

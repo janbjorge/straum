@@ -84,7 +84,7 @@ fn base_parses() {
 /// PostgreSQL reads the view.
 #[test]
 fn keys_go_by_their_select_name() {
-    let src = base(
+    let text = base(
         "f.a AS a, f.z_id AS z_id, z.name AS name",
         "f.a AS kind, f.z_id AS zone, z.name AS label",
     )
@@ -92,7 +92,7 @@ fn keys_go_by_their_select_name() {
         "count(*) AS n",
         "count(*) AS n, count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS some",
     );
-    let spec = parse(&src).unwrap();
+    let spec = parse(&text).unwrap();
     let fact = spec.fact("t").unwrap();
     assert_eq!(
         fact.by_keys,
@@ -137,19 +137,19 @@ fn keys_go_by_their_select_name() {
 
 #[test]
 fn buckets_parse() {
-    let src = base("buckets = '1 hour'", "buckets = '1 hour, 1 day,7 days'");
-    let spec = parse(&src).unwrap();
+    let text = base("buckets = '1 hour'", "buckets = '1 hour, 1 day,7 days'");
+    let spec = parse(&text).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.wider,
         [Width { seconds: 86_400 }, Width { seconds: 604_800 }]
     );
 
-    let src = base(
+    let text = base(
         "buckets = '1 hour'",
         "buckets = '1 hour, 90 minutes, 1 day'",
     );
     assert_eq!(
-        spec_errors(&src),
+        spec_errors(&text),
         [SpecError::BadBucket {
             fact: id("t"),
             seconds: 5_400,
@@ -206,12 +206,12 @@ fn comments_and_empty_file() {
 
 #[test]
 fn literals_and_filters() {
-    let src = base(
+    let text = base(
         "count(*) AS n",
         "count(*) FILTER (WHERE f.a IN (-1, 2) AND z.name = 'it''s' AND f.z_id = 3 \
          AND z.id = 4 AND f.a = true) AS n",
     );
-    let spec = parse(&src).unwrap();
+    let spec = parse(&text).unwrap();
     // A dim key column names the fact column joined to it.
     assert_eq!(
         spec.fact("t").unwrap().measure("n").unwrap().filter,
@@ -227,11 +227,11 @@ fn literals_and_filters() {
 
 #[test]
 fn a_column_measure_takes_a_filter() {
-    let src = base(
+    let text = base(
         "count(*) AS n",
         "count(*) AS n, sum(f.v) FILTER (WHERE f.a = 1) AS s",
     );
-    let spec = parse(&src).unwrap();
+    let spec = parse(&text).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().measure("s").unwrap().filter,
         [condition("a", vec![Literal::Int(1)])]
@@ -251,7 +251,7 @@ fn a_column_measure_takes_a_filter() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let src = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
+    let text = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a, z.id AS z_id, z.name AS name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
@@ -260,7 +260,7 @@ SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
 FROM public.t AS f
 LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
-    let spec = parse(src).unwrap();
+    let spec = parse(text).unwrap();
     let fact = spec.fact("t").unwrap();
     assert_eq!(fact.time.width, Width { seconds: 30 });
     // A dim key column names the fact column joined to it.
@@ -355,7 +355,7 @@ fn through_z(column: &str) -> Via {
 fn joins_of_every_kind_parse() {
     // Inner and left outer joins, a join through a dim, and both EXISTS
     // forms, in one view.
-    let src = "CREATE VIEW t WITH (buckets = '1 hour') AS
+    let text = "CREATE VIEW t WITH (buckets = '1 hour') AS
 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a, z.name AS name, w.label AS label, count(*) AS n
 FROM public.t AS f
@@ -365,7 +365,7 @@ WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a)
   AND NOT EXISTS (SELECT 1 FROM public.b AS b WHERE b.x = f.a AND b.y = z.name)
   AND f.a IN (1, 2) AND z.name = 'x'
 GROUP BY 1, 2, 3, 4";
-    let spec = parse(src).unwrap();
+    let spec = parse(text).unwrap();
     let fact = spec.fact("t").unwrap();
     let mut shown = Vec::new();
     for reference in &fact.refs {
@@ -461,24 +461,24 @@ fn parser_errors_and_deep_nesting_are_errors() {
 
 #[test]
 fn error_display() {
-    let src = base(
+    let text = base(
         "buckets = '1 hour'",
         "buckets = '1 hour', buckets = '2 days'",
     )
     .replace("f.a AS a,", "q.a AS a,");
     assert_eq!(
-        parse(&src).unwrap_err().to_string(),
+        parse(&text).unwrap_err().to_string(),
         "line 1: view option buckets given twice\n\
          line 3: unknown table alias q"
     );
-    let src = base("count(*) AS n", "count(*) AS n, count(*) AS n");
-    assert_eq!(parse(&src).unwrap_err().to_string(), "t: n declared twice");
-    let src = base(
+    let text = base("count(*) AS n", "count(*) AS n, count(*) AS n");
+    assert_eq!(parse(&text).unwrap_err().to_string(), "t: n declared twice");
+    let text = base(
         "count(*) AS n",
         "count(*) AS n, count(*) AS n, count(*) AS m, count(*) AS m",
     );
     assert_eq!(
-        parse(&src).unwrap_err().to_string(),
+        parse(&text).unwrap_err().to_string(),
         "t: n declared twice\nt: m declared twice"
     );
 }

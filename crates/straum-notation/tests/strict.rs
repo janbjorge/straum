@@ -121,13 +121,13 @@ fn one_join_spelling() {
 /// with `EXISTS` and `NOT EXISTS` are the semi and anti joins.
 #[test]
 fn inner_join_and_exists_parse() {
-    let src = canon(
+    let text = canon(
         "LEFT OUTER JOIN shop.customers AS customers ON customers.id = orders.customer_id",
         "INNER JOIN shop.customers AS customers ON customers.id = orders.customer_id\n\
          WHERE EXISTS (SELECT 1 FROM shop.promos AS promos WHERE promos.sku = orders.sku)\n\
          AND NOT EXISTS (SELECT 1 FROM shop.blocked AS blocked WHERE blocked.id = orders.customer_id)",
     );
-    let spec = parse(&src).unwrap();
+    let spec = parse(&text).unwrap();
     let mut aliases = Vec::new();
     let mut kinds = Vec::new();
     for reference in &spec.fact("orders").unwrap().refs {

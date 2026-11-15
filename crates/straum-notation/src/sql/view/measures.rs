@@ -12,7 +12,7 @@ use crate::sql::{Reported, Walker, line};
 /// A call's arguments and how it treats them.
 // Borrows from the tree, which outlives the walk.
 struct Call<'tree> {
-    args: &'tree [sql::FunctionArg],
+    arguments: &'tree [sql::FunctionArg],
     distinct: bool,
     within_group: &'tree [sql::OrderByExpr],
 }
@@ -103,7 +103,11 @@ impl Walker {
         if function.filter.is_some() {
             self.not_in_subset(at, "FILTER on date_bin");
         }
-        let Call { args, distinct, .. } = self.call(function)?;
+        let Call {
+            arguments,
+            distinct,
+            ..
+        } = self.call(function)?;
         if distinct {
             self.not_in_subset(at, "DISTINCT on date_bin");
         }
@@ -111,7 +115,7 @@ impl Walker {
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(origin)),
-        ] = args
+        ] = arguments
         else {
             self.refuse(at, "date_bin arguments", function);
             return Err(Reported);
@@ -176,7 +180,8 @@ impl Walker {
         let aggregate = match self.over(function, name.as_deref(), &call)? {
             Over::Rows => Aggregate::Count,
             Over::Column(aggregate) => {
-                let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] = call.args
+                let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] =
+                    call.arguments
                 else {
                     self.refuse(at, "arguments", function);
                     return Err(Reported);
@@ -202,7 +207,7 @@ impl Walker {
             return Err(Reported);
         };
         if name == "count" && !call.distinct {
-            match call.args {
+            match call.arguments {
                 [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Wildcard)] => {
                     return Ok(Over::Rows);
                 }
@@ -251,13 +256,14 @@ impl Walker {
         if call.distinct {
             self.not_in_subset(at, "DISTINCT outside count");
         }
-        let fraction =
-            if let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] = call.args {
-                self.fraction(argument)
-            } else {
-                self.refuse(at, "arguments, write one fraction,", function);
-                Err(Reported)
-            };
+        let fraction = if let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] =
+            call.arguments
+        {
+            self.fraction(argument)
+        } else {
+            self.refuse(at, "arguments, write one fraction,", function);
+            Err(Reported)
+        };
         let [order] = call.within_group else {
             let what = match call.within_group {
                 [] => "percentile_disc without WITHIN GROUP (ORDER BY alias.column)",
@@ -376,7 +382,7 @@ impl Walker {
             }
         };
         Ok(Call {
-            args,
+            arguments: args,
             distinct,
             within_group,
         })
