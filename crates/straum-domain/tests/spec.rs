@@ -8,7 +8,7 @@ use straum_domain::{
 
 mod common;
 
-use common::{attribute, col, id, percentile, table};
+use common::{attribute, by_key, id, percentile, table};
 
 fn dim() -> Dim {
     Dim {
@@ -38,7 +38,7 @@ fn fact() -> Fact {
             kind: RefKind::Left,
             reads: vec![attribute("name", "name")],
         }],
-        by_keys: vec![col("a"), col("z_id")],
+        by_keys: vec![by_key("a"), by_key("z_id")],
         filter: vec![],
         measures: vec![Measure {
             name: id("n"),
@@ -111,7 +111,7 @@ fn names_resolve_to_by_keys_and_attributes() {
 #[test]
 fn columns_and_rollup_key() {
     let mut view = fact();
-    view.by_keys = vec![col("a")];
+    view.by_keys = vec![by_key("a")];
     view.measures.push(Measure {
         name: id("s"),
         aggregate: Aggregate::Sum(id("z_id")),
@@ -133,7 +133,7 @@ fn columns_and_rollup_key() {
 fn a_via_column_adds_a_part_unless_a_by_key_reads_it() {
     let mut view = fact();
     assert!(!view.vias_add_parts());
-    view.by_keys = vec![col("a")];
+    view.by_keys = vec![by_key("a")];
     assert!(view.vias_add_parts());
     view.by_keys.push(ByKey::IsNull {
         column: id("z_id"),
@@ -197,10 +197,10 @@ fn bad_view() -> Fact {
     view.name = id("z");
     view.time.width = Width { seconds: 420 };
     view.by_keys = vec![
-        col("id"),
-        col("at"),
-        col("name"),
-        col("id"),
+        by_key("id"),
+        by_key("at"),
+        by_key("name"),
+        by_key("id"),
         ByKey::IsNull {
             column: id("at"),
             name: id("no_time"),
@@ -232,7 +232,7 @@ fn bad_view() -> Fact {
 fn bad_joins() -> Fact {
     let mut joins = fact();
     joins.name = id("u");
-    joins.by_keys = vec![col("a"), col("z_id"), col("b")];
+    joins.by_keys = vec![by_key("a"), by_key("z_id"), by_key("b")];
     joins.refs = vec![
         Ref {
             alias: id("r"),

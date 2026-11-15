@@ -39,7 +39,7 @@ pub fn id(name: &str) -> Identifier {
     Identifier::new(name).unwrap()
 }
 
-pub fn col(name: &str) -> ByKey {
+pub fn by_key(name: &str) -> ByKey {
     ByKey::Column {
         column: id(name),
         name: id(name),

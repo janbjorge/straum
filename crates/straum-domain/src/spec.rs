@@ -848,13 +848,13 @@ impl fmt::Display for SpecError {
                 "view {fact}: bucket is what asks call the time bucket; \
                  name the column, join or measure otherwise"
             ),
-            join_error => join_error.fmt_join(f),
+            join_error => join_error.format_join(f),
         }
     }
 }
 
 impl SpecError {
-    fn fmt_join(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn format_join(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SpecError::ViaReused {
                 fact,

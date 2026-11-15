@@ -9,7 +9,7 @@ use straum_notation::{Error, SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
 
-fn col(name: &str) -> ByKey {
+fn by_key(name: &str) -> ByKey {
     ByKey::Column {
         column: id(name),
         name: id(name),
@@ -127,7 +127,7 @@ fn base_parses() {
     let spec = parse(BASE).unwrap();
     let fact = spec.fact("t").unwrap();
     assert_eq!(fact.table.schema, id("public"));
-    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(fact.by_keys, [by_key("a"), by_key("z_id")]);
     assert_eq!(fact.refs[0].alias, id("z"));
     assert_eq!(fact.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(fact.refs[0].reads, [attribute("name", "name")]);
@@ -325,7 +325,7 @@ GROUP BY 1, 2, 3, 4";
     let fact = spec.fact("t").unwrap();
     assert_eq!(fact.time.width, Width { seconds: 30 });
     // A dim key column names the fact column joined to it.
-    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(fact.by_keys, [by_key("a"), by_key("z_id")]);
     let aggs: Vec<&Aggregate> = fact
         .measures
         .iter()
@@ -399,7 +399,7 @@ GROUP BY 1, 2, 3, 4";
 fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
     let fact = spec.fact("t").unwrap();
-    assert_eq!(fact.by_keys, [col("org"), col("grp")]);
+    assert_eq!(fact.by_keys, [by_key("org"), by_key("grp")]);
     assert_eq!(
         fact.refs[0].via,
         [Via::Fact(id("org")), Via::Fact(id("grp"))]
@@ -453,7 +453,7 @@ fn a_ref_on_two_columns_rejected() {
     )
     .unwrap();
     let fact = without_grp.fact("t").unwrap();
-    assert_eq!(fact.by_keys, [col("org")]);
+    assert_eq!(fact.by_keys, [by_key("org")]);
     assert_eq!(
         fact.refs[0].via,
         [Via::Fact(id("org")), Via::Fact(id("grp"))]
@@ -508,7 +508,7 @@ GROUP BY 1, 2, 3";
 fn a_ref_reads_what_the_view_selects() {
     let spec = parse(ATTR_ONLY).unwrap();
     let fact = spec.fact("t").unwrap();
-    assert_eq!(fact.by_keys, [col("a")]);
+    assert_eq!(fact.by_keys, [by_key("a")]);
     assert_eq!(fact.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(fact.refs[0].reads, [attribute("name", "name")]);
     // The via column keys the cells, selected or not.
@@ -536,7 +536,7 @@ fn a_ref_reads_what_the_view_selects() {
     let both = format!("{ATTR_ONLY};\n{}", BASE.replace("VIEW t", "VIEW u"));
     let spec = parse(&both).unwrap();
     let fact = spec.fact("u").unwrap();
-    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(fact.by_keys, [by_key("a"), by_key("z_id")]);
     assert_eq!(fact.refs[0].reads, [attribute("name", "name")]);
     let errors = sql_errors(&ATTR_ONLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
     assert_eq!(
@@ -575,7 +575,7 @@ fn null_ness_keys() {
     assert_eq!(
         fact.by_keys,
         [
-            col("a"),
+            by_key("a"),
             ByKey::IsNull {
                 column: id("done_at"),
                 name: id("done"),

@@ -51,19 +51,19 @@ impl Socket {
 }
 
 impl Read for Socket {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
-            Socket::Plain(tcp) => tcp.read(buf),
-            Socket::Tls(tls) => tls.read(buf),
+            Socket::Plain(tcp) => tcp.read(buffer),
+            Socket::Tls(tls) => tls.read(buffer),
         }
     }
 }
 
 impl Write for Socket {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         match self {
-            Socket::Plain(tcp) => tcp.write(buf),
-            Socket::Tls(tls) => tls.write(buf),
+            Socket::Plain(tcp) => tcp.write(buffer),
+            Socket::Tls(tls) => tls.write(buffer),
         }
     }
 

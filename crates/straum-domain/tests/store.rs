@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashSet};
 mod common;
 
 use common::{
-    Rng, Spilled, attribute, col, condition, dim_row, holds, id, lit, percentile, percentile_disc,
-    table, text,
+    Rng, Spilled, attribute, by_key, condition, dim_row, holds, id, lit, percentile,
+    percentile_disc, table, text,
 };
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
@@ -202,11 +202,11 @@ fn trip_refs(vend: RefKind) -> Vec<Ref> {
 
 fn trip_by_keys() -> Vec<ByKey> {
     vec![
-        col("pay"),
-        col("vendor"),
-        col("shared"),
-        col("pu"),
-        col("dro"),
+        by_key("pay"),
+        by_key("vendor"),
+        by_key("shared"),
+        by_key("pu"),
+        by_key("dro"),
         // Over by columns, which the row carries once: one key for
         // each way round.
         ByKey::IsNull {
@@ -982,7 +982,7 @@ fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
             origin: Origin::Timestamptz,
         },
         refs: pickup.into_iter().collect(),
-        by_keys: vec![col("pay")],
+        by_keys: vec![by_key("pay")],
         filter: vec![],
         measures: vec![Measure {
             name: id("trips"),
@@ -1066,7 +1066,7 @@ fn percentile_spec() -> Spec {
             origin: Origin::Timestamptz,
         },
         refs: Vec::new(),
-        by_keys: vec![col("pay")],
+        by_keys: vec![by_key("pay")],
         filter: vec![],
         measures: vec![
             new_measure("top", Aggregate::Max(id("fare")), vec![]),
@@ -2252,7 +2252,7 @@ fn a_count_alone_notices_a_value_its_cell_lacks() {
             origin: Origin::Timestamptz,
         },
         refs: Vec::new(),
-        by_keys: vec![col("pay")],
+        by_keys: vec![by_key("pay")],
         filter: vec![],
         measures: vec![
             new_measure("trips", Aggregate::Count, vec![]),

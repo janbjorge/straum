@@ -65,16 +65,16 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.alloc(layout) }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         grow(layout.size(), MemoryChange::Freed);
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { System.dealloc(pointer, layout) }
     }
 
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
         grow(new_size, MemoryChange::Allocated);
         grow(layout.size(), MemoryChange::Freed);
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { System.realloc(pointer, layout, new_size) }
     }
 }
 
