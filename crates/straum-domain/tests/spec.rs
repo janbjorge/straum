@@ -1,5 +1,7 @@
 //! `Spec::new` on hand-built declarations, including shapes Straum SQL can't
-//! produce (a ref to a missing dim, a dim attribute listed twice).
+//! produce (a ref to a missing dim, a dim attribute listed twice), and
+//! `Spec::check_ask` on asks of one view: each check, the error it gives
+//! and the text that error shows.
 
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Identifier, JoinError,
@@ -118,11 +120,13 @@ fn columns_and_rollup_key() {
         filter: vec![],
     });
     assert_eq!(view.columns(), [id("at"), id("a"), id("z_id")]);
-    let attributes: Vec<String> = (view.attributes())
-        .map(|(join, attribute)| {
-            format!("{}.{} AS {}", join.alias, attribute.column, attribute.name)
-        })
-        .collect();
+    let mut attributes = Vec::new();
+    for (join, attribute) in view.attributes() {
+        attributes.push(format!(
+            "{}.{} AS {}",
+            join.alias, attribute.column, attribute.name
+        ));
+    }
     assert_eq!(attributes, ["r.name AS name"]);
     assert_eq!(view.rollup_key().count(), 3);
 }
@@ -157,9 +161,10 @@ fn tables_once_each_dims_first() {
     other.name = id("other");
     other.table.schema = id("other");
     let spec = Spec::new(vec![dim(), other, zones], vec![fact(), log]).unwrap();
-    let tables: Vec<String> = (spec.tables().iter())
-        .map(|table| format!("{}.{}", table.schema, table.name))
-        .collect();
+    let mut tables = Vec::new();
+    for table in spec.tables() {
+        tables.push(format!("{}.{}", table.schema, table.name));
+    }
     assert_eq!(tables, ["public.z", "other.z", "public.t"]);
 }
 
@@ -372,22 +377,20 @@ fn chained() -> Fact {
     view
 }
 
-/// The errors of [`chained`] once `change` is made to it.
-fn refused(change: &dyn Fn(&mut Fact)) -> Vec<String> {
-    let mut view = chained();
-    change(&mut view);
+/// The errors of a spec of the dim and `view`.
+fn refused(view: Fact) -> Vec<String> {
     let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
     errors.iter().map(ToString::to_string).collect()
 }
 
-/// A change that joins the second ref through `column` of join `through`.
-fn through(through: usize, column: &str) -> impl Fn(&mut Fact) {
-    move |view: &mut Fact| {
-        view.refs[1].via = vec![Via::Attribute {
-            through,
-            column: id(column),
-        }];
-    }
+/// [`chained`], its second ref joined through `column` of join `through`.
+fn chained_through(through: usize, column: &str) -> Fact {
+    let mut view = chained();
+    view.refs[1].via = vec![Via::Attribute {
+        through,
+        column: id(column),
+    }];
+    view
 }
 
 /// What Straum SQL refuses in its own words before the spec sees it: a
@@ -398,34 +401,38 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     assert!(Spec::new(vec![dim()], vec![chained()]).is_ok());
 
     let reads = vec![attribute("through_name", "name")];
+    let mut semi_reading = chained();
+    semi_reading.refs[1].reads.clone_from(&reads);
     assert_eq!(
-        refused(&|view| view.refs[1].reads.clone_from(&reads)),
+        refused(semi_reading),
         ["view t: join through is a semi join and reads columns, which it has none of"]
     );
+    let mut anti_reading = chained();
+    anti_reading.refs[1].kind = RefKind::Anti;
+    anti_reading.refs[1].reads.clone_from(&reads);
     assert_eq!(
-        refused(&|view| {
-            view.refs[1].kind = RefKind::Anti;
-            view.refs[1].reads.clone_from(&reads);
-        }),
+        refused(anti_reading),
         ["view t: join through is an anti join and reads columns, which it has none of"]
     );
     // A column the dim before it doesn't carry, then the join itself
     // and one that isn't there.
     assert_eq!(
-        refused(&through(0, "id")),
+        refused(chained_through(0, "id")),
         ["view t: join through joins through column id of join 0, which no join before it carries"]
     );
     for not_before in [1, 7] {
         assert_eq!(
-            refused(&through(not_before, "name")),
+            refused(chained_through(not_before, "name")),
             [format!(
                 "view t: join through joins through column name of join {not_before}, \
                  which no join before it carries"
             )]
         );
     }
+    let mut unknown_filter = chained();
+    unknown_filter.filter[0].key = id("n");
     assert_eq!(
-        refused(&|view| view.filter[0].key = id("n")),
+        refused(unknown_filter),
         ["view t: WHERE filters on n, which names no key of the view"]
     );
 }
