@@ -59,7 +59,7 @@ cov crates=changed: (_named crates)
 # Crates depend inward only
 [group('check')]
 layers:
-    python3 scripts/check-layers.py
+    scripts/check-layers.py
 
 # Physical stream against random workloads, as CI's correctness job
 [group('check')]
@@ -69,7 +69,7 @@ correctness:
 # Helm chart checks
 [group('check')]
 chart:
-    python3 scripts/check-chart.py
+    scripts/check-chart.py
 
 # Serve the book with live reload
 [group('docs')]

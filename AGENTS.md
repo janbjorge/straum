@@ -11,7 +11,7 @@ cargo fmt --all
 cargo clippy -p <crate> --all-targets -- -D warnings
 cargo test -p <crate>
 cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
-python3 scripts/check-layers.py
+scripts/check-layers.py
 ```
 
 Coverage: touched crates plus crates whose tests exercise them
@@ -28,7 +28,7 @@ dataset. In docs the taxi trips stay in the quick start, running and
 benchmark pages; other pages show the smallest view for their point,
 over `public.events AS e` and `public.accounts AS a`.
 
-- Change under `deploy/`: run `python3 scripts/check-chart.py`. Needs
+- Change under `deploy/`: run `scripts/check-chart.py`. Needs uv,
   helm, the helm-unittest plugin and kubeconform.
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 

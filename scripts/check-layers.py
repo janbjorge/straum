@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = "==3.14.*"
+# dependencies = []
+# ///
 """Reject workspace dependencies that violate Straum's crate layering.
 
 Each crate must depend on exactly the workspace crates ALLOWED lists, so

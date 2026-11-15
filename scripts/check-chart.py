@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = "==3.14.*"
+# dependencies = []
+# ///
 """Lint the Helm chart, run its unit tests, and check what it renders
 against the schemas of the oldest and newest Kubernetes it targets."""
 
