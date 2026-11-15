@@ -81,14 +81,18 @@ change.
   (ADR-0027).
 - Plain structs, enums, functions. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
-- Write for a reader who doesn't know Rust (ADR-0053):
+- Write for a reader who doesn't know Rust (ADR-0053, ADR-0054):
   - Whole words, units last (`timeout_ms`), verbs for functions.
   - Early returns with `let ... else`, so the main path stays flat.
-  - `match` or `if let` once a closure needs a statement. Name a
-    closure as a function instead of binding it to `let`.
+  - A `for` loop, not a chain with a closure. Name a closure as a
+    function instead of binding it to `let`.
   - Enums over `bool` parameters, named structs over tuples, named
-    constants over magic numbers.
-  - Functions under 70 lines.
+    constants over magic numbers, named index types (`FactIndex`)
+    over bare `usize`.
+  - A lifetime, generic or `impl Trait` only where a plain type won't
+    do, saying why.
+  - Dense code only where a benchmark shows a clear gain, naming it.
+  - Functions under 70 lines, files under 1000.
 - Every crate, a new one too, takes `[workspace.lints]` with `[lints]
   workspace = true`. Silence a lint with `#[expect(.., reason = ..)]`,
   never `#[allow]`. One exception: `dead_code` on a helper module that
@@ -105,10 +109,13 @@ change.
   small helpers. Review with `cargo tree --workspace -e normal`.
 - `docs/src/glossary.md` names each thing once. Use its terms in docs,
   comments and error text. Its Clashes table lists renames still open.
-- No doc comments by default; names and types carry the what. Comment
-  only a why the code can't show: constraint, invariant, PostgreSQL
-  quirk, rejected alternative. Never reference callers or tickets. Never
-  leave `TODO` or commented-out code.
+- Each file opens with a `//!` header in plain English: what it holds
+  and how data moves through it. Each public type gets one `///` line
+  saying what it is. Other comments say only a why the code can't show:
+  constraint, invariant, PostgreSQL quirk, rejected alternative. Never
+  reference callers or tickets. Never leave `TODO` or commented-out
+  code. `docs/src/reading-the-code.md` explains the Rust used; add to it
+  when code needs a feature it doesn't cover.
 - Every behaviour gets a positive and a negative test. State that
   changes over time gets a property test against a reference; a planted
   bug must make it fail.

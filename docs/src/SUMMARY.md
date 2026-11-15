@@ -20,4 +20,5 @@
 # Contributing
 
 - [Design](design.md)
+- [Reading the code](reading-the-code.md)
 - [Glossary](glossary.md)

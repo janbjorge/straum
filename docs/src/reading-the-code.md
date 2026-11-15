@@ -1,0 +1,109 @@
+# Reading the code
+
+This page is for a reader who knows programming but not Rust. It gives
+the order to read the crates in, then the Rust the code uses, each
+with an example in Straum's own words. [Design](design.md) is the
+model behind the code; the [glossary](glossary.md) names each thing.
+
+## Where to start
+
+Read the crates from the inside out. Each one only uses the ones
+before it.
+
+1. `straum-domain`: what a view is and how its cells add up. No I/O,
+   no threads. Start with `spec.rs` (the parsed views), then
+   `store.rs` (where rows land and asks read).
+2. `straum-notation`: reads Straum SQL, the `CREATE VIEW` statements
+   and the asks, into the domain's types.
+3. `straum-app`: the use cases. `app.rs` holds `App`, which answers
+   asks, and `Writer`, the loop that loads the tables and applies the
+   stream. `source.rs` is the one trait PostgreSQL sits behind.
+4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
+   `straum-app`; `wal/` reads the physical WAL.
+5. `straum-http`: serves asks and status over HTTP.
+6. `straum`: the binary. `main.rs` starts it all.
+
+Every file opens with a few lines saying what it holds. Read those
+first; they tell you whether you need the rest.
+
+## The Rust you'll meet
+
+**`&` and `&mut`: borrowing.** A value has one owner. `&rows` lends
+it out to read; `&mut rows` lends it out to change, and while it is
+lent that way nothing else may touch it. A function that takes
+`table: &str` reads the name and gives it back. `&[Datum]` is a
+borrowed list: a row, read in place, never copied.
+
+**`String` and `&str`, `Vec<T>` and `&[T]`.** The first of each pair
+owns its text or list; the second borrows one. `Box<[u32]>` is a list
+that owns its items and never grows.
+
+**`Option<T>`: maybe a value.** `Some(value)` or `None`, never null.
+`Option<usize>` is "a position, if there is one".
+
+**`Result<T, E>`: a value or an error.** `Ok(value)` or `Err(error)`.
+Every error type is an `enum` listing what can go wrong, such as
+`RowError` or `ClientError`, with the text a person reads written in
+its `Display`.
+
+**`?`: return the error.** `self.remove_row(table, old)?;` means: if
+that returned `Err`, return the same error from here; otherwise carry
+on with the value. Most functions read as a straight line of steps
+because of it.
+
+**`let ... else`: stop early.**
+
+```rust
+let Some(bound) = &mut self.bound[fact] else {
+    return Ok(());
+};
+```
+
+reads: take the value out of `Some`; if there is none, return. After
+it, `bound` is the value itself.
+
+**`if let` and `match`.** `if let Some(dim) = self.dim_index(table)`
+runs its block only when there is a value. `match` picks one arm per
+case of an enum, and the compiler refuses a `match` that forgets one.
+
+**`enum` with data.** An enum case can carry values:
+`Direction::Add` carries none, `Step::Started(lsn)` carries a
+position in the WAL. `match` takes them out again.
+
+**`impl` blocks and `self`.** `impl Store { .. }` holds the functions
+of a `Store`. A first parameter `&self` reads the store, `&mut self`
+changes it, `self` uses it up.
+
+**Traits.** A trait is a set of functions a type promises to have.
+Straum has two of its own, at its edges: `Source` (PostgreSQL, in
+`straum-app/src/source.rs`) and `Spill`. `impl Display for X` and
+`impl From<A> for B` are the standard ones: how to print an `X`, and
+how to turn an `A` into a `B`, which is what lets `?` convert one
+error into another.
+
+**`#[derive(..)]`.** Asks the compiler to write the obvious functions:
+`Debug` to print for a developer, `Clone` to copy, `PartialEq` to
+compare.
+
+**Generics: `<T>`.** `Writer<S>` is a writer over any source `S`. The
+binary uses `Writer<Postgres>`; tests use a fake source. A generic is
+kept only where two types really fill it.
+
+**Lifetimes: `'a`.** `Flags<'a>` holds text borrowed from the command
+line; `'a` says the flags may not outlive that text. A lifetime is
+kept only where copying would cost; the comment beside it says so.
+
+**Threads: `Arc` and `RwLock`.** `App` keeps its state in
+`Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
+threads share it, `RwLock` lets many asks read at once while one
+commit writes. `read()` and `write()` in `app.rs` take the lock.
+
+**Modules.** `mod store;` pulls in `store.rs`. `pub` is visible to
+other crates, `pub(crate)` only inside this one, nothing at all only
+inside the file. `#[cfg(test)] mod tests` at the end of a file holds
+its unit tests; `tests/` beside `src/` holds the tests that use the
+crate from outside.
+
+**Dense code.** Where a loop would be slower in a way a benchmark
+measured, the code keeps a denser form and a comment names the
+benchmark. Everywhere else it is a plain `for` loop.
