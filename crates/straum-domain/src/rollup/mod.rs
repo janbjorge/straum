@@ -246,7 +246,7 @@ impl Rollup {
     }
 
     /// Columns a row holds, as [`Fact::columns`].
-    pub(crate) fn row_len(&self) -> usize {
+    pub(crate) fn column_count(&self) -> usize {
         self.columns.len()
     }
 
@@ -341,7 +341,7 @@ impl Rollup {
     /// of cells on its own thread, since they share nothing but the rows.
     /// If a row fails [`Rollup::add`]'s checks, none is added.
     pub(crate) fn add_rows(&mut self, rows: &[Datum]) -> Result<(), RowError> {
-        let rows: Vec<&[Datum]> = split_rows(rows, self.row_len())?.collect();
+        let rows: Vec<&[Datum]> = split_rows(rows, self.column_count())?.collect();
         for row in &rows {
             self.check(row)?;
         }
@@ -524,7 +524,7 @@ impl Rollup {
 
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
-        arity(self.row_len(), row.len())?;
+        arity(self.column_count(), row.len())?;
         if !matches!(row[TIME], Datum::Null | Datum::Int(_)) {
             return Err(RowError::NotInt {
                 column: self.columns[TIME].clone(),

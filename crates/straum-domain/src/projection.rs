@@ -84,7 +84,7 @@ impl Projection {
     }
 
     /// How many of a row's columns are its key, which comes first.
-    pub(crate) fn key_len(&self) -> usize {
+    pub(crate) fn key_column_count(&self) -> usize {
         self.key_columns
     }
 

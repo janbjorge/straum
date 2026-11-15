@@ -54,7 +54,7 @@ impl Store {
             let Some(bound) = &mut self.bound[fact.0] else {
                 return Ok(());
             };
-            let row_width = self.rollups[fact.0].row_len();
+            let row_width = self.rollups[fact.0].column_count();
             let mut bound_rows = Vec::new();
             for row in rows.chunks_exact(row_width) {
                 bound.rows(&self.projections, row, &mut bound_rows);
@@ -125,7 +125,7 @@ impl Store {
         change: DimChange,
     ) -> Result<(), RowError> {
         let dim = self.dim_index(table).expect(IN_SPEC);
-        let key_columns = self.projections[dim.0].key_len();
+        let key_columns = self.projections[dim.0].key_column_count();
         let key = row.get(..key_columns).unwrap_or(&[]);
         // Owned, so the bound cells can leave the rows the key held after
         // the projection has moved on.
