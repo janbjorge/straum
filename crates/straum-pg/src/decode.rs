@@ -11,6 +11,7 @@ use straum_domain::{ColumnType, Datum, Identifier};
 use crate::catalog::Checked;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, RelationColumn, Tuple};
+use crate::problem::{ColumnProblem, Problem, TableNames};
 use crate::value::{read, type_of};
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
@@ -181,11 +182,14 @@ fn position_in(relation: &Relation, column: &Identifier) -> Option<usize> {
 }
 
 fn changed(table: &Checked, column: &Identifier) -> Error {
-    Error::Setup(vec![format!(
-        "{}: column {column} of {} was dropped or changed type",
-        table.name,
-        table.qualified()
-    )])
+    Error::Setup(vec![Problem::Column {
+        table: TableNames {
+            name: table.name.clone(),
+            qualified: table.qualified(),
+        },
+        column: column.clone(),
+        problem: ColumnProblem::Changed,
+    }])
 }
 
 /// How the decoder reads a relation's column: an enum of the table's as

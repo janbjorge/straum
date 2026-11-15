@@ -5,6 +5,7 @@ use straum_app::Lsn;
 use straum_domain::RowError;
 
 use crate::pgoutput::DecodeError;
+use crate::problem::Problem;
 use crate::value::ValueError;
 use crate::wal::WalError;
 
@@ -29,7 +30,7 @@ pub(crate) enum Error {
     Tls(String),
     /// The setup doesn't fit the spec; one line per problem, saying what to
     /// fix.
-    Setup(Vec<String>),
+    Setup(Vec<Problem>),
     /// A transaction changed more rows Straum reads than
     /// `--max-transaction-rows` allows. Starting over is the cheap way
     /// through it: the new slot's snapshot is after the commit, so its rows
@@ -91,7 +92,15 @@ impl fmt::Display for Error {
             Error::Wal(error) => write!(formatter, "{error}"),
             Error::Row(error) => write!(formatter, "loaded {error}"),
             Error::Tls(error) => write!(formatter, "TLS to PostgreSQL: {error}"),
-            Error::Setup(problems) => formatter.write_str(&problems.join("\n")),
+            Error::Setup(problems) => {
+                for (index, problem) in problems.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str("\n")?;
+                    }
+                    write!(formatter, "{problem}")?;
+                }
+                Ok(())
+            }
             Error::Transaction { lsn, limit } => write!(
                 formatter,
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
@@ -112,6 +121,7 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::problem::{ServerProblem, WaitProblem};
     use straum_domain::ColumnType;
 
     #[test]
@@ -150,7 +160,18 @@ mod tests {
                 "loaded removed row was never added",
             ),
             (Error::Tls("no".into()), "TLS to PostgreSQL: no"),
-            (Error::Setup(vec!["one".into(), "two".into()]), "one\ntwo"),
+            (
+                Error::Setup(vec![
+                    Problem::Server(ServerProblem::WalCompressionZstd),
+                    Problem::Wait {
+                        waited_seconds: 60,
+                        problem: WaitProblem::NotLogged,
+                    },
+                ]),
+                "wal_compression is zstd; --wal physical reads off, pglz and lz4\n\
+                 --wal physical waited 60 s for PostgreSQL to log which transactions run; \
+                 GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role",
+            ),
             (
                 Error::Transaction {
                     lsn: Lsn(0x16_B374_D848),

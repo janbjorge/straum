@@ -21,6 +21,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
 use crate::physical::{self, Physical};
+use crate::problem::{Problem, WaitProblem};
 use crate::stream::{Reader, Stream};
 use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
@@ -198,12 +199,7 @@ fn physical_snapshot(
             Sight::Blind(xids) => {
                 connection.execute("ROLLBACK")?;
                 if Instant::now() >= deadline {
-                    let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
-                    return Err(Error::Setup(vec![format!(
-                        "--wal physical waited {waited} s for transactions it read the commits of \
-                         to end: xid {}; a synchronous standby that doesn't answer holds them",
-                        xids.join(", ")
-                    )]));
+                    return Err(waited_for(waited, WaitProblem::InvisibleCommits(xids)));
                 }
                 thread::sleep(SNAPSHOT_AGAIN);
             }
@@ -227,19 +223,17 @@ fn wait_consistent(stream: &mut Stream, wait: Duration) -> Result<(), Error> {
     let waited = wait.as_secs();
     match stream.wait_consistent(wait)? {
         Consistency::Consistent => Ok(()),
-        Consistency::Unknown => Err(Error::Setup(vec![format!(
-            "--wal physical waited {waited} s for PostgreSQL to log which transactions run; \
-             GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role"
-        )])),
-        Consistency::Waiting(xids) => {
-            let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
-            Err(Error::Setup(vec![format!(
-                "--wal physical waited {waited} s for transactions open before it started to end: \
-                 xid {}; a long or prepared one (pg_prepared_xacts) holds the start back",
-                xids.join(", ")
-            )]))
-        }
+        Consistency::Unknown => Err(waited_for(waited, WaitProblem::NotLogged)),
+        Consistency::Waiting(xids) => Err(waited_for(waited, WaitProblem::OpenTransactions(xids))),
     }
+}
+
+/// The setup error of a physical start that waited `waited_seconds` in vain.
+fn waited_for(waited_seconds: u64, problem: WaitProblem) -> Error {
+    Error::Setup(vec![Problem::Wait {
+        waited_seconds,
+        problem,
+    }])
 }
 
 fn unloaded(tables: &Tables) -> Vec<Identifier> {

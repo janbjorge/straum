@@ -3976,7 +3976,7 @@ fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
     match opened {
         Ok(_) => Vec::new(),
         Err(error) => match error.downcast::<Error>().map(|error| *error) {
-            Ok(Error::Setup(problems)) => problems,
+            Ok(Error::Setup(problems)) => crate::problem::lines(&problems),
             other => panic!("{name}: {other:?}"),
         },
     }
@@ -4693,11 +4693,11 @@ fn checks_what_the_physical_wal_needs() {
     );
     assert_eq!(physical_problems(&spec, &catalog), None);
     let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
-    assert!(
-        logical
-            .iter()
-            .any(|problem| problem.contains("publication needs does not exist"))
-    );
+    assert!(logical.iter().any(|problem| {
+        problem
+            .to_string()
+            .contains("publication needs does not exist")
+    }));
     for (version, wal_level, fpw, compression, problems) in [
         (170_000, "replica", "on", "lz4", vec![]),
         (180_000, "logical", "on", "pglz", vec![]),
@@ -4743,7 +4743,10 @@ fn checks_what_the_physical_wal_needs() {
 
 /// What the check for `--wal physical` finds wrong with `catalog`.
 fn physical_problems(spec: &Spec, catalog: &catalog::Catalog) -> Option<Vec<String>> {
-    catalog::check(spec, catalog, "needs", PHYSICAL).err()
+    catalog::check(spec, catalog, "needs", PHYSICAL)
+        .err()
+        .as_deref()
+        .map(crate::problem::lines)
 }
 
 /// With nothing logging which transactions run, and a role that may not
@@ -4812,7 +4815,10 @@ fn reports_wal_level_and_read_access() {
             )]
         });
         assert_eq!(
-            catalog::check(&spec, &catalog, "access", Replication::Logical).err(),
+            catalog::check(&spec, &catalog, "access", Replication::Logical)
+                .err()
+                .as_deref()
+                .map(crate::problem::lines),
             expected,
             "{version} {wal_level}"
         );
@@ -4820,7 +4826,10 @@ fn reports_wal_level_and_read_access() {
     catalog.server_version = 160_009;
     catalog.wal_level = "logical".into();
     assert_eq!(
-        catalog::check(&spec, &catalog, "access", Replication::Logical).err(),
+        catalog::check(&spec, &catalog, "access", Replication::Logical)
+            .err()
+            .as_deref()
+            .map(crate::problem::lines),
         Some(vec![
             "PostgreSQL 16 is too old; Straum needs 17 or newer".to_owned()
         ])

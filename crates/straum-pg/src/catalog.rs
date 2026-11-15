@@ -8,6 +8,9 @@ use straum_domain::{
 };
 
 use crate::error::Error;
+use crate::problem::{
+    ColumnFix, ColumnProblem, Filter, Problem, ServerProblem, TableNames, TableProblem, ViewProblem,
+};
 use crate::source::Replication;
 use crate::value::type_of;
 use crate::wire::Connection;
@@ -369,7 +372,7 @@ fn shape(query: &str) -> Error {
 
 /// What a column is for, which decides the types it may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Purpose {
+pub(crate) enum Purpose {
     /// The fact's time column, of the type its `date_bin` origin has.
     Time(Origin),
     /// A value Straum sums, or keeps the least and greatest of.
@@ -395,7 +398,7 @@ impl Purpose {
     }
 
     /// What to change, after what the column is.
-    fn needs(self) -> String {
+    pub(crate) fn needs(self) -> String {
         match self {
             Purpose::Time(origin) => {
                 let other = match origin {
@@ -431,7 +434,7 @@ pub(crate) fn check(
     catalog: &Catalog,
     publication: &str,
     replication: Replication,
-) -> Result<Tables, Vec<String>> {
+) -> Result<Tables, Vec<Problem>> {
     let mut problems = Vec::new();
     check_server(catalog, publication, replication, &mut problems);
     let mut tables = Tables {
@@ -476,53 +479,49 @@ fn check_server(
     catalog: &Catalog,
     publication: &str,
     replication: Replication,
-    problems: &mut Vec<String>,
+    problems: &mut Vec<Problem>,
 ) {
     // ADR-0051.
     if catalog.server_version < OLDEST_VERSION_NUM {
-        problems.push(format!(
-            "PostgreSQL {} is too old; Straum needs 17 or newer",
-            catalog.server_version / VERSION_NUM_PER_MAJOR
-        ));
+        problems.push(Problem::Server(ServerProblem::TooOld {
+            major: catalog.server_version / VERSION_NUM_PER_MAJOR,
+        }));
     }
     // From 19, a logical slot turns logical decoding on under replica.
     // The physical WAL holds every change from replica on (ADR-0049).
-    let enough: &[&str] = match replication {
+    let enough: &'static [&'static str] = match replication {
         Replication::Logical if catalog.server_version < LOGICAL_UNDER_REPLICA_VERSION_NUM => {
             &["logical"]
         }
         _ => &["replica", "logical"],
     };
     if !enough.contains(&catalog.wal_level.as_str()) {
-        problems.push(format!(
-            "wal_level is {}; Straum needs {}, which takes a restart",
-            catalog.wal_level,
-            enough.join(" or ")
-        ));
+        problems.push(Problem::Server(ServerProblem::WalLevel {
+            wal_level: catalog.wal_level.clone(),
+            enough,
+        }));
     }
+    let publication = publication.to_owned();
     match replication {
         Replication::Logical => match catalog.publication {
-            None => problems.push(format!(
-                "publication {publication} does not exist; run the SQL straum plan prints"
-            )),
-            Some(false) => problems.push(format!(
-                "publication {publication} must publish insert, update, delete and truncate"
-            )),
+            None => problems.push(Problem::Server(ServerProblem::NoPublication {
+                publication,
+            })),
+            Some(false) => problems.push(Problem::Server(ServerProblem::PublicationActions {
+                publication,
+            })),
             Some(true) => {}
         },
         Replication::Physical { .. } => {
             // The first change to a page after a checkpoint must bring
             // the page whole: deletes and updates name only a slot on it.
             if catalog.full_page_writes != "on" {
-                problems.push(format!(
-                    "full_page_writes is {}; --wal physical needs on",
-                    catalog.full_page_writes
-                ));
+                problems.push(Problem::Server(ServerProblem::FullPageWrites {
+                    setting: catalog.full_page_writes.clone(),
+                }));
             }
             if catalog.wal_compression == "zstd" {
-                problems.push(
-                    "wal_compression is zstd; --wal physical reads off, pglz and lz4".to_owned(),
-                );
+                problems.push(Problem::Server(ServerProblem::WalCompressionZstd));
             }
         }
     }
@@ -614,29 +613,29 @@ fn check_table(
     catalog: &Catalog,
     publication: &str,
     replication: Replication,
-    problems: &mut Vec<String>,
+    problems: &mut Vec<Problem>,
 ) -> Option<Checked> {
     let logical = replication == Replication::Logical;
-    let qualified = format!("{}.{}", table.schema, table.name);
+    let names = TableNames {
+        name: name.clone(),
+        qualified: format!("{}.{}", table.schema, table.name),
+    };
     let Some(class) = catalog.class(table.schema.as_str(), table.name.as_str()) else {
-        problems.push(format!("{name}: table {qualified} does not exist"));
+        problems.push(names.table_problem(TableProblem::Missing));
         return None;
     };
     let before = problems.len();
     if class.relkind != "r" {
-        problems.push(format!("{name}: {qualified} is not a plain table"));
+        problems.push(names.table_problem(TableProblem::NotPlain));
         return None;
     }
     if !class.select {
-        problems.push(format!(
-            "{name}: Straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
-        ));
+        problems.push(names.table_problem(TableProblem::NoSelect));
     }
     if logical && class.row_filter {
-        problems.push(format!(
-            "{name}: publication {publication} filters the rows of {qualified}; \
-             Straum needs every row"
-        ));
+        problems.push(names.table_problem(TableProblem::RowFilter {
+            publication: publication.to_owned(),
+        }));
     }
     // A missing publication is reported once, not per table.
     let published = match (&class.published, catalog.publication) {
@@ -645,16 +644,14 @@ fn check_table(
         (Some(published), _) => Some(published.as_slice()),
         (None, None) => None,
         (None, Some(_)) => {
-            problems.push(format!(
-                "{name}: publication {publication} leaves out {qualified}: \
-                 ALTER PUBLICATION {publication} ADD TABLE {qualified}"
-            ));
+            problems.push(names.table_problem(TableProblem::NotPublished {
+                publication: publication.to_owned(),
+            }));
             return None;
         }
     };
     let reader = ColumnReader {
-        name,
-        qualified: &qualified,
+        table: &names,
         publication,
         class,
         published,
@@ -666,10 +663,7 @@ fn check_table(
     }
     // The physical stream keeps old rows from the pages.
     if logical && class.identity != "f" {
-        problems.push(format!(
-            "{kind} {name}: Straum needs the whole old row of every update and delete: \
-             ALTER TABLE {qualified} REPLICA IDENTITY FULL"
-        ));
+        problems.push(names.table_problem(TableProblem::ReplicaIdentity { kind }));
     }
     Some(Checked {
         name: name.clone(),
@@ -683,9 +677,7 @@ fn check_table(
 
 /// What a table's columns are checked against, and named by in problems.
 struct ColumnReader<'a> {
-    /// The spec's name for the table.
-    name: &'a Identifier,
-    qualified: &'a str,
+    table: &'a TableNames,
     publication: &'a str,
     class: &'a Class,
     /// The columns the publication sends; `None` when it sends all.
@@ -704,7 +696,7 @@ struct ReadColumns {
 impl ColumnReader<'_> {
     /// Each column of `uses` once, the problems of all of them in
     /// `problems`.
-    fn read(&self, uses: Vec<ColumnUse<'_>>, problems: &mut Vec<String>) -> ReadColumns {
+    fn read(&self, uses: Vec<ColumnUse<'_>>, problems: &mut Vec<Problem>) -> ReadColumns {
         let mut read = ReadColumns {
             columns: Vec::new(),
             types: Vec::new(),
@@ -730,17 +722,16 @@ impl ColumnReader<'_> {
         column_name: &Identifier,
         purpose: Purpose,
         enums: &mut Vec<u32>,
-    ) -> Result<ColumnType, String> {
-        let (name, qualified, publication) = (self.name, self.qualified, self.publication);
+    ) -> Result<ColumnType, Problem> {
         let Some(column) = self.class.column(column_name) else {
-            return Err(format!("{name}: {qualified} has no column {column_name}"));
+            return Err(self.problem(column_name, ColumnProblem::Missing));
         };
         if let Some(published) = self.published
             && !published.contains(&column.name)
         {
-            return Err(format!(
-                "{name}: publication {publication} leaves out column {column_name} of {qualified}"
-            ));
+            let publication = self.publication.to_owned();
+            let problem = ColumnProblem::NotPublished { publication };
+            return Err(self.problem(column_name, problem));
         }
         let column_type = match (self.as_text.contains(column_name), column.typtype == "e") {
             (true, true) => {
@@ -749,98 +740,120 @@ impl ColumnReader<'_> {
                 }
                 Some(ColumnType::Text)
             }
-            (true, false) => {
-                return Err(self.is(column_name, column, ", not an enum; drop the ::text"));
-            }
-            (false, true) => {
-                let fix = format!(", an enum; write {column_name}::text");
-                return Err(self.is(column_name, column, &fix));
-            }
+            (true, false) => return Err(self.is(column_name, column, ColumnFix::DropText)),
+            (false, true) => return Err(self.is(column_name, column, ColumnFix::WriteText)),
             (false, false) => type_of(column.type_oid, column.typmod),
         };
         match column_type {
             Some(column_type) if purpose.allows(column_type) => Ok(column_type),
-            _ => Err(self.is(column_name, column, &format!("; {}", purpose.needs()))),
+            _ => Err(self.is(column_name, column, ColumnFix::Needs(purpose))),
         }
     }
 
-    /// A problem with a column: its type, then `what`.
-    fn is(&self, column_name: &Identifier, column: &Column, what: &str) -> String {
-        format!(
-            "{}: column {column_name} of {} is {}{what}",
-            self.name, self.qualified, column.type_name
-        )
+    /// A problem with a column's type, and how to fix it.
+    fn is(&self, column_name: &Identifier, column: &Column, fix: ColumnFix) -> Problem {
+        let type_name = column.type_name.clone();
+        self.problem(column_name, ColumnProblem::Type { type_name, fix })
+    }
+
+    fn problem(&self, column: &Identifier, problem: ColumnProblem) -> Problem {
+        Problem::Column {
+            table: self.table.clone(),
+            column: column.clone(),
+            problem,
+        }
     }
 }
 
 /// Refs join fact columns to dim keys of the same type, and filters compare
 /// columns with literals of their type, an enum's with one of its labels.
-fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Vec<String>) {
+fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Vec<Problem>) {
     for fact in spec.facts() {
-        let facts = tables.fact(&fact.name);
-        for reference in &fact.refs {
-            let dim = tables.dim(&reference.dim);
-            for (via, key) in reference.via.iter().zip(&dim.columns) {
-                let (via_name, via_type) = match via {
-                    Via::Fact(column) => (column.to_string(), facts.column_type(column)),
-                    Via::Attribute { through, column } => {
-                        let parent = &fact.refs[*through];
-                        let name = format!("{}.{column}", parent.alias);
-                        (name, tables.dim(&parent.dim).column_type(column))
-                    }
-                };
-                let key_type = dim.column_type(key);
-                if via_type != key_type {
-                    problems.push(format!(
-                        "view {}: join {} joins {via_name} ({via_type}) to {key} ({key_type}); \
-                         they must read alike",
-                        fact.name, reference.alias
-                    ));
+        check_joins(fact, tables, problems);
+        check_filters(fact, tables, catalog, problems);
+    }
+}
+
+/// Each join's key columns read alike on both sides.
+fn check_joins(fact: &Fact, tables: &Tables, problems: &mut Vec<Problem>) {
+    let facts = tables.fact(&fact.name);
+    for reference in &fact.refs {
+        let dim = tables.dim(&reference.dim);
+        for (via, key) in reference.via.iter().zip(&dim.columns) {
+            let (via_name, via_type) = match via {
+                Via::Fact(column) => (column.to_string(), facts.column_type(column)),
+                Via::Attribute { through, column } => {
+                    let parent = &fact.refs[*through];
+                    let name = format!("{}.{column}", parent.alias);
+                    (name, tables.dim(&parent.dim).column_type(column))
                 }
+            };
+            let key_type = dim.column_type(key);
+            if via_type != key_type {
+                problems.push(Problem::View {
+                    view: fact.name.clone(),
+                    problem: ViewProblem::JoinTypes {
+                        join: reference.alias.clone(),
+                        via: via_name,
+                        via_type,
+                        key: key.clone(),
+                        key_type,
+                    },
+                });
             }
         }
-        let mut filters = Vec::new();
-        for measure in &fact.measures {
-            filters.push((format!("measure {}", measure.name), &measure.filter));
-        }
-        filters.push(("WHERE".to_owned(), &fact.filter));
-        for (what, filter) in filters {
-            for condition in filter {
-                let (table, column, column_type) =
-                    match fact.resolve(&condition.key).expect("checked by Spec::new") {
-                        Key::ByKey(ByKey::Column { column, .. }) => {
-                            (facts, column, facts.column_type(column))
-                        }
-                        Key::ByKey(ByKey::IsNull { .. }) => {
-                            (facts, &fact.time.column, ColumnType::Bool)
-                        }
-                        Key::Attribute(reference, attribute) => {
-                            let dim = tables.dim(&reference.dim);
-                            (dim, &attribute.column, dim.column_type(&attribute.column))
-                        }
-                    };
-                let labels = catalog.labels(table, column);
-                for value in &condition.values {
-                    // The rule asks follow too.
-                    if !column_type.fits(value) {
-                        problems.push(format!(
-                            "view {}: {what} compares {} ({column_type}) with {}",
-                            fact.name,
-                            condition.key,
-                            literal(value)
-                        ));
-                    } else if let (Some((type_name, labels)), Literal::Text(text)) =
-                        (&labels, value)
-                        && !labels.contains(&text.as_str())
-                    {
-                        problems.push(format!(
-                            "view {}: {what} compares {} with {}, which is no label of {type_name}",
-                            fact.name,
-                            condition.key,
-                            literal(value)
-                        ));
-                    }
+    }
+}
+
+/// Each filter's literals fit their column, and an enum's are its labels.
+fn check_filters(fact: &Fact, tables: &Tables, catalog: &Catalog, problems: &mut Vec<Problem>) {
+    let facts = tables.fact(&fact.name);
+    let mut filters = Vec::new();
+    for measure in &fact.measures {
+        filters.push((Filter::Measure(measure.name.clone()), &measure.filter));
+    }
+    filters.push((Filter::Where, &fact.filter));
+    for (what, filter) in filters {
+        for condition in filter {
+            let (table, column, column_type) = match fact
+                .resolve(&condition.key)
+                .expect("checked by Spec::new")
+            {
+                Key::ByKey(ByKey::Column { column, .. }) => {
+                    (facts, column, facts.column_type(column))
                 }
+                Key::ByKey(ByKey::IsNull { .. }) => (facts, &fact.time.column, ColumnType::Bool),
+                Key::Attribute(reference, attribute) => {
+                    let dim = tables.dim(&reference.dim);
+                    (dim, &attribute.column, dim.column_type(&attribute.column))
+                }
+            };
+            let labels = catalog.labels(table, column);
+            for value in &condition.values {
+                // The rule asks follow too.
+                let problem = if !column_type.fits(value) {
+                    ViewProblem::FilterType {
+                        filter: what.clone(),
+                        key: condition.key.clone(),
+                        column_type,
+                        literal: literal(value),
+                    }
+                } else if let (Some((type_name, labels)), Literal::Text(text)) = (&labels, value)
+                    && !labels.contains(&text.as_str())
+                {
+                    ViewProblem::NotALabel {
+                        filter: what.clone(),
+                        key: condition.key.clone(),
+                        literal: literal(value),
+                        type_name: (*type_name).to_owned(),
+                    }
+                } else {
+                    continue;
+                };
+                problems.push(Problem::View {
+                    view: fact.name.clone(),
+                    problem,
+                });
             }
         }
     }

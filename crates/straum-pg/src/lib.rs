@@ -18,6 +18,7 @@ mod load;
 mod pgoutput;
 mod physical;
 mod plan;
+mod problem;
 mod source;
 mod stream;
 #[cfg(test)]
