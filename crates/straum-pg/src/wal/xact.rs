@@ -4,8 +4,8 @@
 //! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
 
 use super::{
-    Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION, Record,
-    WalError, u32_at,
+    Oid, Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
+    Record, TransactionId, WalError, u32_at,
 };
 
 const XACT_OPERATION: u8 = 0x70;
@@ -69,8 +69,8 @@ pub(crate) enum Event {
 /// A transaction that ends, with the subtransactions that end with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Ending {
-    pub(crate) xid: u32,
-    pub(crate) subxacts: Vec<u32>,
+    pub(crate) xid: TransactionId,
+    pub(crate) subxacts: Vec<TransactionId>,
     /// Microseconds since 2000-01-01 UTC.
     pub(crate) time: i64,
     /// Tables whose relcache entry the commit invalidates: what DDL, and
@@ -82,8 +82,8 @@ pub(crate) struct Ending {
 /// of the database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Invalidated {
-    pub(crate) database: u32,
-    pub(crate) relation: u32,
+    pub(crate) database: Oid,
+    pub(crate) relation: Oid,
 }
 
 /// The transactions running when the record was written, logged at each
@@ -91,12 +91,12 @@ pub(crate) struct Invalidated {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Running {
     /// The xid the next transaction gets: none at or past it ran yet.
-    pub(crate) next_xid: u32,
+    pub(crate) next_xid: TransactionId,
     /// Every xid before it has ended, even one a crash cut off, which
     /// leaves no abort record.
-    pub(crate) oldest_xid: u32,
+    pub(crate) oldest_xid: TransactionId,
     /// The top-level transactions only.
-    pub(crate) xids: Vec<u32>,
+    pub(crate) xids: Vec<TransactionId>,
 }
 
 /// The event `record` is, if any. `major` picks the layout.
@@ -134,30 +134,31 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
     let data = record.main_data();
     let time = i64::from_le_bytes(*data.first_chunk()?);
     let mut at = TIME_SIZE;
-    let mut info = 0;
+    // `xl_xact_xinfo`: which optional parts follow, a flag each.
+    let mut parts = 0;
     if record.info & XACT_HAS_INFO != 0 {
-        info = u32_at(data, at)?;
+        parts = u32_at(data, at)?;
         at += XINFO_SIZE;
     }
-    if info & HAS_DATABASE != 0 {
+    if parts & HAS_DATABASE != 0 {
         at += DATABASE_INFO;
     }
     let mut subxacts = Vec::new();
-    if info & HAS_SUBXACTS != 0 {
+    if parts & HAS_SUBXACTS != 0 {
         let count = read_count(data, &mut at)?;
         for index in 0..count {
             subxacts.push(u32_at(data, at + XID_SIZE * index)?);
         }
         at += XID_SIZE * count;
     }
-    if info & HAS_RELATION_FILES != 0 {
+    if parts & HAS_RELATION_FILES != 0 {
         at += RELATION_FILE * read_count(data, &mut at)?;
     }
-    if info & HAS_DROPPED_STATS != 0 {
+    if parts & HAS_DROPPED_STATS != 0 {
         at += dropped_stat_size(major) * read_count(data, &mut at)?;
     }
     let mut invalidated = Vec::new();
-    if outcome == Outcome::Commit && info & HAS_INVALIDATIONS != 0 {
+    if outcome == Outcome::Commit && parts & HAS_INVALIDATIONS != 0 {
         let count = read_count(data, &mut at)?;
         for index in 0..count {
             let message = at + INVALIDATION * index;
@@ -170,7 +171,7 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
         }
         at += INVALIDATION * count;
     }
-    let xid = if info & HAS_TWO_PHASE != 0 {
+    let xid = if parts & HAS_TWO_PHASE != 0 {
         u32_at(data, at)?
     } else {
         record.xid
@@ -241,7 +242,7 @@ pub(crate) mod tests {
     /// `xl_running_xacts.subxcnt`.
     const RUNNING_SUBXACT_COUNT: usize = 4;
 
-    fn record(resource_manager: u8, info: u8, xid: u32, main: Vec<u8>) -> Record {
+    fn record(resource_manager: u8, info: u8, xid: TransactionId, main: Vec<u8>) -> Record {
         let spec = Spec {
             xid,
             resource_manager,
@@ -303,9 +304,9 @@ pub(crate) mod tests {
 
     /// A commit or abort with every part `ParseCommitRecord` reads before
     /// the two-phase xid, and a gid and an origin after it.
-    fn ending_main(xinfo: u32, outcome: Outcome, stat: usize) -> Vec<u8> {
+    fn ending_main(parts: u32, outcome: Outcome, stat: usize) -> Vec<u8> {
         let mut main = 12_345i64.to_le_bytes().to_vec();
-        main.extend(xinfo.to_le_bytes());
+        main.extend(parts.to_le_bytes());
         main.extend(words(&[5, 1663]));
         main.extend(words(&[2, 801, 802]));
         main.extend(words(&[1]));

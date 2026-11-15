@@ -15,6 +15,7 @@ use std::collections::HashSet;
 
 use straum_domain::FastMap;
 
+use super::TransactionId;
 use super::heap::HeapChange;
 use super::xact::{Ending, Event, Invalidated, Running};
 
@@ -26,7 +27,7 @@ const LOW_32_BITS: u64 = 0xFFFF_FFFF;
 /// tracked tables, in WAL order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Committed {
-    pub(crate) xid: u32,
+    pub(crate) xid: TransactionId,
     /// The commit record's start, which names it, and its end.
     pub(crate) lsn: u64,
     pub(crate) end: u64,
@@ -43,20 +44,20 @@ pub(crate) enum Consistency {
     /// No `RUNNING_XACTS` read yet.
     Unknown,
     /// These transactions ran at the first one and haven't ended.
-    Waiting(Vec<u32>),
+    Waiting(Vec<TransactionId>),
     Consistent,
 }
 
 /// A transaction past the limit commits: its changes weren't all kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TooBig {
-    pub(crate) xid: u32,
+    pub(crate) xid: TransactionId,
     pub(crate) lsn: u64,
 }
 
 pub(crate) struct Transactions {
     /// By xid, top-level or sub, with the LSN of each change's record.
-    held: FastMap<u32, Held>,
+    held: FastMap<TransactionId, Held>,
     /// The held changes' footprints, summed.
     bytes: usize,
     /// The most changes one xid keeps; past it, only that it had more.
@@ -64,7 +65,7 @@ pub(crate) struct Transactions {
     start: Start,
     /// The xids of commits dropped as not whole, until the load's
     /// snapshot: it must see each. `None` once it did.
-    dropped: Option<HashSet<u32>>,
+    dropped: Option<HashSet<TransactionId>>,
 }
 
 #[derive(Default)]
@@ -76,14 +77,14 @@ struct Held {
 
 enum Start {
     /// No `RUNNING_XACTS` yet; the xids that ended so far.
-    Unknown { ended: HashSet<u32> },
+    Unknown { ended: HashSet<TransactionId> },
     /// The first one: transactions from `next_xid` on are whole, since
     /// PostgreSQL holds `XidGenLock` until the record is in the WAL
     /// (`LogStandbySnapshot`), so no later xid wrote before it. Those it
     /// names that haven't ended yet keep Straum from being consistent.
     From {
-        next_xid: u32,
-        running: HashSet<u32>,
+        next_xid: TransactionId,
+        running: HashSet<TransactionId>,
     },
 }
 
@@ -100,7 +101,7 @@ impl Transactions {
         }
     }
 
-    pub(crate) fn hold(&mut self, xid: u32, lsn: u64, changes: Vec<HeapChange>) {
+    pub(crate) fn hold(&mut self, xid: TransactionId, lsn: u64, changes: Vec<HeapChange>) {
         if changes.is_empty() {
             return;
         }
@@ -133,7 +134,7 @@ impl Transactions {
             Start::Unknown { .. } => Consistency::Unknown,
             Start::From { running, .. } if running.is_empty() => Consistency::Consistent,
             Start::From { running, .. } => {
-                let mut xids: Vec<u32> = running.iter().copied().collect();
+                let mut xids: Vec<TransactionId> = running.iter().copied().collect();
                 xids.sort_unstable();
                 Consistency::Waiting(xids)
             }
@@ -244,7 +245,7 @@ impl Transactions {
 
     /// The commits dropped as not whole that `snapshot` doesn't see: it
     /// was taken before PostgreSQL ended them, and can't be the load's.
-    pub(crate) fn unseen_dropped(&self, snapshot: &TransactionSnapshot) -> Vec<u32> {
+    pub(crate) fn unseen_dropped(&self, snapshot: &TransactionSnapshot) -> Vec<TransactionId> {
         let mut xids = Vec::new();
         if let Some(dropped) = &self.dropped {
             for xid in dropped {
@@ -282,7 +283,7 @@ impl Transactions {
     }
 
     /// Moves what `xid` held into `held`.
-    fn take_held(&mut self, xid: u32, held: &mut Vec<Held>) {
+    fn take_held(&mut self, xid: TransactionId, held: &mut Vec<Held>) {
         if let Some(part) = self.held.remove(&xid) {
             self.bytes -= part.bytes;
             held.push(part);
@@ -304,7 +305,7 @@ impl Transactions {
     }
 
     #[cfg(test)]
-    fn holds(&self, xid: u32) -> bool {
+    fn holds(&self, xid: TransactionId) -> bool {
         self.held.contains_key(&xid)
     }
 }
@@ -329,7 +330,7 @@ fn lsn_of(change: &(u64, HeapChange)) -> u64 {
 }
 
 /// `xid` is `from` or later, as xids wrap: `TransactionIdFollowsOrEquals`.
-pub(crate) fn follows(xid: u32, from: u32) -> bool {
+pub(crate) fn follows(xid: TransactionId, from: TransactionId) -> bool {
     i32::from_ne_bytes(xid.wrapping_sub(from).to_ne_bytes()) >= 0
 }
 
@@ -361,7 +362,7 @@ impl TransactionSnapshot {
 
     /// The snapshot sees `xid`'s commit: it ended before the snapshot. A
     /// 32-bit xid is read as the 64-bit one nearest `xmax`.
-    pub(crate) fn sees(&self, xid: u32) -> bool {
+    pub(crate) fn sees(&self, xid: TransactionId) -> bool {
         let low = u32::try_from(self.xmax & LOW_32_BITS).unwrap_or(0);
         let distance = i64::from(i32::from_ne_bytes(xid.wrapping_sub(low).to_ne_bytes()));
         let Some(full) = self.xmax.checked_add_signed(distance) else {
@@ -389,7 +390,7 @@ mod tests {
         }
     }
 
-    fn ending(xid: u32, subxacts: Vec<u32>) -> Ending {
+    fn ending(xid: TransactionId, subxacts: Vec<TransactionId>) -> Ending {
         Ending {
             xid,
             subxacts,
@@ -398,7 +399,11 @@ mod tests {
         }
     }
 
-    fn running(next_xid: u32, oldest_xid: u32, xids: Vec<u32>) -> Event {
+    fn running(
+        next_xid: TransactionId,
+        oldest_xid: TransactionId,
+        xids: Vec<TransactionId>,
+    ) -> Event {
         Event::Running(Running {
             next_xid,
             oldest_xid,
@@ -408,19 +413,19 @@ mod tests {
 
     /// A transaction of the generated workload, by its index.
     struct Script {
-        top: u32,
-        subxacts: Vec<u32>,
+        top: TransactionId,
+        subxacts: Vec<TransactionId>,
         /// The subtransaction open now, and how many were opened.
-        open_sub: Option<u32>,
+        open_sub: Option<TransactionId>,
         opened: usize,
-        kept_subs: Vec<u32>,
+        kept_subs: Vec<TransactionId>,
         /// What a reference keeps if the transaction commits.
         kept: Vec<u64>,
         /// Changes of the open subtransaction, kept if it is released.
         pending: Vec<u64>,
     }
 
-    fn commit(xid: u32, subxacts: Vec<u32>) -> Event {
+    fn commit(xid: TransactionId, subxacts: Vec<TransactionId>) -> Event {
         Event::Commit(ending(xid, subxacts))
     }
 
@@ -432,7 +437,7 @@ mod tests {
     /// A transaction and the changes a reference keeps of it.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Kept {
-        xid: u32,
+        xid: TransactionId,
         changes: Vec<u64>,
     }
 
@@ -441,7 +446,7 @@ mod tests {
         seed: u64,
         scripts: Vec<Script>,
         /// The xid after the last script's.
-        next_xid: u32,
+        next_xid: TransactionId,
         transactions: Transactions,
         lsn: u64,
         /// The last change number handed out.
@@ -455,7 +460,7 @@ mod tests {
         expected: Vec<Kept>,
         emitted: Vec<Kept>,
         /// Commits dropped as not whole that a snapshot may still miss.
-        dropped: Vec<u32>,
+        dropped: Vec<TransactionId>,
     }
 
     impl Workload {

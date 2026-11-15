@@ -13,7 +13,7 @@ use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
 use super::tuple::{self, Attribute, Value};
 use super::xact::Invalidated;
-use super::{Problem, RelationFile, WalError};
+use super::{Oid, Problem, RelationFile, WalError};
 use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{Field, Message, Old, Relation};
@@ -41,17 +41,17 @@ pub(crate) struct Layout {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Layouts {
     pub(crate) tables: Vec<Layout>,
-    pub(crate) labels: HashMap<u32, String>,
+    pub(crate) labels: HashMap<Oid, String>,
 }
 
 pub(crate) struct Publisher {
     tables: FastMap<RelationFile, Layout>,
     /// Enum labels by `pg_enum` OID.
-    labels: HashMap<u32, String>,
+    labels: HashMap<Oid, String>,
     /// Tables whose `Relation` the decoder has.
     announced: HashSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
-    unfit: Vec<u32>,
+    unfit: Vec<Oid>,
 }
 
 impl Publisher {
@@ -75,7 +75,7 @@ impl Publisher {
     /// The OIDs of the tables whose layout a commit with these
     /// invalidations may have changed: read them again, for
     /// [`Publisher::relayout`].
-    pub(crate) fn stale(&self, invalidated: &[Invalidated]) -> Vec<u32> {
+    pub(crate) fn stale(&self, invalidated: &[Invalidated]) -> Vec<Oid> {
         let mut stale = Vec::new();
         for table in self.tables.values() {
             for message in invalidated {
@@ -95,7 +95,7 @@ impl Publisher {
     /// before its next change, as pgoutput does after an invalidation,
     /// and the decoder sees what changed. A column added may be of an
     /// enum no table had before, so the labels come along.
-    pub(crate) fn relayout(&mut self, stale: &[u32], fresh: Layouts) {
+    pub(crate) fn relayout(&mut self, stale: &[Oid], fresh: Layouts) {
         for &oid in stale {
             let Some(file) = self.file_with_oid(oid) else {
                 continue;
@@ -112,7 +112,7 @@ impl Publisher {
     }
 
     /// The file of the table Straum reads whose OID is `oid`.
-    fn file_with_oid(&self, oid: u32) -> Option<RelationFile> {
+    fn file_with_oid(&self, oid: Oid) -> Option<RelationFile> {
         for table in self.tables.values() {
             if table.relation.id == oid {
                 return Some(table.file);
@@ -183,7 +183,7 @@ impl Publisher {
 }
 
 /// The table in `tables` whose OID is `oid`.
-fn table_with_oid(tables: &[Layout], oid: u32) -> Option<&Layout> {
+fn table_with_oid(tables: &[Layout], oid: Oid) -> Option<&Layout> {
     for table in tables {
         if table.relation.id == oid {
             return Some(table);
@@ -203,7 +203,7 @@ fn invalidates(message: Invalidated, table: &Layout) -> bool {
 fn fields(
     table: &Layout,
     tuple: &HeapTuple,
-    labels: &HashMap<u32, String>,
+    labels: &HashMap<Oid, String>,
     lsn: u64,
 ) -> Result<Vec<Field<'static>>, Error> {
     let mut values = match tuple::values(tuple, &table.attributes, labels) {
@@ -259,7 +259,7 @@ mod tests {
     const TOAST_POINTER: [u8; 2] = [0x01, 18];
     const EXTERNAL_POINTER: usize = 16;
 
-    fn column(name: &str, type_oid: u32) -> RelationColumn {
+    fn column(name: &str, type_oid: Oid) -> RelationColumn {
         RelationColumn {
             name: name.to_owned(),
             type_oid,

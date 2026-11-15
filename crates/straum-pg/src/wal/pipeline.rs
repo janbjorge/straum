@@ -10,11 +10,11 @@ use std::mem;
 
 use straum_app::{Commit, Lsn};
 
-use super::Record;
 use super::heap::Heap;
 use super::messages::{Layouts, Publisher};
 use super::transactions::{Committed, Consistency, TooBig, TransactionSnapshot, Transactions};
 use super::xact;
+use super::{Record, TransactionId};
 use crate::catalog::Checked;
 use crate::decode::Decoder;
 use crate::error::Error;
@@ -26,7 +26,7 @@ pub(crate) enum Sight {
     Through(Lsn),
     /// The snapshot doesn't see these transactions, whose commits the
     /// stream read as before its start: take another.
-    Blind(Vec<u32>),
+    Blind(Vec<TransactionId>),
 }
 
 pub(crate) struct Pipeline {

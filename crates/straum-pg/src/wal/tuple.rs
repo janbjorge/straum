@@ -13,9 +13,9 @@ use std::ops::Range;
 
 use straum_domain::{ColumnType, Datum};
 
-use super::Problem;
 use super::compress;
 use super::heap::HeapTuple;
+use super::{Oid, Problem};
 use crate::value::{scaled, time};
 
 /// `HEAP_HASNULL` in `t_infomask`: the row has a null bitmap.
@@ -108,7 +108,7 @@ pub(crate) enum Value {
 pub(crate) fn values(
     tuple: &HeapTuple,
     attributes: &[Attribute],
-    labels: &HashMap<u32, String>,
+    labels: &HashMap<Oid, String>,
 ) -> Result<Vec<Value>, Problem> {
     let short = Problem::ShortRow;
     let column_count = usize::from(tuple.infomask2 & COLUMN_COUNT_MASK);
@@ -209,15 +209,20 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     if first & VARLENA_COMPRESSED == 0 {
         return Ok(Some(Cow::Borrowed(&bytes[FOUR_BYTE_HEADER..])));
     }
-    let Some(info) = bytes.get(TCINFO) else {
+    let Some(size_and_method) = bytes.get(TCINFO) else {
         return Err(Problem::CompressedWithoutSize);
     };
-    let info = u32::from_le_bytes([info[0], info[1], info[2], info[3]]);
-    let Ok(size) = usize::try_from(info & RAW_SIZE_MASK) else {
+    let size_and_method = u32::from_le_bytes([
+        size_and_method[0],
+        size_and_method[1],
+        size_and_method[2],
+        size_and_method[3],
+    ]);
+    let Ok(size) = usize::try_from(size_and_method & RAW_SIZE_MASK) else {
         return Err(Problem::ValueTooBig);
     };
     let stored = &bytes[COMPRESSED_HEADER..];
-    let raw = match info >> METHOD_SHIFT {
+    let raw = match size_and_method >> METHOD_SHIFT {
         METHOD_PGLZ => compress::pglz(stored, size),
         METHOD_LZ4 => compress::lz4(stored, size),
         _ => return Err(Problem::UnknownCompression),
@@ -231,7 +236,7 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
 fn value(
     attribute: &Attribute,
     bytes: &[u8],
-    labels: &HashMap<u32, String>,
+    labels: &HashMap<Oid, String>,
 ) -> Result<Value, Problem> {
     let wrong = Problem::WrongLength;
     let column_type = match attribute.kind {
@@ -482,9 +487,9 @@ mod tests {
         // lz4: 3 literals, a match of 9 (4 + 5) back 3, no literals.
         let lz4 = [0x35, b'a', b'b', b'c', 0x03, 0x00, 0x00];
         for (method, stored) in [(METHOD_PGLZ, &pglz[..]), (METHOD_LZ4, &lz4[..])] {
-            let info = u32::try_from(plain.len()).unwrap() | method << METHOD_SHIFT;
+            let size_and_method = u32::try_from(plain.len()).unwrap() | method << METHOD_SHIFT;
             let mut bytes = compressed_header(stored.len()).to_vec();
-            bytes.extend(info.to_le_bytes());
+            bytes.extend(size_and_method.to_le_bytes());
             bytes.extend(stored);
             let got = values(
                 &row(&attributes, &[Some(&bytes)]),
@@ -493,7 +498,7 @@ mod tests {
             );
             assert_eq!(got, Ok(vec![text("abcabcabcabc")]), "method {method}");
             let mut bad = bytes.clone();
-            bad[TCINFO].copy_from_slice(&(info + 1).to_le_bytes());
+            bad[TCINFO].copy_from_slice(&(size_and_method + 1).to_le_bytes());
             let got = values(
                 &row(&attributes, &[Some(&bad)]),
                 &attributes,
