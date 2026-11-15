@@ -100,17 +100,13 @@ impl Walker {
             );
         }
         let at = line(function);
-        if function.filter.is_some() {
-            self.not_in_subset(at, "FILTER on date_bin");
-        }
+        self.reject_if_present(at, function.filter.is_some(), "FILTER on date_bin");
         let Call {
             arguments,
             distinct,
             ..
         } = self.call(function)?;
-        if distinct {
-            self.not_in_subset(at, "DISTINCT on date_bin");
-        }
+        self.reject_if_present(at, distinct, "DISTINCT on date_bin");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
@@ -172,9 +168,7 @@ impl Walker {
                 return Err(Reported);
             }
             _ => {
-                if !call.within_group.is_empty() {
-                    self.not_in_subset(at, "WITHIN GROUP");
-                }
+                self.reject_if_present(at, !call.within_group.is_empty(), "WITHIN GROUP");
             }
         }
         let aggregate = match self.over(function, name.as_deref(), &call)? {
@@ -253,9 +247,7 @@ impl Walker {
         call: &Call,
     ) -> Result<Aggregate, Reported> {
         let at = line(function);
-        if call.distinct {
-            self.not_in_subset(at, "DISTINCT outside count");
-        }
+        self.reject_if_present(at, call.distinct, "DISTINCT outside count");
         let fraction = if let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(argument))] =
             call.arguments
         {
@@ -278,15 +270,9 @@ impl Walker {
             with_fill,
         } = order;
         // Ascending is the only order, so it is never written.
-        if sort.is_some() {
-            self.not_in_subset(at, "ASC, DESC or USING in WITHIN GROUP");
-        }
-        if nulls_first.is_some() {
-            self.not_in_subset(at, "NULLS FIRST or LAST");
-        }
-        if with_fill.is_some() {
-            self.not_in_subset(at, "WITH FILL");
-        }
+        self.reject_if_present(at, sort.is_some(), "ASC, DESC or USING in WITHIN GROUP");
+        self.reject_if_present(at, nulls_first.is_some(), "NULLS FIRST or LAST");
+        self.reject_if_present(at, with_fill.is_some(), "WITH FILL");
         let column = self.uncast_fact_column(scope, column, "an aggregated column");
         Ok(Aggregate::PercentileDisc {
             fraction: fraction?,
@@ -325,9 +311,11 @@ impl Walker {
     // Borrows the arguments from the tree, which outlives the walk.
     fn call<'tree>(&mut self, function: &'tree sql::Function) -> Result<Call<'tree>, Reported> {
         let call = self.ordered_call(function)?;
-        if !call.within_group.is_empty() {
-            self.not_in_subset(line(function), "WITHIN GROUP");
-        }
+        self.reject_if_present(
+            line(function),
+            !call.within_group.is_empty(),
+            "WITHIN GROUP",
+        );
         Ok(call)
     }
 
@@ -349,18 +337,14 @@ impl Walker {
             over,
         } = function;
         let at = line(function);
-        if *uses_odbc_syntax {
-            self.not_in_subset(at, "ODBC call syntax");
-        }
-        if !matches!(parameters, sql::FunctionArguments::None) {
-            self.not_in_subset(at, "function parameters");
-        }
-        if null_treatment.is_some() {
-            self.not_in_subset(at, "IGNORE or RESPECT NULLS");
-        }
-        if over.is_some() {
-            self.not_in_subset(at, "a window function (OVER)");
-        }
+        self.reject_if_present(at, *uses_odbc_syntax, "ODBC call syntax");
+        self.reject_if_present(
+            at,
+            !matches!(parameters, sql::FunctionArguments::None),
+            "function parameters",
+        );
+        self.reject_if_present(at, null_treatment.is_some(), "IGNORE or RESPECT NULLS");
+        self.reject_if_present(at, over.is_some(), "a window function (OVER)");
         let sql::FunctionArguments::List(sql::FunctionArgumentList {
             duplicate_treatment,
             args,
@@ -370,9 +354,7 @@ impl Walker {
             self.refuse(at, "function call", function);
             return Err(Reported);
         };
-        if !clauses.is_empty() {
-            self.not_in_subset(at, "ORDER BY or LIMIT inside a call");
-        }
+        self.reject_if_present(at, !clauses.is_empty(), "ORDER BY or LIMIT inside a call");
         let distinct = match duplicate_treatment {
             None => false,
             Some(sql::DuplicateTreatment::Distinct) => true,

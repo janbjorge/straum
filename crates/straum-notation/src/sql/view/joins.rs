@@ -113,9 +113,11 @@ impl Walker {
             self.refuse(at, "EXISTS, write EXISTS (SELECT 1 FROM ...),", expression);
             return Err(Reported);
         }
-        if !groups_by_nothing(&select.group_by) {
-            self.not_in_subset(at, "GROUP BY inside EXISTS");
-        }
+        self.reject_if_present(
+            at,
+            !groups_by_nothing(&select.group_by),
+            "GROUP BY inside EXISTS",
+        );
         let [from] = select.from.as_slice() else {
             self.refuse(
                 at,
@@ -124,9 +126,7 @@ impl Walker {
             );
             return Err(Reported);
         };
-        if !from.joins.is_empty() {
-            self.not_in_subset(at, "a join inside EXISTS");
-        }
+        self.reject_if_present(at, !from.joins.is_empty(), "a join inside EXISTS");
         let table = self.table(&from.relation)?;
         let Some(on) = &select.selection else {
             self.refuse(at, "EXISTS without WHERE alias.key = ...,", expression);
@@ -243,12 +243,8 @@ impl Walker {
             );
             return Err(Reported);
         };
-        if !columns.is_empty() {
-            self.not_in_subset(at, "an alias column list");
-        }
-        if at_time.is_some() {
-            self.not_in_subset(at, "AT");
-        }
+        self.reject_if_present(at, !columns.is_empty(), "an alias column list");
+        self.reject_if_present(at, at_time.is_some(), "AT");
         let alias = self.read_identifier(alias)?;
         Ok(AliasedTable {
             table: table?,
@@ -267,9 +263,7 @@ impl Walker {
             join_operator,
         } = join;
         let at = line(join);
-        if *global {
-            self.not_in_subset(at, "GLOBAL");
-        }
+        self.reject_if_present(at, *global, "GLOBAL");
         match join_operator {
             sql::JoinOperator::LeftOuter(constraint) => {
                 self.join_on(scope, join, relation, RefKind::Left, constraint)

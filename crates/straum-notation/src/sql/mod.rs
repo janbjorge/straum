@@ -118,15 +118,24 @@ impl Walker {
     ) -> Result<&'tree [sql::Expr], Reported> {
         match group_by {
             sql::GroupByExpr::Expressions(expressions, modifiers) => {
-                if !modifiers.is_empty() {
-                    self.not_in_subset(at, "ROLLUP, CUBE or GROUPING SETS");
-                }
+                self.reject_if_present(at, !modifiers.is_empty(), "ROLLUP, CUBE or GROUPING SETS");
                 Ok(expressions)
             }
             sql::GroupByExpr::All(_) => {
                 self.not_in_subset(at, "GROUP BY ALL");
                 Err(Reported)
             }
+        }
+    }
+
+    /// Rejects `clause` when the statement writes it.
+    // One call per clause keeps the long lists of rejected clauses one
+    // line each; many are clauses only other dialects parse, so an `if`
+    // per clause leaves lines no test can reach (measured with
+    // `cargo llvm-cov`).
+    fn reject_if_present(&mut self, line: u64, present: bool, clause: &str) {
+        if present {
+            self.not_in_subset(line, clause);
         }
     }
 
@@ -204,30 +213,14 @@ impl Walker {
             return Err(Reported);
         };
         let at = line(factor);
-        if args.is_some() {
-            self.not_in_subset(at, "a table function");
-        }
-        if !with_hints.is_empty() {
-            self.not_in_subset(at, "a table hint");
-        }
-        if version.is_some() {
-            self.not_in_subset(at, "a table version");
-        }
-        if *with_ordinality {
-            self.not_in_subset(at, "WITH ORDINALITY");
-        }
-        if !partitions.is_empty() {
-            self.not_in_subset(at, "PARTITION");
-        }
-        if json_path.is_some() {
-            self.not_in_subset(at, "a JSON path");
-        }
-        if sample.is_some() {
-            self.not_in_subset(at, "TABLESAMPLE");
-        }
-        if !index_hints.is_empty() {
-            self.not_in_subset(at, "an index hint");
-        }
+        self.reject_if_present(at, args.is_some(), "a table function");
+        self.reject_if_present(at, !with_hints.is_empty(), "a table hint");
+        self.reject_if_present(at, version.is_some(), "a table version");
+        self.reject_if_present(at, *with_ordinality, "WITH ORDINALITY");
+        self.reject_if_present(at, !partitions.is_empty(), "PARTITION");
+        self.reject_if_present(at, json_path.is_some(), "a JSON path");
+        self.reject_if_present(at, sample.is_some(), "TABLESAMPLE");
+        self.reject_if_present(at, !index_hints.is_empty(), "an index hint");
         Ok(NamedTable {
             name,
             alias: alias.as_ref(),
@@ -254,33 +247,15 @@ impl Walker {
             pipe_operators,
         } = query;
         let at = line(query);
-        if with.is_some() {
-            self.not_in_subset(at, "WITH (a CTE)");
-        }
-        if order_by.is_some() {
-            self.not_in_subset(at, "ORDER BY");
-        }
-        if limit_clause.is_some() {
-            self.not_in_subset(at, "LIMIT or OFFSET");
-        }
-        if fetch.is_some() {
-            self.not_in_subset(at, "FETCH");
-        }
-        if !locks.is_empty() {
-            self.not_in_subset(at, "FOR UPDATE or FOR SHARE");
-        }
-        if for_clause.is_some() {
-            self.not_in_subset(at, "FOR");
-        }
-        if settings.is_some() {
-            self.not_in_subset(at, "SETTINGS");
-        }
-        if format_clause.is_some() {
-            self.not_in_subset(at, "FORMAT");
-        }
-        if !pipe_operators.is_empty() {
-            self.not_in_subset(at, "a pipe operator");
-        }
+        self.reject_if_present(at, with.is_some(), "WITH (a CTE)");
+        self.reject_if_present(at, order_by.is_some(), "ORDER BY");
+        self.reject_if_present(at, limit_clause.is_some(), "LIMIT or OFFSET");
+        self.reject_if_present(at, fetch.is_some(), "FETCH");
+        self.reject_if_present(at, !locks.is_empty(), "FOR UPDATE or FOR SHARE");
+        self.reject_if_present(at, for_clause.is_some(), "FOR");
+        self.reject_if_present(at, settings.is_some(), "SETTINGS");
+        self.reject_if_present(at, format_clause.is_some(), "FORMAT");
+        self.reject_if_present(at, !pipe_operators.is_empty(), "a pipe operator");
         match body.as_ref() {
             sql::SetExpr::Select(select) => Ok(select),
             other => {
@@ -308,24 +283,21 @@ impl Walker {
             lateral_views,
             prewhere,
             selection: _,
+            connect_by,
             group_by: _,
-            // These eight are rejected in `select_closing_clauses`.
-            connect_by: _,
-            cluster_by: _,
-            distribute_by: _,
-            sort_by: _,
-            having: _,
-            named_window: _,
-            qualify: _,
-            value_table_mode: _,
+            cluster_by,
+            distribute_by,
+            sort_by,
+            having,
+            named_window,
+            qualify,
             // Only says where QUALIFY was written, which is rejected.
             window_before_qualify: _,
+            value_table_mode,
             flavor,
         } = select;
         let at = select_token.0.span.start.line;
-        if !optimizer_hints.is_empty() {
-            self.not_in_subset(at, "an optimizer hint");
-        }
+        self.reject_if_present(at, !optimizer_hints.is_empty(), "an optimizer hint");
         match distinct {
             None => {}
             Some(sql::Distinct::All) => self.not_in_subset(at, "SELECT ALL"),
@@ -333,25 +305,20 @@ impl Walker {
                 self.not_in_subset(at, "SELECT DISTINCT");
             }
         }
-        if select_modifiers.is_some() {
-            self.not_in_subset(at, "a SELECT modifier");
-        }
-        if top.is_some() {
-            self.not_in_subset(at, "TOP");
-        }
-        if exclude.is_some() {
-            self.not_in_subset(at, "EXCLUDE");
-        }
-        if into.is_some() {
-            self.not_in_subset(at, "SELECT INTO");
-        }
-        if !lateral_views.is_empty() {
-            self.not_in_subset(at, "LATERAL VIEW");
-        }
-        if prewhere.is_some() {
-            self.not_in_subset(at, "PREWHERE");
-        }
-        self.select_closing_clauses(at, select);
+        self.reject_if_present(at, select_modifiers.is_some(), "a SELECT modifier");
+        self.reject_if_present(at, top.is_some(), "TOP");
+        self.reject_if_present(at, exclude.is_some(), "EXCLUDE");
+        self.reject_if_present(at, into.is_some(), "SELECT INTO");
+        self.reject_if_present(at, !lateral_views.is_empty(), "LATERAL VIEW");
+        self.reject_if_present(at, prewhere.is_some(), "PREWHERE");
+        self.reject_if_present(at, !connect_by.is_empty(), "CONNECT BY");
+        self.reject_if_present(at, !cluster_by.is_empty(), "CLUSTER BY");
+        self.reject_if_present(at, !distribute_by.is_empty(), "DISTRIBUTE BY");
+        self.reject_if_present(at, !sort_by.is_empty(), "SORT BY");
+        self.reject_if_present(at, having.is_some(), "HAVING");
+        self.reject_if_present(at, !named_window.is_empty(), "WINDOW");
+        self.reject_if_present(at, qualify.is_some(), "QUALIFY");
+        self.reject_if_present(at, value_table_mode.is_some(), "SELECT AS VALUE or STRUCT");
         match flavor {
             sql::SelectFlavor::Standard => {}
             sql::SelectFlavor::FromFirst | sql::SelectFlavor::FromFirstNoSelect => {
@@ -359,34 +326,6 @@ impl Walker {
             }
         }
         at
-    }
-
-    /// Rejects the clauses that close a `SELECT` in other dialects.
-    fn select_closing_clauses(&mut self, at: u64, select: &sql::Select) {
-        if !select.connect_by.is_empty() {
-            self.not_in_subset(at, "CONNECT BY");
-        }
-        if !select.cluster_by.is_empty() {
-            self.not_in_subset(at, "CLUSTER BY");
-        }
-        if !select.distribute_by.is_empty() {
-            self.not_in_subset(at, "DISTRIBUTE BY");
-        }
-        if !select.sort_by.is_empty() {
-            self.not_in_subset(at, "SORT BY");
-        }
-        if select.having.is_some() {
-            self.not_in_subset(at, "HAVING");
-        }
-        if !select.named_window.is_empty() {
-            self.not_in_subset(at, "WINDOW");
-        }
-        if select.qualify.is_some() {
-            self.not_in_subset(at, "QUALIFY");
-        }
-        if select.value_table_mode.is_some() {
-            self.not_in_subset(at, "SELECT AS VALUE or STRUCT");
-        }
     }
 
     /// `key = value` and `key IN (values)` joined by `AND`, and in a view

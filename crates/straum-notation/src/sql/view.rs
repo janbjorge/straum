@@ -228,42 +228,18 @@ impl Walker {
             params,
         } = view;
         let at = line(name);
-        if *or_alter {
-            self.not_in_subset(at, "OR ALTER");
-        }
-        if *materialized {
-            self.not_in_subset(at, "MATERIALIZED");
-        }
-        if *secure {
-            self.not_in_subset(at, "SECURE");
-        }
-        if !columns.is_empty() {
-            self.not_in_subset(at, "a view column list");
-        }
-        if !cluster_by.is_empty() {
-            self.not_in_subset(at, "CLUSTER BY");
-        }
-        if comment.is_some() {
-            self.not_in_subset(at, "COMMENT");
-        }
-        if *with_no_schema_binding {
-            self.not_in_subset(at, "WITH NO SCHEMA BINDING");
-        }
-        if *if_not_exists {
-            self.not_in_subset(at, "IF NOT EXISTS");
-        }
-        if *temporary {
-            self.not_in_subset(at, "TEMPORARY");
-        }
-        if *copy_grants {
-            self.not_in_subset(at, "COPY GRANTS");
-        }
-        if to.is_some() {
-            self.not_in_subset(at, "TO");
-        }
-        if params.is_some() {
-            self.not_in_subset(at, "ALGORITHM, DEFINER or SQL SECURITY");
-        }
+        self.reject_if_present(at, *or_alter, "OR ALTER");
+        self.reject_if_present(at, *materialized, "MATERIALIZED");
+        self.reject_if_present(at, *secure, "SECURE");
+        self.reject_if_present(at, !columns.is_empty(), "a view column list");
+        self.reject_if_present(at, !cluster_by.is_empty(), "CLUSTER BY");
+        self.reject_if_present(at, comment.is_some(), "COMMENT");
+        self.reject_if_present(at, *with_no_schema_binding, "WITH NO SCHEMA BINDING");
+        self.reject_if_present(at, *if_not_exists, "IF NOT EXISTS");
+        self.reject_if_present(at, *temporary, "TEMPORARY");
+        self.reject_if_present(at, *copy_grants, "COPY GRANTS");
+        self.reject_if_present(at, to.is_some(), "TO");
+        self.reject_if_present(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
         at
     }
 

@@ -213,9 +213,7 @@ impl Walker {
             });
         };
         let at = line(expression);
-        if format.is_some() {
-            self.not_in_subset(at, "CAST ... FORMAT");
-        }
+        self.reject_if_present(at, format.is_some(), "CAST ... FORMAT");
         match kind {
             sql::CastKind::DoubleColon => {}
             sql::CastKind::Cast => {
