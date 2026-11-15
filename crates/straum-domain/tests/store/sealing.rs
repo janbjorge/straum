@@ -520,7 +520,21 @@ fn set_extent(sealed: &mut Sealed, values: Vec<Vec<ValueCount>>) {
     sealed.columns[extent] = SealedColumn::Extent { values };
 }
 
+/// Sets the extent column's first cell to hold `entries`, the others as
+/// they are, so the column still has an entry per cell.
+fn set_first_extent_cell(sealed: &mut Sealed, entries: Vec<ValueCount>) {
+    let extent = column_of(sealed, ColumnKind::Extent);
+    let SealedColumn::Extent { values } = &mut sealed.columns[extent] else {
+        panic!("column_of found the extent");
+    };
+    values[0] = entries;
+}
+
 fn count_a_value_no_times(sealed: &mut Sealed) {
+    set_first_extent_cell(sealed, vec![ValueCount { value: 1, count: 0 }]);
+}
+
+fn count_a_value_no_times_in_every_cell(sealed: &mut Sealed) {
     set_extent(sealed, vec![vec![ValueCount { value: 1, count: 0 }]]);
 }
 
@@ -529,33 +543,34 @@ fn drop_the_extent_cells(sealed: &mut Sealed) {
 }
 
 fn put_values_out_of_order(sealed: &mut Sealed) {
-    set_extent(
+    set_first_extent_cell(
         sealed,
-        vec![vec![
+        vec![
             ValueCount { value: 9, count: 1 },
             ValueCount { value: 4, count: 1 },
-        ]],
+        ],
     );
 }
 
 fn put_a_value_twice(sealed: &mut Sealed) {
-    set_extent(
+    set_first_extent_cell(
         sealed,
-        vec![vec![
+        vec![
             ValueCount { value: 4, count: 1 },
             ValueCount { value: 4, count: 1 },
-        ]],
+        ],
     );
 }
 
 fn count_a_distinct_value_no_times(sealed: &mut Sealed) {
     let distinct = column_of(sealed, ColumnKind::Distinct);
-    sealed.columns[distinct] = SealedColumn::Distinct {
-        values: vec![vec![DatumCount {
-            value: Datum::Null,
-            count: 0,
-        }]],
+    let SealedColumn::Distinct { values } = &mut sealed.columns[distinct] else {
+        panic!("column_of found the distinct column");
     };
+    values[0] = vec![DatumCount {
+        value: Datum::Null,
+        count: 0,
+    }];
 }
 
 fn drop_the_distinct_cells(sealed: &mut Sealed) {
@@ -567,6 +582,7 @@ fn drop_the_distinct_cells(sealed: &mut Sealed) {
 fn thaw_refuses_values_that_do_not_fit_their_cell() {
     SealedBucket::new().assert_refused(&[
         misfit(count_a_value_no_times),
+        misfit(count_a_value_no_times_in_every_cell),
         misfit(drop_the_extent_cells),
         misfit(put_values_out_of_order),
         misfit(put_a_value_twice),

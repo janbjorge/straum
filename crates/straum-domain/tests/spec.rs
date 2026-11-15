@@ -320,12 +320,13 @@ fn every_error_is_reported_and_displayed() {
     ));
 }
 
-#[test]
-fn a_chained_via_used_twice_names_its_ref() {
+/// The errors of a spec whose ref `c` joins twice through `column` of
+/// join `through`.
+fn joined_twice_through(through: usize, column: &str) -> Vec<String> {
     let mut view = fact();
     let chained = Via::Attribute {
-        through: 0,
-        column: id("name"),
+        through,
+        column: id(column),
     };
     view.refs.push(Ref {
         alias: id("c"),
@@ -334,11 +335,25 @@ fn a_chained_via_used_twice_names_its_ref() {
         kind: RefKind::Left,
         reads: vec![attribute("c_name", "name")],
     });
-    let shown: Vec<String> = (Spec::new(vec![dim()], vec![view]).unwrap_err().iter())
-        .map(ToString::to_string)
-        .collect();
+    refused(view)
+}
+
+#[test]
+fn a_chained_via_used_twice_names_its_ref() {
+    let shown = joined_twice_through(0, "name");
     assert!(
         shown.contains(&"view t: join c joins on r.name twice".to_owned()),
+        "{shown:?}"
+    );
+}
+
+/// A join through a ref the view has not got: the message can't name
+/// that ref, and puts a question mark in its place.
+#[test]
+fn a_chained_via_through_no_ref_is_named_with_a_question_mark() {
+    let shown = joined_twice_through(9, "name");
+    assert!(
+        shown.contains(&"view t: join c joins on ?.name twice".to_owned()),
         "{shown:?}"
     );
 }
