@@ -159,3 +159,24 @@ fn key_part_text(part: KeyPart) -> String {
         KeyPart::Bucket => "bucket".into(),
     }
 }
+
+/// Every construct outside Straum SQL is an error that names it; none is
+/// ignored. `(from, to, line, message fragment)` edits to `BASE`.
+pub fn rejects(cases: &[(&str, &str, u64, &str)]) {
+    let mut failed = Vec::new();
+    for &(from, to, line, fragment) in cases {
+        let errors = match parse(&base(from, to)) {
+            Err(Error::Sql(errors)) => errors,
+            other => {
+                failed.push(format!("{to}: got {other:?}"));
+                continue;
+            }
+        };
+        if !any_message(&errors, Some(line), fragment) {
+            failed.push(format!(
+                "{to}: expected line {line}: {fragment}, got {errors:?}"
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

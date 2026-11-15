@@ -4,29 +4,8 @@
 
 mod common;
 
-use common::{any_contains, any_message, base, edit, error_lines};
-use straum_notation::{Error, parse};
-
-/// Every construct outside Straum SQL is an error that names it; none is
-/// ignored. `(from, to, line, message fragment)` edits to `BASE`.
-fn rejects(cases: &[(&str, &str, u64, &str)]) {
-    let mut failed = Vec::new();
-    for &(from, to, line, fragment) in cases {
-        let errors = match parse(&base(from, to)) {
-            Err(Error::Sql(errors)) => errors,
-            other => {
-                failed.push(format!("{to}: got {other:?}"));
-                continue;
-            }
-        };
-        if !any_message(&errors, Some(line), fragment) {
-            failed.push(format!(
-                "{to}: expected line {line}: {fragment}, got {errors:?}"
-            ));
-        }
-    }
-    assert!(failed.is_empty(), "{}", failed.join("\n"));
-}
+use common::{any_contains, edit, error_lines, rejects};
+use straum_notation::parse;
 
 /// Statements and view shape.
 #[test]
@@ -378,49 +357,6 @@ fn from_forms_outside_the_subset_are_rejected() {
             "FROM public.t AS f TABLESAMPLE SYSTEM (10)",
             4,
             "TABLESAMPLE is not",
-        ),
-    ]);
-}
-
-/// Semi and anti joins: one shape of EXISTS.
-#[test]
-fn exists_has_one_shape() {
-    rejects(&[
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT * FROM public.p AS p WHERE p.k = f.a)\nGROUP BY",
-            6,
-            "EXISTS, write EXISTS (SELECT 1 FROM ...),",
-        ),
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p)\nGROUP BY",
-            6,
-            "EXISTS without WHERE alias.key = ...,",
-        ),
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = 1)\nGROUP BY",
-            6,
-            "join ON p.<key> = f.<column>",
-        ),
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p, public.q AS q WHERE p.k = f.a)\nGROUP BY",
-            6,
-            "EXISTS, write EXISTS (SELECT 1 FROM one table),",
-        ),
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT 1 FROM public.p WHERE p.k = f.a)\nGROUP BY",
-            6,
-            "table public.p must be public.p AS <alias>",
-        ),
-        (
-            "\nGROUP BY",
-            "\nWHERE EXISTS (SELECT 1 FROM public.p AS z WHERE z.k = f.a)\nGROUP BY",
-            6,
-            "alias z used twice",
         ),
     ]);
 }
@@ -972,34 +908,6 @@ fn rare_clauses_are_rejected_by_name() {
             "date_bin('1 hour', f.at, timestamptz 'epoch') WITHIN GROUP (ORDER BY f.a)",
             2,
             "WITHIN GROUP is not in Straum SQL",
-        ),
-    ]);
-}
-
-/// An `EXISTS` is one table and one condition: no GROUP BY, no join.
-#[test]
-fn exists_groups_by_nothing_and_joins_nothing() {
-    rejects(&[
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY p.k)\n\
-             GROUP BY 1, 2, 3, 4",
-            6,
-            "GROUP BY inside EXISTS is not in Straum SQL",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY ALL)\n\
-             GROUP BY 1, 2, 3, 4",
-            6,
-            "GROUP BY inside EXISTS is not in Straum SQL",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "WHERE EXISTS (SELECT 1 FROM public.p AS p JOIN public.q AS q ON q.a = p.a \
-             WHERE p.k = f.a)\nGROUP BY 1, 2, 3, 4",
-            6,
-            "a join inside EXISTS is not in Straum SQL",
         ),
     ]);
 }

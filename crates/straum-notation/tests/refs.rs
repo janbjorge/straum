@@ -1,12 +1,13 @@
 //! Refs and the keys over them: a dim keyed by two columns, a ref read
 //! through its via column, null-ness keys and the FILTERs that count
-//! through them, a dim shared by views, and the spec's own errors.
+//! through them, a dim shared by views, and the spec's own errors; then
+//! joins through a dim joined before, and the one shape of `EXISTS`.
 
 mod common;
 
 use common::{
     BASE, FEB, JAN, any_message, ask_view_t, attribute, base, by_key, condition, id, key_text,
-    spec_errors, sql_errors,
+    rejects, spec_errors, sql_errors,
 };
 use straum_domain::{Ask, AskError, AskKey, ByKey, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
@@ -421,4 +422,75 @@ fn a_join_through_a_dim_key_reads_the_fact_column() {
             column: id("name")
         }]
     );
+}
+
+/// Semi and anti joins: one shape of EXISTS.
+#[test]
+fn exists_has_one_shape() {
+    rejects(&[
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT * FROM public.p AS p WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "EXISTS, write EXISTS (SELECT 1 FROM ...),",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p)\nGROUP BY",
+            6,
+            "EXISTS without WHERE alias.key = ...,",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = 1)\nGROUP BY",
+            6,
+            "join ON p.<key> = f.<column>",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS p, public.q AS q WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "EXISTS, write EXISTS (SELECT 1 FROM one table),",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p WHERE p.k = f.a)\nGROUP BY",
+            6,
+            "table public.p must be public.p AS <alias>",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE EXISTS (SELECT 1 FROM public.p AS z WHERE z.k = f.a)\nGROUP BY",
+            6,
+            "alias z used twice",
+        ),
+    ]);
+}
+
+/// An `EXISTS` is one table and one condition: no GROUP BY, no join.
+#[test]
+fn exists_groups_by_nothing_and_joins_nothing() {
+    rejects(&[
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY p.k)\n\
+             GROUP BY 1, 2, 3, 4",
+            6,
+            "GROUP BY inside EXISTS is not in Straum SQL",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY ALL)\n\
+             GROUP BY 1, 2, 3, 4",
+            6,
+            "GROUP BY inside EXISTS is not in Straum SQL",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p JOIN public.q AS q ON q.a = p.a \
+             WHERE p.k = f.a)\nGROUP BY 1, 2, 3, 4",
+            6,
+            "a join inside EXISTS is not in Straum SQL",
+        ),
+    ]);
 }
