@@ -271,7 +271,7 @@ mod tests {
             infomask2: 4,
             infomask: 0,
             hoff: 24,
-            body,
+            body: body.into(),
         }
     }
 
@@ -384,7 +384,7 @@ mod tests {
             "WAL at 0/100 has a change to a table Straum doesn't read"
         );
         let mut cut = row(1, &short("a"));
-        cut.body.truncate(6);
+        cut.body = cut.body[..6].into();
         assert_eq!(
             message(publish(insert(FILE, cut))),
             "WAL at 0/100 has a row shorter than its columns"
@@ -495,7 +495,7 @@ mod tests {
                 infomask2: 4,
                 infomask: 0,
                 hoff: 24,
-                body,
+                body: body.into(),
             },
         });
         let commit = publisher.publish(&committed(changes), &mut decoder);

@@ -10,6 +10,7 @@
 //! guess.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use straum_domain::{FastMap, FastSet};
 
@@ -70,8 +71,9 @@ pub(crate) struct Tuple {
     pub(crate) infomask: u16,
     /// Where the columns start, counted from the start of the header.
     pub(crate) hoff: u8,
-    /// The null bitmap, its padding, then the columns.
-    pub(crate) body: Vec<u8>,
+    /// The null bitmap, its padding, then the columns. Shared: the page
+    /// and the change it makes hold the same row.
+    pub(crate) body: Arc<[u8]>,
 }
 
 impl Tuple {
@@ -104,9 +106,9 @@ impl Change {
     /// The bytes the change holds, near enough to bound memory by.
     pub(crate) fn footprint(&self) -> usize {
         let rows = match self {
-            Change::Insert { new, .. } => new.body.capacity(),
-            Change::Update { old, new, .. } => old.body.capacity() + new.body.capacity(),
-            Change::Delete { old, .. } => old.body.capacity(),
+            Change::Insert { new, .. } => new.body.len(),
+            Change::Update { old, new, .. } => old.body.len() + new.body.len(),
+            Change::Delete { old, .. } => old.body.len(),
         };
         size_of::<Change>() + rows
     }
@@ -159,9 +161,9 @@ impl Page {
         if self.tuples.len() <= slot {
             self.tuples.resize(slot + 1, None);
         }
-        self.rows += tuple.body.capacity();
+        self.rows += tuple.body.len();
         if let Some(old) = self.tuples[slot].replace(tuple) {
-            self.rows -= old.body.capacity();
+            self.rows -= old.body.len();
         }
         Some(())
     }
@@ -170,7 +172,7 @@ impl Page {
         if let Some(slot) = usize::from(offnum).checked_sub(1)
             && let Some(old) = self.tuples.get_mut(slot).and_then(Option::take)
         {
-            self.rows -= old.body.capacity();
+            self.rows -= old.body.len();
         }
     }
 }
@@ -214,11 +216,8 @@ impl Heap {
     /// The bytes the pages hold, counted afresh.
     #[cfg(test)]
     pub(crate) fn recount(&self) -> usize {
-        let rows = |page: &Page| -> usize {
-            (page.tuples.iter().flatten())
-                .map(|t| t.body.capacity())
-                .sum()
-        };
+        let rows =
+            |page: &Page| -> usize { (page.tuples.iter().flatten()).map(|t| t.body.len()).sum() };
         (self.pages.values())
             .map(|page| page.footprint() - page.rows + rows(page))
             .sum()
@@ -589,7 +588,7 @@ fn tuple(header: &[u8], body: &[u8]) -> Tuple {
         infomask2: le_u16(&header[0..2]),
         infomask: le_u16(&header[2..4]),
         hoff: header[4],
-        body: body.to_vec(),
+        body: body.into(),
     }
 }
 
@@ -608,11 +607,12 @@ fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
     };
     let prefix = length(UPDATE_PREFIX_FROM_OLD)?;
     let suffix = length(UPDATE_SUFFIX_FROM_OLD)?;
-    let header = header_and_body(data.get(at..)?)?;
-    let logged = &header.body;
+    let header = data.get(at..at + 5)?;
+    let hoff = header[4];
+    let logged = &data[at + 5..];
     let mut body = Vec::with_capacity(logged.len() + prefix + suffix);
     if prefix > 0 {
-        let bitmap = usize::from(header.hoff).checked_sub(TUPLE_HEADER)?;
+        let bitmap = usize::from(hoff).checked_sub(TUPLE_HEADER)?;
         body.extend_from_slice(logged.get(..bitmap)?);
         body.extend_from_slice(old.columns()?.get(..prefix)?);
         body.extend_from_slice(&logged[bitmap..]);
@@ -623,7 +623,10 @@ fn updated(data: &[u8], flags: u8, old: &Tuple) -> Option<Tuple> {
         let from = old.body.len().checked_sub(suffix)?;
         body.extend_from_slice(&old.body[from..]);
     }
-    Some(Tuple { body, ..header })
+    Some(Tuple {
+        body: body.into(),
+        ..tuple(header, &[])
+    })
 }
 
 /// `count` rows, each an `xl_multi_insert_tuple` at a 2-byte boundary
@@ -716,7 +719,7 @@ mod tests {
             infomask2: 2,
             infomask: 0,
             hoff: 24,
-            body: [&[0][..], columns].concat(),
+            body: [&[0][..], columns].concat().into(),
         }
     }
 
@@ -783,7 +786,7 @@ mod tests {
         data.extend(tuple.infomask2.to_le_bytes());
         data.extend(tuple.infomask.to_le_bytes());
         data.push(tuple.hoff);
-        data.extend(&tuple.body);
+        data.extend_from_slice(&tuple.body);
         data
     }
 
@@ -965,7 +968,7 @@ mod tests {
             data.extend(row.infomask2.to_le_bytes());
             data.extend(row.infomask.to_le_bytes());
             data.push(row.hoff);
-            data.extend(&row.body);
+            data.extend_from_slice(&row.body);
         }
         let main = [&[0, 0][..], &3u16.to_le_bytes()].concat();
         let fresh = record(

@@ -279,7 +279,7 @@ mod tests {
             infomask2: u16::try_from(columns.len()).unwrap(),
             infomask: u16::from(nulls),
             hoff: u8::try_from(hoff).unwrap(),
-            body,
+            body: body.into(),
         }
     }
 
@@ -429,7 +429,7 @@ mod tests {
         };
         check(&fits, &[], "a row with more columns than its table");
         let mut cut = fits.clone();
-        cut.body.pop();
+        cut.body = cut.body[..cut.body.len() - 1].into();
         check(&cut, &[int], "a row shorter than its columns");
         let mut no_header = fits.clone();
         no_header.hoff = 8;

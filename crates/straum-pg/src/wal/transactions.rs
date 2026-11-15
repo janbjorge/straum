@@ -354,7 +354,7 @@ mod tests {
                 infomask2: 1,
                 infomask: 0,
                 hoff: 24,
-                body: n.to_le_bytes().to_vec(),
+                body: n.to_le_bytes().into(),
             },
         }
     }
@@ -520,7 +520,7 @@ mod tests {
                             let numbers: Vec<u64> = (committed.changes.into_iter())
                                 .map(|c| match c {
                                     Change::Insert { new, .. } => {
-                                        u64::from_le_bytes(new.body.try_into().unwrap())
+                                        u64::from_le_bytes(new.body[..].try_into().unwrap())
                                     }
                                     _ => unreachable!(),
                                 })
