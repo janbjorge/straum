@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 
 use straum_domain::{ColumnType, Datum};
 
@@ -19,10 +20,26 @@ use crate::value::{scaled, time};
 const HAS_NULL: u16 = 0x0001;
 const NATTS_MASK: u16 = 0x07FF;
 
+/// A varlena header's first byte, little-endian (`varatt.h`): exactly
+/// 0x01 for a TOAST pointer (`VARATT_IS_1B_E`), low bit set for a
+/// one-byte header holding the size shifted by one (`VARATT_IS_1B`),
+/// else a four-byte header holding it shifted by two, whose second bit
+/// says it is compressed (`VARATT_IS_4B_C`).
+const VARLENA_EXTERNAL: u8 = 0x01;
+const VARLENA_ONE_BYTE: u8 = 0x01;
+const VARLENA_COMPRESSED: u8 = 0x02;
+const ONE_BYTE_HEADER: usize = 1;
+const FOUR_BYTE_HEADER: usize = 4;
+/// `varattrib_4b.va_compressed`: the header, then `va_tcinfo`.
+const COMPRESSED_HEADER: usize = 8;
+const TCINFO: Range<usize> = 4..8;
 /// `VARTAG_ONDISK` and the size of the `varatt_external` after it.
 const VARTAG_ON_DISK: u8 = 18;
 const EXTERNAL_POINTER: usize = 16;
+/// `va_tcinfo`: the raw size in 30 bits, the method in the top two
+/// (`VARLENA_EXTSIZE_BITS`).
 const RAW_SIZE_MASK: u32 = 0x3FFF_FFFF;
+const METHOD_SHIFT: u32 = 30;
 const METHOD_PGLZ: u32 = 0;
 const METHOD_LZ4: u32 = 1;
 
@@ -58,7 +75,7 @@ pub(crate) enum Kind {
 pub(crate) enum Value {
     /// Null too for a column of a [`Kind::Other`] type.
     Datum(Datum),
-    /// A value TOASTed out of line, which the page doesn't hold.
+    /// A value TOAST keeps out of line, which the page doesn't hold.
     External,
     /// A column added after the row was written. Its value is the
     /// column's `attmissingval`, or null if it has none.
@@ -85,25 +102,25 @@ pub(crate) fn values(
     let data = tuple.columns().ok_or(short)?;
     let mut at = 0;
     let mut values = Vec::with_capacity(attributes.len());
-    for (i, attribute) in attributes.iter().enumerate() {
-        if i >= natts {
+    for (index, attribute) in attributes.iter().enumerate() {
+        if index >= natts {
             values.push(Value::Missing);
             continue;
         }
-        if bitmap.is_some_and(|bits| bits[i / 8] >> (i % 8) & 1 == 0) {
+        if bitmap.is_some_and(|bits| bits[index / 8] >> (index % 8) & 1 == 0) {
             values.push(Value::Datum(Datum::Null));
             continue;
         }
         // A varlena with a one-byte header isn't aligned, and its first
         // byte is never zero, which padding always is.
-        let unaligned = attribute.length == -1 && data.get(at).is_some_and(|b| *b != 0);
+        let unaligned = attribute.length == -1 && data.get(at).is_some_and(|byte| *byte != 0);
         if !unaligned {
             at = at.next_multiple_of(attribute.align.max(1));
         }
         let rest = data.get(at..).ok_or(short)?;
         let size = match attribute.length {
             -1 => varlena_size(rest).ok_or(short)?,
-            -2 => rest.iter().position(|b| *b == 0).ok_or(short)? + 1,
+            -2 => rest.iter().position(|byte| *byte == 0).ok_or(short)? + 1,
             length => usize::try_from(length).map_err(|_| "a column of unknown length")?,
         };
         let bytes = rest.get(..size).ok_or(short)?;
@@ -117,38 +134,40 @@ pub(crate) fn values(
 /// else the length its one- or four-byte header holds.
 fn varlena_size(bytes: &[u8]) -> Option<usize> {
     let first = *bytes.first()?;
-    if first == 0x01 {
+    if first == VARLENA_EXTERNAL {
+        // The header, then `va_tag`, then the pointer.
         return (*bytes.get(1)? == VARTAG_ON_DISK).then_some(2 + EXTERNAL_POINTER);
     }
-    let size = if first & 0x01 == 1 {
-        usize::from(first >> 1)
+    let (size, header) = if first & VARLENA_ONE_BYTE != 0 {
+        (usize::from(first >> 1), ONE_BYTE_HEADER)
     } else {
-        usize::try_from(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) >> 2).ok()?
+        let four: [u8; FOUR_BYTE_HEADER] = *bytes.first_chunk()?;
+        let size = usize::try_from(u32::from_le_bytes(four) >> 2).ok()?;
+        (size, FOUR_BYTE_HEADER)
     };
-    let header = if first & 0x01 == 1 { 1 } else { 4 };
     (size >= header).then_some(size)
 }
 
 /// What a varlena holds: its bytes, decompressed, or `None` for a value
-/// TOASTed out of line. Only a compressed one is copied.
+/// TOAST keeps out of line. Only a compressed one is copied.
 fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, &'static str> {
     let first = bytes[0];
-    if first == 0x01 {
+    if first == VARLENA_EXTERNAL {
         return Ok(None);
     }
-    if first & 0x01 == 1 {
-        return Ok(Some(Cow::Borrowed(&bytes[1..])));
+    if first & VARLENA_ONE_BYTE != 0 {
+        return Ok(Some(Cow::Borrowed(&bytes[ONE_BYTE_HEADER..])));
     }
-    if first & 0x03 == 0 {
-        return Ok(Some(Cow::Borrowed(&bytes[4..])));
+    if first & VARLENA_COMPRESSED == 0 {
+        return Ok(Some(Cow::Borrowed(&bytes[FOUR_BYTE_HEADER..])));
     }
-    let info = bytes
-        .get(4..8)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .ok_or("a compressed value without its size")?;
+    let Some(info) = bytes.get(TCINFO) else {
+        return Err("a compressed value without its size");
+    };
+    let info = u32::from_le_bytes([info[0], info[1], info[2], info[3]]);
     let size = usize::try_from(info & RAW_SIZE_MASK).map_err(|_| "a value too big")?;
-    let stored = &bytes[8..];
-    let raw = match info >> 30 {
+    let stored = &bytes[COMPRESSED_HEADER..];
+    let raw = match info >> METHOD_SHIFT {
         METHOD_PGLZ => compress::pglz(stored, size),
         METHOD_LZ4 => compress::lz4(stored, size),
         _ => return Err("a value compressed in a way Straum can't read"),
@@ -175,12 +194,7 @@ fn value(
         }
     };
     let datum = match column_type {
-        ColumnType::Int => Datum::Int(match *bytes {
-            [a, b] => i16::from_le_bytes([a, b]).into(),
-            [a, b, c, d] => i32::from_le_bytes([a, b, c, d]).into(),
-            [a, b, c, d, e, f, g, h] => i64::from_le_bytes([a, b, c, d, e, f, g, h]),
-            _ => return Err(wrong),
-        }),
+        ColumnType::Int => Datum::Int(integer(bytes).ok_or(wrong)?),
         ColumnType::Bool => match bytes {
             [byte] => Datum::Bool(*byte != 0),
             _ => return Err(wrong),
@@ -208,6 +222,17 @@ fn value(
     Ok(Value::Datum(datum))
 }
 
+/// An `int2`, `int4` or `int8`, by its length.
+fn integer(bytes: &[u8]) -> Option<i64> {
+    if let Ok(two) = bytes.try_into() {
+        return Some(i16::from_le_bytes(two).into());
+    }
+    if let Ok(four) = bytes.try_into() {
+        return Some(i32::from_le_bytes(four).into());
+    }
+    Some(i64::from_le_bytes(bytes.try_into().ok()?))
+}
+
 /// A numeric as it lies on a page, short or long header then
 /// base-10000 digits, in units of `10^-scale`. `NaN` and the infinities
 /// are `None`, as the text reader has them.
@@ -220,7 +245,7 @@ fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
             let weight = if header & NUMERIC_SHORT_WEIGHT_SIGN == 0 {
                 bits
             } else {
-                bits - 64
+                bits - i32::from(NUMERIC_SHORT_WEIGHT_SIGN)
             };
             (header & NUMERIC_SHORT_SIGN != 0, weight, bytes.get(2..)?)
         }
@@ -260,9 +285,9 @@ mod tests {
         let bitmap = if nulls { columns.len().div_ceil(8) } else { 0 };
         let hoff = (23 + bitmap).next_multiple_of(8);
         let mut body = vec![0; hoff - 23];
-        for (i, column) in columns.iter().enumerate() {
+        for (index, column) in columns.iter().enumerate() {
             if column.is_some() && nulls {
-                body[i / 8] |= 1 << (i % 8);
+                body[index / 8] |= 1 << (index % 8);
             }
         }
         let mut data = Vec::new();
@@ -384,7 +409,7 @@ mod tests {
         // lz4: 3 literals, a match of 9 (4 + 5) back 3, no literals.
         let lz4 = [0x35, b'a', b'b', b'c', 0x03, 0x00, 0x00];
         for (method, stored) in [(METHOD_PGLZ, &pglz[..]), (METHOD_LZ4, &lz4[..])] {
-            let info = u32::try_from(plain.len()).unwrap() | method << 30;
+            let info = u32::try_from(plain.len()).unwrap() | method << METHOD_SHIFT;
             let mut bytes = u32::try_from((stored.len() + 8) << 2 | 2)
                 .unwrap()
                 .to_le_bytes()
@@ -407,7 +432,8 @@ mod tests {
             assert_eq!(got, Err("a value that doesn't decompress"));
         }
         let mut zstd = u32::try_from(10 << 2 | 2).unwrap().to_le_bytes().to_vec();
-        zstd.extend((12u32 | 2 << 30).to_le_bytes());
+        // Method 2, zstd, and a raw size of 12.
+        zstd.extend(((0b10 << METHOD_SHIFT) + 12u32).to_le_bytes());
         zstd.extend([0, 0]);
         let got = values(
             &row(&attributes, &[Some(&zstd)]),
@@ -417,16 +443,19 @@ mod tests {
         assert_eq!(got, Err("a value compressed in a way Straum can't read"));
     }
 
+    fn check(tuple: &Tuple, attributes: &[Attribute], problem: &str) {
+        assert_eq!(values(tuple, attributes, &HashMap::new()), Err(problem));
+    }
+
+    fn four_byte_row() -> Tuple {
+        row(&[attribute(4, 4, INT)], &[Some(&1i32.to_le_bytes())])
+    }
+
     #[test]
     fn rejects_rows_that_dont_fit() {
         let int = attribute(4, 4, INT);
         let text_column = attribute(-1, 4, TEXT);
-        let none = HashMap::new();
-        let four = 1i32.to_le_bytes();
-        let fits = row(&[int], &[Some(&four)]);
-        let check = |tuple: &Tuple, attributes: &[Attribute], problem: &str| {
-            assert_eq!(values(tuple, attributes, &none), Err(problem));
-        };
+        let fits = four_byte_row();
         check(&fits, &[], "a row with more columns than its table");
         let mut cut = fits.clone();
         cut.body = cut.body[..cut.body.len() - 1].into();
@@ -434,6 +463,31 @@ mod tests {
         let mut no_header = fits.clone();
         no_header.hoff = 8;
         check(&no_header, &[int], "a row shorter than its columns");
+        let other_tag = [0x01, 1, 0, 0];
+        check(
+            &row(&[text_column], &[Some(&other_tag)]),
+            &[text_column],
+            "a row shorter than its columns",
+        );
+        let half = [10 << 2 | 2, 0, 0, 0, 0, 0];
+        check(
+            &row(&[text_column], &[Some(&half)]),
+            &[text_column],
+            "a row shorter than its columns",
+        );
+        // A four-byte header naming fewer bytes than itself.
+        check(
+            &row(&[text_column], &[Some(&[0x04, 0, 0, 0])]),
+            &[text_column],
+            "a row shorter than its columns",
+        );
+    }
+
+    #[test]
+    fn rejects_values_that_dont_fit() {
+        let int = attribute(4, 4, INT);
+        let text_column = attribute(-1, 4, TEXT);
+        let fits = four_byte_row();
         check(
             &fits,
             &[attribute(-3, 1, INT)],
@@ -482,24 +536,6 @@ mod tests {
             &row(&[numeric], &[Some(&short_varlena("\u{1}"))]),
             &[numeric],
             "a numeric Straum can't read",
-        );
-        let other_tag = [0x01, 1, 0, 0];
-        check(
-            &row(&[text_column], &[Some(&other_tag)]),
-            &[text_column],
-            "a row shorter than its columns",
-        );
-        let half = [10 << 2 | 2, 0, 0, 0, 0, 0];
-        check(
-            &row(&[text_column], &[Some(&half)]),
-            &[text_column],
-            "a row shorter than its columns",
-        );
-        // A four-byte header naming fewer bytes than itself.
-        check(
-            &row(&[text_column], &[Some(&[0x04, 0, 0, 0])]),
-            &[text_column],
-            "a row shorter than its columns",
         );
     }
 
