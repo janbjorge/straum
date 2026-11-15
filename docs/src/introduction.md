@@ -1,7 +1,7 @@
 # Straum
 
 Straum keeps aggregates of PostgreSQL tables in memory and answers
-asks about them over HTTP in microseconds.
+asks about them over HTTP. Counts and sums come back in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
@@ -48,6 +48,8 @@ Every commit made before `as_of` is in the answer, and an ask never
 touches PostgreSQL. In the [benchmark](benchmark.md) counts and sums
 answer in 166 to 413 µs where PostgreSQL takes 22.3 to 2,376.2 ms, and
 a median fare in 32 ms where it takes 6.6 s, from 113 MiB of memory.
+The target is under 1 ms for every ask. The two percentile asks over
+every trip miss it.
 
 ![Straum between PostgreSQL and the apps that ask it](diagrams/overview.svg)
 
@@ -77,8 +79,11 @@ leaves no slot behind holding WAL. PostgreSQL stays the source of
 truth.
 
 Straum supports PostgreSQL 17 and newer as shipped, with no extension
-and no superuser, so managed services work. The name is Nynorsk for a
-stream or current: Straum's input is PostgreSQL's replication stream.
+and no superuser, so managed services work. Where `wal_level = logical`
+can't be had, `--wal physical` reads the WAL `replica` writes
+([setup](postgresql.md#without-logical-decoding)). The name is Nynorsk
+for a stream or current: Straum's input is PostgreSQL's replication
+stream.
 
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.

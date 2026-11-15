@@ -10,8 +10,9 @@ asks about them over HTTP. In the
 [benchmark](https://janbjorge.github.io/straum/benchmark.html) its counts
 and sums answer in 166 to 413 µs where PostgreSQL takes 22.3 to 2,376.2
 ms, and a median fare in 32 ms where it takes 6.6 s, from 113 MiB.
-PostgreSQL stays the source of truth; Straum keeps nothing on
-disk.
+The target is under 1 ms for every ask. The two percentile asks over
+every trip miss it. PostgreSQL stays the source of truth; Straum
+keeps nothing on disk. A crash leaves no slot behind holding WAL.
 
 **Not stable.** The spec, the asks and the flags may change.
 
@@ -89,6 +90,7 @@ need Docker.
 - [Decisions](docs/adr/)
 - [Straum and PostgreSQL](research/POSTGRESQL.md)
 - [Joins: history and sources](research/JOINS.md)
+- [Aggregates: merge and delete](research/AGGREGATES.md)
 
 ## License
 
