@@ -501,6 +501,30 @@ bucket | shared | fare
         );
     }
 
+    fn ask_over(from: i64, to: i64) -> Ask {
+        Ask {
+            view: straum_domain::Identifier::new("trips").unwrap(),
+            measures: Vec::new(),
+            keys: Vec::new(),
+            filter: Vec::new(),
+            from,
+            to,
+        }
+    }
+
+    #[test]
+    fn a_range_jiff_can_write_has_no_errors() {
+        assert!(range_errors(&ask_over(0, 3_600)).is_empty());
+        let errors = range_errors(&ask_over(i64::MIN, i64::MAX));
+        let mut lines = Vec::new();
+        for error in &errors {
+            lines.push(error.to_string());
+        }
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("range start -9223372036854775808 is not between "));
+        assert!(lines[1].starts_with("range end 9223372036854775807 is not between "));
+    }
+
     #[test]
     #[should_panic(expected = "range_errors keeps time keys in range")]
     fn a_time_key_past_jiff_is_a_bug() {

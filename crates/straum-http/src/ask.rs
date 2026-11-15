@@ -151,9 +151,7 @@ mod tests {
 
     /// The errors a body gives, as the reply says them.
     fn errors_of(body: &str) -> Vec<String> {
-        let Err(errors) = read(body.as_bytes()) else {
-            panic!("{body} was read");
-        };
+        let errors = read(body.as_bytes()).unwrap_err();
         let mut lines = Vec::new();
         for error in errors {
             lines.push(error.to_string());

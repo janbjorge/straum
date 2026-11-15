@@ -161,10 +161,7 @@ mod tests {
     }
 
     fn parse_error(text: &[u8]) -> String {
-        let Err(error) = Json::parse(text) else {
-            panic!("{text:?} parsed");
-        };
-        error.to_string()
+        Json::parse(text).unwrap_err().to_string()
     }
 
     #[test]
