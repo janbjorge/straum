@@ -9,7 +9,7 @@ use crate::aggregate::{Aggregate, Reads};
 use crate::codes::Codes;
 use crate::column::{Counts, Sums, grow, put};
 use crate::hash::FastMap;
-use crate::ident::Identifier;
+use crate::identifier::Identifier;
 use crate::index::{Index, Keys};
 use crate::sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 use crate::spec::{Fact, KeyPart};

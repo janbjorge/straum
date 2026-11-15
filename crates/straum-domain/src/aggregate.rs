@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::column::Counts;
-use crate::ident::Identifier;
+use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
 use crate::value_counts::ValueCounts;

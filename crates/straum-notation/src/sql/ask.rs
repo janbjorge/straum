@@ -178,7 +178,7 @@ impl Walker {
     fn ask_key(&mut self, expr: &sql::Expr) -> Option<AskKey> {
         match expr {
             sql::Expr::Identifier(id) => {
-                let name = self.ident(id)?;
+                let name = self.read_identifier(id)?;
                 if name.as_str() == "bucket" {
                     return Some(AskKey::Bucket);
                 }

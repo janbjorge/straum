@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::aggregate::Aggregate;
-use crate::ident::Identifier;
+use crate::identifier::Identifier;
 use crate::value::ColumnType;
 
 /// Seconds per day. Every width divides it, so buckets roll up to days.

@@ -8,7 +8,7 @@ mod ask;
 mod codes;
 mod column;
 mod hash;
-mod ident;
+mod identifier;
 mod index;
 mod projection;
 mod rollup;
@@ -21,7 +21,7 @@ mod value_counts;
 pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey};
 pub use hash::{FastMap, FastSet, Seeded};
-pub use ident::Identifier;
+pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 pub use spec::{

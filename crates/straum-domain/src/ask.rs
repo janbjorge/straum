@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::ident::Identifier;
+use crate::identifier::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec, Width};
 use crate::value::ColumnType;
 

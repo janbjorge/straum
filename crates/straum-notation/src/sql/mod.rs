@@ -117,7 +117,7 @@ impl Walker {
     }
 
     /// An unquoted name, folded to lower case as PostgreSQL does.
-    fn ident(&mut self, id: &sql::Ident) -> Option<Identifier> {
+    fn read_identifier(&mut self, id: &sql::Ident) -> Option<Identifier> {
         let sql::Ident {
             value,
             quote_style,
@@ -127,11 +127,11 @@ impl Walker {
             self.refuse(span.start.line, "quoted identifier", id);
             return None;
         }
-        let ident = Identifier::new(&value.to_lowercase());
-        if ident.is_none() {
+        let identifier = Identifier::new(&value.to_lowercase());
+        if identifier.is_none() {
             self.error(span.start.line, format!("bad identifier {value}"));
         }
-        ident
+        identifier
     }
 
     fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Option<Identifier> {
@@ -149,7 +149,7 @@ impl Walker {
         part: &sql::ObjectNamePart,
     ) -> Option<Identifier> {
         match part {
-            sql::ObjectNamePart::Identifier(id) => self.ident(id),
+            sql::ObjectNamePart::Identifier(id) => self.read_identifier(id),
             other @ sql::ObjectNamePart::Function(_) => {
                 self.refuse(line(name), "name part", other);
                 None

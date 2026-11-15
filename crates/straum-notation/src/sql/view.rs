@@ -350,7 +350,7 @@ impl Walker {
                 continue;
             };
             let at = line(option);
-            let Some(name) = self.ident(name) else {
+            let Some(name) = self.read_identifier(name) else {
                 continue;
             };
             if name.as_str() != "buckets" {
@@ -549,7 +549,7 @@ impl Walker {
         by: &mut Vec<ByKey>,
         attributes: &mut [Vec<Attribute>],
     ) {
-        let name = self.ident(alias);
+        let name = self.read_identifier(alias);
         if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expr {
             self.refuse(
                 line(expr),
@@ -682,7 +682,7 @@ impl Walker {
         function: &sql::Function,
         alias: &sql::Ident,
     ) -> Option<Measure> {
-        let name = self.ident(alias);
+        let name = self.read_identifier(alias);
         let (aggregate, filter) = self.aggregate(scope, function)?;
         Some(Measure {
             name: name?,
@@ -886,7 +886,7 @@ impl Walker {
         {
             self.absent(at, !columns.is_empty(), "an alias column list");
             self.absent(at, at_time.is_some(), "AT");
-            Some(self.ident(alias)?)
+            Some(self.read_identifier(alias)?)
         } else {
             self.error(
                 line(name),
@@ -1100,8 +1100,8 @@ impl Walker {
                     return None;
                 };
                 Some(Qualified {
-                    alias: self.ident(alias)?,
-                    column: self.ident(column)?,
+                    alias: self.read_identifier(alias)?,
+                    column: self.read_identifier(column)?,
                 })
             }
             other => {
@@ -1222,7 +1222,7 @@ impl Walker {
         alias: &sql::Ident,
     ) -> Option<Time> {
         // Walked for its errors: the name is fixed.
-        self.ident(alias);
+        self.read_identifier(alias);
         if alias.value != "bucket" {
             self.error(
                 alias.span.start.line,

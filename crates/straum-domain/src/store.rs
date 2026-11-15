@@ -4,7 +4,7 @@ use std::ops::Range;
 use crate::aggregate::Partials;
 use crate::ask::{Ask, AskError, AskKey};
 use crate::hash::FastMap;
-use crate::ident::Identifier;
+use crate::identifier::Identifier;
 use crate::projection::{NULL, Projection};
 use crate::rollup::{Bucket, Cells, Direction, Rollup, RowError};
 
