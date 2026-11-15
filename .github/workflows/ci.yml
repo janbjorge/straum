@@ -68,6 +68,30 @@ jobs:
           toolchain: ${{ env.RUST }}
       - run: cargo test --workspace
 
+  # The physical stream against PostgreSQL on every supported major: random
+  # workloads, compared byte for byte with a logical slot and, under
+  # wal_level=replica, with SQL. Each run tries new seeds; a re-run the
+  # same ones, and a failure names its seed.
+  correctness:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16", "17", "18", "19rc1"]
+    env:
+      STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
+      STRAUM_TEST_SEEDS: "50"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST }}
+      - run: echo "STRAUM_TEST_SEED_FROM=$((GITHUB_RUN_NUMBER * 1000))" >> "$GITHUB_ENV"
+      - run: >-
+          cargo test -p straum-pg --
+          tests::commits_what_logical_decoding_commits_at_random
+          tests::follows_random_workloads_from_a_random_start
+
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -166,7 +190,7 @@ jobs:
   # index annotations come from the repository's description and license;
   # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
-    needs: [gate, format, lint, architecture, test, coverage, chart, image]
+    needs: [gate, format, lint, architecture, test, correctness, coverage, chart, image]
     if: needs.gate.outputs.publish == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
