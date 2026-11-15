@@ -1,5 +1,7 @@
-//! PostgreSQL in memory: tables, a log of commits, and a source that loads
-//! and streams facts and dims the way a temporary slot and pgoutput would.
+//! PostgreSQL in memory. A case writes to the `Database`: each commit
+//! changes its tables and logs what pgoutput would send. The `Fake`
+//! source reads the database as a slot would: it loads the tables as of
+//! the stream's start, then hands out the logged commits one by one.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -11,7 +13,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use straum_app::{Change, Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{ColumnType, Datum, Identifier, RowError, Spec, Store};
 
+/// A row as a table holds it.
 pub type Row = Vec<Datum>;
+
+/// A table's `REPLICA IDENTITY`: whether its updates and deletes send the
+/// whole old row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    Full,
+    Default,
+}
+
+/// A published table the database starts with, empty.
+// Table names are always literals here, so `&'static str` needs no copy.
+pub struct Published {
+    pub name: &'static str,
+    pub identity: Identity,
+}
 
 /// A column's type, as the catalog gives it: every table here names its
 /// columns alike.
@@ -48,8 +66,7 @@ fn fill(table: &Identifier, rows: &[Row], store: &mut Store) -> Result<(), RowEr
 
 #[derive(Debug, Clone)]
 struct Table {
-    /// `REPLICA IDENTITY FULL`: updates and deletes send the whole old row.
-    full: bool,
+    identity: Identity,
     /// By primary key. A dim row starts with its key.
     rows: BTreeMap<Datum, Row>,
 }
@@ -83,6 +100,7 @@ pub enum Write {
     },
 }
 
+/// The tables and the log of commits a case writes.
 #[derive(Debug)]
 pub struct Database {
     /// The tables after each commit, and before the first.
@@ -104,7 +122,7 @@ pub struct Database {
 /// A source over a shared [`Database`], so a test can write while the app
 /// reads.
 pub struct Fake {
-    db: Rc<RefCell<Database>>,
+    database: Rc<RefCell<Database>>,
     stream: Option<Stream>,
     pub on_load: Option<OnLoad>,
 }
@@ -127,20 +145,20 @@ pub fn time(lsn: Lsn) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(lsn.0)
 }
 
+/// A name the tests know is valid.
 pub fn id(name: &str) -> Identifier {
     Identifier::new(name).unwrap()
 }
 
 impl Database {
-    /// Empty tables, each with whether it has `REPLICA IDENTITY FULL`.
-    pub fn new(tables: &[(&'static str, bool)]) -> Database {
-        let empty = tables
-            .iter()
-            .map(|&(name, full)| {
-                let rows = BTreeMap::new();
-                (name, Table { full, rows })
-            })
-            .collect();
+    /// The published tables, empty.
+    pub fn new(tables: &[Published]) -> Database {
+        let mut empty = Tables::new();
+        for table in tables {
+            let rows = BTreeMap::new();
+            let identity = table.identity;
+            empty.insert(table.name, Table { identity, rows });
+        }
         Database {
             history: BTreeMap::from([(Lsn(100), empty)]),
             log: Vec::new(),
@@ -151,10 +169,12 @@ impl Database {
         }
     }
 
+    /// The database, to share between a case and its fake source.
     pub fn shared(self) -> Rc<RefCell<Database>> {
         Rc::new(RefCell::new(self))
     }
 
+    /// The LSN of the last commit.
     pub fn lsn(&self) -> Lsn {
         *self.history.keys().next_back().unwrap()
     }
@@ -175,15 +195,21 @@ impl Database {
     /// as the writer loads them.
     pub fn store_at(&self, spec: &Spec, lsn: Lsn) -> Store {
         let mut store = Store::new(spec.clone());
-        let dims = spec.dims().iter().map(|dim| &dim.name);
-        let facts = spec.facts().iter().map(|fact| &fact.name);
-        for table in dims.chain(facts) {
-            let rows = self.rows_at(lsn, table.as_str());
-            fill(table, &rows, &mut store).expect("a row the store takes");
+        for dim in spec.dims() {
+            self.load_at(lsn, &dim.name, &mut store);
+        }
+        for fact in spec.facts() {
+            self.load_at(lsn, &fact.name, &mut store);
         }
         store
     }
 
+    fn load_at(&self, lsn: Lsn, table: &Identifier, store: &mut Store) {
+        let rows = self.rows_at(lsn, table.as_str());
+        fill(table, &rows, store).expect("a row the store takes");
+    }
+
+    /// The primary keys a table holds now.
     pub fn keys(&self, table: &str) -> Vec<Datum> {
         let tables = self.history.values().next_back().unwrap();
         tables[table].rows.keys().cloned().collect()
@@ -192,9 +218,10 @@ impl Database {
     /// Commits the writes and logs what pgoutput would send for them.
     pub fn commit(&mut self, writes: Vec<Write>) -> Lsn {
         let mut tables = self.history.values().next_back().unwrap().clone();
-        let changes = (writes.into_iter())
-            .map(|write| apply_write(&mut tables, write))
-            .collect();
+        let mut changes = Vec::new();
+        for write in writes {
+            changes.push(apply_write(&mut tables, write));
+        }
         self.push(changes, tables)
     }
 
@@ -242,7 +269,7 @@ fn apply_write(tables: &mut Tables, write: Write) -> Change {
             let held = tables.get_mut(table).unwrap();
             let before = held.rows.remove(&key).expect("updated row exists");
             held.rows.insert(new_key, row.clone());
-            if held.full {
+            if held.identity == Identity::Full {
                 Change::Update {
                     table: id(table),
                     old: before,
@@ -255,7 +282,7 @@ fn apply_write(tables: &mut Tables, write: Write) -> Change {
         Write::Delete { table, key } => {
             let held = tables.get_mut(table).unwrap();
             let before = held.rows.remove(&key).expect("deleted row exists");
-            if held.full {
+            if held.identity == Identity::Full {
                 Change::Delete {
                     table: id(table),
                     old: before,
@@ -273,9 +300,10 @@ fn apply_write(tables: &mut Tables, write: Write) -> Change {
 }
 
 impl Fake {
-    pub fn new(db: &Rc<RefCell<Database>>) -> Fake {
+    /// A source over the database, with no stream open yet.
+    pub fn new(database: &Rc<RefCell<Database>>) -> Fake {
         Fake {
-            db: Rc::clone(db),
+            database: Rc::clone(database),
             stream: None,
             on_load: None,
         }
@@ -283,12 +311,12 @@ impl Fake {
 
     /// A table's rows in the snapshot the stream starts from.
     fn read(&mut self, table: &Identifier) -> Result<Vec<Row>, SourceError> {
-        let mut db = self.db.borrow_mut();
-        db.connect()?;
-        db.loads.push(table.to_string());
+        let mut database = self.database.borrow_mut();
+        database.connect()?;
+        database.loads.push(table.to_string());
         let start = self.stream.as_ref().expect("open first").start;
-        let rows = db.rows_at(start, table.as_str());
-        drop(db);
+        let rows = database.rows_at(start, table.as_str());
+        drop(database);
         if let Some(on_load) = &mut self.on_load {
             on_load(table.as_str());
         }
@@ -298,12 +326,12 @@ impl Fake {
 
 impl Source for Fake {
     fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
-        let mut db = self.db.borrow_mut();
-        db.connect()?;
-        let start = db.lsn();
+        let mut database = self.database.borrow_mut();
+        database.connect()?;
+        let start = database.lsn();
         self.stream = Some(Stream {
             start,
-            next: db.log.len(),
+            next: database.log.len(),
             applied: start,
         });
         Ok(start)
@@ -315,17 +343,17 @@ impl Source for Fake {
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
-        let mut db = self.db.borrow_mut();
-        db.connect()?;
-        if db.waits > 0 {
-            db.waits -= 1;
+        let mut database = self.database.borrow_mut();
+        database.connect()?;
+        if database.waits > 0 {
+            database.waits -= 1;
             thread::sleep(wait);
             return Ok(None);
         }
         let stream = self.stream.as_mut().expect("open first");
         // Every published table's changes, as pgoutput sends them; the
         // writer skips the ones outside the spec.
-        let commit = db
+        let commit = database
             .log
             .get(stream.next)
             .expect("a commit is waiting")
@@ -337,11 +365,11 @@ impl Source for Fake {
     }
 
     fn wal(&mut self) -> Result<Wal, SourceError> {
-        let mut db = self.db.borrow_mut();
-        db.connect()?;
+        let mut database = self.database.borrow_mut();
+        database.connect()?;
         let applied = self.stream.as_ref().expect("open first").applied;
-        Ok(db.wal.unwrap_or(Wal {
-            written: db.lsn(),
+        Ok(database.wal.unwrap_or(Wal {
+            written: database.lsn(),
             confirmed: applied,
             restart: applied,
         }))

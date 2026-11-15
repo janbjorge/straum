@@ -1,4 +1,6 @@
-//! A spill in memory, which can be broken on purpose and counts its calls.
+//! A spill in memory: buckets in a map behind a lock, as the writer and
+//! asks put and get them. A case can break it on purpose, and read how
+//! often it was asked for a bucket or emptied.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -7,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use straum_app::{Spill, SpillError};
 use straum_domain::{Sealed, SealedId};
 
+/// A spill that keeps its buckets in memory and counts its calls.
 #[derive(Default)]
 pub struct MemorySpill {
     pub buckets: Mutex<BTreeMap<SealedId, Sealed>>,
@@ -17,18 +20,22 @@ pub struct MemorySpill {
 }
 
 impl MemorySpill {
+    /// The buckets it holds now.
     pub fn ids(&self) -> Vec<SealedId> {
         self.buckets.lock().unwrap().keys().cloned().collect()
     }
 
+    /// Makes every call fail while `broken`.
     pub fn break_it(&self, broken: bool) {
         self.broken.store(broken, Ordering::Relaxed);
     }
 
+    /// How often a bucket was read back.
     pub fn gets(&self) -> usize {
         self.gets.load(Ordering::Relaxed)
     }
 
+    /// How often it was emptied.
     pub fn clears(&self) -> usize {
         self.clears.load(Ordering::Relaxed)
     }
@@ -53,10 +60,10 @@ impl Spill for MemorySpill {
         self.working()?;
         self.gets.fetch_add(1, Ordering::Relaxed);
         let buckets = self.buckets.lock().unwrap();
-        buckets
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("no {id}").into())
+        match buckets.get(id) {
+            Some(sealed) => Ok(sealed.clone()),
+            None => Err(format!("no {id}").into()),
+        }
     }
 
     fn remove(&self, id: &SealedId) -> Result<(), SpillError> {
