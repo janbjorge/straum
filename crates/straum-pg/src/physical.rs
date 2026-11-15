@@ -209,13 +209,15 @@ pub(crate) fn tables(
         .collect();
     let names = names.join(", ");
     // A dropped column has no type, and its bytes stay in older rows, so
-    // the join to pg_type keeps it.
+    // the join to pg_type keeps it. A missing value is a one-element
+    // array of the column's type.
     let rows = conn.rows(&format!(
         "SELECT c.oid, n.nspname, c.relname,
                 CASE c.reltablespace WHEN 0 THEN d.dattablespace ELSE c.reltablespace END,
                 d.oid, pg_relation_filenode(c.oid), a.attname, a.atttypid, a.atttypmod,
-                a.attlen, a.attalign, a.attisdropped, a.attmissingval::text,
-                coalesce(t.typtype::text, '')
+                a.attlen,
+                CASE a.attalign WHEN 'c' THEN 1 WHEN 's' THEN 2 WHEN 'i' THEN 4 ELSE 8 END,
+                a.attisdropped, (a.attmissingval::text::text[])[1], t.typtype = 'e'
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
          JOIN pg_database d ON d.datname = current_database()
@@ -252,18 +254,12 @@ pub(crate) fn tables(
         let type_oid = number(7)?;
         let typmod = field(8)?.parse().map_err(|_| shape())?;
         let dropped = field(11)? == "t";
-        let align = match field(10)? {
-            "c" => 1,
-            "s" => 2,
-            "i" => 4,
-            "d" => 8,
-            _ => return Err(shape()),
-        };
+        let align = field(10)?.parse().map_err(|_| shape())?;
         // As the decoder reads the column: an enum as its label's text.
         let kind = match type_of(type_oid, typmod) {
             _ if dropped => Kind::Other,
             Some(column_type) => Kind::Read(column_type),
-            None if field(13)? == "e" => Kind::Enum,
+            None if row.get(13).is_some_and(|e| e.as_deref() == Some("t")) => Kind::Enum,
             None => Kind::Other,
         };
         if !dropped {
@@ -279,10 +275,7 @@ pub(crate) fn tables(
             align,
             kind,
         });
-        let missing = match row.get(12).and_then(|v| v.as_deref()) {
-            None => None,
-            Some(array) => Some(element(array).ok_or_else(shape)?),
-        };
+        let missing = row.get(12).cloned().flatten();
         table.missing.push(match (missing, kind) {
             (Some(text), Kind::Read(column_type)) => read(column_type, &text)?,
             (Some(text), Kind::Enum) => Datum::Text(text.into()),
@@ -305,58 +298,4 @@ pub(crate) fn tables(
         })
         .collect::<Result<_, Error>>()?;
     Ok((tables, labels))
-}
-
-/// The one element of an array literal, as `attmissingval::text`
-/// prints it: `{7}`, or quoted with backslash escapes when it holds a
-/// space, comma, quote, brace or backslash.
-fn element(array: &str) -> Option<String> {
-    let inner = array.strip_prefix('{')?.strip_suffix('}')?;
-    let Some(quoted) = inner.strip_prefix('"') else {
-        let plain = !inner.is_empty()
-            && !inner.contains([',', '"', '\\', '{', '}'])
-            && !inner.eq_ignore_ascii_case("null");
-        return plain.then(|| inner.to_owned());
-    };
-    let mut text = String::new();
-    let mut chars = quoted.chars();
-    loop {
-        match chars.next()? {
-            '"' => return chars.next().is_none().then_some(text),
-            '\\' => text.push(chars.next()?),
-            c => text.push(c),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_array_elements() {
-        let cases = [
-            ("{7}", Some("7")),
-            ("{-1.50}", Some("-1.50")),
-            (
-                "{\"2024-01-01 00:00:00+00\"}",
-                Some("2024-01-01 00:00:00+00"),
-            ),
-            ("{\"a,b\"}", Some("a,b")),
-            ("{\"say \\\"hi\\\" \\\\ back\"}", Some("say \"hi\" \\ back")),
-            ("{\"\"}", Some("")),
-            ("{\"NULL\"}", Some("NULL")),
-            ("{NULL}", None),
-            ("{}", None),
-            ("{a,b}", None),
-            ("7", None),
-            ("{7", None),
-            ("{\"open}", None),
-            ("{\"a\"b}", None),
-            ("{\"a\\\"}", None),
-        ];
-        for (array, expected) in cases {
-            assert_eq!(element(array).as_deref(), expected, "{array}");
-        }
-    }
 }
