@@ -1,5 +1,8 @@
-//! Sealed buckets as plain data (ADR-0033): what a spill keeps, and what
-//! the store checks before it reads one back.
+//! Sealed buckets as plain data (ADR-0033). Sealing copies a bucket's
+//! cells out of the store into these types for a spill to keep; an ask or
+//! a change that needs the bucket again hands them back, and the store
+//! checks them (a thaw) before it reads them. Codes in them mean something
+//! only to the store that sealed them.
 
 use std::fmt;
 
@@ -30,6 +33,7 @@ pub struct Sealed {
     pub columns: Vec<SealedColumn>,
 }
 
+/// One cell state of a sealed bucket, one entry per cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedColumn {
     /// Count of the non-null values.

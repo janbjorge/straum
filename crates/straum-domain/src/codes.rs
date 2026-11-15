@@ -1,3 +1,8 @@
+//! Codes: the small integer a column's value goes by inside the store.
+//! A rollup-key part or a dim attribute codes each value the first time
+//! it meets one and keeps the value, so a cell key or a projection row is
+//! a few integers, and an answer looks the value up again by its code.
+
 use crate::hash::FastMap;
 use crate::value::Datum;
 
@@ -11,6 +16,7 @@ pub(crate) struct Codes {
 }
 
 impl Codes {
+    /// The code of `value`, given now if it has none yet.
     pub(crate) fn code(&mut self, value: &Datum) -> u32 {
         if let Some(&code) = self.codes.get(value) {
             return code;
@@ -26,10 +32,12 @@ impl Codes {
         self.codes.get(value).copied()
     }
 
+    /// The value a code stands for.
     pub(crate) fn value(&self, code: u32) -> &Datum {
         &self.values[code as usize]
     }
 
+    /// How many codes have been given.
     pub(crate) fn len(&self) -> usize {
         self.values.len()
     }
