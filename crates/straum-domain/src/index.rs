@@ -1,4 +1,7 @@
-//! Where each cell of a bucket lies among its columns, found by its key.
+//! Finds a cell of a bucket by its key. A bucket keeps its cells side by
+//! side in columns; this index maps a cell key (a few codes) to the
+//! cell's place among them. A row added looks its cell up here, a new cell
+//! is put in, and a removed cell's place is taken by the last one.
 
 use std::hash::{BuildHasher, Hasher};
 
@@ -9,20 +12,23 @@ const EMPTY: u32 = u32::MAX;
 
 /// The keys of a bucket's cells, end to end, `len` codes each.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Keys<'a> {
-    pub(crate) codes: &'a [u32],
+pub(crate) struct Keys<'bucket> {
+    // Borrowed from the bucket, which keeps every key once.
+    pub(crate) codes: &'bucket [u32],
     pub(crate) len: usize,
 }
 
-impl<'a> Keys<'a> {
-    pub(crate) fn of(self, cell: usize) -> &'a [u32] {
+impl<'bucket> Keys<'bucket> {
+    /// The key of the cell at `cell`.
+    pub(crate) fn of(self, cell: usize) -> &'bucket [u32] {
         &self.codes[cell * self.len..][..self.len]
     }
 }
 
-/// A slot holds a cell's place, and the key column says whose it is. A
-/// map from keys would hold every key a second time, each in an
-/// allocation of its own behind a pointer four times its size.
+/// Open addressing over the cells' places: a slot holds a cell's place,
+/// and the key column says whose it is. A map from keys would hold every
+/// key a second time, each in an allocation of its own behind a pointer
+/// four times its size.
 #[derive(Debug, Default)]
 pub(crate) struct Index {
     /// None, or a power of two of them, at most three quarters taken: a
@@ -34,9 +40,12 @@ pub(crate) struct Index {
 /// Whether two keys of a bucket are one. Compared as slices, two or three
 /// codes are a call.
 fn same(left: &[u32], right: &[u32]) -> bool {
-    left.iter()
-        .zip(right)
-        .all(|(left_code, right_code)| left_code == right_code)
+    for (left_code, right_code) in left.iter().zip(right) {
+        if left_code != right_code {
+            return false;
+        }
+    }
+    true
 }
 
 impl Index {
@@ -60,6 +69,7 @@ impl Index {
         (slot + 1) & (self.slots.len() - 1)
     }
 
+    /// The place of the cell with `key`, if any cell has it.
     pub(crate) fn get(&self, key: &[u32], keys: Keys<'_>) -> Option<usize> {
         if self.slots.is_empty() {
             return None;
@@ -79,7 +89,9 @@ impl Index {
     pub(crate) fn insert(&mut self, cell: usize, keys: Keys<'_>) {
         if (cell + 1) * 4 > self.slots.len() * 3 {
             self.slots = vec![EMPTY; (self.slots.len() * 2).max(4)];
-            (0..cell).for_each(|held| self.place(held, keys));
+            for held in 0..cell {
+                self.place(held, keys);
+            }
         }
         self.place(cell, keys);
     }
@@ -127,13 +139,13 @@ impl Index {
     /// Takes in `cells` cells at once. False if two of them hold one key.
     pub(crate) fn fill(&mut self, cells: usize, keys: Keys<'_>) -> bool {
         self.slots = vec![EMPTY; (cells * 4).div_ceil(3).next_power_of_two().max(4)];
-        (0..cells).all(|cell| {
-            let new = self.get(keys.of(cell), keys).is_none();
-            if new {
-                self.place(cell, keys);
+        for cell in 0..cells {
+            if self.get(keys.of(cell), keys).is_some() {
+                return false;
             }
-            new
-        })
+            self.place(cell, keys);
+        }
+        true
     }
 }
 
@@ -145,8 +157,65 @@ mod tests {
 
     use crate::test_rng::Rng;
 
-    fn code_below(rng: &mut Rng, values: usize) -> u32 {
-        u32::try_from(rng.position_below(values)).expect("codes fit u32")
+    /// A key of `codes_per_key` codes, each below `values`.
+    fn key_below(rng: &mut Rng, codes_per_key: usize, values: usize) -> Vec<u32> {
+        let mut key = Vec::with_capacity(codes_per_key);
+        for _ in 0..codes_per_key {
+            key.push(u32::try_from(rng.position_below(values)).expect("codes fit u32"));
+        }
+        key
+    }
+
+    /// A bucket's keys and their index, beside a map from key to place.
+    struct Followed {
+        codes_per_key: usize,
+        index: Index,
+        codes: Vec<u32>,
+        held: HashMap<Vec<u32>, usize>,
+    }
+
+    impl Followed {
+        fn keys(&self) -> Keys<'_> {
+            Keys {
+                codes: &self.codes,
+                len: self.codes_per_key,
+            }
+        }
+
+        /// A new cell takes the next place.
+        fn arrive(&mut self, key: Vec<u32>) {
+            let cell = self.held.len();
+            self.codes.extend(&key);
+            let keys = Keys {
+                codes: &self.codes,
+                len: self.codes_per_key,
+            };
+            self.index.insert(cell, keys);
+            self.held.insert(key, cell);
+        }
+
+        /// The cell at `cell` leaves, and the last cell takes its place.
+        fn leave(&mut self, key: &[u32], cell: usize) {
+            let codes_per_key = self.codes_per_key;
+            let last = self.held.len() - 1;
+            let keys = Keys {
+                codes: &self.codes,
+                len: codes_per_key,
+            };
+            self.index.remove(cell, keys);
+            self.held.remove(key);
+            if cell != last {
+                self.index.moved(last, cell, keys);
+                let moved = self
+                    .held
+                    .get_mut(keys.of(last))
+                    .expect("the last key is held");
+                *moved = cell;
+                let last_codes = last * codes_per_key..(last + 1) * codes_per_key;
+                self.codes.copy_within(last_codes, cell * codes_per_key);
+            }
+            self.codes.truncate(last * codes_per_key);
+        }
     }
 
     /// Cells come and go as a bucket's do, the last taking the place of
@@ -154,57 +223,36 @@ mod tests {
     /// is found where it lies, and no other is found at all.
     #[test]
     fn places_follow_a_map_as_cells_come_and_go() {
-        for (key_len, values) in [(1, 40), (1, 3_000), (3, 6), (0, 1)] {
+        for (codes_per_key, values) in [(1, 40), (1, 3_000), (3, 6), (0, 1)] {
             let mut rng = Rng::new(3);
-            let mut index = Index::default();
-            let mut codes: Vec<u32> = Vec::new();
-            let mut held: HashMap<Vec<u32>, usize> = HashMap::new();
+            let mut followed = Followed {
+                codes_per_key,
+                index: Index::default(),
+                codes: Vec::new(),
+                held: HashMap::new(),
+            };
             for step in 0..20_000 {
-                let at = format!("{key_len} codes of {values}, step {step}");
-                let key: Vec<u32> = (0..key_len).map(|_| code_below(&mut rng, values)).collect();
-                let keys = Keys {
-                    codes: &codes,
-                    len: key_len,
-                };
-                assert_eq!(index.get(&key, keys), held.get(&key).copied(), "{at}");
+                let at = format!("{codes_per_key} codes of {values}, step {step}");
+                let key = key_below(&mut rng, codes_per_key, values);
+                let found = followed.index.get(&key, followed.keys());
+                let place = followed.held.get(&key).copied();
+                assert_eq!(found, place, "{at}");
                 // More come than go until most keys are held, then as many.
                 let arrives = rng.position_below(100) < if step < 8_000 { 70 } else { 45 };
-                match (held.get(&key).copied(), arrives) {
-                    (None, true) => {
-                        let cell = held.len();
-                        codes.extend(&key);
-                        let keys = Keys {
-                            codes: &codes,
-                            len: key_len,
-                        };
-                        index.insert(cell, keys);
-                        held.insert(key, cell);
-                    }
-                    (Some(cell), false) => {
-                        let last = held.len() - 1;
-                        index.remove(cell, keys);
-                        held.remove(&key);
-                        if cell != last {
-                            index.moved(last, cell, keys);
-                            *held.get_mut(keys.of(last)).unwrap() = cell;
-                            codes.copy_within(last * key_len..(last + 1) * key_len, cell * key_len);
-                        }
-                        codes.truncate(last * key_len);
-                    }
+                match (place, arrives) {
+                    (None, true) => followed.arrive(key),
+                    (Some(cell), false) => followed.leave(&key, cell),
                     _ => {}
                 }
                 if step % 997 == 0 {
-                    let keys = Keys {
-                        codes: &codes,
-                        len: key_len,
-                    };
-                    for (key, &cell) in &held {
-                        assert_eq!(index.get(key, keys), Some(cell), "{at}: {key:?}");
+                    for (key, &cell) in &followed.held {
+                        let found = followed.index.get(key, followed.keys());
+                        assert_eq!(found, Some(cell), "{at}: {key:?}");
                     }
                 }
             }
             // At most three quarters of the slots are taken.
-            assert!(held.len() * 4 <= index.slots.len() * 3);
+            assert!(followed.held.len() * 4 <= followed.index.slots.len() * 3);
         }
     }
 
@@ -215,7 +263,10 @@ mod tests {
         let mut rng = Rng::new(9);
         for cells in [0, 1, 2, 3, 4, 100, 5_000] {
             let cell_count = u32::try_from(cells).expect("a bucket's cells fit u32");
-            let mut codes: Vec<u32> = (0..cell_count).flat_map(|n| [n / 7, n % 7]).collect();
+            let mut codes: Vec<u32> = Vec::with_capacity(2 * cells);
+            for cell in 0..cell_count {
+                codes.extend([cell / 7, cell % 7]);
+            }
             for at in (1..cells).rev() {
                 let with = rng.position_below(at + 1);
                 codes.swap(2 * at, 2 * with);
