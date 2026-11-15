@@ -5,6 +5,10 @@
 //! max. And what sealing saves: the heap a sealed bucket's cells held.
 //! A percentile holds nothing beyond its column's min or max, and its ask
 //! holds the values of its range, however many cells lie outside it.
+//!
+//! A counting allocator stands in for the system one: each thread tallies
+//! its own allocations and live bytes, and a test reads the tally before
+//! and after the work it measures.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -21,7 +25,8 @@ mod common;
 use common::{id, percentile, table};
 
 thread_local! {
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    /// Allocations this thread has made.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
     /// Bytes allocated and not yet freed by this thread.
     static LIVE: Cell<isize> = const { Cell::new(0) };
     /// The most `LIVE` has been since last set.
@@ -38,17 +43,19 @@ enum MemoryChange {
     clippy::cast_possible_wrap,
     reason = "a layout's size is at most isize::MAX"
 )]
-fn grow(bytes: usize, change: MemoryChange) {
+fn track(bytes: usize, change: MemoryChange) {
     let bytes = bytes as isize;
     let by = match change {
         MemoryChange::Allocated => bytes,
         MemoryChange::Freed => -bytes,
     };
-    let live = LIVE.with(|n| {
-        n.set(n.get() + by);
-        n.get()
-    });
-    PEAK.with(|n| n.set(n.get().max(live)));
+    let live = LIVE.get() + by;
+    LIVE.set(live);
+    PEAK.set(PEAK.get().max(live));
+}
+
+fn count_allocation() {
+    ALLOCATIONS.set(ALLOCATIONS.get() + 1);
 }
 
 /// Counts the allocations of the thread that makes them, so tests running
@@ -60,20 +67,20 @@ struct Counting;
 // SAFETY: hands every call to `System` unchanged.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(layout.size(), MemoryChange::Allocated);
+        count_allocation();
+        track(layout.size(), MemoryChange::Allocated);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        grow(layout.size(), MemoryChange::Freed);
+        track(layout.size(), MemoryChange::Freed);
         unsafe { System.dealloc(pointer, layout) }
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(new_size, MemoryChange::Allocated);
-        grow(layout.size(), MemoryChange::Freed);
+        count_allocation();
+        track(new_size, MemoryChange::Allocated);
+        track(layout.size(), MemoryChange::Freed);
         unsafe { System.realloc(pointer, layout, new_size) }
     }
 }
@@ -95,6 +102,7 @@ fn spec(buckets: &[u32]) -> Spec {
     spec_of(buckets, Zones::Joined)
 }
 
+/// Whether the fact joins the zones.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Zones {
     Joined,
@@ -119,31 +127,25 @@ fn spec_of(buckets: &[u32], zones: Zones) -> Spec {
     spec_measuring(buckets, zones, measures)
 }
 
+/// As [`spec_of`], with the `measures` given.
 fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec {
-    let joined = zones == Zones::Joined;
-    let zones = Dim {
-        as_text: Vec::new(),
-        name: id("zones"),
-        table: table("zones"),
-        key: vec![id("id")],
-        attributes: vec![id("borough")],
-    };
-    let trips = Fact {
-        as_text: Vec::new(),
-        name: id("trips"),
-        table: table("trips"),
-        time: Time {
-            column: id("at"),
-            width: Width { seconds: HOUR },
-            wider: buckets
-                .iter()
-                .map(|hours| Width {
-                    seconds: hours * HOUR,
-                })
-                .collect(),
-            origin: Origin::Timestamptz,
-        },
-        refs: Vec::from_iter(joined.then(|| Ref {
+    let mut wider = Vec::with_capacity(buckets.len());
+    for hours in buckets {
+        wider.push(Width {
+            seconds: hours * HOUR,
+        });
+    }
+    let mut dims = Vec::new();
+    let mut refs = Vec::new();
+    if zones == Zones::Joined {
+        dims.push(Dim {
+            as_text: Vec::new(),
+            name: id("zones"),
+            table: table("zones"),
+            key: vec![id("id")],
+            attributes: vec![id("borough")],
+        });
+        refs.push(Ref {
             alias: id("pickup"),
             dim: id("zones"),
             via: vec![Via::Fact(id("pu"))],
@@ -152,7 +154,19 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
                 name: id("borough"),
                 column: id("borough"),
             }],
-        })),
+        });
+    }
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: HOUR },
+            wider,
+            origin: Origin::Timestamptz,
+        },
+        refs,
         by_keys: vec![
             ByKey::Column {
                 column: id("pay"),
@@ -166,7 +180,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
         filter: vec![],
         measures,
     };
-    Spec::new(Vec::from_iter(joined.then_some(zones)), vec![trips]).unwrap()
+    Spec::new(dims, vec![trips]).unwrap()
 }
 
 /// A store whose rollup holds `cells` cells: one row per pay, zone and hour.
@@ -187,55 +201,70 @@ fn store_of(spec: Spec, cells: i64, tips: i64) -> Store {
     let joined = !spec.dims().is_empty();
     let mut store = Store::new(spec);
     if joined {
-        store
-            .set_types("zones", &[ColumnType::Int, ColumnType::Text])
-            .unwrap();
-        let zones: Vec<Datum> = (0..ZONES)
-            .flat_map(|zone| {
-                [
-                    Datum::Int(zone),
-                    Datum::Text(BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()].into()),
-                ]
-            })
-            .collect();
-        store.add_rows("zones", &zones).unwrap();
+        load_zones(&mut store);
     }
-    for (n, tip) in (0..cells).flat_map(|n| (0..tips).map(move |tip| (n, tip))) {
-        let zone = n / 2 % ZONES;
-        let row: Vec<_> = columns
-            .iter()
-            .map(|column| match column.as_str() {
-                "at" => Datum::Int(n / (2 * ZONES) * i64::from(HOUR)),
-                "pay" => Datum::Int(n % 2),
-                "pu" => Datum::Int(zone),
-                "fare" => Datum::Int(n),
-                "tip" => Datum::Int(n % 7 + tip),
-                other => panic!("no value for {other}"),
-            })
-            .collect();
-        store.add_row("trips", &row).unwrap();
+    for cell in 0..cells {
+        for tip in 0..tips {
+            let mut row = Vec::with_capacity(columns.len());
+            for column in &columns {
+                row.push(trip_value(column.as_str(), cell, tip));
+            }
+            store.add_row("trips", &row).unwrap();
+        }
     }
     assert_eq!(store.cells("trips"), Some(usize::try_from(cells).unwrap()));
     store
 }
 
+/// Every zone, each in a borough, laid end to end as a load reads them.
+fn load_zones(store: &mut Store) {
+    store
+        .set_types("zones", &[ColumnType::Int, ColumnType::Text])
+        .unwrap();
+    let mut zones = Vec::new();
+    for zone in 0..ZONES {
+        let borough = BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()];
+        zones.push(Datum::Int(zone));
+        zones.push(Datum::Text(borough.into()));
+    }
+    store.add_rows("zones", &zones).unwrap();
+}
+
+/// The value of `column` in the trip of cell number `cell` with tip
+/// offset `tip`: one cell per pay, zone and hour.
+fn trip_value(column: &str, cell: i64, tip: i64) -> Datum {
+    match column {
+        "at" => Datum::Int(cell / (2 * ZONES) * i64::from(HOUR)),
+        "pay" => Datum::Int(cell % 2),
+        "pu" => Datum::Int(cell / 2 % ZONES),
+        "fare" => Datum::Int(cell),
+        "tip" => Datum::Int(cell % 7 + tip),
+        other => panic!("no value for {other}"),
+    }
+}
+
 /// Every measure, by `by`, over the hours `from..to`.
 fn ask(by: &[&str], from: i64, to: i64) -> Ask {
+    let mut keys = Vec::with_capacity(by.len());
+    for name in by {
+        keys.push(key(name));
+    }
     Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("fare"), id("tip_max")],
-        keys: by.iter().map(|name| key(name)).collect(),
+        keys,
         filter: vec![],
         from: from * i64::from(HOUR),
         to: to * i64::from(HOUR),
     }
 }
 
-fn allocs(store: &Store, by: &[&str]) -> usize {
+/// The allocations an ask of every measure by `by` makes.
+fn allocations(store: &Store, by: &[&str]) -> usize {
     let ask = ask(by, 0, 1000);
-    let before = ALLOCS.with(Cell::get);
+    let before = ALLOCATIONS.get();
     let answer = store.ask(&ask).unwrap();
-    let after = ALLOCS.with(Cell::get);
+    let after = ALLOCATIONS.get();
     drop(answer);
     after - before
 }
@@ -248,8 +277,8 @@ fn an_ask_allocates_per_group_not_per_cell() {
     let big = store(8_000);
     for by in [&[][..], &["pay"], &["pu"], &["borough"]] {
         assert_eq!(
-            allocs(&small, by),
-            allocs(&big, by),
+            allocations(&small, by),
+            allocations(&big, by),
             "by {by:?}: allocations grow with the cells"
         );
     }
@@ -323,10 +352,12 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
 }
 
 fn live() -> isize {
-    LIVE.with(Cell::get)
+    LIVE.get()
 }
 
 /// The heap the store `build` makes holds.
+// A function to call, not a store: the heap is read before and after the
+// store is built, and each test builds its own.
 fn held(build: impl FnOnce() -> Store) -> isize {
     let empty = live();
     let store = build();
@@ -440,9 +471,9 @@ fn peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {
     let mut ask = ask(by, from, to);
     ask.measures = vec![id("tip_median")];
     let before = live();
-    PEAK.with(|n| n.set(before));
+    PEAK.set(before);
     drop(store.ask(&ask).unwrap());
-    PEAK.with(Cell::get) - before
+    PEAK.get() - before
 }
 
 /// The fact joined to the zones, measuring the median tip alone.
@@ -471,12 +502,12 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
 }
 
 /// The allocations an ask of the median by `by` makes, the answer dropped.
-fn median_allocs(store: &Store, by: &[&str]) -> usize {
+fn median_allocations(store: &Store, by: &[&str]) -> usize {
     let mut ask = ask(by, 0, 1000);
     ask.measures = vec![id("tip_median")];
-    let before = ALLOCS.with(Cell::get);
+    let before = ALLOCATIONS.get();
     drop(store.ask(&ask).unwrap());
-    ALLOCS.with(Cell::get) - before
+    ALLOCATIONS.get() - before
 }
 
 /// An ask of a percentile allocates once more each time a group's list
@@ -493,7 +524,7 @@ fn a_percentile_ask_allocates_per_doubling_of_its_values() {
         (&["borough"], 4),
         (&["pu"], 40),
     ] {
-        let (few, many) = (median_allocs(&few, by), median_allocs(&many, by));
+        let (few, many) = (median_allocations(&few, by), median_allocations(&many, by));
         eprintln!("by {by:?}: {few} allocations, {many} with 8x the values");
         assert!(many - few <= 3 * groups, "by {by:?}: {few} then {many}");
     }
