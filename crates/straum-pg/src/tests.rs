@@ -2701,6 +2701,381 @@ fn commits_what_logical_decoding_commits() {
     assert_eq!(ours.len(), theirs.len());
 }
 
+/// Random workloads, a seed each, over sessions whose transactions
+/// interleave: inserts, HOT and other updates, keys changing, deletes,
+/// savepoints kept and rolled back, aborts, two-phase commit, columns
+/// added and dropped, `VACUUM` and checkpoints between. On one server
+/// with logical decoding, the physical stream yields the commits a
+/// logical slot yields, byte for byte. `STRAUM_TEST_SEEDS` sets how many.
+#[test]
+fn commits_what_logical_decoding_commits_at_random() {
+    let pg = plain(image(&tag()).with_cmd([
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "max_prepared_transactions=8",
+    ]));
+    for seed in seeds() {
+        let mut rng = Rng::new(1_000 + seed);
+        let mut db = random_db(&pg, &format!("twin{seed}"), &mut rng);
+        let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+        let spec = db.spec(SPEC);
+        let mut logical = db.pg();
+        let start = logical.open(&spec).unwrap();
+        let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
+        let mut workload = Workload::new(&db);
+        for _ in 0..STEPS {
+            workload.step(&mut rng, &mut db);
+        }
+        workload.finish(&mut db);
+        // A published commit last, for the logical slot to reach, past
+        // a position read before it: other WAL, autovacuum's or a
+        // RUNNING_XACTS, may follow it, which the slot sends nothing for.
+        let before = parse_lsn(
+            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        db.run(&rng.trip(u64::MAX >> 8));
+        let mut theirs = Vec::new();
+        let deadline = Instant::now() + LONG;
+        while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
+            assert!(
+                Instant::now() < deadline,
+                "seed {seed}: no logical commit past {before}"
+            );
+            theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
+        }
+        let ours = pipeline.through_now(&mut db, &mut stream);
+        let ours: Vec<Commit> = ours.into_iter().filter(|c| c.lsn > start).collect();
+        assert!(theirs.len() > 50, "seed {seed}: {} commits", theirs.len());
+        for (ours, theirs) in ours.iter().zip(&theirs) {
+            assert_eq!(ours, theirs, "seed {seed}");
+        }
+        assert_eq!(ours.len(), theirs.len(), "seed {seed}");
+        let kinds = workload.done;
+        assert!(kinds.iter().all(|n| *n > 0), "seed {seed}: {kinds:?}");
+    }
+}
+
+/// The same workloads under `wal_level = replica`, where PostgreSQL logs
+/// less: an update only the bytes that changed, a delete no old row, an
+/// insert with a page image no row. Straum starts at a random step, with
+/// transactions open, prepared or committing all around, and its views
+/// then equal SQL's.
+#[test]
+fn follows_random_workloads_from_a_random_start() {
+    let pg = plain(image(&tag()).with_cmd([
+        "-c",
+        "wal_level=replica",
+        "-c",
+        "max_prepared_transactions=8",
+    ]));
+    for seed in seeds() {
+        let mut rng = Rng::new(2_000 + seed);
+        let mut db = random_db(&pg, &format!("replica{seed}"), &mut rng);
+        let start_at = rng.below(STEPS);
+        let (starting, start) = std::sync::mpsc::channel();
+        let started = Arc::new(AtomicBool::new(false));
+        let streaming = Arc::clone(&started);
+        let mut worker = Db {
+            conn: Connection::connect(&db.dsn, false).unwrap(),
+            name: db.name.clone(),
+            dsn: db.dsn.clone(),
+        };
+        let mut worker_rng = Rng::new(3_000 + seed);
+        let workload = thread::spawn(move || {
+            let mut workload = Workload::new(&worker);
+            for _ in 0..start_at {
+                workload.step(&mut worker_rng, &mut worker);
+            }
+            starting.send(()).unwrap();
+            // On through Straum's start, then as many steps again while
+            // it streams.
+            while !streaming.load(Ordering::Acquire) {
+                workload.step(&mut worker_rng, &mut worker);
+            }
+            for _ in 0..STEPS / 2 {
+                workload.step(&mut worker_rng, &mut worker);
+            }
+            workload.finish(&mut worker);
+            workload.done
+        });
+        start.recv().unwrap();
+        let mut writer = db.physical_writer(SPEC);
+        let step = writer.step();
+        assert!(
+            matches!(step, Ok(Step::Started(_))),
+            "seed {seed}: {step:?}"
+        );
+        started.store(true, Ordering::Release);
+        let done = workload.join().unwrap();
+        assert!(done.iter().all(|n| *n > 0), "seed {seed}: {done:?}");
+        let mut next = 1 << 40;
+        catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    }
+}
+
+/// The seeds the random workloads run: `STRAUM_TEST_SEEDS` of them (a
+/// few by default) from `STRAUM_TEST_SEED_FROM` (0), so CI can try new
+/// ones each run and a failure names the seed that replays it.
+fn seeds() -> std::ops::Range<u64> {
+    let number = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
+    };
+    let from = number("STRAUM_TEST_SEED_FROM", 0);
+    from..from + number("STRAUM_TEST_SEEDS", 6)
+}
+
+/// Steps of each random workload.
+const STEPS: u64 = 400;
+
+/// A schema for a random workload: a zone per session, rows before the
+/// start, and `tip` dropped and added again with a default, so older rows
+/// lack a column the spec reads.
+fn random_db(pg: &PostgresContainer, name: &str, rng: &mut Rng) -> Db {
+    let mut db = Db::new(pg, name, TABLES);
+    db.run("CREATE TABLE $S.other (id int, note text)");
+    db.run(&format!(
+        "INSERT INTO $S.zones SELECT i, 'z' || i, i FROM generate_series(1, {SESSIONS}) AS i"
+    ));
+    for id in 0..60 {
+        db.run(&rng.trip(id));
+    }
+    db.run("ALTER TABLE $S.trips DROP COLUMN tip, ADD tip int DEFAULT 7");
+    db
+}
+
+/// Sessions of [`Workload`]; each changes only its own rows, so one thread
+/// drives them all without waiting on a lock.
+const SESSIONS: u64 = 4;
+
+/// Several sessions in one thread. Session `s` owns the trips whose id is
+/// `s` modulo [`SESSIONS`] and zone `s + 1`.
+struct Workload {
+    sessions: Vec<Session>,
+    schema: String,
+    next_id: u64,
+    added: Vec<String>,
+    columns: u64,
+    gids: u64,
+    /// How often each kind of step ran: insert, update, key change,
+    /// delete, savepoint, commit, abort, prepare, DDL, checkpoint, vacuum.
+    done: [u32; 11],
+}
+
+struct Session {
+    conn: Connection,
+    open: bool,
+    savepoints: u32,
+    /// A prepared transaction of this session, holding its rows.
+    prepared: Option<String>,
+}
+
+impl Workload {
+    fn new(db: &Db) -> Workload {
+        let sessions = (0..SESSIONS)
+            .map(|_| Session {
+                conn: Connection::connect(&db.dsn, false).unwrap(),
+                open: false,
+                savepoints: 0,
+                prepared: None,
+            })
+            .collect();
+        Workload {
+            sessions,
+            schema: db.name.clone(),
+            next_id: 1_000,
+            added: Vec::new(),
+            columns: 0,
+            gids: 0,
+            done: [0; 11],
+        }
+    }
+
+    fn id(&mut self, session: u64) -> u64 {
+        self.next_id += 1;
+        self.next_id * SESSIONS + session
+    }
+
+    fn step(&mut self, rng: &mut Rng, db: &mut Db) {
+        if rng.chance(6) {
+            return self.between(rng, db);
+        }
+        let s = rng.below(SESSIONS);
+        let index = usize::try_from(s).unwrap();
+        if let Some(gid) = self.sessions[index].prepared.take() {
+            let end = if rng.chance(70) { "COMMIT" } else { "ROLLBACK" };
+            db.run(&format!("{end} PREPARED '{gid}'"));
+            return;
+        }
+        let r = rng.below(7);
+        let schema = self.schema.clone();
+        let statement = match rng.below(12) {
+            0..=2 => {
+                self.done[0] += 1;
+                let count = 1 + rng.below(4);
+                (0..count)
+                    .map(|_| {
+                        let id = self.id(s);
+                        rng.trip(id)
+                    })
+                    .collect::<String>()
+            }
+            3 | 4 => {
+                self.done[1] += 1;
+                match rng.below(4) {
+                    0 => format!(
+                        "UPDATE $S.trips SET fare = fare + 1 WHERE id % {SESSIONS} = {s} AND id % 7 = {r};"
+                    ),
+                    1 => format!(
+                        "UPDATE $S.trips SET tip = coalesce(tip, 0) + 1, kind = left(coalesce(kind, '') || 'x', 30) WHERE id % {SESSIONS} = {s} AND id % 5 = {};",
+                        r % 5
+                    ),
+                    2 => format!(
+                        "UPDATE $S.trips SET rider = NULL, zone_id = {} WHERE id % {SESSIONS} = {s} AND id % 9 = {r};",
+                        s + 1
+                    ),
+                    _ => format!(
+                        "UPDATE $S.zones SET toll = toll + 0.5, borough = borough || '.' WHERE id = {};",
+                        s + 1
+                    ),
+                }
+            }
+            5 => {
+                self.done[2] += 1;
+                format!(
+                    "UPDATE $S.trips SET id = id + {} WHERE id % {SESSIONS} = {s} AND id % 11 = {r};",
+                    SESSIONS * 1_000_000
+                )
+            }
+            6 => {
+                self.done[3] += 1;
+                format!("DELETE FROM $S.trips WHERE id % {SESSIONS} = {s} AND id % 13 = {r};")
+            }
+            7 => {
+                let id = self.id(s);
+                format!(
+                    "INSERT INTO $S.logins VALUES ({id}, now(), {}); INSERT INTO $S.other VALUES ({id}, 'x');",
+                    s + 1
+                )
+            }
+            _ => return self.transaction(rng, db, index),
+        };
+        let session = &mut self.sessions[index];
+        let sql = statement.replace("$S", &schema);
+        if !session.open && rng.chance(50) {
+            session.conn.execute("BEGIN").unwrap();
+            session.open = true;
+        }
+        session
+            .conn
+            .execute(&sql)
+            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+    }
+
+    /// Savepoints and ends of a session's transaction.
+    fn transaction(&mut self, rng: &mut Rng, db: &mut Db, index: usize) {
+        let session = &mut self.sessions[index];
+        if !session.open {
+            session.conn.execute("BEGIN").unwrap();
+            session.open = true;
+            return;
+        }
+        let sql = match rng.below(10) {
+            0 | 1 => {
+                self.done[4] += 1;
+                session.savepoints += 1;
+                format!("SAVEPOINT p{}", session.savepoints)
+            }
+            2 if session.savepoints > 0 => {
+                self.done[4] += 1;
+                // The savepoint stays, its changes gone.
+                format!("ROLLBACK TO p{}", session.savepoints)
+            }
+            3 if session.savepoints > 0 => {
+                self.done[4] += 1;
+                let sql = format!("RELEASE p{}", session.savepoints);
+                session.savepoints -= 1;
+                sql
+            }
+            4 => {
+                self.done[6] += 1;
+                session.open = false;
+                session.savepoints = 0;
+                "ROLLBACK".to_owned()
+            }
+            5 => {
+                self.done[7] += 1;
+                self.gids += 1;
+                let gid = format!("{}_{}", db.name, self.gids);
+                session.open = false;
+                session.savepoints = 0;
+                session.prepared = Some(gid.clone());
+                format!("PREPARE TRANSACTION '{gid}'")
+            }
+            _ => {
+                self.done[5] += 1;
+                session.open = false;
+                session.savepoints = 0;
+                "COMMIT".to_owned()
+            }
+        };
+        session
+            .conn
+            .execute(&sql)
+            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+    }
+
+    /// What runs between transactions: DDL, once every session's
+    /// transaction ends, `VACUUM` and checkpoints.
+    fn between(&mut self, rng: &mut Rng, db: &mut Db) {
+        match rng.below(3) {
+            0 => {
+                self.done[8] += 1;
+                self.finish(db);
+                if self.added.len() < 3 && (self.added.is_empty() || rng.chance(60)) {
+                    self.columns += 1;
+                    let column = format!("added{}", self.columns);
+                    let default = if rng.chance(50) { " DEFAULT 'd'" } else { "" };
+                    db.run(&format!("ALTER TABLE $S.trips ADD {column} text{default}"));
+                    self.added.push(column);
+                } else {
+                    let at = usize::try_from(rng.below(self.added.len() as u64)).unwrap();
+                    let column = self.added.remove(at);
+                    db.run(&format!("ALTER TABLE $S.trips DROP COLUMN {column}"));
+                }
+            }
+            1 => {
+                self.done[9] += 1;
+                db.run("CHECKPOINT");
+            }
+            _ => {
+                self.done[10] += 1;
+                db.run("VACUUM $S.trips");
+            }
+        }
+    }
+
+    /// Ends every transaction, committing.
+    fn finish(&mut self, db: &mut Db) {
+        for session in &mut self.sessions {
+            if session.open {
+                session.conn.execute("COMMIT").unwrap();
+                session.open = false;
+                session.savepoints = 0;
+            }
+            if let Some(gid) = session.prepared.take() {
+                db.run(&format!("COMMIT PREPARED '{gid}'"));
+            }
+        }
+    }
+}
+
 /// The physical stream's path from records to commits, with a snapshot
 /// that sees nothing, so every whole commit comes, and layouts read again
 /// on a plain connection.

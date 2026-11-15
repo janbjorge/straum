@@ -18,7 +18,10 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. `bench/taxi.py shell` runs Straum against
+PostgreSQL tests need Docker. `STRAUM_TEST_POSTGRES` picks the major
+(18 by default). The random workloads of the physical stream run
+`STRAUM_TEST_SEEDS` seeds (6) from `STRAUM_TEST_SEED_FROM` (0); CI's
+`correctness` job runs 50 new ones per major each run. `bench/taxi.py shell` runs Straum against
 a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
 Demo and try-out data is always the taxi trips, never a hand-written
 dataset. In docs the taxi trips stay in the quick start, running and
