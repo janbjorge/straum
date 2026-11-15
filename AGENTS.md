@@ -32,15 +32,20 @@ over `public.events AS e` and `public.accounts AS a`.
   helm, the helm-unittest plugin and kubeconform.
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 
-The `justfile` is the entry point to every tool: `just check <crate>`,
-`just cov <crate>`, `just docs` (live preview), `just docs-build`,
-`just chart`, `just taxi [asks|transactions|shell]`, `just taxi-month`,
-`just wal-bench`. A new script, check or benchmark gets a recipe in the
-same commit. Keep it tidy: one recipe per tool, in a `[group]`, with a
-one-line comment; recipes are thin wrappers, logic stays in the script or
-test; drop a recipe when its tool goes. Nothing depends on it; the
-commands here and in `docs/src/benchmark.md` stay the reference. Keep
-them in step.
+The `justfile` is the entry point to every tool: `just check`, `just fmt`,
+`just lint`, `just test`, `just cov`, `just layers`, `just correctness`,
+`just chart`, `just docs` (live preview), `just docs-build`,
+`just taxi [asks|transactions|shell]`, `just taxi-month`,
+`just wal-bench`. With no crate named, crate recipes take the crates
+changed since HEAD. Every setting has a default, overridden on the
+command line (`just postgres=17 seeds=50 correctness`) or through its
+environment variable; `just --evaluate` shows them. A new script, check,
+benchmark or setting gets a recipe or variable in the same commit, with
+the same default as the code. Keep it tidy: one recipe per tool, in a
+`[group]`, with a one-line comment; recipes are thin wrappers, logic
+stays in the script or test; drop a recipe when its tool goes. Nothing
+depends on it; the commands here and in `docs/src/benchmark.md` stay the
+reference. Keep them in step.
 
 ## Documents
 

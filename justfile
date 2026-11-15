@@ -1,22 +1,70 @@
-# Shortcuts for the commands in AGENTS.md and docs/src/benchmark.md.
-# Optional: those commands stay the reference.
+# Entry point to every tool. The commands in AGENTS.md and
+# docs/src/benchmark.md stay the reference.
+#
+# With no crate named, a recipe takes the crates changed since HEAD,
+# untracked files included. Name crates to override: just test straum-pg
+# or just check "straum-pg straum-domain".
+#
+# Every setting below has a default; override it on the command line or
+# through its environment variable:
+#   just postgres=17 seeds=50 correctness
+#   STRAUM_TEST_POSTGRES=17 just test straum-pg
+# just --evaluate prints what a run will use.
+
+# PostgreSQL major of the tests and benchmarks
+postgres := env("STRAUM_TEST_POSTGRES", "18")
+# Random workloads of the physical stream: how many, from which seed
+seeds := env("STRAUM_TEST_SEEDS", "6")
+seed_from := env("STRAUM_TEST_SEED_FROM", "0")
+# Reads of each kind in wal-bench; the fastest counts
+runs := env("STRAUM_BENCH_RUNS", "3")
+# Line coverage cov fails under
+coverage := env("STRAUM_COVERAGE", "98")
+
+export STRAUM_TEST_POSTGRES := postgres
+export STRAUM_TEST_SEEDS := seeds
+export STRAUM_TEST_SEED_FROM := seed_from
+export STRAUM_BENCH_RUNS := runs
+
+changed := `{ git diff --name-only HEAD -- crates; git ls-files -o --exclude-standard -- crates; } | cut -d/ -f2 | sort -u | paste -sd' ' -`
 
 [private]
 default:
     @just --list
 
-# fmt, clippy, test, layers for one crate
+# fmt, clippy, test and layers for the changed crates
 [group('check')]
-check crate:
+check crates=changed: (_named crates) fmt (lint crates) (test crates) layers
+
+# Format the workspace
+[group('check')]
+fmt:
     cargo fmt --all
-    cargo clippy -p {{crate}} --all-targets -- -D warnings
-    cargo test -p {{crate}}
+
+# Clippy with warnings as errors
+[group('check')]
+lint crates=changed: (_named crates)
+    cargo clippy {{ prepend('-p ', crates) }} --all-targets -- -D warnings
+
+# Tests; args go to cargo test: just test straum-pg -- tests::name
+[group('check')]
+test crates=changed *args: (_named crates)
+    cargo test {{ prepend('-p ', crates) }} {{ args }}
+
+# Line coverage gate; add the crates whose tests exercise these
+[group('check')]
+cov crates=changed: (_named crates)
+    cargo llvm-cov {{ prepend('-p ', crates) }} --all-targets --fail-under-lines {{ coverage }}
+
+# Crates depend inward only
+[group('check')]
+layers:
     python3 scripts/check-layers.py
 
-# Coverage gate (98% lines) for one crate
+# Physical stream against random workloads, as CI's correctness job
 [group('check')]
-cov crate:
-    cargo llvm-cov -p {{crate}} --all-targets --fail-under-lines 98
+correctness:
+    cargo test -p straum-pg -- tests::commits_what_logical_decoding_commits_at_random tests::follows_random_workloads_from_a_random_start
 
 # Helm chart checks
 [group('check')]
@@ -36,7 +84,7 @@ docs-build:
 # Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
 [group('taxi')]
 taxi mode="asks":
-    bench/taxi.py {{mode}}
+    bench/taxi.py {{ mode }}
 
 # taxi.sql view against PostgreSQL (loads the taxi month, needs uv)
 [group('taxi')]
@@ -47,3 +95,7 @@ taxi-month:
 [group('taxi')]
 wal-bench:
     cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
+
+[private]
+_named crates:
+    @[ -n "{{ crates }}" ] || { echo "no crate changed since HEAD; name one, as in just test straum-pg" >&2; exit 1; }
