@@ -71,6 +71,16 @@ it, `bound` is the value itself.
 **`if let` and `match`.** `if let Some(dim) = self.dim_index(table)`
 runs its block only when there is a value. `match` picks one arm per
 case of an enum, and the compiler refuses a `match` that forgets one.
+Several tests can share one `if`: `if let Ok(key) = key && let
+Ok(value) = value` runs its block only when both hold.
+`matches!(value, Pattern)` is `true` when the value has that shape.
+
+**Errors kept in a list: `Reported`.** The Straum SQL walker in
+`straum-notation` reports every error in a spec at once, so it pushes
+each one onto a list instead of returning it. A walk that failed
+returns `Err(Reported)`: an empty marker saying the error is already
+on the list. The caller stops there and adds nothing of its own. A
+plain `Option` is left for "there is none", which is no error.
 
 **`if let ... && ...`: several conditions at once.**
 
@@ -111,13 +121,16 @@ only where callers really pass different types.
 
 **Generics: `<T>`.** `Writer<S>` is a writer over any source `S`. The
 binary uses `Writer<Postgres>`; tests use a fake source. A generic is
-kept only where two types really fill it.
+kept only where two types really fill it. A parameter `error: impl
+fmt::Display` is the short form: any type that can be printed.
 
 **Lifetimes: `'a`.** A name for how long borrowed data lives.
 `Visitor<'de>` in `straum-http`'s `json.rs` reads a request body that
 lives as long as `'de`; serde's trait asks for it. A lifetime is kept
 only where copying would cost or a library asks for one; the comment
-beside it says so.
+beside it says so. The walker's `'tree` is one such: its structs point
+into the tree `sqlparser` built, which lives as long as the walk, so
+nothing is copied out of it.
 
 **Closures: `|value| ...`.** A function without a name, written where
 it is used, which may use the names around it. Straum writes one only

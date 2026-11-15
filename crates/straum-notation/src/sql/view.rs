@@ -1,12 +1,20 @@
+//! Walks a spec, a list of `CREATE VIEW` statements, into dims and facts.
+//! Each view's `WITH` gives its bucket widths; its `SELECT` reads one fact
+//! table and the dims it joins. The walk reads FROM first, so it knows the
+//! tables, then the keys, so a FILTER can reach them, then the measures.
+//! This file holds the view and its `SELECT`; `joins` reads FROM and the
+//! joins, `columns` the keys and the columns they name, `measures` the
+//! aggregates and the bucket, and `dims` merges each view's joins into
+//! the dims of the spec.
+
 use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, RefKind, Table, Time, Via,
-    Width,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, RefKind, Table, Time, Width,
 };
 
-use super::{Names, SqlError, Walker, line, statements};
+use super::{Names, NullTest, Reported, SqlError, Walker, line, statements};
 use measures::is_date_bin;
 
 mod columns;
@@ -14,22 +22,31 @@ mod dims;
 mod joins;
 mod measures;
 
-pub(crate) fn parse(src: &str) -> Result<(Vec<Dim>, Vec<Fact>), Vec<SqlError>> {
-    let statements = statements(src)?;
+/// What a spec holds once walked: every dim its views join, and the views.
+pub(crate) struct Views {
+    pub(crate) dims: Vec<Dim>,
+    pub(crate) facts: Vec<Fact>,
+}
+
+/// Walks a spec's text into its views and their dims.
+pub(crate) fn parse(text: &str) -> Result<Views, Vec<SqlError>> {
+    let statements = statements(text)?;
     let mut walker = Walker::default();
     let mut dims = Vec::new();
     let mut facts = Vec::new();
     for statement in &statements {
-        match statement {
-            sql::Statement::CreateView(view) => {
-                facts.extend(walker.view(view, &mut dims));
-            }
-            other => walker.refuse(line(other), "statement", other),
+        let sql::Statement::CreateView(view) = statement else {
+            walker.refuse(line(statement), "statement", statement);
+            continue;
+        };
+        if let Ok(fact) = walker.view(view, &mut dims) {
+            facts.push(fact);
         }
     }
-    walker.finish(Some((dims, facts)))
+    walker.finish(Ok(Views { dims, facts }))
 }
 
+/// A view's `SELECT`, walked.
 struct Body {
     table: Table,
     time: Time,
@@ -53,11 +70,25 @@ pub(super) struct Scope {
 struct ScopedKey {
     name: Identifier,
     column: ResolvedColumn,
-    is_null: Option<bool>,
-    /// Written `alias.column::text`.
-    cast: bool,
+    form: KeyForm,
+    cast: Cast,
     /// The column as written, so a second spelling can be named.
-    spelled: String,
+    written: String,
+}
+
+/// What a key reads of its column: the value, or whether it is null.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyForm {
+    Value,
+    NullNess(NullTest),
+}
+
+/// Whether a column is written `alias.column::text`, to read an enum as
+/// its label (ADR-0037), or plain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cast {
+    Plain,
+    AsText,
 }
 
 /// A join: `reference.via[i]`, of the fact or of a dim joined before,
@@ -75,75 +106,46 @@ struct JoinedRef {
 #[derive(PartialEq, Eq)]
 enum ResolvedColumn {
     Fact(Identifier),
-    Attribute { through: usize, column: Identifier },
+    /// A dim column; `through` is its ref's place in `Scope::refs`, as in
+    /// the domain's `Via::Attribute`.
+    Attribute {
+        through: usize,
+        column: Identifier,
+    },
 }
 
-struct AliasedTable {
-    table: Table,
-    alias: Identifier,
-}
-
+/// `alias.column`, as written.
 struct Qualified {
     alias: Identifier,
     column: Identifier,
 }
 
-struct Reference {
-    alias: Identifier,
-    column: Identifier,
-    cast: bool,
+/// A named SELECT item: `expression AS alias`.
+// Borrows both from the tree, which outlives the walk.
+struct NamedItem<'tree> {
+    expression: &'tree sql::Expr,
+    alias: &'tree sql::Ident,
 }
 
-struct KeyRead {
-    column: ResolvedColumn,
-    is_null: Option<bool>,
-    cast: bool,
-}
-
-struct Equalities {
-    key: Vec<Identifier>,
-    via: Vec<Via>,
-}
-
-struct Equality {
-    key: Identifier,
-    via: Via,
-}
-
-struct NamedItem<'a> {
-    expr: &'a sql::Expr,
-    alias: &'a sql::Ident,
-}
-
-struct FromClause<'a> {
-    table: Table,
-    scope: Scope,
-    conditions: Vec<&'a sql::Expr>,
-}
-
-struct Call<'a> {
-    args: &'a [sql::FunctionArg],
-    distinct: bool,
-    within_group: &'a [sql::OrderByExpr],
-}
-
-#[derive(Clone, Copy)]
-enum KeyKind {
-    Value,
-    NullNess,
+/// What a view's SELECT list names before its measures: the key items'
+/// places, the `date_bin` buckets, the fact keys, and per ref the dim
+/// columns it reads.
+struct SelectedKeys {
+    positions: Vec<usize>,
+    buckets: Vec<Time>,
+    by_keys: Vec<ByKey>,
+    attributes: Vec<Vec<Attribute>>,
 }
 
 impl Walker {
-    fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Option<Fact> {
+    fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Result<Fact, Reported> {
         let before = self.errors.len();
         let at = self.view_clauses(view);
-        let name = &view.name;
-        let query = &view.query;
-        let options = &view.options;
-
-        let fact_name = self.bare_name(name, "view");
-        let buckets = self.options(at, options);
-        if let (Some(name), None) = (&fact_name, &buckets) {
+        let fact_name = self.bare_name(&view.name, "view");
+        let buckets = self.options(at, &view.options);
+        if buckets.is_none()
+            && let Ok(name) = &fact_name
+        {
             self.error(
                 at,
                 format!(
@@ -152,21 +154,21 @@ impl Walker {
                 ),
             );
         }
-        let body = (self.one_select(query, "view body")).and_then(|select| self.select(select));
+        let body = self.view_body(&view.query);
+        let name = fact_name?;
+        let body = body?;
         // An empty bucket list is always an error already reported.
-        let (Some(name), Some(body), Some([first, wider @ ..])) =
-            (fact_name, body, buckets.as_deref())
-        else {
-            return None;
+        let Some([first, wider @ ..]) = buckets.as_deref() else {
+            return Err(Reported);
         };
         if self.errors.len() > before {
-            return None;
+            return Err(Reported);
         }
         let Body {
             table,
             mut time,
             refs,
-            by_keys: by,
+            by_keys,
             measures,
             filter,
             as_text,
@@ -183,20 +185,25 @@ impl Walker {
                     time.width
                 ),
             );
-            return None;
+            return Err(Reported);
         }
         time.wider = wider.to_vec();
         let refs = self.add_dims(at, dims, refs);
-        Some(Fact {
+        Ok(Fact {
             name,
             table,
             time,
             refs,
-            by_keys: by,
+            by_keys,
             measures,
             filter,
             as_text,
         })
+    }
+
+    fn view_body(&mut self, query: &sql::Query) -> Result<Body, Reported> {
+        let select = self.one_select(query, "view body")?;
+        self.select(select)
     }
 
     fn view_clauses(&mut self, view: &sql::CreateView) -> u64 {
@@ -221,24 +228,48 @@ impl Walker {
             params,
         } = view;
         let at = line(name);
-        self.absent(at, *or_alter, "OR ALTER");
-        self.absent(at, *materialized, "MATERIALIZED");
-        self.absent(at, *secure, "SECURE");
-        self.absent(at, !columns.is_empty(), "a view column list");
-        self.absent(at, !cluster_by.is_empty(), "CLUSTER BY");
-        self.absent(at, comment.is_some(), "COMMENT");
-        self.absent(at, *with_no_schema_binding, "WITH NO SCHEMA BINDING");
-        self.absent(at, *if_not_exists, "IF NOT EXISTS");
-        self.absent(at, *temporary, "TEMPORARY");
-        self.absent(at, *copy_grants, "COPY GRANTS");
-        self.absent(at, to.is_some(), "TO");
-        self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
+        if *or_alter {
+            self.not_in_subset(at, "OR ALTER");
+        }
+        if *materialized {
+            self.not_in_subset(at, "MATERIALIZED");
+        }
+        if *secure {
+            self.not_in_subset(at, "SECURE");
+        }
+        if !columns.is_empty() {
+            self.not_in_subset(at, "a view column list");
+        }
+        if !cluster_by.is_empty() {
+            self.not_in_subset(at, "CLUSTER BY");
+        }
+        if comment.is_some() {
+            self.not_in_subset(at, "COMMENT");
+        }
+        if *with_no_schema_binding {
+            self.not_in_subset(at, "WITH NO SCHEMA BINDING");
+        }
+        if *if_not_exists {
+            self.not_in_subset(at, "IF NOT EXISTS");
+        }
+        if *temporary {
+            self.not_in_subset(at, "TEMPORARY");
+        }
+        if *copy_grants {
+            self.not_in_subset(at, "COPY GRANTS");
+        }
+        if to.is_some() {
+            self.not_in_subset(at, "TO");
+        }
+        if params.is_some() {
+            self.not_in_subset(at, "ALGORITHM, DEFINER or SQL SECURITY");
+        }
         at
     }
 
-    /// `WITH (buckets = '1 hour, 1 day, 7 days')`.
+    /// `WITH (buckets = '1 hour, 1 day, 7 days')`; `None` when the view
+    /// gives no buckets, which the caller reports in its own words.
     fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Width>> {
-        let mut buckets = None;
         let list = match options {
             sql::CreateTableOptions::With(list) => list.as_slice(),
             sql::CreateTableOptions::None => &[],
@@ -247,13 +278,14 @@ impl Walker {
                 &[]
             }
         };
+        let mut buckets = None;
         for option in list {
             let sql::SqlOption::KeyValue { key: name, value } = option else {
                 self.refuse(line(option), "view option", option);
                 continue;
             };
             let at = line(option);
-            let Some(name) = self.read_identifier(name) else {
+            let Ok(name) = self.read_identifier(name) else {
                 continue;
             };
             if name.as_str() != "buckets" {
@@ -266,68 +298,55 @@ impl Walker {
             }
             buckets = Some(value);
         }
-        match buckets {
-            None => None,
-            Some(
-                value @ sql::Expr::Value(sql::ValueWithSpan {
-                    value: sql::Value::SingleQuotedString(text),
-                    span: _,
-                }),
-            ) => {
-                let mut buckets = Vec::new();
-                for width in text.split(',').map(str::trim) {
-                    match parse_width(width) {
-                        Some(parsed) => buckets.push(parsed),
-                        None => self.error(
-                            line(value),
-                            format!("bucket width '{width}': use '<n> seconds|minutes|hours|days'"),
-                        ),
-                    }
-                }
-                Some(buckets)
-            }
-            Some(other) => {
-                self.refuse(line(other), "buckets, use '<n> <unit>, ...',", other);
-                Some(Vec::new())
-            }
-        }
+        Some(self.bucket_widths(buckets?))
     }
 
-    fn select(&mut self, select: &sql::Select) -> Option<Body> {
+    /// The widths a `buckets` option lists; a bad one is reported and
+    /// left out.
+    fn bucket_widths(&mut self, value: &sql::Expr) -> Vec<Width> {
+        let sql::Expr::Value(sql::ValueWithSpan {
+            value: sql::Value::SingleQuotedString(text),
+            span: _,
+        }) = value
+        else {
+            self.refuse(line(value), "buckets, use '<n> <unit>, ...',", value);
+            return Vec::new();
+        };
+        let mut widths = Vec::new();
+        for width in text.split(',').map(str::trim) {
+            let Some(parsed) = parse_width(width) else {
+                self.error(
+                    line(value),
+                    format!("bucket width '{width}': use '<n> seconds|minutes|hours|days'"),
+                );
+                continue;
+            };
+            widths.push(parsed);
+        }
+        widths
+    }
+
+    fn select(&mut self, select: &sql::Select) -> Result<Body, Reported> {
         let at = self.select_clauses(select);
         let [from] = select.from.as_slice() else {
             self.error(
                 at,
                 "SELECT needs exactly one FROM table; join with LEFT OUTER JOIN".into(),
             );
-            return None;
+            return Err(Reported);
         };
-        let FromClause {
+        let joins::FromClause {
             table,
             mut scope,
             conditions,
         } = self.from(from, select.selection.as_ref())?;
         let named = self.named_items(&select.projection);
-        // Keys first, then measures, so a FILTER can reach any key. A
-        // position comes from the item's shape, not its walk, so a bad key
-        // column is reported once and not again by GROUP BY.
-        let mut positions = Vec::new();
-        let mut buckets = Vec::new();
-        let mut by = Vec::new();
-        let mut attributes: Vec<Vec<Attribute>> = vec![Vec::new(); scope.refs.len()];
-        for (index, &NamedItem { expr, alias }) in named.iter().enumerate() {
-            match expr {
-                sql::Expr::Function(function) if is_date_bin(function) => {
-                    positions.push(index + 1);
-                    buckets.extend(self.bucket(&scope, function, alias));
-                }
-                sql::Expr::Function(_) => {}
-                _ => {
-                    positions.push(index + 1);
-                    self.key(&mut scope, expr, alias, &mut by, &mut attributes);
-                }
-            }
-        }
+        let SelectedKeys {
+            positions,
+            buckets,
+            by_keys,
+            attributes,
+        } = self.selected_keys(&mut scope, &named);
         let measures = self.measures(&scope, &named);
         self.group_by(at, &select.group_by, &positions);
         let mut buckets = buckets.into_iter();
@@ -337,15 +356,14 @@ impl Walker {
         }
         self.ref_attributes(at, &mut scope.refs, attributes);
         let as_text = cast_columns(&mut scope);
-        let filter = self.read_filter(&scope, conditions)?;
+        let filter = self.read_filter(&scope, &conditions)?;
         if measures_share_filter(&measures) {
             self.error(
                 at,
                 "every measure has the same FILTER; write it as the view's WHERE".into(),
             );
-            return None;
+            return Err(Reported);
         }
-
         let Some(time) = time else {
             self.error(
                 at,
@@ -353,29 +371,65 @@ impl Walker {
                  or timestamp 'epoch' for a column without a zone"
                     .into(),
             );
-            return None;
+            return Err(Reported);
         };
-        Some(Body {
+        Ok(Body {
             table,
             time,
             refs: scope.refs,
-            by_keys: by,
+            by_keys,
             measures,
             filter,
             as_text,
         })
     }
 
-    fn named_items<'a>(&mut self, projection: &'a [sql::SelectItem]) -> Vec<NamedItem<'a>> {
+    /// Keys first, then measures, so a FILTER can reach any key. A
+    /// position comes from the item's shape, not its walk, so a bad key
+    /// column is reported once and not again by GROUP BY.
+    fn selected_keys(&mut self, scope: &mut Scope, named: &[NamedItem]) -> SelectedKeys {
+        let mut selected = SelectedKeys {
+            positions: Vec::new(),
+            buckets: Vec::new(),
+            by_keys: Vec::new(),
+            attributes: vec![Vec::new(); scope.refs.len()],
+        };
+        for (index, item) in named.iter().enumerate() {
+            let position = index + 1;
+            match item.expression {
+                sql::Expr::Function(function) if is_date_bin(function) => {
+                    selected.positions.push(position);
+                    if let Ok(time) = self.bucket(scope, function, item.alias) {
+                        selected.buckets.push(time);
+                    }
+                }
+                sql::Expr::Function(_) => {}
+                expression => {
+                    selected.positions.push(position);
+                    self.key(scope, expression, item.alias, &mut selected);
+                }
+            }
+        }
+        selected
+    }
+
+    // Borrows the items from the tree, which outlives the walk.
+    fn named_items<'tree>(
+        &mut self,
+        projection: &'tree [sql::SelectItem],
+    ) -> Vec<NamedItem<'tree>> {
         let mut named = Vec::new();
         for item in projection {
             match item {
                 sql::SelectItem::ExprWithAlias { expr, alias } => {
-                    named.push(NamedItem { expr, alias });
+                    named.push(NamedItem {
+                        expression: expr,
+                        alias,
+                    });
                 }
-                sql::SelectItem::UnnamedExpr(expr) => self.error(
+                sql::SelectItem::UnnamedExpr(expression) => self.error(
                     line(item),
-                    format!("name every SELECT item: {expr} AS <name>"),
+                    format!("name every SELECT item: {expression} AS <name>"),
                 ),
                 other => self.refuse(line(other), "SELECT item", other),
             }
@@ -385,11 +439,15 @@ impl Walker {
 
     fn measures(&mut self, scope: &Scope, named: &[NamedItem]) -> Vec<Measure> {
         let mut measures = Vec::new();
-        for &NamedItem { expr, alias } in named {
-            if let sql::Expr::Function(function) = expr
-                && !is_date_bin(function)
-            {
-                measures.extend(self.measure(scope, function, alias));
+        for item in named {
+            let sql::Expr::Function(function) = item.expression else {
+                continue;
+            };
+            if is_date_bin(function) {
+                continue;
+            }
+            if let Ok(measure) = self.measure(scope, function, item.alias) {
+                measures.push(measure);
             }
         }
         measures
@@ -399,9 +457,9 @@ impl Walker {
     /// columns that key its cells. A join that selects nothing would do
     /// nothing; a semi or anti join selects nothing by nature.
     fn ref_attributes(&mut self, at: u64, refs: &mut [JoinedRef], attributes: Vec<Vec<Attribute>>) {
-        for (joined, attributes) in refs.iter_mut().zip(attributes) {
-            let reference = &mut joined.reference;
-            let selects_none = attributes.is_empty();
+        for (index, reads) in attributes.into_iter().enumerate() {
+            let reference = &mut refs[index].reference;
+            let selects_none = reads.is_empty();
             match reference.kind {
                 RefKind::Left | RefKind::Inner if selects_none => self.error(
                     at,
@@ -419,50 +477,43 @@ impl Walker {
                 ),
                 _ => {}
             }
-            reference.reads = attributes;
+            reference.reads = reads;
         }
     }
 
     /// The view's WHERE and a measure's FILTER alike: `=`, `IN`, `IS NULL`
     /// and `IS NOT NULL` on columns, joined by AND, each reaching the key
-    /// that reads the column. `None` once a condition fails.
-    fn read_filter<'e>(
+    /// that reads the column. Stops at the first condition that fails.
+    fn read_filter(
         &mut self,
         scope: &Scope,
-        conditions: impl IntoIterator<Item = &'e sql::Expr>,
-    ) -> Option<Vec<Condition>> {
+        conditions: &[&sql::Expr],
+    ) -> Result<Vec<Condition>, Reported> {
         let mut filter = Vec::new();
         for condition in conditions {
             let before = self.errors.len();
             self.read_conditions(condition, &mut filter, &mut Names::View(scope));
             if self.errors.len() > before {
-                return None;
+                return Err(Reported);
             }
         }
-        Some(filter)
+        Ok(filter)
     }
 
     /// GROUP BY lists the keys by their SELECT positions, in order, so the
     /// view groups like the rollup. A position is what PostgreSQL resolves
     /// without a lookup; an output name it may read as an input column.
     fn group_by(&mut self, at: u64, group_by: &sql::GroupByExpr, positions: &[usize]) {
-        let Some(exprs) = self.group_by_exprs(at, group_by) else {
+        let Ok(expressions) = self.group_by_expressions(at, group_by) else {
             return;
         };
         let mut grouped = Vec::new();
-        for expr in exprs {
-            let position = match expr {
-                sql::Expr::Value(sql::ValueWithSpan {
-                    value: sql::Value::Number(digits, false),
-                    span: _,
-                }) => digits.parse::<usize>().ok(),
-                _ => None,
-            };
-            let Some(position) = position else {
+        for expression in expressions {
+            let Some(position) = select_position(expression) else {
                 self.refuse(
-                    line(expr),
+                    line(expression),
                     "GROUP BY item, write the key's position in SELECT,",
-                    expr,
+                    expression,
                 );
                 return;
             };
@@ -481,6 +532,18 @@ impl Walker {
     }
 }
 
+/// A GROUP BY item written as a SELECT position, `1` on.
+fn select_position(expression: &sql::Expr) -> Option<usize> {
+    let sql::Expr::Value(sql::ValueWithSpan {
+        value: sql::Value::Number(digits, false),
+        span: _,
+    }) = expression
+    else {
+        return None;
+    };
+    digits.parse().ok()
+}
+
 fn parse_width(text: &str) -> Option<Width> {
     let [count, unit] = text.split_whitespace().collect::<Vec<_>>()[..] else {
         return None;
@@ -497,23 +560,28 @@ fn parse_width(text: &str) -> Option<Width> {
     Some(Width { seconds })
 }
 
+/// The columns the view reads as `::text`: the fact's, returned, and each
+/// dim's, put on its ref.
 fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
     let mut as_text = Vec::new();
     for key in &scope.keys {
-        if !key.cast {
+        if key.cast == Cast::Plain {
             continue;
         }
-        let (read, column) = match &key.column {
-            ResolvedColumn::Fact(column) => (&mut as_text, column),
+        match &key.column {
+            ResolvedColumn::Fact(column) => push_once(&mut as_text, column),
             ResolvedColumn::Attribute { through, column } => {
-                (&mut scope.refs[*through].as_text, column)
+                push_once(&mut scope.refs[*through].as_text, column);
             }
-        };
-        if !read.contains(column) {
-            read.push(column.clone());
         }
     }
     as_text
+}
+
+fn push_once(columns: &mut Vec<Identifier>, column: &Identifier) {
+    if !columns.contains(column) {
+        columns.push(column.clone());
+    }
 }
 
 /// A FILTER every measure shares is the view's WHERE in disguise; a
@@ -522,13 +590,22 @@ fn measures_share_filter(measures: &[Measure]) -> bool {
     let [first, rest @ ..] = measures else {
         return false;
     };
-    !first.filter.is_empty()
-        && !rest.is_empty()
-        && rest.iter().all(|measure| measure.filter == first.filter)
+    if first.filter.is_empty() || rest.is_empty() {
+        return false;
+    }
+    for measure in rest {
+        if measure.filter != first.filter {
+            return false;
+        }
+    }
+    true
 }
 
+// Any printable list: column names or SELECT positions.
 fn comma_list(items: &[impl fmt::Display]) -> String {
-    (items.iter().map(ToString::to_string))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut texts = Vec::new();
+    for item in items {
+        texts.push(item.to_string());
+    }
+    texts.join(", ")
 }

@@ -1,8 +1,62 @@
+//! The columns a view names, and the keys that read them. A column is
+//! written `alias.column`, maybe `::text`; it resolves to a fact column or
+//! to a dim column through its join. A key item records what it reads in
+//! the scope, so a FILTER or the view's WHERE can reach the key by its
+//! column, as PostgreSQL reads the view. Literals are read here too.
+
 use sqlparser::ast as sql;
 use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, Via};
 
-use super::{KeyKind, KeyRead, Qualified, Reference, ResolvedColumn, Scope, ScopedKey};
-use crate::sql::{Walker, line};
+use super::joins::{key_position, ref_position};
+use super::{Cast, KeyForm, Qualified, ResolvedColumn, Scope, ScopedKey, SelectedKeys};
+use crate::sql::{NullTest, Reported, Walker, line};
+
+/// `alias.column` and whether it is cast, before the alias is resolved.
+struct Reference {
+    alias: Identifier,
+    column: Identifier,
+    cast: Cast,
+}
+
+/// What a key item reads: its column, the value or its null-ness, and
+/// how it is spelled.
+struct KeyRead {
+    column: ResolvedColumn,
+    form: KeyForm,
+    cast: Cast,
+}
+
+/// A column reference, resolved.
+struct ColumnRead {
+    column: ResolvedColumn,
+    cast: Cast,
+}
+
+/// A column reference that must name a fact column, resolved.
+struct FactColumnRead {
+    column: Identifier,
+    cast: Cast,
+}
+
+/// Which keys a FILTER's column may reach: value keys, or null-ness keys.
+#[derive(Clone, Copy)]
+enum KeyKind {
+    Value,
+    NullNess,
+}
+
+/// The key a FILTER's column reaches.
+struct FilterKey {
+    name: Identifier,
+    form: KeyForm,
+}
+
+/// `(column IS NULL)` or `(column IS NOT NULL)`, as written.
+// Borrows the column from the tree, which outlives the walk.
+struct NullTestOf<'tree> {
+    column: &'tree sql::Expr,
+    test: NullTest,
+}
 
 impl Walker {
     /// A key item: a fact column, its null-ness, or a dim column through its
@@ -10,113 +64,91 @@ impl Walker {
     pub(super) fn key(
         &mut self,
         scope: &mut Scope,
-        expr: &sql::Expr,
+        expression: &sql::Expr,
         alias: &sql::Ident,
-        by: &mut Vec<ByKey>,
-        attributes: &mut [Vec<Attribute>],
+        selected: &mut SelectedKeys,
     ) {
         let name = self.read_identifier(alias);
-        if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expr {
+        if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expression {
             self.refuse(
-                line(expr),
-                &format!("null-ness key without parentheses, write ({expr}),"),
-                expr,
+                line(expression),
+                &format!("null-ness key without parentheses, write ({expression}),"),
+                expression,
             );
             return;
         }
-        if let sql::Expr::Nested(_) = expr
-            && null_test(expr).is_none()
+        let null_test = null_test(expression);
+        if let sql::Expr::Nested(_) = expression
+            && null_test.is_none()
         {
             self.refuse(
-                line(expr),
+                line(expression),
                 "parentheses, write alias.column or (alias.column IS NULL),",
-                expr,
+                expression,
             );
             return;
         }
-        let spelled = match null_test(expr) {
-            Some((inner, _)) => inner,
-            None => expr,
+        let written = match &null_test {
+            Some(null_test) => null_test.column,
+            None => expression,
         };
-        let read = self.key_read(scope, expr);
-        let (
-            Some(name),
-            Some(KeyRead {
-                column,
-                is_null,
-                cast,
-            }),
-        ) = (name, read)
-        else {
+        let read = self.key_read(scope, expression);
+        let Ok(name) = name else {
             return;
         };
-        self.same_spelling(scope, spelled, &column, cast);
-        match (&column, is_null) {
-            (ResolvedColumn::Fact(fact_column), None) => by.push(ByKey::Column {
-                column: fact_column.clone(),
-                name: name.clone(),
-            }),
-            (ResolvedColumn::Fact(fact_column), Some(is_null)) => by.push(ByKey::IsNull {
-                column: fact_column.clone(),
-                name: name.clone(),
-                negated: !is_null,
-            }),
-            (
-                ResolvedColumn::Attribute {
-                    through,
-                    column: attribute_column,
-                },
-                _,
-            ) => attributes[*through].push(Attribute {
-                name: name.clone(),
-                column: attribute_column.clone(),
-            }),
-        }
+        let Ok(KeyRead { column, form, cast }) = read else {
+            return;
+        };
+        self.same_spelling(scope, written, &column, cast);
+        record_key(selected, &name, &column, form);
         scope.keys.push(ScopedKey {
             name,
             column,
-            is_null,
+            form,
             cast,
-            spelled: spelling(spelled),
+            written: spelling(written),
         });
     }
 
-    pub(super) fn key_read(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<KeyRead> {
-        if let Some((inner, negated)) = null_test(expr) {
-            let (column, cast) = self.fact_column(scope, inner, "the IS NULL column")?;
-            return Some(KeyRead {
+    fn key_read(&mut self, scope: &Scope, expression: &sql::Expr) -> Result<KeyRead, Reported> {
+        if let Some(NullTestOf { column, test }) = null_test(expression) {
+            let FactColumnRead { column, cast } =
+                self.fact_column(scope, column, "the IS NULL column")?;
+            return Ok(KeyRead {
                 column: ResolvedColumn::Fact(column),
-                is_null: Some(!negated),
+                form: KeyForm::NullNess(test),
                 cast,
             });
         }
-        let (column, cast) = self.column(scope, expr)?;
-        Some(KeyRead {
+        let ColumnRead { column, cast } = self.column(scope, expression)?;
+        Ok(KeyRead {
             column,
-            is_null: None,
+            form: KeyForm::Value,
             cast,
         })
     }
 
     /// A column is one spelling throughout a view: with `::text` or
     /// without, as its type decides.
-    pub(super) fn same_spelling(
+    fn same_spelling(
         &mut self,
         scope: &Scope,
-        expr: &sql::Expr,
+        expression: &sql::Expr,
         column: &ResolvedColumn,
-        cast: bool,
+        cast: Cast,
     ) {
-        let other = (scope.keys.iter()).find(|key| key.column == *column && key.cast != cast);
-        if let Some(other) = other {
-            self.error(
-                line(expr),
-                format!(
-                    "{}: SELECT spells the column {}; write it alike",
-                    spelling(expr),
-                    other.spelled
-                ),
-            );
+        for other in &scope.keys {
+            if other.column == *column && other.cast != cast {
+                self.error(
+                    line(expression),
+                    format!(
+                        "{}: SELECT spells the column {}; write it alike",
+                        spelling(expression),
+                        other.written
+                    ),
+                );
+                return;
+            }
         }
     }
 
@@ -125,183 +157,183 @@ impl Walker {
     pub(super) fn uncast_fact_column(
         &mut self,
         scope: &Scope,
-        expr: &sql::Expr,
+        expression: &sql::Expr,
         what: &str,
-    ) -> Option<Identifier> {
-        let (column, cast) = self.fact_column(scope, expr, what)?;
-        if cast {
+    ) -> Result<Identifier, Reported> {
+        let FactColumnRead { column, cast } = self.fact_column(scope, expression, what)?;
+        if cast == Cast::AsText {
             self.error(
-                line(expr),
+                line(expression),
                 format!(
                     "{what} {} can't be ::text; it goes on a key or a FILTER column",
-                    spelling(expr)
+                    spelling(expression)
                 ),
             );
-            return None;
+            return Err(Reported);
         }
-        Some(column)
+        Ok(column)
     }
 
-    pub(crate) fn literal(&mut self, expr: &sql::Expr) -> Option<Literal> {
-        let (negative, value) = match expr {
+    /// An integer, `'text'`, `true` or `false`, as a view's condition
+    /// writes it.
+    pub(crate) fn literal(&mut self, expression: &sql::Expr) -> Result<Literal, Reported> {
+        let literal = match expression {
             sql::Expr::UnaryOp {
                 op: sql::UnaryOperator::Minus,
                 expr: inner,
-            } => (true, inner.as_ref()),
-            other => (false, other),
+            } => negative_literal(inner),
+            other => plain_literal(other),
         };
-        let literal = match value {
-            sql::Expr::Value(sql::ValueWithSpan { value, span: _ }) => match value {
-                sql::Value::Number(digits, false) => {
-                    let digits = if negative {
-                        format!("-{digits}")
-                    } else {
-                        digits.clone()
-                    };
-                    digits.parse().ok().map(Literal::Int)
-                }
-                sql::Value::SingleQuotedString(text) if !negative => {
-                    Some(Literal::Text(text.clone()))
-                }
-                sql::Value::Boolean(value) if !negative => Some(Literal::Bool(*value)),
-                _ => None,
-            },
-            _ => None,
-        };
-        if literal.is_none() {
+        let Some(literal) = literal else {
             self.refuse(
-                line(expr),
+                line(expression),
                 "literal, use an integer, 'text', true or false,",
-                expr,
+                expression,
             );
-        }
-        literal
+            return Err(Reported);
+        };
+        Ok(literal)
     }
 
     /// `alias.column`, or `alias.column::text` to read an enum column as
-    /// the label PostgreSQL prints (ADR-0037). `true` when cast.
-    pub(super) fn reference(&mut self, expr: &sql::Expr) -> Option<Reference> {
+    /// the label PostgreSQL prints (ADR-0037).
+    fn reference(&mut self, expression: &sql::Expr) -> Result<Reference, Reported> {
         let sql::Expr::Cast {
             kind,
             expr: inner,
             data_type,
             format,
-        } = expr
+        } = expression
         else {
-            let Qualified { alias, column } = self.qualified(expr)?;
-            return Some(Reference {
+            let Qualified { alias, column } = self.qualified(expression)?;
+            return Ok(Reference {
                 alias,
                 column,
-                cast: false,
+                cast: Cast::Plain,
             });
         };
-        let at = line(expr);
-        self.absent(at, format.is_some(), "CAST ... FORMAT");
+        let at = line(expression);
+        if format.is_some() {
+            self.not_in_subset(at, "CAST ... FORMAT");
+        }
         match kind {
             sql::CastKind::DoubleColon => {}
             sql::CastKind::Cast => {
-                self.refuse(at, "CAST, write alias.column::text,", expr);
-                return None;
+                self.refuse(at, "CAST, write alias.column::text,", expression);
+                return Err(Reported);
             }
             sql::CastKind::TryCast | sql::CastKind::SafeCast => {
-                self.refuse(at, "cast", expr);
-                return None;
+                self.refuse(at, "cast", expression);
+                return Err(Reported);
             }
         }
         if !matches!(data_type, sql::DataType::Text) {
-            self.refuse(at, &format!("::{data_type}, write ::text,"), expr);
-            return None;
+            self.refuse(at, &format!("::{data_type}, write ::text,"), expression);
+            return Err(Reported);
         }
         let Qualified { alias, column } = self.qualified(inner)?;
-        Some(Reference {
+        Ok(Reference {
             alias,
             column,
-            cast: true,
+            cast: Cast::AsText,
         })
     }
 
     /// `alias.column`, the fact's included: no table is anyone's default.
-    pub(super) fn qualified(&mut self, expr: &sql::Expr) -> Option<Qualified> {
-        match expr {
+    pub(super) fn qualified(&mut self, expression: &sql::Expr) -> Result<Qualified, Reported> {
+        match expression {
             sql::Expr::Cast { .. } => {
-                self.refuse(line(expr), "::text outside a key or a FILTER column,", expr);
-                None
+                self.refuse(
+                    line(expression),
+                    "::text outside a key or a FILTER column,",
+                    expression,
+                );
+                Err(Reported)
             }
-            sql::Expr::CompoundIdentifier(ids) => {
-                let [alias, column] = ids.as_slice() else {
-                    self.refuse(line(expr), "column, write alias.column,", expr);
-                    return None;
+            sql::Expr::CompoundIdentifier(identifiers) => {
+                let [alias, column] = identifiers.as_slice() else {
+                    self.refuse(line(expression), "column, write alias.column,", expression);
+                    return Err(Reported);
                 };
-                Some(Qualified {
+                Ok(Qualified {
                     alias: self.read_identifier(alias)?,
                     column: self.read_identifier(column)?,
                 })
             }
             other => {
                 self.refuse(line(other), "column, write alias.column,", other);
-                None
+                Err(Reported)
             }
         }
     }
 
-    pub(super) fn column(
-        &mut self,
-        scope: &Scope,
-        expr: &sql::Expr,
-    ) -> Option<(ResolvedColumn, bool)> {
+    fn column(&mut self, scope: &Scope, expression: &sql::Expr) -> Result<ColumnRead, Reported> {
         let Reference {
             alias,
             column,
             cast,
-        } = self.reference(expr)?;
+        } = self.reference(expression)?;
         if alias == scope.alias {
-            return Some((ResolvedColumn::Fact(column), cast));
+            return Ok(ColumnRead {
+                column: ResolvedColumn::Fact(column),
+                cast,
+            });
         }
-        let Some(through) = (scope.refs.iter()).position(|joined| joined.reference.alias == alias)
-        else {
-            self.error(line(expr), format!("unknown table alias {alias}"));
-            return None;
+        let Some(through) = ref_position(scope, &alias) else {
+            self.error(line(expression), format!("unknown table alias {alias}"));
+            return Err(Reported);
         };
         let joined = &scope.refs[through];
-        let position = joined.key.iter().position(|key| *key == column);
-        let column = match position.map(|position| &joined.reference.via[position]) {
-            Some(Via::Fact(via)) => ResolvedColumn::Fact(via.clone()),
-            Some(Via::Attribute { .. }) | None => ResolvedColumn::Attribute { through, column },
-        };
-        Some((column, cast))
+        // A dim's key column reads the fact column it was joined on.
+        if let Some(position) = key_position(joined, &column)
+            && let Via::Fact(via) = &joined.reference.via[position]
+        {
+            return Ok(ColumnRead {
+                column: ResolvedColumn::Fact(via.clone()),
+                cast,
+            });
+        }
+        Ok(ColumnRead {
+            column: ResolvedColumn::Attribute { through, column },
+            cast,
+        })
     }
 
-    pub(super) fn fact_column(
+    fn fact_column(
         &mut self,
         scope: &Scope,
-        expr: &sql::Expr,
+        expression: &sql::Expr,
         what: &str,
-    ) -> Option<(Identifier, bool)> {
-        match self.column(scope, expr)? {
-            (ResolvedColumn::Fact(column), cast) => Some((column, cast)),
-            (ResolvedColumn::Attribute { .. }, _) => {
-                self.error(
-                    line(expr),
-                    format!("{what} must be a {} column", scope.alias),
-                );
-                None
-            }
-        }
+    ) -> Result<FactColumnRead, Reported> {
+        let ColumnRead { column, cast } = self.column(scope, expression)?;
+        let ResolvedColumn::Fact(column) = column else {
+            self.error(
+                line(expression),
+                format!("{what} must be a {} column", scope.alias),
+            );
+            return Err(Reported);
+        };
+        Ok(FactColumnRead { column, cast })
     }
 
     /// `FILTER (WHERE alias.column = ...)` reaches the key that reads the
     /// column, by the column, as PostgreSQL reads the view: an output name
     /// is no column there.
-    pub(crate) fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Identifier> {
-        let (column, cast) = self.column(scope, expr)?;
-        let Some(key) = self.filter_key(scope, expr, &column, cast, KeyKind::Value) else {
+    pub(crate) fn key_of(
+        &mut self,
+        scope: &Scope,
+        expression: &sql::Expr,
+    ) -> Result<Identifier, Reported> {
+        let ColumnRead { column, cast } = self.column(scope, expression)?;
+        let Some(key) = filter_key(scope, &column, KeyKind::Value) else {
             self.error(
-                line(expr),
-                format!("FILTER on {expr} needs {expr} AS <name> in SELECT"),
+                line(expression),
+                format!("FILTER on {expression} needs {expression} AS <name> in SELECT"),
             );
-            return None;
+            return Err(Reported);
         };
-        Some(key.name.clone())
+        self.same_spelling(scope, expression, &column, cast);
+        Ok(key.name)
     }
 
     /// `FILTER (WHERE alias.column IS NULL)` counts through the null-ness
@@ -309,63 +341,127 @@ impl Walker {
     pub(crate) fn null_condition(
         &mut self,
         scope: &Scope,
-        test: &sql::Expr,
-        expr: &sql::Expr,
-        is_null: bool,
-    ) -> Option<Condition> {
-        let (column, cast) = self.fact_column(scope, expr, "the IS NULL column")?;
-        let fact_column = ResolvedColumn::Fact(column);
-        let Some(key) = self.filter_key(scope, expr, &fact_column, cast, KeyKind::NullNess) else {
+        whole_test: &sql::Expr,
+        expression: &sql::Expr,
+        test: NullTest,
+    ) -> Result<Condition, Reported> {
+        let FactColumnRead { column, cast } =
+            self.fact_column(scope, expression, "the IS NULL column")?;
+        let column = ResolvedColumn::Fact(column);
+        let Some(key) = filter_key(scope, &column, KeyKind::NullNess) else {
             self.error(
-                line(test),
-                format!("FILTER (WHERE {test}) needs the key ({expr} IS NULL) AS <name> in SELECT"),
+                line(whole_test),
+                format!(
+                    "FILTER (WHERE {whole_test}) needs the key ({expression} IS NULL) AS <name> \
+                     in SELECT"
+                ),
             );
-            return None;
+            return Err(Reported);
         };
-        Some(Condition {
-            key: key.name.clone(),
-            values: vec![Literal::Bool(
-                is_null == key.is_null.expect("a null-ness key"),
-            )],
+        self.same_spelling(scope, expression, &column, cast);
+        Ok(Condition {
+            key: key.name,
+            values: vec![Literal::Bool(key.form == KeyForm::NullNess(test))],
         })
-    }
-
-    /// The key over a FILTER's column, a null-ness key or not, spelled as
-    /// SELECT spells it; `None` when SELECT has none, which the caller
-    /// reports in its own words.
-    pub(super) fn filter_key<'s>(
-        &mut self,
-        scope: &'s Scope,
-        expr: &sql::Expr,
-        column: &ResolvedColumn,
-        cast: bool,
-        kind: KeyKind,
-    ) -> Option<&'s ScopedKey> {
-        let null_ness = matches!(kind, KeyKind::NullNess);
-        let key = (scope.keys.iter())
-            .find(|key| key.column == *column && key.is_null.is_some() == null_ness)?;
-        self.same_spelling(scope, expr, column, cast);
-        Some(key)
     }
 }
 
+/// Adds a key item to the view's keys: a fact column or its null-ness to
+/// the rollup keys, a dim column to its ref's reads.
+fn record_key(
+    selected: &mut SelectedKeys,
+    name: &Identifier,
+    column: &ResolvedColumn,
+    form: KeyForm,
+) {
+    match column {
+        ResolvedColumn::Fact(fact_column) => {
+            let by_key = match form {
+                KeyForm::Value => ByKey::Column {
+                    column: fact_column.clone(),
+                    name: name.clone(),
+                },
+                KeyForm::NullNess(test) => ByKey::IsNull {
+                    column: fact_column.clone(),
+                    name: name.clone(),
+                    negated: test == NullTest::IsNotNull,
+                },
+            };
+            selected.by_keys.push(by_key);
+        }
+        ResolvedColumn::Attribute { through, column } => {
+            selected.attributes[*through].push(Attribute {
+                name: name.clone(),
+                column: column.clone(),
+            });
+        }
+    }
+}
+
+/// The key over a FILTER's column, a null-ness key or not; `None` when
+/// SELECT has none, which the caller reports in its own words.
+fn filter_key(scope: &Scope, column: &ResolvedColumn, kind: KeyKind) -> Option<FilterKey> {
+    let wants_null_ness = matches!(kind, KeyKind::NullNess);
+    for key in &scope.keys {
+        let reads_null_ness = matches!(key.form, KeyForm::NullNess(_));
+        if key.column == *column && reads_null_ness == wants_null_ness {
+            return Some(FilterKey {
+                name: key.name.clone(),
+                form: key.form,
+            });
+        }
+    }
+    None
+}
+
 /// `(column IS NULL)` or `(column IS NOT NULL)`, in its one pair of
-/// parentheses, and whether it is the `NOT` one.
-pub(super) fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
-    let sql::Expr::Nested(inner) = expr else {
+/// parentheses.
+fn null_test(expression: &sql::Expr) -> Option<NullTestOf<'_>> {
+    let sql::Expr::Nested(inner) = expression else {
         return None;
     };
     match inner.as_ref() {
-        sql::Expr::IsNull(column) => Some((column, false)),
-        sql::Expr::IsNotNull(column) => Some((column, true)),
+        sql::Expr::IsNull(column) => Some(NullTestOf {
+            column,
+            test: NullTest::IsNull,
+        }),
+        sql::Expr::IsNotNull(column) => Some(NullTestOf {
+            column,
+            test: NullTest::IsNotNull,
+        }),
         _ => None,
     }
 }
 
+/// An integer, `'text'`, `true` or `false`, with no sign before it.
+fn plain_literal(expression: &sql::Expr) -> Option<Literal> {
+    let sql::Expr::Value(sql::ValueWithSpan { value, span: _ }) = expression else {
+        return None;
+    };
+    match value {
+        sql::Value::Number(digits, false) => Some(Literal::Int(digits.parse().ok()?)),
+        sql::Value::SingleQuotedString(text) => Some(Literal::Text(text.clone())),
+        sql::Value::Boolean(value) => Some(Literal::Bool(*value)),
+        _ => None,
+    }
+}
+
+/// `-` and an integer; nothing else takes a sign.
+fn negative_literal(expression: &sql::Expr) -> Option<Literal> {
+    let sql::Expr::Value(sql::ValueWithSpan {
+        value: sql::Value::Number(digits, false),
+        span: _,
+    }) = expression
+    else {
+        return None;
+    };
+    Some(Literal::Int(format!("-{digits}").parse().ok()?))
+}
+
 /// A column reference as Straum SQL spells it: `sqlparser` prints the cast
 /// as `::TEXT`.
-pub(super) fn spelling(expr: &sql::Expr) -> String {
-    match expr {
+fn spelling(expression: &sql::Expr) -> String {
+    match expression {
         sql::Expr::Cast { expr: inner, .. } => format!("{inner}::text"),
         other => other.to_string(),
     }

@@ -1,6 +1,8 @@
 //! Straum SQL: the spec format Straum reads at start, and the asks it
-//! answers. `docs/src/spec.md` is its grammar (ADR-0029); `sqlparser`
-//! parses the text and this crate walks the AST.
+//! answers. `docs/src/spec.md` is its grammar (ADR-0029). `sqlparser`
+//! parses the text into a tree; the walker in `sql/` reads the tree into
+//! the domain's dims, facts and asks; `Spec::new` then checks the views
+//! against each other.
 //!
 //! PostgreSQL rejects view options, but Straum never sends a view to
 //! PostgreSQL, so `WITH (buckets = ...)` needn't be one it takes.
@@ -15,14 +17,17 @@ use straum_domain::{Spec, SpecError};
 
 pub use sql::{SqlError, parse_ask};
 
+/// Why a spec was refused: what the walker found wrong, or failing that,
+/// what the spec's own checks did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Sql(Vec<SqlError>),
     Spec(Vec<SpecError>),
 }
 
-pub fn parse(src: &str) -> Result<Spec, Error> {
-    let (dims, facts) = sql::parse(src).map_err(Error::Sql)?;
+/// Reads a spec's text into a checked [`Spec`].
+pub fn parse(text: &str) -> Result<Spec, Error> {
+    let sql::Views { dims, facts } = sql::parse(text).map_err(Error::Sql)?;
     Spec::new(dims, facts).map_err(Error::Spec)
 }
 
@@ -45,6 +50,7 @@ impl fmt::Display for Error {
     }
 }
 
+// Any printable errors: the walker's and the spec's.
 fn write_lines(formatter: &mut fmt::Formatter<'_>, lines: &[impl fmt::Display]) -> fmt::Result {
     for (index, line) in lines.iter().enumerate() {
         if index > 0 {
