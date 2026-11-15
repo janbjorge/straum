@@ -229,19 +229,25 @@ mod tests {
         relation: 16_384,
     };
 
-    /// `public.zones`: `id int4`, a dropped `int4`, `name text`, `p
-    /// point`, and `late int4`, added after the rows written here.
-    fn table() -> Table {
-        let attribute = |length, align, kind| Attribute {
+    fn attribute(length: i16, align: usize, kind: Kind) -> Attribute {
+        Attribute {
             length,
             align,
             kind,
-        };
-        let column = |name: &str, type_oid| Column {
+        }
+    }
+
+    fn column(name: &str, type_oid: u32) -> Column {
+        Column {
             name: name.to_owned(),
             type_oid,
             typmod: -1,
-        };
+        }
+    }
+
+    /// `public.zones`: `id int4`, a dropped `int4`, `name text`, `p
+    /// point`, and `late int4`, added after the rows written here.
+    fn table() -> Table {
         Table {
             file: FILE,
             relation: Relation {
@@ -402,23 +408,38 @@ mod tests {
         );
     }
 
+    fn message(result: Result<Option<straum_app::Commit>, Error>) -> String {
+        result.unwrap_err().to_string()
+    }
+
+    fn insert_of_a() -> Committed {
+        committed(vec![Change::Insert {
+            file: FILE,
+            new: row(1, &short("a")),
+        }])
+    }
+
     #[test]
     fn rejects_what_it_cant_publish() {
-        let message =
-            |result: Result<Option<straum_app::Commit>, Error>| result.unwrap_err().to_string();
         let other = RelationFile {
             relation: 1,
             ..FILE
         };
-        let insert = |file, new| vec![Change::Insert { file, new }];
+        let elsewhere = vec![Change::Insert {
+            file: other,
+            new: row(1, &short("a")),
+        }];
         assert_eq!(
-            message(publish(insert(other, row(1, &short("a"))))),
+            message(publish(elsewhere)),
             "WAL at 0/100 has a change to a table Straum doesn't read"
         );
         let mut cut = row(1, &short("a"));
         cut.body = cut.body[..6].into();
         assert_eq!(
-            message(publish(insert(FILE, cut))),
+            message(publish(vec![Change::Insert {
+                file: FILE,
+                new: cut
+            }])),
             "WAL at 0/100 has a row shorter than its columns"
         );
         // A row from before `late` was added holds no value for it; the
@@ -495,16 +516,12 @@ mod tests {
     fn announces_a_table_again_after_it_changes() {
         let mut publisher = Publisher::new(layouts(vec![table()]));
         let mut decoder = decoder();
-        let insert = || {
-            committed(vec![Change::Insert {
-                file: FILE,
-                new: row(1, &short("a")),
-            }])
-        };
-        publisher.publish(&insert(), &mut decoder).unwrap();
+        publisher.publish(&insert_of_a(), &mut decoder).unwrap();
         // Nothing changed for the decoder: rows read on.
         publisher.relayout(&[77], layouts(vec![table()]));
-        let commit = publisher.publish(&insert(), &mut decoder).unwrap().unwrap();
+        let commit = (publisher.publish(&insert_of_a(), &mut decoder))
+            .unwrap()
+            .unwrap();
         assert!(matches!(commit.changes[..], [Applied::Insert { .. }]));
         // `name` now reads as another type: the decoder says unfit.
         let mut retyped = table();

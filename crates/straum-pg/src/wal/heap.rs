@@ -907,6 +907,12 @@ mod tests {
         Change::Insert { file, new }
     }
 
+    fn checkpoint(redo: u64) -> Record {
+        let mut main = redo.to_le_bytes().to_vec();
+        main.extend([0; 80]);
+        record(RM_XLOG, XLOG_CHECKPOINT_ONLINE, main, Vec::new())
+    }
+
     /// A checkpoint lets go of the pages last changed by its redo point,
     /// and keeps those changed after it, whose next change brings no
     /// image.
@@ -928,11 +934,6 @@ mod tests {
         assert!(end > 0x100_0028);
         assert!(heap.bytes() > 0);
         assert_eq!(heap.bytes(), heap.recount());
-        let checkpoint = |redo: u64| {
-            let mut main = redo.to_le_bytes().to_vec();
-            main.extend([0; 80]);
-            record(RM_XLOG, XLOG_CHECKPOINT_ONLINE, main, Vec::new())
-        };
         heap.apply(&checkpoint(end - 8)).unwrap();
         assert_eq!(heap.pages().count(), 3);
         // A page whose LSN is the redo point goes: its next change is
@@ -1086,14 +1087,17 @@ mod tests {
         assert_eq!(at(&heap, 0).rows().count(), 6);
     }
 
+    fn init(id: u8, number: u32, data: Vec<u8>) -> BlockSpec {
+        BlockSpec {
+            will_init: true,
+            ..block(id, number, data, None)
+        }
+    }
+
     #[test]
     fn counts_a_speculative_insert_once_confirmed() {
         let mut heap = heap(18);
         let row = tuple(b"maybe");
-        let init = |id, number, data| BlockSpec {
-            will_init: true,
-            ..block(id, number, data, None)
-        };
         let speculative = record(
             RM_HEAP,
             HEAP_INSERT | INIT_PAGE,
