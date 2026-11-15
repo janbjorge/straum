@@ -32,29 +32,42 @@ struct Key {
 /// `None` for JSON that isn't the views.
 pub(crate) fn read_views(json: &str) -> Option<Vec<View>> {
     let json: Value = serde_json::from_str(json).ok()?;
-    let text = |value: &Value| value.as_str().map(str::to_owned);
-    let views = json.get("views")?.as_array()?.iter().map(|view| {
-        let keys = view.get("keys")?.as_array()?.iter().map(|key| {
-            let column_type = text(key.get("type")?)?;
-            Some(Key {
-                name: text(key.get("name")?)?,
-                column_type: match key.get("scale").and_then(Value::as_u64) {
-                    Some(scale) => format!("{column_type} scale {scale}"),
-                    None => column_type,
-                },
-            })
-        });
-        Some(View {
-            name: text(view.get("name")?)?,
-            keys: keys.collect::<Option<_>>()?,
-            measures: (view.get("measures")?.as_array()?.iter())
-                .map(text)
-                .collect::<Option<_>>()?,
-            from: view.get("from").and_then(text),
-            to: view.get("to").and_then(text),
-        })
-    });
-    views.collect()
+    let mut views = Vec::new();
+    for view in json.get("views")?.as_array()? {
+        views.push(read_view(view)?);
+    }
+    Some(views)
+}
+
+fn read_view(view: &Value) -> Option<View> {
+    let mut keys = Vec::new();
+    for key in view.get("keys")?.as_array()? {
+        keys.push(read_key(key)?);
+    }
+    let mut measures = Vec::new();
+    for measure in view.get("measures")?.as_array()? {
+        measures.push(read_text(measure)?);
+    }
+    Some(View {
+        name: read_text(view.get("name")?)?,
+        keys,
+        measures,
+        from: view.get("from").and_then(read_text),
+        to: view.get("to").and_then(read_text),
+    })
+}
+
+fn read_key(key: &Value) -> Option<Key> {
+    let name = read_text(key.get("name")?)?;
+    let mut column_type = read_text(key.get("type")?)?;
+    if let Some(scale) = key.get("scale").and_then(Value::as_u64) {
+        column_type = format!("{column_type} scale {scale}");
+    }
+    Some(Key { name, column_type })
+}
+
+fn read_text(value: &Value) -> Option<String> {
+    value.as_str().map(str::to_owned)
 }
 
 /// What Tab offers: each candidate replaces the line from `start` to the
@@ -120,13 +133,30 @@ pub(crate) fn complete(views: &[View], line: &str, pos: usize) -> Completion {
         (start, query_candidates(views, line, &before[..start]))
     };
     let typed = &before[start..];
-    let fits = |candidate: &String| {
-        (candidate.get(..typed.len())).is_some_and(|head| head.eq_ignore_ascii_case(typed))
+    let candidates = candidates
+        .into_iter()
+        .filter(|candidate| starts_with_ignoring_case(candidate, typed))
+        .collect();
+    Completion { start, candidates }
+}
+
+fn starts_with_ignoring_case(candidate: &str, typed: &str) -> bool {
+    let Some(head) = candidate.get(..typed.len()) else {
+        return false;
     };
-    Completion {
-        start,
-        candidates: candidates.into_iter().filter(fits).collect(),
-    }
+    head.eq_ignore_ascii_case(typed)
+}
+
+/// The view the line names after `FROM`, if Straum serves one by that name.
+fn view_after_from<'a>(views: &'a [View], words: &[&str]) -> Option<&'a View> {
+    let name = after(words, "FROM")?.first()?;
+    views.iter().find(|view| view.name == *name)
+}
+
+fn names_of(view: &View) -> Vec<String> {
+    let mut names: Vec<String> = view.keys.iter().map(|key| key.name.clone()).collect();
+    names.extend(view.measures.iter().cloned());
+    names
 }
 
 /// What may come next in a query, after the words `before` the cursor's.
@@ -142,8 +172,7 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     if is(first, "\\rows") && before.len() == 1 {
         return views.iter().map(|view| view.name.clone()).collect();
     }
-    let view = (after(&all, "FROM").and_then(|rest| rest.first()))
-        .and_then(|name| views.iter().find(|view| view.name == *name));
+    let view = view_after_from(views, &all);
     let selected = selected_keys(view, &all);
 
     if let Some(listed) = after(&before, "GROUP") {
@@ -172,13 +201,12 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     }
     if let Some(listed) = after(&before, "SELECT") {
         // Before FROM names the view, any view's names may be meant.
-        let of = |view: &View| {
-            let keys = view.keys.iter().map(|key| key.name.clone());
-            keys.chain(view.measures.iter().cloned())
-                .collect::<Vec<_>>()
+        let offered: Vec<String> = match view {
+            Some(view) => names_of(view),
+            None => views.iter().flat_map(names_of).collect(),
         };
         let mut names: Vec<String> = Vec::new();
-        for name in view.map_or_else(|| views.iter().flat_map(of).collect(), of) {
+        for name in offered {
             if !names.contains(&name) && !listed.contains(&name.as_str()) {
                 names.push(name);
             }
@@ -231,26 +259,39 @@ fn condition_candidates(
         }
         Some(last) if !is(last, "AND") => Vec::new(),
         _ => {
-            let numbered = all.iter().filter_map(|word| word.strip_prefix('$'));
-            let n = 1
-                + (numbered.filter_map(|n| n.parse::<u32>().ok()))
-                    .max()
-                    .unwrap_or(0);
+            let number = next_parameter_number(all);
             let mut next = match (from, to) {
                 (false, false) => {
-                    vec![format!("{BUCKET} >= ${n} AND {BUCKET} < ${}", n + 1)]
+                    vec![format!(
+                        "{BUCKET} >= ${number} AND {BUCKET} < ${}",
+                        number + 1
+                    )]
                 }
-                (false, true) => vec![format!("{BUCKET} >= ${n}")],
-                (true, false) => vec![format!("{BUCKET} < ${n}")],
+                (false, true) => vec![format!("{BUCKET} >= ${number}")],
+                (true, false) => vec![format!("{BUCKET} < ${number}")],
                 (true, true) => Vec::new(),
             };
             let keys = view.map_or(&[][..], |view| &view.keys[..]);
             let free = (keys.iter().map(|key| key.name.as_str()))
                 .filter(|name| *name != BUCKET && !conditions.contains(name));
-            next.extend(free.map(|name| format!("{name} = ${n}")));
+            next.extend(free.map(|name| format!("{name} = ${number}")));
             next
         }
     }
+}
+
+fn parameter_number(word: &str) -> Option<usize> {
+    word.strip_prefix('$')?.parse().ok()
+}
+
+fn next_parameter_number(words: &[&str]) -> usize {
+    let mut highest = 0;
+    for word in words {
+        if let Some(number) = parameter_number(word) {
+            highest = highest.max(number);
+        }
+    }
+    highest + 1
 }
 
 /// What a parameter is the value of: the key a query compares `$n` with.
@@ -283,15 +324,14 @@ impl Slot<'_> {
 fn slot<'v>(views: &'v [View], query: &'v str, given: &str) -> Option<Slot<'v>> {
     let number = given.split_whitespace().count() + 1;
     let query = words(query);
-    let name = after(&query, "FROM")?.first()?;
-    let view = views.iter().find(|view| view.name == *name)?;
+    let view = view_after_from(views, &query)?;
     let (mut key, mut operator) = (None, "");
     for word in &query {
         if let Some(named) = view.keys.iter().find(|key| key.name == *word) {
             key = Some(named);
         } else if ["=", ">=", "<"].contains(word) || is(word, "IN") {
             operator = word;
-        } else if word.strip_prefix('$').and_then(|n| n.parse().ok()) == Some(number) {
+        } else if parameter_number(word) == Some(number) {
             return Some(Slot {
                 number,
                 key: key?,
@@ -611,5 +651,15 @@ mod tests {
         assert_eq!(words(" ,( "), Vec::<&str>::new());
         // The cursor's word starts after the last part, whatever its width.
         assert_eq!(tab("SELECT blå"), ("blå".to_owned(), Vec::new()));
+    }
+
+    #[test]
+    fn a_candidate_fits_what_is_typed_in_any_case() {
+        assert!(starts_with_ignoring_case("SELECT ", "sel"));
+        assert!(starts_with_ignoring_case("SELECT ", ""));
+        // Typed past the candidate's end, or into the middle of a letter.
+        assert!(!starts_with_ignoring_case("SEL", "SELECT"));
+        assert!(!starts_with_ignoring_case("blåbær", "bla"));
+        assert!(!starts_with_ignoring_case("FROM ", "SEL"));
     }
 }

@@ -24,6 +24,9 @@ use crate::client::{ask, load_views, rows, views};
 use crate::complete::{Completion, View, complete, hint};
 
 const PROMPT: &str = "straum> ";
+// ANSI escapes that dim a hint and end the dimming, so it reads as a note.
+const DIM: &str = "\x1b[2m";
+const UNDIM: &str = "\x1b[0m";
 
 /// What one line asks for; `None` to leave.
 fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
@@ -89,11 +92,17 @@ pub(crate) fn piped(
 /// state directory, which is `~/.local/state` unless `XDG_STATE_HOME`
 /// names another. Nowhere without a home, as in Straum's image.
 fn history_file(state_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    // The XDG rules take only an absolute path.
-    let absolute = |path: OsString| Some(PathBuf::from(path)).filter(|path| path.is_absolute());
-    let state = (state_home.and_then(absolute))
-        .or_else(|| Some(home.and_then(absolute)?.join(".local").join("state")))?;
+    let state = match state_home.and_then(absolute) {
+        Some(state) => state,
+        None => home.and_then(absolute)?.join(".local").join("state"),
+    };
     Some(state.join("straum").join("history"))
+}
+
+// The XDG rules take only an absolute path.
+fn absolute(path: OsString) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    if path.is_absolute() { Some(path) } else { None }
 }
 
 /// The prompt at a terminal, with line editing, history and completion.
@@ -181,7 +190,7 @@ impl Hinter for Names {
 
 impl Highlighter for Names {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        Cow::Owned(format!("\x1b[2m{hint}\x1b[0m"))
+        Cow::Owned(format!("{DIM}{hint}{UNDIM}"))
     }
 }
 

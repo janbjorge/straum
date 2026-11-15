@@ -21,12 +21,15 @@ pub(crate) fn views(url: &str) -> Result<String, String> {
 
 pub(crate) fn rows(url: &str, view: &str) -> Result<String, String> {
     // The name goes into the request line as it is.
-    let named = |character: char| character.is_ascii_alphanumeric() || character == '_';
-    if !view.chars().all(named) {
+    if !view.chars().all(is_name_character) {
         return Err(format!("{view:?} is not a view's name"));
     }
     let request = format!("GET /views/{view}");
     fetch(url, "its rows", &request, "text/plain", None)
+}
+
+fn is_name_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
 }
 
 pub(crate) fn load_views(url: &str) -> Option<Vec<View>> {
@@ -81,6 +84,16 @@ fn json_string(text: &str) -> String {
     json
 }
 
+/// The `HOST:PORT` of an `http://HOST:PORT` URL, which may end in `/`.
+fn address_of(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("http://")?;
+    let address = rest.trim_end_matches('/');
+    if address.is_empty() || address.contains('/') {
+        return None;
+    }
+    Some(address)
+}
+
 /// The body of the reply to one request, in the form `accept` names.
 fn fetch(
     url: &str,
@@ -89,10 +102,9 @@ fn fetch(
     accept: &str,
     ask: Option<&str>,
 ) -> Result<String, String> {
-    let address = (url.strip_prefix("http://"))
-        .map(|rest| rest.trim_end_matches('/'))
-        .filter(|address| !address.is_empty() && !address.contains('/'))
-        .ok_or_else(|| format!("--url takes http://HOST:PORT, not {url:?}"))?;
+    let Some(address) = address_of(url) else {
+        return Err(format!("--url takes http://HOST:PORT, not {url:?}"));
+    };
     let failed = |error: io::Error| format!("asking {url} for {what}: {error}");
     let mut stream = TcpStream::connect(address).map_err(failed)?;
     stream.set_read_timeout(Some(TIMEOUT)).map_err(failed)?;

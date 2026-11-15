@@ -23,7 +23,7 @@ use std::time::Duration;
 use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
 use straum_pg::{Dsn, Postgres, Replication};
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 const HELP: &str = "\
 Straum follows tables in PostgreSQL and answers asks over HTTP.
@@ -157,6 +157,9 @@ const MAX_TRANSACTION_ROWS: usize = 100_000;
 /// what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
 
+// 2, not 1, so a script can tell a misused command line from a failed run.
+const USAGE_FAILURE: u8 = 2;
+
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -281,7 +284,7 @@ enum Exit {
 impl Exit {
     fn exit_code(&self) -> ExitCode {
         match self {
-            Exit::NoCommand | Exit::Usage { .. } => ExitCode::from(2),
+            Exit::NoCommand | Exit::Usage { .. } => ExitCode::from(USAGE_FAILURE),
             Exit::Runtime(_) => ExitCode::FAILURE,
         }
     }
@@ -303,13 +306,15 @@ impl Display for Exit {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    match command(&args).and_then(|command| execute(command).map_err(Exit::Runtime)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(exit) => {
-            eprintln!("{exit}");
-            exit.exit_code()
-        }
-    }
+    let exit = match command(&args) {
+        Ok(command) => match execute(command) {
+            Ok(()) => return ExitCode::SUCCESS,
+            Err(message) => Exit::Runtime(message),
+        },
+        Err(exit) => exit,
+    };
+    eprintln!("{exit}");
+    exit.exit_code()
 }
 
 fn execute(command: Command) -> Result<(), String> {
@@ -701,14 +706,11 @@ fn run(
         .enable_all()
         .build()
         .map_err(|error| format!("starting tokio: {error}"))?;
-    let handling = |name: &str, kind: SignalKind| {
-        signal(kind).map_err(|error| format!("handling {name}: {error}"))
-    };
     let (mut terminate, mut interrupt) = {
         let _entered = runtime.enter();
         (
-            handling("SIGTERM", SignalKind::terminate())?,
-            handling("SIGINT", SignalKind::interrupt())?,
+            handle_signal("SIGTERM", SignalKind::terminate())?,
+            handle_signal("SIGINT", SignalKind::interrupt())?,
         )
     };
     runtime
@@ -733,6 +735,10 @@ fn run(
     // Leaving closes the replication connections, and PostgreSQL drops
     // their temporary slots.
     Ok(())
+}
+
+fn handle_signal(name: &str, kind: SignalKind) -> Result<Signal, String> {
+    signal(kind).map_err(|error| format!("handling {name}: {error}"))
 }
 
 fn run_writer(mut writer: Writer<Postgres>) {
@@ -946,7 +952,7 @@ mod tests {
         for (line, printed) in cases {
             let exit = command(&args(line)).unwrap_err();
             assert_eq!(exit.to_string(), printed, "{line}");
-            assert_eq!(exit.exit_code(), ExitCode::from(2), "{line}");
+            assert_eq!(exit.exit_code(), ExitCode::from(USAGE_FAILURE), "{line}");
         }
         let exit = Exit::Runtime("reading s: gone".into());
         assert_eq!(exit.to_string(), "straum: reading s: gone");
