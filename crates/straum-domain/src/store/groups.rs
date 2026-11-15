@@ -65,6 +65,7 @@ impl<'s> Grouping<'s> {
         }
     }
 
+    /// The type of the key's values, as the load set it.
     pub(super) fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
             Grouping::Lookup { lookup, .. } => lookup.column_type(rollup),

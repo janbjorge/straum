@@ -109,15 +109,18 @@ impl<'bytes> Records<'bytes> {
         self.start + record * self.size()
     }
 
+    /// The value of record `record`.
     pub(super) fn value(self, record: usize) -> i64 {
         let end = self.at(record) + self.widths.value;
         (self.base).wrapping_add(signed(self.bytes, end, self.widths.value))
     }
 
+    /// How many rows hold the value of record `record`.
     pub(super) fn count(self, record: usize) -> u64 {
         unsigned(self.bytes, self.at(record + 1), self.widths.count) + 1
     }
 
+    /// Record `record` as a value and its count.
     pub(super) fn entry(self, record: usize) -> ValueCount {
         ValueCount {
             value: self.value(record),

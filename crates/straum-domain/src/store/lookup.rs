@@ -199,6 +199,7 @@ impl<'s> Lookup<'s> {
         }
     }
 
+    /// The type of the key's values, as the load set it.
     pub(super) fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
             Lookup::KeyPart(part) => rollup.key_type(*part),

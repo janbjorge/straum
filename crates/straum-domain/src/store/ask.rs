@@ -35,6 +35,7 @@ pub(super) enum Read<'s> {
 }
 
 impl<'s> Read<'s> {
+    /// The rollup whose cells the ask reads.
     pub(super) fn rollup(self) -> &'s Rollup {
         match self {
             Read::Bound(rollup) | Read::Keyed(rollup) => rollup,
