@@ -26,7 +26,7 @@ use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wal::{Record, Records};
-use crate::wire::{Connection, server_error};
+use crate::wire::{Connection, ConnectionKind, server_error};
 
 const PASSWORD: &str = "straum";
 const READY: &str = "database system is ready to accept connections";
@@ -113,8 +113,8 @@ fn physical_wal_bench() {
     });
     let (container, dsn) = start_postgres();
     load_month(&root, &container);
-    let mut sql = Connection::connect(&dsn, false).unwrap();
-    let mut stream = Connection::connect(&dsn, true).unwrap();
+    let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
+    let mut stream = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
     let setup = set_up(&root, &mut sql, &mut stream);
     let phases = write_phases(&mut sql, &container, &setup.copies, setup.start);
     let flushed = lsn(&mut sql, "SELECT pg_current_wal_flush_lsn()");

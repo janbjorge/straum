@@ -24,7 +24,7 @@ use crate::physical::{self, Physical};
 use crate::stream::{Reader, Stream};
 use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::transactions::{Consistency, Snapshot as Seen};
-use crate::wire::{Connection, first_row_value};
+use crate::wire::{Connection, ConnectionKind, first_row_value};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
 /// or the physical WAL, which `wal_level = replica` writes (ADR-0049).
@@ -115,7 +115,7 @@ impl Postgres {
 /// A new temporary slot, and a transaction on its connection that sees
 /// the database as of the slot's consistent point.
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
-    let mut conn = Connection::connect(dsn, true)?;
+    let mut conn = Connection::connect(dsn, ConnectionKind::Replication)?;
     conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = slot_name();
     let created = match conn.rows(&format!(
@@ -157,7 +157,7 @@ fn physical_snapshot(
     wait: Duration,
 ) -> Result<Snapshot, Error> {
     let physical = Replication::Physical { max_page_memory };
-    let mut conn = Connection::connect(dsn, false)?;
+    let mut conn = Connection::connect(dsn, ConnectionKind::Sql)?;
     let tables = catalog::read(&mut conn, spec, publication, physical)?;
     let checked = checked(tables);
     // After the slot: a rewrite between the two would be in neither the
@@ -172,7 +172,7 @@ fn physical_snapshot(
         limit,
         max_page_memory,
     );
-    let layouts_conn = Connection::connect(dsn, false)?;
+    let layouts_conn = Connection::connect(dsn, ConnectionKind::Sql)?;
     let (replication, replay) = stream.into_replay(pipeline, layouts_conn, checked);
     let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
     // Logs which transactions run now, rather than at the next checkpoint
@@ -268,7 +268,7 @@ pub(crate) fn slot_name() -> String {
 /// The plain connection, made on first use and after a failure.
 fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
     if plain.is_none() {
-        *plain = Some(Connection::connect(dsn, false)?);
+        *plain = Some(Connection::connect(dsn, ConnectionKind::Sql)?);
     }
     Ok(plain.as_mut().expect("connected just now"))
 }

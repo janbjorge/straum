@@ -22,7 +22,7 @@ use crate::wal::messages::{Layouts, Table};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
-use crate::wire::{Connection, first_row_value};
+use crate::wire::{Connection, ConnectionKind, first_row_value};
 
 /// How long a start waits for PostgreSQL to flush the WAL up to the redo
 /// point, which a checkpoint in progress sets where WAL is still being
@@ -47,7 +47,7 @@ impl Physical {
     /// record, the redo point: every page changed since then comes with a
     /// full image the first time.
     pub(crate) fn start(dsn: &Dsn) -> Result<(Physical, Lsn), Error> {
-        let mut conn = Connection::connect(dsn, true)?;
+        let mut conn = Connection::connect(dsn, ConnectionKind::Replication)?;
         let slot = slot_name();
         conn.execute(&format!(
             "CREATE_REPLICATION_SLOT {slot} TEMPORARY PHYSICAL (RESERVE_WAL)"

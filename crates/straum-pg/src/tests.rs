@@ -37,7 +37,7 @@ use crate::wal::messages::{Layouts, Table};
 use crate::wal::transactions::{Committed, Snapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
-use crate::wire::Connection;
+use crate::wire::{Connection, ConnectionKind};
 
 const PASSWORD: &str = "straum";
 /// Long enough for anything a test waits on to come.
@@ -340,7 +340,7 @@ struct Db {
 impl Db {
     fn new(pg: &PostgresContainer, name: &str, tables: &str) -> Db {
         let mut db = Db {
-            conn: Connection::connect(&pg.dsn, false).unwrap(),
+            conn: Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap(),
             name: name.to_owned(),
             dsn: pg.dsn.clone(),
         };
@@ -1442,7 +1442,7 @@ fn the_snapshot_and_the_stream_split_exactly() {
             let (dsn, name) = (db.dsn.clone(), db.name.clone());
             let (written, done) = (Arc::clone(&written), Arc::clone(&done));
             thread::spawn(move || {
-                let mut conn = Connection::connect(&dsn, false).unwrap();
+                let mut conn = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
                 for id in 0..2_000 {
                     let sql = format!(
                         "INSERT INTO {name}.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
@@ -1717,7 +1717,7 @@ fn holds_only_what_changed_since_the_checkpoint() {
     // Two pages: the first rows and the last.
     db.run("UPDATE $S.trips SET tip = 0 WHERE id IN (1, 2, 30000)");
     // An open transaction's changes count until it ends.
-    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    let mut open = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     open.execute("BEGIN").unwrap();
     open.execute(&db.sql("UPDATE $S.trips SET fare = 1 WHERE id <= 100"))
         .unwrap();
@@ -1789,7 +1789,7 @@ fn follows_the_physical_wal() {
             let dsn = pg.dsn.clone();
             let schema = db.name.clone();
             thread::spawn(move || {
-                let mut conn = Connection::connect(&dsn, false).unwrap();
+                let mut conn = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
                 let mut rng = Rng::new(100 + index);
                 let mut id = 1_000_000 * (index + 1);
                 while !stop.load(Ordering::Relaxed) {
@@ -1908,7 +1908,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     for id in 0..10 {
         db.run(&rng.trip(id));
     }
-    let mut held = Connection::connect(&db.dsn, false).unwrap();
+    let mut held = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
     held.execute(&db.sql(&format!("BEGIN; {}", rng.trip(10))))
         .unwrap();
     let xid = held.rows("SELECT pg_current_xact_id()").unwrap()[0][0]
@@ -1945,7 +1945,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     let dsn = db.dsn.clone();
     let release = thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));
-        let mut conn = Connection::connect(&dsn, false).unwrap();
+        let mut conn = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         conn.execute("ALTER SYSTEM RESET synchronous_standby_names")
             .unwrap();
         conn.execute("SELECT pg_reload_conf()").unwrap();
@@ -1974,7 +1974,7 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     }
     // Open before the start, it holds Straum back until it rolls back,
     // which waits for no standby.
-    let mut holding = Connection::connect(&db.dsn, false).unwrap();
+    let mut holding = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
     holding
         .execute(&db.sql(&format!("BEGIN; {}", rng.trip(10))))
         .unwrap();
@@ -1982,14 +1982,14 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     db.run("SELECT pg_reload_conf()");
     let (dsn, sql) = (db.dsn.clone(), db.sql(&rng.trip(11)));
     let helper = thread::spawn(move || {
-        let mut watch = Connection::connect(&dsn, false).unwrap();
+        let mut watch = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         // Straum logged which transactions run, the one holding it among
         // them.
         wait_for(
             &mut watch,
             "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_log_standby_snapshot()'",
         );
-        let mut committing = Connection::connect(&dsn, false).unwrap();
+        let mut committing = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         let deadline = Instant::now() + LONG;
         while committing.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref()
             != Some("nobody")
@@ -2044,7 +2044,7 @@ fn starts_while_a_checkpoint_runs() {
     .map(|sql| {
         let (stop, dsn, sql) = (Arc::clone(&stop), db.dsn.clone(), db.sql(sql));
         thread::spawn(move || {
-            let mut conn = Connection::connect(&dsn, false).unwrap();
+            let mut conn = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
             // Commits that don't wait for their flush leave WAL unflushed.
             conn.execute("SET synchronous_commit = off").unwrap();
             while !stop.load(Ordering::Relaxed) {
@@ -2491,7 +2491,7 @@ fn write_datums(db: &mut Db) {
 
 /// The layout of `datums.v` and its enum's labels.
 fn datums_layouts(dsn: &Dsn) -> Layouts {
-    let mut conn = Connection::connect(dsn, false).unwrap();
+    let mut conn = Connection::connect(dsn, ConnectionKind::Sql).unwrap();
     let checked = Checked {
         name: id("v"),
         schema: id("datums"),
@@ -2579,7 +2579,7 @@ fn reads_the_endings_pg_waldump_reads() {
     ]));
     let mut db = Db::new(&pg, "endings", "CREATE TABLE $S.t (id int)");
     let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
-    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    let mut open = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     open.execute("BEGIN").unwrap();
     open.execute(&db.sql("INSERT INTO $S.t VALUES (0)"))
         .unwrap();
@@ -2982,7 +2982,7 @@ fn follows_random_workloads_from_a_random_start() {
         let started = Arc::new(AtomicBool::new(false));
         let streaming = Arc::clone(&started);
         let mut worker = Db {
-            conn: Connection::connect(&db.dsn, false).unwrap(),
+            conn: Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap(),
             name: db.name.clone(),
             dsn: db.dsn.clone(),
         };
@@ -3118,7 +3118,7 @@ impl Workload {
     fn new(db: &Db) -> Workload {
         let sessions = (0..SESSIONS)
             .map(|_| Session {
-                conn: Connection::connect(&db.dsn, false).unwrap(),
+                conn: Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap(),
                 open: false,
                 savepoints: 0,
                 prepared: None,
@@ -3333,7 +3333,7 @@ struct Pipeline {
 
 impl Pipeline {
     fn new(pg: &PostgresContainer, spec: &Spec, publication: &str, major: u32) -> Pipeline {
-        let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+        let mut conn = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
         let tables = catalog::read(&mut conn, spec, publication, PHYSICAL).unwrap();
         let checked: Vec<Checked> = tables.facts.into_iter().chain(tables.dims).collect();
         let layouts = physical::tables(&mut conn, &checked).unwrap();
@@ -3440,7 +3440,7 @@ fn rewritten_and_dropped_tables_are_unfit() {
 fn lines_the_load_up_with_the_stream() {
     let pg = postgres_at_replica(&tag());
     let mut db = Db::new(&pg, "aligned", TABLES);
-    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    let mut open = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     open.execute("BEGIN").unwrap();
     open.execute(&db.sql("INSERT INTO $S.trips (id) VALUES (-1)"))
         .unwrap();
@@ -3455,7 +3455,7 @@ fn lines_the_load_up_with_the_stream() {
     // Without it the first RUNNING_XACTS comes with the next checkpoint
     // or within 15 seconds.
     db.run("SELECT pg_log_standby_snapshot()");
-    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+    let mut conn = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     let (relation, _) = relation_file(&mut db, "trips");
     let mut heap = Heap::new([relation].into(), stream.major());
     let mut transactions = Transactions::new(ROW_LIMIT);
@@ -3591,7 +3591,7 @@ fn insert_and_delete_until(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> threa
     let dsn = db.dsn.clone();
     let schema = db.name.clone();
     thread::spawn(move || {
-        let mut conn = Connection::connect(&dsn, false).unwrap();
+        let mut conn = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
         let mut id = index * 1_000_000;
         while !stop.load(Ordering::Relaxed) {
             id += 1;
@@ -3723,7 +3723,7 @@ fn says_to_set_wal_level_logical() {
 
 /// Whether the session `dsn` opens runs over TLS, as `pg_stat_ssl` says.
 fn ssl(dsn: &str) -> Result<String, Error> {
-    let mut conn = Connection::connect(&Dsn::parse(dsn).unwrap(), false)?;
+    let mut conn = Connection::connect(&Dsn::parse(dsn).unwrap(), ConnectionKind::Sql)?;
     let rows = conn.rows("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")?;
     Ok(rows[0][0].clone().unwrap())
 }
@@ -3838,7 +3838,10 @@ fn tls_start_error(answer: Vec<u8>, ca: Option<String>) -> String {
         None => "sslmode=require".to_owned(),
     };
     let dsn = Dsn::parse(&dsn.to_string().replace("sslmode=disable", &tls)).unwrap();
-    Connection::connect(&dsn, false).err().unwrap().to_string()
+    Connection::connect(&dsn, ConnectionKind::Sql)
+        .err()
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -4604,7 +4607,7 @@ fn chain_problems(pg: &PostgresContainer) {
 #[test]
 fn binary_copies_read_as_text_does() {
     let pg = postgres();
-    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+    let mut conn = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     let types = [
         ColumnType::Int,
         ColumnType::Int,
@@ -4982,9 +4985,9 @@ fn now(bytes: Vec<u8>) -> (Duration, Vec<u8>) {
     (Duration::ZERO, bytes)
 }
 
-fn connect(parts: Vec<(Duration, Vec<u8>)>, replication: bool) -> Result<Connection, Error> {
+fn connect(parts: Vec<(Duration, Vec<u8>)>, kind: ConnectionKind) -> Result<Connection, Error> {
     let (dsn, _server) = scripted(parts);
-    Connection::connect(&dsn, replication)
+    Connection::connect(&dsn, kind)
 }
 
 /// `AuthenticationSASL` offering `mechanisms`.
@@ -5020,14 +5023,16 @@ fn sign_in_errors() {
         ),
     ];
     for (reply, expected) in cases {
-        let err = connect(vec![now(reply)], false).err().unwrap();
+        let err = connect(vec![now(reply)], ConnectionKind::Sql)
+            .err()
+            .unwrap();
         assert_eq!(err.to_string(), expected);
     }
     // Notices and parameters along the way are fine.
     let mut chatty = message(b'N', b"SNOTICE\0Mhello\0\0");
     chatty.extend(message(b'S', b"TimeZone\0UTC\0"));
     chatty.extend(signed_in());
-    assert!(connect(vec![now(chatty)], true).is_ok());
+    assert!(connect(vec![now(chatty)], ConnectionKind::Replication).is_ok());
 }
 
 #[test]
@@ -5035,7 +5040,7 @@ fn query_errors() {
     // CopyInResponse: Straum never copies in.
     let mut conn = connect(
         vec![now(signed_in()), now(message(b'G', &[0, 0, 0]))],
-        false,
+        ConnectionKind::Sql,
     )
     .unwrap();
     let err = conn.execute("SELECT 1").unwrap_err().to_string();
@@ -5044,7 +5049,11 @@ fn query_errors() {
     let mut row = 1_i16.to_be_bytes().to_vec();
     row.extend(1_i32.to_be_bytes());
     row.push(0xff);
-    let mut conn = connect(vec![now(signed_in()), now(message(b'D', &row))], false).unwrap();
+    let mut conn = connect(
+        vec![now(signed_in()), now(message(b'D', &row))],
+        ConnectionKind::Sql,
+    )
+    .unwrap();
     let err = conn.execute("SELECT 1").unwrap_err().to_string();
     assert!(
         err.starts_with("connection to PostgreSQL: invalid utf-8"),
@@ -5052,11 +5061,11 @@ fn query_errors() {
     );
 
     // The server hangs up mid-query.
-    let mut conn = connect(vec![now(signed_in())], false).unwrap();
+    let mut conn = connect(vec![now(signed_in())], ConnectionKind::Sql).unwrap();
     drop(conn.execute("SELECT 1"));
     let mut conn = connect(
         vec![now(signed_in()), (Duration::ZERO, b"D".to_vec())],
-        false,
+        ConnectionKind::Sql,
     )
     .unwrap();
     let err = conn.execute("SELECT 1").unwrap_err().to_string();
@@ -5108,7 +5117,7 @@ fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> 
         reply.extend(copy_data(body));
     }
     reply.extend(after);
-    let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
+    let mut conn = connect(vec![now(signed_in()), now(reply)], ConnectionKind::Sql)?;
     let mut rows = Vec::new();
     load::copy(&mut conn, &two_ints(), |batch| {
         rows.extend(batch.chunks(2).map(<[Datum]>::to_vec));
@@ -5169,7 +5178,11 @@ fn copies_hand_over_bounded_batches() {
         reply.extend(copy_data(body));
     }
     reply.extend(copy_done());
-    let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
+    let mut conn = connect(
+        vec![now(signed_in()), now(reply.clone())],
+        ConnectionKind::Sql,
+    )
+    .unwrap();
     let mut batches = Vec::new();
     let mut next = 0;
     load::copy(&mut conn, &two_ints(), |batch| {
@@ -5185,7 +5198,7 @@ fn copies_hand_over_bounded_batches() {
     assert_eq!(batches, [full, full, 7]);
 
     // A failed batch stops the copy, and its error is the one returned.
-    let mut conn = connect(vec![now(signed_in()), now(reply)], false).unwrap();
+    let mut conn = connect(vec![now(signed_in()), now(reply)], ConnectionKind::Sql).unwrap();
     let mut calls = 0;
     let err = load::copy(&mut conn, &two_ints(), |_| {
         calls += 1;
@@ -5281,7 +5294,11 @@ fn copy_both_errors() {
         ),
     ];
     for (reply, expected) in cases {
-        let mut conn = connect(vec![now(signed_in()), now(reply)], true).unwrap();
+        let mut conn = connect(
+            vec![now(signed_in()), now(reply)],
+            ConnectionKind::Replication,
+        )
+        .unwrap();
         let err = conn.copy_both("START_REPLICATION").unwrap_err();
         assert_eq!(err.to_string(), expected);
     }
@@ -5293,7 +5310,7 @@ fn scripted_stream(parts: Vec<(Duration, Vec<u8>)>) -> (Stream, thread::JoinHand
     start.extend(message(b'N', b"SNOTICE\0Mstarting\0\0"));
     start.extend(message(b'W', &[0, 0, 0]));
     let (dsn, server) = scripted([vec![now(start)], parts].concat());
-    let mut conn = Connection::connect(&dsn, true).unwrap();
+    let mut conn = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
     conn.copy_both("START_REPLICATION").unwrap();
     let stream = Stream::start(
         conn,
@@ -5373,7 +5390,7 @@ fn reads_the_servers_wal() {
     assert!(source.wal().unwrap().confirmed >= commit.lsn);
 
     // A slot the server doesn't have.
-    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+    let mut conn = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     let err = read_wal(&mut conn, "nope").unwrap_err().to_string();
     assert_eq!(err, "PostgreSQL sent no WAL position for slot nope");
 }
@@ -5479,7 +5496,7 @@ fn taxi_month() {
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
     let pg = taxi_month_postgres(&root);
-    let mut sql = Connection::connect(&pg.dsn, false).unwrap();
+    let mut sql = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     sql.execute(
         "ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
          ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
@@ -5550,7 +5567,7 @@ fn taxi_month_postgres(root: &Path) -> PostgresContainer {
     assert!(psql.success(), "psql: {psql}");
     let exit = loader.wait().unwrap();
     assert!(exit.success(), "bench/load_taxi_trips.py: {exit}");
-    let mut sql = Connection::connect(&dsn, false).unwrap();
+    let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
     let trips = sql.rows("SELECT count(*) FROM yellow_trips").unwrap();
     eprintln!("copied {:?} trips in {:.1?}", trips[0][0], clock.elapsed());
     PostgresContainer {

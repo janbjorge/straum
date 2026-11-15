@@ -23,6 +23,13 @@ const READ_CHUNK: usize = 64 * 1024;
 /// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
+/// What a connection takes: SQL, or replication commands as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionKind {
+    Sql,
+    Replication,
+}
+
 pub(crate) struct Connection {
     socket: Socket,
     input: BytesMut,
@@ -73,7 +80,7 @@ impl Connection {
     /// Connects and authenticates. A replication connection takes
     /// replication commands as well as SQL. Every connection reads dates as
     /// ISO in UTC, which `value` expects.
-    pub(crate) fn connect(dsn: &Dsn, replication: bool) -> Result<Connection, Error> {
+    pub(crate) fn connect(dsn: &Dsn, kind: ConnectionKind) -> Result<Connection, Error> {
         let tcp = connect_tcp(dsn)?;
         tcp.set_nodelay(true)?;
         let socket = match &dsn.tls {
@@ -95,7 +102,7 @@ impl Connection {
             ("DateStyle", "ISO"),
             ("TimeZone", "UTC"),
         ];
-        if replication {
+        if kind == ConnectionKind::Replication {
             params.push(("replication", "database"));
         }
         frontend::startup_message(params, &mut conn.output)?;
