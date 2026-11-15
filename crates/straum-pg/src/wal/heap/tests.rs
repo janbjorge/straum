@@ -10,7 +10,7 @@ use super::super::BLOCK_SIZE;
 use super::edit::*;
 use super::page::*;
 use super::*;
-use crate::wal::test_support::{BlockSpec, FILE, ImageSpec, Spec, assemble, decode};
+use crate::wal::test_support::{BlockSpec, FILE, ImageSpec, ROW_HEADER, Spec, TEST_LSN, decoded};
 use crate::wal::{BlockNumber, Compression, Problem, Record, RelationFile, SlotNumber, WalError};
 
 const OTHER: RelationFile = RelationFile {
@@ -20,7 +20,7 @@ const OTHER: RelationFile = RelationFile {
 };
 
 /// The LSN every test record starts at.
-const LSN: u64 = 0x100_0028;
+const LSN: u64 = TEST_LSN;
 /// `XLOG_FPI`: a full-page image with no other change.
 const XLOG_FULL_PAGE_IMAGE: u8 = 0xB0;
 /// `FSM_FORKNUM`: the free space map, a fork Straum leaves alone.
@@ -29,9 +29,6 @@ const FREE_SPACE_FORK: u8 = 1;
 const CHECKPOINT_REDO: Range<usize> = 0..8;
 /// The rest of `CheckPoint`, which Straum doesn't read.
 const CHECKPOINT_REST: usize = 80;
-/// A test row's `t_hoff`: `SizeofHeapTupleHeader` rounded up to 8 bytes,
-/// so the body opens with one byte of padding and no null bitmap.
-const ALIGNED_HOFF: u8 = 24;
 /// The padding before a test row's columns.
 const PADDING: [u8; 1] = [0];
 /// A test row's `t_infomask2`: two columns, no flags.
@@ -64,7 +61,7 @@ fn tuple(columns: &[u8]) -> HeapTuple {
     HeapTuple {
         infomask2: TWO_COLUMNS,
         infomask: 0,
-        hoff: ALIGNED_HOFF,
+        hoff: ROW_HEADER,
         body: [&PADDING[..], columns].concat().into(),
     }
 }
@@ -143,7 +140,7 @@ fn imaged(number: BlockNumber, image: ImageSpec) -> BlockSpec {
 }
 
 fn record(resource_manager: u8, info: u8, main: Vec<u8>, blocks: Vec<BlockSpec>) -> Record {
-    let spec = Spec {
+    decoded(&Spec {
         xid: 700,
         resource_manager,
         info,
@@ -151,9 +148,7 @@ fn record(resource_manager: u8, info: u8, main: Vec<u8>, blocks: Vec<BlockSpec>)
         origin: false,
         blocks,
         main,
-    };
-    let bytes = assemble(&spec);
-    decode(LSN, LSN + bytes.len() as u64, bytes).unwrap()
+    })
 }
 
 /// A full-page image record of `blocks`.

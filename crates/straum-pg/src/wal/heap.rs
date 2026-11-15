@@ -30,7 +30,8 @@ use super::{
 };
 use edit::{Edit, PruneLayout};
 pub(crate) use page::Page;
-use page::{TUPLE_HEADER, page_from_image, restore};
+pub(in crate::wal) use page::TUPLE_HEADER;
+use page::{page_from_image, restore};
 
 /// `XLOG_CHECKPOINT_SHUTDOWN`: the checkpoint a clean shutdown writes.
 pub(super) const XLOG_CHECKPOINT_SHUTDOWN: u8 = 0x00;

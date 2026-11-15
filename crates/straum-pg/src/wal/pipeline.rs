@@ -232,16 +232,9 @@ mod tests {
         RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
     };
 
-    /// `XLOG_HEAP_INSERT`, and `XLOG_HEAP_INIT_PAGE`: the record starts its
-    /// page afresh.
-    const HEAP_INSERT: u8 = 0x00;
-    const INIT_PAGE: u8 = 0x80;
-    /// `t_hoff` of a row without nulls: `SizeofHeapTupleHeader`, 23,
-    /// rounded up to `MAXALIGN`, so one byte of padding before the columns.
-    const ROW_HEADER: u8 = 24;
-    const ROW_PADDING: usize = 1;
-    /// `MAXALIGN`: records start on 8-byte boundaries.
-    const RECORD_ALIGNMENT: u64 = 8;
+    use crate::wal::heap::{HEAP_INSERT, INIT_PAGE};
+    use crate::wal::record::RECORD_ALIGNMENT;
+    use crate::wal::test_support::{ROW_HEADER, ROW_PADDING};
     /// The commit time of every test commit, in microseconds since 2000.
     const COMMIT_TIME: i64 = 7;
 

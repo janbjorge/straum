@@ -23,7 +23,7 @@ pub(super) const HEADER_INFOMASK: Range<usize> = 2..4;
 /// `xl_heap_header.t_hoff`.
 pub(super) const HEADER_HOFF: usize = 4;
 /// `SizeofHeapTupleHeader`: what comes before the null bitmap.
-pub(super) const TUPLE_HEADER: usize = 23;
+pub(in crate::wal) const TUPLE_HEADER: usize = 23;
 /// Where `t_infomask2`, the first field `xl_heap_header` logs, lies in
 /// `HeapTupleHeaderData`.
 pub(super) const TUPLE_LOGGED_HEADER: usize = 18;

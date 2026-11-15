@@ -394,7 +394,7 @@ impl TransactionSnapshot {
 mod tests {
     use super::*;
     use crate::wal::heap::HeapTuple;
-    use crate::wal::test_support::{FILE, Rng};
+    use crate::wal::test_support::{FILE, ROW_HEADER, Rng};
 
     fn change(number: u64) -> HeapChange {
         HeapChange::Insert {
@@ -402,7 +402,7 @@ mod tests {
             new: HeapTuple {
                 infomask2: 1,
                 infomask: 0,
-                hoff: 24,
+                hoff: ROW_HEADER,
                 body: number.to_le_bytes().into(),
             },
         }

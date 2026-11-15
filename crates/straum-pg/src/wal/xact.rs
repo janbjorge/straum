@@ -228,7 +228,7 @@ fn running(data: &[u8]) -> Option<Running> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::wal::test_support::{Spec, assemble, decode};
+    use crate::wal::test_support::{Spec, decoded};
     use crate::wal::{RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_XLOG};
 
     /// `XACT_XINFO_HAS_ORIGIN`: an `xl_xact_origin` comes last.
@@ -254,7 +254,7 @@ pub(crate) mod tests {
     const RUNNING_SUBXACT_COUNT: usize = 4;
 
     fn record(resource_manager: u8, info: u8, xid: TransactionId, main: Vec<u8>) -> Record {
-        let spec = Spec {
+        decoded(&Spec {
             xid,
             resource_manager,
             info,
@@ -262,9 +262,7 @@ pub(crate) mod tests {
             origin: false,
             blocks: Vec::new(),
             main,
-        };
-        let bytes = assemble(&spec);
-        decode(0x100_0028, 0x100_0028 + bytes.len() as u64, bytes).unwrap()
+        })
     }
 
     /// `values` as `uint32`s, one after another.

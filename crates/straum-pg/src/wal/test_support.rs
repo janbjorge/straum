@@ -44,6 +44,14 @@ pub(crate) const DATABASE: Oid = 5;
 /// `SizeOfPageHeaderData`: where a heap page's line pointers start, so
 /// the earliest a page image's hole can start.
 const HEAP_PAGE_HEADER: u16 = 24;
+/// A test row's `t_hoff`: `SizeofHeapTupleHeader`, 23, rounded up to
+/// `MAXALIGN`, so the body opens with one byte of padding and no null
+/// bitmap.
+pub(crate) const ROW_HEADER: u8 = 24;
+/// The padding byte that opens such a row's body.
+pub(crate) const ROW_PADDING: usize = 1;
+/// The LSN of a record a test decodes on its own.
+pub(crate) const TEST_LSN: u64 = 0x100_0028;
 /// A `RepOriginId` for records that name a replication origin.
 const ORIGIN_ID: u16 = 7;
 
@@ -573,6 +581,12 @@ pub(crate) fn plain_block(image: Option<ImageSpec>, data: Vec<u8>) -> Spec {
         }],
         main: vec![1, 2, 3],
     }
+}
+
+/// The record `spec` describes, decoded on its own at `TEST_LSN`.
+pub(crate) fn decoded(spec: &Spec) -> Record {
+    let bytes = assemble(spec);
+    decode(TEST_LSN, TEST_LSN + bytes.len() as u64, bytes).unwrap()
 }
 
 /// `bytes`, a whole record, read as the record at `lsn` that ends at

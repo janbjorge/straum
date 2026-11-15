@@ -248,8 +248,10 @@ mod tests {
     use crate::catalog::Checked;
     use crate::pgoutput::RelationColumn;
     use crate::value::{INT4, INT8, TEXT};
-    use crate::wal::test_support::{FILE, attribute, short_varlena as short};
-    use crate::wal::tuple::{Kind, VARLENA_LENGTH};
+    use crate::wal::test_support::{
+        FILE, ROW_HEADER, ROW_PADDING, attribute, short_varlena as short,
+    };
+    use crate::wal::tuple::{EXTERNAL_POINTER, Kind, VARLENA_LENGTH};
 
     const INT: Kind = Kind::Read(ColumnType::Int);
     /// `point`'s type OID, a type Straum doesn't read.
@@ -258,14 +260,9 @@ mod tests {
     const POINT_SIZE: usize = 16;
     const POINT_LENGTH: i16 = 16;
     const POINT_ALIGN: usize = 8;
-    /// `t_hoff` of a row without nulls: `SizeofHeapTupleHeader`, 23,
-    /// rounded up to `MAXALIGN`, so one byte of padding before the columns.
-    const ROW_HEADER: u8 = 24;
-    const ROW_PADDING: usize = 1;
     /// A TOAST pointer to a value on disk: `varattrib_1b_e`'s header byte
     /// and `va_tag` `VARTAG_ONDISK`, then a 16-byte `varatt_external`.
     const TOAST_POINTER: [u8; 2] = [0x01, 18];
-    const EXTERNAL_POINTER: usize = 16;
 
     fn column(name: &str, type_oid: Oid) -> RelationColumn {
         RelationColumn {

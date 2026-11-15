@@ -50,7 +50,7 @@ const TCINFO: Range<usize> = 4..8;
 const EXTERNAL_HEADER: usize = 2;
 const VARTAG: usize = 1;
 const VARTAG_ON_DISK: u8 = 18;
-const EXTERNAL_POINTER: usize = 16;
+pub(super) const EXTERNAL_POINTER: usize = 16;
 /// `va_tcinfo`: the raw size in 30 bits, the method in the top two
 /// (`VARLENA_EXTSIZE_BITS`).
 const RAW_SIZE_MASK: u32 = 0x3FFF_FFFF;
@@ -346,8 +346,7 @@ mod tests {
     const INT: Kind = Kind::Read(ColumnType::Int);
     const TEXT: Kind = Kind::Read(ColumnType::Text);
     const TIME: Kind = Kind::Read(ColumnType::Time { zoned: true });
-    /// `SizeofHeapTupleHeader`: the fixed part of a row's header.
-    const TUPLE_HEADER: usize = 23;
+    use crate::wal::heap::TUPLE_HEADER;
     /// `MAXALIGN`: where a row's columns start is a multiple of it.
     const MAXALIGN: usize = 8;
     /// `va_tcinfo`'s method for zstd, which Straum doesn't read.
