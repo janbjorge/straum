@@ -818,3 +818,152 @@ fn says_what_went_wrong() {
     let error = problem(0x1_0000_0028, Problem::RowInSlotZero);
     assert_eq!(error.to_string(), "WAL at 1/28 has a row in slot 0");
 }
+
+/// A page image that is all zeros, as a page PostgreSQL has just added,
+/// holds no rows.
+#[test]
+fn reads_a_new_page_as_empty() {
+    let mut heap = heap(18);
+    let images = full_page_images(vec![imaged(0, image(vec![0; BLOCK_SIZE]))]);
+    assert_eq!(heap.apply(&images), Ok(vec![]));
+    assert_eq!(page_at(&heap, 0).rows().count(), 0);
+}
+
+/// An image whose hole starts past the bytes it keeps can't be put back.
+#[test]
+fn refuses_an_image_whose_hole_lies_past_it() {
+    let mut heap = heap(18);
+    let hole_length = 100;
+    let past = ImageSpec {
+        hole_offset: 9_000,
+        hole_length,
+        ..image(vec![0; BLOCK_SIZE - usize::from(hole_length)])
+    };
+    let images = full_page_images(vec![imaged(0, past)]);
+    assert_eq!(error(&mut heap, &images), Problem::ImageNotDecompressing);
+}
+
+/// An insert into a slot that holds a row puts the new row there, and
+/// the bytes counted follow.
+#[test]
+fn puts_a_row_over_the_one_in_its_slot() {
+    let mut heap = heap(18);
+    five_rows(&mut heap);
+    let row = tuple(b"in slot one");
+    let over = record(
+        RESOURCE_MANAGER_HEAP,
+        HEAP_INSERT,
+        insert_main(1, 0),
+        vec![block(MAIN_BLOCK, 0, logged(&row), None)],
+    );
+    assert_eq!(heap.apply(&over), Ok(vec![insert(FILE, row.clone())]));
+    assert_eq!(page_at(&heap, 0).get(1), Some(&row));
+    assert_eq!(heap.bytes(), heap.recount());
+}
+
+/// A prune that names slot 0, which no row has, and a truncate of
+/// another fork leave every row.
+#[test]
+fn leaves_rows_a_prune_or_truncate_does_not_reach() {
+    let mut heap = heap(17);
+    five_rows(&mut heap);
+    let slot_zero = record(
+        RESOURCE_MANAGER_HEAP2,
+        HEAP2_PRUNE,
+        prune_main(17, PRUNE_HAS_DEAD_ITEMS),
+        vec![block(MAIN_BLOCK, 0, prune_list(1, &[0]), None)],
+    );
+    assert_eq!(heap.apply(&slot_zero), Ok(vec![]));
+    let not_the_heap = 0;
+    let truncate = record(
+        RESOURCE_MANAGER_STORAGE,
+        SMGR_TRUNCATE,
+        truncate_main(FILE, 0, not_the_heap),
+        Vec::new(),
+    );
+    assert_eq!(heap.apply(&truncate), Ok(vec![]));
+    assert_eq!(slots(&heap), vec![1, 2, 3, 4, 5]);
+}
+
+/// A record of a kind Straum doesn't redo still sets the LSN of the
+/// pages it names, and passes over pages Straum doesn't hold.
+#[test]
+fn passes_over_records_that_change_no_row() {
+    // `XLOG_HEAP_LOCK`: a row lock, which changes no column.
+    let heap_lock = 0x60;
+    let mut heap = heap(18);
+    five_rows(&mut heap);
+    let lock = record(
+        RESOURCE_MANAGER_HEAP,
+        heap_lock,
+        Vec::new(),
+        vec![
+            block(MAIN_BLOCK, 0, Vec::new(), None),
+            block(1, 7, Vec::new(), None),
+        ],
+    );
+    assert_eq!(heap.apply(&lock), Ok(vec![]));
+    assert!(page_at(&heap, 0).lsn > LSN);
+    assert!(
+        heap.page(PageId {
+            file: FILE,
+            block: 7
+        })
+        .is_none()
+    );
+}
+
+/// A confirm of another table's row, and a bulk insert its image already
+/// holds, change nothing Straum must redo.
+#[test]
+fn redoes_only_what_it_must() {
+    let mut heap = heap(18);
+    let other = BlockSpec {
+        file: OTHER,
+        ..block(MAIN_BLOCK, 0, Vec::new(), None)
+    };
+    let confirm = record(
+        RESOURCE_MANAGER_HEAP,
+        HEAP_CONFIRM,
+        confirm_main(1),
+        vec![other],
+    );
+    assert_eq!(heap.apply(&confirm), Ok(vec![]));
+    let rows = [tuple(b"a"), tuple(b"bb")];
+    let mut placed = Vec::new();
+    let mut inserts = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let slot = SlotNumber::try_from(index + 1).unwrap();
+        placed.push(Placed {
+            slot,
+            tuple: row.clone(),
+        });
+        inserts.push(insert(FILE, row.clone()));
+    }
+    let imaged_insert = record(
+        RESOURCE_MANAGER_HEAP2,
+        HEAP2_MULTI_INSERT,
+        multi_insert_main(2, &[1, 2]),
+        vec![block(
+            MAIN_BLOCK,
+            0,
+            multi_insert_data(&rows),
+            Some(image(page_bytes(&placed))),
+        )],
+    );
+    assert_eq!(heap.apply(&imaged_insert), Ok(inserts));
+}
+
+/// A bulk insert that counts more rows than it lists is cut short.
+#[test]
+fn refuses_a_bulk_insert_that_lists_too_few_slots() {
+    let mut heap = heap(18);
+    five_rows(&mut heap);
+    let short = record(
+        RESOURCE_MANAGER_HEAP2,
+        HEAP2_MULTI_INSERT,
+        multi_insert_main(3, &[6]),
+        vec![block(MAIN_BLOCK, 0, Vec::new(), None)],
+    );
+    assert_eq!(error(&mut heap, &short), Problem::ShortHeapRecord);
+}

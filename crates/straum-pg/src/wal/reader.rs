@@ -428,6 +428,19 @@ mod tests {
     }
 
     #[test]
+    fn waits_for_the_rest_of_a_long_page_header() {
+        let LaidOut { wal, lsns } = one_record();
+        let mut records = Records::new(lsns[0], SEGMENT);
+        let short_header = usize::try_from(SHORT_HEADER).unwrap();
+        records.feed(SEGMENT, &wal[..short_header]).unwrap();
+        assert_eq!(records.next_record(), Ok(None));
+        records
+            .feed(records.wanted(), &wal[short_header..])
+            .unwrap();
+        assert!(records.next_record().unwrap().is_some());
+    }
+
+    #[test]
     fn refuses_another_segment_size() {
         let LaidOut { wal, lsns } = one_record();
         let mut records = Records::new(lsns[0], SEGMENT * 2);

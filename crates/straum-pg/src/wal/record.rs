@@ -497,6 +497,24 @@ mod tests {
     }
 
     #[test]
+    fn refuses_images_of_more_than_a_page() {
+        // Compressed to a whole page: PostgreSQL would have stored it plain.
+        let whole = ImageSpec {
+            bytes: vec![1; BLOCK_SIZE],
+            ..compressed_image()
+        };
+        let record = assemble(&plain_block(Some(whole), Vec::new()));
+        assert_eq!(decode_error(record), blocks_problem());
+        let past_a_page = ImageSpec {
+            compression: None,
+            bytes: vec![1; BLOCK_SIZE + 1],
+            ..compressed_image()
+        };
+        let record = assemble(&plain_block(Some(past_a_page), Vec::new()));
+        assert_eq!(decode_error(record), blocks_problem());
+    }
+
+    #[test]
     fn refuses_bytes_the_headers_do_not_account_for() {
         let mut record = assemble(&plain_block(None, vec![7; 4]));
         record.push(0);

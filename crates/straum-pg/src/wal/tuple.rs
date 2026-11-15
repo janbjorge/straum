@@ -572,6 +572,22 @@ mod tests {
         );
     }
 
+    /// A compressed varlena too short to hold `va_tcinfo`, the size it
+    /// comes out at.
+    #[test]
+    fn rejects_a_compressed_value_without_its_size() {
+        let text_column = attribute(VARLENA_LENGTH, 4, TEXT);
+        let size = FOUR_BYTE_HEADER + 2;
+        let header = size << FOUR_BYTE_SIZE_SHIFT | usize::from(VARLENA_COMPRESSED);
+        let header = u32::try_from(header).unwrap().to_le_bytes();
+        let value = [header.as_slice(), &[0, 0]].concat();
+        check(
+            &row(&[text_column], &[Some(&value)]),
+            &[text_column],
+            Problem::CompressedWithoutSize,
+        );
+    }
+
     #[test]
     fn rejects_values_that_dont_fit() {
         let int = attribute(4, 4, INT);
