@@ -115,10 +115,18 @@ only where copying would cost or a library asks for one; the comment
 beside it says so.
 
 **Closures: `|value| ...`.** A function without a name, written where
-it is used. Straum writes one only where a library takes code to run
-later: `thread::spawn(move || run_writer(writer))` runs `run_writer` on
-a new thread, and `move` hands the closure the values it uses.
+it is used, which may use the names around it. Straum writes one only
+where code is handed over to run later. `thread::spawn(move ||
+run_writer(writer))` runs `run_writer` on a new thread, and `move`
+hands the closure the values it uses. `load::copy` takes one as
+`each: impl FnMut(&[Datum])`, "any function of a batch", and calls it
+on every batch as it comes, so a table never sits in memory whole.
 Everywhere else a `for` loop or a named function does the work.
+
+**`type` and one-field structs.** `type Oid = u32;` gives a number its
+PostgreSQL meaning; it is still a `u32`. `struct TableIndex(usize);` is
+a new type: a `usize` that only fits where a `TableIndex` is asked for,
+read back as `.0`.
 
 **Threads: `Arc` and `RwLock`.** `App` keeps its state in
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
