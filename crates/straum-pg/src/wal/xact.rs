@@ -8,6 +8,9 @@ use super::{Record, WalError, u32_at};
 const RM_XACT: u8 = 1;
 const RM_STANDBY: u8 = 8;
 
+/// The bits of a record's info its resource manager owns; the low four
+/// are `XLR_INFO_MASK`, the WAL insertion's own.
+const RESOURCE_MANAGER_INFO: u8 = 0xF0;
 const XACT_OPERATION: u8 = 0x70;
 const XACT_HAS_INFO: u8 = 0x80;
 const XACT_COMMIT: u8 = 0x00;
@@ -23,18 +26,41 @@ const HAS_INVALIDATIONS: u32 = 1 << 3;
 const HAS_TWO_PHASE: u32 = 1 << 4;
 const HAS_DROPPED_STATS: u32 = 1 << 8;
 
+/// `xl_xact_commit` and `xl_xact_abort` open with `xact_time`, a
+/// `TimestampTz`.
+const TIME_SIZE: usize = 8;
+/// `xl_xact_xinfo`, after the time when the info says it is there.
+const XINFO_SIZE: usize = 4;
+/// The count before each list: `nsubxacts`, `nrels`, `nitems`, `nmsgs`.
+const COUNT_SIZE: usize = 4;
+const XID_SIZE: usize = 4;
+/// `xl_xact_dbinfo`: database and tablespace.
 const DATABASE_INFO: usize = 8;
+/// `RelFileLocator`: tablespace, database and relation.
 const RELATION_FILE: usize = 12;
 /// `SharedInvalidationMessage`: an `int8` kind, then the kind's fields;
 /// a relcache one names its database and table (`sinval.h`).
 const INVALIDATION: usize = 16;
 const INVALIDATE_RELCACHE: u8 = 0xFE;
+/// `SharedInvalRelcacheMsg`: `dbId`, then `relId`, after the kind.
+const RELCACHE_DATABASE: usize = 4;
+const RELCACHE_RELATION: usize = 8;
 /// `xl_xact_stats_item`: kind, database and object; the object is 64
 /// bits from 18.
-const DROPPED_STAT_16: usize = 12;
+const DROPPED_STAT_17: usize = 12;
 const DROPPED_STAT_18: usize = 16;
-/// `xl_running_xacts` up to its xids.
+/// `xl_running_xacts`: `xcnt`, `subxcnt`, `subxid_overflow`, `nextXid`,
+/// `oldestRunningXid` and `latestCompletedXid`, then the xids.
+const RUNNING_COUNT: usize = 0;
+const RUNNING_NEXT_XID: usize = 12;
+const RUNNING_OLDEST_XID: usize = 16;
 const RUNNING_HEADER: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Commit,
+    Abort,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -84,77 +110,66 @@ pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalErr
     };
     match record.resource_manager {
         RM_XACT => {
-            let operation = record.info & XACT_OPERATION;
-            let commit = match operation {
-                XACT_COMMIT | XACT_COMMIT_PREPARED => true,
-                XACT_ABORT | XACT_ABORT_PREPARED => false,
+            let outcome = match record.info & XACT_OPERATION {
+                XACT_COMMIT | XACT_COMMIT_PREPARED => Outcome::Commit,
+                XACT_ABORT | XACT_ABORT_PREPARED => Outcome::Abort,
                 _ => return Ok(None),
             };
-            let has_info = record.info & XACT_HAS_INFO != 0;
-            let ending = ending(record, has_info, commit, major >= 18).ok_or(short)?;
-            Ok(Some(if commit {
-                Event::Commit(ending)
-            } else {
-                Event::Abort(ending)
+            let ending = ending(record, outcome, major).ok_or(short)?;
+            Ok(Some(match outcome {
+                Outcome::Commit => Event::Commit(ending),
+                Outcome::Abort => Event::Abort(ending),
             }))
         }
-        RM_STANDBY if record.info & 0xF0 == STANDBY_RUNNING_XACTS => running(record.main_data())
-            .map(|r| Some(Event::Running(r)))
-            .ok_or(short),
+        RM_STANDBY if record.info & RESOURCE_MANAGER_INFO == STANDBY_RUNNING_XACTS => {
+            let Some(running) = running(record.main_data()) else {
+                return Err(short);
+            };
+            Ok(Some(Event::Running(running)))
+        }
         _ => Ok(None),
     }
 }
 
-fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Option<Ending> {
+fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
     let data = record.main_data();
-    let time = i64::from_le_bytes(data.get(..8)?.try_into().ok()?);
-    let mut at = 8;
-    let info = if has_info {
-        at += 4;
-        u32_at(data, 8)?
-    } else {
-        0
-    };
-    let count = |at: &mut usize| -> Option<usize> {
-        let n = usize::try_from(u32_at(data, *at)?).ok()?;
-        *at += 4;
-        Some(n)
-    };
+    let time = i64::from_le_bytes(*data.first_chunk()?);
+    let mut at = TIME_SIZE;
+    let mut info = 0;
+    if record.info & XACT_HAS_INFO != 0 {
+        info = u32_at(data, at)?;
+        at += XINFO_SIZE;
+    }
     if info & HAS_DATABASE != 0 {
         at += DATABASE_INFO;
     }
     let mut subxacts = Vec::new();
     if info & HAS_SUBXACTS != 0 {
-        let n = count(&mut at)?;
-        for i in 0..n {
-            subxacts.push(u32_at(data, at + 4 * i)?);
+        let count = read_count(data, &mut at)?;
+        for index in 0..count {
+            subxacts.push(u32_at(data, at + XID_SIZE * index)?);
         }
-        at += 4 * n;
+        at += XID_SIZE * count;
     }
     if info & HAS_RELATION_FILES != 0 {
-        at += RELATION_FILE * count(&mut at)?;
+        at += RELATION_FILE * read_count(data, &mut at)?;
     }
     if info & HAS_DROPPED_STATS != 0 {
-        let item = if wide_stats {
-            DROPPED_STAT_18
-        } else {
-            DROPPED_STAT_16
-        };
-        at += item * count(&mut at)?;
+        at += dropped_stat_size(major) * read_count(data, &mut at)?;
     }
     let mut invalidated = Vec::new();
-    if commit && info & HAS_INVALIDATIONS != 0 {
-        let n = count(&mut at)?;
-        for i in 0..n {
-            let message = at + INVALIDATION * i;
+    if outcome == Outcome::Commit && info & HAS_INVALIDATIONS != 0 {
+        let count = read_count(data, &mut at)?;
+        for index in 0..count {
+            let message = at + INVALIDATION * index;
             if *data.get(message)? == INVALIDATE_RELCACHE {
                 invalidated.push(Invalidated {
-                    database: u32_at(data, message + 4)?,
-                    relation: u32_at(data, message + 8)?,
+                    database: u32_at(data, message + RELCACHE_DATABASE)?,
+                    relation: u32_at(data, message + RELCACHE_RELATION)?,
                 });
             }
         }
-        at += INVALIDATION * n;
+        at += INVALIDATION * count;
     }
     let xid = if info & HAS_TWO_PHASE != 0 {
         u32_at(data, at)?
@@ -169,13 +184,29 @@ fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Op
     })
 }
 
+/// The count at `at`, moving `at` past it.
+fn read_count(data: &[u8], at: &mut usize) -> Option<usize> {
+    let count = usize::try_from(u32_at(data, *at)?).ok()?;
+    *at += COUNT_SIZE;
+    Some(count)
+}
+
+fn dropped_stat_size(major: u32) -> usize {
+    if major >= 18 {
+        DROPPED_STAT_18
+    } else {
+        DROPPED_STAT_17
+    }
+}
+
 fn running(data: &[u8]) -> Option<Running> {
-    let count = usize::try_from(u32_at(data, 0)?).ok()?;
-    let next_xid = u32_at(data, 12)?;
-    let oldest_xid = u32_at(data, 16)?;
-    let xids = (0..count)
-        .map(|i| u32_at(data, RUNNING_HEADER + 4 * i))
-        .collect::<Option<_>>()?;
+    let count = usize::try_from(u32_at(data, RUNNING_COUNT)?).ok()?;
+    let next_xid = u32_at(data, RUNNING_NEXT_XID)?;
+    let oldest_xid = u32_at(data, RUNNING_OLDEST_XID)?;
+    let mut xids = Vec::new();
+    for index in 0..count {
+        xids.push(u32_at(data, RUNNING_HEADER + XID_SIZE * index)?);
+    }
     Some(Running {
         next_xid,
         oldest_xid,
@@ -204,7 +235,10 @@ mod tests {
     }
 
     fn words(values: &[u32]) -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
     }
 
     /// A commit or abort with every part `ParseCommitRecord` reads before
@@ -245,11 +279,7 @@ mod tests {
 
     #[test]
     fn reads_endings() {
-        for (major, stat) in [
-            (16, DROPPED_STAT_16),
-            (17, DROPPED_STAT_16),
-            (18, DROPPED_STAT_18),
-        ] {
+        for (major, stat) in [(17, DROPPED_STAT_17), (18, DROPPED_STAT_18)] {
             for (operation, commit) in [
                 (XACT_COMMIT, true),
                 (XACT_COMMIT_PREPARED, true),
