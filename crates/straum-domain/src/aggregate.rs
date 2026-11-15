@@ -83,30 +83,38 @@ impl Fraction {
 impl Aggregate {
     /// The column the aggregate reads; none for `count(*)`.
     pub fn input(&self) -> Option<&Identifier> {
-        let (_, column) = self.state()?;
-        Some(column)
+        match self {
+            Aggregate::Count => None,
+            Aggregate::CountNotNull(column)
+            | Aggregate::Sum(column)
+            | Aggregate::Avg(column)
+            | Aggregate::Min(column)
+            | Aggregate::Max(column)
+            | Aggregate::PercentileDisc { column, .. }
+            | Aggregate::CountDistinct(column)
+            | Aggregate::BoolAnd(column)
+            | Aggregate::BoolOr(column) => Some(column),
+        }
     }
 
     /// What the aggregate reads of its column; none for `count(*)`.
     pub fn reads(&self) -> Option<Reads> {
-        let (kind, _) = self.state()?;
+        let kind = self.state_kind()?;
         Some(kind.reads())
     }
 
-    /// The cell state the aggregate keeps, and of which column; none for
+    /// The form of cell state the aggregate keeps of its column; none for
     /// `count(*)`, which reads the cell's row count.
-    pub(crate) fn state(&self) -> Option<(StateKind, &Identifier)> {
+    pub(crate) fn state_kind(&self) -> Option<StateKind> {
         match self {
             Aggregate::Count => None,
-            Aggregate::CountNotNull(column) => Some((StateKind::Count, column)),
-            Aggregate::Sum(column) | Aggregate::Avg(column) => Some((StateKind::Sum, column)),
-            Aggregate::Min(column)
-            | Aggregate::Max(column)
-            | Aggregate::PercentileDisc { column, .. } => Some((StateKind::Extent, column)),
-            Aggregate::CountDistinct(column) => Some((StateKind::Distinct, column)),
-            Aggregate::BoolAnd(column) | Aggregate::BoolOr(column) => {
-                Some((StateKind::Bools, column))
+            Aggregate::CountNotNull(_) => Some(StateKind::Count),
+            Aggregate::Sum(_) | Aggregate::Avg(_) => Some(StateKind::Sum),
+            Aggregate::Min(_) | Aggregate::Max(_) | Aggregate::PercentileDisc { .. } => {
+                Some(StateKind::Extent)
             }
+            Aggregate::CountDistinct(_) => Some(StateKind::Distinct),
+            Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Some(StateKind::Bools),
         }
     }
 }

@@ -208,7 +208,8 @@ impl Rollup {
     fn build(fact: &Fact, columns: Vec<Identifier>, key_columns: Vec<Coded>) -> Rollup {
         let mut inputs = Vec::new();
         for measure in &fact.measures {
-            let Some((kind, name)) = measure.aggregate.state() else {
+            let aggregate = &measure.aggregate;
+            let (Some(kind), Some(name)) = (aggregate.state_kind(), aggregate.input()) else {
                 continue;
             };
             let input = Input {
@@ -313,8 +314,8 @@ impl Rollup {
 
     /// A measure over numbers keeps its column's scale; a count has none.
     pub(crate) fn scale_of(&self, aggregate: &Aggregate) -> u32 {
-        match aggregate.state() {
-            Some((kind, column)) if kind.reads() == Reads::Numbers => {
+        match (aggregate.reads(), aggregate.input()) {
+            (Some(Reads::Numbers), Some(column)) => {
                 self.types[self.column(column).expect(COLUMNS).0].scale()
             }
             _ => 0,
@@ -492,8 +493,8 @@ impl Rollup {
     /// Where among the cells' states an aggregate finds its own; none for
     /// a count of rows, which reads the row counts.
     pub(crate) fn state_of(&self, aggregate: &Aggregate) -> Option<InputIndex> {
-        let (kind, name) = aggregate.state()?;
-        let column = self.column(name)?;
+        let kind = aggregate.state_kind()?;
+        let column = self.column(aggregate.input()?)?;
         let wanted = Input { kind, column };
         for (position, input) in self.inputs.iter().enumerate() {
             if *input == wanted {

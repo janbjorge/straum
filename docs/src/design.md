@@ -150,7 +150,7 @@ width; a hot bucket is columnar cells with one state per input.*
   cell by its key codes: a table of positions, the keys themselves
   staying in their column. A cell goes with its last row
   (`Rollup::remove`).
-  `Aggregate::state` picks which **State** a measure reads, so
+  `Aggregate::state_kind` picks which **State** a measure reads, so
   measures over one column share it.
 - A **Projection** maps key values to the attribute codes of every
   row under them. `Null` is code 0 in every attribute, so no row and
