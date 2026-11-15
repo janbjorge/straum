@@ -55,11 +55,11 @@ pub(crate) struct Relation {
     pub(crate) id: u32,
     pub(crate) schema: String,
     pub(crate) name: String,
-    pub(crate) columns: Vec<Column>,
+    pub(crate) columns: Vec<RelationColumn>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Column {
+pub(crate) struct RelationColumn {
     pub(crate) name: String,
     pub(crate) type_oid: u32,
     pub(crate) typmod: i32,
@@ -173,7 +173,7 @@ impl<'a> Reader<'a> {
         for _ in 0..count {
             // Flags: part of the key or not.
             self.skip(FLAGS_SIZE)?;
-            columns.push(Column {
+            columns.push(RelationColumn {
                 name: self.cstr()?.to_owned(),
                 type_oid: self.u32()?,
                 typmod: self.i32()?,
@@ -466,12 +466,12 @@ mod tests {
                 schema: "public".into(),
                 name: "zones".into(),
                 columns: vec![
-                    Column {
+                    RelationColumn {
                         name: "id".into(),
                         type_oid: 23,
                         typmod: -1,
                     },
-                    Column {
+                    RelationColumn {
                         name: "fare".into(),
                         type_oid: 1700,
                         typmod: 786_438,

@@ -217,7 +217,7 @@ mod tests {
 
     use super::*;
     use crate::catalog::Checked;
-    use crate::pgoutput::Column;
+    use crate::pgoutput::RelationColumn;
     use crate::value::{INT4, INT8, TEXT};
     use crate::wal::tuple::Kind;
 
@@ -237,8 +237,8 @@ mod tests {
         }
     }
 
-    fn column(name: &str, type_oid: u32) -> Column {
-        Column {
+    fn column(name: &str, type_oid: u32) -> RelationColumn {
+        RelationColumn {
             name: name.to_owned(),
             type_oid,
             typmod: -1,

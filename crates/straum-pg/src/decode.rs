@@ -10,7 +10,7 @@ use straum_domain::{ColumnType, Datum, Identifier};
 
 use crate::catalog::Checked;
 use crate::error::Error;
-use crate::pgoutput::{self, Column, Field, Message, Relation, Tuple};
+use crate::pgoutput::{self, Field, Message, Relation, RelationColumn, Tuple};
 use crate::value::{read, type_of};
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
@@ -178,7 +178,7 @@ fn changed(table: &Checked, column: &Identifier) -> Error {
 
 /// How the decoder reads a relation's column: an enum of the table's as
 /// its label's text.
-fn read_as(table: &Checked, column: &Column) -> Option<ColumnType> {
+fn read_as(table: &Checked, column: &RelationColumn) -> Option<ColumnType> {
     if let Some(column_type) = type_of(column.type_oid, column.typmod) {
         return Some(column_type);
     }
@@ -289,7 +289,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::*;
-    use crate::pgoutput::Column;
+    use crate::pgoutput::RelationColumn;
 
     const INT4: u32 = 23;
     const TEXT: u32 = 25;
@@ -331,7 +331,7 @@ mod tests {
             name: "zones".into(),
             columns: columns
                 .iter()
-                .map(|&(name, type_oid)| Column {
+                .map(|&(name, type_oid)| RelationColumn {
                     name: name.into(),
                     type_oid,
                     typmod: -1,

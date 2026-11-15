@@ -211,7 +211,7 @@ mod tests {
     use straum_domain::{ColumnType, Datum, Identifier};
 
     use super::*;
-    use crate::pgoutput::{Column, Relation};
+    use crate::pgoutput::{Relation, RelationColumn};
     use crate::wal::messages::Table;
     use crate::wal::tests::{BlockSpec, Spec, assemble};
     use crate::wal::tuple::{Attribute, Kind};
@@ -231,7 +231,7 @@ mod tests {
                 id: 77,
                 schema: "public".to_owned(),
                 name: "t".to_owned(),
-                columns: vec![Column {
+                columns: vec![RelationColumn {
                     name: "id".to_owned(),
                     type_oid: 23,
                     typmod: -1,

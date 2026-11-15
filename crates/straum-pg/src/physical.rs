@@ -14,7 +14,7 @@ use straum_domain::Datum;
 use crate::catalog::{Checked, VERSION_NUM_PER_MAJOR};
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::pgoutput::{Column, Relation};
+use crate::pgoutput::{Relation, RelationColumn};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::POLL;
 use crate::value::{read, type_of};
@@ -333,7 +333,7 @@ fn push_attribute(table: &mut Table, attribute: &AttributeRow) -> Result<(), Err
     };
     if !attribute.dropped {
         table.columns.push(table.attributes.len());
-        table.relation.columns.push(Column {
+        table.relation.columns.push(RelationColumn {
             name: attribute.name.to_owned(),
             type_oid: attribute.type_oid,
             typmod: attribute.typmod,
