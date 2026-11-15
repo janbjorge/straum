@@ -23,11 +23,41 @@ pub(crate) mod xact;
 pub(crate) const PAGE_SIZE: u64 = 8192;
 /// `BLCKSZ`, the size of a table page and of a full-page image.
 pub(crate) const BLOCK_SIZE: usize = 8192;
+/// An image header holds lengths within a page as `uint16`.
+#[expect(clippy::cast_possible_truncation, reason = "BLCKSZ, 8192, fits a u16")]
+const BLOCK_SIZE_U16: u16 = BLOCK_SIZE as u16;
 
+/// `SizeOfXLogShortPHD`, `XLogPageHeaderData`: `xlp_magic`, `xlp_info`,
+/// `xlp_tli`, `xlp_pageaddr`, `xlp_rem_len`, padded to 8 bytes.
 const SHORT_HEADER: u64 = 24;
+/// `SizeOfXLogLongPHD`, `XLogLongPageHeaderData`: the short header, then
+/// `xlp_sysid`, `xlp_seg_size` and `xlp_xlog_blcksz`. The first page of
+/// a segment has it.
 const LONG_HEADER: u64 = 40;
+const PAGE_MAGIC: Range<usize> = 0..2;
+const PAGE_FLAGS_FIELD: Range<usize> = 2..4;
+const PAGE_ADDRESS_FIELD: Range<usize> = 8..16;
+const PAGE_REMAINING: Range<usize> = 16..20;
+const PAGE_SEGMENT_SIZE: Range<usize> = 32..36;
+const PAGE_BLOCK_SIZE: Range<usize> = 36..40;
+
+/// `SizeOfXLogRecord`, `XLogRecord`: `xl_tot_len`, `xl_xid`, `xl_prev`,
+/// `xl_info`, `xl_rmid`, two bytes of padding, `xl_crc`.
 const RECORD_HEADER: usize = 24;
-const MAX_RECORD: u32 = 1020 * 1024 * 1024;
+const RECORD_LENGTH: Range<usize> = 0..4;
+const RECORD_XID: Range<usize> = 4..8;
+const RECORD_INFO: usize = 16;
+const RECORD_RESOURCE_MANAGER: usize = 17;
+const RECORD_CHECKSUM: Range<usize> = 20..24;
+/// `XLogRecordMaxSize`.
+const MAX_RECORD: usize = 1020 * 1024 * 1024;
+/// `MAXALIGN`: records start on 8-byte boundaries.
+const RECORD_ALIGNMENT: u64 = 8;
+/// The bits of `xl_info` its resource manager owns; the low four are
+/// `XLR_INFO_MASK`, the WAL insertion's own.
+const RESOURCE_MANAGER_INFO: u8 = 0xF0;
+/// `XLR_BLOCK_ID_ORIGIN` is followed by a `RepOriginId`, a `uint16`.
+const ORIGIN_SIZE: usize = 2;
 
 const FIRST_IS_CONTINUATION: u16 = 0x0001;
 const LONG_PAGE_HEADER: u16 = 0x0002;
@@ -160,7 +190,8 @@ impl Record {
 
     /// A switch record ends its segment: the rest of it is padding.
     pub(crate) fn is_switch(&self) -> bool {
-        self.resource_manager == XLOG_RESOURCE_MANAGER && self.info & 0xF0 == XLOG_SWITCH
+        self.resource_manager == XLOG_RESOURCE_MANAGER
+            && self.info & RESOURCE_MANAGER_INFO == XLOG_SWITCH
     }
 }
 
@@ -256,22 +287,25 @@ impl Records {
         }
         let total = match self.slice(position, RECORD_HEADER as u64) {
             Some(head) if position % PAGE_SIZE + RECORD_HEADER as u64 <= PAGE_SIZE => {
-                le_u32(&head[0..4])
+                le_u32(&head[RECORD_LENGTH])
             }
             _ => {
                 if self.gather(position, RECORD_HEADER, bytes)?.is_none() {
                     return Ok(None);
                 }
-                le_u32(&bytes[0..4])
+                le_u32(&bytes[RECORD_LENGTH])
             }
         };
-        if !(RECORD_HEADER as u32..=MAX_RECORD).contains(&total) {
+        let Ok(total) = usize::try_from(total) else {
+            return Err(at(position, LENGTH));
+        };
+        if !(RECORD_HEADER..=MAX_RECORD).contains(&total) {
             return Err(at(position, LENGTH));
         }
-        let Some(end) = self.gather(position, total as usize, bytes)? else {
+        let Some(end) = self.gather(position, total, bytes)? else {
             return Ok(None);
         };
-        let stored = le_u32(&bytes[20..24]);
+        let stored = le_u32(&bytes[RECORD_CHECKSUM]);
         if stored != checksum(bytes) {
             return Err(at(position, CHECKSUM));
         }
@@ -288,10 +322,10 @@ impl Records {
         let Some(short) = self.slice(page, SHORT_HEADER) else {
             return Ok(None);
         };
-        let magic = le_u16(&short[0..2]);
-        let flags = le_u16(&short[2..4]);
-        let address = le_u64(&short[8..16]);
-        let remaining = le_u32(&short[16..20]);
+        let magic = le_u16(&short[PAGE_MAGIC]);
+        let flags = le_u16(&short[PAGE_FLAGS_FIELD]);
+        let address = le_u64(&short[PAGE_ADDRESS_FIELD]);
+        let remaining = le_u32(&short[PAGE_REMAINING]);
         if address != page {
             return Err(at(page, PAGE_ADDRESS));
         }
@@ -309,8 +343,8 @@ impl Records {
             let Some(long) = self.slice(page, LONG_HEADER) else {
                 return Ok(None);
             };
-            let segment_size = u64::from(le_u32(&long[32..36]));
-            let page_size = u64::from(le_u32(&long[36..40]));
+            let segment_size = u64::from(le_u32(&long[PAGE_SEGMENT_SIZE]));
+            let page_size = u64::from(le_u32(&long[PAGE_BLOCK_SIZE]));
             if segment_size != self.segment_size || page_size != PAGE_SIZE {
                 return Err(WalError::Sizes {
                     segment_size,
@@ -390,107 +424,141 @@ fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(), WalError> 
     let bytes = &record.bytes;
     let blocks = &mut record.blocks;
     blocks.clear();
-    let mut r = Cursor {
+    let mut cursor = Cursor {
         bytes,
         at: RECORD_HEADER,
     };
     let mut toplevel_xid = None;
     let mut main_length = 0usize;
     let mut payload = 0usize;
-    let mut last_file = None;
-    while bytes.len() - r.at > payload {
-        let id = r.u8().ok_or(short)?;
+    while bytes.len() - cursor.at > payload {
+        let id = cursor.u8().ok_or(short)?;
         match id {
             DATA_SHORT => {
-                main_length = r.u8().ok_or(short)?.into();
+                main_length = cursor.u8().ok_or(short)?.into();
                 break;
             }
             DATA_LONG => {
-                main_length = r.u32().ok_or(short)? as usize;
+                main_length = cursor.u32().ok_or(short)? as usize;
                 break;
             }
             ORIGIN => {
-                r.take(2).ok_or(short)?;
+                cursor.take(ORIGIN_SIZE).ok_or(short)?;
             }
-            TOPLEVEL_XID => toplevel_xid = Some(r.u32().ok_or(short)?),
+            TOPLEVEL_XID => toplevel_xid = Some(cursor.u32().ok_or(short)?),
             id if id <= MAX_BLOCK_ID => {
-                if blocks.last().is_some_and(|b| b.id >= id) {
+                let previous = blocks.last();
+                if previous.is_some_and(|block| block.id >= id) {
                     return Err(short);
                 }
-                let flags = r.u8().ok_or(short)?;
-                let data_length = usize::from(r.u16().ok_or(short)?);
-                if (flags & HAS_DATA != 0) != (data_length != 0) {
-                    return Err(short);
+                let previous_file = previous.map(|block| block.file);
+                let block = read_block_header(&mut cursor, id, previous_file).ok_or(short)?;
+                payload += block.data.len();
+                if let Some(image) = &block.image {
+                    payload += image.bytes.len();
                 }
-                payload += data_length;
-                let mut image = None;
-                if flags & HAS_IMAGE != 0 {
-                    let length = r.u16().ok_or(short)?;
-                    let hole_offset = r.u16().ok_or(short)?;
-                    let info = r.u8().ok_or(short)?;
-                    let compression = match info & (IMAGE_PGLZ | IMAGE_LZ4 | IMAGE_ZSTD) {
-                        0 => None,
-                        IMAGE_PGLZ => Some(Compression::Pglz),
-                        IMAGE_LZ4 => Some(Compression::Lz4),
-                        IMAGE_ZSTD => Some(Compression::Zstd),
-                        _ => return Err(short),
-                    };
-                    let has_hole = info & IMAGE_HAS_HOLE != 0;
-                    let hole_length = match (compression, has_hole) {
-                        (Some(_), true) => r.u16().ok_or(short)?,
-                        (Some(_), false) => 0,
-                        (None, _) => (BLOCK_SIZE as u16).wrapping_sub(length),
-                    };
-                    let block_size = BLOCK_SIZE as u16;
-                    let valid = usize::from(length) <= BLOCK_SIZE
-                        && if has_hole {
-                            hole_offset != 0 && hole_length != 0 && length != block_size
-                        } else {
-                            hole_offset == 0
-                                && hole_length == 0
-                                && (compression.is_some() || length == block_size)
-                        }
-                        && (compression.is_none() || length != block_size);
-                    if !valid {
-                        return Err(short);
-                    }
-                    payload += usize::from(length);
-                    image = Some(Image {
-                        hole_offset,
-                        hole_length,
-                        compression,
-                        apply: info & IMAGE_APPLY != 0,
-                        bytes: 0..usize::from(length),
-                    });
-                }
-                let file = if flags & SAME_RELATION != 0 {
-                    last_file.ok_or(short)?
-                } else {
-                    RelationFile {
-                        tablespace: r.u32().ok_or(short)?,
-                        database: r.u32().ok_or(short)?,
-                        relation: r.u32().ok_or(short)?,
-                    }
-                };
-                last_file = Some(file);
-                blocks.push(Block {
-                    id,
-                    fork: flags & FORK_MASK,
-                    will_init: flags & WILL_INIT != 0,
-                    file,
-                    number: r.u32().ok_or(short)?,
-                    image,
-                    data: 0..data_length,
-                });
+                blocks.push(block);
             }
             _ => return Err(short),
         }
     }
-    if bytes.len() - r.at != payload + main_length {
+    if bytes.len() - cursor.at != payload + main_length {
         return Err(short);
     }
+    let main_start = place_payloads(blocks, cursor.at);
+    record.xid = le_u32(&bytes[RECORD_XID]);
+    record.info = bytes[RECORD_INFO];
+    record.resource_manager = bytes[RECORD_RESOURCE_MANAGER];
+    record.lsn = lsn;
+    record.end = end;
+    record.toplevel_xid = toplevel_xid;
+    record.main = main_start..main_start + main_length;
+    Ok(())
+}
+
+/// One `XLogRecordBlockHeader`, with its image header and relation file
+/// when it has them. Its payloads are placed once all headers are read.
+fn read_block_header(
+    cursor: &mut Cursor,
+    id: u8,
+    previous_file: Option<RelationFile>,
+) -> Option<Block> {
+    let flags = cursor.u8()?;
+    let data_length = usize::from(cursor.u16()?);
+    if (flags & HAS_DATA != 0) != (data_length != 0) {
+        return None;
+    }
+    let image = if flags & HAS_IMAGE != 0 {
+        Some(read_image_header(cursor)?)
+    } else {
+        None
+    };
+    let file = if flags & SAME_RELATION != 0 {
+        previous_file?
+    } else {
+        RelationFile {
+            tablespace: cursor.u32()?,
+            database: cursor.u32()?,
+            relation: cursor.u32()?,
+        }
+    };
+    Some(Block {
+        id,
+        fork: flags & FORK_MASK,
+        will_init: flags & WILL_INIT != 0,
+        file,
+        number: cursor.u32()?,
+        image,
+        data: 0..data_length,
+    })
+}
+
+/// `XLogRecordBlockImageHeader`, and the hole's length when it is
+/// compressed (`XLogRecordBlockCompressHeader`), checked as
+/// `DecodeXLogRecord` checks them.
+fn read_image_header(cursor: &mut Cursor) -> Option<Image> {
+    let length = cursor.u16()?;
+    let hole_offset = cursor.u16()?;
+    let info = cursor.u8()?;
+    let compression = match info & (IMAGE_PGLZ | IMAGE_LZ4 | IMAGE_ZSTD) {
+        0 => None,
+        IMAGE_PGLZ => Some(Compression::Pglz),
+        IMAGE_LZ4 => Some(Compression::Lz4),
+        IMAGE_ZSTD => Some(Compression::Zstd),
+        _ => return None,
+    };
+    let has_hole = info & IMAGE_HAS_HOLE != 0;
+    let hole_length = match (compression, has_hole) {
+        (Some(_), true) => cursor.u16()?,
+        (Some(_), false) => 0,
+        (None, _) => BLOCK_SIZE_U16.wrapping_sub(length),
+    };
+    let valid = usize::from(length) <= BLOCK_SIZE
+        && if has_hole {
+            hole_offset != 0 && hole_length != 0 && length != BLOCK_SIZE_U16
+        } else {
+            hole_offset == 0
+                && hole_length == 0
+                && (compression.is_some() || length == BLOCK_SIZE_U16)
+        }
+        && (compression.is_none() || length != BLOCK_SIZE_U16);
+    if !valid {
+        return None;
+    }
+    Some(Image {
+        hole_offset,
+        hole_length,
+        compression,
+        apply: info & IMAGE_APPLY != 0,
+        bytes: 0..usize::from(length),
+    })
+}
+
+/// Moves each block's payload ranges to where they lie from `start`:
+/// where the main data starts.
+fn place_payloads(blocks: &mut [Block], start: usize) -> usize {
     // Payloads follow the headers in block order: image, then data.
-    let mut offset = r.at;
+    let mut offset = start;
     for block in blocks.iter_mut() {
         if let Some(image) = &mut block.image {
             image.bytes = offset..offset + image.bytes.len();
@@ -499,14 +567,7 @@ fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(), WalError> 
         block.data = offset..offset + block.data.len();
         offset = block.data.end;
     }
-    record.xid = le_u32(&bytes[4..8]);
-    record.info = bytes[16];
-    record.resource_manager = bytes[17];
-    record.lsn = lsn;
-    record.end = end;
-    record.toplevel_xid = toplevel_xid;
-    record.main = offset..offset + main_length;
-    Ok(())
+    offset
 }
 
 struct Cursor<'a> {
@@ -515,14 +576,14 @@ struct Cursor<'a> {
 }
 
 impl Cursor<'_> {
-    fn take(&mut self, n: usize) -> Option<&[u8]> {
-        let bytes = self.bytes.get(self.at..self.at.checked_add(n)?)?;
-        self.at += n;
+    fn take(&mut self, length: usize) -> Option<&[u8]> {
+        let bytes = self.bytes.get(self.at..self.at.checked_add(length)?)?;
+        self.at += length;
         Some(bytes)
     }
 
     fn u8(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
+        self.take(1).map(|bytes| bytes[0])
     }
 
     fn u16(&mut self) -> Option<u16> {
@@ -558,15 +619,15 @@ fn page_start(lsn: u64) -> u64 {
     lsn - lsn % PAGE_SIZE
 }
 
-/// `MAXALIGN`: records start on 8-byte boundaries.
 fn align(lsn: u64) -> u64 {
-    lsn.div_ceil(8) * 8
+    lsn.div_ceil(RECORD_ALIGNMENT) * RECORD_ALIGNMENT
 }
 
 /// The checksum a record carries: CRC-32C over the record after its
 /// header, then over the header up to the checksum, as `XLogRecord` has it.
 fn checksum(record: &[u8]) -> u32 {
-    crc32c::crc32c_append(crc32c::crc32c(&record[RECORD_HEADER..]), &record[..20])
+    let before_checksum = &record[..RECORD_CHECKSUM.start];
+    crc32c::crc32c_append(crc32c::crc32c(&record[RECORD_HEADER..]), before_checksum)
 }
 
 /// WAL Straum can't read. Any of these ends the stream, and Straum starts
@@ -633,24 +694,34 @@ pub(crate) mod tests {
     impl Rng {
         fn next(&mut self) -> u64 {
             self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
+            let mut mixed = self.0;
+            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            mixed ^ (mixed >> 31)
         }
 
-        fn below(&mut self, n: u64) -> u64 {
-            self.next() % n
+        fn below(&mut self, limit: u64) -> u64 {
+            self.next() % limit
         }
 
-        fn bytes(&mut self, n: usize) -> Vec<u8> {
-            (0..n).map(|_| self.next() as u8).collect()
+        /// A number below `limit`, as the type a field holds.
+        fn below_as<T: TryFrom<u64, Error: std::fmt::Debug>>(&mut self, limit: u64) -> T {
+            T::try_from(self.below(limit)).unwrap()
+        }
+
+        fn bytes(&mut self, length: usize) -> Vec<u8> {
+            (0..length).map(|_| self.below_as(256)).collect()
         }
 
         fn some_bytes(&mut self, least: u64, more: u64) -> Vec<u8> {
-            let n = least + self.below(more);
-            self.bytes(n as usize)
+            let length = least + self.below(more);
+            self.bytes(usize::try_from(length).unwrap())
         }
+    }
+
+    /// Where `lsn` lies in WAL laid out from `SEGMENT`.
+    fn offset(lsn: u64) -> usize {
+        usize::try_from(lsn - SEGMENT).unwrap()
     }
 
     /// A record as a test describes it, and what the reader must give back.
@@ -700,64 +771,20 @@ pub(crate) mod tests {
         let mut last = None;
         for block in &spec.blocks {
             let same = last == Some(block.file);
-            let mut flags = block.fork;
-            if block.image.is_some() {
-                flags |= HAS_IMAGE;
-            }
-            if !block.data.is_empty() {
-                flags |= HAS_DATA;
-            }
-            if block.will_init {
-                flags |= WILL_INIT;
-            }
-            if same {
-                flags |= SAME_RELATION;
-            }
-            headers.push(block.id);
-            headers.push(flags);
-            headers.extend((block.data.len() as u16).to_le_bytes());
-            if let Some(image) = &block.image {
-                let mut info = 0;
-                if image.hole_length != 0 {
-                    info |= IMAGE_HAS_HOLE;
-                }
-                if image.apply {
-                    info |= IMAGE_APPLY;
-                }
-                info |= match image.compression {
-                    None => 0,
-                    Some(Compression::Pglz) => IMAGE_PGLZ,
-                    Some(Compression::Lz4) => IMAGE_LZ4,
-                    Some(Compression::Zstd) => IMAGE_ZSTD,
-                };
-                headers.extend((image.bytes.len() as u16).to_le_bytes());
-                headers.extend(image.hole_offset.to_le_bytes());
-                headers.push(info);
-                if image.compression.is_some() && image.hole_length != 0 {
-                    headers.extend(image.hole_length.to_le_bytes());
-                }
-                payload.extend(&image.bytes);
-            }
-            if !same {
-                headers.extend(block.file.tablespace.to_le_bytes());
-                headers.extend(block.file.database.to_le_bytes());
-                headers.extend(block.file.relation.to_le_bytes());
-            }
-            headers.extend(block.number.to_le_bytes());
-            payload.extend(&block.data);
+            assemble_block(block, same, &mut headers, &mut payload);
             last = Some(block.file);
         }
         if !spec.main.is_empty() {
-            if spec.main.len() < 256 {
+            if let Ok(length) = u8::try_from(spec.main.len()) {
                 headers.push(DATA_SHORT);
-                headers.push(spec.main.len() as u8);
+                headers.push(length);
             } else {
                 headers.push(DATA_LONG);
-                headers.extend((spec.main.len() as u32).to_le_bytes());
+                headers.extend(u32::try_from(spec.main.len()).unwrap().to_le_bytes());
             }
             payload.extend(&spec.main);
         }
-        let total = (RECORD_HEADER + headers.len() + payload.len()) as u32;
+        let total = u32::try_from(RECORD_HEADER + headers.len() + payload.len()).unwrap();
         let mut record = Vec::new();
         record.extend(total.to_le_bytes());
         record.extend(spec.xid.to_le_bytes());
@@ -768,9 +795,60 @@ pub(crate) mod tests {
         record.extend([0; 4]);
         record.extend(headers);
         record.extend(payload);
-        let crc = checksum(&record);
-        record[20..24].copy_from_slice(&crc.to_le_bytes());
-        record
+        reseal(record)
+    }
+
+    /// A block's header into `headers`, its image and data into `payload`.
+    /// `same` says it names the relation the block before it does.
+    fn assemble_block(block: &BlockSpec, same: bool, headers: &mut Vec<u8>, payload: &mut Vec<u8>) {
+        let mut flags = block.fork;
+        if block.image.is_some() {
+            flags |= HAS_IMAGE;
+        }
+        if !block.data.is_empty() {
+            flags |= HAS_DATA;
+        }
+        if block.will_init {
+            flags |= WILL_INIT;
+        }
+        if same {
+            flags |= SAME_RELATION;
+        }
+        headers.push(block.id);
+        headers.push(flags);
+        headers.extend(u16::try_from(block.data.len()).unwrap().to_le_bytes());
+        if let Some(image) = &block.image {
+            headers.extend(u16::try_from(image.bytes.len()).unwrap().to_le_bytes());
+            headers.extend(image.hole_offset.to_le_bytes());
+            headers.push(image_info(image));
+            if image.compression.is_some() && image.hole_length != 0 {
+                headers.extend(image.hole_length.to_le_bytes());
+            }
+            payload.extend(&image.bytes);
+        }
+        if !same {
+            headers.extend(block.file.tablespace.to_le_bytes());
+            headers.extend(block.file.database.to_le_bytes());
+            headers.extend(block.file.relation.to_le_bytes());
+        }
+        headers.extend(block.number.to_le_bytes());
+        payload.extend(&block.data);
+    }
+
+    fn image_info(image: &ImageSpec) -> u8 {
+        let mut info = 0;
+        if image.hole_length != 0 {
+            info |= IMAGE_HAS_HOLE;
+        }
+        if image.apply {
+            info |= IMAGE_APPLY;
+        }
+        info | match image.compression {
+            None => 0,
+            Some(Compression::Pglz) => IMAGE_PGLZ,
+            Some(Compression::Lz4) => IMAGE_LZ4,
+            Some(Compression::Zstd) => IMAGE_ZSTD,
+        }
     }
 
     /// WAL from `start`, a segment start, laid out as `CopyXLogRecordToWAL`
@@ -781,42 +859,24 @@ pub(crate) mod tests {
         let mut wal = Vec::new();
         let mut lsns = Vec::new();
         let mut position = start;
-        let header = |wal: &mut Vec<u8>, position: u64, remaining: usize| {
-            let long = position.is_multiple_of(SEGMENT);
-            let mut flags = BACKUP_REMOVABLE | if long { LONG_PAGE_HEADER } else { 0 };
-            if remaining > 0 {
-                flags |= FIRST_IS_CONTINUATION;
-            }
-            wal.extend(MAGIC.to_le_bytes());
-            wal.extend(flags.to_le_bytes());
-            wal.extend(1u32.to_le_bytes());
-            wal.extend(position.to_le_bytes());
-            wal.extend((remaining as u32).to_le_bytes());
-            wal.extend([0; 4]);
-            if long {
-                wal.extend(42u64.to_le_bytes());
-                wal.extend((SEGMENT as u32).to_le_bytes());
-                wal.extend((PAGE_SIZE as u32).to_le_bytes());
-            }
-            position + if long { LONG_HEADER } else { SHORT_HEADER }
-        };
         for record in records {
             if position.is_multiple_of(PAGE_SIZE) {
-                position = header(&mut wal, position, 0);
+                position = write_page_header(&mut wal, position, 0);
             }
             lsns.push(position);
             let mut written = 0;
             while written < record.len() {
                 if position.is_multiple_of(PAGE_SIZE) {
-                    position = header(&mut wal, position, record.len() - written);
+                    position = write_page_header(&mut wal, position, record.len() - written);
                 }
-                let room = (PAGE_SIZE - position % PAGE_SIZE) as usize;
+                let room = usize::try_from(PAGE_SIZE - position % PAGE_SIZE).unwrap();
                 let take = room.min(record.len() - written);
                 wal.extend(&record[written..written + take]);
                 written += take;
                 position += take as u64;
             }
-            let is_switch = record[17] == XLOG_RESOURCE_MANAGER && record[16] & 0xF0 == XLOG_SWITCH;
+            let is_switch = record[RECORD_RESOURCE_MANAGER] == XLOG_RESOURCE_MANAGER
+                && record[RECORD_INFO] & RESOURCE_MANAGER_INFO == XLOG_SWITCH;
             let next = if is_switch {
                 position.div_ceil(SEGMENT) * SEGMENT
             } else {
@@ -824,7 +884,7 @@ pub(crate) mod tests {
             };
             while position < next {
                 if position.is_multiple_of(PAGE_SIZE) {
-                    position = header(&mut wal, position, 0);
+                    position = write_page_header(&mut wal, position, 0);
                     continue;
                 }
                 wal.push(0);
@@ -834,11 +894,69 @@ pub(crate) mod tests {
         (wal, lsns)
     }
 
+    /// The page header at `position`, with `remaining` bytes of a record
+    /// carrying on into the page: where the page's first record starts.
+    fn write_page_header(wal: &mut Vec<u8>, position: u64, remaining: usize) -> u64 {
+        let long = position.is_multiple_of(SEGMENT);
+        let mut flags = BACKUP_REMOVABLE | if long { LONG_PAGE_HEADER } else { 0 };
+        if remaining > 0 {
+            flags |= FIRST_IS_CONTINUATION;
+        }
+        wal.extend(MAGIC.to_le_bytes());
+        wal.extend(flags.to_le_bytes());
+        wal.extend(1u32.to_le_bytes());
+        wal.extend(position.to_le_bytes());
+        wal.extend(u32::try_from(remaining).unwrap().to_le_bytes());
+        wal.extend([0; 4]);
+        if long {
+            wal.extend(42u64.to_le_bytes());
+            wal.extend(u32::try_from(SEGMENT).unwrap().to_le_bytes());
+            wal.extend(u32::try_from(PAGE_SIZE).unwrap().to_le_bytes());
+        }
+        position + if long { LONG_HEADER } else { SHORT_HEADER }
+    }
+
     fn file(rng: &mut Rng) -> RelationFile {
         RelationFile {
             tablespace: 1663,
             database: 5,
-            relation: 16384 + rng.below(3) as u32,
+            relation: 16384 + rng.below_as::<u32>(3),
+        }
+    }
+
+    fn random_image(rng: &mut Rng) -> Option<ImageSpec> {
+        match rng.below(4) {
+            0 => {
+                let hole_offset = 24 + rng.below_as::<u16>(1000);
+                let hole_length = 1 + rng.below_as::<u16>(6000);
+                Some(ImageSpec {
+                    hole_offset,
+                    hole_length,
+                    compression: None,
+                    apply: rng.below(2) == 0,
+                    bytes: rng.bytes(BLOCK_SIZE - usize::from(hole_length)),
+                })
+            }
+            1 => Some(ImageSpec {
+                hole_offset: 0,
+                hole_length: 0,
+                compression: None,
+                apply: true,
+                bytes: rng.bytes(BLOCK_SIZE),
+            }),
+            2 => {
+                let compression = [Compression::Pglz, Compression::Lz4, Compression::Zstd]
+                    [rng.below_as::<usize>(3)];
+                let hole = rng.below(2) == 0;
+                Some(ImageSpec {
+                    hole_offset: if hole { 100 } else { 0 },
+                    hole_length: if hole { 200 } else { 0 },
+                    compression: Some(compression),
+                    apply: true,
+                    bytes: rng.some_bytes(1, 3000),
+                })
+            }
+            _ => None,
         }
     }
 
@@ -846,50 +964,18 @@ pub(crate) mod tests {
         let mut blocks = Vec::new();
         let mut id = 0u8;
         for _ in 0..rng.below(4) {
-            id += rng.below(3) as u8;
+            id += rng.below_as::<u8>(3);
             if id > MAX_BLOCK_ID {
                 break;
             }
-            let image = match rng.below(4) {
-                0 => {
-                    let hole_offset = 24 + rng.below(1000) as u16;
-                    let hole_length = 1 + rng.below(6000) as u16;
-                    Some(ImageSpec {
-                        hole_offset,
-                        hole_length,
-                        compression: None,
-                        apply: rng.below(2) == 0,
-                        bytes: rng.bytes(BLOCK_SIZE - usize::from(hole_length)),
-                    })
-                }
-                1 => Some(ImageSpec {
-                    hole_offset: 0,
-                    hole_length: 0,
-                    compression: None,
-                    apply: true,
-                    bytes: rng.bytes(BLOCK_SIZE),
-                }),
-                2 => {
-                    let compression = [Compression::Pglz, Compression::Lz4, Compression::Zstd]
-                        [rng.below(3) as usize];
-                    let hole = rng.below(2) == 0;
-                    Some(ImageSpec {
-                        hole_offset: if hole { 100 } else { 0 },
-                        hole_length: if hole { 200 } else { 0 },
-                        compression: Some(compression),
-                        apply: true,
-                        bytes: rng.some_bytes(1, 3000),
-                    })
-                }
-                _ => None,
-            };
+            let image = random_image(rng);
             let data = rng.some_bytes(0, 300);
             blocks.push(BlockSpec {
                 id,
-                fork: rng.below(3) as u8,
+                fork: rng.below_as(3),
                 will_init: rng.below(5) == 0,
                 file: file(rng),
-                number: rng.below(1000) as u32,
+                number: rng.below_as(1000),
                 image,
                 data,
             });
@@ -897,14 +983,14 @@ pub(crate) mod tests {
         }
         let main_length = match rng.below(4) {
             0 => 0,
-            1 => 300 + rng.below(20_000) as usize,
-            _ => rng.below(200) as usize,
+            1 => 300 + rng.below_as::<usize>(20_000),
+            _ => rng.below_as(200),
         };
         Spec {
-            xid: rng.below(1000) as u32,
-            resource_manager: 1 + rng.below(20) as u8,
-            info: (rng.below(16) as u8) << 4,
-            toplevel_xid: (rng.below(5) == 0).then(|| rng.below(1000) as u32),
+            xid: rng.below_as(1000),
+            resource_manager: 1 + rng.below_as::<u8>(20),
+            info: rng.below_as::<u8>(16) << 4,
+            toplevel_xid: (rng.below(5) == 0).then(|| rng.below_as(1000)),
             origin: rng.below(10) == 0,
             blocks,
             main: rng.bytes(main_length),
@@ -961,11 +1047,11 @@ pub(crate) mod tests {
         start: u64,
     ) -> Result<Vec<Record>, WalError> {
         let mut records = Records::new(start, SEGMENT);
-        let skip = (page_start(start) - wal_start) as usize;
+        let skip = usize::try_from(page_start(start) - wal_start).unwrap();
         let mut out = Vec::new();
         let mut at = skip;
         while at < wal.len() {
-            let take = (1 + rng.below(20_000) as usize).min(wal.len() - at);
+            let take = (1 + rng.below_as::<usize>(20_000)).min(wal.len() - at);
             records.feed(records.wanted(), &wal[at..at + take])?;
             at += take;
             while let Some(record) = records.next_record()? {
@@ -980,16 +1066,14 @@ pub(crate) mod tests {
         for seed in 0..200 {
             let mut rng = Rng(seed);
             let start = SEGMENT * (1 + rng.below(4));
-            let mut specs: Vec<Spec> = (0..1 + rng.below(40))
-                .map(|_| random_spec(&mut rng))
-                .collect();
+            let mut specs: Vec<Spec> = (0..=rng.below(40)).map(|_| random_spec(&mut rng)).collect();
             if rng.below(3) == 0 {
-                let at = rng.below(specs.len() as u64) as usize;
+                let at = rng.below_as(specs.len() as u64);
                 specs.insert(at, switch());
             }
             let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
             let (wal, lsns) = lay_out(start, &assembled);
-            let first = rng.below(specs.len() as u64) as usize;
+            let first = rng.below_as(specs.len() as u64);
             let records = read(&mut rng, &wal, start, lsns[first]).unwrap();
             assert_eq!(records.len(), specs.len() - first, "seed {seed}");
             for ((record, spec), lsn) in records.iter().zip(&specs[first..]).zip(&lsns[first..]) {
@@ -1008,7 +1092,7 @@ pub(crate) mod tests {
         first.blocks.clear();
         first.toplevel_xid = None;
         first.origin = false;
-        first.main = rng.bytes(first_room as usize - RECORD_HEADER - 5);
+        first.main = rng.bytes(usize::try_from(first_room).unwrap() - RECORD_HEADER - 5);
         let second = random_spec(&mut rng);
         let assembled = vec![assemble(&first), assemble(&second)];
         let (wal, lsns) = lay_out(SEGMENT, &assembled);
@@ -1061,14 +1145,14 @@ pub(crate) mod tests {
     #[test]
     fn refuses_a_flipped_byte() {
         let (mut wal, lsns) = one_record();
-        wal[(lsns[0] - SEGMENT) as usize + 30] ^= 1;
+        wal[offset(lsns[0]) + 30] ^= 1;
         assert_eq!(first_error(&wal, lsns[0]), at(lsns[0], CHECKSUM));
     }
 
     #[test]
     fn refuses_a_page_in_the_wrong_place() {
         let (mut wal, lsns) = one_record();
-        wal[8] ^= 1;
+        wal[PAGE_ADDRESS_FIELD.start] ^= 1;
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
@@ -1081,7 +1165,7 @@ pub(crate) mod tests {
     #[test]
     fn refuses_unknown_page_flags() {
         let (mut wal, lsns) = one_record();
-        wal[2] |= 0x80;
+        wal[PAGE_FLAGS_FIELD.start] |= 0x80;
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
@@ -1105,7 +1189,7 @@ pub(crate) mod tests {
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(10_000);
         let (mut wal, lsns) = lay_out(SEGMENT, &[assemble(&spec)]);
-        let second_page = PAGE_SIZE as usize;
+        let second_page = offset(SEGMENT + PAGE_SIZE);
         wal[second_page] ^= 1;
         assert!(matches!(
             first_error(&wal, lsns[0]),
@@ -1122,8 +1206,8 @@ pub(crate) mod tests {
         let mut spec = random_spec(&mut rng);
         spec.main = rng.bytes(10_000);
         let (mut wal, lsns) = lay_out(SEGMENT, &[assemble(&spec)]);
-        let second_page = PAGE_SIZE as usize;
-        wal[second_page + 2] &= !(FIRST_IS_CONTINUATION as u8);
+        let second_page = offset(SEGMENT + PAGE_SIZE);
+        wal[second_page + PAGE_FLAGS_FIELD.start] &= !FIRST_IS_CONTINUATION.to_le_bytes()[0];
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
@@ -1132,7 +1216,7 @@ pub(crate) mod tests {
             }
         ));
         let (mut wal, lsns) = lay_out(SEGMENT, &[assemble(&spec)]);
-        wal[second_page + 16] ^= 1;
+        wal[second_page + PAGE_REMAINING.start] ^= 1;
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
@@ -1145,7 +1229,7 @@ pub(crate) mod tests {
     #[test]
     fn refuses_a_continuation_where_a_record_should_start() {
         let (mut wal, _) = one_record();
-        wal[2] |= FIRST_IS_CONTINUATION as u8;
+        wal[PAGE_FLAGS_FIELD.start] |= FIRST_IS_CONTINUATION.to_le_bytes()[0];
         assert!(matches!(
             first_error(&wal, SEGMENT),
             WalError::At {
@@ -1170,7 +1254,7 @@ pub(crate) mod tests {
     #[test]
     fn refuses_an_overwritten_record() {
         let (mut wal, _) = one_record();
-        wal[2] |= FIRST_IS_OVERWRITE as u8;
+        wal[PAGE_FLAGS_FIELD.start] |= FIRST_IS_OVERWRITE.to_le_bytes()[0];
         assert!(matches!(
             first_error(&wal, SEGMENT),
             WalError::At {
@@ -1183,7 +1267,7 @@ pub(crate) mod tests {
     #[test]
     fn refuses_an_impossible_length() {
         let (mut wal, lsns) = one_record();
-        let at = (lsns[0] - SEGMENT) as usize;
+        let at = offset(lsns[0]);
         wal[at..at + 4].copy_from_slice(&3u32.to_le_bytes());
         assert!(matches!(
             first_error(&wal, lsns[0]),
@@ -1197,7 +1281,7 @@ pub(crate) mod tests {
     /// Re-checksums `record` after a test edits it.
     fn reseal(mut record: Vec<u8>) -> Vec<u8> {
         let crc = checksum(&record);
-        record[20..24].copy_from_slice(&crc.to_le_bytes());
+        record[RECORD_CHECKSUM].copy_from_slice(&crc.to_le_bytes());
         record
     }
 
@@ -1295,8 +1379,8 @@ pub(crate) mod tests {
         // More bytes than the headers account for.
         let mut record = assemble(&plain_block(None, vec![7; 4]));
         record.push(0);
-        let total = record.len() as u32;
-        record[0..4].copy_from_slice(&total.to_le_bytes());
+        let total = u32::try_from(record.len()).unwrap();
+        record[RECORD_LENGTH].copy_from_slice(&total.to_le_bytes());
         assert_eq!(decode_error(record), expected);
     }
 
