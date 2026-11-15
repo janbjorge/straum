@@ -502,6 +502,12 @@ fn le_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+/// The `u32` at `at`, if `bytes` reach that far.
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    let bytes = bytes.get(at..)?.first_chunk()?;
+    Some(u32::from_le_bytes(*bytes))
+}
+
 fn le_u64(bytes: &[u8]) -> u64 {
     let mut array = [0; 8];
     array.copy_from_slice(&bytes[..8]);

@@ -597,13 +597,18 @@ fn prune_freeze_slots(data: &[u8], flags: u8) -> Option<Vec<u16>> {
 
 /// `xl_heap_header` then the tuple from its null bitmap on.
 fn header_and_body(data: &[u8]) -> Option<Tuple> {
-    let header = data.get(..5)?;
-    Some(Tuple {
+    Some(tuple(data.get(..5)?, &data[5..]))
+}
+
+/// A row from the five header bytes the WAL and the page share,
+/// `t_infomask2`, `t_infomask` and `t_hoff`, and what follows them.
+fn tuple(header: &[u8], body: &[u8]) -> Tuple {
+    Tuple {
         infomask2: le_u16(&header[0..2]),
         infomask: le_u16(&header[2..4]),
         hoff: header[4],
-        body: data[5..].to_vec(),
-    })
+        body: body.to_vec(),
+    }
 }
 
 /// The new row of an update, as `heap_xlog_update` puts it together: the
@@ -649,12 +654,7 @@ fn multi_insert_tuples(data: &[u8], count: usize) -> Option<Vec<Tuple>> {
         let header = data.get(at..at + 7)?;
         let length = usize::from(le_u16(&header[0..2]));
         at += 7;
-        tuples.push(Tuple {
-            infomask2: le_u16(&header[2..4]),
-            infomask: le_u16(&header[4..6]),
-            hoff: header[6],
-            body: data.get(at..at + length)?.to_vec(),
-        });
+        tuples.push(tuple(&header[2..], data.get(at..at + length)?));
         at += length;
     }
     (at == data.len()).then_some(tuples)
@@ -703,19 +703,11 @@ fn page_from_image(bytes: &[u8]) -> Option<Page> {
         }
         let offset = (pointer & 0x7FFF) as usize;
         let length = (pointer >> 17) as usize;
-        let tuple = bytes.get(offset..offset.checked_add(length)?)?;
+        let row = bytes.get(offset..offset.checked_add(length)?)?;
         if length < TUPLE_HEADER {
             return None;
         }
-        page.set(
-            offnum,
-            Tuple {
-                infomask2: le_u16(&tuple[18..20]),
-                infomask: le_u16(&tuple[20..22]),
-                hoff: tuple[22],
-                body: tuple[TUPLE_HEADER..].to_vec(),
-            },
-        )?;
+        page.set(offnum, tuple(&row[18..TUPLE_HEADER], &row[TUPLE_HEADER..]))?;
     }
     Some(page)
 }

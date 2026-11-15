@@ -3,7 +3,7 @@
 //! `ParseCommitRecord`, `ParseAbortRecord` in
 //! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
 
-use super::{Record, WalError};
+use super::{Record, WalError, u32_at};
 
 const RM_XACT: u8 = 1;
 const RM_STANDBY: u8 = 8;
@@ -111,12 +111,12 @@ fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Op
     let mut at = 8;
     let info = if has_info {
         at += 4;
-        word(data, 8)?
+        u32_at(data, 8)?
     } else {
         0
     };
     let count = |at: &mut usize| -> Option<usize> {
-        let n = usize::try_from(word(data, *at)?).ok()?;
+        let n = usize::try_from(u32_at(data, *at)?).ok()?;
         *at += 4;
         Some(n)
     };
@@ -127,7 +127,7 @@ fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Op
     if info & HAS_SUBXACTS != 0 {
         let n = count(&mut at)?;
         for i in 0..n {
-            subxacts.push(word(data, at + 4 * i)?);
+            subxacts.push(u32_at(data, at + 4 * i)?);
         }
         at += 4 * n;
     }
@@ -149,15 +149,15 @@ fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Op
             let message = at + INVALIDATION * i;
             if *data.get(message)? == INVALIDATE_RELCACHE {
                 invalidated.push(Invalidated {
-                    database: word(data, message + 4)?,
-                    relation: word(data, message + 8)?,
+                    database: u32_at(data, message + 4)?,
+                    relation: u32_at(data, message + 8)?,
                 });
             }
         }
         at += INVALIDATION * n;
     }
     let xid = if info & HAS_TWO_PHASE != 0 {
-        word(data, at)?
+        u32_at(data, at)?
     } else {
         record.xid
     };
@@ -170,23 +170,17 @@ fn ending(record: &Record, has_info: bool, commit: bool, wide_stats: bool) -> Op
 }
 
 fn running(data: &[u8]) -> Option<Running> {
-    let count = usize::try_from(word(data, 0)?).ok()?;
-    let next_xid = word(data, 12)?;
-    let oldest_xid = word(data, 16)?;
+    let count = usize::try_from(u32_at(data, 0)?).ok()?;
+    let next_xid = u32_at(data, 12)?;
+    let oldest_xid = u32_at(data, 16)?;
     let xids = (0..count)
-        .map(|i| word(data, RUNNING_HEADER + 4 * i))
+        .map(|i| u32_at(data, RUNNING_HEADER + 4 * i))
         .collect::<Option<_>>()?;
     Some(Running {
         next_xid,
         oldest_xid,
         xids,
     })
-}
-
-fn word(data: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        data.get(at..at.checked_add(4)?)?.try_into().ok()?,
-    ))
 }
 
 #[cfg(test)]
