@@ -16,6 +16,17 @@ min_ident_chars = "warn"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+# They ask for a closure chain where ADR-0054 wants a for loop.
+manual_find = "allow"
+manual_find_map = "allow"
+manual_filter = "allow"
+manual_filter_map = "allow"
+manual_map = "allow"
+manual_flatten = "allow"
+manual_try_fold = "allow"
+manual_ok_err = "allow"
+needless_range_loop = "allow"
+explicit_counter_loop = "allow"
 
 [workspace.lints.rust]
 # cargo-llvm-cov sets cfg(coverage), which keeps the WAL benchmark out of
