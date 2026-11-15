@@ -358,26 +358,7 @@ impl Sums {
 mod tests {
     use super::*;
 
-    /// splitmix64; the tests need no crate for randomness.
-    struct Rng(u64);
-
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
-        }
-
-        fn below(&mut self, n: u64) -> u64 {
-            self.next() % n
-        }
-
-        fn place_below(&mut self, len: usize) -> usize {
-            usize::try_from(self.below(len as u64)).expect("below a usize")
-        }
-    }
+    use crate::test_rng::Rng;
 
     fn width(counts: &Counts) -> usize {
         match counts {
@@ -410,7 +391,7 @@ mod tests {
     #[test]
     fn counts_follow_a_list_at_every_width() {
         for most in [1, 200, 60_000, 4_000_000_000, 1 << 50] {
-            let mut rng = Rng(most);
+            let mut rng = Rng::new(most);
             let mut counts = Counts::Zero(0);
             let mut list: Vec<u64> = Vec::new();
             let mut widest = 0;
@@ -422,17 +403,17 @@ mod tests {
                         list.push(0);
                     }
                     (3, len) => {
-                        let i = rng.place_below(len);
+                        let i = rng.position_below(len);
                         counts.swap_remove(i);
                         list.swap_remove(i);
                     }
                     (4..=7, len) => {
-                        let (i, n) = (rng.place_below(len), rng.below(most));
+                        let (i, n) = (rng.position_below(len), rng.below(most));
                         counts.add(i, n);
                         list[i] += n;
                     }
                     (_, len) => {
-                        let i = rng.place_below(len);
+                        let i = rng.position_below(len);
                         let n = rng.below(list[i] + 1);
                         counts.sub(i, n);
                         list[i] -= n;
@@ -484,7 +465,7 @@ mod tests {
     #[test]
     fn sums_follow_a_list_at_every_width() {
         for most in [1_000_i128, 3_000_000_000, i128::from(i64::MAX) * 3] {
-            let mut rng = Rng(7);
+            let mut rng = Rng::new(7);
             let mut sums = Sums::new();
             let mut list: Vec<i128> = Vec::new();
             let (mut least, mut greatest) = (0, 0);
@@ -496,12 +477,12 @@ mod tests {
                         list.push(0);
                     }
                     (3, len) => {
-                        let i = rng.place_below(len);
+                        let i = rng.position_below(len);
                         sums.swap_remove(i);
                         list.swap_remove(i);
                     }
                     (_, len) => {
-                        let i = rng.place_below(len);
+                        let i = rng.position_below(len);
                         let n = i128::from(rng.next()) % (2 * most + 1) - most;
                         sums.add(i, n);
                         list[i] += n;

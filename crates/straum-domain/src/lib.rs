@@ -15,6 +15,8 @@ mod rollup;
 mod sealed;
 mod spec;
 mod store;
+#[cfg(test)]
+mod test_rng;
 mod value;
 mod value_counts;
 

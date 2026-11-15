@@ -143,21 +143,10 @@ mod tests {
 
     use super::*;
 
-    /// splitmix64; the tests need no crate for randomness.
-    struct Rng(u64);
-
-    impl Rng {
-        fn below(&mut self, n: usize) -> usize {
-            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            usize::try_from((z ^ (z >> 31)) % n as u64).expect("below a usize")
-        }
-    }
+    use crate::test_rng::Rng;
 
     fn code_below(rng: &mut Rng, values: usize) -> u32 {
-        u32::try_from(rng.below(values)).expect("codes fit u32")
+        u32::try_from(rng.position_below(values)).expect("codes fit u32")
     }
 
     /// Cells come and go as a bucket's do, the last taking the place of
@@ -166,7 +155,7 @@ mod tests {
     #[test]
     fn places_follow_a_map_as_cells_come_and_go() {
         for (key_len, values) in [(1, 40), (1, 3_000), (3, 6), (0, 1)] {
-            let mut rng = Rng(3);
+            let mut rng = Rng::new(3);
             let mut index = Index::default();
             let mut codes: Vec<u32> = Vec::new();
             let mut held: HashMap<Vec<u32>, usize> = HashMap::new();
@@ -179,7 +168,7 @@ mod tests {
                 };
                 assert_eq!(index.get(&key, keys), held.get(&key).copied(), "{at}");
                 // More come than go until most keys are held, then as many.
-                let arrives = rng.below(100) < if step < 8_000 { 70 } else { 45 };
+                let arrives = rng.position_below(100) < if step < 8_000 { 70 } else { 45 };
                 match (held.get(&key).copied(), arrives) {
                     (None, true) => {
                         let cell = held.len();
@@ -223,12 +212,12 @@ mod tests {
     /// them hold is found out.
     #[test]
     fn cells_taken_in_at_once_hold_a_key_each() {
-        let mut rng = Rng(9);
+        let mut rng = Rng::new(9);
         for cells in [0, 1, 2, 3, 4, 100, 5_000] {
             let cell_count = u32::try_from(cells).expect("a bucket's cells fit u32");
             let mut codes: Vec<u32> = (0..cell_count).flat_map(|n| [n / 7, n % 7]).collect();
             for at in (1..cells).rev() {
-                let with = rng.below(at + 1);
+                let with = rng.position_below(at + 1);
                 codes.swap(2 * at, 2 * with);
                 codes.swap(2 * at + 1, 2 * with + 1);
             }
@@ -244,7 +233,7 @@ mod tests {
             assert_eq!(index.get(&[u32::MAX, 0], keys), None, "{cells} cells");
             if cells > 1 {
                 let mut twice = codes.clone();
-                let (from, to) = (rng.below(cells), rng.below(cells - 1));
+                let (from, to) = (rng.position_below(cells), rng.position_below(cells - 1));
                 let to = to + usize::from(to >= from);
                 twice.copy_within(2 * from..2 * from + 2, 2 * to);
                 let keys = Keys {
