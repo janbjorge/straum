@@ -8,7 +8,7 @@
 use crate::aggregate::Reads;
 use crate::column::{Counts, Sums, put};
 use crate::hash::FastMap;
-use crate::sealed::{SealedColumn, ValueCount};
+use crate::sealed::{DatumCount, SealedColumn, ValueCount};
 use crate::value::Datum;
 use crate::value_counts::ValueCounts;
 
@@ -454,10 +454,13 @@ fn present(rows: &Counts, nulls: &Counts) -> Vec<u64> {
 }
 
 /// A sealed column lists its values ascending, as a spill keeps them.
-fn sorted_counts(counts: &FastMap<Datum, u64>) -> Vec<(Datum, u64)> {
+fn sorted_counts(counts: &FastMap<Datum, u64>) -> Vec<DatumCount> {
     let mut sorted = Vec::with_capacity(counts.len());
     for (value, count) in counts {
-        sorted.push((value.clone(), *count));
+        sorted.push(DatumCount {
+            value: value.clone(),
+            count: *count,
+        });
     }
     sorted.sort();
     sorted
@@ -498,10 +501,10 @@ fn extent_fits(values: &[Vec<ValueCount>]) -> bool {
 }
 
 /// Each value of each cell counted once at least.
-fn distinct_fits(values: &[Vec<(Datum, u64)>]) -> bool {
+fn distinct_fits(values: &[Vec<DatumCount>]) -> bool {
     for entries in values {
-        for (_, count) in entries {
-            if !counted(*count) {
+        for entry in entries {
+            if !counted(entry.count) {
                 return false;
             }
         }
@@ -523,12 +526,12 @@ fn thawed_extent(values: &[Vec<ValueCount>]) -> State {
     State::Extent { mins, maxs, counts }
 }
 
-fn thawed_distinct(values: Vec<Vec<(Datum, u64)>>) -> State {
+fn thawed_distinct(values: Vec<Vec<DatumCount>>) -> State {
     let mut counts = Vec::with_capacity(values.len());
     for entries in values {
         let mut value_counts = FastMap::default();
-        for (value, count) in entries {
-            value_counts.insert(value, count);
+        for entry in entries {
+            value_counts.insert(entry.value, entry.count);
         }
         counts.push(value_counts);
     }

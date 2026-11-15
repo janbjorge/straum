@@ -10,8 +10,8 @@ use crate::random::trip;
 use crate::views::{spec, typed};
 use crate::{AT, DAY, HOUR, START, TIP, WEEK, WIDTH};
 use straum_domain::{
-    Ask, AskKey, Datum, RowError, Sealed, SealedColumn, SealedError, SealedId, Store, Value,
-    ValueCount,
+    Ask, AskKey, Datum, DatumCount, RowError, Sealed, SealedColumn, SealedError, SealedId, Store,
+    Value, ValueCount,
 };
 
 /// The rows of each tip one cell holds.
@@ -551,7 +551,10 @@ fn put_a_value_twice(sealed: &mut Sealed) {
 fn count_a_distinct_value_no_times(sealed: &mut Sealed) {
     let distinct = column_of(sealed, ColumnKind::Distinct);
     sealed.columns[distinct] = SealedColumn::Distinct {
-        values: vec![vec![(Datum::Null, 0)]],
+        values: vec![vec![DatumCount {
+            value: Datum::Null,
+            count: 0,
+        }]],
     };
 }
 

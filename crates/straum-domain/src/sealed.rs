@@ -43,7 +43,7 @@ pub enum SealedColumn {
     /// Count per value, ascending by value.
     Extent { values: Vec<Vec<ValueCount>> },
     /// Count per value, ascending by value.
-    Distinct { values: Vec<Vec<(Datum, u64)>> },
+    Distinct { values: Vec<Vec<DatumCount>> },
     /// Counts of true and of false.
     Bools { trues: Vec<u64>, falses: Vec<u64> },
 }
@@ -52,6 +52,13 @@ pub enum SealedColumn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueCount {
     pub value: i64,
+    pub count: u64,
+}
+
+/// One value a count distinct column holds, and how many rows hold it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DatumCount {
+    pub value: Datum,
     pub count: u64,
 }
 
