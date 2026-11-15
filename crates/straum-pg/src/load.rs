@@ -18,9 +18,10 @@ const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
 
 /// The columns Straum reads of the table, as the catalog checked them.
 pub(crate) fn copy_sql(table: &Checked) -> String {
-    let select: Vec<String> = (table.columns.iter())
-        .map(|column| escape_identifier(column.as_str()))
-        .collect();
+    let mut select = Vec::new();
+    for column in &table.columns {
+        select.push(escape_identifier(column.as_str()));
+    }
     format!(
         "COPY (SELECT {} FROM {}) TO STDOUT (FORMAT binary)",
         select.join(", "),
@@ -64,9 +65,10 @@ pub(crate) fn copy(
     thread::scope(|scope| {
         let reader = scope.spawn(move || {
             read(connection, table, |batch| {
-                let next = empty
-                    .try_recv()
-                    .unwrap_or_else(|_| Vec::with_capacity(BATCH * width));
+                let next = match empty.try_recv() {
+                    Ok(spent) => spent,
+                    Err(_) => Vec::with_capacity(BATCH * width),
+                };
                 // The receiver is gone once `each` has failed.
                 full.send(mem::replace(batch, next))
                     .map_err(|_| Error::Stopped)
@@ -83,9 +85,10 @@ pub(crate) fn copy(
             let _ = spent.send(batch);
         }
         drop(filled);
-        let read = reader
-            .join()
-            .unwrap_or_else(|payload| panic::resume_unwind(payload));
+        let read = match reader.join() {
+            Ok(read) => read,
+            Err(payload) => panic::resume_unwind(payload),
+        };
         result.and(read)
     })
 }
@@ -129,9 +132,9 @@ fn read(
                     // -1 is null.
                     Err(_) => Datum::Null,
                     Ok(length) => {
-                        let (value, rest) = data
-                            .split_at_checked(length)
-                            .ok_or_else(|| Error::protocol("a copy value cut short"))?;
+                        let Some((value, rest)) = data.split_at_checked(length) else {
+                            return Err(Error::protocol("a copy value cut short"));
+                        };
                         data = rest;
                         read_binary(*column_type, value)
                             .map_err(|error| error.at(&table.qualified(), name))?
@@ -156,13 +159,15 @@ fn read(
 
 /// The data after the signature, flags and header extension.
 fn header(data: &[u8]) -> Result<&[u8], Error> {
-    let mut data = data
-        .strip_prefix(SIGNATURE)
-        .ok_or_else(|| Error::protocol("a copy that isn't binary"))?;
+    let Some(mut data) = data.strip_prefix(SIGNATURE) else {
+        return Err(Error::protocol("a copy that isn't binary"));
+    };
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
-    let after = usize::try_from(extension).ok();
-    let Some(rest) = after.and_then(|length| data.get(length..)) else {
+    let Ok(extension) = usize::try_from(extension) else {
+        return Err(Error::protocol("a copy header cut short"));
+    };
+    let Some(rest) = data.get(extension..) else {
         return Err(Error::protocol("a copy header cut short"));
     };
     Ok(rest)
@@ -170,9 +175,9 @@ fn header(data: &[u8]) -> Result<&[u8], Error> {
 
 /// The next `N` bytes.
 fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], Error> {
-    let (head, rest) = data
-        .split_first_chunk()
-        .ok_or_else(|| Error::protocol("a copy row cut short"))?;
+    let Some((head, rest)) = data.split_first_chunk() else {
+        return Err(Error::protocol("a copy row cut short"));
+    };
     *data = rest;
     Ok(*head)
 }

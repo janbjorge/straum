@@ -130,9 +130,9 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
             return Err(error);
         }
     };
-    let at = first_row_value(&created, 1)
-        .and_then(parse_lsn)
-        .ok_or_else(|| Error::protocol("a slot without a consistent point"))?;
+    let Some(at) = first_row_value(&created, 1).and_then(parse_lsn) else {
+        return Err(Error::protocol("a slot without a consistent point"));
+    };
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
@@ -187,12 +187,12 @@ fn physical_snapshot(
     let at = loop {
         connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
         let taken = connection.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
-        let seen = first_row_value(&taken, 0)
-            .and_then(TransactionSnapshot::parse)
-            .ok_or_else(|| Error::protocol("a snapshot of an unknown shape"))?;
-        let written = first_row_value(&taken, 1)
-            .and_then(parse_lsn)
-            .ok_or_else(|| Error::protocol("no WAL position"))?;
+        let Some(seen) = first_row_value(&taken, 0).and_then(TransactionSnapshot::parse) else {
+            return Err(Error::protocol("a snapshot of an unknown shape"));
+        };
+        let Some(written) = first_row_value(&taken, 1).and_then(parse_lsn) else {
+            return Err(Error::protocol("no WAL position"));
+        };
         match stream.see(seen, written)? {
             Sight::Through(at) => break at,
             Sight::Blind(xids) => {
@@ -243,9 +243,11 @@ fn wait_consistent(stream: &mut Stream, wait: Duration) -> Result<(), Error> {
 }
 
 fn unloaded(tables: &Tables) -> Vec<Identifier> {
-    (tables.dims.iter().chain(&tables.facts))
-        .map(|table| table.name.clone())
-        .collect()
+    let mut names = Vec::new();
+    for table in tables.dims.iter().chain(&tables.facts) {
+        names.push(table.name.clone());
+    }
+    names
 }
 
 /// The facts, then the dims, as the decoder takes them.
@@ -255,12 +257,14 @@ fn checked(tables: Tables) -> Vec<Checked> {
 
 /// A slot name no other Straum process or slot of this one has.
 pub(crate) fn slot_name() -> String {
+    // A clock before 1970 still names a slot; the counter keeps it unique.
+    let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since) => since.as_nanos(),
+        Err(_) => 0,
+    };
     format!(
-        "straum_{}_{}_{}",
+        "straum_{}_{nanos}_{}",
         process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos()),
         SLOTS.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -322,8 +326,10 @@ impl Source for Postgres {
         if matches!(self.state, State::Closed) {
             return Err(Error::Stopped.into());
         }
-        let wal = plain(&mut self.plain, &self.dsn)
-            .and_then(|connection| read_wal(connection, &self.slot));
+        let wal = match plain(&mut self.plain, &self.dsn) {
+            Ok(connection) => read_wal(connection, &self.slot),
+            Err(error) => Err(error),
+        };
         if wal.is_err() {
             self.plain = None;
         }
@@ -348,9 +354,12 @@ pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, E
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
     ))?;
-    let lsns: Vec<Lsn> = (rows.first().into_iter().flatten())
-        .filter_map(|lsn| parse_lsn(lsn.as_deref()?))
-        .collect();
+    let mut lsns = Vec::new();
+    for value in rows.first().into_iter().flatten() {
+        if let Some(lsn) = value.as_deref().and_then(parse_lsn) {
+            lsns.push(lsn);
+        }
+    }
     match lsns[..] {
         [written, confirmed, restart] => Ok(Wal {
             written,

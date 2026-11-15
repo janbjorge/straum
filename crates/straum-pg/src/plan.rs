@@ -29,12 +29,17 @@ pub fn plan(
     replication: Replication,
 ) -> String {
     let tables = spec.tables();
-    let schemas = once((tables.iter()).map(|table| escape_identifier(table.schema.as_str())));
-    let list = tables
-        .iter()
-        .map(|table| qualified(table))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut schemas = Vec::new();
+    let mut qualified_tables = Vec::new();
+    for table in &tables {
+        let schema = escape_identifier(table.schema.as_str());
+        // Each schema at its first place only.
+        if !schemas.contains(&schema) {
+            schemas.push(schema);
+        }
+        qualified_tables.push(qualified(table));
+    }
+    let list = qualified_tables.join(", ");
     let publication = escape_identifier(publication);
     let role = escape_identifier(role);
 
@@ -100,32 +105,33 @@ fn qualified(table: &straum_domain::Table) -> String {
     escaped(&table.schema, &table.name)
 }
 
-/// Each item at its first place only.
-fn once(items: impl Iterator<Item = String>) -> Vec<String> {
-    let mut kept = Vec::new();
-    for item in items {
-        if !kept.contains(&item) {
-            kept.push(item);
-        }
-    }
-    kept
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A schema or a table named again apart from its first place still
     /// comes once.
+    /// A view `name` counting the rows of `table` by the hour.
+    fn view(name: &str, table: &str) -> String {
+        format!(
+            "CREATE VIEW {name} WITH (buckets = '1 hour') AS
+             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+             FROM {table} AS f GROUP BY 1;"
+        )
+    }
+
+    /// The first line of `sql` that starts with `start`.
+    fn line_starting<'a>(sql: &'a str, start: &str) -> &'a str {
+        for line in sql.lines() {
+            if line.starts_with(start) {
+                return line;
+            }
+        }
+        panic!("no line starts with {start}: {sql}")
+    }
+
     #[test]
     fn schemas_and_tables_come_once() {
-        let view = |name: &str, table: &str| {
-            format!(
-                "CREATE VIEW {name} WITH (buckets = '1 hour') AS
-                 SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
-                 FROM {table} AS f GROUP BY 1;"
-            )
-        };
         let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
         let sql = plan(
             &straum_notation::parse(&views).unwrap(),
@@ -159,9 +165,7 @@ mod tests {
         )
         .unwrap();
         let sql = plan(&spec, "p", "r", Some("s'cret"), Replication::Logical);
-        let line = (sql.lines())
-            .find(|line| line.starts_with("CREATE ROLE"))
-            .unwrap();
+        let line = line_starting(&sql, "CREATE ROLE");
         assert!(
             line.starts_with("CREATE ROLE \"r\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:"),
             "{line}"

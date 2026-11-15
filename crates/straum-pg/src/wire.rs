@@ -126,10 +126,9 @@ impl Connection {
                             "SASL mechanisms {offered:?}; Straum needs {SCRAM_SHA_256}"
                         )));
                     }
-                    let password = dsn
-                        .password
-                        .as_deref()
-                        .ok_or_else(|| Error::protocol("a password request; the DSN has none"))?;
+                    let Some(password) = dsn.password.as_deref() else {
+                        return Err(Error::protocol("a password request; the DSN has none"));
+                    };
                     let state =
                         ScramSha256::new(password.as_bytes(), ChannelBinding::unsupported());
                     frontend::sasl_initial_response(
@@ -141,17 +140,17 @@ impl Connection {
                     scram = Some(state);
                 }
                 Message::AuthenticationSaslContinue(body) => {
-                    let state = scram
-                        .as_mut()
-                        .ok_or_else(|| Error::protocol("SASL continue"))?;
+                    let Some(state) = scram.as_mut() else {
+                        return Err(Error::protocol("SASL continue"));
+                    };
                     state.update(body.data())?;
                     frontend::sasl_response(state.message(), &mut self.output)?;
                     self.flush()?;
                 }
                 Message::AuthenticationSaslFinal(body) => {
-                    let state = scram
-                        .as_mut()
-                        .ok_or_else(|| Error::protocol("SASL final"))?;
+                    let Some(state) = scram.as_mut() else {
+                        return Err(Error::protocol("SASL final"));
+                    };
                     state.finish(body.data())?;
                 }
                 Message::ReadyForQuery(_) => return Ok(()),
@@ -183,10 +182,16 @@ impl Connection {
                 | Message::EmptyQueryResponse
                 | Message::NoticeResponse(_)
                 | Message::ParameterStatus(_) => {}
+                // The first error is the one that says why.
                 Message::ErrorResponse(body) => {
-                    error.get_or_insert_with(|| server_error(&body));
+                    if error.is_none() {
+                        error = Some(server_error(&body));
+                    }
                 }
-                Message::ReadyForQuery(_) => return error.map_or(Ok(rows), Err),
+                Message::ReadyForQuery(_) => match error {
+                    None => return Ok(rows),
+                    Some(error) => return Err(error),
+                },
                 _ => return Err(Error::protocol("a message during a query")),
             }
         }
@@ -289,8 +294,10 @@ impl Connection {
     }
 
     fn whole(&self) -> io::Result<bool> {
-        Ok(Header::parse(&self.input)?
-            .is_some_and(|header| self.input.len() >= frame_length(header)))
+        let Some(header) = Header::parse(&self.input)? else {
+            return Ok(false);
+        };
+        Ok(self.input.len() >= frame_length(header))
     }
 
     fn fill(&mut self) -> io::Result<()> {
@@ -302,7 +309,13 @@ impl Connection {
                 other => break other,
             }
         };
-        let received = read.inspect_err(|_| self.input.truncate(start))?;
+        let received = match read {
+            Ok(received) => received,
+            Err(error) => {
+                self.input.truncate(start);
+                return Err(error);
+            }
+        };
         self.input.truncate(start + received);
         if received == 0 {
             return Err(io::Error::new(

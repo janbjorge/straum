@@ -50,10 +50,13 @@ impl Dsn {
     /// trusts the roots in FILE instead of the ones built in. With TLS the
     /// host must be a DNS name or IP address, which a certificate can name.
     pub fn parse(url: &str) -> Result<Dsn, DsnError> {
-        let rest = ["postgres://", "postgresql://"]
-            .iter()
-            .find_map(|scheme| url.strip_prefix(scheme))
-            .ok_or(DsnError::Scheme)?;
+        let rest = match url.strip_prefix("postgres://") {
+            Some(rest) => rest,
+            None => match url.strip_prefix("postgresql://") {
+                Some(rest) => rest,
+                None => return Err(DsnError::Scheme),
+            },
+        };
         let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
         let (authority, database) = rest.split_once('/').unwrap_or((rest, ""));
         let (userinfo, hostport) = authority.rsplit_once('@').ok_or(DsnError::User)?;
@@ -74,7 +77,10 @@ impl Dsn {
         }
         let mut plain = false;
         let mut root_cert = None;
-        for pair in query.split('&').filter(|part| !part.is_empty()) {
+        for pair in query.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
             match pair.split_once('=') {
                 Some(("sslmode", "disable")) => plain = true,
                 Some(("sslmode", "require" | "verify-ca" | "verify-full")) => plain = false,
@@ -241,12 +247,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_mode_but_disable_verifies() {
-        let verify = |root_cert: Option<&str>| Tls::Verify {
+    /// TLS to host `h`, trusting the roots in `root_cert` if given.
+    fn verify(root_cert: Option<&str>) -> Tls {
+        Tls::Verify {
             name: ServerName::try_from("h").unwrap(),
             root_cert: root_cert.map(str::to_owned),
-        };
+        }
+    }
+
+    #[test]
+    fn every_mode_but_disable_verifies() {
         let cases = [
             ("", verify(None)),
             ("sslmode=require", verify(None)),

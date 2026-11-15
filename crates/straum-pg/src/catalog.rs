@@ -3,7 +3,9 @@
 //! so it sees the tables as the load does.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
-use straum_domain::{ByKey, ColumnType, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via};
+use straum_domain::{
+    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via,
+};
 
 use crate::error::Error;
 use crate::source::Replication;
@@ -36,8 +38,12 @@ pub(crate) struct Checked {
 
 impl Checked {
     pub(crate) fn column_type(&self, column: &Identifier) -> ColumnType {
-        let index = (self.columns.iter()).position(|candidate| candidate == column);
-        self.types[index.expect("the column is in the table's row")]
+        for (candidate, column_type) in self.columns.iter().zip(&self.types) {
+            if candidate == column {
+                return *column_type;
+            }
+        }
+        panic!("the column is in the table's row")
     }
 
     pub(crate) fn qualified(&self) -> String {
@@ -56,13 +62,21 @@ impl Checked {
             name: Identifier::new(name).unwrap(),
             schema: Identifier::new("public").unwrap(),
             table_name: Identifier::new(table).unwrap(),
-            columns: (columns.iter())
-                .map(|column| Identifier::new(column).unwrap())
-                .collect(),
+            columns: identifiers(columns),
             types,
             enums: Vec::new(),
         }
     }
+}
+
+/// Each of `names` as an identifier, which a test knows is valid.
+#[cfg(test)]
+fn identifiers(names: &[&str]) -> Vec<Identifier> {
+    let mut identifiers = Vec::new();
+    for name in names {
+        identifiers.push(Identifier::new(name).unwrap());
+    }
+    identifiers
 }
 
 /// `"schema"."table"`, quoted for SQL.
@@ -85,21 +99,29 @@ pub(crate) struct Tables {
 impl Tables {
     /// A table by the spec's name for it, dim or fact.
     pub(crate) fn get(&self, name: &Identifier) -> &Checked {
-        (self
-            .facts
-            .iter()
-            .chain(&self.dims)
-            .find(|table| table.name == *name))
-        .expect("the spec's tables are checked")
+        if let Some(fact) = named(&self.facts, name) {
+            return fact;
+        }
+        named(&self.dims, name).expect("the spec's tables are checked")
     }
 
     pub(crate) fn fact(&self, name: &Identifier) -> &Checked {
-        (self.facts.iter().find(|table| table.name == *name)).expect("the spec's facts are checked")
+        named(&self.facts, name).expect("the spec's facts are checked")
     }
 
     pub(crate) fn dim(&self, name: &Identifier) -> &Checked {
-        (self.dims.iter().find(|table| table.name == *name)).expect("the spec's dims are checked")
+        named(&self.dims, name).expect("the spec's dims are checked")
     }
+}
+
+/// The table of `tables` the spec calls `name`, if there is one.
+fn named<'a>(tables: &'a [Checked], name: &Identifier) -> Option<&'a Checked> {
+    for table in tables {
+        if table.name == *name {
+            return Some(table);
+        }
+    }
+    None
 }
 
 /// What Straum reads from the catalog; `check` holds every rule.
@@ -177,16 +199,15 @@ pub(crate) fn query(
 
 /// The spec's tables as an SQL list of `(schema, table)` pairs.
 fn table_list(spec: &Spec) -> String {
-    (spec.tables().iter())
-        .map(|table| {
-            format!(
-                "({}, {})",
-                escape_literal(table.schema.as_str()),
-                escape_literal(table.name.as_str())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut pairs = Vec::new();
+    for table in spec.tables() {
+        pairs.push(format!(
+            "({}, {})",
+            escape_literal(table.schema.as_str()),
+            escape_literal(table.name.as_str())
+        ));
+    }
+    pairs.join(", ")
 }
 
 /// The server's settings, in a catalog with nothing else yet.
@@ -207,7 +228,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_compression,
         published,
     ] = row.try_into().map_err(|_| shape("settings"))?;
-    let Some(server_version) = version.and_then(|version| version.parse().ok()) else {
+    let Some(Ok(server_version)) = version.as_deref().map(str::parse) else {
         return Err(shape("settings"));
     };
     Ok(Catalog {
@@ -215,7 +236,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_level: wal_level.unwrap_or_default(),
         full_page_writes: full_page_writes.unwrap_or_default(),
         wal_compression: wal_compression.unwrap_or_default(),
-        publication: published.map(|published| published == "t"),
+        publication: published.as_deref().map(is_true),
         ..Catalog::default()
     })
 }
@@ -261,6 +282,11 @@ fn classes(
     Ok(classes)
 }
 
+/// PostgreSQL's text for a true boolean.
+fn is_true(text: &str) -> bool {
+    text == "t"
+}
+
 fn comma_list(text: &str) -> Vec<String> {
     text.split(',').map(str::to_owned).collect()
 }
@@ -288,10 +314,9 @@ fn read_columns(
             <[Option<String>; 7]>::try_from(row)
                 .map_err(|_| shape("columns"))?
                 .map(Option::unwrap_or_default);
-        let class = classes
-            .iter_mut()
-            .find(|class| class.schema == schema && class.name == table)
-            .ok_or_else(|| shape("columns"))?;
+        let Some(class) = class_mut(classes, &schema, &table) else {
+            return Err(shape("columns"));
+        };
         class.columns.push(Column {
             name,
             type_oid: type_oid.parse().map_err(|_| shape("columns"))?,
@@ -301,6 +326,16 @@ fn read_columns(
         });
     }
     Ok(())
+}
+
+/// The class of `classes` that is `schema.table`, to add columns to.
+fn class_mut<'a>(classes: &'a mut [Class], schema: &str, table: &str) -> Option<&'a mut Class> {
+    for class in classes {
+        if class.schema == schema && class.name == table {
+            return Some(class);
+        }
+    }
+    None
 }
 
 /// Every label of every enum type a column of the tables has.
@@ -409,13 +444,7 @@ pub(crate) fn check(
             name: &dim.name,
             kind: "dim",
             table: &dim.table,
-            // The key columns come first.
-            uses: (dim.columns())
-                .map(|column| ColumnUse {
-                    column,
-                    purpose: Purpose::Key,
-                })
-                .collect(),
+            uses: dim_uses(dim),
             as_text: &dim.as_text,
         };
         let checked = check_table(member, catalog, publication, replication, &mut problems);
@@ -503,6 +532,18 @@ fn check_server(
 struct ColumnUse<'a> {
     column: &'a Identifier,
     purpose: Purpose,
+}
+
+/// Every column the dim reads, the key columns first, each a key.
+fn dim_uses(dim: &Dim) -> Vec<ColumnUse<'_>> {
+    let mut uses = Vec::new();
+    for column in dim.columns() {
+        uses.push(ColumnUse {
+            column,
+            purpose: Purpose::Key,
+        });
+    }
+    uses
 }
 
 /// Every column the fact reads, with what it is for.
@@ -691,14 +732,11 @@ impl ColumnReader<'_> {
         enums: &mut Vec<u32>,
     ) -> Result<ColumnType, String> {
         let (name, qualified, publication) = (self.name, self.qualified, self.publication);
-        let Some(column) =
-            (self.class.columns.iter()).find(|column| column.name == column_name.as_str())
-        else {
+        let Some(column) = self.class.column(column_name) else {
             return Err(format!("{name}: {qualified} has no column {column_name}"));
         };
-        if self
-            .published
-            .is_some_and(|published| !published.contains(&column.name))
+        if let Some(published) = self.published
+            && !published.contains(&column.name)
         {
             return Err(format!(
                 "{name}: publication {publication} leaves out column {column_name} of {qualified}"
@@ -761,9 +799,11 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
                 }
             }
         }
-        let filters = (fact.measures.iter())
-            .map(|measure| (format!("measure {}", measure.name), &measure.filter))
-            .chain(std::iter::once(("WHERE".to_owned(), &fact.filter)));
+        let mut filters = Vec::new();
+        for measure in &fact.measures {
+            filters.push((format!("measure {}", measure.name), &measure.filter));
+        }
+        filters.push(("WHERE".to_owned(), &fact.filter));
         for (what, filter) in filters {
             for condition in filter {
                 let (table, column, column_type) =
@@ -810,19 +850,38 @@ impl Catalog {
     /// An enum column's type name and labels; `None` for any other column.
     fn labels(&self, table: &Checked, column: &Identifier) -> Option<(&str, Vec<&str>)> {
         let class = self.class(table.schema.as_str(), table.table_name.as_str())?;
-        let column = (class.columns.iter()).find(|candidate| candidate.name == column.as_str())?;
+        let column = class.column(column)?;
         if column.typtype != "e" {
             return None;
         }
-        let labels = (self.labels.iter())
-            .filter(|label| label.type_oid == column.type_oid)
-            .map(|label| label.label.as_str())
-            .collect();
+        let mut labels = Vec::new();
+        for label in &self.labels {
+            if label.type_oid == column.type_oid {
+                labels.push(label.label.as_str());
+            }
+        }
         Some((&column.type_name, labels))
     }
 
     fn class(&self, schema: &str, name: &str) -> Option<&Class> {
-        (self.classes.iter()).find(|class| class.schema == schema && class.name == name)
+        for class in &self.classes {
+            if class.schema == schema && class.name == name {
+                return Some(class);
+            }
+        }
+        None
+    }
+}
+
+impl Class {
+    /// The column named `name`, if the table has one.
+    fn column(&self, name: &Identifier) -> Option<&Column> {
+        for column in &self.columns {
+            if column.name == name.as_str() {
+                return Some(column);
+            }
+        }
+        None
     }
 }
 

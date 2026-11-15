@@ -283,11 +283,9 @@ impl<'a> Reader<'a> {
 
     /// A null-terminated string.
     fn null_terminated(&mut self) -> Result<&'a str, DecodeError> {
-        let end = self
-            .bytes
-            .iter()
-            .position(|&byte| byte == 0)
-            .ok_or(DecodeError::Short)?;
+        let Some(end) = zero_at(self.bytes) else {
+            return Err(DecodeError::Short);
+        };
         let text = Reader::text(self.take(end)?)?;
         // The terminating zero.
         self.skip(1)?;
@@ -313,6 +311,16 @@ impl<'a> Reader<'a> {
         }
         Ok(fields)
     }
+}
+
+/// Where the first zero byte is, if there is one.
+fn zero_at(bytes: &[u8]) -> Option<usize> {
+    for (position, byte) in bytes.iter().enumerate() {
+        if *byte == 0 {
+            return Some(position);
+        }
+    }
+    None
 }
 
 /// pgoutput sent bytes Straum can't read.
@@ -541,6 +549,12 @@ mod tests {
                     old: Old::Row(tuple("1")),
                 },
             ),
+        ]);
+    }
+
+    #[test]
+    fn decodes_truncates_and_skips_the_rest() {
+        assert_decodes(vec![
             (
                 Bytes::default().tag(b'T').u32(2).tag(0).u32(7).u32(8),
                 Message::Truncate {

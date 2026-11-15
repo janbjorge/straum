@@ -88,9 +88,11 @@ impl Decoder {
             // A relation outside the spec holds none of its tables.
             for mapping in self.relations.get(&relation).into_iter().flatten() {
                 let table = &self.tables[mapping.table];
-                let change = mapping.change(table, message)?;
-                self.transaction
-                    .hold(change.unwrap_or_else(|| unfit(table)))?;
+                let change = match mapping.change(table, message)? {
+                    Some(change) => change,
+                    None => unfit(table),
+                };
+                self.transaction.hold(change)?;
             }
         }
         Ok(None)
@@ -119,16 +121,16 @@ impl Decoder {
     /// what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
-        let tables = (self.tables.iter_mut().enumerate()).filter(|(_, table)| {
-            table.schema.as_str() == relation.schema && table.table_name.as_str() == relation.name
-        });
-        for (index, table) in tables {
+        for (index, table) in self.tables.iter_mut().enumerate() {
+            if table.schema.as_str() != relation.schema
+                || table.table_name.as_str() != relation.name
+            {
+                continue;
+            }
             let mut positions = Vec::new();
             let mut types = Vec::new();
             for column in &table.columns {
-                let Some(position) = (relation.columns.iter())
-                    .position(|candidate| candidate.name == column.as_str())
-                else {
+                let Some(position) = position_in(relation, column) else {
                     return Err(changed(table, column));
                 };
                 let Some(column_type) = read_as(table, &relation.columns[position]) else {
@@ -168,6 +170,16 @@ impl Transaction {
     }
 }
 
+/// Where the relation has the column named `column`, if it has one.
+fn position_in(relation: &Relation, column: &Identifier) -> Option<usize> {
+    for (position, candidate) in relation.columns.iter().enumerate() {
+        if candidate.name == column.as_str() {
+            return Some(position);
+        }
+    }
+    None
+}
+
 fn changed(table: &Checked, column: &Identifier) -> Error {
     Error::Setup(vec![format!(
         "{}: column {column} of {} was dropped or changed type",
@@ -200,7 +212,10 @@ impl Mapping {
     fn change(&self, table: &Checked, message: &Message) -> Result<Option<Change>, Error> {
         Ok(match message {
             Message::Insert { new, .. } => {
-                (self.row(table, new, None)?).map(|row| Change::Insert {
+                let Some(row) = self.row(table, new, None)? else {
+                    return Ok(None);
+                };
+                Some(Change::Insert {
                     table: table.name.clone(),
                     row,
                 })
@@ -219,10 +234,15 @@ impl Mapping {
                     _ => None,
                 }
             }
-            Message::Delete { old, .. } => (self.old(table, old)?).map(|old| Change::Delete {
-                table: table.name.clone(),
-                old,
-            }),
+            Message::Delete { old, .. } => {
+                let Some(old) = self.old(table, old)? else {
+                    return Ok(None);
+                };
+                Some(Change::Delete {
+                    table: table.name.clone(),
+                    old,
+                })
+            }
             Message::Truncate { .. } => Some(Change::Truncate {
                 table: table.name.clone(),
             }),
@@ -309,34 +329,34 @@ mod tests {
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
     /// `visits`, reading `name` alone.
     fn zones_decoder() -> Decoder {
-        let table =
-            |name: &str, columns: &[&str], types| Checked::public(name, "zones", columns, types);
         Decoder::new(
             vec![
-                table(
+                Checked::public(
+                    "zones",
                     "zones",
                     &["id", "name"],
                     vec![ColumnType::Int, ColumnType::Text],
                 ),
-                table("visits", &["name"], vec![ColumnType::Text]),
+                Checked::public("visits", "zones", &["name"], vec![ColumnType::Text]),
             ],
             LIMIT,
         )
     }
 
     fn relation(id: u32, columns: &[(&str, u32)]) -> Message<'static> {
+        let mut relation_columns = Vec::new();
+        for &(name, type_oid) in columns {
+            relation_columns.push(RelationColumn {
+                name: name.into(),
+                type_oid,
+                typmod: -1,
+            });
+        }
         Message::Relation(Relation {
             id,
             schema: "public".into(),
             name: "zones".into(),
-            columns: columns
-                .iter()
-                .map(|&(name, type_oid)| RelationColumn {
-                    name: name.into(),
-                    type_oid,
-                    typmod: -1,
-                })
-                .collect(),
+            columns: relation_columns,
         })
     }
 
@@ -369,6 +389,28 @@ mod tests {
 
     fn text(value: &str) -> Datum {
         Datum::Text(value.into())
+    }
+
+    /// A row of `public.zones` whose name PostgreSQL left out, unchanged.
+    fn unchanged() -> Tuple<'static> {
+        row(Field::Text("1"), Field::Unchanged)
+    }
+
+    /// An insert of zone 1, the Bronx.
+    fn insert_bronx() -> Message<'static> {
+        Message::Insert {
+            relation: 7,
+            new: row(Field::Text("1"), Field::Text("Bronx")),
+        }
+    }
+
+    /// The zones relation, then `count` inserts.
+    fn zones_and_inserts(count: usize) -> Vec<Message<'static>> {
+        let mut messages = vec![zones()];
+        for _ in 0..count {
+            messages.push(insert_bronx());
+        }
+        messages
     }
 
     /// An enum's OID is its own, so a relation names it only through the
@@ -481,7 +523,6 @@ mod tests {
     #[test]
     fn changes_without_the_old_row_start_over() {
         let mut decoder = zones_decoder();
-        let unchanged = || row(Field::Text("1"), Field::Unchanged);
         let changes = feed(
             &mut decoder,
             vec![
@@ -516,8 +557,10 @@ mod tests {
             ],
         )
         .unwrap();
-        let pair = [unfit_named("zones"), unfit_named("visits")];
-        let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
+        let mut expected = Vec::new();
+        for _ in 0..6 {
+            expected.extend([unfit_named("zones"), unfit_named("visits")]);
+        }
         assert_eq!(changes, expected);
     }
 
@@ -617,22 +660,16 @@ mod tests {
     /// insert here is a change to both facts.
     #[test]
     fn a_transaction_past_the_cap_stops_the_stream() {
-        let insert = |_: usize| Message::Insert {
-            relation: 7,
-            new: row(Field::Text("1"), Field::Text("Bronx")),
-        };
         // LIMIT / 2 inserts make LIMIT changes: fine, twice over.
         let mut decoder = zones_decoder();
         for _ in 0..2 {
-            let messages = [zones()].into_iter().chain((0..LIMIT / 2).map(insert));
-            let changes = feed(&mut decoder, messages.collect()).unwrap();
+            let changes = feed(&mut decoder, zones_and_inserts(LIMIT / 2)).unwrap();
             assert_eq!(changes.len(), LIMIT);
         }
         // One more insert is one change past the limit, in the transaction
         // that commits at 9.
         let mut decoder = zones_decoder();
-        let messages = [zones()].into_iter().chain((0..=LIMIT / 2).map(insert));
-        let error = feed(&mut decoder, messages.collect()).unwrap_err();
+        let error = feed(&mut decoder, zones_and_inserts(LIMIT / 2 + 1)).unwrap_err();
         assert!(
             matches!(
                 error,

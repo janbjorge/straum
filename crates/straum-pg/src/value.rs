@@ -66,14 +66,18 @@ pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
         NUMERIC => {
             // An unconstrained numeric (typmod -1) has no fixed scale.
-            let packed = typmod
-                .checked_sub(TYPMOD_HEADER)
-                .filter(|packed| *packed >= 0)?;
+            let packed = typmod.checked_sub(TYPMOD_HEADER)?;
+            if packed < 0 {
+                return None;
+            }
             let precision = packed >> TYPMOD_PRECISION_SHIFT;
             // The low 11 bits hold the scale, signed since PostgreSQL 15.
             let scale = ((packed & TYPMOD_SCALE_MASK) ^ TYPMOD_SCALE_SIGN) - TYPMOD_SCALE_SIGN;
             let scale = u32::try_from(scale).ok()?;
-            (precision <= MAX_PRECISION).then_some(ColumnType::Numeric { scale })
+            if precision > MAX_PRECISION {
+                return None;
+            }
+            Some(ColumnType::Numeric { scale })
         }
         BOOL => Some(ColumnType::Bool),
         TEXT | VARCHAR | BPCHAR => Some(ColumnType::Text),
@@ -86,9 +90,10 @@ pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
 pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueError> {
     let datum = match column_type {
         ColumnType::Int => text.parse().ok().map(Datum::Int),
-        ColumnType::Numeric { scale } => decimal(text, scale)
-            .and_then(|value| i64::try_from(value).ok())
-            .map(Datum::Int),
+        ColumnType::Numeric { scale } => match decimal(text, scale).map(i64::try_from) {
+            Some(Ok(value)) => Some(Datum::Int(value)),
+            _ => None,
+        },
         ColumnType::Bool => match text {
             "t" => Some(Datum::Bool(true)),
             "f" => Some(Datum::Bool(false)),
@@ -100,7 +105,10 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
         ColumnType::Time { .. } if text == "infinity" || text == "-infinity" => Some(Datum::Null),
         ColumnType::Time { zoned } => timestamp(text, zoned).map(Datum::Int),
     };
-    datum.ok_or_else(|| ValueError::new(column_type, text))
+    match datum {
+        Some(datum) => Ok(datum),
+        None => Err(ValueError::new(column_type, text)),
+    }
 }
 
 /// Reads the binary form `COPY ... (FORMAT binary)` sends.
@@ -113,16 +121,21 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
             [1] => Some(Datum::Bool(true)),
             _ => None,
         },
-        ColumnType::Text => str::from_utf8(bytes)
-            .ok()
-            .map(|text| Datum::Text(text.into())),
+        ColumnType::Text => match str::from_utf8(bytes) {
+            Ok(text) => Some(Datum::Text(text.into())),
+            Err(_) => None,
+        },
         // Both types are microseconds since 2000-01-01, a `timestamp`'s
         // read as if UTC.
-        ColumnType::Time { .. } => <[u8; 8]>::try_from(bytes)
-            .ok()
-            .map(|array| time(i64::from_be_bytes(array))),
+        ColumnType::Time { .. } => match <[u8; 8]>::try_from(bytes) {
+            Ok(array) => Some(time(i64::from_be_bytes(array))),
+            Err(_) => None,
+        },
     };
-    datum.ok_or_else(|| ValueError::binary(column_type, bytes))
+    match datum {
+        Some(datum) => Ok(datum),
+        None => Err(ValueError::binary(column_type, bytes)),
+    }
 }
 
 /// A timestamp, microseconds since PostgreSQL's epoch, as Straum reads
@@ -148,10 +161,10 @@ pub(crate) fn system_time(micros: i64) -> SystemTime {
 
 /// A clock time as a PostgreSQL timestamp; 0 for one before its epoch.
 pub(crate) fn timestamp_micros(time: SystemTime) -> i64 {
-    time.duration_since(UNIX_EPOCH + PG_EPOCH_AFTER_UNIX)
-        .map_or(0, |since| {
-            i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
-        })
+    let Ok(since) = time.duration_since(UNIX_EPOCH + PG_EPOCH_AFTER_UNIX) else {
+        return 0;
+    };
+    i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
 }
 
 /// `int2`, `int4` or `int8`, big-endian, told apart by length.
@@ -178,7 +191,7 @@ fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i64> {
     if !odd.is_empty() || digits.len() != usize::from(count) {
         return None;
     }
-    let digits = digits.iter().map(|pair| u16::from_be_bytes(*pair));
+    let digits = digits.iter().copied().map(u16::from_be_bytes);
     scaled(digits, weight.into(), negative, scale)
 }
 
@@ -261,7 +274,10 @@ fn timestamp(text: &str, zoned: bool) -> Option<i64> {
 /// An hour, minute or second of a clock, at most `max`.
 fn clock_field(text: Option<&str>, max: i64) -> Option<i64> {
     let value = number(text?)?;
-    (value <= max).then_some(value)
+    if value > max {
+        return None;
+    }
+    Some(value)
 }
 
 /// `+05:30` is 19800 seconds.
@@ -286,7 +302,12 @@ fn number(text: &str) -> Option<i64> {
 }
 
 fn all_digits(text: &str) -> bool {
-    text.bytes().all(|byte| byte.is_ascii_digit())
+    for byte in text.bytes() {
+        if !byte.is_ascii_digit() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
@@ -549,7 +570,9 @@ mod tests {
         bytes.extend(weight.to_be_bytes());
         bytes.extend(sign.to_be_bytes());
         bytes.extend(0_u16.to_be_bytes());
-        bytes.extend(digits.iter().flat_map(|digit| digit.to_be_bytes()));
+        for digit in digits {
+            bytes.extend(digit.to_be_bytes());
+        }
         bytes
     }
 

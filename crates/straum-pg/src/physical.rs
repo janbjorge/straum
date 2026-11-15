@@ -155,15 +155,15 @@ fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> 
          WHERE slot_name = {} AND name = 'wal_segment_size'",
         escape_literal(slot)
     ))?;
-    let start = first_row_value(&rows, 0)
-        .and_then(parse_lsn)
-        .ok_or_else(|| Error::protocol("a physical slot without a restart LSN"))?;
-    let segment_size = first_row_value(&rows, 1)
-        .and_then(|size| size.parse::<u64>().ok())
-        .ok_or_else(|| Error::protocol("no wal_segment_size"))?;
-    let version = first_row_value(&rows, 2)
-        .and_then(|version| version.parse::<u32>().ok())
-        .ok_or_else(|| Error::protocol("no server_version_num"))?;
+    let Some(start) = first_row_value(&rows, 0).and_then(parse_lsn) else {
+        return Err(Error::protocol("a physical slot without a restart LSN"));
+    };
+    let Some(Ok(segment_size)) = first_row_value(&rows, 1).map(str::parse::<u64>) else {
+        return Err(Error::protocol("no wal_segment_size"));
+    };
+    let Some(Ok(version)) = first_row_value(&rows, 2).map(str::parse::<u32>) else {
+        return Err(Error::protocol("no server_version_num"));
+    };
     Ok(Reserved {
         start,
         segment_size,
@@ -178,9 +178,9 @@ fn wait_for_flush(connection: &mut Connection, start: Lsn) -> Result<(), Error> 
     let deadline = Instant::now() + FLUSH_WAIT;
     loop {
         let rows = connection.rows("SELECT pg_current_wal_flush_lsn()")?;
-        let flushed = first_row_value(&rows, 0)
-            .and_then(parse_lsn)
-            .ok_or_else(|| Error::protocol("no WAL flush position"))?;
+        let Some(flushed) = first_row_value(&rows, 0).and_then(parse_lsn) else {
+            return Err(Error::protocol("no WAL flush position"));
+        };
         if flushed.0 >= start.0 {
             return Ok(());
         }
@@ -240,9 +240,10 @@ pub(crate) fn read_layouts(
     let mut tables: Vec<Layout> = Vec::new();
     for row in &rows {
         let attribute = AttributeRow::parse(row)?;
-        let is_next_table = tables
-            .last()
-            .is_none_or(|table| table.relation.id != attribute.table_oid);
+        let is_next_table = match tables.last() {
+            Some(table) => table.relation.id != attribute.table_oid,
+            None => true,
+        };
         if is_next_table {
             tables.push(attribute.empty_table());
         }
@@ -255,16 +256,14 @@ pub(crate) fn read_layouts(
 
 /// The `(schema, table)` pairs of `checked`, as an SQL list.
 fn table_names(checked: &[Checked]) -> String {
-    let names: Vec<String> = checked
-        .iter()
-        .map(|table| {
-            format!(
-                "({}, {})",
-                escape_literal(table.schema.as_str()),
-                escape_literal(table.table_name.as_str())
-            )
-        })
-        .collect();
+    let mut names = Vec::new();
+    for table in checked {
+        names.push(format!(
+            "({}, {})",
+            escape_literal(table.schema.as_str()),
+            escape_literal(table.table_name.as_str())
+        ));
+    }
     names.join(", ")
 }
 
@@ -304,9 +303,7 @@ impl<'a> AttributeRow<'a> {
             align: parsed(row, 10)?,
             dropped: text(row, 11)? == "t",
             missing: row.get(12).and_then(Option::as_deref),
-            is_enum: row
-                .get(13)
-                .is_some_and(|value| value.as_deref() == Some("t")),
+            is_enum: matches!(row.get(13), Some(Some(value)) if value == "t"),
         })
     }
 
@@ -383,9 +380,10 @@ fn unknown_shape() -> Error {
 }
 
 fn text(row: &[Option<String>], column: usize) -> Result<&str, Error> {
-    row.get(column)
-        .and_then(Option::as_deref)
-        .ok_or_else(unknown_shape)
+    let Some(Some(text)) = row.get(column) else {
+        return Err(unknown_shape());
+    };
+    Ok(text)
 }
 
 fn parsed<T: FromStr>(row: &[Option<String>], column: usize) -> Result<T, Error> {
