@@ -1,0 +1,734 @@
+//! The logical stream end to end: Straum loads the tables, follows the
+//! changes pgoutput (PostgreSQL's logical decoding plugin) sends, and
+//! after each commit every view equals its SQL. Also how it starts over:
+//! past the transaction limit, on a value it can't read, on an altered
+//! table.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, SystemTime};
+
+use straum_app::{AnswerError, App, Step, Writer};
+use straum_domain::{AnswerRow, Ask, AskError, ColumnType, Datum, Literal, Value};
+
+use super::references::*;
+use super::support::*;
+use crate::dsn::Dsn;
+use crate::source::{Postgres, Replication, parse_lsn};
+use crate::wire::{Connection, ConnectionKind};
+
+#[test]
+fn follows_the_database() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "follows", TABLES);
+    // Six hours of trips, so a cell holds several rows.
+    let mut rng = Rng::within_hours(7, 6);
+    let mut trips: Vec<u64> = Vec::new();
+    let mut next = 1;
+    for zone in 1..=4 {
+        db.run(&format!(
+            "INSERT INTO $S.zones VALUES ({zone}, '{}', {})",
+            rng.pick(&BOROUGHS),
+            rng.toll()
+        ));
+    }
+    for _ in 0..400 {
+        db.run(&rng.trip(next));
+        trips.push(next);
+        next += 1;
+    }
+
+    let mut writer = db.writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
+
+    let mut compared = 0;
+    for round in 0..120 {
+        // Every transaction inserts a trip, so each is one commit.
+        let mut sql = vec!["BEGIN;".to_owned(), rng.trip(next)];
+        trips.push(next);
+        next += 1;
+        // The zones stand still here; `a_dim_change_shows_at_once` and
+        // `follows_the_task_tables` move a dim.
+        for _ in 0..rng.below(4) {
+            let Some(statement) = random_trip_change(&mut rng, &mut trips, next) else {
+                continue;
+            };
+            next += 1;
+            sql.push(statement);
+        }
+        // Every login moves zone at once; truncates empty a table in place.
+        match round {
+            30 | 70 => sql.push("UPDATE $S.logins SET zone_id = zone_id + 1;".into()),
+            50 => sql.push("TRUNCATE $S.logins;".into()),
+            90 => {
+                sql.push("TRUNCATE $S.trips;".into());
+                trips.clear();
+                sql.push(rng.trip(next));
+                trips.push(next);
+                next += 1;
+            }
+            _ => {}
+        }
+        sql.push("COMMIT;".into());
+        db.run(&sql.join("\n"));
+        applied_or_started(&mut writer);
+        if compare(&mut db, writer.app(), &taxi_oracles(2)).is_some() {
+            compared += 1;
+        }
+    }
+    assert!(compared > 100, "compared only {compared} times");
+}
+
+/// A statement that changes one of `trips` at random, or logs in as
+/// `next`; `None` one time in eight.
+fn random_trip_change(rng: &mut Rng, trips: &mut Vec<u64>, next: u64) -> Option<String> {
+    let pick = trips[rng.index(trips.len())];
+    let statement = match rng.below(8) {
+        0 | 1 => format!(
+            "UPDATE $S.trips SET fare = fare + 1, kind = '{}' WHERE id = {pick};",
+            rng.pick(&KINDS)
+        ),
+        2 => format!("UPDATE $S.trips SET at = at + interval '5 hours' WHERE id = {pick};"),
+        3 => {
+            trips.retain(|trip| *trip != pick);
+            format!("DELETE FROM $S.trips WHERE id = {pick};")
+        }
+        // Into zones 5 and 6 too, which have no row.
+        4 | 5 => format!(
+            "UPDATE $S.trips SET zone_id = {} WHERE id = {pick};",
+            1 + rng.below(6)
+        ),
+        6 => format!(
+            "INSERT INTO $S.logins VALUES ({next}, to_timestamp({}), {});",
+            START + i64::try_from(rng.below(3 * 86_400)).unwrap(),
+            1 + rng.below(6)
+        ),
+        _ => return None,
+    };
+    Some(statement)
+}
+
+/// Naive times and a dim keyed by two columns, one of them a by column.
+#[test]
+fn follows_the_task_tables() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "task_tables", TASKS);
+    // The comparison session is far from UTC, so a value that went through
+    // a zone on either side would show.
+    db.run("SET TIME ZONE 'Europe/Oslo'");
+    let mut rng = Rng::new(17);
+    insert_task_tables(&mut db, &mut rng);
+    // On a bucket edge, a microsecond before it, and at the infinities,
+    // which no bucket holds.
+    db.run(&format!(
+        "INSERT INTO $S.tasks VALUES
+           (1000, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1),
+           (1001, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC' - interval '1 microsecond', NULL, 1),
+           (1002, 1, 1, 'infinity', NULL, 1),
+           (1003, 2, 2, '-infinity', NULL, 2)"
+    ));
+    let spec = db.spec(TASKS_SPEC);
+    assert!(crate::plan(&spec, "p", "r", None, Replication::Logical).contains(
+        "-- dim taskgroups: Straum holds its key and the columns the views read, and follows it."
+    ));
+    let mut writer = db.writer(TASKS_SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
+    assert_edge_buckets(writer.app());
+
+    for id in 200..230 {
+        db.run(&rng.task(id));
+        applied(&mut writer);
+    }
+    for change in task_changes() {
+        db.run(&change);
+        applied(&mut writer);
+        compare_after(&mut db, writer.app(), &task_oracles(), &change);
+    }
+    // The key is a boolean, whatever its column is.
+    assert!(writer.app().ask(&done_is(Literal::Bool(true))).is_ok());
+    assert_eq!(
+        writer
+            .app()
+            .ask(&done_is(Literal::Int(1)))
+            .unwrap_err()
+            .to_string(),
+        "done is a boolean, so it can't be the integer 1"
+    );
+}
+
+/// Six task groups in three organizations, then 200 tasks.
+fn insert_task_tables(db: &mut Db, rng: &mut Rng) {
+    for organization in 1..=3 {
+        for taskgroup in 1..=2 {
+            db.run(&format!(
+                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
+                rng.pick(&["pick", "pack", "count"])
+            ));
+        }
+    }
+    for id in 0..200 {
+        db.run(&rng.task(id));
+    }
+}
+
+/// The hour before `START` holds the row a microsecond before it alone.
+fn assert_edge_buckets(app: &App) {
+    let edges = Ask {
+        from: START - 3_600,
+        to: START + 3_600,
+        ..ask("tasks", &["tasks"], &["bucket"])
+    };
+    let answered = app.ask(&edges).unwrap();
+    assert_eq!(answered.answer.rows.len(), 2);
+    assert_eq!(
+        answered.answer.rows[0],
+        AnswerRow {
+            keys: vec![Datum::Int(START - 3_600)],
+            values: vec![Value::Int(1)]
+        }
+    );
+    assert_eq!(answered.answer.rows[1].keys, [Datum::Int(START)]);
+}
+
+/// The tasks whose `done` key is `value`.
+fn done_is(value: Literal) -> Ask {
+    where_is(ask("tasks", &["tasks"], &[]), "done", value)
+}
+
+/// Each change is one commit, compared after it: facts moving to
+/// another dim row or to a group with no row, times moved, rows gone.
+fn task_changes() -> [String; 15] {
+    [
+        // Null-ness flips both ways.
+        "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0"
+            .to_owned(),
+        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 6 = 0".to_owned(),
+        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
+        "UPDATE $S.tasks SET taskgroup_id = 4 WHERE task_id % 17 = 0".to_owned(),
+        // The enum key moves, in the fact and through the dim.
+        "UPDATE $S.tasks SET kind = 'shelf' WHERE task_id % 4 = 0".to_owned(),
+        "UPDATE $S.tasks SET organization_id = 3 WHERE task_id % 13 = 0".to_owned(),
+        "UPDATE $S.tasks SET created = created + interval '90 minutes' WHERE task_id % 7 = 0"
+            .to_owned(),
+        // An infinite time becomes a real one and lands in its bucket; a
+        // real one becomes infinite and leaves its bucket; one goes.
+        format!(
+            "UPDATE $S.tasks SET created = to_timestamp({START}) AT TIME ZONE 'UTC' \
+             + interval '2 hours' WHERE task_id = 1002"
+        ),
+        "UPDATE $S.tasks SET created = 'infinity' WHERE task_id = 1000".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id = 1003".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
+        // The dim moves: a group recategorised, one moved to a new key,
+        // one gone, one back.
+        "UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1".to_owned(),
+        "UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1"
+            .to_owned(),
+        "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2".to_owned(),
+        "INSERT INTO $S.taskgroups VALUES (3, 2, 'count')".to_owned(),
+    ]
+}
+
+/// A transaction at the limit applies; one past it starts Straum over, and
+/// the new load holds its rows.
+#[test]
+fn a_transaction_past_the_limit_starts_over() {
+    const CAP: usize = 50;
+    let pg = postgres();
+    let mut db = Db::new(&pg, "capped", TABLES);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    let mut rng = Rng::new(23);
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = Writer::new(
+        App::new(db.spec(SPEC), LIMITS, None),
+        Postgres::new(db.dsn.clone(), &db.name, CAP, Replication::Logical),
+    );
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    db.run(&batch(&mut rng, 100, CAP));
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    db.run(&batch(&mut rng, 200, CAP + 1));
+    let error = writer.step().unwrap_err().to_string();
+    let lsn = db.rows("SELECT pg_current_wal_lsn()")[0][0]
+        .clone()
+        .unwrap();
+    assert_eq!(
+        error,
+        format!(
+            "transaction {} changes more than {CAP} rows Straum reads, the --max-transaction-rows \
+             limit; Straum starts over from a snapshot after it",
+            error.split(' ').nth(1).unwrap_or_default()
+        ),
+        "{error}"
+    );
+    // The transaction's commit record ends at or before the server's
+    // position now, and the failure is what /status shows.
+    let named = error.split(' ').nth(1).unwrap();
+    assert!(
+        parse_lsn(named).unwrap() <= parse_lsn(&lsn).unwrap(),
+        "transaction {named} is past the server at {lsn}"
+    );
+    assert_eq!(writer.app().status().last_failure.unwrap().error, error);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
+    db.run(&rng.trip(300));
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}
+
+/// One transaction inserting `rows` trips from id `from`.
+fn batch(rng: &mut Rng, from: u64, rows: usize) -> String {
+    let to = from + u64::try_from(rows).unwrap();
+    let mut inserts: Vec<String> = Vec::new();
+    for id in from..to {
+        inserts.push(rng.trip(id));
+    }
+    format!("BEGIN;\n{}\nCOMMIT;", inserts.join("\n"))
+}
+
+/// The same tables under two views: a dim change is a change to the dim's
+/// projection, and every ask reads the dim as it is now, as PostgreSQL's
+/// view does. Nothing starts over.
+#[test]
+fn a_dim_change_shows_at_once() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "ingest", TASKS);
+    db.run("SET TIME ZONE 'Europe/Oslo'");
+    let mut rng = Rng::new(29);
+    insert_task_tables(&mut db, &mut rng);
+    let mut picks = db.writer(PICKS_SPEC);
+    let mut tasks = db.writer(TASKS_SPEC);
+    assert!(matches!(picks.step(), Ok(Step::Started(_))));
+    assert!(matches!(tasks.step(), Ok(Step::Started(_))));
+    compare(&mut db, picks.app(), &picks_oracles()).expect("picks ready");
+    compare(&mut db, tasks.app(), &task_oracles()).expect("tasks ready");
+
+    for change in dim_changes(&mut rng) {
+        db.run(&change);
+        applied(&mut picks);
+        applied(&mut tasks);
+        compare_after(&mut db, picks.app(), &picks_oracles(), &change);
+        compare_after(&mut db, tasks.app(), &task_oracles(), &change);
+    }
+    assert_eq!(picks.app().status().starts, 1);
+    assert_eq!(tasks.app().status().starts, 1);
+    tasks_of_a_gone_group_read_null(picks.app());
+}
+
+/// Fact rows come, move between groups, flip and go; tasks in groups 3
+/// and 4 have no dim row and read null. Then the dim moves: a group
+/// recategorised with a new task in the same transaction, a key moved and
+/// a row gone each with a task pointing at them, the table emptied and
+/// filled again.
+fn dim_changes(rng: &mut Rng) -> Vec<String> {
+    let mut changes: Vec<String> = Vec::new();
+    for id in 200..210 {
+        changes.push(rng.task(id));
+    }
+    changes.extend([
+        "UPDATE $S.tasks SET taskgroup_id = 2 WHERE task_id % 5 = 0".to_owned(),
+        "UPDATE $S.tasks SET completed = NULL WHERE task_id % 4 = 0".to_owned(),
+        "DELETE FROM $S.tasks WHERE task_id % 11 = 0".to_owned(),
+        format!(
+            "BEGIN;
+             UPDATE $S.taskgroups SET category = 'other' WHERE organization_id = 1;
+             INSERT INTO $S.tasks VALUES (300, 1, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 5);
+             COMMIT;"
+        ),
+        "UPDATE $S.tasks SET picks = coalesce(picks, 0) + 1
+          WHERE task_id = (SELECT min(task_id) FROM $S.tasks
+                            WHERE organization_id = 1 AND taskgroup_id = 1 AND task_id < 300)"
+            .to_owned(),
+        format!(
+            "BEGIN;
+             UPDATE $S.taskgroups SET taskgroup_id = 3 WHERE organization_id = 2 AND taskgroup_id = 1;
+             INSERT INTO $S.tasks VALUES (401, 2, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1);
+             COMMIT;"
+        ),
+        format!(
+            "BEGIN;
+             DELETE FROM $S.taskgroups WHERE organization_id = 2 AND taskgroup_id = 3;
+             INSERT INTO $S.tasks VALUES (402, 2, 1, to_timestamp({START}) AT TIME ZONE 'UTC', NULL, 1);
+             COMMIT;"
+        ),
+        "TRUNCATE $S.taskgroups".to_owned(),
+        "INSERT INTO $S.taskgroups VALUES (1, 1, 'pick'), (2, 2, 'pack'), (3, 1, 'count')"
+            .to_owned(),
+    ]);
+    changes
+}
+
+/// Tasks whose group is gone read null, as the join gives.
+fn tasks_of_a_gone_group_read_null(app: &App) {
+    let organization_2 = where_is(
+        ask("picks", &["tasks"], &["category"]),
+        "organization_id",
+        Literal::Int(2),
+    );
+    let null_tasks = Ask {
+        from: START,
+        to: START + 3_600,
+        ..organization_2
+    };
+    let answered = app.ask(&null_tasks).unwrap();
+    let mut nulls = None;
+    for row in &answered.answer.rows {
+        if row.keys[0] == Datum::Null {
+            nulls = Some(row.values[0].clone());
+            break;
+        }
+    }
+    assert!(
+        matches!(nulls, Some(Value::Int(count)) if count >= 2),
+        "{nulls:?}"
+    );
+}
+
+/// A value Straum can't read stops the load, or the stream, naming the
+/// table and column it was in, so the row can be found and fixed.
+#[test]
+fn a_poison_value_names_its_column() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "poison", TABLES);
+    db.run("INSERT INTO $S.trips VALUES (1, to_timestamp(1705276800), 'cab', 1, 'NaN', 'ann', 2)");
+    let mut writer = db.writer(SPEC);
+    let error = writer.step().unwrap_err().to_string();
+    assert!(
+        error.starts_with("can't read \"\\\\x")
+            && error.ends_with("as a numeric of scale 2 in column fare of poison.trips"),
+        "{error}"
+    );
+    assert_eq!(writer.app().status().last_failure.unwrap().error, error);
+    db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    // Streamed, the value comes as text.
+    db.run("UPDATE $S.trips SET fare = 'NaN' WHERE id = 1");
+    let error = writer.step().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "can't read \"NaN\" as a numeric of scale 2 in column fare of poison.trips"
+    );
+    db.run("UPDATE $S.trips SET fare = 2.50 WHERE id = 1");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the fix");
+}
+
+#[test]
+fn the_snapshot_and_the_stream_split_exactly() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "split", TABLES);
+    for round in 0..3 {
+        db.run("TRUNCATE $S.trips");
+        let written = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let inserter = insert_trips_in_turn(db.dsn.clone(), db.name.clone(), &written, &done);
+        while written.load(Ordering::Acquire) < 50 {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut writer = db.writer(SPEC);
+        assert!(matches!(writer.step(), Ok(Step::Started(_))));
+        assert!(
+            !done.load(Ordering::Acquire),
+            "round {round}: the writer finished before the load"
+        );
+        let loaded = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
+        assert_ne!(
+            loaded.answer.rows[0].values[0],
+            Value::Int(0),
+            "round {round}"
+        );
+        inserter.join().unwrap();
+        db.run("INSERT INTO $S.trips VALUES (-1, now(), 'marker', 1, 1.00, 'ann', 2)");
+        let marker = ask("trips", &["trips"], &["kind"]);
+        let mut streamed = 0;
+        loop {
+            applied(&mut writer);
+            streamed += 1;
+            let answered = writer.app().ask(&marker).unwrap();
+            if holds_the_marker(&answered.answer.rows) {
+                break;
+            }
+        }
+        assert!(streamed > 1, "round {round}: nothing was streamed");
+        // The marker's commit time, by the server's clock, is now.
+        let time = writer.app().status().committed.unwrap();
+        let apart = match SystemTime::now().duration_since(time) {
+            Ok(behind) => behind,
+            Err(ahead) => ahead.duration(),
+        };
+        assert!(apart < Duration::from_secs(60), "round {round}: {apart:?}");
+        compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+    }
+}
+
+/// A thread inserting 2000 trips into schema `name`, one commit each,
+/// counting them in `written` and setting `done` at the end.
+fn insert_trips_in_turn(
+    dsn: Dsn,
+    name: String,
+    written: &Arc<AtomicUsize>,
+    done: &Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    let (written, done) = (Arc::clone(written), Arc::clone(done));
+    thread::spawn(move || {
+        let mut connection = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
+        for id in 0..2_000 {
+            let sql = format!(
+                "INSERT INTO {name}.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
+                START + id
+            );
+            connection.execute(&sql).unwrap();
+            written.fetch_add(1, Ordering::Release);
+        }
+        done.store(true, Ordering::Release);
+    })
+}
+
+/// Whether one of `rows` is of kind `marker`.
+fn holds_the_marker(rows: &[AnswerRow]) -> bool {
+    for row in rows {
+        if row.keys[0] == Datum::Text("marker".into()) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn an_unfit_change_starts_over() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "unfit", TABLES);
+    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    let mut writer = db.writer(SPEC);
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    // A fact that stops sending old rows starts over, and the setup then
+    // says what to fix.
+    db.run("ALTER TABLE $S.logins REPLICA IDENTITY DEFAULT");
+    db.run("UPDATE $S.logins SET zone_id = 2");
+    let error = writer.step().unwrap_err().to_string();
+    assert_eq!(error, "a change no longer fits logins");
+    assert_eq!(
+        writer.app().ask(&ask("trips", &["trips"], &[])),
+        Err(AnswerError::NotReady)
+    );
+    let error = writer.step().unwrap_err().to_string();
+    assert!(
+        error.contains("fact logins: Straum needs the whole old row of every update and delete"),
+        "{error}"
+    );
+    db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
+    db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    // A dim is held too, so it owes the same.
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    applied(&mut writer);
+    db.run("ALTER TABLE $S.zones REPLICA IDENTITY DEFAULT");
+    db.run("UPDATE $S.zones SET borough = 'Staten Island' WHERE id = 1");
+    let error = writer.step().unwrap_err().to_string();
+    assert_eq!(error, "a change no longer fits zones");
+    let error = writer.step().unwrap_err().to_string();
+    assert!(
+        error.contains("dim zones: Straum needs the whole old row of every update and delete"),
+        "{error}"
+    );
+    db.run("ALTER TABLE $S.zones REPLICA IDENTITY FULL");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the dim's new load");
+}
+
+#[test]
+fn asks_take_values_of_the_types_the_load_read() {
+    let pg = postgres();
+    let db = Db::new(&pg, "types", TABLES);
+    let mut writer = db.writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    // text, the column a ref joins on (int), a dim's text; then
+    // numeric(4, 1).
+    let cases = [
+        TypeCase {
+            key: "kind",
+            right: text_literal("cab"),
+            wrong: Literal::Int(1),
+            column: ColumnType::Text,
+        },
+        TypeCase {
+            key: "zone_id",
+            right: Literal::Int(1),
+            wrong: text_literal("1"),
+            column: ColumnType::Int,
+        },
+        TypeCase {
+            key: "borough",
+            right: text_literal("Bronx"),
+            wrong: Literal::Bool(true),
+            column: ColumnType::Text,
+        },
+    ];
+    for case in cases {
+        takes_only_its_type(writer.app(), case);
+    }
+    // A numeric of scale 1 takes no integer: 1 would read as 0.1.
+    let toll = filtered("logins", "logins", "toll", Literal::Int(1));
+    assert_eq!(
+        writer.app().ask(&toll).unwrap_err().to_string(),
+        "toll is a numeric of scale 1, so it can't be the integer 1"
+    );
+}
+
+/// A key of the trips view, a value of its column's type, one of another
+/// type, and the column's type.
+struct TypeCase {
+    // `'static`: every key is a literal written here.
+    key: &'static str,
+    right: Literal,
+    wrong: Literal,
+    column: ColumnType,
+}
+
+/// The trips where `case.key` is a value of its type answer; where it is
+/// one of another type, the ask is refused naming the column's type.
+fn takes_only_its_type(app: &App, case: TypeCase) {
+    let TypeCase {
+        key,
+        right,
+        wrong,
+        column,
+    } = case;
+    let answered = app.ask(&filtered("trips", "trips", key, right));
+    assert!(answered.is_ok(), "{key}: {answered:?}");
+    let refused = app.ask(&filtered("trips", "trips", key, wrong.clone()));
+    let Err(AnswerError::Invalid(errors)) = refused else {
+        panic!("{key}: {refused:?}");
+    };
+    assert_eq!(errors.len(), 1, "{key}");
+    assert!(
+        matches!(&errors[0], AskError::WrongType { column: got, value, .. } if *got == column && *value == wrong),
+        "{key}: {errors:?}"
+    );
+}
+
+/// `fact`'s `measure` where `key` is `value`.
+fn filtered(fact: &str, measure: &str, key: &str, value: Literal) -> Ask {
+    where_is(ask(fact, &[measure], &[]), key, value)
+}
+
+/// `text` as a text literal.
+fn text_literal(text: &str) -> Literal {
+    Literal::Text(text.into())
+}
+
+#[test]
+fn follows_at_replica_from_19() {
+    let pg = postgres_at_replica(NINETEEN);
+    let mut db = Db::new(&pg, "replica", TABLES);
+    let mut rng = Rng::new(13);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = db.writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the load");
+    for id in 20..30 {
+        db.run(&rng.trip(id));
+        applied(&mut writer);
+    }
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}
+
+#[test]
+fn a_changed_column_type_starts_over() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "altered", TABLES);
+    db.run(&Rng::new(1).trip(1));
+    let mut writer = db.writer(SPEC);
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
+    db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
+    let error = writer.step().unwrap_err().to_string();
+    assert_eq!(error, "a change no longer fits trips");
+    writer.step().unwrap();
+    db.run(&Rng::new(2).trip(3));
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(3)).expect("ready");
+
+    // A column Straum reads is gone: Straum stops and the setup check says why.
+    db.run("ALTER TABLE $S.trips DROP COLUMN rider");
+    db.run(
+        "INSERT INTO $S.trips (id, at, kind, zone_id, fare, tip)
+         VALUES (4, to_timestamp(1705276800), 'cab', 1, 1.000, 1)",
+    );
+    let error = writer.step().unwrap_err().to_string();
+    assert!(error.contains("column rider of"), "{error}");
+    let error = writer.step().unwrap_err().to_string();
+    assert!(error.contains("has no column rider"), "{error}");
+}
+
+/// Too big and too random to stay inline: PostgreSQL TOASTs the rider, and
+/// an update that leaves it alone doesn't send it. The old row, whole
+/// under `REPLICA IDENTITY FULL`, supplies it.
+#[test]
+fn a_value_left_out_comes_from_the_old_row() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "toast", TABLES);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    db.run(
+        "INSERT INTO $S.trips
+         SELECT 1, to_timestamp(1705276800), 'cab', 1, 1.00,
+                string_agg(md5(random()::text), ''), 2
+           FROM generate_series(1, 2000)",
+    );
+    let mut writer = db.writer(SPEC);
+    writer.step().unwrap();
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+
+    db.run("UPDATE $S.trips SET tip = 3 WHERE id = 1");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the update");
+    db.run("DELETE FROM $S.trips WHERE id = 1");
+    applied(&mut writer);
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the delete");
+}
+
+#[test]
+fn the_stream_outlasts_a_busy_writer() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "busy", TABLES);
+    let mut writer = db.writer(SPEC);
+    writer.step().unwrap();
+    // The stream starts with the first commit asked for.
+    let mut rng = Rng::new(5);
+    db.run(&rng.trip(0));
+    applied(&mut writer);
+    // More commits than the queue holds, then a pause past
+    // wal_sender_timeout (4 s): the thread keeps answering.
+    for id in 1..101 {
+        db.run(&rng.trip(id));
+    }
+    thread::sleep(Duration::from_secs(9));
+    for _ in 0..100 {
+        applied(&mut writer);
+    }
+    // Commits made after the pause still arrive: the stream survived.
+    for id in 101..111 {
+        db.run(&rng.trip(id));
+        applied(&mut writer);
+    }
+    compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}

@@ -1,0 +1,18 @@
+//! straum-pg against PostgreSQL in Docker, one container per test: 18, or
+//! the major `STRAUM_TEST_POSTGRES` names. Every answer is checked against
+//! the view body of the spec, run in PostgreSQL. `support` and
+//! `references` hold what the subject files share.
+
+mod decoding;
+mod joins;
+mod load;
+mod logical;
+mod physical;
+mod protocol;
+mod records;
+mod references;
+mod setup;
+mod support;
+mod taxi_month;
+mod tls;
+mod transactions;
