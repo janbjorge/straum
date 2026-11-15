@@ -16,3 +16,8 @@ min_ident_chars = "warn"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+
+[workspace.lints.rust]
+# cargo-llvm-cov sets cfg(coverage), which keeps the WAL benchmark out of
+# coverage.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }

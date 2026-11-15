@@ -29,6 +29,5 @@ straum-domain = { path = "../straum-domain" }
 testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }
 straum-notation = { path = "../straum-notation" }
 
-[lints.rust]
-# cargo-llvm-cov sets it; the WAL benchmark stays out of coverage.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
+[lints]
+workspace = true
