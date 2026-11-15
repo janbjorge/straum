@@ -15,6 +15,7 @@ use crate::problem::{
     ColumnFix, ColumnProblem, Filter, Problem, ServerProblem, TableNames, TableProblem, ViewProblem,
 };
 use crate::source::Replication;
+use crate::unexpected::Unexpected;
 use crate::value::{Oid, type_of};
 use crate::wire::Connection;
 
@@ -381,8 +382,8 @@ fn labels(connection: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, E
     Ok(labels)
 }
 
-fn shape(query: &str) -> Error {
-    Error::Protocol(format!("a catalog {query} result of an unexpected shape"))
+fn shape(query: &'static str) -> Error {
+    Error::Protocol(Unexpected::CatalogShape(query))
 }
 
 /// What a column is for, which decides the types it may have.

@@ -12,6 +12,7 @@ use straum_domain::{Datum, Store};
 
 use crate::catalog::{Checked, escaped};
 use crate::error::Error;
+use crate::unexpected::Unexpected;
 use crate::value::read_binary;
 use crate::wire::Connection;
 
@@ -119,7 +120,7 @@ fn read(
         // PostgreSQL sends a row per message, but nothing here needs it to.
         while !data.is_empty() {
             if ended {
-                return Err(Error::protocol("data after the end of a copy"));
+                return Err(Error::Protocol(Unexpected::DataAfterCopy));
             }
             let fields = i16::from_be_bytes(take(&mut data)?);
             if fields == -1 {
@@ -127,10 +128,10 @@ fn read(
                 continue;
             }
             if usize::try_from(fields).ok() != Some(types.len()) {
-                return Err(Error::Protocol(format!(
-                    "a copy row of {fields} columns, not {}",
-                    types.len()
-                )));
+                return Err(Error::Protocol(Unexpected::CopyRowWidth {
+                    fields,
+                    columns: types.len(),
+                }));
             }
             for (name, column_type) in table.columns.iter().zip(types) {
                 let length = i32::from_be_bytes(take(&mut data)?);
@@ -139,7 +140,7 @@ fn read(
                     Err(_) => Datum::Null,
                     Ok(length) => {
                         let Some((value, rest)) = data.split_at_checked(length) else {
-                            return Err(Error::protocol("a copy value cut short"));
+                            return Err(Error::Protocol(Unexpected::CopyValueCutShort));
                         };
                         data = rest;
                         read_binary(*column_type, value)
@@ -154,7 +155,7 @@ fn read(
         Ok(())
     })?;
     if !ended {
-        return Err(Error::protocol("a copy without its end"));
+        return Err(Error::Protocol(Unexpected::CopyWithoutEnd));
     }
     if batch.is_empty() {
         Ok(())
@@ -166,14 +167,14 @@ fn read(
 /// The data after the signature, flags and header extension.
 fn header(data: &[u8]) -> Result<&[u8], Error> {
     let Some(mut data) = data.strip_prefix(SIGNATURE) else {
-        return Err(Error::protocol("a copy that isn't binary"));
+        return Err(Error::Protocol(Unexpected::CopyNotBinary));
     };
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
     // An extension past `usize` is past the data too.
     let extension = usize::try_from(extension).unwrap_or(usize::MAX);
     let Some(rest) = data.get(extension..) else {
-        return Err(Error::protocol("a copy header cut short"));
+        return Err(Error::Protocol(Unexpected::CopyHeaderCutShort));
     };
     Ok(rest)
 }
@@ -181,7 +182,7 @@ fn header(data: &[u8]) -> Result<&[u8], Error> {
 /// The next `N` bytes.
 fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], Error> {
     let Some((head, rest)) = data.split_first_chunk() else {
-        return Err(Error::protocol("a copy row cut short"));
+        return Err(Error::Protocol(Unexpected::CopyRowCutShort));
     };
     *data = rest;
     Ok(*head)

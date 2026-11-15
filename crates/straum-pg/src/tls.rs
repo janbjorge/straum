@@ -14,6 +14,35 @@ use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::error::Error;
+use crate::unexpected::Unexpected;
+
+/// Why TLS to PostgreSQL didn't start.
+#[derive(Debug)]
+pub(crate) enum TlsProblem {
+    SslOff,
+    Handshake(std::io::Error),
+    ReadingRoots {
+        file: String,
+        error: rustls::pki_types::pem::Error,
+    },
+    NoRoots(String),
+}
+
+impl std::fmt::Display for TlsProblem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TlsProblem::SslOff => formatter.write_str(
+                "PostgreSQL has ssl off; turn it on, \
+                 or use sslmode=disable on a trusted network",
+            ),
+            TlsProblem::Handshake(error) => write!(formatter, "{error}"),
+            TlsProblem::ReadingRoots { file, error } => {
+                write!(formatter, "reading {file}: {error}")
+            }
+            TlsProblem::NoRoots(file) => write!(formatter, "{file} holds no CA certificate"),
+        }
+    }
+}
 
 /// A TCP socket with TLS on it, which reads and writes plain bytes.
 pub(crate) type TlsStream = StreamOwned<ClientConnection, TcpStream>;
@@ -35,24 +64,18 @@ pub(crate) fn start(
     match answer[0] {
         b'S' => {}
         b'N' => {
-            return Err(Error::Tls(
-                "PostgreSQL has ssl off; turn it on, \
-                 or use sslmode=disable on a trusted network"
-                    .into(),
-            ));
+            return Err(Error::Tls(TlsProblem::SslOff));
         }
         other => {
-            return Err(Error::Protocol(format!(
-                "{other:#04x} as its answer to SSLRequest"
-            )));
+            return Err(Error::Protocol(Unexpected::SslAnswer(other)));
         }
     }
     let mut connection =
         ClientConnection::new(config, name.clone()).expect("the config is complete");
     while connection.is_handshaking() {
-        connection
-            .complete_io(&mut tcp)
-            .map_err(|error| Error::Tls(error.to_string()))?;
+        if let Err(error) = connection.complete_io(&mut tcp) {
+            return Err(Error::Tls(TlsProblem::Handshake(error)));
+        }
     }
     Ok(StreamOwned::new(connection, tcp))
 }
@@ -64,12 +87,16 @@ fn config(root_cert: Option<&str>) -> Result<Arc<ClientConfig>, Error> {
     match root_cert {
         None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
         Some(file) => {
-            let certs: Vec<CertificateDer> = CertificateDer::pem_file_iter(file)
-                .and_then(Iterator::collect)
-                .map_err(|error| Error::Tls(format!("reading {file}: {error}")))?;
+            let certs = match read_roots(file) {
+                Ok(certs) => certs,
+                Err(error) => {
+                    let file = file.to_owned();
+                    return Err(Error::Tls(TlsProblem::ReadingRoots { file, error }));
+                }
+            };
             roots.add_parsable_certificates(certs);
             if roots.is_empty() {
-                return Err(Error::Tls(format!("{file} holds no CA certificate")));
+                return Err(Error::Tls(TlsProblem::NoRoots(file.to_owned())));
             }
         }
     }
@@ -80,4 +107,13 @@ fn config(root_cert: Option<&str>) -> Result<Arc<ClientConfig>, Error> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(Arc::new(config))
+}
+
+/// The certificates in the PEM file `file`.
+fn read_roots(file: &str) -> Result<Vec<CertificateDer<'static>>, rustls::pki_types::pem::Error> {
+    let mut certs = Vec::new();
+    for cert in CertificateDer::pem_file_iter(file)? {
+        certs.push(cert?);
+    }
+    Ok(certs)
 }

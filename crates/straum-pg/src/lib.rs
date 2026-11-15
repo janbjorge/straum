@@ -21,6 +21,7 @@ mod stream;
 #[cfg(test)]
 mod tests;
 mod tls;
+mod unexpected;
 mod value;
 mod wal;
 // An ignored benchmark, never run by the tests that measure coverage;

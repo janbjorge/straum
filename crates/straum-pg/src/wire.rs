@@ -19,6 +19,7 @@ use postgres_protocol::message::frontend;
 use crate::dsn::{Dsn, Tls};
 use crate::error::Error;
 use crate::tls::{self, TlsStream};
+use crate::unexpected::Unexpected;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
@@ -125,12 +126,10 @@ impl Connection {
                 Message::AuthenticationSasl(body) => {
                     let offered: Vec<&str> = body.mechanisms().collect()?;
                     if !offered.contains(&SCRAM_SHA_256) {
-                        return Err(Error::Protocol(format!(
-                            "SASL mechanisms {offered:?}; Straum needs {SCRAM_SHA_256}"
-                        )));
+                        return Err(Error::Protocol(Unexpected::SaslMechanisms(owned(&offered))));
                     }
                     let Some(password) = dsn.password.as_deref() else {
-                        return Err(Error::protocol("a password request; the DSN has none"));
+                        return Err(Error::Protocol(Unexpected::PasswordRequestWithoutPassword));
                     };
                     let state =
                         ScramSha256::new(password.as_bytes(), ChannelBinding::unsupported());
@@ -144,7 +143,7 @@ impl Connection {
                 }
                 Message::AuthenticationSaslContinue(body) => {
                     let Some(state) = scram.as_mut() else {
-                        return Err(Error::protocol("SASL continue"));
+                        return Err(Error::Protocol(Unexpected::SaslContinue));
                     };
                     state.update(body.data())?;
                     frontend::sasl_response(state.message(), &mut self.output)?;
@@ -152,18 +151,14 @@ impl Connection {
                 }
                 Message::AuthenticationSaslFinal(body) => {
                     let Some(state) = scram.as_mut() else {
-                        return Err(Error::protocol("SASL final"));
+                        return Err(Error::Protocol(Unexpected::SaslFinal));
                     };
                     state.finish(body.data())?;
                 }
                 Message::ReadyForQuery(_) => return Ok(()),
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 _ => {
-                    return Err(Error::Protocol(
-                        "an authentication request Straum doesn't support; \
-                         Straum signs in with SCRAM-SHA-256 or trust"
-                            .into(),
-                    ));
+                    return Err(Error::Protocol(Unexpected::AuthenticationRequest));
                 }
             }
         }
@@ -195,7 +190,7 @@ impl Connection {
                     None => return Ok(rows),
                     Some(error) => return Err(error),
                 },
-                _ => return Err(Error::protocol("a message during a query")),
+                _ => return Err(Error::Protocol(Unexpected::MessageDuringQuery)),
             }
         }
     }
@@ -222,7 +217,7 @@ impl Connection {
                 | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 Message::ReadyForQuery(_) => return Ok(()),
-                _ => return Err(Error::protocol("a message during a copy")),
+                _ => return Err(Error::Protocol(Unexpected::MessageDuringCopy)),
             }
         }
     }
@@ -246,7 +241,7 @@ impl Connection {
             match self.read()? {
                 Message::NoticeResponse(_) | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
-                _ => return Err(Error::protocol("a message instead of CopyBothResponse")),
+                _ => return Err(Error::Protocol(Unexpected::NoCopyBothResponse)),
             }
         }
     }
@@ -426,4 +421,13 @@ pub(crate) fn server_error(body: &ErrorResponseBody) -> Error {
         message = format!("{message}: {detail}");
     }
     Error::Server { code, message }
+}
+
+/// The SASL mechanism names, copied out of the message they borrow from.
+fn owned(names: &[&str]) -> Vec<String> {
+    let mut owned = Vec::new();
+    for name in names {
+        owned.push((*name).to_owned());
+    }
+    owned
 }

@@ -15,6 +15,7 @@ use crate::catalog::Checked;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, RelationColumn, Tuple};
 use crate::problem::{ColumnProblem, Problem, TableNames};
+use crate::unexpected::Unexpected;
 use crate::value::{Oid, read, type_of};
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
@@ -309,11 +310,10 @@ impl Mapping {
         if tuple.len() == self.width {
             return Ok(());
         }
-        Err(Error::Protocol(format!(
-            "a tuple of {} columns for a relation of {}",
-            tuple.len(),
-            self.width
-        )))
+        Err(Error::Protocol(Unexpected::TupleWidth {
+            columns: tuple.len(),
+            relation_columns: self.width,
+        }))
     }
 }
 

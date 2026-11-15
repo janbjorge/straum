@@ -18,6 +18,7 @@ use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
 use crate::physical::Replay;
+use crate::unexpected::Unexpected;
 use crate::value;
 use crate::wal::pipeline::Sight;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
@@ -151,7 +152,7 @@ impl Stream {
             }
             match self.commits.recv_timeout(left.min(WAIT)) {
                 Ok(Err(error)) => return Err(error),
-                Ok(Ok(_)) => return Err(Error::protocol("a commit before the load's snapshot")),
+                Ok(Ok(_)) => return Err(Error::Protocol(Unexpected::CommitBeforeSnapshot)),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Err(Error::Stopped),
             }
@@ -226,7 +227,7 @@ impl StreamThread {
                     }
                 }
                 Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
-                Some(_) => return Err(Error::protocol("a message that ended the stream")),
+                Some(_) => return Err(Error::Protocol(Unexpected::StreamEnded)),
             }
             if self.last_report.elapsed() >= REPORT_INTERVAL {
                 self.report()?;

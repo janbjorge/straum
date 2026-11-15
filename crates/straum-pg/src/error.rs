@@ -11,6 +11,8 @@ use straum_domain::RowError;
 
 use crate::pgoutput::DecodeError;
 use crate::problem::Problem;
+use crate::tls::TlsProblem;
+use crate::unexpected::Unexpected;
 use crate::value::ValueError;
 use crate::wal::WalError;
 
@@ -24,7 +26,7 @@ pub(crate) enum Error {
         message: String,
     },
     /// PostgreSQL sent something Straum didn't expect.
-    Protocol(String),
+    Protocol(Unexpected),
     Decode(DecodeError),
     Value(ValueError),
     Wal(WalError),
@@ -32,7 +34,7 @@ pub(crate) enum Error {
     Row(RowError),
     /// TLS didn't start: the server has it off, or Straum doesn't trust its
     /// certificate.
-    Tls(String),
+    Tls(TlsProblem),
     /// The setup doesn't fit the spec; one line per problem, saying what to
     /// fix.
     Setup(Vec<Problem>),
@@ -54,13 +56,6 @@ pub(crate) enum Error {
     },
     /// The thread reading the stream has stopped.
     Stopped,
-}
-
-impl Error {
-    /// PostgreSQL sent `what`, which Straum didn't expect.
-    pub(crate) fn protocol(what: &str) -> Error {
-        Error::Protocol(what.to_owned())
-    }
 }
 
 impl From<io::Error> for Error {
@@ -144,7 +139,10 @@ mod tests {
                 },
                 "PostgreSQL: relation \"x\" does not exist (42P01)",
             ),
-            (Error::Protocol("bytes".into()), "PostgreSQL sent bytes"),
+            (
+                Error::Protocol(Unexpected::SaslFinal),
+                "PostgreSQL sent SASL final",
+            ),
             (
                 Error::Memory {
                     held: 2048,
@@ -165,7 +163,10 @@ mod tests {
                 Error::Row(RowError::Missing),
                 "loaded removed row was never added",
             ),
-            (Error::Tls("no".into()), "TLS to PostgreSQL: no"),
+            (
+                Error::Tls(TlsProblem::NoRoots("ca.pem".into())),
+                "TLS to PostgreSQL: ca.pem holds no CA certificate",
+            ),
             (
                 Error::Setup(vec![
                     Problem::Server(ServerProblem::WalCompressionZstd),

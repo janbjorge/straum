@@ -20,6 +20,7 @@ use crate::error::Error;
 use crate::pgoutput::{Relation, RelationColumn};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::POLL;
+use crate::unexpected::Unexpected;
 use crate::value::{Oid, read, type_of};
 use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
@@ -97,7 +98,7 @@ impl Physical {
                     }
                 },
                 Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
-                Some(_) => return Err(Error::protocol("a message that ended the stream")),
+                Some(_) => return Err(Error::Protocol(Unexpected::StreamEnded)),
             }
         }
     }
@@ -160,13 +161,13 @@ fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> 
         escape_literal(slot)
     ))?;
     let start = (first_row_value(&rows, 0).and_then(parse_lsn))
-        .ok_or(Error::protocol("a physical slot without a restart LSN"))?;
+        .ok_or(Error::Protocol(Unexpected::SlotWithoutRestartLsn))?;
     let segment_size = (first_row_value(&rows, 1).map(str::parse::<u64>))
         .and_then(Result::ok)
-        .ok_or(Error::protocol("no wal_segment_size"))?;
+        .ok_or(Error::Protocol(Unexpected::NoWalSegmentSize))?;
     let version = (first_row_value(&rows, 2).map(str::parse::<u32>))
         .and_then(Result::ok)
-        .ok_or(Error::protocol("no server_version_num"))?;
+        .ok_or(Error::Protocol(Unexpected::NoServerVersion))?;
     Ok(Reserved {
         start,
         segment_size,
@@ -182,14 +183,12 @@ fn wait_for_flush(connection: &mut Connection, start: Lsn) -> Result<(), Error> 
     loop {
         let rows = connection.rows("SELECT pg_current_wal_flush_lsn()")?;
         let flushed = (first_row_value(&rows, 0).and_then(parse_lsn))
-            .ok_or(Error::protocol("no WAL flush position"))?;
+            .ok_or(Error::Protocol(Unexpected::NoWalFlushPosition))?;
         if flushed.0 >= start.0 {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(Error::protocol(
-                "PostgreSQL never flushed the WAL up to the redo point",
-            ));
+            return Err(Error::Protocol(Unexpected::WalNeverFlushed));
         }
         thread::sleep(FLUSH_POLL);
     }
@@ -383,7 +382,7 @@ fn labels(connection: &mut Connection, names: &str) -> Result<LabelsByOid, Error
 }
 
 fn unknown_shape() -> Error {
-    Error::protocol("a table layout of an unknown shape")
+    Error::Protocol(Unexpected::LayoutShape)
 }
 
 fn text(row: &[Option<String>], column: usize) -> Result<&str, Error> {

@@ -245,10 +245,10 @@ fn copies_hand_over_bounded_batches() {
     let mut calls = 0;
     let error = load::copy(&mut connection, &two_ints(), |_| {
         calls += 1;
-        Err(Error::Protocol("a row Straum refused".into()))
+        Err(Error::Stopped)
     })
     .unwrap_err();
-    assert_eq!(error.to_string(), "PostgreSQL sent a row Straum refused");
+    assert_eq!(error.to_string(), "the replication stream stopped");
     assert_eq!(calls, 1);
 }
 
