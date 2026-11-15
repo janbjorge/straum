@@ -29,7 +29,7 @@ thread_local! {
 }
 
 #[derive(Clone, Copy)]
-enum Change {
+enum MemoryChange {
     Allocated,
     Freed,
 }
@@ -38,11 +38,11 @@ enum Change {
     clippy::cast_possible_wrap,
     reason = "a layout's size is at most isize::MAX"
 )]
-fn grow(bytes: usize, change: Change) {
+fn grow(bytes: usize, change: MemoryChange) {
     let bytes = bytes as isize;
     let by = match change {
-        Change::Allocated => bytes,
-        Change::Freed => -bytes,
+        MemoryChange::Allocated => bytes,
+        MemoryChange::Freed => -bytes,
     };
     let live = LIVE.with(|n| {
         n.set(n.get() + by);
@@ -61,19 +61,19 @@ struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(layout.size(), Change::Allocated);
+        grow(layout.size(), MemoryChange::Allocated);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        grow(layout.size(), Change::Freed);
+        grow(layout.size(), MemoryChange::Freed);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(new_size, Change::Allocated);
-        grow(layout.size(), Change::Freed);
+        grow(new_size, MemoryChange::Allocated);
+        grow(layout.size(), MemoryChange::Freed);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

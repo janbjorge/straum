@@ -2786,7 +2786,7 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     store.add_row("trips", &rows[0]).unwrap();
 }
 
-type Change<'a> = dyn Fn(&mut Sealed) + 'a;
+type Tamper<'a> = dyn Fn(&mut Sealed) + 'a;
 
 struct SealedBucket {
     store: Store,
@@ -2806,10 +2806,10 @@ impl SealedBucket {
         self.good.columns.iter().position(is_kind).unwrap()
     }
 
-    fn assert_refused(&self, cases: &[(&str, &Change<'_>)]) {
-        for (reason, change) in cases {
+    fn assert_refused(&self, cases: &[(&str, &Tamper<'_>)]) {
+        for (reason, tamper) in cases {
             let mut sealed = self.good.clone();
-            change(&mut sealed);
+            tamper(&mut sealed);
             assert_eq!(self.store.thaw(sealed).unwrap_err().reason, *reason);
         }
         assert!(self.store.thaw(self.good.clone()).is_ok());
