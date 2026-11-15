@@ -194,7 +194,7 @@ impl Rollup {
         };
         let keys = Keys {
             codes: &cells.keys,
-            len: cells.key_parts,
+            codes_per_key: cells.key_parts,
         };
         if !cells.index.fill(cells.rows.len(), keys) {
             return Err("a key held twice");

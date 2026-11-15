@@ -10,18 +10,18 @@ use crate::hash::Seeded;
 /// No cell.
 const EMPTY: u32 = u32::MAX;
 
-/// The keys of a bucket's cells, end to end, `len` codes each.
+/// The keys of a bucket's cells, end to end, `codes_per_key` codes each.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Keys<'bucket> {
     // Borrowed from the bucket, which keeps every key once.
     pub(crate) codes: &'bucket [u32],
-    pub(crate) len: usize,
+    pub(crate) codes_per_key: usize,
 }
 
 impl<'bucket> Keys<'bucket> {
     /// The key of the cell at `cell`.
     pub(crate) fn of(self, cell: usize) -> &'bucket [u32] {
-        &self.codes[cell * self.len..][..self.len]
+        &self.codes[cell * self.codes_per_key..][..self.codes_per_key]
     }
 }
 
@@ -178,7 +178,7 @@ mod tests {
         fn keys(&self) -> Keys<'_> {
             Keys {
                 codes: &self.codes,
-                len: self.codes_per_key,
+                codes_per_key: self.codes_per_key,
             }
         }
 
@@ -188,7 +188,7 @@ mod tests {
             self.codes.extend(&key);
             let keys = Keys {
                 codes: &self.codes,
-                len: self.codes_per_key,
+                codes_per_key: self.codes_per_key,
             };
             self.index.insert(cell, keys);
             self.held.insert(key, cell);
@@ -200,7 +200,7 @@ mod tests {
             let last = self.held.len() - 1;
             let keys = Keys {
                 codes: &self.codes,
-                len: codes_per_key,
+                codes_per_key,
             };
             self.index.remove(cell, keys);
             self.held.remove(key);
@@ -275,7 +275,7 @@ mod tests {
             let mut index = Index::default();
             let keys = Keys {
                 codes: &codes,
-                len: 2,
+                codes_per_key: 2,
             };
             assert!(index.fill(cells, keys), "{cells} cells");
             for cell in 0..cells {
@@ -289,7 +289,7 @@ mod tests {
                 twice.copy_within(2 * from..2 * from + 2, 2 * to);
                 let keys = Keys {
                     codes: &twice,
-                    len: 2,
+                    codes_per_key: 2,
                 };
                 assert!(!Index::default().fill(cells, keys), "{cells} cells");
             }

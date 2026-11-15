@@ -46,7 +46,7 @@ impl Cells {
     fn keys(&self) -> Keys<'_> {
         Keys {
             codes: &self.keys,
-            len: self.key_parts,
+            codes_per_key: self.key_parts,
         }
     }
 
@@ -168,7 +168,7 @@ impl Cells {
         }
         let keys = Keys {
             codes: &self.keys,
-            len: self.key_parts,
+            codes_per_key: self.key_parts,
         };
         self.index.insert(cell, keys);
         CellEntry {
@@ -183,7 +183,7 @@ impl Cells {
         let key_parts = self.key_parts;
         let keys = Keys {
             codes: &self.keys,
-            len: key_parts,
+            codes_per_key: key_parts,
         };
         self.index.remove(cell, keys);
         if cell != last {
