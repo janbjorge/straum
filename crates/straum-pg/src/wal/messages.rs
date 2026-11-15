@@ -168,17 +168,20 @@ fn fields(
     labels: &HashMap<u32, String>,
     lsn: u64,
 ) -> Result<Vec<Field<'static>>, Error> {
-    let values = tuple::values(tuple, &table.attributes, labels).map_err(|p| problem(lsn, p))?;
+    let mut values =
+        tuple::values(tuple, &table.attributes, labels).map_err(|p| problem(lsn, p))?;
     Ok(table
         .columns
         .iter()
-        .map(|&i| match &values[i] {
-            Value::Datum(datum) => Field::Datum(datum.clone()),
-            // pgoutput, too, leaves out a value TOASTed out of line that
-            // the change kept.
-            Value::External => Field::Unchanged,
-            Value::Missing => Field::Datum(table.missing[i].clone()),
-        })
+        .map(
+            |&i| match std::mem::replace(&mut values[i], Value::Missing) {
+                Value::Datum(datum) => Field::Datum(datum),
+                // pgoutput, too, leaves out a value TOASTed out of line that
+                // the change kept.
+                Value::External => Field::Unchanged,
+                Value::Missing => Field::Datum(table.missing[i].clone()),
+            },
+        )
         .collect())
 }
 

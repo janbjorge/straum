@@ -7,6 +7,7 @@
 //! Values are read little-endian: PostgreSQL writes them in the server's
 //! byte order, and the servers Straum meets are x86 or ARM.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use straum_domain::{ColumnType, Datum};
@@ -129,17 +130,17 @@ fn varlena_size(bytes: &[u8]) -> Option<usize> {
 }
 
 /// What a varlena holds: its bytes, decompressed, or `None` for a value
-/// TOASTed out of line.
-fn detoast(bytes: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+/// TOASTed out of line. Only a compressed one is copied.
+fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, &'static str> {
     let first = bytes[0];
     if first == 0x01 {
         return Ok(None);
     }
     if first & 0x01 == 1 {
-        return Ok(Some(bytes[1..].to_vec()));
+        return Ok(Some(Cow::Borrowed(&bytes[1..])));
     }
     if first & 0x03 == 0 {
-        return Ok(Some(bytes[4..].to_vec()));
+        return Ok(Some(Cow::Borrowed(&bytes[4..])));
     }
     let info = bytes
         .get(4..8)
@@ -152,7 +153,8 @@ fn detoast(bytes: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
         METHOD_LZ4 => compress::lz4(stored, size),
         _ => return Err("a value compressed in a way Straum can't read"),
     };
-    raw.map(Some).ok_or("a value that doesn't decompress")
+    raw.map(|raw| Some(Cow::Owned(raw)))
+        .ok_or("a value that doesn't decompress")
 }
 
 fn value(
@@ -196,7 +198,7 @@ fn value(
                     Datum::Int(numeric(&raw, scale).ok_or("a numeric Straum can't read")?)
                 }
                 _ => Datum::Text(
-                    String::from_utf8(raw)
+                    std::str::from_utf8(&raw)
                         .map_err(|_| "text that isn't UTF-8")?
                         .into(),
                 ),
