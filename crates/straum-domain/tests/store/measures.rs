@@ -9,24 +9,37 @@ use crate::rows::base_trip_with;
 use crate::views::{new_measure, percentile_spec, spec, typed};
 use crate::{AT, END, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH};
 use straum_domain::{
-    Aggregate, Ask, AskKey, Datum, Fact, Origin, RowError, Spec, Store, Time, Value, Width,
+    Aggregate, Answer, Ask, AskKey, Datum, Fact, Origin, RowError, Spec, Store, Time, Value, Width,
 };
 
-pub(crate) fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
+/// The values of each row of an answer, the keys left out.
+fn values_of(answer: Answer) -> Vec<Vec<Value>> {
+    let mut values = Vec::with_capacity(answer.rows.len());
+    for row in answer.rows {
+        values.push(row.values);
+    }
+    values
+}
+
+/// The named measures by pay over every bucket the tests fill.
+fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
+    let mut names = Vec::with_capacity(measures.len());
+    for name in measures {
+        names.push(id(name));
+    }
     let ask = Ask {
         view: id("trips"),
-        measures: measures.iter().map(|name| id(name)).collect(),
+        measures: names,
         keys: vec![AskKey::Key(id("pay"))],
         filter: Vec::new(),
         from: START,
         to: END,
     };
-    (store.ask(&ask).unwrap().rows.into_iter())
-        .map(|row| row.values)
-        .collect()
+    values_of(store.ask(&ask).unwrap())
 }
 
-pub(crate) fn fare_row(at: i64, pay: i64, fare: i64) -> [Datum; 3] {
+/// A row of the percentile view: its time, its pay and its fare.
+fn fare_row(at: i64, pay: i64, fare: i64) -> [Datum; 3] {
     [Datum::Int(at), Datum::Int(pay), Datum::Int(fare)]
 }
 
@@ -108,7 +121,7 @@ fn rows_collapse_into_cells() {
     assert_eq!(store.cells("trips"), Some(3));
 }
 
-pub(crate) fn first_values(store: &Store, ask: &Ask) -> Vec<Value> {
+fn first_values(store: &Store, ask: &Ask) -> Vec<Value> {
     store.ask(ask).unwrap().rows[0].values.clone()
 }
 
@@ -125,13 +138,11 @@ fn removing_an_extreme_reveals_the_next() {
     };
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
-    let rows: Vec<_> = [5, 9, 9, 2, 7]
-        .iter()
-        .map(|&tip| {
-            row[TIP] = Datum::Int(tip);
-            row.clone()
-        })
-        .collect();
+    let mut rows = Vec::new();
+    for tip in [5, 9, 9, 2, 7] {
+        row[TIP] = Datum::Int(tip);
+        rows.push(row.clone());
+    }
     for row in &rows {
         store.add_row("trips", row).unwrap();
     }
@@ -151,12 +162,13 @@ fn removing_an_extreme_reveals_the_next() {
     assert_eq!(first_values(&store, &ask), [Value::Int(1), Value::Int(7)]);
 }
 
-// The fact's columns: its time, its key, the column it counts.
-pub(crate) fn tip_row(pay: i64, tip: Datum) -> Vec<Datum> {
+/// A row of the view of tips: its time, its pay and its tip.
+fn tip_row(pay: i64, tip: Datum) -> Vec<Datum> {
     vec![Datum::Int(START), Datum::Int(pay), tip]
 }
 
-pub(crate) fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
+/// The trips and those tipped, by `keys`, over the first hour.
+fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("tipped")],
@@ -165,11 +177,11 @@ pub(crate) fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Valu
         from: START,
         to: START + i64::from(HOUR),
     };
-    let rows = store.ask(&ask).unwrap().rows;
-    rows.into_iter().map(|row| row.values).collect()
+    values_of(store.ask(&ask).unwrap())
 }
 
-pub(crate) fn trips_and_tipped_pair(trips: i128, tipped: i128) -> Vec<Value> {
+/// A row of [`trips_and_tipped`].
+fn trips_and_tipped_pair(trips: i128, tipped: i128) -> Vec<Value> {
     vec![Value::Int(trips), Value::Int(tipped)]
 }
 
@@ -260,7 +272,7 @@ fn a_tip_its_cell_lacks_is_missing() {
 fn each_kind_of_state_notices_a_value_it_never_saw() {
     let seen = base_trip_with(FARE, Datum::Null);
     let untolled = Datum::Bool(seen[TOLLED] != Datum::Bool(true));
-    for (pos, datum) in [
+    for (position, datum) in [
         (FARE, Datum::Int(1)),
         (TIP, Datum::Int(301)),
         (RIDER, text("zed")),
@@ -269,11 +281,11 @@ fn each_kind_of_state_notices_a_value_it_never_saw() {
         let mut store = Store::new(spec());
         store.add_row("trips", &seen).unwrap();
         let mut other = seen.clone();
-        other[pos] = datum;
+        other[position] = datum;
         assert_eq!(
             store.remove_row("trips", &other),
             Err(RowError::Missing),
-            "{pos}"
+            "{position}"
         );
     }
 }
@@ -284,23 +296,27 @@ fn each_kind_of_state_notices_a_value_it_never_saw() {
 fn a_null_the_cell_never_held_is_noticed() {
     let mut full = base_trip_with(FARE, Datum::Int(5));
     (full[TIP], full[RIDER]) = (Datum::Int(3), text("ann"));
-    for pos in [FARE, TIP, RIDER] {
+    for position in [FARE, TIP, RIDER] {
         let mut store = Store::new(spec());
         store.add_row("trips", &full).unwrap();
         let mut other = full.clone();
-        other[pos] = Datum::Null;
+        other[position] = Datum::Null;
         assert_eq!(
             store.remove_row("trips", &other),
             Err(RowError::Missing),
-            "a null at {pos}"
+            "a null at {position}"
         );
         // One it does hold leaves. A store that missed a row no longer
         // matches its table, so this is another.
         let mut store = Store::new(spec());
         store.add_row("trips", &full).unwrap();
         store.add_row("trips", &other).unwrap();
-        assert_eq!(store.remove_row("trips", &other), Ok(()), "a null at {pos}");
-        assert_eq!(store.remove_row("trips", &full), Ok(()), "{pos}");
-        assert_eq!(store.cells("trips"), Some(0), "{pos}");
+        assert_eq!(
+            store.remove_row("trips", &other),
+            Ok(()),
+            "a null at {position}"
+        );
+        assert_eq!(store.remove_row("trips", &full), Ok(()), "{position}");
+        assert_eq!(store.cells("trips"), Some(0), "{position}");
     }
 }

@@ -14,62 +14,96 @@ use straum_domain::{
     ValueCount,
 };
 
-pub(crate) fn buckets_holding_start() -> [(i64, i64); 4] {
-    // The one bucket of each width that holds START.
+/// The rows of each tip one cell holds.
+type TipCounts = BTreeMap<i64, usize>;
+
+/// One bucket's range, `from..to` in Unix seconds.
+#[derive(Clone, Copy)]
+struct BucketRange {
+    from: i64,
+    to: i64,
+}
+
+/// The one bucket of each width that holds `START`.
+fn buckets_holding_start() -> [BucketRange; 4] {
     let week = START.div_euclid(i64::from(WEEK)) * i64::from(WEEK);
     [
-        (START, START + i64::from(WIDTH)),
-        (START, START + i64::from(HOUR)),
-        (START, START + i64::from(DAY)),
-        (week, week + i64::from(WEEK)),
+        starting_at_start(WIDTH),
+        starting_at_start(HOUR),
+        starting_at_start(DAY),
+        BucketRange {
+            from: week,
+            to: week + i64::from(WEEK),
+        },
     ]
 }
 
-pub(crate) fn shuffle(tips: &mut [i64], rng: &mut Rng) {
+/// The bucket of `width` seconds that starts at `START`.
+fn starting_at_start(width: u32) -> BucketRange {
+    BucketRange {
+        from: START,
+        to: START + i64::from(width),
+    }
+}
+
+/// Puts the tips in a random order, each order as likely.
+fn shuffle(tips: &mut [i64], rng: &mut Rng) {
     for at in (1..tips.len()).rev() {
         tips.swap(at, rng.below(at + 1));
     }
 }
 
-pub(crate) fn end_value(end: Option<(&i64, &usize)>) -> Value {
-    end.map_or(Value::Null, |(&tip, _)| Value::Int(tip.into()))
+/// A tip as an answer gives it, or null when the cell holds none.
+fn tip_value(tip: Option<(&i64, &usize)>) -> Value {
+    match tip {
+        Some((&tip, _)) => Value::Int(tip.into()),
+        None => Value::Null,
+    }
 }
 
-pub(crate) fn check_ends(store: &Store, held: &BTreeMap<i64, usize>, sealed: Option<&Sealed>) {
-    let rows = held.values().sum::<usize>() as i128;
+/// The trips, least tip and greatest tip the store answers for the bucket
+/// of each width that holds `START` are `held`'s. With `sealed`, the
+/// narrowest bucket is sealed and its ask reads that copy.
+fn check_ends(store: &Store, held: &TipCounts, sealed: Option<&Sealed>) {
+    let mut rows: usize = 0;
+    for count in held.values() {
+        rows += count;
+    }
     let expected = [
-        Value::Int(rows),
-        end_value(held.first_key_value()),
-        end_value(held.last_key_value()),
+        Value::Int(rows as i128),
+        tip_value(held.first_key_value()),
+        tip_value(held.last_key_value()),
     ];
-    for (from, to) in buckets_holding_start() {
+    for range in buckets_holding_start() {
         let ask = Ask {
             view: id("trips"),
             measures: vec![id("trips"), id("tip_min"), id("tip_max")],
             keys: Vec::new(),
             filter: Vec::new(),
-            from,
-            to,
+            from: range.from,
+            to: range.to,
         };
-        let thawed: Vec<_> = (store.sealed_read(&ask).unwrap().iter())
-            .map(|_| store.thaw(sealed.unwrap().clone()).unwrap())
-            .collect();
+        let mut thawed = Vec::new();
+        for _ in store.sealed_read(&ask).unwrap() {
+            thawed.push(store.thaw(sealed.unwrap().clone()).unwrap());
+        }
         // Only the narrowest width is sealed, so only its ask thaws.
-        let narrowest = to - from == i64::from(WIDTH);
+        let narrowest = range.to - range.from == i64::from(WIDTH);
         assert_eq!(thawed.len(), usize::from(sealed.is_some() && narrowest));
         assert_eq!(
             store.ask_with(&ask, &thawed).unwrap().rows[0].values,
             expected,
             "{} values, {} s wide",
             held.len(),
-            to - from
+            range.to - range.from
         );
     }
 }
 
-// Sealed, an ask reads the keyed cells: the thawed bucket at the
-// narrowest width, the hot wider ones above it.
-pub(crate) fn check_ends_through_a_seal(store: &mut Store, held: &BTreeMap<i64, usize>) {
+/// As [`check_ends`], hot, then sealed, then hot again. Sealed, an ask
+/// reads the keyed cells: the thawed bucket at the narrowest width, the
+/// hot wider ones above it.
+fn check_ends_through_a_seal(store: &mut Store, held: &TipCounts) {
     let bucket = sealed_id(i64::from(WIDTH), START);
     check_ends(store, held, None);
     let sealed = store.sealed_copy(&bucket).unwrap();
@@ -79,6 +113,55 @@ pub(crate) fn check_ends_through_a_seal(store: &mut Store, held: &BTreeMap<i64, 
     check_ends(store, held, None);
 }
 
+/// Values from below zero up, each once and every third twice.
+fn tips_of_many_values() -> Vec<i64> {
+    const VALUES: i64 = 3_000;
+    let mut tips = Vec::new();
+    for index in 0..VALUES {
+        let tip = index * 3 - VALUES;
+        tips.push(tip);
+        if index % 3 == 0 {
+            tips.push(tip);
+        }
+    }
+    tips
+}
+
+/// Adds a row of each tip in turn to the one cell `row` falls in.
+fn add_each_tip(store: &mut Store, row: &mut [Datum], tips: &[i64], held: &mut TipCounts) {
+    for (position, &tip) in tips.iter().enumerate() {
+        row[TIP] = Datum::Int(tip);
+        store.add_row("trips", row).unwrap();
+        *held.entry(tip).or_default() += 1;
+        // One value, a few, a run more than half full, and several.
+        if [0, 3, 900, tips.len() - 1].contains(&position) {
+            check_ends_through_a_seal(store, held);
+        } else if position % 97 == 0 {
+            check_ends(store, held, None);
+        }
+    }
+}
+
+/// Removes the row of each tip in turn from the cell `row` falls in.
+fn remove_each_tip(store: &mut Store, row: &mut [Datum], tips: &[i64], held: &mut TipCounts) {
+    for (position, &tip) in tips.iter().enumerate() {
+        row[TIP] = Datum::Int(tip);
+        store.remove_row("trips", row).unwrap();
+        let count = held.get_mut(&tip).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            held.remove(&tip);
+        }
+        // Runs thinned, one down to a few values, and the last.
+        let left = tips.len() - 1 - position;
+        if [2_000, 3, 1].contains(&left) {
+            check_ends_through_a_seal(store, held);
+        } else if position % 97 == 0 {
+            check_ends(store, held, None);
+        }
+    }
+}
+
 /// One cell through every form its count per value takes: a few values in
 /// the cell itself, a run of them, and past what a run holds several, then
 /// back down as the rows leave. All the way the min and max of every width
@@ -86,70 +169,45 @@ pub(crate) fn check_ends_through_a_seal(store: &mut Store, held: &BTreeMap<i64, 
 /// the keyed cells and the thawed bucket.
 #[test]
 fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
-    const VALUES: i64 = 3_000;
     let mut store = typed(&spec());
     let mut rng = Rng(7);
     let mut row = trip(&mut rng);
     row[AT] = Datum::Int(START);
-    // Each value once, every third twice.
-    let mut tips: Vec<i64> = (0..VALUES)
-        .flat_map(|index| vec![index * 3 - VALUES; if index % 3 == 0 { 2 } else { 1 }])
-        .collect();
-    let mut held: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut tips = tips_of_many_values();
+    let mut held = TipCounts::new();
     for round in 0..2 {
         shuffle(&mut tips, &mut rng);
-        for (position, &tip) in tips.iter().enumerate() {
-            row[TIP] = Datum::Int(tip);
-            store.add_row("trips", &row).unwrap();
-            *held.entry(tip).or_default() += 1;
-            // One value, a few, a run more than half full, and several.
-            if [0, 3, 900, tips.len() - 1].contains(&position) {
-                check_ends_through_a_seal(&mut store, &held);
-            } else if position % 97 == 0 {
-                check_ends(&store, &held, None);
-            }
-        }
+        add_each_tip(&mut store, &mut row, &tips, &mut held);
         assert_eq!(store.cells("trips"), Some(1));
         shuffle(&mut tips, &mut rng);
-        for (position, &tip) in tips.iter().enumerate() {
-            row[TIP] = Datum::Int(tip);
-            store.remove_row("trips", &row).unwrap();
-            let count = held.get_mut(&tip).unwrap();
-            *count -= 1;
-            if *count == 0 {
-                held.remove(&tip);
-            }
-            // Runs thinned, one down to a few values, and the last.
-            let left = tips.len() - 1 - position;
-            if [2_000, 3, 1].contains(&left) {
-                check_ends_through_a_seal(&mut store, &held);
-            } else if position % 97 == 0 {
-                check_ends(&store, &held, None);
-            }
-        }
+        remove_each_tip(&mut store, &mut row, &tips, &mut held);
         assert_eq!(store.cells("trips"), Some(0), "round {round}");
     }
 }
 
+/// A store and the rows it holds.
+struct Filled {
+    store: Store,
+    rows: Vec<Vec<Datum>>,
+}
+
 /// A store with two rows in one 15-minute bucket and one in the next.
-pub(crate) fn three_rows() -> (Store, Vec<Vec<Datum>>) {
+fn three_rows() -> Filled {
     let mut store = typed(&spec());
     let mut row = trip(&mut Rng(3));
-    let rows: Vec<Vec<Datum>> = [(START, 4), (START + 60, 9), (START + 900, 1)]
-        .iter()
-        .map(|&(at, tip)| {
-            row[AT] = Datum::Int(at);
-            row[TIP] = Datum::Int(tip);
-            row.clone()
-        })
-        .collect();
+    let mut rows = Vec::new();
+    for (at, tip) in [(START, 4), (START + 60, 9), (START + 900, 1)] {
+        row[AT] = Datum::Int(at);
+        row[TIP] = Datum::Int(tip);
+        rows.push(row.clone());
+    }
     for row in &rows {
         store.add_row("trips", row).unwrap();
     }
-    (store, rows)
+    Filled { store, rows }
 }
 
-pub(crate) fn sealed_id(width: i64, bucket_start: i64) -> SealedId {
+fn sealed_id(width: i64, bucket_start: i64) -> SealedId {
     SealedId {
         fact: id("trips"),
         width,
@@ -157,7 +215,8 @@ pub(crate) fn sealed_id(width: i64, bucket_start: i64) -> SealedId {
     }
 }
 
-pub(crate) fn whole_range(by: Vec<AskKey>) -> Ask {
+/// Trips, tips and riders by `by` over the week from `START`.
+fn whole_range(by: Vec<AskKey>) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("tip_min"), id("tip_max"), id("riders")],
@@ -170,7 +229,7 @@ pub(crate) fn whole_range(by: Vec<AskKey>) -> Ask {
 
 #[test]
 fn a_sealed_bucket_answers_as_before() {
-    let (mut store, _) = three_rows();
+    let mut store = three_rows().store;
     let ask = whole_range(vec![AskKey::Bucket]);
     let before = store.ask(&ask).unwrap();
     let cells = store.cells_read(&ask).unwrap();
@@ -192,13 +251,13 @@ fn a_sealed_bucket_answers_as_before() {
     assert_eq!(store.ask(&ask).unwrap(), before);
 }
 
-pub(crate) fn seal_refusal(store: &mut Store, id: &SealedId) -> &'static str {
+fn seal_refusal(store: &mut Store, id: &SealedId) -> &'static str {
     store.seal(id).unwrap_err().reason
 }
 
 #[test]
 fn sealable_buckets_end_by_the_cutoff() {
-    let (mut store, _) = three_rows();
+    let mut store = three_rows().store;
     let width = i64::from(WIDTH);
     assert_eq!(store.sealable(START + width - 1), []);
     assert_eq!(store.sealable(START + width), [sealed_id(width, START)]);
@@ -239,7 +298,7 @@ fn sealable_buckets_end_by_the_cutoff() {
 
 #[test]
 fn a_row_in_a_sealed_bucket_waits_for_unseal() {
-    let (mut store, rows) = three_rows();
+    let Filled { mut store, rows } = three_rows();
     let id = sealed_id(i64::from(DAY), START);
     let sealed = store.sealed_copy(&id).unwrap();
     store.seal(&id).unwrap();
@@ -250,8 +309,7 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     assert_eq!(store.sealed_touched("trips", &[]), []);
     assert_eq!(store.add_row("trips", &rows[0]), Err(RowError::Sealed));
     assert_eq!(store.remove_row("trips", &rows[0]), Err(RowError::Sealed));
-    let mut many = rows[0].clone();
-    many.extend(rows[1].iter().cloned());
+    let many = [rows[0].clone(), rows[1].clone()].concat();
     assert_eq!(store.add_rows("trips", &many), Err(RowError::Sealed));
     // A row of another day goes in.
     let mut later = rows[0].clone();
@@ -265,146 +323,257 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     store.add_row("trips", &rows[0]).unwrap();
 }
 
-pub(crate) type Tamper<'a> = dyn Fn(&mut Sealed) + 'a;
+/// One way to spoil a sealed bucket, so the store must refuse it. A plain
+/// function, so each case of a table has a name.
+type Spoil = fn(&mut Sealed);
 
-pub(crate) struct SealedBucket {
+/// The reason the store gives for refusing a bucket, and how it was
+/// spoiled.
+struct Refused {
+    reason: &'static str,
+    spoil: Spoil,
+}
+
+/// The kinds of column a sealed bucket holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnKind {
+    Count,
+    Sum,
+    Extent,
+    Distinct,
+    Bools,
+}
+
+fn kind_of(column: &SealedColumn) -> ColumnKind {
+    match column {
+        SealedColumn::Count { .. } => ColumnKind::Count,
+        SealedColumn::Sum { .. } => ColumnKind::Sum,
+        SealedColumn::Extent { .. } => ColumnKind::Extent,
+        SealedColumn::Distinct { .. } => ColumnKind::Distinct,
+        SealedColumn::Bools { .. } => ColumnKind::Bools,
+    }
+}
+
+/// Where the first column of `kind` lies among the sealed bucket's.
+fn column_of(sealed: &Sealed, kind: ColumnKind) -> usize {
+    for (position, column) in sealed.columns.iter().enumerate() {
+        if kind_of(column) == kind {
+            return position;
+        }
+    }
+    panic!("no such column")
+}
+
+/// The bucket at `START` sealed, and the copy a spill keeps of it.
+struct SealedBucket {
     store: Store,
     good: Sealed,
 }
 
 impl SealedBucket {
     fn new() -> SealedBucket {
-        let (mut store, _) = three_rows();
+        let mut store = three_rows().store;
         let bucket = sealed_id(i64::from(WIDTH), START);
         let good = store.sealed_copy(&bucket).unwrap();
         store.seal(&bucket).unwrap();
         SealedBucket { store, good }
     }
 
-    fn column(&self, is_kind: fn(&SealedColumn) -> bool) -> usize {
-        self.good.columns.iter().position(is_kind).unwrap()
-    }
-
-    fn assert_refused(&self, cases: &[(&str, &Tamper<'_>)]) {
-        for (reason, tamper) in cases {
+    /// Each spoiled copy is refused with its reason; the good one thaws.
+    fn assert_refused(&self, cases: &[Refused]) {
+        for case in cases {
             let mut sealed = self.good.clone();
-            tamper(&mut sealed);
-            assert_eq!(self.store.thaw(sealed).unwrap_err().reason, *reason);
+            (case.spoil)(&mut sealed);
+            assert_eq!(self.store.thaw(sealed).unwrap_err().reason, case.reason);
         }
         assert!(self.store.thaw(self.good.clone()).is_ok());
     }
 }
 
+const COLUMNS_DO_NOT_FIT: &str = "columns don't fit the measures";
+
+/// A case refused because its columns don't fit the measures.
+fn misfit(spoil: Spoil) -> Refused {
+    Refused {
+        reason: COLUMNS_DO_NOT_FIT,
+        spoil,
+    }
+}
+
+fn name_another_fact(sealed: &mut Sealed) {
+    sealed.id.fact = id("nope");
+}
+
+fn name_another_width(sealed: &mut Sealed) {
+    sealed.id.width = 7;
+}
+
+fn drop_the_cells(sealed: &mut Sealed) {
+    sealed.counts.clear();
+}
+
+fn empty_a_cell(sealed: &mut Sealed) {
+    sealed.counts[0] = 0;
+}
+
+fn cut_a_key(sealed: &mut Sealed) {
+    sealed.keys.pop();
+}
+
+fn code_a_key_anew(sealed: &mut Sealed) {
+    sealed.keys[0] = 99;
+}
+
 #[test]
 fn thaw_refuses_a_bucket_whose_id_or_keys_do_not_fit() {
     SealedBucket::new().assert_refused(&[
-        ("unknown fact", &|sealed| sealed.id.fact = id("nope")),
-        ("no such width", &|sealed| sealed.id.width = 7),
-        ("no cells", &|sealed| sealed.counts.clear()),
-        ("a cell without rows", &|sealed| sealed.counts[0] = 0),
-        ("keys don't fit the rollup key", &|sealed| {
-            sealed.keys.pop();
-        }),
-        ("a code the store never gave", &|sealed| sealed.keys[0] = 99),
+        Refused {
+            reason: "unknown fact",
+            spoil: name_another_fact,
+        },
+        Refused {
+            reason: "no such width",
+            spoil: name_another_width,
+        },
+        Refused {
+            reason: "no cells",
+            spoil: drop_the_cells,
+        },
+        Refused {
+            reason: "a cell without rows",
+            spoil: empty_a_cell,
+        },
+        Refused {
+            reason: "keys don't fit the rollup key",
+            spoil: cut_a_key,
+        },
+        Refused {
+            reason: "a code the store never gave",
+            spoil: code_a_key_anew,
+        },
     ]);
+}
+
+fn drop_a_column(sealed: &mut Sealed) {
+    sealed.columns.pop();
+}
+
+fn swap_the_first_column_and_the_extent(sealed: &mut Sealed) {
+    let extent = column_of(sealed, ColumnKind::Extent);
+    sealed.columns.swap(0, extent);
+}
+
+fn make_the_first_column_an_empty_sum(sealed: &mut Sealed) {
+    sealed.columns[0] = SealedColumn::Sum {
+        sums: Vec::new(),
+        counts: vec![0],
+    };
+}
+
+fn empty_the_count(sealed: &mut Sealed) {
+    let count = column_of(sealed, ColumnKind::Count);
+    sealed.columns[count] = SealedColumn::Count { counts: vec![] };
+}
+
+/// More values than the cell has rows.
+fn count_more_than_the_rows(sealed: &mut Sealed) {
+    let count = column_of(sealed, ColumnKind::Count);
+    let mut counts = Vec::with_capacity(sealed.counts.len());
+    for rows in &sealed.counts {
+        counts.push(rows + 1);
+    }
+    sealed.columns[count] = SealedColumn::Count { counts };
+}
+
+fn sum_more_than_the_rows(sealed: &mut Sealed) {
+    let sum = column_of(sealed, ColumnKind::Sum);
+    let SealedColumn::Sum { counts, .. } = &mut sealed.columns[sum] else {
+        panic!("a sum");
+    };
+    counts[0] = sealed.counts[0] + 1;
+}
+
+fn empty_the_falses(sealed: &mut Sealed) {
+    let bools = column_of(sealed, ColumnKind::Bools);
+    sealed.columns[bools] = SealedColumn::Bools {
+        trues: vec![0],
+        falses: vec![],
+    };
 }
 
 #[test]
 fn thaw_refuses_columns_that_do_not_fit_the_measures() {
-    let bucket = SealedBucket::new();
-    let extent = bucket.column(|column| matches!(column, SealedColumn::Extent { .. }));
-    let count = bucket.column(|column| matches!(column, SealedColumn::Count { .. }));
-    let bools = bucket.column(|column| matches!(column, SealedColumn::Bools { .. }));
-    let sum = bucket.column(|column| matches!(column, SealedColumn::Sum { .. }));
-    bucket.assert_refused(&[
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns.pop();
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns.swap(0, extent);
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[0] = SealedColumn::Sum {
-                sums: Vec::new(),
-                counts: vec![0],
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[count] = SealedColumn::Count { counts: vec![] };
-        }),
-        // More values than the cell has rows.
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[count] = SealedColumn::Count {
-                counts: sealed.counts.iter().map(|rows| rows + 1).collect(),
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            let SealedColumn::Sum { counts, .. } = &mut sealed.columns[sum] else {
-                panic!("a sum");
-            };
-            counts[0] = sealed.counts[0] + 1;
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[bools] = SealedColumn::Bools {
-                trues: vec![0],
-                falses: vec![],
-            };
-        }),
+    SealedBucket::new().assert_refused(&[
+        misfit(drop_a_column),
+        misfit(swap_the_first_column_and_the_extent),
+        misfit(make_the_first_column_an_empty_sum),
+        misfit(empty_the_count),
+        misfit(count_more_than_the_rows),
+        misfit(sum_more_than_the_rows),
+        misfit(empty_the_falses),
     ]);
+}
+
+/// Sets the extent column to hold `values` for its cells.
+fn set_extent(sealed: &mut Sealed, values: Vec<Vec<ValueCount>>) {
+    let extent = column_of(sealed, ColumnKind::Extent);
+    sealed.columns[extent] = SealedColumn::Extent { values };
+}
+
+fn count_a_value_no_times(sealed: &mut Sealed) {
+    set_extent(sealed, vec![vec![ValueCount { value: 1, count: 0 }]]);
+}
+
+fn drop_the_extent_cells(sealed: &mut Sealed) {
+    set_extent(sealed, vec![]);
+}
+
+fn put_values_out_of_order(sealed: &mut Sealed) {
+    set_extent(
+        sealed,
+        vec![vec![
+            ValueCount { value: 9, count: 1 },
+            ValueCount { value: 4, count: 1 },
+        ]],
+    );
+}
+
+fn put_a_value_twice(sealed: &mut Sealed) {
+    set_extent(
+        sealed,
+        vec![vec![
+            ValueCount { value: 4, count: 1 },
+            ValueCount { value: 4, count: 1 },
+        ]],
+    );
+}
+
+fn count_a_distinct_value_no_times(sealed: &mut Sealed) {
+    let distinct = column_of(sealed, ColumnKind::Distinct);
+    sealed.columns[distinct] = SealedColumn::Distinct {
+        values: vec![vec![(Datum::Null, 0)]],
+    };
+}
+
+fn drop_the_distinct_cells(sealed: &mut Sealed) {
+    let distinct = column_of(sealed, ColumnKind::Distinct);
+    sealed.columns[distinct] = SealedColumn::Distinct { values: vec![] };
 }
 
 #[test]
 fn thaw_refuses_values_that_do_not_fit_their_cell() {
-    let bucket = SealedBucket::new();
-    let extent = bucket.column(|column| matches!(column, SealedColumn::Extent { .. }));
-    let distinct = bucket.column(|column| matches!(column, SealedColumn::Distinct { .. }));
-    bucket.assert_refused(&[
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![ValueCount { value: 1, count: 0 }]],
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[extent] = SealedColumn::Extent { values: vec![] };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![
-                    ValueCount { value: 9, count: 1 },
-                    ValueCount { value: 4, count: 1 },
-                ]],
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![
-                    ValueCount { value: 4, count: 1 },
-                    ValueCount { value: 4, count: 1 },
-                ]],
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[distinct] = SealedColumn::Distinct {
-                values: vec![vec![(Datum::Null, 0)]],
-            };
-        }),
-        ("columns don't fit the measures", &|sealed| {
-            sealed.columns[distinct] = SealedColumn::Distinct { values: vec![] };
-        }),
+    SealedBucket::new().assert_refused(&[
+        misfit(count_a_value_no_times),
+        misfit(drop_the_extent_cells),
+        misfit(put_values_out_of_order),
+        misfit(put_a_value_twice),
+        misfit(count_a_distinct_value_no_times),
+        misfit(drop_the_distinct_cells),
     ]);
 }
 
-#[test]
-fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
-    let (mut store, _) = three_rows();
-    let id = sealed_id(i64::from(DAY), START);
-    let mut sealed = store.sealed_copy(&id).unwrap();
-    let err = store
-        .unseal(store.thaw(sealed.clone()).unwrap())
-        .unwrap_err();
-    assert_eq!(err.reason, "not sealed");
-    store.seal(&id).unwrap();
-    // Two cells under one key.
+/// Every cell twice, so the bucket holds each key twice.
+fn hold_every_key_twice(sealed: &mut Sealed) {
     sealed.keys.extend_from_slice(&sealed.keys.clone());
     sealed.counts.extend_from_slice(&sealed.counts.clone());
     for column in &mut sealed.columns {
@@ -422,25 +591,38 @@ fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
             }
         }
     }
-    let err = store.unseal(store.thaw(sealed).unwrap()).unwrap_err();
-    assert_eq!(err.reason, "a key held twice");
+}
+
+#[test]
+fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
+    let mut store = three_rows().store;
+    let id = sealed_id(i64::from(DAY), START);
+    let mut sealed = store.sealed_copy(&id).unwrap();
+    let error = store
+        .unseal(store.thaw(sealed.clone()).unwrap())
+        .unwrap_err();
+    assert_eq!(error.reason, "not sealed");
+    store.seal(&id).unwrap();
+    hold_every_key_twice(&mut sealed);
+    let error = store.unseal(store.thaw(sealed).unwrap()).unwrap_err();
+    assert_eq!(error.reason, "a key held twice");
 }
 
 #[test]
 fn sealed_error_display() {
-    let err = SealedError {
+    let error = SealedError {
         id: sealed_id(900, 1_800),
         reason: "no cells",
     };
     assert_eq!(
-        err.to_string(),
+        error.to_string(),
         "sealed trips bucket of 900s at 1800: no cells"
     );
 }
 
 #[test]
 fn a_row_of_a_bucket_never_filled_is_missing() {
-    let (mut store, rows) = three_rows();
+    let Filled { mut store, rows } = three_rows();
     let mut elsewhere = rows[0].clone();
     elsewhere[AT] = Datum::Int(START + i64::from(DAY));
     assert_eq!(

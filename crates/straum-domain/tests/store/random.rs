@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use crate::common::{Rng, condition, dim_row, id, lit, text};
-use crate::{DRO, Dims, END, HOME, KEYS, START, WIDTH};
-use straum_domain::{Ask, AskKey, Datum, Identifier, Literal, Spec, Store};
+use crate::{DRO, DimRows, Dims, END, HOME, KEYS, START, WIDTH};
+use straum_domain::{Ask, AskKey, Condition, Datum, Identifier, Literal, Spec, Store};
 
 impl Rng {
     /// One of a few texts, or null `percent` percent of the time, as a
@@ -53,6 +53,15 @@ pub(crate) fn trip(rng: &mut Rng) -> Vec<Datum> {
     ]
 }
 
+/// `count` random trips.
+pub(crate) fn trips(rng: &mut Rng, count: usize) -> Vec<Vec<Datum>> {
+    let mut trips = Vec::with_capacity(count);
+    for _ in 0..count {
+        trips.push(trip(rng));
+    }
+    trips
+}
+
 /// Random dims over the keys trips point at: `pu`, `dro` and `home` in
 /// 1..7, `vendor` in 1..3. Some keys have no row, so some joins find
 /// nothing, and some rows have a null in their key, which nothing joins.
@@ -91,19 +100,60 @@ pub(crate) fn random_dims(rng: &mut Rng) -> Dims {
 }
 
 /// The rows of a dim the store holds: those with no null in their key.
-pub(crate) fn held(rows: &BTreeMap<Vec<Datum>, Vec<Datum>>) -> usize {
-    (rows.keys())
-        .filter(|key| !key.contains(&Datum::Null))
-        .count()
+pub(crate) fn held(rows: &DimRows) -> usize {
+    let mut held = 0;
+    for key in rows.keys() {
+        if !key.contains(&Datum::Null) {
+            held += 1;
+        }
+    }
+    held
+}
+
+/// A dim's rows laid end to end, as a load reads them.
+fn laid_end_to_end(rows: &DimRows) -> Vec<Datum> {
+    let mut flat = Vec::new();
+    for (key, attributes) in rows {
+        flat.extend(dim_row(key, attributes));
+    }
+    flat
 }
 
 /// Loads every dim, as a load does, rows laid end to end.
 pub(crate) fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
-        let flat: Vec<Datum> = (rows.iter())
-            .flat_map(|(key, attributes)| dim_row(key, attributes))
-            .collect();
-        store.add_rows(dim, &flat).unwrap();
+        store.add_rows(dim, &laid_end_to_end(rows)).unwrap();
+    }
+}
+
+/// One dim row a change brings: the dim, the key and the attributes.
+struct DimChange {
+    dim: &'static str,
+    key: Vec<Datum>,
+    attributes: Vec<Datum>,
+}
+
+/// A row of a random dim, under a key with a null now and then.
+fn random_dim_row(rng: &mut Rng) -> DimChange {
+    match rng.below(3) {
+        0 => DimChange {
+            dim: "zones",
+            key: vec![rng.maybe(1, 7, 5)],
+            attributes: vec![
+                rng.attribute(&["m", "q", "b"], 25),
+                rng.attribute(&["a", "b", "c"], 25),
+            ],
+        },
+        1 => DimChange {
+            dim: "combos",
+            key: vec![rng.maybe(1, 7, 5), rng.maybe(1, 3, 5)],
+            attributes: vec![rng.attribute(&["x", "y"], 50)],
+        },
+        _ => DimChange {
+            dim: "vendors",
+            key: vec![rng.maybe(1, 3, 5)],
+            attributes: vec![rng.attribute(&["v1", "v2"], 50)],
+        },
     }
 }
 
@@ -119,33 +169,15 @@ pub(crate) fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
         } else {
             BTreeMap::new()
         };
-        let flat: Vec<Datum> = (rows.iter())
-            .flat_map(|(key, attributes)| dim_row(key, attributes))
-            .collect();
-        store.add_rows(dim, &flat).unwrap();
+        store.add_rows(dim, &laid_end_to_end(&rows)).unwrap();
         dims.insert(dim, rows);
         return;
     }
-    let (dim, key, attributes): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
-        0 => (
-            "zones",
-            vec![rng.maybe(1, 7, 5)],
-            vec![
-                rng.attribute(&["m", "q", "b"], 25),
-                rng.attribute(&["a", "b", "c"], 25),
-            ],
-        ),
-        1 => (
-            "combos",
-            vec![rng.maybe(1, 7, 5), rng.maybe(1, 3, 5)],
-            vec![rng.attribute(&["x", "y"], 50)],
-        ),
-        _ => (
-            "vendors",
-            vec![rng.maybe(1, 3, 5)],
-            vec![rng.attribute(&["v1", "v2"], 50)],
-        ),
-    };
+    let DimChange {
+        dim,
+        key,
+        attributes,
+    } = random_dim_row(rng);
     let rows = dims.get_mut(dim).unwrap();
     match rows.remove(&key) {
         Some(old) if rng.chance(40) => {
@@ -161,37 +193,32 @@ pub(crate) fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     rows.insert(key, attributes);
 }
 
+/// An ask over random keys, filters and measures of `trips`, and a random
+/// range that may reach past the rows at either end.
 pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
-    let mut by: Vec<AskKey> = KEYS
-        .iter()
-        .filter(|_| rng.chance(25))
-        .map(|key| AskKey::Key(id(key)))
-        .collect();
+    let mut by = Vec::new();
+    for key in KEYS {
+        if rng.chance(25) {
+            by.push(AskKey::Key(id(key)));
+        }
+    }
     if rng.chance(60) {
         let at = rng.below(by.len() + 1);
         by.insert(at, AskKey::Bucket);
     }
-    let pool = [
-        condition("pay", vec![Literal::Int(1), Literal::Int(2)]),
-        condition("vendor", vec![Literal::Int(2)]),
-        condition("shared", vec![Literal::Bool(false)]),
-        condition("pickup_borough", vec![lit("m")]),
-        condition("dro", vec![Literal::Int(5)]),
-        condition("dropoff_zone", vec![lit("a"), lit("c")]),
-        condition("pu", vec![Literal::Int(1), Literal::Int(3)]),
-        condition("combo_label", vec![lit("x")]),
-        condition("known", vec![Literal::Bool(true)]),
-        condition("unpaid", vec![Literal::Bool(false)]),
-        condition("vend_label", vec![lit("v1")]),
-        condition("home_borough", vec![lit("q"), lit("b")]),
-    ];
-    let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
+    let mut filter = Vec::new();
+    for condition in condition_pool() {
+        if rng.chance(15) {
+            filter.push(condition);
+        }
+    }
     let all = &spec.fact("trips").unwrap().measures;
-    let mut measures: Vec<Identifier> = all
-        .iter()
-        .filter(|_| rng.chance(50))
-        .map(|measure| measure.name.clone())
-        .collect();
+    let mut measures: Vec<Identifier> = Vec::new();
+    for measure in all {
+        if rng.chance(50) {
+            measures.push(measure.name.clone());
+        }
+    }
     if measures.is_empty() {
         measures.push(rng.pick(all).name.clone());
     }
@@ -206,6 +233,24 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         from,
         to,
     }
+}
+
+/// The conditions a random ask draws its filter from.
+fn condition_pool() -> [Condition; 12] {
+    [
+        condition("pay", vec![Literal::Int(1), Literal::Int(2)]),
+        condition("vendor", vec![Literal::Int(2)]),
+        condition("shared", vec![Literal::Bool(false)]),
+        condition("pickup_borough", vec![lit("m")]),
+        condition("dro", vec![Literal::Int(5)]),
+        condition("dropoff_zone", vec![lit("a"), lit("c")]),
+        condition("pu", vec![Literal::Int(1), Literal::Int(3)]),
+        condition("combo_label", vec![lit("x")]),
+        condition("known", vec![Literal::Bool(true)]),
+        condition("unpaid", vec![Literal::Bool(false)]),
+        condition("vend_label", vec![lit("v1")]),
+        condition("home_borough", vec![lit("q"), lit("b")]),
+    ]
 }
 
 /// Makes `row` fall in the cell of `other`, or beside it: the same keys

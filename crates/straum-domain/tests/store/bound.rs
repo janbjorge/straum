@@ -10,7 +10,7 @@ use straum_domain::{Ask, AskKey, Datum, RefKind, Store, Value};
 
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
 /// `START`.
-pub(crate) fn zoned_store() -> Store {
+fn zoned_store() -> Store {
     let mut store = Store::new(zones_spec(Some(RefKind::Left), Widths::Quarter));
     for zone in 1..7 {
         let borough = if zone < 4 { "m" } else { "q" };
@@ -29,11 +29,13 @@ pub(crate) fn zoned_store() -> Store {
     store
 }
 
-pub(crate) fn by_borough() -> Ask {
+/// The trips by borough over every bucket the tests fill.
+fn by_borough() -> Ask {
     by_borough_over(START, END)
 }
 
-pub(crate) fn by_borough_over(from: i64, to: i64) -> Ask {
+/// The trips by borough over `from..to`.
+fn by_borough_over(from: i64, to: i64) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips")],
@@ -138,7 +140,9 @@ fn a_sealed_bucket_is_read_through_its_keyed_cells() {
     );
 }
 
-pub(crate) fn load_three_zones_and_trips(store: &mut Store) {
+/// Zones 1 to 3 in borough m, a trip from zone 1 in the first quarter
+/// and from zones 2 and 3 in the next.
+fn load_three_zones_and_trips(store: &mut Store) {
     store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
     store.add_row("zones", &[Datum::Int(2), text("m")]).unwrap();
     store.add_row("zones", &[Datum::Int(3), text("m")]).unwrap();
@@ -187,9 +191,12 @@ fn a_hot_quarter_keeps_bound_cells_beside_a_sealed_one() {
     );
 }
 
+/// A change to the zones made between a seal and an unseal.
+type ZoneChange = fn(&mut Store);
+
 /// Seals the bucket at `START`, hands it to `between`, puts it back and
 /// adds one more trip from zone 1 to it.
-pub(crate) fn through_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
+fn through_a_seal(store: &mut Store, between: ZoneChange) {
     let id = store.sealable(START + i64::from(WIDTH)).remove(0);
     let copy = store.sealed_copy(&id).unwrap();
     store.seal(&id).unwrap();
@@ -202,34 +209,36 @@ pub(crate) fn through_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
 }
 
 /// The same changes with the bucket hot throughout.
-pub(crate) fn without_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
+fn without_a_seal(store: &mut Store, between: ZoneChange) {
     between(store);
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
         .unwrap();
 }
 
-pub(crate) fn move_zone_six_to_m(store: &mut Store) {
+fn move_zone_six_to_m(store: &mut Store) {
     let old = [Datum::Int(6), text("q")];
     let new = [Datum::Int(6), text("m")];
     store.update_row("zones", &old, &new).unwrap();
 }
 
-pub(crate) fn truncate_zones(store: &mut Store) {
+fn truncate_zones(store: &mut Store) {
     store.clear("zones");
 }
 
-pub(crate) fn reload_zones_into_b(store: &mut Store) {
+/// Zones 1 and 2 loaded anew, both in borough b.
+fn reload_zones_into_b(store: &mut Store) {
     store.clear("zones");
     let rows = [Datum::Int(1), text("b"), Datum::Int(2), text("b")];
     store.add_rows("zones", &rows).unwrap();
 }
 
-pub(crate) fn insert_zone_one(store: &mut Store) {
+fn insert_zone_one(store: &mut Store) {
     store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
 }
 
-pub(crate) fn inner_zoned_store_with(trip: &[Datum]) -> Store {
+/// The zones joined inner, holding no zone yet, and one trip.
+fn inner_zoned_store_with(trip: &[Datum]) -> Store {
     let mut store = Store::new(zones_spec(Some(RefKind::Inner), Widths::Quarter));
     store.add_row("trips", trip).unwrap();
     assert_eq!(store.bound_cells("trips"), Some(0));
@@ -241,7 +250,8 @@ pub(crate) fn inner_zoned_store_with(trip: &[Datum]) -> Store {
 /// never been sealed, and every trip still comes out.
 #[test]
 fn a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed() {
-    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    let mut sealed = zoned_store();
+    let mut hot = zoned_store();
     through_a_seal(&mut sealed, move_zone_six_to_m);
     without_a_seal(&mut hot, move_zone_six_to_m);
     let by_borough = by_borough();
@@ -263,7 +273,8 @@ fn a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed() {
 /// only the one that came after.
 #[test]
 fn a_dim_truncate_under_a_sealed_bucket_keeps_its_trips() {
-    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    let mut sealed = zoned_store();
+    let mut hot = zoned_store();
     through_a_seal(&mut sealed, truncate_zones);
     without_a_seal(&mut hot, truncate_zones);
     let by_borough = by_borough();
@@ -276,7 +287,8 @@ fn a_dim_truncate_under_a_sealed_bucket_keeps_its_trips() {
 /// As the truncate, for a dim loaded while the bucket is sealed.
 #[test]
 fn a_dim_load_under_a_sealed_bucket_keeps_its_trips() {
-    let (mut sealed, mut hot) = (zoned_store(), zoned_store());
+    let mut sealed = zoned_store();
+    let mut hot = zoned_store();
     through_a_seal(&mut sealed, reload_zones_into_b);
     without_a_seal(&mut hot, reload_zones_into_b);
     let by_borough = by_borough();
@@ -293,10 +305,8 @@ fn a_dim_load_under_a_sealed_bucket_keeps_its_trips() {
 #[test]
 fn a_sealed_bucket_without_bound_cells_gains_them_from_a_dim_insert() {
     let first = [Datum::Int(START), Datum::Int(2), Datum::Int(1)];
-    let (mut sealed, mut hot) = (
-        inner_zoned_store_with(&first),
-        inner_zoned_store_with(&first),
-    );
+    let mut sealed = inner_zoned_store_with(&first);
+    let mut hot = inner_zoned_store_with(&first);
     through_a_seal(&mut sealed, insert_zone_one);
     without_a_seal(&mut hot, insert_zone_one);
     let by_borough = by_borough();

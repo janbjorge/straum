@@ -5,7 +5,7 @@
 use crate::common::{Rng, id, text};
 use crate::random::trip;
 use crate::views::spec;
-use crate::{AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_LEN, SHARED, TIP, TOLLED, VENDOR};
+use crate::{AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, TIP, TOLLED, VENDOR};
 use straum_domain::{ColumnType, Datum, Identifier, KeyPart, RowError, Store};
 
 #[test]
@@ -16,12 +16,12 @@ fn rows_added_together_add_none_on_error() {
     assert_eq!(
         store.add_rows("trips", &good[1..]),
         Err(RowError::Arity {
-            expected: ROW_LEN,
-            found: ROW_LEN - 1
+            expected: ROW_COLUMNS,
+            found: ROW_COLUMNS - 1
         })
     );
     let mut bad = good.clone();
-    bad[ROW_LEN + AT] = text("noon");
+    bad[ROW_COLUMNS + AT] = text("noon");
     assert_eq!(
         store.add_rows("trips", &bad),
         Err(RowError::NotInt { column: id("at") })
@@ -56,9 +56,9 @@ fn columns_put_measure_inputs_after_the_key() {
         (RIDER, "rider"),
         (TOLLED, "tolled"),
     ];
-    assert_eq!(columns, expected.map(|(_, name)| name.to_owned()));
-    for (pos, name) in expected {
-        assert_eq!(columns[pos], name);
+    assert_eq!(columns.len(), expected.len());
+    for (position, name) in expected {
+        assert_eq!(columns[position], name);
     }
 }
 
@@ -67,15 +67,21 @@ fn columns_put_measure_inputs_after_the_key() {
 #[test]
 fn rollup_key_puts_via_columns_after_the_by_keys_each_once() {
     let spec = spec();
-    let key: Vec<String> = (spec.fact("trips").unwrap().rollup_key())
-        .map(|slot| match slot {
+    let mut key = Vec::new();
+    for part in spec.fact("trips").unwrap().rollup_key() {
+        key.push(match part {
             KeyPart::Column(column) => column.to_string(),
-            KeyPart::IsNull { column, negated } => {
-                format!("{column} is {}null", if negated { "not " } else { "" })
-            }
-            KeyPart::Bucket => "bucket".into(),
-        })
-        .collect();
+            KeyPart::IsNull {
+                column,
+                negated: true,
+            } => format!("{column} is not null"),
+            KeyPart::IsNull {
+                column,
+                negated: false,
+            } => format!("{column} is null"),
+            KeyPart::Bucket => "bucket".to_owned(),
+        });
+    }
     assert_eq!(
         key,
         [
@@ -104,6 +110,7 @@ fn clear_drops_every_row() {
     assert_eq!(store.cells("trips"), Some(1));
 }
 
+/// The trip of seed 3, one column changed.
 pub(crate) fn base_trip_with(column: usize, datum: Datum) -> Vec<Datum> {
     let mut row = trip(&mut Rng(3));
     row[column] = datum;
@@ -117,8 +124,8 @@ fn row_errors() {
     assert_eq!(
         store.add_row("trips", &base[1..]),
         Err(RowError::Arity {
-            expected: ROW_LEN,
-            found: ROW_LEN - 1
+            expected: ROW_COLUMNS,
+            found: ROW_COLUMNS - 1
         })
     );
     assert_eq!(
@@ -143,10 +150,10 @@ fn row_errors() {
 
     let mut store = Store::new(spec());
     assert_eq!(
-        store.set_types("trips", &[ColumnType::Int; ROW_LEN + 1]),
+        store.set_types("trips", &[ColumnType::Int; ROW_COLUMNS + 1]),
         Err(RowError::Arity {
-            expected: ROW_LEN,
-            found: ROW_LEN + 1
+            expected: ROW_COLUMNS,
+            found: ROW_COLUMNS + 1
         })
     );
 }

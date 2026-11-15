@@ -10,7 +10,7 @@ use crate::views::{spec, typed};
 use crate::{AT, DRO, END, FARE, PU, SHARED, START, VENDOR, WIDTH};
 use straum_domain::{Ask, AskKey, ColumnType, Datum, RowError, Store, Value};
 
-pub(crate) fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
+fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
     store.key_type("trips", &id(name))
 }
 
@@ -72,10 +72,13 @@ fn a_fact_row_still_comes_out_after_its_dim_changes() {
     store.remove_row("trips", &untimed).unwrap();
 }
 
-pub(crate) fn first_keys(store: &Store, ask: &Ask) -> Vec<Datum> {
-    (store.ask(ask).unwrap().rows.into_iter())
-        .map(|row| row.keys[0].clone())
-        .collect()
+/// The first key of each row of the answer.
+fn first_keys(store: &Store, ask: &Ask) -> Vec<Datum> {
+    let mut keys = Vec::new();
+    for row in store.ask(ask).unwrap().rows {
+        keys.push(row.keys[0].clone());
+    }
+    keys
 }
 
 /// A cell is keyed by the join column, not the dim's value, so a dim row
@@ -136,25 +139,29 @@ fn a_dim_change_moves_the_answer_at_once() {
 fn a_dim_update_moves_the_bound_cells_when_it_reads_otherwise() {
     let spec = spec();
     let mut store = typed(&spec);
-    let v1 = [Datum::Int(1), text("v1")];
-    let v2 = [Datum::Int(1), text("v2")];
-    store.add_row("vendors", &v1).unwrap();
+    let labelled_v1 = [Datum::Int(1), text("v1")];
+    let labelled_v2 = [Datum::Int(1), text("v2")];
+    store.add_row("vendors", &labelled_v1).unwrap();
     let mut row = trip(&mut Rng(5));
     row[AT] = Datum::Int(START);
     row[VENDOR] = Datum::Int(1);
     store.add_row("trips", &row).unwrap();
     assert_eq!(store.bound_cells("trips"), Some(1));
 
-    store.update_row("vendors", &v1, &v1).unwrap();
+    store
+        .update_row("vendors", &labelled_v1, &labelled_v1)
+        .unwrap();
     assert_eq!(store.bound_cells("trips"), Some(1));
     assert_eq!(
-        store.update_row("vendors", &v1[..1], &v1[..1]),
+        store.update_row("vendors", &labelled_v1[..1], &labelled_v1[..1]),
         Err(RowError::Arity {
             expected: 2,
             found: 1
         })
     );
-    store.update_row("vendors", &v1, &v2).unwrap();
+    store
+        .update_row("vendors", &labelled_v1, &labelled_v2)
+        .unwrap();
     assert_eq!(store.bound_cells("trips"), Some(1));
 
     let mut other = trip(&mut Rng(6));
@@ -167,7 +174,9 @@ fn a_dim_update_moves_the_bound_cells_when_it_reads_otherwise() {
     assert_eq!(store.bound_cells("trips"), Some(2));
 }
 
-pub(crate) fn two_combos() -> Vec<Datum> {
+/// Combos of pickup zone 1 with vendors 1 and 2, labelled x and y, laid
+/// end to end.
+fn two_combos() -> Vec<Datum> {
     vec![
         Datum::Int(1),
         Datum::Int(1),
@@ -178,7 +187,8 @@ pub(crate) fn two_combos() -> Vec<Datum> {
     ]
 }
 
-pub(crate) fn trip_at_start_from(rng: &mut Rng, pu: Datum, vendor: Datum) -> Vec<Datum> {
+/// A random trip at `START` from pickup zone `pu` with `vendor`.
+fn trip_at_start_from(rng: &mut Rng, pu: Datum, vendor: Datum) -> Vec<Datum> {
     let mut row = trip(rng);
     row[AT] = Datum::Int(START);
     row[PU] = pu;
@@ -186,7 +196,8 @@ pub(crate) fn trip_at_start_from(rng: &mut Rng, pu: Datum, vendor: Datum) -> Vec
     row
 }
 
-pub(crate) fn by_combo_label() -> Ask {
+/// The trips by combo label over every bucket the tests fill.
+fn by_combo_label() -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips")],

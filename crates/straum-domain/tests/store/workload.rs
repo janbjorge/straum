@@ -4,14 +4,15 @@
 //! reference. Also rows loaded in batches against rows added one by one.
 
 use crate::common::{Rng, Spilled, dim_row, id};
-use crate::random::{change_dim, held, load_dims, near, random_ask, random_dims, trip};
+use crate::random::{change_dim, held, load_dims, near, random_ask, random_dims, trip, trips};
 use crate::reference::reference;
 use crate::views::{spec, spec_joining, typed};
-use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, END, KEYS, ROW_LEN, SEEDS, START, STEPS, WEEK};
+use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, END, KEYS, ROW_COLUMNS, SEEDS, START, STEPS, WEEK};
 use straum_domain::{Ask, AskKey, Datum, RefKind, Spec, Store};
 
+/// Whether the workload seals buckets as it goes.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Sealing {
+enum Sealing {
     Never,
     AtRandom,
 }
@@ -22,7 +23,7 @@ pub(crate) enum Sealing {
 /// read. An ask that overlaps a sealed bucket reads the keyed cells, the
 /// rest the bound cells, which move with the dims. Halfway the trips
 /// are truncated. `vend` is how the vendors join.
-pub(crate) fn run(seed: u64, sealing: Sealing, vend: RefKind) -> usize {
+fn run(seed: u64, sealing: Sealing, vend: RefKind) -> usize {
     let mut workload = Workload::new(seed, vend);
     for step in 0..STEPS {
         if sealing == Sealing::AtRandom && workload.rng.chance(5) {
@@ -39,7 +40,8 @@ pub(crate) fn run(seed: u64, sealing: Sealing, vend: RefKind) -> usize {
     workload.finish(sealing)
 }
 
-pub(crate) struct Workload {
+/// The store under test, and the live rows and dims the reference reads.
+struct Workload {
     seed: u64,
     spec: Spec,
     store: Store,
@@ -67,6 +69,7 @@ impl Workload {
         }
     }
 
+    /// Seals some of the buckets that end before a random time.
     fn seal_some(&mut self) {
         let before = self.rng.int(START, END + i64::from(WEEK));
         self.spilled.seal(&mut self.rng, &mut self.store, before);
@@ -81,6 +84,7 @@ impl Workload {
         assert_eq!(self.store.bound_cells("trips"), Some(0), "seed {seed}");
     }
 
+    /// One random change: to a dim, or a trip removed, updated or added.
     fn change_one(&mut self) {
         match self.rng.below(40) {
             0..=3 => change_dim(&mut self.rng, &mut self.store, &mut self.dims),
@@ -123,6 +127,8 @@ impl Workload {
         self.rows.push(row);
     }
 
+    /// The dims hold the rows they should, and random asks answer as the
+    /// reference does.
     fn check(&mut self, step: u32) {
         let seed = self.seed;
         for (dim, rows) in &self.dims {
@@ -142,12 +148,15 @@ impl Workload {
         }
     }
 
+    /// Takes every trip out again, and with it every cell; the sealed
+    /// buckets asks read.
     fn finish(mut self, sealing: Sealing) -> usize {
         let seed = self.seed;
         assert!(self.store.cells("trips").unwrap() > 0);
         // Home zones of one borough share bound cells, so these are fewer.
         if sealing == Sealing::Never {
-            let (keyed, bound) = (self.store.cells("trips"), self.store.bound_cells("trips"));
+            let keyed = self.store.cells("trips");
+            let bound = self.store.bound_cells("trips");
             assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
         }
         for row in &self.rows {
@@ -175,13 +184,21 @@ fn store_matches_naive_reference() {
     }
 }
 
+/// The sealed buckets asks read over every seed, sealing at random, the
+/// vendors joined as `vend` says.
+fn sealed_buckets_read(vend: RefKind) -> usize {
+    let mut read = 0;
+    for seed in 0..SEEDS {
+        read += run(seed, Sealing::AtRandom, vend);
+    }
+    read
+}
+
 /// A sealed bucket has no bound cells, so an ask over one reads the keyed
 /// cells, thawed; the rest read the bound cells.
 #[test]
 fn sealed_store_matches_naive_reference() {
-    let read: usize = (0..SEEDS)
-        .map(|seed| run(seed, Sealing::AtRandom, RefKind::Left))
-        .sum();
+    let read = sealed_buckets_read(RefKind::Left);
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
@@ -189,10 +206,21 @@ fn sealed_store_matches_naive_reference() {
 /// cells when it is sealed, and gains them when the vendor's row comes.
 #[test]
 fn sealed_inner_store_matches_naive_reference() {
-    let read: usize = (0..SEEDS)
-        .map(|seed| run(seed, Sealing::AtRandom, RefKind::Inner))
-        .sum();
+    let read = sealed_buckets_read(RefKind::Inner);
     assert!(read > 1_000, "asks read {read} sealed buckets");
+}
+
+/// Adds `rows` laid end to end, as a load does, in batches of random
+/// sizes.
+fn add_in_batches(rng: &mut Rng, store: &mut Store, rows: &[Vec<Datum>]) {
+    let flat: Vec<Datum> = rows.concat();
+    let mut rest = &flat[..];
+    while !rest.is_empty() {
+        let batch_rows = 1 + rng.below(300);
+        let (batch, after) = rest.split_at(rest.len().min(batch_rows * ROW_COLUMNS));
+        store.add_rows("trips", batch).unwrap();
+        rest = after;
+    }
 }
 
 #[test]
@@ -205,17 +233,11 @@ fn rows_added_together_match_rows_added_one_by_one() {
         let dims = random_dims(&mut rng);
         load_dims(&mut by_row, &dims);
         load_dims(&mut together, &dims);
-        let rows: Vec<Vec<Datum>> = (0..2_000).map(|_| trip(&mut rng)).collect();
+        let rows = trips(&mut rng, 2_000);
         for row in &rows {
             by_row.add_row("trips", row).unwrap();
         }
-        let flat: Vec<Datum> = rows.concat();
-        let mut rest = &flat[..];
-        while !rest.is_empty() {
-            let (batch, after) = rest.split_at(rest.len().min((1 + rng.below(300)) * ROW_LEN));
-            together.add_rows("trips", batch).unwrap();
-            rest = after;
-        }
+        add_in_batches(&mut rng, &mut together, &rows);
         assert_eq!(
             together.cells("trips"),
             by_row.cells("trips"),
@@ -250,14 +272,18 @@ fn every_key_at_once_uses_the_sparse_index() {
     let mut rng = Rng(9);
     let dims = random_dims(&mut rng);
     load_dims(&mut store, &dims);
-    let rows: Vec<Vec<Datum>> = (0..500).map(|_| trip(&mut rng)).collect();
+    let rows = trips(&mut rng, 500);
     for row in &rows {
         store.add_row("trips", row).unwrap();
+    }
+    let mut keys = Vec::with_capacity(KEYS.len());
+    for key in KEYS {
+        keys.push(AskKey::Key(id(key)));
     }
     let ask = Ask {
         view: id("trips"),
         measures: vec![id("trips"), id("riders")],
-        keys: KEYS.iter().map(|key| AskKey::Key(id(key))).collect(),
+        keys,
         filter: Vec::new(),
         from: START,
         to: END,
@@ -281,7 +307,7 @@ fn dim_rows_added_together_match_rows_added_one_by_one() {
             by_row.add_row(dim, &dim_row(key, attributes)).unwrap();
         }
     }
-    let rows: Vec<Vec<Datum>> = (0..300).map(|_| trip(&mut rng)).collect();
+    let rows = trips(&mut rng, 300);
     for row in &rows {
         together.add_row("trips", row).unwrap();
         by_row.add_row("trips", row).unwrap();

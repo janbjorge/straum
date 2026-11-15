@@ -4,12 +4,13 @@
 //! so a store here is typed as the source would type it.
 
 use crate::common::{attribute, by_key, condition, id, lit, percentile, table};
-use crate::{DAY, DIM_TYPES, DIST, FARE, HOUR, ROW_LEN, TIP, TRIP_SCALES, WEEK, WIDTH};
+use crate::{DAY, DIM_TYPES, DIST, FARE, HOUR, ROW_COLUMNS, TIP, TRIP_SCALES, WEEK, WIDTH};
 use straum_domain::{
     Aggregate, ByKey, ColumnType, Condition, Dim, Fact, Literal, Measure, Origin, Ref, RefKind,
     Spec, Store, Time, Via, Width,
 };
 
+/// The trips view with every join a left one.
 pub(crate) fn spec() -> Spec {
     spec_joining(RefKind::Left)
 }
@@ -67,6 +68,7 @@ pub(crate) fn spec_joining(vend: RefKind) -> Spec {
     Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
 }
 
+/// A measure of the trips view.
 pub(crate) fn new_measure(name: &str, aggregate: Aggregate, filter: Vec<Condition>) -> Measure {
     Measure {
         name: id(name),
@@ -75,7 +77,9 @@ pub(crate) fn new_measure(name: &str, aggregate: Aggregate, filter: Vec<Conditio
     }
 }
 
-pub(crate) fn trip_refs(vend: RefKind) -> Vec<Ref> {
+/// The trips' joins: pickup and dropoff zones, the combo of pickup and
+/// vendor, the vendor as `vend` says, and the home zone.
+fn trip_refs(vend: RefKind) -> Vec<Ref> {
     vec![
         Ref {
             alias: id("pickup"),
@@ -124,7 +128,8 @@ pub(crate) fn trip_refs(vend: RefKind) -> Vec<Ref> {
     ]
 }
 
-pub(crate) fn trip_by_keys() -> Vec<ByKey> {
+/// The trips' by keys: five columns, and two null-ness keys.
+fn trip_by_keys() -> Vec<ByKey> {
     vec![
         by_key("pay"),
         by_key("vendor"),
@@ -146,7 +151,8 @@ pub(crate) fn trip_by_keys() -> Vec<ByKey> {
     ]
 }
 
-pub(crate) fn count_sum_and_rank_measures() -> Vec<Measure> {
+/// Counts, sums, mins, maxes and percentiles, one filtered.
+fn count_sum_and_rank_measures() -> Vec<Measure> {
     vec![
         new_measure("trips", Aggregate::Count, vec![]),
         new_measure("fare", Aggregate::Sum(id("fare")), vec![]),
@@ -166,7 +172,9 @@ pub(crate) fn count_sum_and_rank_measures() -> Vec<Measure> {
     ]
 }
 
-pub(crate) fn average_count_and_bool_measures() -> Vec<Measure> {
+/// Averages, counts of distinct and of not-null values, and the boolean
+/// aggregates, several filtered on keys and dim columns.
+fn average_count_and_bool_measures() -> Vec<Measure> {
     vec![
         // A sum over a column the load groups by.
         new_measure("tip_avg", Aggregate::Avg(id("tip")), vec![]),
@@ -223,7 +231,7 @@ pub(crate) fn average_count_and_bool_measures() -> Vec<Measure> {
     ]
 }
 
-/// The column types `run` sets.
+/// The column types a load sets for the trips.
 pub(crate) fn trip_types() -> Vec<ColumnType> {
     let types = vec![
         ColumnType::Time { zoned: true },
@@ -239,11 +247,13 @@ pub(crate) fn trip_types() -> Vec<ColumnType> {
         ColumnType::Text,
         ColumnType::Bool,
     ];
-    assert_eq!(types.len(), ROW_LEN);
+    assert_eq!(types.len(), ROW_COLUMNS);
     types
 }
 
-pub(crate) fn trip_numeric(column: usize) -> ColumnType {
+/// A numeric of a scale its own, so a scale taken from the wrong column
+/// shows.
+fn trip_numeric(column: usize) -> ColumnType {
     ColumnType::Numeric {
         scale: TRIP_SCALES + u32::try_from(column).expect("a row position fits a scale"),
     }
@@ -253,12 +263,13 @@ pub(crate) fn trip_numeric(column: usize) -> ColumnType {
 pub(crate) fn typed(spec: &Spec) -> Store {
     let mut store = Store::new(spec.clone());
     store.set_types("trips", &trip_types()).unwrap();
-    for (dim, types) in DIM_TYPES {
-        store.set_types(dim, types).unwrap();
+    for dim in DIM_TYPES {
+        store.set_types(dim.dim, dim.types).unwrap();
     }
     store
 }
 
+/// The bucket widths of the zones view: a quarter hour, and an hour too.
 #[derive(Clone, Copy)]
 pub(crate) enum Widths {
     Quarter,
@@ -275,13 +286,16 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
         key: vec![id("id")],
         attributes: vec![id("borough")],
     };
-    let pickup = pickup.map(|kind| Ref {
-        alias: id("pickup"),
-        dim: id("zones"),
-        via: vec![Via::Fact(id("pu"))],
-        kind,
-        reads: vec![attribute("borough", "borough")],
-    });
+    let mut refs = Vec::new();
+    if let Some(kind) = pickup {
+        refs.push(Ref {
+            alias: id("pickup"),
+            dim: id("zones"),
+            via: vec![Via::Fact(id("pu"))],
+            kind,
+            reads: vec![attribute("borough", "borough")],
+        });
+    }
     let trips = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -295,7 +309,7 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
             },
             origin: Origin::Timestamptz,
         },
-        refs: pickup.into_iter().collect(),
+        refs,
         by_keys: vec![by_key("pay")],
         filter: vec![],
         measures: vec![Measure {
@@ -307,6 +321,7 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
     Spec::new(vec![zones], vec![trips]).unwrap()
 }
 
+/// Trips by pay with a max and percentiles of the fare, joined to nothing.
 pub(crate) fn percentile_spec() -> Spec {
     let trips = Fact {
         as_text: Vec::new(),

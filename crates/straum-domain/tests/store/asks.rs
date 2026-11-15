@@ -4,12 +4,13 @@
 
 use crate::common::{condition, id, lit};
 use crate::views::{spec, trip_types, typed};
-use crate::{END, FARE, PAY, ROW_LEN, START, TIP};
+use crate::{END, FARE, PAY, ROW_COLUMNS, START, TIP};
 use straum_domain::{
     AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Identifier, Literal, Store, Value,
 };
 
-pub(crate) fn trips_filtered(filter: Vec<Condition>) -> Ask {
+/// The trips over every bucket the tests fill, filtered.
+fn trips_filtered(filter: Vec<Condition>) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips")],
@@ -62,9 +63,14 @@ fn filter_values_are_of_their_column_type() {
     );
 }
 
-pub(crate) fn answer_scales(store: &Store, ask: &Ask) -> Vec<u32> {
+/// The scale of each column of the answer.
+fn answer_scales(store: &Store, ask: &Ask) -> Vec<u32> {
     let answer = store.ask(ask).unwrap();
-    answer.columns.iter().map(|column| column.scale).collect()
+    let mut scales = Vec::with_capacity(answer.columns.len());
+    for column in &answer.columns {
+        scales.push(column.scale);
+    }
+    scales
 }
 
 #[test]
@@ -79,7 +85,7 @@ fn types_stay_through_clear() {
         to: END,
     };
     assert_eq!(answer_scales(&store, &ask), [0, 0, 0, 0, 0]);
-    let mut types = vec![ColumnType::Int; ROW_LEN];
+    let mut types = vec![ColumnType::Int; ROW_COLUMNS];
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
     types[TIP] = ColumnType::Numeric { scale: 1 };
@@ -105,31 +111,25 @@ fn columns_name_keys_and_measures_as_asked() {
         from: START,
         to: END,
     };
-    let columns: Vec<(String, bool)> = (store.ask(&ask).unwrap().columns.into_iter())
-        .map(|column| (column.name, column.is_time))
-        .collect();
-    assert_eq!(
-        columns,
-        [
-            ("pickup_zone".to_owned(), false),
-            ("bucket".to_owned(), true),
-            ("fare".to_owned(), false),
-            ("trips".to_owned(), false),
-        ]
-    );
+    let columns = store.ask(&ask).unwrap().columns;
+    let mut names = Vec::new();
+    let mut times = Vec::new();
+    for column in columns {
+        names.push(column.name);
+        times.push(column.is_time);
+    }
+    assert_eq!(names, ["pickup_zone", "bucket", "fare", "trips"]);
+    assert_eq!(times, [false, true, false, false]);
 }
 
 #[test]
 fn ask_without_by_answers_one_row() {
     let store = Store::new(spec());
     let fact = spec();
-    let measures: Vec<Identifier> = fact
-        .fact("trips")
-        .unwrap()
-        .measures
-        .iter()
-        .map(|measure| measure.name.clone())
-        .collect();
+    let mut measures: Vec<Identifier> = Vec::new();
+    for measure in &fact.fact("trips").unwrap().measures {
+        measures.push(measure.name.clone());
+    }
     let ask = Ask {
         view: id("trips"),
         measures,

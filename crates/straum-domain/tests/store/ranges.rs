@@ -8,7 +8,8 @@ use crate::views::{Widths, spec, typed, zones_spec};
 use crate::{AT, END, START, WEEK, WIDTH};
 use straum_domain::{AnswerRow, Ask, AskKey, Datum, RowError, Store, Value, Width};
 
-pub(crate) fn paid_trip_at(time: Datum) -> [Datum; 2] {
+/// A row of the zones view without its join: a time and pay 1.
+fn paid_trip_at(time: Datum) -> [Datum; 2] {
     [time, Datum::Int(1)]
 }
 
@@ -59,16 +60,18 @@ fn a_range_cuts_at_both_ends() {
     assert_eq!(trips_counted(&empty, START, END), Value::Int(0));
 }
 
+/// The first measure of the first row of the answer.
 pub(crate) fn first_value(store: &Store, ask: &Ask) -> Value {
     store.ask(ask).unwrap().rows[0].values[0].clone()
 }
 
-pub(crate) fn trips_counted(store: &Store, from: i64, to: i64) -> Value {
+/// The trips over `from..to`.
+fn trips_counted(store: &Store, from: i64, to: i64) -> Value {
     first_value(store, &trips_over(from, to, Vec::new()))
 }
 
 /// The count of trips, by bucket or not, over a range.
-pub(crate) fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
+fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips")],
@@ -125,7 +128,8 @@ fn a_row_without_a_time_is_kept_and_never_answered() {
     assert_eq!(store.bound_cells("trips"), Some(2));
 
     // The widest range on bucket edges.
-    let (from, to) = (i64::MIN / width * width, i64::MAX / width * width);
+    let from = i64::MIN / width * width;
+    let to = i64::MAX / width * width;
     let all = store.ask(&trips_over(from, to, Vec::new())).unwrap();
     assert_eq!(all.rows[0].values, [Value::Int(1)]);
     let by_bucket = trips_over(from, to, vec![AskKey::Bucket]);
