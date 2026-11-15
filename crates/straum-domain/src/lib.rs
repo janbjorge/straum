@@ -22,6 +22,7 @@ mod projection;
 mod rollup;
 mod sealed;
 mod spec;
+mod spec_error;
 mod store;
 #[cfg(test)]
 mod test_rng;
@@ -35,8 +36,9 @@ pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use sealed::{DatumCount, Sealed, SealedColumn, SealedError, SealedId, Thawed, ValueCount};
 pub use spec::{
-    Attribute, ByKey, Condition, Dim, Fact, JoinError, Key, KeyPart, Literal, Measure, Origin, Ref,
-    RefKind, Spec, SpecError, Table, Time, Via, Width,
+    Attribute, ByKey, Condition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind,
+    Spec, Table, Time, Via, Width,
 };
+pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
 pub use value::{ColumnType, Datum, Value, decimal};
