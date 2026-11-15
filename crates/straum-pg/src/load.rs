@@ -170,9 +170,8 @@ fn header(data: &[u8]) -> Result<&[u8], Error> {
     };
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
-    let Ok(extension) = usize::try_from(extension) else {
-        return Err(Error::protocol("a copy header cut short"));
-    };
+    // An extension past `usize` is past the data too.
+    let extension = usize::try_from(extension).unwrap_or(usize::MAX);
     let Some(rest) = data.get(extension..) else {
         return Err(Error::protocol("a copy header cut short"));
     };

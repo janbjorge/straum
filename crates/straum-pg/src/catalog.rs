@@ -45,12 +45,13 @@ pub(crate) struct Checked {
 impl Checked {
     /// The type Straum reads `column` as; the column is one it reads.
     pub(crate) fn column_type(&self, column: &Identifier) -> ColumnType {
+        let mut found = None;
         for (candidate, column_type) in self.columns.iter().zip(&self.types) {
             if candidate == column {
-                return *column_type;
+                found = Some(*column_type);
             }
         }
-        panic!("the column is in the table's row")
+        found.expect("the column is in the table's row")
     }
 
     /// `schema.table`, unquoted, for messages.
@@ -245,9 +246,8 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_compression,
         published,
     ] = row.try_into().map_err(|_| shape("settings"))?;
-    let Some(Ok(server_version)) = version.as_deref().map(str::parse) else {
-        return Err(shape("settings"));
-    };
+    let server_version =
+        (version.as_deref().unwrap_or_default().parse()).map_err(|_| shape("settings"))?;
     Ok(Catalog {
         server_version,
         wal_level: wal_level.unwrap_or_default(),

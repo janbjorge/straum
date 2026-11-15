@@ -132,9 +132,8 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
             return Err(error);
         }
     };
-    let Some(at) = first_row_value(&created, 1).and_then(parse_lsn) else {
-        return Err(Error::protocol("a slot without a consistent point"));
-    };
+    let at = (first_row_value(&created, 1).and_then(parse_lsn))
+        .ok_or(Error::protocol("a slot without a consistent point"))?;
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
@@ -189,12 +188,10 @@ fn physical_snapshot(
     let at = loop {
         connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
         let taken = connection.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
-        let Some(seen) = first_row_value(&taken, 0).and_then(TransactionSnapshot::parse) else {
-            return Err(Error::protocol("a snapshot of an unknown shape"));
-        };
-        let Some(written) = first_row_value(&taken, 1).and_then(parse_lsn) else {
-            return Err(Error::protocol("no WAL position"));
-        };
+        let seen = (first_row_value(&taken, 0).and_then(TransactionSnapshot::parse))
+            .ok_or(Error::protocol("a snapshot of an unknown shape"))?;
+        let written = (first_row_value(&taken, 1).and_then(parse_lsn))
+            .ok_or(Error::protocol("no WAL position"))?;
         match stream.see(seen, written)? {
             Sight::Through(at) => break at,
             Sight::Blind(xids) => {
@@ -253,10 +250,8 @@ fn checked(tables: Tables) -> Vec<Checked> {
 /// A slot name no other Straum process or slot of this one has.
 pub(crate) fn slot_name() -> String {
     // A clock before 1970 still names a slot; the counter keeps it unique.
-    let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(since) => since.as_nanos(),
-        Err(_) => 0,
-    };
+    let since = SystemTime::now().duration_since(UNIX_EPOCH);
+    let nanos = since.unwrap_or_default().as_nanos();
     format!(
         "straum_{}_{nanos}_{}",
         process::id(),

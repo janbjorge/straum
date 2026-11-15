@@ -125,13 +125,15 @@ mod tests {
     }
 
     /// The first line of `sql` that starts with `start`.
+    // 'a: the line is borrowed from `sql`, not from `start`.
     fn line_starting<'a>(sql: &'a str, start: &str) -> &'a str {
+        let mut lines = Vec::new();
         for line in sql.lines() {
             if line.starts_with(start) {
-                return line;
+                lines.push(line);
             }
         }
-        panic!("no line starts with {start}: {sql}")
+        lines[0]
     }
 
     #[test]

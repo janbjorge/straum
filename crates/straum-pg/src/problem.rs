@@ -268,15 +268,15 @@ fn write_column(
             "{name}: publication {publication} leaves out column {column} of {qualified}"
         ),
         ColumnProblem::Type { type_name, fix } => {
+            let fix = match fix {
+                ColumnFix::DropText => ", not an enum; drop the ::text".to_owned(),
+                ColumnFix::WriteText => format!(", an enum; write {column}::text"),
+                ColumnFix::Needs(purpose) => format!("; {}", purpose.needs()),
+            };
             write!(
                 formatter,
-                "{name}: column {column} of {qualified} is {type_name}"
-            )?;
-            match fix {
-                ColumnFix::DropText => formatter.write_str(", not an enum; drop the ::text"),
-                ColumnFix::WriteText => write!(formatter, ", an enum; write {column}::text"),
-                ColumnFix::Needs(purpose) => write!(formatter, "; {}", purpose.needs()),
-            }
+                "{name}: column {column} of {qualified} is {type_name}{fix}"
+            )
         }
         ColumnProblem::Changed => write!(
             formatter,

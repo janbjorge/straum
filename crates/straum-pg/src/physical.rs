@@ -159,15 +159,14 @@ fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> 
          WHERE slot_name = {} AND name = 'wal_segment_size'",
         escape_literal(slot)
     ))?;
-    let Some(start) = first_row_value(&rows, 0).and_then(parse_lsn) else {
-        return Err(Error::protocol("a physical slot without a restart LSN"));
-    };
-    let Some(Ok(segment_size)) = first_row_value(&rows, 1).map(str::parse::<u64>) else {
-        return Err(Error::protocol("no wal_segment_size"));
-    };
-    let Some(Ok(version)) = first_row_value(&rows, 2).map(str::parse::<u32>) else {
-        return Err(Error::protocol("no server_version_num"));
-    };
+    let start = (first_row_value(&rows, 0).and_then(parse_lsn))
+        .ok_or(Error::protocol("a physical slot without a restart LSN"))?;
+    let segment_size = (first_row_value(&rows, 1).map(str::parse::<u64>))
+        .and_then(Result::ok)
+        .ok_or(Error::protocol("no wal_segment_size"))?;
+    let version = (first_row_value(&rows, 2).map(str::parse::<u32>))
+        .and_then(Result::ok)
+        .ok_or(Error::protocol("no server_version_num"))?;
     Ok(Reserved {
         start,
         segment_size,
@@ -182,9 +181,8 @@ fn wait_for_flush(connection: &mut Connection, start: Lsn) -> Result<(), Error> 
     let deadline = Instant::now() + FLUSH_WAIT;
     loop {
         let rows = connection.rows("SELECT pg_current_wal_flush_lsn()")?;
-        let Some(flushed) = first_row_value(&rows, 0).and_then(parse_lsn) else {
-            return Err(Error::protocol("no WAL flush position"));
-        };
+        let flushed = (first_row_value(&rows, 0).and_then(parse_lsn))
+            .ok_or(Error::protocol("no WAL flush position"))?;
         if flushed.0 >= start.0 {
             return Ok(());
         }
