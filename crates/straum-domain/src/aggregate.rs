@@ -58,6 +58,12 @@ impl Fraction {
     /// `total`. PostgreSQL takes `ceil(fraction * total)` in float8, which
     /// differs from exact math where the product falls near a whole number:
     /// 0.07 of 100 is rank 8 there, not 7.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "PostgreSQL rounds in float8 too, and the product lies in 0..=total"
+    )]
     pub(crate) fn rank(self, total: u64) -> u64 {
         let fraction: f64 = format!("{}e-{}", self.units, self.places)
             .parse()

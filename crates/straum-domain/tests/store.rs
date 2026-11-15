@@ -492,7 +492,7 @@ fn value(row: &[Datum], key: &Identifier, dims: &Dims) -> Datum {
 /// The column types `run` sets.
 fn trip_types() -> Vec<ColumnType> {
     let numeric = |column: usize| ColumnType::Numeric {
-        scale: TRIP_SCALES + column as u32,
+        scale: TRIP_SCALES + u32::try_from(column).expect("a row position fits a scale"),
     };
     let types = vec![
         ColumnType::Time { zoned: true },

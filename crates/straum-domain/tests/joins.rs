@@ -112,10 +112,10 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
         time: straum_domain::Time {
             column: id("at"),
             width: Width {
-                seconds: HOUR as u32,
+                seconds: u32::try_from(HOUR).unwrap(),
             },
             wider: vec![Width {
-                seconds: 24 * HOUR as u32,
+                seconds: 24 * u32::try_from(HOUR).unwrap(),
             }],
             origin: Origin::Timestamptz,
         },
@@ -382,7 +382,7 @@ fn reference(
                     AskKey::Key(name) => value(row, &joined, name),
                     AskKey::Bucket => Datum::Int(
                         Width {
-                            seconds: HOUR as u32,
+                            seconds: u32::try_from(HOUR).unwrap(),
                         }
                         .bucket_start(at),
                     ),
@@ -1054,8 +1054,8 @@ fn kinds_of(seed: u64) -> [RefKind; 5] {
         reads(0),
         reads(1),
         reads(2),
-        any[(seed % 4) as usize],
-        any[((seed / 2 + 1) % 4) as usize],
+        any[usize::try_from(seed % 4).unwrap()],
+        any[usize::try_from((seed / 2 + 1) % 4).unwrap()],
     ]
 }
 

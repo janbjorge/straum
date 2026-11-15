@@ -46,7 +46,12 @@ impl Index {
         // of one length.
         let mut hasher = self.seed.build_hasher();
         key.iter().for_each(|&code| hasher.write_u32(code));
-        hasher.finish() as usize & (self.slots.len() - 1)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the mask keeps only low bits"
+        )]
+        let hash = hasher.finish() as usize;
+        hash & (self.slots.len() - 1)
     }
 
     fn next(&self, slot: usize) -> usize {
@@ -145,8 +150,12 @@ mod tests {
             let mut z = self.0;
             z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            (z ^ (z >> 31)) as usize % n
+            usize::try_from((z ^ (z >> 31)) % n as u64).expect("below a usize")
         }
+    }
+
+    fn code_below(rng: &mut Rng, values: usize) -> u32 {
+        u32::try_from(rng.below(values)).expect("codes fit u32")
     }
 
     /// Cells come and go as a bucket's do, the last taking the place of
@@ -161,7 +170,7 @@ mod tests {
             let mut held: HashMap<Vec<u32>, usize> = HashMap::new();
             for step in 0..20_000 {
                 let at = format!("{key_len} codes of {values}, step {step}");
-                let key: Vec<u32> = (0..key_len).map(|_| rng.below(values) as u32).collect();
+                let key: Vec<u32> = (0..key_len).map(|_| code_below(&mut rng, values)).collect();
                 let keys = Keys {
                     codes: &codes,
                     len: key_len,
@@ -214,7 +223,8 @@ mod tests {
     fn cells_taken_in_at_once_hold_a_key_each() {
         let mut rng = Rng(9);
         for cells in [0, 1, 2, 3, 4, 100, 5_000] {
-            let mut codes: Vec<u32> = (0..cells as u32).flat_map(|n| [n / 7, n % 7]).collect();
+            let cell_count = u32::try_from(cells).expect("a bucket's cells fit u32");
+            let mut codes: Vec<u32> = (0..cell_count).flat_map(|n| [n / 7, n % 7]).collect();
             for at in (1..cells).rev() {
                 let with = rng.below(at + 1);
                 codes.swap(2 * at, 2 * with);

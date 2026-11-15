@@ -860,9 +860,9 @@ mod tests {
         assert_eq!(shape(&once(40, 0, 70)), ("run", HEADER + 80, 2, 0));
         assert_eq!(shape(&once(40, 1 << 50, 70)), ("run", HEADER + 80, 2, 0));
         // A run takes RUN_MAX bytes, and one record more makes two.
-        let full = (RUN_MAX - HEADER) / 2;
-        assert_eq!(shape(&once(full as i64, 0, 5)), ("run", RUN_MAX, 2, 0));
-        assert_eq!(shape(&once(full as i64 + 1, 0, 5)), ("runs", 2, 0, 0));
+        let full = i64::try_from((RUN_MAX - HEADER) / 2).expect("a run's records");
+        assert_eq!(shape(&once(full, 0, 5)), ("run", RUN_MAX, 2, 0));
+        assert_eq!(shape(&once(full + 1, 0, 5)), ("runs", 2, 0, 0));
     }
 
     /// Each width a value or a count takes, at its ends, read back as

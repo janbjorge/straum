@@ -19,9 +19,15 @@ pub fn percentile(units: u64, places: u32, column: &str) -> Aggregate {
 
 /// PostgreSQL's `percentile_disc`: of the values sorted, the one at
 /// `ceil(fraction * n)` counting from 1, the product in float8.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "PostgreSQL takes the product in float8 too, and the rank is from 0 to the count"
+)]
 pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
     values.sort_unstable();
-    let fraction = fraction.units as f64 / 10f64.powi(fraction.places as i32);
+    let fraction = fraction.units as f64 / 10f64.powi(i32::try_from(fraction.places).unwrap());
     let rank = (fraction * values.len() as f64).ceil() as usize;
     match values.get(rank.max(1) - 1) {
         Some(&value) => Value::Int(value),
@@ -97,7 +103,7 @@ impl Rng {
     }
 
     pub fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        usize::try_from(self.next() % n as u64).unwrap()
     }
 
     pub fn chance(&mut self, percent: usize) -> bool {
@@ -105,7 +111,8 @@ impl Rng {
     }
 
     pub fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next() % (hi - lo) as u64) as i64
+        let offset = self.next() % hi.abs_diff(lo);
+        lo.checked_add_unsigned(offset).unwrap()
     }
 
     /// An integer in `lo..hi`, or null `percent` percent of the time.

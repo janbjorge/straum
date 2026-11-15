@@ -362,6 +362,10 @@ mod tests {
         fn below(&mut self, n: u64) -> u64 {
             self.next() % n
         }
+
+        fn place_below(&mut self, len: usize) -> usize {
+            usize::try_from(self.below(len as u64)).expect("below a usize")
+        }
     }
 
     fn width(counts: &Counts) -> usize {
@@ -383,7 +387,7 @@ mod tests {
     }
 
     /// What a column of counts read beside `beside` gives each cell.
-    fn read(counts: &Counts, beside: &[u8]) -> Vec<(usize, u8, u64)> {
+    fn read(counts: &Counts, beside: &[usize]) -> Vec<(usize, usize, u64)> {
         let mut seen = Vec::new();
         counts.each(beside, |cell, group, count| seen.push((cell, group, count)));
         seen
@@ -407,17 +411,17 @@ mod tests {
                         list.push(0);
                     }
                     (3, len) => {
-                        let i = rng.below(len as u64) as usize;
+                        let i = rng.place_below(len);
                         counts.swap_remove(i);
                         list.swap_remove(i);
                     }
                     (4..=7, len) => {
-                        let (i, n) = (rng.below(len as u64) as usize, rng.below(most));
+                        let (i, n) = (rng.place_below(len), rng.below(most));
                         counts.add(i, n);
                         list[i] += n;
                     }
                     (_, len) => {
-                        let i = rng.below(len as u64) as usize;
+                        let i = rng.place_below(len);
                         let n = rng.below(list[i] + 1);
                         counts.sub(i, n);
                         list[i] -= n;
@@ -429,10 +433,8 @@ mod tests {
                 if step % 97 == 0 {
                     assert!(counts.iter().eq(list.iter().copied()), "{at}");
                     assert_eq!(counts.total(), list.iter().sum::<u64>(), "{at}");
-                    let beside: Vec<u8> = (0..list.len()).map(|i| i as u8).collect();
-                    let all: Vec<_> = (list.iter().enumerate())
-                        .map(|(i, &n)| (i, i as u8, n))
-                        .collect();
+                    let beside: Vec<usize> = (0..list.len()).collect();
+                    let all: Vec<_> = (list.iter().enumerate()).map(|(i, &n)| (i, i, n)).collect();
                     // A column of zeros is passed over whole.
                     let expected = if widest == 0 { Vec::new() } else { all };
                     assert_eq!(read(&counts, &beside), expected, "{at}");
@@ -483,12 +485,12 @@ mod tests {
                         list.push(0);
                     }
                     (3, len) => {
-                        let i = rng.below(len as u64) as usize;
+                        let i = rng.place_below(len);
                         sums.swap_remove(i);
                         list.swap_remove(i);
                     }
                     (_, len) => {
-                        let i = rng.below(len as u64) as usize;
+                        let i = rng.place_below(len);
                         let n = i128::from(rng.next()) % (2 * most + 1) - most;
                         sums.add(i, n);
                         list[i] += n;
@@ -504,7 +506,7 @@ mod tests {
                 if step % 97 == 0 {
                     assert!(sums.iter().eq(list.iter().copied()), "{at}");
                     assert_eq!(sums.total(), list.iter().sum::<i128>(), "{at}");
-                    let beside: Vec<u8> = (0..list.len()).map(|i| i as u8).collect();
+                    let beside: Vec<usize> = (0..list.len()).collect();
                     for counts in [0, 9, 300, 70_000, 5_000_000_000] {
                         let rows = Counts::of(&vec![counts; list.len()]);
                         let mut seen = Vec::new();
@@ -512,7 +514,7 @@ mod tests {
                             seen.push((cell, group, sum, count));
                         });
                         let all: Vec<_> = (list.iter().enumerate())
-                            .map(|(i, &sum)| (i, i as u8, sum, counts))
+                            .map(|(i, &sum)| (i, i, sum, counts))
                             .collect();
                         assert_eq!(seen, all, "{at}, beside {counts}");
                     }

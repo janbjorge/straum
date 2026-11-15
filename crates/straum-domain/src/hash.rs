@@ -32,6 +32,10 @@ impl BuildHasher for Seeded {
 
 pub struct Folded(u64);
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the product's low and high halves are each wanted"
+)]
 fn fold(left: u64, right: u64) -> u64 {
     let product = u128::from(left) * u128::from(right);
     (product as u64) ^ ((product >> 64) as u64)

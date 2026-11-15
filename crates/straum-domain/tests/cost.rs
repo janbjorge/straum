@@ -28,6 +28,10 @@ thread_local! {
     static PEAK: Cell<isize> = const { Cell::new(0) };
 }
 
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "a layout's size is at most isize::MAX"
+)]
 fn grow(bytes: usize, by: isize) {
     let live = LIVE.with(|n| {
         n.set(n.get() + by * bytes as isize);
@@ -172,7 +176,7 @@ fn store_of(spec: Spec, cells: i64, tips: i64) -> Store {
             .flat_map(|zone| {
                 [
                     Datum::Int(zone),
-                    Datum::Text(BOROUGHS[zone as usize % BOROUGHS.len()].into()),
+                    Datum::Text(BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()].into()),
                 ]
             })
             .collect();
@@ -193,7 +197,7 @@ fn store_of(spec: Spec, cells: i64, tips: i64) -> Store {
             .collect();
         store.add_row("trips", &row).unwrap();
     }
-    assert_eq!(store.cells("trips"), Some(cells as usize));
+    assert_eq!(store.cells("trips"), Some(usize::try_from(cells).unwrap()));
     store
 }
 
@@ -239,11 +243,11 @@ fn an_ask_reads_only_the_buckets_in_its_range() {
     let mut unknown = ask(&[], 0, 1);
     unknown.view = id("nope");
     assert!(store.cells_read(&unknown).is_err());
-    let per_hour = 2 * ZONES as usize;
+    let per_hour = 2 * usize::try_from(ZONES).unwrap();
     for (from, to) in [(24, 48), (99, 100), (0, 100)] {
         assert_eq!(
             store.cells_read(&ask(&[], from, to)).unwrap(),
-            (to - from) as usize * per_hour,
+            usize::try_from(to - from).unwrap() * per_hour,
             "hours {from}..{to}: reads cells outside its range"
         );
     }
@@ -267,6 +271,10 @@ fn an_ask_stays_within_its_time_per_cell() {
         for _ in 0..REPS {
             black_box(store.ask(&ask).unwrap());
         }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a time per cell needs no more digits than a float holds"
+        )]
         let per_cell = clock.elapsed().as_nanos() as f64 / f64::from(REPS) / CELLS as f64;
         eprintln!("by {by:?}: {per_cell:.1} ns a cell");
         assert!(
@@ -282,15 +290,18 @@ fn an_ask_stays_within_its_time_per_cell() {
 /// hours.
 #[test]
 fn wider_buckets_cut_the_cells_a_range_reads() {
-    let per_hour = 2 * ZONES as usize;
-    let store = store_with(720 * per_hour as i64, &[24, 168]);
+    let per_hour = 2 * ZONES;
+    let store = store_with(720 * per_hour, &[24, 168]);
     assert_eq!(
         store.cells_read(&ask(&[], 5, 700)).unwrap(),
-        (19 + 6 + 3 + 1 + 4) * per_hour
+        usize::try_from((19 + 6 + 3 + 1 + 4) * per_hour).unwrap()
     );
     let mut by_bucket = ask(&[], 5, 700);
     by_bucket.keys = vec![AskKey::Bucket];
-    assert_eq!(store.cells_read(&by_bucket).unwrap(), 695 * per_hour);
+    assert_eq!(
+        store.cells_read(&by_bucket).unwrap(),
+        usize::try_from(695 * per_hour).unwrap()
+    );
 }
 
 fn live() -> isize {
@@ -327,7 +338,7 @@ fn a_join_on_a_by_key_keeps_one_set_of_cells() {
 #[test]
 fn a_cell_costs_the_bytes_its_numbers_need() {
     const CELLS: i64 = 80_000;
-    let a_cell = held(|| store_of(spec(&[]), CELLS, 1)) / CELLS as isize;
+    let a_cell = held(|| store_of(spec(&[]), CELLS, 1)) / isize::try_from(CELLS).unwrap();
     eprintln!("{a_cell} bytes a cell");
     assert!(a_cell <= 80, "{a_cell} bytes a cell");
 }
@@ -343,7 +354,7 @@ fn a_min_or_max_costs_a_cell_a_run_of_its_values() {
     let one = held(|| store_of(spec(&[]), CELLS, 1));
     for (tips, most) in [(4, 0), (40, 180), (520, 260)] {
         let several = held(|| store_of(spec(&[]), CELLS, tips));
-        let a_value = (several - one) * 100 / (CELLS * tips) as isize;
+        let a_value = (several - one) * 100 / isize::try_from(CELLS * tips).unwrap();
         eprintln!("{tips} tips a cell: {a_value} hundredths of a byte a value");
         assert!(
             a_value <= most,
@@ -427,7 +438,7 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
     let big = store_of(spec(), 8 * HOURS * per_hour, TIPS);
     for (by, from, to) in [(&[][..], 24, 48), (&["pay"], 0, 100), (&["pu"], 99, 100)] {
         let values = (to - from) * per_hour * TIPS;
-        let most = (2 * 16 * values + (4 << 10)) as isize;
+        let most = isize::try_from(2 * 16 * values + (4 << 10)).unwrap();
         let (small, big) = (peak(&small, by, from, to), peak(&big, by, from, to));
         eprintln!("by {by:?}, hours {from}..{to}: {small} bytes, {big} with 8x the cells");
         assert!(small <= most, "{small} bytes for {values} values");
