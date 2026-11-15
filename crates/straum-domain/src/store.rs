@@ -114,7 +114,7 @@ impl Bound {
         })
     }
 
-    /// Appends to `out` one bound row per way the refs resolve `row`
+    /// Appends to `out` one bound row per join row the refs resolve `row` to
     /// through the projections as they are now: the row, then the
     /// attributes read, null where a left join finds none.
     fn rows(&self, projections: &[Projection], row: &[Datum], out: &mut Vec<Datum>) {
@@ -127,9 +127,9 @@ impl Bound {
                     .collect()
             })
             .collect();
-        for way in self.ways(projections, &via_keys, None) {
+        for join_row in self.join_rows(projections, &via_keys, None) {
             out.extend_from_slice(row);
-            for (reference, found) in self.refs.iter().zip(&way) {
+            for (reference, found) in self.refs.iter().zip(&join_row) {
                 let projection = &projections[reference.dim];
                 out.extend(reference.attrs.iter().map(|&attr| match found {
                     Some(codes) => projection.attribute_value(attr, codes[attr]).clone(),
@@ -139,10 +139,10 @@ impl Bound {
         }
     }
 
-    /// One join per way the refs resolve `via_keys`. `overlay` stands in
+    /// The join rows the refs resolve `via_keys` to. `overlay` stands in
     /// for one dim key, so a change can expand the rows it held before the
     /// projection moved.
-    fn ways<'a>(
+    fn join_rows<'a>(
         &self,
         projections: &'a [Projection],
         via_keys: &[Vec<Datum>],
@@ -152,8 +152,8 @@ impl Bound {
         for (reference, via) in self.refs.iter().zip(via_keys) {
             let matches = matched(projections, reference, via, overlay);
             let mut next = Vec::new();
-            for way in &joined {
-                keep(reference.kind, matches, way, &mut next);
+            for join_row in &joined {
+                keep(reference.kind, matches, join_row, &mut next);
             }
             joined = next;
         }
@@ -939,7 +939,7 @@ fn ask_once<'s>(
 }
 
 /// The cell loop for a view whose joins repeat a cell: each cell once per
-/// way its joins resolve.
+/// join row its joins resolve it to.
 fn ask_expanded<'s>(
     each: &mut Each<'_, 's, '_>,
     cover: impl Iterator<Item = (i64, &'s Cells)>,
@@ -1089,9 +1089,9 @@ fn cover<'r>(
     })
 }
 
-/// One way a cell's joins resolve: per ref, the dim row matched, or none
-/// for a left join with no match and for a semi or anti join, which keep
-/// no row.
+/// A join row: one way a cell's joins resolve, per ref the dim row
+/// matched, or none for a left join with no match and for a semi or anti
+/// join, which keep no row.
 type JoinRow<'s> = Vec<Option<&'s [u32]>>;
 
 /// The attribute rows one dim key held, used in place of the projection.
@@ -1153,7 +1153,7 @@ fn pour(
     Ok(())
 }
 
-/// The bound-key codes of each way `cell` resolves. `overlay` supplies
+/// The bound-key codes of each join row `cell` resolves to. `overlay` supplies
 /// one key's rows; `None` reads the projections as they are.
 fn bound_keys(
     bound: &mut Bound,
@@ -1170,16 +1170,16 @@ fn bound_keys(
                 .collect()
         })
         .collect();
-    let ways = bound.ways(projections, &via_keys, overlay);
-    let mut keys = Vec::with_capacity(ways.len());
-    for way in &ways {
-        let mut key = Vec::with_capacity(bound.by_len + way.len());
+    let join_rows = bound.join_rows(projections, &via_keys, overlay);
+    let mut keys = Vec::with_capacity(join_rows.len());
+    for join_row in &join_rows {
+        let mut key = Vec::with_capacity(bound.by_len + join_row.len());
         for part in 0..bound.by_len {
             let datum = keyed.value(part, cells.code(cell, part));
             key.push(bound.rollup.code_part(part, datum));
         }
         let mut part = bound.by_len;
-        for (reference, found) in bound.refs.iter().zip(way) {
+        for (reference, found) in bound.refs.iter().zip(join_row) {
             for &attr in &reference.attrs {
                 let datum = match found {
                     Some(codes) => projections[reference.dim].attribute_value(attr, codes[attr]),
@@ -1240,7 +1240,7 @@ impl<'s> Expander<'s> {
         &self.memo[&tuple]
     }
 
-    /// Every way the refs resolve for a cell, in ref order: a ref's key
+    /// Every join row the refs resolve a cell to, in ref order: a ref's key
     /// comes from the cell or from a ref before it, and its kind says what
     /// of the rows matched goes on.
     fn resolve(&self, rollup: &Rollup, key: &[u32]) -> Vec<JoinRow<'s>> {
@@ -1269,7 +1269,7 @@ impl<'s> Expander<'s> {
     }
 }
 
-/// What a join of `kind` keeps of `row`, one way the refs before it
+/// What a join of `kind` keeps of `row`, a join row the refs before it
 /// resolved, given the dim rows `matches` under its key: pushed onto
 /// `next` once per row kept, as SQL's join kinds repeat or drop a row.
 fn keep<'s>(
@@ -1404,7 +1404,7 @@ impl AttributeLookup<'_> {
         })
     }
 
-    /// The attribute's code under one way the joins resolved.
+    /// The attribute's code under one join row.
     fn code_in(&self, row: &JoinRow<'_>) -> u32 {
         row[self.reference].map_or(NULL, |found| found[self.attr])
     }
@@ -1420,8 +1420,7 @@ impl<'s> Lookup<'s> {
         }
     }
 
-    /// The code of the key's value for `cell` under one way its joins
-    /// resolved.
+    /// The code of the key's value for `cell` under one join row.
     fn code_in(&self, cells: &Cells, cell: usize, row: &JoinRow<'_>) -> u32 {
         match self {
             Lookup::KeyPart(part) => cells.code(cell, *part),
@@ -1486,7 +1485,7 @@ impl Match<'_, '_> {
         }
     }
 
-    /// Whether `cell` passes under one way its joins resolved.
+    /// Whether `cell` passes under one join row.
     fn holds(&mut self, rollup: &Rollup, cells: &Cells, cell: usize, row: &JoinRow<'_>) -> bool {
         let code = self.lookup.code_in(cells, cell, row);
         let mut known = self.memo[code as usize];

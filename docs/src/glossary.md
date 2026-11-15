@@ -89,6 +89,9 @@ are open.
   not (ADR-0030). In code a "via"; also "join id" (ADR-0030).
 - **Chain** (`Via::Attribute`): a join whose key comes from a dim
   joined before it, `r.name = a.region`.
+- **Join row** (`JoinRow`, `Bound::join_rows`): one way a cell's or a
+  fact row's joins resolve: per join the dim row it found, or none. A
+  join that finds several rows gives several join rows.
 - **Projection** (`Projection`): the shape Straum holds a dim in: a
   map from dim key to the coded columns of every row under it.
 
