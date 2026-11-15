@@ -123,7 +123,7 @@ impl Publisher {
         if committed.changes.is_empty() && self.unfit.is_empty() {
             return Ok(None);
         }
-        decoder.feed(Message::Begin {
+        decoder.feed(&Message::Begin {
             final_lsn: committed.lsn,
         })?;
         for oid in std::mem::take(&mut self.unfit) {
@@ -131,7 +131,7 @@ impl Publisher {
             if let Some(table) = self.tables.values().find(|table| table.relation.id == oid)
                 && self.announced.insert(table.file)
             {
-                decoder.feed(Message::Relation(table.relation.clone()))?;
+                decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
             decoder.unfit(oid);
         }
@@ -146,11 +146,11 @@ impl Publisher {
                 .get(file)
                 .ok_or_else(|| problem(committed.lsn, "a change to a table Straum doesn't read"))?;
             if self.announced.insert(*file) {
-                decoder.feed(Message::Relation(table.relation.clone()))?;
+                decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
             let (labels, lsn) = (&self.labels, committed.lsn);
             let relation = table.relation.id;
-            decoder.feed(match change {
+            decoder.feed(&match change {
                 Change::Insert { new, .. } => Message::Insert {
                     relation,
                     new: fields(table, new, labels, lsn)?,
@@ -166,7 +166,7 @@ impl Publisher {
                 },
             })?;
         }
-        decoder.feed(Message::Commit {
+        decoder.feed(&Message::Commit {
             end_lsn: committed.end,
             committed: system_time(committed.time),
         })

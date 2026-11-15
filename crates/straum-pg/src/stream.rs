@@ -266,7 +266,7 @@ impl StreamThread {
             CopyMessage::XLogData { start, bytes } => {
                 let commits = match &mut self.reader {
                     Reader::Logical(decoder) => decoder
-                        .feed(pgoutput::decode(bytes)?)?
+                        .feed(&pgoutput::decode(bytes)?)?
                         .into_iter()
                         .collect(),
                     Reader::Physical(replay) => replay.feed(start, bytes)?,

@@ -59,8 +59,8 @@ impl Decoder {
     }
 
     /// A commit once its Commit message comes.
-    pub(crate) fn feed(&mut self, message: Message) -> Result<Option<Commit>, Error> {
-        let relations = match &message {
+    pub(crate) fn feed(&mut self, message: &Message) -> Result<Option<Commit>, Error> {
+        let relations = match message {
             Message::Begin { final_lsn } => {
                 self.transaction.lsn = Some(Lsn(*final_lsn));
                 return Ok(None);
@@ -88,7 +88,7 @@ impl Decoder {
             // A relation outside the spec holds none of its tables.
             for mapping in self.relations.get(&relation).into_iter().flatten() {
                 let table = &self.tables[mapping.table];
-                let change = mapping.change(table, &message)?;
+                let change = mapping.change(table, message)?;
                 self.transaction
                     .hold(change.unwrap_or_else(|| unfit(table)))?;
             }
@@ -349,12 +349,12 @@ mod tests {
     }
 
     fn feed(decoder: &mut Decoder, messages: Vec<Message>) -> Result<Vec<Change>, Error> {
-        decoder.feed(Message::Begin { final_lsn: 9 })?;
+        decoder.feed(&Message::Begin { final_lsn: 9 })?;
         for message in messages {
-            decoder.feed(message)?;
+            decoder.feed(&message)?;
         }
         let time = UNIX_EPOCH + Duration::from_secs(9);
-        let commit = (decoder.feed(Message::Commit {
+        let commit = (decoder.feed(&Message::Commit {
             end_lsn: 9,
             committed: time,
         }))?
@@ -529,12 +529,12 @@ mod tests {
             end_lsn: 0x20,
             committed: UNIX_EPOCH,
         };
-        decoder.feed(zones()).unwrap();
-        decoder.feed(begin).unwrap();
+        decoder.feed(&zones()).unwrap();
+        decoder.feed(&begin).unwrap();
         // Not a relation the decoder knows: nothing to say.
         decoder.unfit(8);
         decoder.unfit(7);
-        let got = decoder.feed(commit).unwrap().unwrap();
+        let got = decoder.feed(&commit).unwrap().unwrap();
         assert_eq!(got.changes, [unfit_named("zones"), unfit_named("visits")]);
     }
 
@@ -608,7 +608,7 @@ mod tests {
                 "zones: column id of public.zones was dropped or changed type",
             ),
         ] {
-            let err = zones_decoder().feed(message).unwrap_err().to_string();
+            let err = zones_decoder().feed(&message).unwrap_err().to_string();
             assert_eq!(err, expected);
         }
     }
@@ -673,8 +673,8 @@ mod tests {
         ];
         for (message, expected) in cases {
             let mut decoder = zones_decoder();
-            decoder.feed(zones()).unwrap();
-            assert_eq!(decoder.feed(message).unwrap_err().to_string(), expected);
+            decoder.feed(&zones()).unwrap();
+            assert_eq!(decoder.feed(&message).unwrap_err().to_string(), expected);
         }
     }
 }
