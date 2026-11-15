@@ -152,46 +152,48 @@ impl Transactions {
                 self.ended(&ending);
                 Ok(None)
             }
-            Event::Commit(ending) => {
-                let whole = match &self.start {
-                    Start::From { next_xid, .. } => follows(ending.xid, *next_xid),
-                    Start::Unknown { .. } => false,
-                };
-                let held = self.ended(&ending);
-                if !whole {
-                    if let Some(dropped) = &mut self.dropped {
-                        dropped.insert(ending.xid);
-                    }
-                    return Ok(None);
-                }
-                if held.iter().any(|part| part.over) {
-                    return Err(TooBig {
-                        xid: ending.xid,
-                        lsn,
-                    });
-                }
-                // pgoutput sends nothing for a transaction that changed
-                // no published table. One that invalidated a table may
-                // have changed how its rows read, so it still comes.
-                if held.iter().all(|part| part.changes.is_empty()) && ending.invalidated.is_empty()
-                {
-                    return Ok(None);
-                }
-                // Each xid's changes are in WAL order; together they
-                // merge by LSN, as the reorder buffer replays them.
-                let mut changes: Vec<(u64, HeapChange)> =
-                    held.into_iter().flat_map(|part| part.changes).collect();
-                changes.sort_by_key(|(lsn, _)| *lsn);
-                Ok(Some(Committed {
-                    xid: ending.xid,
-                    lsn,
-                    end,
-                    time: ending.time,
-                    changes: changes.into_iter().map(|(_, change)| change).collect(),
-                    invalidated: ending.invalidated,
-                }))
-            }
+            Event::Commit(ending) => self.commit(ending, lsn, end),
         }
+    }
+
+    fn commit(&mut self, ending: Ending, lsn: u64, end: u64) -> Result<Option<Committed>, TooBig> {
+        let whole = match &self.start {
+            Start::From { next_xid, .. } => follows(ending.xid, *next_xid),
+            Start::Unknown { .. } => false,
+        };
+        let held = self.ended(&ending);
+        if !whole {
+            if let Some(dropped) = &mut self.dropped {
+                dropped.insert(ending.xid);
+            }
+            return Ok(None);
+        }
+        let mut over = false;
+        let mut no_changes = true;
+        for part in &held {
+            over |= part.over;
+            no_changes &= part.changes.is_empty();
+        }
+        if over {
+            return Err(TooBig {
+                xid: ending.xid,
+                lsn,
+            });
+        }
+        // pgoutput sends nothing for a transaction that changed no
+        // published table. One that invalidated a table may have changed
+        // how its rows read, so it still comes.
+        if no_changes && ending.invalidated.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Committed {
+            xid: ending.xid,
+            lsn,
+            end,
+            time: ending.time,
+            changes: merge_by_lsn(held),
+            invalidated: ending.invalidated,
+        }))
     }
 
     fn running(&mut self, running: &Running) {
@@ -199,10 +201,12 @@ impl Transactions {
             // The record lists what ran when PostgreSQL looked, and goes
             // into the WAL after: a transaction may end in between, its
             // ending before the record that names it (`snapbuild.c`).
-            let waiting = (running.xids.iter())
-                .filter(|xid| !ended.contains(xid))
-                .copied()
-                .collect();
+            let mut waiting = HashSet::new();
+            for xid in &running.xids {
+                if !ended.contains(xid) {
+                    waiting.insert(*xid);
+                }
+            }
             self.start = Start::From {
                 next_xid: running.next_xid,
                 running: waiting,
@@ -211,15 +215,16 @@ impl Transactions {
         // Every xid before the oldest has ended. One with no ending in
         // the WAL died in a crash.
         let oldest = running.oldest_xid;
-        let mut freed = 0;
-        self.held.retain(|xid, held| {
-            let keep = follows(*xid, oldest);
-            if !keep {
-                freed += held.bytes;
+        let mut ended = Vec::new();
+        for (xid, held) in &self.held {
+            if !follows(*xid, oldest) {
+                ended.push(*xid);
+                self.bytes -= held.bytes;
             }
-            keep
-        });
-        self.bytes -= freed;
+        }
+        for xid in ended {
+            self.held.remove(&xid);
+        }
         if let Start::From {
             running: waiting, ..
         } = &mut self.start
@@ -236,10 +241,14 @@ impl Transactions {
     /// The commits dropped as not whole that `snapshot` doesn't see: it
     /// was taken before PostgreSQL ended them, and can't be the load's.
     pub(crate) fn unseen_dropped(&self, snapshot: &TransactionSnapshot) -> Vec<u32> {
-        let mut xids: Vec<u32> = (self.dropped.iter().flatten())
-            .copied()
-            .filter(|xid| !snapshot.sees(*xid))
-            .collect();
+        let mut xids = Vec::new();
+        if let Some(dropped) = &self.dropped {
+            for xid in dropped {
+                if !snapshot.sees(*xid) {
+                    xids.push(*xid);
+                }
+            }
+        }
         xids.sort_unstable();
         xids
     }
@@ -260,25 +269,59 @@ impl Transactions {
                 running.remove(&ending.xid);
             }
         }
-        let xids = std::iter::once(ending.xid).chain(ending.subxacts.iter().copied());
-        let held: Vec<Held> = xids.filter_map(|xid| self.held.remove(&xid)).collect();
-        self.bytes -= held.iter().map(|part| part.bytes).sum::<usize>();
+        let mut held = Vec::new();
+        self.take_held(ending.xid, &mut held);
+        for subxact in &ending.subxacts {
+            self.take_held(*subxact, &mut held);
+        }
         held
+    }
+
+    /// Moves what `xid` held into `held`.
+    fn take_held(&mut self, xid: u32, held: &mut Vec<Held>) {
+        if let Some(part) = self.held.remove(&xid) {
+            self.bytes -= part.bytes;
+            held.push(part);
+        }
     }
 
     #[cfg(test)]
     fn held_changes(&self) -> usize {
-        let counted: usize = (self.held.values().flat_map(|held| &held.changes))
-            .map(|(_, change)| change.footprint())
-            .sum();
+        let mut counted = 0;
+        let mut changes = 0;
+        for held in self.held.values() {
+            changes += held.changes.len();
+            for (_, change) in &held.changes {
+                counted += change.footprint();
+            }
+        }
         assert_eq!(self.bytes, counted, "bytes as counted");
-        self.held.values().map(|held| held.changes.len()).sum()
+        changes
     }
 
     #[cfg(test)]
     fn holds(&self, xid: u32) -> bool {
         self.held.contains_key(&xid)
     }
+}
+
+/// Each xid's changes, in WAL order, merged by LSN as the reorder buffer
+/// replays them.
+fn merge_by_lsn(held: Vec<Held>) -> Vec<HeapChange> {
+    let mut changes = Vec::new();
+    for part in held {
+        changes.extend(part.changes);
+    }
+    changes.sort_by_key(lsn_of);
+    let mut merged = Vec::with_capacity(changes.len());
+    for (_, change) in changes {
+        merged.push(change);
+    }
+    merged
+}
+
+fn lsn_of(change: &(u64, HeapChange)) -> u64 {
+    change.0
 }
 
 /// `xid` is `from` or later, as xids wrap: `TransactionIdFollowsOrEquals`.
@@ -306,7 +349,10 @@ impl TransactionSnapshot {
                 running.insert(xid.parse().ok()?);
             }
         }
-        (parts.next().is_none() && xmin <= xmax).then_some(TransactionSnapshot { xmax, running })
+        if parts.next().is_some() || xmin > xmax {
+            return None;
+        }
+        Some(TransactionSnapshot { xmax, running })
     }
 
     /// The snapshot sees `xid`'s commit: it ended before the snapshot. A
@@ -314,8 +360,10 @@ impl TransactionSnapshot {
     pub(crate) fn sees(&self, xid: u32) -> bool {
         let low = u32::try_from(self.xmax & 0xFFFF_FFFF).unwrap_or(0);
         let distance = i64::from(i32::from_ne_bytes(xid.wrapping_sub(low).to_ne_bytes()));
-        let full = self.xmax.checked_add_signed(distance);
-        full.is_some_and(|full| full < self.xmax && !self.running.contains(&full))
+        let Some(full) = self.xmax.checked_add_signed(distance) else {
+            return false;
+        };
+        full < self.xmax && !self.running.contains(&full)
     }
 }
 
@@ -413,9 +461,10 @@ mod tests {
             for _ in 0..=rng.below(10) {
                 let top = next_xid;
                 let count = rng.below(4);
-                let subxacts = (1..=count)
-                    .map(|index| top.wrapping_add(u32::try_from(index).unwrap()))
-                    .collect();
+                let mut subxacts = Vec::new();
+                for index in 1..=count {
+                    subxacts.push(top.wrapping_add(u32::try_from(index).unwrap()));
+                }
                 next_xid = top.wrapping_add(u32::try_from(count).unwrap() + 1);
                 scripts.push(Script {
                     top,
@@ -470,12 +519,14 @@ mod tests {
 
         fn log_running(&mut self) {
             let seed = self.seed;
-            let next = (self.scripts.get(self.started)).map_or(self.next_xid, |script| script.top);
-            let names: Vec<u32> = self
-                .open
-                .iter()
-                .map(|index| self.scripts[*index].top)
-                .collect();
+            let next = match self.scripts.get(self.started) {
+                Some(script) => script.top,
+                None => self.next_xid,
+            };
+            let mut names = Vec::new();
+            for index in &self.open {
+                names.push(self.scripts[*index].top);
+            }
             let oldest = names.first().copied().unwrap_or(next);
             let event = running(next, oldest, names);
             let lsn = self.lsn;
@@ -544,7 +595,10 @@ mod tests {
                 1 => Event::Abort(ending(script.top, subs)),
                 _ => Event::Commit(ending(script.top, subs)),
             };
-            let whole = self.first_whole.is_some_and(|first| index >= first);
+            let whole = match self.first_whole {
+                Some(first) => index >= first,
+                None => false,
+            };
             if outcome > 1 && whole && !script.kept.is_empty() {
                 self.expected.push(Kept {
                     xid: script.top,
@@ -560,11 +614,10 @@ mod tests {
             self.dropped.sort_unstable();
             let unseen = self.transactions.unseen_dropped(&blind());
             assert_eq!(unseen, self.dropped, "seed {seed}");
-            let ended = std::iter::once(script.top).chain(script.kept_subs.clone());
-            assert!(
-                ended.into_iter().all(|xid| !self.transactions.holds(xid)),
-                "seed {seed}"
-            );
+            assert!(!self.transactions.holds(script.top), "seed {seed}");
+            for sub in &script.kept_subs {
+                assert!(!self.transactions.holds(*sub), "seed {seed}");
+            }
             if let Some(committed) = got {
                 assert_eq!((committed.lsn, committed.end), (lsn, lsn + 4));
                 let changes = numbers(committed.changes);

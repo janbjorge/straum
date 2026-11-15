@@ -108,21 +108,26 @@ pub(crate) fn values(
             values.push(Value::Missing);
             continue;
         }
-        if bitmap.is_some_and(|bits| bits[index / 8] >> (index % 8) & 1 == 0) {
+        if let Some(bits) = bitmap
+            && bits[index / 8] >> (index % 8) & 1 == 0
+        {
             values.push(Value::Datum(Datum::Null));
             continue;
         }
         // A varlena with a one-byte header isn't aligned, and its first
         // byte is never zero, which padding always is.
-        let unaligned = attribute.length == -1 && data.get(at).is_some_and(|byte| *byte != 0);
+        let unaligned = attribute.length == -1 && matches!(data.get(at), Some(byte) if *byte != 0);
         if !unaligned {
             at = at.next_multiple_of(attribute.align.max(1));
         }
         let rest = data.get(at..).ok_or(short)?;
         let size = match attribute.length {
             -1 => varlena_size(rest).ok_or(short)?,
-            -2 => rest.iter().position(|byte| *byte == 0).ok_or(short)? + 1,
-            length => usize::try_from(length).map_err(|_| Problem::UnknownLength)?,
+            -2 => c_string_size(rest).ok_or(short)?,
+            length => match usize::try_from(length) {
+                Ok(length) => length,
+                Err(_) => return Err(Problem::UnknownLength),
+            },
         };
         let bytes = rest.get(..size).ok_or(short)?;
         at += size;
@@ -131,13 +136,26 @@ pub(crate) fn values(
     Ok(values)
 }
 
+/// A C string's size with its closing zero byte.
+fn c_string_size(bytes: &[u8]) -> Option<usize> {
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == 0 {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
 /// A varlena's size with its header: 1 + 16 bytes for a TOAST pointer,
 /// else the length its one- or four-byte header holds.
 fn varlena_size(bytes: &[u8]) -> Option<usize> {
     let first = *bytes.first()?;
     if first == VARLENA_EXTERNAL {
         // The header, then `va_tag`, then the pointer.
-        return (*bytes.get(1)? == VARTAG_ON_DISK).then_some(2 + EXTERNAL_POINTER);
+        if *bytes.get(1)? != VARTAG_ON_DISK {
+            return None;
+        }
+        return Some(2 + EXTERNAL_POINTER);
     }
     let (size, header) = if first & VARLENA_ONE_BYTE != 0 {
         (usize::from(first >> 1), ONE_BYTE_HEADER)
@@ -146,7 +164,10 @@ fn varlena_size(bytes: &[u8]) -> Option<usize> {
         let size = usize::try_from(u32::from_le_bytes(four) >> 2).ok()?;
         (size, FOUR_BYTE_HEADER)
     };
-    (size >= header).then_some(size)
+    if size < header {
+        return None;
+    }
+    Some(size)
 }
 
 /// What a varlena holds: its bytes, decompressed, or `None` for a value
@@ -166,15 +187,19 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
         return Err(Problem::CompressedWithoutSize);
     };
     let info = u32::from_le_bytes([info[0], info[1], info[2], info[3]]);
-    let size = usize::try_from(info & RAW_SIZE_MASK).map_err(|_| Problem::ValueTooBig)?;
+    let Ok(size) = usize::try_from(info & RAW_SIZE_MASK) else {
+        return Err(Problem::ValueTooBig);
+    };
     let stored = &bytes[COMPRESSED_HEADER..];
     let raw = match info >> METHOD_SHIFT {
         METHOD_PGLZ => compress::pglz(stored, size),
         METHOD_LZ4 => compress::lz4(stored, size),
         _ => return Err(Problem::UnknownCompression),
     };
-    raw.map(|raw| Some(Cow::Owned(raw)))
-        .ok_or(Problem::ValueNotDecompressing)
+    match raw {
+        Some(raw) => Ok(Some(Cow::Owned(raw))),
+        None => Err(Problem::ValueNotDecompressing),
+    }
 }
 
 fn value(
@@ -187,7 +212,10 @@ fn value(
         Kind::Read(column_type) => column_type,
         Kind::Other => return Ok(Value::Datum(Datum::Null)),
         Kind::Enum => {
-            let oid = u32::from_le_bytes(bytes.try_into().map_err(|_| wrong)?);
+            let Ok(oid) = bytes.try_into() else {
+                return Err(wrong);
+            };
+            let oid = u32::from_le_bytes(oid);
             let label = labels.get(&oid).ok_or(Problem::UnlabelledEnum)?;
             return Ok(Value::Datum(Datum::Text(label.as_str().into())));
         }
@@ -198,7 +226,12 @@ fn value(
             [byte] => Datum::Bool(*byte != 0),
             _ => return Err(wrong),
         },
-        ColumnType::Time { .. } => time(i64::from_le_bytes(bytes.try_into().map_err(|_| wrong)?)),
+        ColumnType::Time { .. } => {
+            let Ok(micros) = bytes.try_into() else {
+                return Err(wrong);
+            };
+            time(i64::from_le_bytes(micros))
+        }
         ColumnType::Numeric { .. } | ColumnType::Text => {
             if attribute.length != -1 {
                 return Err(wrong);
@@ -210,11 +243,10 @@ fn value(
                 ColumnType::Numeric { scale } => {
                     Datum::Int(numeric(&raw, scale).ok_or(Problem::UnreadableNumeric)?)
                 }
-                _ => Datum::Text(
-                    std::str::from_utf8(&raw)
-                        .map_err(|_| Problem::NotUtf8)?
-                        .into(),
-                ),
+                _ => match std::str::from_utf8(&raw) {
+                    Ok(text) => Datum::Text(text.into()),
+                    Err(_) => return Err(Problem::NotUtf8),
+                },
             }
         }
     };
@@ -257,7 +289,8 @@ fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
     if !odd.is_empty() {
         return None;
     }
-    let digits = digits.iter().map(|pair| u16::from_le_bytes(*pair));
+    // `scaled` reads the digits as they come, so none is copied out.
+    let digits = digits.iter().copied().map(u16::from_le_bytes);
     scaled(digits, weight, negative, scale)
 }
 

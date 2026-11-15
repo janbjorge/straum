@@ -53,7 +53,10 @@ pub(crate) fn pglz(source: &[u8], size: usize) -> Option<Vec<u8>> {
             control >>= 1;
         }
     }
-    (out.len() == size && at == source.len()).then_some(out)
+    if out.len() != size || at != source.len() {
+        return None;
+    }
+    Some(out)
 }
 
 /// An LZ4 block: sequences of literals then a match, the last with
@@ -79,7 +82,10 @@ pub(crate) fn lz4(source: &[u8], size: usize) -> Option<Vec<u8>> {
         }
         copy_back(&mut out, offset, length);
     }
-    (out.len() == size).then_some(out)
+    if out.len() != size {
+        return None;
+    }
+    Some(out)
 }
 
 /// A length nibble of 15 goes on in the bytes after, while they are 255.

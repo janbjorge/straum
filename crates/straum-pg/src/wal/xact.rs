@@ -234,10 +234,11 @@ mod tests {
     }
 
     fn words(values: &[u32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
+        let mut bytes = Vec::new();
+        for value in values {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes
     }
 
     /// A commit or abort with every part `ParseCommitRecord` reads before
@@ -296,12 +297,16 @@ mod tests {
                     major,
                 );
                 let invalidated = if outcome == Outcome::Commit {
-                    [16_384, 0]
-                        .map(|relation| Invalidated {
+                    vec![
+                        Invalidated {
                             database: 5,
-                            relation,
-                        })
-                        .to_vec()
+                            relation: 16_384,
+                        },
+                        Invalidated {
+                            database: 5,
+                            relation: 0,
+                        },
+                    ]
                 } else {
                     Vec::new()
                 };

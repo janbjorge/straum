@@ -56,10 +56,12 @@ pub(crate) struct Publisher {
 
 impl Publisher {
     pub(crate) fn new(layouts: Layouts) -> Publisher {
+        let mut tables = FastMap::default();
+        for table in layouts.tables {
+            tables.insert(table.file, table);
+        }
         Publisher {
-            tables: (layouts.tables.into_iter())
-                .map(|table| (table.file, table))
-                .collect(),
+            tables,
             labels: layouts.labels,
             announced: HashSet::new(),
             unfit: Vec::new(),
@@ -76,11 +78,11 @@ impl Publisher {
     pub(crate) fn stale(&self, invalidated: &[Invalidated]) -> Vec<u32> {
         let mut stale = Vec::new();
         for table in self.tables.values() {
-            if invalidated
-                .iter()
-                .any(|message| invalidates(*message, table))
-            {
-                stale.push(table.relation.id);
+            for message in invalidated {
+                if invalidates(*message, table) {
+                    stale.push(table.relation.id);
+                    break;
+                }
             }
         }
         stale.sort_unstable();
@@ -95,13 +97,10 @@ impl Publisher {
     /// enum no table had before, so the labels come along.
     pub(crate) fn relayout(&mut self, stale: &[u32], fresh: Layouts) {
         for &oid in stale {
-            let Some(file) = (self.tables.values())
-                .find(|table| table.relation.id == oid)
-                .map(|table| table.file)
-            else {
+            let Some(file) = self.file_with_oid(oid) else {
                 continue;
             };
-            match fresh.tables.iter().find(|table| table.relation.id == oid) {
+            match table_with_oid(&fresh.tables, oid) {
                 Some(table) if table.file == file => {
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
@@ -110,6 +109,16 @@ impl Publisher {
             }
         }
         self.labels.extend(fresh.labels);
+    }
+
+    /// The file of the table Straum reads whose OID is `oid`.
+    fn file_with_oid(&self, oid: u32) -> Option<RelationFile> {
+        for table in self.tables.values() {
+            if table.relation.id == oid {
+                return Some(table.file);
+            }
+        }
+        None
     }
 
     /// Feeds `committed` to `decoder` as messages: the commit it makes.
@@ -128,8 +137,9 @@ impl Publisher {
         })?;
         for oid in std::mem::take(&mut self.unfit) {
             // The decoder knows a table by its Relation.
-            if let Some(table) = self.tables.values().find(|table| table.relation.id == oid)
-                && self.announced.insert(table.file)
+            if let Some(file) = self.file_with_oid(oid)
+                && let Some(table) = self.tables.get(&file)
+                && self.announced.insert(file)
             {
                 decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
@@ -141,10 +151,9 @@ impl Publisher {
                 | HeapChange::Update { file, .. }
                 | HeapChange::Delete { file, .. } => file,
             };
-            let table = self
-                .tables
-                .get(file)
-                .ok_or_else(|| problem(committed.lsn, Problem::UntrackedTable))?;
+            let Some(table) = self.tables.get(file) else {
+                return Err(problem(committed.lsn, Problem::UntrackedTable));
+            };
             if self.announced.insert(*file) {
                 decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
@@ -173,6 +182,16 @@ impl Publisher {
     }
 }
 
+/// The table in `tables` whose OID is `oid`.
+fn table_with_oid(tables: &[Layout], oid: u32) -> Option<&Layout> {
+    for table in tables {
+        if table.relation.id == oid {
+            return Some(table);
+        }
+    }
+    None
+}
+
 /// Whether `message` invalidates `table`: relation 0 is every table of
 /// its database.
 fn invalidates(message: Invalidated, table: &Layout) -> bool {
@@ -187,8 +206,10 @@ fn fields(
     labels: &HashMap<u32, String>,
     lsn: u64,
 ) -> Result<Vec<Field<'static>>, Error> {
-    let mut values =
-        tuple::values(tuple, &table.attributes, labels).map_err(|text| problem(lsn, text))?;
+    let mut values = match tuple::values(tuple, &table.attributes, labels) {
+        Ok(values) => values,
+        Err(row_problem) => return Err(problem(lsn, row_problem)),
+    };
     let mut fields = Vec::with_capacity(table.columns.len());
     for &attribute in &table.columns {
         fields.push(

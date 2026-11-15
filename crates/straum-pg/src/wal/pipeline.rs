@@ -11,7 +11,7 @@ use std::mem;
 use straum_app::{Commit, Lsn};
 
 use super::Record;
-use super::heap::{Heap, HeapChange};
+use super::heap::Heap;
 use super::messages::{Layouts, Publisher};
 use super::transactions::{Committed, Consistency, TooBig, TransactionSnapshot, Transactions};
 use super::xact;
@@ -139,20 +139,20 @@ impl Pipeline {
         };
         match &self.snapshot {
             None => {
-                self.held_bytes += committed
-                    .changes
-                    .iter()
-                    .map(HeapChange::footprint)
-                    .sum::<usize>();
+                for change in &committed.changes {
+                    self.held_bytes += change.footprint();
+                }
                 self.held.push(committed);
                 Ok(Vec::new())
             }
             Some(snapshot) if snapshot.sees(committed.xid) => Ok(Vec::new()),
-            Some(_) => Ok(self
-                .publisher
-                .publish(&committed, &mut self.decoder)?
-                .into_iter()
-                .collect()),
+            Some(_) => {
+                let mut commits = Vec::new();
+                if let Some(commit) = self.publisher.publish(&committed, &mut self.decoder)? {
+                    commits.push(commit);
+                }
+                Ok(commits)
+            }
         }
     }
 
@@ -178,16 +178,19 @@ impl Pipeline {
         if !blind.is_empty() {
             return Ok((Sight::Blind(blind), Vec::new()));
         }
-        if let Some(too_big) = (self.too_big.iter()).find(|too_big| !snapshot.sees(too_big.xid)) {
-            return Err(self.too_big(*too_big));
+        for too_big in &self.too_big {
+            if !snapshot.sees(too_big.xid) {
+                return Err(self.too_big(*too_big));
+            }
         }
         // Every commit before the first held one it doesn't see is in
         // the load.
-        let first = (self.held.iter())
-            .filter(|committed| !snapshot.sees(committed.xid))
-            .map(|committed| committed.end)
-            .min();
-        let seen = first.map_or(at, |first| Lsn(first.saturating_sub(1)).min(at));
+        let mut seen = at;
+        for committed in &self.held {
+            if !snapshot.sees(committed.xid) {
+                seen = seen.min(Lsn(committed.end.saturating_sub(1)));
+            }
+        }
         self.too_big = Vec::new();
         self.transactions.loaded();
         self.held_bytes = 0;
@@ -336,16 +339,40 @@ mod tests {
         Err(Error::Stopped)
     }
 
+    /// No tables any more, counting the call in `calls`.
+    fn count_no_tables(calls: &Cell<u32>) -> Layouts {
+        calls.set(calls.get() + 1);
+        Layouts::default()
+    }
+
+    /// The table as it was, counting the call in `calls`.
+    fn count_the_table(calls: &Cell<u32>) -> Layouts {
+        calls.set(calls.get() + 1);
+        Layouts {
+            tables: vec![table()],
+            labels: HashMap::new(),
+        }
+    }
+
+    /// The commits `pipeline` releases as it takes the snapshot `text`.
+    fn see_all(pipeline: &mut Pipeline, text: &str) -> Result<Vec<Commit>, Error> {
+        let snapshot = TransactionSnapshot::parse(text).unwrap();
+        let (_, commits) = pipeline.see(snapshot, Lsn(u64::MAX))?;
+        Ok(commits)
+    }
+
     fn ids(commits: &[Commit]) -> Vec<i64> {
         let mut ids = Vec::new();
-        for change in commits.iter().flat_map(|commit| &commit.changes) {
-            let Change::Insert { row, .. } = change else {
-                unreachable!()
-            };
-            let [Datum::Int(id)] = row[..] else {
-                unreachable!()
-            };
-            ids.push(id);
+        for commit in commits {
+            for change in &commit.changes {
+                let Change::Insert { row, .. } = change else {
+                    unreachable!()
+                };
+                let [Datum::Int(id)] = row[..] else {
+                    unreachable!()
+                };
+                ids.push(id);
+            }
         }
         ids
     }
@@ -376,14 +403,17 @@ mod tests {
 
     /// Three inserts by `xid`, past the limit of 2, and its commit.
     fn big_transaction(wal: &mut Wal, xid: u32) -> Vec<Record> {
-        let mut records: Vec<Record> = (1..=3).map(|id| wal.insert(xid, id)).collect();
+        let mut records = Vec::new();
+        for id in 1..=3 {
+            records.push(wal.insert(xid, id));
+        }
         records.push(wal.commit(xid));
         records
     }
 
     fn assert_too_big(result: Result<Vec<Commit>, Error>) {
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("changes more than 2 rows"), "{err}");
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("changes more than 2 rows"), "{error}");
     }
 
     /// Commits wait for the load's snapshot, and only those it doesn't
@@ -438,9 +468,7 @@ mod tests {
             block: 0,
         };
         let mut big = pipeline(1 << 20);
-        big.see(TransactionSnapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
-            .map(|(_, commits)| commits)
-            .unwrap();
+        see_all(&mut big, "1:1:").unwrap();
         let records = [
             wal.running(100, &[]),
             wal.insert(100, 1),
@@ -451,15 +479,15 @@ mod tests {
             big.record(&record, no_layouts).unwrap();
         }
         let commit = wal.commit(100);
-        let err = big.record(&commit, no_layouts).unwrap_err().to_string();
+        let error = big.record(&commit, no_layouts).unwrap_err().to_string();
         assert!(
-            err.contains("changes more than 2 rows Straum reads"),
-            "{err}"
+            error.contains("changes more than 2 rows Straum reads"),
+            "{error}"
         );
 
         let mut small = pipeline(100);
-        let err = small.record(&wal.insert(200, 1), no_layouts).unwrap_err();
-        assert!(matches!(err, Error::Memory { limit: 100, .. }), "{err}");
+        let error = small.record(&wal.insert(200, 1), no_layouts).unwrap_err();
+        assert!(matches!(error, Error::Memory { limit: 100, .. }), "{error}");
     }
 
     /// A commit that invalidates a table reads its layout again, once.
@@ -470,29 +498,21 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        pipeline
-            .see(TransactionSnapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
-            .map(|(_, commits)| commits)
-            .unwrap();
+        see_all(&mut pipeline, "1:1:").unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         let ddl = ddl(&mut wal, 100);
         let calls = Cell::new(0);
-        let layouts = || {
-            calls.set(calls.get() + 1);
-            Ok(Layouts::default())
-        };
         // The table is gone now: its tables are unfit.
-        let commits = pipeline.record(&ddl, layouts).unwrap();
+        let commits = (pipeline.record(&ddl, || Ok(count_no_tables(&calls)))).unwrap();
         assert_eq!(calls.get(), 1);
         let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
         };
-        assert_eq!(
-            (commits.iter())
-                .flat_map(|commit| &commit.changes)
-                .collect::<Vec<_>>(),
-            [&unfit]
-        );
+        let mut changes = Vec::new();
+        for commit in &commits {
+            changes.extend(&commit.changes);
+        }
+        assert_eq!(changes, [&unfit]);
         let again = wal.record(1, 0x80, 101, ddl.main_data().to_vec(), Vec::new());
         assert!(matches!(
             pipeline.record(&again, failing_layouts),
@@ -510,28 +530,17 @@ mod tests {
             block: 0,
         };
         let calls = Cell::new(0);
-        let layouts = || {
-            calls.set(calls.get() + 1);
-            Ok(Layouts {
-                tables: vec![table()],
-                labels: HashMap::new(),
-            })
-        };
         // Before any RUNNING_XACTS: not whole, yet laid out again.
         let early = ddl(&mut wal, 50);
-        assert_eq!(pipeline.record(&early, layouts).unwrap(), []);
+        let commits = pipeline.record(&early, || Ok(count_the_table(&calls)));
+        assert_eq!(commits.unwrap(), []);
         assert_eq!(calls.get(), 1);
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
-        pipeline
-            .see(
-                TransactionSnapshot::parse("100:102:").unwrap(),
-                Lsn(u64::MAX),
-            )
-            .map(|(_, commits)| commits)
-            .unwrap();
+        see_all(&mut pipeline, "100:102:").unwrap();
         // Seen by the load: dropped, yet laid out again.
         let seen = ddl(&mut wal, 101);
-        assert_eq!(pipeline.record(&seen, layouts).unwrap(), []);
+        let commits = pipeline.record(&seen, || Ok(count_the_table(&calls)));
+        assert_eq!(commits.unwrap(), []);
         assert_eq!(calls.get(), 2);
     }
 
@@ -551,31 +560,13 @@ mod tests {
         // Seen, both go quietly; 101 unseen stops the stream.
         let mut seen = pipeline(1 << 20);
         read_all(&mut seen, &records).unwrap();
-        let released = seen
-            .see(
-                TransactionSnapshot::parse("102:102:").unwrap(),
-                Lsn(u64::MAX),
-            )
-            .map(|(_, commits)| commits);
+        let released = see_all(&mut seen, "102:102:");
         assert_eq!(released.unwrap(), []);
-        assert_too_big(
-            before
-                .see(
-                    TransactionSnapshot::parse("101:102:101").unwrap(),
-                    Lsn(u64::MAX),
-                )
-                .map(|(_, commits)| commits),
-        );
+        assert_too_big(see_all(&mut before, "101:102:101"));
         // After the snapshot: 102 it saw, 103 it didn't.
         let mut after = pipeline(1 << 20);
         after.record(&wal.running(102, &[]), no_layouts).unwrap();
-        after
-            .see(
-                TransactionSnapshot::parse("103:103:").unwrap(),
-                Lsn(u64::MAX),
-            )
-            .map(|(_, commits)| commits)
-            .unwrap();
+        see_all(&mut after, "103:103:").unwrap();
         let seen_by_load = big_transaction(&mut wal, 102);
         assert_eq!(read_all(&mut after, &seen_by_load).unwrap(), []);
         assert_too_big(read_all(&mut after, &big_transaction(&mut wal, 103)));
