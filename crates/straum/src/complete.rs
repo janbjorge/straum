@@ -1,10 +1,14 @@
-//! What Tab offers in `straum shell`, by where in the line the cursor is: a
-//! view after `FROM`, its keys and measures after `SELECT`, a whole
-//! condition after `WHERE`, the selected keys after `GROUP BY`, the bounds
-//! of the buckets held where a parameter is a bound. Plain functions over
-//! the line and the views a Straum serves as JSON; no terminal and no
-//! network. A line is split into words, never parsed: Straum checks the
+//! What Tab offers in `straum shell`, and the hint shown past the cursor.
+//! `read_views` reads the views a Straum serves as JSON; `complete` and
+//! `hint` take those views and the line being edited and look at the words
+//! before the cursor: a view after `FROM`, its keys and measures after
+//! `SELECT`, a whole condition after `WHERE`, the selected keys after
+//! `GROUP BY`, the bounds of the buckets held where a parameter is a
+//! bound. Plain functions, with no terminal and no network: `shell.rs`
+//! calls them. A line is split into words, never parsed: Straum checks the
 //! ask.
+
+use std::fmt;
 
 use serde_json::Value;
 
@@ -12,7 +16,7 @@ const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
 const BUCKET: &str = "bucket";
 
 /// A view as `GET /views` describes it in JSON: what a line may name.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct View {
     name: String,
     /// `bucket` first.
@@ -23,13 +27,43 @@ pub(crate) struct View {
     to: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+impl View {
+    /// The key of this name, if the view has one.
+    fn key(&self, name: &str) -> Option<&Key> {
+        for key in &self.keys {
+            if key.name == name {
+                return Some(key);
+            }
+        }
+        None
+    }
+}
+
+/// A key of a view and its PostgreSQL type, as `straum views` writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Key {
     name: String,
     column_type: String,
 }
 
-/// `None` for JSON that isn't the views.
+/// A `$n` in a query: which parameter it is, counted from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ParameterNumber(usize);
+
+impl ParameterNumber {
+    fn next(self) -> ParameterNumber {
+        ParameterNumber(self.0 + 1)
+    }
+}
+
+impl fmt::Display for ParameterNumber {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "${}", self.0)
+    }
+}
+
+/// The views in the JSON of `GET /views`, or `None` for JSON that isn't
+/// the views.
 pub(crate) fn read_views(json: &str) -> Option<Vec<View>> {
     let json: Value = serde_json::from_str(json).ok()?;
     let mut views = Vec::new();
@@ -52,26 +86,34 @@ fn read_view(view: &Value) -> Option<View> {
         name: read_text(view.get("name")?)?,
         keys,
         measures,
-        from: view.get("from").and_then(read_text),
-        to: view.get("to").and_then(read_text),
+        from: read_optional_text(view, "from"),
+        to: read_optional_text(view, "to"),
     })
 }
 
 fn read_key(key: &Value) -> Option<Key> {
     let name = read_text(key.get("name")?)?;
     let mut column_type = read_text(key.get("type")?)?;
-    if let Some(scale) = key.get("scale").and_then(Value::as_u64) {
+    if let Some(scale) = key.get("scale")
+        && let Some(scale) = scale.as_u64()
+    {
         column_type = format!("{column_type} scale {scale}");
     }
     Some(Key { name, column_type })
 }
 
 fn read_text(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned)
+    let text = value.as_str()?;
+    Some(text.to_owned())
 }
 
-/// What Tab offers: each candidate replaces the line from `start` to the
-/// cursor.
+/// The text under `field`, or `None` when it is missing or null.
+fn read_optional_text(object: &Value, field: &str) -> Option<String> {
+    read_text(object.get(field)?)
+}
+
+/// What Tab offers: each candidate replaces the line from `start`, a byte
+/// position, to the cursor.
 pub(crate) struct Completion {
     pub(crate) start: usize,
     pub(crate) candidates: Vec<String>,
@@ -81,25 +123,54 @@ fn is_word_break(character: char) -> bool {
     character.is_whitespace() || ",()".contains(character)
 }
 
+/// What kind of word a character belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordKind {
+    /// A name, a keyword or a `$n`.
+    Name,
+    /// `=`, `>=` or `<`.
+    Operator,
+}
+
+/// The kind of word `character` is part of, or `None` between words.
+fn word_kind(character: char) -> Option<WordKind> {
+    if is_word_break(character) {
+        return None;
+    }
+    if "<>=".contains(character) {
+        return Some(WordKind::Operator);
+    }
+    Some(WordKind::Name)
+}
+
+/// Where the word being read starts in the text, and its kind.
+struct WordStart {
+    at: usize,
+    kind: WordKind,
+}
+
 /// The words of a query: names, keywords, `$n` and operators. Commas and
 /// parentheses only part them.
-fn words(text: &str) -> Vec<&str> {
+fn words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
-    // Where the word being read starts, and whether it is an operator.
-    let mut word: Option<(usize, bool)> = None;
+    let mut word: Option<WordStart> = None;
     for (at, character) in text.char_indices() {
-        let kind = (!is_word_break(character)).then(|| "<>=".contains(character));
-        if let Some((start, operator)) = word
-            && kind != Some(operator)
+        let kind = word_kind(character);
+        if let Some(start) = &word
+            && kind != Some(start.kind)
         {
-            words.push(&text[start..at]);
+            words.push(text[start.at..at].to_owned());
             word = None;
         }
-        if word.is_none() {
-            word = kind.map(|operator| (at, operator));
+        if word.is_none()
+            && let Some(kind) = kind
+        {
+            word = Some(WordStart { at, kind });
         }
     }
-    words.extend(word.map(|(start, _)| &text[start..]));
+    if let Some(start) = word {
+        words.push(text[start.at..].to_owned());
+    }
     words
 }
 
@@ -107,36 +178,64 @@ fn is(word: &str, keyword: &str) -> bool {
     word.eq_ignore_ascii_case(keyword)
 }
 
-fn after<'a, 'w>(words: &'a [&'w str], keyword: &str) -> Option<&'a [&'w str]> {
-    let at = words.iter().rposition(|word| is(word, keyword))?;
-    Some(&words[at + 1..])
+/// The words after the last `keyword`, if the words hold it.
+fn after(words: &[String], keyword: &str) -> Option<Vec<String>> {
+    let mut last = None;
+    for (position, word) in words.iter().enumerate() {
+        if is(word, keyword) {
+            last = Some(position);
+        }
+    }
+    let position = last?;
+    Some(words[position + 1..].to_vec())
 }
 
-/// Where the word the cursor is in starts.
+/// Where the word the cursor is in starts, as a byte position in `before`.
 fn word_start(before: &str, is_break: fn(char) -> bool) -> usize {
-    let word: usize = (before.chars().rev())
-        .take_while(|&character| !is_break(character))
-        .map(char::len_utf8)
-        .sum();
-    before.len() - word
+    let mut word_bytes = 0;
+    for character in before.chars().rev() {
+        if is_break(character) {
+            break;
+        }
+        word_bytes += character.len_utf8();
+    }
+    before.len() - word_bytes
 }
 
-pub(crate) fn complete(views: &[View], line: &str, pos: usize) -> Completion {
-    let before = &line[..pos];
-    let (start, candidates) = if let Some((query, _)) = before.split_once(';') {
-        // A parameter starts no earlier than the semicolon ends.
-        let start = word_start(before, char::is_whitespace).max(query.len() + 1);
-        let slot = slot(views, query, &before[query.len() + 1..start]);
-        (start, slot.map_or_else(Vec::new, |slot| slot.values()))
+/// What Tab offers with the cursor at byte `cursor` of `line`.
+pub(crate) fn complete(views: &[View], line: &str, cursor: usize) -> Completion {
+    let before = &line[..cursor];
+    let offered = if let Some((query, _)) = before.split_once(';') {
+        parameter_candidates(views, before, query)
     } else {
         let start = word_start(before, is_word_break);
-        (start, query_candidates(views, line, &before[..start]))
+        let candidates = query_candidates(views, line, &before[..start]);
+        Completion { start, candidates }
     };
-    let typed = &before[start..];
-    let candidates = candidates
-        .into_iter()
-        .filter(|candidate| starts_with_ignoring_case(candidate, typed))
-        .collect();
+    let typed = &before[offered.start..];
+    let mut candidates = Vec::new();
+    for candidate in offered.candidates {
+        if starts_with_ignoring_case(&candidate, typed) {
+            candidates.push(candidate);
+        }
+    }
+    Completion {
+        start: offered.start,
+        candidates,
+    }
+}
+
+/// What Tab offers past the semicolon: the values the next parameter may
+/// take.
+fn parameter_candidates(views: &[View], before: &str, query: &str) -> Completion {
+    let parameters_start = query.len() + 1;
+    // A parameter starts no earlier than the semicolon ends.
+    let start = word_start(before, char::is_whitespace).max(parameters_start);
+    let given = &before[parameters_start..start];
+    let candidates = match slot(views, query, given) {
+        Some(slot) => slot.values(),
+        None => Vec::new(),
+    };
     Completion { start, candidates }
 }
 
@@ -148,14 +247,25 @@ fn starts_with_ignoring_case(candidate: &str, typed: &str) -> bool {
 }
 
 /// The view the line names after `FROM`, if Straum serves one by that name.
-fn view_after_from<'a>(views: &'a [View], words: &[&str]) -> Option<&'a View> {
-    let name = after(words, "FROM")?.first()?;
-    views.iter().find(|view| view.name == *name)
+fn view_after_from(views: &[View], words: &[String]) -> Option<View> {
+    let named = after(words, "FROM")?;
+    let name = named.first()?;
+    for view in views {
+        if view.name == *name {
+            return Some(view.clone());
+        }
+    }
+    None
 }
 
 fn names_of(view: &View) -> Vec<String> {
-    let mut names: Vec<String> = view.keys.iter().map(|key| key.name.clone()).collect();
-    names.extend(view.measures.iter().cloned());
+    let mut names = Vec::with_capacity(view.keys.len() + view.measures.len());
+    for key in &view.keys {
+        names.push(key.name.clone());
+    }
+    for measure in &view.measures {
+        names.push(measure.clone());
+    }
     names
 }
 
@@ -164,173 +274,252 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     let before = words(before);
     let all = words(line);
     let Some(first) = before.first() else {
-        return std::iter::once("SELECT ")
-            .chain(COMMANDS)
-            .map(str::to_owned)
-            .collect();
+        return line_starts();
     };
     if is(first, "\\rows") && before.len() == 1 {
-        return views.iter().map(|view| view.name.clone()).collect();
+        return view_names(views, "");
     }
     let view = view_after_from(views, &all);
-    let selected = selected_keys(view, &all);
+    let selected = selected_keys(view.as_ref(), &all);
 
     if let Some(listed) = after(&before, "GROUP") {
-        return match listed {
-            [] => vec!["BY ".to_owned()],
-            [_by] => vec![selected.join(", ")],
-            [_by, listed @ ..] => {
-                let left = selected.iter().filter(|key| !listed.contains(key));
-                let left: Vec<String> = left.map(|key| (*key).to_owned()).collect();
-                if left.is_empty() {
-                    vec!["; ".to_owned()]
-                } else {
-                    left
-                }
-            }
-        };
+        return group_by_candidates(&selected, &listed);
     }
     if let Some(conditions) = after(&before, "WHERE") {
-        return condition_candidates(view, &all, conditions, &selected);
+        return condition_candidates(view.as_ref(), &all, &conditions, &selected);
     }
     if let Some(named) = after(&before, "FROM") {
-        return match named {
-            [] => views.iter().map(|view| format!("{} ", view.name)).collect(),
-            _ => vec!["WHERE ".to_owned()],
-        };
+        if named.is_empty() {
+            return view_names(views, " ");
+        }
+        return vec!["WHERE ".to_owned()];
     }
     if let Some(listed) = after(&before, "SELECT") {
-        // Before FROM names the view, any view's names may be meant.
-        let offered: Vec<String> = match view {
-            Some(view) => names_of(view),
-            None => views.iter().flat_map(names_of).collect(),
-        };
-        let mut names: Vec<String> = Vec::new();
-        for name in offered {
-            if !names.contains(&name) && !listed.contains(&name.as_str()) {
-                names.push(name);
-            }
-        }
-        if !listed.is_empty() {
-            names.push("FROM ".to_owned());
-        }
-        return names;
+        return select_candidates(views, view.as_ref(), &listed);
     }
     Vec::new()
 }
 
+/// What a line may start with: a query or a shell command.
+fn line_starts() -> Vec<String> {
+    let mut starts = vec!["SELECT ".to_owned()];
+    for command in COMMANDS {
+        starts.push(command.to_owned());
+    }
+    starts
+}
+
+/// Each view's name, followed by `ending`.
+fn view_names(views: &[View], ending: &str) -> Vec<String> {
+    let mut names = Vec::with_capacity(views.len());
+    for view in views {
+        names.push(format!("{}{ending}", view.name));
+    }
+    names
+}
+
+/// What may follow `GROUP`: `BY`, then the selected keys not yet listed.
+fn group_by_candidates(selected: &[String], listed: &[String]) -> Vec<String> {
+    match listed {
+        [] => vec!["BY ".to_owned()],
+        [_by] => vec![selected.join(", ")],
+        [_by, listed @ ..] => {
+            let mut left = Vec::new();
+            for key in selected {
+                if !listed.contains(key) {
+                    left.push(key.clone());
+                }
+            }
+            if left.is_empty() {
+                vec!["; ".to_owned()]
+            } else {
+                left
+            }
+        }
+    }
+}
+
+/// What may follow `SELECT`: the names not yet listed, then `FROM`.
+fn select_candidates(views: &[View], view: Option<&View>, listed: &[String]) -> Vec<String> {
+    let offered = if let Some(view) = view {
+        names_of(view)
+    } else {
+        // Before FROM names the view, any view's names may be meant.
+        let mut offered = Vec::new();
+        for each in views {
+            offered.extend(names_of(each));
+        }
+        offered
+    };
+    let mut names: Vec<String> = Vec::new();
+    for name in offered {
+        if !names.contains(&name) && !listed.contains(&name) {
+            names.push(name);
+        }
+    }
+    if !listed.is_empty() {
+        names.push("FROM ".to_owned());
+    }
+    names
+}
+
 /// The keys between `SELECT` and `FROM`, which `GROUP BY` names again.
-fn selected_keys<'w>(view: Option<&View>, all: &[&'w str]) -> Vec<&'w str> {
+fn selected_keys(view: Option<&View>, all: &[String]) -> Vec<String> {
     let Some(view) = view else {
         return Vec::new();
     };
     let listed = after(all, "SELECT").unwrap_or_default();
-    (listed.iter().take_while(|word| !is(word, "FROM")))
-        .filter(|word| view.keys.iter().any(|key| key.name == **word))
-        .copied()
-        .collect()
+    let mut selected = Vec::new();
+    for word in listed {
+        if is(&word, "FROM") {
+            break;
+        }
+        if view.key(&word).is_some() {
+            selected.push(word);
+        }
+    }
+    selected
 }
 
-fn has_bound(all: &[&str], operator: &str) -> bool {
-    all.windows(2)
-        .any(|pair| pair[0] == BUCKET && pair[1] == operator)
+fn has_bound(all: &[String], operator: &str) -> bool {
+    for pair in all.windows(2) {
+        if pair[0] == BUCKET && pair[1] == operator {
+            return true;
+        }
+    }
+    false
+}
+
+/// Which bounds of the range the query has written: `bucket >=` and
+/// `bucket <`.
+#[derive(Clone, Copy)]
+struct Bounds {
+    has_from: bool,
+    has_to: bool,
 }
 
 /// What may come next in `WHERE`: a whole condition with the next free
 /// `$n`, or what joins and follows conditions.
 fn condition_candidates(
     view: Option<&View>,
-    all: &[&str],
-    conditions: &[&str],
-    selected: &[&str],
+    all: &[String],
+    conditions: &[String],
+    selected: &[String],
 ) -> Vec<String> {
-    let (from, to) = (has_bound(all, ">="), has_bound(all, "<"));
+    let bounds = Bounds {
+        has_from: has_bound(all, ">="),
+        has_to: has_bound(all, "<"),
+    };
     match conditions.last() {
-        Some(last) if last.starts_with('$') => {
-            let mut next = vec!["AND ".to_owned()];
-            if from && to {
-                next.push(if selected.is_empty() {
-                    "; ".to_owned()
-                } else {
-                    format!("GROUP BY {}; ", selected.join(", "))
-                });
-            }
-            next
-        }
+        Some(last) if last.starts_with('$') => after_a_condition(bounds, selected),
         Some(last) if !is(last, "AND") => Vec::new(),
-        _ => {
-            let number = next_parameter_number(all);
-            let mut next = match (from, to) {
-                (false, false) => {
-                    vec![format!(
-                        "{BUCKET} >= ${number} AND {BUCKET} < ${}",
-                        number + 1
-                    )]
-                }
-                (false, true) => vec![format!("{BUCKET} >= ${number}")],
-                (true, false) => vec![format!("{BUCKET} < ${number}")],
-                (true, true) => Vec::new(),
-            };
-            let keys = view.map_or(&[][..], |view| &view.keys[..]);
-            let free = (keys.iter().map(|key| key.name.as_str()))
-                .filter(|name| *name != BUCKET && !conditions.contains(name));
-            next.extend(free.map(|name| format!("{name} = ${number}")));
-            next
-        }
+        _ => next_conditions(view, all, conditions, bounds),
     }
 }
 
-fn parameter_number(word: &str) -> Option<usize> {
-    word.strip_prefix('$')?.parse().ok()
+/// What may follow a whole condition: `AND`, and once both bounds are
+/// written, the end of the query.
+fn after_a_condition(bounds: Bounds, selected: &[String]) -> Vec<String> {
+    let mut next = vec!["AND ".to_owned()];
+    if bounds.has_from && bounds.has_to {
+        if selected.is_empty() {
+            next.push("; ".to_owned());
+        } else {
+            next.push(format!("GROUP BY {}; ", selected.join(", ")));
+        }
+    }
+    next
 }
 
-fn next_parameter_number(words: &[&str]) -> usize {
-    let mut highest = 0;
+/// The conditions that may start here: the bounds not yet written, then
+/// each key not yet conditioned.
+fn next_conditions(
+    view: Option<&View>,
+    all: &[String],
+    conditions: &[String],
+    bounds: Bounds,
+) -> Vec<String> {
+    let number = next_parameter_number(all);
+    let mut next = match (bounds.has_from, bounds.has_to) {
+        (false, false) => {
+            let after = number.next();
+            vec![format!("{BUCKET} >= {number} AND {BUCKET} < {after}")]
+        }
+        (false, true) => vec![format!("{BUCKET} >= {number}")],
+        (true, false) => vec![format!("{BUCKET} < {number}")],
+        (true, true) => Vec::new(),
+    };
+    let Some(view) = view else {
+        return next;
+    };
+    for key in &view.keys {
+        if key.name != BUCKET && !conditions.contains(&key.name) {
+            next.push(format!("{} = {number}", key.name));
+        }
+    }
+    next
+}
+
+fn parameter_number(word: &str) -> Option<ParameterNumber> {
+    let digits = word.strip_prefix('$')?;
+    let Ok(number) = digits.parse() else {
+        return None;
+    };
+    Some(ParameterNumber(number))
+}
+
+fn next_parameter_number(words: &[String]) -> ParameterNumber {
+    let mut highest = ParameterNumber(0);
     for word in words {
         if let Some(number) = parameter_number(word) {
             highest = highest.max(number);
         }
     }
-    highest + 1
+    highest.next()
 }
 
 /// What a parameter is the value of: the key a query compares `$n` with.
-struct Slot<'v> {
-    number: usize,
-    key: &'v Key,
-    operator: &'v str,
-    view: &'v View,
+struct Slot {
+    number: ParameterNumber,
+    key: Key,
+    operator: String,
+    view: View,
 }
 
-impl Slot<'_> {
+impl Slot {
     /// The values Tab can give: the buckets held for a bound, both
     /// booleans for a boolean.
     fn values(&self) -> Vec<String> {
-        let bound = match (self.key.name.as_str(), self.operator) {
-            (BUCKET, ">=") => self.view.from.as_ref(),
-            (BUCKET, "<") => self.view.to.as_ref(),
+        let bound = match (self.key.name.as_str(), self.operator.as_str()) {
+            (BUCKET, ">=") => self.view.from.clone(),
+            (BUCKET, "<") => self.view.to.clone(),
             _ => None,
         };
-        let values: Vec<&str> = match (bound, self.key.column_type.as_str()) {
+        let values = match (bound, self.key.column_type.as_str()) {
             (Some(bound), _) => vec![bound],
-            (None, "boolean") => vec!["true", "false"],
+            (None, "boolean") => vec!["true".to_owned(), "false".to_owned()],
             (None, _) => Vec::new(),
         };
-        values.iter().map(|value| format!("{value} ")).collect()
+        let mut candidates = Vec::with_capacity(values.len());
+        for value in values {
+            candidates.push(format!("{value} "));
+        }
+        candidates
     }
 }
 
 /// The slot of the parameter after those `given`, by the `$n` it is.
-fn slot<'v>(views: &'v [View], query: &'v str, given: &str) -> Option<Slot<'v>> {
-    let number = given.split_whitespace().count() + 1;
+fn slot(views: &[View], query: &str, given: &str) -> Option<Slot> {
+    let number = ParameterNumber(given.split_whitespace().count() + 1);
     let query = words(query);
     let view = view_after_from(views, &query)?;
-    let (mut key, mut operator) = (None, "");
+    let mut key: Option<Key> = None;
+    let mut operator = String::new();
     for word in &query {
-        if let Some(named) = view.keys.iter().find(|key| key.name == *word) {
-            key = Some(named);
-        } else if ["=", ">=", "<"].contains(word) || is(word, "IN") {
-            operator = word;
+        if let Some(named) = view.key(word) {
+            key = Some(named.clone());
+        } else if ["=", ">=", "<"].contains(&word.as_str()) || is(word, "IN") {
+            operator.clone_from(word);
         } else if parameter_number(word) == Some(number) {
             return Some(Slot {
                 number,
@@ -345,20 +534,27 @@ fn slot<'v>(views: &'v [View], query: &'v str, given: &str) -> Option<Slot<'v>> 
 
 /// What the next parameter is, shown past the cursor while none of it is
 /// typed.
-pub(crate) fn hint(views: &[View], line: &str, pos: usize) -> Option<String> {
+pub(crate) fn hint(views: &[View], line: &str, cursor: usize) -> Option<String> {
     let (query, given) = line.split_once(';')?;
-    if pos != line.len() || !given.chars().next_back().is_none_or(char::is_whitespace) {
+    if cursor != line.len() {
+        return None;
+    }
+    let typing = match given.chars().next_back() {
+        Some(last) => !last.is_whitespace(),
+        None => false,
+    };
+    if typing {
         return None;
     }
     let slot = slot(views, query, given)?;
-    let Key { name, column_type } = slot.key;
+    let Key { name, column_type } = &slot.key;
     let gap = if given.is_empty() { " " } else { "" };
     let tab = match slot.values().first() {
         Some(value) if slot.key.name == BUCKET => format!(", Tab gives {}", value.trim_end()),
         _ => String::new(),
     };
     Some(format!(
-        "{gap}${}: {name} {} {column_type}{tab}",
+        "{gap}{}: {name} {} {column_type}{tab}",
         slot.number, slot.operator
     ))
 }
@@ -392,14 +588,22 @@ mod tests {
         tab(line).1
     }
 
+    /// The hint with the cursor at the end of `line`.
+    fn hinted(line: &str) -> Option<String> {
+        hint(&held(), line, line.len())
+    }
+
+    fn key(name: &str, column_type: &str) -> Key {
+        Key {
+            name: name.to_owned(),
+            column_type: column_type.to_owned(),
+        }
+    }
+
     #[test]
     fn reads_the_views_a_straum_serves() {
         let views = held();
         assert_eq!(views.len(), 2);
-        let key = |name: &str, column_type: &str| Key {
-            name: name.to_owned(),
-            column_type: column_type.to_owned(),
-        };
         assert_eq!(
             views[1],
             View {
@@ -433,6 +637,16 @@ mod tests {
         ] {
             assert_eq!(read_views(not_views), None, "{not_views}");
         }
+    }
+
+    #[test]
+    fn a_scale_that_is_not_a_number_is_left_out() {
+        let scaled = r#"{"views":[{"name":"v","measures":[],
+            "keys":[{"name":"fare","type":"numeric","scale":"two"}]}]}"#;
+        assert_eq!(
+            read_views(scaled).unwrap()[0].keys,
+            [key("fare", "numeric")]
+        );
     }
 
     #[test]
@@ -529,6 +743,10 @@ mod tests {
                 "country = $2"
             ]
         );
+    }
+
+    #[test]
+    fn where_offers_nothing_mid_condition_or_for_an_unknown_view() {
         // In the middle of a condition there is nothing to offer.
         assert_eq!(
             offers("SELECT orders FROM orders WHERE status "),
@@ -538,6 +756,11 @@ mod tests {
         assert_eq!(
             offers("SELECT x FROM nope WHERE "),
             ["bucket >= $1 AND bucket < $2"]
+        );
+        // With both bounds written and no view, nothing is left.
+        assert_eq!(
+            offers("SELECT x FROM nope WHERE bucket >= $1 AND bucket < $2 AND "),
+            Vec::<String>::new()
         );
     }
 
@@ -586,6 +809,12 @@ mod tests {
         );
         assert_eq!(offers(&format!("{query}; a b ")), ["true ", "false "]);
         assert_eq!(offers(&format!("{query}; a b f")), ["false "]);
+    }
+
+    #[test]
+    fn a_parameter_offers_nothing_where_nothing_is_known() {
+        let query = "SELECT orders FROM orders WHERE shipped = $3 \
+                     AND bucket >= $1 AND bucket < $2";
         // Past the last parameter, and where nothing is known.
         assert_eq!(offers(&format!("{query}; a b c ")), Vec::<String>::new());
         assert_eq!(
@@ -610,7 +839,6 @@ mod tests {
 
     #[test]
     fn a_hint_says_what_the_next_parameter_is() {
-        let hinted = |line: &str| hint(&held(), line, line.len());
         let query = "SELECT orders FROM orders WHERE status IN ($3, $4) \
                      AND bucket >= $1 AND bucket < $2";
         assert_eq!(
@@ -648,7 +876,7 @@ mod tests {
                 "a", "b", "c", "d", ">=", "$1", "AND", "e", "<", "$2", "x", "=", "y"
             ]
         );
-        assert_eq!(words(" ,( "), Vec::<&str>::new());
+        assert_eq!(words(" ,( "), Vec::<String>::new());
         // The cursor's word starts after the last part, whatever its width.
         assert_eq!(tab("SELECT blå"), ("blå".to_owned(), Vec::new()));
     }

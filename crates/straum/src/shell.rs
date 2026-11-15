@@ -1,8 +1,10 @@
-//! `straum shell`: a prompt at a running Straum. A line is a command: `\d`
-//! for the views, `\rows VIEW` for a view's rows, or an ask written as
-//! `QUERY; PARAMETER...`. At a terminal the line is edited with rustyline,
-//! Tab completes from the views the Straum serves (see `complete.rs`), and
-//! the lines entered are kept between sessions. On a pipe it reads lines.
+//! `straum shell`: a prompt at a running Straum. Each line goes to
+//! `answer`, which reads it as a command and asks Straum through
+//! `client.rs`: `\d` for the views, `\rows VIEW` for a view's rows, or an
+//! ask written as `QUERY; PARAMETER...`. At a terminal, `interactive`
+//! edits the line with rustyline, Tab completes from the views the Straum
+//! serves (see `complete.rs`), and the lines entered are kept between
+//! sessions. On a pipe, `piped` reads one line at a time.
 
 use std::borrow::Cow;
 use std::env;
@@ -29,6 +31,7 @@ const PROMPT: &str = "straum> ";
 const DIM: &str = "\x1b[2m";
 const UNDIM: &str = "\x1b[0m";
 
+/// A line the shell could not answer.
 #[derive(Debug)]
 enum LineError {
     NoSuchCommand(String),
@@ -52,25 +55,36 @@ impl From<ClientError> for LineError {
     }
 }
 
-/// What one line asks for; `None` to leave.
-fn answer(url: &str, line: &str) -> Option<Result<String, LineError>> {
+/// What to do after a line.
+enum Outcome {
+    Print(String),
+    Failed(LineError),
+    Leave,
+}
+
+/// What one line asks for.
+fn answer(url: &str, line: &str) -> Outcome {
     let words: Vec<&str> = line.split_whitespace().collect();
     let answered = match words[..] {
         [] => Ok(String::new()),
-        ["\\q"] => return None,
+        ["\\q"] => return Outcome::Leave,
         ["\\?"] => Ok(shell_commands()),
         ["\\d"] => views(url),
         ["\\rows", view] => rows(url, view),
         [command, ..] if command.starts_with('\\') => {
-            return Some(Err(LineError::NoSuchCommand(line.to_owned())));
+            return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
         }
         _ => {
             let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
-            let parameters: Vec<&str> = parameters.split_whitespace().collect();
+            let parameters: Vec<String> =
+                parameters.split_whitespace().map(str::to_owned).collect();
             ask(url, query.trim_end(), &parameters)
         }
     };
-    Some(answered.map_err(LineError::from))
+    match answered {
+        Ok(text) => Outcome::Print(text),
+        Err(error) => Outcome::Failed(LineError::from(error)),
+    }
 }
 
 fn shell_commands() -> String {
@@ -87,6 +101,8 @@ fn shell_commands() -> String {
 /// Answers each line of `input` on `output` and says each failure on
 /// `errors`, going on after one as psql does. How many lines failed, so
 /// a script can tell.
+// `impl`: the binary passes the terminal's locked streams, tests pass
+// byte buffers and a writer that always fails.
 pub(crate) fn piped(
     url: &str,
     mut input: impl BufRead,
@@ -97,13 +113,13 @@ pub(crate) fn piped(
     let mut line = String::new();
     while input.read_line(&mut line)? > 0 {
         match answer(url, line.trim()) {
-            None => break,
-            Some(Ok(text)) => match output.write_all(text.as_bytes()) {
+            Outcome::Leave => break,
+            Outcome::Print(text) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
                 Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
                 written => written?,
             },
-            Some(Err(error)) => {
+            Outcome::Failed(error) => {
                 failed += 1;
                 writeln!(errors, "straum: {error}")?;
             }
@@ -117,17 +133,22 @@ pub(crate) fn piped(
 /// state directory, which is `~/.local/state` unless `XDG_STATE_HOME`
 /// names another. Nowhere without a home, as in Straum's image.
 fn history_file(state_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let state = match state_home.and_then(absolute) {
-        Some(state) => state,
-        None => home.and_then(absolute)?.join(".local").join("state"),
+    let state = match state_home {
+        Some(state_home) if is_absolute(&state_home) => PathBuf::from(state_home),
+        _ => {
+            let home = home?;
+            if !is_absolute(&home) {
+                return None;
+            }
+            PathBuf::from(home).join(".local").join("state")
+        }
     };
     Some(state.join("straum").join("history"))
 }
 
 // The XDG rules take only an absolute path.
-fn absolute(path: OsString) -> Option<PathBuf> {
-    let path = PathBuf::from(path);
-    if path.is_absolute() { Some(path) } else { None }
+fn is_absolute(path: &OsString) -> bool {
+    PathBuf::from(path).is_absolute()
 }
 
 /// The prompt at a terminal, with line editing, history and completion.
@@ -143,7 +164,23 @@ pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
         editor.load_history(file).ok();
     }
     println!("Straum at {url}. Tab completes; \\? lists the commands, \\q leaves.");
-    let outcome = loop {
+    let result = prompt_until_leaving(url, &mut editor);
+    if let Some(file) = &history {
+        // A history that can't be kept, as on a read-only disk, is lost
+        // and nothing else.
+        if let Some(directory) = file.parent() {
+            fs::create_dir_all(directory).ok();
+        }
+        editor.save_history(file).ok();
+    }
+    result
+}
+
+fn prompt_until_leaving(
+    url: &str,
+    editor: &mut Editor<Names, DefaultHistory>,
+) -> Result<(), ReadlineError> {
+    loop {
         // Read again before each line: a view's buckets move on.
         if let (Some(views), Some(names)) = (load_views(url), editor.helper_mut()) {
             names.views = views;
@@ -152,37 +189,32 @@ pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
             Ok(line) => line,
             // Ctrl-C drops the line, as in psql.
             Err(ReadlineError::Interrupted) => continue,
-            Err(ReadlineError::Eof) => break Ok(()),
-            Err(error) => break Err(error),
+            Err(ReadlineError::Eof) => return Ok(()),
+            Err(error) => return Err(error),
         };
         editor.add_history_entry(line.trim())?;
         match answer(url, line.trim()) {
-            None => break Ok(()),
-            Some(Ok(text)) => print!("{text}"),
-            Some(Err(error)) => eprintln!("straum: {error}"),
+            Outcome::Leave => return Ok(()),
+            Outcome::Print(text) => print!("{text}"),
+            Outcome::Failed(error) => eprintln!("straum: {error}"),
         }
-    };
-    if let Some(file) = &history {
-        // A history that can't be kept, as on a read-only disk, is lost
-        // and nothing else.
-        file.parent().map(fs::create_dir_all);
-        editor.save_history(file).ok();
     }
-    outcome
 }
 
-/// What rustyline asks while a line is edited.
+/// What rustyline asks while a line is edited: the views to complete from.
 struct Names {
     views: Vec<View>,
 }
 
 /// A hint that the right arrow doesn't take into the line: it describes
 /// what to type, it isn't it.
-struct Note(String);
+struct Note {
+    text: String,
+}
 
 impl Hint for Note {
     fn display(&self) -> &str {
-        &self.0
+        &self.text
     }
 
     fn completion(&self) -> Option<&str> {
@@ -196,10 +228,10 @@ impl Completer for Names {
     fn complete(
         &self,
         line: &str,
-        pos: usize,
+        cursor: usize,
         _: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<String>)> {
-        let Completion { start, candidates } = complete(&self.views, line, pos);
+        let Completion { start, candidates } = complete(&self.views, line, cursor);
         Ok((start, candidates))
     }
 }
@@ -207,13 +239,15 @@ impl Completer for Names {
 impl Hinter for Names {
     type Hint = Note;
 
-    fn hint(&self, line: &str, pos: usize, _: &Context<'_>) -> Option<Note> {
-        hint(&self.views, line, pos).map(Note)
+    fn hint(&self, line: &str, cursor: usize, _: &Context<'_>) -> Option<Note> {
+        let text = hint(&self.views, line, cursor)?;
+        Some(Note { text })
     }
 }
 
 impl Highlighter for Names {
-    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+    // The lifetime is rustyline's: the hint may come back borrowed.
+    fn highlight_hint<'hint>(&self, hint: &'hint str) -> Cow<'hint, str> {
         Cow::Owned(format!("{DIM}{hint}{UNDIM}"))
     }
 }
@@ -225,8 +259,8 @@ impl rustyline::Helper for Names {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::tests::{GET_ROWS, POST_ASK, answering};
     use crate::complete::read_views;
+    use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, answering};
 
     #[test]
     fn rustyline_is_given_the_candidates_and_the_hint() {
@@ -244,6 +278,12 @@ mod tests {
         assert_eq!(note.display(), "$1: bucket >= timestamp");
         assert_eq!(note.completion(), None);
         assert_eq!(names.highlight_hint("$1"), "\x1b[2m$1\x1b[0m");
+        assert!(Hinter::hint(&names, line, 0, &context).is_none());
+    }
+
+    /// What the shell wrote, with the URL of the server in it as `URL`.
+    fn text(bytes: Vec<u8>, url: &str) -> String {
+        String::from_utf8(bytes).unwrap().replace(url, "URL")
     }
 
     /// What the shell writes for `input`, at a Straum that takes
@@ -252,8 +292,7 @@ mod tests {
         let url = answering(request, reply);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(&url, input.as_bytes(), &mut output, &mut errors).unwrap();
-        let text = |bytes| String::from_utf8(bytes).unwrap().replace(&url, "URL");
-        (text(output), text(errors), failed)
+        (text(output, &url), text(errors, &url), failed)
     }
 
     /// Takes nothing: its reader has left.
@@ -284,33 +323,41 @@ mod tests {
         assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
 
+    fn history(state: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+        history_file(state.map(OsString::from), home.map(OsString::from))
+    }
+
+    fn kept(path: &str) -> PathBuf {
+        PathBuf::from(path)
+    }
+
     #[test]
     fn history_is_kept_under_the_xdg_state_directory() {
-        let file = |state: Option<&str>, home: Option<&str>| {
-            history_file(state.map(OsString::from), home.map(OsString::from))
-        };
-        let kept = |path: &str| Some(PathBuf::from(path));
         assert_eq!(
-            file(Some("/state"), Some("/home/jo")),
-            kept("/state/straum/history")
+            history(Some("/state"), Some("/home/jo")),
+            Some(kept("/state/straum/history"))
         );
         assert_eq!(
-            file(None, Some("/home/jo")),
-            kept("/home/jo/.local/state/straum/history")
+            history(None, Some("/home/jo")),
+            Some(kept("/home/jo/.local/state/straum/history"))
         );
         // A relative or empty path is not taken, and no home means no file.
         assert_eq!(
-            file(Some("state"), Some("/home/jo")),
-            kept("/home/jo/.local/state/straum/history")
+            history(Some("state"), Some("/home/jo")),
+            Some(kept("/home/jo/.local/state/straum/history"))
         );
-        assert_eq!(file(Some(""), Some("")), None);
-        assert_eq!(file(None, None), None);
+        assert_eq!(history(Some(""), Some("")), None);
+        assert_eq!(history(None, Some("home")), None);
+        assert_eq!(history(None, None), None);
     }
 
     #[test]
     fn the_shell_answers_a_line_at_a_time() {
-        let views = "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: text/plain\r\n\r\n";
-        let written = shelled(views, "HTTP/1.1 200 OK\r\n\r\nview trips\n", "\n \\d \n");
+        let written = shelled(
+            GET_VIEWS,
+            "HTTP/1.1 200 OK\r\n\r\nview trips\n",
+            "\n \\d \n",
+        );
         assert_eq!(written, ("view trips\n".to_owned(), String::new(), 0));
         let (written, _, _) = shelled(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\ntrips\n", "\\rows trips");
         assert_eq!(written, "trips\n");
@@ -336,7 +383,11 @@ mod tests {
              straum: URL answered \"HTTP/1.1 404 Not Found\"\n\
              no view trips; GET /views lists them\n"
         );
-        // A query with no semicolon has no parameters; nothing listens here.
+    }
+
+    #[test]
+    fn a_query_without_a_semicolon_has_no_parameters() {
+        // Nothing listens here, so the ask fails and the shell goes on.
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(
             "http://127.0.0.1:1",

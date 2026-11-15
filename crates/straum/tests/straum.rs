@@ -1,10 +1,13 @@
-//! The Straum binary end to end: `straum plan` sets up PostgreSQL 18 in Docker,
-//! `straum run` loads and follows it as the role the plan made, and asks over
-//! HTTP answer what the view body answers in PostgreSQL.
+//! The Straum binary end to end, run as a child process. `straum plan`
+//! sets up PostgreSQL in Docker, `straum run` loads and follows it as the
+//! role the plan made, and asks over HTTP, `straum ask` and `straum shell`
+//! answer what the view body answers in PostgreSQL. The tests without a
+//! database check help, usage and the errors a person reads.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -76,7 +79,22 @@ struct PostgresContainer {
 
 /// CI sets `STRAUM_TEST_POSTGRES` to each major Straum supports.
 fn tag() -> String {
-    std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned())
+    match std::env::var("STRAUM_TEST_POSTGRES") {
+        Ok(tag) => tag,
+        Err(_) => "18".to_owned(),
+    }
+}
+
+/// Docker may publish a port a moment after the container starts, so
+/// this asks a few times.
+fn published_port(container: &Container<GenericImage>) -> u16 {
+    for _ in 0..50 {
+        if let Ok(port) = container.get_host_port_ipv4(5432) {
+            return port;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    panic!("Docker publishes port 5432");
 }
 
 fn postgres() -> PostgresContainer {
@@ -90,16 +108,7 @@ fn postgres() -> PostgresContainer {
         .with_cmd(["-c", "wal_level=logical"])
         .start()
         .expect("Docker runs postgres");
-    // Docker may publish the port a moment after the container starts.
-    let port = (0..50)
-        .find_map(|_| {
-            let port = container.get_host_port_ipv4(5432).ok();
-            if port.is_none() {
-                thread::sleep(Duration::from_millis(100));
-            }
-            port
-        })
-        .expect("Docker publishes port 5432");
+    let port = published_port(&container);
     PostgresContainer { container, port }
 }
 
@@ -139,20 +148,23 @@ impl PostgresContainer {
 }
 
 /// A directory of the test's own, removed at the end.
-struct Scratch(PathBuf);
+struct Scratch {
+    path: PathBuf,
+}
 
 static SCRATCH: AtomicUsize = AtomicUsize::new(0);
 
 impl Scratch {
     fn new() -> Scratch {
-        let n = SCRATCH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("straum-test-{}-{n}", std::process::id()));
+        let number = SCRATCH.fetch_add(1, Ordering::Relaxed);
+        let name = format!("straum-test-{}-{number}", std::process::id());
+        let path = std::env::temp_dir().join(name);
         fs::create_dir_all(&path).unwrap();
-        Scratch(path)
+        Scratch { path }
     }
 
     fn file(&self, name: &str, text: &str) -> String {
-        let path = self.0.join(name);
+        let path = self.path.join(name);
         fs::write(&path, text).unwrap();
         path.to_str().unwrap().to_owned()
     }
@@ -160,7 +172,7 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).ok();
+        fs::remove_dir_all(&self.path).ok();
     }
 }
 
@@ -182,6 +194,19 @@ fn output(command: &mut Command) -> (Option<i32>, String, String) {
         String::from_utf8(stderr).unwrap(),
     )
 }
+
+/// What a test waits for a running Straum to do.
+enum Until {
+    /// `/readyz` answers 200.
+    Ready,
+    /// The log holds this text.
+    Logged(&'static str),
+    /// The ask in `ASK` answers with these rows at the end.
+    Answers(String),
+}
+
+/// Where the code sits in a status line such as `HTTP/1.1 200 OK`.
+const STATUS_CODE: Range<usize> = 9..12;
 
 /// `straum run`, its log gathered as it comes.
 struct Running {
@@ -243,18 +268,23 @@ impl Running {
         self.log.lock().unwrap().clone()
     }
 
-    fn wait_for(&mut self, what: &str, done: impl Fn(&Running) -> bool) {
+    fn wait_for(&mut self, what: &str, until: &Until) {
         let start = Instant::now();
-        while !done(self) {
+        while !self.reached(until) {
             wait(&mut self.child, &self.log, what, start);
         }
     }
 
+    fn reached(&self, until: &Until) -> bool {
+        match until {
+            Until::Ready => self.call("GET", "/readyz", "").0 == 200,
+            Until::Logged(text) => self.log().contains(text),
+            Until::Answers(rows) => self.call("POST", "/ask", ASK).1.ends_with(rows),
+        }
+    }
+
     fn wait_for_rows(&mut self, pg: &PostgresContainer, what: &str) {
-        let rows = pg.expected_rows();
-        self.wait_for(what, |straum| {
-            straum.call("POST", "/ask", ASK).1.ends_with(&rows)
-        });
+        self.wait_for(what, &Until::Answers(pg.expected_rows()));
     }
 
     /// The status and body.
@@ -269,7 +299,7 @@ impl Running {
         let mut reply = String::new();
         stream.read_to_string(&mut reply).unwrap();
         let (head, body) = reply.split_once("\r\n\r\n").unwrap();
-        (head[9..12].parse().unwrap(), body.to_owned())
+        (head[STATUS_CODE].parse().unwrap(), body.to_owned())
     }
 
     /// Sends the signal and waits for Straum to exit.
@@ -301,8 +331,15 @@ fn set_up(pg: &PostgresContainer, spec: &str, hold: Option<&str>) -> Vec<String>
     let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));
     let mut held_back = Vec::new();
-    for statement in plan.lines().filter(|line| !line.starts_with("--")) {
-        if hold.is_some_and(|hold| statement.starts_with(hold)) {
+    for statement in plan.lines() {
+        if statement.starts_with("--") {
+            continue;
+        }
+        let is_held = match hold {
+            Some(hold) => statement.starts_with(hold),
+            None => false,
+        };
+        if is_held {
             held_back.push(statement.to_owned());
         } else {
             pg.psql(statement);
@@ -332,7 +369,7 @@ fn serves_asks_from_postgres() {
         ],
         "not a DSN",
     );
-    straum.wait_for("ready", |straum| straum.call("GET", "/readyz", "").0 == 200);
+    straum.wait_for("ready", &Until::Ready);
 
     let url = format!("http://{}", straum.address);
     status_says_ready(&url);
@@ -510,9 +547,7 @@ fn waits_for_the_setup() {
         &pg.dsn("straum"),
     );
     // Each try waits twice as long as the one before.
-    straum.wait_for("two failed starts", |straum| {
-        straum.log().contains("starting over in 2 s")
-    });
+    straum.wait_for("two failed starts", &Until::Logged("starting over in 2 s"));
     assert!(straum.log().contains("starting over in 1 s"));
     let (status, body) = straum.call("GET", "/readyz", "");
     assert_eq!(status, 503);
@@ -526,7 +561,7 @@ fn waits_for_the_setup() {
 
     // Once the setup is there, the next try starts.
     pg.psql(&publication[0]);
-    straum.wait_for("ready", |straum| straum.call("GET", "/readyz", "").0 == 200);
+    straum.wait_for("ready", &Until::Ready);
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
     let (code, log) = straum.stop("-INT");
@@ -642,7 +677,7 @@ fn says_what_is_wrong() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let bad = scratch.file("bad.sql", "CREATE VIEW v AS SELECT 1;\n");
-    let missing = scratch.0.join("missing").to_str().unwrap().to_owned();
+    let missing = scratch.path.join("missing").to_str().unwrap().to_owned();
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let taken = taken.local_addr().unwrap().to_string();
     let not_found = format!("straum: reading {missing}: No such file or directory (os error 2)\n");

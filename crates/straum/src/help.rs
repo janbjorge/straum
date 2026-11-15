@@ -1,5 +1,8 @@
-//! What `straum help` and each command's `--help` print.
+//! The help text: what `straum help` and each command's `--help` print.
+//! `command_line.rs` picks one by the command's `Name`, `main.rs` prints
+//! it, and `shell.rs` takes its list of commands from `SHELL_HELP`.
 
+/// What `straum help` prints: every command, a line each.
 pub(crate) const HELP: &str = "\
 Straum follows tables in PostgreSQL and answers asks over HTTP.
 
@@ -17,6 +20,7 @@ usage: straum <command> [flags]
 Guide: https://janbjorge.github.io/straum/
 ";
 
+/// What `straum run --help` prints.
 pub(crate) const RUN_HELP: &str = "\
 usage: straum run --spec FILE [flags]
 
@@ -41,6 +45,7 @@ HTTP. SIGTERM or SIGINT stops it.
 Guide: https://janbjorge.github.io/straum/running.html#straum-run
 ";
 
+/// What `straum plan --help` prints.
 pub(crate) const PLAN_HELP: &str = "\
 usage: straum plan --spec FILE [flags]
 
@@ -60,6 +65,7 @@ SCRAM-SHA-256 verifier.
 Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 ";
 
+/// What `straum status --help` prints.
 pub(crate) const STATUS_HELP: &str = "\
 usage: straum status [flags]
 
@@ -72,6 +78,7 @@ kubectl exec deployment/straum -- /straum status
 Guide: https://janbjorge.github.io/straum/running.html#straum-status
 ";
 
+/// What `straum views --help` prints.
 pub(crate) const VIEWS_HELP: &str = "\
 usage: straum views [flags]
 
@@ -84,6 +91,7 @@ Then each dim and its rows.
 Guide: https://janbjorge.github.io/straum/running.html#straum-views
 ";
 
+/// What `straum ask --help` prints.
 pub(crate) const ASK_HELP: &str = "\
 usage: straum ask [flags] QUERY [PARAMETER...]
 
@@ -96,6 +104,8 @@ are booleans, anything else is a string, and '7' in quotes is the string 7.
 Guide: https://janbjorge.github.io/straum/running.html#straum-ask
 ";
 
+/// What `straum shell --help` prints; its indented lines are the shell's
+/// commands.
 pub(crate) const SHELL_HELP: &str = "\
 usage: straum shell [flags]
 

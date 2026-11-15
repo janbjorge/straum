@@ -20,7 +20,8 @@ before it.
    stream. `source.rs` is the one trait PostgreSQL sits behind.
 4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
    `straum-app`; `wal/` reads the physical WAL.
-5. `straum-http`: serves asks and status over HTTP.
+5. `straum-http`: serves asks and status over HTTP. `lib.rs` is the
+   server loop; `routes.rs` picks the handler for each request.
 6. `straum`: the binary. `main.rs` starts it all.
 
 Every file opens with a few lines saying what it holds. Read those
@@ -66,6 +67,19 @@ it, `bound` is the value itself.
 runs its block only when there is a value. `match` picks one arm per
 case of an enum, and the compiler refuses a `match` that forgets one.
 
+**`if let ... && ...`: several conditions at once.**
+
+```rust
+if let Some(scale) = key.get("scale")
+    && let Some(scale) = scale.as_u64()
+{
+    column_type = format!("{column_type} scale {scale}");
+}
+```
+
+runs its block only when every part holds; a later part may use what
+an earlier `let` took out.
+
 **`enum` with data.** An enum case can carry values:
 `Direction::Add` carries none, `Step::Started(lsn)` carries a
 position in the WAL. `match` takes them out again.
@@ -85,13 +99,26 @@ error into another.
 `Debug` to print for a developer, `Clone` to copy, `PartialEq` to
 compare.
 
+**`impl Trait` in a parameter.** `input: impl BufRead` takes any type
+that can read lines, without naming it. `straum shell` passes the
+terminal, its tests pass bytes in memory. Like a generic, it is kept
+only where callers really pass different types.
+
 **Generics: `<T>`.** `Writer<S>` is a writer over any source `S`. The
 binary uses `Writer<Postgres>`; tests use a fake source. A generic is
 kept only where two types really fill it.
 
-**Lifetimes: `'a`.** `Flags<'a>` holds text borrowed from the command
-line; `'a` says the flags may not outlive that text. A lifetime is
-kept only where copying would cost; the comment beside it says so.
+**Lifetimes: `'a`.** A name for how long borrowed data lives.
+`Visitor<'de>` in `straum-http`'s `json.rs` reads a request body that
+lives as long as `'de`; serde's trait asks for it. A lifetime is kept
+only where copying would cost or a library asks for one; the comment
+beside it says so.
+
+**Closures: `|value| ...`.** A function without a name, written where
+it is used. Straum writes one only where a library takes code to run
+later: `thread::spawn(move || run_writer(writer))` runs `run_writer` on
+a new thread, and `move` hands the closure the values it uses.
+Everywhere else a `for` loop or a named function does the work.
 
 **Threads: `Arc` and `RwLock`.** `App` keeps its state in
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP

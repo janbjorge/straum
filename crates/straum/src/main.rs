@@ -1,6 +1,9 @@
-//! The Straum binary, where Straum SQL, the PostgreSQL source, the use cases and
-//! HTTP meet. One thread writes: it loads every table, then applies the
-//! stream, and starts over after a failure. straum-http serves asks meanwhile.
+//! The Straum binary, where Straum SQL, the PostgreSQL source, the use
+//! cases and HTTP meet. `main` reads the command line (`command_line.rs`)
+//! and `execute` runs the command. `straum run` starts one writer thread,
+//! which loads every table, then applies the stream, and starts over after
+//! a failure, while `straum-http` serves asks. The other commands talk to
+//! a running Straum through `client.rs`, or prompt at it (`shell.rs`).
 
 #![forbid(unsafe_code)]
 
@@ -9,6 +12,8 @@ mod command_line;
 mod complete;
 mod help;
 mod shell;
+#[cfg(test)]
+mod testing;
 
 use std::env;
 use std::fmt::{self, Display};
@@ -28,7 +33,7 @@ use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, Postgres};
 
 use crate::client::ClientError;
-use crate::command_line::{Command, Name, Plan, ROLE, Run, command};
+use crate::command_line::{Command, Plan, ROLE, Run, command};
 use crate::help::HELP;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
@@ -75,8 +80,10 @@ impl Display for Failure {
             Failure::Spec { path, error } => {
                 // Each line names the file, as a compiler's errors do.
                 let text = error.to_string();
-                let lines: Vec<String> =
-                    text.lines().map(|line| format!("{path}: {line}")).collect();
+                let mut lines = Vec::new();
+                for line in text.lines() {
+                    lines.push(format!("{path}: {line}"));
+                }
                 formatter.write_str(&lines.join("\n"))
             }
             Failure::Dsn(error) => error.fmt(formatter),
@@ -114,7 +121,7 @@ fn main() -> ExitCode {
     match execute(command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            log(failure);
+            log(&failure.to_string());
             ExitCode::FAILURE
         }
     }
@@ -123,12 +130,19 @@ fn main() -> ExitCode {
 fn execute(command: Command) -> Result<(), Failure> {
     match command {
         Command::Help(topic) => {
-            print!("{}", topic.map_or(HELP, Name::help));
+            let help = match topic {
+                Some(name) => name.help(),
+                None => HELP,
+            };
+            print!("{help}");
             Ok(())
         }
         Command::Version => {
             // CI builds with the release's version; Cargo.toml never names it.
-            let version = option_env!("STRAUM_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            let version = match option_env!("STRAUM_VERSION") {
+                Some(version) => version,
+                None => env!("CARGO_PKG_VERSION"),
+            };
             println!("straum {version}");
             Ok(())
         }
@@ -202,10 +216,15 @@ fn plan(
 ) -> Result<(), Failure> {
     let spec = read_spec(&spec)?;
     let dsn = read_dsn(dsn_file.as_deref())?;
-    let role = (role.as_deref())
-        .or_else(|| dsn.as_ref().map(Dsn::user))
-        .unwrap_or(ROLE);
-    let password = dsn.as_ref().and_then(Dsn::password);
+    let role = match (&role, &dsn) {
+        (Some(role), _) => role.as_str(),
+        (None, Some(dsn)) => dsn.user(),
+        (None, None) => ROLE,
+    };
+    let password = match &dsn {
+        Some(dsn) => dsn.password(),
+        None => None,
+    };
     let sql = straum_pg::plan(&spec, &publication, role, password, replication);
     print!("{sql}");
     Ok(())
@@ -262,7 +281,7 @@ fn run(
     let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
         return Err(Failure::NoDsn);
     };
-    let (listener, address) = match bind(&listen) {
+    let Bound { listener, address } = match bind(&listen) {
         Ok(bound) => bound,
         Err(error) => {
             let address = listen;
@@ -288,7 +307,7 @@ fn run(
         .spawn(move || run_writer(writer))
         .map_err(Failure::StartingWriter)?;
 
-    log(format!("listening on {address}"));
+    log(&format!("listening on {address}"));
     straum_http::serve_until_signal(listener, app, read_ask, say_stopping)
         .map_err(Failure::Serving)?;
     log("stopped");
@@ -297,10 +316,17 @@ fn run(
     Ok(())
 }
 
-fn bind(listen: &str) -> io::Result<(TcpListener, SocketAddr)> {
+/// A socket bound for HTTP, and the address it took: with port 0 the
+/// system picks the port.
+struct Bound {
+    listener: TcpListener,
+    address: SocketAddr,
+}
+
+fn bind(listen: &str) -> io::Result<Bound> {
     let listener = TcpListener::bind(listen)?;
     let address = listener.local_addr()?;
-    Ok((listener, address))
+    Ok(Bound { listener, address })
 }
 
 fn say_stopping() {
@@ -313,11 +339,14 @@ fn run_writer(mut writer: Writer<Postgres>) {
         match writer.step() {
             Ok(Step::Started(lsn)) => {
                 backoff = FIRST_BACKOFF;
-                log(format!("loaded every table; streaming from {lsn}"));
+                log(&format!("loaded every table; streaming from {lsn}"));
             }
             Ok(Step::Applied(_)) => {}
             Err(error) => {
-                log(format!("{error}\nstarting over in {} s", backoff.as_secs()));
+                log(&format!(
+                    "{error}\nstarting over in {} s",
+                    backoff.as_secs()
+                ));
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
@@ -325,13 +354,37 @@ fn run_writer(mut writer: Writer<Postgres>) {
     }
 }
 
-fn log(message: impl Display) {
+fn log(message: &str) {
     eprintln!("straum: {message}");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_query_error_keeps_its_line_unless_it_is_in_the_message() {
+        let error = query_error(SqlError {
+            line: 3,
+            message: "nope".to_owned(),
+        });
+        assert_eq!(error.to_string(), "line 3: nope");
+        let error = query_error(SqlError {
+            line: 0,
+            message: "nope at line 1 column 2".to_owned(),
+        });
+        assert_eq!(error.line, None);
+        assert_eq!(error.to_string(), "nope at line 1 column 2");
+    }
+
+    #[test]
+    fn reads_asks_as_straum_sql() {
+        let Err(errors) = read_ask("SELECT trips", &[]) else {
+            panic!("SELECT trips is an ask");
+        };
+        let first = errors[0].to_string();
+        assert!(first.starts_with("line 1: "), "{first}");
+    }
 
     fn gone() -> io::Error {
         io::Error::new(io::ErrorKind::NotFound, "gone")
@@ -367,11 +420,8 @@ mod tests {
             path: "s".into(),
             error,
         };
-        assert!(
-            failure
-                .to_string()
-                .lines()
-                .all(|line| line.starts_with("s: "))
-        );
+        for line in failure.to_string().lines() {
+            assert!(line.starts_with("s: "), "{line}");
+        }
     }
 }

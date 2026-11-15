@@ -1,5 +1,8 @@
-//! Reading a command line into a `Command`: which command, its flags
-//! and their values, or why the line is wrong.
+//! Reading a command line into a `Command`. `command` takes the words
+//! after `straum`: the first names the command, `Flags::read` checks the
+//! flags against the ones that command takes, and each `*_command`
+//! function builds the command from them, filling in defaults. A line
+//! Straum can't run becomes a `Usage` error that `main.rs` prints.
 
 use std::fmt::{self, Display};
 use std::time::Duration;
@@ -9,13 +12,17 @@ use straum_pg::Replication;
 
 use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
 
+/// Where `straum run` listens unless told.
 const LISTEN: &str = "0.0.0.0:8080";
 const PUBLICATION: &str = "straum";
+/// The role `straum plan` sets up when neither `--role` nor a DSN names one.
 pub(crate) const ROLE: &str = "straum";
+/// Where the commands that talk to a running Straum find it unless told.
 const URL: &str = "http://127.0.0.1:8080";
+const FOUR_GIBIBYTES: u64 = 4 << 30;
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
-    max_retained_wal: 4 << 30,
+    max_retained_wal: FOUR_GIBIBYTES,
 };
 /// Rows one transaction may change before Straum loads again instead of
 /// applying it; `bench/taxi.py transactions` measures what a transaction this
@@ -25,6 +32,7 @@ const MAX_TRANSACTION_ROWS: usize = 100_000;
 /// what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
 
+/// A command's name, the first word after `straum`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Name {
     Run,
@@ -46,7 +54,12 @@ impl Name {
     ];
 
     fn parse(text: &str) -> Option<Name> {
-        Name::ALL.into_iter().find(|name| name.as_str() == text)
+        for name in Name::ALL {
+            if name.as_str() == text {
+                return Some(name);
+            }
+        }
+        None
     }
 
     fn as_str(self) -> &'static str {
@@ -60,6 +73,7 @@ impl Name {
         }
     }
 
+    /// What `straum <name> --help` prints.
     pub(crate) fn help(self) -> &'static str {
         match self {
             Name::Run => RUN_HELP,
@@ -90,6 +104,7 @@ impl Name {
     }
 }
 
+/// A command line Straum can run.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     Run(Run),
@@ -113,6 +128,7 @@ pub(crate) enum Command {
     Version,
 }
 
+/// What `straum run` was told.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Run {
     pub(crate) spec: String,
@@ -124,6 +140,7 @@ pub(crate) struct Run {
     pub(crate) max_transaction_rows: usize,
 }
 
+/// What `straum plan` was told.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Plan {
     pub(crate) spec: String,
@@ -158,6 +175,7 @@ impl Display for Usage {
     }
 }
 
+/// What is wrong with a command line.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UsageError {
     UnknownCommand(String),
@@ -208,6 +226,8 @@ impl Display for UsageError {
     }
 }
 
+/// The command the words after `straum` name, or why Straum can't run
+/// them.
 pub(crate) fn command(args: &[String]) -> Result<Command, Usage> {
     let Some((first, rest)) = args.split_first() else {
         return Err(Usage::NoCommand);
@@ -217,10 +237,13 @@ pub(crate) fn command(args: &[String]) -> Result<Command, Usage> {
         Some(name) => flags(name, rest),
         None => help_or_version(first, rest),
     };
-    parsed.map_err(|error| Usage::Wrong {
-        error,
-        command: name,
-    })
+    match parsed {
+        Ok(command) => Ok(command),
+        Err(error) => Err(Usage::Wrong {
+            error,
+            command: name,
+        }),
+    }
 }
 
 fn help_or_version(word: &str, rest: &[String]) -> Result<Command, UsageError> {
@@ -247,12 +270,24 @@ fn is_help(arg: &str) -> bool {
     arg == "-h" || arg == "--help"
 }
 
+fn asks_for_help(args: &[String]) -> bool {
+    for arg in args {
+        if is_help(arg) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Where an ask's flags end and its query begins: each flag takes one
 /// value, a call for help none.
 fn query_at(rest: &[String]) -> usize {
     let mut at = 0;
-    while let Some(flag) = rest.get(at).filter(|arg| arg.starts_with('-')) {
-        at += if is_help(flag) { 1 } else { 2 };
+    while let Some(arg) = rest.get(at) {
+        if !arg.starts_with('-') {
+            break;
+        }
+        at += if is_help(arg) { 1 } else { 2 };
     }
     at.min(rest.len())
 }
@@ -265,7 +300,7 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
         _ => (rest, &[][..]),
     };
     // -h anywhere asks for help, whatever else is on the line.
-    if rest.iter().any(|arg| is_help(arg)) {
+    if asks_for_help(rest) {
         return Ok(Command::Help(Some(name)));
     }
     let flags = Flags::read(name, rest)?;
@@ -328,7 +363,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     )?;
     Ok(Command::Run(Run {
         spec,
-        listen: flags.text("--listen").unwrap_or_else(|| LISTEN.into()),
+        listen: flags.text_or("--listen", LISTEN),
         replication,
         publication: flags.publication(),
         dsn_file: flags.text("--dsn-file"),
@@ -340,19 +375,20 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     }))
 }
 
-struct Given<'a> {
-    flag: &'a str,
-    value: &'a str,
+/// One flag on the line and the value after it.
+struct Given {
+    flag: String,
+    value: String,
 }
 
 /// The flags on one command's line, each with its value.
-struct Flags<'a> {
+struct Flags {
     name: Name,
-    given: Vec<Given<'a>>,
+    given: Vec<Given>,
 }
 
-impl<'a> Flags<'a> {
-    fn read(name: Name, rest: &'a [String]) -> Result<Flags<'a>, UsageError> {
+impl Flags {
+    fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
         let mut flags = Flags {
             name,
             given: Vec::new(),
@@ -371,20 +407,36 @@ impl<'a> Flags<'a> {
             let Some(value) = rest.next() else {
                 return Err(UsageError::NeedsValue(flag.clone()));
             };
-            flags.given.push(Given { flag, value });
+            flags.given.push(Given {
+                flag: flag.clone(),
+                value: value.clone(),
+            });
         }
         Ok(flags)
     }
 
-    fn value(&self, flag: &str) -> Option<&'a str> {
-        let given = self.given.iter().find(|given| given.flag == flag)?;
-        Some(given.value)
+    fn value(&self, flag: &str) -> Option<&str> {
+        for given in &self.given {
+            if given.flag == flag {
+                return Some(&given.value);
+            }
+        }
+        None
     }
 
     fn text(&self, flag: &str) -> Option<String> {
         self.value(flag).map(str::to_owned)
     }
 
+    fn text_or(&self, flag: &str, default: &str) -> String {
+        match self.value(flag) {
+            Some(value) => value.to_owned(),
+            None => default.to_owned(),
+        }
+    }
+
+    // Generic: the flags parse to seconds, bytes and counts, each a type
+    // of its own.
     fn parsed<T>(
         &self,
         flag: &'static str,
@@ -410,12 +462,11 @@ impl<'a> Flags<'a> {
     }
 
     fn publication(&self) -> String {
-        self.text("--publication")
-            .unwrap_or_else(|| PUBLICATION.into())
+        self.text_or("--publication", PUBLICATION)
     }
 
     fn url(&self) -> String {
-        self.text("--url").unwrap_or_else(|| URL.into())
+        self.text_or("--url", URL)
     }
 
     fn replication(&self) -> Result<Replication, UsageError> {
@@ -436,7 +487,13 @@ impl<'a> Flags<'a> {
 }
 
 fn positive(text: &str) -> Option<u64> {
-    text.parse().ok().filter(|&number| number > 0)
+    let Ok(number) = text.parse() else {
+        return None;
+    };
+    if number == 0 {
+        return None;
+    }
+    Some(number)
 }
 
 fn seconds(text: &str) -> Option<Duration> {
@@ -451,22 +508,49 @@ fn memory(text: &str) -> Option<usize> {
     usize::try_from(bytes(text)?).ok()
 }
 
+/// A binary unit a size may end in, and the power of two it stands for.
+struct Unit {
+    suffix: &'static str,
+    shift: u32,
+}
+
 // The suffixes are Kubernetes' own, so a chart's `4Gi` passes as written.
+const UNITS: [Unit; 4] = [
+    Unit {
+        suffix: "Ki",
+        shift: 10,
+    },
+    Unit {
+        suffix: "Mi",
+        shift: 20,
+    },
+    Unit {
+        suffix: "Gi",
+        shift: 30,
+    },
+    Unit {
+        suffix: "Ti",
+        shift: 40,
+    },
+];
+
 fn bytes(text: &str) -> Option<u64> {
-    let (count, shift) = [("Ki", 10), ("Mi", 20), ("Gi", 30), ("Ti", 40)]
-        .into_iter()
-        .find_map(|(unit, shift)| Some((text.strip_suffix(unit)?, shift)))
-        .unwrap_or((text, 0));
+    let mut count = text;
+    let mut shift = 0;
+    for unit in &UNITS {
+        if let Some(number) = text.strip_suffix(unit.suffix) {
+            count = number;
+            shift = unit.shift;
+            break;
+        }
+    }
     positive(count)?.checked_mul(1 << shift)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn args(line: &str) -> Vec<String> {
-        line.split_whitespace().map(str::to_owned).collect()
-    }
+    use crate::testing::args;
 
     #[test]
     fn reads_run_and_plan() {
@@ -503,6 +587,10 @@ mod tests {
                 max_transaction_rows: 2500,
             }))
         );
+    }
+
+    #[test]
+    fn reads_plan() {
         assert_eq!(
             command(&args("plan --spec s")),
             Ok(Command::Plan(Plan {
@@ -594,6 +682,19 @@ mod tests {
         }
     }
 
+    /// The flags other commands take and `name` doesn't.
+    fn flags_of_others(name: Name) -> Vec<&'static str> {
+        let mut flags = Vec::new();
+        for other in Name::ALL {
+            for flag in other.flags() {
+                if !name.flags().contains(flag) && !flags.contains(flag) {
+                    flags.push(*flag);
+                }
+            }
+        }
+        flags
+    }
+
     #[test]
     fn help_names_every_flag() {
         assert!(HELP.contains("usage: straum <command>"));
@@ -605,14 +706,8 @@ mod tests {
             for flag in name.flags() {
                 assert!(text.contains(&format!("  {flag} ")), "{word} {flag}");
             }
-            for other in Name::ALL.into_iter().filter(|&other| other != name) {
-                for flag in other
-                    .flags()
-                    .iter()
-                    .filter(|flag| !name.flags().contains(flag))
-                {
-                    assert!(!text.contains(flag), "{word} {flag}");
-                }
+            for flag in flags_of_others(name) {
+                assert!(!text.contains(flag), "{word} {flag}");
             }
         }
     }
@@ -671,6 +766,23 @@ mod tests {
             ("run --spec=s", "straum run takes no \"--spec=s\""),
             ("run", "straum run needs --spec"),
             ("plan --role r", "straum plan needs --spec"),
+            ("status --spec s", "straum status takes no \"--spec\""),
+            ("status --url", "--url needs a value"),
+            ("views --spec s", "straum views takes no \"--spec\""),
+            ("shell now", "straum shell takes no \"now\""),
+            ("ask", "straum ask needs a query"),
+            ("ask --url u", "straum ask needs a query"),
+            ("ask --url", "--url needs a value"),
+            ("ask --spec s SELECT", "straum ask takes no \"--spec\""),
+        ];
+        for (line, error) in cases {
+            assert_eq!(usage(line), error, "{line}");
+        }
+    }
+
+    #[test]
+    fn wal_flags_say_what_they_take() {
+        let cases = [
             (
                 "run --spec s --wal Physical",
                 "--wal takes logical or physical, not \"Physical\"",
@@ -704,14 +816,6 @@ mod tests {
                 "plan --spec s --max-lag 5",
                 "straum plan takes no \"--max-lag\"",
             ),
-            ("status --spec s", "straum status takes no \"--spec\""),
-            ("status --url", "--url needs a value"),
-            ("views --spec s", "straum views takes no \"--spec\""),
-            ("shell now", "straum shell takes no \"now\""),
-            ("ask", "straum ask needs a query"),
-            ("ask --url u", "straum ask needs a query"),
-            ("ask --url", "--url needs a value"),
-            ("ask --spec s SELECT", "straum ask takes no \"--spec\""),
         ];
         for (line, error) in cases {
             assert_eq!(usage(line), error, "{line}");
@@ -722,11 +826,10 @@ mod tests {
     fn number_flags_say_what_they_take() {
         for lag in ["0", "-1", "1.5", "30s", ""] {
             let line = format!("run --spec s --max-lag {lag}");
-            let error = format!("--max-lag takes whole seconds above 0, not {lag:?}");
             let error = if lag.is_empty() {
-                "--max-lag needs a value".into()
+                "--max-lag needs a value".to_owned()
             } else {
-                error
+                format!("--max-lag takes whole seconds above 0, not {lag:?}")
             };
             assert_eq!(usage(&line), error, "{lag}");
         }
