@@ -99,7 +99,9 @@ With `--wal physical`, step 2 differs (ADR-0049):
 
 1. Read the catalog on a plain connection and check it.
 2. Create a temporary physical slot; it reserves WAL from the last
-   checkpoint's redo point. Read each spec table's **Layout**
+   checkpoint's redo point. A checkpoint in progress may set that past
+   the WAL flushed, so wait for `pg_current_wal_flush_lsn()` to reach
+   it: the server streams only flushed WAL. Read each spec table's **Layout**
    (`physical::tables`): its file, its attributes, dropped ones too,
    and its enums' labels by OID. After the slot, so a rewrite between
    the two is in the WAL read. Start the stream thread at once, with

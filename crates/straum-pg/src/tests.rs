@@ -1927,6 +1927,42 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
+/// A checkpoint in progress sets the redo point, where a physical slot
+/// starts, before PostgreSQL has flushed the WAL up to it; the server
+/// streams nothing it hasn't flushed, so the start waits for the flush.
+#[test]
+fn starts_while_a_checkpoint_runs() {
+    let pg = postgres_at_replica(&tag());
+    let db = Db::new(&pg, "flushing", "CREATE TABLE $S.t (id int, body text);");
+    let stop = Arc::new(AtomicBool::new(false));
+    let busy: Vec<_> = [
+        "CHECKPOINT",
+        "INSERT INTO $S.t SELECT i, repeat('x', 200) FROM generate_series(1, 50) AS i",
+    ]
+    .into_iter()
+    .map(|sql| {
+        let (stop, dsn, sql) = (Arc::clone(&stop), db.dsn.clone(), db.sql(sql));
+        thread::spawn(move || {
+            let mut conn = Connection::connect(&dsn, false).unwrap();
+            // Commits that don't wait for their flush leave WAL unflushed.
+            conn.execute("SET synchronous_commit = off").unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                conn.execute(&sql).unwrap();
+            }
+        })
+    })
+    .collect();
+    for _ in 0..100 {
+        let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
+        let record = physical.next_record().unwrap();
+        assert!(record.is_none_or(|r| r.lsn >= start.0));
+    }
+    stop.store(true, Ordering::Relaxed);
+    for thread in busy {
+        thread.join().unwrap();
+    }
+}
+
 /// A walsender that dies takes the physical stream with it; Straum
 /// starts over from a new slot and follows on.
 #[test]

@@ -3,6 +3,8 @@
 //! records. The stream carries the whole server's WAL, every database.
 
 use std::collections::HashMap;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use postgres_protocol::escape::escape_literal;
 use straum_app::{Commit, Lsn};
@@ -19,6 +21,11 @@ use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wal::tuple::Attribute;
 use crate::wal::{Records, RelationFile};
 use crate::wire::Connection;
+
+/// How long a start waits for PostgreSQL to flush the WAL up to the redo
+/// point, which a checkpoint in progress sets where WAL is still being
+/// written.
+const FLUSH_WAIT: Duration = Duration::from_secs(10);
 
 /// A temporary physical slot streaming from its redo point, before the
 /// stream's thread takes it over.
@@ -61,6 +68,26 @@ impl Physical {
             .ok_or_else(|| Error::protocol("no server_version_num"))?
             / 10_000;
         let records = Records::new(start.0, segment_size);
+        // The slot keeps WAL from the redo point (`GetRedoRecPtr`), which
+        // a checkpoint in progress may have set past what PostgreSQL has
+        // flushed, and the server streams nothing it hasn't flushed.
+        let deadline = Instant::now() + FLUSH_WAIT;
+        loop {
+            let rows = conn.rows("SELECT pg_current_wal_flush_lsn()")?;
+            let flushed = (rows.first())
+                .and_then(|row| row.first()?.as_deref())
+                .and_then(parse_lsn)
+                .ok_or_else(|| Error::protocol("no WAL flush position"))?;
+            if flushed.0 >= start.0 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::protocol(
+                    "PostgreSQL never flushed the WAL up to the redo point",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         conn.copy_both(&format!(
             "START_REPLICATION SLOT {slot} PHYSICAL {}",
             Lsn(records.wanted())
