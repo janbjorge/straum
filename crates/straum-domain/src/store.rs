@@ -662,7 +662,7 @@ impl Store {
             groups.numbers.clear();
             groups.insert(&by, rollup);
         }
-        let mut each = Each {
+        let mut cell_loop = CellLoop {
             rollup,
             by: &mut by,
             groups: &mut groups,
@@ -678,12 +678,12 @@ impl Store {
                 // The bound cells hold only what the joins keep.
                 let mut joins = match read {
                     Read::Bound(_) => Vec::new(),
-                    Read::Keyed(_) => self.presences(fact, rollup),
+                    Read::Keyed(_) => self.join_checks(fact, rollup),
                 };
-                ask_once(&mut each, &mut joins, cover(rollup, ask, &loaded));
+                ask_once(&mut cell_loop, &mut joins, cover(rollup, ask, &loaded));
             }
             Some(mut expander) => {
-                ask_expanded(&mut each, cover(rollup, ask, &loaded), &mut expander);
+                ask_expanded(&mut cell_loop, cover(rollup, ask, &loaded), &mut expander);
             }
         }
         let rows = answer_rows(groups, &mut measures, by.len());
@@ -713,7 +713,7 @@ impl Store {
     /// How a cell's joins repeat it, when any can: a key with several rows
     /// under a left or inner join, or a join through another dim. `None`
     /// when every cell counts once or not at all, which
-    /// [`Store::presences`] tells apart.
+    /// [`Store::join_checks`] tells apart.
     fn expander(&self, fact: &Fact) -> Option<Expander<'_>> {
         let plans: Vec<RefPlan<'_>> = (fact.refs.iter())
             .map(|reference| self.ref_plan(fact, reference))
@@ -763,10 +763,10 @@ impl Store {
 
     /// The joins that keep or drop a whole cell, for a view that counts
     /// each cell once: every ref but the left ones, which keep them all.
-    fn presences<'s>(&'s self, fact: &Fact, rollup: &Rollup) -> Vec<Presence<'s>> {
+    fn join_checks<'s>(&'s self, fact: &Fact, rollup: &Rollup) -> Vec<JoinCheck<'s>> {
         (fact.refs.iter())
             .filter(|reference| reference.kind != RefKind::Left)
-            .map(|reference| Presence {
+            .map(|reference| JoinCheck {
                 joined: self.joined(fact, reference, rollup),
                 keeps_found: reference.kind != RefKind::Anti,
             })
@@ -856,11 +856,11 @@ impl Store {
         fact: &Fact,
         read: &Read<'_>,
         conds: &'a [Condition],
-    ) -> Vec<Match<'_, 'a>> {
+    ) -> Vec<ConditionCheck<'_, 'a>> {
         let mut tests = Vec::with_capacity(conds.len());
         for cond in conds {
             let lookup = self.lookup(fact, read, &cond.key);
-            tests.push(Match {
+            tests.push(ConditionCheck {
                 memo: vec![Known::Unknown; lookup.bound(read.rollup())],
                 lookup,
                 values: &cond.values,
@@ -887,11 +887,11 @@ impl<'s> Read<'s> {
 }
 
 /// What the cell loops fill in.
-struct Each<'e, 's, 'a> {
+struct CellLoop<'e, 's, 'a> {
     rollup: &'s Rollup,
     by: &'e mut [Grouping<'s>],
     groups: &'e mut Groups<'s>,
-    filter: &'e mut [Match<'s, 'a>],
+    filter: &'e mut [ConditionCheck<'s, 'a>],
     measures: &'e mut [Asked<'s, 'a>],
 }
 
@@ -899,17 +899,18 @@ struct Each<'e, 's, 'a> {
 /// one row a key at most, none joined through another dim. `joins` drop
 /// the cells an inner, semi or anti join does.
 fn ask_once<'s>(
-    each: &mut Each<'_, 's, '_>,
-    joins: &mut [Presence<'s>],
+    cell_loop: &mut CellLoop<'_, 's, '_>,
+    joins: &mut [JoinCheck<'s>],
     cover: impl Iterator<Item = (i64, &'s Cells)>,
 ) {
-    let rollup = each.rollup;
+    let rollup = cell_loop.rollup;
     // Per cell of a bucket: 1 while it may pass, then its group; 0 for
     // cells passed over. Again per measure with a filter of its own.
     let mut cell_groups = Vec::new();
     let mut measure_groups = Vec::new();
     for (bucket, cells) in cover {
-        each.by
+        cell_loop
+            .by
             .iter_mut()
             .for_each(|grouping| grouping.enter(bucket));
         cell_groups.clear();
@@ -917,12 +918,14 @@ fn ask_once<'s>(
         for join in joins.iter_mut() {
             join.pass(rollup, cells, &mut cell_groups);
         }
-        for test in each.filter.iter_mut() {
+        for test in cell_loop.filter.iter_mut() {
             test.pass(rollup, cells, &mut cell_groups);
         }
-        each.groups.assign(each.by, rollup, cells, &mut cell_groups);
-        for measure in each.measures.iter_mut() {
-            measure.partials.grow(each.groups.len());
+        cell_loop
+            .groups
+            .assign(cell_loop.by, rollup, cells, &mut cell_groups);
+        for measure in cell_loop.measures.iter_mut() {
+            measure.partials.grow(cell_loop.groups.len());
             let read = if measure.filter.is_empty() {
                 &cell_groups
             } else {
@@ -941,30 +944,32 @@ fn ask_once<'s>(
 /// The cell loop for a view whose joins repeat a cell: each cell once per
 /// join row its joins resolve it to.
 fn ask_expanded<'s>(
-    each: &mut Each<'_, 's, '_>,
+    cell_loop: &mut CellLoop<'_, 's, '_>,
     cover: impl Iterator<Item = (i64, &'s Cells)>,
     expander: &mut Expander<'s>,
 ) {
-    let rollup = each.rollup;
+    let rollup = cell_loop.rollup;
     for (bucket, cells) in cover {
-        each.by
+        cell_loop
+            .by
             .iter_mut()
             .for_each(|grouping| grouping.enter(bucket));
         for cell in 0..cells.len() {
             for row in expander.expand(rollup, cells.key(cell)) {
-                if !each
+                if !cell_loop
                     .filter
                     .iter_mut()
                     .all(|test| test.holds(rollup, cells, cell, row))
                 {
                     continue;
                 }
-                let groups = &mut *each.groups;
+                let groups = &mut *cell_loop.groups;
                 groups.numbers.clear();
-                let numbers = (each.by.iter()).map(|grouping| grouping.number_in(cells, cell, row));
+                let numbers =
+                    (cell_loop.by.iter()).map(|grouping| grouping.number_in(cells, cell, row));
                 groups.numbers.extend(numbers);
-                let group = groups.insert(each.by, rollup);
-                for measure in each.measures.iter_mut() {
+                let group = groups.insert(cell_loop.by, rollup);
+                for measure in cell_loop.measures.iter_mut() {
                     measure.partials.grow(groups.len());
                     if (measure.filter.iter_mut()).all(|test| test.holds(rollup, cells, cell, row))
                     {
@@ -1153,8 +1158,8 @@ fn pour(
     Ok(())
 }
 
-/// The bound-key codes of each join row `cell` resolves to. `overlay` supplies
-/// one key's rows; `None` reads the projections as they are.
+/// The bound-key codes of each join row `cell` resolves to. `overlay`
+/// supplies one key's rows; `None` reads the projections as they are.
 fn bound_keys(
     bound: &mut Bound,
     keyed: &Rollup,
@@ -1376,13 +1381,13 @@ impl Joined<'_> {
 /// A join that keeps or drops a whole cell, in a view that counts each
 /// cell once: an inner or semi join keeps the cells whose key finds a
 /// row, an anti join the ones whose key finds none.
-struct Presence<'s> {
+struct JoinCheck<'s> {
     joined: Joined<'s>,
     keeps_found: bool,
 }
 
-impl Presence<'_> {
-    /// Selects, not branches, as [`Match::pass`] does.
+impl JoinCheck<'_> {
+    /// Selects, not branches, as [`ConditionCheck::pass`] does.
     fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
         let keeps_found = self.keeps_found;
         for (cell, group) in groups.iter_mut().enumerate() {
@@ -1457,7 +1462,7 @@ impl<'s> Lookup<'s> {
 
 /// A [`Condition`] of an ask, worked out once per code of its key as the ask
 /// meets the code.
-struct Match<'s, 'a> {
+struct ConditionCheck<'s, 'a> {
     lookup: Lookup<'s>,
     values: &'a [Literal],
     /// Per code of the key.
@@ -1471,7 +1476,7 @@ enum Known {
     Fails,
 }
 
-impl Match<'_, '_> {
+impl ConditionCheck<'_, '_> {
     /// Whether a cell passes is as likely as not, so the loop selects rather
     /// than branches; only a code met first branches.
     fn pass(&mut self, rollup: &Rollup, cells: &Cells, groups: &mut [u32]) {
@@ -1777,5 +1782,5 @@ impl<'a> Groups<'a> {
 struct Asked<'s, 'a> {
     partials: Partials,
     state: Option<usize>,
-    filter: Vec<Match<'s, 'a>>,
+    filter: Vec<ConditionCheck<'s, 'a>>,
 }

@@ -142,6 +142,9 @@ are open.
   state (ADR-0016).
 - **Merge**: what an ask does with the cells it reads: one answer per
   group from their cell states. Every cell state merges.
+- **Cell loop** (`CellLoop`, `ask_once`, `ask_expanded`): the pass an
+  ask makes over the cells it reads, dropping the ones its filter and
+  joins fail and merging the rest into their groups.
 - **Distributive**, **algebraic**, **holistic**: what a part must keep
   for its aggregate to merge: its own answer (`sum`, `min`), a fixed
   few numbers (`avg`), or more as it holds more values (median,
@@ -187,7 +190,8 @@ are open.
   a view `column IS NULL` and `IS NOT NULL`. A **filter** is
   conditions joined by `AND`: a measure's `FILTER`, the view's `WHERE`
   (`Fact::filter`) or an ask's `WHERE`. `store.rs` evaluates one as a
-  `Match`.
+  `ConditionCheck`, and an inner, semi or anti join that keeps or
+  drops whole cells as a `JoinCheck`.
 - **Range** (`Ask::from`, `Ask::to`): the half-open `[from, to)` an
   ask reads, on bucket edges. Its **bounds** are `bucket >= $n` and
   `bucket < $m`, both required. The tests say "window" for a range
