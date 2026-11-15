@@ -31,11 +31,7 @@ fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
     Some(match words[..] {
         [] => Ok(String::new()),
         ["\\q"] => return None,
-        ["\\?"] => {
-            let commands = (SHELL_HELP.lines())
-                .filter(|line| line.starts_with("  ") && !line.starts_with("  --"));
-            Ok(commands.map(|line| format!("{line}\n")).collect())
-        }
+        ["\\?"] => Ok(shell_commands()),
         ["\\d"] => views(url),
         ["\\rows", view] => rows(url, view),
         [command, ..] if command.starts_with('\\') => {
@@ -47,6 +43,17 @@ fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
             ask(url, query.trim_end(), &parameters)
         }
     })
+}
+
+fn shell_commands() -> String {
+    let mut text = String::new();
+    for line in SHELL_HELP.lines() {
+        if line.starts_with("  ") && !line.starts_with("  --") {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    text
 }
 
 /// Answers each line of `input` on `output` and says each failure on
@@ -65,7 +72,7 @@ pub(crate) fn piped(
             None => break,
             Some(Ok(text)) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
                 written => written?,
             },
             Some(Err(error)) => {
@@ -91,7 +98,7 @@ fn history_file(state_home: Option<OsString>, home: Option<OsString>) -> Option<
 
 /// The prompt at a terminal, with line editing, history and completion.
 pub(crate) fn interactive(url: &str) -> Result<(), String> {
-    let failed = |e: ReadlineError| format!("reading the terminal: {e}");
+    let failed = |error: ReadlineError| format!("reading the terminal: {error}");
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .build();
@@ -113,7 +120,7 @@ pub(crate) fn interactive(url: &str) -> Result<(), String> {
             // Ctrl-C drops the line, as in psql.
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => break Ok(()),
-            Err(e) => break Err(failed(e)),
+            Err(error) => break Err(failed(error)),
         };
         editor.add_history_entry(line.trim()).map_err(failed)?;
         match answer(url, line.trim()) {

@@ -79,9 +79,19 @@ change.
 - No `unsafe`, no macros of our own, traits only at ports. One
   exception: the counting allocator in `straum-domain/tests/cost.rs`
   (ADR-0027).
-- Plain structs, enums, functions. Named fields over tuples, whole words
-  over abbreviations. Names and signatures follow the
+- Plain structs, enums, functions. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+- Write for a reader who doesn't know Rust (ADR-0053):
+  - Whole words, units last (`timeout_ms`), verbs for functions.
+  - Early returns with `let ... else`, so the main path stays flat.
+  - `match` or `if let` once a closure needs a statement. Name a
+    closure as a function instead of binding it to `let`.
+  - Enums over `bool` parameters, named structs over tuples, named
+    constants over magic numbers.
+  - Functions under 70 lines.
+- A crate opts into `[workspace.lints]` with `[lints] workspace = true`
+  once it passes them. Silence a lint with `#[expect(.., reason = ..)]`,
+  never `#[allow]`.
 - Errors: hand-written enums with `Display` and `From` impls. No
   `thiserror`, no `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the

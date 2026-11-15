@@ -2,6 +2,7 @@
 //! running Straum: one request on a plain socket, since Straum's image
 //! holds nothing else to ask with.
 
+use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -20,7 +21,7 @@ pub(crate) fn views(url: &str) -> Result<String, String> {
 
 pub(crate) fn rows(url: &str, view: &str) -> Result<String, String> {
     // The name goes into the request line as it is.
-    let named = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let named = |character: char| character.is_ascii_alphanumeric() || character == '_';
     if !view.chars().all(named) {
         return Err(format!("{view:?} is not a view's name"));
     }
@@ -69,7 +70,10 @@ fn json_string(text: &str) -> String {
     for character in text.chars() {
         match character {
             '"' | '\\' => json.extend(['\\', character]),
-            '\0'..='\x1f' => json.push_str(&format!("\\u{:04x}", u32::from(character))),
+            '\0'..='\x1f' => {
+                // Writing to a String can't fail.
+                let _ = write!(json, "\\u{:04x}", u32::from(character));
+            }
             _ => json.push(character),
         }
     }
@@ -89,7 +93,7 @@ fn fetch(
         .map(|rest| rest.trim_end_matches('/'))
         .filter(|address| !address.is_empty() && !address.contains('/'))
         .ok_or_else(|| format!("--url takes http://HOST:PORT, not {url:?}"))?;
-    let failed = |e: io::Error| format!("asking {url} for {what}: {e}");
+    let failed = |error: io::Error| format!("asking {url} for {what}: {error}");
     let mut stream = TcpStream::connect(address).map_err(failed)?;
     stream.set_read_timeout(Some(TIMEOUT)).map_err(failed)?;
     let body_headers = ask.map_or_else(String::new, |ask| {
@@ -124,8 +128,8 @@ pub(crate) mod tests {
 
     use super::*;
 
-    fn args(s: &str) -> Vec<String> {
-        s.split_whitespace().map(str::to_owned).collect()
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
     }
 
     /// A server that sends `reply` to one request, if it is `request`.

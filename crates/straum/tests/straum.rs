@@ -199,10 +199,10 @@ fn run(args: &[&str], dsn: &str) -> Running {
         .unwrap();
     let log = Arc::new(Mutex::new(String::new()));
     let lines = BufReader::new(child.stderr.take().unwrap());
-    let gathered = Arc::clone(&log);
+    let shared_log = Arc::clone(&log);
     let gatherer = thread::spawn(move || {
         for line in lines.lines() {
-            let mut log = gathered.lock().unwrap();
+            let mut log = shared_log.lock().unwrap();
             log.push_str(&line.unwrap());
             log.push('\n');
         }
@@ -300,15 +300,15 @@ fn set_up(pg: &PostgresContainer, spec: &str, hold: Option<&str>) -> Vec<String>
     plan.env("STRAUM_DSN", pg.dsn("straum"));
     let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));
-    let mut held = Vec::new();
-    for statement in plan.lines().filter(|l| !l.starts_with("--")) {
+    let mut held_back = Vec::new();
+    for statement in plan.lines().filter(|line| !line.starts_with("--")) {
         if hold.is_some_and(|hold| statement.starts_with(hold)) {
-            held.push(statement.to_owned());
+            held_back.push(statement.to_owned());
         } else {
             pg.psql(statement);
         }
     }
-    held
+    held_back
 }
 
 #[test]
@@ -334,9 +334,19 @@ fn serves_asks_from_postgres() {
     );
     straum.wait_for("ready", |straum| straum.call("GET", "/readyz", "").0 == 200);
 
-    // What `straum status` says, as from inside the pod.
     let url = format!("http://{}", straum.address);
-    let (code, status, _) = output(Command::new(STRAUM).args(["status", "--url", &url]));
+    status_says_ready(&url);
+    let views = views_lists_the_view_and_the_dim(&url);
+    ask_prints_a_table_or_says_why_not(&url);
+    shell_answers_a_line_at_a_time(&url, &views);
+    http_answers_in_json(&pg, &straum);
+    follows_changes(&pg, &mut straum);
+    stops_on_sigterm(&pg, straum);
+}
+
+// What `straum status` says, as from inside the pod.
+fn status_says_ready(url: &str) {
+    let (code, status, _) = output(Command::new(STRAUM).args(["status", "--url", url]));
     assert_eq!(code, Some(0), "{status}");
     assert!(
         status.starts_with("ready:        yes\napplied:      "),
@@ -344,8 +354,10 @@ fn serves_asks_from_postgres() {
     );
     let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\nsealed:       no spill\n";
     assert!(status.ends_with(counts), "{status}");
+}
 
-    let (code, views, _) = output(Command::new(STRAUM).args(["views", "--url", &url]));
+fn views_lists_the_view_and_the_dim(url: &str) -> String {
+    let (code, views, _) = output(Command::new(STRAUM).args(["views", "--url", url]));
     assert_eq!(code, Some(0), "{views}");
     assert_eq!(
         views,
@@ -361,12 +373,16 @@ dim shop.zones
 "
     );
 
+    views
+}
+
+fn ask_prints_a_table_or_says_why_not(url: &str) {
     // The range `straum views` gave, as `straum ask` takes it.
     let query = "SELECT kind, borough, trips, fare FROM trips \
                  WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough";
     let range = ["2024-01-01T00:00:00Z", "2024-01-01T04:00:00Z"];
     let (code, table, _) =
-        output(Command::new(STRAUM).args(["ask", "--url", &url, query, range[0], range[1]]));
+        output(Command::new(STRAUM).args(["ask", "--url", url, query, range[0], range[1]]));
     assert_eq!(code, Some(0), "{table}");
     let rows = "\
 kind | borough | trips | fare
@@ -379,7 +395,7 @@ van  | null    |     1 | null
     assert!(table.starts_with(rows), "{table}");
     let wrong = "SELECT trips FROM trips WHERE kind = $1 AND bucket >= $2 AND bucket < $3";
     let (code, _, stderr) =
-        output(Command::new(STRAUM).args(["ask", "--url", &url, wrong, "7", "0", "3600"]));
+        output(Command::new(STRAUM).args(["ask", "--url", url, wrong, "7", "0", "3600"]));
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
         stderr,
@@ -388,10 +404,12 @@ van  | null    |     1 | null
              kind is text, so it can't be the integer 7\n"
         )
     );
+}
 
-    // The same from `straum shell`, a line each, on a pipe.
+// The same from `straum shell`, a line each, on a pipe.
+fn shell_answers_a_line_at_a_time(url: &str, views: &str) {
     let mut shell = Command::new(STRAUM)
-        .args(["shell", "--url", &url])
+        .args(["shell", "--url", url])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -433,7 +451,9 @@ bucket               | kind | zone_id | borough | trips | fare
         "{rest}"
     );
     assert_eq!(rest.split_once("Z\n").unwrap().1, "");
+}
 
+fn http_answers_in_json(pg: &PostgresContainer, straum: &Running) {
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(status, 200, "{body}");
     assert!(body.starts_with(r#"{"as_of":"20"#), "{body}");
@@ -442,20 +462,24 @@ bucket               | kind | zone_id | borough | trips | fare
     assert!(body.ends_with(&rows), "{body}\nis not\n{rows}");
     let cab = r#"{"kind":"cab","borough":"Bronx","trips":1,"fare":12.50}"#;
     assert!(body.contains(cab), "{body}");
+}
 
+fn follows_changes(pg: &PostgresContainer, straum: &mut Running) {
     pg.psql("INSERT INTO shop.trips VALUES (5, '2024-01-02 00:00Z', 'cab', 2, 1.25)");
     pg.psql("DELETE FROM shop.trips WHERE id = 3");
     pg.psql("UPDATE shop.trips SET fare = 10 WHERE id = 1");
-    straum.wait_for_rows(&pg, "the changes");
+    straum.wait_for_rows(pg, "the changes");
 
     // A zone renamed shows in the next answer: the dim is held and
     // followed, so nothing starts over.
     pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
-    straum.wait_for_rows(&pg, "the dim change");
+    straum.wait_for_rows(pg, "the dim change");
     pg.psql("UPDATE shop.trips SET fare = 20 WHERE id = 2");
-    straum.wait_for_rows(&pg, "the trip change");
+    straum.wait_for_rows(pg, "the trip change");
     assert!(!straum.log().contains("no longer fits"), "{}", straum.log());
+}
 
+fn stops_on_sigterm(pg: &PostgresContainer, straum: Running) {
     let (code, log) = straum.stop("-TERM");
     assert_eq!(code, Some(0), "{log}");
     assert!(

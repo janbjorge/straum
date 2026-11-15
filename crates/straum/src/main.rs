@@ -343,7 +343,7 @@ fn execute(command: Command) -> Result<(), String> {
             match shell::piped(&url, input.lock(), output.lock(), io::stderr().lock()) {
                 Ok(0) => Ok(()),
                 Ok(failed) => Err(format!("lines that failed: {failed}")),
-                Err(e) => Err(format!("reading commands: {e}")),
+                Err(error) => Err(format!("reading commands: {error}")),
             }
         }
     }
@@ -353,7 +353,9 @@ fn execute(command: Command) -> Result<(), String> {
 /// after its lines, is no failure.
 fn print(text: &str) -> Result<(), String> {
     match io::stdout().write_all(text.as_bytes()) {
-        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(format!("writing the answer: {e}")),
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+            Err(format!("writing the answer: {error}"))
+        }
         _ => Ok(()),
     }
 }
@@ -396,9 +398,8 @@ fn help_or_version(word: &str, rest: &[String]) -> Result<Command, String> {
     Err(unknown(word))
 }
 
-struct Given<'a> {
-    flag: &'a str,
-    value: &'a str,
+fn is_help(arg: &str) -> bool {
+    arg == "-h" || arg == "--help"
 }
 
 /// Where an ask's flags end and its query begins: each flag takes one
@@ -406,11 +407,7 @@ struct Given<'a> {
 fn query_at(rest: &[String]) -> usize {
     let mut at = 0;
     while let Some(flag) = rest.get(at).filter(|arg| arg.starts_with('-')) {
-        at += if flag == "-h" || flag == "--help" {
-            1
-        } else {
-            2
-        };
+        at += if is_help(flag) { 1 } else { 2 };
     }
     at.min(rest.len())
 }
@@ -423,117 +420,171 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
         _ => (rest, &[][..]),
     };
     // -h anywhere asks for help, whatever else is on the line.
-    if rest.iter().any(|arg| arg == "-h" || arg == "--help") {
+    if rest.iter().any(|arg| is_help(arg)) {
         return Ok(Command::Help(Some(name)));
     }
-    let mut given: Vec<Given> = Vec::new();
-    let mut rest = rest.iter();
-    while let Some(flag) = rest.next() {
-        if !name.flags().contains(&flag.as_str()) {
-            return Err(format!("straum {} takes no {flag:?}", name.as_str()));
-        }
-        if value(&given, flag).is_some() {
-            return Err(format!("{flag} given twice"));
-        }
-        let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
-        given.push(Given { flag, value });
+    let flags = Flags::read(name, rest)?;
+    match name {
+        Name::Status => Ok(Command::Status { url: flags.url() }),
+        Name::Views => Ok(Command::Views { url: flags.url() }),
+        Name::Shell => Ok(Command::Shell { url: flags.url() }),
+        Name::Ask => ask_command(&flags, query),
+        Name::Plan => plan_command(&flags),
+        Name::Run => run_command(&flags),
     }
-    let text = |flag| value(&given, flag).map(str::to_owned);
-    let spec = || text("--spec").ok_or_else(|| format!("straum {} needs --spec", name.as_str()));
-    let publication = || text("--publication").unwrap_or_else(|| PUBLICATION.into());
-    let replication = || match value(&given, "--wal") {
-        None | Some("logical") => Ok(Replication::Logical),
-        Some("physical") => Ok(Replication::Physical {
-            max_page_memory: parsed(
-                &given,
-                "--max-page-memory",
-                MAX_PAGE_MEMORY,
-                memory,
-                "bytes above 0, as 1073741824 or 1Gi",
-            )?,
-        }),
-        Some(other) => Err(format!("--wal takes logical or physical, not {other:?}")),
+}
+
+fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, String> {
+    let Some((query, parameters)) = query.split_first() else {
+        return Err("straum ask needs a query".into());
     };
-    let url = || text("--url").unwrap_or_else(|| URL.into());
-    Ok(match name {
-        Name::Status => Command::Status { url: url() },
-        Name::Views => Command::Views { url: url() },
-        Name::Shell => Command::Shell { url: url() },
-        Name::Ask => match query {
-            [query, parameters @ ..] => Command::Ask {
-                url: url(),
-                query: query.clone(),
-                parameters: parameters.to_vec(),
-            },
-            [] => return Err("straum ask needs a query".into()),
-        },
-        Name::Plan => Command::Plan(Plan {
-            spec: spec()?,
-            replication: replication()?,
-            publication: publication(),
-            role: text("--role"),
-            dsn_file: text("--dsn-file"),
-        }),
-        Name::Run
-            if value(&given, "--max-page-memory").is_some()
-                && !matches!(replication()?, Replication::Physical { .. }) =>
-        {
-            return Err("--max-page-memory takes --wal physical".into());
-        }
-        Name::Run => Command::Run(Run {
-            spec: spec()?,
-            listen: text("--listen").unwrap_or_else(|| LISTEN.into()),
-            replication: replication()?,
-            publication: publication(),
-            dsn_file: text("--dsn-file"),
-            limits: Limits {
-                max_lag: parsed(
-                    &given,
-                    "--max-lag",
-                    LIMITS.max_lag,
-                    seconds,
-                    "whole seconds above 0",
-                )?,
-                max_retained_wal: parsed(
-                    &given,
-                    "--max-retained-wal",
-                    LIMITS.max_retained_wal,
-                    bytes,
-                    "bytes above 0, as 4294967296 or 4Gi",
-                )?,
-            },
-            max_transaction_rows: parsed(
-                &given,
-                "--max-transaction-rows",
-                MAX_TRANSACTION_ROWS,
-                count,
-                "a count of rows above 0",
-            )?,
-        }),
+    Ok(Command::Ask {
+        url: flags.url(),
+        query: query.clone(),
+        parameters: parameters.to_vec(),
     })
 }
 
-fn value<'a>(given: &[Given<'a>], flag: &str) -> Option<&'a str> {
-    (given.iter())
-        .find(|given| given.flag == flag)
-        .map(|given| given.value)
+fn plan_command(flags: &Flags) -> Result<Command, String> {
+    Ok(Command::Plan(Plan {
+        spec: flags.spec()?,
+        replication: flags.replication()?,
+        publication: flags.publication(),
+        role: flags.text("--role"),
+        dsn_file: flags.text("--dsn-file"),
+    }))
 }
 
-fn parsed<T>(
-    given: &[Given],
-    flag: &str,
-    default: T,
-    parse: fn(&str) -> Option<T>,
-    takes: &str,
-) -> Result<T, String> {
-    match value(given, flag) {
-        None => Ok(default),
-        Some(value) => parse(value).ok_or_else(|| format!("{flag} takes {takes}, not {value:?}")),
+fn run_command(flags: &Flags) -> Result<Command, String> {
+    let is_physical = matches!(flags.replication()?, Replication::Physical { .. });
+    if flags.value("--max-page-memory").is_some() && !is_physical {
+        return Err("--max-page-memory takes --wal physical".into());
+    }
+    // The spec comes first: without one, nothing else on the line matters.
+    let spec = flags.spec()?;
+    let replication = flags.replication()?;
+    let max_lag = flags.parsed(
+        "--max-lag",
+        LIMITS.max_lag,
+        seconds,
+        "whole seconds above 0",
+    )?;
+    let max_retained_wal = flags.parsed(
+        "--max-retained-wal",
+        LIMITS.max_retained_wal,
+        bytes,
+        "bytes above 0, as 4294967296 or 4Gi",
+    )?;
+    let max_transaction_rows = flags.parsed(
+        "--max-transaction-rows",
+        MAX_TRANSACTION_ROWS,
+        count,
+        "a count of rows above 0",
+    )?;
+    Ok(Command::Run(Run {
+        spec,
+        listen: flags.text("--listen").unwrap_or_else(|| LISTEN.into()),
+        replication,
+        publication: flags.publication(),
+        dsn_file: flags.text("--dsn-file"),
+        limits: Limits {
+            max_lag,
+            max_retained_wal,
+        },
+        max_transaction_rows,
+    }))
+}
+
+struct Given<'a> {
+    flag: &'a str,
+    value: &'a str,
+}
+
+/// The flags on one command's line, each with its value.
+struct Flags<'a> {
+    name: Name,
+    given: Vec<Given<'a>>,
+}
+
+impl<'a> Flags<'a> {
+    fn read(name: Name, rest: &'a [String]) -> Result<Flags<'a>, String> {
+        let mut flags = Flags {
+            name,
+            given: Vec::new(),
+        };
+        let mut rest = rest.iter();
+        while let Some(flag) = rest.next() {
+            if !name.flags().contains(&flag.as_str()) {
+                return Err(format!("straum {} takes no {flag:?}", name.as_str()));
+            }
+            if flags.value(flag).is_some() {
+                return Err(format!("{flag} given twice"));
+            }
+            let Some(value) = rest.next() else {
+                return Err(format!("{flag} needs a value"));
+            };
+            flags.given.push(Given { flag, value });
+        }
+        Ok(flags)
+    }
+
+    fn value(&self, flag: &str) -> Option<&'a str> {
+        let given = self.given.iter().find(|given| given.flag == flag)?;
+        Some(given.value)
+    }
+
+    fn text(&self, flag: &str) -> Option<String> {
+        self.value(flag).map(str::to_owned)
+    }
+
+    fn parsed<T>(
+        &self,
+        flag: &str,
+        default: T,
+        parse: fn(&str) -> Option<T>,
+        takes: &str,
+    ) -> Result<T, String> {
+        let Some(value) = self.value(flag) else {
+            return Ok(default);
+        };
+        parse(value).ok_or_else(|| format!("{flag} takes {takes}, not {value:?}"))
+    }
+
+    fn spec(&self) -> Result<String, String> {
+        let Some(spec) = self.text("--spec") else {
+            return Err(format!("straum {} needs --spec", self.name.as_str()));
+        };
+        Ok(spec)
+    }
+
+    fn publication(&self) -> String {
+        self.text("--publication")
+            .unwrap_or_else(|| PUBLICATION.into())
+    }
+
+    fn url(&self) -> String {
+        self.text("--url").unwrap_or_else(|| URL.into())
+    }
+
+    fn replication(&self) -> Result<Replication, String> {
+        match self.value("--wal") {
+            None | Some("logical") => Ok(Replication::Logical),
+            Some("physical") => {
+                let max_page_memory = self.parsed(
+                    "--max-page-memory",
+                    MAX_PAGE_MEMORY,
+                    memory,
+                    "bytes above 0, as 1073741824 or 1Gi",
+                )?;
+                Ok(Replication::Physical { max_page_memory })
+            }
+            Some(other) => Err(format!("--wal takes logical or physical, not {other:?}")),
+        }
     }
 }
 
 fn positive(text: &str) -> Option<u64> {
-    text.parse().ok().filter(|&n| n > 0)
+    text.parse().ok().filter(|&number| number > 0)
 }
 
 fn seconds(text: &str) -> Option<Duration> {
@@ -558,13 +609,13 @@ fn bytes(text: &str) -> Option<u64> {
 }
 
 fn read_file(path: &str) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))
+    fs::read_to_string(path).map_err(|error| format!("reading {path}: {error}"))
 }
 
 fn read_spec(path: &str) -> Result<Spec, String> {
     let text = read_file(path)?;
-    straum_notation::parse(&text).map_err(|e| {
-        let lines: Vec<String> = (e.to_string().lines())
+    straum_notation::parse(&text).map_err(|error| {
+        let lines: Vec<String> = (error.to_string().lines())
             .map(|line| format!("{path}: {line}"))
             .collect();
         lines.join("\n")
@@ -606,7 +657,9 @@ fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, String> {
         (None, Ok(text)) => text,
         (None, Err(_)) => return Ok(None),
     };
-    Dsn::parse(text.trim()).map(Some).map_err(|e| e.to_string())
+    Dsn::parse(text.trim())
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 fn run(
@@ -622,7 +675,7 @@ fn run(
 ) -> Result<(), String> {
     let spec = read_spec(&spec)?;
     let dsn = read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?;
-    let listening = |e: io::Error| format!("listening on {listen}: {e}");
+    let listening = |error: io::Error| format!("listening on {listen}: {error}");
     let listener = TcpListener::bind(&listen).map_err(listening)?;
     let address = listener.local_addr().map_err(listening)?;
 
@@ -642,14 +695,15 @@ fn run(
     thread::Builder::new()
         .name("straum-writer".into())
         .spawn(move || run_writer(writer))
-        .map_err(|e| format!("starting the writer: {e}"))?;
+        .map_err(|error| format!("starting the writer: {error}"))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|e| format!("starting tokio: {e}"))?;
-    let handling =
-        |name: &str, kind: SignalKind| signal(kind).map_err(|e| format!("handling {name}: {e}"));
+        .map_err(|error| format!("starting tokio: {error}"))?;
+    let handling = |name: &str, kind: SignalKind| {
+        signal(kind).map_err(|error| format!("handling {name}: {error}"))
+    };
     let (mut terminate, mut interrupt) = {
         let _entered = runtime.enter();
         (
@@ -674,7 +728,7 @@ fn run(
             log(format!("listening on {address}"));
             straum_http::serve(listener, app, read_ask, stop).await
         })
-        .map_err(|e| format!("serving HTTP: {e}"))?;
+        .map_err(|error| format!("serving HTTP: {error}"))?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops
     // their temporary slots.
@@ -690,8 +744,8 @@ fn run_writer(mut writer: Writer<Postgres>) {
                 log(format!("loaded every table; streaming from {lsn}"));
             }
             Ok(Step::Applied(_)) => {}
-            Err(e) => {
-                log(format!("{e}\nstarting over in {} s", backoff.as_secs()));
+            Err(error) => {
+                log(format!("{error}\nstarting over in {} s", backoff.as_secs()));
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
@@ -707,12 +761,12 @@ fn log(message: impl Display) {
 mod tests {
     use super::*;
 
-    fn args(s: &str) -> Vec<String> {
-        s.split_whitespace().map(str::to_owned).collect()
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
     }
 
     #[test]
-    fn reads_commands() {
+    fn reads_run_and_plan() {
         assert_eq!(
             command(&args("run --spec s.sql")),
             Ok(Command::Run(Run {
@@ -768,6 +822,10 @@ mod tests {
                 dsn_file: Some("d".into()),
             }))
         );
+    }
+
+    #[test]
+    fn reads_the_commands_that_talk_to_a_running_straum() {
         assert_eq!(
             command(&args("status")),
             Ok(Command::Status { url: URL.into() })
@@ -805,6 +863,10 @@ mod tests {
                 parameters: args("-h --url -7"),
             })
         );
+    }
+
+    #[test]
+    fn reads_calls_for_help_and_the_version() {
         for help in ["help", "--help", "-h"] {
             assert_eq!(command(&args(help)), Ok(Command::Help(None)));
         }
@@ -841,7 +903,11 @@ mod tests {
                 assert!(text.contains(&format!("  {flag} ")), "{word} {flag}");
             }
             for other in Name::ALL.into_iter().filter(|&other| other != name) {
-                for flag in other.flags().iter().filter(|f| !name.flags().contains(f)) {
+                for flag in other
+                    .flags()
+                    .iter()
+                    .filter(|flag| !name.flags().contains(flag))
+                {
                     assert!(!text.contains(flag), "{word} {flag}");
                 }
             }
@@ -951,6 +1017,10 @@ mod tests {
         for (line, error) in cases {
             assert_eq!(usage(line), error, "{line}");
         }
+    }
+
+    #[test]
+    fn number_flags_say_what_they_take() {
         for lag in ["0", "-1", "1.5", "30s", ""] {
             let line = format!("run --spec s --max-lag {lag}");
             let error = format!("--max-lag takes whole seconds above 0, not {lag:?}");

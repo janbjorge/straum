@@ -64,8 +64,8 @@ pub(crate) struct Completion {
     pub(crate) candidates: Vec<String>,
 }
 
-fn parts(c: char) -> bool {
-    c.is_whitespace() || ",()".contains(c)
+fn is_word_break(character: char) -> bool {
+    character.is_whitespace() || ",()".contains(character)
 }
 
 /// The words of a query: names, keywords, `$n` and operators. Commas and
@@ -74,8 +74,8 @@ fn words(text: &str) -> Vec<&str> {
     let mut words = Vec::new();
     // Where the word being read starts, and whether it is an operator.
     let mut word: Option<(usize, bool)> = None;
-    for (at, c) in text.char_indices() {
-        let kind = (!parts(c)).then(|| "<>=".contains(c));
+    for (at, character) in text.char_indices() {
+        let kind = (!is_word_break(character)).then(|| "<>=".contains(character));
         if let Some((start, operator)) = word
             && kind != Some(operator)
         {
@@ -100,9 +100,9 @@ fn after<'a, 'w>(words: &'a [&'w str], keyword: &str) -> Option<&'a [&'w str]> {
 }
 
 /// Where the word the cursor is in starts.
-fn word_start(before: &str, parts: fn(char) -> bool) -> usize {
+fn word_start(before: &str, is_break: fn(char) -> bool) -> usize {
     let word: usize = (before.chars().rev())
-        .take_while(|&c| !parts(c))
+        .take_while(|&character| !is_break(character))
         .map(char::len_utf8)
         .sum();
     before.len() - word
@@ -110,17 +110,14 @@ fn word_start(before: &str, parts: fn(char) -> bool) -> usize {
 
 pub(crate) fn complete(views: &[View], line: &str, pos: usize) -> Completion {
     let before = &line[..pos];
-    let (start, candidates) = match before.split_once(';') {
-        Some((query, _)) => {
-            // A parameter starts no earlier than the semicolon ends.
-            let start = word_start(before, char::is_whitespace).max(query.len() + 1);
-            let slot = slot(views, query, &before[query.len() + 1..start]);
-            (start, slot.map_or_else(Vec::new, |slot| slot.values()))
-        }
-        None => {
-            let start = word_start(before, parts);
-            (start, query_candidates(views, line, &before[..start]))
-        }
+    let (start, candidates) = if let Some((query, _)) = before.split_once(';') {
+        // A parameter starts no earlier than the semicolon ends.
+        let start = word_start(before, char::is_whitespace).max(query.len() + 1);
+        let slot = slot(views, query, &before[query.len() + 1..start]);
+        (start, slot.map_or_else(Vec::new, |slot| slot.values()))
+    } else {
+        let start = word_start(before, is_word_break);
+        (start, query_candidates(views, line, &before[..start]))
     };
     let typed = &before[start..];
     let fits = |candidate: &String| {
