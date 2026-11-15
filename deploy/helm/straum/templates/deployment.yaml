@@ -60,6 +60,12 @@ spec:
             - {{ .Values.maxRetainedWal | quote }}
             - --max-transaction-rows
             - {{ .Values.maxTransactionRows | quote }}
+            {{- if eq .Values.wal "physical" }}
+            - --wal
+            - physical
+            - --max-page-memory
+            - {{ .Values.maxPageMemory | quote }}
+            {{- end }}
           env:
             - name: STRAUM_DSN
               valueFrom:
