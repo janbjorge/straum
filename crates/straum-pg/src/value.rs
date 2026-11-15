@@ -8,16 +8,16 @@ use std::{fmt, str};
 
 use straum_domain::{ColumnType, Datum, Identifier};
 
-const BOOL: u32 = 16;
-const INT8: u32 = 20;
-const INT2: u32 = 21;
-const INT4: u32 = 23;
-const TEXT: u32 = 25;
-const BPCHAR: u32 = 1042;
-const VARCHAR: u32 = 1043;
-const TIMESTAMP: u32 = 1114;
-const TIMESTAMPTZ: u32 = 1184;
-const NUMERIC: u32 = 1700;
+pub(crate) const BOOL: u32 = 16;
+pub(crate) const INT8: u32 = 20;
+pub(crate) const INT2: u32 = 21;
+pub(crate) const INT4: u32 = 23;
+pub(crate) const TEXT: u32 = 25;
+pub(crate) const BPCHAR: u32 = 1042;
+pub(crate) const VARCHAR: u32 = 1043;
+pub(crate) const TIMESTAMP: u32 = 1114;
+pub(crate) const TIMESTAMPTZ: u32 = 1184;
+pub(crate) const NUMERIC: u32 = 1700;
 
 /// `VARHDRSZ`, which a numeric typmod adds to precision and scale.
 const TYPMOD_HEADER: i32 = 4;
@@ -240,7 +240,7 @@ fn number(text: &str) -> Option<i64> {
 }
 
 /// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
-fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }

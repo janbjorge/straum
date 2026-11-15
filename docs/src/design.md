@@ -95,6 +95,34 @@ Any error is a **Failure**, and the next step is a start over. The
 load fills a new store outside the lock, so asks never wait on
 PostgreSQL; they answer 503 until step 5.
 
+With `--wal physical`, step 2 differs (ADR-0049):
+
+1. Read the catalog on a plain connection and check it.
+2. Create a temporary physical slot; it reserves WAL from the last
+   checkpoint's redo point. Read each spec table's **Layout**
+   (`physical::tables`): its file, its attributes, dropped ones too,
+   and its enums' labels by OID. After the slot, so a rewrite between
+   the two is in the WAL read. Start the stream thread at once, with
+   a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes into
+   records, `Heap` keeps the pages, `Transactions` holds changes by
+   xid, `Publisher` turns commits into pgoutput messages for the same
+   `Decoder`.
+3. Try `pg_log_standby_snapshot()`, then wait until the stream is at its
+   **Consistent point**: past the first `RUNNING_XACTS` and every
+   transaction it names.
+4. Begin the repeatable-read transaction, read `pg_current_snapshot()`
+   and the WAL position, check the catalog again, and hand the snapshot
+   to the stream thread (`Stream::see`). Commits it saw are dropped.
+   L is the LSN before the first commit it didn't see. PostgreSQL logs
+   a commit before snapshots see it, and waits for synchronous standbys
+   in between, so a snapshot may miss a commit the stream dropped as
+   before its start. The thread then answers `Sight::Blind`, and Straum
+   rolls back and takes another.
+
+The thread reads on through the load, so the walsender never waits on
+a reply. The pure parts, `wal/` and the pipeline, read no socket: a
+table's layout read again after DDL comes in through a closure.
+
 ## The store
 
 What the store holds, mutable, one per process, owned by **App**.

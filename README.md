@@ -64,7 +64,9 @@ in four steps, on a month of New York taxi trips.
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares. It needs PostgreSQL 16 or newer as
 shipped, with stock logical replication, no extension and no superuser
-([setup](https://janbjorge.github.io/straum/postgresql.html)).
+([setup](https://janbjorge.github.io/straum/postgresql.html)). Where
+`wal_level = logical` can't be had, `--wal physical` reads the WAL
+`replica` writes instead.
 
 ## How it works
 

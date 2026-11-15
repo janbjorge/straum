@@ -3,9 +3,9 @@
 //! reports the applied LSN while the writer applies, so PostgreSQL never
 //! times Straum out for being busy.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -15,20 +15,50 @@ use straum_app::{Commit, Lsn};
 use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
+use crate::physical::Replay;
 use crate::value;
+use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wire::{Closer, Connection, server_error};
 
 /// How long a read waits before the thread checks whether a status update
 /// is due or it should stop.
-const POLL: Duration = Duration::from_secs(1);
+pub(crate) const POLL: Duration = Duration::from_secs(1);
 /// How often the thread reports, whether or not the server asks. Short, so
 /// a full queue, which stops the thread reading, can't outlast a
 /// `wal_sender_timeout` of a few seconds.
-const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Commits read ahead of the writer.
 const QUEUE: usize = 64;
 /// How long the thread waits for room in a full queue before trying again.
 const WAIT: Duration = Duration::from_millis(10);
+
+/// What turns the stream's bytes into commits.
+pub(crate) enum Reader {
+    /// pgoutput messages from a logical slot.
+    Logical(Decoder),
+    /// WAL from a physical slot.
+    Physical(Box<Replay>),
+}
+
+impl Reader {
+    /// Holds part of a transaction it hasn't handed out.
+    fn in_transaction(&self) -> bool {
+        match self {
+            Reader::Logical(decoder) => decoder.in_transaction(),
+            Reader::Physical(_) => false,
+        }
+    }
+}
+
+/// What a physical stream made of the load's snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Sight {
+    /// Every commit up to this LSN is in the load; later ones stream.
+    Through(Lsn),
+    /// The snapshot doesn't see these transactions, whose commits the
+    /// stream read as before its start: take another.
+    Blind(Vec<u32>),
+}
 
 /// The writer's end of the stream.
 pub(crate) struct Stream {
@@ -44,22 +74,32 @@ pub(crate) struct Stream {
 struct Shared {
     applied: AtomicU64,
     stop: AtomicBool,
+    /// A physical stream's state before its load: how far it is from
+    /// where every later commit is whole, the load's snapshot with the WAL
+    /// position it was taken at, for the thread to take, and what the
+    /// thread made of it.
+    consistency: Mutex<Consistency>,
+    snapshot: Mutex<Option<(Snapshot, Lsn)>>,
+    sight: Mutex<Option<Sight>>,
 }
 
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
     /// streaming from `start`.
-    pub(crate) fn start(conn: Connection, decoder: Decoder, start: Lsn) -> Result<Stream, Error> {
+    pub(crate) fn start(conn: Connection, reader: Reader, start: Lsn) -> Result<Stream, Error> {
         conn.set_read_timeout(POLL)?;
         let closer = conn.closer()?;
         let (commits, receiver) = mpsc::sync_channel(QUEUE);
         let shared = Arc::new(Shared {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
+            consistency: Mutex::new(Consistency::Unknown),
+            snapshot: Mutex::new(None),
+            sight: Mutex::new(None),
         });
         let thread = StreamThread {
             conn,
-            decoder,
+            reader,
             commits,
             shared: Arc::clone(&shared),
             sent: start.0,
@@ -93,6 +133,53 @@ impl Stream {
     }
 }
 
+impl Stream {
+    /// For a physical stream: waits at most `wait` until every
+    /// transaction that commits from now on is whole in the WAL read, and
+    /// says how far it got. No commit comes before the load's snapshot, so
+    /// the queue holds at most the thread's error.
+    pub(crate) fn wait_consistent(&mut self, wait: Duration) -> Result<Consistency, Error> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let consistency = self
+                .shared
+                .consistency
+                .lock()
+                .map_err(|_| Error::Stopped)?
+                .clone();
+            let left = deadline.saturating_duration_since(Instant::now());
+            if consistency == Consistency::Consistent || left.is_zero() {
+                return Ok(consistency);
+            }
+            match self.commits.recv_timeout(left.min(WAIT)) {
+                Ok(Err(e)) => return Err(e),
+                Ok(Ok(_)) => return Err(Error::protocol("a commit before the load's snapshot")),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(Error::Stopped),
+            }
+        }
+    }
+
+    /// For a physical stream: hands the thread the load's snapshot, taken
+    /// with the server's WAL at `at`, and says what it made of it.
+    pub(crate) fn see(&mut self, snapshot: Snapshot, at: Lsn) -> Result<Sight, Error> {
+        *self.shared.snapshot.lock().map_err(|_| Error::Stopped)? = Some((snapshot, at));
+        loop {
+            if let Some(sight) = self.shared.sight.lock().map_err(|_| Error::Stopped)?.take() {
+                return Ok(sight);
+            }
+            // A thread that stopped left its error in the queue.
+            if self.thread.as_ref().is_none_or(|t| t.is_finished()) {
+                return Err(match self.commits.try_recv() {
+                    Ok(Err(e)) => e,
+                    _ => Error::Stopped,
+                });
+            }
+            thread::sleep(WAIT);
+        }
+    }
+}
+
 impl Drop for Stream {
     /// Stops the thread and closes the connection, which drops the slot.
     fn drop(&mut self) {
@@ -106,10 +193,10 @@ impl Drop for Stream {
     }
 }
 
-/// The thread's end: the socket, the decoder and what it has reported.
+/// The thread's end: the socket, the reader and what it has reported.
 struct StreamThread {
     conn: Connection,
-    decoder: Decoder,
+    reader: Reader,
     commits: SyncSender<Result<Commit, Error>>,
     shared: Arc<Shared>,
     /// The LSN of the last commit queued.
@@ -130,6 +217,9 @@ impl StreamThread {
 
     fn serve(&mut self) -> Result<(), Error> {
         while !self.shared.stop.load(Ordering::Acquire) {
+            if !self.before_load()? {
+                return Ok(());
+            }
             match self.conn.try_read()? {
                 None => {}
                 Some(Backend::CopyData(body)) => {
@@ -147,17 +237,58 @@ impl StreamThread {
         Ok(())
     }
 
+    /// A physical stream says when it is consistent, and takes the load's
+    /// snapshot: the commits held that it didn't see go out. `false` once
+    /// the writer is gone.
+    fn before_load(&mut self) -> Result<bool, Error> {
+        let Reader::Physical(replay) = &mut self.reader else {
+            return Ok(true);
+        };
+        let mut consistency = self.shared.consistency.lock().map_err(|_| Error::Stopped)?;
+        if *consistency != Consistency::Consistent {
+            *consistency = replay.consistency();
+        }
+        drop(consistency);
+        let taken = self
+            .shared
+            .snapshot
+            .lock()
+            .map_err(|_| Error::Stopped)?
+            .take();
+        let Some((snapshot, at)) = taken else {
+            return Ok(true);
+        };
+        let (sight, commits) = replay.see(snapshot, at)?;
+        *self.shared.sight.lock().map_err(|_| Error::Stopped)? = Some(sight);
+        for commit in commits {
+            self.sent = commit.lsn.0;
+            if !self.deliver(Ok(commit))? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// `false` once the writer is gone.
     fn copy_data(&mut self, data: &[u8]) -> Result<bool, Error> {
         match pgoutput::copy_message(data)? {
-            CopyMessage::XLogData(bytes) => {
-                if let Some(commit) = self.decoder.feed(pgoutput::decode(bytes)?)? {
+            CopyMessage::XLogData { start, bytes } => {
+                let commits = match &mut self.reader {
+                    Reader::Logical(decoder) => decoder
+                        .feed(pgoutput::decode(bytes)?)?
+                        .into_iter()
+                        .collect(),
+                    Reader::Physical(replay) => replay.feed(start, bytes)?,
+                };
+                for commit in commits {
                     self.sent = commit.lsn.0;
-                    return self.deliver(Ok(commit));
+                    if !self.deliver(Ok(commit))? {
+                        return Ok(false);
+                    }
                 }
             }
             CopyMessage::Keepalive { end, reply } => {
-                if !self.decoder.in_transaction() {
+                if !self.reader.in_transaction() {
                     self.idle = self.idle.max(end);
                 }
                 if reply {
@@ -194,22 +325,33 @@ impl StreamThread {
     /// everything up to the last keepalive.
     fn report(&mut self) -> Result<(), Error> {
         let applied = self.shared.applied.load(Ordering::Acquire);
-        let done = if applied >= self.sent && !self.decoder.in_transaction() {
-            applied.max(self.idle)
+        // A physical keepalive may name WAL not read yet; the replay
+        // knows what it has read.
+        let idle = match &self.reader {
+            Reader::Logical(_) => self.idle,
+            Reader::Physical(replay) => replay.read(),
+        };
+        let done = if applied >= self.sent && !self.reader.in_transaction() {
+            applied.max(idle)
         } else {
             applied
         };
-        let now = value::timestamp_micros(SystemTime::now());
-        let mut message = Vec::with_capacity(34);
-        message.push(b'r');
-        // Written, flushed and applied are one point for straum.
-        for _ in 0..3 {
-            message.extend(done.to_be_bytes());
-        }
-        message.extend(now.to_be_bytes());
-        message.push(0);
-        self.conn.send_copy_data(&message)?;
+        self.conn.send_copy_data(&status_update(done))?;
         self.last_report = Instant::now();
         Ok(())
     }
+}
+
+/// A standby status update saying everything before `done` is applied.
+pub(crate) fn status_update(done: u64) -> Vec<u8> {
+    let now = value::timestamp_micros(SystemTime::now());
+    let mut message = Vec::with_capacity(34);
+    message.push(b'r');
+    // Written, flushed and applied are one point for straum.
+    for _ in 0..3 {
+        message.extend(done.to_be_bytes());
+    }
+    message.extend(now.to_be_bytes());
+    message.push(0);
+    message
 }

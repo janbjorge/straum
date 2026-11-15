@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use straum_app::{AnswerError, App, Limits, Lsn, Source, SourceError, Step, Writer};
+use straum_app::{AnswerError, App, Commit, Limits, Lsn, Source, SourceError, Step, Writer};
 use straum_domain::{
     Answer, AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Literal,
     Spec, Store, Value, decimal,
@@ -26,9 +26,15 @@ use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
-use crate::source::{Postgres, parse_lsn, read_wal};
-use crate::stream::Stream;
+use crate::physical::{self, Physical};
+use crate::source::{Postgres, Replication, parse_lsn, read_wal};
+use crate::stream::{Reader, Stream};
 use crate::value::read;
+use crate::wal::RelationFile;
+use crate::wal::heap::{Heap, PageId, Tuple};
+use crate::wal::transactions::{self as held, Committed, Snapshot, Transactions};
+use crate::wal::tuple::{self as row_values, Kind};
+use crate::wal::xact::{self, Event};
 use crate::wire::Connection;
 
 const PASSWORD: &str = "straum";
@@ -41,6 +47,11 @@ const LIMITS: Limits = Limits {
 /// Rows a transaction may change before Straum starts over; no test but
 /// the one for it comes near.
 const ROW_LIMIT: usize = 10_000;
+/// The rows a physical stream may hold in these tests.
+const PAGE_MEMORY: usize = 256 << 20;
+const PHYSICAL: Replication = Replication::Physical {
+    max_page_memory: PAGE_MEMORY,
+};
 const READY: &str = "database system is ready to accept connections";
 /// 2100-01-01, on every bucket edge.
 const END: i64 = 4_102_444_800;
@@ -343,11 +354,22 @@ impl Db {
     }
 
     fn pg(&self) -> Postgres {
-        Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT)
+        Postgres::new(
+            self.dsn.clone(),
+            &self.name,
+            ROW_LIMIT,
+            Replication::Logical,
+        )
     }
 
     fn writer(&self, spec: &str) -> Writer<Postgres> {
         Writer::new(App::new(self.spec(spec), LIMITS, None), self.pg())
+    }
+
+    /// A writer that reads the physical WAL (ADR-0049).
+    fn physical_writer(&self, spec: &str) -> Writer<Postgres> {
+        let source = Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT, PHYSICAL);
+        Writer::new(App::new(self.spec(spec), LIMITS, None), source)
     }
 }
 
@@ -958,7 +980,7 @@ fn a_transaction_past_the_limit_starts_over() {
     }
     let mut writer = Writer::new(
         App::new(db.spec(SPEC), LIMITS, None),
-        Postgres::new(db.dsn.clone(), &db.name, CAP),
+        Postgres::new(db.dsn.clone(), &db.name, CAP, Replication::Logical),
     );
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     let batch = |rng: &mut Rng, from: u64, rows: usize| {
@@ -1578,6 +1600,1402 @@ fn follows_at_replica_from_19() {
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
+/// The physical stream holds the pages changed since the last
+/// checkpoint's redo point and the changes of open transactions, not the
+/// table: after a checkpoint and a few changes, a few pages' worth.
+#[test]
+fn holds_only_what_changed_since_the_checkpoint() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "bounded", TABLES);
+    let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+    db.run("SELECT pg_log_standby_snapshot()");
+    let spec = db.spec(SPEC);
+    let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
+    // Under the transaction limit, a statement at a time.
+    for from in (1..30_000).step_by(6_000) {
+        db.run(&format!(
+            "INSERT INTO $S.trips SELECT i, timestamptz '2024-01-01' + i * interval '1 minute',
+                    'cab', 1 + i % 3, i % 70 + 0.25, md5(i::text), i % 9
+             FROM generate_series({from}, {}) AS i",
+            from + 5_999
+        ));
+        db.run(&format!(
+            "UPDATE $S.trips SET tip = tip + 1 WHERE id BETWEEN {from} AND {}",
+            from + 5_999
+        ));
+    }
+    pipeline.through_now(&mut db, &mut stream);
+    let table: usize = db.rows("SELECT pg_relation_size('$S.trips')")[0][0]
+        .as_deref()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let everything = pipeline.inner.bytes();
+    assert!(
+        everything > table / 2,
+        "{everything} bytes for a table of {table}"
+    );
+    db.run("CHECKPOINT");
+    // Two pages: the first rows and the last.
+    db.run("UPDATE $S.trips SET tip = 0 WHERE id IN (1, 2, 30000)");
+    // An open transaction's changes count until it ends.
+    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    open.execute("BEGIN").unwrap();
+    open.execute(&db.sql("UPDATE $S.trips SET fare = 1 WHERE id <= 100"))
+        .unwrap();
+    pipeline.through_now(&mut db, &mut stream);
+    let held = pipeline.inner.bytes();
+    let page = 8192 + 4096;
+    assert!(held < 8 * page, "{held} bytes held after the checkpoint");
+    open.execute("COMMIT").unwrap();
+    db.run("CHECKPOINT");
+    pipeline.through_now(&mut db, &mut stream);
+    assert!(
+        pipeline.inner.bytes() < 2 * page,
+        "{}",
+        pipeline.inner.bytes()
+    );
+}
+
+/// Past `--max-page-memory` the physical stream stops and says so, and
+/// Straum starts over rather than grow.
+#[test]
+fn stops_past_the_page_memory() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "capped", TABLES);
+    let spec = db.spec(SPEC);
+    let small = Replication::Physical {
+        max_page_memory: 64 << 10,
+    };
+    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, small);
+    source.open(&spec).unwrap();
+    db.run(
+        "INSERT INTO $S.trips SELECT i, now(), 'cab', 1, 1.5, md5(i::text), 1
+         FROM generate_series(1, 5000) AS i",
+    );
+    let deadline = Instant::now() + LONG;
+    let err = loop {
+        assert!(Instant::now() < deadline, "never stopped");
+        match source.next_commit(Duration::from_millis(100)) {
+            Ok(_) => {}
+            Err(e) => break e.to_string(),
+        }
+    };
+    assert!(
+        err.starts_with("the physical stream holds ")
+            && err.ends_with(
+                " bytes of rows, past the --max-page-memory limit of 65536; Straum starts over"
+            ),
+        "{err}"
+    );
+}
+
+/// `straum run --wal physical` at `wal_level = replica`: it loads while
+/// writers insert, update and delete, starts from a snapshot every later
+/// commit streams after, follows, and every view equals SQL's.
+#[test]
+fn follows_the_physical_wal() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "physical_run", TABLES);
+    let mut rng = Rng::new(17);
+    db.run(
+        "INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL), (3, 'Manhattan', 9.5)",
+    );
+    for id in 0..50 {
+        db.run(&rng.trip(id));
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<_> = (0..3u64)
+        .map(|w| {
+            let stop = Arc::clone(&stop);
+            let dsn = pg.dsn.clone();
+            let schema = db.name.clone();
+            thread::spawn(move || {
+                let mut conn = Connection::connect(&dsn, false).unwrap();
+                let mut rng = Rng::new(100 + w);
+                let mut id = 1_000_000 * (w + 1);
+                while !stop.load(Ordering::Relaxed) {
+                    id += 1;
+                    let sql = format!(
+                        "BEGIN; {} UPDATE $S.trips SET fare = fare + 1 WHERE id = {};
+                         DELETE FROM $S.trips WHERE id = {}; UPDATE $S.zones SET toll = toll + 0.5
+                         WHERE id = {}; COMMIT",
+                        rng.trip(id),
+                        id - 1,
+                        id - 2,
+                        1 + w
+                    );
+                    conn.execute(&sql.replace("$S", &schema)).unwrap();
+                    // DDL while Straum starts: a column comes and goes.
+                    if w == 0 && id % 25 == 0 {
+                        let ddl = format!(
+                            "ALTER TABLE $S.trips ADD c{id} int DEFAULT 7;
+                             UPDATE $S.trips SET c{id} = 8 WHERE id = {id};
+                             ALTER TABLE $S.trips DROP c{id}"
+                        );
+                        conn.execute(&ddl.replace("$S", &schema)).unwrap();
+                    }
+                }
+            })
+        })
+        .collect();
+    thread::sleep(Duration::from_millis(200));
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    stop.store(true, Ordering::Relaxed);
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let mut next = 5_000_000;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    db.run("UPDATE $S.trips SET kind = 'van', tip = tip + 1 WHERE id % 3 = 0");
+    db.run("DELETE FROM $S.trips WHERE id % 4 = 0");
+    db.run("UPDATE $S.zones SET borough = 'Brooklyn' WHERE id = 2");
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// A transaction prepared before the start holds it back until it ends,
+/// as it does a logical slot's creation: the WAL before the redo point
+/// may hold its changes. The error names it; once it ends Straum starts.
+#[test]
+fn a_prepared_transaction_holds_the_start_back() {
+    let pg = plain(image(&tag()).with_cmd([
+        "-c",
+        "wal_level=replica",
+        "-c",
+        "max_prepared_transactions=4",
+    ]));
+    let mut db = Db::new(&pg, "prepared", TABLES);
+    let mut rng = Rng::new(3);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    for id in 0..10 {
+        db.run(&rng.trip(id));
+    }
+    db.run(&format!(
+        "BEGIN; {} PREPARE TRANSACTION 'held'",
+        rng.trip(10)
+    ));
+    db.run("CHECKPOINT");
+    let xid = db.rows("SELECT transaction FROM pg_prepared_xacts WHERE gid = 'held'")[0][0]
+        .clone()
+        .unwrap();
+    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
+    source.consistent_wait = Duration::from_secs(2);
+    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS, None), source);
+    let err = writer.step().unwrap_err().to_string();
+    assert!(
+        err.contains(&format!(
+            "--wal physical waited 2 s for transactions open before it started to end: xid {xid}; \
+             a long or prepared one (pg_prepared_xacts) holds the start back"
+        )),
+        "{err}"
+    );
+    db.run("COMMIT PREPARED 'held'");
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let mut next = 1_000;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// PostgreSQL logs a commit, then waits for synchronous standbys, then
+/// ends the transaction for snapshots. The stream reads such a commit as
+/// before its start, so the load must see it: Straum takes the load's
+/// snapshot again until it does, and says what holds it back.
+#[test]
+fn takes_the_snapshot_again_until_it_sees_what_ended() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "synced", TABLES);
+    let mut rng = Rng::new(5);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    for id in 0..10 {
+        db.run(&rng.trip(id));
+    }
+    let mut held = Connection::connect(&db.dsn, false).unwrap();
+    held.execute(&db.sql(&format!("BEGIN; {}", rng.trip(10))))
+        .unwrap();
+    let xid = held.rows("SELECT pg_current_xact_id()").unwrap()[0][0]
+        .clone()
+        .unwrap();
+    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
+    db.run("SELECT pg_reload_conf()");
+    // A session reads its configuration again between commands.
+    let deadline = Instant::now() + LONG;
+    while held.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref() != Some("nobody") {
+        assert!(Instant::now() < deadline, "the setting never came");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let committing = thread::spawn(move || held.execute("COMMIT").unwrap());
+    while db
+        .rows("SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'")
+        .is_empty()
+    {
+        assert!(Instant::now() < deadline, "the commit never waited");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
+    source.consistent_wait = Duration::from_secs(2);
+    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS, None), source);
+    let err = writer.step().unwrap_err().to_string();
+    assert!(
+        err.contains(&format!(
+            "--wal physical waited 2 s for transactions it read the commits of to end: \
+             xid {xid}; a synchronous standby that doesn't answer holds them"
+        )),
+        "{err}"
+    );
+    // The standby gives up while Straum takes snapshots again.
+    let dsn = db.dsn.clone();
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(1));
+        let mut conn = Connection::connect(&dsn, false).unwrap();
+        conn.execute("ALTER SYSTEM RESET synchronous_standby_names")
+            .unwrap();
+        conn.execute("SELECT pg_reload_conf()").unwrap();
+    });
+    drop(writer);
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    release.join().unwrap();
+    committing.join().unwrap();
+    let mut next = 1_000;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// A whole commit the stream read before the load's snapshot, which
+/// that snapshot doesn't see yet since PostgreSQL waits for a synchronous
+/// standby, goes out on the stream when the snapshot is taken: the load
+/// doesn't have it.
+#[test]
+fn streams_a_commit_logged_before_the_snapshot_saw_it() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "unseen", TABLES);
+    let mut rng = Rng::new(6);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    for id in 0..10 {
+        db.run(&rng.trip(id));
+    }
+    // Open before the start, it holds Straum back until it rolls back,
+    // which waits for no standby.
+    let mut holding = Connection::connect(&db.dsn, false).unwrap();
+    holding
+        .execute(&db.sql(&format!("BEGIN; {}", rng.trip(10))))
+        .unwrap();
+    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
+    db.run("SELECT pg_reload_conf()");
+    let (dsn, sql) = (db.dsn.clone(), db.sql(&rng.trip(11)));
+    let helper = thread::spawn(move || {
+        let mut watch = Connection::connect(&dsn, false).unwrap();
+        let wait_for = |watch: &mut Connection, query: &str| {
+            let deadline = Instant::now() + LONG;
+            while watch.rows(query).unwrap().is_empty() {
+                assert!(Instant::now() < deadline, "never: {query}");
+                thread::sleep(Duration::from_millis(20));
+            }
+        };
+        // Straum logged which transactions run, the one holding it among
+        // them.
+        wait_for(
+            &mut watch,
+            "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_log_standby_snapshot()'",
+        );
+        let mut committing = Connection::connect(&dsn, false).unwrap();
+        let deadline = Instant::now() + LONG;
+        while committing.rows("SHOW synchronous_standby_names").unwrap()[0][0].as_deref()
+            != Some("nobody")
+        {
+            assert!(Instant::now() < deadline, "the setting never came");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let commit = thread::spawn(move || {
+            committing.execute(&format!("BEGIN; {sql} COMMIT")).unwrap();
+        });
+        wait_for(
+            &mut watch,
+            "SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'",
+        );
+        holding.execute("ROLLBACK").unwrap();
+        thread::sleep(Duration::from_secs(1));
+        watch
+            .execute("ALTER SYSTEM RESET synchronous_standby_names")
+            .unwrap();
+        watch.execute("SELECT pg_reload_conf()").unwrap();
+        commit.join().unwrap();
+    });
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    helper.join().unwrap();
+    let mut next = 1_000;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// A walsender that dies takes the physical stream with it; Straum
+/// starts over from a new slot and follows on.
+#[test]
+fn starts_over_when_the_physical_stream_dies() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "dies", TABLES);
+    let mut rng = Rng::new(4);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    for id in 0..10 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let mut next = 1_000;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    let killed = db.rows("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_replication");
+    assert_eq!(killed[0][0].as_deref(), Some("1"));
+    db.run(&rng.trip(500));
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "never noticed");
+        if writer.step().is_err() {
+            break;
+        }
+    }
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// Applies commits until Straum is ready and its views equal SQL's. A
+/// trip goes in each round, so there is a commit to wait for.
+fn catch_up(db: &mut Db, writer: &mut Writer<Postgres>, rng: &mut Rng, next: &mut u64) {
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "never caught up");
+        *next += 1;
+        db.run(&rng.trip(*next));
+        let written = parse_lsn(
+            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        while writer
+            .app()
+            .status()
+            .applied
+            .is_none_or(|applied| applied < written)
+        {
+            assert!(Instant::now() < deadline, "never applied {written}");
+            applied(writer);
+        }
+        if compare(db, writer.app(), &taxi_oracles(2)).is_some() {
+            return;
+        }
+    }
+}
+
+/// The physical stream reads the records `pg_waldump` reads from the same
+/// start: whole, in order, with the same blocks and full-page images,
+/// under every `wal_compression`.
+#[test]
+fn reads_the_wal_pg_waldump_reads() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(
+        &pg,
+        "physical",
+        "CREATE TABLE $S.t (id int PRIMARY KEY, body text);
+         ALTER TABLE $S.t ALTER body SET STORAGE EXTERNAL;",
+    );
+    let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
+    for compression in ["off", "pglz", "lz4", "zstd"] {
+        db.run(&format!("ALTER SYSTEM SET wal_compression = {compression}"));
+        db.run("SELECT pg_reload_conf()");
+        db.run("CHECKPOINT");
+        db.run(
+            "INSERT INTO $S.t SELECT i, md5(i::text) FROM generate_series(1, 400) AS i
+             ON CONFLICT (id) DO UPDATE SET body = excluded.body || 'x'",
+        );
+        db.run("UPDATE $S.t SET body = body || 'y' WHERE id % 3 = 0");
+        db.run("DELETE FROM $S.t WHERE id % 7 = 0");
+        // Past a page: TOAST chunks, and a record split across pages.
+        db.run(
+            "INSERT INTO $S.t SELECT 1000 + i, string_agg(md5(j::text), '')
+             FROM generate_series(1, 3) AS i, generate_series(1, 700) AS j GROUP BY i
+             ON CONFLICT (id) DO NOTHING",
+        );
+        db.run(
+            "BEGIN; DELETE FROM $S.t WHERE id = -1;
+             SAVEPOINT a; INSERT INTO $S.t VALUES (-1, 'a'); RELEASE a;
+             SAVEPOINT b; INSERT INTO $S.t VALUES (-2, 'b'); ROLLBACK TO b; COMMIT",
+        );
+    }
+    let last = parse_lsn(
+        &db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+            .clone()
+            .unwrap(),
+    )
+    .unwrap();
+    db.run("SELECT pg_switch_wal()");
+    let mut read = Vec::new();
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "no switch record past {last}");
+        let Some(record) = physical.next_record().unwrap() else {
+            continue;
+        };
+        read.push(dumped(&record));
+        if record.is_switch() && record.lsn >= last.0 {
+            break;
+        }
+    }
+    let switch = *read.last().map(|(lsn, _)| lsn).unwrap();
+    let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
+    let mut waldump = pg
+        ._container
+        .exec(ExecCommand::new([
+            "pg_waldump".to_owned(),
+            "-p".to_owned(),
+            format!("{directory}/pg_wal"),
+            "-s".to_owned(),
+            start.to_string(),
+        ]))
+        .unwrap();
+    let out = String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap();
+    let expected: Vec<(u64, String)> = out
+        .lines()
+        .filter_map(waldump_line)
+        .take_while(|(lsn, _)| *lsn <= switch)
+        .collect();
+    assert_eq!(read.first().map(|(lsn, _)| *lsn), Some(start.0));
+    assert!(read.len() > 1000, "{} records", read.len());
+    for (ours, theirs) in read.iter().zip(&expected) {
+        assert_eq!(ours, theirs);
+    }
+    assert_eq!(read.len(), expected.len());
+}
+
+/// The rows Straum keeps for each page of a table are the rows on that
+/// page in PostgreSQL, slot by slot, after inserts, `COPY`, `ON
+/// CONFLICT`, HOT and other updates, rows moving page, deletes and
+/// `VACUUM`, under each `wal_compression` Straum reads.
+#[test]
+fn keeps_the_rows_pageinspect_sees() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(
+        &pg,
+        "pages",
+        "CREATE EXTENSION pageinspect;
+         CREATE TABLE $S.t (id int PRIMARY KEY, n int, note text, body text)
+             WITH (fillfactor = 60, autovacuum_enabled = off);",
+    );
+    let (mut physical, _) = Physical::start(&pg.dsn).unwrap();
+    for (round, compression) in ["off", "pglz", "lz4"].into_iter().enumerate() {
+        db.run(&format!("ALTER SYSTEM SET wal_compression = {compression}"));
+        db.run("SELECT pg_reload_conf()");
+        db.run("CHECKPOINT");
+        // First changes since the checkpoint, so each brings a page image.
+        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 9 = 1");
+        db.run("DELETE FROM $S.t WHERE id % 17 = 2");
+        db.run("UPDATE $S.t SET body = repeat(body, 5) WHERE id % 19 = 3");
+        let base = round * 10_000;
+        db.run(&format!(
+            "INSERT INTO $S.t SELECT {base} + i, i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' END,
+                 repeat(md5(i::text), 1 + i % 4)
+             FROM generate_series(1, 300) AS i"
+        ));
+        // HOT: n has no index. The long body shares a prefix and suffix.
+        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 3 = 0");
+        db.run("UPDATE $S.t SET body = body || 'tail' WHERE id % 4 = 0");
+        db.run("UPDATE $S.t SET body = 'head' || body WHERE id % 6 = 0");
+        db.run("UPDATE $S.t SET note = 'x' WHERE note IS NULL AND id % 2 = 0");
+        // Not HOT, and rows too big to stay on their page.
+        db.run("UPDATE $S.t SET id = id + 5000 WHERE id % 7 = 0");
+        db.run("UPDATE $S.t SET body = repeat(body, 6) WHERE id % 11 = 0");
+        db.run("DELETE FROM $S.t WHERE id % 13 = 0");
+        db.run(&format!(
+            "COPY (SELECT {base} + 9000 + i, i, 'c', md5(i::text)
+                   FROM generate_series(1, 200) AS i) TO '/tmp/rows.csv'"
+        ));
+        db.run("COPY $S.t FROM '/tmp/rows.csv'");
+        db.run(&format!(
+            "INSERT INTO $S.t VALUES ({base} + 1, 0, 'dup', 'dup'), ({base} + 8999, 0, 'new', 'new')
+             ON CONFLICT (id) DO NOTHING"
+        ));
+        db.run("VACUUM $S.t");
+        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 5 = 1");
+    }
+    // Empty pages at the end, which VACUUM cuts off.
+    db.run("INSERT INTO $S.t SELECT 100000 + i, i, 'f', md5(i::text) FROM generate_series(1, 3000) AS i");
+    db.run("DELETE FROM $S.t WHERE id > 100000");
+    db.run("VACUUM $S.t");
+    // After a checkpoint Straum keeps only the pages changed since its
+    // redo point: the others come whole with their next change.
+    db.run("CHECKPOINT");
+    db.run("UPDATE $S.t SET n = n + 1 WHERE id IN (SELECT id FROM $S.t ORDER BY id LIMIT 3)");
+    db.run("DELETE FROM $S.t WHERE id = (SELECT max(id) FROM $S.t)");
+    // A lock changes no row Straum reads, yet sets the page's LSN.
+    db.run(
+        "BEGIN; SELECT id FROM $S.t WHERE id = (SELECT min(id) + 200 FROM $S.t) FOR UPDATE; COMMIT",
+    );
+    let redo = parse_lsn(
+        db.rows("SELECT redo_lsn FROM pg_control_checkpoint()")[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let (relation, blocks) = relation_file(&mut db, "t");
+    let (heap, changes) = follow_to_now(&mut db, &mut physical, relation);
+    assert!(changes > 3000, "{changes} changes");
+    assert!(blocks > 10, "{blocks} pages");
+    let kept: Vec<u32> = heap
+        .pages()
+        .filter(|(id, _)| id.file == relation)
+        .map(|(id, _)| id.block)
+        .filter(|block| *block >= blocks)
+        .collect();
+    assert_eq!(kept, Vec::<u32>::new(), "pages past the end");
+    let mut kept = 0;
+    for block in 0..blocks {
+        let page_lsn = parse_lsn(
+            db.rows(&format!(
+                "SELECT lsn FROM page_header(get_raw_page('$S.t', {block}))"
+            ))[0][0]
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        let page = heap.page(PageId {
+            file: relation,
+            block,
+        });
+        assert_eq!(
+            page.is_some(),
+            page_lsn > redo,
+            "page {block}: LSN {page_lsn}, redo {redo}"
+        );
+        let Some(page) = page else {
+            continue;
+        };
+        kept += 1;
+        let theirs: Vec<String> = db
+            .rows(&format!(
+                "SELECT lp, t_hoff, t_infomask2 & 2047, coalesce(t_bits, ''), encode(t_data, 'hex')
+                 FROM heap_page_items(get_raw_page('$S.t', {block})) WHERE lp_flags = 1
+                 ORDER BY lp"
+            ))
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(Option::unwrap)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        let ours: Vec<String> = page
+            .rows()
+            .map(|(offnum, tuple)| page_item(offnum, tuple))
+            .collect();
+        assert_eq!(ours, theirs, "page {block}");
+    }
+    assert!(
+        (1..blocks / 2).contains(&kept),
+        "{kept} of {blocks} pages kept"
+    );
+    assert_eq!(heap.bytes(), heap.recount());
+}
+
+/// The file of `$S.table` and its length in pages.
+fn relation_file(db: &mut Db, table: &str) -> (RelationFile, u32) {
+    let file = db.rows(&format!(
+        "SELECT CASE reltablespace WHEN 0 THEN 1663 ELSE reltablespace END,
+                (SELECT oid FROM pg_database WHERE datname = current_database()),
+                pg_relation_filenode(oid), pg_relation_size(oid) / 8192
+         FROM pg_class WHERE oid = '$S.{table}'::regclass"
+    ))[0]
+        .iter()
+        .map(|v| v.as_deref().unwrap().parse::<u32>().unwrap())
+        .collect::<Vec<_>>();
+    let relation = RelationFile {
+        tablespace: file[0],
+        database: file[1],
+        relation: file[2],
+    };
+    (relation, file[3])
+}
+
+/// The pages of `relation` once the stream has read all WAL written so
+/// far, and how many changes to its rows that was.
+fn follow_to_now(db: &mut Db, physical: &mut Physical, relation: RelationFile) -> (Heap, usize) {
+    let mut heap = Heap::new([relation].into(), physical.major());
+    let last = parse_lsn(
+        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    db.run("SELECT pg_switch_wal()");
+    let deadline = Instant::now() + LONG;
+    let mut changes = 0;
+    loop {
+        assert!(Instant::now() < deadline, "no switch record past {last}");
+        let Some(record) = physical.next_record().unwrap() else {
+            continue;
+        };
+        changes += heap.apply(&record).unwrap().len();
+        if record.is_switch() && record.lsn >= last.0 {
+            return (heap, changes);
+        }
+    }
+}
+
+/// Every value Straum reads off the pages of a table is the text a
+/// `SELECT` gets, which its type's output function prints, as pgoutput's
+/// does: each type Straum reads, nulls, values
+/// compressed with pglz and lz4, rows from before a column was dropped or
+/// added, and rows an update rebuilt from the old one.
+#[test]
+fn reads_the_values_select_prints() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(
+        &pg,
+        "datums",
+        "CREATE TYPE $S.mood AS ENUM ('sad', 'ok', 'happy');
+         CREATE TABLE $S.v (
+             id int8 PRIMARY KEY, a int2, b int4, flag bool, gone int4,
+             n numeric(18, 4), whole numeric(10, 0), free numeric, t text,
+             v varchar(20), c char(5), ts timestamp, tz timestamptz,
+             mood $S.mood, p point, label name,
+             l text COMPRESSION lz4, z text COMPRESSION pglz
+         ) WITH (autovacuum_enabled = off);",
+    );
+    let (mut physical, _) = Physical::start(&pg.dsn).unwrap();
+    let rows = |from: i32, to: i32| {
+        format!(
+            "INSERT INTO $S.v (id, a, b, flag, n, whole, free, t, v, c, ts, tz, mood, p, label, l, z)
+             SELECT (i - 150)::int8 * 1000000007, ((i * 7919) % 65535 - 32767)::int2, i * -123457,
+                 CASE i % 3 WHEN 0 THEN NULL ELSE i % 2 = 0 END,
+                 (i - 150) * 333333333.3333, i * 99991,
+                 CASE i % 10 WHEN 0 THEN 'NaN' WHEN 1 THEN 'Infinity' WHEN 2 THEN '-Infinity'
+                     WHEN 3 THEN NULL WHEN 4 THEN i * 1e-30 WHEN 5 THEN i * 1e40
+                     WHEN 6 THEN -i ELSE i::numeric / 7 END,
+                 CASE i % 4 WHEN 0 THEN '' WHEN 1 THEN 'héllo ' || i
+                     WHEN 2 THEN repeat('x', 200 + i) END,
+                 'v' || i, left(i::text, 3),
+                 CASE i % 17 WHEN 0 THEN 'infinity' WHEN 1 THEN '0044-03-15 12:00:00 BC'
+                     WHEN 2 THEN '1999-12-31 23:59:59.999999' WHEN 3 THEN '10000-02-29 01:02:03'
+                     ELSE timestamp '1900-01-01' + i * interval '97 days 1 hour 7 minutes 3.25 seconds'
+                 END,
+                 CASE i % 19 WHEN 0 THEN '-infinity'
+                     ELSE timestamptz '1970-01-01 00:00:00+00' + i * interval '1234567.891011 seconds'
+                 END,
+                 (enum_range(NULL::$S.mood))[1 + i % 3], point(i, -i), 'n' || i,
+                 CASE i % 5 WHEN 0 THEN repeat('lz4', 1000 + i) WHEN 1 THEN 'short' END,
+                 CASE i % 5 WHEN 1 THEN repeat('pglz', 800 + i)
+                     WHEN 2 THEN (SELECT string_agg(md5(i::text || j), '')
+                                  FROM generate_series(1, 300) AS j)
+                 END
+             FROM generate_series({from}, {to}) AS i"
+        )
+    };
+    db.run("CHECKPOINT");
+    db.run(&rows(1, 200));
+    db.run("ALTER TABLE $S.v DROP COLUMN gone");
+    db.run(
+        "ALTER TABLE $S.v ADD late int DEFAULT 7, ADD late_null int,
+             ADD late_text text DEFAULT 'a \"quoted\", {value} \\ here',
+             ADD late_at timestamptz DEFAULT '2024-01-01 00:00:00.5+00'",
+    );
+    db.run(&rows(201, 300));
+    db.run("UPDATE $S.v SET b = b + 1 WHERE id % 3 = 0");
+    db.run("UPDATE $S.v SET t = t || 'z', late = 8 WHERE id % 4 = 1");
+    let (relation, blocks) = relation_file(&mut db, "v");
+    let (heap, _) = follow_to_now(&mut db, &mut physical, relation);
+    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+    let checked = Checked {
+        name: id("v"),
+        schema: id("datums"),
+        table: id("v"),
+        columns: Vec::new(),
+        types: Vec::new(),
+        enums: Vec::new(),
+    };
+    let (tables, labels) = physical::tables(&mut conn, &[checked]).unwrap();
+    let [table] = &tables[..] else {
+        panic!("{tables:?}")
+    };
+    assert_eq!(table.file, relation);
+    let attributes = &table.attributes;
+    let live = &table.columns;
+    let names: Vec<&str> = table
+        .relation
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(attributes.len(), live.len() + 1, "one dropped column");
+    let select = names.join(", ");
+    let expected = db.rows(&format!(
+        "SELECT ctid::text, {select} FROM $S.v ORDER BY ctid"
+    ));
+    assert_eq!(expected.len(), 300);
+    assert!(blocks > 5, "{blocks} pages");
+    let mut seen = [0; 3];
+    for row in expected {
+        let ctid = row[0].as_deref().unwrap();
+        let (block, offnum) = ctid
+            .trim_matches(['(', ')'])
+            .split_once(',')
+            .map(|(b, o)| (b.parse().unwrap(), o.parse().unwrap()))
+            .unwrap();
+        let tuple = heap
+            .page(PageId {
+                file: relation,
+                block,
+            })
+            .and_then(|page| page.get(offnum))
+            .unwrap_or_else(|| panic!("no row at {ctid}"));
+        let values = row_values::values(tuple, attributes, &labels).unwrap();
+        for ((&i, theirs), name) in live.iter().zip(&row[1..]).zip(&names) {
+            let ours = &values[i];
+            let fits = match ours {
+                row_values::Value::Text(text) => theirs.as_ref() == Some(text),
+                row_values::Value::Null => theirs.is_none(),
+                row_values::Value::Skipped => attributes[i].kind == Kind::Other,
+                row_values::Value::External => {
+                    seen[0] += 1;
+                    theirs.as_ref().is_some_and(|t| t.len() > 8000)
+                }
+                row_values::Value::Missing => {
+                    seen[1] += 1;
+                    *theirs == table.missing[i]
+                }
+            };
+            assert!(fits, "{ctid} {name}: ours {ours:?}, theirs {theirs:?}");
+            seen[2] += 1;
+        }
+    }
+    let [external, missing, _] = seen;
+    assert!(external >= 30 && missing >= 400, "{seen:?}");
+    let compressed = db.rows(
+        "SELECT count(*) FILTER (WHERE pg_column_compression(l) = 'lz4'),
+                count(*) FILTER (WHERE pg_column_compression(z) = 'pglz')
+         FROM $S.v",
+    );
+    for count in &compressed[0] {
+        let count: u32 = count.as_deref().unwrap().parse().unwrap();
+        assert!(count >= 40, "{compressed:?}");
+    }
+}
+
+/// Straum reads how each transaction ends, with its subtransactions, and
+/// which run at each `RUNNING_XACTS`, as `pg_waldump` describes them:
+/// commits, aborts, savepoints kept and rolled back, past 64
+/// subtransactions, two-phase commit, and catalog changes, whose commit
+/// records carry relation files, dropped stats and invalidations.
+#[test]
+fn reads_the_endings_pg_waldump_reads() {
+    let pg = plain(image(&tag()).with_cmd([
+        "-c",
+        "wal_level=replica",
+        "-c",
+        "max_prepared_transactions=4",
+    ]));
+    let mut db = Db::new(&pg, "endings", "CREATE TABLE $S.t (id int)");
+    let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
+    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    open.execute("BEGIN").unwrap();
+    open.execute(&db.sql("INSERT INTO $S.t VALUES (0)"))
+        .unwrap();
+    db.run("CHECKPOINT");
+    db.run("INSERT INTO $S.t VALUES (1)");
+    db.run("BEGIN; INSERT INTO $S.t VALUES (2); ROLLBACK");
+    db.run(
+        "BEGIN; INSERT INTO $S.t VALUES (3); SAVEPOINT a; INSERT INTO $S.t VALUES (4);
+         SAVEPOINT b; INSERT INTO $S.t VALUES (5); ROLLBACK TO b; COMMIT",
+    );
+    let many: String = (0..100)
+        .map(|i| format!("SAVEPOINT s{i}; INSERT INTO $S.t VALUES ({i});"))
+        .collect();
+    db.run(&format!("BEGIN; {many} COMMIT"));
+    db.run(&format!("BEGIN; {many} ROLLBACK"));
+    db.run(
+        "BEGIN; INSERT INTO $S.t VALUES (6); SAVEPOINT a; INSERT INTO $S.t VALUES (7);
+         PREPARE TRANSACTION 'kept'",
+    );
+    db.run("BEGIN; INSERT INTO $S.t VALUES (8); PREPARE TRANSACTION 'dropped'");
+    db.run("CHECKPOINT");
+    db.run("COMMIT PREPARED 'kept'");
+    db.run("ROLLBACK PREPARED 'dropped'");
+    db.run("BEGIN; CREATE TABLE $S.gone (id int); INSERT INTO $S.gone VALUES (1); COMMIT");
+    db.run("BEGIN; DROP TABLE $S.gone; CREATE TABLE $S.other (id int); COMMIT");
+    db.run(
+        "BEGIN; CREATE TABLE $S.prepared (id int); DROP TABLE $S.other;
+         PREPARE TRANSACTION 'ddl'",
+    );
+    db.run("COMMIT PREPARED 'ddl'");
+    open.execute("COMMIT").unwrap();
+    db.run("ALTER TABLE $S.t ADD note text DEFAULT 'x'");
+    db.run("CREATE INDEX ON $S.t (id)");
+    db.run("ANALYZE $S.t");
+    let last = parse_lsn(
+        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    db.run("SELECT pg_switch_wal()");
+    let mut ours = Vec::new();
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "no switch record past {last}");
+        let Some(record) = physical.next_record().unwrap() else {
+            continue;
+        };
+        let described = match xact::event(&record, physical.major()).unwrap() {
+            Some(Event::Commit(e)) => Some(format!("COMMIT {}", ending(&e))),
+            Some(Event::Abort(e)) => Some(format!("ABORT {}", ending(&e))),
+            Some(Event::Running(r)) => Some(format!(
+                "RUNNING {} {} {:?}",
+                r.next_xid, r.oldest_xid, r.xids
+            )),
+            None => None,
+        };
+        ours.extend(described.map(|d| (record.lsn, d)));
+        if record.is_switch() && record.lsn >= last.0 {
+            break;
+        }
+    }
+    let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
+    let mut waldump = pg
+        ._container
+        .exec(ExecCommand::new([
+            "pg_waldump".to_owned(),
+            "-p".to_owned(),
+            format!("{directory}/pg_wal"),
+            "-s".to_owned(),
+            start.to_string(),
+            "-e".to_owned(),
+            last.to_string(),
+        ]))
+        .unwrap();
+    let out = String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap();
+    let theirs: Vec<(u64, String)> = out.lines().filter_map(described_ending).collect();
+    let ours: Vec<(u64, String)> = ours.into_iter().filter(|(lsn, _)| *lsn < last.0).collect();
+    for (ours, theirs) in ours.iter().zip(&theirs) {
+        assert_eq!(ours, theirs);
+    }
+    assert_eq!(ours.len(), theirs.len());
+    let count = |what: &str| ours.iter().filter(|(_, d)| d.starts_with(what)).count();
+    assert!(count("COMMIT") >= 8 && count("ABORT") >= 3 && count("RUNNING") >= 2);
+    assert!(
+        ours.iter().any(|(_, d)| d.matches(' ').count() > 100),
+        "100 subxacts"
+    );
+    assert!(
+        ours.iter()
+            .any(|(_, d)| d.starts_with("RUNNING") && !d.ends_with("[]")),
+        "a transaction running at a checkpoint"
+    );
+    assert!(
+        ours.iter().filter(|(_, d)| d.contains("relcache")).count() >= 3,
+        "relcache invalidations"
+    );
+}
+
+/// An ending as [`described_ending`] puts it: xid, time as `pg_waldump`
+/// prints it, subtransactions.
+fn ending(ending: &xact::Ending) -> String {
+    let micros = ending.time.rem_euclid(1_000_000);
+    let whole = row_values::timestamp(ending.time - micros, false);
+    let mut text = format!("{} {whole}.{micros:06} UTC", ending.xid);
+    for subxact in &ending.subxacts {
+        text.push_str(&format!(" {subxact}"));
+    }
+    for invalidated in &ending.invalidated {
+        text.push_str(&format!(" relcache {}", invalidated.relation));
+    }
+    text
+}
+
+/// A transaction's end or a `RUNNING_XACTS` line of `pg_waldump`.
+fn described_ending(line: &str) -> Option<(u64, String)> {
+    let after = |key: &str| line.split_once(key).map(|(_, rest)| rest.trim_start());
+    let lsn = parse_lsn(after("lsn:")?.split(',').next()?.trim())?.0;
+    let tx = after("tx:")?.split(',').next()?.trim();
+    let desc = after("desc: ")?;
+    let (kind, rest) = desc.split_once(' ')?;
+    let text = match kind {
+        "COMMIT" | "COMMIT_PREPARED" | "ABORT" | "ABORT_PREPARED" => {
+            let (xid, rest) = match rest.split_once(": ") {
+                Some((xid, time)) if xid.bytes().all(|b| b.is_ascii_digit()) => (xid, time),
+                _ => (tx, rest),
+            };
+            let time = rest.split(';').next()?.trim();
+            let mut text = format!(
+                "{} {xid} {time}",
+                &kind[..kind.find('_').unwrap_or(kind.len())]
+            );
+            for subxact in rest
+                .split("; ")
+                .find_map(|p| p.strip_prefix("subxacts: "))
+                .into_iter()
+                .flat_map(str::split_whitespace)
+            {
+                text.push_str(&format!(" {subxact}"));
+            }
+            let messages = rest
+                .split("; ")
+                .find_map(|p| p.strip_prefix("inval msgs: "))
+                .unwrap_or_default();
+            let words: Vec<&str> = messages.split_whitespace().collect();
+            for pair in words.windows(2).filter(|pair| pair[0] == "relcache") {
+                text.push_str(&format!(" relcache {}", pair[1]));
+            }
+            text
+        }
+        "RUNNING_XACTS" => {
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let (next, oldest) = (words[1], words[5].trim_end_matches(';'));
+            let xids: Vec<u32> = rest
+                .split("; ")
+                .find(|p| p.contains(" xacts:"))
+                .and_then(|p| p.split_once(':'))
+                .map(|(_, ids)| ids.split_whitespace().map(|x| x.parse().unwrap()).collect())
+                .unwrap_or_default();
+            format!("RUNNING {next} {oldest} {xids:?}")
+        }
+        _ => return None,
+    };
+    Some((lsn, text))
+}
+
+/// On one server with logical decoding, the physical stream yields the
+/// commits a logical slot yields, byte for byte: inserts, `COPY`, HOT and
+/// other updates, rows moving page, deletes, `ON CONFLICT`, savepoints
+/// kept and rolled back, aborts, two-phase commit, `VACUUM`, a checkpoint
+/// between, and changes to tables outside the spec.
+#[test]
+fn commits_what_logical_decoding_commits() {
+    let pg = plain(image(&tag()).with_cmd([
+        "-c",
+        "wal_level=logical",
+        "-c",
+        "max_prepared_transactions=4",
+    ]));
+    // A column between those the spec reads, dropped once rows hold it.
+    let tables = TABLES.replace("    kind text,\n", "    junk text,\n    kind text,\n");
+    let mut db = Db::new(&pg, "twin", &tables);
+    db.run("CREATE TABLE $S.other (id int, note text)");
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL), (3, 'Manhattan', 12.5)");
+    db.run(
+        "INSERT INTO $S.trips (id, at, junk, kind, zone_id, fare, rider, tip)
+         SELECT i, timestamptz '2024-01-01' + i * interval '7 minutes', repeat('j', 3 + i % 200),
+                'cab', 1 + i % 3, i + 0.5, 'ann', i
+         FROM generate_series(0, 39) AS i",
+    );
+    db.run("ALTER TABLE $S.trips DROP COLUMN junk");
+    let mut rng = Rng::new(21);
+    let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+    let spec = db.spec(SPEC);
+    let mut logical = db.pg();
+    let start = logical.open(&spec).unwrap();
+    let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
+
+    for id in 40..140 {
+        db.run(&rng.trip(id));
+    }
+    let batch: String = (140..200).map(|id| rng.trip(id)).collect();
+    db.run(&format!("BEGIN; {batch} COMMIT"));
+    db.run("UPDATE $S.trips SET fare = fare + 1 WHERE id % 3 = 0");
+    db.run("CHECKPOINT");
+    db.run("UPDATE $S.trips SET tip = tip + 1, kind = kind || '!' WHERE id % 4 = 1");
+    db.run("UPDATE $S.trips SET id = id + 1000 WHERE id % 7 = 0");
+    db.run("DELETE FROM $S.trips WHERE id % 5 = 0");
+    db.run("UPDATE $S.zones SET borough = 'Brooklyn', toll = 2.0 WHERE id = 2");
+    // DDL logical decoding reads through: the decoder gets the table
+    // again, and older rows lack the new columns.
+    db.run("ALTER TABLE $S.trips ADD extra text DEFAULT 'filler', ADD note int");
+    db.run("UPDATE $S.trips SET fare = fare + 2 WHERE id % 6 = 0");
+    db.run(&rng.trip(300));
+    db.run("ALTER TABLE $S.trips DROP COLUMN note");
+    db.run("CREATE INDEX ON $S.trips (zone_id)");
+    db.run("ANALYZE $S.trips");
+    db.run("BEGIN; ALTER TABLE $S.zones ADD region text DEFAULT 'east'; UPDATE $S.zones SET toll = 3.5 WHERE id = 1; COMMIT");
+    db.run("UPDATE $S.zones SET toll = 4.5 WHERE id = 3");
+    db.run(
+        "BEGIN; INSERT INTO $S.logins VALUES (1, now(), 1); SAVEPOINT a;
+         INSERT INTO $S.logins VALUES (2, now(), 2); ROLLBACK TO a;
+         SAVEPOINT b; UPDATE $S.trips SET tip = 0 WHERE id = 1; RELEASE b;
+         INSERT INTO $S.other VALUES (1, 'not read'); INSERT INTO $S.logins VALUES (3, now(), 3);
+         COMMIT",
+    );
+    db.run("BEGIN; DELETE FROM $S.trips; ROLLBACK");
+    db.run(
+        "BEGIN; INSERT INTO $S.logins VALUES (4, now(), 1); SAVEPOINT a;
+         DELETE FROM $S.logins WHERE id = 3; PREPARE TRANSACTION 'two'",
+    );
+    db.run("INSERT INTO $S.other VALUES (2, 'between')");
+    db.run("COMMIT PREPARED 'two'");
+    db.run(
+        "COPY (SELECT 5000 + i, timestamptz '2024-01-01' + i * interval '1 minute', 'cab', 1 + i % 3,
+                      i % 70 + 0.25, NULL, i % 9
+               FROM generate_series(1, 150) AS i) TO '/tmp/trips.csv'",
+    );
+    db.run("COPY $S.trips (id, at, kind, zone_id, fare, rider, tip) FROM '/tmp/trips.csv'");
+    db.run(
+        "INSERT INTO $S.trips VALUES (5001, now(), 'pool', 2, 1.00, 'ann', 1), (9999, now(), 'van', 3, 2.50, 'bo', 2)
+         ON CONFLICT (id) DO UPDATE SET fare = excluded.fare",
+    );
+    db.run("VACUUM $S.trips");
+    // Read before the last commit: other WAL, autovacuum's or a
+    // RUNNING_XACTS, may follow it, which the logical slot sends nothing
+    // for.
+    let before = parse_lsn(
+        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    db.run("UPDATE $S.trips SET rider = 'di' WHERE id % 11 = 0");
+
+    let mut theirs = Vec::new();
+    let deadline = Instant::now() + LONG;
+    while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
+        assert!(Instant::now() < deadline, "no logical commit past {before}");
+        theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
+    }
+
+    let ours = pipeline.through_now(&mut db, &mut stream);
+    let ours: Vec<Commit> = ours.into_iter().filter(|c| c.lsn > start).collect();
+    assert!(theirs.len() > 100, "{} commits", theirs.len());
+    for (ours, theirs) in ours.iter().zip(&theirs) {
+        assert_eq!(ours, theirs);
+    }
+    assert_eq!(ours.len(), theirs.len());
+}
+
+/// The physical stream's path from records to commits, with a snapshot
+/// that sees nothing, so every whole commit comes, and layouts read again
+/// on a plain connection.
+struct Pipeline {
+    conn: Connection,
+    checked: Vec<Checked>,
+    inner: crate::wal::pipeline::Pipeline,
+}
+
+impl Pipeline {
+    fn new(pg: &PostgresContainer, spec: &Spec, publication: &str, major: u32) -> Pipeline {
+        let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+        let tables = catalog::read(&mut conn, spec, publication, PHYSICAL).unwrap();
+        let checked: Vec<Checked> = tables.facts.into_iter().chain(tables.dims).collect();
+        let (layouts, labels) = physical::tables(&mut conn, &checked).unwrap();
+        let mut inner = crate::wal::pipeline::Pipeline::new(
+            checked.clone(),
+            layouts,
+            labels,
+            major,
+            ROW_LIMIT,
+            PAGE_MEMORY,
+        );
+        let nothing = Snapshot::parse("1:1:").unwrap();
+        assert_eq!(inner.snapshot(nothing).unwrap(), []);
+        Pipeline {
+            conn,
+            checked,
+            inner,
+        }
+    }
+
+    fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
+        let (conn, checked) = (&mut self.conn, &self.checked);
+        let layouts = || physical::tables(conn, checked).map(|(tables, _)| tables);
+        self.inner.record(record, layouts).unwrap()
+    }
+
+    /// The commits of all WAL written so far.
+    fn through_now(&mut self, db: &mut Db, stream: &mut Physical) -> Vec<Commit> {
+        let last = parse_lsn(
+            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        db.run("SELECT pg_switch_wal()");
+        let mut commits = Vec::new();
+        let deadline = Instant::now() + LONG;
+        loop {
+            assert!(Instant::now() < deadline, "no switch record past {last}");
+            let Some(record) = stream.next_record().unwrap() else {
+                continue;
+            };
+            commits.extend(self.record(&record));
+            if record.is_switch() && record.lsn >= last.0 {
+                assert_eq!(
+                    self.inner.consistency(),
+                    crate::wal::transactions::Consistency::Consistent
+                );
+                return commits;
+            }
+        }
+    }
+}
+
+/// A table rewritten, truncated or dropped no longer reads as loaded:
+/// its old pages are gone, and the physical stream says so with an
+/// `Unfit` for each, at the commit that did it. DDL that keeps the file
+/// says nothing.
+#[test]
+fn rewritten_and_dropped_tables_are_unfit() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "rewrites", TABLES);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
+    let mut rng = Rng::new(5);
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    db.run("INSERT INTO $S.logins VALUES (1, now(), 1)");
+    let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+    db.run("SELECT pg_log_standby_snapshot()");
+    let spec = db.spec(SPEC);
+    let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
+    let steps = [
+        ("ALTER TABLE $S.trips ADD extra int", None),
+        // A value the spec reads, TOASTed out of line: the page holds a
+        // pointer, and the chunks may be gone before Straum could read
+        // them.
+        (
+            "INSERT INTO $S.trips (id, kind) SELECT 999, string_agg(md5(i::text), '')
+             FROM generate_series(1, 400) AS i",
+            Some("trips"),
+        ),
+        ("VACUUM FULL $S.zones", Some("zones")),
+        ("TRUNCATE $S.logins", Some("logins")),
+        ("ALTER TABLE $S.trips ALTER tip TYPE bigint", Some("trips")),
+        ("DROP TABLE $S.zones", Some("zones")),
+    ];
+    for (sql, unfit) in steps {
+        db.run(sql);
+        let commits = pipeline.through_now(&mut db, &mut stream);
+        let names: Vec<String> = commits
+            .iter()
+            .flat_map(|c| &c.changes)
+            .filter_map(|c| match c {
+                straum_app::Change::Unfit { table } => Some(table.to_string()),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<String> = unfit.map(str::to_owned).into_iter().collect();
+        assert_eq!(names, expected, "{sql}");
+    }
+}
+
+/// A load in a snapshot taken once the physical stream is consistent,
+/// plus the commits that snapshot doesn't see, is the table: with
+/// writers inserting and deleting all along, and a transaction open from
+/// before the stream started until after.
+#[test]
+fn lines_the_load_up_with_the_stream() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "aligned", TABLES);
+    let mut open = Connection::connect(&pg.dsn, false).unwrap();
+    open.execute("BEGIN").unwrap();
+    open.execute(&db.sql("INSERT INTO $S.trips (id) VALUES (-1)"))
+        .unwrap();
+    // The redo point Straum starts from is past that insert.
+    db.run("CHECKPOINT");
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<_> = (0..3)
+        .map(|w| {
+            let stop = Arc::clone(&stop);
+            let dsn = pg.dsn.clone();
+            let schema = db.name.clone();
+            thread::spawn(move || {
+                let mut conn = Connection::connect(&dsn, false).unwrap();
+                let mut id = w * 1_000_000;
+                while !stop.load(Ordering::Relaxed) {
+                    id += 1;
+                    conn.execute(&format!(
+                        "BEGIN; INSERT INTO {schema}.trips (id) VALUES ({id}), ({}); SAVEPOINT a;
+                         INSERT INTO {schema}.trips (id) VALUES ({}); ROLLBACK TO a;
+                         DELETE FROM {schema}.trips WHERE id = {}; COMMIT",
+                        id + 500_000,
+                        id + 700_000,
+                        id - 1
+                    ))
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    thread::sleep(Duration::from_millis(200));
+    let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
+    // Without it the first RUNNING_XACTS comes with the next checkpoint
+    // or within 15 seconds.
+    db.run("SELECT pg_log_standby_snapshot()");
+    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
+    let (relation, _) = relation_file(&mut db, "trips");
+    let mut heap = Heap::new([relation].into(), stream.major());
+    let mut transactions = Transactions::new(ROW_LIMIT);
+    let net = |committed: &Committed| -> i64 {
+        (committed.changes.iter())
+            .map(|c| match c {
+                crate::wal::heap::Change::Insert { .. } => 1,
+                crate::wal::heap::Change::Update { .. } => 0,
+                crate::wal::heap::Change::Delete { .. } => -1,
+            })
+            .sum()
+    };
+    let mut before = Vec::new();
+    let mut closed = false;
+    let deadline = Instant::now() + LONG;
+    while transactions.consistency() != crate::wal::transactions::Consistency::Consistent {
+        assert!(Instant::now() < deadline, "never consistent");
+        let (committed, record) = advance(&mut stream, &mut heap, &mut transactions);
+        before.extend(committed);
+        // The open transaction holds the stream back until it ends.
+        if record.is_some() && !closed {
+            thread::sleep(Duration::from_millis(50));
+            assert!(
+                transactions.consistency() != crate::wal::transactions::Consistency::Consistent
+            );
+            open.execute("COMMIT").unwrap();
+            closed = true;
+        }
+    }
+    conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        .unwrap();
+    let snapshot = Snapshot::parse(
+        conn.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let loaded: i64 = conn.rows(&db.sql("SELECT count(*) FROM $S.trips")).unwrap()[0][0]
+        .as_deref()
+        .unwrap()
+        .parse()
+        .unwrap();
+    conn.execute("COMMIT").unwrap();
+    if !closed {
+        open.execute("COMMIT").unwrap();
+    }
+    let mut count = loaded;
+    let unseen = held::unseen(&mut before, &snapshot);
+    count += unseen.iter().map(net).sum::<i64>();
+    // Checkpoints while the writers write: a page changed twice between a
+    // redo point and its checkpoint record has an image only the first
+    // time, so Straum must keep it past the record.
+    for _ in 0..3 {
+        thread::sleep(Duration::from_millis(100));
+        db.run("CHECKPOINT");
+    }
+    thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Relaxed);
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let last = parse_lsn(
+        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    db.run("SELECT pg_switch_wal()");
+    let mut after = 0;
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "no switch record past {last}");
+        let (committed, record) = advance(&mut stream, &mut heap, &mut transactions);
+        if let Some(committed) = committed
+            && !snapshot.sees(committed.xid)
+        {
+            count += net(&committed);
+            after += 1;
+        }
+        if record.is_some_and(|r| r.is_switch() && r.lsn >= last.0) {
+            break;
+        }
+    }
+    let total: i64 = db.rows("SELECT count(*) FROM $S.trips")[0][0]
+        .as_deref()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(after > 20, "{after} commits after the load");
+    assert_eq!(count, total, "loaded {loaded}, {} before", unseen.len());
+}
+
+/// Reads the next record into the pages and the held transactions: the
+/// transaction it commits whole, if it does, and the record.
+fn advance(
+    stream: &mut Physical,
+    heap: &mut Heap,
+    transactions: &mut Transactions,
+) -> (Option<Committed>, Option<crate::wal::Record>) {
+    let Some(record) = stream.next_record().unwrap() else {
+        return (None, None);
+    };
+    transactions.hold(record.xid, record.lsn, heap.apply(&record).unwrap());
+    let committed = xact::event(&record, stream.major())
+        .unwrap()
+        .and_then(|e| transactions.event(e, record.lsn, record.next()).unwrap());
+    (committed, Some(record))
+}
+
+/// A row as `heap_page_items` shows it: slot, `t_hoff`, the number of
+/// columns, the null bitmap as bits and the columns in hex.
+fn page_item(offnum: u16, tuple: &Tuple) -> String {
+    let columns = tuple.infomask2 & 0x07FF;
+    let bitmap_bytes = usize::from(tuple.hoff) - 23;
+    let bits: String = if tuple.infomask & 0x0001 == 0 {
+        String::new()
+    } else {
+        // Whole bytes of it, as pageinspect prints them.
+        (0..usize::from(columns).div_ceil(8) * 8)
+            .map(|i| {
+                let byte = tuple.body[i / 8];
+                if byte >> (i % 8) & 1 == 1 { '1' } else { '0' }
+            })
+            .collect()
+    };
+    let hex: String = tuple.body[bitmap_bytes..]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{offnum} {} {columns} {bits} {hex}", tuple.hoff)
+}
+
+/// A record as `pg_waldump` prints it: its LSN, then its total length,
+/// transaction and block references.
+fn dumped(record: &crate::wal::Record) -> (u64, String) {
+    let mut text = format!("{} {}", record.total_length(), record.xid);
+    for block in &record.blocks {
+        let file = block.file;
+        text.push_str(&format!(
+            " #{} rel {}/{}/{}",
+            block.id, file.tablespace, file.database, file.relation
+        ));
+        if block.fork != 0 {
+            let fork = ["main", "fsm", "vm", "init"][usize::from(block.fork)];
+            text.push_str(&format!(" fork {fork}"));
+        }
+        text.push_str(&format!(" blk {}", block.number));
+        match &block.image {
+            Some(image) if image.apply => text.push_str(" FPW"),
+            Some(_) => text.push_str(" FPW for WAL verification"),
+            None => {}
+        }
+    }
+    (record.lsn, text)
+}
+
+/// One line of `pg_waldump` as [`dumped`] puts a record.
+fn waldump_line(line: &str) -> Option<(u64, String)> {
+    let after = |key: &str| line.split_once(key).map(|(_, rest)| rest.trim_start());
+    let total = after("len (rec/tot):")?.split_once('/')?.1;
+    let total = total.split(',').next()?.trim();
+    let xid = after("tx:")?.split(',').next()?.trim();
+    let lsn = parse_lsn(after("lsn:")?.split(',').next()?.trim())?;
+    let mut text = format!("{total} {xid}");
+    for block in line.split("blkref ").skip(1) {
+        let block = block.trim_end().trim_end_matches(',');
+        text.push(' ');
+        text.push_str(block.replacen(':', "", 1).as_str());
+    }
+    Some((lsn.0, text))
+}
+
 #[test]
 fn says_to_set_wal_level_logical() {
     for tag in ["17", "18"] {
@@ -1813,7 +3231,12 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
     let dsn = pg.dsn.to_string().replace("postgres@", "straum_plan:plan@");
-    let pg = Postgres::new(Dsn::parse(&dsn).unwrap(), "plan", ROW_LIMIT);
+    let pg = Postgres::new(
+        Dsn::parse(&dsn).unwrap(),
+        "plan",
+        ROW_LIMIT,
+        Replication::Logical,
+    );
     let mut writer = Writer::new(App::new(spec, LIMITS, None), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
@@ -2224,7 +3647,12 @@ fn setup_problems_say_what_to_fix() {
         .dsn
         .to_string()
         .replace("postgres@", &format!("{name}:r@"));
-    let mut source = Postgres::new(Dsn::parse(&dsn).unwrap(), name, ROW_LIMIT);
+    let mut source = Postgres::new(
+        Dsn::parse(&dsn).unwrap(),
+        name,
+        ROW_LIMIT,
+        Replication::Logical,
+    );
     assert_eq!(
         setup_problems(name, source.open(&db.spec(dim_spec))),
         ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
@@ -2413,13 +3841,116 @@ fn binary_copies_read_as_text_does() {
     assert_eq!(&texts[5][10..], [Datum::Null, Datum::Null]);
 }
 
+/// `--wal physical` needs neither the publication nor `REPLICA IDENTITY
+/// FULL`, takes `wal_level` replica from 16, and needs full-page writes
+/// and a `wal_compression` it reads.
+#[test]
+fn checks_what_the_physical_wal_needs() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(
+        &pg,
+        "needs",
+        &TABLES
+            .replace("REPLICA IDENTITY FULL", "REPLICA IDENTITY DEFAULT")
+            .replace(
+                "CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;",
+                "",
+            ),
+    );
+    let spec = db.spec(SPEC);
+    let mut catalog = catalog::query(&mut db.conn, &spec, "needs").unwrap();
+    assert_eq!(
+        (catalog.full_page_writes.as_str(), catalog.publication),
+        ("on", None)
+    );
+    let physical =
+        |catalog: &catalog::Catalog| catalog::check(&spec, catalog, "needs", PHYSICAL).err();
+    assert_eq!(physical(&catalog), None);
+    let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
+    assert!(
+        logical
+            .iter()
+            .any(|p| p.contains("publication needs does not exist"))
+    );
+    for (version, wal_level, fpw, compression, problems) in [
+        (160_000, "replica", "on", "lz4", vec![]),
+        (180_000, "logical", "on", "pglz", vec![]),
+        (170_000, "replica", "on", "on", vec![]),
+        (
+            160_000,
+            "minimal",
+            "on",
+            "off",
+            vec!["wal_level is minimal; Straum needs replica or logical, which takes a restart"],
+        ),
+        (
+            180_000,
+            "replica",
+            "off",
+            "zstd",
+            vec![
+                "full_page_writes is off; --wal physical needs on",
+                "wal_compression is zstd; --wal physical reads off, pglz and lz4",
+            ],
+        ),
+    ] {
+        catalog.server_version = version;
+        catalog.wal_level = wal_level.into();
+        catalog.full_page_writes = fpw.into();
+        catalog.wal_compression = compression.into();
+        let expected = (!problems.is_empty())
+            .then(|| problems.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>());
+        assert_eq!(
+            physical(&catalog),
+            expected,
+            "{version} {wal_level} {fpw} {compression}"
+        );
+    }
+}
+
+/// With nothing logging which transactions run, and a role that may not
+/// make PostgreSQL log it, a physical start says how to fix that.
+#[test]
+fn says_what_a_physical_start_waits_for() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "waits", TABLES);
+    db.run(
+        "CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader;
+         GRANT SELECT ON ALL TABLES IN SCHEMA $S TO reader",
+    );
+    let spec = db.spec(SPEC);
+    // The server just started: its last checkpoint is the shutdown one,
+    // which logs no RUNNING_XACTS, and the background writer logs the
+    // first 15 seconds in. An online checkpoint would log one.
+    let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
+    let mut source = Postgres::new(Dsn::parse(&dsn).unwrap(), "waits", ROW_LIMIT, PHYSICAL);
+    source.consistent_wait = Duration::from_secs(2);
+    let err = source.open(&spec).unwrap_err().to_string();
+    assert!(
+        err.contains(
+            "--wal physical waited 2 s for PostgreSQL to log which transactions run; \
+             GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role"
+        ),
+        "{err}"
+    );
+    // Granted, it starts at once.
+    db.run("GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO reader");
+    let started = Instant::now();
+    source.open(&spec).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn reports_wal_level_and_read_access() {
     let pg = postgres();
     let mut db = Db::new(&pg, "access", TABLES);
     let spec = db.spec(SPEC);
     let mut catalog = catalog::query(&mut db.conn, &spec, "access").unwrap();
-    assert!(catalog::check(&spec, &catalog, "access").is_ok());
+    assert!(catalog::check(&spec, &catalog, "access", Replication::Logical).is_ok());
     let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
     assert_eq!(
         catalog.server_version / 10_000,
@@ -2443,7 +3974,7 @@ fn reports_wal_level_and_read_access() {
             )]
         });
         assert_eq!(
-            catalog::check(&spec, &catalog, "access").err(),
+            catalog::check(&spec, &catalog, "access", Replication::Logical).err(),
             expected,
             "{version} {wal_level}"
         );
@@ -2451,7 +3982,12 @@ fn reports_wal_level_and_read_access() {
 
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
-    let mut reader = Postgres::new(Dsn::parse(&dsn).unwrap(), "access", ROW_LIMIT);
+    let mut reader = Postgres::new(
+        Dsn::parse(&dsn).unwrap(),
+        "access",
+        ROW_LIMIT,
+        Replication::Logical,
+    );
     let err = reader.open(&spec).unwrap_err().to_string();
     for table in ["zones", "trips", "logins"] {
         let line =
@@ -2464,7 +4000,12 @@ fn reports_wal_level_and_read_access() {
 fn connection_errors() {
     let pg = postgres();
     let wrong = pg.dsn.to_string().replace("postgres@", "postgres:wrong@");
-    let mut source = Postgres::new(Dsn::parse(&wrong).unwrap(), "p", ROW_LIMIT);
+    let mut source = Postgres::new(
+        Dsn::parse(&wrong).unwrap(),
+        "p",
+        ROW_LIMIT,
+        Replication::Logical,
+    );
     let spec = straum_notation::parse(&SPEC.replace("$S", "p")).unwrap();
     let err = source.open(&spec).unwrap_err().to_string();
     assert!(
@@ -2473,7 +4014,7 @@ fn connection_errors() {
     );
 
     let bare = Dsn::parse(&pg.dsn.to_string()).unwrap();
-    let err = Postgres::new(bare, "p", ROW_LIMIT)
+    let err = Postgres::new(bare, "p", ROW_LIMIT, Replication::Logical)
         .open(&spec)
         .unwrap_err()
         .to_string();
@@ -2490,7 +4031,7 @@ fn connection_errors() {
 
     // Nothing listens on port 1.
     let closed = Dsn::parse("postgres://straum@127.0.0.1:1/straum").unwrap();
-    let err = Postgres::new(closed, "p", ROW_LIMIT)
+    let err = Postgres::new(closed, "p", ROW_LIMIT, Replication::Logical)
         .open(&spec)
         .unwrap_err()
         .to_string();
@@ -2904,7 +4445,12 @@ fn scripted_stream(parts: Vec<(Duration, Vec<u8>)>) -> (Stream, thread::JoinHand
     let (dsn, server) = scripted([vec![now(start)], parts].concat());
     let mut conn = Connection::connect(&dsn, true).unwrap();
     conn.copy_both("START_REPLICATION").unwrap();
-    let stream = Stream::start(conn, Decoder::new(Vec::new(), ROW_LIMIT), Lsn(0x10)).unwrap();
+    let stream = Stream::start(
+        conn,
+        Reader::Logical(Decoder::new(Vec::new(), ROW_LIMIT)),
+        Lsn(0x10),
+    )
+    .unwrap();
     (stream, server)
 }
 
@@ -3202,7 +4748,7 @@ fn taxi_month() {
 
     let mut writer = Writer::new(
         App::new(spec, LIMITS, None),
-        Postgres::new(dsn, "straum", ROW_LIMIT),
+        Postgres::new(dsn, "straum", ROW_LIMIT, Replication::Logical),
     );
     let clock = Instant::now();
     assert!(matches!(writer.step(), Ok(Step::Started(_))));

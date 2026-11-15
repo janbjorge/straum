@@ -4,9 +4,10 @@
 [Helm chart](#kubernetes):
 
 ```text
-straum run --spec FILE [--listen ADDRESS] [--publication NAME] [--dsn-file FILE]
-           [--max-lag SECONDS] [--max-retained-wal BYTES]
-           [--max-transaction-rows ROWS]
+straum run --spec FILE [--listen ADDRESS] [--wal logical|physical]
+           [--publication NAME] [--dsn-file FILE] [--max-lag SECONDS]
+           [--max-retained-wal BYTES] [--max-transaction-rows ROWS]
+           [--max-page-memory BYTES]
 straum plan --spec FILE [--publication NAME] [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
 straum views [--url URL]
@@ -48,11 +49,13 @@ over HTTP.
 | --- | --- |
 | `--spec FILE` | The [spec](spec.md). |
 | `--listen ADDRESS` | Where to serve HTTP. |
+| `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#without-logical-decoding) `wal_level = replica` writes. |
 | `--publication NAME` | The publication `straum plan` made. |
 | `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#following) instead of applying it. |
+| `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 
 It logs to stderr, one line per event. SIGTERM or SIGINT stops it: it
 stops accepting, finishes the asks in flight and exits, and PostgreSQL

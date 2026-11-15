@@ -175,8 +175,8 @@ The same steps work on a database you have:
    keys, its aggregates as measures ([Writing a spec](spec.md)).
 2. `straum plan --spec FILE` prints the setup SQL, or what is wrong
    with the spec. A table owner runs the SQL once. PostgreSQL 16 to
-   18 also need `wal_level = logical`, which takes a restart ([Setting
-   up PostgreSQL](postgresql.md)).
+   18 also need `wal_level = logical`, which takes a restart, or
+   `--wal physical` ([Setting up PostgreSQL](postgresql.md)).
 3. `straum run --spec FILE` with `STRAUM_DSN` set, then ask.
 
 Start with few keys. Memory follows cells, one per distinct

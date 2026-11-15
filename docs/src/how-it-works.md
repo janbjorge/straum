@@ -126,6 +126,41 @@ in through the bulk `COPY` instead; the
 connection or WAL past `--max-retained-wal` starts Straum over too
 ([States](running.md#states)).
 
+## The physical stream
+
+With `--wal physical` there is no logical decoding to send rows
+(ADR-0049). A temporary physical slot streams the server's WAL from the
+last checkpoint's redo point, and Straum turns it into the same
+messages the logical slot sends, so one decoder serves both:
+
+- Pages. The first change to a page after a checkpoint carries a full
+  image of it; Straum keeps the rows of each page of the spec's tables
+  from there and applies the inserts, updates, deletes, pruning and
+  vacuuming that follow, as PostgreSQL's redo does. A delete names only
+  a slot on a page, and an update may log only the bytes that differ
+  from the old row: the page has the rest.
+- Transactions. Changes wait by transaction until its commit record,
+  with its subtransactions', and go in WAL order; an abort drops them.
+- Rows. A row's bytes become text as PostgreSQL's output functions
+  print it, then the pgoutput messages: the old row of an update or
+  delete is whole, as under `REPLICA IDENTITY FULL`.
+- The load. Straum waits until every transaction open when the stream
+  began has ended, so each later one is whole in the WAL it reads, then
+  takes the load's snapshot. Commits the snapshot saw are in the load
+  and dropped; the rest stream. A commit read before that point must
+  be in the load; PostgreSQL logs a commit a moment before snapshots
+  see it, longer while a synchronous standby answers, so Straum takes
+  the snapshot again until it does. A transaction past the row limit
+  that the load saw doesn't stop the stream. The stream reads on
+  during the load.
+- Memory. A page goes at the next checkpoint record whose redo point is
+  past its last change: PostgreSQL logs it whole the next time. So
+  Straum holds the pages changed in about one checkpoint cycle, not the
+  tables, and starts over past `--max-page-memory`.
+- DDL. A commit that changes a table's catalog entry makes Straum read
+  the table's columns again, and the decoder sees what changed, as with
+  pgoutput. A table rewritten or truncated starts Straum over.
+
 ## Answering an ask
 
 This ask reads the purchases of two regions over the hour from 9:00

@@ -185,7 +185,8 @@ are open.
   that fit in the middle, narrower ones at the ends, or `date_bin`
   buckets alone when grouped by bucket.
 - **Limit**: what a flag caps: `--max-lag`, `--max-retained-wal`
-  (`Limits`) and `--max-transaction-rows` (`Transaction::limit`).
+  (`Limits`), `--max-transaction-rows` (`Transaction::limit`) and
+  `--max-page-memory` (`Replication::Physical`).
 - **Answer**: the JSON `{"as_of", "rows"}`, or the same as a table in
   plain text for `Accept: text/plain` and `straum ask` (ADR-0039).
   `Answer` is its columns and rows; `Answered` adds `as_of` and the
@@ -229,9 +230,14 @@ are open.
 - **Snapshot** (`Snapshot`): the database as of a new slot's
   consistent point, seen by a read-only repeatable-read transaction on
   the replication connection. It ends with the last load (ADR-0010).
+  With `--wal physical` it is on a plain connection, and the stream
+  drops the commits it saw (`wal::transactions::Snapshot`, read from
+  `pg_current_snapshot()`).
 - **Consistent point** (`Snapshot::at`): the LSN a new slot reports,
   where the snapshot is taken and the stream starts. The guide says
-  "LSN L".
+  "LSN L". For the physical stream (`Consistency`): past the first
+  `RUNNING_XACTS` record and every transaction it names, so every
+  later commit is whole in the WAL read.
 - **Stream** (`Stream`): the commits pgoutput sends from the
   consistent point on. `Following` is where the stream stands.
 - **Applied** (`Following::applied`, `Status::applied`,
@@ -297,8 +303,27 @@ are open.
 - **Publication**: the publication holding every spec table, `straum`
   by default (`--publication`).
 - **Replication slot**: the temporary logical slot each start creates,
-  `straum_<pid>_<nanos>_<n>`, dropped when the connection closes.
-  "The slot" in the guide.
+  `straum_<pid>_<nanos>_<n>`, dropped when the connection closes, or
+  with `--wal physical` a temporary physical one. "The slot" in the
+  guide.
+- **Replication** (`Replication`, `--wal`): which WAL Straum streams:
+  logical decoding's through the publication, or the physical WAL
+  (ADR-0049).
+- **Physical stream** (`Physical`, `Replay`, `Reader::Physical`): the
+  physical WAL from a physical slot, turned into pgoutput messages for
+  the same decoder.
+- **Redo point**: where recovery from a checkpoint starts, and where a
+  physical slot reserves WAL from. The first change to a page after it
+  carries a **full-page image**: the page whole, after the change.
+- **Page state** (`Heap`, `Page`): the rows Straum keeps of each page of
+  the spec's tables changed since the last redo point, by slot. A page
+  goes at a checkpoint record whose redo point is past its last change.
+- **Layout** (`wal::messages::Table`, `physical::tables`): how a
+  table's rows lie on its pages: its file, every attribute by `attnum`
+  with dropped ones, and each column added with a default's value.
+- **Pipeline** (`wal::pipeline::Pipeline`): the physical stream's pure
+  path from records to commits: page state, held transactions, the
+  publisher and the decoder.
 - **Replication connection**: the connection that creates the slot,
   loads in its snapshot and then streams, all on one session
   (ADR-0010).

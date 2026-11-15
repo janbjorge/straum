@@ -42,7 +42,7 @@ pub(crate) enum Message<'a> {
 }
 
 /// A table's shape, sent before its first change and again after it changes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relation {
     pub(crate) id: u32,
     pub(crate) schema: String,
@@ -50,7 +50,7 @@ pub(crate) struct Relation {
     pub(crate) columns: Vec<Column>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Column {
     pub(crate) name: String,
     pub(crate) type_oid: u32,
@@ -79,8 +79,9 @@ pub(crate) enum Field<'a> {
 /// What a CopyData on a replication connection holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CopyMessage<'a> {
-    /// XLogData: a pgoutput message, for [`decode`].
-    XLogData(&'a [u8]),
+    /// XLogData: the bytes of the stream from `start`. On a logical
+    /// stream they are one pgoutput message, for [`decode`].
+    XLogData { start: u64, bytes: &'a [u8] },
     /// The server's position, and whether it asks for a status update now.
     Keepalive { end: u64, reply: bool },
 }
@@ -89,9 +90,13 @@ pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError>
     let mut r = Reader { bytes };
     match r.u8()? {
         b'w' => {
-            // The WAL start and end, and the send time.
-            r.skip(8 + 8 + 8)?;
-            Ok(CopyMessage::XLogData(r.bytes))
+            let start = r.u64()?;
+            // The WAL end and the send time.
+            r.skip(8 + 8)?;
+            Ok(CopyMessage::XLogData {
+                start,
+                bytes: r.bytes,
+            })
         }
         b'k' => {
             let end = r.u64()?;
@@ -581,7 +586,13 @@ mod tests {
     #[test]
     fn reads_copy_messages() {
         let xlog = Bytes::default().tag(b'w').u64(1).u64(2).i64(3).tag(b'B');
-        assert_eq!(copy_message(&xlog.0), Ok(CopyMessage::XLogData(b"B")));
+        assert_eq!(
+            copy_message(&xlog.0),
+            Ok(CopyMessage::XLogData {
+                start: 1,
+                bytes: b"B"
+            })
+        );
         for (reply, asks) in [(0, false), (1, true)] {
             let keepalive = Bytes::default().tag(b'k').u64(7).i64(3).tag(reply);
             assert_eq!(
