@@ -6,7 +6,6 @@
 //! Commits wait until the load's snapshot is known, and only those it
 //! doesn't see go on: the load has the rest.
 
-use std::collections::HashMap;
 use std::mem;
 
 use straum_app::{Commit, Lsn};
@@ -179,14 +178,14 @@ impl Pipeline {
         if !blind.is_empty() {
             return Ok((Sight::Blind(blind), Vec::new()));
         }
-        if let Some(too_big) = self.too_big.iter().find(|t| !snapshot.sees(t.xid)) {
+        if let Some(too_big) = (self.too_big.iter()).find(|too_big| !snapshot.sees(too_big.xid)) {
             return Err(self.too_big(*too_big));
         }
         // Every commit before the first held one it doesn't see is in
         // the load.
         let first = (self.held.iter())
-            .filter(|c| !snapshot.sees(c.xid))
-            .map(|c| c.end)
+            .filter(|committed| !snapshot.sees(committed.xid))
+            .map(|committed| committed.end)
             .min();
         let seen = first.map_or(at, |first| Lsn(first.saturating_sub(1)).min(at));
         self.too_big = Vec::new();
@@ -206,6 +205,7 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::HashMap;
 
     use straum_app::Change as Applied;
     use straum_domain::{ColumnType, Datum, Identifier};
@@ -338,18 +338,58 @@ mod tests {
         unreachable!("no commit here invalidates a table")
     }
 
+    fn failing_layouts() -> Result<Layouts, Error> {
+        Err(Error::Stopped)
+    }
+
     fn ids(commits: &[Commit]) -> Vec<i64> {
-        commits
-            .iter()
-            .flat_map(|c| &c.changes)
-            .map(|c| match c {
-                Applied::Insert { row, .. } => match row[..] {
-                    [Datum::Int(id)] => id,
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            })
-            .collect()
+        let mut ids = Vec::new();
+        for change in commits.iter().flat_map(|commit| &commit.changes) {
+            let Applied::Insert { row, .. } = change else {
+                unreachable!()
+            };
+            let [Datum::Int(id)] = row[..] else {
+                unreachable!()
+            };
+            ids.push(id);
+        }
+        ids
+    }
+
+    fn read_one(pipeline: &mut Pipeline, record: &Record) -> Vec<Commit> {
+        pipeline.record(record, no_layouts).unwrap()
+    }
+
+    fn read_all(pipeline: &mut Pipeline, records: &[Record]) -> Result<Vec<Commit>, Error> {
+        let mut commits = Vec::new();
+        for record in records {
+            commits.extend(pipeline.record(record, no_layouts)?);
+        }
+        Ok(commits)
+    }
+
+    /// A commit of `xid` with one relcache invalidation, of table 77.
+    fn ddl(wal: &mut Wal, xid: u32) -> Record {
+        let mut main = 7i64.to_le_bytes().to_vec();
+        main.extend((1u32 << 3).to_le_bytes());
+        main.extend(1u32.to_le_bytes());
+        main.extend([0xFE, 0, 0, 0]);
+        for word in [5u32, 77, 0] {
+            main.extend(word.to_le_bytes());
+        }
+        wal.record(1, 0x80, xid, main, Vec::new())
+    }
+
+    /// Three inserts by `xid`, past the limit of 2, and its commit.
+    fn big_transaction(wal: &mut Wal, xid: u32) -> Vec<Record> {
+        let mut records: Vec<Record> = (1..=3).map(|id| wal.insert(xid, id)).collect();
+        records.push(wal.commit(xid));
+        records
+    }
+
+    fn assert_too_big(result: Result<Vec<Commit>, Error>) {
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("changes more than 2 rows"), "{err}");
     }
 
     /// Commits wait for the load's snapshot, and only those it doesn't
@@ -361,8 +401,6 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        let read =
-            |pipeline: &mut Pipeline, record: Record| pipeline.record(&record, no_layouts).unwrap();
         assert_eq!(pipeline.consistency(), Consistency::Unknown);
         let records = [
             wal.running(100, &[]),
@@ -370,12 +408,12 @@ mod tests {
             wal.insert(101, 2),
         ];
         for record in records {
-            assert_eq!(read(&mut pipeline, record), []);
+            assert_eq!(read_one(&mut pipeline, &record), []);
         }
         assert_eq!(pipeline.consistency(), Consistency::Consistent);
         let before = pipeline.bytes();
         for record in [wal.commit(101), wal.commit(100)] {
-            assert_eq!(read(&mut pipeline, record), []);
+            assert_eq!(read_one(&mut pipeline, &record), []);
         }
         // The changes moved from open transactions to held commits.
         assert_eq!(pipeline.bytes(), before);
@@ -393,10 +431,7 @@ mod tests {
             wal.insert(101, 9),
             wal.commit(101),
         ];
-        let commits: Vec<Commit> = later
-            .into_iter()
-            .flat_map(|r| read(&mut pipeline, r))
-            .collect();
+        let commits = read_all(&mut pipeline, &later).unwrap();
         assert_eq!(ids(&commits), [3]);
     }
 
@@ -446,15 +481,7 @@ mod tests {
             .map(|(_, commits)| commits)
             .unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
-        // A commit with one relcache invalidation of table 77.
-        let mut main = 7i64.to_le_bytes().to_vec();
-        main.extend((1u32 << 3).to_le_bytes());
-        main.extend(1u32.to_le_bytes());
-        main.extend([0xFE, 0, 0, 0]);
-        for word in [5u32, 77, 0] {
-            main.extend(word.to_le_bytes());
-        }
-        let ddl = wal.record(1, 0x80, 100, main, Vec::new());
+        let ddl = ddl(&mut wal, 100);
         let calls = Cell::new(0);
         let layouts = || {
             calls.set(calls.get() + 1);
@@ -467,13 +494,14 @@ mod tests {
             table: Identifier::new("t").unwrap(),
         };
         assert_eq!(
-            commits.iter().flat_map(|c| &c.changes).collect::<Vec<_>>(),
+            (commits.iter())
+                .flat_map(|commit| &commit.changes)
+                .collect::<Vec<_>>(),
             [&unfit]
         );
-        let failing = || Err(Error::Stopped);
         let again = wal.record(1, 0x80, 101, ddl.main_data().to_vec(), Vec::new());
         assert!(matches!(
-            pipeline.record(&again, failing),
+            pipeline.record(&again, failing_layouts),
             Err(Error::Stopped)
         ));
     }
@@ -494,16 +522,6 @@ mod tests {
                 tables: vec![table()],
                 labels: HashMap::new(),
             })
-        };
-        let ddl = |wal: &mut Wal, xid: u32| {
-            let mut main = 7i64.to_le_bytes().to_vec();
-            main.extend((1u32 << 3).to_le_bytes());
-            main.extend(1u32.to_le_bytes());
-            main.extend([0xFE, 0, 0, 0]);
-            for word in [5u32, 77, 0] {
-                main.extend(word.to_le_bytes());
-            }
-            wal.record(1, 0x80, xid, main, Vec::new())
         };
         // Before any RUNNING_XACTS: not whole, yet laid out again.
         let early = ddl(&mut wal, 50);
@@ -528,34 +546,19 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        let big = |wal: &mut Wal, xid: u32| {
-            let mut records: Vec<Record> = (1..=3).map(|id| wal.insert(xid, id)).collect();
-            records.push(wal.commit(xid));
-            records
-        };
-        let read = |pipeline: &mut Pipeline, records: Vec<Record>| {
-            (records.iter())
-                .map(|r| pipeline.record(r, no_layouts))
-                .collect::<Result<Vec<_>, Error>>()
-                .map(|commits| commits.concat())
-        };
-        let too_big = |result: Result<Vec<Commit>, Error>| {
-            let err = result.unwrap_err().to_string();
-            assert!(err.contains("changes more than 2 rows"), "{err}");
-        };
         let mut before = pipeline(1 << 20);
         let mut records = vec![wal.running(100, &[])];
-        records.extend(big(&mut wal, 100));
-        records.extend(big(&mut wal, 101));
-        assert_eq!(read(&mut before, records.clone()).unwrap(), []);
+        records.extend(big_transaction(&mut wal, 100));
+        records.extend(big_transaction(&mut wal, 101));
+        assert_eq!(read_all(&mut before, &records).unwrap(), []);
         // Seen, both go quietly; 101 unseen stops the stream.
         let mut seen = pipeline(1 << 20);
-        read(&mut seen, records).unwrap();
+        read_all(&mut seen, &records).unwrap();
         let released = seen
             .see(Snapshot::parse("102:102:").unwrap(), Lsn(u64::MAX))
             .map(|(_, commits)| commits);
         assert_eq!(released.unwrap(), []);
-        too_big(
+        assert_too_big(
             before
                 .see(Snapshot::parse("101:102:101").unwrap(), Lsn(u64::MAX))
                 .map(|(_, commits)| commits),
@@ -567,8 +570,9 @@ mod tests {
             .see(Snapshot::parse("103:103:").unwrap(), Lsn(u64::MAX))
             .map(|(_, commits)| commits)
             .unwrap();
-        assert_eq!(read(&mut after, big(&mut wal, 102)).unwrap(), []);
-        too_big(read(&mut after, big(&mut wal, 103)));
+        let seen_by_load = big_transaction(&mut wal, 102);
+        assert_eq!(read_all(&mut after, &seen_by_load).unwrap(), []);
+        assert_too_big(read_all(&mut after, &big_transaction(&mut wal, 103)));
     }
 
     /// A commit read as before the start must be in the load: a snapshot

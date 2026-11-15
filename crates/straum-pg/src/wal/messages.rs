@@ -57,7 +57,9 @@ pub(crate) struct Publisher {
 impl Publisher {
     pub(crate) fn new(layouts: Layouts) -> Publisher {
         Publisher {
-            tables: layouts.tables.into_iter().map(|t| (t.file, t)).collect(),
+            tables: (layouts.tables.into_iter())
+                .map(|table| (table.file, table))
+                .collect(),
             labels: layouts.labels,
             announced: HashSet::new(),
             unfit: Vec::new(),
@@ -72,15 +74,15 @@ impl Publisher {
     /// invalidations may have changed: read them again, for
     /// [`Publisher::relayout`].
     pub(crate) fn stale(&self, invalidated: &[Invalidated]) -> Vec<u32> {
-        let mut stale: Vec<u32> = (self.tables.values())
-            .filter(|t| {
-                invalidated.iter().any(|i| {
-                    i.database == t.file.database
-                        && (i.relation == t.relation.id || i.relation == 0)
-                })
-            })
-            .map(|t| t.relation.id)
-            .collect();
+        let mut stale = Vec::new();
+        for table in self.tables.values() {
+            if invalidated
+                .iter()
+                .any(|message| invalidates(*message, table))
+            {
+                stale.push(table.relation.id);
+            }
+        }
         stale.sort_unstable();
         stale
     }
@@ -94,12 +96,12 @@ impl Publisher {
     pub(crate) fn relayout(&mut self, stale: &[u32], fresh: Layouts) {
         for &oid in stale {
             let Some(file) = (self.tables.values())
-                .find(|t| t.relation.id == oid)
-                .map(|t| t.file)
+                .find(|table| table.relation.id == oid)
+                .map(|table| table.file)
             else {
                 continue;
             };
-            match fresh.tables.iter().find(|t| t.relation.id == oid) {
+            match fresh.tables.iter().find(|table| table.relation.id == oid) {
                 Some(table) if table.file == file => {
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
@@ -126,7 +128,7 @@ impl Publisher {
         })?;
         for oid in std::mem::take(&mut self.unfit) {
             // The decoder knows a table by its Relation.
-            if let Some(table) = self.tables.values().find(|t| t.relation.id == oid)
+            if let Some(table) = self.tables.values().find(|table| table.relation.id == oid)
                 && self.announced.insert(table.file)
             {
                 decoder.feed(Message::Relation(table.relation.clone()))?;
@@ -146,21 +148,21 @@ impl Publisher {
             if self.announced.insert(*file) {
                 decoder.feed(Message::Relation(table.relation.clone()))?;
             }
-            let row = |tuple: &Tuple| fields(table, tuple, &self.labels, committed.lsn);
+            let (labels, lsn) = (&self.labels, committed.lsn);
             let relation = table.relation.id;
             decoder.feed(match change {
                 Change::Insert { new, .. } => Message::Insert {
                     relation,
-                    new: row(new)?,
+                    new: fields(table, new, labels, lsn)?,
                 },
                 Change::Update { old, new, .. } => Message::Update {
                     relation,
-                    old: Some(Old::Row(row(old)?)),
-                    new: row(new)?,
+                    old: Some(Old::Row(fields(table, old, labels, lsn)?)),
+                    new: fields(table, new, labels, lsn)?,
                 },
                 Change::Delete { old, .. } => Message::Delete {
                     relation,
-                    old: Old::Row(row(old)?),
+                    old: Old::Row(fields(table, old, labels, lsn)?),
                 },
             })?;
         }
@@ -171,6 +173,13 @@ impl Publisher {
     }
 }
 
+/// Whether `message` invalidates `table`: relation 0 is every table of
+/// its database.
+fn invalidates(message: Invalidated, table: &Table) -> bool {
+    message.database == table.file.database
+        && (message.relation == table.relation.id || message.relation == 0)
+}
+
 /// The relation's columns of `tuple`, as a message holds them.
 fn fields(
     table: &Table,
@@ -179,20 +188,20 @@ fn fields(
     lsn: u64,
 ) -> Result<Vec<Field<'static>>, Error> {
     let mut values =
-        tuple::values(tuple, &table.attributes, labels).map_err(|p| problem(lsn, p))?;
-    Ok(table
-        .columns
-        .iter()
-        .map(
-            |&i| match std::mem::replace(&mut values[i], Value::Missing) {
+        tuple::values(tuple, &table.attributes, labels).map_err(|text| problem(lsn, text))?;
+    let mut fields = Vec::with_capacity(table.columns.len());
+    for &attribute in &table.columns {
+        fields.push(
+            match std::mem::replace(&mut values[attribute], Value::Missing) {
                 Value::Datum(datum) => Field::Datum(datum),
                 // pgoutput, too, leaves out a value TOASTed out of line that
                 // the change kept.
                 Value::External => Field::Unchanged,
-                Value::Missing => Field::Datum(table.missing[i].clone()),
+                Value::Missing => Field::Datum(table.missing[attribute].clone()),
             },
-        )
-        .collect())
+        );
+    }
+    Ok(fields)
 }
 
 fn problem(lsn: u64, problem: &'static str) -> Error {
@@ -321,45 +330,51 @@ mod tests {
         publisher.publish(&committed(changes), &mut decoder())
     }
 
+    fn zone_row(name: &str) -> Vec<Datum> {
+        vec![Datum::Int(1), Datum::Text(name.into())]
+    }
+
     fn zones() -> Identifier {
         Identifier::new("zones").unwrap()
     }
 
     #[test]
     fn publishes_changes_as_a_logical_slot_does() {
-        let a = row(1, &short("a"));
-        let b = row(1, &short("b"));
+        let first = row(1, &short("a"));
+        let second = row(1, &short("b"));
         let changes = vec![
             Change::Insert {
                 file: FILE,
-                new: a.clone(),
+                new: first.clone(),
             },
             Change::Update {
                 file: FILE,
-                old: a.clone(),
-                new: b.clone(),
+                old: first.clone(),
+                new: second.clone(),
             },
-            Change::Delete { file: FILE, old: b },
+            Change::Delete {
+                file: FILE,
+                old: second,
+            },
         ];
         let commit = publish(changes).unwrap().unwrap();
         assert_eq!(commit.lsn.0, 0x140);
         assert_eq!(commit.committed, system_time(1_000_000));
-        let row = |name: &str| vec![Datum::Int(1), Datum::Text(name.into())];
         assert_eq!(
             commit.changes,
             [
                 Applied::Insert {
                     table: zones(),
-                    row: row("a"),
+                    row: zone_row("a"),
                 },
                 Applied::Update {
                     table: zones(),
-                    old: row("a"),
-                    new: row("b"),
+                    old: zone_row("a"),
+                    new: zone_row("b"),
                 },
                 Applied::Delete {
                     table: zones(),
-                    old: row("b"),
+                    old: zone_row("b"),
                 },
             ]
         );
