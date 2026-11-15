@@ -120,6 +120,9 @@ pub(crate) struct PageId {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Page {
     tuples: Vec<Option<Tuple>>,
+    /// The rows' bytes, kept as they change: summing them per record cost
+    /// a walk over the page.
+    rows: usize,
     /// The end of the last record that changed the page: its page LSN.
     lsn: u64,
     /// What [`Page::footprint`] was when last counted.
@@ -133,10 +136,7 @@ impl Page {
     /// The bytes the page holds, near enough to bound memory by.
     fn footprint(&self) -> usize {
         let slots = self.tuples.capacity() * size_of::<Option<Tuple>>();
-        let rows: usize = (self.tuples.iter().flatten())
-            .map(|t| t.body.capacity())
-            .sum();
-        PAGE_OVERHEAD + slots + rows
+        PAGE_OVERHEAD + slots + self.rows
     }
 
     pub(crate) fn get(&self, offnum: u16) -> Option<&Tuple> {
@@ -157,15 +157,18 @@ impl Page {
         if self.tuples.len() <= slot {
             self.tuples.resize(slot + 1, None);
         }
-        self.tuples[slot] = Some(tuple);
+        self.rows += tuple.body.capacity();
+        if let Some(old) = self.tuples[slot].replace(tuple) {
+            self.rows -= old.body.capacity();
+        }
         Some(())
     }
 
     fn remove(&mut self, offnum: u16) {
         if let Some(slot) = usize::from(offnum).checked_sub(1)
-            && let Some(tuple) = self.tuples.get_mut(slot)
+            && let Some(old) = self.tuples.get_mut(slot).and_then(Option::take)
         {
-            *tuple = None;
+            self.rows -= old.body.capacity();
         }
     }
 }
@@ -209,7 +212,14 @@ impl Heap {
     /// The bytes the pages hold, counted afresh.
     #[cfg(test)]
     pub(crate) fn recount(&self) -> usize {
-        self.pages.values().map(Page::footprint).sum()
+        let rows = |page: &Page| -> usize {
+            (page.tuples.iter().flatten())
+                .map(|t| t.body.capacity())
+                .sum()
+        };
+        (self.pages.values())
+            .map(|page| page.footprint() - page.rows + rows(page))
+            .sum()
     }
 
     /// Applies the record to the tracked pages, and returns the changes it
