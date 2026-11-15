@@ -339,8 +339,8 @@ impl Fact {
             return Some(Key::ByKey(by));
         }
         for join in &self.refs {
-            if let Some(attr) = join.reads.iter().find(|attribute| attribute.name == *name) {
-                return Some(Key::Attribute(join, attr));
+            if let Some(attribute) = join.reads.iter().find(|attribute| attribute.name == *name) {
+                return Some(Key::Attribute(join, attribute));
             }
         }
         None
@@ -618,26 +618,26 @@ fn check_reads<'a>(
 ) {
     let name = &fact.name;
     let mut read = HashSet::new();
-    for attr in &join.reads {
-        if !read.insert(&attr.column) {
+    for attribute in &join.reads {
+        if !read.insert(&attribute.column) {
             errors.push(SpecError::Duplicate {
                 scope: Some(join.alias.clone()),
-                name: attr.column.clone(),
+                name: attribute.column.clone(),
             });
         } else if let Some(dim) = dim
-            && !dim.columns().any(|column| *column == attr.column)
+            && !dim.columns().any(|column| *column == attribute.column)
         {
             errors.push(SpecError::UnknownAttribute {
                 fact: name.clone(),
                 ref_name: join.alias.clone(),
-                attr: attr.column.clone(),
+                attribute: attribute.column.clone(),
                 dim: dim.name.clone(),
             });
         }
-        if !keys.insert(&attr.name) {
+        if !keys.insert(&attribute.name) {
             errors.push(SpecError::Duplicate {
                 scope: Some(name.clone()),
-                name: attr.name.clone(),
+                name: attribute.name.clone(),
             });
         }
     }
@@ -771,7 +771,7 @@ pub enum SpecError {
     UnknownAttribute {
         fact: Identifier,
         ref_name: Identifier,
-        attr: Identifier,
+        attribute: Identifier,
         dim: Identifier,
     },
     NoKey {
@@ -901,11 +901,11 @@ impl SpecError {
             SpecError::UnknownAttribute {
                 fact,
                 ref_name,
-                attr,
+                attribute,
                 dim,
             } => write!(
                 formatter,
-                "view {fact}: join {ref_name} reads {attr}, which dim {dim} has no column of"
+                "view {fact}: join {ref_name} reads {attribute}, which dim {dim} has no column of"
             ),
             SpecError::UnknownDim {
                 fact,

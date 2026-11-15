@@ -8,7 +8,7 @@ use straum_domain::{
 
 mod common;
 
-use common::{attr, col, id, percentile, table};
+use common::{attribute, col, id, percentile, table};
 
 fn dim() -> Dim {
     Dim {
@@ -36,7 +36,7 @@ fn fact() -> Fact {
             dim: id("z"),
             via: vec![Via::Fact(id("z_id"))],
             kind: RefKind::Left,
-            reads: vec![attr("name", "name")],
+            reads: vec![attribute("name", "name")],
         }],
         by_keys: vec![col("a"), col("z_id")],
         filter: vec![],
@@ -118,12 +118,12 @@ fn columns_and_rollup_key() {
         filter: vec![],
     });
     assert_eq!(view.columns(), [id("at"), id("a"), id("z_id")]);
-    let attrs: Vec<String> = (view.attributes())
+    let attributes: Vec<String> = (view.attributes())
         .map(|(join, attribute)| {
             format!("{}.{} AS {}", join.alias, attribute.column, attribute.name)
         })
         .collect();
-    assert_eq!(attrs, ["r.name AS name"]);
+    assert_eq!(attributes, ["r.name AS name"]);
     assert_eq!(view.rollup_key().count(), 3);
 }
 
@@ -239,14 +239,14 @@ fn bad_joins() -> Fact {
             dim: id("z"),
             via: vec![Via::Fact(id("z_id")), Via::Fact(id("b"))],
             kind: RefKind::Left,
-            reads: vec![attr("r_name", "name")],
+            reads: vec![attribute("r_name", "name")],
         },
         Ref {
             alias: id("s"),
             dim: id("z"),
             via: vec![Via::Fact(id("a")), Via::Fact(id("a"))],
             kind: RefKind::Left,
-            reads: vec![attr("s_name", "name")],
+            reads: vec![attribute("s_name", "name")],
         },
         Ref {
             alias: id("e"),
@@ -261,9 +261,9 @@ fn bad_joins() -> Fact {
             via: vec![Via::Fact(id("b"))],
             kind: RefKind::Left,
             reads: vec![
-                attr("nope", "nope"),
-                attr("q_name", "name"),
-                attr("a", "name"),
+                attribute("nope", "nope"),
+                attribute("q_name", "name"),
+                attribute("a", "name"),
             ],
         },
     ];
@@ -321,7 +321,7 @@ fn a_chained_via_used_twice_names_its_ref() {
         dim: id("z"),
         via: vec![chained.clone(), chained],
         kind: RefKind::Left,
-        reads: vec![attr("c_name", "name")],
+        reads: vec![attribute("c_name", "name")],
     });
     let shown: Vec<String> = (Spec::new(vec![dim()], vec![view]).unwrap_err().iter())
         .map(ToString::to_string)
@@ -391,7 +391,7 @@ fn through(through: usize, column: &str) -> impl Fn(&mut Fact) {
 fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     assert!(Spec::new(vec![dim()], vec![chained()]).is_ok());
 
-    let reads = vec![attr("through_name", "name")];
+    let reads = vec![attribute("through_name", "name")];
     assert_eq!(
         refused(&|view| view.refs[1].reads.clone_from(&reads)),
         ["view t: join through is a semi join and reads columns, which it has none of"]

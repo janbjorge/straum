@@ -43,17 +43,17 @@ const MEASURES: [&str; 9] = [
 /// A measure with a filter of its own, over a column a join reads.
 const FILTERED: &str = "q_no";
 
-fn dim(name: &str, key: &[&str], attrs: &[&str]) -> Dim {
+fn dim(name: &str, key: &[&str], attributes: &[&str]) -> Dim {
     Dim {
         as_text: Vec::new(),
         name: id(name),
         table: table(name),
         key: key.iter().map(|column| id(column)).collect(),
-        attributes: attrs.iter().map(|column| id(column)).collect(),
+        attributes: attributes.iter().map(|column| id(column)).collect(),
     }
 }
 
-fn attr(name: &str) -> Attribute {
+fn attribute(name: &str) -> Attribute {
     Attribute {
         name: id(name),
         column: id(name),
@@ -137,40 +137,40 @@ fn refs(kinds: [RefKind; 5], shape: Shape) -> Vec<Ref> {
             kinds[CUSTOMERS],
             "customers",
             Via::Fact(id("customer")),
-            vec![attr("country")],
+            vec![attribute("country")],
         ),
-        join(kinds[TIERS], "tiers", tiers_via, vec![attr("label")]),
+        join(kinds[TIERS], "tiers", tiers_via, vec![attribute("label")]),
         join(
             kinds[TAGS],
             "tags",
             Via::Fact(id("product")),
-            vec![attr("tag")],
+            vec![attribute("tag")],
         ),
         join(
             kinds[PROMOS],
             "promos",
             Via::Fact(id("product")),
-            vec![attr("note")],
+            vec![attribute("note")],
         ),
         join(
             kinds[BLOCKED],
             "blocked",
             Via::Fact(id("customer")),
-            vec![attr("reason")],
+            vec![attribute("reason")],
         ),
     ]
 }
 
 /// A semi or anti join reads nothing; the same ref as a left or inner
 /// join reads the dim's one column.
-fn join(kind: RefKind, name: &str, via: Via, attrs: Vec<Attribute>) -> Ref {
+fn join(kind: RefKind, name: &str, via: Via, attributes: Vec<Attribute>) -> Ref {
     Ref {
         alias: id(name),
         dim: id(name),
         kind,
         via: vec![via],
         reads: match kind {
-            RefKind::Left | RefKind::Inner => attrs,
+            RefKind::Left | RefKind::Inner => attributes,
             RefKind::Semi | RefKind::Anti => vec![],
         },
     }
@@ -246,8 +246,8 @@ fn typed(spec: &Spec) -> Store {
 fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
         for (key, each) in rows {
-            for attrs in each {
-                store.add_row(dim, &dim_row(key, attrs)).unwrap();
+            for attributes in each {
+                store.add_row(dim, &dim_row(key, attributes)).unwrap();
             }
         }
     }
@@ -258,14 +258,14 @@ fn add_dim(
     dims: &mut Dims,
     dim: &'static str,
     key: Vec<Datum>,
-    attrs: Vec<Datum>,
+    attributes: Vec<Datum>,
 ) {
-    store.add_row(dim, &dim_row(&key, &attrs)).unwrap();
+    store.add_row(dim, &dim_row(&key, &attributes)).unwrap();
     dims.entry(dim)
         .or_default()
         .entry(key)
         .or_default()
-        .push(attrs);
+        .push(attributes);
 }
 
 fn remove_dim(
@@ -273,11 +273,11 @@ fn remove_dim(
     dims: &mut Dims,
     dim: &'static str,
     key: &[Datum],
-    attrs: &[Datum],
+    attributes: &[Datum],
 ) {
-    store.remove_row(dim, &dim_row(key, attrs)).unwrap();
+    store.remove_row(dim, &dim_row(key, attributes)).unwrap();
     let rows = dims.get_mut(dim).unwrap().get_mut(key).unwrap();
-    let index = rows.iter().position(|held| held == attrs).unwrap();
+    let index = rows.iter().position(|held| held == attributes).unwrap();
     rows.remove(index);
     if rows.is_empty() {
         dims.get_mut(dim).unwrap().remove(key);
@@ -539,7 +539,7 @@ fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
 /// with none; product 1 on promo; customer 2 blocked.
 fn small_dims() -> Dims {
     let mut dims = Dims::new();
-    for (dim, key, attrs) in [
+    for (dim, key, attributes) in [
         ("customers", 1, vec![text("NO"), Datum::Int(10)]),
         ("customers", 2, vec![text("SE"), Datum::Null]),
         ("tiers", 10, vec![text("gold")]),
@@ -549,7 +549,9 @@ fn small_dims() -> Dims {
         ("blocked", 2, vec![text("y")]),
     ] {
         let rows = dims.entry(dim).or_default();
-        rows.entry(vec![Datum::Int(key)]).or_default().push(attrs);
+        rows.entry(vec![Datum::Int(key)])
+            .or_default()
+            .push(attributes);
     }
     dims
 }
@@ -977,13 +979,13 @@ fn joins_on_by_keys_keep_no_bound_cells() {
     assert_eq!(store.ask(&by_tag).unwrap().rows, [text_row("red", 1, 5)]);
     check(&store, &spec, &dims, KINDS, &orders, &by_tag);
     // The next ask reads the dims as they are then.
-    for (dim, attr) in [("tags", "big"), ("promos", "x")] {
+    for (dim, attribute) in [("tags", "big"), ("promos", "x")] {
         add_dim(
             &mut store,
             &mut dims,
             dim,
             vec![Datum::Int(2)],
-            vec![text(attr)],
+            vec![text(attribute)],
         );
     }
     assert_eq!(
@@ -1327,22 +1329,22 @@ impl Walk {
     /// A random dim row, unless every key holds one row at most and its
     /// key holds one already.
     fn add_random_dim_row(&mut self) {
-        let (dim, key, attrs) = self.rng.dim_row(self.chained());
+        let (dim, key, attributes) = self.rng.dim_row(self.chained());
         let taken = self.run.rows_a_key == RowsAKey::One
             && (self.dims.get(dim)).is_some_and(|rows| rows.contains_key(&key));
         if !taken {
-            add_dim(&mut self.store, &mut self.dims, dim, key, attrs);
+            add_dim(&mut self.store, &mut self.dims, dim, key, attributes);
         }
     }
 
     /// A random dim row removed, if it is held.
     fn remove_random_dim_row(&mut self) {
-        let (dim, key, attrs) = self.rng.dim_row(self.chained());
+        let (dim, key, attributes) = self.rng.dim_row(self.chained());
         let held = (self.dims.get(dim))
             .and_then(|by_key| by_key.get(&key))
-            .is_some_and(|rows| rows.contains(&attrs));
+            .is_some_and(|rows| rows.contains(&attributes));
         if held {
-            remove_dim(&mut self.store, &mut self.dims, dim, &key, &attrs);
+            remove_dim(&mut self.store, &mut self.dims, dim, &key, &attributes);
         }
     }
 

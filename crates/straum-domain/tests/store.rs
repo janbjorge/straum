@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 mod common;
 
 use common::{
-    Rng, Spilled, attr, col, condition, dim_row, holds, id, lit, percentile, percentile_disc,
+    Rng, Spilled, attribute, col, condition, dim_row, holds, id, lit, percentile, percentile_disc,
     table, text,
 };
 use straum_domain::{
@@ -159,8 +159,8 @@ fn trip_refs(vend: RefKind) -> Vec<Ref> {
             via: vec![Via::Fact(id("pu"))],
             kind: RefKind::Left,
             reads: vec![
-                attr("pickup_borough", "borough"),
-                attr("pickup_zone", "zone"),
+                attribute("pickup_borough", "borough"),
+                attribute("pickup_zone", "zone"),
             ],
         },
         Ref {
@@ -169,8 +169,8 @@ fn trip_refs(vend: RefKind) -> Vec<Ref> {
             via: vec![Via::Fact(id("dro"))],
             kind: RefKind::Left,
             reads: vec![
-                attr("dropoff_borough", "borough"),
-                attr("dropoff_zone", "zone"),
+                attribute("dropoff_borough", "borough"),
+                attribute("dropoff_zone", "zone"),
             ],
         },
         Ref {
@@ -178,14 +178,14 @@ fn trip_refs(vend: RefKind) -> Vec<Ref> {
             dim: id("combos"),
             via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
             kind: RefKind::Left,
-            reads: vec![attr("combo_label", "label")],
+            reads: vec![attribute("combo_label", "label")],
         },
         Ref {
             alias: id("vend"),
             dim: id("vendors"),
             via: vec![Via::Fact(id("vendor"))],
             kind: vend,
-            reads: vec![attr("vend_label", "label")],
+            reads: vec![attribute("vend_label", "label")],
         },
         // On a column that is no by key: trips from several home
         // zones of one borough share a bound cell, so a zone that
@@ -195,7 +195,7 @@ fn trip_refs(vend: RefKind) -> Vec<Ref> {
             dim: id("zones"),
             via: vec![Via::Fact(id("home"))],
             kind: RefKind::Left,
-            reads: vec![attr("home_borough", "borough")],
+            reads: vec![attribute("home_borough", "borough")],
         },
     ]
 }
@@ -302,7 +302,7 @@ fn average_count_and_bool_measures() -> Vec<Measure> {
 impl Rng {
     /// One of a few texts, or null `percent` percent of the time, as a
     /// dim value comes.
-    fn attr(&mut self, choices: &[&str], percent: usize) -> Datum {
+    fn attribute(&mut self, choices: &[&str], percent: usize) -> Datum {
         if self.chance(percent) {
             Datum::Null
         } else {
@@ -352,11 +352,11 @@ fn random_dims(rng: &mut Rng) -> Dims {
     let zones = dims.entry("zones").or_default();
     for id in 1..7 {
         if rng.chance(75) {
-            let attrs = vec![
-                rng.attr(&["m", "q", "b"], 25),
-                rng.attr(&["a", "b", "c"], 25),
+            let attributes = vec![
+                rng.attribute(&["m", "q", "b"], 25),
+                rng.attribute(&["a", "b", "c"], 25),
             ];
-            zones.insert(vec![Datum::Int(id)], attrs);
+            zones.insert(vec![Datum::Int(id)], attributes);
         }
     }
     if rng.chance(50) {
@@ -366,8 +366,8 @@ fn random_dims(rng: &mut Rng) -> Dims {
     for pu in 1..7 {
         for vendor in 1..3 {
             if rng.chance(60) {
-                let attrs = vec![rng.attr(&["x", "y"], 50)];
-                combos.insert(vec![Datum::Int(pu), Datum::Int(vendor)], attrs);
+                let attributes = vec![rng.attribute(&["x", "y"], 50)];
+                combos.insert(vec![Datum::Int(pu), Datum::Int(vendor)], attributes);
             }
         }
     }
@@ -376,7 +376,7 @@ fn random_dims(rng: &mut Rng) -> Dims {
     }
     let vendors = dims.entry("vendors").or_default();
     for id in 1..3 {
-        vendors.insert(vec![Datum::Int(id)], vec![rng.attr(&["v1", "v2"], 50)]);
+        vendors.insert(vec![Datum::Int(id)], vec![rng.attribute(&["v1", "v2"], 50)]);
     }
     dims
 }
@@ -392,7 +392,7 @@ fn held(rows: &BTreeMap<Vec<Datum>, Vec<Datum>>) -> usize {
 fn load_dims(store: &mut Store, dims: &Dims) {
     for (dim, rows) in dims {
         let flat: Vec<Datum> = (rows.iter())
-            .flat_map(|(key, attrs)| dim_row(key, attrs))
+            .flat_map(|(key, attributes)| dim_row(key, attributes))
             .collect();
         store.add_rows(dim, &flat).unwrap();
     }
@@ -411,30 +411,30 @@ fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
             BTreeMap::new()
         };
         let flat: Vec<Datum> = (rows.iter())
-            .flat_map(|(key, attrs)| dim_row(key, attrs))
+            .flat_map(|(key, attributes)| dim_row(key, attributes))
             .collect();
         store.add_rows(dim, &flat).unwrap();
         dims.insert(dim, rows);
         return;
     }
-    let (dim, key, attrs): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
+    let (dim, key, attributes): (&'static str, Vec<Datum>, Vec<Datum>) = match rng.below(3) {
         0 => (
             "zones",
             vec![rng.maybe(1, 7, 5)],
             vec![
-                rng.attr(&["m", "q", "b"], 25),
-                rng.attr(&["a", "b", "c"], 25),
+                rng.attribute(&["m", "q", "b"], 25),
+                rng.attribute(&["a", "b", "c"], 25),
             ],
         ),
         1 => (
             "combos",
             vec![rng.maybe(1, 7, 5), rng.maybe(1, 3, 5)],
-            vec![rng.attr(&["x", "y"], 50)],
+            vec![rng.attribute(&["x", "y"], 50)],
         ),
         _ => (
             "vendors",
             vec![rng.maybe(1, 3, 5)],
-            vec![rng.attr(&["v1", "v2"], 50)],
+            vec![rng.attribute(&["v1", "v2"], 50)],
         ),
     };
     let rows = dims.get_mut(dim).unwrap();
@@ -445,11 +445,11 @@ fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
         }
         // Now and then to the row it was, which changes nothing.
         Some(old) => store
-            .update_row(dim, &dim_row(&key, &old), &dim_row(&key, &attrs))
+            .update_row(dim, &dim_row(&key, &old), &dim_row(&key, &attributes))
             .unwrap(),
-        None => store.add_row(dim, &dim_row(&key, &attrs)).unwrap(),
+        None => store.add_row(dim, &dim_row(&key, &attributes)).unwrap(),
     }
-    rows.insert(key, attrs);
+    rows.insert(key, attributes);
 }
 
 fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
@@ -966,7 +966,7 @@ fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
         dim: id("zones"),
         via: vec![Via::Fact(id("pu"))],
         kind,
-        reads: vec![attr("borough", "borough")],
+        reads: vec![attribute("borough", "borough")],
     });
     let trips = Fact {
         as_text: Vec::new(),
@@ -1931,8 +1931,8 @@ fn dim_rows_added_together_match_rows_added_one_by_one() {
     load_dims(&mut together, &dims);
     let mut by_row = typed(&spec);
     for (dim, rows) in &dims {
-        for (key, attrs) in rows {
-            by_row.add_row(dim, &dim_row(key, attrs)).unwrap();
+        for (key, attributes) in rows {
+            by_row.add_row(dim, &dim_row(key, attributes)).unwrap();
         }
     }
     let rows: Vec<Vec<Datum>> = (0..300).map(|_| trip(&mut rng)).collect();

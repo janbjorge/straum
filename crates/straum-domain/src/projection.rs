@@ -97,11 +97,11 @@ impl Projection {
     }
 
     fn add_checked(&mut self, row: &[Datum]) {
-        let (key, attrs) = row.split_at(self.key_len);
+        let (key, attributes) = row.split_at(self.key_len);
         if key.contains(&Datum::Null) {
             return;
         }
-        let codes: Box<[u32]> = (attrs.iter().zip(&mut self.codes))
+        let codes: Box<[u32]> = (attributes.iter().zip(&mut self.codes))
             .map(|(value, codes)| codes.code(value))
             .collect();
         let rows = self.rows.entry(key.into()).or_default();
@@ -129,12 +129,13 @@ impl Projection {
     /// projection no longer matches the table.
     pub(crate) fn remove(&mut self, row: &[Datum]) -> Result<(), RowError> {
         self.check(row)?;
-        let (key, attrs) = row.split_at(self.key_len);
+        let (key, attributes) = row.split_at(self.key_len);
         if key.contains(&Datum::Null) {
             return Ok(());
         }
         let held = self.rows.get_mut(key).ok_or(RowError::Missing)?;
-        let Some(i) = (held.iter()).position(|codes| codes_match(&self.codes, attrs, codes)) else {
+        let Some(i) = (held.iter()).position(|codes| codes_match(&self.codes, attributes, codes))
+        else {
             return Err(RowError::Missing);
         };
         held.swap_remove(i);
@@ -157,17 +158,17 @@ impl Projection {
         self.rows.get(key).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn attribute_value(&self, attr: usize, code: u32) -> &Datum {
-        self.codes[attr].value(code)
+    pub(crate) fn attribute_value(&self, attribute: usize, code: u32) -> &Datum {
+        self.codes[attribute].value(code)
     }
 
     /// Codes an attribute has, `Null`'s counted.
-    pub(crate) fn attribute_codes(&self, attr: usize) -> usize {
-        self.codes[attr].len()
+    pub(crate) fn attribute_codes(&self, attribute: usize) -> usize {
+        self.codes[attribute].len()
     }
 
-    pub(crate) fn attribute_type(&self, attr: usize) -> ColumnType {
-        self.types[self.key_len + attr]
+    pub(crate) fn attribute_type(&self, attribute: usize) -> ColumnType {
+        self.types[self.key_len + attribute]
     }
 
     pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {
@@ -175,7 +176,7 @@ impl Projection {
     }
 }
 
-fn codes_match(known: &[Codes], attrs: &[Datum], codes: &[u32]) -> bool {
-    (attrs.iter().zip(known).zip(codes))
+fn codes_match(known: &[Codes], attributes: &[Datum], codes: &[u32]) -> bool {
+    (attributes.iter().zip(known).zip(codes))
         .all(|((value, known), &code)| known.get(value) == Some(code))
 }

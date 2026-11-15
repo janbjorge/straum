@@ -63,7 +63,7 @@ struct BoundRef {
     /// The keyed rollup-key part of each of `via`.
     via_parts: Vec<usize>,
     /// Into the dim's attributes, in the order the ref reads them.
-    attrs: Vec<usize>,
+    attributes: Vec<usize>,
 }
 
 impl BoundRef {
@@ -79,16 +79,16 @@ impl BoundRef {
         let via_parts = (via.iter())
             .map(|&column| keyed.part_of_column(column).expect(CHECKED))
             .collect();
-        let attributes = &spec.dims()[dim].attributes;
-        let attrs = (reference.reads.iter())
-            .map(|read| position_of(attributes, &read.column))
+        let dim_attributes = &spec.dims()[dim].attributes;
+        let attributes = (reference.reads.iter())
+            .map(|read| position_of(dim_attributes, &read.column))
             .collect();
         BoundRef {
             dim,
             kind: reference.kind,
             via,
             via_parts,
-            attrs,
+            attributes,
         }
     }
 }
@@ -131,9 +131,13 @@ impl Bound {
             out.extend_from_slice(row);
             for (reference, found) in self.refs.iter().zip(&join_row) {
                 let projection = &projections[reference.dim];
-                out.extend(reference.attrs.iter().map(|&attr| match found {
-                    Some(codes) => projection.attribute_value(attr, codes[attr]).clone(),
-                    None => Datum::Null,
+                out.extend(reference.attributes.iter().map(|&attribute| {
+                    match found {
+                        Some(codes) => projection
+                            .attribute_value(attribute, codes[attribute])
+                            .clone(),
+                        None => Datum::Null,
+                    }
                 }));
             }
         }
@@ -229,9 +233,9 @@ impl Store {
             for reference in &bound.refs {
                 types.extend(
                     reference
-                        .attrs
+                        .attributes
                         .iter()
-                        .map(|&attr| projections[reference.dim].attribute_type(attr)),
+                        .map(|&attribute| projections[reference.dim].attribute_type(attribute)),
                 );
             }
             (bound.rollup.set_types(&types)).expect("a bound row is as wide as its types");
@@ -755,7 +759,7 @@ impl Store {
                 let parent = self.spec.dim(fact.refs[*through].dim.as_str());
                 ViaFrom::Through {
                     reference: *through,
-                    attr: position_of(&parent.expect(CHECKED).attributes, column),
+                    attribute: position_of(&parent.expect(CHECKED).attributes, column),
                 }
             }
         }
@@ -839,12 +843,12 @@ impl Store {
         };
         match fact.resolve(name).expect(CHECKED) {
             Key::ByKey(by) => Lookup::KeyPart(key_part_of(fact, by.key_part())),
-            Key::Attribute(reference, attr) => {
+            Key::Attribute(reference, attribute) => {
                 let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
                 let at = (fact.refs.iter()).position(|other| other.alias == reference.alias);
                 Lookup::Attribute(AttributeLookup {
                     reference: at.expect(CHECKED),
-                    attr: position_of(&dim.attributes, &attr.column),
+                    attribute: position_of(&dim.attributes, &attribute.column),
                     joined: self.joined(fact, reference, rollup),
                 })
             }
@@ -1064,9 +1068,11 @@ fn bound_part_of(fact: &Fact, name: &Identifier) -> usize {
         Key::ByKey(by) => (fact.by_parts())
             .position(|part| part == by.key_part())
             .expect(CHECKED),
-        Key::Attribute(reference, attr) => {
+        Key::Attribute(reference, attribute) => {
             let at = (fact.attributes())
-                .position(|(other, read)| other.alias == reference.alias && read.name == attr.name)
+                .position(|(other, read)| {
+                    other.alias == reference.alias && read.name == attribute.name
+                })
                 .expect(CHECKED);
             fact.by_parts().count() + at
         }
@@ -1185,9 +1191,11 @@ fn bound_keys(
         }
         let mut part = bound.by_len;
         for (reference, found) in bound.refs.iter().zip(join_row) {
-            for &attr in &reference.attrs {
+            for &attribute in &reference.attributes {
                 let datum = match found {
-                    Some(codes) => projections[reference.dim].attribute_value(attr, codes[attr]),
+                    Some(codes) => {
+                        projections[reference.dim].attribute_value(attribute, codes[attribute])
+                    }
                     None => &Datum::Null,
                 };
                 key.push(bound.rollup.code_part(part, datum));
@@ -1232,7 +1240,7 @@ impl RefPlan<'_> {
 /// of a ref before it.
 enum ViaFrom {
     KeyPart(usize),
-    Through { reference: usize, attr: usize },
+    Through { reference: usize, attribute: usize },
 }
 
 impl<'s> Expander<'s> {
@@ -1258,9 +1266,12 @@ impl<'s> Expander<'s> {
                 for via in &plan.via {
                     dim_key.push(match *via {
                         ViaFrom::KeyPart(part) => rollup.value(part, key[part]).clone(),
-                        ViaFrom::Through { reference, attr } => match row[reference] {
+                        ViaFrom::Through {
+                            reference,
+                            attribute,
+                        } => match row[reference] {
                             Some(found) => (self.plans[reference].projection)
-                                .attribute_value(attr, found[attr]),
+                                .attribute_value(attribute, found[attribute]),
                             None => &Datum::Null,
                         }
                         .clone(),
@@ -1315,7 +1326,7 @@ struct AttributeLookup<'s> {
     /// Into [`Fact::refs`].
     reference: usize,
     /// Into the dim's attributes.
-    attr: usize,
+    attribute: usize,
     joined: Joined<'s>,
 }
 
@@ -1403,15 +1414,15 @@ impl AttributeLookup<'_> {
     /// The attribute's code for the cell with `key`: the one row under the
     /// key, or [`NULL`].
     fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
-        let attr = self.attr;
+        let attribute = self.attribute;
         (self.joined).read(rollup, key, |rows| {
-            rows.first().map_or(NULL, |row| row[attr])
+            rows.first().map_or(NULL, |row| row[attribute])
         })
     }
 
     /// The attribute's code under one join row.
     fn code_in(&self, row: &JoinRow<'_>) -> u32 {
-        row[self.reference].map_or(NULL, |found| found[self.attr])
+        row[self.reference].map_or(NULL, |found| found[self.attribute])
     }
 }
 
@@ -1421,7 +1432,7 @@ impl<'s> Lookup<'s> {
     fn code(&mut self, rollup: &Rollup, cells: &Cells, cell: usize) -> u32 {
         match self {
             Lookup::KeyPart(part) => cells.code(cell, *part),
-            Lookup::Attribute(attr) => attr.code(rollup, cells.key(cell)),
+            Lookup::Attribute(lookup) => lookup.code(rollup, cells.key(cell)),
         }
     }
 
@@ -1429,7 +1440,7 @@ impl<'s> Lookup<'s> {
     fn code_in(&self, cells: &Cells, cell: usize, row: &JoinRow<'_>) -> u32 {
         match self {
             Lookup::KeyPart(part) => cells.code(cell, *part),
-            Lookup::Attribute(attr) => attr.code_in(row),
+            Lookup::Attribute(lookup) => lookup.code_in(row),
         }
     }
 
@@ -1440,7 +1451,10 @@ impl<'s> Lookup<'s> {
     {
         match self {
             Lookup::KeyPart(part) => rollup.value(*part, code),
-            Lookup::Attribute(attr) => attr.joined.projection.attribute_value(attr.attr, code),
+            Lookup::Attribute(lookup) => lookup
+                .joined
+                .projection
+                .attribute_value(lookup.attribute, code),
         }
     }
 
@@ -1448,14 +1462,14 @@ impl<'s> Lookup<'s> {
     fn bound(&self, rollup: &Rollup) -> usize {
         match self {
             Lookup::KeyPart(part) => rollup.codes(*part),
-            Lookup::Attribute(attr) => attr.joined.projection.attribute_codes(attr.attr),
+            Lookup::Attribute(lookup) => lookup.joined.projection.attribute_codes(lookup.attribute),
         }
     }
 
     fn column_type(&self, rollup: &Rollup) -> ColumnType {
         match self {
             Lookup::KeyPart(part) => rollup.key_type(*part),
-            Lookup::Attribute(attr) => attr.joined.projection.attribute_type(attr.attr),
+            Lookup::Attribute(lookup) => lookup.joined.projection.attribute_type(lookup.attribute),
         }
     }
 }

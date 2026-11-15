@@ -46,7 +46,7 @@ pub fn col(name: &str) -> ByKey {
     }
 }
 
-pub fn attr(name: &str, column: &str) -> Attribute {
+pub fn attribute(name: &str, column: &str) -> Attribute {
     Attribute {
         name: id(name),
         column: id(column),
@@ -76,8 +76,8 @@ pub fn table(name: &str) -> Table {
 }
 
 /// A dim row as a load reads it: the key, then the attributes.
-pub fn dim_row(key: &[Datum], attrs: &[Datum]) -> Vec<Datum> {
-    [key, attrs].concat()
+pub fn dim_row(key: &[Datum], attributes: &[Datum]) -> Vec<Datum> {
+    [key, attributes].concat()
 }
 
 /// SQL `=`: null matches nothing.

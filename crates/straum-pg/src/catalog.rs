@@ -766,9 +766,9 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
                         Key::ByKey(ByKey::IsNull { .. }) => {
                             (facts, &fact.time.column, ColumnType::Bool)
                         }
-                        Key::Attribute(reference, attr) => {
+                        Key::Attribute(reference, attribute) => {
                             let dim = tables.dim(&reference.dim);
-                            (dim, &attr.column, dim.column_type(&attr.column))
+                            (dim, &attribute.column, dim.column_type(&attribute.column))
                         }
                     };
                 let labels = catalog.labels(table, column);

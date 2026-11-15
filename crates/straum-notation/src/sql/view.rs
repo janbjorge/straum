@@ -271,7 +271,7 @@ impl Walker {
                 table: joined.table.clone(),
                 key: joined.key.clone(),
                 attributes: (joined.reference.reads.iter())
-                    .map(|attr| attr.column.clone())
+                    .map(|attribute| attribute.column.clone())
                     .collect(),
                 as_text: joined.as_text.clone(),
             });
@@ -303,8 +303,8 @@ impl Walker {
         joined.reference.via = via;
         joined.key.clone_from(&dim.key);
         // A column is one spelling in every view, since it is one type.
-        for attr in &joined.reference.reads {
-            let column = &attr.column;
+        for attribute in &joined.reference.reads {
+            let column = &attribute.column;
             let cast = joined.as_text.contains(column);
             let read_before = dim.attributes.contains(column);
             let cast_before = dim.as_text.contains(column);
@@ -411,7 +411,7 @@ impl Walker {
         let mut positions = Vec::new();
         let mut buckets = Vec::new();
         let mut by = Vec::new();
-        let mut attrs: Vec<Vec<Attribute>> = vec![Vec::new(); scope.refs.len()];
+        let mut attributes: Vec<Vec<Attribute>> = vec![Vec::new(); scope.refs.len()];
         for (index, &NamedItem { expr, alias }) in named.iter().enumerate() {
             match expr {
                 sql::Expr::Function(function) if is_date_bin(function) => {
@@ -421,7 +421,7 @@ impl Walker {
                 sql::Expr::Function(_) => {}
                 _ => {
                     positions.push(index + 1);
-                    self.key(&mut scope, expr, alias, &mut by, &mut attrs);
+                    self.key(&mut scope, expr, alias, &mut by, &mut attributes);
                 }
             }
         }
@@ -432,7 +432,7 @@ impl Walker {
         for _ in buckets {
             self.error(at, "SELECT has more than one date_bin bucket".into());
         }
-        self.ref_attrs(at, &mut scope.refs, attrs);
+        self.ref_attributes(at, &mut scope.refs, attributes);
         let as_text = cast_columns(&mut scope);
         let filter = self.read_filter(&scope, conditions)?;
         if measures_share_filter(&measures) {
@@ -495,10 +495,10 @@ impl Walker {
     /// A ref reads the dim columns the view selects, through the via
     /// columns that key its cells. A join that selects nothing would do
     /// nothing; a semi or anti join selects nothing by nature.
-    fn ref_attrs(&mut self, at: u64, refs: &mut [JoinedRef], attrs: Vec<Vec<Attribute>>) {
-        for (joined, attrs) in refs.iter_mut().zip(attrs) {
+    fn ref_attributes(&mut self, at: u64, refs: &mut [JoinedRef], attributes: Vec<Vec<Attribute>>) {
+        for (joined, attributes) in refs.iter_mut().zip(attributes) {
             let reference = &mut joined.reference;
-            let selects_none = attrs.is_empty();
+            let selects_none = attributes.is_empty();
             match reference.kind {
                 RefKind::Left | RefKind::Inner if selects_none => self.error(
                     at,
@@ -516,7 +516,7 @@ impl Walker {
                 ),
                 _ => {}
             }
-            reference.reads = attrs;
+            reference.reads = attributes;
         }
     }
 
@@ -547,7 +547,7 @@ impl Walker {
         expr: &sql::Expr,
         alias: &sql::Ident,
         by: &mut Vec<ByKey>,
-        attrs: &mut [Vec<Attribute>],
+        attributes: &mut [Vec<Attribute>],
     ) {
         let name = self.ident(alias);
         if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expr {
@@ -598,12 +598,12 @@ impl Walker {
             (
                 ResolvedColumn::Attribute {
                     through,
-                    column: attr_column,
+                    column: attribute_column,
                 },
                 _,
-            ) => attrs[*through].push(Attribute {
+            ) => attributes[*through].push(Attribute {
                 name: name.clone(),
-                column: attr_column.clone(),
+                column: attribute_column.clone(),
             }),
         }
         scope.keys.push(ScopedKey {
