@@ -99,9 +99,11 @@ schema.table`. The alias is never left out either, so every column says
 which table it is from. Setup SQL and start checks print tables as
 `public.events`, the way PostgreSQL resolves them.
 
-The fact table needs no primary key. Straum takes the old row of an
-update or delete from `REPLICA IDENTITY FULL`, which the [setup
-SQL](postgresql.md#2-run-the-setup-sql) gives every fact table.
+The fact table needs no primary key. On the logical stream the old
+row of an update or delete comes from `REPLICA IDENTITY FULL`, which
+the [setup SQL](postgresql.md#2-run-the-setup-sql) sets on every spec
+table. `--wal physical` rebuilds that row from the page and does not
+set `FULL`.
 
 ## Keys
 

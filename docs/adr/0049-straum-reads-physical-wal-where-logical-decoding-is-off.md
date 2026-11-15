@@ -1,6 +1,6 @@
 # ADR-0049: Straum reads physical WAL where logical decoding is off
 
-Status: Accepted, 2026-11-14
+Status: Accepted, 2026-11-14; amended by ADR-0051 and ADR-0052
 
 ## Context
 

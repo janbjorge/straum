@@ -1,6 +1,6 @@
 # ADR-0034: Spilled buckets are Arrow IPC
 
-Status: Accepted, 2026-11-11
+Status: Accepted, 2026-11-11; adapter not built
 
 ## Context
 

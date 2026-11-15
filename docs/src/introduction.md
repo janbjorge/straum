@@ -5,10 +5,10 @@ asks about them over HTTP. Counts and sums come back in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
-keeps each group as a cell in memory, and follows every commit through
-logical replication. You declare what to keep as a view, in a small
-subset of PostgreSQL's `CREATE VIEW`, here over an `events` table and
-the `accounts` it belongs to:
+keeps each group as a cell in memory, and follows every commit. You
+declare what to keep as a view, in a small subset of PostgreSQL's
+`CREATE VIEW`, here over an `events` table and the `accounts` it
+belongs to:
 
 ```sql
 CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS

@@ -1,6 +1,6 @@
 # ADR-0023: straum status instead of telemetry, for now
 
-Status: Accepted (retroactive), 2026-11-10
+Status: Accepted (retroactive), 2026-11-10; amended by ADR-0039
 
 ## Context
 

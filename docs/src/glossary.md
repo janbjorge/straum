@@ -36,7 +36,8 @@ are open.
   `straum plan` and the setup check say "fact" and "dim" for a
   table's role.
 - **Fact table** (`Fact::table`): the table in `FROM`, whose rows the
-  view counts. Needs no primary key, only `REPLICA IDENTITY FULL`.
+  view counts. Needs no primary key. The logical stream needs
+  `REPLICA IDENTITY FULL`; the physical stream does not.
 - **Dim** (`Dim`): a table the view joins, held projected to its key
   and the columns the views read, and followed like a fact. One dim
   per table however many views join it. Also "joined table";
@@ -45,8 +46,9 @@ are open.
   columns must equal. Any number of rows may share one; no index is
   required. Not a view key.
 - **Spec table** (`Member`): a fact or a dim when the role does not
-  matter: what the publication holds, what gets `REPLICA IDENTITY
-  FULL`, what a load copies. Also "every table the spec names".
+  matter: what a load copies. On the logical stream, what the
+  publication holds and what gets `REPLICA IDENTITY FULL`. Also
+  "every table the spec names".
 - **Table** (`straum_domain::Table`): a `schema.table`, always written
   whole and with an alias. `catalog::Checked` is a spec table as the
   setup check read it. `Relation` is PostgreSQL's word, in pgoutput
@@ -359,10 +361,12 @@ are open.
 - **Slot on a page** (`SlotNumber`, PostgreSQL's `OffsetNumber`): where
   a row sits on a heap page, counted from 1. Its line pointer says where
   the row's bytes lie. Not a replication slot.
-- **xid** (`TransactionId`): a transaction id, 32 bits that wrap. A
-  **subtransaction** (subxact) is a savepoint's own xid; it commits with
-  its top transaction. `xact` is PostgreSQL's word for transaction, kept
-  as the name of the module that reads its records.
+- **xid** (`TransactionId`, `Xid`): a transaction id, 32 bits that
+  wrap. `TransactionId` is the WAL reader's name; `Xid` is the name
+  in the errors that say which transactions a start waits on. A
+  **subtransaction** (subxact) is a savepoint's own xid; it commits
+  with its top transaction. `xact` is PostgreSQL's word for
+  transaction, kept as the name of the module that reads its records.
 - **Running transactions** (`xact::Running`): a standby record,
   `RUNNING_XACTS`, listing the transactions running when it was
   written. The physical stream holds each transaction's changes until
@@ -386,12 +390,11 @@ are open.
 - **OID** (`Oid`): an object id, how PostgreSQL names a row of its
   catalog: a table, a type, an enum label. pgoutput names a table by
   its OID, the relation id. Code writes `oid`, PostgreSQL's word.
-- **xid** (`Xid`): a transaction id, as PostgreSQL numbers
-  transactions in its WAL and its snapshots.
 - **Catalog** (`Catalog`, `Class`, `Column`): PostgreSQL's system
   tables as the setup check reads them.
 - **Old row** (`Change::Update::old`): the row before an update or
-  delete, whole under `REPLICA IDENTITY FULL` (ADR-0031).
+  delete. The logical stream has it whole under `REPLICA IDENTITY
+  FULL` (ADR-0031). The physical stream rebuilds it from the page.
 - **Label** (`EnumLabel`): an enum value's text, read by writing
   `::text` (ADR-0037).
 - **Poison value** (`ValueError::at`): a value Straum can't read, such

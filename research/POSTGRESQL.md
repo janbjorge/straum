@@ -10,9 +10,10 @@ of [upstream PostgreSQL](https://github.com/postgres/postgres/tree/0f3b42ce806),
 `src/backend` unless stated; the replication tree was read on
 2026-11-08 and the load-bearing citations re-read by hand that day.
 
-Everything Straum needs ships in stock PostgreSQL 17 and newer and
-works on Azure: pgoutput, temporary logical slots, exported snapshots,
-SQL on a replication connection.
+Everything the logical stream needs ships in stock PostgreSQL 17 and
+newer and works on Azure: pgoutput, temporary logical slots, exported
+snapshots, SQL on a replication connection. `--wal physical` needs
+none of those. It reads the WAL `replica` writes (ADR-0049).
 
 ## 1. Start and initial load
 
@@ -233,8 +234,10 @@ PostgreSQL 17 is the floor (jb, 2026-11-15). CI tests 17, 18 and 19rc1.
   (`heapam.c:9079-9084`, R) and new tuple data is kept beside full-page
   images (`heapam.c:2147`, R). How much at the real write rate is open.
 
-One code path covers all of them. Azure Flexible Server 18 defaults to
-`replica` (U), so it needs one restart with `wal_level = logical`.
+One code path covers those `wal_level` cases. `--wal physical`
+(ADR-0049) is the other path: it reads the WAL `replica` writes, so
+no restart is required. Azure Flexible Server 18 defaults to
+`replica` (U).
 
 ## 7. Managed PostgreSQL
 
@@ -324,8 +327,8 @@ described in `docs/src/running.md`; the choices made for Azure are a
 Deployment with no PVC, one replica by default, and liveness on the
 process only, since failing it on lag would turn a slow catch-up into
 a restart loop. Setup on Flexible Server is one restart with
-`wal_level = logical`, then the guide's steps; slot sync settings
-aren't needed (§5).
+`wal_level = logical`, or `--wal physical` and no `wal_level` change,
+then the guide's steps. Slot sync settings aren't needed (§5).
 
 Baseline to beat: `pg_ivm` maintains GROUP BY views with count, sum,
 avg, min and max inside PostgreSQL, synchronously on every write, with

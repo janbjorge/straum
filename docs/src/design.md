@@ -434,7 +434,7 @@ maps each part of the model to the records that settled it.
 | Old row on every update and delete, dims too   | 0014, 0031             |
 | `Failure` and the start-over loop              | 0015                   |
 | Rollup key, cell states, levels per width, `None` bucket | 0016, 0017, 0019, 0028, 0041 |
-| Refs bound at ask time, bound cells beside     | 0030, 0038, 0042       |
+| Refs bound at ask time, bound cells beside     | 0030, 0038, 0042, 0056 |
 | Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
 | `timestamp` as wall clock, enums as labels     | 0018, 0037             |
 | tokio only in `straum-http`                    | 0008                   |
@@ -449,11 +449,5 @@ what joins replaced and the sources behind them in
 
 ## Where the code and the records differ
 
-[ADR-0038](https://github.com/janbjorge/straum/blob/main/docs/adr/0038-a-view-with-refs-keeps-bound-cells-beside-its-keyed-cells.md)
-says a dim change moves bound cells in one pass over the keyed cells,
-before the commit's next fact change and at its end. The code makes
-the pass at once, one for each dim row that changes
-(`Store::retarget`), so a commit that changes many dim rows walks the
-hot keyed cells once a row. The answers are the same; the cost is
-not. The spill flags ADR-0033 names, and the other open names,
-are in the glossary's [Clashes](glossary.md#clashes) table.
+ADR-0034's adapter is not built: `main.rs` passes `None`. The open
+names are in the glossary's [Clashes](glossary.md#clashes) table.

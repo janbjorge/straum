@@ -1,6 +1,6 @@
 # ADR-0039: Straum writes plain text for people itself
 
-Status: Accepted, 2026-11-12
+Status: Accepted, 2026-11-12; amended by ADR-0040
 
 ## Context
 

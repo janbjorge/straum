@@ -1,6 +1,6 @@
 # Straum
 
-**In-memory PostgreSQL aggregates, kept current through logical replication.**
+**In-memory PostgreSQL aggregates, kept current as PostgreSQL commits.**
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 
@@ -64,8 +64,9 @@ in four steps, on a month of New York taxi trips.
 
 Straum is not a SQL engine, a replica, a cache or a durable store. It
 answers only what its spec declares. It needs PostgreSQL 17 or newer as
-shipped, with stock logical replication, no extension and no superuser
-([setup](https://janbjorge.github.io/straum/postgresql.html)). Where
+shipped, with no extension and no superuser
+([setup](https://janbjorge.github.io/straum/postgresql.html)). The
+logical stream uses stock logical replication. Where
 `wal_level = logical` can't be had, `--wal physical` reads the WAL
 `replica` writes instead.
 

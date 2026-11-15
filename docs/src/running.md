@@ -306,6 +306,8 @@ apps in the cluster ask at `http://straum:8080/ask`.
 | `spec` | required | The spec; set it with `--set-file spec=spec.sql`. |
 | `dsn.existingSecret` | required | The Secret holding the DSN. |
 | `publication` | `straum` | The publication Straum reads. |
+| `wal` | `logical` | `logical`, or `physical` for the WAL `wal_level = replica` writes. |
+| `maxPageMemory` | `1Gi` | With `wal: physical`, rows held from the WAL before Straum starts over. |
 | `maxLag` | `30` | Seconds behind PostgreSQL before `/readyz` turns off. |
 | `maxRetainedWal` | `4Gi` | WAL retained for the slot before Straum starts over. |
 | `maxTransactionRows` | `100000` | Rows one transaction may change before Straum starts over instead of applying it. |

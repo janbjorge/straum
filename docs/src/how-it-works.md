@@ -97,9 +97,10 @@ PostgreSQL in between:
 
 - An insert into a fact table adds the row to its cell; one into a
   dim table adds the row to the projection.
-- An update takes the old row out and adds the new one. The old row
-  is there because every table in the spec has `REPLICA IDENTITY
-  FULL`.
+- An update takes the old row out and adds the new one. The logical
+  stream has the old row because every spec table has `REPLICA
+  IDENTITY FULL`. The physical stream rebuilds that row from the page,
+  so it does not need `FULL`.
 - A delete takes the old row out.
 - A truncate empties the view's cells, or the dim's projection.
 

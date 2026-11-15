@@ -1,6 +1,6 @@
 # ADR-0038: A view with refs keeps bound cells beside its keyed cells
 
-Status: Accepted, 2026-11-11
+Status: Accepted, 2026-11-11; amended by ADR-0042 and ADR-0056
 
 ## Context
 
