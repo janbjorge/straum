@@ -12,7 +12,6 @@
 //! in between, so the dropped xids are kept for the load to check.
 
 use std::collections::{HashMap, HashSet};
-use std::mem;
 
 use super::heap::Change;
 use super::xact::{Ending, Event, Invalidated, Running};
@@ -315,15 +314,6 @@ impl Snapshot {
         let full = self.xmax.checked_add_signed(distance);
         full.is_some_and(|full| full < self.xmax && !self.running.contains(&full))
     }
-}
-
-/// Takes the committed transactions out of a list, keeping those the
-/// load's snapshot doesn't see.
-pub(crate) fn unseen(committed: &mut Vec<Committed>, snapshot: &Snapshot) -> Vec<Committed> {
-    mem::take(committed)
-        .into_iter()
-        .filter(|c| !snapshot.sees(c.xid))
-        .collect()
 }
 
 #[cfg(test)]
@@ -704,17 +694,5 @@ mod tests {
         ] {
             assert_eq!(Snapshot::parse(bad), None, "{bad}");
         }
-        let committed = |xid| Committed {
-            xid,
-            lsn: 0,
-            end: 0,
-            time: 0,
-            changes: Vec::new(),
-            invalidated: Vec::new(),
-        };
-        let mut list = vec![committed(749), committed(751), committed(748)];
-        let kept = unseen(&mut list, &empty);
-        assert_eq!(kept, [committed(751)]);
-        assert!(list.is_empty());
     }
 }

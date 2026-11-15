@@ -32,7 +32,7 @@ use crate::stream::{Reader, Stream};
 use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, PageId, Tuple};
-use crate::wal::transactions::{self as held, Committed, Snapshot, Transactions};
+use crate::wal::transactions::{Committed, Snapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
 use crate::wire::Connection;
@@ -3127,7 +3127,7 @@ impl Pipeline {
             PAGE_MEMORY,
         );
         let nothing = Snapshot::parse("1:1:").unwrap();
-        assert_eq!(inner.snapshot(nothing).unwrap(), []);
+        assert_eq!(inner.see(nothing, Lsn(0)).unwrap().1, []);
         Pipeline {
             conn,
             checked,
@@ -3309,8 +3309,8 @@ fn lines_the_load_up_with_the_stream() {
         open.execute("COMMIT").unwrap();
     }
     let mut count = loaded;
-    let unseen = held::unseen(&mut before, &snapshot);
-    count += unseen.iter().map(net).sum::<i64>();
+    let unseen: Vec<&Committed> = before.iter().filter(|c| !snapshot.sees(c.xid)).collect();
+    count += unseen.iter().map(|c| net(c)).sum::<i64>();
     // Checkpoints while the writers write: a page changed twice between a
     // redo point and its checkpoint record has an image only the first
     // time, so Straum must keep it past the record.

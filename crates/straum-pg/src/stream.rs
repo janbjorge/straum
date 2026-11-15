@@ -17,6 +17,7 @@ use crate::error::Error;
 use crate::pgoutput::{self, CopyMessage};
 use crate::physical::Replay;
 use crate::value;
+use crate::wal::pipeline::Sight;
 use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wire::{Closer, Connection, server_error};
 
@@ -48,16 +49,6 @@ impl Reader {
             Reader::Physical(_) => false,
         }
     }
-}
-
-/// What a physical stream made of the load's snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Sight {
-    /// Every commit up to this LSN is in the load; later ones stream.
-    Through(Lsn),
-    /// The snapshot doesn't see these transactions, whose commits the
-    /// stream read as before its start: take another.
-    Blind(Vec<u32>),
 }
 
 /// The writer's end of the stream.
@@ -246,7 +237,7 @@ impl StreamThread {
         };
         let mut consistency = self.shared.consistency.lock().map_err(|_| Error::Stopped)?;
         if *consistency != Consistency::Consistent {
-            *consistency = replay.consistency();
+            *consistency = replay.pipeline.consistency();
         }
         drop(consistency);
         let taken = self
@@ -258,7 +249,7 @@ impl StreamThread {
         let Some((snapshot, at)) = taken else {
             return Ok(true);
         };
-        let (sight, commits) = replay.see(snapshot, at)?;
+        let (sight, commits) = replay.pipeline.see(snapshot, at)?;
         *self.shared.sight.lock().map_err(|_| Error::Stopped)? = Some(sight);
         for commit in commits {
             self.sent = commit.lsn.0;

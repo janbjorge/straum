@@ -21,8 +21,8 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
 use crate::physical::{self, Physical};
-use crate::stream::{Reader, Sight, Stream};
-use crate::wal::pipeline::Pipeline;
+use crate::stream::{Reader, Stream};
+use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::transactions::{Consistency, Snapshot as Seen};
 use crate::wire::Connection;
 

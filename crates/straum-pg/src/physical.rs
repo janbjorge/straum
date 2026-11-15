@@ -15,11 +15,10 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::pgoutput::{Column, Relation};
 use crate::source::{parse_lsn, slot_name};
-use crate::stream::{POLL, Sight};
+use crate::stream::POLL;
 use crate::value::{read, type_of};
 use crate::wal::messages::Table;
 use crate::wal::pipeline::Pipeline;
-use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
 use crate::wire::Connection;
@@ -166,7 +165,7 @@ impl Physical {
 /// stream's thread, with a plain connection to read layouts again.
 pub(crate) struct Replay {
     records: Records,
-    pipeline: Pipeline,
+    pub(crate) pipeline: Pipeline,
     catalog: Connection,
     checked: Vec<Checked>,
     /// Every record before here is read.
@@ -185,28 +184,6 @@ impl Replay {
             self.read = record.next();
         }
         Ok(commits)
-    }
-
-    pub(crate) fn consistency(&self) -> Consistency {
-        self.pipeline.consistency()
-    }
-
-    /// Takes the load's snapshot, taken with the server's WAL at `at`:
-    /// the LSN every commit up to which is in the load, and the commits
-    /// held that it didn't see. A snapshot blind to a commit read as
-    /// before the start isn't taken.
-    pub(crate) fn see(
-        &mut self,
-        snapshot: Snapshot,
-        at: Lsn,
-    ) -> Result<(Sight, Vec<Commit>), Error> {
-        let blind = self.pipeline.unseen_dropped(&snapshot);
-        if !blind.is_empty() {
-            return Ok((Sight::Blind(blind), Vec::new()));
-        }
-        let first = self.pipeline.first_unseen(&snapshot);
-        let seen = first.map_or(at, |first| Lsn(first.0.saturating_sub(1)).min(at));
-        Ok((Sight::Through(seen), self.pipeline.snapshot(snapshot)?))
     }
 
     pub(crate) fn read(&self) -> u64 {

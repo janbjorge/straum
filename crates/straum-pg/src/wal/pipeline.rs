@@ -7,17 +7,28 @@
 //! doesn't see go on: the load has the rest.
 
 use std::collections::HashMap;
+use std::mem;
 
 use straum_app::{Commit, Lsn};
 
 use super::Record;
 use super::heap::{Change, Heap};
 use super::messages::{Publisher, Table};
-use super::transactions::{Committed, Consistency, Snapshot, TooBig, Transactions, unseen};
+use super::transactions::{Committed, Consistency, Snapshot, TooBig, Transactions};
 use super::xact;
 use crate::catalog::Checked;
 use crate::decode::Decoder;
 use crate::error::Error;
+
+/// What the pipeline made of the load's snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Sight {
+    /// Every commit up to this LSN is in the load; later ones stream.
+    Through(Lsn),
+    /// The snapshot doesn't see these transactions, whose commits the
+    /// stream read as before its start: take another.
+    Blind(Vec<u32>),
+}
 
 pub(crate) struct Pipeline {
     major: u32,
@@ -155,39 +166,42 @@ impl Pipeline {
         }
     }
 
-    /// The xids of commits read as before the start that `snapshot`
-    /// doesn't see: PostgreSQL logged them and hadn't ended them yet, as
-    /// while it waits for a synchronous standby. Such a snapshot can't be
-    /// the load's; a later one can.
-    pub(crate) fn unseen_dropped(&self, snapshot: &Snapshot) -> Vec<u32> {
-        self.transactions.unseen_dropped(snapshot)
-    }
-
-    /// The load's snapshot, which sees every commit read as before the
-    /// start: the commits held that it doesn't see, and every later one,
-    /// go on; the others are in the load.
-    pub(crate) fn snapshot(&mut self, snapshot: Snapshot) -> Result<Vec<Commit>, Error> {
+    /// Takes the load's snapshot, taken with the server's WAL at `at`:
+    /// the LSN every commit up to which is in the load, and the commits
+    /// held that it didn't see, which go on, as every later one does. A
+    /// snapshot blind to a commit read as before the start isn't taken:
+    /// PostgreSQL logged it and hadn't ended it yet, as while it waits
+    /// for a synchronous standby. A later snapshot sees it.
+    pub(crate) fn see(
+        &mut self,
+        snapshot: Snapshot,
+        at: Lsn,
+    ) -> Result<(Sight, Vec<Commit>), Error> {
+        let blind = self.transactions.unseen_dropped(&snapshot);
+        if !blind.is_empty() {
+            return Ok((Sight::Blind(blind), Vec::new()));
+        }
         if let Some(too_big) = self.too_big.iter().find(|t| !snapshot.sees(t.xid)) {
             return Err(self.too_big(*too_big));
         }
+        // Every commit before the first held one it doesn't see is in
+        // the load.
+        let first = (self.held.iter())
+            .filter(|c| !snapshot.sees(c.xid))
+            .map(|c| c.end)
+            .min();
+        let seen = first.map_or(at, |first| Lsn(first.saturating_sub(1)).min(at));
         self.too_big = Vec::new();
         self.transactions.loaded();
-        let mut commits = Vec::new();
         self.held_bytes = 0;
-        for committed in unseen(&mut self.held, &snapshot) {
-            commits.extend(self.publisher.publish(&committed, &mut self.decoder)?);
+        let mut commits = Vec::new();
+        for committed in mem::take(&mut self.held) {
+            if !snapshot.sees(committed.xid) {
+                commits.extend(self.publisher.publish(&committed, &mut self.decoder)?);
+            }
         }
         self.snapshot = Some(snapshot);
-        Ok(commits)
-    }
-
-    /// The first commit the snapshot doesn't see, of those held: every
-    /// commit before it is in the load.
-    pub(crate) fn first_unseen(&self, snapshot: &Snapshot) -> Option<Lsn> {
-        (self.held.iter())
-            .filter(|c| !snapshot.sees(c.xid))
-            .map(|c| Lsn(c.end))
-            .min()
+        Ok((Sight::Through(seen), commits))
     }
 }
 
@@ -366,10 +380,10 @@ mod tests {
         assert_eq!(pipeline.bytes(), before);
         // The snapshot saw 101, not 100.
         let snapshot = Snapshot::parse("100:102:100").unwrap();
-        let first = pipeline.first_unseen(&snapshot).unwrap();
-        let released = pipeline.snapshot(snapshot).unwrap();
+        let (sight, released) = pipeline.see(snapshot, Lsn(u64::MAX)).unwrap();
         assert_eq!(ids(&released), [1]);
-        assert_eq!(first, released[0].lsn);
+        // The load has every commit before the first it didn't see.
+        assert_eq!(sight, Sight::Through(Lsn(released[0].lsn.0 - 1)));
         assert!(pipeline.bytes() < before, "released commits don't count");
         // 101 seen; 102 and 103 not.
         let later = [
@@ -394,7 +408,9 @@ mod tests {
             block: 0,
         };
         let mut big = pipeline(1 << 20);
-        big.snapshot(Snapshot::parse("1:1:").unwrap()).unwrap();
+        big.see(Snapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
+            .map(|(_, commits)| commits)
+            .unwrap();
         let records = [
             wal.running(100, &[]),
             wal.insert(100, 1),
@@ -424,7 +440,10 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        pipeline.snapshot(Snapshot::parse("1:1:").unwrap()).unwrap();
+        pipeline
+            .see(Snapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
+            .map(|(_, commits)| commits)
+            .unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         // A commit with one relcache invalidation of table 77.
         let mut main = 7i64.to_le_bytes().to_vec();
@@ -488,7 +507,8 @@ mod tests {
         assert_eq!(calls.get(), 1);
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         pipeline
-            .snapshot(Snapshot::parse("100:102:").unwrap())
+            .see(Snapshot::parse("100:102:").unwrap(), Lsn(u64::MAX))
+            .map(|(_, commits)| commits)
             .unwrap();
         // Seen by the load: dropped, yet laid out again.
         let seen = ddl(&mut wal, 101);
@@ -527,14 +547,21 @@ mod tests {
         // Seen, both go quietly; 101 unseen stops the stream.
         let mut seen = pipeline(1 << 20);
         read(&mut seen, records).unwrap();
-        let released = seen.snapshot(Snapshot::parse("102:102:").unwrap());
+        let released = seen
+            .see(Snapshot::parse("102:102:").unwrap(), Lsn(u64::MAX))
+            .map(|(_, commits)| commits);
         assert_eq!(released.unwrap(), []);
-        too_big(before.snapshot(Snapshot::parse("101:102:101").unwrap()));
+        too_big(
+            before
+                .see(Snapshot::parse("101:102:101").unwrap(), Lsn(u64::MAX))
+                .map(|(_, commits)| commits),
+        );
         // After the snapshot: 102 it saw, 103 it didn't.
         let mut after = pipeline(1 << 20);
         after.record(&wal.running(102, &[]), no_layouts).unwrap();
         after
-            .snapshot(Snapshot::parse("103:103:").unwrap())
+            .see(Snapshot::parse("103:103:").unwrap(), Lsn(u64::MAX))
+            .map(|(_, commits)| commits)
             .unwrap();
         assert_eq!(read(&mut after, big(&mut wal, 102)).unwrap(), []);
         too_big(read(&mut after, big(&mut wal, 103)));
@@ -560,10 +587,14 @@ mod tests {
         }
         assert_eq!(pipeline.consistency(), Consistency::Consistent);
         let blind = Snapshot::parse("99:101:99").unwrap();
-        assert_eq!(pipeline.unseen_dropped(&blind), [99]);
+        assert_eq!(
+            pipeline.see(blind, Lsn(7)).unwrap(),
+            (Sight::Blind(vec![99]), Vec::new())
+        );
         let fine = Snapshot::parse("101:101:").unwrap();
-        assert_eq!(pipeline.unseen_dropped(&fine), Vec::<u32>::new());
-        assert_eq!(ids(&pipeline.snapshot(fine).unwrap()), Vec::<i64>::new());
-        assert_eq!(pipeline.unseen_dropped(&blind), Vec::<u32>::new());
+        assert_eq!(
+            pipeline.see(fine, Lsn(7)).unwrap(),
+            (Sight::Through(Lsn(7)), Vec::new())
+        );
     }
 }
