@@ -1,9 +1,10 @@
-//! [`Postgres`], the [`Source`] over PostgreSQL. Logical: a temporary slot,
-//! loads in its snapshot on the same connection, then the stream from its
-//! consistent point. Physical: a temporary physical slot streams from the
-//! last redo point while the loads run in a snapshot taken once every
-//! later commit is whole in what it read. A plain connection on the side
-//! reads the server's WAL position.
+//! [`Postgres`], the [`Source`] over PostgreSQL, where straum-pg meets
+//! `straum-app`. Logical: a temporary replication slot (PostgreSQL's
+//! bookmark in its WAL), loads in its snapshot on the same connection, then
+//! the stream from its consistent point. Physical: a temporary physical
+//! slot streams from the last redo point while the loads run in a snapshot
+//! taken once every later commit is whole in what it read. A plain
+//! connection on the side reads the server's WAL position.
 
 use std::mem;
 use std::process;
@@ -31,11 +32,10 @@ use crate::wire::{Connection, ConnectionKind, first_row_value};
 /// or the physical WAL, which `wal_level = replica` writes (ADR-0049).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Replication {
+    /// Logical decoding's changes, through the publication.
     Logical,
     /// Past `max_page_memory` bytes of rows held, Straum starts over.
-    Physical {
-        max_page_memory: usize,
-    },
+    Physical { max_page_memory: usize },
 }
 
 /// How long a physical stream waits for PostgreSQL to log which
@@ -69,6 +69,7 @@ pub struct Postgres {
     plain: Option<Connection>,
 }
 
+/// Where the source is between `open` and the stream.
 enum State {
     Closed,
     /// Every dim and fact loads in the snapshot of the slot the stream
@@ -264,6 +265,7 @@ pub(crate) fn slot_name() -> String {
 }
 
 /// The plain connection, made on first use and after a failure.
+// 'c: the connection returned is the one held in `plain`.
 fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
     if plain.is_none() {
         *plain = Some(Connection::connect(dsn, ConnectionKind::Sql)?);

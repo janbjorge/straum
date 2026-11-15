@@ -1,7 +1,9 @@
-//! Column types Straum reads: their text form as PostgreSQL prints it
-//! under `DateStyle = ISO` and `TimeZone = UTC`, which Straum sets on
-//! connect, and their binary form, which loads read. Also PostgreSQL's
-//! timestamps as clock times, as the stream reads and writes them.
+//! Column types Straum reads, by their type OIDs: their text form as
+//! PostgreSQL prints it under `DateStyle = ISO` and `TimeZone = UTC`, which
+//! Straum sets on connect, for the logical stream; and their binary form,
+//! which loads (`load.rs`) read. Each becomes a `Datum`, the domain's
+//! value. Also PostgreSQL's timestamps as clock times, as the stream reads
+//! and writes them.
 
 use std::fmt::{self, Write as _};
 use std::str;
@@ -13,6 +15,7 @@ use straum_domain::{ColumnType, Datum, Identifier};
 /// table (`pg_class`), a type (`pg_type`) or an enum label (`pg_enum`).
 pub(crate) type Oid = u32;
 
+/// The OIDs of the built-in types Straum reads, from `pg_type`.
 pub(crate) const BOOL: Oid = 16;
 pub(crate) const INT8: Oid = 20;
 pub(crate) const INT2: Oid = 21;
@@ -91,6 +94,7 @@ pub(crate) fn type_of(type_oid: Oid, typmod: i32) -> Option<ColumnType> {
     }
 }
 
+/// Reads a value's text form as `column_type`.
 pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueError> {
     let datum = match column_type {
         ColumnType::Int => text.parse().ok().map(Datum::Int),
@@ -207,6 +211,8 @@ fn word_at(bytes: &[u8], at: usize) -> Option<[u8; 2]> {
 /// Base-10000 digits, the first worth `10000^weight`, in units of
 /// `10^-scale`, as [`decimal`] scales text. `None` for a digit below the
 /// scale, or past an `i64`.
+// `impl Iterator`: the load and the WAL read digits from different byte
+// layouts, and neither collects them first.
 pub(crate) fn scaled(
     digits: impl Iterator<Item = u16>,
     weight: i32,

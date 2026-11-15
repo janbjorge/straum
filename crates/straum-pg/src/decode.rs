@@ -1,6 +1,9 @@
-//! pgoutput messages turned into commits of fact and dim rows: which
-//! tables a relation holds, where their columns sit, and how its values
-//! read.
+//! pgoutput messages turned into commits of fact and dim rows. pgoutput is
+//! PostgreSQL's logical decoding output: a Relation message describes a
+//! table (a relation, PostgreSQL's word), then Begin, row changes and
+//! Commit follow. `pgoutput.rs` parses the bytes; the `Decoder` here keeps
+//! where each spec table's columns sit and hands `stream.rs` whole
+//! `Commit`s. The physical stream feeds it the same messages.
 
 use std::collections::HashMap;
 use std::{mem, slice};

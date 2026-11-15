@@ -1,6 +1,9 @@
-//! The physical stream: a temporary physical slot, which keeps WAL from
-//! the last checkpoint's redo point, and the WAL it streams, read as
-//! records. The stream carries the whole server's WAL, every database.
+//! The physical stream's connection: a temporary physical slot, which keeps
+//! WAL from the last checkpoint's redo point, and the WAL it streams, read
+//! as records (`wal.rs`) and turned into commits (`wal/pipeline.rs`). The
+//! stream carries the whole server's WAL, every database. Also the layouts
+//! query: how each spec table's rows lie on its pages, from `pg_class`,
+//! `pg_attribute` and `pg_enum`.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -99,6 +102,7 @@ impl Physical {
         }
     }
 
+    /// The slot's name.
     pub(crate) fn slot(&self) -> &str {
         &self.slot
     }
@@ -208,6 +212,7 @@ impl Replay {
         Ok(commits)
     }
 
+    /// The LSN before which every record is read.
     pub(crate) fn read(&self) -> u64 {
         self.read
     }
@@ -269,6 +274,7 @@ fn table_names(checked: &[Checked]) -> String {
 
 /// A row of the layouts query: one attribute of a table, dropped ones
 /// too.
+// 'a: borrows the query's text for one row, read once.
 struct AttributeRow<'a> {
     table_oid: Oid,
     schema: &'a str,
@@ -386,6 +392,7 @@ fn text(row: &[Option<String>], column: usize) -> Result<&str, Error> {
     Ok(text)
 }
 
+// T: each column parses to its own number type.
 fn parsed<T: FromStr>(row: &[Option<String>], column: usize) -> Result<T, Error> {
     parsed_text(text(row, column)?)
 }

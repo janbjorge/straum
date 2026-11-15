@@ -1,4 +1,8 @@
-//! The setup SQL a table owner runs once, which `straum plan` prints.
+//! The setup SQL a table owner runs once, which `straum plan` prints: the
+//! role, its grants, and for logical decoding the publication (the set of
+//! tables PostgreSQL sends changes of) and each table's replica identity
+//! (what of the old row an update or delete carries). Pure text from the
+//! spec; nothing here connects.
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use postgres_protocol::password::scram_sha_256;

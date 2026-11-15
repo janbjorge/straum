@@ -1,4 +1,7 @@
-//! Where and as whom Straum connects: a `postgres://` URL, as libpq takes it.
+//! Where and as whom Straum connects: a `postgres://` URL, as libpq
+//! (PostgreSQL's client library) takes it. `Dsn::parse` reads the URL once
+//! at start; `wire.rs` connects with it and `tls.rs` checks the server's
+//! certificate against what it says.
 
 use std::fmt;
 
@@ -32,10 +35,12 @@ pub(crate) enum Tls {
 }
 
 impl Dsn {
+    /// The role to connect as.
     pub fn user(&self) -> &str {
         &self.user
     }
 
+    /// The password, if the URL has one.
     pub fn password(&self) -> Option<&str> {
         self.password.as_deref()
     }
@@ -160,6 +165,7 @@ impl fmt::Debug for Dsn {
     }
 }
 
+/// Why a connection URL doesn't parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DsnError {
     Scheme,

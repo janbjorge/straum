@@ -1,3 +1,8 @@
+//! `Error`, everything that stops straum-pg: the connection, PostgreSQL's
+//! own errors, bytes it sent that don't read, a failed setup check, a
+//! limit passed. Each module returns it; `source.rs` hands it to
+//! `straum-app` as a `SourceError`, and Straum starts over.
+
 use std::fmt;
 use std::io;
 
@@ -52,6 +57,7 @@ pub(crate) enum Error {
 }
 
 impl Error {
+    /// PostgreSQL sent `what`, which Straum didn't expect.
     pub(crate) fn protocol(what: &str) -> Error {
         Error::Protocol(what.to_owned())
     }

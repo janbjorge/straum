@@ -1,5 +1,8 @@
 //! pgoutput protocol version 1, the logical replication messages inside
-//! `XLogData`. Text tuples only: Straum never asks for `binary`.
+//! `XLogData`, the copy message that carries WAL on a replication
+//! connection. `copy_message` splits a copy message, `decode` reads a
+//! pgoutput message from its bytes for `decode.rs`. Text tuples only:
+//! Straum never asks for `binary`.
 //! <https://www.postgresql.org/docs/18/protocol-logicalrep-message-formats.html>
 
 use std::fmt;
@@ -17,6 +20,8 @@ const XID_SIZE: usize = 4;
 const FLAGS_SIZE: usize = 1;
 
 /// One pgoutput message, borrowing its text from the received bytes.
+// 'a: the message borrows every value of every row from the bytes received,
+// so decoding copies none of them.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Message<'a> {
     Begin {
@@ -58,6 +63,7 @@ pub(crate) struct Relation {
     pub(crate) columns: Vec<RelationColumn>,
 }
 
+/// One column of a relation: its name and type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelationColumn {
     pub(crate) name: String,
@@ -74,8 +80,10 @@ pub(crate) enum Old<'a> {
     Row(Tuple<'a>),
 }
 
+/// A row's values in the relation's column order.
 pub(crate) type Tuple<'a> = Vec<Field<'a>>;
 
+/// One value of a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Field<'a> {
     Null,
@@ -96,6 +104,7 @@ pub(crate) enum CopyMessage<'a> {
     Keepalive { end: u64, reply: bool },
 }
 
+/// Reads a `CopyData` message of a replication stream.
 pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError> {
     let mut reader = Reader { bytes };
     match reader.u8()? {
@@ -119,6 +128,7 @@ pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError>
     }
 }
 
+/// Reads one pgoutput message, which must fill `bytes` exactly.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
     let mut reader = Reader { bytes };
     let message = match reader.u8()? {
@@ -157,6 +167,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
     Ok(message)
 }
 
+/// The bytes of a message not read yet.
 struct Reader<'a> {
     bytes: &'a [u8],
 }

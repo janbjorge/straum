@@ -1,7 +1,9 @@
 //! The commit stream, read by a thread that owns the replication socket.
-//! The thread decodes commits ahead of the writer, answers keepalives and
-//! reports the applied LSN while the writer applies, so PostgreSQL never
-//! times Straum out for being busy.
+//! The thread decodes commits ahead of the writer (`decode.rs` for the
+//! logical stream, `physical.rs` for the physical one) and queues them;
+//! `Stream::next` takes them off the queue for `source.rs`. Meanwhile the
+//! thread answers keepalives and reports the applied LSN (a WAL position)
+//! in standby status updates, so PostgreSQL never times Straum out.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
@@ -62,6 +64,7 @@ pub(crate) struct Stream {
     applied: Lsn,
 }
 
+/// What the writer and the stream's thread both read and write.
 struct Shared {
     applied: AtomicU64,
     stop: AtomicBool,

@@ -1,7 +1,9 @@
-//! One connection to PostgreSQL over TCP or TLS: startup and SCRAM, simple
-//! queries, and the copy-both stream of a replication connection. Messages
-//! are read whole into a buffer, so a read that times out loses nothing;
-//! rustls keeps a TLS record it has read part of.
+//! One connection to PostgreSQL over TCP or TLS, speaking its frontend and
+//! backend protocol: startup and SCRAM (password sign-in), simple queries,
+//! `COPY` out for loads, and the copy-both stream of a replication
+//! connection. Every other module talks to PostgreSQL through
+//! `Connection`. Messages are read whole into a buffer, so a read that
+//! times out loses nothing; rustls keeps a TLS record it has read part of.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -30,6 +32,7 @@ pub(crate) enum ConnectionKind {
     Replication,
 }
 
+/// An open, signed-in connection to PostgreSQL.
 pub(crate) struct Connection {
     socket: Socket,
     input: BytesMut,
@@ -200,6 +203,8 @@ impl Connection {
     /// Runs a `COPY ... TO STDOUT`, calling `each` with every `CopyData` as
     /// it comes, so a load holds one message of the table at a time. After
     /// an error the connection is mid-copy; drop it.
+    // `impl FnMut`: the caller's code runs on each message in the buffer it
+    // came in, which is reused for the next.
     pub(crate) fn copy_out(
         &mut self,
         sql: &str,
@@ -222,6 +227,7 @@ impl Connection {
         }
     }
 
+    /// Runs one simple query, ignoring any rows.
     pub(crate) fn execute(&mut self, sql: &str) -> Result<(), Error> {
         self.rows(sql).map(drop)
     }
@@ -245,6 +251,7 @@ impl Connection {
         }
     }
 
+    /// Sends `data` as one `CopyData` message on a copy-both stream.
     pub(crate) fn send_copy_data(&mut self, data: &[u8]) -> Result<(), Error> {
         frontend::CopyData::new(data)?.write(&mut self.output);
         self.flush()
@@ -271,6 +278,7 @@ impl Connection {
         self.read().map(Some)
     }
 
+    /// How long a read waits before `try_read` gives up.
     pub(crate) fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
         self.socket.tcp().set_read_timeout(Some(timeout))
     }
@@ -280,6 +288,7 @@ impl Connection {
         self.socket.tcp().try_clone().map(Closer)
     }
 
+    /// The next message, waiting for it.
     pub(crate) fn read(&mut self) -> Result<Message, Error> {
         self.next_tag()?;
         Ok(Message::parse(&mut self.input)?.expect("a whole message is buffered"))
@@ -351,6 +360,7 @@ impl Drop for Connection {
 pub(crate) struct Closer(TcpStream);
 
 impl Closer {
+    /// Shuts the socket both ways.
     pub(crate) fn close(&self) {
         // Already closed is fine.
         let _ = self.0.shutdown(Shutdown::Both);

@@ -1,6 +1,8 @@
 //! Loads: a binary `COPY` of the columns the spec reads of each table, dim
-//! or fact, so Straum groups or projects a row as it comes. A load must
-//! not cost Straum the table's rows in memory.
+//! or fact, so Straum groups or projects a row as it comes. One thread
+//! reads PostgreSQL's copy messages and decodes them (`value.rs`) into
+//! batches of rows; the caller's thread adds each batch to the store. A
+//! load must not cost Straum the table's rows in memory.
 
 use std::sync::mpsc;
 use std::{mem, panic, thread};
@@ -29,6 +31,7 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
     )
 }
 
+/// Loads the whole table into the store, in the connection's snapshot.
 pub(crate) fn table(
     connection: &mut Connection,
     table: &Checked,
@@ -52,6 +55,8 @@ const IN_FLIGHT: usize = 4;
 /// Runs a binary `COPY` of the table and calls `each` with every batch of
 /// rows, laid end to end. A second thread reads and decodes the next batch
 /// meanwhile; spent buffers go back to it.
+// `impl FnMut`: the caller's code runs on each batch as it comes, so the
+// table never sits in memory whole.
 pub(crate) fn copy(
     connection: &mut Connection,
     table: &Checked,
@@ -96,6 +101,7 @@ pub(crate) fn copy(
 /// Runs a binary `COPY` of the table, decoding rows into a batch and
 /// calling `hand_over` with each full one and the last, which it swaps for
 /// an empty one.
+// `impl FnMut`: the batch goes to the other thread as soon as it is full.
 fn read(
     connection: &mut Connection,
     table: &Checked,

@@ -1,5 +1,7 @@
-//! TLS to PostgreSQL: rustls on graviola, which is pure Rust. The server's
-//! certificate must chain to a root Straum trusts and name the host.
+//! TLS to PostgreSQL: rustls on graviola, which is pure Rust. `wire.rs`
+//! calls `start` on a new TCP socket: it sends PostgreSQL's `SSLRequest`,
+//! then shakes hands. The server's certificate must chain to a root Straum
+//! trusts and name the host.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -13,6 +15,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::error::Error;
 
+/// A TCP socket with TLS on it, which reads and writes plain bytes.
 pub(crate) type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
 /// Asks PostgreSQL for TLS on `tcp` and shakes hands, so a certificate
