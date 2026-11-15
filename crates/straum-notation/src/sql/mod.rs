@@ -32,10 +32,10 @@ pub struct SqlError {
 }
 
 fn statements(src: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
-    Parser::parse_sql(&PostgreSqlDialect {}, src).map_err(|e| {
+    Parser::parse_sql(&PostgreSqlDialect {}, src).map_err(|error| {
         vec![SqlError {
             line: 0,
-            msg: e.to_string(),
+            msg: error.to_string(),
         }]
     })
 }
@@ -150,7 +150,7 @@ impl Walker {
     ) -> Option<Identifier> {
         match part {
             sql::ObjectNamePart::Identifier(id) => self.ident(id),
-            other => {
+            other @ sql::ObjectNamePart::Function(_) => {
                 self.refuse(line(name), "name part", other);
                 None
             }
@@ -328,10 +328,13 @@ impl Walker {
                         continue;
                     }
                     let key = self.cond_key(names, inner);
-                    let values: Vec<Literal> = (list.iter())
-                        .filter_map(|item| self.cond_value(names, item))
-                        .collect();
-                    if let Some(key) = key.filter(|_| values.len() == list.len()) {
+                    let mut values: Vec<Literal> = Vec::new();
+                    for item in list {
+                        values.extend(self.cond_value(names, item));
+                    }
+                    if let Some(key) = key
+                        && values.len() == list.len()
+                    {
                         conds.push(Condition { key, values });
                     }
                 }

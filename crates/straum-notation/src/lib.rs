@@ -27,30 +27,30 @@ pub fn parse(src: &str) -> Result<Spec, Error> {
 }
 
 impl fmt::Display for SqlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.line == 0 {
-            write!(f, "{}", self.msg)
+            write!(formatter, "{}", self.msg)
         } else {
-            write!(f, "line {}: {}", self.line, self.msg)
+            write!(formatter, "line {}: {}", self.line, self.msg)
         }
     }
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Sql(errors) => write_lines(f, errors),
-            Error::Spec(errors) => write_lines(f, errors),
+            Error::Sql(errors) => write_lines(formatter, errors),
+            Error::Spec(errors) => write_lines(formatter, errors),
         }
     }
 }
 
-fn write_lines(f: &mut fmt::Formatter<'_>, lines: &[impl fmt::Display]) -> fmt::Result {
+fn write_lines(formatter: &mut fmt::Formatter<'_>, lines: &[impl fmt::Display]) -> fmt::Result {
     for (index, line) in lines.iter().enumerate() {
         if index > 0 {
-            f.write_str("\n")?;
+            formatter.write_str("\n")?;
         }
-        write!(f, "{line}")?;
+        write!(formatter, "{line}")?;
     }
     Ok(())
 }

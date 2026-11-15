@@ -38,9 +38,9 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
             None
         }
     };
-    for (i, used) in params.used.iter().enumerate() {
+    for (index, used) in params.used.iter().enumerate() {
         if !used {
-            walker.error(0, format!("parameter ${} is not used", i + 1));
+            walker.error(0, format!("parameter ${} is not used", index + 1));
         }
     }
     walker.finish(ask)
@@ -65,6 +65,12 @@ impl End {
     }
 }
 
+struct Where {
+    filter: Vec<Condition>,
+    from: Option<i64>,
+    to: Option<i64>,
+}
+
 /// A bucket bound as the ask writes it; `Bad` is one already reported.
 enum Bound {
     Missing,
@@ -86,17 +92,14 @@ impl Walker {
         let select = self.one_select(query, "ask")?;
         let at = self.select_clauses(select);
 
-        let fact = match select.from.as_slice() {
-            [sql::TableWithJoins { relation, joins }] => {
-                for join in joins {
-                    self.refuse(line(join), "join in an ask, read FROM one view,", join);
-                }
-                self.ask_view(relation)
+        let fact = if let [sql::TableWithJoins { relation, joins }] = select.from.as_slice() {
+            for join in joins {
+                self.refuse(line(join), "join in an ask, read FROM one view,", join);
             }
-            _ => {
-                self.error(at, "an ask reads FROM one view".into());
-                None
-            }
+            self.ask_view(relation)
+        } else {
+            self.error(at, "an ask reads FROM one view".into());
+            None
         };
 
         let grouped = self.ask_group_by(at, &select.group_by);
@@ -131,7 +134,7 @@ impl Walker {
             }
         }
 
-        let (filter, from, to) = self.ask_where(at, select.selection.as_ref(), params);
+        let Where { filter, from, to } = self.ask_where(at, select.selection.as_ref(), params);
         Some(Ask {
             view: fact?,
             measures,
@@ -194,12 +197,7 @@ impl Walker {
 
     /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
     /// both bounds required.
-    fn ask_where(
-        &mut self,
-        at: u64,
-        selection: Option<&sql::Expr>,
-        params: &mut Params,
-    ) -> (Vec<Condition>, Option<i64>, Option<i64>) {
+    fn ask_where(&mut self, at: u64, selection: Option<&sql::Expr>, params: &mut Params) -> Where {
         let mut parts = Vec::new();
         if let Some(expr) = selection {
             and_parts(expr, &mut parts);
@@ -234,7 +232,11 @@ impl Walker {
                 );
             }
         }
-        (conds, from.seconds(), to.seconds())
+        Where {
+            filter: conds,
+            from: from.seconds(),
+            to: to.seconds(),
+        }
     }
 
     pub(super) fn ask_name(&mut self, expr: &sql::Expr) -> Option<Identifier> {
@@ -261,37 +263,51 @@ impl Walker {
             self.refuse(line(expr), "value, use a parameter such as $1,", expr);
             return None;
         };
-        let n = name.strip_prefix('$').and_then(|n| n.parse::<usize>().ok());
-        let Some(i) = n.filter(|&n| n >= 1 && n <= params.values.len()) else {
-            let count = params.values.len();
+        let count = params.values.len();
+        let Some(index) = parameter_index(name, count) else {
             self.error(
                 line(expr),
                 format!("{name} is not a parameter: there are {count}, $1 on"),
             );
             return None;
         };
-        params.used[i - 1] = true;
-        Some(params.values[i - 1].clone())
+        params.used[index] = true;
+        Some(params.values[index].clone())
     }
 
     /// Unix seconds, from an integer parameter or an RFC 3339 one.
     fn instant(&mut self, expr: &sql::Expr, params: &mut Params) -> Option<i64> {
         let at = match self.parameter(expr, params)? {
             Literal::Int(seconds) => Ok(seconds),
-            Literal::Text(s) => match s.parse::<Timestamp>() {
-                Ok(at) if at.subsec_nanosecond() != 0 => Err(format!("{s} is not a whole second")),
-                Ok(at) => Ok(at.as_second()),
-                Err(e) => Err(format!("{s:?}: {e}")),
-            },
+            Literal::Text(text) => rfc3339_seconds(&text),
             Literal::Bool(_) => Err("is a boolean".into()),
         };
-        at.map_err(|e| {
-            self.error(
-                line(expr),
-                format!("bucket bound {expr} must be RFC 3339 or Unix seconds: {e}"),
-            );
-        })
-        .ok()
+        match at {
+            Ok(seconds) => Some(seconds),
+            Err(why) => {
+                self.error(
+                    line(expr),
+                    format!("bucket bound {expr} must be RFC 3339 or Unix seconds: {why}"),
+                );
+                None
+            }
+        }
+    }
+}
+
+fn parameter_index(name: &str, count: usize) -> Option<usize> {
+    let number: usize = name.strip_prefix('$')?.parse().ok()?;
+    if number < 1 || number > count {
+        return None;
+    }
+    Some(number - 1)
+}
+
+fn rfc3339_seconds(text: &str) -> Result<i64, String> {
+    match text.parse::<Timestamp>() {
+        Ok(at) if at.subsec_nanosecond() != 0 => Err(format!("{text} is not a whole second")),
+        Ok(at) => Ok(at.as_second()),
+        Err(error) => Err(format!("{text:?}: {error}")),
     }
 }
 

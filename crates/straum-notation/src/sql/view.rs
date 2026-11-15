@@ -72,42 +72,68 @@ enum Column {
     Attribute { through: usize, column: Identifier },
 }
 
+struct AliasedTable {
+    table: Table,
+    alias: Identifier,
+}
+
+struct Qualified {
+    alias: Identifier,
+    column: Identifier,
+}
+
+struct Reference {
+    alias: Identifier,
+    column: Identifier,
+    cast: bool,
+}
+
+struct KeyRead {
+    column: Column,
+    is_null: Option<bool>,
+    cast: bool,
+}
+
+struct Equalities {
+    key: Vec<Identifier>,
+    via: Vec<Via>,
+}
+
+struct Equality {
+    key: Identifier,
+    via: Via,
+}
+
+struct NamedItem<'a> {
+    expr: &'a sql::Expr,
+    alias: &'a sql::Ident,
+}
+
+struct FromClause<'a> {
+    table: Table,
+    scope: Scope,
+    conditions: Vec<&'a sql::Expr>,
+}
+
+struct Call<'a> {
+    args: &'a [sql::FunctionArg],
+    distinct: bool,
+    within_group: &'a [sql::OrderByExpr],
+}
+
+#[derive(Clone, Copy)]
+enum KeyKind {
+    Value,
+    NullNess,
+}
+
 impl Walker {
     fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Option<Fact> {
-        let sql::CreateView {
-            or_alter,
-            or_replace: _,
-            materialized,
-            secure,
-            name,
-            // Only says where IF NOT EXISTS was written, which is rejected.
-            name_before_not_exists: _,
-            columns,
-            query,
-            options,
-            cluster_by,
-            comment,
-            with_no_schema_binding,
-            if_not_exists,
-            temporary,
-            copy_grants,
-            to,
-            params,
-        } = view;
-        let at = line(name);
         let before = self.errors.len();
-        self.absent(at, *or_alter, "OR ALTER");
-        self.absent(at, *materialized, "MATERIALIZED");
-        self.absent(at, *secure, "SECURE");
-        self.absent(at, !columns.is_empty(), "a view column list");
-        self.absent(at, !cluster_by.is_empty(), "CLUSTER BY");
-        self.absent(at, comment.is_some(), "COMMENT");
-        self.absent(at, *with_no_schema_binding, "WITH NO SCHEMA BINDING");
-        self.absent(at, *if_not_exists, "IF NOT EXISTS");
-        self.absent(at, *temporary, "TEMPORARY");
-        self.absent(at, *copy_grants, "COPY GRANTS");
-        self.absent(at, to.is_some(), "TO");
-        self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
+        let at = self.view_clauses(view);
+        let name = &view.name;
+        let query = &view.query;
+        let options = &view.options;
 
         let fact_name = self.bare_name(name, "view");
         let buckets = self.options(at, options);
@@ -165,6 +191,43 @@ impl Walker {
             filter,
             as_text,
         })
+    }
+
+    fn view_clauses(&mut self, view: &sql::CreateView) -> u64 {
+        let sql::CreateView {
+            or_alter,
+            or_replace: _,
+            materialized,
+            secure,
+            name,
+            // Only says where IF NOT EXISTS was written, which is rejected.
+            name_before_not_exists: _,
+            columns,
+            query: _,
+            options: _,
+            cluster_by,
+            comment,
+            with_no_schema_binding,
+            if_not_exists,
+            temporary,
+            copy_grants,
+            to,
+            params,
+        } = view;
+        let at = line(name);
+        self.absent(at, *or_alter, "OR ALTER");
+        self.absent(at, *materialized, "MATERIALIZED");
+        self.absent(at, *secure, "SECURE");
+        self.absent(at, !columns.is_empty(), "a view column list");
+        self.absent(at, !cluster_by.is_empty(), "CLUSTER BY");
+        self.absent(at, comment.is_some(), "COMMENT");
+        self.absent(at, *with_no_schema_binding, "WITH NO SCHEMA BINDING");
+        self.absent(at, *if_not_exists, "IF NOT EXISTS");
+        self.absent(at, *temporary, "TEMPORARY");
+        self.absent(at, *copy_grants, "COPY GRANTS");
+        self.absent(at, to.is_some(), "TO");
+        self.absent(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
+        at
     }
 
     fn add_dims(&mut self, at: u64, dims: &mut Vec<Dim>, refs: Vec<JoinedRef>) -> Vec<Ref> {
@@ -230,14 +293,13 @@ impl Walker {
             );
             return None;
         }
-        let via: Vec<Via> = (dim.key.iter())
-            .map(|column| {
-                let position = (joined.key.iter())
-                    .position(|joined_column| joined_column == column)
-                    .expect("the key sets are equal");
-                joined.reference.via[position].clone()
-            })
-            .collect();
+        let mut via = Vec::new();
+        for column in &dim.key {
+            let position = (joined.key.iter())
+                .position(|joined_column| joined_column == column)
+                .expect("the key sets are equal");
+            via.push(joined.reference.via[position].clone());
+        }
         joined.reference.via = via;
         joined.key.clone_from(&dim.key);
         // A column is one spelling in every view, since it is one type.
@@ -305,14 +367,14 @@ impl Walker {
             None => None,
             Some(
                 value @ sql::Expr::Value(sql::ValueWithSpan {
-                    value: sql::Value::SingleQuotedString(s),
+                    value: sql::Value::SingleQuotedString(text),
                     span: _,
                 }),
             ) => {
                 let mut buckets = Vec::new();
-                for width in s.split(',').map(str::trim) {
+                for width in text.split(',').map(str::trim) {
                     match parse_width(width) {
-                        Some(g) => buckets.push(g),
+                        Some(parsed) => buckets.push(parsed),
                         None => self.error(
                             line(value),
                             format!("bucket width '{width}': use '<n> seconds|minutes|hours|days'"),
@@ -337,19 +399,12 @@ impl Walker {
             );
             return None;
         };
-        let (table, mut scope, conditions) = self.from(from, select.selection.as_ref())?;
-
-        let mut named = Vec::new();
-        for item in &select.projection {
-            match item {
-                sql::SelectItem::ExprWithAlias { expr, alias } => named.push((expr, alias)),
-                sql::SelectItem::UnnamedExpr(expr) => self.error(
-                    line(item),
-                    format!("name every SELECT item: {expr} AS <name>"),
-                ),
-                other => self.refuse(line(other), "SELECT item", other),
-            }
-        }
+        let FromClause {
+            table,
+            mut scope,
+            conditions,
+        } = self.from(from, select.selection.as_ref())?;
+        let named = self.named_items(&select.projection);
         // Keys first, then measures, so a FILTER can reach any key. A
         // position comes from the item's shape, not its walk, so a bad key
         // column is reported once and not again by GROUP BY.
@@ -357,7 +412,7 @@ impl Walker {
         let mut buckets = Vec::new();
         let mut by = Vec::new();
         let mut attrs: Vec<Vec<Attribute>> = vec![Vec::new(); scope.refs.len()];
-        for (index, &(expr, alias)) in named.iter().enumerate() {
+        for (index, &NamedItem { expr, alias }) in named.iter().enumerate() {
             match expr {
                 sql::Expr::Function(function) if is_date_bin(function) => {
                     positions.push(index + 1);
@@ -370,14 +425,7 @@ impl Walker {
                 }
             }
         }
-        let mut measures = Vec::new();
-        for &(expr, alias) in &named {
-            if let sql::Expr::Function(function) = expr
-                && !is_date_bin(function)
-            {
-                measures.extend(self.measure(&scope, function, alias));
-            }
-        }
+        let measures = self.measures(&scope, &named);
         self.group_by(at, &select.group_by, &positions);
         let mut buckets = buckets.into_iter();
         let time = buckets.next();
@@ -385,27 +433,9 @@ impl Walker {
             self.error(at, "SELECT has more than one date_bin bucket".into());
         }
         self.ref_attrs(at, &mut scope.refs, attrs);
-        let mut as_text = Vec::new();
-        for key in &scope.keys {
-            let (read, column) = match &key.column {
-                _ if !key.cast => continue,
-                Column::Fact(column) => (&mut as_text, column),
-                Column::Attribute { through, column } => {
-                    (&mut scope.refs[*through].as_text, column)
-                }
-            };
-            if !read.contains(column) {
-                read.push(column.clone());
-            }
-        }
+        let as_text = cast_columns(&mut scope);
         let filter = self.key_conds(&scope, conditions)?;
-        // A FILTER every measure shares is the view's WHERE in disguise; a
-        // lone measure shares with nobody.
-        if let [first, rest @ ..] = &measures[..]
-            && !first.filter.is_empty()
-            && !rest.is_empty()
-            && rest.iter().all(|measure| measure.filter == first.filter)
-        {
+        if measures_share_filter(&measures) {
             self.error(
                 at,
                 "every measure has the same FILTER; write it as the view's WHERE".into(),
@@ -431,6 +461,35 @@ impl Walker {
             filter,
             as_text,
         })
+    }
+
+    fn named_items<'a>(&mut self, projection: &'a [sql::SelectItem]) -> Vec<NamedItem<'a>> {
+        let mut named = Vec::new();
+        for item in projection {
+            match item {
+                sql::SelectItem::ExprWithAlias { expr, alias } => {
+                    named.push(NamedItem { expr, alias });
+                }
+                sql::SelectItem::UnnamedExpr(expr) => self.error(
+                    line(item),
+                    format!("name every SELECT item: {expr} AS <name>"),
+                ),
+                other => self.refuse(line(other), "SELECT item", other),
+            }
+        }
+        named
+    }
+
+    fn measures(&mut self, scope: &Scope, named: &[NamedItem]) -> Vec<Measure> {
+        let mut measures = Vec::new();
+        for &NamedItem { expr, alias } in named {
+            if let sql::Expr::Function(function) = expr
+                && !is_date_bin(function)
+            {
+                measures.extend(self.measure(scope, function, alias));
+            }
+        }
+        measures
     }
 
     /// A ref reads the dim columns the view selects, through the via
@@ -509,18 +568,20 @@ impl Walker {
             );
             return;
         }
-        let (spelled, read) = match null_test(expr) {
-            Some((inner, negated)) => (
-                inner,
-                (self.fact_column(scope, inner, "the IS NULL column"))
-                    .map(|(column, cast)| (Column::Fact(column), Some(!negated), cast)),
-            ),
-            None => (
-                expr,
-                (self.column(scope, expr)).map(|(column, cast)| (column, None, cast)),
-            ),
+        let spelled = match null_test(expr) {
+            Some((inner, _)) => inner,
+            None => expr,
         };
-        let (Some(name), Some((column, is_null, cast))) = (name, read) else {
+        let read = self.key_read(scope, expr);
+        let (
+            Some(name),
+            Some(KeyRead {
+                column,
+                is_null,
+                cast,
+            }),
+        ) = (name, read)
+        else {
             return;
         };
         self.same_spelling(scope, spelled, &column, cast);
@@ -554,10 +615,27 @@ impl Walker {
         });
     }
 
+    fn key_read(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<KeyRead> {
+        if let Some((inner, negated)) = null_test(expr) {
+            let (column, cast) = self.fact_column(scope, inner, "the IS NULL column")?;
+            return Some(KeyRead {
+                column: Column::Fact(column),
+                is_null: Some(!negated),
+                cast,
+            });
+        }
+        let (column, cast) = self.column(scope, expr)?;
+        Some(KeyRead {
+            column,
+            is_null: None,
+            cast,
+        })
+    }
+
     /// A column is one spelling throughout a view: with `::text` or
     /// without, as its type decides.
     fn same_spelling(&mut self, scope: &Scope, expr: &sql::Expr, column: &Column, cast: bool) {
-        let other = (scope.keys.iter()).find(|k| k.column == *column && k.cast != cast);
+        let other = (scope.keys.iter()).find(|key| key.column == *column && key.cast != cast);
         if let Some(other) = other {
             self.error(
                 line(expr),
@@ -628,9 +706,9 @@ impl Walker {
         let one = matches!(
             select.projection.as_slice(),
             [sql::SelectItem::UnnamedExpr(sql::Expr::Value(sql::ValueWithSpan {
-                value: sql::Value::Number(n, false),
+                value: sql::Value::Number(number, false),
                 ..
-            }))] if n == "1"
+            }))] if number == "1"
         );
         if !one {
             self.refuse(at, "EXISTS, write EXISTS (SELECT 1 FROM ...),", expr);
@@ -638,7 +716,7 @@ impl Walker {
         }
         self.absent(
             at,
-            !matches!(select.group_by, sql::GroupByExpr::Expressions(ref e, _) if e.is_empty()),
+            !matches!(select.group_by, sql::GroupByExpr::Expressions(ref exprs, _) if exprs.is_empty()),
             "GROUP BY inside EXISTS",
         );
         let [from] = select.from.as_slice() else {
@@ -646,23 +724,22 @@ impl Walker {
             return None;
         };
         self.absent(at, !from.joins.is_empty(), "a join inside EXISTS");
-        let (table, alias) = self.table(&from.relation)?;
+        let table = self.table(&from.relation)?;
         let Some(on) = &select.selection else {
             self.refuse(at, "EXISTS without WHERE alias.key = ...,", expr);
             return None;
         };
-        self.joined(scope, kind, table, alias, on)
+        self.joined(scope, kind, table, on)
     }
 
     fn joined(
         &mut self,
         scope: &Scope,
         kind: RefKind,
-        table: Table,
-        alias: Identifier,
+        AliasedTable { table, alias }: AliasedTable,
         on: &sql::Expr,
     ) -> Option<JoinedRef> {
-        let (key, via) = self.equalities(scope, &alias, on)?;
+        let Equalities { key, via } = self.equalities(scope, &alias, on)?;
         Some(JoinedRef {
             reference: Ref {
                 alias,
@@ -694,23 +771,13 @@ impl Walker {
         scope: &Scope,
         alias: &Identifier,
         on: &sql::Expr,
-    ) -> Option<(Vec<Identifier>, Vec<Via>)> {
+    ) -> Option<Equalities> {
         let mut parts = Vec::new();
         and_parts(on, &mut parts);
         let mut key = Vec::new();
         let mut via = Vec::new();
-        for equality in parts {
-            let pair = match equality {
-                sql::Expr::BinaryOp {
-                    left,
-                    op: sql::BinaryOperator::Eq,
-                    right,
-                } => (self.qualified(left).zip(self.qualified(right)))
-                    .filter(|(l, _)| l.0 == *alias)
-                    .and_then(|(l, r)| Some((l.1, self.near(scope, r)?))),
-                _ => None,
-            };
-            let Some((k, v)) = pair else {
+        for part in parts {
+            let Some(equality) = self.equality(scope, alias, part) else {
                 self.error(
                     line(on),
                     format!(
@@ -721,31 +788,40 @@ impl Walker {
                 );
                 return None;
             };
-            key.push(k);
-            via.push(v);
+            key.push(equality.key);
+            via.push(equality.via);
         }
-        Some((key, via))
+        Some(Equalities { key, via })
     }
 
-    /// The near side of a join equality: a fact column, or a column of a
-    /// dim joined before, which then carries it.
-    fn near(&mut self, scope: &Scope, (alias, column): (Identifier, Identifier)) -> Option<Via> {
-        if alias == scope.alias {
-            return Some(Via::Fact(column));
+    fn equality(
+        &mut self,
+        scope: &Scope,
+        alias: &Identifier,
+        expr: &sql::Expr,
+    ) -> Option<Equality> {
+        let sql::Expr::BinaryOp {
+            left,
+            op: sql::BinaryOperator::Eq,
+            right,
+        } = expr
+        else {
+            return None;
+        };
+        // Both sides are walked before either is judged, so each reports
+        // its own errors.
+        let joined_side = self.qualified(left);
+        let near_side = self.qualified(right);
+        let (Some(joined_side), Some(near_side)) = (joined_side, near_side) else {
+            return None;
+        };
+        if joined_side.alias != *alias {
+            return None;
         }
-        let through = (scope.refs.iter()).position(|joined| joined.reference.alias == alias)?;
-        let joined = &scope.refs[through];
-        match joined.reference.kind {
-            RefKind::Left | RefKind::Inner => {}
-            RefKind::Semi | RefKind::Anti => return None,
-        }
-        // A key column of that dim is the column it was joined on.
-        if let Some(position) = joined.key.iter().position(|key| *key == column)
-            && let Via::Fact(_) = &joined.reference.via[position]
-        {
-            return Some(joined.reference.via[position].clone());
-        }
-        Some(Via::Attribute { through, column })
+        Some(Equality {
+            key: joined_side.column,
+            via: near(scope, near_side)?,
+        })
     }
 
     /// The fact, its joins, and the semi and anti joins in WHERE; the rest
@@ -754,9 +830,9 @@ impl Walker {
         &mut self,
         from: &sql::TableWithJoins,
         selection: Option<&'a sql::Expr>,
-    ) -> Option<(Table, Scope, Vec<&'a sql::Expr>)> {
+    ) -> Option<FromClause<'a>> {
         let sql::TableWithJoins { relation, joins } = from;
-        let (table, alias) = self.table(relation)?;
+        let AliasedTable { table, alias } = self.table(relation)?;
         let mut scope = Scope {
             alias,
             refs: Vec::new(),
@@ -782,38 +858,40 @@ impl Walker {
                 other => conditions.push(other),
             }
         }
-        Some((table, scope, conditions))
+        Some(FromClause {
+            table,
+            scope,
+            conditions,
+        })
     }
 
     /// `schema.table AS alias`, every part written: nothing defaults to
     /// `public` or to the table's name.
-    fn table(&mut self, factor: &sql::TableFactor) -> Option<(Table, Identifier)> {
+    fn table(&mut self, factor: &sql::TableFactor) -> Option<AliasedTable> {
         let (name, alias) = self.table_factor(factor)?;
         let at = line(factor);
         let table = self.schema_table(name);
-        let alias = match alias {
-            Some(sql::TableAlias {
-                explicit: true,
-                name: alias,
-                columns,
-                at: at_time,
-            }) => {
-                self.absent(at, !columns.is_empty(), "an alias column list");
-                self.absent(at, at_time.is_some(), "AT");
-                Some(self.ident(alias)?)
-            }
-            Some(sql::TableAlias {
-                explicit: false, ..
-            })
-            | None => {
-                self.error(
-                    line(name),
-                    format!("table {name} must be {name} AS <alias>"),
-                );
-                None
-            }
+        let alias = if let Some(sql::TableAlias {
+            explicit: true,
+            name: alias,
+            columns,
+            at: at_time,
+        }) = alias
+        {
+            self.absent(at, !columns.is_empty(), "an alias column list");
+            self.absent(at, at_time.is_some(), "AT");
+            Some(self.ident(alias)?)
+        } else {
+            self.error(
+                line(name),
+                format!("table {name} must be {name} AS <alias>"),
+            );
+            None
         };
-        Some((table?, alias?))
+        Some(AliasedTable {
+            table: table?,
+            alias: alias?,
+        })
     }
 
     /// `LEFT OUTER JOIN schema.dim AS alias ON alias.key = near.column` or
@@ -829,8 +907,8 @@ impl Walker {
         let at = line(join);
         self.absent(at, *global, "GLOBAL");
         let (kind, constraint) = match join_operator {
-            sql::JoinOperator::LeftOuter(c) => (RefKind::Left, c),
-            sql::JoinOperator::Inner(c) => (RefKind::Inner, c),
+            sql::JoinOperator::LeftOuter(constraint) => (RefKind::Left, constraint),
+            sql::JoinOperator::Inner(constraint) => (RefKind::Inner, constraint),
             sql::JoinOperator::Left(_) => {
                 self.refuse(at, "LEFT JOIN, write LEFT OUTER JOIN,", join);
                 return None;
@@ -844,15 +922,12 @@ impl Walker {
                 return None;
             }
         };
-        let (table, alias) = self.table(relation)?;
-        let on = match constraint {
-            sql::JoinConstraint::On(on) => on,
-            _ => {
-                self.refuse(at, "join condition, write ON,", join);
-                return None;
-            }
+        let table = self.table(relation)?;
+        let sql::JoinConstraint::On(on) = constraint else {
+            self.refuse(at, "join condition, write ON,", join);
+            return None;
         };
-        self.joined(scope, kind, table, alias, on)
+        self.joined(scope, kind, table, on)
     }
 
     fn schema_table(&mut self, name: &sql::ObjectName) -> Option<Table> {
@@ -871,18 +946,19 @@ impl Walker {
 
     /// The arguments of a plain call `name(args)`, or `None` after rejecting
     /// anything else about the call.
-    fn call<'a>(&mut self, function: &'a sql::Function) -> Option<(&'a [sql::FunctionArg], bool)> {
-        let (args, distinct, within_group) = self.ordered_call(function)?;
-        self.absent(line(function), !within_group.is_empty(), "WITHIN GROUP");
-        Some((args, distinct))
+    fn call<'a>(&mut self, function: &'a sql::Function) -> Option<Call<'a>> {
+        let call = self.ordered_call(function)?;
+        self.absent(
+            line(function),
+            !call.within_group.is_empty(),
+            "WITHIN GROUP",
+        );
+        Some(call)
     }
 
     /// As [`Walker::call`], with what `WITHIN GROUP (ORDER BY ...)` lists,
     /// for the one aggregate that takes it.
-    fn ordered_call<'a>(
-        &mut self,
-        function: &'a sql::Function,
-    ) -> Option<(&'a [sql::FunctionArg], bool, &'a [sql::OrderByExpr])> {
+    fn ordered_call<'a>(&mut self, function: &'a sql::Function) -> Option<Call<'a>> {
         let sql::Function {
             name: _,
             uses_odbc_syntax,
@@ -920,7 +996,11 @@ impl Walker {
                 false
             }
         };
-        Some((args, distinct, within_group))
+        Some(Call {
+            args,
+            distinct,
+            within_group,
+        })
     }
 
     pub(super) fn literal(&mut self, expr: &sql::Expr) -> Option<Literal> {
@@ -933,12 +1013,18 @@ impl Walker {
         };
         let literal = match value {
             sql::Expr::Value(sql::ValueWithSpan { value, span: _ }) => match value {
-                sql::Value::Number(n, false) => {
-                    let n = if negative { format!("-{n}") } else { n.clone() };
-                    n.parse().ok().map(Literal::Int)
+                sql::Value::Number(digits, false) => {
+                    let digits = if negative {
+                        format!("-{digits}")
+                    } else {
+                        digits.clone()
+                    };
+                    digits.parse().ok().map(Literal::Int)
                 }
-                sql::Value::SingleQuotedString(s) if !negative => Some(Literal::Text(s.clone())),
-                sql::Value::Boolean(b) if !negative => Some(Literal::Bool(*b)),
+                sql::Value::SingleQuotedString(text) if !negative => {
+                    Some(Literal::Text(text.clone()))
+                }
+                sql::Value::Boolean(value) if !negative => Some(Literal::Bool(*value)),
                 _ => None,
             },
             _ => None,
@@ -955,7 +1041,7 @@ impl Walker {
 
     /// `alias.column`, or `alias.column::text` to read an enum column as
     /// the label PostgreSQL prints (ADR-0037). `true` when cast.
-    fn reference(&mut self, expr: &sql::Expr) -> Option<(Identifier, Identifier, bool)> {
+    fn reference(&mut self, expr: &sql::Expr) -> Option<Reference> {
         let sql::Expr::Cast {
             kind,
             expr: inner,
@@ -963,9 +1049,12 @@ impl Walker {
             format,
         } = expr
         else {
-            return self
-                .qualified(expr)
-                .map(|(alias, column)| (alias, column, false));
+            let Qualified { alias, column } = self.qualified(expr)?;
+            return Some(Reference {
+                alias,
+                column,
+                cast: false,
+            });
         };
         let at = line(expr);
         self.absent(at, format.is_some(), "CAST ... FORMAT");
@@ -984,12 +1073,16 @@ impl Walker {
             self.refuse(at, &format!("::{data_type}, write ::text,"), expr);
             return None;
         }
-        let (alias, column) = self.qualified(inner)?;
-        Some((alias, column, true))
+        let Qualified { alias, column } = self.qualified(inner)?;
+        Some(Reference {
+            alias,
+            column,
+            cast: true,
+        })
     }
 
     /// `alias.column`, the fact's included: no table is anyone's default.
-    fn qualified(&mut self, expr: &sql::Expr) -> Option<(Identifier, Identifier)> {
+    fn qualified(&mut self, expr: &sql::Expr) -> Option<Qualified> {
         match expr {
             sql::Expr::Cast { .. } => {
                 self.refuse(line(expr), "::text outside a key or a FILTER column,", expr);
@@ -1000,7 +1093,10 @@ impl Walker {
                     self.refuse(line(expr), "column, write alias.column,", expr);
                     return None;
                 };
-                Some((self.ident(alias)?, self.ident(column)?))
+                Some(Qualified {
+                    alias: self.ident(alias)?,
+                    column: self.ident(column)?,
+                })
             }
             other => {
                 self.refuse(line(other), "column, write alias.column,", other);
@@ -1010,7 +1106,11 @@ impl Walker {
     }
 
     fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<(Column, bool)> {
-        let (alias, column, cast) = self.reference(expr)?;
+        let Reference {
+            alias,
+            column,
+            cast,
+        } = self.reference(expr)?;
         if alias == scope.alias {
             return Some((Column::Fact(column), cast));
         }
@@ -1051,7 +1151,7 @@ impl Walker {
     /// is no column there.
     pub(super) fn key_of(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<Identifier> {
         let (column, cast) = self.column(scope, expr)?;
-        let Some(key) = self.filter_key(scope, expr, &column, cast, false) else {
+        let Some(key) = self.filter_key(scope, expr, &column, cast, KeyKind::Value) else {
             self.error(
                 line(expr),
                 format!("FILTER on {expr} needs {expr} AS <name> in SELECT"),
@@ -1071,7 +1171,8 @@ impl Walker {
         is_null: bool,
     ) -> Option<Condition> {
         let (column, cast) = self.fact_column(scope, expr, "the IS NULL column")?;
-        let Some(key) = self.filter_key(scope, expr, &Column::Fact(column), cast, true) else {
+        let fact_column = Column::Fact(column);
+        let Some(key) = self.filter_key(scope, expr, &fact_column, cast, KeyKind::NullNess) else {
             self.error(
                 line(test),
                 format!("FILTER (WHERE {test}) needs the key ({expr} IS NULL) AS <name> in SELECT"),
@@ -1095,10 +1196,11 @@ impl Walker {
         expr: &sql::Expr,
         column: &Column,
         cast: bool,
-        null_ness: bool,
+        kind: KeyKind,
     ) -> Option<&'s ScopedKey> {
+        let null_ness = matches!(kind, KeyKind::NullNess);
         let key = (scope.keys.iter())
-            .find(|k| k.column == *column && k.is_null.is_some() == null_ness)?;
+            .find(|key| key.column == *column && key.is_null.is_some() == null_ness)?;
         self.same_spelling(scope, expr, column, cast);
         Some(key)
     }
@@ -1123,7 +1225,7 @@ impl Walker {
         }
         let at = line(function);
         self.absent(at, function.filter.is_some(), "FILTER on date_bin");
-        let (args, distinct) = self.call(function)?;
+        let Call { args, distinct, .. } = self.call(function)?;
         self.absent(at, distinct, "DISTINCT on date_bin");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
@@ -1136,9 +1238,9 @@ impl Walker {
         };
         let parsed = match width {
             sql::Expr::Value(sql::ValueWithSpan {
-                value: sql::Value::SingleQuotedString(s),
+                value: sql::Value::SingleQuotedString(text),
                 span: _,
-            }) => parse_width(s),
+            }) => parse_width(text),
             _ => None,
         };
         if parsed.is_none() {
@@ -1152,11 +1254,11 @@ impl Walker {
                 data_type: sql::DataType::Timestamp(None, zone),
                 value:
                     sql::ValueWithSpan {
-                        value: sql::Value::SingleQuotedString(s),
+                        value: sql::Value::SingleQuotedString(text),
                         span: _,
                     },
                 uses_odbc_syntax: false,
-            }) if s == "epoch" => match zone {
+            }) if text == "epoch" => match zone {
                 sql::TimezoneInfo::Tz => Some(Origin::Timestamptz),
                 sql::TimezoneInfo::None => Some(Origin::Timestamp),
                 sql::TimezoneInfo::WithTimeZone | sql::TimezoneInfo::WithoutTimeZone => None,
@@ -1185,10 +1287,15 @@ impl Walker {
     ) -> Option<(Aggregate, Vec<Condition>)> {
         let at = line(function);
         let name = function_name(function).map(str::to_ascii_lowercase);
-        let (args, distinct, within_group) = self.ordered_call(function)?;
+        let call = self.ordered_call(function)?;
+        let Call {
+            args,
+            distinct,
+            within_group,
+        } = call;
         match name.as_deref() {
             Some("percentile_disc") => {
-                let aggregate = self.percentile_disc(scope, function, args, distinct, within_group);
+                let aggregate = self.percentile_disc(scope, function, &call);
                 let filter = self.key_conds(scope, function.filter.as_deref())?;
                 return Some((aggregate?, filter));
             }
@@ -1255,18 +1362,20 @@ impl Walker {
         &mut self,
         scope: &Scope,
         function: &sql::Function,
-        args: &[sql::FunctionArg],
-        distinct: bool,
-        within_group: &[sql::OrderByExpr],
+        call: &Call,
     ) -> Option<Aggregate> {
+        let &Call {
+            args,
+            distinct,
+            within_group,
+        } = call;
         let at = line(function);
         self.absent(at, distinct, "DISTINCT outside count");
-        let fraction = match args {
-            [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] => self.fraction(expr),
-            _ => {
-                self.refuse(at, "arguments, write one fraction,", function);
-                None
-            }
+        let fraction = if let [sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(expr))] = args {
+            self.fraction(expr)
+        } else {
+            self.refuse(at, "arguments, write one fraction,", function);
+            None
         };
         let [order] = within_group else {
             let what = match within_group {
@@ -1304,13 +1413,11 @@ impl Walker {
             _ => "",
         };
         let (whole, places) = text.split_once('.').unwrap_or((text, ""));
-        let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
-        if whole.is_empty() || !digits(whole) || !digits(places) || text.ends_with('.') {
+        if whole.is_empty() || !all_digits(whole) || !all_digits(places) || text.ends_with('.') {
             self.refuse(at, "fraction, write a number from 0 to 1,", expr);
             return None;
         }
-        let fraction = (format!("{whole}{places}").parse().ok())
-            .and_then(|units| Fraction::new(units, u32::try_from(places.len()).ok()?));
+        let fraction = fraction_of(whole, places);
         if fraction.is_none() {
             self.error(
                 at,
@@ -1331,9 +1438,9 @@ impl Walker {
         for expr in exprs {
             let position = match expr {
                 sql::Expr::Value(sql::ValueWithSpan {
-                    value: sql::Value::Number(n, false),
+                    value: sql::Value::Number(digits, false),
                     span: _,
-                }) => n.parse::<usize>().ok(),
+                }) => digits.parse::<usize>().ok(),
                 _ => None,
             };
             let Some(position) = position else {
@@ -1372,8 +1479,8 @@ fn null_test(expr: &sql::Expr) -> Option<(&sql::Expr, bool)> {
     }
 }
 
-fn parse_width(s: &str) -> Option<Width> {
-    let [count, unit] = s.split_whitespace().collect::<Vec<_>>()[..] else {
+fn parse_width(text: &str) -> Option<Width> {
+    let [count, unit] = text.split_whitespace().collect::<Vec<_>>()[..] else {
         return None;
     };
     let scale = match unit.strip_suffix('s').unwrap_or(unit) {
@@ -1383,11 +1490,68 @@ fn parse_width(s: &str) -> Option<Width> {
         "day" => 86_400,
         _ => return None,
     };
-    count
-        .parse::<u32>()
-        .ok()?
-        .checked_mul(scale)
-        .map(|seconds| Width { seconds })
+    let count: u32 = count.parse().ok()?;
+    let seconds = count.checked_mul(scale)?;
+    Some(Width { seconds })
+}
+
+fn all_digits(text: &str) -> bool {
+    text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {
+    let units = format!("{whole}{places}").parse().ok()?;
+    let places = u32::try_from(places.len()).ok()?;
+    Fraction::new(units, places)
+}
+
+/// The near side of a join equality: a fact column, or a column of a
+/// dim joined before, which then carries it.
+fn near(scope: &Scope, Qualified { alias, column }: Qualified) -> Option<Via> {
+    if alias == scope.alias {
+        return Some(Via::Fact(column));
+    }
+    let through = (scope.refs.iter()).position(|joined| joined.reference.alias == alias)?;
+    let joined = &scope.refs[through];
+    match joined.reference.kind {
+        RefKind::Left | RefKind::Inner => {}
+        RefKind::Semi | RefKind::Anti => return None,
+    }
+    // A key column of that dim is the column it was joined on.
+    if let Some(position) = joined.key.iter().position(|key| *key == column)
+        && let Via::Fact(_) = &joined.reference.via[position]
+    {
+        return Some(joined.reference.via[position].clone());
+    }
+    Some(Via::Attribute { through, column })
+}
+
+fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
+    let mut as_text = Vec::new();
+    for key in &scope.keys {
+        if !key.cast {
+            continue;
+        }
+        let (read, column) = match &key.column {
+            Column::Fact(column) => (&mut as_text, column),
+            Column::Attribute { through, column } => (&mut scope.refs[*through].as_text, column),
+        };
+        if !read.contains(column) {
+            read.push(column.clone());
+        }
+    }
+    as_text
+}
+
+/// A FILTER every measure shares is the view's WHERE in disguise; a
+/// lone measure shares with nobody.
+fn measures_share_filter(measures: &[Measure]) -> bool {
+    let [first, rest @ ..] = measures else {
+        return false;
+    };
+    !first.filter.is_empty()
+        && !rest.is_empty()
+        && rest.iter().all(|measure| measure.filter == first.filter)
 }
 
 /// A column reference as Straum SQL spells it: `sqlparser` prints the cast
