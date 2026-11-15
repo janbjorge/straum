@@ -2,6 +2,7 @@
 //! the major `STRAUM_TEST_POSTGRES` names. Every answer is checked against
 //! the view body of the spec, run in PostgreSQL.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
@@ -32,7 +33,7 @@ use crate::stream::{Reader, Stream};
 use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, PageId, Tuple};
-use crate::wal::messages::Layouts;
+use crate::wal::messages::{Layouts, Table};
 use crate::wal::transactions::{Committed, Snapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
@@ -210,9 +211,24 @@ exec docker-entrypoint.sh postgres -c ssl=on \
 
 /// PostgreSQL, removed when dropped, with its CA file if it has TLS.
 struct PostgresContainer {
-    _container: Container<GenericImage>,
+    container: Container<GenericImage>,
     dsn: Dsn,
     _ca: Option<TempFile>,
+}
+
+impl PostgresContainer {
+    /// What `pg_waldump` prints of the server's WAL directory, read in
+    /// `directory`, with `arguments` after it.
+    fn waldump(&self, directory: &str, arguments: &[String]) -> String {
+        let mut command = vec![
+            "pg_waldump".to_owned(),
+            "-p".to_owned(),
+            format!("{directory}/pg_wal"),
+        ];
+        command.extend_from_slice(arguments);
+        let mut waldump = self.container.exec(ExecCommand::new(command)).unwrap();
+        String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap()
+    }
 }
 
 /// A file in the temp directory, removed when dropped.
@@ -249,7 +265,7 @@ fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
     let (container, port) = start(request);
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     PostgresContainer {
-        _container: container,
+        container,
         dsn: Dsn::parse(&dsn).unwrap(),
         _ca: None,
     }
@@ -257,14 +273,14 @@ fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
 
 /// As [`postgres`], with ssl on. The DSN trusts the test's CA alone.
 fn postgres_tls() -> PostgresContainer {
-    let [c, wal_level, c2, timeout] = FLAGS.map(str::to_owned);
+    let [setting, wal_level, next_setting, timeout] = FLAGS.map(str::to_owned);
     let cmd = [
         "-c".into(),
         WITH_TLS.into(),
         "sh".into(),
-        c,
+        setting,
         wal_level,
-        c2,
+        next_setting,
         timeout,
     ];
     let (container, port) = start(image(&tag()).with_entrypoint("sh").with_cmd(cmd));
@@ -277,7 +293,7 @@ fn postgres_tls() -> PostgresContainer {
         ca.0.display()
     );
     PostgresContainer {
-        _container: container,
+        container,
         dsn: Dsn::parse(&dsn).unwrap(),
         _ca: Some(ca),
     }
@@ -340,14 +356,20 @@ impl Db {
         let sql = self.sql(text);
         self.conn
             .execute(&sql)
-            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+            .unwrap_or_else(|error| panic!("{error}: {sql}"));
     }
 
     fn rows(&mut self, text: &str) -> Vec<Vec<Option<String>>> {
         let sql = self.sql(text);
         self.conn
             .rows(&sql)
-            .unwrap_or_else(|e| panic!("{e}: {sql}"))
+            .unwrap_or_else(|error| panic!("{error}: {sql}"))
+    }
+
+    /// Where PostgreSQL inserts WAL now.
+    fn insert_lsn(&mut self) -> Lsn {
+        let rows = self.rows("SELECT pg_current_wal_insert_lsn()");
+        parse_lsn(rows[0][0].as_deref().unwrap()).unwrap()
     }
 
     fn spec(&self, text: &str) -> Spec {
@@ -374,24 +396,25 @@ impl Db {
     }
 }
 
-fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
+fn id(name: &str) -> Identifier {
+    Identifier::new(name).unwrap()
 }
 
 fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
         view: id(fact),
-        measures: measures.iter().map(|m| id(m)).collect(),
-        keys: by
-            .iter()
-            .map(|k| match *k {
-                "bucket" => AskKey::Bucket,
-                k => AskKey::Key(id(k)),
-            })
-            .collect(),
+        measures: measures.iter().map(|measure| id(measure)).collect(),
+        keys: by.iter().map(|key| ask_key(key)).collect(),
         filter: Vec::new(),
         from: 0,
         to: END,
+    }
+}
+
+fn ask_key(key: &str) -> AskKey {
+    match key {
+        "bucket" => AskKey::Bucket,
+        key => AskKey::Key(id(key)),
     }
 }
 
@@ -399,8 +422,8 @@ fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
 fn text(value: &Value, scale: u32) -> Option<String> {
     match *value {
         Value::Null => None,
-        Value::Int(n) => Some(decimal(n, scale)),
-        Value::Bool(b) => Some(if b { "t" } else { "f" }.to_owned()),
+        Value::Int(number) => Some(decimal(number, scale)),
+        Value::Bool(flag) => Some(boolean(flag)),
         // As `round(avg(c), 6)`: half away from zero.
         Value::Avg { sum, count } => {
             let numerator = sum * 10_i128.pow(6 - scale) * 2;
@@ -412,13 +435,18 @@ fn text(value: &Value, scale: u32) -> Option<String> {
 }
 
 /// A key as PostgreSQL prints it; `scale` for numeric keys.
-fn datum(d: &Datum, scale: u32) -> Option<String> {
-    match d {
+fn datum(key: &Datum, scale: u32) -> Option<String> {
+    match key {
         Datum::Null => None,
-        Datum::Int(n) => Some(decimal(i128::from(*n), scale)),
-        Datum::Text(s) => Some(s.to_string()),
-        Datum::Bool(b) => Some(if *b { "t" } else { "f" }.to_owned()),
+        Datum::Int(number) => Some(decimal(i128::from(*number), scale)),
+        Datum::Text(text) => Some(text.to_string()),
+        Datum::Bool(flag) => Some(boolean(*flag)),
     }
+}
+
+/// A `bool` as PostgreSQL prints it.
+fn boolean(flag: bool) -> String {
+    if flag { "t" } else { "f" }.to_owned()
 }
 
 /// The `SELECT` of a view in `spec`.
@@ -566,8 +594,12 @@ fn task_oracles() -> Vec<Reference> {
         },
         scales: vec![0; 8],
     };
-    // The null-ness key as a filter, against the test it stands for.
-    let open = Reference {
+    vec![by_bucket, window, open_tasks()]
+}
+
+/// The null-ness key as a filter, against the test it stands for.
+fn open_tasks() -> Reference {
+    Reference {
         sql: format!(
             "SELECT f.organization_id, count(*), sum(f.picks)
                FROM $S.tasks f
@@ -586,8 +618,7 @@ fn task_oracles() -> Vec<Reference> {
             ..ask("tasks", &["tasks", "picks"], &["organization_id"])
         },
         scales: vec![0; 3],
-    };
-    vec![by_bucket, window, open]
+    }
 }
 
 /// The picks view's references: by bucket, organization, category and done,
@@ -639,9 +670,11 @@ fn compare(db: &mut Db, app: &App, references: &[Reference]) -> Option<()> {
         let answered = match app.ask(ask) {
             Ok(answered) => answered,
             Err(AnswerError::NotReady) => return None,
-            Err(e) => panic!("{e}"),
+            Err(error) => panic!("{error}"),
         };
-        let got_scales: Vec<u32> = answered.answer.columns.iter().map(|c| c.scale).collect();
+        let got_scales: Vec<u32> = (answered.answer.columns.iter())
+            .map(|column| column.scale)
+            .collect();
         assert_eq!(got_scales, *scales, "{}", ask.view);
         let mut got = printed(&answered.answer, scales);
         let mut expected = db.rows(sql);
@@ -657,9 +690,12 @@ fn printed(answer: &Answer, scales: &[u32]) -> Vec<Vec<Option<String>>> {
     (answer.rows.iter())
         .map(|AnswerRow { keys, values }| {
             let (key_scales, value_scales) = scales.split_at(keys.len());
-            (keys.iter().zip(key_scales).map(|(k, s)| datum(k, *s)))
-                .chain(values.iter().zip(value_scales).map(|(v, s)| text(v, *s)))
-                .collect()
+            (keys
+                .iter()
+                .zip(key_scales)
+                .map(|(key, scale)| datum(key, *scale)))
+            .chain((values.iter().zip(value_scales)).map(|(value, scale)| text(value, *scale)))
+            .collect()
         })
         .collect()
 }
@@ -698,22 +734,33 @@ impl Rng {
 
     fn next(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
+        let mut mixed = self.state;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^ (mixed >> 31)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+
+    /// A second within `hours` of `START`.
+    fn time(&mut self) -> i64 {
+        START + i64::try_from(self.below(self.hours * 3_600)).unwrap()
     }
 
     fn chance(&mut self, percent: u64) -> bool {
         self.below(100) < percent
     }
 
-    fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
-        xs[self.below(xs.len() as u64) as usize]
+    /// An index into something `length` long.
+    fn index(&mut self, length: usize) -> usize {
+        let length = u64::try_from(length).unwrap();
+        usize::try_from(self.below(length)).unwrap()
+    }
+
+    fn pick<'a>(&mut self, choices: &[&'a str]) -> &'a str {
+        choices[self.index(choices.len())]
     }
 
     /// A SQL literal, or `NULL` one time in ten.
@@ -735,7 +782,7 @@ impl Rng {
     /// clock of `at`, whatever zone the session has. Task groups 3 and 4
     /// have no row, so their category is null.
     fn task(&mut self, id: u64) -> String {
-        let at = START + self.below(self.hours * 3_600) as i64;
+        let at = self.time();
         let organization = 1 + self.below(3);
         let taskgroup = (1 + self.below(4)).to_string();
         let completed = if self.chance(50) {
@@ -752,8 +799,26 @@ impl Rng {
         )
     }
 
+    /// An order of the shop: customer 8 and sku 5 have no row.
+    fn order(&mut self, id: u64) -> String {
+        let at = self.time();
+        let customer = (1 + self.below(8)).to_string();
+        let sku = (1 + self.below(5)).to_string();
+        let qty = self.below(10).to_string();
+        let status = format!("'{}'", self.pick(&["paid", "shipped", "new", "cancelled"]));
+        let gift = self.pick(&["true", "false"]).to_owned();
+        format!(
+            "INSERT INTO $S.orders VALUES ({id}, to_timestamp({at}), {}, {}, {}, {}, {})",
+            self.or_null(customer),
+            self.or_null(sku),
+            self.or_null(qty),
+            self.or_null(status),
+            self.or_null(gift)
+        )
+    }
+
     fn trip(&mut self, id: u64) -> String {
-        let at = START + self.below(self.hours * 3_600) as i64;
+        let at = self.time();
         let kind = format!("'{}'", self.pick(&KINDS));
         let zone = (1 + self.below(6)).to_string();
         let fare = format!("{}.{:02}", self.below(80), self.below(100));
@@ -807,28 +872,8 @@ fn follows_the_database() {
         // The zones stand still here; `a_dim_change_shows_at_once` and
         // `follows_the_task_tables` move a dim.
         for _ in 0..rng.below(4) {
-            let pick = trips[rng.below(trips.len() as u64) as usize];
-            let statement = match rng.below(8) {
-                0 | 1 => format!(
-                    "UPDATE $S.trips SET fare = fare + 1, kind = '{}' WHERE id = {pick};",
-                    rng.pick(&KINDS)
-                ),
-                2 => format!("UPDATE $S.trips SET at = at + interval '5 hours' WHERE id = {pick};"),
-                3 => {
-                    trips.retain(|t| *t != pick);
-                    format!("DELETE FROM $S.trips WHERE id = {pick};")
-                }
-                // Into zones 5 and 6 too, which have no row.
-                4 | 5 => format!(
-                    "UPDATE $S.trips SET zone_id = {} WHERE id = {pick};",
-                    1 + rng.below(6)
-                ),
-                6 => format!(
-                    "INSERT INTO $S.logins VALUES ({next}, to_timestamp({}), {});",
-                    START + rng.below(3 * 86_400) as i64,
-                    1 + rng.below(6)
-                ),
-                _ => continue,
+            let Some(statement) = random_trip_change(&mut rng, &mut trips, next) else {
+                continue;
             };
             next += 1;
             sql.push(statement);
@@ -856,6 +901,35 @@ fn follows_the_database() {
     assert!(compared > 100, "compared only {compared} times");
 }
 
+/// A statement that changes one of `trips` at random, or logs in as
+/// `next`; `None` one time in eight.
+fn random_trip_change(rng: &mut Rng, trips: &mut Vec<u64>, next: u64) -> Option<String> {
+    let pick = trips[rng.index(trips.len())];
+    let statement = match rng.below(8) {
+        0 | 1 => format!(
+            "UPDATE $S.trips SET fare = fare + 1, kind = '{}' WHERE id = {pick};",
+            rng.pick(&KINDS)
+        ),
+        2 => format!("UPDATE $S.trips SET at = at + interval '5 hours' WHERE id = {pick};"),
+        3 => {
+            trips.retain(|trip| *trip != pick);
+            format!("DELETE FROM $S.trips WHERE id = {pick};")
+        }
+        // Into zones 5 and 6 too, which have no row.
+        4 | 5 => format!(
+            "UPDATE $S.trips SET zone_id = {} WHERE id = {pick};",
+            1 + rng.below(6)
+        ),
+        6 => format!(
+            "INSERT INTO $S.logins VALUES ({next}, to_timestamp({}), {});",
+            START + i64::try_from(rng.below(3 * 86_400)).unwrap(),
+            1 + rng.below(6)
+        ),
+        _ => return None,
+    };
+    Some(statement)
+}
+
 /// Naive times and a dim keyed by two columns, one of them a by column.
 #[test]
 fn follows_the_task_tables() {
@@ -865,17 +939,7 @@ fn follows_the_task_tables() {
     // a zone on either side would show.
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(17);
-    for organization in 1..=3 {
-        for taskgroup in 1..=2 {
-            db.run(&format!(
-                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
-                rng.pick(&["pick", "pack", "count"])
-            ));
-        }
-    }
-    for id in 0..200 {
-        db.run(&rng.task(id));
-    }
+    insert_task_tables(&mut db, &mut rng);
     // On a bucket edge, a microsecond before it, and at the infinities,
     // which no bucket holds.
     db.run(&format!(
@@ -892,12 +956,52 @@ fn follows_the_task_tables() {
     let mut writer = db.writer(TASKS_SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &task_oracles()).expect("ready after the load");
+    assert_edge_buckets(writer.app());
+
+    for id in 200..230 {
+        db.run(&rng.task(id));
+        applied(&mut writer);
+    }
+    for change in task_changes() {
+        db.run(&change);
+        applied(&mut writer);
+        compare(&mut db, writer.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
+    }
+    // The key is a boolean, whatever its column is.
+    assert!(writer.app().ask(&done_is(Literal::Bool(true))).is_ok());
+    assert_eq!(
+        writer
+            .app()
+            .ask(&done_is(Literal::Int(1)))
+            .unwrap_err()
+            .to_string(),
+        "done is a boolean, so it can't be the integer 1"
+    );
+}
+
+/// Six task groups in three organizations, then 200 tasks.
+fn insert_task_tables(db: &mut Db, rng: &mut Rng) {
+    for organization in 1..=3 {
+        for taskgroup in 1..=2 {
+            db.run(&format!(
+                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
+                rng.pick(&["pick", "pack", "count"])
+            ));
+        }
+    }
+    for id in 0..200 {
+        db.run(&rng.task(id));
+    }
+}
+
+/// The hour before `START` holds the row a microsecond before it alone.
+fn assert_edge_buckets(app: &App) {
     let edges = Ask {
         from: START - 3_600,
         to: START + 3_600,
         ..ask("tasks", &["tasks"], &["bucket"])
     };
-    let answered = writer.app().ask(&edges).unwrap();
+    let answered = app.ask(&edges).unwrap();
     assert_eq!(answered.answer.rows.len(), 2);
     assert_eq!(
         answered.answer.rows[0],
@@ -907,14 +1011,22 @@ fn follows_the_task_tables() {
         }
     );
     assert_eq!(answered.answer.rows[1].keys, [Datum::Int(START)]);
+}
 
-    for id in 200..230 {
-        db.run(&rng.task(id));
-        applied(&mut writer);
+fn done_is(value: Literal) -> Ask {
+    Ask {
+        filter: vec![Condition {
+            key: id("done"),
+            values: vec![value],
+        }],
+        ..ask("tasks", &["tasks"], &[])
     }
-    // Each change is one commit, compared after it: facts moving to
-    // another dim row or to a group with no row, times moved, rows gone.
-    let changes = [
+}
+
+/// Each change is one commit, compared after it: facts moving to
+/// another dim row or to a group with no row, times moved, rows gone.
+fn task_changes() -> [String; 15] {
+    [
         // Null-ness flips both ways.
         "UPDATE $S.tasks SET completed = created + interval '1 hour' WHERE task_id % 3 = 0"
             .to_owned(),
@@ -942,29 +1054,7 @@ fn follows_the_task_tables() {
             .to_owned(),
         "DELETE FROM $S.taskgroups WHERE organization_id = 3 AND taskgroup_id = 2".to_owned(),
         "INSERT INTO $S.taskgroups VALUES (3, 2, 'count')".to_owned(),
-    ];
-    for change in changes {
-        db.run(&change);
-        applied(&mut writer);
-        compare(&mut db, writer.app(), &task_oracles()).unwrap_or_else(|| panic!("{change}"));
-    }
-    // The key is a boolean, whatever its column is.
-    let done_is = |value| Ask {
-        filter: vec![Condition {
-            key: id("done"),
-            values: vec![value],
-        }],
-        ..ask("tasks", &["tasks"], &[])
-    };
-    assert!(writer.app().ask(&done_is(Literal::Bool(true))).is_ok());
-    assert_eq!(
-        writer
-            .app()
-            .ask(&done_is(Literal::Int(1)))
-            .unwrap_err()
-            .to_string(),
-        "done is a boolean, so it can't be the integer 1"
-    );
+    ]
 }
 
 /// A transaction at the limit applies; one past it starts Straum over, and
@@ -984,10 +1074,6 @@ fn a_transaction_past_the_limit_starts_over() {
         Postgres::new(db.dsn.clone(), &db.name, CAP, Replication::Logical),
     );
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    let batch = |rng: &mut Rng, from: u64, rows: usize| {
-        let inserts: Vec<String> = (from..from + rows as u64).map(|id| rng.trip(id)).collect();
-        format!("BEGIN;\n{}\nCOMMIT;", inserts.join("\n"))
-    };
     db.run(&batch(&mut rng, 100, CAP));
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
@@ -1021,6 +1107,13 @@ fn a_transaction_past_the_limit_starts_over() {
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 }
 
+/// One transaction inserting `rows` trips from id `from`.
+fn batch(rng: &mut Rng, from: u64, rows: usize) -> String {
+    let to = from + u64::try_from(rows).unwrap();
+    let inserts: Vec<String> = (from..to).map(|id| rng.trip(id)).collect();
+    format!("BEGIN;\n{}\nCOMMIT;", inserts.join("\n"))
+}
+
 /// The same tables under two views: a dim change is a change to the dim's
 /// projection, and every ask reads the dim as it is now, as PostgreSQL's
 /// view does. Nothing starts over.
@@ -1030,17 +1123,7 @@ fn a_dim_change_shows_at_once() {
     let mut db = Db::new(&pg, "ingest", TASKS);
     db.run("SET TIME ZONE 'Europe/Oslo'");
     let mut rng = Rng::new(29);
-    for organization in 1..=3 {
-        for taskgroup in 1..=2 {
-            db.run(&format!(
-                "INSERT INTO $S.taskgroups VALUES ({organization}, {taskgroup}, '{}')",
-                rng.pick(&["pick", "pack", "count"])
-            ));
-        }
-    }
-    for id in 0..200 {
-        db.run(&rng.task(id));
-    }
+    insert_task_tables(&mut db, &mut rng);
     let mut picks = db.writer(PICKS_SPEC);
     let mut tasks = db.writer(TASKS_SPEC);
     assert!(matches!(picks.step(), Ok(Step::Started(_))));
@@ -1108,7 +1191,10 @@ fn a_dim_change_shows_at_once() {
     let nulls = (answered.answer.rows.iter())
         .find(|row| row.keys[0] == Datum::Null)
         .map(|row| row.values[0].clone());
-    assert!(matches!(nulls, Some(Value::Int(n)) if n >= 2), "{nulls:?}");
+    assert!(
+        matches!(nulls, Some(Value::Int(count)) if count >= 2),
+        "{nulls:?}"
+    );
 }
 
 /// A value Straum can't read stops the load, or the stream, naming the
@@ -1260,25 +1346,8 @@ fn every_join_kind_matches_postgresql() {
                                       (3, NULL), (4, 'sale');
          INSERT INTO $S.blocked VALUES (3, 'fraud')",
     );
-    let order = |id: u64, rng: &mut Rng| {
-        let at = START + rng.below(rng.hours * 3_600) as i64;
-        let customer = (1 + rng.below(8)).to_string();
-        let sku = (1 + rng.below(5)).to_string();
-        let qty = rng.below(10).to_string();
-        let status = format!("'{}'", rng.pick(&["paid", "shipped", "new", "cancelled"]));
-        let gift = rng.pick(&["true", "false"]).to_owned();
-        format!(
-            "INSERT INTO $S.orders VALUES ({id}, to_timestamp({at}), {}, {}, {}, {}, {})",
-            rng.or_null(customer),
-            rng.or_null(sku),
-            rng.or_null(qty),
-            rng.or_null(status),
-            rng.or_null(gift)
-        )
-    };
     for id in 0..300 {
-        let sql = order(id, &mut rng);
-        db.run(&sql);
+        db.run(&rng.order(id));
     }
     let mut paid = db.writer(PAID_SPEC);
     let mut offers = db.writer(OFFERS_SPEC);
@@ -1288,7 +1357,7 @@ fn every_join_kind_matches_postgresql() {
     compare(&mut db, paid.app(), &paid_oracles).expect("ready");
     compare(&mut db, offers.app(), &offers_oracles).expect("ready");
 
-    let mut changes: Vec<String> = (300..320).map(|id| order(id, &mut rng)).collect();
+    let mut changes: Vec<String> = (300..320).map(|id| rng.order(id)).collect();
     changes.extend(
         [
             // A dim row moves, under an inner join and a standing WHERE.
@@ -1374,10 +1443,10 @@ fn the_snapshot_and_the_stream_split_exactly() {
             let (written, done) = (Arc::clone(&written), Arc::clone(&done));
             thread::spawn(move || {
                 let mut conn = Connection::connect(&dsn, false).unwrap();
-                for i in 0..2_000 {
+                for id in 0..2_000 {
                     let sql = format!(
-                        "INSERT INTO {name}.trips VALUES ({i}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
-                        START + i
+                        "INSERT INTO {name}.trips VALUES ({id}, to_timestamp({}), 'cab', 1, 1.00, 'ann', 2)",
+                        START + id
                     );
                     conn.execute(&sql).unwrap();
                     written.fetch_add(1, Ordering::Release);
@@ -1483,17 +1552,6 @@ fn asks_take_values_of_the_types_the_load_read() {
     let db = Db::new(&pg, "types", TABLES);
     let mut writer = db.writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    let filtered = |fact, measure, key: &str, value| Ask {
-        filter: vec![Condition {
-            key: match ask(fact, &[], &[key]).keys.remove(0) {
-                AskKey::Key(name) => name,
-                AskKey::Bucket => unreachable!("cases filter on keys"),
-            },
-            values: vec![value],
-        }],
-        ..ask(fact, &[measure], &[])
-    };
-    let text = |s: &str| Literal::Text(s.into());
     // text, the column a ref joins on (int), a dim's text; then
     // numeric(4, 1).
     let cases = [
@@ -1501,7 +1559,7 @@ fn asks_take_values_of_the_types_the_load_read() {
             "trips",
             "trips",
             "kind",
-            text("cab"),
+            text_literal("cab"),
             Literal::Int(1),
             ColumnType::Text,
         ),
@@ -1510,14 +1568,14 @@ fn asks_take_values_of_the_types_the_load_read() {
             "trips",
             "zone_id",
             Literal::Int(1),
-            text("1"),
+            text_literal("1"),
             ColumnType::Int,
         ),
         (
             "trips",
             "trips",
             "borough",
-            text("Bronx"),
+            text_literal("Bronx"),
             Literal::Bool(true),
             ColumnType::Text,
         ),
@@ -1532,7 +1590,7 @@ fn asks_take_values_of_the_types_the_load_read() {
         };
         assert_eq!(errors.len(), 1, "{key}");
         assert!(
-            matches!(&errors[0], AskError::WrongType { column: c, value, .. } if *c == column && *value == wrong),
+            matches!(&errors[0], AskError::WrongType { column: got, value, .. } if *got == column && *value == wrong),
             "{key}: {errors:?}"
         );
     }
@@ -1542,6 +1600,21 @@ fn asks_take_values_of_the_types_the_load_read() {
         writer.app().ask(&toll).unwrap_err().to_string(),
         "toll is a numeric of scale 1, so it can't be the integer 1"
     );
+}
+
+/// `fact`'s `measure` where `key` is `value`.
+fn filtered(fact: &str, measure: &str, key: &str, value: Literal) -> Ask {
+    Ask {
+        filter: vec![Condition {
+            key: id(key),
+            values: vec![value],
+        }],
+        ..ask(fact, &[measure], &[])
+    }
+}
+
+fn text_literal(text: &str) -> Literal {
+    Literal::Text(text.into())
 }
 
 #[test]
@@ -1578,8 +1651,12 @@ fn follows_the_database_over_tls() {
         "SELECT DISTINCT a.backend_type, s.ssl FROM pg_stat_activity a
          JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'straum' ORDER BY 1",
     );
-    let row = |kind: &str| vec![Some(kind.to_owned()), Some("t".to_owned())];
-    assert_eq!(tls, [row("client backend"), row("walsender")]);
+    assert_eq!(tls, [over_tls("client backend"), over_tls("walsender")]);
+}
+
+/// A `pg_stat_activity` row of `backend_type` that runs over TLS.
+fn over_tls(backend_type: &str) -> Vec<Option<String>> {
+    vec![Some(backend_type.to_owned()), Some("t".to_owned())]
 }
 
 #[test]
@@ -1679,7 +1756,7 @@ fn stops_past_the_page_memory() {
         assert!(Instant::now() < deadline, "never stopped");
         match source.next_commit(Duration::from_millis(100)) {
             Ok(_) => {}
-            Err(e) => break e.to_string(),
+            Err(error) => break error.to_string(),
         }
     };
     assert!(
@@ -1707,14 +1784,14 @@ fn follows_the_physical_wal() {
     }
     let stop = Arc::new(AtomicBool::new(false));
     let writers: Vec<_> = (0..3u64)
-        .map(|w| {
+        .map(|index| {
             let stop = Arc::clone(&stop);
             let dsn = pg.dsn.clone();
             let schema = db.name.clone();
             thread::spawn(move || {
                 let mut conn = Connection::connect(&dsn, false).unwrap();
-                let mut rng = Rng::new(100 + w);
-                let mut id = 1_000_000 * (w + 1);
+                let mut rng = Rng::new(100 + index);
+                let mut id = 1_000_000 * (index + 1);
                 while !stop.load(Ordering::Relaxed) {
                     id += 1;
                     let sql = format!(
@@ -1724,11 +1801,11 @@ fn follows_the_physical_wal() {
                         rng.trip(id),
                         id - 1,
                         id - 2,
-                        1 + w
+                        1 + index
                     );
                     conn.execute(&sql.replace("$S", &schema)).unwrap();
                     // DDL while Straum starts: a column comes and goes.
-                    if w == 0 && id % 25 == 0 {
+                    if index == 0 && id % 25 == 0 {
                         let ddl = format!(
                             "ALTER TABLE $S.trips ADD c{id} int DEFAULT 7;
                              UPDATE $S.trips SET c{id} = 8 WHERE id = {id};
@@ -1906,13 +1983,6 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     let (dsn, sql) = (db.dsn.clone(), db.sql(&rng.trip(11)));
     let helper = thread::spawn(move || {
         let mut watch = Connection::connect(&dsn, false).unwrap();
-        let wait_for = |watch: &mut Connection, query: &str| {
-            let deadline = Instant::now() + LONG;
-            while watch.rows(query).unwrap().is_empty() {
-                assert!(Instant::now() < deadline, "never: {query}");
-                thread::sleep(Duration::from_millis(20));
-            }
-        };
         // Straum logged which transactions run, the one holding it among
         // them.
         wait_for(
@@ -1949,6 +2019,15 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
+/// Waits until `query` returns a row.
+fn wait_for(watch: &mut Connection, query: &str) {
+    let deadline = Instant::now() + LONG;
+    while watch.rows(query).unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "never: {query}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// A checkpoint in progress sets the redo point, where a physical slot
 /// starts, before PostgreSQL has flushed the WAL up to it; the server
 /// streams nothing it hasn't flushed, so the start waits for the flush.
@@ -1977,7 +2056,7 @@ fn starts_while_a_checkpoint_runs() {
     for _ in 0..100 {
         let (mut physical, start) = Physical::start(&pg.dsn).unwrap();
         let record = physical.next_record().unwrap();
-        assert!(record.is_none_or(|r| r.lsn >= start.0));
+        assert!(record.is_none_or(|record| record.lsn >= start.0));
     }
     stop.store(true, Ordering::Relaxed);
     for thread in busy {
@@ -2022,12 +2101,7 @@ fn catch_up(db: &mut Db, writer: &mut Writer<Postgres>, rng: &mut Rng, next: &mu
         assert!(Instant::now() < deadline, "never caught up");
         *next += 1;
         db.run(&rng.trip(*next));
-        let written = parse_lsn(
-            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-                .as_deref()
-                .unwrap(),
-        )
-        .unwrap();
+        let written = db.insert_lsn();
         while writer
             .app()
             .status()
@@ -2060,30 +2134,9 @@ fn reads_the_wal_pg_waldump_reads() {
         db.run(&format!("ALTER SYSTEM SET wal_compression = {compression}"));
         db.run("SELECT pg_reload_conf()");
         db.run("CHECKPOINT");
-        db.run(
-            "INSERT INTO $S.t SELECT i, md5(i::text) FROM generate_series(1, 400) AS i
-             ON CONFLICT (id) DO UPDATE SET body = excluded.body || 'x'",
-        );
-        db.run("UPDATE $S.t SET body = body || 'y' WHERE id % 3 = 0");
-        db.run("DELETE FROM $S.t WHERE id % 7 = 0");
-        // Past a page: TOAST chunks, and a record split across pages.
-        db.run(
-            "INSERT INTO $S.t SELECT 1000 + i, string_agg(md5(j::text), '')
-             FROM generate_series(1, 3) AS i, generate_series(1, 700) AS j GROUP BY i
-             ON CONFLICT (id) DO NOTHING",
-        );
-        db.run(
-            "BEGIN; DELETE FROM $S.t WHERE id = -1;
-             SAVEPOINT a; INSERT INTO $S.t VALUES (-1, 'a'); RELEASE a;
-             SAVEPOINT b; INSERT INTO $S.t VALUES (-2, 'b'); ROLLBACK TO b; COMMIT",
-        );
+        write_records_of_every_kind(&mut db);
     }
-    let last = parse_lsn(
-        &db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-            .clone()
-            .unwrap(),
-    )
-    .unwrap();
+    let last = db.insert_lsn();
     db.run("SELECT pg_switch_wal()");
     let mut read = Vec::new();
     let deadline = Instant::now() + LONG;
@@ -2099,17 +2152,7 @@ fn reads_the_wal_pg_waldump_reads() {
     }
     let switch = *read.last().map(|(lsn, _)| lsn).unwrap();
     let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
-    let mut waldump = pg
-        ._container
-        .exec(ExecCommand::new([
-            "pg_waldump".to_owned(),
-            "-p".to_owned(),
-            format!("{directory}/pg_wal"),
-            "-s".to_owned(),
-            start.to_string(),
-        ]))
-        .unwrap();
-    let out = String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap();
+    let out = pg.waldump(&directory, &["-s".to_owned(), start.to_string()]);
     let expected: Vec<(u64, String)> = out
         .lines()
         .filter_map(waldump_line)
@@ -2121,6 +2164,27 @@ fn reads_the_wal_pg_waldump_reads() {
         assert_eq!(ours, theirs);
     }
     assert_eq!(read.len(), expected.len());
+}
+
+/// Inserts, updates and deletes, records past a page, and savepoints.
+fn write_records_of_every_kind(db: &mut Db) {
+    db.run(
+        "INSERT INTO $S.t SELECT i, md5(i::text) FROM generate_series(1, 400) AS i
+         ON CONFLICT (id) DO UPDATE SET body = excluded.body || 'x'",
+    );
+    db.run("UPDATE $S.t SET body = body || 'y' WHERE id % 3 = 0");
+    db.run("DELETE FROM $S.t WHERE id % 7 = 0");
+    // Past a page: TOAST chunks, and a record split across pages.
+    db.run(
+        "INSERT INTO $S.t SELECT 1000 + i, string_agg(md5(j::text), '')
+         FROM generate_series(1, 3) AS i, generate_series(1, 700) AS j GROUP BY i
+         ON CONFLICT (id) DO NOTHING",
+    );
+    db.run(
+        "BEGIN; DELETE FROM $S.t WHERE id = -1;
+         SAVEPOINT a; INSERT INTO $S.t VALUES (-1, 'a'); RELEASE a;
+         SAVEPOINT b; INSERT INTO $S.t VALUES (-2, 'b'); ROLLBACK TO b; COMMIT",
+    );
 }
 
 /// The rows Straum keeps for each page of a table are the rows on that
@@ -2142,56 +2206,9 @@ fn keeps_the_rows_pageinspect_sees() {
         db.run(&format!("ALTER SYSTEM SET wal_compression = {compression}"));
         db.run("SELECT pg_reload_conf()");
         db.run("CHECKPOINT");
-        // First changes since the checkpoint, so each brings a page image.
-        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 9 = 1");
-        db.run("DELETE FROM $S.t WHERE id % 17 = 2");
-        db.run("UPDATE $S.t SET body = repeat(body, 5) WHERE id % 19 = 3");
-        let base = round * 10_000;
-        db.run(&format!(
-            "INSERT INTO $S.t SELECT {base} + i, i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' END,
-                 repeat(md5(i::text), 1 + i % 4)
-             FROM generate_series(1, 300) AS i"
-        ));
-        // HOT: n has no index. The long body shares a prefix and suffix.
-        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 3 = 0");
-        db.run("UPDATE $S.t SET body = body || 'tail' WHERE id % 4 = 0");
-        db.run("UPDATE $S.t SET body = 'head' || body WHERE id % 6 = 0");
-        db.run("UPDATE $S.t SET note = 'x' WHERE note IS NULL AND id % 2 = 0");
-        // Not HOT, and rows too big to stay on their page.
-        db.run("UPDATE $S.t SET id = id + 5000 WHERE id % 7 = 0");
-        db.run("UPDATE $S.t SET body = repeat(body, 6) WHERE id % 11 = 0");
-        db.run("DELETE FROM $S.t WHERE id % 13 = 0");
-        db.run(&format!(
-            "COPY (SELECT {base} + 9000 + i, i, 'c', md5(i::text)
-                   FROM generate_series(1, 200) AS i) TO '/tmp/rows.csv'"
-        ));
-        db.run("COPY $S.t FROM '/tmp/rows.csv'");
-        db.run(&format!(
-            "INSERT INTO $S.t VALUES ({base} + 1, 0, 'dup', 'dup'), ({base} + 8999, 0, 'new', 'new')
-             ON CONFLICT (id) DO NOTHING"
-        ));
-        db.run("VACUUM $S.t");
-        db.run("UPDATE $S.t SET n = n + 1 WHERE id % 5 = 1");
+        churn_pages(&mut db, round * 10_000);
     }
-    // Empty pages at the end, which VACUUM cuts off.
-    db.run("INSERT INTO $S.t SELECT 100000 + i, i, 'f', md5(i::text) FROM generate_series(1, 3000) AS i");
-    db.run("DELETE FROM $S.t WHERE id > 100000");
-    db.run("VACUUM $S.t");
-    // After a checkpoint Straum keeps only the pages changed since its
-    // redo point: the others come whole with their next change.
-    db.run("CHECKPOINT");
-    db.run("UPDATE $S.t SET n = n + 1 WHERE id IN (SELECT id FROM $S.t ORDER BY id LIMIT 3)");
-    db.run("DELETE FROM $S.t WHERE id = (SELECT max(id) FROM $S.t)");
-    // A lock changes no row Straum reads, yet sets the page's LSN.
-    db.run(
-        "BEGIN; SELECT id FROM $S.t WHERE id = (SELECT min(id) + 200 FROM $S.t) FOR UPDATE; COMMIT",
-    );
-    let redo = parse_lsn(
-        db.rows("SELECT redo_lsn FROM pg_control_checkpoint()")[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
+    let redo = change_a_few_pages_after_a_checkpoint(&mut db);
     let (relation, blocks) = relation_file(&mut db, "t");
     let (heap, changes) = follow_to_now(&mut db, &mut physical, relation);
     assert!(changes > 3000, "{changes} changes");
@@ -2226,20 +2243,7 @@ fn keeps_the_rows_pageinspect_sees() {
             continue;
         };
         kept += 1;
-        let theirs: Vec<String> = db
-            .rows(&format!(
-                "SELECT lp, t_hoff, t_infomask2 & 2047, coalesce(t_bits, ''), encode(t_data, 'hex')
-                 FROM heap_page_items(get_raw_page('$S.t', {block})) WHERE lp_flags = 1
-                 ORDER BY lp"
-            ))
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(Option::unwrap)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .collect();
+        let theirs = page_items(&mut db, block);
         let ours: Vec<String> = page
             .rows()
             .map(|(offnum, tuple)| page_item(offnum, tuple))
@@ -2253,6 +2257,76 @@ fn keeps_the_rows_pageinspect_sees() {
     assert_eq!(heap.bytes(), heap.recount());
 }
 
+/// Cuts empty pages off the end, then changes a few after a checkpoint:
+/// its redo point.
+fn change_a_few_pages_after_a_checkpoint(db: &mut Db) -> Lsn {
+    // Empty pages at the end, which VACUUM cuts off.
+    db.run("INSERT INTO $S.t SELECT 100000 + i, i, 'f', md5(i::text) FROM generate_series(1, 3000) AS i");
+    db.run("DELETE FROM $S.t WHERE id > 100000");
+    db.run("VACUUM $S.t");
+    // After a checkpoint Straum keeps only the pages changed since its
+    // redo point: the others come whole with their next change.
+    db.run("CHECKPOINT");
+    db.run("UPDATE $S.t SET n = n + 1 WHERE id IN (SELECT id FROM $S.t ORDER BY id LIMIT 3)");
+    db.run("DELETE FROM $S.t WHERE id = (SELECT max(id) FROM $S.t)");
+    // A lock changes no row Straum reads, yet sets the page's LSN.
+    db.run(
+        "BEGIN; SELECT id FROM $S.t WHERE id = (SELECT min(id) + 200 FROM $S.t) FOR UPDATE; COMMIT",
+    );
+    let rows = db.rows("SELECT redo_lsn FROM pg_control_checkpoint()");
+    parse_lsn(rows[0][0].as_deref().unwrap()).unwrap()
+}
+
+/// First changes since the checkpoint, so each brings a page image, then
+/// HOT and other updates, rows moving page, deletes, `COPY`, `ON
+/// CONFLICT` and `VACUUM`, with ids from `base`.
+fn churn_pages(db: &mut Db, base: usize) {
+    db.run("UPDATE $S.t SET n = n + 1 WHERE id % 9 = 1");
+    db.run("DELETE FROM $S.t WHERE id % 17 = 2");
+    db.run("UPDATE $S.t SET body = repeat(body, 5) WHERE id % 19 = 3");
+    db.run(&format!(
+        "INSERT INTO $S.t SELECT {base} + i, i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' END,
+                 repeat(md5(i::text), 1 + i % 4)
+             FROM generate_series(1, 300) AS i"
+    ));
+    // HOT: n has no index. The long body shares a prefix and suffix.
+    db.run("UPDATE $S.t SET n = n + 1 WHERE id % 3 = 0");
+    db.run("UPDATE $S.t SET body = body || 'tail' WHERE id % 4 = 0");
+    db.run("UPDATE $S.t SET body = 'head' || body WHERE id % 6 = 0");
+    db.run("UPDATE $S.t SET note = 'x' WHERE note IS NULL AND id % 2 = 0");
+    // Not HOT, and rows too big to stay on their page.
+    db.run("UPDATE $S.t SET id = id + 5000 WHERE id % 7 = 0");
+    db.run("UPDATE $S.t SET body = repeat(body, 6) WHERE id % 11 = 0");
+    db.run("DELETE FROM $S.t WHERE id % 13 = 0");
+    db.run(&format!(
+        "COPY (SELECT {base} + 9000 + i, i, 'c', md5(i::text)
+                   FROM generate_series(1, 200) AS i) TO '/tmp/rows.csv'"
+    ));
+    db.run("COPY $S.t FROM '/tmp/rows.csv'");
+    db.run(&format!(
+        "INSERT INTO $S.t VALUES ({base} + 1, 0, 'dup', 'dup'), ({base} + 8999, 0, 'new', 'new')
+             ON CONFLICT (id) DO NOTHING"
+    ));
+    db.run("VACUUM $S.t");
+    db.run("UPDATE $S.t SET n = n + 1 WHERE id % 5 = 1");
+}
+
+/// The rows `pageinspect` sees on page `block` of `$S.t`, as
+/// [`page_item`] puts them.
+fn page_items(db: &mut Db, block: u32) -> Vec<String> {
+    let rows = db.rows(&format!(
+        "SELECT lp, t_hoff, t_infomask2 & 2047, coalesce(t_bits, ''), encode(t_data, 'hex')
+         FROM heap_page_items(get_raw_page('$S.t', {block})) WHERE lp_flags = 1
+         ORDER BY lp"
+    ));
+    let mut items = Vec::new();
+    for row in rows {
+        let fields: Vec<String> = row.into_iter().map(Option::unwrap).collect();
+        items.push(fields.join(" "));
+    }
+    items
+}
+
 /// The file of `$S.table` and its length in pages.
 fn relation_file(db: &mut Db, table: &str) -> (RelationFile, u32) {
     let file = db.rows(&format!(
@@ -2262,7 +2336,7 @@ fn relation_file(db: &mut Db, table: &str) -> (RelationFile, u32) {
          FROM pg_class WHERE oid = '$S.{table}'::regclass"
     ))[0]
         .iter()
-        .map(|v| v.as_deref().unwrap().parse::<u32>().unwrap())
+        .map(|field| field.as_deref().unwrap().parse::<u32>().unwrap())
         .collect::<Vec<_>>();
     let relation = RelationFile {
         tablespace: file[0],
@@ -2276,12 +2350,7 @@ fn relation_file(db: &mut Db, table: &str) -> (RelationFile, u32) {
 /// far, and how many changes to its rows that was.
 fn follow_to_now(db: &mut Db, physical: &mut Physical, relation: RelationFile) -> (Heap, usize) {
     let mut heap = Heap::new([relation].into(), physical.major());
-    let last = parse_lsn(
-        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
+    let last = db.insert_lsn();
     db.run("SELECT pg_switch_wal()");
     let deadline = Instant::now() + LONG;
     let mut changes = 0;
@@ -2297,29 +2366,9 @@ fn follow_to_now(db: &mut Db, physical: &mut Physical, relation: RelationFile) -
     }
 }
 
-/// Every value Straum reads off the pages of a table is the datum the
-/// logical stream reads of the text a `SELECT` gets, which pgoutput's
-/// matches: each type Straum reads, nulls, values
-/// compressed with pglz and lz4, rows from before a column was dropped or
-/// added, and rows an update rebuilt from the old one.
-#[test]
-fn reads_the_values_select_reads() {
-    let pg = postgres_at_replica(&tag());
-    let mut db = Db::new(
-        &pg,
-        "datums",
-        "CREATE TYPE $S.mood AS ENUM ('sad', 'ok', 'happy');
-         CREATE TABLE $S.v (
-             id int8 PRIMARY KEY, a int2, b int4, flag bool, gone int4,
-             n numeric(18, 4), whole numeric(10, 0), free numeric, t text,
-             v varchar(20), c char(5), ts timestamp, tz timestamptz,
-             mood $S.mood, p point, label name,
-             l text COMPRESSION lz4, z text COMPRESSION pglz
-         ) WITH (autovacuum_enabled = off);",
-    );
-    let (mut physical, _) = Physical::start(&pg.dsn).unwrap();
-    let rows = |from: i32, to: i32| {
-        format!(
+/// Rows of every type `$S.v` holds, ids `from` to `to`.
+fn datum_rows(from: i32, to: i32) -> String {
+    format!(
             "INSERT INTO $S.v (id, a, b, flag, n, whole, free, t, v, c, ts, tz, mood, p, label, l, z)
              SELECT (i - 150)::int8 * 1000000007, ((i * 7919) % 65535 - 32767)::int2, i * -123457,
                  CASE i % 3 WHEN 0 THEN NULL ELSE i % 2 = 0 END,
@@ -2345,30 +2394,33 @@ fn reads_the_values_select_reads() {
                  END
              FROM generate_series({from}, {to}) AS i"
         )
-    };
-    db.run("CHECKPOINT");
-    db.run(&rows(1, 200));
-    db.run("ALTER TABLE $S.v DROP COLUMN gone");
-    db.run(
-        "ALTER TABLE $S.v ADD late int DEFAULT 7, ADD late_null int,
-             ADD late_text text DEFAULT 'a \"quoted\", {value} \\ here',
-             ADD late_at timestamptz DEFAULT '2024-01-01 00:00:00.5+00'",
+}
+
+/// Every value Straum reads off the pages of a table is the datum the
+/// logical stream reads of the text a `SELECT` gets, which pgoutput's
+/// matches: each type Straum reads, nulls, values
+/// compressed with pglz and lz4, rows from before a column was dropped or
+/// added, and rows an update rebuilt from the old one.
+#[test]
+fn reads_the_values_select_reads() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(
+        &pg,
+        "datums",
+        "CREATE TYPE $S.mood AS ENUM ('sad', 'ok', 'happy');
+         CREATE TABLE $S.v (
+             id int8 PRIMARY KEY, a int2, b int4, flag bool, gone int4,
+             n numeric(18, 4), whole numeric(10, 0), free numeric, t text,
+             v varchar(20), c char(5), ts timestamp, tz timestamptz,
+             mood $S.mood, p point, label name,
+             l text COMPRESSION lz4, z text COMPRESSION pglz
+         ) WITH (autovacuum_enabled = off);",
     );
-    db.run(&rows(201, 300));
-    db.run("UPDATE $S.v SET b = b + 1 WHERE id % 3 = 0");
-    db.run("UPDATE $S.v SET t = t || 'z', late = 8 WHERE id % 4 = 1");
+    let (mut physical, _) = Physical::start(&pg.dsn).unwrap();
+    write_datums(&mut db);
     let (relation, blocks) = relation_file(&mut db, "v");
     let (heap, _) = follow_to_now(&mut db, &mut physical, relation);
-    let mut conn = Connection::connect(&pg.dsn, false).unwrap();
-    let checked = Checked {
-        name: id("v"),
-        schema: id("datums"),
-        table: id("v"),
-        columns: Vec::new(),
-        types: Vec::new(),
-        enums: Vec::new(),
-    };
-    let Layouts { tables, labels } = physical::tables(&mut conn, &[checked]).unwrap();
+    let Layouts { tables, labels } = datums_layouts(&pg.dsn);
     let [table] = &tables[..] else {
         panic!("{tables:?}")
     };
@@ -2379,30 +2431,22 @@ fn reads_the_values_select_reads() {
         .relation
         .columns
         .iter()
-        .map(|c| c.name.as_str())
+        .map(|column| column.name.as_str())
         .collect();
     assert_eq!(attributes.len(), live.len() + 1, "one dropped column");
-    // A time as the binary load reads it: the text reader takes no
-    // year before 1 or past 9999.
-    let select: Vec<String> = (live.iter().zip(&names))
-        .map(|(&i, name)| match attributes[i].kind {
-            Kind::Read(ColumnType::Time { .. }) => format!("floor(extract(epoch FROM {name}))"),
-            _ => (*name).to_owned(),
-        })
-        .collect();
-    let select = select.join(", ");
+    let select = selected_as_read(table, &names);
     let expected = db.rows(&format!(
         "SELECT ctid::text, {select} FROM $S.v ORDER BY ctid"
     ));
     assert_eq!(expected.len(), 300);
     assert!(blocks > 5, "{blocks} pages");
-    let mut seen = [0; 3];
+    let mut counts = Counts::default();
     for row in expected {
         let ctid = row[0].as_deref().unwrap();
         let (block, offnum) = ctid
             .trim_matches(['(', ')'])
             .split_once(',')
-            .map(|(b, o)| (b.parse().unwrap(), o.parse().unwrap()))
+            .map(|(block, offnum)| (block.parse().unwrap(), offnum.parse().unwrap()))
             .unwrap();
         let tuple = heap
             .page(PageId {
@@ -2412,38 +2456,13 @@ fn reads_the_values_select_reads() {
             .and_then(|page| page.get(offnum))
             .unwrap_or_else(|| panic!("no row at {ctid}"));
         let values = row_values::values(tuple, attributes, &labels).unwrap();
-        for ((&i, theirs), name) in live.iter().zip(&row[1..]).zip(&names) {
-            let ours = &values[i];
-            // What the logical stream reads of PostgreSQL's text.
-            let read = |text: &str| match attributes[i].kind {
-                Kind::Read(ColumnType::Time { .. }) => match text {
-                    "Infinity" | "-Infinity" => Some(Datum::Null),
-                    seconds => seconds.parse().ok().map(Datum::Int),
-                },
-                Kind::Read(column_type) => value::read(column_type, text).ok(),
-                Kind::Enum => Some(Datum::Text(text.into())),
-                Kind::Other => Some(Datum::Null),
-            };
-            let fits = match ours {
-                row_values::Value::Datum(datum) => {
-                    theirs.as_deref().map_or(Some(Datum::Null), read).as_ref() == Some(datum)
-                }
-                row_values::Value::External => {
-                    seen[0] += 1;
-                    theirs.as_ref().is_some_and(|t| t.len() > 8000)
-                }
-                row_values::Value::Missing => {
-                    seen[1] += 1;
-                    theirs.as_deref().map_or(Some(Datum::Null), read).as_ref()
-                        == Some(&table.missing[i])
-                }
-            };
+        for ((&attribute, theirs), name) in live.iter().zip(&row[1..]).zip(&names) {
+            let ours = &values[attribute];
+            let fits = value_fits(table, attribute, ours, theirs.as_deref(), &mut counts);
             assert!(fits, "{ctid} {name}: ours {ours:?}, theirs {theirs:?}");
-            seen[2] += 1;
         }
     }
-    let [external, missing, _] = seen;
-    assert!(external >= 30 && missing >= 400, "{seen:?}");
+    assert!(counts.external >= 30 && counts.missing >= 400, "{counts:?}");
     let compressed = db.rows(
         "SELECT count(*) FILTER (WHERE pg_column_compression(l) = 'lz4'),
                 count(*) FILTER (WHERE pg_column_compression(z) = 'pglz')
@@ -2452,6 +2471,96 @@ fn reads_the_values_select_reads() {
     for count in &compressed[0] {
         let count: u32 = count.as_deref().unwrap().parse().unwrap();
         assert!(count >= 40, "{compressed:?}");
+    }
+}
+
+/// Rows before a column is dropped and others added, then updates.
+fn write_datums(db: &mut Db) {
+    db.run("CHECKPOINT");
+    db.run(&datum_rows(1, 200));
+    db.run("ALTER TABLE $S.v DROP COLUMN gone");
+    db.run(
+        "ALTER TABLE $S.v ADD late int DEFAULT 7, ADD late_null int,
+             ADD late_text text DEFAULT 'a \"quoted\", {value} \\ here',
+             ADD late_at timestamptz DEFAULT '2024-01-01 00:00:00.5+00'",
+    );
+    db.run(&datum_rows(201, 300));
+    db.run("UPDATE $S.v SET b = b + 1 WHERE id % 3 = 0");
+    db.run("UPDATE $S.v SET t = t || 'z', late = 8 WHERE id % 4 = 1");
+}
+
+/// The layout of `datums.v` and its enum's labels.
+fn datums_layouts(dsn: &Dsn) -> Layouts {
+    let mut conn = Connection::connect(dsn, false).unwrap();
+    let checked = Checked {
+        name: id("v"),
+        schema: id("datums"),
+        table: id("v"),
+        columns: Vec::new(),
+        types: Vec::new(),
+        enums: Vec::new(),
+    };
+    physical::tables(&mut conn, &[checked]).unwrap()
+}
+
+/// The `SELECT` list of `table`'s live columns, named `names`, with a
+/// time as the binary load reads it: the text reader takes no year
+/// before 1 or past 9999.
+fn selected_as_read(table: &Table, names: &[&str]) -> String {
+    let mut selected = Vec::new();
+    for (&attribute, name) in table.columns.iter().zip(names) {
+        selected.push(match table.attributes[attribute].kind {
+            Kind::Read(ColumnType::Time { .. }) => format!("floor(extract(epoch FROM {name}))"),
+            _ => (*name).to_owned(),
+        });
+    }
+    selected.join(", ")
+}
+
+/// The values a page left out of line, and those it lacks because their
+/// column came later.
+#[derive(Debug, Default)]
+struct Counts {
+    external: u32,
+    missing: u32,
+}
+
+/// Whether `ours`, read off the page for `attribute`, is what `theirs`,
+/// PostgreSQL's text, reads as.
+fn value_fits(
+    table: &Table,
+    attribute: usize,
+    ours: &row_values::Value,
+    theirs: Option<&str>,
+    counts: &mut Counts,
+) -> bool {
+    let kind = table.attributes[attribute].kind;
+    match ours {
+        row_values::Value::Datum(datum) => logical_read(kind, theirs).as_ref() == Some(datum),
+        row_values::Value::External => {
+            counts.external += 1;
+            theirs.is_some_and(|text| text.len() > 8000)
+        }
+        row_values::Value::Missing => {
+            counts.missing += 1;
+            logical_read(kind, theirs).as_ref() == Some(&table.missing[attribute])
+        }
+    }
+}
+
+/// What the logical stream reads of PostgreSQL's text.
+fn logical_read(kind: Kind, text: Option<&str>) -> Option<Datum> {
+    let Some(text) = text else {
+        return Some(Datum::Null);
+    };
+    match kind {
+        Kind::Read(ColumnType::Time { .. }) => match text {
+            "Infinity" | "-Infinity" => Some(Datum::Null),
+            seconds => seconds.parse().ok().map(Datum::Int),
+        },
+        Kind::Read(column_type) => value::read(column_type, text).ok(),
+        Kind::Enum => Some(Datum::Text(text.into())),
+        Kind::Other => Some(Datum::Null),
     }
 }
 
@@ -2474,6 +2583,69 @@ fn reads_the_endings_pg_waldump_reads() {
     open.execute("BEGIN").unwrap();
     open.execute(&db.sql("INSERT INTO $S.t VALUES (0)"))
         .unwrap();
+    end_transactions_every_way(&mut db);
+    open.execute("COMMIT").unwrap();
+    db.run("ALTER TABLE $S.t ADD note text DEFAULT 'x'");
+    db.run("CREATE INDEX ON $S.t (id)");
+    db.run("ANALYZE $S.t");
+    let last = db.insert_lsn();
+    db.run("SELECT pg_switch_wal()");
+    let mut ours = Vec::new();
+    let deadline = Instant::now() + LONG;
+    loop {
+        assert!(Instant::now() < deadline, "no switch record past {last}");
+        let Some(record) = physical.next_record().unwrap() else {
+            continue;
+        };
+        if let Some(event) = xact::event(&record, physical.major()).unwrap() {
+            ours.push((record.lsn, described_event(&event)));
+        }
+        if record.is_switch() && record.lsn >= last.0 {
+            break;
+        }
+    }
+    let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
+    let arguments = [
+        "-s".to_owned(),
+        start.to_string(),
+        "-e".to_owned(),
+        last.to_string(),
+    ];
+    let out = pg.waldump(&directory, &arguments);
+    let theirs: Vec<(u64, String)> = out.lines().filter_map(described_ending).collect();
+    let ours: Vec<(u64, String)> = ours.into_iter().filter(|(lsn, _)| *lsn < last.0).collect();
+    for (ours, theirs) in ours.iter().zip(&theirs) {
+        assert_eq!(ours, theirs);
+    }
+    assert_eq!(ours.len(), theirs.len());
+    assert!(
+        count_starting(&ours, "COMMIT") >= 8
+            && count_starting(&ours, "ABORT") >= 3
+            && count_starting(&ours, "RUNNING") >= 2
+    );
+    assert!(
+        (ours.iter()).any(|(_, description)| description.matches(' ').count() > 100),
+        "100 subxacts"
+    );
+    assert!(
+        (ours.iter())
+            .any(|(_, description)| description.starts_with("RUNNING")
+                && !description.ends_with("[]")),
+        "a transaction running at a checkpoint"
+    );
+    assert!(
+        (ours.iter())
+            .filter(|(_, description)| description.contains("relcache"))
+            .count()
+            >= 3,
+        "relcache invalidations"
+    );
+}
+
+/// Commits, aborts, savepoints kept and rolled back, past 64
+/// subtransactions, two-phase commit and catalog changes, with a
+/// checkpoint while two are prepared.
+fn end_transactions_every_way(db: &mut Db) {
     db.run("CHECKPOINT");
     db.run("INSERT INTO $S.t VALUES (1)");
     db.run("BEGIN; INSERT INTO $S.t VALUES (2); ROLLBACK");
@@ -2481,9 +2653,14 @@ fn reads_the_endings_pg_waldump_reads() {
         "BEGIN; INSERT INTO $S.t VALUES (3); SAVEPOINT a; INSERT INTO $S.t VALUES (4);
          SAVEPOINT b; INSERT INTO $S.t VALUES (5); ROLLBACK TO b; COMMIT",
     );
-    let many: String = (0..100)
-        .map(|i| format!("SAVEPOINT s{i}; INSERT INTO $S.t VALUES ({i});"))
-        .collect();
+    let mut many = String::new();
+    for savepoint in 0..100 {
+        write!(
+            many,
+            "SAVEPOINT s{savepoint}; INSERT INTO $S.t VALUES ({savepoint});"
+        )
+        .unwrap();
+    }
     db.run(&format!("BEGIN; {many} COMMIT"));
     db.run(&format!("BEGIN; {many} ROLLBACK"));
     db.run(
@@ -2501,73 +2678,25 @@ fn reads_the_endings_pg_waldump_reads() {
          PREPARE TRANSACTION 'ddl'",
     );
     db.run("COMMIT PREPARED 'ddl'");
-    open.execute("COMMIT").unwrap();
-    db.run("ALTER TABLE $S.t ADD note text DEFAULT 'x'");
-    db.run("CREATE INDEX ON $S.t (id)");
-    db.run("ANALYZE $S.t");
-    let last = parse_lsn(
-        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
-    db.run("SELECT pg_switch_wal()");
-    let mut ours = Vec::new();
-    let deadline = Instant::now() + LONG;
-    loop {
-        assert!(Instant::now() < deadline, "no switch record past {last}");
-        let Some(record) = physical.next_record().unwrap() else {
-            continue;
-        };
-        let described = match xact::event(&record, physical.major()).unwrap() {
-            Some(Event::Commit(e)) => Some(format!("COMMIT {}", ending(&e))),
-            Some(Event::Abort(e)) => Some(format!("ABORT {}", ending(&e))),
-            Some(Event::Running(r)) => Some(format!(
-                "RUNNING {} {} {:?}",
-                r.next_xid, r.oldest_xid, r.xids
-            )),
-            None => None,
-        };
-        ours.extend(described.map(|d| (record.lsn, d)));
-        if record.is_switch() && record.lsn >= last.0 {
-            break;
-        }
+}
+
+/// An event as [`described_ending`] puts it.
+fn described_event(event: &Event) -> String {
+    match event {
+        Event::Commit(commit) => format!("COMMIT {}", ending(commit)),
+        Event::Abort(abort) => format!("ABORT {}", ending(abort)),
+        Event::Running(running) => format!(
+            "RUNNING {} {} {:?}",
+            running.next_xid, running.oldest_xid, running.xids
+        ),
     }
-    let directory = db.rows("SHOW data_directory")[0][0].clone().unwrap();
-    let mut waldump = pg
-        ._container
-        .exec(ExecCommand::new([
-            "pg_waldump".to_owned(),
-            "-p".to_owned(),
-            format!("{directory}/pg_wal"),
-            "-s".to_owned(),
-            start.to_string(),
-            "-e".to_owned(),
-            last.to_string(),
-        ]))
-        .unwrap();
-    let out = String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap();
-    let theirs: Vec<(u64, String)> = out.lines().filter_map(described_ending).collect();
-    let ours: Vec<(u64, String)> = ours.into_iter().filter(|(lsn, _)| *lsn < last.0).collect();
-    for (ours, theirs) in ours.iter().zip(&theirs) {
-        assert_eq!(ours, theirs);
-    }
-    assert_eq!(ours.len(), theirs.len());
-    let count = |what: &str| ours.iter().filter(|(_, d)| d.starts_with(what)).count();
-    assert!(count("COMMIT") >= 8 && count("ABORT") >= 3 && count("RUNNING") >= 2);
-    assert!(
-        ours.iter().any(|(_, d)| d.matches(' ').count() > 100),
-        "100 subxacts"
-    );
-    assert!(
-        ours.iter()
-            .any(|(_, d)| d.starts_with("RUNNING") && !d.ends_with("[]")),
-        "a transaction running at a checkpoint"
-    );
-    assert!(
-        ours.iter().filter(|(_, d)| d.contains("relcache")).count() >= 3,
-        "relcache invalidations"
-    );
+}
+
+/// How many of `described` start with `kind`.
+fn count_starting(described: &[(u64, String)], kind: &str) -> usize {
+    (described.iter())
+        .filter(|(_, description)| description.starts_with(kind))
+        .count()
 }
 
 /// An ending as [`described_ending`] puts it: xid, time as `pg_waldump`
@@ -2579,25 +2708,35 @@ fn ending(ending: &xact::Ending) -> String {
     let micros = ending.time.rem_euclid(1_000_000);
     let mut text = format!("{} {seconds}.{micros:06}", ending.xid);
     for subxact in &ending.subxacts {
-        text.push_str(&format!(" {subxact}"));
+        write!(text, " {subxact}").unwrap();
     }
     for invalidated in &ending.invalidated {
-        text.push_str(&format!(" relcache {}", invalidated.relation));
+        write!(text, " relcache {}", invalidated.relation).unwrap();
     }
     text
 }
 
+/// What comes after `key` in `line`.
+fn after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let (_, rest) = line.split_once(key)?;
+    Some(rest.trim_start())
+}
+
+/// The part of `pg_waldump`'s description after `prefix`.
+fn described<'a>(description: &'a str, prefix: &str) -> Option<&'a str> {
+    (description.split("; ")).find_map(|part| part.strip_prefix(prefix))
+}
+
 /// A transaction's end or a `RUNNING_XACTS` line of `pg_waldump`.
 fn described_ending(line: &str) -> Option<(u64, String)> {
-    let after = |key: &str| line.split_once(key).map(|(_, rest)| rest.trim_start());
-    let lsn = parse_lsn(after("lsn:")?.split(',').next()?.trim())?.0;
-    let tx = after("tx:")?.split(',').next()?.trim();
-    let desc = after("desc: ")?;
-    let (kind, rest) = desc.split_once(' ')?;
+    let lsn = parse_lsn(after(line, "lsn:")?.split(',').next()?.trim())?.0;
+    let tx = after(line, "tx:")?.split(',').next()?.trim();
+    let description = after(line, "desc: ")?;
+    let (kind, rest) = description.split_once(' ')?;
     let text = match kind {
         "COMMIT" | "COMMIT_PREPARED" | "ABORT" | "ABORT_PREPARED" => {
             let (xid, rest) = match rest.split_once(": ") {
-                Some((xid, time)) if xid.bytes().all(|b| b.is_ascii_digit()) => (xid, time),
+                Some((xid, time)) if xid.bytes().all(|byte| byte.is_ascii_digit()) => (xid, time),
                 _ => (tx, rest),
             };
             // `2024-01-15 10:30:00.000001 UTC`, as Unix seconds.
@@ -2611,38 +2750,39 @@ fn described_ending(line: &str) -> Option<(u64, String)> {
                 "{} {xid} {time}",
                 &kind[..kind.find('_').unwrap_or(kind.len())]
             );
-            for subxact in rest
-                .split("; ")
-                .find_map(|p| p.strip_prefix("subxacts: "))
-                .into_iter()
-                .flat_map(str::split_whitespace)
-            {
-                text.push_str(&format!(" {subxact}"));
+            let subxacts = described(rest, "subxacts: ").unwrap_or_default();
+            for subxact in subxacts.split_whitespace() {
+                write!(text, " {subxact}").unwrap();
             }
-            let messages = rest
-                .split("; ")
-                .find_map(|p| p.strip_prefix("inval msgs: "))
-                .unwrap_or_default();
+            let messages = described(rest, "inval msgs: ").unwrap_or_default();
             let words: Vec<&str> = messages.split_whitespace().collect();
             for pair in words.windows(2).filter(|pair| pair[0] == "relcache") {
-                text.push_str(&format!(" relcache {}", pair[1]));
+                write!(text, " relcache {}", pair[1]).unwrap();
             }
             text
         }
         "RUNNING_XACTS" => {
             let words: Vec<&str> = rest.split_whitespace().collect();
             let (next, oldest) = (words[1], words[5].trim_end_matches(';'));
-            let xids: Vec<u32> = rest
-                .split("; ")
-                .find(|p| p.contains(" xacts:"))
-                .and_then(|p| p.split_once(':'))
-                .map(|(_, ids)| ids.split_whitespace().map(|x| x.parse().unwrap()).collect())
-                .unwrap_or_default();
+            let xids = running_xids(rest);
             format!("RUNNING {next} {oldest} {xids:?}")
         }
         _ => return None,
     };
     Some((lsn, text))
+}
+
+/// The xids a `RUNNING_XACTS` description lists.
+fn running_xids(description: &str) -> Vec<u32> {
+    let Some(part) = (description.split("; ")).find(|part| part.contains(" xacts:")) else {
+        return Vec::new();
+    };
+    let Some((_, xids)) = part.split_once(':') else {
+        return Vec::new();
+    };
+    (xids.split_whitespace())
+        .map(|xid| xid.parse().unwrap())
+        .collect()
 }
 
 /// On one server with logical decoding, the physical stream yields the
@@ -2677,10 +2817,47 @@ fn commits_what_logical_decoding_commits() {
     let start = logical.open(&spec).unwrap();
     let mut pipeline = Pipeline::new(&pg, &spec, &db.name, stream.major());
 
+    write_what_logical_decoding_reads(&mut db, &mut rng);
+    // Read before the last commit: other WAL, autovacuum's or a
+    // RUNNING_XACTS, may follow it, which the logical slot sends nothing
+    // for.
+    let before = db.insert_lsn();
+    db.run("UPDATE $S.trips SET rider = 'di' WHERE id % 11 = 0");
+
+    let mut theirs = Vec::new();
+    let deadline = Instant::now() + LONG;
+    while theirs
+        .last()
+        .is_none_or(|commit: &Commit| commit.lsn <= before)
+    {
+        assert!(Instant::now() < deadline, "no logical commit past {before}");
+        theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
+    }
+
+    let ours = pipeline.through_now(&mut db, &mut stream);
+    let ours: Vec<Commit> = ours
+        .into_iter()
+        .filter(|commit| commit.lsn > start)
+        .collect();
+    assert!(theirs.len() > 100, "{} commits", theirs.len());
+    for (ours, theirs) in ours.iter().zip(&theirs) {
+        assert_eq!(ours, theirs);
+    }
+    assert_eq!(ours.len(), theirs.len());
+}
+
+/// Inserts one at a time and in a batch, HOT and other updates, rows
+/// moving page, deletes, DDL logical decoding reads through, savepoints,
+/// an abort, two-phase commit, `COPY`, `ON CONFLICT` and `VACUUM`, with a
+/// checkpoint between and changes to a table outside the spec.
+fn write_what_logical_decoding_reads(db: &mut Db, rng: &mut Rng) {
     for id in 40..140 {
         db.run(&rng.trip(id));
     }
-    let batch: String = (140..200).map(|id| rng.trip(id)).collect();
+    let mut batch = String::new();
+    for id in 140..200 {
+        batch.push_str(&rng.trip(id));
+    }
     db.run(&format!("BEGIN; {batch} COMMIT"));
     db.run("UPDATE $S.trips SET fare = fare + 1 WHERE id % 3 = 0");
     db.run("CHECKPOINT");
@@ -2723,31 +2900,6 @@ fn commits_what_logical_decoding_commits() {
          ON CONFLICT (id) DO UPDATE SET fare = excluded.fare",
     );
     db.run("VACUUM $S.trips");
-    // Read before the last commit: other WAL, autovacuum's or a
-    // RUNNING_XACTS, may follow it, which the logical slot sends nothing
-    // for.
-    let before = parse_lsn(
-        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
-    db.run("UPDATE $S.trips SET rider = 'di' WHERE id % 11 = 0");
-
-    let mut theirs = Vec::new();
-    let deadline = Instant::now() + LONG;
-    while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
-        assert!(Instant::now() < deadline, "no logical commit past {before}");
-        theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
-    }
-
-    let ours = pipeline.through_now(&mut db, &mut stream);
-    let ours: Vec<Commit> = ours.into_iter().filter(|c| c.lsn > start).collect();
-    assert!(theirs.len() > 100, "{} commits", theirs.len());
-    for (ours, theirs) in ours.iter().zip(&theirs) {
-        assert_eq!(ours, theirs);
-    }
-    assert_eq!(ours.len(), theirs.len());
 }
 
 /// Random workloads, a seed each, over sessions whose transactions
@@ -2780,16 +2932,14 @@ fn commits_what_logical_decoding_commits_at_random() {
         // A published commit last, for the logical slot to reach, past
         // a position read before it: other WAL, autovacuum's or a
         // RUNNING_XACTS, may follow it, which the slot sends nothing for.
-        let before = parse_lsn(
-            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-                .as_deref()
-                .unwrap(),
-        )
-        .unwrap();
+        let before = db.insert_lsn();
         db.run(&rng.trip(u64::MAX >> 8));
         let mut theirs = Vec::new();
         let deadline = Instant::now() + LONG;
-        while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
+        while theirs
+            .last()
+            .is_none_or(|commit: &Commit| commit.lsn <= before)
+        {
             assert!(
                 Instant::now() < deadline,
                 "seed {seed}: no logical commit past {before}"
@@ -2797,14 +2947,17 @@ fn commits_what_logical_decoding_commits_at_random() {
             theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
         }
         let ours = pipeline.through_now(&mut db, &mut stream);
-        let ours: Vec<Commit> = ours.into_iter().filter(|c| c.lsn > start).collect();
+        let ours: Vec<Commit> = ours
+            .into_iter()
+            .filter(|commit| commit.lsn > start)
+            .collect();
         assert!(theirs.len() > 50, "seed {seed}: {} commits", theirs.len());
         for (ours, theirs) in ours.iter().zip(&theirs) {
             assert_eq!(ours, theirs, "seed {seed}");
         }
         assert_eq!(ours.len(), theirs.len(), "seed {seed}");
-        let kinds = workload.done;
-        assert!(kinds.iter().all(|n| *n > 0), "seed {seed}: {kinds:?}");
+        let done = workload.done;
+        assert!(done.all_ran(), "seed {seed}: {done:?}");
     }
 }
 
@@ -2860,7 +3013,7 @@ fn follows_random_workloads_from_a_random_start() {
         );
         started.store(true, Ordering::Release);
         let done = workload.join().unwrap();
-        assert!(done.iter().all(|n| *n > 0), "seed {seed}: {done:?}");
+        assert!(done.all_ran(), "seed {seed}: {done:?}");
         let mut next = 1 << 40;
         catch_up(&mut db, &mut writer, &mut rng, &mut next);
     }
@@ -2870,14 +3023,16 @@ fn follows_random_workloads_from_a_random_start() {
 /// few by default) from `STRAUM_TEST_SEED_FROM` (0), so CI can try new
 /// ones each run and a failure names the seed that replays it.
 fn seeds() -> std::ops::Range<u64> {
-    let number = |name: &str, default: u64| {
-        std::env::var(name)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(default)
+    let from = env_number("STRAUM_TEST_SEED_FROM", 0);
+    from..from + env_number("STRAUM_TEST_SEEDS", 6)
+}
+
+/// The number the environment variable `name` holds, or `default`.
+fn env_number(name: &str, default: u64) -> u64 {
+    let Ok(text) = std::env::var(name) else {
+        return default;
     };
-    let from = number("STRAUM_TEST_SEED_FROM", 0);
-    from..from + number("STRAUM_TEST_SEEDS", 6)
+    text.parse().unwrap_or(default)
 }
 
 /// Steps of each random workload.
@@ -2912,9 +3067,43 @@ struct Workload {
     added: Vec<String>,
     columns: u64,
     gids: u64,
-    /// How often each kind of step ran: insert, update, key change,
-    /// delete, savepoint, commit, abort, prepare, DDL, checkpoint, vacuum.
-    done: [u32; 11],
+    done: Done,
+}
+
+/// How often each kind of step ran.
+#[derive(Debug, Default, Clone, Copy)]
+struct Done {
+    insert: u32,
+    update: u32,
+    key_change: u32,
+    delete: u32,
+    savepoint: u32,
+    commit: u32,
+    abort: u32,
+    prepare: u32,
+    ddl: u32,
+    checkpoint: u32,
+    vacuum: u32,
+}
+
+impl Done {
+    fn all_ran(&self) -> bool {
+        [
+            self.insert,
+            self.update,
+            self.key_change,
+            self.delete,
+            self.savepoint,
+            self.commit,
+            self.abort,
+            self.prepare,
+            self.ddl,
+            self.checkpoint,
+            self.vacuum,
+        ]
+        .iter()
+        .all(|count| *count > 0)
+    }
 }
 
 struct Session {
@@ -2942,7 +3131,7 @@ impl Workload {
             added: Vec::new(),
             columns: 0,
             gids: 0,
-            done: [0; 11],
+            done: Done::default(),
         }
     }
 
@@ -2955,62 +3144,48 @@ impl Workload {
         if rng.chance(6) {
             return self.between(rng, db);
         }
-        let s = rng.below(SESSIONS);
-        let index = usize::try_from(s).unwrap();
+        let session = rng.below(SESSIONS);
+        let index = usize::try_from(session).unwrap();
         if let Some(gid) = self.sessions[index].prepared.take() {
             let end = if rng.chance(70) { "COMMIT" } else { "ROLLBACK" };
             db.run(&format!("{end} PREPARED '{gid}'"));
             return;
         }
-        let r = rng.below(7);
+        // Picks which of the session's rows a statement changes.
+        let residue = rng.below(7);
         let schema = self.schema.clone();
         let statement = match rng.below(12) {
             0..=2 => {
-                self.done[0] += 1;
-                let count = 1 + rng.below(4);
-                (0..count)
-                    .map(|_| {
-                        let id = self.id(s);
-                        rng.trip(id)
-                    })
-                    .collect::<String>()
+                self.done.insert += 1;
+                let mut inserts = String::new();
+                for _ in 0..=rng.below(4) {
+                    let id = self.id(session);
+                    inserts.push_str(&rng.trip(id));
+                }
+                inserts
             }
             3 | 4 => {
-                self.done[1] += 1;
-                match rng.below(4) {
-                    0 => format!(
-                        "UPDATE $S.trips SET fare = fare + 1 WHERE id % {SESSIONS} = {s} AND id % 7 = {r};"
-                    ),
-                    1 => format!(
-                        "UPDATE $S.trips SET tip = coalesce(tip, 0) + 1, kind = left(coalesce(kind, '') || 'x', 30) WHERE id % {SESSIONS} = {s} AND id % 5 = {};",
-                        r % 5
-                    ),
-                    2 => format!(
-                        "UPDATE $S.trips SET rider = NULL, zone_id = {} WHERE id % {SESSIONS} = {s} AND id % 9 = {r};",
-                        s + 1
-                    ),
-                    _ => format!(
-                        "UPDATE $S.zones SET toll = toll + 0.5, borough = borough || '.' WHERE id = {};",
-                        s + 1
-                    ),
-                }
+                self.done.update += 1;
+                random_update(rng, session, residue)
             }
             5 => {
-                self.done[2] += 1;
+                self.done.key_change += 1;
                 format!(
-                    "UPDATE $S.trips SET id = id + {} WHERE id % {SESSIONS} = {s} AND id % 11 = {r};",
+                    "UPDATE $S.trips SET id = id + {} WHERE id % {SESSIONS} = {session} AND id % 11 = {residue};",
                     SESSIONS * 1_000_000
                 )
             }
             6 => {
-                self.done[3] += 1;
-                format!("DELETE FROM $S.trips WHERE id % {SESSIONS} = {s} AND id % 13 = {r};")
+                self.done.delete += 1;
+                format!(
+                    "DELETE FROM $S.trips WHERE id % {SESSIONS} = {session} AND id % 13 = {residue};"
+                )
             }
             7 => {
-                let id = self.id(s);
+                let id = self.id(session);
                 format!(
                     "INSERT INTO $S.logins VALUES ({id}, now(), {}); INSERT INTO $S.other VALUES ({id}, 'x');",
-                    s + 1
+                    session + 1
                 )
             }
             _ => return self.transaction(rng, db, index),
@@ -3024,7 +3199,7 @@ impl Workload {
         session
             .conn
             .execute(&sql)
-            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+            .unwrap_or_else(|error| panic!("{error}: {sql}"));
     }
 
     /// Savepoints and ends of a session's transaction.
@@ -3037,29 +3212,29 @@ impl Workload {
         }
         let sql = match rng.below(10) {
             0 | 1 => {
-                self.done[4] += 1;
+                self.done.savepoint += 1;
                 session.savepoints += 1;
                 format!("SAVEPOINT p{}", session.savepoints)
             }
             2 if session.savepoints > 0 => {
-                self.done[4] += 1;
+                self.done.savepoint += 1;
                 // The savepoint stays, its changes gone.
                 format!("ROLLBACK TO p{}", session.savepoints)
             }
             3 if session.savepoints > 0 => {
-                self.done[4] += 1;
+                self.done.savepoint += 1;
                 let sql = format!("RELEASE p{}", session.savepoints);
                 session.savepoints -= 1;
                 sql
             }
             4 => {
-                self.done[6] += 1;
+                self.done.abort += 1;
                 session.open = false;
                 session.savepoints = 0;
                 "ROLLBACK".to_owned()
             }
             5 => {
-                self.done[7] += 1;
+                self.done.prepare += 1;
                 self.gids += 1;
                 let gid = format!("{}_{}", db.name, self.gids);
                 session.open = false;
@@ -3068,7 +3243,7 @@ impl Workload {
                 format!("PREPARE TRANSACTION '{gid}'")
             }
             _ => {
-                self.done[5] += 1;
+                self.done.commit += 1;
                 session.open = false;
                 session.savepoints = 0;
                 "COMMIT".to_owned()
@@ -3077,7 +3252,7 @@ impl Workload {
         session
             .conn
             .execute(&sql)
-            .unwrap_or_else(|e| panic!("{e}: {sql}"));
+            .unwrap_or_else(|error| panic!("{error}: {sql}"));
     }
 
     /// What runs between transactions: DDL, once every session's
@@ -3085,7 +3260,7 @@ impl Workload {
     fn between(&mut self, rng: &mut Rng, db: &mut Db) {
         match rng.below(3) {
             0 => {
-                self.done[8] += 1;
+                self.done.ddl += 1;
                 self.finish(db);
                 if self.added.len() < 3 && (self.added.is_empty() || rng.chance(60)) {
                     self.columns += 1;
@@ -3094,17 +3269,17 @@ impl Workload {
                     db.run(&format!("ALTER TABLE $S.trips ADD {column} text{default}"));
                     self.added.push(column);
                 } else {
-                    let at = usize::try_from(rng.below(self.added.len() as u64)).unwrap();
+                    let at = rng.index(self.added.len());
                     let column = self.added.remove(at);
                     db.run(&format!("ALTER TABLE $S.trips DROP COLUMN {column}"));
                 }
             }
             1 => {
-                self.done[9] += 1;
+                self.done.checkpoint += 1;
                 db.run("CHECKPOINT");
             }
             _ => {
-                self.done[10] += 1;
+                self.done.vacuum += 1;
                 db.run("VACUUM $S.trips");
             }
         }
@@ -3122,6 +3297,28 @@ impl Workload {
                 db.run(&format!("COMMIT PREPARED '{gid}'"));
             }
         }
+    }
+}
+
+/// An update to the rows of `session` that `residue` picks, or to its
+/// zone.
+fn random_update(rng: &mut Rng, session: u64, residue: u64) -> String {
+    match rng.below(4) {
+        0 => format!(
+            "UPDATE $S.trips SET fare = fare + 1 WHERE id % {SESSIONS} = {session} AND id % 7 = {residue};"
+        ),
+        1 => format!(
+            "UPDATE $S.trips SET tip = coalesce(tip, 0) + 1, kind = left(coalesce(kind, '') || 'x', 30) WHERE id % {SESSIONS} = {session} AND id % 5 = {};",
+            residue % 5
+        ),
+        2 => format!(
+            "UPDATE $S.trips SET rider = NULL, zone_id = {} WHERE id % {SESSIONS} = {session} AND id % 9 = {residue};",
+            session + 1
+        ),
+        _ => format!(
+            "UPDATE $S.zones SET toll = toll + 0.5, borough = borough || '.' WHERE id = {};",
+            session + 1
+        ),
     }
 }
 
@@ -3158,18 +3355,14 @@ impl Pipeline {
 
     fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
         let (conn, checked) = (&mut self.conn, &self.checked);
-        let layouts = || physical::tables(conn, checked);
-        self.inner.record(record, layouts).unwrap()
+        (self.inner)
+            .record(record, || physical::tables(conn, checked))
+            .unwrap()
     }
 
     /// The commits of all WAL written so far.
     fn through_now(&mut self, db: &mut Db, stream: &mut Physical) -> Vec<Commit> {
-        let last = parse_lsn(
-            db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-                .as_deref()
-                .unwrap(),
-        )
-        .unwrap();
+        let last = db.insert_lsn();
         db.run("SELECT pg_switch_wal()");
         let mut commits = Vec::new();
         let deadline = Instant::now() + LONG;
@@ -3228,8 +3421,8 @@ fn rewritten_and_dropped_tables_are_unfit() {
         let commits = pipeline.through_now(&mut db, &mut stream);
         let names: Vec<String> = commits
             .iter()
-            .flat_map(|c| &c.changes)
-            .filter_map(|c| match c {
+            .flat_map(|commit| &commit.changes)
+            .filter_map(|change| match change {
                 straum_app::Change::Unfit { table } => Some(table.to_string()),
                 _ => None,
             })
@@ -3255,27 +3448,7 @@ fn lines_the_load_up_with_the_stream() {
     db.run("CHECKPOINT");
     let stop = Arc::new(AtomicBool::new(false));
     let writers: Vec<_> = (0..3)
-        .map(|w| {
-            let stop = Arc::clone(&stop);
-            let dsn = pg.dsn.clone();
-            let schema = db.name.clone();
-            thread::spawn(move || {
-                let mut conn = Connection::connect(&dsn, false).unwrap();
-                let mut id = w * 1_000_000;
-                while !stop.load(Ordering::Relaxed) {
-                    id += 1;
-                    conn.execute(&format!(
-                        "BEGIN; INSERT INTO {schema}.trips (id) VALUES ({id}), ({}); SAVEPOINT a;
-                         INSERT INTO {schema}.trips (id) VALUES ({}); ROLLBACK TO a;
-                         DELETE FROM {schema}.trips WHERE id = {}; COMMIT",
-                        id + 500_000,
-                        id + 700_000,
-                        id - 1
-                    ))
-                    .unwrap();
-                }
-            })
-        })
+        .map(|index| insert_and_delete_until(&stop, &db, index))
         .collect();
     thread::sleep(Duration::from_millis(200));
     let (mut stream, _) = Physical::start(&pg.dsn).unwrap();
@@ -3286,15 +3459,6 @@ fn lines_the_load_up_with_the_stream() {
     let (relation, _) = relation_file(&mut db, "trips");
     let mut heap = Heap::new([relation].into(), stream.major());
     let mut transactions = Transactions::new(ROW_LIMIT);
-    let net = |committed: &Committed| -> i64 {
-        (committed.changes.iter())
-            .map(|c| match c {
-                crate::wal::heap::Change::Insert { .. } => 1,
-                crate::wal::heap::Change::Update { .. } => 0,
-                crate::wal::heap::Change::Delete { .. } => -1,
-            })
-            .sum()
-    };
     let mut before = Vec::new();
     let mut closed = false;
     let deadline = Instant::now() + LONG;
@@ -3305,36 +3469,55 @@ fn lines_the_load_up_with_the_stream() {
         // The open transaction holds the stream back until it ends.
         if record.is_some() && !closed {
             thread::sleep(Duration::from_millis(50));
-            assert!(
-                transactions.consistency() != crate::wal::transactions::Consistency::Consistent
+            assert_ne!(
+                transactions.consistency(),
+                crate::wal::transactions::Consistency::Consistent
             );
             open.execute("COMMIT").unwrap();
             closed = true;
         }
     }
-    conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
-        .unwrap();
-    let snapshot = Snapshot::parse(
-        conn.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
-    let loaded: i64 = conn.rows(&db.sql("SELECT count(*) FROM $S.trips")).unwrap()[0][0]
-        .as_deref()
-        .unwrap()
-        .parse()
-        .unwrap();
-    conn.execute("COMMIT").unwrap();
+    let Load {
+        snapshot,
+        rows: loaded,
+    } = load(&mut conn, &db);
     if !closed {
         open.execute("COMMIT").unwrap();
     }
     let mut count = loaded;
-    let unseen: Vec<&Committed> = before.iter().filter(|c| !snapshot.sees(c.xid)).collect();
-    count += unseen.iter().map(|c| net(c)).sum::<i64>();
-    // Checkpoints while the writers write: a page changed twice between a
-    // redo point and its checkpoint record has an image only the first
-    // time, so Straum must keep it past the record.
+    let unseen: Vec<&Committed> = (before.iter())
+        .filter(|committed| !snapshot.sees(committed.xid))
+        .collect();
+    count += unseen
+        .iter()
+        .map(|committed| net_rows(committed))
+        .sum::<i64>();
+    checkpoint_then_stop(&mut db, &stop, writers);
+    let last = db.insert_lsn();
+    db.run("SELECT pg_switch_wal()");
+    let mut reader = WalReader {
+        stream: &mut stream,
+        heap: &mut heap,
+        transactions: &mut transactions,
+    };
+    let Unseen {
+        rows,
+        commits: after,
+    } = unseen_through(&mut reader, &snapshot, last);
+    count += rows;
+    let total: i64 = db.rows("SELECT count(*) FROM $S.trips")[0][0]
+        .as_deref()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(after > 20, "{after} commits after the load");
+    assert_eq!(count, total, "loaded {loaded}, {} before", unseen.len());
+}
+
+/// Checkpoints while the writers write: a page changed twice between a
+/// redo point and its checkpoint record has an image only the first
+/// time, so Straum must keep it past the record. Then the writers stop.
+fn checkpoint_then_stop(db: &mut Db, stop: &AtomicBool, writers: Vec<thread::JoinHandle<()>>) {
     for _ in 0..3 {
         thread::sleep(Duration::from_millis(100));
         db.run("CHECKPOINT");
@@ -3344,35 +3527,96 @@ fn lines_the_load_up_with_the_stream() {
     for writer in writers {
         writer.join().unwrap();
     }
-    let last = parse_lsn(
-        db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
-    db.run("SELECT pg_switch_wal()");
-    let mut after = 0;
+}
+
+/// What a load in a repeatable-read snapshot reads: the snapshot, and the
+/// trips it sees.
+struct Load {
+    snapshot: Snapshot,
+    rows: i64,
+}
+
+fn load(conn: &mut Connection, db: &Db) -> Load {
+    conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        .unwrap();
+    let snapshot = conn.rows("SELECT pg_current_snapshot()").unwrap();
+    let snapshot = Snapshot::parse(snapshot[0][0].as_deref().unwrap()).unwrap();
+    let rows = conn.rows(&db.sql("SELECT count(*) FROM $S.trips")).unwrap();
+    let rows = rows[0][0].as_deref().unwrap().parse().unwrap();
+    conn.execute("COMMIT").unwrap();
+    Load { snapshot, rows }
+}
+
+/// The physical stream read record by record, as [`advance`] reads it.
+struct WalReader<'a> {
+    stream: &'a mut Physical,
+    heap: &'a mut Heap,
+    transactions: &'a mut Transactions,
+}
+
+/// The commits a snapshot doesn't see: the rows they add, less those
+/// they delete, and how many there are.
+struct Unseen {
+    rows: i64,
+    commits: u32,
+}
+
+/// Reads to the switch record at or past `last`, counting the commits
+/// `snapshot` doesn't see.
+fn unseen_through(reader: &mut WalReader, snapshot: &Snapshot, last: Lsn) -> Unseen {
+    let mut unseen = Unseen {
+        rows: 0,
+        commits: 0,
+    };
     let deadline = Instant::now() + LONG;
     loop {
         assert!(Instant::now() < deadline, "no switch record past {last}");
-        let (committed, record) = advance(&mut stream, &mut heap, &mut transactions);
+        let (committed, record) = advance(reader.stream, reader.heap, reader.transactions);
         if let Some(committed) = committed
             && !snapshot.sees(committed.xid)
         {
-            count += net(&committed);
-            after += 1;
+            unseen.rows += net_rows(&committed);
+            unseen.commits += 1;
         }
-        if record.is_some_and(|r| r.is_switch() && r.lsn >= last.0) {
-            break;
+        if record.is_some_and(|record| record.is_switch() && record.lsn >= last.0) {
+            return unseen;
         }
     }
-    let total: i64 = db.rows("SELECT count(*) FROM $S.trips")[0][0]
-        .as_deref()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(after > 20, "{after} commits after the load");
-    assert_eq!(count, total, "loaded {loaded}, {} before", unseen.len());
+}
+
+/// A writer thread inserting and deleting trips in `db` until `stop`,
+/// each transaction with a savepoint rolled back.
+fn insert_and_delete_until(stop: &Arc<AtomicBool>, db: &Db, index: u64) -> thread::JoinHandle<()> {
+    let stop = Arc::clone(stop);
+    let dsn = db.dsn.clone();
+    let schema = db.name.clone();
+    thread::spawn(move || {
+        let mut conn = Connection::connect(&dsn, false).unwrap();
+        let mut id = index * 1_000_000;
+        while !stop.load(Ordering::Relaxed) {
+            id += 1;
+            conn.execute(&format!(
+                "BEGIN; INSERT INTO {schema}.trips (id) VALUES ({id}), ({}); SAVEPOINT a;
+                 INSERT INTO {schema}.trips (id) VALUES ({}); ROLLBACK TO a;
+                 DELETE FROM {schema}.trips WHERE id = {}; COMMIT",
+                id + 500_000,
+                id + 700_000,
+                id - 1
+            ))
+            .unwrap();
+        }
+    })
+}
+
+/// The rows `committed` adds, less those it deletes.
+fn net_rows(committed: &Committed) -> i64 {
+    (committed.changes.iter())
+        .map(|change| match change {
+            crate::wal::heap::Change::Insert { .. } => 1,
+            crate::wal::heap::Change::Update { .. } => 0,
+            crate::wal::heap::Change::Delete { .. } => -1,
+        })
+        .sum()
 }
 
 /// Reads the next record into the pages and the held transactions: the
@@ -3388,30 +3632,38 @@ fn advance(
     transactions.hold(record.xid, record.lsn, heap.apply(&record).unwrap());
     let committed = xact::event(&record, stream.major())
         .unwrap()
-        .and_then(|e| transactions.event(e, record.lsn, record.next()).unwrap());
+        .and_then(|event| {
+            transactions
+                .event(event, record.lsn, record.next())
+                .unwrap()
+        });
     (committed, Some(record))
 }
+
+/// `HEAP_NATTS_MASK`: the bits of `t_infomask2` that count columns.
+const COLUMN_COUNT_MASK: u16 = 0x07FF;
+/// `HEAP_HASNULL`: the row has a null bitmap.
+const HAS_NULLS: u16 = 0x0001;
+/// `offsetof(HeapTupleHeaderData, t_bits)`: where the null bitmap starts.
+const NULL_BITMAP_OFFSET: usize = 23;
 
 /// A row as `heap_page_items` shows it: slot, `t_hoff`, the number of
 /// columns, the null bitmap as bits and the columns in hex.
 fn page_item(offnum: u16, tuple: &Tuple) -> String {
-    let columns = tuple.infomask2 & 0x07FF;
-    let bitmap_bytes = usize::from(tuple.hoff) - 23;
-    let bits: String = if tuple.infomask & 0x0001 == 0 {
-        String::new()
-    } else {
+    let columns = tuple.infomask2 & COLUMN_COUNT_MASK;
+    let bitmap_bytes = usize::from(tuple.hoff) - NULL_BITMAP_OFFSET;
+    let mut bits = String::new();
+    if tuple.infomask & HAS_NULLS != 0 {
         // Whole bytes of it, as pageinspect prints them.
-        (0..usize::from(columns).div_ceil(8) * 8)
-            .map(|i| {
-                let byte = tuple.body[i / 8];
-                if byte >> (i % 8) & 1 == 1 { '1' } else { '0' }
-            })
-            .collect()
-    };
-    let hex: String = tuple.body[bitmap_bytes..]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+        for bit in 0..usize::from(columns).div_ceil(8) * 8 {
+            let byte = tuple.body[bit / 8];
+            bits.push(if byte >> (bit % 8) & 1 == 1 { '1' } else { '0' });
+        }
+    }
+    let mut hex = String::new();
+    for byte in &tuple.body[bitmap_bytes..] {
+        write!(hex, "{byte:02x}").unwrap();
+    }
     format!("{offnum} {} {columns} {bits} {hex}", tuple.hoff)
 }
 
@@ -3421,15 +3673,17 @@ fn dumped(record: &crate::wal::Record) -> (u64, String) {
     let mut text = format!("{} {}", record.total_length(), record.xid);
     for block in &record.blocks {
         let file = block.file;
-        text.push_str(&format!(
+        write!(
+            text,
             " #{} rel {}/{}/{}",
             block.id, file.tablespace, file.database, file.relation
-        ));
+        )
+        .unwrap();
         if block.fork != 0 {
             let fork = ["main", "fsm", "vm", "init"][usize::from(block.fork)];
-            text.push_str(&format!(" fork {fork}"));
+            write!(text, " fork {fork}").unwrap();
         }
-        text.push_str(&format!(" blk {}", block.number));
+        write!(text, " blk {}", block.number).unwrap();
         match &block.image {
             Some(image) if image.apply => text.push_str(" FPW"),
             Some(_) => text.push_str(" FPW for WAL verification"),
@@ -3441,11 +3695,10 @@ fn dumped(record: &crate::wal::Record) -> (u64, String) {
 
 /// One line of `pg_waldump` as [`dumped`] puts a record.
 fn waldump_line(line: &str) -> Option<(u64, String)> {
-    let after = |key: &str| line.split_once(key).map(|(_, rest)| rest.trim_start());
-    let total = after("len (rec/tot):")?.split_once('/')?.1;
+    let (_, total) = after(line, "len (rec/tot):")?.split_once('/')?;
     let total = total.split(',').next()?.trim();
-    let xid = after("tx:")?.split(',').next()?.trim();
-    let lsn = parse_lsn(after("lsn:")?.split(',').next()?.trim())?;
+    let xid = after(line, "tx:")?.split(',').next()?.trim();
+    let lsn = parse_lsn(after(line, "lsn:")?.split(',').next()?.trim())?;
     let mut text = format!("{total} {xid}");
     for block in line.split("blkref ").skip(1) {
         let block = block.trim_end().trim_end_matches(',');
@@ -3468,16 +3721,18 @@ fn says_to_set_wal_level_logical() {
     }
 }
 
+/// Whether the session `dsn` opens runs over TLS, as `pg_stat_ssl` says.
+fn ssl(dsn: &str) -> Result<String, Error> {
+    let mut conn = Connection::connect(&Dsn::parse(dsn).unwrap(), false)?;
+    let rows = conn.rows("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")?;
+    Ok(rows[0][0].clone().unwrap())
+}
+
 #[test]
 fn tls_trusts_only_its_roots() {
     let pg = postgres_tls();
     // Display leaves the password out.
     let dsn = (pg.dsn.to_string()).replace("postgres@", &format!("postgres:{PASSWORD}@"));
-    let ssl = |dsn: &str| {
-        let mut conn = Connection::connect(&Dsn::parse(dsn).unwrap(), false)?;
-        let rows = conn.rows("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")?;
-        Ok::<_, Error>(rows[0][0].clone().unwrap())
-    };
     assert_eq!(ssl(&dsn).unwrap(), "t");
     let (plain, _) = dsn.split_once('?').unwrap();
     assert_eq!(ssl(&format!("{plain}?sslmode=disable")).unwrap(), "f");
@@ -3508,7 +3763,6 @@ fn tls_start_errors() {
         b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
     );
     let open = TempFile::new("open.pem", b"-----BEGIN CERTIFICATE-----\nAAAA\n");
-    let path = |file: &Path| file.display().to_string();
     let cases: Vec<(Vec<u8>, Option<String>, String)> = vec![
         (
             b"N".to_vec(),
@@ -3566,14 +3820,25 @@ fn tls_start_errors() {
         ),
     ];
     for (answer, ca, expected) in cases {
-        let (dsn, _server) = scripted(vec![now(answer)]);
-        let tls = ca.map_or("sslmode=require".to_owned(), |ca| {
-            format!("sslrootcert={ca}")
-        });
-        let dsn = Dsn::parse(&dsn.to_string().replace("sslmode=disable", &tls)).unwrap();
-        let err = Connection::connect(&dsn, false).err().unwrap().to_string();
+        let err = tls_start_error(answer, ca);
         assert!(err.starts_with(&expected), "{err:?} is not {expected:?}");
     }
+}
+
+fn path(file: &Path) -> String {
+    file.display().to_string()
+}
+
+/// The error a TLS connection gets from a server that answers `answer`,
+/// trusting `ca`, or the roots built in.
+fn tls_start_error(answer: Vec<u8>, ca: Option<String>) -> String {
+    let (dsn, _server) = scripted(vec![now(answer)]);
+    let tls = match ca {
+        Some(ca) => format!("sslrootcert={ca}"),
+        None => "sslmode=require".to_owned(),
+    };
+    let dsn = Dsn::parse(&dsn.to_string().replace("sslmode=disable", &tls)).unwrap();
+    Connection::connect(&dsn, false).err().unwrap().to_string()
 }
 
 #[test]
@@ -3644,16 +3909,16 @@ fn the_stream_outlasts_a_busy_writer() {
     applied(&mut writer);
     // More commits than the queue holds, then a pause past
     // wal_sender_timeout (4 s): the thread keeps answering.
-    for i in 1..101 {
-        db.run(&rng.trip(i));
+    for id in 1..101 {
+        db.run(&rng.trip(id));
     }
     thread::sleep(Duration::from_secs(9));
     for _ in 0..100 {
         applied(&mut writer);
     }
     // Commits made after the pause still arrive: the stream survived.
-    for i in 101..111 {
-        db.run(&rng.trip(i));
+    for id in 101..111 {
+        db.run(&rng.trip(id));
         applied(&mut writer);
     }
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
@@ -3685,7 +3950,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
 "
     );
     // One statement at a time: ALTER SYSTEM can't run in a transaction.
-    for statement in sql.lines().filter(|l| !l.starts_with("--")) {
+    for statement in sql.lines().filter(|line| !line.starts_with("--")) {
         db.run(statement);
     }
     db.run("ALTER ROLE straum_plan PASSWORD 'plan'");
@@ -3707,7 +3972,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
 fn setup_problems(name: &str, opened: Result<Lsn, SourceError>) -> Vec<String> {
     match opened {
         Ok(_) => Vec::new(),
-        Err(e) => match e.downcast::<Error>().map(|e| *e) {
+        Err(error) => match error.downcast::<Error>().map(|error| *error) {
             Ok(Error::Setup(problems)) => problems,
             other => panic!("{name}: {other:?}"),
         },
@@ -3731,24 +3996,54 @@ fn expect_problems(
 #[test]
 fn setup_problems_say_what_to_fix() {
     let pg = postgres();
-    let fact = |columns: &str, view: &str| -> (String, String) {
-        (
-            format!(
-                "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, {columns});
-                 ALTER TABLE $S.f REPLICA IDENTITY FULL;"
-            ),
-            format!(
-                "CREATE VIEW f WITH (buckets = '1 hour') AS
-                 SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
-                 FROM $S.f AS t GROUP BY 1;"
-            ),
-        )
-    };
-    let publish = "CREATE PUBLICATION $S FOR TABLE $S.f;";
-    let enum_type = "CREATE TYPE $S.mood AS ENUM ('ok', 'bad');";
-    let (table, spec) = fact("x int", "count(*) AS n, sum(t.x) AS total");
+    publication_problems(&pg);
+    table_problems(&pg);
+    column_type_problems(&pg);
+    aggregate_problems(&pg);
+    filter_problems(&pg);
+    enum_problems(&pg);
+    dim_problems(&pg);
+    dim_role_problems(&pg);
+    pair_problems(&pg);
+    chain_problems(&pg);
+}
+
+const PUBLISH: &str = "CREATE PUBLICATION $S FOR TABLE $S.f;";
+const MOOD: &str = "CREATE TYPE $S.mood AS ENUM ('ok', 'bad');";
+
+/// A fact's tables and a spec over it.
+struct Fact {
+    table: String,
+    spec: String,
+}
+
+/// A fact with `columns` besides its key and time, and a view selecting
+/// `view` from it by the hour.
+fn fact(columns: &str, view: &str) -> Fact {
+    Fact {
+        table: format!(
+            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, {columns});
+             ALTER TABLE $S.f REPLICA IDENTITY FULL;"
+        ),
+        spec: format!(
+            "CREATE VIEW f WITH (buckets = '1 hour') AS
+             SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
+             FROM $S.f AS t GROUP BY 1;"
+        ),
+    }
+}
+
+/// The fact most cases change one thing of.
+fn summed_fact() -> Fact {
+    fact("x int", "count(*) AS n, sum(t.x) AS total")
+}
+
+/// A publication that is missing, publishes too little or leaves out a
+/// table, a row or a column.
+fn publication_problems(pg: &PostgresContainer) {
+    let Fact { table, spec } = summed_fact();
     let cases: Vec<(&str, String, String, Option<&str>)> = vec![
-        ("ok", format!("{table} {publish}"), spec.clone(), None),
+        ("ok", format!("{table} {PUBLISH}"), spec.clone(), None),
         (
             "nopub",
             table.clone(),
@@ -3797,23 +4092,53 @@ fn setup_problems_say_what_to_fix() {
             spec.clone(),
             Some("f: publication listed leaves out column x of listed.f"),
         ),
+    ];
+    for (name, tables, spec, expected) in cases {
+        expect_problems(pg, name, &tables, &spec, expected);
+    }
+}
+
+/// A column missing, a fact without a key, and one without the whole old
+/// row.
+fn table_problems(pg: &PostgresContainer) {
+    let Fact { spec, .. } = summed_fact();
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
         (
             "nocolumn",
-            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz); {publish}"),
+            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz); {PUBLISH}"),
             spec.clone(),
             Some("f: nocolumn.f has no column x"),
         ),
         (
             "nokey",
             format!(
-                "CREATE TABLE $S.f (at timestamptz, x int); ALTER TABLE $S.f REPLICA IDENTITY FULL; {publish}"
+                "CREATE TABLE $S.f (at timestamptz, x int); ALTER TABLE $S.f REPLICA IDENTITY FULL; {PUBLISH}"
             ),
             spec.clone(),
             None,
         ),
         (
+            "identity",
+            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, x int); {PUBLISH}"),
+            spec.clone(),
+            Some(
+                "fact f: Straum needs the whole old row of every update and delete: \
+             ALTER TABLE identity.f REPLICA IDENTITY FULL",
+            ),
+        ),
+    ];
+    for (name, tables, spec, expected) in cases {
+        expect_problems(pg, name, &tables, &spec, expected);
+    }
+}
+
+/// A measure, time or key column of a type Straum doesn't read there.
+fn column_type_problems(pg: &PostgresContainer) {
+    let Fact { table, spec } = summed_fact();
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
+        (
             "float",
-            format!("{} {publish}", fact("x float8", "").0),
+            format!("{} {PUBLISH}", fact("x float8", "").table),
             spec.clone(),
             Some(
                 "f: column x of float.f is double precision; \
@@ -3822,7 +4147,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "naive",
-            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamp, x int); {publish}"),
+            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamp, x int); {PUBLISH}"),
             spec.clone(),
             Some(
                 "f: column at of naive.f is timestamp without time zone; the date_bin origin \
@@ -3832,7 +4157,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "zoned",
-            format!("{table} {publish}"),
+            format!("{table} {PUBLISH}"),
             spec.replace("timestamptz 'epoch'", "timestamp 'epoch'"),
             Some(
                 "f: column at of zoned.f is timestamp with time zone; the date_bin origin \
@@ -3842,7 +4167,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "notime",
-            format!("{} {publish}", fact("x int, k timestamptz", "").0),
+            format!("{} {PUBLISH}", fact("x int, k timestamptz", "").table),
             spec.replace("t.at", "t.x"),
             Some(
                 "f: column x of notime.f is integer; the date_bin origin timestamptz 'epoch' \
@@ -3851,9 +4176,9 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "timekey",
-            format!("{} {publish}", fact("x int, k timestamptz", "").0),
+            format!("{} {PUBLISH}", fact("x int, k timestamptz", "").table),
             fact("", "t.k AS k, count(*) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some(
                 "f: column k of timekey.f is timestamp with time zone; \
@@ -3862,25 +4187,34 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "naivekey",
-            format!("{} {publish}", fact("x int, k timestamp", "").0),
+            format!("{} {PUBLISH}", fact("x int, k timestamp", "").table),
             fact("", "t.k AS k, count(*) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some(
                 "f: column k of naivekey.f is timestamp without time zone; \
              Straum needs an integer type, numeric(p, s), boolean or text there",
             ),
         ),
+    ];
+    for (name, tables, spec, expected) in cases {
+        expect_problems(pg, name, &tables, &spec, expected);
+    }
+}
+
+/// A column counted or aggregated as a boolean.
+fn aggregate_problems(pg: &PostgresContainer) {
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
         (
             "counted",
-            format!("{} {publish}", fact("x int, k timestamptz", "").0),
-            fact("", "count(t.k) AS n").1,
+            format!("{} {PUBLISH}", fact("x int, k timestamptz", "").table),
+            fact("", "count(t.k) AS n").spec,
             None,
         ),
         (
             "uncounted",
-            format!("{} {publish}", fact("x int, k float8", "").0),
-            fact("", "count(t.k) AS n").1,
+            format!("{} {PUBLISH}", fact("x int, k float8", "").table),
+            fact("", "count(t.k) AS n").spec,
             Some(
                 "f: column k of uncounted.f is double precision; straum needs a type it reads \
              there: an integer type, numeric(p, s), boolean, text, timestamptz or timestamp",
@@ -3888,154 +4222,168 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "boolean",
-            format!("{} {publish}", fact("x int, k boolean", "").0),
-            fact("", "bool_and(t.k) AS every, bool_or(t.k) AS some").1,
+            format!("{} {PUBLISH}", fact("x int, k boolean", "").table),
+            fact("", "bool_and(t.k) AS every, bool_or(t.k) AS some").spec,
             None,
         ),
         (
             "notboolean",
-            format!("{} {publish}", fact("x int, k int", "").0),
-            fact("", "bool_or(t.k) AS some").1,
+            format!("{} {PUBLISH}", fact("x int, k int", "").table),
+            fact("", "bool_or(t.k) AS some").spec,
             Some("f: column k of notboolean.f is integer; Straum needs boolean there"),
         ),
-        (
-            "identity",
-            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, x int); {publish}"),
-            spec.clone(),
-            Some(
-                "fact f: Straum needs the whole old row of every update and delete: \
-             ALTER TABLE identity.f REPLICA IDENTITY FULL",
-            ),
-        ),
+    ];
+    for (name, tables, spec, expected) in cases {
+        expect_problems(pg, name, &tables, &spec, expected);
+    }
+}
+
+/// A `FILTER` or `WHERE` comparing a column with a literal of another
+/// type.
+fn filter_problems(pg: &PostgresContainer) {
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
         (
             "filter",
-            format!("{} {publish}", fact("k text", "").0),
+            format!("{} {PUBLISH}", fact("k text", "").table),
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("view f: measure n compares k (text) with 1"),
         ),
         (
             "filtertext",
-            format!("{} {publish}", fact("k int", "").0),
+            format!("{} {PUBLISH}", fact("k int", "").table),
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 'a') AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("view f: measure n compares k (an integer) with 'a'"),
         ),
         (
             "filterbool",
-            format!("{} {publish}", fact("k text", "").0),
+            format!("{} {PUBLISH}", fact("k text", "").table),
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = true) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("view f: measure n compares k (text) with true"),
         ),
         (
             "filterscale",
-            format!("{} {publish}", fact("k numeric(6, 2)", "").0),
+            format!("{} {PUBLISH}", fact("k numeric(6, 2)", "").table),
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("view f: measure n compares k (a numeric of scale 2) with 1"),
         ),
         (
             "filterwhole",
-            format!("{} {publish}", fact("k numeric(6, 0)", "").0),
+            format!("{} {PUBLISH}", fact("k numeric(6, 0)", "").table),
             fact("", "t.k AS k, count(*) FILTER (WHERE t.k = 1) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             None,
         ),
         (
             "nullkeyok",
-            format!("{} {publish}", fact("k timestamp", "").0),
+            format!("{} {PUBLISH}", fact("k timestamp", "").table),
             fact(
                 "",
                 "(t.k IS NULL) AS open, count(*) FILTER (WHERE t.k IS NOT NULL) AS n",
             )
-            .1
+            .spec
             .replace("GROUP BY 1", "GROUP BY 1, 2"),
             None,
         ),
         (
             "wheretype",
-            format!("{} {publish}", fact("k text", "").0),
+            format!("{} {PUBLISH}", fact("k text", "").table),
             fact("", "t.k AS k, count(*) AS n")
-                .1
+                .spec
                 .replace("AS t GROUP BY 1", "AS t WHERE t.k = 1 GROUP BY 1, 2"),
             Some("view f: WHERE compares k (text) with 1"),
         ),
-        // An enum column is read as its label when written ::text (ADR-0037).
+    ];
+    for (name, tables, spec, expected) in cases {
+        expect_problems(pg, name, &tables, &spec, expected);
+    }
+}
+
+/// An enum column is read as its label when written `::text` (ADR-0037).
+fn enum_problems(pg: &PostgresContainer) {
+    let cases: Vec<(&str, String, String, Option<&str>)> = vec![
         (
             "enumok",
-            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            format!("{MOOD} {} {PUBLISH}", fact("m $S.mood", "").table),
             fact(
                 "",
                 "t.m::text AS m, (t.m::text IS NULL) AS moody, \
                  count(*) FILTER (WHERE t.m::text = 'ok') AS n",
             )
-            .1
+            .spec
             .replace("GROUP BY 1", "GROUP BY 1, 2, 3"),
             None,
         ),
         (
             "enumbare",
-            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            format!("{MOOD} {} {PUBLISH}", fact("m $S.mood", "").table),
             fact("", "t.m AS m, count(*) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("f: column m of enumbare.f is enumbare.mood, an enum; write m::text"),
         ),
         (
             "notenum",
-            format!("{} {publish}", fact("k text", "").0),
+            format!("{} {PUBLISH}", fact("k text", "").table),
             fact("", "t.k::text AS k, count(*) AS n")
-                .1
+                .spec
                 .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("f: column k of notenum.f is text, not an enum; drop the ::text"),
         ),
         (
             "nolabel",
-            format!("{enum_type} {} {publish}", fact("m $S.mood", "").0),
+            format!("{MOOD} {} {PUBLISH}", fact("m $S.mood", "").table),
             fact(
                 "",
                 "t.m::text AS m, count(*) FILTER (WHERE t.m::text IN ('ok', 'meh')) AS n",
             )
-            .1
+            .spec
             .replace("GROUP BY 1", "GROUP BY 1, 2"),
             Some("view f: measure n compares m with 'meh', which is no label of nolabel.mood"),
         ),
     ];
     for (name, tables, spec, expected) in cases {
-        expect_problems(&pg, name, &tables, &spec, expected);
+        expect_problems(pg, name, &tables, &spec, expected);
     }
+}
 
-    let dim_spec = "
+const DIM_SPEC: &str = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.d_id AS d_id, d.name AS name, count(*) AS n
         FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id GROUP BY 1, 2, 3;";
-    // A dim is held and followed, so it is published with the whole old
-    // row, as a fact is.
-    let dim = |d: &str, via: &str| {
-        format!(
-            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id {via});
-             ALTER TABLE $S.f REPLICA IDENTITY FULL;
-             {d}
-             ALTER TABLE $S.d REPLICA IDENTITY FULL;
-             CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
-        )
-    };
+
+/// A dim is held and followed, so it is published with the whole old
+/// row, as a fact is. `dim` creates it; the fact joins it on `via`.
+fn dim_tables(dim: &str, via: &str) -> String {
+    format!(
+        "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id {via});
+         ALTER TABLE $S.f REPLICA IDENTITY FULL;
+         {dim}
+         ALTER TABLE $S.d REPLICA IDENTITY FULL;
+         CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
+    )
+}
+
+fn dim_problems(pg: &PostgresContainer) {
     let cases = [
         (
             "dimok",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int"),
+            dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int"),
             None,
         ),
         (
             "dimunpublished",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(", $S.d;", ";"),
+            dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+                .replace(", $S.d;", ";"),
             Some(
                 "d: publication dimunpublished leaves out dimunpublished.d: \
              ALTER PUBLICATION dimunpublished ADD TABLE dimunpublished.d",
@@ -4043,7 +4391,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "dimidentity",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+            dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("ALTER TABLE $S.d REPLICA IDENTITY FULL;", ""),
             Some(
                 "dim d: Straum needs the whole old row of every update and delete: \
@@ -4052,7 +4400,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "dimfiltered",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+            dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("$S.f, $S.d;", "$S.f, $S.d WHERE (k > 0);"),
             Some(
                 "d: publication dimfiltered filters the rows of dimfiltered.d; Straum needs every row",
@@ -4060,18 +4408,18 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "dimlisted",
-            dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
+            dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int")
                 .replace("$S.f, $S.d;", "$S.f, $S.d (k);"),
             Some("d: publication dimlisted leaves out column name of dimlisted.d"),
         ),
         (
             "dimunique",
-            dim("CREATE TABLE $S.d (k int UNIQUE, name text);", "int"),
+            dim_tables("CREATE TABLE $S.d (k int UNIQUE, name text);", "int"),
             None,
         ),
         (
             "dimpk",
-            dim(
+            dim_tables(
                 "CREATE TABLE $S.d (s serial PRIMARY KEY, k int, name text);",
                 "int",
             ),
@@ -4079,7 +4427,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "dimnounique",
-            dim(
+            dim_tables(
                 "CREATE TABLE $S.d (k int, name text); ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
             ),
@@ -4087,21 +4435,24 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "dimtype",
-            dim("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
+            dim_tables("CREATE TABLE $S.d (k text PRIMARY KEY, name text);", "int"),
             Some("view f: join d joins d_id (an integer) to k (text); they must read alike"),
         ),
     ];
     for (name, tables, expected) in cases {
-        expect_problems(&pg, name, &tables, dim_spec, expected);
+        expect_problems(pg, name, &tables, DIM_SPEC, expected);
     }
+}
+
+fn dim_role_problems(pg: &PostgresContainer) {
     // As the role that may read the fact but not the dim.
     let name = "dimnoselect";
-    let tables = dim("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(
+    let tables = dim_tables("CREATE TABLE $S.d (k int PRIMARY KEY, name text);", "int").replace(
         "CREATE PUBLICATION",
         "CREATE ROLE $S LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO $S; \
              GRANT SELECT ON $S.f TO $S; CREATE PUBLICATION",
     );
-    let db = Db::new(&pg, name, &tables);
+    let db = Db::new(pg, name, &tables);
     let dsn = pg
         .dsn
         .to_string()
@@ -4113,31 +4464,36 @@ fn setup_problems_say_what_to_fix() {
         Replication::Logical,
     );
     assert_eq!(
-        setup_problems(name, source.open(&db.spec(dim_spec))),
+        setup_problems(name, source.open(&db.spec(DIM_SPEC))),
         ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
         "{name}"
     );
+}
 
-    // A dim keyed by two columns, with or without a key of its own.
-    let pair_spec = "
+/// A dim keyed by two columns, with or without a key of its own.
+const PAIR_SPEC: &str = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                t.a AS a, t.b AS b, d.name AS name, count(*) AS n
         FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.x = t.a AND d.y = t.b
         GROUP BY 1, 2, 3, 4;";
-    let pair = |d: &str, b: &str| {
-        format!(
-            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, a int, b {b});
-             ALTER TABLE $S.f REPLICA IDENTITY FULL;
-             {d}
-             ALTER TABLE $S.d REPLICA IDENTITY FULL;
-             CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
-        )
-    };
+
+/// `dim` creates the dim; the fact's second key column is of `b_type`.
+fn pair_tables(dim: &str, b_type: &str) -> String {
+    format!(
+        "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, a int, b {b_type});
+         ALTER TABLE $S.f REPLICA IDENTITY FULL;
+         {dim}
+         ALTER TABLE $S.d REPLICA IDENTITY FULL;
+         CREATE PUBLICATION $S FOR TABLE $S.f, $S.d;"
+    )
+}
+
+fn pair_problems(pg: &PostgresContainer) {
     let cases = [
         (
             "pairok",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (x, y));",
                 "int",
             ),
@@ -4145,7 +4501,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "pairorder",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int, y int, name text, PRIMARY KEY (y, x));",
                 "int",
             ),
@@ -4153,7 +4509,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "pairfull",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int, y int, name text, UNIQUE (x, y));
                  ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
@@ -4162,7 +4518,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "pairsuper",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int, y int, name text, UNIQUE (x, y, name));
                  ALTER TABLE $S.d REPLICA IDENTITY FULL;",
                 "int",
@@ -4171,7 +4527,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "pairpk",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int PRIMARY KEY, y int, name text);",
                 "int",
             ),
@@ -4179,7 +4535,7 @@ fn setup_problems_say_what_to_fix() {
         ),
         (
             "pairtype",
-            pair(
+            pair_tables(
                 "CREATE TABLE $S.d (x int, y text, name text, PRIMARY KEY (x, y));",
                 "int",
             ),
@@ -4187,12 +4543,13 @@ fn setup_problems_say_what_to_fix() {
         ),
     ];
     for (name, tables, expected) in cases {
-        expect_problems(&pg, name, &tables, pair_spec, expected);
+        expect_problems(pg, name, &tables, PAIR_SPEC, expected);
     }
+}
 
-    // A chain joins a dim's column to the next dim's key, and a semi join's
-    // dim is published like any other.
-    let chain_spec = "
+/// A chain joins a dim's column to the next dim's key, and a semi join's
+/// dim is published like any other.
+const CHAIN_SPEC: &str = "
         CREATE VIEW f WITH (buckets = '1 hour') AS
         SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
                d.name AS name, e.label AS label, count(*) AS n
@@ -4201,29 +4558,38 @@ fn setup_problems_say_what_to_fix() {
         LEFT OUTER JOIN $S.e AS e ON e.k = d.e_id
         WHERE EXISTS (SELECT 1 FROM $S.s AS s WHERE s.k = t.d_id)
         GROUP BY 1, 2, 3;";
-    let chain = |e_key: &str, publish: &str| {
-        format!(
-            "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id int);
-             CREATE TABLE $S.d (k int, name text, e_id int);
-             CREATE TABLE $S.e (k {e_key}, label text);
-             CREATE TABLE $S.s (k int);
-             ALTER TABLE $S.f REPLICA IDENTITY FULL;
-             ALTER TABLE $S.d REPLICA IDENTITY FULL;
-             ALTER TABLE $S.e REPLICA IDENTITY FULL;
-             ALTER TABLE $S.s REPLICA IDENTITY FULL;
-             CREATE PUBLICATION $S FOR TABLE {publish};"
-        )
-    };
+
+/// The chain's tables, `e`'s key of `e_key`, `published` in the
+/// publication.
+fn chain_tables(e_key: &str, published: &str) -> String {
+    format!(
+        "CREATE TABLE $S.f (id int PRIMARY KEY, at timestamptz, d_id int);
+         CREATE TABLE $S.d (k int, name text, e_id int);
+         CREATE TABLE $S.e (k {e_key}, label text);
+         CREATE TABLE $S.s (k int);
+         ALTER TABLE $S.f REPLICA IDENTITY FULL;
+         ALTER TABLE $S.d REPLICA IDENTITY FULL;
+         ALTER TABLE $S.e REPLICA IDENTITY FULL;
+         ALTER TABLE $S.s REPLICA IDENTITY FULL;
+         CREATE PUBLICATION $S FOR TABLE {published};"
+    )
+}
+
+fn chain_problems(pg: &PostgresContainer) {
     let cases = [
-        ("chainok", chain("int", "$S.f, $S.d, $S.e, $S.s"), None),
+        (
+            "chainok",
+            chain_tables("int", "$S.f, $S.d, $S.e, $S.s"),
+            None,
+        ),
         (
             "chaintype",
-            chain("text", "$S.f, $S.d, $S.e, $S.s"),
+            chain_tables("text", "$S.f, $S.d, $S.e, $S.s"),
             Some("view f: join e joins d.e_id (an integer) to k (text); they must read alike"),
         ),
         (
             "semiunpublished",
-            chain("int", "$S.f, $S.d, $S.e"),
+            chain_tables("int", "$S.f, $S.d, $S.e"),
             Some(
                 "s: publication semiunpublished leaves out semiunpublished.s: \
              ALTER PUBLICATION semiunpublished ADD TABLE semiunpublished.s",
@@ -4231,7 +4597,7 @@ fn setup_problems_say_what_to_fix() {
         ),
     ];
     for (name, tables, expected) in cases {
-        expect_problems(&pg, name, &tables, chain_spec, expected);
+        expect_problems(pg, name, &tables, CHAIN_SPEC, expected);
     }
 }
 
@@ -4322,14 +4688,12 @@ fn checks_what_the_physical_wal_needs() {
         (catalog.full_page_writes.as_str(), catalog.publication),
         ("on", None)
     );
-    let physical =
-        |catalog: &catalog::Catalog| catalog::check(&spec, catalog, "needs", PHYSICAL).err();
-    assert_eq!(physical(&catalog), None);
+    assert_eq!(physical_problems(&spec, &catalog), None);
     let logical = catalog::check(&spec, &catalog, "needs", Replication::Logical).unwrap_err();
     assert!(
         logical
             .iter()
-            .any(|p| p.contains("publication needs does not exist"))
+            .any(|problem| problem.contains("publication needs does not exist"))
     );
     for (version, wal_level, fpw, compression, problems) in [
         (170_000, "replica", "on", "lz4", vec![]),
@@ -4360,14 +4724,23 @@ fn checks_what_the_physical_wal_needs() {
         catalog.wal_level = wal_level.into();
         catalog.full_page_writes = fpw.into();
         catalog.wal_compression = compression.into();
-        let expected = (!problems.is_empty())
-            .then(|| problems.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>());
+        let expected = (!problems.is_empty()).then(|| {
+            problems
+                .iter()
+                .map(|problem| (*problem).to_owned())
+                .collect::<Vec<_>>()
+        });
         assert_eq!(
-            physical(&catalog),
+            physical_problems(&spec, &catalog),
             expected,
             "{version} {wal_level} {fpw} {compression}"
         );
     }
+}
+
+/// What the check for `--wal physical` finds wrong with `catalog`.
+fn physical_problems(spec: &Spec, catalog: &catalog::Catalog) -> Option<Vec<String>> {
+    catalog::check(spec, catalog, "needs", PHYSICAL).err()
 }
 
 /// With nothing logging which transactions run, and a role that may not
@@ -4552,17 +4925,17 @@ fn no_load_once_the_stream_runs() {
 /// A message as PostgreSQL frames it: tag, length counting itself, body.
 fn message(tag: u8, body: &[u8]) -> Vec<u8> {
     let len = i32::try_from(body.len() + 4).unwrap();
-    let mut m = vec![tag];
-    m.extend(len.to_be_bytes());
-    m.extend(body);
-    m
+    let mut framed = vec![tag];
+    framed.extend(len.to_be_bytes());
+    framed.extend(body);
+    framed
 }
 
-/// AuthenticationOk, then ReadyForQuery.
+/// `AuthenticationOk`, then `ReadyForQuery`.
 fn signed_in() -> Vec<u8> {
-    let mut m = message(b'R', &0_i32.to_be_bytes());
-    m.extend(message(b'Z', b"I"));
-    m
+    let mut messages = message(b'R', &0_i32.to_be_bytes());
+    messages.extend(message(b'Z', b"I"));
+    messages
 }
 
 fn copy_data(body: &[u8]) -> Vec<u8> {
@@ -4614,13 +4987,15 @@ fn connect(parts: Vec<(Duration, Vec<u8>)>, replication: bool) -> Result<Connect
     Connection::connect(&dsn, replication)
 }
 
+/// `AuthenticationSASL` offering `mechanisms`.
+fn sasl(mechanisms: &str) -> Vec<u8> {
+    let mut body = 10_i32.to_be_bytes().to_vec();
+    body.extend(mechanisms.as_bytes());
+    message(b'R', &body)
+}
+
 #[test]
 fn sign_in_errors() {
-    let sasl = |mechanisms: &str| {
-        let mut body = 10_i32.to_be_bytes().to_vec();
-        body.extend(mechanisms.as_bytes());
-        message(b'R', &body)
-    };
     let cases = [
         (
             message(b'R', &3_i32.to_be_bytes()),
@@ -4691,7 +5066,7 @@ fn query_errors() {
     );
 }
 
-/// CopyOutResponse for `columns` binary columns.
+/// `CopyOutResponse` for `columns` binary columns.
 fn copy_out(columns: i16) -> Vec<u8> {
     let mut body = vec![1];
     body.extend(columns.to_be_bytes());
@@ -4714,9 +5089,9 @@ fn copy_tuple(fields: &[Option<i32>]) -> Vec<u8> {
     for field in fields {
         match field {
             None => row.extend((-1_i32).to_be_bytes()),
-            Some(v) => {
+            Some(value) => {
                 row.extend(4_i32.to_be_bytes());
-                row.extend(v.to_be_bytes());
+                row.extend(value.to_be_bytes());
             }
         }
     }
@@ -4726,11 +5101,11 @@ fn copy_tuple(fields: &[Option<i32>]) -> Vec<u8> {
 const COPY_END: [u8; 2] = (-1_i16).to_be_bytes();
 
 /// The rows a fake server's copy of two `int4` columns gives, sent as
-/// `messages` CopyData bodies, then `after`.
+/// `messages` `CopyData` bodies, then `after`.
 fn copied(messages: &[Vec<u8>], after: &[u8]) -> Result<Vec<Vec<Datum>>, Error> {
     let mut reply = copy_out(2);
-    for m in messages {
-        reply.extend(copy_data(m));
+    for body in messages {
+        reply.extend(copy_data(body));
     }
     reply.extend(after);
     let mut conn = connect(vec![now(signed_in()), now(reply)], false)?;
@@ -4748,10 +5123,10 @@ fn two_ints() -> Checked {
 }
 
 fn copy_done() -> Vec<u8> {
-    let mut m = message(b'c', b"");
-    m.extend(message(b'C', b"COPY 2\0"));
-    m.extend(message(b'Z', b"I"));
-    m
+    let mut messages = message(b'c', b"");
+    messages.extend(message(b'C', b"COPY 2\0"));
+    messages.extend(message(b'Z', b"I"));
+    messages
 }
 
 #[test]
@@ -4785,11 +5160,13 @@ fn reads_binary_copies() {
 fn copies_hand_over_bounded_batches() {
     let count = 2 * load::BATCH + 7;
     let mut sent = vec![copy_header(b"")];
-    sent.extend((0..count).map(|i| copy_tuple(&[Some(i32::try_from(i).unwrap()), None])));
+    for row in 0..count {
+        sent.push(copy_tuple(&[Some(i32::try_from(row).unwrap()), None]));
+    }
     sent.push(COPY_END.to_vec());
     let mut reply = copy_out(2);
-    for m in &sent {
-        reply.extend(copy_data(m));
+    for body in &sent {
+        reply.extend(copy_data(body));
     }
     reply.extend(copy_done());
     let mut conn = connect(vec![now(signed_in()), now(reply.clone())], false).unwrap();
@@ -4819,12 +5196,15 @@ fn copies_hand_over_bounded_batches() {
     assert_eq!(calls, 1);
 }
 
+fn joined(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
+}
+
 #[test]
 fn binary_copy_errors() {
     let header = copy_header(b"");
     let row = copy_tuple(&[Some(1), Some(2)]);
-    let with = |parts: &[&[u8]]| parts.concat();
-    let mut cut = with(&[&header, &row]);
+    let mut cut = joined(&[&header, &row]);
     cut.pop();
     let mut cut_header = copy_header(b"ext");
     cut_header.pop();
@@ -4839,24 +5219,24 @@ fn binary_copy_errors() {
         ),
         (vec![cut_header], "PostgreSQL sent a copy header cut short"),
         (
-            vec![with(&[&header, &copy_tuple(&[Some(1)])])],
+            vec![joined(&[&header, &copy_tuple(&[Some(1)])])],
             "PostgreSQL sent a copy row of 1 columns, not 2",
         ),
         (
-            vec![with(&[&header, &row[..3]])],
+            vec![joined(&[&header, &row[..3]])],
             "PostgreSQL sent a copy row cut short",
         ),
         (vec![cut], "PostgreSQL sent a copy value cut short"),
         (
-            vec![with(&[&header, &row, &COPY_END, &row])],
+            vec![joined(&[&header, &row, &COPY_END, &row])],
             "PostgreSQL sent data after the end of a copy",
         ),
         (
-            vec![with(&[&header, &row])],
+            vec![joined(&[&header, &row])],
             "PostgreSQL sent a copy without its end",
         ),
         (
-            vec![with(&[
+            vec![joined(&[
                 &header,
                 &2_i16.to_be_bytes(),
                 &4_i32.to_be_bytes(),
@@ -4875,7 +5255,7 @@ fn binary_copy_errors() {
     // The server fails mid-copy, or sends what a copy doesn't.
     let mut failed = error_response("57014", "canceling statement");
     failed.extend(message(b'Z', b"I"));
-    let err = copied(&[with(&[&header, &row])], &failed).unwrap_err();
+    let err = copied(&[joined(&[&header, &row])], &failed).unwrap_err();
     assert_eq!(err.to_string(), "PostgreSQL: canceling statement (57014)");
     let err = copied(&[header], &message(b'D', &0_i16.to_be_bytes())).unwrap_err();
     assert_eq!(err.to_string(), "PostgreSQL sent a message during a copy");
@@ -4885,7 +5265,7 @@ fn binary_copy_errors() {
     chatty.extend(copy_done());
     let mut empty = copy_header(b"");
     empty.extend(COPY_END);
-    assert!(copied(&[empty], &chatty).unwrap().is_empty());
+    assert_eq!(copied(&[empty], &chatty).unwrap(), Vec::<Vec<Datum>>::new());
 }
 
 #[test]
@@ -4948,7 +5328,7 @@ fn stream_errors() {
     }
 }
 
-/// A commit with no changes, as XLogData messages.
+/// A commit with no changes, as `XLogData` messages.
 #[test]
 fn reads_the_servers_wal() {
     let pg = postgres();
@@ -5008,20 +5388,22 @@ fn the_stream_waits_at_most_the_wait() {
     assert!(clock.elapsed() >= Duration::from_millis(200));
 }
 
+/// `XLogData` holding `message`: its start, end and send time are zero.
+fn xlog_data(message: &[u8]) -> Vec<u8> {
+    let mut body = vec![b'w'];
+    body.extend([0; 24]);
+    body.extend(message);
+    copy_data(&body)
+}
+
 fn empty_commit(end: u64) -> Vec<u8> {
-    let xlog = |message: &[u8]| {
-        let mut body = vec![b'w'];
-        body.extend([0; 24]);
-        body.extend(message);
-        copy_data(&body)
-    };
     let mut begin = vec![b'B'];
     begin.extend([0; 20]);
     let mut commit = vec![b'C', 0];
     commit.extend(0_u64.to_be_bytes());
     commit.extend(end.to_be_bytes());
     commit.extend(0_i64.to_be_bytes());
-    [xlog(&begin), xlog(&commit)].concat()
+    [xlog_data(&begin), xlog_data(&commit)].concat()
 }
 
 /// The applied positions the client reported in standby status updates.
@@ -5031,8 +5413,8 @@ fn reported(received: &[u8]) -> Vec<u64> {
     received
         .windows(frame.len())
         .enumerate()
-        .filter(|(_, w)| *w == frame)
-        .map(|(i, _)| u64::from_be_bytes(received[i + 6..i + 14].try_into().unwrap()))
+        .filter(|(_, window)| *window == frame)
+        .map(|(at, _)| u64::from_be_bytes(received[at + 6..at + 14].try_into().unwrap()))
         .collect()
 }
 
@@ -5060,7 +5442,7 @@ fn the_stream_answers_and_reports() {
     assert!(
         reported
             .iter()
-            .all(|r| [0x10, 0x18, 0x20, 0x40].contains(r)),
+            .all(|position| [0x10, 0x18, 0x20, 0x40].contains(position)),
         "{reported:x?}"
     );
 }
@@ -5078,8 +5460,11 @@ fn a_commit_handed_out_is_not_yet_applied() {
     thread::sleep(Duration::from_millis(1_500));
     drop(stream);
     let reported = reported(&server.join().unwrap());
-    assert!(!reported.is_empty());
-    assert!(reported.iter().all(|r| *r == 0x10), "{reported:x?}");
+    assert_ne!(reported, Vec::<u64>::new());
+    assert!(
+        reported.iter().all(|position| *position == 0x10),
+        "{reported:x?}"
+    );
 }
 
 /// The taxi month through straum: load, stream inserts and dim changes, read
@@ -5088,11 +5473,61 @@ fn a_commit_handed_out_is_not_yet_applied() {
 /// in PostgreSQL, so it needs uv. Slow, so ignored; run
 /// `cargo test -p straum-pg --release taxi_month -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "slow, and needs uv to load the taxi month"]
 fn taxi_month() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
+    let pg = taxi_month_postgres(&root);
+    let mut sql = Connection::connect(&pg.dsn, false).unwrap();
+    sql.execute(
+        "ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
+         ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
+         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;
+         ANALYZE;",
+    )
+    .unwrap();
+    let references = taxi_month_references(&spec_text);
+    let spec = straum_notation::parse(&spec_text).unwrap();
+    let mut writer = Writer::new(
+        App::new(spec, LIMITS, None),
+        Postgres::new(pg.dsn.clone(), "straum", ROW_LIMIT, Replication::Logical),
+    );
+    let clock = Instant::now();
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    eprintln!("loaded in {:.1?}", clock.elapsed());
+    check_taxi_month(&mut sql, writer.app(), &references, "after the load");
+
+    // Inserts in 200 transactions of 50, a day later than rows already there.
+    let clock = Instant::now();
+    for remainder in 0..200 {
+        sql.execute(&format!(
+            "INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
+                                      payment_type, fare_amount, tip_amount, trip_distance)
+             SELECT vendor_id, pickup_at + interval '1 day', pu_location_id, do_location_id,
+                    payment_type, fare_amount + 1, tip_amount, trip_distance
+               FROM yellow_trips WHERE id % 10007 = {remainder} LIMIT 50"
+        ))
+        .unwrap();
+    }
+    for _ in 0..200 {
+        applied(&mut writer);
+    }
+    eprintln!("streamed 200 commits in {:.1?}", clock.elapsed());
+    check_taxi_month(&mut sql, writer.app(), &references, "after the stream");
+
+    // An update takes the old row out of its cell.
+    sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
+        .unwrap();
+    applied(&mut writer);
+    check_taxi_month(&mut sql, writer.app(), &references, "after an update");
+    change_taxi_zones(&mut sql, &mut writer, &references);
+    assert_eq!(writer.app().status().starts, 1);
+}
+
+/// PostgreSQL 18 with the taxi month, which `bench/load_taxi_trips.py`
+/// puts there.
+fn taxi_month_postgres(root: &Path) -> PostgresContainer {
     let (container, port) = start(
         image("18")
             .with_shm_size(1 << 30)
@@ -5113,173 +5548,136 @@ fn taxi_month() {
         .status()
         .unwrap();
     assert!(psql.success(), "psql: {psql}");
-    let loaded = loader.wait().unwrap();
-    assert!(loaded.success(), "bench/load_taxi_trips.py: {loaded}");
+    let exit = loader.wait().unwrap();
+    assert!(exit.success(), "bench/load_taxi_trips.py: {exit}");
     let mut sql = Connection::connect(&dsn, false).unwrap();
-    sql.execute(
-        "ALTER TABLE yellow_trips REPLICA IDENTITY FULL;
-         ALTER TABLE taxi_zones REPLICA IDENTITY FULL;
-         CREATE PUBLICATION straum FOR TABLE taxi_zones, yellow_trips;
-         ANALYZE;",
-    )
-    .unwrap();
-    let rows = |sql: &mut Connection, q: &str| sql.rows(q).unwrap();
-    eprintln!(
-        "copied {:?} trips in {:.1?}",
-        rows(&mut sql, "SELECT count(*) FROM yellow_trips")[0][0],
-        clock.elapsed()
-    );
+    let trips = sql.rows("SELECT count(*) FROM yellow_trips").unwrap();
+    eprintln!("copied {:?} trips in {:.1?}", trips[0][0], clock.elapsed());
+    PostgresContainer {
+        container,
+        dsn,
+        _ca: None,
+    }
+}
 
-    let spec = straum_notation::parse(&spec_text).unwrap();
-    let body = {
-        let start = spec_text.find("SELECT").unwrap();
-        spec_text[start..spec_text.rfind(';').unwrap()].to_owned()
-    };
-    let reference = format!(
-        "SELECT extract(epoch FROM bucket)::int8, payment_type, vendor_id, pu_location_id,
-                do_location_id, borough, zone, service_zone, trips, fare, tip_max,
-                round(distance, 6), card, manhattan_pickups
-           FROM ({body}) v"
-    );
-    let all = ask(
-        "trips",
-        &[
+/// The whole `taxi.sql` view, and a coarse ask, the use case: it reads
+/// every cell, as the first does, but answers few groups.
+fn taxi_month_references(spec_text: &str) -> [Reference; 2] {
+    let start = spec_text.find("SELECT").unwrap();
+    let body = &spec_text[start..spec_text.rfind(';').unwrap()];
+    let all = Reference {
+        sql: format!(
+            "SELECT extract(epoch FROM bucket)::int8, payment_type, vendor_id, pu_location_id,
+                    do_location_id, borough, zone, service_zone, trips, fare, tip_max,
+                    round(distance, 6), card, manhattan_pickups
+               FROM ({body}) v"
+        ),
+        ask: ask(
             "trips",
-            "fare",
-            "tip_max",
-            "distance",
-            "card",
-            "manhattan_pickups",
-        ],
-        &[
-            "bucket",
-            "payment_type",
-            "vendor_id",
-            "pu_location_id",
-            "do_location_id",
-            "borough",
-            "zone",
-            "service_zone",
-        ],
-    );
-    let all_scales = [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0];
-    // A coarse ask, the use case: it reads every cell, as the one above
-    // does, but answers few groups.
-    let coarse = ask(
-        "trips",
-        &["trips", "fare", "tip_max", "card", "manhattan_pickups"],
-        &["borough"],
-    );
-    let coarse_reference = format!(
-        "SELECT borough,
-                sum(trips), sum(fare), max(tip_max), sum(card), sum(manhattan_pickups)
-           FROM ({body}) v
-          GROUP BY 1"
-    );
-    let coarse_scales = [0, 0, 2, 2, 0, 0];
-    // Straum's time is the time `ask` holds the read lock.
-    let compare = |sql: &mut Connection,
-                   app: &App,
-                   (ask, reference, scales): (&Ask, &str, &[u32]),
-                   when: &str| {
-        let clock = Instant::now();
-        let answered = app.ask(ask).unwrap();
-        let asked = clock.elapsed();
-        let mut got = printed(&answered.answer, scales);
-        let clock = Instant::now();
-        let mut expected = sql.rows(reference).unwrap();
-        let queried = clock.elapsed();
-        got.sort();
-        expected.sort();
-        let differ = got.iter().zip(&expected).position(|(g, e)| g != e);
-        assert!(
-            got.len() == expected.len() && differ.is_none(),
-            "{when}: {} rows from Straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
-            got.len(),
-            expected.len(),
-            differ.map(|i| &got[i]),
-            differ.map(|i| &expected[i])
-        );
-        eprintln!(
-            "{when}: {} groups equal; Straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
-            got.len()
-        );
+            &[
+                "trips",
+                "fare",
+                "tip_max",
+                "distance",
+                "card",
+                "manhattan_pickups",
+            ],
+            &[
+                "bucket",
+                "payment_type",
+                "vendor_id",
+                "pu_location_id",
+                "do_location_id",
+                "borough",
+                "zone",
+                "service_zone",
+            ],
+        ),
+        scales: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0],
     };
-    let check = |sql: &mut Connection, app: &App, when: &str| {
-        compare(sql, app, (&all, &reference, &all_scales), when);
-        let when = format!("{when}, by borough");
-        compare(
-            sql,
-            app,
-            (&coarse, &coarse_reference, &coarse_scales),
-            &when,
-        );
+    let coarse = Reference {
+        sql: format!(
+            "SELECT borough,
+                    sum(trips), sum(fare), max(tip_max), sum(card), sum(manhattan_pickups)
+               FROM ({body}) v
+              GROUP BY 1"
+        ),
+        ask: ask(
+            "trips",
+            &["trips", "fare", "tip_max", "card", "manhattan_pickups"],
+            &["borough"],
+        ),
+        scales: vec![0, 0, 2, 2, 0, 0],
     };
+    [all, coarse]
+}
 
-    let mut writer = Writer::new(
-        App::new(spec, LIMITS, None),
-        Postgres::new(dsn, "straum", ROW_LIMIT, Replication::Logical),
-    );
-    let clock = Instant::now();
-    assert!(matches!(writer.step(), Ok(Step::Started(_))));
-    eprintln!("loaded in {:.1?}", clock.elapsed());
-    check(&mut sql, writer.app(), "after the load");
-
-    // Inserts in 200 transactions of 50, a day later than rows already there.
-    let clock = Instant::now();
-    for k in 0..200 {
-        sql.execute(&format!(
-            "INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
-                                      payment_type, fare_amount, tip_amount, trip_distance)
-             SELECT vendor_id, pickup_at + interval '1 day', pu_location_id, do_location_id,
-                    payment_type, fare_amount + 1, tip_amount, trip_distance
-               FROM yellow_trips WHERE id % 10007 = {k} LIMIT 50"
-        ))
-        .unwrap();
+/// Dims change: a zone renamed, another moved to a new key, then a trip
+/// in the renamed zone. Each is one commit applied; nothing starts over.
+fn change_taxi_zones(
+    sql: &mut Connection,
+    writer: &mut Writer<Postgres>,
+    references: &[Reference],
+) {
+    let changes = [
+        (
+            "a zone renamed",
+            "UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161",
+            "after a zone was renamed",
+        ),
+        (
+            "a zone moved",
+            "UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264",
+            "after a zone moved",
+        ),
+        (
+            "a trip in the renamed zone",
+            "UPDATE yellow_trips SET tip_amount = tip_amount + 1
+              WHERE id = (SELECT min(id) FROM yellow_trips WHERE pu_location_id = 161)",
+            "after the zones changed",
+        ),
+    ];
+    for (what, statement, when) in changes {
+        sql.execute(statement).unwrap();
+        let clock = Instant::now();
+        applied(writer);
+        eprintln!("applied {what} in {:.1?}", clock.elapsed());
+        check_taxi_month(sql, writer.app(), references, when);
     }
-    for _ in 0..200 {
-        applied(&mut writer);
-    }
-    eprintln!("streamed 200 commits in {:.1?}", clock.elapsed());
-    check(&mut sql, writer.app(), "after the stream");
+}
 
-    // An update takes the old row out of its cell.
-    sql.execute("UPDATE yellow_trips SET tip_amount = tip_amount + 1 WHERE id = 1")
-        .unwrap();
-    applied(&mut writer);
-    check(&mut sql, writer.app(), "after an update");
+/// Compares each of `references` with PostgreSQL, the second by borough.
+fn check_taxi_month(sql: &mut Connection, app: &App, references: &[Reference], when: &str) {
+    let [all, coarse] = references else {
+        panic!("two references");
+    };
+    compare_timed(sql, app, all, when);
+    compare_timed(sql, app, coarse, &format!("{when}, by borough"));
+}
 
-    // Dims change: a zone renamed, another moved to a new key, then a
-    // trip in the renamed zone. Each is one commit applied; nothing
-    // starts over.
-    let change =
-        |sql: &mut Connection, writer: &mut Writer<Postgres>, what: &str, statement: &str| {
-            sql.execute(statement).unwrap();
-            let clock = Instant::now();
-            applied(writer);
-            eprintln!("applied {what} in {:.1?}", clock.elapsed());
-        };
-    change(
-        &mut sql,
-        &mut writer,
-        "a zone renamed",
-        "UPDATE taxi_zones SET zone = zone || ' (renamed)' WHERE location_id = 161",
+/// Compares `reference` with PostgreSQL, timing both. Straum's time is the
+/// time `ask` holds the read lock.
+fn compare_timed(sql: &mut Connection, app: &App, reference: &Reference, when: &str) {
+    let clock = Instant::now();
+    let answered = app.ask(&reference.ask).unwrap();
+    let asked = clock.elapsed();
+    let mut got = printed(&answered.answer, &reference.scales);
+    let clock = Instant::now();
+    let mut expected = sql.rows(&reference.sql).unwrap();
+    let queried = clock.elapsed();
+    got.sort();
+    expected.sort();
+    let differ = (got.iter().zip(&expected)).position(|(ours, theirs)| ours != theirs);
+    assert!(
+        got.len() == expected.len() && differ.is_none(),
+        "{when}: {} rows from Straum, {} from PostgreSQL; first difference: {:?} vs {:?}",
+        got.len(),
+        expected.len(),
+        differ.map(|index| &got[index]),
+        differ.map(|index| &expected[index])
     );
-    check(&mut sql, writer.app(), "after a zone was renamed");
-    change(
-        &mut sql,
-        &mut writer,
-        "a zone moved",
-        "UPDATE taxi_zones SET location_id = 999 WHERE location_id = 264",
+    eprintln!(
+        "{when}: {} groups equal; Straum asked in {asked:.1?}, PostgreSQL in {queried:.1?}",
+        got.len()
     );
-    check(&mut sql, writer.app(), "after a zone moved");
-    change(
-        &mut sql,
-        &mut writer,
-        "a trip in the renamed zone",
-        "UPDATE yellow_trips SET tip_amount = tip_amount + 1
-          WHERE id = (SELECT min(id) FROM yellow_trips WHERE pu_location_id = 161)",
-    );
-    check(&mut sql, writer.app(), "after the zones changed");
-    assert_eq!(writer.app().status().starts, 1);
 }
