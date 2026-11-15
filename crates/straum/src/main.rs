@@ -1,6 +1,6 @@
 //! The Straum binary, where Straum SQL, the PostgreSQL source, the use cases and
 //! HTTP meet. One thread writes: it loads every table, then applies the
-//! stream, and starts over after a failure. tokio serves asks meanwhile.
+//! stream, and starts over after a failure. straum-http serves asks meanwhile.
 
 #![forbid(unsafe_code)]
 
@@ -13,12 +13,10 @@ mod shell;
 use std::env;
 use std::fmt::{self, Display};
 use std::fs;
-use std::future::poll_fn;
 use std::io::{self, IsTerminal, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::panic;
 use std::process::{self, ExitCode};
-use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
@@ -26,7 +24,6 @@ use rustyline::error::ReadlineError;
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
 use straum_pg::{Dsn, DsnError, Postgres};
-use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::client::ClientError;
 use crate::command_line::{Command, Name, Plan, ROLE, Run, command};
@@ -61,11 +58,6 @@ enum Failure {
         error: io::Error,
     },
     StartingWriter(io::Error),
-    StartingTokio(io::Error),
-    HandlingSignal {
-        name: &'static str,
-        error: io::Error,
-    },
     Serving(io::Error),
 }
 
@@ -91,10 +83,6 @@ impl Display for Failure {
                 write!(formatter, "listening on {address}: {error}")
             }
             Failure::StartingWriter(error) => write!(formatter, "starting the writer: {error}"),
-            Failure::StartingTokio(error) => write!(formatter, "starting tokio: {error}"),
-            Failure::HandlingSignal { name, error } => {
-                write!(formatter, "handling {name}: {error}")
-            }
             Failure::Serving(error) => write!(formatter, "serving HTTP: {error}"),
         }
     }
@@ -278,34 +266,8 @@ fn run(
         .spawn(move || run_writer(writer))
         .map_err(Failure::StartingWriter)?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(Failure::StartingTokio)?;
-    let (mut terminate, mut interrupt) = {
-        let _entered = runtime.enter();
-        (
-            handle_signal("SIGTERM", SignalKind::terminate())?,
-            handle_signal("SIGINT", SignalKind::interrupt())?,
-        )
-    };
-    runtime
-        .block_on(async {
-            let stop = async move {
-                poll_fn(|cx| {
-                    let terminated = terminate.poll_recv(cx).is_ready();
-                    if interrupt.poll_recv(cx).is_ready() || terminated {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                })
-                .await;
-                log("stopping: finishing the asks in flight");
-            };
-            log(format!("listening on {address}"));
-            straum_http::serve(listener, app, read_ask, stop).await
-        })
+    log(format!("listening on {address}"));
+    straum_http::serve_until_signal(listener, app, read_ask, say_stopping)
         .map_err(Failure::Serving)?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops
@@ -319,8 +281,8 @@ fn bind(listen: &str) -> io::Result<(TcpListener, SocketAddr)> {
     Ok((listener, address))
 }
 
-fn handle_signal(name: &'static str, kind: SignalKind) -> Result<Signal, Failure> {
-    signal(kind).map_err(|error| Failure::HandlingSignal { name, error })
+fn say_stopping() {
+    log("stopping: finishing the asks in flight");
 }
 
 fn run_writer(mut writer: Writer<Postgres>) {

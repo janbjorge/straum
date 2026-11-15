@@ -1855,7 +1855,6 @@ dependencies = [
  "straum-notation",
  "straum-pg",
  "testcontainers",
- "tokio",
 ]
 
 [[package]]

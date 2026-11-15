@@ -19,7 +19,7 @@ serde = { version = "1.0.229", default-features = false, features = ["std"] }
 # The JSON parser behind that Visitor.
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 # The one async runtime (ADR-0008).
-tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }
 

@@ -50,6 +50,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Literal};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 
@@ -149,6 +150,48 @@ pub async fn serve(
     drop(listener);
     graceful.shutdown().await;
     Ok(())
+}
+
+/// Serves `app` on `listener` on a tokio runtime of its own until SIGTERM
+/// or SIGINT, then finishes the requests in flight and returns. The
+/// caller stays synchronous, since only this crate runs tokio (ADR-0008).
+/// `stopping` runs when the signal arrives.
+pub fn serve_until_signal(
+    listener: net::TcpListener,
+    app: App,
+    read_ask: ReadAsk,
+    stopping: fn(),
+) -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Signals register with the runtime, so they need it entered.
+    let (mut terminate, mut interrupt) = {
+        let _entered = runtime.enter();
+        (
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::interrupt())?,
+        )
+    };
+    let shutdown = async move {
+        either_signal(&mut terminate, &mut interrupt).await;
+        stopping();
+    };
+    runtime.block_on(serve(listener, app, read_ask, shutdown))
+}
+
+async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
+    poll_fn(|context| {
+        // Poll both, so each wakes this task when its signal comes.
+        let terminated = terminate.poll_recv(context).is_ready();
+        let interrupted = interrupt.poll_recv(context).is_ready();
+        if terminated || interrupted {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 fn spawn_connection(
