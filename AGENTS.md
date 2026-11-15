@@ -89,9 +89,11 @@ change.
   - Enums over `bool` parameters, named structs over tuples, named
     constants over magic numbers.
   - Functions under 70 lines.
-- A crate opts into `[workspace.lints]` with `[lints] workspace = true`
-  once it passes them. Silence a lint with `#[expect(.., reason = ..)]`,
-  never `#[allow]`.
+- Every crate, a new one too, takes `[workspace.lints]` with `[lints]
+  workspace = true`. Silence a lint with `#[expect(.., reason = ..)]`,
+  never `#[allow]`. One exception: `dead_code` on a helper module that
+  several test binaries share, where `#[expect]` fails in the binary
+  that uses all of it.
 - Errors: hand-written enums with `Display` and `From` impls. No
   `thiserror`, no `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the
