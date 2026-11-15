@@ -46,7 +46,7 @@ pub(super) struct Scope {
 /// column's null-ness, or a dim column through its ref.
 struct ScopedKey {
     name: Identifier,
-    column: Column,
+    column: ResolvedColumn,
     is_null: Option<bool>,
     /// Written `alias.column::text`.
     cast: bool,
@@ -67,7 +67,7 @@ struct JoinedRef {
 /// What a column reference names. A dim's key column names the fact
 /// column joined to it, since that is where its value is.
 #[derive(PartialEq, Eq)]
-enum Column {
+enum ResolvedColumn {
     Fact(Identifier),
     Attribute { through: usize, column: Identifier },
 }
@@ -89,7 +89,7 @@ struct Reference {
 }
 
 struct KeyRead {
-    column: Column,
+    column: ResolvedColumn,
     is_null: Option<bool>,
     cast: bool,
 }
@@ -586,17 +586,17 @@ impl Walker {
         };
         self.same_spelling(scope, spelled, &column, cast);
         match (&column, is_null) {
-            (Column::Fact(fact_column), None) => by.push(ByKey::Column {
+            (ResolvedColumn::Fact(fact_column), None) => by.push(ByKey::Column {
                 column: fact_column.clone(),
                 name: name.clone(),
             }),
-            (Column::Fact(fact_column), Some(is_null)) => by.push(ByKey::IsNull {
+            (ResolvedColumn::Fact(fact_column), Some(is_null)) => by.push(ByKey::IsNull {
                 column: fact_column.clone(),
                 name: name.clone(),
                 negated: !is_null,
             }),
             (
-                Column::Attribute {
+                ResolvedColumn::Attribute {
                     through,
                     column: attr_column,
                 },
@@ -619,7 +619,7 @@ impl Walker {
         if let Some((inner, negated)) = null_test(expr) {
             let (column, cast) = self.fact_column(scope, inner, "the IS NULL column")?;
             return Some(KeyRead {
-                column: Column::Fact(column),
+                column: ResolvedColumn::Fact(column),
                 is_null: Some(!negated),
                 cast,
             });
@@ -634,7 +634,13 @@ impl Walker {
 
     /// A column is one spelling throughout a view: with `::text` or
     /// without, as its type decides.
-    fn same_spelling(&mut self, scope: &Scope, expr: &sql::Expr, column: &Column, cast: bool) {
+    fn same_spelling(
+        &mut self,
+        scope: &Scope,
+        expr: &sql::Expr,
+        column: &ResolvedColumn,
+        cast: bool,
+    ) {
         let other = (scope.keys.iter()).find(|key| key.column == *column && key.cast != cast);
         if let Some(other) = other {
             self.error(
@@ -1105,14 +1111,14 @@ impl Walker {
         }
     }
 
-    fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<(Column, bool)> {
+    fn column(&mut self, scope: &Scope, expr: &sql::Expr) -> Option<(ResolvedColumn, bool)> {
         let Reference {
             alias,
             column,
             cast,
         } = self.reference(expr)?;
         if alias == scope.alias {
-            return Some((Column::Fact(column), cast));
+            return Some((ResolvedColumn::Fact(column), cast));
         }
         let Some(through) = (scope.refs.iter()).position(|joined| joined.reference.alias == alias)
         else {
@@ -1122,8 +1128,8 @@ impl Walker {
         let joined = &scope.refs[through];
         let position = joined.key.iter().position(|key| *key == column);
         let column = match position.map(|position| &joined.reference.via[position]) {
-            Some(Via::Fact(via)) => Column::Fact(via.clone()),
-            Some(Via::Attribute { .. }) | None => Column::Attribute { through, column },
+            Some(Via::Fact(via)) => ResolvedColumn::Fact(via.clone()),
+            Some(Via::Attribute { .. }) | None => ResolvedColumn::Attribute { through, column },
         };
         Some((column, cast))
     }
@@ -1135,8 +1141,8 @@ impl Walker {
         what: &str,
     ) -> Option<(Identifier, bool)> {
         match self.column(scope, expr)? {
-            (Column::Fact(column), cast) => Some((column, cast)),
-            (Column::Attribute { .. }, _) => {
+            (ResolvedColumn::Fact(column), cast) => Some((column, cast)),
+            (ResolvedColumn::Attribute { .. }, _) => {
                 self.error(
                     line(expr),
                     format!("{what} must be a {} column", scope.alias),
@@ -1171,7 +1177,7 @@ impl Walker {
         is_null: bool,
     ) -> Option<Condition> {
         let (column, cast) = self.fact_column(scope, expr, "the IS NULL column")?;
-        let fact_column = Column::Fact(column);
+        let fact_column = ResolvedColumn::Fact(column);
         let Some(key) = self.filter_key(scope, expr, &fact_column, cast, KeyKind::NullNess) else {
             self.error(
                 line(test),
@@ -1194,7 +1200,7 @@ impl Walker {
         &mut self,
         scope: &'s Scope,
         expr: &sql::Expr,
-        column: &Column,
+        column: &ResolvedColumn,
         cast: bool,
         kind: KeyKind,
     ) -> Option<&'s ScopedKey> {
@@ -1533,8 +1539,10 @@ fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
             continue;
         }
         let (read, column) = match &key.column {
-            Column::Fact(column) => (&mut as_text, column),
-            Column::Attribute { through, column } => (&mut scope.refs[*through].as_text, column),
+            ResolvedColumn::Fact(column) => (&mut as_text, column),
+            ResolvedColumn::Attribute { through, column } => {
+                (&mut scope.refs[*through].as_text, column)
+            }
         };
         if !read.contains(column) {
             read.push(column.clone());
