@@ -13,7 +13,7 @@ use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
 use super::tuple::{self, Attribute, Value};
 use super::xact::Invalidated;
-use super::{RelationFile, WalError};
+use super::{Problem, RelationFile, WalError};
 use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{Field, Message, Old, Relation};
@@ -144,7 +144,7 @@ impl Publisher {
             let table = self
                 .tables
                 .get(file)
-                .ok_or_else(|| problem(committed.lsn, "a change to a table Straum doesn't read"))?;
+                .ok_or_else(|| problem(committed.lsn, Problem::UntrackedTable))?;
             if self.announced.insert(*file) {
                 decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
@@ -204,7 +204,7 @@ fn fields(
     Ok(fields)
 }
 
-fn problem(lsn: u64, problem: &'static str) -> Error {
+fn problem(lsn: u64, problem: Problem) -> Error {
     Error::Wal(WalError::At { lsn, problem })
 }
 

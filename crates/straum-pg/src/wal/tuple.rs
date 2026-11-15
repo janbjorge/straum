@@ -13,6 +13,7 @@ use std::ops::Range;
 
 use straum_domain::{ColumnType, Datum};
 
+use super::Problem;
 use super::compress;
 use super::heap::HeapTuple;
 use crate::value::{scaled, time};
@@ -88,11 +89,11 @@ pub(crate) fn values(
     tuple: &HeapTuple,
     attributes: &[Attribute],
     labels: &HashMap<u32, String>,
-) -> Result<Vec<Value>, &'static str> {
-    let short = "a row shorter than its columns";
+) -> Result<Vec<Value>, Problem> {
+    let short = Problem::ShortRow;
     let natts = usize::from(tuple.infomask2 & NATTS_MASK);
     if natts > attributes.len() {
-        return Err("a row with more columns than its table");
+        return Err(Problem::TooManyColumns);
     }
     let bitmap = if tuple.infomask & HAS_NULL == 0 {
         None
@@ -121,7 +122,7 @@ pub(crate) fn values(
         let size = match attribute.length {
             -1 => varlena_size(rest).ok_or(short)?,
             -2 => rest.iter().position(|byte| *byte == 0).ok_or(short)? + 1,
-            length => usize::try_from(length).map_err(|_| "a column of unknown length")?,
+            length => usize::try_from(length).map_err(|_| Problem::UnknownLength)?,
         };
         let bytes = rest.get(..size).ok_or(short)?;
         at += size;
@@ -150,7 +151,7 @@ fn varlena_size(bytes: &[u8]) -> Option<usize> {
 
 /// What a varlena holds: its bytes, decompressed, or `None` for a value
 /// TOAST keeps out of line. Only a compressed one is copied.
-fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, &'static str> {
+fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
     let first = bytes[0];
     if first == VARLENA_EXTERNAL {
         return Ok(None);
@@ -162,34 +163,32 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, &'static str> {
         return Ok(Some(Cow::Borrowed(&bytes[FOUR_BYTE_HEADER..])));
     }
     let Some(info) = bytes.get(TCINFO) else {
-        return Err("a compressed value without its size");
+        return Err(Problem::CompressedWithoutSize);
     };
     let info = u32::from_le_bytes([info[0], info[1], info[2], info[3]]);
-    let size = usize::try_from(info & RAW_SIZE_MASK).map_err(|_| "a value too big")?;
+    let size = usize::try_from(info & RAW_SIZE_MASK).map_err(|_| Problem::ValueTooBig)?;
     let stored = &bytes[COMPRESSED_HEADER..];
     let raw = match info >> METHOD_SHIFT {
         METHOD_PGLZ => compress::pglz(stored, size),
         METHOD_LZ4 => compress::lz4(stored, size),
-        _ => return Err("a value compressed in a way Straum can't read"),
+        _ => return Err(Problem::UnknownCompression),
     };
     raw.map(|raw| Some(Cow::Owned(raw)))
-        .ok_or("a value that doesn't decompress")
+        .ok_or(Problem::ValueNotDecompressing)
 }
 
 fn value(
     attribute: &Attribute,
     bytes: &[u8],
     labels: &HashMap<u32, String>,
-) -> Result<Value, &'static str> {
-    let wrong = "a value of the wrong length for its type";
+) -> Result<Value, Problem> {
+    let wrong = Problem::WrongLength;
     let column_type = match attribute.kind {
         Kind::Read(column_type) => column_type,
         Kind::Other => return Ok(Value::Datum(Datum::Null)),
         Kind::Enum => {
             let oid = u32::from_le_bytes(bytes.try_into().map_err(|_| wrong)?);
-            let label = labels
-                .get(&oid)
-                .ok_or("an enum value Straum has no label for")?;
+            let label = labels.get(&oid).ok_or(Problem::UnlabelledEnum)?;
             return Ok(Value::Datum(Datum::Text(label.as_str().into())));
         }
     };
@@ -209,11 +208,11 @@ fn value(
             };
             match column_type {
                 ColumnType::Numeric { scale } => {
-                    Datum::Int(numeric(&raw, scale).ok_or("a numeric Straum can't read")?)
+                    Datum::Int(numeric(&raw, scale).ok_or(Problem::UnreadableNumeric)?)
                 }
                 _ => Datum::Text(
                     std::str::from_utf8(&raw)
-                        .map_err(|_| "text that isn't UTF-8")?
+                        .map_err(|_| Problem::NotUtf8)?
                         .into(),
                 ),
             }
@@ -416,7 +415,7 @@ mod tests {
                 &attributes,
                 &HashMap::new(),
             );
-            assert_eq!(got, Err("a value that doesn't decompress"));
+            assert_eq!(got, Err(Problem::ValueNotDecompressing));
         }
         let mut zstd = u32::try_from(10 << 2 | 2).unwrap().to_le_bytes().to_vec();
         // Method 2, zstd, and a raw size of 12.
@@ -427,10 +426,10 @@ mod tests {
             &attributes,
             &HashMap::new(),
         );
-        assert_eq!(got, Err("a value compressed in a way Straum can't read"));
+        assert_eq!(got, Err(Problem::UnknownCompression));
     }
 
-    fn check(tuple: &HeapTuple, attributes: &[Attribute], problem: &str) {
+    fn check(tuple: &HeapTuple, attributes: &[Attribute], problem: Problem) {
         assert_eq!(values(tuple, attributes, &HashMap::new()), Err(problem));
     }
 
@@ -443,30 +442,30 @@ mod tests {
         let int = attribute(4, 4, INT);
         let text_column = attribute(-1, 4, TEXT);
         let fits = four_byte_row();
-        check(&fits, &[], "a row with more columns than its table");
+        check(&fits, &[], Problem::TooManyColumns);
         let mut cut = fits.clone();
         cut.body = cut.body[..cut.body.len() - 1].into();
-        check(&cut, &[int], "a row shorter than its columns");
+        check(&cut, &[int], Problem::ShortRow);
         let mut no_header = fits.clone();
         no_header.hoff = 8;
-        check(&no_header, &[int], "a row shorter than its columns");
+        check(&no_header, &[int], Problem::ShortRow);
         let other_tag = [0x01, 1, 0, 0];
         check(
             &row(&[text_column], &[Some(&other_tag)]),
             &[text_column],
-            "a row shorter than its columns",
+            Problem::ShortRow,
         );
         let half = [10 << 2 | 2, 0, 0, 0, 0, 0];
         check(
             &row(&[text_column], &[Some(&half)]),
             &[text_column],
-            "a row shorter than its columns",
+            Problem::ShortRow,
         );
         // A four-byte header naming fewer bytes than itself.
         check(
             &row(&[text_column], &[Some(&[0x04, 0, 0, 0])]),
             &[text_column],
-            "a row shorter than its columns",
+            Problem::ShortRow,
         );
     }
 
@@ -475,54 +474,34 @@ mod tests {
         let int = attribute(4, 4, INT);
         let text_column = attribute(-1, 4, TEXT);
         let fits = four_byte_row();
-        check(
-            &fits,
-            &[attribute(-3, 1, INT)],
-            "a column of unknown length",
-        );
+        check(&fits, &[attribute(-3, 1, INT)], Problem::UnknownLength);
         check(
             &fits,
             &[attribute(4, 4, Kind::Read(ColumnType::Bool))],
-            "a value of the wrong length for its type",
+            Problem::WrongLength,
         );
-        check(
-            &fits,
-            &[attribute(4, 4, TEXT)],
-            "a value of the wrong length for its type",
-        );
-        check(
-            &fits,
-            &[attribute(4, 4, TIME)],
-            "a value of the wrong length for its type",
-        );
-        check(
-            &fits,
-            &[attribute(2, 2, Kind::Enum)],
-            "a value of the wrong length for its type",
-        );
+        check(&fits, &[attribute(4, 4, TEXT)], Problem::WrongLength);
+        check(&fits, &[attribute(4, 4, TIME)], Problem::WrongLength);
+        check(&fits, &[attribute(2, 2, Kind::Enum)], Problem::WrongLength);
         check(
             &fits,
             &[attribute(4, 4, Kind::Enum)],
-            "an enum value Straum has no label for",
+            Problem::UnlabelledEnum,
         );
         let three = row(&[int], &[Some(&[1, 2, 3])]);
-        check(
-            &three,
-            &[attribute(3, 1, INT)],
-            "a value of the wrong length for its type",
-        );
+        check(&three, &[attribute(3, 1, INT)], Problem::WrongLength);
         let bad_utf8 = short_varlena("ab");
         let bad_utf8 = [bad_utf8[0], 0xFF, 0xFE];
         check(
             &row(&[text_column], &[Some(&bad_utf8)]),
             &[text_column],
-            "text that isn't UTF-8",
+            Problem::NotUtf8,
         );
         let numeric = attribute(-1, 4, Kind::Read(ColumnType::Numeric { scale: 0 }));
         check(
             &row(&[numeric], &[Some(&short_varlena("\u{1}"))]),
             &[numeric],
-            "a numeric Straum can't read",
+            Problem::UnreadableNumeric,
         );
     }
 

@@ -17,8 +17,8 @@ use straum_domain::{FastMap, FastSet};
 
 use super::compress;
 use super::{
-    BLOCK_SIZE, Block, Compression, Image, RESOURCE_MANAGER_INFO, Record, RelationFile, WalError,
-    le_u16, le_u32,
+    BLOCK_SIZE, Block, Compression, Image, Problem, RESOURCE_MANAGER_INFO, Record, RelationFile,
+    WalError, le_u16, le_u32,
 };
 
 const RM_XLOG: u8 = 0;
@@ -296,7 +296,7 @@ impl Heap {
             match &block.image {
                 Some(image) if image.apply => {
                     let page = page_from_image(&restore(record, image)?)
-                        .ok_or(problem(lsn, "a page image Straum can't read"))?;
+                        .ok_or(problem(lsn, Problem::UnreadableImage))?;
                     self.store(id, page);
                     restored.push(block.id);
                 }
@@ -323,7 +323,7 @@ impl Heap {
         {
             // `CheckPoint` opens with `redo`.
             let Some(redo) = record.main_data().first_chunk() else {
-                return Err(problem(lsn, "a checkpoint without its redo point"));
+                return Err(problem(lsn, Problem::CheckpointWithoutRedo));
             };
             self.evict(u64::from_le_bytes(*redo));
         }
@@ -403,7 +403,7 @@ fn page_id(block: &Block) -> PageId {
     }
 }
 
-fn problem(lsn: u64, problem: &'static str) -> WalError {
+fn problem(lsn: u64, problem: Problem) -> WalError {
     WalError::At { lsn, problem }
 }
 
@@ -418,12 +418,12 @@ struct Edit<'a> {
 }
 
 impl<'a> Edit<'a> {
-    fn fail(&self, what: &'static str) -> WalError {
+    fn fail(&self, what: Problem) -> WalError {
         problem(self.record.lsn, what)
     }
 
     fn short(&self) -> WalError {
-        self.fail("a heap record shorter than its kind")
+        self.fail(Problem::ShortHeapRecord)
     }
 
     fn main(&self, length: usize) -> Result<&'a [u8], WalError> {
@@ -440,7 +440,7 @@ impl<'a> Edit<'a> {
         let record: &'a Record = self.record;
         let block = (record.blocks.iter())
             .find(|block| block.id == id)
-            .ok_or_else(|| self.fail("a heap record without its page"))?;
+            .ok_or_else(|| self.fail(Problem::HeapRecordWithoutPage))?;
         Ok(self.heap.is_tracked(block).then_some(block))
     }
 
@@ -450,19 +450,17 @@ impl<'a> Edit<'a> {
 
     fn page(&mut self, block: &Block) -> Result<&mut Page, WalError> {
         let lsn = self.record.lsn;
-        (self.heap.pages.get_mut(&page_id(block)))
-            .ok_or(problem(lsn, "a change to a page Straum has no image of"))
+        (self.heap.pages.get_mut(&page_id(block))).ok_or(problem(lsn, Problem::PageWithoutImage))
     }
 
     fn row(&mut self, block: &Block, offnum: u16) -> Result<HeapTuple, WalError> {
         let lsn = self.record.lsn;
-        (self.page(block)?.get(offnum).cloned())
-            .ok_or(problem(lsn, "a change to a row Straum doesn't have"))
+        (self.page(block)?.get(offnum).cloned()).ok_or(problem(lsn, Problem::MissingRow))
     }
 
     fn put(&mut self, block: &Block, offnum: u16, tuple: HeapTuple) -> Result<(), WalError> {
         let lsn = self.record.lsn;
-        (self.page(block)?.set(offnum, tuple)).ok_or(problem(lsn, "a row in slot 0"))
+        (self.page(block)?.set(offnum, tuple)).ok_or(problem(lsn, Problem::RowInSlotZero))
     }
 
     fn insert(&mut self) -> Result<(), WalError> {
@@ -537,7 +535,7 @@ impl<'a> Edit<'a> {
         let old = self.row(old_block, old_offnum)?;
         if self.redo(new_block) {
             let new = updated(self.record.block_data(new_block), flags, &old)
-                .ok_or_else(|| self.fail("an update that doesn't fit its old row"))?;
+                .ok_or_else(|| self.fail(Problem::UpdateMisfit))?;
             self.put(new_block, new_offnum, new)?;
         }
         let new = self.row(new_block, new_offnum)?;
@@ -733,16 +731,13 @@ fn restore(record: &Record, image: &Image) -> Result<Vec<u8>, WalError> {
         Some(Compression::Pglz) => compress::pglz(stored, size),
         Some(Compression::Lz4) => compress::lz4(stored, size),
         Some(Compression::Zstd) => {
-            return Err(problem(
-                lsn,
-                "a page image in zstd; Straum reads wal_compression off, pglz and lz4",
-            ));
+            return Err(problem(lsn, Problem::ImageInZstd));
         }
     };
     let hole = usize::from(image.hole_offset);
     let raw = raw
         .filter(|raw| raw.len() == size && hole <= size)
-        .ok_or(problem(lsn, "a page image that doesn't decompress"))?;
+        .ok_or(problem(lsn, Problem::ImageNotDecompressing))?;
     let mut page = Vec::with_capacity(BLOCK_SIZE);
     page.extend_from_slice(&raw[..hole]);
     page.resize(hole + usize::from(image.hole_length), 0);
@@ -1276,7 +1271,7 @@ mod tests {
         }
     }
 
-    fn error(heap: &mut Heap, record: &Record) -> &'static str {
+    fn error(heap: &mut Heap, record: &Record) -> Problem {
         match heap.apply(record) {
             Err(WalError::At { problem, .. }) => problem,
             other => panic!("{other:?}"),
@@ -1293,10 +1288,7 @@ mod tests {
             insert_main(1, 0),
             vec![block(0, 0, logged(&row), None)],
         );
-        assert_eq!(
-            error(&mut heap, &no_page),
-            "a change to a page Straum has no image of"
-        );
+        assert_eq!(error(&mut heap, &no_page), Problem::PageWithoutImage);
         five_rows(&mut heap);
         let no_row = record(
             RM_HEAP,
@@ -1304,17 +1296,14 @@ mod tests {
             delete_main(9, 0),
             vec![block(0, 0, vec![], None)],
         );
-        assert_eq!(
-            error(&mut heap, &no_row),
-            "a change to a row Straum doesn't have"
-        );
+        assert_eq!(error(&mut heap, &no_row), Problem::MissingRow);
         let slot_zero = record(
             RM_HEAP,
             HEAP_INSERT,
             insert_main(0, 0),
             vec![block(0, 0, logged(&row), None)],
         );
-        assert_eq!(error(&mut heap, &slot_zero), "a row in slot 0");
+        assert_eq!(error(&mut heap, &slot_zero), Problem::RowInSlotZero);
     }
 
     #[test]
@@ -1328,25 +1317,16 @@ mod tests {
             vec![0; 13],
             vec![block(0, 0, vec![], None)],
         );
-        assert_eq!(
-            error(&mut heap, &short),
-            "a heap record shorter than its kind"
-        );
+        assert_eq!(error(&mut heap, &short), Problem::ShortHeapRecord);
         let headless = record(
             RM_HEAP,
             HEAP_INSERT,
             insert_main(6, 0),
             vec![block(0, 0, vec![0; 4], None)],
         );
-        assert_eq!(
-            error(&mut heap, &headless),
-            "a heap record shorter than its kind"
-        );
+        assert_eq!(error(&mut heap, &headless), Problem::ShortHeapRecord);
         let no_block = record(RM_HEAP, HEAP_INSERT, insert_main(6, 0), vec![]);
-        assert_eq!(
-            error(&mut heap, &no_block),
-            "a heap record without its page"
-        );
+        assert_eq!(error(&mut heap, &no_block), Problem::HeapRecordWithoutPage);
         let mut too_long = 200u16.to_le_bytes().to_vec();
         too_long.extend(logged(&row));
         let misfit = record(
@@ -1355,30 +1335,21 @@ mod tests {
             update_main(1, UPDATE_PREFIX_FROM_OLD, 6),
             vec![block(0, 0, too_long, None)],
         );
-        assert_eq!(
-            error(&mut heap, &misfit),
-            "an update that doesn't fit its old row"
-        );
+        assert_eq!(error(&mut heap, &misfit), Problem::UpdateMisfit);
         let trailing = record(
             RM_HEAP2,
             HEAP2_MULTI_INSERT,
             [&[0, 0][..], &1u16.to_le_bytes(), &7u16.to_le_bytes()].concat(),
             vec![block(0, 0, vec![1, 0, 2, 0, 0, 0, 24, 0, 9], None)],
         );
-        assert_eq!(
-            error(&mut heap, &trailing),
-            "a heap record shorter than its kind"
-        );
+        assert_eq!(error(&mut heap, &trailing), Problem::ShortHeapRecord);
         let broken_prune = record(
             RM_HEAP2,
             HEAP2_PRUNE,
             vec![1, PRUNE_HAS_DEAD_ITEMS],
             vec![block(0, 0, vec![3, 0, 1, 0], None)],
         );
-        assert_eq!(
-            error(&mut heap, &broken_prune),
-            "a heap record shorter than its kind"
-        );
+        assert_eq!(error(&mut heap, &broken_prune), Problem::ShortHeapRecord);
     }
 
     #[test]
@@ -1391,10 +1362,7 @@ mod tests {
             ..image(page[..100].to_vec())
         };
         let zstd = record(RM_XLOG, 0xB0, vec![], vec![block(0, 0, vec![], Some(zstd))]);
-        assert_eq!(
-            error(&mut heap, &zstd),
-            "a page image in zstd; Straum reads wal_compression off, pglz and lz4"
-        );
+        assert_eq!(error(&mut heap, &zstd), Problem::ImageInZstd);
         let garbage = ImageSpec {
             compression: Some(Compression::Pglz),
             ..image(vec![0xFF, 1, 2])
@@ -1405,10 +1373,7 @@ mod tests {
             vec![],
             vec![block(0, 0, vec![], Some(garbage))],
         );
-        assert_eq!(
-            error(&mut heap, &garbage),
-            "a page image that doesn't decompress"
-        );
+        assert_eq!(error(&mut heap, &garbage), Problem::ImageNotDecompressing);
         let mut bad_pointer = page.clone();
         bad_pointer[PAGE_HEADER..PAGE_HEADER + LINE_POINTER]
             .copy_from_slice(&line_pointer(8190, 100));
@@ -1418,7 +1383,7 @@ mod tests {
             vec![],
             vec![block(0, 0, vec![], Some(image(bad_pointer)))],
         );
-        assert_eq!(error(&mut heap, &bad), "a page image Straum can't read");
+        assert_eq!(error(&mut heap, &bad), Problem::UnreadableImage);
         let mut tiny = page;
         tiny[PAGE_HEADER..PAGE_HEADER + LINE_POINTER].copy_from_slice(&line_pointer(100, 10));
         let tiny = record(
@@ -1427,12 +1392,12 @@ mod tests {
             vec![],
             vec![block(0, 0, vec![], Some(image(tiny)))],
         );
-        assert_eq!(error(&mut heap, &tiny), "a page image Straum can't read");
+        assert_eq!(error(&mut heap, &tiny), Problem::UnreadableImage);
     }
 
     #[test]
     fn says_what_went_wrong() {
-        let error = problem(0x1_0000_0028, "a row in slot 0");
+        let error = problem(0x1_0000_0028, Problem::RowInSlotZero);
         assert_eq!(error.to_string(), "WAL at 1/28 has a row in slot 0");
     }
 }

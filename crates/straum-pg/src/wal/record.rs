@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use super::{BLOCK_SIZE, BLOCKS, RESOURCE_MANAGER_INFO, WalError, at, le_u16, le_u32};
+use super::{BLOCK_SIZE, Problem, RESOURCE_MANAGER_INFO, WalError, at, le_u16, le_u32};
 
 /// An image header holds lengths within a page as `uint16`.
 #[expect(clippy::cast_possible_truncation, reason = "BLCKSZ, 8192, fits a u16")]
@@ -146,7 +146,7 @@ impl Record {
 
 /// Reads `record`'s bytes into the rest of it.
 pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(), WalError> {
-    let short = at(lsn, BLOCKS);
+    let short = at(lsn, Problem::Blocks);
     let bytes = &record.bytes;
     let blocks = &mut record.blocks;
     blocks.clear();
@@ -342,7 +342,7 @@ mod tests {
     fn refuses_block_headers_that_do_not_add_up() {
         let at_flags = RECORD_HEADER + 1;
         let lsn = SEGMENT + LONG_HEADER;
-        let expected = at(lsn, BLOCKS);
+        let expected = at(lsn, Problem::Blocks);
 
         // Data flagged but none counted, and data counted but not flagged.
         let mut record = assemble(&plain_block(None, vec![7; 4]));

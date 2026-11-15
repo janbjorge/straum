@@ -3,7 +3,7 @@
 //! `ParseCommitRecord`, `ParseAbortRecord` in
 //! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
 
-use super::{RESOURCE_MANAGER_INFO, Record, WalError, u32_at};
+use super::{Problem, RESOURCE_MANAGER_INFO, Record, WalError, u32_at};
 
 const RM_XACT: u8 = 1;
 const RM_STANDBY: u8 = 8;
@@ -103,7 +103,7 @@ pub(crate) struct Running {
 pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalError> {
     let short = WalError::At {
         lsn: record.lsn,
-        problem: "a transaction record shorter than its kind",
+        problem: Problem::ShortTransactionRecord,
     };
     match record.resource_manager {
         RM_XACT => {
@@ -362,7 +362,7 @@ mod tests {
             let got = event(&record(RM_XACT, XACT_COMMIT | XACT_HAS_INFO, 1, main), 18);
             assert!(
                 matches!(got, Err(WalError::At { problem, .. })
-                    if problem == "a transaction record shorter than its kind"),
+                    if problem == Problem::ShortTransactionRecord),
                 "{length}: {got:?}"
             );
         }

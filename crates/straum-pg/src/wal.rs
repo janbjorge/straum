@@ -65,21 +65,90 @@ pub(crate) enum WalError {
         expected_segment_size: u64,
     },
     /// The page or record at `lsn` has `problem`.
-    At { lsn: u64, problem: &'static str },
+    At { lsn: u64, problem: Problem },
 }
 
-const PAGE_ADDRESS: &str = "a page header that names another page";
-const PAGE_FLAGS: &str = "a page header with unknown flags";
-/// The WAL format changed in the stream.
-const OTHER_FORMAT: &str = "a page in another WAL format";
-const CONTINUATION: &str = "a page that doesn't carry on the record before it";
-/// After a crash, PostgreSQL wrote over a record it never finished.
-const OVERWRITTEN: &str = "a record written over one a crash cut off";
-const LENGTH: &str = "a record length out of range";
-const CHECKSUM: &str = "a record that fails its checksum";
-const BLOCKS: &str = "a record whose block headers don't add up";
+/// What is wrong with the WAL at an LSN. Each says it in the words a
+/// person reads after "WAL at <LSN> has".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Problem {
+    PageAddress,
+    PageFlags,
+    /// The WAL format changed in the stream.
+    OtherFormat,
+    Continuation,
+    /// After a crash, PostgreSQL wrote over a record it never finished.
+    Overwritten,
+    Length,
+    Checksum,
+    Blocks,
+    UnreadableImage,
+    ImageInZstd,
+    ImageNotDecompressing,
+    CheckpointWithoutRedo,
+    ShortHeapRecord,
+    HeapRecordWithoutPage,
+    PageWithoutImage,
+    MissingRow,
+    RowInSlotZero,
+    UpdateMisfit,
+    ShortTransactionRecord,
+    UntrackedTable,
+    ShortRow,
+    TooManyColumns,
+    UnknownLength,
+    CompressedWithoutSize,
+    ValueTooBig,
+    UnknownCompression,
+    ValueNotDecompressing,
+    WrongLength,
+    UnlabelledEnum,
+    UnreadableNumeric,
+    NotUtf8,
+}
 
-fn at(lsn: u64, problem: &'static str) -> WalError {
+impl fmt::Display for Problem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Problem::PageAddress => "a page header that names another page",
+            Problem::PageFlags => "a page header with unknown flags",
+            Problem::OtherFormat => "a page in another WAL format",
+            Problem::Continuation => "a page that doesn't carry on the record before it",
+            Problem::Overwritten => "a record written over one a crash cut off",
+            Problem::Length => "a record length out of range",
+            Problem::Checksum => "a record that fails its checksum",
+            Problem::Blocks => "a record whose block headers don't add up",
+            Problem::UnreadableImage => "a page image Straum can't read",
+            Problem::ImageInZstd => {
+                "a page image in zstd; Straum reads wal_compression off, pglz and lz4"
+            }
+            Problem::ImageNotDecompressing => "a page image that doesn't decompress",
+            Problem::CheckpointWithoutRedo => "a checkpoint without its redo point",
+            Problem::ShortHeapRecord => "a heap record shorter than its kind",
+            Problem::HeapRecordWithoutPage => "a heap record without its page",
+            Problem::PageWithoutImage => "a change to a page Straum has no image of",
+            Problem::MissingRow => "a change to a row Straum doesn't have",
+            Problem::RowInSlotZero => "a row in slot 0",
+            Problem::UpdateMisfit => "an update that doesn't fit its old row",
+            Problem::ShortTransactionRecord => "a transaction record shorter than its kind",
+            Problem::UntrackedTable => "a change to a table Straum doesn't read",
+            Problem::ShortRow => "a row shorter than its columns",
+            Problem::TooManyColumns => "a row with more columns than its table",
+            Problem::UnknownLength => "a column of unknown length",
+            Problem::CompressedWithoutSize => "a compressed value without its size",
+            Problem::ValueTooBig => "a value too big",
+            Problem::UnknownCompression => "a value compressed in a way Straum can't read",
+            Problem::ValueNotDecompressing => "a value that doesn't decompress",
+            Problem::WrongLength => "a value of the wrong length for its type",
+            Problem::UnlabelledEnum => "an enum value Straum has no label for",
+            Problem::UnreadableNumeric => "a numeric Straum can't read",
+            Problem::NotUtf8 => "text that isn't UTF-8",
+        };
+        formatter.write_str(text)
+    }
+}
+
+fn at(lsn: u64, problem: Problem) -> WalError {
     WalError::At { lsn, problem }
 }
 
@@ -109,10 +178,106 @@ impl std::error::Error for WalError {}
 mod tests {
     use super::*;
 
+    /// Every problem, and the words it says.
+    const EVERY_PROBLEM: [(Problem, &str); 31] = [
+        (
+            Problem::PageAddress,
+            "a page header that names another page",
+        ),
+        (Problem::PageFlags, "a page header with unknown flags"),
+        (Problem::OtherFormat, "a page in another WAL format"),
+        (
+            Problem::Continuation,
+            "a page that doesn't carry on the record before it",
+        ),
+        (
+            Problem::Overwritten,
+            "a record written over one a crash cut off",
+        ),
+        (Problem::Length, "a record length out of range"),
+        (Problem::Checksum, "a record that fails its checksum"),
+        (Problem::Blocks, "a record whose block headers don't add up"),
+        (Problem::UnreadableImage, "a page image Straum can't read"),
+        (
+            Problem::ImageInZstd,
+            "a page image in zstd; Straum reads wal_compression off, pglz and lz4",
+        ),
+        (
+            Problem::ImageNotDecompressing,
+            "a page image that doesn't decompress",
+        ),
+        (
+            Problem::CheckpointWithoutRedo,
+            "a checkpoint without its redo point",
+        ),
+        (
+            Problem::ShortHeapRecord,
+            "a heap record shorter than its kind",
+        ),
+        (
+            Problem::HeapRecordWithoutPage,
+            "a heap record without its page",
+        ),
+        (
+            Problem::PageWithoutImage,
+            "a change to a page Straum has no image of",
+        ),
+        (Problem::MissingRow, "a change to a row Straum doesn't have"),
+        (Problem::RowInSlotZero, "a row in slot 0"),
+        (
+            Problem::UpdateMisfit,
+            "an update that doesn't fit its old row",
+        ),
+        (
+            Problem::ShortTransactionRecord,
+            "a transaction record shorter than its kind",
+        ),
+        (
+            Problem::UntrackedTable,
+            "a change to a table Straum doesn't read",
+        ),
+        (Problem::ShortRow, "a row shorter than its columns"),
+        (
+            Problem::TooManyColumns,
+            "a row with more columns than its table",
+        ),
+        (Problem::UnknownLength, "a column of unknown length"),
+        (
+            Problem::CompressedWithoutSize,
+            "a compressed value without its size",
+        ),
+        (Problem::ValueTooBig, "a value too big"),
+        (
+            Problem::UnknownCompression,
+            "a value compressed in a way Straum can't read",
+        ),
+        (
+            Problem::ValueNotDecompressing,
+            "a value that doesn't decompress",
+        ),
+        (
+            Problem::WrongLength,
+            "a value of the wrong length for its type",
+        ),
+        (
+            Problem::UnlabelledEnum,
+            "an enum value Straum has no label for",
+        ),
+        (Problem::UnreadableNumeric, "a numeric Straum can't read"),
+        (Problem::NotUtf8, "text that isn't UTF-8"),
+    ];
+
+    #[test]
+    fn says_each_problem_in_words() {
+        for (problem, text) in EVERY_PROBLEM {
+            assert_eq!(problem.to_string(), text);
+        }
+    }
+
     #[test]
     fn says_what_went_wrong() {
         assert_eq!(
-            at(0x1_0000_0028, CHECKSUM).to_string(),
+            at(0x1_0000_0028, Problem::Checksum).to_string(),
             "WAL at 1/28 has a record that fails its checksum"
         );
         for error in [

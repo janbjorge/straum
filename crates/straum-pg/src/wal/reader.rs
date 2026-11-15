@@ -5,10 +5,7 @@ use std::ops::Range;
 use super::record::{
     RECORD_CHECKSUM, RECORD_HEADER, RECORD_LENGTH, Record, align, checksum, decode_into,
 };
-use super::{
-    CHECKSUM, CONTINUATION, LENGTH, OTHER_FORMAT, OVERWRITTEN, PAGE_ADDRESS, PAGE_FLAGS, PAGE_SIZE,
-    WalError, at, le_u16, le_u32, le_u64,
-};
+use super::{PAGE_SIZE, Problem, WalError, at, le_u16, le_u32, le_u64};
 
 /// `SizeOfXLogShortPHD`, `XLogPageHeaderData`: `xlp_magic`, `xlp_info`,
 /// `xlp_tli`, `xlp_pageaddr`, `xlp_rem_len`, padded to 8 bytes.
@@ -117,7 +114,7 @@ impl Records {
                 return Ok(None);
             };
             if self.next < page + header.length {
-                return Err(at(page, CONTINUATION));
+                return Err(at(page, Problem::Continuation));
             }
             self.unchecked = None;
         }
@@ -127,10 +124,10 @@ impl Records {
                 return Ok(None);
             };
             if header.flags & FIRST_IS_OVERWRITE != 0 {
-                return Err(at(position, OVERWRITTEN));
+                return Err(at(position, Problem::Overwritten));
             }
             if header.flags & FIRST_IS_CONTINUATION != 0 {
-                return Err(at(position, CONTINUATION));
+                return Err(at(position, Problem::Continuation));
             }
             position += header.length;
         }
@@ -146,17 +143,17 @@ impl Records {
             }
         };
         let Ok(total) = usize::try_from(total) else {
-            return Err(at(position, LENGTH));
+            return Err(at(position, Problem::Length));
         };
         if !(RECORD_HEADER..=MAX_RECORD).contains(&total) {
-            return Err(at(position, LENGTH));
+            return Err(at(position, Problem::Length));
         }
         let Some(end) = self.gather(position, total, bytes)? else {
             return Ok(None);
         };
         let stored = le_u32(&bytes[RECORD_CHECKSUM]);
         if stored != checksum(bytes) {
-            return Err(at(position, CHECKSUM));
+            return Err(at(position, Problem::Checksum));
         }
         Ok(Some((position, end)))
     }
@@ -176,15 +173,15 @@ impl Records {
         let address = le_u64(&short[PAGE_ADDRESS_FIELD]);
         let remaining = le_u32(&short[PAGE_REMAINING]);
         if address != page {
-            return Err(at(page, PAGE_ADDRESS));
+            return Err(at(page, Problem::PageAddress));
         }
         if flags & !ALL_PAGE_FLAGS != 0 {
-            return Err(at(page, PAGE_FLAGS));
+            return Err(at(page, Problem::PageFlags));
         }
         match self.magic {
             None => self.magic = Some(magic),
             Some(known) if known != magic => {
-                return Err(at(page, OTHER_FORMAT));
+                return Err(at(page, Problem::OtherFormat));
             }
             Some(_) => {}
         }
@@ -237,7 +234,7 @@ impl Records {
                 if header.flags & FIRST_IS_CONTINUATION == 0
                     || expected.is_some_and(|left| u64::from(header.remaining) != left)
                 {
-                    return Err(at(position, CONTINUATION));
+                    return Err(at(position, Problem::Continuation));
                 }
                 position += header.length;
             }
@@ -347,7 +344,7 @@ mod tests {
     fn refuses_a_flipped_byte() {
         let (mut wal, lsns) = one_record();
         wal[offset(lsns[0]) + 30] ^= 1;
-        assert_eq!(first_error(&wal, lsns[0]), at(lsns[0], CHECKSUM));
+        assert_eq!(first_error(&wal, lsns[0]), at(lsns[0], Problem::Checksum));
     }
 
     #[test]
@@ -357,7 +354,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: PAGE_ADDRESS,
+                problem: Problem::PageAddress,
                 ..
             }
         ));
@@ -370,7 +367,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: PAGE_FLAGS,
+                problem: Problem::PageFlags,
                 ..
             }
         ));
@@ -395,7 +392,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: OTHER_FORMAT,
+                problem: Problem::OtherFormat,
                 ..
             }
         ));
@@ -412,7 +409,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: CONTINUATION,
+                problem: Problem::Continuation,
                 ..
             }
         ));
@@ -421,7 +418,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: CONTINUATION,
+                problem: Problem::Continuation,
                 ..
             }
         ));
@@ -434,7 +431,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, SEGMENT),
             WalError::At {
-                problem: CONTINUATION,
+                problem: Problem::Continuation,
                 ..
             }
         ));
@@ -446,7 +443,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, SEGMENT + 8),
             WalError::At {
-                problem: CONTINUATION,
+                problem: Problem::Continuation,
                 ..
             }
         ));
@@ -459,7 +456,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, SEGMENT),
             WalError::At {
-                problem: OVERWRITTEN,
+                problem: Problem::Overwritten,
                 ..
             }
         ));
@@ -473,7 +470,7 @@ mod tests {
         assert!(matches!(
             first_error(&wal, lsns[0]),
             WalError::At {
-                problem: LENGTH,
+                problem: Problem::Length,
                 ..
             }
         ));
