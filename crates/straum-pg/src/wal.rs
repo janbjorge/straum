@@ -55,7 +55,7 @@ const MAX_RECORD: usize = 1020 * 1024 * 1024;
 const RECORD_ALIGNMENT: u64 = 8;
 /// The bits of `xl_info` its resource manager owns; the low four are
 /// `XLR_INFO_MASK`, the WAL insertion's own.
-const RESOURCE_MANAGER_INFO: u8 = 0xF0;
+pub(crate) const RESOURCE_MANAGER_INFO: u8 = 0xF0;
 /// `XLR_BLOCK_ID_ORIGIN` is followed by a `RepOriginId`, a `uint16`.
 const ORIGIN_SIZE: usize = 2;
 

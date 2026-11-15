@@ -3,14 +3,11 @@
 //! `ParseCommitRecord`, `ParseAbortRecord` in
 //! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
 
-use super::{Record, WalError, u32_at};
+use super::{RESOURCE_MANAGER_INFO, Record, WalError, u32_at};
 
 const RM_XACT: u8 = 1;
 const RM_STANDBY: u8 = 8;
 
-/// The bits of a record's info its resource manager owns; the low four
-/// are `XLR_INFO_MASK`, the WAL insertion's own.
-const RESOURCE_MANAGER_INFO: u8 = 0xF0;
 const XACT_OPERATION: u8 = 0x70;
 const XACT_HAS_INFO: u8 = 0x80;
 const XACT_COMMIT: u8 = 0x00;
