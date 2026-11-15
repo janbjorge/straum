@@ -305,15 +305,11 @@ impl Heap {
             },
             RM_HEAP2 => match operation {
                 HEAP2_MULTI_INSERT => edit.multi_insert()?,
-                HEAP2_PRUNE | HEAP2_VACUUM | HEAP2_PRUNE_CLEANUP if edit.heap.prune_freeze => {
-                    edit.prune_freeze()?;
-                }
-                HEAP2_PRUNE => edit.prune()?,
-                HEAP2_VACUUM => edit.vacuum()?,
+                HEAP2_PRUNE | HEAP2_VACUUM => edit.prune()?,
+                HEAP2_PRUNE_CLEANUP if edit.heap.prune_freeze => edit.prune()?,
                 _ => {}
             },
             RM_SMGR if operation & 0xF0 == SMGR_TRUNCATE => edit.truncate()?,
-            RM_XLOG | RM_SMGR => {}
             _ => {}
         }
         Ok(edit.changes)
@@ -514,65 +510,14 @@ impl<'a> Edit<'a> {
         Ok(())
     }
 
-    /// 16: rows pruned, as redirected from, dead and unused slots.
+    /// Pruning, vacuuming and freezing: the slots whose rows go. 16 logs
+    /// a prune's redirected, dead and unused slots, then a vacuum's
+    /// unused ones; 17 and later log freeze plans, then redirected, dead
+    /// and now unused slots, each list there only if its flag says so.
     fn prune(&mut self) -> Result<(), WalError> {
-        let main = self.main(8)?;
-        let redirected = usize::from(le_u16(&main[4..6]));
-        let dead = usize::from(le_u16(&main[6..8]));
-        let Some(block) = self.block(0)? else {
-            return Ok(());
-        };
-        if !self.redo(block) {
-            return Ok(());
-        }
-        let offnums: Vec<u16> = self
-            .record
-            .block_data(block)
-            .chunks(2)
-            .map(le_u16)
-            .collect();
-        if offnums.len() < 2 * redirected + dead {
-            return Err(self.short());
-        }
-        let page = self.page(block)?;
-        let from = offnums[..2 * redirected].iter().step_by(2);
-        for offnum in from.chain(&offnums[2 * redirected..]) {
-            page.remove(*offnum);
-        }
-        Ok(())
-    }
-
-    /// 16: dead slots made unused. Their rows went in the prune before.
-    fn vacuum(&mut self) -> Result<(), WalError> {
-        self.main(2)?;
-        let Some(block) = self.block(0)? else {
-            return Ok(());
-        };
-        if !self.redo(block) {
-            return Ok(());
-        }
-        let offnums: Vec<u16> = self
-            .record
-            .block_data(block)
-            .chunks(2)
-            .map(le_u16)
-            .collect();
-        let page = self.page(block)?;
-        for offnum in offnums {
-            page.remove(offnum);
-        }
-        Ok(())
-    }
-
-    /// 17 and later: freeze plans, then redirected, dead and now unused
-    /// slots, each list there only if its flag says so.
-    fn prune_freeze(&mut self) -> Result<(), WalError> {
-        let main = self.main(2)?;
-        let flags = if self.heap.prune_flags_first {
-            main[0]
-        } else {
-            main[1]
-        };
+        let operation = self.record.info & OPERATION;
+        let pruning_16 = !self.heap.prune_freeze && operation == HEAP2_PRUNE;
+        let main = self.main(if pruning_16 { 8 } else { 2 })?;
         let Some(block) = self.block(0)? else {
             return Ok(());
         };
@@ -580,30 +525,22 @@ impl<'a> Edit<'a> {
             return Ok(());
         }
         let data = self.record.block_data(block);
-        let mut at = 0;
-        let mut gone = Vec::new();
-        let count = |at: usize| data.get(at..at + 2).map(|n| usize::from(le_u16(n)));
-        if flags & PRUNE_HAS_FREEZE_PLANS != 0 {
-            let plans = count(at).ok_or_else(|| self.short())?;
-            // The plans follow at the alignment of their transaction ids.
-            at += 4 + FREEZE_PLAN * plans;
-        }
-        for (flag, width) in [
-            (PRUNE_HAS_REDIRECTIONS, 2),
-            (PRUNE_HAS_DEAD_ITEMS, 1),
-            (PRUNE_HAS_NOW_UNUSED_ITEMS, 1),
-        ] {
-            if flags & flag == 0 {
-                continue;
-            }
-            let items = count(at).ok_or_else(|| self.short())?;
-            at += 2;
-            let list = data
-                .get(at..at + 2 * width * items)
-                .ok_or_else(|| self.short())?;
-            gone.extend(list.chunks_exact(2 * width).map(le_u16));
-            at += list.len();
-        }
+        let gone = if self.heap.prune_freeze {
+            let flags = main[usize::from(!self.heap.prune_flags_first)];
+            prune_freeze_slots(data, flags)
+        } else if pruning_16 {
+            let redirected = 2 * usize::from(le_u16(&main[4..6]));
+            let dead = usize::from(le_u16(&main[6..8]));
+            let all: Vec<u16> = slots(data).collect();
+            // Of a redirect, the slot it points from goes.
+            (all.len() >= redirected + dead).then(|| {
+                let from = all[..redirected].iter().step_by(2);
+                from.chain(&all[redirected..]).copied().collect()
+            })
+        } else {
+            Some(slots(data).collect())
+        };
+        let gone = gone.ok_or_else(|| self.short())?;
         let page = self.page(block)?;
         for offnum in gone {
             page.remove(offnum);
@@ -625,6 +562,37 @@ impl<'a> Edit<'a> {
         }
         Ok(())
     }
+}
+
+fn slots(bytes: &[u8]) -> impl Iterator<Item = u16> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|n| u16::from_le_bytes(*n))
+}
+
+/// 17 and later: the slots a prune record's lists name. The freeze
+/// plans come first, at the alignment of their transaction ids.
+fn prune_freeze_slots(data: &[u8], flags: u8) -> Option<Vec<u16>> {
+    let count = |at: usize| data.get(at..at + 2).map(|n| usize::from(le_u16(n)));
+    let mut at = 0;
+    if flags & PRUNE_HAS_FREEZE_PLANS != 0 {
+        at += 4 + FREEZE_PLAN * count(at)?;
+    }
+    let mut gone = Vec::new();
+    for (flag, width) in [
+        (PRUNE_HAS_REDIRECTIONS, 2),
+        (PRUNE_HAS_DEAD_ITEMS, 1),
+        (PRUNE_HAS_NOW_UNUSED_ITEMS, 1),
+    ] {
+        if flags & flag != 0 {
+            let list = data.get(at + 2..at + 2 + 2 * width * count(at)?)?;
+            gone.extend(list.chunks_exact(2 * width).map(le_u16));
+            at += 2 + list.len();
+        }
+    }
+    Some(gone)
 }
 
 /// `xl_heap_header` then the tuple from its null bitmap on.
