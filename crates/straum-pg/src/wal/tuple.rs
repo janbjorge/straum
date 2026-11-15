@@ -265,18 +265,11 @@ fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wal::test_support::{attribute, short_varlena};
 
     const INT: Kind = Kind::Read(ColumnType::Int);
     const TEXT: Kind = Kind::Read(ColumnType::Text);
     const TIME: Kind = Kind::Read(ColumnType::Time { zoned: true });
-
-    fn attribute(length: i16, align: usize, kind: Kind) -> Attribute {
-        Attribute {
-            length,
-            align,
-            kind,
-        }
-    }
 
     /// A row of `columns`, nulls where `None`, as `heap_form_tuple` lays
     /// it out with a 24-byte header.
@@ -306,12 +299,6 @@ mod tests {
             hoff: u8::try_from(hoff).unwrap(),
             body: body.into(),
         }
-    }
-
-    fn short_varlena(text: &str) -> Vec<u8> {
-        let mut bytes = vec![u8::try_from((text.len() + 1) << 1 | 1).unwrap()];
-        bytes.extend_from_slice(text.as_bytes());
-        bytes
     }
 
     fn long_varlena(payload: &[u8]) -> Vec<u8> {

@@ -219,23 +219,10 @@ mod tests {
     use crate::catalog::Checked;
     use crate::pgoutput::RelationColumn;
     use crate::value::{INT4, INT8, TEXT};
+    use crate::wal::test_support::{FILE, attribute, short_varlena as short};
     use crate::wal::tuple::Kind;
 
     const INT: Kind = Kind::Read(ColumnType::Int);
-
-    const FILE: RelationFile = RelationFile {
-        tablespace: 1663,
-        database: 5,
-        relation: 16_384,
-    };
-
-    fn attribute(length: i16, align: usize, kind: Kind) -> Attribute {
-        Attribute {
-            length,
-            align,
-            kind,
-        }
-    }
 
     fn column(name: &str, type_oid: u32) -> RelationColumn {
         RelationColumn {
@@ -298,12 +285,6 @@ mod tests {
             hoff: 24,
             body: body.into(),
         }
-    }
-
-    fn short(text: &str) -> Vec<u8> {
-        let mut bytes = vec![u8::try_from((text.len() + 1) << 1 | 1).unwrap()];
-        bytes.extend(text.as_bytes());
-        bytes
     }
 
     fn committed(changes: Vec<HeapChange>) -> Committed {

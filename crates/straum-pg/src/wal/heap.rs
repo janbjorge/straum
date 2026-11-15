@@ -780,13 +780,8 @@ fn page_from_image(bytes: &[u8]) -> Option<Page> {
 mod tests {
     use super::*;
     use crate::wal::test_support::decode;
-    use crate::wal::test_support::{BlockSpec, ImageSpec, Spec, assemble};
+    use crate::wal::test_support::{BlockSpec, FILE, ImageSpec, Spec, assemble};
 
-    const FILE: RelationFile = RelationFile {
-        tablespace: 1663,
-        database: 5,
-        relation: 16_384,
-    };
     const OTHER: RelationFile = RelationFile {
         tablespace: 1663,
         database: 5,

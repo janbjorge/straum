@@ -2,6 +2,7 @@
 
 use super::reader::*;
 use super::record::*;
+use super::tuple::{Attribute, Kind};
 use super::*;
 
 pub(crate) const SEGMENT: u64 = 64 * 1024;
@@ -27,6 +28,11 @@ impl Rng {
         T::try_from(self.below(limit)).unwrap()
     }
 
+    /// A number below `limit`, for a length or an index.
+    pub(crate) fn below_usize(&mut self, limit: usize) -> usize {
+        usize::try_from(self.below(limit as u64)).unwrap()
+    }
+
     pub(crate) fn bytes(&mut self, length: usize) -> Vec<u8> {
         (0..length).map(|_| self.below_as(256)).collect()
     }
@@ -35,6 +41,30 @@ impl Rng {
         let length = least + self.below(more);
         self.bytes(usize::try_from(length).unwrap())
     }
+}
+
+/// The relation file of the table most tests change.
+pub(crate) const FILE: RelationFile = RelationFile {
+    tablespace: 1663,
+    database: 5,
+    relation: 16_384,
+};
+
+/// An attribute of `length` bytes, aligned to `align`, read as `kind`.
+pub(crate) fn attribute(length: i16, align: usize, kind: Kind) -> Attribute {
+    Attribute {
+        length,
+        align,
+        kind,
+    }
+}
+
+/// `text` as a varlena with a one-byte header, as a short value lies
+/// in a row.
+pub(crate) fn short_varlena(text: &str) -> Vec<u8> {
+    let mut bytes = vec![u8::try_from((text.len() + 1) << 1 | 1).unwrap()];
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
 }
 
 /// Where `lsn` lies in WAL laid out from `SEGMENT`.

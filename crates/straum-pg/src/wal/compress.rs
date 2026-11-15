@@ -110,37 +110,21 @@ fn copy_back(out: &mut Vec<u8>, offset: usize, length: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A splitmix generator, so failures replay.
-    struct Rng(u64);
-
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut mixed = self.0;
-            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            mixed ^ (mixed >> 31)
-        }
-
-        fn below(&mut self, limit: usize) -> usize {
-            usize::try_from(self.next() % limit as u64).unwrap()
-        }
-    }
+    use crate::wal::test_support::Rng;
 
     /// Data with repeats near and far, like a page of tuples.
     fn page_like(rng: &mut Rng, size: usize) -> Vec<u8> {
         let mut data = Vec::with_capacity(size);
         while data.len() < size {
-            if data.len() > 4 && rng.below(2) == 0 {
-                let back = 1 + rng.below(data.len().min(4000));
-                let length = 1 + rng.below(300);
+            if data.len() > 4 && rng.below_usize(2) == 0 {
+                let back = 1 + rng.below_usize(data.len().min(4000));
+                let length = 1 + rng.below_usize(300);
                 for _ in 0..length {
                     data.push(data[data.len() - back]);
                 }
             } else {
-                for _ in 0..rng.below(20) {
-                    data.push(u8::try_from(rng.below(8)).unwrap());
+                for _ in 0..rng.below_usize(20) {
+                    data.push(u8::try_from(rng.below_usize(8)).unwrap());
                 }
             }
         }
@@ -262,7 +246,7 @@ mod tests {
     fn decompresses_what_was_compressed() {
         for seed in 0..40 {
             let mut rng = Rng(seed);
-            let size = 1 + rng.below(8192);
+            let size = 1 + rng.below_usize(8192);
             let data = page_like(&mut rng, size);
             assert_eq!(
                 pglz(&pglz_compress(&data), size),
