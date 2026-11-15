@@ -4,8 +4,8 @@
 //! HTTP) depend on this crate, never the other way round.
 //!
 //! Read `spec.rs` first (the views, as data), then `ask.rs` (what an ask
-//! may say), then `store.rs` (where rows land and asks read), which keeps
-//! a `rollup.rs` per view (its cells, by bucket) and a `projection.rs` per
+//! may say), then `store/` (where rows land and asks read), which keeps a
+//! `rollup/` per view (its cells, by bucket) and a `projection.rs` per
 //! dim. `aggregate.rs` merges cells into answers; the other files are the
 //! compact columns and maps the cells are kept in.
 
