@@ -22,7 +22,7 @@ use crate::value::system_time;
 /// A table the physical stream reads: its file, as pgoutput announces
 /// it, and how its rows lie on its pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Table {
+pub(crate) struct Layout {
     pub(crate) file: RelationFile,
     /// Its id is the table's OID, as pgoutput's is; its columns leave out
     /// dropped ones, as pgoutput's do.
@@ -40,12 +40,12 @@ pub(crate) struct Table {
 /// their columns have, by `pg_enum` OID, which is what a row stores.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Layouts {
-    pub(crate) tables: Vec<Table>,
+    pub(crate) tables: Vec<Layout>,
     pub(crate) labels: HashMap<u32, String>,
 }
 
 pub(crate) struct Publisher {
-    tables: FastMap<RelationFile, Table>,
+    tables: FastMap<RelationFile, Layout>,
     /// Enum labels by `pg_enum` OID.
     labels: HashMap<u32, String>,
     /// Tables whose `Relation` the decoder has.
@@ -175,14 +175,14 @@ impl Publisher {
 
 /// Whether `message` invalidates `table`: relation 0 is every table of
 /// its database.
-fn invalidates(message: Invalidated, table: &Table) -> bool {
+fn invalidates(message: Invalidated, table: &Layout) -> bool {
     message.database == table.file.database
         && (message.relation == table.relation.id || message.relation == 0)
 }
 
 /// The relation's columns of `tuple`, as a message holds them.
 fn fields(
-    table: &Table,
+    table: &Layout,
     tuple: &HeapTuple,
     labels: &HashMap<u32, String>,
     lsn: u64,
@@ -247,8 +247,8 @@ mod tests {
 
     /// `public.zones`: `id int4`, a dropped `int4`, `name text`, `p
     /// point`, and `late int4`, added after the rows written here.
-    fn table() -> Table {
-        Table {
+    fn table() -> Layout {
+        Layout {
             file: FILE,
             relation: Relation {
                 id: 77,
@@ -324,7 +324,7 @@ mod tests {
         }
     }
 
-    fn layouts(tables: Vec<Table>) -> Layouts {
+    fn layouts(tables: Vec<Layout>) -> Layouts {
         Layouts {
             tables,
             labels: HashMap::new(),
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn a_table_rewritten_or_dropped_is_unfit() {
-        let rewritten = Table {
+        let rewritten = Layout {
             file: RelationFile {
                 relation: 16_999,
                 ..FILE

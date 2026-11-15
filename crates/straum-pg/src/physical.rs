@@ -18,7 +18,7 @@ use crate::pgoutput::{Relation, RelationColumn};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::POLL;
 use crate::value::{read, type_of};
-use crate::wal::messages::{Layouts, Table};
+use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
@@ -234,7 +234,7 @@ pub(crate) fn read_layouts(conn: &mut Connection, checked: &[Checked]) -> Result
          WHERE (n.nspname, c.relname) IN ({names})
          ORDER BY c.oid, a.attnum"
     ))?;
-    let mut tables: Vec<Table> = Vec::new();
+    let mut tables: Vec<Layout> = Vec::new();
     for row in &rows {
         let attribute = AttributeRow::parse(row)?;
         let is_next_table = tables
@@ -308,8 +308,8 @@ impl<'a> AttributeRow<'a> {
     }
 
     /// The attribute's table, with no attributes yet.
-    fn empty_table(&self) -> Table {
-        Table {
+    fn empty_table(&self) -> Layout {
+        Layout {
             file: self.file,
             relation: Relation {
                 id: self.table_oid,
@@ -325,7 +325,7 @@ impl<'a> AttributeRow<'a> {
 }
 
 /// Adds `attribute` to `table`, and its column unless it was dropped.
-fn push_attribute(table: &mut Table, attribute: &AttributeRow) -> Result<(), Error> {
+fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Error> {
     // As the decoder reads the column: an enum as its label's text.
     let kind = match type_of(attribute.type_oid, attribute.typmod) {
         _ if attribute.dropped => Kind::Other,

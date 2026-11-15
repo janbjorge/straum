@@ -33,7 +33,7 @@ use crate::stream::{Reader, Stream};
 use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, HeapTuple, PageId};
-use crate::wal::messages::{Layouts, Table};
+use crate::wal::messages::{Layout, Layouts};
 use crate::wal::transactions::{Committed, TransactionSnapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
@@ -2506,7 +2506,7 @@ fn datums_layouts(dsn: &Dsn) -> Layouts {
 /// The `SELECT` list of `table`'s live columns, named `names`, with a
 /// time as the binary load reads it: the text reader takes no year
 /// before 1 or past 9999.
-fn selected_as_read(table: &Table, names: &[&str]) -> String {
+fn selected_as_read(table: &Layout, names: &[&str]) -> String {
     let mut selected = Vec::new();
     for (&attribute, name) in table.columns.iter().zip(names) {
         selected.push(match table.attributes[attribute].kind {
@@ -2528,7 +2528,7 @@ struct Counts {
 /// Whether `ours`, read off the page for `attribute`, is what `theirs`,
 /// PostgreSQL's text, reads as.
 fn value_fits(
-    table: &Table,
+    table: &Layout,
     attribute: usize,
     ours: &row_values::Value,
     theirs: Option<&str>,

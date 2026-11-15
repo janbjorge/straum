@@ -212,7 +212,7 @@ mod tests {
 
     use super::*;
     use crate::pgoutput::{Relation, RelationColumn};
-    use crate::wal::messages::Table;
+    use crate::wal::messages::Layout;
     use crate::wal::tests::{BlockSpec, Spec, assemble};
     use crate::wal::tuple::{Attribute, Kind};
     use crate::wal::{RelationFile, decode};
@@ -224,8 +224,8 @@ mod tests {
     };
 
     /// `public.t (id int4)`, read by the spec as `t`.
-    fn table() -> Table {
-        Table {
+    fn table() -> Layout {
+        Layout {
             file: FILE,
             relation: Relation {
                 id: 77,
