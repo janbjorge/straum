@@ -369,7 +369,7 @@ fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> (usize, usiz
                 clock = Instant::now();
                 phase += 1;
             }
-            let (images, rows) = each(&record);
+            let (images, rows) = each(record);
             let read = &mut reads[phase];
             read.records += 1;
             read.images += images;

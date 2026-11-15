@@ -72,10 +72,13 @@ pub(crate) struct Records {
     /// The page Straum starts in, when it starts past its header, which
     /// still wants checking.
     unchecked: Option<u64>,
+    /// The record last read, its buffers kept for the next: reading
+    /// allocates nothing once they have grown to the largest record.
+    record: Record,
 }
 
 /// One WAL record. Owns its bytes, since a record split across pages has
-/// to be put back together anyway.
+/// to be put back together anyway; `Records` lends out the one it reuses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Record {
     pub(crate) lsn: u64,
@@ -172,6 +175,17 @@ impl Records {
             next: start,
             magic: None,
             unchecked: (!start.is_multiple_of(PAGE_SIZE)).then_some(page_start(start)),
+            record: Record {
+                lsn: 0,
+                end: 0,
+                xid: 0,
+                resource_manager: 0,
+                info: 0,
+                toplevel_xid: None,
+                blocks: Vec::new(),
+                main: 0..0,
+                bytes: Vec::new(),
+            },
         }
     }
 
@@ -199,7 +213,25 @@ impl Records {
     }
 
     /// The next whole record, or `None` until more bytes come.
-    pub(crate) fn next_record(&mut self) -> Result<Option<Record>, WalError> {
+    pub(crate) fn next_record(&mut self) -> Result<Option<&Record>, WalError> {
+        let mut bytes = std::mem::take(&mut self.record.bytes);
+        let read = self.read(&mut bytes);
+        self.record.bytes = bytes;
+        let Some((position, end)) = read? else {
+            return Ok(None);
+        };
+        decode_into(position, end, &mut self.record)?;
+        self.next = if self.record.is_switch() {
+            end.div_ceil(self.segment_size) * self.segment_size
+        } else {
+            align(end)
+        };
+        Ok(Some(&self.record))
+    }
+
+    /// The next whole record's bytes into `bytes`, checked: where it
+    /// starts and ends.
+    fn read(&mut self, bytes: &mut Vec<u8>) -> Result<Option<(u64, u64)>, WalError> {
         if let Some(page) = self.unchecked {
             let Some(header) = self.page_header(page)? else {
                 return Ok(None);
@@ -227,30 +259,23 @@ impl Records {
                 le_u32(&head[0..4])
             }
             _ => {
-                let Some((head, _)) = self.gather(position, RECORD_HEADER)? else {
+                if self.gather(position, RECORD_HEADER, bytes)?.is_none() {
                     return Ok(None);
-                };
-                le_u32(&head[0..4])
+                }
+                le_u32(&bytes[0..4])
             }
         };
         if !(RECORD_HEADER as u32..=MAX_RECORD).contains(&total) {
             return Err(at(position, LENGTH));
         }
-        let Some((bytes, end)) = self.gather(position, total as usize)? else {
+        let Some(end) = self.gather(position, total as usize, bytes)? else {
             return Ok(None);
         };
         let stored = le_u32(&bytes[20..24]);
-        let computed = checksum(&bytes);
-        if stored != computed {
+        if stored != checksum(bytes) {
             return Err(at(position, CHECKSUM));
         }
-        let record = decode(position, end, bytes)?;
-        self.next = if record.is_switch() {
-            end.div_ceil(self.segment_size) * self.segment_size
-        } else {
-            align(end)
-        };
-        Ok(Some(record))
+        Ok(Some((position, end)))
     }
 
     fn slice(&self, at: u64, length: u64) -> Option<&[u8]> {
@@ -304,10 +329,15 @@ impl Records {
         }))
     }
 
-    /// `length` bytes of the record at `start`, without the page headers it
-    /// runs across, and where they end.
-    fn gather(&mut self, start: u64, length: usize) -> Result<Option<(Vec<u8>, u64)>, WalError> {
-        let mut out = Vec::with_capacity(length);
+    /// `length` bytes of the record at `start` into `out`, without the page
+    /// headers it runs across: where they end.
+    fn gather(
+        &mut self,
+        start: u64,
+        length: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<Option<u64>, WalError> {
+        out.clear();
         let mut position = start;
         while out.len() < length {
             if position.is_multiple_of(PAGE_SIZE) {
@@ -336,7 +366,7 @@ impl Records {
             out.extend_from_slice(bytes);
             position += take;
         }
-        Ok(Some((out, position)))
+        Ok(Some(position))
     }
 }
 
@@ -346,13 +376,24 @@ struct PageHeader {
     length: u64,
 }
 
+#[cfg(test)]
 fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
+    let mut record = Records::new(lsn, PAGE_SIZE).record;
+    record.bytes = bytes;
+    decode_into(lsn, end, &mut record)?;
+    Ok(record)
+}
+
+/// Reads `record`'s bytes into the rest of it.
+fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(), WalError> {
     let short = at(lsn, BLOCKS);
+    let bytes = &record.bytes;
+    let blocks = &mut record.blocks;
+    blocks.clear();
     let mut r = Cursor {
-        bytes: &bytes,
+        bytes,
         at: RECORD_HEADER,
     };
-    let mut blocks: Vec<Block> = Vec::new();
     let mut toplevel_xid = None;
     let mut main_length = 0usize;
     let mut payload = 0usize;
@@ -450,7 +491,7 @@ fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
     }
     // Payloads follow the headers in block order: image, then data.
     let mut offset = r.at;
-    for block in &mut blocks {
+    for block in blocks.iter_mut() {
         if let Some(image) = &mut block.image {
             image.bytes = offset..offset + image.bytes.len();
             offset = image.bytes.end;
@@ -458,17 +499,14 @@ fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
         block.data = offset..offset + block.data.len();
         offset = block.data.end;
     }
-    Ok(Record {
-        lsn,
-        end,
-        xid: le_u32(&bytes[4..8]),
-        info: bytes[16],
-        resource_manager: bytes[17],
-        toplevel_xid,
-        blocks,
-        main: offset..offset + main_length,
-        bytes,
-    })
+    record.xid = le_u32(&bytes[4..8]);
+    record.info = bytes[16];
+    record.resource_manager = bytes[17];
+    record.lsn = lsn;
+    record.end = end;
+    record.toplevel_xid = toplevel_xid;
+    record.main = offset..offset + main_length;
+    Ok(())
 }
 
 struct Cursor<'a> {
@@ -931,7 +969,7 @@ pub(crate) mod tests {
             records.feed(records.wanted(), &wal[at..at + take])?;
             at += take;
             while let Some(record) = records.next_record()? {
-                out.push(record);
+                out.push(record.clone());
             }
         }
         Ok(out)
@@ -991,7 +1029,7 @@ pub(crate) mod tests {
         records
             .feed(records.wanted(), &wal[wal.len() - 1..])
             .unwrap();
-        check(&records.next_record().unwrap().unwrap(), &spec, lsns[0]);
+        check(records.next_record().unwrap().unwrap(), &spec, lsns[0]);
         assert_eq!(records.next_record(), Ok(None));
     }
 

@@ -115,7 +115,7 @@ impl Physical {
         use crate::wire::server_error;
         loop {
             if let Some(record) = self.records.next_record()? {
-                return Ok(Some(record));
+                return Ok(Some(record.clone()));
             }
             match self.conn.try_read()? {
                 None => return Ok(None),
@@ -180,7 +180,7 @@ impl Replay {
         while let Some(record) = self.records.next_record()? {
             let (catalog, checked) = (&mut self.catalog, &self.checked);
             let layouts = || tables(catalog, checked).map(|(tables, _)| tables);
-            commits.extend(self.pipeline.record(&record, layouts)?);
+            commits.extend(self.pipeline.record(record, layouts)?);
             self.read = record.next();
         }
         Ok(commits)

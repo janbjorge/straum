@@ -238,16 +238,16 @@ thread, PostgreSQL 18:
 
 | Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| copy | 128.1 MiB | 1,044,746 | 12 | 2.2 s | 1,192 MiB/s | 167 MiB/s | 1,304,911 | 2.8x |
-| insert | 173.3 MiB | 2,033,148 | 3 | 1.5 s | 832 MiB/s | 164 MiB/s | 945,430 | 1.5x |
-| update | 356.9 MiB | 3,008,775 | 13,447 | 3.6 s | 1,039 MiB/s | 187 MiB/s | 523,927 | 1.9x |
-| delete | 137.7 MiB | 1,010,911 | 10,712 | 912.1 ms | 1,275 MiB/s | 159 MiB/s | 1,157,659 | 1.1x |
-| all | 795.9 MiB | | | 8.2 s | 1,038 MiB/s | 173 MiB/s | 870,222 | 1.8x |
+| copy | 128.1 MiB | 1,044,746 | 12 | 2.1 s | 2,202 MiB/s | 172 MiB/s | 1,340,971 | 2.9x |
+| insert | 173.3 MiB | 2,033,148 | 3 | 1.5 s | 1,681 MiB/s | 182 MiB/s | 1,048,652 | 1.6x |
+| update | 356.9 MiB | 3,008,774 | 13,447 | 3.3 s | 1,899 MiB/s | 205 MiB/s | 574,454 | 1.9x |
+| delete | 137.7 MiB | 1,010,912 | 10,712 | 767.0 ms | 2,278 MiB/s | 169 MiB/s | 1,230,601 | 0.9x |
+| all | 795.9 MiB | | | 7.7 s | 1,943 MiB/s | 187 MiB/s | 940,573 | 1.8x |
 
 "Against PostgreSQL" divides the time PostgreSQL took to write a
-phase's WAL by the time the pipeline took to read it. Below 1x, a
-writer that keeps that pace for long leaves Straum behind, and once the
-lag passes `--max-lag`, `/readyz` turns off. The deletes come closest.
+phase's WAL by the time the pipeline took to read it. Below 1x, as for
+the deletes, a writer that keeps that pace for long leaves Straum
+behind, and once the lag passes `--max-lag`, `/readyz` turns off.
 Images are the full-page images: the first change to a page after the
 checkpoint brings one. The pipeline held at most 481.5 MiB of rows, most of them
 the open `COPY` transactions' rows, which wait for their commit.
