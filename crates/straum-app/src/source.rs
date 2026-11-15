@@ -95,7 +95,7 @@ pub enum Change {
     /// The table changed shape, so rows already read may no longer read the
     /// same; a column's type changed, for example. Also a change the source
     /// can't read whole: an update or delete without the old row, or one
-    /// that left out an unchanged TOASTed value with no old row to take it
+    /// that left out an unchanged `TOASTed` value with no old row to take it
     /// from.
     Unfit {
         table: Identifier,

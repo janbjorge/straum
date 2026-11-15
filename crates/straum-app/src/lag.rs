@@ -76,40 +76,40 @@ mod tests {
         }
     }
 
-    fn secs(n: u64) -> Duration {
-        Duration::from_secs(n)
+    fn secs(seconds: u64) -> Duration {
+        Duration::from_secs(seconds)
     }
 
     #[test]
     fn behind_since_last_caught_up() {
-        let t = Instant::now();
-        let mut lag = Lag::new(t);
-        assert_eq!(lag.behind(t + secs(5)), secs(0), "nothing read yet");
+        let start = Instant::now();
+        let mut lag = Lag::new(start);
+        assert_eq!(lag.behind(start + secs(5)), secs(0), "nothing read yet");
 
-        lag.read(&wal(10, 10), t + secs(1));
-        assert_eq!(lag.behind(t + secs(9)), secs(0));
-        lag.read(&wal(20, 10), t + secs(2));
-        assert_eq!(lag.behind(t + secs(9)), secs(8));
+        lag.read(&wal(10, 10), start + secs(1));
+        assert_eq!(lag.behind(start + secs(9)), secs(0));
+        lag.read(&wal(20, 10), start + secs(2));
+        assert_eq!(lag.behind(start + secs(9)), secs(8));
         // Confirming part of the WAL moves the bound to the reading it
         // covers.
-        lag.read(&wal(30, 20), t + secs(3));
-        assert_eq!(lag.behind(t + secs(9)), secs(7));
-        lag.read(&wal(30, 25), t + secs(4));
-        assert_eq!(lag.behind(t + secs(9)), secs(7));
-        lag.read(&wal(30, 30), t + secs(5));
-        assert_eq!(lag.behind(t + secs(9)), secs(0));
+        lag.read(&wal(30, 20), start + secs(3));
+        assert_eq!(lag.behind(start + secs(9)), secs(7));
+        lag.read(&wal(30, 25), start + secs(4));
+        assert_eq!(lag.behind(start + secs(9)), secs(7));
+        lag.read(&wal(30, 30), start + secs(5));
+        assert_eq!(lag.behind(start + secs(9)), secs(0));
         // A clock read before the bound reads as no time.
-        lag.read(&wal(40, 30), t + secs(6));
-        assert_eq!(lag.behind(t), secs(0));
+        lag.read(&wal(40, 30), start + secs(6));
+        assert_eq!(lag.behind(start), secs(0));
     }
 
     #[test]
     fn the_first_reading_counts_from_the_start() {
         // WAL written while the tables loaded is as old as the load.
-        let t = Instant::now();
-        let mut lag = Lag::new(t);
-        lag.read(&wal(50, 10), t + secs(40));
-        assert_eq!(lag.behind(t + secs(41)), secs(41));
+        let start = Instant::now();
+        let mut lag = Lag::new(start);
+        lag.read(&wal(50, 10), start + secs(40));
+        assert_eq!(lag.behind(start + secs(41)), secs(41));
     }
 
     /// Every reading kept. The WAL the slot hasn't confirmed was written
@@ -129,7 +129,7 @@ mod tests {
                 return Duration::ZERO;
             }
             let since = (self.readings.iter().rev())
-                .find(|(_, w)| w.written <= confirmed)
+                .find(|(_, wal)| wal.written <= confirmed)
                 .map_or(self.start, |(at, _)| *at);
             now.saturating_duration_since(since)
         }
@@ -139,12 +139,12 @@ mod tests {
     struct Rng(u64);
 
     impl Rng {
-        fn below(&mut self, n: u64) -> u64 {
+        fn below(&mut self, bound: u64) -> u64 {
             self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            (z ^ (z >> 31)) % n
+            let mut bits = self.0;
+            bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (bits ^ (bits >> 31)) % bound
         }
     }
 
@@ -183,9 +183,9 @@ mod tests {
             readings: Vec::new(),
         };
         let total = READINGS as u64 + 500;
-        for i in 1..=total {
-            let reading = wal(100 + i, 100);
-            let at = start + secs(i);
+        for second in 1..=total {
+            let reading = wal(100 + second, 100);
+            let at = start + secs(second);
             lag.read(&reading, at);
             naive.readings.push((at, reading));
         }

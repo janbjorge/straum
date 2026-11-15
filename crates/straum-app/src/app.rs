@@ -31,6 +31,8 @@ const STARTED: &str = "the writer applies commits only to a started stream";
 /// The lag can look up to this much longer than it is.
 const WAL_EVERY: Duration = Duration::from_secs(1);
 
+const BYTES_PER_MIB: u32 = 1 << 20;
+
 /// How far behind the server Straum may fall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -232,14 +234,14 @@ impl App {
     pub fn status(&self) -> Status {
         let state = self.read();
         let following = state.following.as_ref();
-        let lag = following.map(|f| f.lag.behind(Instant::now()));
+        let lag = following.map(|following| following.lag.behind(Instant::now()));
         Status {
             ready: lag.is_some_and(|lag| lag <= self.limits.max_lag),
-            applied: following.map(|f| f.applied),
-            committed: following.and_then(|f| f.committed),
+            applied: following.map(|following| following.applied),
+            committed: following.and_then(|following| following.committed),
             as_of: following.map(Following::as_of),
             lag,
-            wal: following.map(|f| f.wal),
+            wal: following.map(|following| following.wal),
             limits: self.limits,
             last_failure: state.last_failure.clone(),
             starts: state.starts,
@@ -269,7 +271,11 @@ impl App {
                             column_type: store.key_type(name, key).expect(IN_SPEC),
                         })
                         .collect(),
-                    measures: fact.measures.iter().map(|m| m.name.clone()).collect(),
+                    measures: fact
+                        .measures
+                        .iter()
+                        .map(|measure| measure.name.clone())
+                        .collect(),
                     cells: store.cells(name).expect(IN_SPEC),
                     bound_cells: store.bound_cells(name),
                     range: store.range(name),
@@ -295,7 +301,11 @@ impl App {
         let range = (state.store.range(view)).unwrap_or(0..i64::from(fact.time.width.seconds));
         Some(Ask {
             view: fact.name.clone(),
-            measures: fact.measures.iter().map(|m| m.name.clone()).collect(),
+            measures: fact
+                .measures
+                .iter()
+                .map(|measure| measure.name.clone())
+                .collect(),
             keys: iter::once(AskKey::Bucket)
                 .chain(fact.keys().cloned().map(AskKey::Key))
                 .collect(),
@@ -314,8 +324,8 @@ impl App {
     }
 }
 
-fn spill_error(e: impl fmt::Display) -> AnswerError {
-    AnswerError::Spill(e.to_string())
+fn spill_error(error: impl fmt::Display) -> AnswerError {
+    AnswerError::Spill(error.to_string())
 }
 
 impl Following {
@@ -403,12 +413,12 @@ impl<S: Source> Writer<S> {
         } else {
             self.start().map(Step::Started)
         };
-        if let Err(e) = &step {
+        if let Err(error) = &step {
             let mut state = self.app.write();
             state.following = None;
             state.last_failure = Some(Failure {
                 at: SystemTime::now(),
-                error: e.to_string(),
+                error: error.to_string(),
             });
             state.failures += 1;
         }
@@ -605,30 +615,30 @@ pub enum Error {
 }
 
 impl From<SealedError> for Error {
-    fn from(e: SealedError) -> Error {
-        Error::Sealed(e)
+    fn from(error: SealedError) -> Error {
+        Error::Sealed(error)
     }
 }
 
 impl From<SourceError> for Error {
-    fn from(e: SourceError) -> Error {
-        Error::Source(e)
+    fn from(error: SourceError) -> Error {
+        Error::Source(error)
     }
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Source(e) => write!(f, "{e}"),
-            Error::Unfit(table) => write!(f, "a change no longer fits {table}"),
+            Error::Source(error) => write!(formatter, "{error}"),
+            Error::Unfit(table) => write!(formatter, "a change no longer fits {table}"),
             Error::Retained { retained, limit } => write!(
-                f,
+                formatter,
                 "PostgreSQL holds {} of WAL for Straum's slot, past the limit of {}",
                 mib(*retained),
                 mib(*limit)
             ),
-            Error::Spill(e) => write!(f, "spill: {e}"),
-            Error::Sealed(e) => write!(f, "{e}"),
+            Error::Spill(error) => write!(formatter, "spill: {error}"),
+            Error::Sealed(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -636,8 +646,12 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes as mebibytes, for messages.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "f64 is exact up to 2^53 bytes, and the message shows one decimal"
+)]
 pub fn mib(bytes: u64) -> String {
-    format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
+    format!("{:.1} MiB", bytes as f64 / f64::from(BYTES_PER_MIB))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,16 +664,18 @@ pub enum AnswerError {
 }
 
 impl fmt::Display for AnswerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AnswerError::NotReady => f.write_str("not ready"),
-            AnswerError::Spill(e) => write!(f, "reading a sealed bucket failed: {e}"),
+            AnswerError::NotReady => formatter.write_str("not ready"),
+            AnswerError::Spill(error) => {
+                write!(formatter, "reading a sealed bucket failed: {error}")
+            }
             AnswerError::Invalid(errors) => {
-                for (i, e) in errors.iter().enumerate() {
-                    if i > 0 {
-                        writeln!(f)?;
+                for (index, error) in errors.iter().enumerate() {
+                    if index > 0 {
+                        writeln!(formatter)?;
                     }
-                    write!(f, "{e}")?;
+                    write!(formatter, "{error}")?;
                 }
                 Ok(())
             }
@@ -769,7 +785,10 @@ mod tests {
                     }],
                 })
                 .unwrap();
-            assert_eq!(state.following.as_ref().map(|f| f.applied), Some(Lsn(2)));
+            assert_eq!(
+                state.following.as_ref().map(|following| following.applied),
+                Some(Lsn(2))
+            );
         }
         let answered = app.ask(&count()).unwrap();
         assert_eq!(answered.applied, Lsn(2));

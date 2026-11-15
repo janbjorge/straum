@@ -50,7 +50,7 @@ fn fill(table: &Identifier, rows: &[Row], store: &mut Store) -> Result<(), RowEr
 struct Table {
     /// `REPLICA IDENTITY FULL`: updates and deletes send the whole old row.
     full: bool,
-    /// ByKey primary key. A dim row starts with its key.
+    /// By primary key. A dim row starts with its key.
     rows: BTreeMap<Datum, Row>,
 }
 
@@ -127,8 +127,8 @@ pub fn time(lsn: Lsn) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(lsn.0)
 }
 
-pub fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
+pub fn id(name: &str) -> Identifier {
+    Identifier::new(name).unwrap()
 }
 
 impl Database {
@@ -192,7 +192,9 @@ impl Database {
     /// Commits the writes and logs what pgoutput would send for them.
     pub fn commit(&mut self, writes: Vec<Write>) -> Lsn {
         let mut tables = self.history.values().next_back().unwrap().clone();
-        let changes = writes.into_iter().map(|w| write(&mut tables, w)).collect();
+        let changes = (writes.into_iter())
+            .map(|write| apply_write(&mut tables, write))
+            .collect();
         self.push(changes, tables)
     }
 
@@ -222,7 +224,7 @@ impl Database {
     }
 }
 
-fn write(tables: &mut Tables, write: Write) -> Change {
+fn apply_write(tables: &mut Tables, write: Write) -> Change {
     match write {
         Write::Insert { table, key, row } => {
             tables.get_mut(table).unwrap().rows.insert(key, row.clone());
@@ -237,10 +239,10 @@ fn write(tables: &mut Tables, write: Write) -> Change {
             new_key,
             row,
         } => {
-            let t = tables.get_mut(table).unwrap();
-            let before = t.rows.remove(&key).expect("updated row exists");
-            t.rows.insert(new_key, row.clone());
-            if t.full {
+            let held = tables.get_mut(table).unwrap();
+            let before = held.rows.remove(&key).expect("updated row exists");
+            held.rows.insert(new_key, row.clone());
+            if held.full {
                 Change::Update {
                     table: id(table),
                     old: before,
@@ -251,9 +253,9 @@ fn write(tables: &mut Tables, write: Write) -> Change {
             }
         }
         Write::Delete { table, key } => {
-            let t = tables.get_mut(table).unwrap();
-            let before = t.rows.remove(&key).expect("deleted row exists");
-            if t.full {
+            let held = tables.get_mut(table).unwrap();
+            let before = held.rows.remove(&key).expect("deleted row exists");
+            if held.full {
                 Change::Delete {
                     table: id(table),
                     old: before,

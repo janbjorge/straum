@@ -72,12 +72,12 @@ fn spec() -> Spec {
     straum_notation::parse(SPEC).unwrap()
 }
 
-fn int(v: i64) -> Datum {
-    Datum::Int(v)
+fn int(value: i64) -> Datum {
+    Datum::Int(value)
 }
 
-fn text(s: &str) -> Datum {
-    Datum::Text(s.into())
+fn text(value: &str) -> Datum {
+    Datum::Text(value.into())
 }
 
 fn setup(tables: &[(&'static str, bool)]) -> (Rc<RefCell<Database>>, Writer<Fake>) {
@@ -128,18 +128,18 @@ fn login(key: i64, zone: i64) -> Write {
 fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
         view: id(fact),
-        measures: measures.iter().map(|m| id(m)).collect(),
-        keys: by.iter().map(|k| ask_key(k)).collect(),
+        measures: measures.iter().map(|measure| id(measure)).collect(),
+        keys: by.iter().map(|key| ask_key(key)).collect(),
         filter: Vec::new(),
         from: 0,
         to: RANGE,
     }
 }
 
-fn ask_key(s: &str) -> AskKey {
-    match s {
+fn ask_key(name: &str) -> AskKey {
+    match name {
         "bucket" => AskKey::Bucket,
-        _ => AskKey::Key(id(s)),
+        _ => AskKey::Key(id(name)),
     }
 }
 
@@ -627,8 +627,10 @@ fn asks_wait_while_the_tables_load() {
     let log = Rc::clone(&seen);
     let app = App::new(spec(), LIMITS, None);
     let (db, mut writer) = watched(app, move |app, table| {
-        let count =
-            |fact| aside(app, ask(fact, &[fact], &[])).map(|a| a.answer.rows[0].values[0].clone());
+        let count = |fact| {
+            aside(app, ask(fact, &[fact], &[]))
+                .map(|answered| answered.answer.rows[0].values[0].clone())
+        };
         log.borrow_mut()
             .push((table.to_owned(), count("trips"), count("logins")));
     });
@@ -718,8 +720,8 @@ fn status_reports_what_straum_did() {
     // Answers say the same.
     let answered = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     let apart = match answered.as_of.duration_since(status.as_of.unwrap()) {
-        Ok(d) => d,
-        Err(e) => e.duration(),
+        Ok(later) => later,
+        Err(earlier) => earlier.duration(),
     };
     assert!(apart < Duration::from_millis(1), "{apart:?}");
     assert_eq!(status.lag, Some(Duration::ZERO));
@@ -890,7 +892,10 @@ fn a_change_that_does_not_fit_starts_over() {
         let lsn = db.borrow_mut().send(vec![change]);
 
         let err = writer.step().unwrap_err();
-        assert!(matches!(&err, Error::Unfit(t) if *t == table), "{name}");
+        assert!(
+            matches!(&err, Error::Unfit(unfit) if *unfit == table),
+            "{name}"
+        );
         assert!(!writer.app().status().ready, "{name}");
         assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
         assert_eq!(
@@ -1178,30 +1183,32 @@ struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
+        let mut bits = self.0;
+        bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        bits ^ (bits >> 31)
     }
 
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+    fn below(&mut self, bound: usize) -> usize {
+        let bound = u64::try_from(bound).expect("a usize fits a u64");
+        usize::try_from(self.next() % bound).expect("below a usize")
     }
 
     fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }
 
-    fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next() % (hi - lo) as u64) as i64
+    fn int(&mut self, low: i64, high: i64) -> i64 {
+        let span = u64::try_from(high - low).expect("low below high");
+        low + i64::try_from(self.next() % span).expect("below an i64 span")
     }
 
-    /// An integer in `lo..hi`, or null one time in ten.
-    fn maybe(&mut self, lo: i64, hi: i64) -> Datum {
+    /// An integer in `low..high`, or null one time in ten.
+    fn maybe(&mut self, low: i64, high: i64) -> Datum {
         if self.chance(10) {
             Datum::Null
         } else {
-            int(self.int(lo, hi))
+            int(self.int(low, high))
         }
     }
 
@@ -1235,104 +1242,69 @@ fn random_login(rng: &mut Rng) -> Row {
 
 /// One transaction's writes. `next_key` hands out fact keys.
 fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write> {
-    // Keys as the transaction goes, so no write misses its row.
-    let mut keys: BTreeMap<&'static str, BTreeSet<Datum>> = ["zones", "trips", "logins"]
-        .into_iter()
-        .map(|t| (t, db.keys(t).into_iter().collect()))
-        .collect();
-    let mut new_key = || {
-        *next_key += 1;
-        int(*next_key)
-    };
-    let existing = |keys: &BTreeMap<_, BTreeSet<Datum>>, table| -> Vec<Datum> {
-        keys[table].iter().cloned().collect()
-    };
+    let mut transaction = Transaction::new(db, next_key);
     let mut writes = Vec::new();
-    for _ in 0..1 + rng.below(4) {
+    for _ in 0..=rng.below(4) {
+        let Some(write) = transaction.random_write(rng) else {
+            continue;
+        };
+        transaction.record(&write);
+        writes.push(write);
+    }
+    writes
+}
+
+/// Keys as the transaction goes, so no write misses its row.
+struct Transaction<'a> {
+    keys: BTreeMap<&'static str, BTreeSet<Datum>>,
+    next_key: &'a mut i64,
+}
+
+impl<'a> Transaction<'a> {
+    fn new(db: &Database, next_key: &'a mut i64) -> Transaction<'a> {
+        let mut keys = BTreeMap::new();
+        for table in ["zones", "trips", "logins"] {
+            keys.insert(table, db.keys(table).into_iter().collect());
+        }
+        Transaction { keys, next_key }
+    }
+
+    fn new_key(&mut self) -> Datum {
+        *self.next_key += 1;
+        int(*self.next_key)
+    }
+
+    fn existing(&self, table: &str) -> Vec<Datum> {
+        self.keys[table].iter().cloned().collect()
+    }
+
+    /// `None` when the write it drew has no row to change.
+    fn random_write(&mut self, rng: &mut Rng) -> Option<Write> {
         let write = match rng.below(100) {
             0..40 => Write::Insert {
                 table: "trips",
-                key: new_key(),
+                key: self.new_key(),
                 row: random_trip(rng),
             },
-            40..55 => match rng.pick(&existing(&keys, "trips")) {
-                Some(key) => Write::Update {
-                    table: "trips",
-                    new_key: if rng.chance(20) {
-                        new_key()
-                    } else {
-                        key.clone()
-                    },
-                    key,
-                    row: random_trip(rng),
-                },
-                None => continue,
-            },
-            55..65 => match rng.pick(&existing(&keys, "trips")) {
-                Some(key) => Write::Delete {
-                    table: "trips",
-                    key,
-                },
-                None => continue,
+            40..55 => self.trip_update(rng)?,
+            55..65 => Write::Delete {
+                table: "trips",
+                key: rng.pick(&self.existing("trips"))?,
             },
             65..80 => Write::Insert {
                 table: "logins",
-                key: new_key(),
+                key: self.new_key(),
                 row: random_login(rng),
             },
             // Logins send no old rows; these make Straum start over.
-            80..84 => match rng.pick(&existing(&keys, "logins")) {
-                Some(key) if rng.chance(50) => Write::Delete {
-                    table: "logins",
-                    key,
-                },
-                Some(key) => Write::Update {
-                    table: "logins",
-                    new_key: key.clone(),
-                    key,
-                    row: random_login(rng),
-                },
-                None => continue,
-            },
+            80..84 => self.login_change(rng)?,
             84..87 => Write::Insert {
                 table: "audit",
-                key: new_key(),
+                key: self.new_key(),
                 row: vec![text("x")],
             },
             // The zones move: relabelled, moved to a new key, gone, back.
-            87..92 => {
-                let key = int(rng.int(1, 9));
-                let borough = text(rng.pick(&BOROUGHS).unwrap());
-                if keys["zones"].contains(&key) {
-                    if rng.chance(30) {
-                        Write::Delete {
-                            table: "zones",
-                            key,
-                        }
-                    } else {
-                        let new_key = if rng.chance(20) {
-                            int(rng.int(1, 9))
-                        } else {
-                            key.clone()
-                        };
-                        if new_key != key && keys["zones"].contains(&new_key) {
-                            continue;
-                        }
-                        Write::Update {
-                            table: "zones",
-                            row: vec![new_key.clone(), borough],
-                            key,
-                            new_key,
-                        }
-                    }
-                } else {
-                    Write::Insert {
-                        table: "zones",
-                        row: vec![key.clone(), borough],
-                        key,
-                    }
-                }
-            }
+            87..92 => self.zone_change(rng)?,
             92..95 => Write::Truncate {
                 table: rng.pick(&["trips", "logins"]).unwrap(),
             },
@@ -1340,11 +1312,78 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 table: rng.pick(&["zones", "trips", "logins"]).unwrap(),
             },
         };
-        match &write {
+        Some(write)
+    }
+
+    fn trip_update(&mut self, rng: &mut Rng) -> Option<Write> {
+        let key = rng.pick(&self.existing("trips"))?;
+        let new_key = if rng.chance(20) {
+            self.new_key()
+        } else {
+            key.clone()
+        };
+        Some(Write::Update {
+            table: "trips",
+            key,
+            new_key,
+            row: random_trip(rng),
+        })
+    }
+
+    fn login_change(&self, rng: &mut Rng) -> Option<Write> {
+        let key = rng.pick(&self.existing("logins"))?;
+        if rng.chance(50) {
+            return Some(Write::Delete {
+                table: "logins",
+                key,
+            });
+        }
+        Some(Write::Update {
+            table: "logins",
+            new_key: key.clone(),
+            key,
+            row: random_login(rng),
+        })
+    }
+
+    fn zone_change(&self, rng: &mut Rng) -> Option<Write> {
+        let key = int(rng.int(1, 9));
+        let borough = text(rng.pick(&BOROUGHS).unwrap());
+        if !self.keys["zones"].contains(&key) {
+            return Some(Write::Insert {
+                table: "zones",
+                row: vec![key.clone(), borough],
+                key,
+            });
+        }
+        if rng.chance(30) {
+            return Some(Write::Delete {
+                table: "zones",
+                key,
+            });
+        }
+        let new_key = if rng.chance(20) {
+            int(rng.int(1, 9))
+        } else {
+            key.clone()
+        };
+        if new_key != key && self.keys["zones"].contains(&new_key) {
+            return None;
+        }
+        Some(Write::Update {
+            table: "zones",
+            row: vec![new_key.clone(), borough],
+            key,
+            new_key,
+        })
+    }
+
+    fn record(&mut self, write: &Write) {
+        match write {
             // audit keeps no keys here.
             Write::Insert { table, key, .. } => {
-                if let Some(k) = keys.get_mut(table) {
-                    k.insert(key.clone());
+                if let Some(held) = self.keys.get_mut(table) {
+                    held.insert(key.clone());
                 }
             }
             Write::Update {
@@ -1353,19 +1392,17 @@ fn random_writes(rng: &mut Rng, db: &Database, next_key: &mut i64) -> Vec<Write>
                 new_key,
                 ..
             } => {
-                let k = keys.get_mut(table).unwrap();
-                k.remove(key);
-                k.insert(new_key.clone());
+                let held = self.keys.get_mut(table).unwrap();
+                held.remove(key);
+                held.insert(new_key.clone());
             }
             Write::Delete { table, key } => {
-                keys.get_mut(table).unwrap().remove(key);
+                self.keys.get_mut(table).unwrap().remove(key);
             }
-            Write::Truncate { table } => keys.get_mut(table).unwrap().clear(),
+            Write::Truncate { table } => self.keys.get_mut(table).unwrap().clear(),
             Write::Alter { .. } => {}
         }
-        writes.push(write);
     }
-    writes
 }
 
 fn random_ask(rng: &mut Rng) -> Ask {
@@ -1395,7 +1432,7 @@ fn random_ask(rng: &mut Rng) -> Ask {
         let values = BOROUGHS
             .iter()
             .filter(|_| rng.chance(50))
-            .map(|b| Literal::Text(b.to_string()))
+            .map(|borough| Literal::Text(borough.to_string()))
             .collect::<Vec<_>>();
         if !values.is_empty() {
             ask.filter.push(Condition {
@@ -1434,22 +1471,22 @@ fn check_aside(app: &App) -> usize {
 }
 
 /// Asks against a fresh load of the database at `lsn`.
-fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, seen: &mut Seen) {
+fn check(app: &App, db: &Database, lsn: Lsn, rng: &mut Rng, tally: &mut Seen) {
     let reference = db.store_at(&spec(), lsn);
     for _ in 0..4 {
         let ask = random_ask(rng);
         let answered = app
             .ask(&ask)
-            .unwrap_or_else(|e| panic!("{e} at {lsn} for {ask:?}"));
+            .unwrap_or_else(|error| panic!("{error} at {lsn} for {ask:?}"));
         assert_eq!(answered.applied, lsn);
         assert_eq!(answered.answer, reference.ask(&ask).unwrap(), "{ask:?}");
-        seen.answered += 1;
+        tally.answered += 1;
     }
 }
 
 /// Follows random writes, checking asks at every LSN. With a spill, every
 /// bucket is sealed on each start, so changes unseal them as they come.
-fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
+fn follow(seed: u64, tally: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
     let mut rng = Rng(seed);
     let spilling = spill.map(|spill| Spilling {
         spill: Arc::clone(spill) as Arc<dyn Spill>,
@@ -1462,15 +1499,20 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
         *count.borrow_mut() += check_aside(app);
     });
     let zones: Vec<Write> = (1..=6)
-        .map(|key| zone(key, BOROUGHS[key as usize % BOROUGHS.len()]))
+        .map(|key| {
+            zone(
+                key,
+                BOROUGHS[usize::try_from(key).unwrap() % BOROUGHS.len()],
+            )
+        })
         .collect();
     db.borrow_mut().commit(zones);
     let mut next_key = 0;
     let mut position = None;
     for _ in 0..150 {
         for _ in 0..rng.below(4) {
-            let writes = random_writes(&mut rng, &db.borrow(), &mut next_key);
-            db.borrow_mut().commit(writes);
+            let transaction = random_writes(&mut rng, &db.borrow(), &mut next_key);
+            db.borrow_mut().commit(transaction);
         }
         if rng.chance(5) {
             db.borrow_mut().drop_connection = true;
@@ -1482,14 +1524,14 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
             assert!(steps < 100, "seed {seed}: stuck");
             position = match writer.step() {
                 Ok(Step::Started(lsn) | Step::Applied(lsn)) => Some(lsn),
-                Err(e) => {
-                    seen.failed += 1;
-                    seen.unfit += usize::from(matches!(e, Error::Unfit(_)));
+                Err(error) => {
+                    tally.failed += 1;
+                    tally.unfit += usize::from(matches!(error, Error::Unfit(_)));
                     None
                 }
             };
             if let Some(lsn) = position {
-                check(writer.app(), &db.borrow(), lsn, &mut rng, seen);
+                check(writer.app(), &db.borrow(), lsn, &mut rng, tally);
             }
             // The spill holds what the store has sealed and no more. After
             // a failed step it may hold more, until the next start empties
@@ -1504,7 +1546,7 @@ fn follow(seed: u64, seen: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
         }
         assert!(writer.app().status().ready, "seed {seed}");
     }
-    seen.aside += *aside.borrow();
+    tally.aside += *aside.borrow();
 }
 
 #[test]

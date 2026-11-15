@@ -10,3 +10,6 @@ straum-domain = { path = "../straum-domain" }
 
 [dev-dependencies]
 straum-notation = { path = "../straum-notation" }
+
+[lints]
+workspace = true
