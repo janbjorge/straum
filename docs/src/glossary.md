@@ -357,6 +357,18 @@ are open.
   **subtransaction** (subxact) is a savepoint's own xid; it commits with
   its top transaction. `xact` is PostgreSQL's word for transaction, kept
   as the name of the module that reads its records.
+- **Running transactions** (`xact::Running`): a standby record,
+  `RUNNING_XACTS`, listing the transactions running when it was
+  written. The physical stream holds each transaction's changes until
+  it ends, as logical decoding's reorder buffer does
+  (`Transactions`).
+- **Relcache invalidation** (`Invalidated`): a commit's note that a
+  table's catalog entry changed, which DDL leaves. The physical stream
+  reads the table's layout again after one.
+- **Varlena** and **TOAST**: a value of varying length, such as `text`
+  or `numeric`, with a one- or four-byte length header. A long one may
+  be compressed in the row, with pglz or lz4, or moved out of it to
+  the table's TOAST table, leaving a pointer (`tuple::Value::External`).
 - **WAL problem** (`wal::Problem`): what is wrong with WAL Straum can't
   read, said after "WAL at LSN has". It stops the stream.
 - **Replication connection**: the connection that creates the slot,
