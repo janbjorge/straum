@@ -2,8 +2,8 @@
 //! produce (a ref to a missing dim, a dim attribute listed twice).
 
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Identifier, Key,
-    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Identifier, JoinError,
+    Key, Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -306,7 +306,13 @@ fn every_error_is_reported_and_displayed() {
             "view u: no measures",
         ]
     );
-    assert!(matches!(errors[7], SpecError::UnknownDim { .. }));
+    assert!(matches!(
+        errors[7],
+        SpecError::Join {
+            error: JoinError::UnknownDim { .. },
+            ..
+        }
+    ));
 }
 
 #[test]
