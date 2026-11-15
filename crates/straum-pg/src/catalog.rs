@@ -23,7 +23,7 @@ pub(crate) struct Checked {
     /// The spec's name for it.
     pub(crate) name: Identifier,
     pub(crate) schema: Identifier,
-    pub(crate) table: Identifier,
+    pub(crate) table_name: Identifier,
     /// What Straum reads of it, in order: `Fact::columns`, or the dim's
     /// key columns and then its attributes.
     pub(crate) columns: Vec<Identifier>,
@@ -41,7 +41,7 @@ impl Checked {
     }
 
     pub(crate) fn qualified(&self) -> String {
-        format!("{}.{}", self.schema, self.table)
+        format!("{}.{}", self.schema, self.table_name)
     }
 
     /// `name`, reading `columns` of `public.table`, none an enum.
@@ -55,7 +55,7 @@ impl Checked {
         Checked {
             name: Identifier::new(name).unwrap(),
             schema: Identifier::new("public").unwrap(),
-            table: Identifier::new(table).unwrap(),
+            table_name: Identifier::new(table).unwrap(),
             columns: (columns.iter())
                 .map(|column| Identifier::new(column).unwrap())
                 .collect(),
@@ -625,7 +625,7 @@ fn check_table(
     Some(Checked {
         name: name.clone(),
         schema: table.schema.clone(),
-        table: table.name.clone(),
+        table_name: table.name.clone(),
         columns: read.columns,
         types: read.types,
         enums: read.enums,
@@ -801,7 +801,7 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
 impl Catalog {
     /// An enum column's type name and labels; `None` for any other column.
     fn labels(&self, table: &Checked, column: &Identifier) -> Option<(&str, Vec<&str>)> {
-        let class = self.class(table.schema.as_str(), table.table.as_str())?;
+        let class = self.class(table.schema.as_str(), table.table_name.as_str())?;
         let column = (class.columns.iter()).find(|candidate| candidate.name == column.as_str())?;
         if column.typtype != "e" {
             return None;

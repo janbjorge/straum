@@ -24,7 +24,7 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
     format!(
         "COPY (SELECT {} FROM {}) TO STDOUT (FORMAT binary)",
         select.join(", "),
-        escaped(&table.schema, &table.table)
+        escaped(&table.schema, &table.table_name)
     )
 }
 

@@ -2495,7 +2495,7 @@ fn datums_layouts(dsn: &Dsn) -> Layouts {
     let checked = Checked {
         name: id("v"),
         schema: id("datums"),
-        table: id("v"),
+        table_name: id("v"),
         columns: Vec::new(),
         types: Vec::new(),
         enums: Vec::new(),

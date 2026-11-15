@@ -256,7 +256,7 @@ fn table_names(checked: &[Checked]) -> String {
             format!(
                 "({}, {})",
                 escape_literal(table.schema.as_str()),
-                escape_literal(table.table.as_str())
+                escape_literal(table.table_name.as_str())
             )
         })
         .collect();

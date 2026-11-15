@@ -120,7 +120,7 @@ impl Decoder {
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
         let tables = (self.tables.iter_mut().enumerate()).filter(|(_, table)| {
-            table.schema.as_str() == relation.schema && table.table.as_str() == relation.name
+            table.schema.as_str() == relation.schema && table.table_name.as_str() == relation.name
         });
         for (index, table) in tables {
             let mut positions = Vec::new();
