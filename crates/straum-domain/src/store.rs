@@ -5,8 +5,11 @@ use crate::aggregate::Partials;
 use crate::ask::{Ask, AskError, AskKey};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
-use crate::projection::{NULL, Projection};
-use crate::rollup::{Bucket, Cells, Direction, Rollup, RowError};
+use crate::projection::{AttributeIndex, NULL, Projection};
+use crate::rollup::{
+    BucketId, Cells, ColumnIndex, Cover, CoveredBucket, Direction, InputIndex, PartIndex, Rollup,
+    RowError,
+};
 
 use crate::sealed::{Sealed, SealedError, SealedId, Thawed};
 use crate::spec::{
@@ -19,8 +22,18 @@ const IN_SPEC: &str = "the table is in the spec";
 const HOT: &str = "the bucket is hot";
 const POURED: &str = "a bound cell takes any cell of its fact";
 
-/// Thawed cells an ask reads, by width and start.
-type ThawedCells<'t> = FastMap<(i64, i64), &'t Cells>;
+/// Thawed cells an ask reads, by bucket.
+// Borrowed from the thawed buckets the caller holds, which may be large.
+type ThawedCells<'t> = FastMap<BucketId, &'t Cells>;
+
+/// A position among the spec's facts, and so among the store's rollups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FactIndex(usize);
+
+/// A position among the spec's dims, and so among the store's
+/// projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DimIndex(usize);
 
 /// The cells of every fact, and every dim projected to its key and the
 /// columns the views read. Nothing else: a cell is keyed by the fact's
@@ -56,14 +69,14 @@ struct Bound {
 
 #[derive(Debug)]
 struct BoundRef {
-    dim: usize,
+    dim: DimIndex,
     kind: RefKind,
     /// Positions in a fact row, in the dim's key order.
-    via: Vec<usize>,
+    via: Vec<ColumnIndex>,
     /// The keyed rollup-key part of each of `via`.
-    via_parts: Vec<usize>,
-    /// Into the dim's attributes, in the order the ref reads them.
-    attributes: Vec<usize>,
+    via_parts: Vec<PartIndex>,
+    /// The dim's attributes, in the order the ref reads them.
+    attributes: Vec<AttributeIndex>,
 }
 
 impl BoundRef {
@@ -74,15 +87,17 @@ impl BoundRef {
             let Via::Fact(column) = column else {
                 unreachable!("every ref is direct");
             };
-            via.push(position_of(columns, column));
+            via.push(ColumnIndex(position_of(columns, column)));
         }
-        let via_parts = (via.iter())
-            .map(|&column| keyed.part_of_column(column).expect(CHECKED))
-            .collect();
-        let dim_attributes = &spec.dims()[dim].attributes;
-        let attributes = (reference.reads.iter())
-            .map(|read| position_of(dim_attributes, &read.column))
-            .collect();
+        let mut via_parts = Vec::with_capacity(via.len());
+        for column in &via {
+            via_parts.push(keyed.part_of_column(*column).expect(CHECKED));
+        }
+        let dim_attributes = &spec.dims()[dim.0].attributes;
+        let mut attributes = Vec::with_capacity(reference.reads.len());
+        for read in &reference.reads {
+            attributes.push(AttributeIndex(position_of(dim_attributes, &read.column)));
+        }
         BoundRef {
             dim,
             kind: reference.kind,
@@ -94,7 +109,12 @@ impl BoundRef {
 }
 
 fn position_of(names: &[Identifier], name: &Identifier) -> usize {
-    names.iter().position(|each| each == name).expect(CHECKED)
+    for (position, each) in names.iter().enumerate() {
+        if each == name {
+            return position;
+        }
+    }
+    panic!("{CHECKED}")
 }
 
 impl Bound {
@@ -123,18 +143,18 @@ impl Bound {
                 reference
                     .via
                     .iter()
-                    .map(|&column| row[column].clone())
+                    .map(|&column| row[column.0].clone())
                     .collect()
             })
             .collect();
         for join_row in self.join_rows(projections, &via_keys, None) {
             out.extend_from_slice(row);
             for (reference, found) in self.refs.iter().zip(&join_row) {
-                let projection = &projections[reference.dim];
+                let projection = &projections[reference.dim.0];
                 out.extend(reference.attributes.iter().map(|&attribute| {
                     match found {
                         Some(codes) => projection
-                            .attribute_value(attribute, codes[attribute])
+                            .attribute_value(attribute, codes[attribute.0])
                             .clone(),
                         None => Datum::Null,
                     }
@@ -164,7 +184,7 @@ impl Bound {
         joined
     }
 
-    fn reads(&self, dim: usize) -> bool {
+    fn reads(&self, dim: DimIndex) -> bool {
         self.refs.iter().any(|reference| reference.dim == dim)
     }
 }
@@ -214,10 +234,10 @@ impl Store {
     /// sets them.
     pub fn set_types(&mut self, table: &str, types: &[ColumnType]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
-            self.rollups[fact].set_types(types)?;
+            self.rollups[fact.0].set_types(types)?;
         } else {
             let dim = self.dim_index(table).expect(IN_SPEC);
-            self.projections[dim].set_types(types)?;
+            self.projections[dim.0].set_types(types)?;
         }
         // A bound row's types are the fact's and its dims', whichever
         // came last.
@@ -235,7 +255,7 @@ impl Store {
                     reference
                         .attributes
                         .iter()
-                        .map(|&attribute| projections[reference.dim].attribute_type(attribute)),
+                        .map(|&attribute| projections[reference.dim.0].attribute_type(attribute)),
                 );
             }
             (bound.rollup.set_types(&types)).expect("a bound row is as wide as its types");
@@ -247,11 +267,11 @@ impl Store {
     /// `table` wide.
     pub fn add_rows(&mut self, table: &str, rows: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
-            self.rollups[fact].add_rows(rows)?;
-            let Some(bound) = &mut self.bound[fact] else {
+            self.rollups[fact.0].add_rows(rows)?;
+            let Some(bound) = &mut self.bound[fact.0] else {
                 return Ok(());
             };
-            let row_len = self.rollups[fact].row_len();
+            let row_len = self.rollups[fact.0].row_len();
             let mut out = Vec::new();
             for row in rows.chunks_exact(row_len) {
                 bound.rows(&self.projections, row, &mut out);
@@ -259,7 +279,7 @@ impl Store {
             return bound.rollup.add_rows(&out);
         }
         let dim = self.dim_index(table).expect(IN_SPEC);
-        self.projections[dim].add_rows(rows)?;
+        self.projections[dim.0].add_rows(rows)?;
         self.rebuild_dim(dim);
         Ok(())
     }
@@ -267,7 +287,7 @@ impl Store {
     /// Adds one row, as the stream brings it.
     pub fn add_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
-            self.rollups[fact].add(row)?;
+            self.rollups[fact.0].add(row)?;
             return self.bind(fact, row, Direction::Add);
         }
         self.change_dim(table, row, Projection::add)
@@ -277,7 +297,7 @@ impl Store {
     /// found, so the caller starts over.
     pub fn remove_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
-            self.rollups[fact].remove(row)?;
+            self.rollups[fact.0].remove(row)?;
             return self.bind(fact, row, Direction::Remove);
         }
         self.change_dim(table, row, Projection::remove)
@@ -290,13 +310,13 @@ impl Store {
         change: fn(&mut Projection, &[Datum]) -> Result<(), RowError>,
     ) -> Result<(), RowError> {
         let dim = self.dim_index(table).expect(IN_SPEC);
-        let key_len = self.projections[dim].key_len();
+        let key_len = self.projections[dim.0].key_len();
         let key = row.get(..key_len).unwrap_or(&[]);
         // Owned, so the bound cells can leave the rows the key held after
         // the projection has moved on.
-        let old = self.projections[dim].matches(key).to_vec();
-        change(&mut self.projections[dim], row)?;
-        if old == self.projections[dim].matches(key) {
+        let old = self.projections[dim.0].matches(key).to_vec();
+        change(&mut self.projections[dim.0], row)?;
+        if old == self.projections[dim.0].matches(key) {
             return Ok(());
         }
         for fact in self.facts_reading(dim) {
@@ -317,7 +337,7 @@ impl Store {
         if let Some(dim) = self.dim_index(table)
             && old == new
         {
-            return self.projections[dim].check(old);
+            return self.projections[dim.0].check(old);
         }
         self.remove_row(table, old)?;
         self.add_row(table, new)
@@ -326,21 +346,26 @@ impl Store {
     /// Drops every row of a table after a truncate.
     pub fn clear(&mut self, table: &str) {
         if let Some(fact) = self.fact_index(table) {
-            self.rollups[fact].clear();
-            if let Some(bound) = &mut self.bound[fact] {
+            self.rollups[fact.0].clear();
+            if let Some(bound) = &mut self.bound[fact.0] {
                 bound.rollup.clear();
             }
             return;
         }
         let dim = self.dim_index(table).expect(IN_SPEC);
-        self.projections[dim].clear();
+        self.projections[dim.0].clear();
         self.rebuild_dim(dim);
     }
 
     /// Adds or removes a fact row's bound rows, as the refs resolve it
     /// now.
-    fn bind(&mut self, fact: usize, row: &[Datum], direction: Direction) -> Result<(), RowError> {
-        let Some(bound) = &mut self.bound[fact] else {
+    fn bind(
+        &mut self,
+        fact: FactIndex,
+        row: &[Datum],
+        direction: Direction,
+    ) -> Result<(), RowError> {
+        let Some(bound) = &mut self.bound[fact.0] else {
             return Ok(());
         };
         let mut out = Vec::new();
@@ -355,19 +380,24 @@ impl Store {
     }
 
     /// The facts whose bound cells read `dim`.
-    fn facts_reading(&self, dim: usize) -> Vec<usize> {
-        (self.bound.iter().enumerate())
-            .filter(|(_, bound)| bound.as_ref().is_some_and(|bound| bound.reads(dim)))
-            .map(|(fact, _)| fact)
-            .collect()
+    fn facts_reading(&self, dim: DimIndex) -> Vec<FactIndex> {
+        let mut facts = Vec::new();
+        for (fact, bound) in self.bound.iter().enumerate() {
+            if let Some(bound) = bound
+                && bound.reads(dim)
+            {
+                facts.push(FactIndex(fact));
+            }
+        }
+        facts
     }
 
     /// `dim`'s `key` held the `old` attribute rows before it changed.
     /// Bound cells whose join columns name `key` move; the rest stay.
     fn retarget(
         &mut self,
-        fact: usize,
-        dim: usize,
+        fact: FactIndex,
+        dim: DimIndex,
         key: &[Datum],
         old: &[Box<[u32]>],
     ) -> Result<(), RowError> {
@@ -377,10 +407,10 @@ impl Store {
             bound,
             ..
         } = self;
-        let Some(bound) = bound[fact].as_mut() else {
+        let Some(bound) = bound[fact.0].as_mut() else {
             return Ok(());
         };
-        let keyed = &rollups[fact];
+        let keyed = &rollups[fact.0];
         let overlay = Overlay {
             dim,
             key,
@@ -422,27 +452,27 @@ impl Store {
 
     /// The dim was replaced wholesale: pour the hot keyed cells into a
     /// fresh bound rollup.
-    fn rebuild_dim(&mut self, dim: usize) {
+    fn rebuild_dim(&mut self, dim: DimIndex) {
         for fact in self.facts_reading(dim) {
-            if self.rollups[fact].cells() == 0 {
+            if self.rollups[fact.0].cells() == 0 {
                 continue;
             }
             self.rebuild_fact(fact);
         }
     }
 
-    fn rebuild_fact(&mut self, fact: usize) {
+    fn rebuild_fact(&mut self, fact: FactIndex) {
         let Store {
             rollups,
             projections,
             bound,
             ..
         } = self;
-        let Some(bound) = bound[fact].as_mut() else {
+        let Some(bound) = bound[fact.0].as_mut() else {
             return;
         };
         bound.rollup.clear();
-        let keyed = &rollups[fact];
+        let keyed = &rollups[fact.0];
         for start in keyed.hot_date_bin_starts() {
             let cells = keyed.hot_date_bin(start).expect(HOT);
             pour(bound, keyed, projections, start, cells, Direction::Add).expect(POURED);
@@ -461,7 +491,7 @@ impl Store {
     /// Bound cells at the `date_bin` width, while the fact has them.
     pub fn bound_cells(&self, fact: &str) -> Option<usize> {
         let index = self.fact_index(fact)?;
-        Some(self.bound[index].as_ref()?.rollup.cells())
+        Some(self.bound[index.0].as_ref()?.rollup.cells())
     }
 
     /// Sealed buckets, every fact and width.
@@ -470,7 +500,7 @@ impl Store {
     }
 
     pub fn dim_rows(&self, dim: &str) -> Option<usize> {
-        Some(self.projections[self.dim_index(dim)?].len())
+        Some(self.projections[self.dim_index(dim)?.0].len())
     }
 
     /// From the start of the fact's first `date_bin` bucket to the end of
@@ -487,9 +517,7 @@ impl Store {
             Key::ByKey(by) => rollup.key_type(key_part_of(fact, by.key_part())),
             Key::Attribute(reference, attribute) => {
                 let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
-                let read = (dim.attributes.iter())
-                    .position(|column| *column == attribute.column)
-                    .expect(CHECKED);
+                let read = AttributeIndex(position_of(&dim.attributes, &attribute.column));
                 self.projection(reference.dim.as_str()).attribute_type(read)
             }
         })
@@ -497,17 +525,21 @@ impl Store {
 
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let (_, read) = self.reading(ask)?;
-        Ok(buckets(read.rollup(), ask)
-            .map(|(_, _, bucket)| bucket.len())
-            .sum())
+        let mut cells = 0;
+        for covered in buckets(read.rollup(), ask) {
+            cells += covered.bucket.len();
+        }
+        Ok(cells)
     }
 
     /// Each `date_bin` bucket not sealed that ends by `before`, Unix
     /// seconds, every fact.
     pub fn sealable(&self, before: i64) -> Vec<SealedId> {
-        (self.spec.facts().iter().zip(&self.rollups))
-            .flat_map(|(fact, rollup)| sealed_ids(fact, rollup.sealable(before)))
-            .collect()
+        let mut sealable = Vec::new();
+        for (fact, rollup) in self.spec.facts().iter().zip(&self.rollups) {
+            sealable.extend(sealed_ids(fact, &rollup.sealable(before)));
+        }
+        sealable
     }
 
     /// A copy of a bucket's cells, for a spill to keep before
@@ -531,7 +563,7 @@ impl Store {
         {
             return Err(sealed_error(id, "bound cells don't hold the bucket"));
         }
-        match self.rollups[fact].seal(id.width, id.bucket_start) {
+        match self.rollups[fact.0].seal(id.width, id.bucket_start) {
             Ok(()) => Ok(()),
             Err(reason) => Err(sealed_error(id, reason)),
         }
@@ -542,7 +574,7 @@ impl Store {
     /// rows of its own to bind.
     fn pour_bucket(
         &mut self,
-        fact: usize,
+        fact: FactIndex,
         width: i64,
         start: i64,
         direction: Direction,
@@ -553,7 +585,7 @@ impl Store {
             bound,
             ..
         } = self;
-        let (Some(bound), keyed) = (bound[fact].as_mut(), &rollups[fact]) else {
+        let (Some(bound), keyed) = (bound[fact.0].as_mut(), &rollups[fact.0]) else {
             return Ok(());
         };
         if width != keyed.date_bin_width() {
@@ -568,17 +600,20 @@ impl Store {
     /// Every sealed bucket of a fact, which a truncate drops with the rest.
     pub fn sealed(&self, fact: &str) -> Vec<SealedId> {
         let (fact, rollup) = self.rollup(fact).expect(IN_SPEC);
-        sealed_ids(fact, rollup.sealed())
+        sealed_ids(fact, &rollup.sealed())
     }
 
     /// The sealed buckets [`Store::ask_with`] needs for `ask`; none when
     /// the bound cells answer it, which are never sealed.
     pub fn sealed_read(&self, ask: &Ask) -> Result<Vec<SealedId>, Vec<AskError>> {
         let (fact, read) = self.reading(ask)?;
-        let sealed = buckets(read.rollup(), ask)
-            .filter(|(_, _, bucket)| bucket.cells().is_none())
-            .map(|(width, start, _)| (width, start));
-        Ok(sealed_ids(fact, sealed))
+        let mut sealed = Vec::new();
+        for covered in buckets(read.rollup(), ask) {
+            if covered.bucket.cells().is_none() {
+                sealed.push(covered.id);
+            }
+        }
+        Ok(sealed_ids(fact, &sealed))
     }
 
     /// The sealed buckets a fact row falls in, which must be unsealed
@@ -586,7 +621,7 @@ impl Store {
     pub fn sealed_touched(&self, fact: &str, row: &[Datum]) -> Vec<SealedId> {
         let (fact, rollup) = self.rollup(fact).expect(IN_SPEC);
         match row.first() {
-            Some(time) => sealed_ids(fact, rollup.touched(time)),
+            Some(time) => sealed_ids(fact, &rollup.touched(time)),
             None => Vec::new(),
         }
     }
@@ -608,7 +643,7 @@ impl Store {
     pub fn unseal(&mut self, thawed: Thawed) -> Result<(), SealedError> {
         let Thawed { id, cells } = thawed;
         let fact = self.fact_index(id.fact.as_str()).expect(IN_SPEC);
-        match self.rollups[fact].unseal(id.width, id.bucket_start, cells) {
+        match self.rollups[fact.0].unseal(id.width, id.bucket_start, cells) {
             Ok(()) => {
                 let poured = self.pour_bucket(fact, id.width, id.bucket_start, Direction::Add);
                 poured.expect(POURED);
@@ -635,10 +670,16 @@ impl Store {
         let (fact, read) = self.reading(ask)?;
         let rollup = read.rollup();
         self.check_types(fact, &read, ask)?;
-        let loaded: ThawedCells<'_> = (thawed.iter())
-            .filter(|bucket| bucket.id.fact == fact.name)
-            .map(|bucket| ((bucket.id.width, bucket.id.bucket_start), &bucket.cells))
-            .collect();
+        let mut loaded: ThawedCells<'_> = FastMap::default();
+        for bucket in thawed {
+            if bucket.id.fact == fact.name {
+                let id = BucketId {
+                    width: bucket.id.width,
+                    start: bucket.id.bucket_start,
+                };
+                loaded.insert(id, &bucket.cells);
+            }
+        }
         let buckets = buckets(rollup, ask).count();
         let mut by: Vec<Grouping> = (ask.keys.iter())
             .map(|key| match key {
@@ -759,7 +800,10 @@ impl Store {
                 let parent = self.spec.dim(fact.refs[*through].dim.as_str());
                 ViaFrom::Through {
                     reference: *through,
-                    attribute: position_of(&parent.expect(CHECKED).attributes, column),
+                    attribute: AttributeIndex(position_of(
+                        &parent.expect(CHECKED).attributes,
+                        column,
+                    )),
                 }
             }
         }
@@ -780,12 +824,12 @@ impl Store {
     /// How a cell's key finds a ref's dim rows, through the rollup-key
     /// parts of its fact-side via columns.
     fn joined<'s>(&'s self, fact: &Fact, reference: &Ref, rollup: &Rollup) -> Joined<'s> {
-        let via: Vec<usize> = (reference.via.iter())
-            .filter_map(|via| match via {
-                Via::Fact(column) => Some(key_part_of(fact, KeyPart::Column(column))),
-                Via::Attribute { .. } => None,
-            })
-            .collect();
+        let mut via = Vec::with_capacity(reference.via.len());
+        for column in &reference.via {
+            if let Via::Fact(column) = column {
+                via.push(key_part_of(fact, KeyPart::Column(column)));
+            }
+        }
         let memo = match via[..] {
             [part] => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
             _ => Memo::Sparse(FastMap::default()),
@@ -799,24 +843,26 @@ impl Store {
         }
     }
 
-    fn fact_index(&self, name: &str) -> Option<usize> {
-        self.spec
-            .facts()
-            .iter()
-            .position(|fact| fact.name.as_str() == name)
+    fn fact_index(&self, name: &str) -> Option<FactIndex> {
+        for (position, fact) in self.spec.facts().iter().enumerate() {
+            if fact.name.as_str() == name {
+                return Some(FactIndex(position));
+            }
+        }
+        None
     }
 
-    fn dim_index(&self, name: &str) -> Option<usize> {
+    fn dim_index(&self, name: &str) -> Option<DimIndex> {
         dim_index(&self.spec, name)
     }
 
     fn rollup(&self, fact: &str) -> Option<(&Fact, &Rollup)> {
         let index = self.fact_index(fact)?;
-        Some((&self.spec.facts()[index], &self.rollups[index]))
+        Some((&self.spec.facts()[index.0], &self.rollups[index.0]))
     }
 
     fn projection(&self, dim: &str) -> &Projection {
-        &self.projections[self.dim_index(dim).expect(IN_SPEC)]
+        &self.projections[self.dim_index(dim).expect(IN_SPEC).0]
     }
 
     /// The ask's fact and the cells that answer it: the bound cells,
@@ -826,8 +872,8 @@ impl Store {
     fn reading(&self, ask: &Ask) -> Result<(&Fact, Read<'_>), Vec<AskError>> {
         let fact = self.spec.check_ask(ask)?;
         let index = self.fact_index(fact.name.as_str()).expect(CHECKED);
-        let keyed = &self.rollups[index];
-        let read = match &self.bound[index] {
+        let keyed = &self.rollups[index.0];
+        let read = match &self.bound[index.0] {
             Some(bound) if !keyed.overlaps_sealed(ask.from, ask.to) => Read::Bound(&bound.rollup),
             _ => Read::Keyed(keyed),
         };
@@ -848,7 +894,7 @@ impl Store {
                 let at = (fact.refs.iter()).position(|other| other.alias == reference.alias);
                 Lookup::Attribute(AttributeLookup {
                     reference: at.expect(CHECKED),
-                    attribute: position_of(&dim.attributes, &attribute.column),
+                    attribute: AttributeIndex(position_of(&dim.attributes, &attribute.column)),
                     joined: self.joined(fact, reference, rollup),
                 })
             }
@@ -1040,48 +1086,79 @@ fn sealed_error(id: &SealedId, reason: &'static str) -> SealedError {
     }
 }
 
-fn sealed_ids(fact: &Fact, buckets: impl Iterator<Item = (i64, i64)>) -> Vec<SealedId> {
-    buckets
-        .map(|(width, start)| SealedId {
+fn sealed_ids(fact: &Fact, buckets: &[BucketId]) -> Vec<SealedId> {
+    let mut ids = Vec::with_capacity(buckets.len());
+    for bucket in buckets {
+        ids.push(SealedId {
             fact: fact.name.clone(),
-            width,
-            bucket_start: start,
-        })
-        .collect()
+            width: bucket.width,
+            bucket_start: bucket.start,
+        });
+    }
+    ids
 }
 
-fn dim_index(spec: &Spec, name: &str) -> Option<usize> {
-    spec.dims().iter().position(|dim| dim.name.as_str() == name)
+fn dim_index(spec: &Spec, name: &str) -> Option<DimIndex> {
+    for (position, dim) in spec.dims().iter().enumerate() {
+        if dim.name.as_str() == name {
+            return Some(DimIndex(position));
+        }
+    }
+    None
 }
 
-fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> usize {
-    fact.rollup_key()
-        .position(|key| key == part)
-        .expect(CHECKED)
+fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> PartIndex {
+    for (position, key) in fact.rollup_key().enumerate() {
+        if key == part {
+            return PartIndex(position);
+        }
+    }
+    panic!("{CHECKED}")
 }
 
 /// The part of the bound cell key the view names so: the `by` keys'
 /// parts, then the attributes in [`Fact::attributes`] order, as
 /// [`Rollup::bound`] lays them.
-fn bound_part_of(fact: &Fact, name: &Identifier) -> usize {
+fn bound_part_of(fact: &Fact, name: &Identifier) -> PartIndex {
     match fact.resolve(name).expect(CHECKED) {
-        Key::ByKey(by) => (fact.by_parts())
-            .position(|part| part == by.key_part())
-            .expect(CHECKED),
+        Key::ByKey(by) => {
+            for (position, part) in fact.by_parts().enumerate() {
+                if part == by.key_part() {
+                    return PartIndex(position);
+                }
+            }
+            panic!("{CHECKED}")
+        }
         Key::Attribute(reference, attribute) => {
-            let at = (fact.attributes())
-                .position(|(other, read)| {
-                    other.alias == reference.alias && read.name == attribute.name
-                })
-                .expect(CHECKED);
-            fact.by_parts().count() + at
+            let by_count = fact.by_parts().count();
+            for (position, (other, read)) in fact.attributes().enumerate() {
+                if other.alias == reference.alias && read.name == attribute.name {
+                    return PartIndex(by_count + position);
+                }
+            }
+            panic!("{CHECKED}")
         }
     }
 }
 
-fn buckets<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = (i64, i64, &'r Bucket)> {
-    let each_bucket = ask.keys.iter().any(|key| matches!(key, AskKey::Bucket));
-    rollup.cover(ask.from, ask.to, each_bucket)
+fn buckets<'r>(rollup: &'r Rollup, ask: &Ask) -> impl Iterator<Item = CoveredBucket<'r>> {
+    let mut cover = Cover::WidestFit;
+    for key in &ask.keys {
+        if *key == AskKey::Bucket {
+            cover = Cover::EachDateBin;
+        }
+    }
+    rollup.cover(ask.from, ask.to, cover)
+}
+
+/// The cells of a covered bucket, a sealed one's from `loaded`.
+fn cells_of<'r>(covered: CoveredBucket<'r>, loaded: &ThawedCells<'r>) -> &'r Cells {
+    match covered.bucket.cells() {
+        Some(cells) => cells,
+        None => loaded
+            .get(&covered.id)
+            .expect("ask_with is given every bucket sealed_read names"),
+    }
 }
 
 /// Each bucket's start and cells, a sealed one's from `loaded`.
@@ -1090,14 +1167,7 @@ fn cover<'r>(
     ask: &Ask,
     loaded: &'r ThawedCells<'r>,
 ) -> impl Iterator<Item = (i64, &'r Cells)> {
-    buckets(rollup, ask).map(|(width, start, bucket)| {
-        let cells = bucket.cells().unwrap_or_else(|| {
-            loaded
-                .get(&(width, start))
-                .expect("ask_with is given every bucket sealed_read names")
-        });
-        (start, cells)
-    })
+    buckets(rollup, ask).map(|covered| (covered.id.start, cells_of(covered, loaded)))
 }
 
 /// A join row: one way a cell's joins resolve, per ref the dim row
@@ -1108,7 +1178,7 @@ type JoinRow<'s> = Vec<Option<&'s [u32]>>;
 /// The attribute rows one dim key held, used in place of the projection.
 #[derive(Clone, Copy)]
 struct Overlay<'a> {
-    dim: usize,
+    dim: DimIndex,
     key: &'a [Datum],
     rows: &'a [Box<[u32]>],
 }
@@ -1125,7 +1195,7 @@ fn matched<'a>(
     {
         return overlay.rows;
     }
-    projections[reference.dim].matches(via)
+    projections[reference.dim.0].matches(via)
 }
 
 /// Whether `cell` joins `key` of `dim` through any ref.
@@ -1134,7 +1204,7 @@ fn cell_hits(
     keyed: &Rollup,
     cells: &Cells,
     cell: usize,
-    dim: usize,
+    dim: DimIndex,
     key: &[Datum],
 ) -> bool {
     bound.refs.iter().any(|reference| {
@@ -1186,6 +1256,7 @@ fn bound_keys(
     for join_row in &join_rows {
         let mut key = Vec::with_capacity(bound.by_len + join_row.len());
         for part in 0..bound.by_len {
+            let part = PartIndex(part);
             let datum = keyed.value(part, cells.code(cell, part));
             key.push(bound.rollup.code_part(part, datum));
         }
@@ -1194,11 +1265,11 @@ fn bound_keys(
             for &attribute in &reference.attributes {
                 let datum = match found {
                     Some(codes) => {
-                        projections[reference.dim].attribute_value(attribute, codes[attribute])
+                        projections[reference.dim.0].attribute_value(attribute, codes[attribute.0])
                     }
                     None => &Datum::Null,
                 };
-                key.push(bound.rollup.code_part(part, datum));
+                key.push(bound.rollup.code_part(PartIndex(part), datum));
                 part += 1;
             }
         }
@@ -1212,7 +1283,7 @@ fn bound_keys(
 struct Expander<'s> {
     plans: Vec<RefPlan<'s>>,
     /// The rollup-key parts the refs read, each once.
-    parts: Vec<usize>,
+    parts: Vec<PartIndex>,
     memo: FastMap<Box<[u32]>, Vec<JoinRow<'s>>>,
 }
 
@@ -1239,13 +1310,17 @@ impl RefPlan<'_> {
 /// Where a ref's key column comes from: a cell's part, or an attribute
 /// of a ref before it.
 enum ViaFrom {
-    KeyPart(usize),
-    Through { reference: usize, attribute: usize },
+    KeyPart(PartIndex),
+    Through {
+        /// Into [`Fact::refs`].
+        reference: usize,
+        attribute: AttributeIndex,
+    },
 }
 
 impl<'s> Expander<'s> {
     fn expand(&mut self, rollup: &Rollup, key: &[u32]) -> &[JoinRow<'s>] {
-        let tuple: Box<[u32]> = self.parts.iter().map(|&part| key[part]).collect();
+        let tuple: Box<[u32]> = self.parts.iter().map(|&part| key[part.0]).collect();
         if !self.memo.contains_key(&tuple) {
             let rows = self.resolve(rollup, key);
             self.memo.insert(tuple.clone(), rows);
@@ -1265,13 +1340,13 @@ impl<'s> Expander<'s> {
                 dim_key.clear();
                 for via in &plan.via {
                     dim_key.push(match *via {
-                        ViaFrom::KeyPart(part) => rollup.value(part, key[part]).clone(),
+                        ViaFrom::KeyPart(part) => rollup.value(part, key[part.0]).clone(),
                         ViaFrom::Through {
                             reference,
                             attribute,
                         } => match row[reference] {
                             Some(found) => (self.plans[reference].projection)
-                                .attribute_value(attribute, found[attribute]),
+                                .attribute_value(attribute, found[attribute.0]),
                             None => &Datum::Null,
                         }
                         .clone(),
@@ -1317,7 +1392,7 @@ fn extended<'s>(row: &JoinRow<'s>, found: Option<&'s [u32]>) -> JoinRow<'s> {
 
 /// Where a key's values come from.
 enum Lookup<'s> {
-    KeyPart(usize),
+    KeyPart(PartIndex),
     Attribute(AttributeLookup<'s>),
 }
 
@@ -1325,8 +1400,7 @@ enum Lookup<'s> {
 struct AttributeLookup<'s> {
     /// Into [`Fact::refs`].
     reference: usize,
-    /// Into the dim's attributes.
-    attribute: usize,
+    attribute: AttributeIndex,
     joined: Joined<'s>,
 }
 
@@ -1337,7 +1411,7 @@ struct Joined<'s> {
     projection: &'s Projection,
     /// The rollup-key parts of the ref's fact-side via columns, in the
     /// dim's key order.
-    via: Vec<usize>,
+    via: Vec<PartIndex>,
     /// The key of one lookup, kept to spare an allocation per lookup.
     key: Vec<Datum>,
     /// The via codes of one lookup, kept likewise.
@@ -1365,10 +1439,10 @@ impl Joined<'_> {
         read: impl FnOnce(&[Box<[u32]>]) -> u32,
     ) -> u32 {
         let known = match &mut self.memo {
-            Memo::Dense(codes) => &mut codes[key[self.via[0]] as usize],
+            Memo::Dense(codes) => &mut codes[key[self.via[0].0] as usize],
             Memo::Sparse(map) => {
                 self.tuple.clear();
-                self.tuple.extend(self.via.iter().map(|&part| key[part]));
+                self.tuple.extend(self.via.iter().map(|&part| key[part.0]));
                 // Looked up before inserting, so only a new tuple allocates.
                 if !map.contains_key(self.tuple.as_slice()) {
                     map.insert(self.tuple.as_slice().into(), UNKNOWN);
@@ -1381,7 +1455,7 @@ impl Joined<'_> {
             (self.key).extend(
                 self.via
                     .iter()
-                    .map(|&part| rollup.value(part, key[part]).clone()),
+                    .map(|&part| rollup.value(part, key[part.0]).clone()),
             );
             *known = read(self.projection.matches(&self.key));
         }
@@ -1416,13 +1490,13 @@ impl AttributeLookup<'_> {
     fn code(&mut self, rollup: &Rollup, key: &[u32]) -> u32 {
         let attribute = self.attribute;
         (self.joined).read(rollup, key, |rows| {
-            rows.first().map_or(NULL, |row| row[attribute])
+            rows.first().map_or(NULL, |row| row[attribute.0])
         })
     }
 
     /// The attribute's code under one join row.
     fn code_in(&self, row: &JoinRow<'_>) -> u32 {
-        row[self.reference].map_or(NULL, |found| found[self.attribute])
+        row[self.reference].map_or(NULL, |found| found[self.attribute.0])
     }
 }
 
@@ -1795,6 +1869,6 @@ impl<'a> Groups<'a> {
 
 struct Asked<'s, 'a> {
     partials: Partials,
-    state: Option<usize>,
+    state: Option<InputIndex>,
     filter: Vec<ConditionCheck<'s, 'a>>,
 }

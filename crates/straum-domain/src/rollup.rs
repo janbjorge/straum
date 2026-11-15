@@ -11,6 +11,7 @@ use crate::column::{Counts, Sums, grow, put};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::index::{Index, Keys};
+use crate::sealed::ValueCount;
 use crate::sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
 use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
@@ -23,6 +24,45 @@ const TIME: usize = 0;
 const DATE_BIN: usize = 0;
 
 const COLUMNS: &str = "Fact::columns lists every measure input";
+
+/// A position in a row of the rollup's table, as [`Fact::columns`] lays
+/// it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ColumnIndex(pub(crate) usize);
+
+/// A part of the rollup key: a by key, a join column or a dim column,
+/// the bucket aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PartIndex(pub(crate) usize);
+
+/// A cell state's place among the rollup's inputs, one per input column
+/// and form of state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InputIndex(pub(crate) usize);
+
+/// One bucket of a rollup: its width and its start, both in seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct BucketId {
+    pub(crate) width: i64,
+    pub(crate) start: i64,
+}
+
+/// A bucket an ask reads, hot or sealed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CoveredBucket<'r> {
+    pub(crate) id: BucketId,
+    // Borrowed: a bucket's cells are the bulk of the store.
+    pub(crate) bucket: &'r Bucket,
+}
+
+/// Which buckets [`Rollup::cover`] picks for a range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cover {
+    /// The widest buckets that fit, narrower ones at the ends.
+    WidestFit,
+    /// Only `date_bin` buckets, as an ask grouped by the bucket needs.
+    EachDateBin,
+}
 
 /// One cell per rollup key, holding what the fact's measures need. Cells
 /// are kept per bucket, so an ask reads only the buckets in its range, and
@@ -65,34 +105,37 @@ fn coded<'a>(columns: &[Identifier], parts: impl Iterator<Item = KeyPart<'a>>) -
         .collect()
 }
 
-fn position_of(columns: &[Identifier], name: &Identifier) -> usize {
-    (columns.iter())
-        .position(|column| column == name)
-        .expect(COLUMNS)
+fn position_of(columns: &[Identifier], name: &Identifier) -> ColumnIndex {
+    for (position, column) in columns.iter().enumerate() {
+        if column == name {
+            return ColumnIndex(position);
+        }
+    }
+    panic!("{COLUMNS}")
 }
 
 /// What a rollup-key part codes of a row.
 #[derive(Debug, Clone, Copy)]
 enum Coded {
     /// The column's value.
-    Value(usize),
+    Value(ColumnIndex),
     /// Whether the column is null, or not null when `negated`.
-    IsNull { column: usize, negated: bool },
+    IsNull { column: ColumnIndex, negated: bool },
 }
 
 impl Coded {
     fn datum(self, row: &[Datum]) -> Cow<'_, Datum> {
         match self {
-            Coded::Value(column) => Cow::Borrowed(&row[column]),
+            Coded::Value(column) => Cow::Borrowed(&row[column.0]),
             Coded::IsNull { column, negated } => {
-                Cow::Owned(Datum::Bool((row[column] == Datum::Null) != negated))
+                Cow::Owned(Datum::Bool((row[column.0] == Datum::Null) != negated))
             }
         }
     }
 
     fn column_type(self, types: &[ColumnType]) -> ColumnType {
         match self {
-            Coded::Value(column) => types[column],
+            Coded::Value(column) => types[column.0],
             Coded::IsNull { .. } => ColumnType::Bool,
         }
     }
@@ -150,7 +193,7 @@ impl Level {
         let i = entry.position;
         cells.rows.add(i, 1);
         for (column, input) in cells.states.iter_mut().zip(inputs) {
-            column.add(i, &row[input.column]);
+            column.add(i, &row[input.column.0]);
         }
         entry.new
     }
@@ -179,20 +222,37 @@ impl Level {
         new_cells
     }
 
-    fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = (i64, i64, &Bucket)> {
-        (self.buckets.range(Some(from)..Some(to)))
-            .filter_map(|(&start, bucket)| Some((self.width, start?, bucket)))
+    // An iterator, not a `Vec`: an ask allocates per group, never per
+    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
+    fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = CoveredBucket<'_>> {
+        let width = self.width;
+        (self.buckets.range(Some(from)..Some(to))).map(move |(start, bucket)| CoveredBucket {
+            id: BucketId {
+                width,
+                start: start.expect("the range holds only buckets with a start"),
+            },
+            bucket,
+        })
     }
 
-    fn hot_ended_by(&self, start: i64, bucket: &Bucket, before: i64) -> Option<(i64, i64)> {
-        let ended = start.checked_add(self.width)? <= before;
-        (ended && bucket.cells().is_some()).then_some((self.width, start))
+    fn hot_ended_by(&self, start: i64, bucket: &Bucket, before: i64) -> Option<BucketId> {
+        let end = start.checked_add(self.width)?;
+        if end <= before && bucket.cells().is_some() {
+            return Some(BucketId {
+                width: self.width,
+                start,
+            });
+        }
+        None
     }
 
-    fn sealed_bucket_of(&self, time: &Datum) -> Option<(i64, i64)> {
-        let start = self.bucket(time);
-        match self.buckets.get(&start) {
-            Some(Bucket::Sealed { .. }) => Some((self.width, start?)),
+    fn sealed_bucket_of(&self, time: &Datum) -> Option<BucketId> {
+        let start = self.bucket(time)?;
+        match self.buckets.get(&Some(start)) {
+            Some(Bucket::Sealed { .. }) => Some(BucketId {
+                width: self.width,
+                start,
+            }),
             _ => None,
         }
     }
@@ -268,16 +328,16 @@ impl Cells {
         &self.keys[i * self.key_len..][..self.key_len]
     }
 
-    pub(crate) fn code(&self, i: usize, part: usize) -> u32 {
-        self.keys[i * self.key_len + part]
+    pub(crate) fn code(&self, i: usize, part: PartIndex) -> u32 {
+        self.keys[i * self.key_len + part.0]
     }
 
     pub(crate) fn rows(&self) -> &Counts {
         &self.rows
     }
 
-    pub(crate) fn state(&self, input: usize) -> &State {
-        &self.states[input]
+    pub(crate) fn state(&self, input: InputIndex) -> &State {
+        &self.states[input.0]
     }
 
     pub(crate) fn states(&self) -> &[State] {
@@ -377,7 +437,7 @@ impl Cells {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Input {
     kind: StateKind,
-    column: usize,
+    column: ColumnIndex,
 }
 
 /// A form of [`State`], which [`Aggregate::state`] picks per measure.
@@ -442,7 +502,7 @@ impl Rollup {
         let mut columns = fact.columns();
         let mut key_columns = coded(&columns, fact.by_parts());
         for (_, attribute) in fact.attributes() {
-            key_columns.push(Coded::Value(columns.len()));
+            key_columns.push(Coded::Value(ColumnIndex(columns.len())));
             columns.push(attribute.name.clone());
         }
         Rollup::build(fact, columns, key_columns)
@@ -527,8 +587,8 @@ impl Rollup {
         Ok(())
     }
 
-    pub(crate) fn key_type(&self, part: usize) -> ColumnType {
-        self.key_columns[part].column_type(&self.types)
+    pub(crate) fn key_type(&self, part: PartIndex) -> ColumnType {
+        self.key_columns[part.0].column_type(&self.types)
     }
 
     pub(crate) fn types(&self) -> &[ColumnType] {
@@ -543,7 +603,7 @@ impl Rollup {
     pub(crate) fn scale_of(&self, aggregate: &Aggregate) -> u32 {
         match aggregate.state() {
             Some((kind, column)) if kind.reads() == Reads::Numbers => {
-                self.types[self.column(column).expect(COLUMNS)].scale()
+                self.types[self.column(column).expect(COLUMNS).0].scale()
             }
             _ => 0,
         }
@@ -637,7 +697,7 @@ impl Rollup {
             let i = cells.find(key).ok_or(RowError::Missing)?;
             let rows = cells.rows.get(i);
             for (column, input) in cells.states.iter_mut().zip(&self.inputs) {
-                column.remove(i, rows, &row[input.column])?;
+                column.remove(i, rows, &row[input.column.0])?;
             }
             cells.rows.sub(i, 1);
             if rows == 1 {
@@ -689,16 +749,20 @@ impl Rollup {
         Ok(())
     }
 
-    pub(crate) fn code_part(&mut self, part: usize, datum: &Datum) -> u32 {
-        self.codes[part].code(datum)
+    pub(crate) fn code_part(&mut self, part: PartIndex, datum: &Datum) -> u32 {
+        self.codes[part.0].code(datum)
     }
 
     /// The rollup-key part that codes the fact column, when one does.
-    pub(crate) fn part_of_column(&self, column: usize) -> Option<usize> {
-        (self.key_columns.iter()).position(|coded| match coded {
-            Coded::Value(value_column) => *value_column == column,
-            Coded::IsNull { .. } => false,
-        })
+    pub(crate) fn part_of_column(&self, column: ColumnIndex) -> Option<PartIndex> {
+        for (part, coded) in self.key_columns.iter().enumerate() {
+            if let Coded::Value(value_column) = coded
+                && *value_column == column
+            {
+                return Some(PartIndex(part));
+            }
+        }
+        None
     }
 
     pub(crate) fn date_bin_width(&self) -> i64 {
@@ -732,28 +796,31 @@ impl Rollup {
             .any(|(_, bucket)| matches!(bucket, Bucket::Sealed { .. }))
     }
 
-    pub(crate) fn state_of(&self, aggregate: &Aggregate) -> Option<usize> {
+    pub(crate) fn state_of(&self, aggregate: &Aggregate) -> Option<InputIndex> {
         let (kind, name) = aggregate.state()?;
         let column = self.column(name)?;
-        self.inputs
-            .iter()
-            .position(|input| *input == Input { kind, column })
+        let wanted = Input { kind, column };
+        for (position, input) in self.inputs.iter().enumerate() {
+            if *input == wanted {
+                return Some(InputIndex(position));
+            }
+        }
+        None
     }
 
-    /// Buckets that cover `from..to` once, in time order, each with its
-    /// width and start: the widest that fit, narrower ones at the ends. With
-    /// `each_bucket`, as an ask grouped by the bucket needs, only `date_bin`
-    /// buckets. `from` and `to` are on `date_bin` edges.
+    /// Buckets that cover `from..to` once, in time order, picked as
+    /// `cover` says. `from` and `to` are on `date_bin` edges.
+    // An iterator, not a `Vec`: an ask allocates per group, never per
+    // bucket (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
     pub(crate) fn cover(
         &self,
         from: i64,
         to: i64,
-        each_bucket: bool,
-    ) -> impl Iterator<Item = (i64, i64, &Bucket)> {
-        let widest = if each_bucket {
-            DATE_BIN
-        } else {
-            self.levels.len() - 1
+        cover: Cover,
+    ) -> impl Iterator<Item = CoveredBucket<'_>> {
+        let widest = match cover {
+            Cover::EachDateBin => DATE_BIN,
+            Cover::WidestFit => self.levels.len() - 1,
         };
         let mut runs = Vec::new();
         self.runs(widest, from, to, &mut runs);
@@ -787,13 +854,21 @@ impl Rollup {
         self.runs(level - 1, last, to, runs);
     }
 
-    /// Width and start of each `date_bin` bucket not sealed that ends by
-    /// `before`. Wider buckets stay in memory: an ask over a long range
-    /// reads them, and the narrow ones only at its ends (ADR-0035).
-    pub(crate) fn sealable(&self, before: i64) -> impl Iterator<Item = (i64, i64)> {
+    /// Each `date_bin` bucket not sealed that ends by `before`. Wider
+    /// buckets stay in memory: an ask over a long range reads them, and
+    /// the narrow ones only at its ends (ADR-0035).
+    pub(crate) fn sealable(&self, before: i64) -> Vec<BucketId> {
         let level = &self.levels[DATE_BIN];
-        (level.buckets.range(..Some(before)))
-            .filter_map(move |(&start, bucket)| level.hot_ended_by(start?, bucket, before))
+        let mut sealable = Vec::new();
+        for (start, bucket) in level.buckets.range(..Some(before)) {
+            let Some(start) = *start else {
+                continue;
+            };
+            if let Some(id) = level.hot_ended_by(start, bucket, before) {
+                sealable.push(id);
+            }
+        }
+        sealable
     }
 
     /// A copy of a bucket not sealed.
@@ -828,21 +903,53 @@ impl Rollup {
         Ok(())
     }
 
-    /// Width and start of every sealed bucket.
-    pub(crate) fn sealed(&self) -> impl Iterator<Item = (i64, i64)> {
+    /// Every sealed bucket.
+    pub(crate) fn sealed(&self) -> Vec<BucketId> {
+        let mut sealed = Vec::new();
         // Most rollups have none sealed, so none is walked.
-        (self.levels.iter().filter(|_| self.sealed > 0)).flat_map(|level| {
-            (level.buckets.iter())
-                .filter(|(_, bucket)| matches!(bucket, Bucket::Sealed { .. }))
-                .filter_map(|(&start, _)| Some((level.width, start?)))
-        })
+        if self.sealed == 0 {
+            return sealed;
+        }
+        for level in &self.levels {
+            for (start, bucket) in &level.buckets {
+                if let (Some(start), Bucket::Sealed { .. }) = (*start, bucket) {
+                    sealed.push(BucketId {
+                        width: level.width,
+                        start,
+                    });
+                }
+            }
+        }
+        sealed
     }
 
-    /// Width and start of each sealed bucket a row of time `time` falls in.
-    pub(crate) fn touched(&self, time: &Datum) -> impl Iterator<Item = (i64, i64)> {
-        // Every row added asks, and most rollups have none sealed.
-        (self.levels.iter().filter(|_| self.sealed > 0))
-            .filter_map(move |level| level.sealed_bucket_of(time))
+    /// Each sealed bucket a row of time `time` falls in.
+    pub(crate) fn touched(&self, time: &Datum) -> Vec<BucketId> {
+        let mut touched = Vec::new();
+        if self.sealed == 0 {
+            return touched;
+        }
+        for level in &self.levels {
+            if let Some(id) = level.sealed_bucket_of(time) {
+                touched.push(id);
+            }
+        }
+        touched
+    }
+
+    /// Whether a row of time `time` falls in a sealed bucket. Every row
+    /// added asks, so this allocates nothing; most rollups have none
+    /// sealed.
+    fn touches_sealed(&self, time: &Datum) -> bool {
+        if self.sealed == 0 {
+            return false;
+        }
+        for level in &self.levels {
+            if level.sealed_bucket_of(time).is_some() {
+                return true;
+            }
+        }
+        false
     }
 
     /// A bucket from a spill, checked so that no ask or change on it can
@@ -928,8 +1035,13 @@ impl Rollup {
         Ok(())
     }
 
-    fn column(&self, name: &Identifier) -> Option<usize> {
-        self.columns.iter().position(|column| column == name)
+    fn column(&self, name: &Identifier) -> Option<ColumnIndex> {
+        for (position, column) in self.columns.iter().enumerate() {
+            if column == name {
+                return Some(ColumnIndex(position));
+            }
+        }
+        None
     }
 
     fn level(&self, width: i64) -> Option<&Level> {
@@ -942,41 +1054,47 @@ impl Rollup {
             .ok_or("no such width")
     }
 
-    pub(crate) fn codes(&self, part: usize) -> usize {
-        self.codes[part].len()
+    pub(crate) fn codes(&self, part: PartIndex) -> usize {
+        self.codes[part.0].len()
     }
 
-    pub(crate) fn value(&self, part: usize, code: u32) -> &Datum {
-        self.codes[part].value(code)
+    pub(crate) fn value(&self, part: PartIndex, code: u32) -> &Datum {
+        self.codes[part.0].value(code)
     }
 
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
         arity(self.row_len(), row.len())?;
-        for column in iter::once(TIME).chain(self.columns_reading(Reads::Numbers)) {
-            if !matches!(row[column], Datum::Null | Datum::Int(_)) {
+        if !matches!(row[TIME], Datum::Null | Datum::Int(_)) {
+            return Err(RowError::NotInt {
+                column: self.columns[TIME].clone(),
+            });
+        }
+        // Numbers before booleans, so a row wrong in both names a number.
+        for input in &self.inputs {
+            let column = input.column.0;
+            if input.kind.reads() == Reads::Numbers
+                && !matches!(row[column], Datum::Null | Datum::Int(_))
+            {
                 return Err(RowError::NotInt {
                     column: self.columns[column].clone(),
                 });
             }
         }
-        for column in self.columns_reading(Reads::Booleans) {
-            if !matches!(row[column], Datum::Null | Datum::Bool(_)) {
+        for input in &self.inputs {
+            let column = input.column.0;
+            if input.kind.reads() == Reads::Booleans
+                && !matches!(row[column], Datum::Null | Datum::Bool(_))
+            {
                 return Err(RowError::NotBool {
                     column: self.columns[column].clone(),
                 });
             }
         }
-        if self.touched(&row[TIME]).next().is_some() {
+        if self.touches_sealed(&row[TIME]) {
             return Err(RowError::Sealed);
         }
         Ok(())
-    }
-
-    fn columns_reading(&self, reads: Reads) -> impl Iterator<Item = usize> {
-        (self.inputs.iter())
-            .filter(move |input| input.kind.reads() == reads)
-            .map(|input| input.column)
     }
 
     fn code(&mut self, row: &[Datum], key: &mut Vec<u32>) {
@@ -1164,15 +1282,18 @@ impl State {
                 })
             }
             (SealedColumn::Extent { values }, StateKind::Extent)
-                if values.len() == len
-                    && values.iter().all(|pairs| ascending(pairs))
-                    && values.iter().flatten().all(|(_, n)| counted(*n)) =>
+                if values.len() == len && extent_fits(&values) =>
             {
-                let counts: Vec<ValueCounts> = values
-                    .iter()
-                    .map(|pairs| ValueCounts::from_pairs(pairs))
-                    .collect();
-                let (mins, maxs) = counts.iter().map(ValueCounts::ends).unzip();
+                let mut mins = Vec::with_capacity(len);
+                let mut maxs = Vec::with_capacity(len);
+                let mut counts = Vec::with_capacity(len);
+                for entries in &values {
+                    let value_counts = ValueCounts::from_ascending(entries);
+                    let ends = value_counts.ends();
+                    mins.push(ends.least);
+                    maxs.push(ends.greatest);
+                    counts.push(value_counts);
+                }
                 Some(State::Extent { mins, maxs, counts })
             }
             (SealedColumn::Distinct { values }, StateKind::Distinct)
@@ -1233,7 +1354,9 @@ impl State {
             (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
                 held(counts[i].sub(number, 1))?;
                 if number == mins[i] || number == maxs[i] {
-                    (mins[i], maxs[i]) = counts[i].ends();
+                    let ends = counts[i].ends();
+                    mins[i] = ends.least;
+                    maxs[i] = ends.greatest;
                 }
             }
             (State::Distinct(counts), _) => {
@@ -1323,7 +1446,9 @@ impl State {
                 },
             ) => {
                 counts[i].add_counts(&src_counts[src_i]);
-                (mins[i], maxs[i]) = counts[i].ends();
+                let ends = counts[i].ends();
+                mins[i] = ends.least;
+                maxs[i] = ends.greatest;
             }
             (State::Distinct(counts), State::Distinct(src_counts)) => {
                 for (value, n) in &src_counts[src_i] {
@@ -1366,7 +1491,9 @@ impl State {
                 },
             ) => {
                 counts[i].sub_counts(&src_counts[src_i]);
-                (mins[i], maxs[i]) = counts[i].ends();
+                let ends = counts[i].ends();
+                mins[i] = ends.least;
+                maxs[i] = ends.greatest;
             }
             (State::Distinct(counts), State::Distinct(src_counts)) => {
                 for (value, n) in &src_counts[src_i] {
@@ -1430,8 +1557,19 @@ fn counted(count: u64) -> bool {
     count > 0
 }
 
-fn ascending(pairs: &[(i64, u64)]) -> bool {
-    pairs.is_sorted_by(|earlier, later| earlier.0 < later.0)
+/// Each cell's values ascend, each counted once at least.
+fn extent_fits(values: &[Vec<ValueCount>]) -> bool {
+    for entries in values {
+        for (position, entry) in entries.iter().enumerate() {
+            if !counted(entry.count) {
+                return false;
+            }
+            if position > 0 && entries[position - 1].value >= entry.value {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1503,7 +1641,10 @@ mod tests {
     /// them null in each column a count or a sum reads, and as many not.
     /// A store never asks for more, so this is asked here.
     fn cell_of(values: &[Datum]) -> Cells {
-        let inputs = [StateKind::Count, StateKind::Sum].map(|kind| Input { kind, column: 1 });
+        let inputs = [StateKind::Count, StateKind::Sum].map(|kind| Input {
+            kind,
+            column: ColumnIndex(1),
+        });
         let mut cells = Cells::new(1, &inputs);
         let entry = cells.entry(&[7]);
         assert!(entry.new && entry.position == 0);

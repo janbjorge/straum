@@ -27,6 +27,11 @@ pub(crate) struct Projection {
     many: usize,
 }
 
+/// A position among a dim's attributes, the columns the views read
+/// beside its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttributeIndex(pub(crate) usize);
+
 /// The code of `Null` in every attribute's codes.
 pub(crate) const NULL: u32 = 0;
 
@@ -158,17 +163,17 @@ impl Projection {
         self.rows.get(key).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn attribute_value(&self, attribute: usize, code: u32) -> &Datum {
-        self.codes[attribute].value(code)
+    pub(crate) fn attribute_value(&self, attribute: AttributeIndex, code: u32) -> &Datum {
+        self.codes[attribute.0].value(code)
     }
 
     /// Codes an attribute has, `Null`'s counted.
-    pub(crate) fn attribute_codes(&self, attribute: usize) -> usize {
-        self.codes[attribute].len()
+    pub(crate) fn attribute_codes(&self, attribute: AttributeIndex) -> usize {
+        self.codes[attribute.0].len()
     }
 
-    pub(crate) fn attribute_type(&self, attribute: usize) -> ColumnType {
-        self.types[self.key_len + attribute]
+    pub(crate) fn attribute_type(&self, attribute: AttributeIndex) -> ColumnType {
+        self.types[self.key_len + attribute.0]
     }
 
     pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {

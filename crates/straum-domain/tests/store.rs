@@ -14,7 +14,8 @@ use common::{
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
     Condition, Datum, Dim, Fact, Identifier, KeyPart, Literal, Measure, Origin, Ref, RefKind,
-    RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, Value, Via, Width,
+    RowError, Sealed, SealedColumn, SealedError, SealedId, Spec, Store, Time, Value, ValueCount,
+    Via, Width,
 };
 
 const WIDTH: u32 = 900;
@@ -2882,7 +2883,7 @@ fn thaw_refuses_values_that_do_not_fit_their_cell() {
     bucket.assert_refused(&[
         ("columns don't fit the measures", &|sealed| {
             sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![(1, 0)]],
+                values: vec![vec![ValueCount { value: 1, count: 0 }]],
             };
         }),
         ("columns don't fit the measures", &|sealed| {
@@ -2890,12 +2891,18 @@ fn thaw_refuses_values_that_do_not_fit_their_cell() {
         }),
         ("columns don't fit the measures", &|sealed| {
             sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![(9, 1), (4, 1)]],
+                values: vec![vec![
+                    ValueCount { value: 9, count: 1 },
+                    ValueCount { value: 4, count: 1 },
+                ]],
             };
         }),
         ("columns don't fit the measures", &|sealed| {
             sealed.columns[extent] = SealedColumn::Extent {
-                values: vec![vec![(4, 1), (4, 1)]],
+                values: vec![vec![
+                    ValueCount { value: 4, count: 1 },
+                    ValueCount { value: 4, count: 1 },
+                ]],
             };
         }),
         ("columns don't fit the measures", &|sealed| {

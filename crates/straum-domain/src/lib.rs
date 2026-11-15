@@ -25,7 +25,7 @@ pub use ask::{Ask, AskError, AskKey};
 pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
-pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed};
+pub use sealed::{Sealed, SealedColumn, SealedError, SealedId, Thawed, ValueCount};
 pub use spec::{
     Attribute, ByKey, Condition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind,
     Spec, SpecError, Table, Time, Via, Width,

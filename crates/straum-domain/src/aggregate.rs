@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::column::Counts;
 use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
+use crate::sealed::ValueCount;
 use crate::value::{Datum, Value};
 use crate::value_counts::ValueCounts;
 
@@ -153,7 +154,7 @@ pub(crate) enum Partials {
     /// in, sorted only when finished.
     Percentile {
         fraction: Fraction,
-        values: Vec<Vec<(i64, u64)>>,
+        values: Vec<Vec<ValueCount>>,
     },
     /// A `bool_and` and a `bool_or` merge alike and part only when finished.
     Bools {
@@ -438,17 +439,20 @@ impl Partials {
             Partials::Distinct(seen) => Value::Int(seen[group].len() as i128),
             Partials::Percentile { fraction, values } => {
                 let values = &mut values[group];
-                values.sort_unstable_by_key(|&(value, _)| value);
-                let total: u64 = values.iter().map(|&(_, count)| count).sum();
+                values.sort_unstable_by_key(|entry| entry.value);
+                let mut total: u64 = 0;
+                for entry in values.iter() {
+                    total += entry.count;
+                }
                 if total == 0 {
                     return Value::Null;
                 }
                 let rank = fraction.rank(total);
                 let mut seen = 0;
-                for &(value, count) in values.iter() {
-                    seen += count;
+                for entry in values.iter() {
+                    seen += entry.count;
                     if seen >= rank {
-                        return Value::Int(value.into());
+                        return Value::Int(entry.value.into());
                     }
                 }
                 unreachable!("rank is at most the values' count")

@@ -7,6 +7,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::{hint, mem};
 
+use crate::sealed::ValueCount;
+
 /// Bytes of records a cell holds in itself, where a run's pointer would
 /// be. Nearly two thirds of the taxi cells hold no more.
 const INLINE: usize = 28;
@@ -24,7 +26,7 @@ const RUN_MAX: usize = 4 << 10;
 
 /// Values ascend. A record is a value less its run's base, in as many bytes
 /// as the widest of the run takes, then the value's count less one
-/// likewise: three fares seen once take two bytes each, where a pair of
+/// likewise: three fares seen once take two bytes each, where a entry of
 /// integers took 16. The widths are fixed within a run, so a value is found
 /// by halving, and a value or a count too wide for its run has the run
 /// encoded anew.
@@ -38,6 +40,14 @@ pub(crate) enum ValueCounts {
     /// Runs of at most [`RUN_MAX`] bytes. A run holds the values from its
     /// key up to the next run's, and the first those below every key too.
     Runs(BTreeMap<i64, Vec<u8>>),
+}
+
+/// The least and greatest value a cell holds: `i64::MAX` and `i64::MIN`
+/// when it holds none, which any min or max passes over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ends {
+    pub(crate) least: i64,
+    pub(crate) greatest: i64,
 }
 
 // A column of these is a third of what a min or max holds beside its runs.
@@ -139,8 +149,11 @@ impl<'a> Records<'a> {
         })
     }
 
-    fn iter(self) -> impl Iterator<Item = (i64, u64)> + 'a {
-        (0..self.len).map(move |i| (self.value(i), self.count(i)))
+    fn iter(self) -> impl Iterator<Item = ValueCount> + 'a {
+        (0..self.len).map(move |i| ValueCount {
+            value: self.value(i),
+            count: self.count(i),
+        })
     }
 
     /// Whether a record of these widths holds `value` counted `count` times.
@@ -164,24 +177,24 @@ impl<'a> Records<'a> {
         }
     }
 
-    /// The pairs of at most [`INLINE`] records, with a place for one more.
-    fn few(self) -> ([(i64, u64); INLINE + 1], usize) {
-        let mut pairs = [(0, 0); INLINE + 1];
-        for (pair, held) in pairs.iter_mut().zip(self.iter()) {
-            *pair = held;
+    /// The entries of at most [`INLINE`] records, with a place for one more.
+    fn few(self) -> ([ValueCount; INLINE + 1], usize) {
+        let mut entries = [ValueCount { value: 0, count: 0 }; INLINE + 1];
+        for (entry, held) in entries.iter_mut().zip(self.iter()) {
+            *entry = held;
         }
-        (pairs, self.len)
+        (entries, self.len)
     }
 
-    /// The pairs with `count` more of `value`.
-    fn with(self, value: i64, count: u64) -> Vec<(i64, u64)> {
-        let mut pairs = Vec::with_capacity(self.len + 1);
-        pairs.extend(self.iter());
+    /// The entries with `count` more of `value`.
+    fn with(self, value: i64, count: u64) -> Vec<ValueCount> {
+        let mut entries = Vec::with_capacity(self.len + 1);
+        entries.extend(self.iter());
         match self.find(value) {
-            Ok(i) => pairs[i].1 += count,
-            Err(i) => pairs.insert(i, (value, count)),
+            Ok(i) => entries[i].count += count,
+            Err(i) => entries.insert(i, ValueCount { value, count }),
         }
-        pairs
+        entries
     }
 }
 
@@ -233,8 +246,12 @@ fn unsigned_width(n: u64) -> usize {
     (64 - n.leading_zeros() as usize).div_ceil(8)
 }
 
-fn count_width(pairs: &[(i64, u64)]) -> usize {
-    unsigned_width(pairs.iter().map(|&(_, count)| count - 1).max().unwrap_or(0))
+fn count_width(entries: &[ValueCount]) -> usize {
+    let mut most = 0;
+    for entry in entries {
+        most = most.max(entry.count - 1);
+    }
+    unsigned_width(most)
 }
 
 fn byte(width: usize) -> u8 {
@@ -343,11 +360,11 @@ fn take(run: &mut Vec<u8>, value: i64, count: u64) -> Option<bool> {
     Some(held_count == count)
 }
 
-/// `pairs`, which ascend and are not empty, as runs of at most
+/// `entries`, which ascend and are not empty, as runs of at most
 /// [`RUN_MAX`] bytes under the narrowest widths that hold them.
-fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
-    let base = pairs[pairs.len() / 2].0;
-    let (least, greatest) = (pairs[0].0, pairs[pairs.len() - 1].0);
+fn runs_into(entries: &[ValueCount], runs: &mut BTreeMap<i64, Vec<u8>>) {
+    let base = entries[entries.len() / 2].value;
+    let (least, greatest) = (entries[0].value, entries[entries.len() - 1].value);
     let value_width = match (least.checked_sub(base), greatest.checked_sub(base)) {
         (Some(below), Some(above)) => signed_width(below).max(signed_width(above)),
         // As in `Records::holds`.
@@ -355,12 +372,12 @@ fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
     };
     let widths = Widths {
         value: value_width,
-        count: count_width(pairs),
+        count: count_width(entries),
     };
     let size = widths.size();
-    let len = HEADER + pairs.len() * size;
+    let len = HEADER + entries.len() * size;
     if len > RUN_MAX {
-        let (low, high) = pairs.split_at(pairs.len() / 2);
+        let (low, high) = entries.split_at(entries.len() / 2);
         runs_into(low, runs);
         runs_into(high, runs);
         return;
@@ -368,15 +385,15 @@ fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
     let mut run = vec![0; len];
     run[0] = byte(widths.value);
     run[1] = byte(widths.count);
-    set_len(&mut run, pairs.len());
+    set_len(&mut run, entries.len());
     run[4..HEADER].copy_from_slice(&base.to_le_bytes());
-    for (i, &(value, count)) in pairs.iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate() {
         record(
             &mut run,
             HEADER + i * size,
             widths,
-            value.wrapping_sub(base),
-            count,
+            entry.value.wrapping_sub(base),
+            entry.count,
         );
     }
     runs.insert(least, run);
@@ -394,8 +411,8 @@ fn key_of(runs: &BTreeMap<i64, Vec<u8>>, value: i64) -> i64 {
 /// move at every change.
 fn settled(run: &mut Vec<u8>) -> Option<ValueCounts> {
     if run.len() - HEADER <= INLINE / 2 {
-        let (pairs, len) = Records::of(run).few();
-        return Some(ValueCounts::from_pairs(&pairs[..len]));
+        let (entries, len) = Records::of(run).few();
+        return Some(ValueCounts::from_ascending(&entries[..len]));
     }
     if run.len() <= run.capacity() / 2 {
         run.shrink_to_fit();
@@ -410,34 +427,40 @@ impl ValueCounts {
         cell
     });
 
-    /// `pairs` ascend by value, each counted once at least.
-    pub(crate) fn from_pairs(pairs: &[(i64, u64)]) -> ValueCounts {
-        let (Some(&(least, _)), Some(&(greatest, _))) = (pairs.first(), pairs.last()) else {
+    /// `entries` ascend by value, each counted once at least.
+    pub(crate) fn from_ascending(entries: &[ValueCount]) -> ValueCounts {
+        let (Some(least), Some(greatest)) = (entries.first(), entries.last()) else {
             return ValueCounts::EMPTY;
         };
         let widths = Widths {
-            value: signed_width(least).max(signed_width(greatest)),
-            count: count_width(pairs),
+            value: signed_width(least.value).max(signed_width(greatest.value)),
+            count: count_width(entries),
         };
         let size = widths.size();
-        if pairs.len() * size <= INLINE {
+        if entries.len() * size <= INLINE {
             let mut cell = [0; CELL_HEADER + INLINE];
             cell[..CELL_HEADER].copy_from_slice(&[
-                byte(pairs.len()),
+                byte(entries.len()),
                 byte(widths.value),
                 byte(widths.count),
             ]);
-            for (i, &(value, count)) in pairs.iter().enumerate() {
-                record(&mut cell, CELL_HEADER + i * size, widths, value, count);
+            for (i, entry) in entries.iter().enumerate() {
+                record(
+                    &mut cell,
+                    CELL_HEADER + i * size,
+                    widths,
+                    entry.value,
+                    entry.count,
+                );
             }
             return ValueCounts::Inline(cell);
         }
         let mut runs = BTreeMap::new();
-        runs_into(pairs, &mut runs);
+        runs_into(entries, &mut runs);
         if runs.len() > 1 {
             return ValueCounts::Runs(runs);
         }
-        ValueCounts::Run(runs.pop_first().expect("pairs make a run").1)
+        ValueCounts::Run(runs.pop_first().expect("entries make a run").1)
     }
 
     /// Counts `count` more of `value`, `count` above zero.
@@ -461,22 +484,22 @@ impl ValueCounts {
                     // Too many or too wide for the cell as it is: encoded
                     // anew they may fit it yet.
                     _ => {
-                        let (mut pairs, mut len) = held.few();
+                        let (mut entries, mut len) = held.few();
                         match held.find(value) {
-                            Ok(i) => pairs[i].1 += count,
+                            Ok(i) => entries[i].count += count,
                             Err(i) => {
-                                pairs.copy_within(i..len, i + 1);
-                                pairs[i] = (value, count);
+                                entries.copy_within(i..len, i + 1);
+                                entries[i] = ValueCount { value, count };
                                 len += 1;
                             }
                         }
-                        *self = ValueCounts::from_pairs(&pairs[..len]);
+                        *self = ValueCounts::from_ascending(&entries[..len]);
                     }
                 }
             }
             ValueCounts::Run(run) => {
                 if !put(run, value, count) {
-                    *self = ValueCounts::from_pairs(&Records::of(run).with(value, count));
+                    *self = ValueCounts::from_ascending(&Records::of(run).with(value, count));
                 }
             }
             ValueCounts::Runs(runs) => {
@@ -542,21 +565,26 @@ impl ValueCounts {
     }
 
     pub(crate) fn add_counts(&mut self, other: &ValueCounts) {
-        for (value, count) in other.iter() {
-            self.add(value, count);
+        for entry in other.iter() {
+            self.add(entry.value, entry.count);
         }
     }
 
     /// Takes out what [`ValueCounts::covers`] found held.
     pub(crate) fn sub_counts(&mut self, other: &ValueCounts) {
-        for (value, count) in other.iter() {
-            let held = self.sub(value, count);
+        for entry in other.iter() {
+            let held = self.sub(entry.value, entry.count);
             assert!(held, "covers checked");
         }
     }
 
     pub(crate) fn covers(&self, other: &ValueCounts) -> bool {
-        other.iter().all(|(value, count)| self.has(value, count))
+        for entry in other.iter() {
+            if !self.has(entry.value, entry.count) {
+                return false;
+            }
+        }
+        true
     }
 
     fn has(&self, value: i64, count: u64) -> bool {
@@ -583,7 +611,7 @@ impl ValueCounts {
     }
 
     /// Each value and its count, ascending by value.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (i64, u64)> + '_ {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = ValueCount> + '_ {
         let runs = match self {
             ValueCounts::Runs(runs) => Some(runs.values()),
             _ => None,
@@ -592,8 +620,7 @@ impl ValueCounts {
             .chain((runs.into_iter().flatten()).flat_map(|run| Records::of(run).iter()))
     }
 
-    /// The least and greatest value, `i64::MAX` and `i64::MIN` if none.
-    pub(crate) fn ends(&self) -> (i64, i64) {
+    pub(crate) fn ends(&self) -> Ends {
         let (first, last) = if let ValueCounts::Runs(runs) = self {
             (
                 runs.values().next().map(|run| Records::of(run)),
@@ -603,7 +630,10 @@ impl ValueCounts {
             let records = self.flat();
             (records, records)
         };
-        (least_in(first), greatest_in(last))
+        Ends {
+            least: least_in(first),
+            greatest: greatest_in(last),
+        }
     }
 }
 
@@ -625,42 +655,38 @@ fn greatest_in(records: Option<Records<'_>>) -> i64 {
 mod tests {
     use super::*;
 
-    /// splitmix64; the tests need no crate for randomness.
-    struct Rng(u64);
+    use crate::test_rng::Rng;
 
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
-        }
-
-        fn below(&mut self, n: u64) -> u64 {
-            self.next() % n
-        }
+    fn entry(value: i64, count: u64) -> ValueCount {
+        ValueCount { value, count }
     }
 
-    fn pairs_of(held: &BTreeMap<i64, u64>) -> Vec<(i64, u64)> {
-        held.iter().map(|(&value, &count)| (value, count)).collect()
+    fn entries_of(held: &BTreeMap<i64, u64>) -> Vec<ValueCount> {
+        let mut entries = Vec::with_capacity(held.len());
+        for (&value, &count) in held {
+            entries.push(entry(value, count));
+        }
+        entries
     }
 
-    fn ends_of(held: &BTreeMap<i64, u64>) -> (i64, i64) {
-        (
-            held.keys().next().copied().unwrap_or(i64::MAX),
-            held.keys().next_back().copied().unwrap_or(i64::MIN),
-        )
+    fn ends_of(held: &BTreeMap<i64, u64>) -> Ends {
+        Ends {
+            least: held.keys().next().copied().unwrap_or(i64::MAX),
+            greatest: held.keys().next_back().copied().unwrap_or(i64::MIN),
+        }
     }
 
     /// The counts are the reference's, and so are they encoded from its
-    /// pairs at once.
+    /// entries at once.
     fn check(counts: &ValueCounts, held: &BTreeMap<i64, u64>, at: &str) {
-        let pairs = pairs_of(held);
-        assert!(counts.iter().eq(pairs.iter().copied()), "{at}");
+        let entries = entries_of(held);
+        assert!(counts.iter().eq(entries.iter().copied()), "{at}");
         assert_eq!(counts.ends(), ends_of(held), "{at}");
-        let anew = ValueCounts::from_pairs(&pairs);
-        assert!(anew.iter().eq(pairs.iter().copied()), "{at}: encoded anew");
+        let anew = ValueCounts::from_ascending(&entries);
+        assert!(
+            anew.iter().eq(entries.iter().copied()),
+            "{at}: encoded anew"
+        );
         assert!(counts.covers(&anew) && anew.covers(counts), "{at}");
     }
 
@@ -725,12 +751,12 @@ mod tests {
     ];
 
     /// Adds and removes at random against a map from value to count: the
-    /// pairs, the ends and every refusal are the map's, through each form
+    /// entries, the ends and every refusal are the map's, through each form
     /// a cell takes on its way up and back to empty.
     #[test]
     fn counts_follow_a_reference_through_every_form() {
         for shape in &SHAPES {
-            let mut rng = Rng(11);
+            let mut rng = Rng::new(11);
             let mut counts = ValueCounts::EMPTY;
             let mut held: BTreeMap<i64, u64> = BTreeMap::new();
             let mut forms = vec![form(&counts)];
@@ -815,7 +841,7 @@ mod tests {
             assert_eq!(form(&counts), "runs");
             check(&counts, &held, "in order");
             // Out again from the least: every run's key leaves ahead of its run.
-            for (value, count) in pairs_of(&held) {
+            for ValueCount { value, count } in entries_of(&held) {
                 assert!(counts.sub(value, count), "{value}");
                 held.remove(&value);
                 assert_eq!(counts.ends(), ends_of(&held), "{value}");
@@ -839,10 +865,10 @@ mod tests {
     #[test]
     fn counts_fold_in_and_come_out_again() {
         for (ours, theirs) in [(3, 2), (300, 40), (9_000, 9_000), (0, 5)] {
-            let mut rng = Rng(5);
+            let mut rng = Rng::new(5);
             let (our_held, their_held) = (draw(&mut rng, ours), draw(&mut rng, theirs));
-            let mut counts = ValueCounts::from_pairs(&pairs_of(&our_held));
-            let other = ValueCounts::from_pairs(&pairs_of(&their_held));
+            let mut counts = ValueCounts::from_ascending(&entries_of(&our_held));
+            let other = ValueCounts::from_ascending(&entries_of(&their_held));
             counts.add_counts(&other);
             let mut both = our_held.clone();
             for (&value, &count) in &their_held {
@@ -855,8 +881,8 @@ mod tests {
             // One more of a value than is left, and a value never held.
             let (&value, &count) = their_held.iter().next().unwrap();
             let more = our_held.get(&value).copied().unwrap_or(0) + count + 1;
-            assert!(!counts.covers(&ValueCounts::from_pairs(&[(value, more)])));
-            assert!(!counts.covers(&ValueCounts::from_pairs(&[(-7, 1)])));
+            assert!(!counts.covers(&ValueCounts::from_ascending(&[entry(value, more)])));
+            assert!(!counts.covers(&ValueCounts::from_ascending(&[entry(-7, 1)])));
         }
     }
 
@@ -865,8 +891,11 @@ mod tests {
     #[test]
     fn a_cell_gives_only_what_it_holds() {
         for values in [0, 3, 400, 20_000] {
-            let pairs: Vec<(i64, u64)> = (0..values).map(|index| (index * 70, 2)).collect();
-            let mut counts = ValueCounts::from_pairs(&pairs);
+            let mut entries = Vec::new();
+            for index in 0..values {
+                entries.push(entry(index * 70, 2));
+            }
+            let mut counts = ValueCounts::from_ascending(&entries);
             for (value, count) in [(-70, 1), (35, 1), (values * 70, 1), (0, 3), (70, u64::MAX)] {
                 assert!(
                     !counts.has(value, count),
@@ -877,22 +906,26 @@ mod tests {
                     "{values} values: gave {count} of {value}"
                 );
             }
-            assert!(counts.iter().eq(pairs.iter().copied()), "{values} values");
+            assert!(counts.iter().eq(entries.iter().copied()), "{values} values");
         }
     }
 
-    /// The form pairs are encoded in, how many records or runs or bytes
+    /// The form entries are encoded in, how many records or runs or bytes
     /// it holds, and its value and count widths.
-    fn layout(pairs: &[(i64, u64)]) -> (&'static str, usize, u8, u8) {
-        match ValueCounts::from_pairs(pairs) {
+    fn layout(entries: &[ValueCount]) -> (&'static str, usize, u8, u8) {
+        match ValueCounts::from_ascending(entries) {
             ValueCounts::Inline(cell) => ("cell", usize::from(cell[0]), cell[1], cell[2]),
             ValueCounts::Run(run) => ("run", run.len(), run[0], run[1]),
             ValueCounts::Runs(runs) => ("runs", runs.len(), 0, 0),
         }
     }
 
-    fn once(values: i64, least: i64, step: i64) -> Vec<(i64, u64)> {
-        (0..values).map(|index| (least + index * step, 1)).collect()
+    fn once(values: i64, least: i64, step: i64) -> Vec<ValueCount> {
+        let mut entries = Vec::new();
+        for index in 0..values {
+            entries.push(entry(least + index * step, 1));
+        }
+        entries
     }
 
     /// Where a cell keeps its values, and in how many bytes.
@@ -900,12 +933,12 @@ mod tests {
     fn a_cell_keeps_its_values_in_the_fewest_bytes() {
         // Three fares seen once: two bytes each, and none for the counts.
         assert_eq!(
-            layout(&[(1280, 1), (1350, 1), (1420, 1)]),
+            layout(&[entry(1280, 1), entry(1350, 1), entry(1420, 1)]),
             ("cell", 3, 2, 0)
         );
         // A fare seen twice gives every count a byte.
         assert_eq!(
-            layout(&[(1280, 2), (1350, 1), (1420, 1)]),
+            layout(&[entry(1280, 2), entry(1350, 1), entry(1420, 1)]),
             ("cell", 3, 2, 1)
         );
         assert_eq!(layout(&[]), ("cell", 0, 1, 0));
@@ -929,26 +962,34 @@ mod tests {
         for width in 1..=8_u32 {
             let greatest = i64::MAX >> (64 - 8 * width);
             let most = u64::MAX >> (64 - 8 * width);
-            for pairs in [
-                vec![(greatest, 1)],
-                vec![(-greatest - 1, 1)],
-                vec![(-greatest - 1, most), (0, 1), (greatest, most)],
+            for entries in [
+                vec![entry(greatest, 1)],
+                vec![entry(-greatest - 1, 1)],
                 vec![
-                    (-greatest - 1, 1),
-                    (-1, most),
-                    (greatest - 1, 2),
-                    (greatest, 1),
+                    entry(-greatest - 1, most),
+                    entry(0, 1),
+                    entry(greatest, most),
+                ],
+                vec![
+                    entry(-greatest - 1, 1),
+                    entry(-1, most),
+                    entry(greatest - 1, 2),
+                    entry(greatest, 1),
                 ],
             ] {
-                let at = format!("{width} bytes: {pairs:?}");
-                let counts = ValueCounts::from_pairs(&pairs);
-                assert!(counts.iter().eq(pairs.iter().copied()), "{at}");
+                let at = format!("{width} bytes: {entries:?}");
+                let counts = ValueCounts::from_ascending(&entries);
+                assert!(counts.iter().eq(entries.iter().copied()), "{at}");
                 let mut added = ValueCounts::EMPTY;
-                for &(value, count) in pairs.iter().rev() {
-                    added.add(value, count);
+                for added_entry in entries.iter().rev() {
+                    added.add(added_entry.value, added_entry.count);
                 }
-                assert!(added.iter().eq(pairs.iter().copied()), "{at}: added");
-                assert_eq!(added.ends(), (pairs[0].0, pairs[pairs.len() - 1].0), "{at}");
+                assert!(added.iter().eq(entries.iter().copied()), "{at}: added");
+                let ends = Ends {
+                    least: entries[0].value,
+                    greatest: entries[entries.len() - 1].value,
+                };
+                assert_eq!(added.ends(), ends, "{at}");
             }
         }
     }
@@ -956,7 +997,7 @@ mod tests {
     /// A run widens when a value or a count outgrows it, whatever it holds.
     #[test]
     fn a_run_widens_for_a_value_or_a_count_it_cannot_hold() {
-        let narrow: Vec<(i64, u64)> = (0..100).map(|value| (value, 1)).collect();
+        let narrow = once(100, 0, 1);
         for (value, count) in [
             (1 << 20, 1),
             (-(1 << 40), 1),
@@ -966,8 +1007,11 @@ mod tests {
             (50, 1 << 30),
             (200, u64::MAX),
         ] {
-            let mut counts = ValueCounts::from_pairs(&narrow);
-            let mut held: BTreeMap<i64, u64> = narrow.iter().copied().collect();
+            let mut counts = ValueCounts::from_ascending(&narrow);
+            let mut held: BTreeMap<i64, u64> = BTreeMap::new();
+            for narrow_entry in &narrow {
+                held.insert(narrow_entry.value, narrow_entry.count);
+            }
             counts.add(value, count);
             *held.entry(value).or_default() += count;
             check(&counts, &held, &format!("{count} of {value}"));
