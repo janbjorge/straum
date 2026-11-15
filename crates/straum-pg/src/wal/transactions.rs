@@ -164,7 +164,7 @@ impl Transactions {
                     }
                     return Ok(None);
                 }
-                if held.iter().any(|h| h.over) {
+                if held.iter().any(|part| part.over) {
                     return Err(TooBig {
                         xid: ending.xid,
                         lsn,
@@ -173,20 +173,21 @@ impl Transactions {
                 // pgoutput sends nothing for a transaction that changed
                 // no published table. One that invalidated a table may
                 // have changed how its rows read, so it still comes.
-                if held.iter().all(|h| h.changes.is_empty()) && ending.invalidated.is_empty() {
+                if held.iter().all(|part| part.changes.is_empty()) && ending.invalidated.is_empty()
+                {
                     return Ok(None);
                 }
                 // Each xid's changes are in WAL order; together they
                 // merge by LSN, as the reorder buffer replays them.
                 let mut changes: Vec<(u64, Change)> =
-                    held.into_iter().flat_map(|h| h.changes).collect();
+                    held.into_iter().flat_map(|part| part.changes).collect();
                 changes.sort_by_key(|(lsn, _)| *lsn);
                 Ok(Some(Committed {
                     xid: ending.xid,
                     lsn,
                     end,
                     time: ending.time,
-                    changes: changes.into_iter().map(|(_, c)| c).collect(),
+                    changes: changes.into_iter().map(|(_, change)| change).collect(),
                     invalidated: ending.invalidated,
                 }))
             }
@@ -261,17 +262,17 @@ impl Transactions {
         }
         let xids = std::iter::once(ending.xid).chain(ending.subxacts.iter().copied());
         let held: Vec<Held> = xids.filter_map(|xid| self.held.remove(&xid)).collect();
-        self.bytes -= held.iter().map(|h| h.bytes).sum::<usize>();
+        self.bytes -= held.iter().map(|part| part.bytes).sum::<usize>();
         held
     }
 
     #[cfg(test)]
     fn held_changes(&self) -> usize {
-        let counted: usize = (self.held.values().flat_map(|h| &h.changes))
-            .map(|(_, c)| c.footprint())
+        let counted: usize = (self.held.values().flat_map(|held| &held.changes))
+            .map(|(_, change)| change.footprint())
             .sum();
         assert_eq!(self.bytes, counted, "bytes as counted");
-        self.held.values().map(|h| h.changes.len()).sum()
+        self.held.values().map(|held| held.changes.len()).sum()
     }
 
     #[cfg(test)]
@@ -298,13 +299,13 @@ impl Snapshot {
         let mut parts = text.split(':');
         let xmin: u64 = parts.next()?.parse().ok()?;
         let xmax: u64 = parts.next()?.parse().ok()?;
-        let running = match parts.next()? {
-            "" => HashSet::new(),
-            list => list
-                .split(',')
-                .map(|x| x.parse().ok())
-                .collect::<Option<_>>()?,
-        };
+        let mut running = HashSet::new();
+        let list = parts.next()?;
+        if !list.is_empty() {
+            for xid in list.split(',') {
+                running.insert(xid.parse().ok()?);
+            }
+        }
         (parts.next().is_none() && xmin <= xmax).then_some(Snapshot { xmax, running })
     }
 
@@ -336,25 +337,25 @@ mod tests {
     impl Rng {
         fn next(&mut self) -> u64 {
             self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
+            let mut mixed = self.0;
+            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            mixed ^ (mixed >> 31)
         }
 
-        fn below(&mut self, n: u64) -> u64 {
-            self.next() % n
+        fn below(&mut self, limit: u64) -> u64 {
+            self.next() % limit
         }
     }
 
-    fn change(n: u64) -> Change {
+    fn change(number: u64) -> Change {
         Change::Insert {
             file: FILE,
             new: Tuple {
                 infomask2: 1,
                 infomask: 0,
                 hoff: 24,
-                body: n.to_le_bytes().into(),
+                body: number.to_le_bytes().into(),
             },
         }
     }
@@ -390,23 +391,53 @@ mod tests {
         pending: Vec<u64>,
     }
 
-    /// Random interleavings of transactions that change rows in the top
-    /// and in subtransactions, release or roll back savepoints, commit,
-    /// abort or vanish in a crash, with `RUNNING_XACTS` between: what
-    /// commits is each committed transaction that started after the
-    /// first `RUNNING_XACTS`, with its changes and its released
-    /// subtransactions', in WAL order. Nothing stays held.
-    #[test]
-    fn commits_what_a_reference_commits() {
-        for seed in 0..500 {
-            let mut rng = Rng(seed);
+    fn commit(xid: u32, subxacts: Vec<u32>) -> Event {
+        Event::Commit(ending(xid, subxacts))
+    }
+
+    /// A snapshot that sees nothing.
+    fn blind() -> Snapshot {
+        Snapshot::parse("0:0:").unwrap()
+    }
+
+    /// A transaction and the changes a reference keeps of it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Kept {
+        xid: u32,
+        changes: Vec<u64>,
+    }
+
+    /// The generated workload as it runs, and what a reference expects.
+    struct Workload {
+        seed: u64,
+        scripts: Vec<Script>,
+        /// The xid after the last script's.
+        next_xid: u32,
+        transactions: Transactions,
+        lsn: u64,
+        /// The last change number handed out.
+        counter: u64,
+        /// The scripts started so far, in order.
+        started: usize,
+        /// The scripts started and not yet ended, by index.
+        open: Vec<usize>,
+        /// The first script started after the first `RUNNING_XACTS`.
+        first_whole: Option<usize>,
+        expected: Vec<Kept>,
+        emitted: Vec<Kept>,
+        /// Commits dropped as not whole that a snapshot may still miss.
+        dropped: Vec<u32>,
+    }
+
+    impl Workload {
+        fn new(seed: u64, rng: &mut Rng) -> Workload {
             let mut next_xid = (u32::MAX - 30).wrapping_add(u32::try_from(rng.below(60)).unwrap());
             let mut scripts: Vec<Script> = Vec::new();
-            for _ in 0..1 + rng.below(10) {
+            for _ in 0..=rng.below(10) {
                 let top = next_xid;
                 let count = rng.below(4);
                 let subxacts = (1..=count)
-                    .map(|i| top.wrapping_add(u32::try_from(i).unwrap()))
+                    .map(|index| top.wrapping_add(u32::try_from(index).unwrap()))
                     .collect();
                 next_xid = top.wrapping_add(u32::try_from(count).unwrap() + 1);
                 scripts.push(Script {
@@ -419,133 +450,200 @@ mod tests {
                     pending: Vec::new(),
                 });
             }
-            let mut transactions = Transactions::new(1_000);
-            let mut lsn = 0x100;
-            let mut counter = 0;
-            let mut started = 0;
-            let mut open: Vec<usize> = Vec::new();
-            let mut first_whole: Option<usize> = None;
-            let mut expected = Vec::new();
-            let mut emitted = Vec::new();
-            // Commits dropped as not whole that a snapshot may still miss.
-            let mut dropped: Vec<u32> = Vec::new();
-            let blind = Snapshot::parse("0:0:").unwrap();
-            loop {
-                lsn += 8;
-                let roll = rng.below(10);
-                let next = scripts.get(started).map_or(next_xid, |s| s.top);
-                if roll == 0 || (started == scripts.len() && open.is_empty()) {
-                    let names: Vec<u32> = open.iter().map(|i| scripts[*i].top).collect();
-                    let oldest = names.first().copied().unwrap_or(next);
-                    let event = running(next, oldest, names);
-                    assert_eq!(transactions.event(event, lsn, lsn + 4), Ok(None));
-                    dropped.retain(|xid| follows(*xid, oldest));
-                    dropped.sort_unstable();
-                    assert_eq!(transactions.unseen_dropped(&blind), dropped, "seed {seed}");
-                    first_whole.get_or_insert(started);
-                    if started == scripts.len() && open.is_empty() {
-                        break;
-                    }
-                    continue;
-                }
-                if started < scripts.len() && (roll < 3 || open.is_empty()) {
-                    open.push(started);
-                    started += 1;
-                    continue;
-                }
-                let pick = usize::try_from(rng.below(u64::try_from(open.len()).unwrap())).unwrap();
-                let index = open[pick];
-                let script = &mut scripts[index];
-                match rng.below(6) {
-                    0..=2 => {
-                        counter += 1;
-                        let xid = script.open_sub.unwrap_or(script.top);
-                        transactions.hold(xid, lsn, vec![change(counter)]);
-                        if script.open_sub.is_some() {
-                            script.pending.push(counter);
-                        } else {
-                            script.kept.push(counter);
-                        }
-                    }
-                    3 if script.open_sub.is_none() && script.opened < script.subxacts.len() => {
-                        script.open_sub = Some(script.subxacts[script.opened]);
-                        script.opened += 1;
-                    }
-                    3 => {}
-                    4 if script.open_sub.is_some() => {
-                        let sub = script.open_sub.take().unwrap();
-                        if rng.below(2) == 0 {
-                            script.kept_subs.push(sub);
-                            script.kept.append(&mut script.pending);
-                        } else {
-                            script.pending.clear();
-                            let event = Event::Abort(ending(sub, Vec::new()));
-                            assert_eq!(transactions.event(event, lsn, lsn + 4), Ok(None));
-                            assert!(!transactions.holds(sub), "seed {seed}");
-                        }
-                    }
-                    _ => {
-                        // COMMIT releases an open savepoint.
-                        if let Some(sub) = script.open_sub.take() {
-                            script.kept_subs.push(sub);
-                            script.kept.append(&mut script.pending);
-                        }
-                        open.remove(pick);
-                        let subs = script.kept_subs.clone();
-                        let outcome = rng.below(5);
-                        let event = match outcome {
-                            0 => continue,
-                            1 => Event::Abort(ending(script.top, subs)),
-                            _ => Event::Commit(ending(script.top, subs)),
-                        };
-                        let whole = first_whole.is_some_and(|first| index >= first);
-                        if outcome > 1 && whole && !script.kept.is_empty() {
-                            expected.push((script.top, script.kept.clone()));
-                        }
-                        if outcome > 1 && !whole {
-                            dropped.push(script.top);
-                        }
-                        let got = transactions.event(event, lsn, lsn + 4).unwrap();
-                        // The byte count stays true at every step.
-                        transactions.held_changes();
-                        dropped.sort_unstable();
-                        assert_eq!(transactions.unseen_dropped(&blind), dropped, "seed {seed}");
-                        let ended = std::iter::once(script.top).chain(script.kept_subs.clone());
-                        assert!(
-                            ended.into_iter().all(|x| !transactions.holds(x)),
-                            "seed {seed}"
-                        );
-                        if let Some(committed) = got {
-                            assert_eq!((committed.lsn, committed.end), (lsn, lsn + 4));
-                            let numbers: Vec<u64> = (committed.changes.into_iter())
-                                .map(|c| match c {
-                                    Change::Insert { new, .. } => {
-                                        u64::from_le_bytes(new.body[..].try_into().unwrap())
-                                    }
-                                    _ => unreachable!(),
-                                })
-                                .collect();
-                            assert!(!numbers.is_empty(), "seed {seed}: empty commit");
-                            emitted.push((committed.xid, numbers));
-                        }
-                    }
-                }
+            Workload {
+                seed,
+                scripts,
+                next_xid,
+                transactions: Transactions::new(1_000),
+                lsn: 0x100,
+                counter: 0,
+                started: 0,
+                open: Vec::new(),
+                first_whole: None,
+                expected: Vec::new(),
+                emitted: Vec::new(),
+                dropped: Vec::new(),
             }
-            assert_eq!(emitted, expected, "seed {seed}");
+        }
+
+        /// One step of the workload: `false` once every script ended.
+        fn step(&mut self, rng: &mut Rng) -> bool {
+            self.lsn += 8;
+            let roll = rng.below(10);
+            let all_ended = self.started == self.scripts.len() && self.open.is_empty();
+            if roll == 0 || all_ended {
+                self.log_running();
+                return !all_ended;
+            }
+            if self.started < self.scripts.len() && (roll < 3 || self.open.is_empty()) {
+                self.open.push(self.started);
+                self.started += 1;
+                return true;
+            }
+            let pick = usize::try_from(rng.below(u64::try_from(self.open.len()).unwrap())).unwrap();
+            let index = self.open[pick];
+            match rng.below(6) {
+                0..=2 => self.change(index),
+                3 => self.open_savepoint(index),
+                4 if self.scripts[index].open_sub.is_some() => self.end_savepoint(rng, index),
+                _ => self.end(rng, pick),
+            }
+            true
+        }
+
+        fn log_running(&mut self) {
+            let seed = self.seed;
+            let next = (self.scripts.get(self.started)).map_or(self.next_xid, |script| script.top);
+            let names: Vec<u32> = self
+                .open
+                .iter()
+                .map(|index| self.scripts[*index].top)
+                .collect();
+            let oldest = names.first().copied().unwrap_or(next);
+            let event = running(next, oldest, names);
+            let lsn = self.lsn;
+            assert_eq!(self.transactions.event(event, lsn, lsn + 4), Ok(None));
+            self.dropped.retain(|xid| follows(*xid, oldest));
+            self.dropped.sort_unstable();
+            let unseen = self.transactions.unseen_dropped(&blind());
+            assert_eq!(unseen, self.dropped, "seed {seed}");
+            self.first_whole.get_or_insert(self.started);
+        }
+
+        fn change(&mut self, index: usize) {
+            self.counter += 1;
+            let script = &mut self.scripts[index];
+            let xid = script.open_sub.unwrap_or(script.top);
+            self.transactions
+                .hold(xid, self.lsn, vec![change(self.counter)]);
+            if script.open_sub.is_some() {
+                script.pending.push(self.counter);
+            } else {
+                script.kept.push(self.counter);
+            }
+        }
+
+        fn open_savepoint(&mut self, index: usize) {
+            let script = &mut self.scripts[index];
+            if script.open_sub.is_none() && script.opened < script.subxacts.len() {
+                script.open_sub = Some(script.subxacts[script.opened]);
+                script.opened += 1;
+            }
+        }
+
+        /// Releases the open savepoint, or rolls it back.
+        fn end_savepoint(&mut self, rng: &mut Rng, index: usize) {
+            let seed = self.seed;
+            let script = &mut self.scripts[index];
+            let Some(sub) = script.open_sub.take() else {
+                return;
+            };
+            if rng.below(2) == 0 {
+                script.kept_subs.push(sub);
+                script.kept.append(&mut script.pending);
+                return;
+            }
+            script.pending.clear();
+            let event = Event::Abort(ending(sub, Vec::new()));
+            let lsn = self.lsn;
+            assert_eq!(self.transactions.event(event, lsn, lsn + 4), Ok(None));
+            assert!(!self.transactions.holds(sub), "seed {seed}");
+        }
+
+        /// Commits, aborts or crashes the script open at `pick`.
+        fn end(&mut self, rng: &mut Rng, pick: usize) {
+            let (seed, lsn) = (self.seed, self.lsn);
+            let index = self.open.remove(pick);
+            let script = &mut self.scripts[index];
+            // COMMIT releases an open savepoint.
+            if let Some(sub) = script.open_sub.take() {
+                script.kept_subs.push(sub);
+                script.kept.append(&mut script.pending);
+            }
+            let subs = script.kept_subs.clone();
+            let outcome = rng.below(5);
+            let event = match outcome {
+                0 => return,
+                1 => Event::Abort(ending(script.top, subs)),
+                _ => Event::Commit(ending(script.top, subs)),
+            };
+            let whole = self.first_whole.is_some_and(|first| index >= first);
+            if outcome > 1 && whole && !script.kept.is_empty() {
+                self.expected.push(Kept {
+                    xid: script.top,
+                    changes: script.kept.clone(),
+                });
+            }
+            if outcome > 1 && !whole {
+                self.dropped.push(script.top);
+            }
+            let got = self.transactions.event(event, lsn, lsn + 4).unwrap();
+            // The byte count stays true at every step.
+            self.transactions.held_changes();
+            self.dropped.sort_unstable();
+            let unseen = self.transactions.unseen_dropped(&blind());
+            assert_eq!(unseen, self.dropped, "seed {seed}");
+            let ended = std::iter::once(script.top).chain(script.kept_subs.clone());
             assert!(
-                transactions.consistency() == Consistency::Consistent,
+                ended.into_iter().all(|xid| !self.transactions.holds(xid)),
                 "seed {seed}"
             );
-            assert_eq!(transactions.held_changes(), 0, "seed {seed}");
+            if let Some(committed) = got {
+                assert_eq!((committed.lsn, committed.end), (lsn, lsn + 4));
+                let changes = numbers(committed.changes);
+                assert!(!changes.is_empty(), "seed {seed}: empty commit");
+                self.emitted.push(Kept {
+                    xid: committed.xid,
+                    changes,
+                });
+            }
+        }
+
+        fn finish(&self) {
+            let seed = self.seed;
+            assert_eq!(self.emitted, self.expected, "seed {seed}");
+            assert_eq!(
+                self.transactions.consistency(),
+                Consistency::Consistent,
+                "seed {seed}"
+            );
+            assert_eq!(self.transactions.held_changes(), 0, "seed {seed}");
+        }
+    }
+
+    /// The numbers `change` made `changes` of.
+    fn numbers(changes: Vec<Change>) -> Vec<u64> {
+        let mut numbers = Vec::new();
+        for change in changes {
+            let Change::Insert { new, .. } = change else {
+                unreachable!()
+            };
+            numbers.push(u64::from_le_bytes(new.body[..].try_into().unwrap()));
+        }
+        numbers
+    }
+
+    /// Random interleavings of transactions that change rows in the top
+    /// and in subtransactions, release or roll back savepoints, commit,
+    /// abort or vanish in a crash, with `RUNNING_XACTS` between: what
+    /// commits is each committed transaction that started after the
+    /// first `RUNNING_XACTS`, with its changes and its released
+    /// subtransactions', in WAL order. Nothing stays held.
+    #[test]
+    fn commits_what_a_reference_commits() {
+        for seed in 0..500 {
+            let mut rng = Rng(seed);
+            let mut workload = Workload::new(seed, &mut rng);
+            while workload.step(&mut rng) {}
+            workload.finish();
         }
     }
 
     #[test]
     fn stops_at_the_limit() {
         let mut transactions = Transactions::new(2);
-        let commit = |xid: u32, subxacts: Vec<u32>| Event::Commit(ending(xid, subxacts));
         assert_eq!(transactions.event(running(10, 10, vec![]), 8, 12), Ok(None));
-        assert!(transactions.consistency() == Consistency::Consistent);
+        assert_eq!(transactions.consistency(), Consistency::Consistent);
         transactions.hold(10, 16, vec![change(1), change(2)]);
         transactions.hold(11, 24, vec![change(3), change(4)]);
         let got = transactions
@@ -574,10 +672,9 @@ mod tests {
     fn waits_for_the_transactions_running_at_the_start() {
         let mut transactions = Transactions::new(10);
         transactions.hold(5, 8, vec![change(1)]);
-        let commit = |xid: u32| Event::Commit(ending(xid, vec![]));
         // Before any RUNNING_XACTS nothing is known whole.
-        assert_eq!(transactions.event(commit(5), 16, 20), Ok(None));
-        assert!(transactions.consistency() != Consistency::Consistent);
+        assert_eq!(transactions.event(commit(5, vec![]), 16, 20), Ok(None));
+        assert_ne!(transactions.consistency(), Consistency::Consistent);
         transactions.hold(6, 24, vec![change(2)]);
         assert_eq!(transactions.consistency(), Consistency::Unknown);
         assert_eq!(
@@ -586,12 +683,15 @@ mod tests {
         );
         assert_eq!(transactions.consistency(), Consistency::Waiting(vec![6, 7]));
         transactions.hold(8, 40, vec![change(3)]);
-        assert_eq!(transactions.event(commit(6), 48, 52), Ok(None));
-        assert!(transactions.consistency() != Consistency::Consistent);
+        assert_eq!(transactions.event(commit(6, vec![]), 48, 52), Ok(None));
+        assert_ne!(transactions.consistency(), Consistency::Consistent);
         // 7 dies in a crash: a later RUNNING_XACTS has it gone.
         assert_eq!(transactions.event(running(9, 8, vec![8]), 56, 60), Ok(None));
-        assert!(transactions.consistency() == Consistency::Consistent);
-        let got = transactions.event(commit(8), 64, 68).unwrap().unwrap();
+        assert_eq!(transactions.consistency(), Consistency::Consistent);
+        let got = transactions
+            .event(commit(8, vec![]), 64, 68)
+            .unwrap()
+            .unwrap();
         assert_eq!((got.xid, got.changes), (8, vec![change(3)]));
         assert_eq!(transactions.held_changes(), 0);
     }
@@ -608,10 +708,10 @@ mod tests {
             transactions.event(running(9, 7, vec![7, 8]), 24, 28),
             Ok(None)
         );
-        assert!(transactions.consistency() != Consistency::Consistent);
+        assert_ne!(transactions.consistency(), Consistency::Consistent);
         let abort = Event::Abort(ending(8, vec![]));
         assert_eq!(transactions.event(abort, 32, 36), Ok(None));
-        assert!(transactions.consistency() == Consistency::Consistent);
+        assert_eq!(transactions.consistency(), Consistency::Consistent);
         assert_eq!(transactions.held_changes(), 0);
     }
 
@@ -620,19 +720,23 @@ mod tests {
     #[test]
     fn keeps_what_it_dropped_for_the_load_to_see() {
         let mut transactions = Transactions::new(10);
-        let commit = |xid: u32| Event::Commit(ending(xid, vec![]));
-        let blind = Snapshot::parse("0:0:").unwrap();
-        assert_eq!(transactions.event(commit(5), 8, 12), Ok(None));
+        let blind = blind();
+        assert_eq!(transactions.event(commit(5, vec![]), 8, 12), Ok(None));
         assert_eq!(
             transactions.event(running(8, 6, vec![6, 7]), 16, 20),
             Ok(None)
         );
-        assert_eq!(transactions.event(commit(6), 24, 28), Ok(None));
+        assert_eq!(transactions.event(commit(6, vec![]), 24, 28), Ok(None));
         // An abort, and a whole commit, aren't the load's to see.
         let abort = Event::Abort(ending(7, vec![]));
         assert_eq!(transactions.event(abort, 32, 36), Ok(None));
         transactions.hold(8, 40, vec![change(1)]);
-        assert!(transactions.event(commit(8), 48, 52).unwrap().is_some());
+        assert!(
+            transactions
+                .event(commit(8, vec![]), 48, 52)
+                .unwrap()
+                .is_some()
+        );
         // 5 ended before 6, the oldest running then: every snapshot sees it.
         assert_eq!(transactions.unseen_dropped(&blind), [6]);
         let before = Snapshot::parse("6:9:6").unwrap();
@@ -641,10 +745,10 @@ mod tests {
         assert_eq!(transactions.unseen_dropped(&after), Vec::<u32>::new());
         assert_eq!(transactions.event(running(9, 7, vec![]), 56, 60), Ok(None));
         assert_eq!(transactions.unseen_dropped(&blind), Vec::<u32>::new());
-        assert_eq!(transactions.event(commit(6), 64, 68), Ok(None));
+        assert_eq!(transactions.event(commit(6, vec![]), 64, 68), Ok(None));
         assert_eq!(transactions.unseen_dropped(&blind), [6]);
         transactions.loaded();
-        assert_eq!(transactions.event(commit(6), 72, 76), Ok(None));
+        assert_eq!(transactions.event(commit(6, vec![]), 72, 76), Ok(None));
         assert_eq!(transactions.unseen_dropped(&blind), Vec::<u32>::new());
     }
 
