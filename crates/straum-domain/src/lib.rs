@@ -1,5 +1,13 @@
-//! No I/O and no dependencies. Adapters (Straum SQL, PostgreSQL, HTTP) depend
-//! on this crate, never the other way round.
+//! What a view is and how its cells add up: the spec, the store that
+//! keeps every view's cells as rows come and go, and the asks that read
+//! them. No I/O and no dependencies. Adapters (Straum SQL, PostgreSQL,
+//! HTTP) depend on this crate, never the other way round.
+//!
+//! Read `spec.rs` first (the views, as data), then `ask.rs` (what an ask
+//! may say), then `store.rs` (where rows land and asks read), which keeps
+//! a `rollup.rs` per view (its cells, by bucket) and a `projection.rs` per
+//! dim. `aggregate.rs` merges cells into answers; the other files are the
+//! compact columns and maps the cells are kept in.
 
 #![forbid(unsafe_code)]
 

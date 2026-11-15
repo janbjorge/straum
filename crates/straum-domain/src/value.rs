@@ -1,3 +1,8 @@
+//! The values a row holds and an answer gives back. A load turns each
+//! PostgreSQL value into a [`Datum`], typed by its [`ColumnType`]; cells
+//! keep a state per input column, and an ask merges them into a [`Value`] per measure, which
+//! [`decimal`] prints in its column's scale.
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -23,6 +28,7 @@ pub enum ColumnType {
 }
 
 impl ColumnType {
+    /// Digits after the point: a numeric column's scale, else 0.
     pub fn scale(self) -> u32 {
         match self {
             ColumnType::Numeric { scale } => scale,
@@ -68,8 +74,8 @@ pub enum Datum {
 
 impl Datum {
     /// SQL `=`: null matches nothing.
-    pub(crate) fn matches(&self, lit: &Literal) -> bool {
-        match (self, lit) {
+    pub(crate) fn matches(&self, literal: &Literal) -> bool {
+        match (self, literal) {
             (Datum::Bool(held), Literal::Bool(wanted)) => held == wanted,
             (Datum::Int(held), Literal::Int(wanted)) => held == wanted,
             (Datum::Text(held), Literal::Text(wanted)) => **held == **wanted,
@@ -78,6 +84,7 @@ impl Datum {
     }
 }
 
+/// One measure's answer for one group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Null,
@@ -166,15 +173,18 @@ mod tests {
 
     #[test]
     fn types_display() {
-        let shown = [
+        let types = [
             ColumnType::Int,
             ColumnType::Numeric { scale: 2 },
             ColumnType::Bool,
             ColumnType::Text,
             ColumnType::Time { zoned: true },
             ColumnType::Time { zoned: false },
-        ]
-        .map(|column_type| column_type.to_string());
+        ];
+        let mut shown = Vec::new();
+        for column_type in types {
+            shown.push(column_type.to_string());
+        }
         assert_eq!(
             shown,
             [

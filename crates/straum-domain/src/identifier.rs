@@ -1,24 +1,36 @@
+//! The names a spec and an ask use: a view, a key, a measure, a column.
+//! Straum SQL reads each into an [`Identifier`], which only an unquoted
+//! lowercase PostgreSQL name can become, so a name never needs quoting.
+
 use std::fmt;
 
 /// Longest identifier PostgreSQL keeps (`NAMEDATALEN - 1`).
-const MAX_LEN: usize = 63;
+const MAX_BYTES: usize = 63;
 
 /// An unquoted PostgreSQL identifier: `[a-z_][a-z0-9_]*`, at most 63 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identifier(String);
 
 impl Identifier {
+    /// The identifier `text` spells, if it is one.
     pub fn new(text: &str) -> Option<Identifier> {
-        let mut chars = text.chars();
-        let first = chars.next()?;
-        let ok = text.len() <= MAX_LEN
-            && (first.is_ascii_lowercase() || first == '_')
-            && chars.all(|character| {
-                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
-            });
-        ok.then(|| Identifier(text.to_owned()))
+        if text.len() > MAX_BYTES {
+            return None;
+        }
+        let mut characters = text.chars();
+        let first = characters.next()?;
+        if !(first.is_ascii_lowercase() || first == '_') {
+            return None;
+        }
+        for character in characters {
+            if !(character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_') {
+                return None;
+            }
+        }
+        Some(Identifier(text.to_owned()))
     }
 
+    /// The identifier as text.
     pub fn as_str(&self) -> &str {
         &self.0
     }

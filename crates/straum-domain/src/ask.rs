@@ -1,3 +1,8 @@
+//! An ask: the request to `POST /ask`, parsed into plain data, and the
+//! checks it must pass against the spec before the store reads a cell.
+//! `straum-notation` reads the query into an [`Ask`]; [`Spec::check_ask`]
+//! finds the view it reads and lists every [`AskError`] at once.
+
 use std::collections::HashSet;
 use std::fmt;
 
@@ -5,6 +10,8 @@ use crate::identifier::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec, Width};
 use crate::value::ColumnType;
 
+/// One `SELECT` over a view: its measures, the keys it groups by, its
+/// filter and its time range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     pub view: Identifier,
@@ -17,75 +24,31 @@ pub struct Ask {
     pub to: i64,
 }
 
+/// A key an ask groups by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskKey {
     /// A key by the name the view gives it.
     Key(Identifier),
+    /// The time bucket.
     Bucket,
 }
 
 impl Spec {
+    /// The view `ask` reads, once every check passes.
     pub fn check_ask(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
         let Some(fact) = self.fact(ask.view.as_str()) else {
             return Err(vec![AskError::UnknownView(ask.view.clone())]);
         };
-        let width = fact.time.width;
         let mut errors = Vec::new();
-
-        if ask.measures.is_empty() {
-            errors.push(AskError::NoMeasures);
-        }
-        for measure in &ask.measures {
-            if fact.measure(measure.as_str()).is_none() {
-                errors.push(AskError::UnknownMeasure(measure.clone()));
-            }
-        }
-
-        let mut bucket = false;
-        for key in &ask.keys {
-            match key {
-                AskKey::Key(name) => {
-                    if fact.resolve(name).is_none() {
-                        errors.push(AskError::UnknownKey(name.clone()));
-                    }
-                }
-                AskKey::Bucket => {
-                    if bucket {
-                        errors.push(AskError::TimeKeyTwice);
-                    }
-                    bucket = true;
-                }
-            }
-        }
-        // An answer's columns go by name, so two can't share one.
-        let mut names = HashSet::new();
-        let keys = (ask.keys.iter()).filter_map(|key| match key {
-            AskKey::Key(name) => Some(name.as_str()),
-            AskKey::Bucket => None,
-        });
-        for name in keys.chain(ask.measures.iter().map(Identifier::as_str)) {
-            if !names.insert(name) {
-                errors.push(AskError::AskedTwice(name.to_owned()));
-            }
-        }
+        check_measures(fact, ask, &mut errors);
+        check_keys(fact, ask, &mut errors);
+        check_names(ask, &mut errors);
         for condition in &ask.filter {
             if fact.resolve(&condition.key).is_none() {
                 errors.push(AskError::UnknownKey(condition.key.clone()));
             }
         }
-
-        if ask.from >= ask.to {
-            errors.push(AskError::RangeEmpty {
-                from: ask.from,
-                to: ask.to,
-            });
-        }
-        for at in [ask.from, ask.to] {
-            if at.rem_euclid(i64::from(width.seconds)) != 0 {
-                errors.push(AskError::RangeUnaligned { at, width });
-            }
-        }
-
+        check_range(fact.time.width, ask, &mut errors);
         if errors.is_empty() {
             Ok(fact)
         } else {
@@ -94,6 +57,70 @@ impl Spec {
     }
 }
 
+fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
+    if ask.measures.is_empty() {
+        errors.push(AskError::NoMeasures);
+    }
+    for measure in &ask.measures {
+        if fact.measure(measure.as_str()).is_none() {
+            errors.push(AskError::UnknownMeasure(measure.clone()));
+        }
+    }
+}
+
+fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
+    let mut bucket = false;
+    for key in &ask.keys {
+        match key {
+            AskKey::Key(name) => {
+                if fact.resolve(name).is_none() {
+                    errors.push(AskError::UnknownKey(name.clone()));
+                }
+            }
+            AskKey::Bucket => {
+                if bucket {
+                    errors.push(AskError::TimeKeyTwice);
+                }
+                bucket = true;
+            }
+        }
+    }
+}
+
+/// An answer's columns go by name, so two can't share one.
+fn check_names(ask: &Ask, errors: &mut Vec<AskError>) {
+    let mut asked: Vec<&str> = Vec::new();
+    for key in &ask.keys {
+        if let AskKey::Key(name) = key {
+            asked.push(name.as_str());
+        }
+    }
+    for measure in &ask.measures {
+        asked.push(measure.as_str());
+    }
+    let mut names = HashSet::new();
+    for name in asked {
+        if !names.insert(name) {
+            errors.push(AskError::AskedTwice(name.to_owned()));
+        }
+    }
+}
+
+fn check_range(width: Width, ask: &Ask, errors: &mut Vec<AskError>) {
+    if ask.from >= ask.to {
+        errors.push(AskError::RangeEmpty {
+            from: ask.from,
+            to: ask.to,
+        });
+    }
+    for at in [ask.from, ask.to] {
+        if at.rem_euclid(i64::from(width.seconds)) != 0 {
+            errors.push(AskError::RangeUnaligned { at, width });
+        }
+    }
+}
+
+/// One thing wrong with an ask.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskError {
     UnknownView(Identifier),
