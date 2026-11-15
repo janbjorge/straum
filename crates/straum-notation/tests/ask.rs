@@ -8,8 +8,8 @@ fn key(name: &str) -> AskKey {
     AskKey::Key(id(name))
 }
 
-fn text(s: &str) -> Literal {
-    Literal::Text(s.into())
+fn text(value: &str) -> Literal {
+    Literal::Text(value.into())
 }
 
 /// The range parameters most cases end on.
@@ -63,6 +63,10 @@ fn reads_every_part() {
 }
 
 /// Both bounds are written, whichever order; an ask says what it reads.
+fn missing_bound(bound: &str) -> String {
+    format!("line 1: an ask writes both bounds; {bound} is missing")
+}
+
 #[test]
 fn both_bounds_are_required() {
     let ask = parse_ask(
@@ -74,24 +78,23 @@ fn both_bounds_are_required() {
         (ask.view, ask.measures, ask.keys, ask.from, ask.to),
         (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
     );
-    let missing = |bound: &str| format!("line 1: an ask writes both bounds; {bound} is missing");
     assert_eq!(
         errors("SELECT trips FROM t", &[]),
-        [missing("bucket >= $n"), missing("bucket < $n")]
+        [missing_bound("bucket >= $n"), missing_bound("bucket < $n")]
     );
     assert_eq!(
         errors(
             "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
             &[Literal::Int(1), Literal::Int(JAN)]
         ),
-        [missing("bucket < $n")]
+        [missing_bound("bucket < $n")]
     );
     assert_eq!(
         errors(
             "SELECT trips FROM t WHERE bucket < $1",
             &[Literal::Int(FEB)]
         ),
-        [missing("bucket >= $n")]
+        [missing_bound("bucket >= $n")]
     );
 }
 
@@ -107,9 +110,19 @@ fn keys_come_in_select_order() {
 }
 
 /// Each case is one wrong ask; its errors must include the fragment.
+fn assert_each_names_what_is_wrong(cases: &[(&str, &[Literal], &str)]) {
+    for (query, parameters, fragment) in cases {
+        let errors = errors(query, parameters);
+        assert!(
+            errors.iter().any(|error| error.contains(fragment)),
+            "{query}: {errors:?} has no {fragment:?}"
+        );
+    }
+}
+
 #[test]
-fn every_error_names_what_is_wrong() {
-    let cases: &[(&str, &[Literal], &str)] = &[
+fn values_come_as_parameters() {
+    assert_each_names_what_is_wrong(&[
         (
             "SELECT trips FROM t WHERE kind = 1 AND bucket >= $1 AND bucket < $2",
             &range(),
@@ -119,11 +132,6 @@ fn every_error_names_what_is_wrong() {
             "SELECT trips FROM t WHERE kind IN ($3, 'x') AND bucket >= $1 AND bucket < $2",
             &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
             "value, use a parameter such as $1, `'x'`",
-        ),
-        (
-            "SELECT trips FROM t WHERE kind IN ($3) AND bucket >= $1 AND bucket < $2",
-            &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
-            "IN with one value, write =, `kind IN ($3)` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -150,6 +158,12 @@ fn every_error_names_what_is_wrong() {
             &range(),
             "$x is not a parameter",
         ),
+    ]);
+}
+
+#[test]
+fn bucket_bounds_come_once_each() {
+    assert_each_names_what_is_wrong(&[
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket >= $1 AND bucket < $2",
             &range(),
@@ -169,6 +183,32 @@ fn every_error_names_what_is_wrong() {
             "SELECT trips FROM t WHERE bucket > $1 AND bucket < $2",
             &range(),
             "filter condition, write = or IN joined by AND, `bucket > $1`",
+        ),
+        (
+            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
+            &[Literal::Bool(true), Literal::Int(FEB)],
+            "bucket bound $1 must be RFC 3339 or Unix seconds: is a boolean",
+        ),
+        (
+            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
+            &[text("2024-01-01"), Literal::Int(FEB)],
+            "bucket bound $1 must be RFC 3339 or Unix seconds: \"2024-01-01\":",
+        ),
+        (
+            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
+            &[text("2024-01-01T00:00:00.5Z"), Literal::Int(FEB)],
+            "2024-01-01T00:00:00.5Z is not a whole second",
+        ),
+    ]);
+}
+
+#[test]
+fn conditions_are_equalities_joined_by_and() {
+    assert_each_names_what_is_wrong(&[
+        (
+            "SELECT trips FROM t WHERE kind IN ($3) AND bucket >= $1 AND bucket < $2",
+            &[Literal::Int(JAN), Literal::Int(FEB), Literal::Int(1)],
+            "IN with one value, write =, `kind IN ($3)` is not in Straum SQL",
         ),
         (
             "SELECT trips FROM t WHERE kind = $1 OR kind = $1 AND bucket >= $1 AND bucket < $2",
@@ -211,21 +251,12 @@ fn every_error_names_what_is_wrong() {
             &range(),
             "filter condition, write = or IN joined by AND, `done_at IS NOT NULL`",
         ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &[Literal::Bool(true), Literal::Int(FEB)],
-            "bucket bound $1 must be RFC 3339 or Unix seconds: is a boolean",
-        ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &[text("2024-01-01"), Literal::Int(FEB)],
-            "bucket bound $1 must be RFC 3339 or Unix seconds: \"2024-01-01\":",
-        ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &[text("2024-01-01T00:00:00.5Z"), Literal::Int(FEB)],
-            "2024-01-01T00:00:00.5Z is not a whole second",
-        ),
+    ]);
+}
+
+#[test]
+fn an_ask_is_one_select_from_one_view() {
+    assert_each_names_what_is_wrong(&[
         ("SELECT 1; SELECT 2", &[], "an ask is one SELECT"),
         ("", &[], "an ask is one SELECT"),
         (
@@ -288,6 +319,13 @@ fn every_error_names_what_is_wrong() {
             &range(),
             "HAVING is not in Straum SQL",
         ),
+        ("SELECT trips FROM t WHERE", &[], "sql parser error"),
+    ]);
+}
+
+#[test]
+fn select_and_group_by_name_the_keys() {
+    assert_each_names_what_is_wrong(&[
         (
             "SELECT trips AS n FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
@@ -356,13 +394,5 @@ fn every_error_names_what_is_wrong() {
             &range(),
             "is not in Straum SQL",
         ),
-        ("SELECT trips FROM t WHERE", &[], "sql parser error"),
-    ];
-    for (query, parameters, fragment) in cases {
-        let errors = errors(query, parameters);
-        assert!(
-            errors.iter().any(|e| e.contains(fragment)),
-            "{query}: {errors:?} has no {fragment:?}"
-        );
-    }
+    ]);
 }

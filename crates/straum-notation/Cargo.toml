@@ -12,3 +12,6 @@ jiff = { version = "0.2.41", default-features = false, features = ["std"] }
 # the walker matches its AST exactly.
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }
 straum-domain = { path = "../straum-domain" }
+
+[lints]
+workspace = true

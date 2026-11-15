@@ -10,8 +10,8 @@ use straum_notation::{Error, parse};
 pub const JAN: i64 = 1_704_067_200;
 pub const FEB: i64 = 1_706_745_600;
 
-pub fn id(s: &str) -> Identifier {
-    Identifier::new(s).unwrap()
+pub fn id(name: &str) -> Identifier {
+    Identifier::new(name).unwrap()
 }
 
 pub fn cond(key: &str, values: Vec<Literal>) -> Condition {

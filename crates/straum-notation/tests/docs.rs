@@ -43,7 +43,7 @@ fn specs(markdown: &str) -> Vec<(usize, String)> {
 fn check(name: &str, markdown: &str) -> Result<usize, String> {
     let specs = specs(markdown);
     for (line, spec) in &specs {
-        straum_notation::parse(spec).map_err(|e| format!("{name}:{line}: {e}"))?;
+        straum_notation::parse(spec).map_err(|error| format!("{name}:{line}: {error}"))?;
     }
     Ok(specs.len())
 }
@@ -51,7 +51,7 @@ fn check(name: &str, markdown: &str) -> Result<usize, String> {
 #[test]
 fn every_doc_example_parses() {
     for (name, markdown) in DOCS {
-        let parsed = check(name, markdown).unwrap_or_else(|e| panic!("{e}"));
+        let parsed = check(name, markdown).unwrap_or_else(|error| panic!("{error}"));
         assert!(parsed > 0, "{name} has no spec example");
     }
 }

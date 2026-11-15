@@ -32,7 +32,7 @@ fn check(cases: &[(&str, &str, &str)]) {
     for (from, to, fragment) in cases {
         let errors = error_lines(&canon(from, to));
         assert!(
-            errors.iter().any(|e| e.contains(fragment)),
+            errors.iter().any(|error| error.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -111,7 +111,7 @@ fn one_join_spelling() {
     for (to, fragment) in cases {
         let errors = error_lines(&canon(join, &to));
         assert!(
-            errors.iter().any(|e| e.contains(fragment)),
+            errors.iter().any(|error| error.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -129,7 +129,7 @@ fn inner_join_and_exists_parse() {
     );
     let spec = parse(&src).unwrap();
     let kinds: Vec<_> = (spec.fact("orders").unwrap().refs.iter())
-        .map(|r| (r.alias.to_string(), r.kind))
+        .map(|reference| (reference.alias.to_string(), reference.kind))
         .collect();
     assert_eq!(
         kinds,
@@ -158,7 +158,7 @@ fn inner_join_and_exists_parse() {
             &format!("{to} GROUP BY 1, 2, 3, 4, 5"),
         ));
         assert!(
-            errors.iter().any(|e| e.contains(fragment)),
+            errors.iter().any(|error| error.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -471,11 +471,7 @@ fn parentheses_are_written_where_the_canon_has_them() {
     ]);
 }
 
-/// An enum column is read as its label by writing `alias.column::text`
-/// (ADR-0037): on a key, its null-ness, or a FILTER column, spelled alike
-/// everywhere the view reads the column, and nowhere else.
-#[test]
-fn enum_columns_are_cast_to_text() {
+fn cast_canon() -> String {
     let cast = canon("orders.status AS status", "orders.status::text AS status");
     let cast = cast.replacen(
         "FILTER (WHERE orders.status = 'paid')",
@@ -492,14 +488,25 @@ fn enum_columns_are_cast_to_text() {
         "(orders.shipped_at::text IS NOT NULL) AS shipped",
         1,
     );
-    let cast = cast.replacen(
+    cast.replacen(
         "WHERE orders.shipped_at IS NOT NULL AND customers.country IN",
         "WHERE orders.shipped_at::text IS NOT NULL AND customers.country::text IN",
         1,
-    );
-    let spec = parse(&cast).unwrap();
+    )
+}
+
+/// An enum column is read as its label by writing `alias.column::text`
+/// (ADR-0037): on a key, its null-ness, or a FILTER column, spelled alike
+/// everywhere the view reads the column, and nowhere else.
+#[test]
+fn enum_columns_are_cast_to_text() {
+    let spec = parse(&cast_canon()).unwrap();
     let orders = spec.fact("orders").unwrap();
-    let as_text: Vec<&str> = orders.as_text.iter().map(|c| c.as_str()).collect();
+    let as_text: Vec<&str> = orders
+        .as_text
+        .iter()
+        .map(straum_domain::Identifier::as_str)
+        .collect();
     assert_eq!(as_text, ["status", "shipped_at"]);
     let customers = spec.dim("customers").unwrap();
     assert_eq!(customers.as_text, [customers.attributes[0].clone()]);
@@ -510,17 +517,24 @@ fn enum_columns_are_cast_to_text() {
             values: vec![Literal::Text("paid".into())],
         }
     );
+}
 
+#[test]
+fn a_dim_column_is_cast_alike_in_every_view() {
     // A second view reads the dim column without the cast.
     let two = format!(
-        "{cast};\n{}",
+        "{};\n{}",
+        cast_canon(),
         CANON.replace("VIEW orders", "VIEW orders_again")
     );
-    assert!(error_lines(&two).iter().any(|e| e.contains(
+    assert!(error_lines(&two).iter().any(|error| error.contains(
         "shop.customers.country is read without ::text here and with it in another view; \
          write it alike"
     )));
+}
 
+#[test]
+fn a_cast_is_text_and_only_on_a_label() {
     check(&[
         (
             "orders.status AS status",

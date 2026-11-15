@@ -9,10 +9,10 @@ use straum_notation::{Error, SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
 
-fn col(s: &str) -> ByKey {
+fn col(name: &str) -> ByKey {
     ByKey::Column {
-        column: id(s),
-        name: id(s),
+        column: id(name),
+        name: id(name),
     }
 }
 
@@ -45,7 +45,7 @@ fn ask_view_t(by: &[&str]) -> Ask {
     Ask {
         view: id("t"),
         measures: vec![id("n")],
-        keys: by.iter().map(|k| AskKey::Key(id(k))).collect(),
+        keys: by.iter().map(|key| AskKey::Key(id(key))).collect(),
         filter: vec![],
         from: JAN,
         to: FEB,
@@ -55,14 +55,18 @@ fn ask_view_t(by: &[&str]) -> Ask {
 /// The rollup key as text: column names, null-ness tests and `bucket`.
 fn key_text(spec: &Spec, fact: &str) -> Vec<String> {
     (spec.fact(fact).unwrap().rollup_key())
-        .map(|slot| match slot {
-            KeyPart::Column(c) => c.to_string(),
-            KeyPart::IsNull { column, negated } => {
-                format!("{column} is {}null", if negated { "not " } else { "" })
-            }
-            KeyPart::Bucket => "bucket".into(),
-        })
+        .map(key_part_text)
         .collect()
+}
+
+fn key_part_text(part: KeyPart) -> String {
+    match part {
+        KeyPart::Column(column) => column.to_string(),
+        KeyPart::IsNull { column, negated } => {
+            format!("{column} is {}null", if negated { "not " } else { "" })
+        }
+        KeyPart::Bucket => "bucket".into(),
+    }
 }
 
 #[test]
@@ -121,14 +125,14 @@ fn base(from: &str, to: &str) -> String {
 #[test]
 fn base_parses() {
     let spec = parse(BASE).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!(t.table.schema, id("public"));
-    assert_eq!(t.by_keys, [col("a"), col("z_id")]);
-    assert_eq!(t.refs[0].alias, id("z"));
-    assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
-    assert_eq!(t.refs[0].reads, [attr("name", "name")]);
-    assert!(t.time.wider.is_empty());
-    assert_eq!(t.time.origin, Origin::Timestamptz);
+    let fact = spec.fact("t").unwrap();
+    assert_eq!(fact.table.schema, id("public"));
+    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(fact.refs[0].alias, id("z"));
+    assert_eq!(fact.refs[0].via, [Via::Fact(id("z_id"))]);
+    assert_eq!(fact.refs[0].reads, [attr("name", "name")]);
+    assert_eq!(fact.time.wider, []);
+    assert_eq!(fact.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
     assert_eq!(
         (&z.key[..], &z.attributes[..]),
@@ -150,9 +154,9 @@ fn keys_go_by_their_select_name() {
         "count(*) AS n, count(*) FILTER (WHERE f.a = 1 AND z.name = 'x') AS some",
     );
     let spec = parse(&src).unwrap();
-    let t = spec.fact("t").unwrap();
+    let fact = spec.fact("t").unwrap();
     assert_eq!(
-        t.by_keys,
+        fact.by_keys,
         [
             ByKey::Column {
                 column: id("a"),
@@ -164,9 +168,9 @@ fn keys_go_by_their_select_name() {
             }
         ]
     );
-    assert_eq!(t.refs[0].reads, [attr("label", "name")]);
+    assert_eq!(fact.refs[0].reads, [attr("label", "name")]);
     assert_eq!(
-        t.measure("some").unwrap().filter,
+        fact.measure("some").unwrap().filter,
         [
             cond("kind", vec![Literal::Int(1)]),
             cond("label", vec![Literal::Text("x".into())])
@@ -318,11 +322,15 @@ FROM public.t AS f
 LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!(t.time.width, Width { seconds: 30 });
+    let fact = spec.fact("t").unwrap();
+    assert_eq!(fact.time.width, Width { seconds: 30 });
     // A dim key column names the fact column joined to it.
-    assert_eq!(t.by_keys, [col("a"), col("z_id")]);
-    let aggs: Vec<&Aggregate> = t.measures.iter().map(|m| &m.aggregate).collect();
+    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    let aggs: Vec<&Aggregate> = fact
+        .measures
+        .iter()
+        .map(|measure| &measure.aggregate)
+        .collect();
     assert_eq!(
         aggs,
         [
@@ -390,12 +398,15 @@ GROUP BY 1, 2, 3, 4";
 #[test]
 fn a_ref_on_two_columns() {
     let spec = parse(GROUPED).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!(t.by_keys, [col("org"), col("grp")]);
-    assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
-    let g = spec.dim("g").unwrap();
-    assert_eq!(g.key, [id("org_id"), id("grp_id")]);
-    assert_eq!(g.attributes, [id("label")]);
+    let fact = spec.fact("t").unwrap();
+    assert_eq!(fact.by_keys, [col("org"), col("grp")]);
+    assert_eq!(
+        fact.refs[0].via,
+        [Via::Fact(id("org")), Via::Fact(id("grp"))]
+    );
+    let dim = spec.dim("g").unwrap();
+    assert_eq!(dim.key, [id("org_id"), id("grp_id")]);
+    assert_eq!(dim.attributes, [id("label")]);
     // A dim key column names the fact column joined to it.
     let through = GROUPED.replace(
         "f.org AS org, f.grp AS grp",
@@ -441,10 +452,13 @@ fn a_ref_on_two_columns_rejected() {
             .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3"),
     )
     .unwrap();
-    let t = without_grp.fact("t").unwrap();
-    assert_eq!(t.by_keys, [col("org")]);
-    assert_eq!(t.refs[0].via, [Via::Fact(id("org")), Via::Fact(id("grp"))]);
-    assert_eq!(t.refs[0].reads, [attr("label", "label")]);
+    let fact = without_grp.fact("t").unwrap();
+    assert_eq!(fact.by_keys, [col("org")]);
+    assert_eq!(
+        fact.refs[0].via,
+        [Via::Fact(id("org")), Via::Fact(id("grp"))]
+    );
+    assert_eq!(fact.refs[0].reads, [attr("label", "label")]);
     let errors = sql_errors(
         &GROUPED
             .replace(
@@ -491,15 +505,15 @@ GROUP BY 1, 2, 3";
 #[test]
 fn a_ref_reads_what_the_view_selects() {
     let spec = parse(ATTR_ONLY).unwrap();
-    let t = spec.fact("t").unwrap();
-    assert_eq!(t.by_keys, [col("a")]);
-    assert_eq!(t.refs[0].via, [Via::Fact(id("z_id"))]);
-    assert_eq!(t.refs[0].reads, [attr("name", "name")]);
+    let fact = spec.fact("t").unwrap();
+    assert_eq!(fact.by_keys, [col("a")]);
+    assert_eq!(fact.refs[0].via, [Via::Fact(id("z_id"))]);
+    assert_eq!(fact.refs[0].reads, [attr("name", "name")]);
     // The via column keys the cells, selected or not.
-    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
+    assert_eq!(fact.columns(), [id("at"), id("a"), id("z_id")]);
     assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
     assert_eq!(
-        t.measure("named").unwrap().filter,
+        fact.measure("named").unwrap().filter,
         [cond("name", vec![Literal::Text("x".into())])]
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
@@ -519,9 +533,9 @@ fn a_ref_reads_what_the_view_selects() {
     // still be grouped by.
     let both = format!("{ATTR_ONLY};\n{}", BASE.replace("VIEW t", "VIEW u"));
     let spec = parse(&both).unwrap();
-    let u = spec.fact("u").unwrap();
-    assert_eq!(u.by_keys, [col("a"), col("z_id")]);
-    assert_eq!(u.refs[0].reads, [attr("name", "name")]);
+    let fact = spec.fact("u").unwrap();
+    assert_eq!(fact.by_keys, [col("a"), col("z_id")]);
+    assert_eq!(fact.refs[0].reads, [attr("name", "name")]);
     let errors = sql_errors(&ATTR_ONLY.replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2"));
     assert_eq!(
         errors,
@@ -545,12 +559,18 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
 FROM public.t AS f
 GROUP BY 1, 2, 3, 4";
 
+fn measure_names(spec: &Spec) -> Vec<String> {
+    (spec.fact("t").unwrap().measures.iter())
+        .map(|measure| measure.name.to_string())
+        .collect()
+}
+
 #[test]
 fn null_ness_keys() {
     let spec = parse(NULLS).unwrap();
-    let t = spec.fact("t").unwrap();
+    let fact = spec.fact("t").unwrap();
     assert_eq!(
-        t.by_keys,
+        fact.by_keys,
         [
             col("a"),
             ByKey::IsNull {
@@ -566,23 +586,22 @@ fn null_ness_keys() {
         ]
     );
     assert_eq!(
-        t.columns(),
+        fact.columns(),
         [id("at"), id("a"), id("done_at"), id("gone_at")]
     );
     assert_eq!(
         key_text(&spec, "t"),
         ["a", "done_at is not null", "gone_at is null", "bucket"]
     );
-    let filter = |m: &str| t.measure(m).unwrap().filter.clone();
     assert_eq!(
-        filter("closed"),
+        fact.measure("closed").unwrap().filter,
         [
             cond("done", vec![Literal::Bool(true)]),
             cond("open", vec![Literal::Bool(false)]),
         ]
     );
     assert_eq!(
-        filter("pending"),
+        fact.measure("pending").unwrap().filter,
         [cond("done", vec![Literal::Bool(false)])]
     );
     // A FILTER may come before the key it names.
@@ -597,16 +616,11 @@ fn null_ness_keys() {
         )
         .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 3, 4, 5");
     let early = parse(&filter_first).unwrap();
-    let names = |spec: &Spec| -> Vec<String> {
-        (spec.fact("t").unwrap().measures.iter())
-            .map(|m| m.name.to_string())
-            .collect()
-    };
-    assert_eq!(names(&early), ["pending", "n", "closed"]);
-    assert_eq!(early.fact("t").unwrap().by_keys, t.by_keys);
+    assert_eq!(measure_names(&early), ["pending", "n", "closed"]);
+    assert_eq!(early.fact("t").unwrap().by_keys, fact.by_keys);
     assert_eq!(
         early.fact("t").unwrap().measure("pending").unwrap().filter,
-        filter("pending")
+        fact.measure("pending").unwrap().filter
     );
     // Asks name the key.
     let ask = Ask {
@@ -650,7 +664,7 @@ fn null_ness_keys_rejected() {
         assert!(NULLS.contains(from), "{from}");
         let errors = sql_errors(&NULLS.replacen(from, to, 1));
         assert!(
-            errors.iter().any(|e| e.msg.contains(fragment)),
+            errors.iter().any(|error| error.msg.contains(fragment)),
             "{to}: {errors:?}"
         );
     }
@@ -659,7 +673,7 @@ fn null_ness_keys_rejected() {
     assert!(
         errors
             .iter()
-            .any(|e| e.msg == "the IS NULL column must be a f column"),
+            .any(|error| error.msg == "the IS NULL column must be a f column"),
         "{errors:?}"
     );
     let no_time = base("f.a AS a,", "f.a AS a, (f.at IS NULL) AS no_time,")
@@ -772,7 +786,7 @@ fn rejects(cases: &[(&str, &str, u64, &str)]) {
         };
         if !errors
             .iter()
-            .any(|e| e.line == line && e.msg.contains(fragment))
+            .any(|error| error.line == line && error.msg.contains(fragment))
         {
             failed.push(format!(
                 "{to}: expected line {line}: {fragment}, got {errors:?}"
@@ -915,6 +929,42 @@ fn query_clauses_outside_the_subset_are_rejected() {
             "WITH (a CTE) is not in Straum SQL",
         ),
         (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 ORDER BY 1",
+            2,
+            "ORDER BY is not",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 LIMIT 5",
+            2,
+            "LIMIT or OFFSET is not",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 FOR UPDATE",
+            2,
+            "FOR UPDATE or FOR SHARE",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 UNION SELECT 1",
+            2,
+            "view body, use one SELECT,",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 FETCH FIRST 1 ROWS ONLY",
+            2,
+            "FETCH is not",
+        ),
+    ]);
+}
+
+#[test]
+fn other_dialects_select_clauses_are_rejected() {
+    rejects(&[
+        (
             "SELECT date_bin",
             "SELECT /*+ x */ date_bin",
             2,
@@ -969,6 +1019,12 @@ fn query_clauses_outside_the_subset_are_rejected() {
             2,
             "QUALIFY is not",
         ),
+    ]);
+}
+
+#[test]
+fn table_and_call_options_are_rejected() {
+    rejects(&[
         (
             "FROM public.t AS f",
             "FROM public.t(1) AS f",
@@ -1004,36 +1060,6 @@ fn query_clauses_outside_the_subset_are_rejected() {
             "{fn count(*)} AS n",
             3,
             "ODBC call syntax is not",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4 ORDER BY 1",
-            2,
-            "ORDER BY is not",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4 LIMIT 5",
-            2,
-            "LIMIT or OFFSET is not",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4 FOR UPDATE",
-            2,
-            "FOR UPDATE or FOR SHARE",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4 UNION SELECT 1",
-            2,
-            "view body, use one SELECT,",
-        ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 1, 2, 3, 4 FETCH FIRST 1 ROWS ONLY",
-            2,
-            "FETCH is not",
         ),
     ]);
 }
@@ -1322,15 +1348,33 @@ fn aggregates_outside_the_subset_are_rejected() {
         ),
         (
             "count(*) AS n",
-            "percentile_cont(0.5) WITHIN GROUP (ORDER BY f.x) AS n",
-            3,
-            "percentile_cont, use percentile_disc, `percentile_cont(0.5) WITHIN GROUP",
-        ),
-        (
-            "count(*) AS n",
             "sum(f.x) WITHIN GROUP (ORDER BY f.x) AS n",
             3,
             "WITHIN GROUP is not",
+        ),
+        (
+            "count(*) AS n",
+            "\"count\"(*) AS n",
+            3,
+            "aggregate `\"count\"(*)` is not",
+        ),
+        (
+            "count(*) AS n",
+            "current_timestamp AS n",
+            3,
+            "function call `current_timestamp` is not",
+        ),
+    ]);
+}
+
+#[test]
+fn percentile_disc_orders_by_one_column() {
+    rejects(&[
+        (
+            "count(*) AS n",
+            "percentile_cont(0.5) WITHIN GROUP (ORDER BY f.x) AS n",
+            3,
+            "percentile_cont, use percentile_disc, `percentile_cont(0.5) WITHIN GROUP",
         ),
         (
             "count(*) AS n",
@@ -1382,6 +1426,24 @@ fn aggregates_outside_the_subset_are_rejected() {
         ),
         (
             "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY z.name) AS n",
+            3,
+            "an aggregated column must be a f column",
+        ),
+        (
+            "count(*) AS n",
+            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x) FILTER (WHERE f.a > 1) AS n",
+            3,
+            "filter condition",
+        ),
+    ]);
+}
+
+#[test]
+fn a_fraction_is_written_from_0_to_1() {
+    rejects(&[
+        (
+            "count(*) AS n",
             "percentile_disc(-0.5) WITHIN GROUP (ORDER BY f.x) AS n",
             3,
             "fraction, write a number from 0 to 1, `-0.5` is not",
@@ -1415,30 +1477,6 @@ fn aggregates_outside_the_subset_are_rejected() {
             "percentile_disc(0.00000000000000000001) WITHIN GROUP (ORDER BY f.x) AS n",
             3,
             "in at most 19 places",
-        ),
-        (
-            "count(*) AS n",
-            "percentile_disc(0.5) WITHIN GROUP (ORDER BY z.name) AS n",
-            3,
-            "an aggregated column must be a f column",
-        ),
-        (
-            "count(*) AS n",
-            "percentile_disc(0.5) WITHIN GROUP (ORDER BY f.x) FILTER (WHERE f.a > 1) AS n",
-            3,
-            "filter condition",
-        ),
-        (
-            "count(*) AS n",
-            "\"count\"(*) AS n",
-            3,
-            "aggregate `\"count\"(*)` is not",
-        ),
-        (
-            "count(*) AS n",
-            "current_timestamp AS n",
-            3,
-            "function call `current_timestamp` is not",
         ),
     ]);
 }
@@ -1497,6 +1535,49 @@ fn measure_filters_take_one_condition_form() {
 fn the_bucket_is_one_date_bin() {
     rejects(&[
         (
+            "f.at, timestamptz 'epoch')",
+            "f.at)",
+            2,
+            "date_bin arguments",
+        ),
+        (
+            "date_bin('1 hour', f.at",
+            "date_bin('1 hour', z.at",
+            2,
+            "the date_bin column must be a f column",
+        ),
+        (
+            "timestamptz 'epoch')",
+            "timestamptz 'epoch') FILTER (WHERE f.a = 1)",
+            2,
+            "FILTER on date_bin",
+        ),
+        (
+            "date_bin('1 hour',",
+            "date_bin(DISTINCT '1 hour',",
+            2,
+            "DISTINCT on date_bin",
+        ),
+        ("date_bin(", "date_trunc(", 2, "aggregate `date_trunc"),
+        (
+            "SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,",
+            "SELECT",
+            2,
+            "SELECT needs a bucket",
+        ),
+        (
+            "AS bucket,",
+            "AS bucket, date_bin('1 day', f.at, timestamptz 'epoch') AS bucket,",
+            2,
+            "more than one date_bin bucket",
+        ),
+    ]);
+}
+
+#[test]
+fn the_date_bin_width_and_origin_are_spelled_one_way() {
+    rejects(&[
+        (
             "date_bin('1 hour'",
             "date_bin('15x'",
             2,
@@ -1544,43 +1625,6 @@ fn the_bucket_is_one_date_bin() {
             2,
             "date_bin origin",
         ),
-        (
-            "f.at, timestamptz 'epoch')",
-            "f.at)",
-            2,
-            "date_bin arguments",
-        ),
-        (
-            "date_bin('1 hour', f.at",
-            "date_bin('1 hour', z.at",
-            2,
-            "the date_bin column must be a f column",
-        ),
-        (
-            "timestamptz 'epoch')",
-            "timestamptz 'epoch') FILTER (WHERE f.a = 1)",
-            2,
-            "FILTER on date_bin",
-        ),
-        (
-            "date_bin('1 hour',",
-            "date_bin(DISTINCT '1 hour',",
-            2,
-            "DISTINCT on date_bin",
-        ),
-        ("date_bin(", "date_trunc(", 2, "aggregate `date_trunc"),
-        (
-            "SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,",
-            "SELECT",
-            2,
-            "SELECT needs a bucket",
-        ),
-        (
-            "AS bucket,",
-            "AS bucket, date_bin('1 day', f.at, timestamptz 'epoch') AS bucket,",
-            2,
-            "more than one date_bin bucket",
-        ),
     ]);
 }
 
@@ -1624,9 +1668,16 @@ WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a)
   AND f.a IN (1, 2) AND z.name = 'x'
 GROUP BY 1, 2, 3, 4";
     let spec = parse(src).unwrap();
-    let t = spec.fact("t").unwrap();
-    let shown: Vec<(String, RefKind, Vec<Via>, usize)> = (t.refs.iter())
-        .map(|r| (r.alias.to_string(), r.kind, r.via.clone(), r.reads.len()))
+    let fact = spec.fact("t").unwrap();
+    let shown: Vec<(String, RefKind, Vec<Via>, usize)> = (fact.refs.iter())
+        .map(|reference| {
+            (
+                reference.alias.to_string(),
+                reference.kind,
+                reference.via.clone(),
+                reference.reads.len(),
+            )
+        })
         .collect();
     assert_eq!(
         shown,
@@ -1660,7 +1711,7 @@ GROUP BY 1, 2, 3, 4";
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name"), id("w_id")]);
     assert_eq!(spec.dim("b").unwrap().key, [id("x"), id("y")]);
     assert_eq!(
-        t.filter,
+        fact.filter,
         [
             cond("a", vec![Literal::Int(1), Literal::Int(2)]),
             cond("name", vec![Literal::Text("x".into())]),
@@ -1668,7 +1719,7 @@ GROUP BY 1, 2, 3, 4";
     );
     // Only the fact-side join columns key the cells.
     assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
-    assert_eq!(t.columns(), [id("at"), id("a"), id("z_id")]);
+    assert_eq!(fact.columns(), [id("at"), id("a"), id("z_id")]);
 }
 
 #[test]
@@ -1716,7 +1767,7 @@ GROUP BY 1, 2, 3";
         );
         let errors = error_lines(&src);
         assert!(
-            errors.iter().any(|e| e.contains(fragment)),
+            errors.iter().any(|error| error.contains(fragment)),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
