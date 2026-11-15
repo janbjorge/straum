@@ -14,10 +14,16 @@ const READINGS: usize = 3_600;
 pub(crate) struct Lag {
     /// The server's position at each reading the slot hasn't confirmed
     /// yet, oldest first.
-    unconfirmed: VecDeque<(Instant, Lsn)>,
+    unconfirmed: VecDeque<Reading>,
     /// The last reading the slot had confirmed all of. WAL it hasn't
     /// confirmed was written after it.
     caught_up: Instant,
+}
+
+#[derive(Debug)]
+struct Reading {
+    at: Instant,
+    written: Lsn,
 }
 
 impl Lag {
@@ -34,14 +40,17 @@ impl Lag {
         match self.unconfirmed.back_mut() {
             // The later of two readings at one position is the closer
             // bound.
-            Some((when, lsn)) if *lsn >= wal.written => *when = at,
-            Some((_, lsn)) if full => *lsn = wal.written,
-            _ => self.unconfirmed.push_back((at, wal.written)),
+            Some(last) if last.written >= wal.written => last.at = at,
+            Some(last) if full => last.written = wal.written,
+            _ => self.unconfirmed.push_back(Reading {
+                at,
+                written: wal.written,
+            }),
         }
-        while let Some(&(when, lsn)) = self.unconfirmed.front()
-            && lsn <= wal.confirmed
+        while let Some(oldest) = self.unconfirmed.front()
+            && oldest.written <= wal.confirmed
         {
-            self.caught_up = when;
+            self.caught_up = oldest.at;
             self.unconfirmed.pop_front();
         }
     }

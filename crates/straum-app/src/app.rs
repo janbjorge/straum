@@ -12,8 +12,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, ColumnType, Identifier, SealedError, SealedId, Spec, Store,
-    Table, Width,
+    Answer, Ask, AskError, AskKey, ColumnType, Fact, Identifier, SealedError, SealedId, Spec,
+    Store, Table, Thawed, Width,
 };
 
 use crate::lag::Lag;
@@ -216,12 +216,7 @@ impl App {
             Vec::new()
         } else {
             let spilling = (self.spilling.as_ref()).expect("only a spilling writer seals");
-            (ids.iter())
-                .map(|id| {
-                    let sealed = spilling.spill.get(id).map_err(spill_error)?;
-                    store.thaw(sealed).map_err(spill_error)
-                })
-                .collect::<Result<_, _>>()?
+            thaw_from_spill(store, spilling, &ids)?
         };
         let answer = store.ask_with(ask, &thawed).map_err(AnswerError::Invalid)?;
         Ok(Answered {
@@ -257,30 +252,7 @@ impl App {
         state.following.as_ref()?;
         let store = &state.store;
         let views = (store.spec().facts().iter())
-            .map(|fact| {
-                let name = fact.name.as_str();
-                HeldView {
-                    name: fact.name.clone(),
-                    widths: iter::once(fact.time.width)
-                        .chain(fact.time.wider.iter().copied())
-                        .collect(),
-                    bucket: fact.time.origin.column_type(),
-                    keys: (fact.keys())
-                        .map(|key| HeldKey {
-                            name: key.clone(),
-                            column_type: store.key_type(name, key).expect(IN_SPEC),
-                        })
-                        .collect(),
-                    measures: fact
-                        .measures
-                        .iter()
-                        .map(|measure| measure.name.clone())
-                        .collect(),
-                    cells: store.cells(name).expect(IN_SPEC),
-                    bound_cells: store.bound_cells(name),
-                    range: store.range(name),
-                }
-            })
+            .map(|fact| held_view(store, fact))
             .collect();
         let dims = (store.spec().dims().iter())
             .map(|dim| HeldDim {
@@ -322,6 +294,46 @@ impl App {
     fn write(&self) -> RwLockWriteGuard<'_, State> {
         self.state.write().expect(POISONED)
     }
+}
+
+fn held_view(store: &Store, fact: &Fact) -> HeldView {
+    let name = fact.name.as_str();
+    let mut widths = vec![fact.time.width];
+    widths.extend(fact.time.wider.iter().copied());
+    let mut keys = Vec::new();
+    for key in fact.keys() {
+        keys.push(HeldKey {
+            name: key.clone(),
+            column_type: store.key_type(name, key).expect(IN_SPEC),
+        });
+    }
+    HeldView {
+        name: fact.name.clone(),
+        widths,
+        bucket: fact.time.origin.column_type(),
+        keys,
+        measures: fact
+            .measures
+            .iter()
+            .map(|measure| measure.name.clone())
+            .collect(),
+        cells: store.cells(name).expect(IN_SPEC),
+        bound_cells: store.bound_cells(name),
+        range: store.range(name),
+    }
+}
+
+fn thaw_from_spill(
+    store: &Store,
+    spilling: &Spilling,
+    ids: &[SealedId],
+) -> Result<Vec<Thawed>, AnswerError> {
+    let mut thawed = Vec::new();
+    for id in ids {
+        let sealed = spilling.spill.get(id).map_err(spill_error)?;
+        thawed.push(store.thaw(sealed).map_err(spill_error)?);
+    }
+    Ok(thawed)
 }
 
 fn spill_error(error: impl fmt::Display) -> AnswerError {
@@ -514,10 +526,10 @@ impl<S: Source> Writer<S> {
         if ids.is_empty() {
             return Ok(());
         }
-        let sealed = (ids.iter())
-            .map(|id| spilling.spill.get(id))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(Error::Spill)?;
+        let mut sealed = Vec::new();
+        for id in &ids {
+            sealed.push(spilling.spill.get(id).map_err(Error::Spill)?);
+        }
         {
             let mut state = self.app.write();
             for sealed in sealed {
@@ -548,7 +560,8 @@ impl<S: Source> Writer<S> {
         let at = Instant::now();
         let wal = self.source.wal()?;
         self.wal_read_at = at;
-        let (retained, limit) = (wal.retained(), self.app.limits.max_retained_wal);
+        let retained = wal.retained();
+        let limit = self.app.limits.max_retained_wal;
         if retained > limit {
             return Err(Error::Retained { retained, limit });
         }
@@ -581,15 +594,16 @@ fn touched(store: &Store, commit: &Commit) -> Vec<SealedId> {
 
 /// The sealed buckets of the facts a commit truncates.
 fn truncated(store: &Store, commit: &Commit) -> Vec<SealedId> {
-    (commit.changes.iter())
-        .filter_map(|change| match change {
-            Change::Truncate { table } if store.spec().fact(table.as_str()).is_some() => {
-                Some(store.sealed(table.as_str()))
-            }
-            _ => None,
-        })
-        .flatten()
-        .collect()
+    let mut ids = Vec::new();
+    for change in &commit.changes {
+        let Change::Truncate { table } = change else {
+            continue;
+        };
+        if store.spec().fact(table.as_str()).is_some() {
+            ids.extend(store.sealed(table.as_str()));
+        }
+    }
+    ids
 }
 
 /// Whole seconds, saturating.

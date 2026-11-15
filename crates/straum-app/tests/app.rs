@@ -28,9 +28,11 @@ const DAY: i64 = 86_400;
 /// Every row's time falls in `[0, RANGE)`.
 const RANGE: i64 = 3 * DAY;
 
+const GIB: u64 = 1 << 30;
+
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
-    max_retained_wal: 4 << 30,
+    max_retained_wal: 4 * GIB,
 };
 
 const SPEC: &str = "
@@ -197,16 +199,19 @@ fn starts_from_one_snapshot() {
     );
 }
 
-#[test]
-fn a_value_of_another_type_is_refused_once_loaded() {
-    let (_db, mut writer) = setup(&TABLES);
-    let by_kind = |value| Ask {
+fn by_kind(value: Literal) -> Ask {
+    Ask {
         filter: vec![Condition {
             key: id("kind"),
             values: vec![value],
         }],
         ..ask("trips", &["trips"], &[])
-    };
+    }
+}
+
+#[test]
+fn a_value_of_another_type_is_refused_once_loaded() {
+    let (_db, mut writer) = setup(&TABLES);
     // Only a load knows the types.
     assert_eq!(
         writer.app().ask(&by_kind(Literal::Text("1".into()))),
@@ -238,6 +243,13 @@ fn not_ready_before_the_first_step() {
     );
 }
 
+fn held_key(name: &str, column_type: ColumnType) -> HeldKey {
+    HeldKey {
+        name: id(name),
+        column_type,
+    }
+}
+
 #[test]
 fn held_says_what_the_store_holds_once_loaded() {
     let (db, mut writer) = setup(&TABLES);
@@ -245,10 +257,6 @@ fn held_says_what_the_store_holds_once_loaded() {
 
     (db.borrow_mut()).commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10)]);
     writer.step().unwrap();
-    let key = |name: &str, column_type| HeldKey {
-        name: id(name),
-        column_type,
-    };
     // The trips join on a key of theirs, so bound cells would be as many
     // as their cells; the logins join on a column that is no key.
     let held = Held {
@@ -258,9 +266,9 @@ fn held_says_what_the_store_holds_once_loaded() {
                 widths: vec![Width { seconds: 3_600 }],
                 bucket: ColumnType::Time { zoned: true },
                 keys: vec![
-                    key("kind", ColumnType::Int),
-                    key("zone_id", ColumnType::Int),
-                    key("borough", ColumnType::Text),
+                    held_key("kind", ColumnType::Int),
+                    held_key("zone_id", ColumnType::Int),
+                    held_key("borough", ColumnType::Text),
                 ],
                 measures: vec![id("trips"), id("fare"), id("fare_max"), id("riders")],
                 cells: 1,
@@ -271,7 +279,7 @@ fn held_says_what_the_store_holds_once_loaded() {
                 name: id("logins"),
                 widths: vec![Width { seconds: 86_400 }],
                 bucket: ColumnType::Time { zoned: true },
-                keys: vec![key("borough", ColumnType::Text)],
+                keys: vec![held_key("borough", ColumnType::Text)],
                 measures: vec![id("logins")],
                 cells: 0,
                 bound_cells: Some(0),
@@ -292,6 +300,13 @@ fn held_says_what_the_store_holds_once_loaded() {
     db.borrow_mut().drop_connection = true;
     writer.step().unwrap_err();
     assert_eq!(writer.app().held(), None);
+}
+
+fn one_trip(kind: i64, fare: i128) -> AnswerRow {
+    AnswerRow {
+        keys: vec![int(0), int(kind), int(1), text("Bronx")],
+        values: [1, fare, fare, 1].map(Value::Int).to_vec(),
+    }
 }
 
 #[test]
@@ -320,11 +335,10 @@ fn the_rows_ask_reads_the_whole_view() {
             )
         }
     );
-    let row = |kind, fare: i128| AnswerRow {
-        keys: vec![int(0), int(kind), int(1), text("Bronx")],
-        values: [1, fare, fare, 1].map(Value::Int).to_vec(),
-    };
-    assert_eq!(app.ask(&rows).unwrap().answer.rows, [row(1, 10), row(2, 5)]);
+    assert_eq!(
+        app.ask(&rows).unwrap().answer.rows,
+        [one_trip(1, 10), one_trip(2, 5)]
+    );
     assert_eq!(app.ask(&empty).unwrap().answer.rows, []);
 }
 
@@ -627,22 +641,47 @@ fn asks_wait_while_the_tables_load() {
     let log = Rc::clone(&seen);
     let app = App::new(spec(), LIMITS, None);
     let (db, mut writer) = watched(app, move |app, table| {
-        let count = |fact| {
-            aside(app, ask(fact, &[fact], &[]))
-                .map(|answered| answered.answer.rows[0].values[0].clone())
-        };
-        log.borrow_mut()
-            .push((table.to_owned(), count("trips"), count("logins")));
+        log.borrow_mut().push(DuringLoad {
+            table: table.to_owned(),
+            trips: count_aside(app, "trips"),
+            logins: count_aside(app, "logins"),
+        });
     });
     db.borrow_mut()
         .commit(vec![login(1, 1), login(2, 1), trip(1, 1, 1, 10)]);
     writer.step().unwrap();
-    let not_ready = Err(AnswerError::NotReady);
-    let starting = |table: &str| (table.to_owned(), not_ready.clone(), not_ready.clone());
     assert_eq!(
         *seen.borrow(),
-        [starting("zones"), starting("trips"), starting("logins")]
+        [not_ready("zones"), not_ready("trips"), not_ready("logins")]
     );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DuringLoad {
+    table: String,
+    trips: Result<Value, AnswerError>,
+    logins: Result<Value, AnswerError>,
+}
+
+fn not_ready(table: &str) -> DuringLoad {
+    DuringLoad {
+        table: table.to_owned(),
+        trips: Err(AnswerError::NotReady),
+        logins: Err(AnswerError::NotReady),
+    }
+}
+
+fn count_aside(app: &App, fact: &str) -> Result<Value, AnswerError> {
+    let answered = aside(app, ask(fact, &[fact], &[]))?;
+    Ok(answered.answer.rows[0].values[0].clone())
+}
+
+fn wal(written: u64, confirmed: u64) -> Wal {
+    Wal {
+        written: Lsn(written),
+        confirmed: Lsn(confirmed),
+        restart: Lsn(confirmed),
+    }
 }
 
 #[test]
@@ -657,11 +696,6 @@ fn ready_only_within_the_lag_bound() {
     assert_eq!(writer.app().status().lag, None);
 
     // WAL written during the load that the slot hasn't confirmed.
-    let wal = |server, confirmed| Wal {
-        written: Lsn(server),
-        confirmed: Lsn(confirmed),
-        restart: Lsn(confirmed),
-    };
     db.borrow_mut().wal = Some(wal(200, 100));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().status().lag.unwrap() >= Duration::from_millis(2));
@@ -694,8 +728,16 @@ fn ready_only_within_the_lag_bound() {
 #[test]
 fn status_reports_what_straum_did() {
     let (db, mut writer) = setup(&TABLES);
+    status_before_the_first_step(writer.app());
+    let start = status_after_a_start(&db, &mut writer);
+    status_while_waiting_for_a_commit(&db, &mut writer, start);
+    let failed = status_after_a_failure(&db, &mut writer);
+    status_after_the_next_start(&db, &mut writer, &failed);
+}
+
+fn status_before_the_first_step(app: &App) {
     assert_eq!(
-        writer.app().status(),
+        app.status(),
         Status {
             ready: false,
             applied: None,
@@ -711,7 +753,9 @@ fn status_reports_what_straum_did() {
             unseals: 0,
         }
     );
+}
 
+fn status_after_a_start(db: &RefCell<Database>, writer: &mut Writer<Fake>) -> Lsn {
     let start = db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     writer.step().unwrap();
     let status = writer.app().status();
@@ -732,8 +776,15 @@ fn status_reports_what_straum_did() {
     };
     assert_eq!(status.wal, Some(caught_up));
     assert_eq!((status.starts, status.failures), (1, 0));
+    start
+}
 
-    // A reading while it waits for the next commit.
+// A reading while it waits for the next commit.
+fn status_while_waiting_for_a_commit(
+    db: &RefCell<Database>,
+    writer: &mut Writer<Fake>,
+    start: Lsn,
+) {
     let held = Wal {
         written: Lsn(start.0 + 50),
         confirmed: start,
@@ -749,7 +800,9 @@ fn status_reports_what_straum_did() {
         (Some(lsn), Some(time(lsn)))
     );
     assert_eq!(status.wal, Some(held));
+}
 
+fn status_after_a_failure(db: &RefCell<Database>, writer: &mut Writer<Fake>) -> Status {
     db.borrow_mut().drop_connection = true;
     db.borrow_mut().commit(vec![trip(3, 1, 1, 10)]);
     writer.step().unwrap_err();
@@ -760,13 +813,16 @@ fn status_reports_what_straum_did() {
     let failure = status.last_failure.clone().unwrap();
     assert_eq!(failure.error, "connection dropped");
     assert_eq!((status.starts, status.failures), (1, 1));
+    status
+}
 
-    // The next start keeps the last failure.
+// The next start keeps the last failure.
+fn status_after_the_next_start(db: &RefCell<Database>, writer: &mut Writer<Fake>, failed: &Status) {
     db.borrow_mut().wal = None;
     writer.step().unwrap();
     let after = writer.app().status();
     assert!(after.ready);
-    assert_eq!(after.last_failure, status.last_failure);
+    assert_eq!(after.last_failure, failed.last_failure);
     assert_eq!((after.starts, after.failures), (2, 1));
 }
 
@@ -774,30 +830,25 @@ fn status_reports_what_straum_did() {
 fn too_much_wal_starts_over() {
     let (db, mut writer) = setup(&TABLES);
     let limit = LIMITS.max_retained_wal;
-    let held = |bytes| Wal {
-        written: Lsn(100 + bytes),
-        confirmed: Lsn(100),
-        restart: Lsn(100),
-    };
     let message = "PostgreSQL holds 5120.0 MiB of WAL for Straum's slot, \
                    past the limit of 4096.0 MiB";
 
-    db.borrow_mut().wal = Some(held(5 << 30));
+    db.borrow_mut().wal = Some(wal(100 + 5 * GIB, 100));
     let err = writer.step().unwrap_err();
     assert!(
-        matches!(err, Error::Retained { retained, limit: 4_294_967_296 } if retained == 5 << 30)
+        matches!(err, Error::Retained { retained, limit } if retained == 5 * GIB && limit == 4 * GIB)
     );
     assert_eq!(err.to_string(), message);
     assert!(!writer.app().status().ready);
     assert_eq!(writer.app().status().last_failure.unwrap().error, message);
 
     // Up to the limit is fine.
-    db.borrow_mut().wal = Some(held(limit));
+    db.borrow_mut().wal = Some(wal(100 + limit, 100));
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().status().ready);
 
     // Past it while streaming, at the next reading.
-    db.borrow_mut().wal = Some(held(5 << 30));
+    db.borrow_mut().wal = Some(wal(100 + 5 * GIB, 100));
     db.borrow_mut().waits = 1;
     db.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     assert_eq!(writer.step().unwrap_err().to_string(), message);
@@ -831,10 +882,16 @@ fn a_row_that_does_not_fit_stops_straum() {
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
 }
 
+fn trip_row() -> Row {
+    vec![int(0), int(1), int(1), int(10), text("ann")]
+}
+
+fn never_added() -> Row {
+    vec![int(0), int(9), int(9), int(9), text("zed")]
+}
+
 #[test]
 fn a_change_that_does_not_fit_starts_over() {
-    let trip_row = || vec![int(0), int(1), int(1), int(10), text("ann")];
-    let never_added = || vec![int(0), int(9), int(9), int(9), text("zed")];
     let cases = [
         (
             "fact update from a row Straum never saw",
@@ -882,28 +939,32 @@ fn a_change_that_does_not_fit_starts_over() {
             },
         ),
     ];
-    let by_borough = ask("trips", &["trips", "fare"], &["borough"]);
     for (name, change) in cases {
-        let (db, mut writer) = setup(&TABLES);
-        db.borrow_mut()
-            .commit(vec![zone(1, "Bronx"), zone(2, "Queens"), trip(1, 1, 1, 10)]);
-        writer.step().unwrap();
-        let table = change.table().clone();
-        let lsn = db.borrow_mut().send(vec![change]);
-
-        let err = writer.step().unwrap_err();
-        assert!(
-            matches!(&err, Error::Unfit(unfit) if *unfit == table),
-            "{name}"
-        );
-        assert!(!writer.app().status().ready, "{name}");
-        assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
-        assert_eq!(
-            writer.app().ask(&by_borough).unwrap().answer,
-            reference_answer(&db.borrow(), &by_borough),
-            "{name}"
-        );
+        starts_over_after(name, change);
     }
+}
+
+fn starts_over_after(name: &str, change: Change) {
+    let (db, mut writer) = setup(&TABLES);
+    db.borrow_mut()
+        .commit(vec![zone(1, "Bronx"), zone(2, "Queens"), trip(1, 1, 1, 10)]);
+    writer.step().unwrap();
+    let table = change.table().clone();
+    let lsn = db.borrow_mut().send(vec![change]);
+
+    let err = writer.step().unwrap_err();
+    assert!(
+        matches!(&err, Error::Unfit(unfit) if *unfit == table),
+        "{name}"
+    );
+    assert!(!writer.app().status().ready, "{name}");
+    assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
+    let by_borough = ask("trips", &["trips", "fare"], &["borough"]);
+    assert_eq!(
+        writer.app().ask(&by_borough).unwrap().answer,
+        reference_answer(&db.borrow(), &by_borough),
+        "{name}"
+    );
 }
 
 /// Long enough that no bucket here is old enough to seal.
