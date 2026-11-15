@@ -209,7 +209,7 @@ answers keepalives while the writer is busy (`StreamThread`).
 
 ## Answering an ask
 
-The HTTP handler in `straum-http` and `App::ask`:
+The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
 
 1. Read at most 1 MiB of body; parse the query with the parameters
    bound to `$n`; refuse a range jiff can't print.

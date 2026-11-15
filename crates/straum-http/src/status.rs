@@ -1,5 +1,7 @@
-//! `/status`: what Straum has done, in plain text for people, as
-//! `straum status` prints it.
+//! `GET /status` and `GET /readyz`: what Straum has done, in plain text for
+//! people. `routes.rs` takes a `Status` from the app and hands it here;
+//! `write` turns it into the lines `straum status` prints, and `why_not`
+//! into the one reason `/readyz` gives when Straum is not ready.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
@@ -9,44 +11,81 @@ use straum_app::{Failure, Status, format_mebibytes};
 use crate::time::rfc3339_of;
 
 /// Labels and values line up after this many characters.
-const LABEL: usize = 14;
+const LABEL_WIDTH: usize = 14;
 
+const UNKNOWN: &str = "unknown until every table is loaded";
+
+/// Why Straum is not ready, or `None` when it is.
 pub(crate) fn why_not(status: &Status) -> Option<String> {
     if status.ready {
         return None;
     }
     // No lag means no stream: the last failure, if any, is why.
-    Some(match (status.lag, &status.last_failure) {
+    let why = match (status.lag, &status.last_failure) {
         (Some(lag), _) => format!("{} s behind PostgreSQL", lag.as_secs()),
         (None, Some(failure)) => failure.error.clone(),
         (None, None) => "loading".to_owned(),
-    })
+    };
+    Some(why)
 }
 
+/// The status as `label: value` lines.
 pub(crate) fn write(status: &Status) -> String {
-    const UNKNOWN: &str = "unknown until every table is loaded";
-    let ready = match why_not(status) {
+    let mut out = String::new();
+    write_line(&mut out, "ready", &ready(status));
+    write_line(&mut out, "applied", &applied(status));
+    write_line(&mut out, "as of", &as_of(status));
+    write_line(&mut out, "lag", &lag(status));
+    write_line(&mut out, "WAL retained", &wal(status));
+    write_line(&mut out, "starts", &status.starts.to_string());
+    write_line(&mut out, "failures", &status.failures.to_string());
+    write_line(&mut out, "last failure", &last_failure(status));
+    write_line(&mut out, "sealed", &sealed(status));
+    out
+}
+
+fn write_line(out: &mut String, label: &str, value: &str) {
+    let label = format!("{label}:");
+    // An error of several lines keeps them under its value.
+    let value = value.replace('\n', &format!("\n{:LABEL_WIDTH$}", ""));
+    let _ = writeln!(out, "{label:LABEL_WIDTH$}{value}");
+}
+
+fn ready(status: &Status) -> String {
+    match why_not(status) {
         None => "yes".to_owned(),
         Some(why) => format!("no, {why}"),
-    };
-    let applied = match (status.applied, status.committed) {
+    }
+}
+
+fn applied(status: &Status) -> String {
+    match (status.applied, status.committed) {
         (None, _) => "nothing yet".to_owned(),
         (Some(lsn), None) => format!("{lsn}, where the stream started"),
         (Some(lsn), Some(time)) => format!("{lsn}, committed {}", timestamp(time)),
-    };
-    let as_of = match status.as_of {
+    }
+}
+
+fn as_of(status: &Status) -> String {
+    match status.as_of {
         None => UNKNOWN.to_owned(),
         Some(at) => format!("{}, every commit before it applied", timestamp(at)),
-    };
-    let lag = match status.lag {
+    }
+}
+
+fn lag(status: &Status) -> String {
+    match status.lag {
         None => UNKNOWN.to_owned(),
         Some(lag) => format!(
             "{:.1} s, at most {} s",
             lag.as_secs_f64(),
             status.limits.max_lag.as_secs()
         ),
-    };
-    let wal = match status.wal {
+    }
+}
+
+fn wal(status: &Status) -> String {
+    match status.wal {
         None => UNKNOWN.to_owned(),
         Some(wal) => format!(
             "{}, at most {}; PostgreSQL is at {}",
@@ -54,41 +93,32 @@ pub(crate) fn write(status: &Status) -> String {
             format_mebibytes(status.limits.max_retained_wal),
             wal.written
         ),
-    };
-    let last_failure = match &status.last_failure {
+    }
+}
+
+fn last_failure(status: &Status) -> String {
+    match &status.last_failure {
         None => "none".to_owned(),
         Some(Failure { at, error }) => format!("{}: {error}", timestamp(*at)),
-    };
-    let sealed = match status.sealed {
+    }
+}
+
+fn sealed(status: &Status) -> String {
+    match status.sealed {
         None => "no spill".to_owned(),
         Some(sealed) => format!(
             "{sealed} buckets in the spill, {} unsealed by a change",
             status.unseals
         ),
-    };
-    let mut out = String::new();
-    for (label, value) in [
-        ("ready", ready),
-        ("applied", applied),
-        ("as of", as_of),
-        ("lag", lag),
-        ("WAL retained", wal),
-        ("starts", status.starts.to_string()),
-        ("failures", status.failures.to_string()),
-        ("last failure", last_failure),
-        ("sealed", sealed),
-    ] {
-        let label = format!("{label}:");
-        // An error of several lines keeps them under its value.
-        let value = value.replace('\n', &format!("\n{:LABEL$}", ""));
-        let _ = writeln!(out, "{label:LABEL$}{value}");
     }
-    out
 }
 
 fn timestamp(time: SystemTime) -> String {
-    // Past jiff's year 9999, which only a broken clock gives.
-    rfc3339_of(time).unwrap_or_else(|| "an unreadable time".to_owned())
+    match rfc3339_of(time) {
+        Some(text) => text,
+        // Past jiff's year 9999, which only a broken clock gives.
+        None => "an unreadable time".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -102,6 +132,7 @@ mod tests {
     /// 2024-01-01 00:00 UTC, in Unix seconds.
     const JAN_1: u64 = 1_704_067_200;
     const JAN_2: u64 = JAN_1 + 86_400;
+    const FOUR_GIBIBYTES: u64 = 4 << 30;
 
     fn status() -> Status {
         Status {
@@ -117,7 +148,7 @@ mod tests {
             }),
             limits: Limits {
                 max_lag: Duration::from_secs(30),
-                max_retained_wal: 4 << 30,
+                max_retained_wal: FOUR_GIBIBYTES,
             },
             last_failure: Some(Failure {
                 at: UNIX_EPOCH + Duration::from_secs(JAN_1),

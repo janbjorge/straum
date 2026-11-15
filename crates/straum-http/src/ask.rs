@@ -1,5 +1,8 @@
 //! The JSON around an ask: its query and the values for its `$n`
-//! parameters. Fields Straum doesn't know are errors, never ignored.
+//! parameters. `read` takes the bytes of a `POST /ask` body, parses them
+//! with `json.rs` and checks each field, collecting every error it finds;
+//! `routes.rs` then hands the query to the `ReadAsk` the binary gave.
+//! Fields Straum doesn't know are errors, never ignored.
 //!
 //! ```json
 //! {
@@ -12,9 +15,11 @@
 //!   is given.
 //! - `parameters`: integers, strings and booleans, `$1` first.
 
+use std::fmt;
+
 use straum_domain::Literal;
 
-use crate::json::Json;
+use crate::json::{Json, JsonError};
 
 /// An ask as sent, before the `ReadAsk` reads its query.
 #[derive(Debug, PartialEq)]
@@ -23,40 +28,90 @@ pub(crate) struct AskBody {
     pub(crate) parameters: Vec<Literal>,
 }
 
-/// Every error found, each naming its field.
-pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<String>> {
-    let json = Json::parse(body).map_err(|error| vec![error])?;
+/// Where a parameter sits in `parameters`, counted from 0; it fills
+/// `$n` with n one more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParameterIndex(pub(crate) usize);
+
+/// One thing wrong with an ask's body, naming the field it is in.
+#[derive(Debug)]
+pub(crate) enum BodyError {
+    Json(JsonError),
+    NotAnObject {
+        kind: &'static str,
+    },
+    QueryNotText {
+        kind: &'static str,
+    },
+    ParametersNotArray {
+        kind: &'static str,
+    },
+    UnknownField(String),
+    QueryMissing,
+    /// A parameter that is not an integer, a string or a boolean.
+    ParameterType {
+        index: ParameterIndex,
+        kind: &'static str,
+    },
+}
+
+impl fmt::Display for BodyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BodyError::Json(error) => error.fmt(formatter),
+            BodyError::NotAnObject { kind } => write!(formatter, "an ask is an object, not {kind}"),
+            BodyError::QueryNotText { kind } => {
+                write!(formatter, "\"query\" must be a string, not {kind}")
+            }
+            BodyError::ParametersNotArray { kind } => {
+                write!(formatter, "\"parameters\" must be an array, not {kind}")
+            }
+            BodyError::UnknownField(name) => write!(formatter, "unknown field {name:?}"),
+            BodyError::QueryMissing => formatter.write_str("\"query\" is missing"),
+            BodyError::ParameterType { index, kind } => write!(
+                formatter,
+                "\"parameters[{}]\" (${}) must be an integer, a string or a boolean, not {kind}",
+                index.0,
+                index.0 + 1
+            ),
+        }
+    }
+}
+
+/// Reads an ask's body, or says every error found.
+pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<BodyError>> {
+    let json = match Json::parse(body) {
+        Ok(json) => json,
+        Err(error) => return Err(vec![BodyError::Json(error)]),
+    };
     let Json::Object(fields) = json else {
-        return Err(vec![format!("an ask is an object, not {}", json.kind())]);
+        let kind = json.kind();
+        return Err(vec![BodyError::NotAnObject { kind }]);
     };
     let mut errors = Vec::new();
     let mut query = None;
     let mut parameters = Vec::new();
     let mut saw_query = false;
-    for (field, value) in fields {
-        saw_query |= field == "query";
-        match (field.as_str(), value) {
+    for field in fields {
+        saw_query |= field.name == "query";
+        match (field.name.as_str(), field.value) {
             ("query", Json::Text(text)) => query = Some(text),
             ("query", other) => {
-                errors.push(format!("\"query\" must be a string, not {}", other.kind()));
+                let kind = other.kind();
+                errors.push(BodyError::QueryNotText { kind });
             }
             ("parameters", Json::Array(items)) => {
-                for (index, item) in items.iter().enumerate() {
-                    match literal(index, item) {
-                        Ok(literal) => parameters.push(literal),
-                        Err(error) => errors.push(error),
-                    }
-                }
+                read_parameters(&items, &mut parameters, &mut errors);
             }
-            ("parameters", other) => errors.push(format!(
-                "\"parameters\" must be an array, not {}",
-                other.kind()
-            )),
-            (other, _) => errors.push(format!("unknown field {other:?}")),
+            ("parameters", other) => {
+                let kind = other.kind();
+                errors.push(BodyError::ParametersNotArray { kind });
+            }
+            (other, _) => errors.push(BodyError::UnknownField(other.to_owned())),
         }
     }
     if !saw_query {
-        errors.push("\"query\" is missing".into());
+        errors.push(BodyError::QueryMissing);
     }
     match query {
         Some(query) if errors.is_empty() => Ok(AskBody { query, parameters }),
@@ -64,17 +119,25 @@ pub(crate) fn read(body: &[u8]) -> Result<AskBody, Vec<String>> {
     }
 }
 
-fn literal(index: usize, value: &Json) -> Result<Literal, String> {
+fn read_parameters(items: &[Json], parameters: &mut Vec<Literal>, errors: &mut Vec<BodyError>) {
+    for (position, item) in items.iter().enumerate() {
+        match literal(ParameterIndex(position), item) {
+            Ok(literal) => parameters.push(literal),
+            Err(error) => errors.push(error),
+        }
+    }
+}
+
+fn literal(index: ParameterIndex, value: &Json) -> Result<Literal, BodyError> {
     match value {
         Json::Int(integer) => Ok(Literal::Int(*integer)),
         Json::Text(text) => Ok(Literal::Text(text.clone())),
         Json::Bool(boolean) => Ok(Literal::Bool(*boolean)),
         // `= NULL` matches nothing in SQL, so it can only be a mistake.
-        other => Err(format!(
-            "\"parameters[{index}]\" (${}) must be an integer, a string or a boolean, not {}",
-            index + 1,
-            other.kind()
-        )),
+        other => Err(BodyError::ParameterType {
+            index,
+            kind: other.kind(),
+        }),
     }
 }
 
@@ -82,14 +145,26 @@ fn literal(index: usize, value: &Json) -> Result<Literal, String> {
 mod tests {
     use super::*;
 
-    fn read_str(body: &str) -> Result<AskBody, Vec<String>> {
-        read(body.as_bytes())
+    fn read_str(body: &str) -> AskBody {
+        read(body.as_bytes()).unwrap()
+    }
+
+    /// The errors a body gives, as the reply says them.
+    fn errors_of(body: &str) -> Vec<String> {
+        let Err(errors) = read(body.as_bytes()) else {
+            panic!("{body} was read");
+        };
+        let mut lines = Vec::new();
+        for error in errors {
+            lines.push(error.to_string());
+        }
+        lines
     }
 
     #[test]
     fn reads_the_query_and_its_parameters() {
         assert_eq!(
-            read_str(r#"{"parameters": [2, "x", false], "query": "SELECT"}"#).unwrap(),
+            read_str(r#"{"parameters": [2, "x", false], "query": "SELECT"}"#),
             AskBody {
                 query: "SELECT".to_owned(),
                 parameters: vec![
@@ -100,7 +175,7 @@ mod tests {
             }
         );
         assert_eq!(
-            read_str(r#"{"query": "SELECT"}"#).unwrap(),
+            read_str(r#"{"query": "SELECT"}"#),
             AskBody {
                 query: "SELECT".to_owned(),
                 parameters: Vec::new()
@@ -133,8 +208,7 @@ mod tests {
             ),
         ];
         for (body, expected) in cases {
-            let errors = read_str(body).unwrap_err();
-            assert_eq!(errors, expected, "{body}");
+            assert_eq!(errors_of(body), expected, "{body}");
         }
     }
 }

@@ -178,7 +178,7 @@ are open.
 ## Asks and answers
 
 - **Ask** (`Ask`): the request to `POST /ask`: a query and its
-  parameters. `straum-http` calls the parsed form `request`.
+  parameters. `straum-http` calls the parsed form `asked`.
 - **Query**: the ask's `query` field, one `SELECT` over a view in
   Straum SQL (ADR-0006).
 - **Parameter** (`Literal`): a `$n` value of an ask: integer, string
@@ -205,8 +205,7 @@ are open.
 - **Answer**: the JSON `{"as_of", "rows"}`, or the same as a table in
   plain text for `Accept: text/plain` and `straum ask` (ADR-0039).
   `Answer` is its columns and rows; `Answered` adds `as_of` and the
-  applied LSN. The HTTP
-  tests say "reply"; `straum-http` says "response" for the HTTP
+  applied LSN. `straum-http` and its tests say "reply" for the HTTP
   message around it.
 - **Row** (`AnswerRow`): one object of an answer's `rows`, sorted by
   key. A fact row and a dim row are rows too.

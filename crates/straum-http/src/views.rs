@@ -1,7 +1,9 @@
-//! `/views`: every view asks may read and how much of it Straum holds, in
-//! plain text for people, as `straum views` prints it. A program that
-//! sends `Accept: application/json`, as `straum shell` does to complete
-//! names, gets each view's names and the range of buckets it holds:
+//! `GET /views`: every view asks may read and how much of it Straum holds.
+//! `routes.rs` takes a `Held` from the app and hands it here. `write`
+//! turns it into plain text for people, as `straum views` prints it;
+//! `json` turns it into each view's names and the range of buckets it
+//! holds, for a program that sends `Accept: application/json`, as
+//! `straum shell` does to complete names:
 //!
 //! ```json
 //! {"views": [{"name": "trips", "from": "2024-01-01T00:00:00Z",
@@ -23,14 +25,24 @@ use straum_domain::{ColumnType, Identifier};
 use crate::json::quoted;
 use crate::time::rfc3339;
 
+/// Every view, then every dim, as blocks of plain text.
 pub(crate) fn write(held: &Held) -> String {
-    let views = held.views.iter().map(view);
-    let dims = held.dims.iter().map(dim);
-    views.chain(dims).collect::<Vec<_>>().join("\n")
+    let mut blocks = Vec::with_capacity(held.views.len() + held.dims.len());
+    for held_view in &held.views {
+        blocks.push(view_text(held_view));
+    }
+    for held_dim in &held.dims {
+        blocks.push(dim_text(held_dim));
+    }
+    blocks.join("\n")
 }
 
+/// Every view's names and range, as the JSON body `straum shell` reads.
 pub(crate) fn json(held: &Held) -> Vec<u8> {
-    let views: Vec<String> = held.views.iter().map(view_json).collect();
+    let mut views = Vec::with_capacity(held.views.len());
+    for held_view in &held.views {
+        views.push(view_json(held_view));
+    }
     format!("{{\"views\":[{}]}}", views.join(",")).into_bytes()
 }
 
@@ -39,28 +51,29 @@ fn view_json(view: &HeldView) -> String {
     for key in &view.keys {
         keys.push(key_json(key.name.as_str(), key.column_type));
     }
-    let measures: Vec<String> = view
-        .measures
-        .iter()
-        .map(|measure| quoted(measure.as_str()))
-        .collect();
+    let mut measures = Vec::with_capacity(view.measures.len());
+    for measure in &view.measures {
+        measures.push(quoted(measure.as_str()));
+    }
+    let (from, to) = match &view.range {
+        Some(range) => (edge_json(range.start), edge_json(range.end)),
+        None => ("null".to_owned(), "null".to_owned()),
+    };
     format!(
-        "{{\"name\":{},\"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
+        "{{\"name\":{},\"from\":{from},\"to\":{to},\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
-        edge_json(view.range.as_ref().map(|range| range.start)),
-        edge_json(view.range.as_ref().map(|range| range.end)),
         keys.join(","),
         measures.join(",")
     )
 }
 
-fn edge_json(seconds: Option<i64>) -> String {
-    // A time past jiff's year 9999 is null too, as it has no RFC 3339
-    // form here.
-    let Some(at) = seconds.and_then(rfc3339) else {
-        return "null".to_owned();
-    };
-    quoted(&at)
+fn edge_json(seconds: i64) -> String {
+    match rfc3339(seconds) {
+        Some(at) => quoted(&at),
+        // A time past jiff's year 9999 is null too, as it has no RFC 3339
+        // form here.
+        None => "null".to_owned(),
+    }
 }
 
 fn key_json(name: &str, column: ColumnType) -> String {
@@ -75,7 +88,7 @@ fn key_json(name: &str, column: ColumnType) -> String {
     )
 }
 
-fn view(view: &HeldView) -> String {
+fn view_text(view: &HeldView) -> String {
     let widths: Vec<String> = view.widths.iter().map(ToString::to_string).collect();
     let mut holds = counted(view.cells, "cell");
     if let Some(bound) = view.bound_cells {
@@ -86,10 +99,10 @@ fn view(view: &HeldView) -> String {
         // an ask's `bucket < $n` takes.
         let _ = write!(holds, ", {} to {}", time(range.start), time(range.end));
     }
-    let bucket = format!("bucket {}", column_type(view.bucket));
-    let keys =
-        (view.keys.iter()).map(|key| format!("{} {}", key.name, column_type(key.column_type)));
-    let keys: Vec<String> = std::iter::once(bucket).chain(keys).collect();
+    let mut keys = vec![format!("bucket {}", column_type(view.bucket))];
+    for key in &view.keys {
+        keys.push(format!("{} {}", key.name, column_type(key.column_type)));
+    }
     let measures: Vec<&str> = view.measures.iter().map(Identifier::as_str).collect();
     format!(
         "view {}\n  buckets:  {}\n  holds:    {holds}\n  keys:     {}\n  measures: {}\n",
@@ -100,7 +113,7 @@ fn view(view: &HeldView) -> String {
     )
 }
 
-fn dim(dim: &HeldDim) -> String {
+fn dim_text(dim: &HeldDim) -> String {
     let HeldDim { table, rows } = dim;
     let rows = counted(*rows, "row");
     format!("dim {}.{}\n  holds:    {rows}\n", table.schema, table.name)
@@ -131,8 +144,11 @@ fn column_type(column_type: ColumnType) -> String {
 }
 
 fn time(seconds: i64) -> String {
-    // PostgreSQL keeps times past jiff's year 9999.
-    rfc3339(seconds).unwrap_or_else(|| format!("Unix second {seconds}"))
+    match rfc3339(seconds) {
+        Some(text) => text,
+        // PostgreSQL keeps times past jiff's year 9999.
+        None => format!("Unix second {seconds}"),
+    }
 }
 
 #[cfg(test)]
@@ -141,22 +157,22 @@ mod tests {
     use straum_domain::{Identifier, Table, Width};
 
     use super::*;
-    use crate::json::Json;
+    use crate::json::{Field, Json};
 
-    fn id(name: &str) -> Identifier {
+    fn identifier(name: &str) -> Identifier {
         Identifier::new(name).unwrap()
     }
 
     fn key(name: &str, column_type: ColumnType) -> HeldKey {
         HeldKey {
-            name: id(name),
+            name: identifier(name),
             column_type,
         }
     }
 
     fn trips() -> HeldView {
         HeldView {
-            name: id("trips"),
+            name: identifier("trips"),
             widths: vec![Width { seconds: 900 }, Width { seconds: 86_400 }],
             bucket: ColumnType::Time { zoned: true },
             keys: vec![
@@ -165,10 +181,20 @@ mod tests {
                 key("shared", ColumnType::Bool),
                 key("borough", ColumnType::Text),
             ],
-            measures: vec![id("trips"), id("fare_sum")],
+            measures: vec![identifier("trips"), identifier("fare_sum")],
             cells: 412,
             bound_cells: Some(1),
             range: Some(1_704_067_200..1_704_240_000),
+        }
+    }
+
+    fn zones(rows: usize) -> HeldDim {
+        HeldDim {
+            table: Table {
+                schema: identifier("public"),
+                name: identifier("zones"),
+            },
+            rows,
         }
     }
 
@@ -178,23 +204,17 @@ mod tests {
             views: vec![
                 trips(),
                 HeldView {
-                    name: id("logins"),
+                    name: identifier("logins"),
                     widths: vec![Width { seconds: 90 }],
                     bucket: ColumnType::Time { zoned: false },
                     keys: Vec::new(),
-                    measures: vec![id("logins")],
+                    measures: vec![identifier("logins")],
                     cells: 1,
                     bound_cells: None,
                     range: None,
                 },
             ],
-            dims: vec![HeldDim {
-                table: Table {
-                    schema: id("public"),
-                    name: id("zones"),
-                },
-                rows: 1,
-            }],
+            dims: vec![zones(1)],
         };
         assert_eq!(
             write(&held),
@@ -233,13 +253,7 @@ dim public.zones
                     ..trips()
                 },
             ],
-            dims: vec![HeldDim {
-                table: Table {
-                    schema: id("public"),
-                    name: id("zones"),
-                },
-                rows: 2,
-            }],
+            dims: vec![zones(2)],
         };
         let keys = concat!(
             r#"{"name":"bucket","type":"timestamptz"},{"name":"kind","type":"integer"},"#,
@@ -264,27 +278,25 @@ dim public.zones
         assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
     }
 
-    fn names(fields: &[(String, Json)]) -> Vec<String> {
-        fields.iter().map(|(name, _)| name.clone()).collect()
+    fn names(fields: &[Field]) -> Vec<String> {
+        let mut names = Vec::with_capacity(fields.len());
+        for field in fields {
+            names.push(field.name.clone());
+        }
+        names
     }
 
     #[test]
     fn views_as_json_hold_only_what_the_shell_reads() {
         let held = Held {
             views: vec![trips()],
-            dims: vec![HeldDim {
-                table: Table {
-                    schema: id("public"),
-                    name: id("zones"),
-                },
-                rows: 2,
-            }],
+            dims: vec![zones(2)],
         };
         let Ok(Json::Object(top)) = Json::parse(&json(&held)) else {
             panic!("not an object");
         };
         assert_eq!(names(&top), ["views"]);
-        let Json::Array(views) = &top[0].1 else {
+        let Json::Array(views) = &top[0].value else {
             panic!("views is not an array");
         };
         let Json::Object(view) = &views[0] else {
@@ -293,7 +305,8 @@ dim public.zones
         let view = names(view);
         assert_eq!(view, ["name", "from", "to", "keys", "measures"]);
         for dropped in ["buckets", "cells", "bound_cells", "dims"] {
-            assert!(!view.iter().chain(&names(&top)).any(|name| name == dropped));
+            assert!(!view.contains(&dropped.to_owned()), "{dropped}");
+            assert!(!names(&top).contains(&dropped.to_owned()), "{dropped}");
         }
     }
 

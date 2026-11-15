@@ -1,10 +1,14 @@
-//! JSON in and out. `serde_json` reads the text; [`Json`] keeps every key
-//! as sent, so a key given twice is an error instead of a value dropped.
+//! JSON in and out. `Json::parse` hands the bytes of a request body to
+//! `serde_json`, which calls `JsonVisitor` for each value it meets; the
+//! visitor builds a `Json` tree that keeps every key as sent, so a key
+//! given twice is an error instead of a value dropped. `quoted` writes a
+//! string the other way, for the answers `answer.rs` and `views.rs` build.
 
 use std::fmt;
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
+/// One JSON value as sent, before `ask.rs` checks what it holds.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Json {
     Null,
@@ -15,12 +19,35 @@ pub(crate) enum Json {
     Text(String),
     Array(Vec<Json>),
     /// In the order sent, each key once.
-    Object(Vec<(String, Json)>),
+    Object(Vec<Field>),
+}
+
+/// One key of a JSON object and its value.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) value: Json,
+}
+
+/// Why a body is not JSON, in `serde_json`'s words with the line and column.
+#[derive(Debug)]
+pub(crate) struct JsonError {
+    error: serde_json::Error,
+}
+
+impl fmt::Display for JsonError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
 }
 
 impl Json {
-    pub(crate) fn parse(bytes: &[u8]) -> Result<Json, String> {
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())
+    /// Reads `bytes` as one JSON value.
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Json, JsonError> {
+        match serde_json::from_slice(bytes) {
+            Ok(json) => Ok(json),
+            Err(error) => Err(JsonError { error }),
+        }
     }
 
     /// What the value is, for errors.
@@ -37,14 +64,18 @@ impl Json {
     }
 }
 
+// The lifetime `'de` is serde's: the text being read lives that long.
 impl<'de> Deserialize<'de> for Json {
+    // Generic over serde's deserializer, as the trait requires.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Json, D::Error> {
         deserializer.deserialize_any(JsonVisitor)
     }
 }
 
+/// What serde calls back with each value it reads.
 struct JsonVisitor;
 
+// The generic error types `E` and `A` below are serde's, fixed by the trait.
 impl<'de> Visitor<'de> for JsonVisitor {
     type Value = Json;
 
@@ -69,7 +100,10 @@ impl<'de> Visitor<'de> for JsonVisitor {
         reason = "an integer past i64 is only ever named by its kind, never read as a number"
     )]
     fn visit_u64<E>(self, value: u64) -> Result<Json, E> {
-        Ok(i64::try_from(value).map_or(Json::Float(value as f64), Json::Int))
+        match i64::try_from(value) {
+            Ok(integer) => Ok(Json::Int(integer)),
+            Err(_) => Ok(Json::Float(value as f64)),
+        }
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Json, E> {
@@ -80,27 +114,37 @@ impl<'de> Visitor<'de> for JsonVisitor {
         Ok(Json::Text(value.to_owned()))
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Json, A::Error> {
         let mut items = Vec::new();
-        while let Some(item) = seq.next_element()? {
+        while let Some(item) = sequence.next_element()? {
             items.push(item);
         }
         Ok(Json::Array(items))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
-        let mut fields: Vec<(String, Json)> = Vec::new();
-        while let Some(key) = map.next_key::<String>()? {
-            if fields.iter().any(|(seen, _)| *seen == key) {
-                return Err(de::Error::custom(format!("key {key:?} given twice")));
+        let mut fields: Vec<Field> = Vec::new();
+        while let Some(name) = map.next_key::<String>()? {
+            if has_field(&fields, &name) {
+                return Err(de::Error::custom(format!("key {name:?} given twice")));
             }
             let value = map.next_value()?;
-            fields.push((key, value));
+            fields.push(Field { name, value });
         }
         Ok(Json::Object(fields))
     }
 }
 
+fn has_field(fields: &[Field], name: &str) -> bool {
+    for field in fields {
+        if field.name == name {
+            return true;
+        }
+    }
+    false
+}
+
+/// `text` as a JSON string, with its quotes.
 pub(crate) fn quoted(text: &str) -> String {
     serde_json::to_string(text).expect("a str is a JSON string")
 }
@@ -109,28 +153,41 @@ pub(crate) fn quoted(text: &str) -> String {
 mod tests {
     use super::*;
 
+    fn field(name: &str, value: Json) -> Field {
+        Field {
+            name: name.to_owned(),
+            value,
+        }
+    }
+
+    fn parse_error(text: &[u8]) -> String {
+        let Err(error) = Json::parse(text) else {
+            panic!("{text:?} parsed");
+        };
+        error.to_string()
+    }
+
     #[test]
     fn reads_json() {
         let json =
             Json::parse(br#"{"a": [null, true, -1, 1.5, "x", {}], "b": 18446744073709551615}"#);
+        let array = Json::Array(vec![
+            Json::Null,
+            Json::Bool(true),
+            Json::Int(-1),
+            Json::Float(1.5),
+            Json::Text("x".into()),
+            Json::Object(Vec::new()),
+        ]);
+        let expected = Json::Object(vec![
+            field("a", array),
+            field("b", Json::Float(18_446_744_073_709_551_615.0)),
+        ]);
+        assert_eq!(json.unwrap(), expected);
         assert_eq!(
-            json,
-            Ok(Json::Object(vec![
-                (
-                    "a".into(),
-                    Json::Array(vec![
-                        Json::Null,
-                        Json::Bool(true),
-                        Json::Int(-1),
-                        Json::Float(1.5),
-                        Json::Text("x".into()),
-                        Json::Object(Vec::new()),
-                    ])
-                ),
-                ("b".into(), Json::Float(18_446_744_073_709_551_615.0)),
-            ]))
+            Json::parse(b"9223372036854775807").unwrap(),
+            Json::Int(i64::MAX)
         );
-        assert_eq!(Json::parse(b"9223372036854775807"), Ok(Json::Int(i64::MAX)));
     }
 
     #[test]
@@ -145,15 +202,11 @@ mod tests {
             (b"[1] 2", "trailing characters at line 1 column 5"),
         ];
         for (text, error) in cases {
-            let got = Json::parse(text).unwrap_err();
+            let got = parse_error(text);
             assert!(got.starts_with(error), "{got}");
         }
         let deep = "[".repeat(200) + &"]".repeat(200);
-        assert!(
-            Json::parse(deep.as_bytes())
-                .unwrap_err()
-                .starts_with("recursion limit")
-        );
+        assert!(parse_error(deep.as_bytes()).starts_with("recursion limit"));
     }
 
     #[test]

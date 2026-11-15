@@ -1,16 +1,24 @@
-//! Times as RFC 3339 in UTC. jiff writes only the years -9999 to 9999, so
-//! each caller says what a time past them reads as.
+//! Times as RFC 3339 text in UTC, for the answers, views and status the
+//! other files write. jiff writes only the years -9999 to 9999, so each
+//! function returns `None` past them and its caller says what such a time
+//! reads as.
 
 use std::time::SystemTime;
 
 use jiff::Timestamp;
 
+/// A Unix second as RFC 3339, if jiff can write it.
 pub(crate) fn rfc3339(seconds: i64) -> Option<String> {
-    Timestamp::from_second(seconds)
-        .ok()
-        .map(|at| at.to_string())
+    let Ok(at) = Timestamp::from_second(seconds) else {
+        return None;
+    };
+    Some(at.to_string())
 }
 
+/// A clock reading as RFC 3339, if jiff can write it.
 pub(crate) fn rfc3339_of(time: SystemTime) -> Option<String> {
-    Timestamp::try_from(time).ok().map(|at| at.to_string())
+    let Ok(at) = Timestamp::try_from(time) else {
+        return None;
+    };
+    Some(at.to_string())
 }

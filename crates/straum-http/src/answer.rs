@@ -1,4 +1,7 @@
-//! An answer as JSON:
+//! Writes an answer from the app for a client: `write` as JSON for
+//! programs, `table` as plain text for people. `routes.rs` calls
+//! `range_errors` before asking the app, so every time key here can be
+//! printed, then calls one of the two writers on the app's answer.
 //!
 //! ```json
 //! {
@@ -15,9 +18,8 @@
 //! - `rows`: one object per group, keyed by the names the ask selected.
 //! - Time keys are RFC 3339 in UTC; over a `timestamp` column, which has no
 //!   zone, they are the wall clock reading with a `Z`. Numeric values are
-//!   exact decimals in
-//!   their column's scale; avg is rounded half to even at four places
-//!   past it, with trailing zeros dropped.
+//!   exact decimals in their column's scale; avg is rounded half to even
+//!   at four places past it, with trailing zeros dropped.
 //!
 //! The LSN the answer reflects goes in the `Straum-LSN` header: a caller
 //! can't wait for one yet, so it is there for debugging.
@@ -31,7 +33,7 @@
 //! 1 row, as of 2024-01-31T22:59:59.123456Z
 //! ```
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::time::SystemTime;
 
 use jiff::Timestamp;
@@ -43,55 +45,106 @@ use crate::time::{rfc3339, rfc3339_of};
 
 /// How far an ask's range stays clear of the earliest time jiff can write,
 /// so a time key that starts up to a month before it still prints.
-const LOOK_BACK: i64 = 32 * 86_400;
+const LOOK_BACK_SECONDS: i64 = 32 * 86_400;
 
-/// A time key starts in its ask's range or at most `LOOK_BACK` before it,
-/// so an ask that passes here never fails `write`, whoever read it.
-pub(crate) fn range_errors(ask: &Ask) -> Vec<String> {
-    let earliest = Timestamp::MIN.as_second() + LOOK_BACK;
-    let latest = Timestamp::MAX.as_second();
+/// Places past a column's scale that avg keeps.
+const AVG_PLACES: u32 = 4;
+
+/// Which end of an ask's range.
+#[derive(Debug, Clone, Copy)]
+enum RangeEnd {
+    Start,
+    End,
+}
+
+/// An end of an ask's range that jiff could not write as a time.
+#[derive(Debug)]
+pub(crate) struct RangeError {
+    end: RangeEnd,
+    at_seconds: i64,
+}
+
+impl fmt::Display for RangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let end = match self.end {
+            RangeEnd::Start => "start",
+            RangeEnd::End => "end",
+        };
+        write!(
+            formatter,
+            "range {end} {} is not between {} and {}",
+            self.at_seconds,
+            earliest_seconds(),
+            latest_seconds()
+        )
+    }
+}
+
+fn earliest_seconds() -> i64 {
+    Timestamp::MIN.as_second() + LOOK_BACK_SECONDS
+}
+
+fn latest_seconds() -> i64 {
+    Timestamp::MAX.as_second()
+}
+
+/// A time key starts in its ask's range or at most `LOOK_BACK_SECONDS`
+/// before it, so an ask that passes here never fails `write`, whoever
+/// read it.
+pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
+    let writable = earliest_seconds()..=latest_seconds();
     let mut errors = Vec::new();
-    for (end, at) in [("start", ask.from), ("end", ask.to)] {
-        if !(earliest..=latest).contains(&at) {
-            errors.push(format!(
-                "range {end} {at} is not between {earliest} and {latest}"
-            ));
+    for (end, at_seconds) in [(RangeEnd::Start, ask.from), (RangeEnd::End, ask.to)] {
+        if !writable.contains(&at_seconds) {
+            errors.push(RangeError { end, at_seconds });
         }
     }
     errors
 }
 
-/// Places past a column's scale that avg keeps.
-const AVG_PLACES: u32 = 4;
-
-/// The body; the LSN is the caller's to send.
+/// The answer as a JSON body; the LSN is the caller's to send.
 pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, as_of, .. } = answered;
-    let names: Vec<String> = (answer.columns.iter())
-        .map(|column| quoted(&column.name))
-        .collect();
+    let mut names = Vec::with_capacity(answer.columns.len());
+    for column in &answer.columns {
+        names.push(quoted(&column.name));
+    }
     let mut out = format!("{{\"as_of\":{},\"rows\":[", quoted(&as_of_text(*as_of)));
-    for (row_index, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
+    for (row_index, row) in answer.rows.iter().enumerate() {
         if row_index > 0 {
             out.push(',');
         }
-        let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
-        let keys = (key_columns.iter().zip(keys)).map(|(column, key)| key_json(column, key));
-        let values = (measure_columns.iter().zip(values))
-            .map(|(column, value)| value_json(value, column.scale));
-        out.push('{');
-        for (cell_index, (name, cell)) in names.iter().zip(keys.chain(values)).enumerate() {
-            if cell_index > 0 {
-                out.push(',');
-            }
-            out.push_str(name);
-            out.push(':');
-            out.push_str(&cell);
-        }
-        out.push('}');
+        push_row_json(&mut out, &names, &answer.columns, row);
     }
     out.push_str("]}");
     out.into_bytes()
+}
+
+/// One row as an object: the keys first, then the measures, each under
+/// its column's quoted name.
+fn push_row_json(out: &mut String, names: &[String], columns: &[AnswerColumn], row: &AnswerRow) {
+    out.push('{');
+    for (index, key) in row.keys.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_member(out, &names[index], &key_json(&columns[index], key));
+    }
+    let key_count = row.keys.len();
+    for (offset, value) in row.values.iter().enumerate() {
+        let index = key_count + offset;
+        if index > 0 {
+            out.push(',');
+        }
+        push_member(out, &names[index], &value_json(value, columns[index].scale));
+    }
+    out.push('}');
+}
+
+fn push_member(out: &mut String, name: &str, cell: &str) {
+    out.push_str(name);
+    out.push(':');
+    out.push_str(cell);
 }
 
 fn key_json(column: &AnswerColumn, key: &Datum) -> String {
@@ -102,9 +155,12 @@ fn key_json(column: &AnswerColumn, key: &Datum) -> String {
 }
 
 fn as_of_text(as_of: SystemTime) -> String {
-    // Past jiff's year 9999, which only a broken clock gives; 1970 is
-    // still a true lower bound.
-    rfc3339_of(as_of).unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
+    match rfc3339_of(as_of) {
+        Some(text) => text,
+        // Past jiff's year 9999, which only a broken clock gives; 1970 is
+        // still a true lower bound.
+        None => "1970-01-01T00:00:00Z".to_owned(),
+    }
 }
 
 fn time_key(seconds: i64) -> String {
@@ -118,6 +174,7 @@ enum Align {
     Right,
 }
 
+/// One cell of the text table, before it is padded to its column.
 struct Cell {
     text: String,
     align: Align,
@@ -128,7 +185,11 @@ struct Cell {
 /// quotes. Past `limit` rows the count says how many there are.
 pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
     let Answered { answer, as_of, .. } = answered;
-    let shown = limit.map_or(answer.rows.len(), |limit| limit.min(answer.rows.len()));
+    let total = answer.rows.len();
+    let shown = match limit {
+        Some(limit) => limit.min(total),
+        None => total,
+    };
     let mut lines = vec![name_cells(&answer.columns)];
     for row in &answer.rows[..shown] {
         lines.push(row_cells(&answer.columns, row));
@@ -142,28 +203,32 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
             out.push_str(&rule(&widths));
         }
     }
-    let rows = row_count(answer.rows.len(), shown);
+    let rows = row_count(total, shown);
     let _ = writeln!(out, "{rows}, as of {}", as_of_text(*as_of));
     out
 }
 
 fn name_cells(columns: &[AnswerColumn]) -> Vec<Cell> {
-    columns.iter().map(name_cell).collect()
-}
-
-fn name_cell(column: &AnswerColumn) -> Cell {
-    Cell {
-        text: column.name.clone(),
-        align: Align::Left,
+    let mut cells = Vec::with_capacity(columns.len());
+    for column in columns {
+        cells.push(Cell {
+            text: column.name.clone(),
+            align: Align::Left,
+        });
     }
+    cells
 }
 
 fn row_cells(columns: &[AnswerColumn], row: &AnswerRow) -> Vec<Cell> {
-    let (key_columns, measure_columns) = columns.split_at(row.keys.len());
-    let keys = (key_columns.iter().zip(&row.keys)).map(|(column, key)| key_cell(column, key));
-    let values =
-        (measure_columns.iter().zip(&row.values)).map(|(column, value)| value_cell(column, value));
-    keys.chain(values).collect()
+    let mut cells = Vec::with_capacity(columns.len());
+    for (index, key) in row.keys.iter().enumerate() {
+        cells.push(key_cell(&columns[index], key));
+    }
+    let key_count = row.keys.len();
+    for (offset, value) in row.values.iter().enumerate() {
+        cells.push(value_cell(&columns[key_count + offset], value));
+    }
+    cells
 }
 
 fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
@@ -190,22 +255,23 @@ fn value_cell(column: &AnswerColumn, value: &Value) -> Cell {
     }
 }
 
-/// The widest cell of each column. The first line holds the names, so
-/// it has every column.
+/// The widest cell of each column, in characters. The first line holds
+/// the names, so it has every column.
 fn column_widths(lines: &[Vec<Cell>]) -> Vec<usize> {
     let mut widths = vec![0; lines[0].len()];
     for line in lines {
-        for (width, cell) in widths.iter_mut().zip(line) {
-            *width = (*width).max(cell.text.chars().count());
+        for (index, cell) in line.iter().enumerate() {
+            widths[index] = widths[index].max(cell.text.chars().count());
         }
     }
     widths
 }
 
 fn table_line(line: &[Cell], widths: &[usize]) -> String {
-    let cells: Vec<String> = (line.iter().zip(widths))
-        .map(|(cell, &width)| padded(cell, width))
-        .collect();
+    let mut cells = Vec::with_capacity(line.len());
+    for (index, cell) in line.iter().enumerate() {
+        cells.push(padded(cell, widths[index]));
+    }
     format!("{}\n", cells.join(" | ").trim_end())
 }
 
@@ -218,7 +284,10 @@ fn padded(cell: &Cell, width: usize) -> String {
 }
 
 fn rule(widths: &[usize]) -> String {
-    let dashes: Vec<String> = widths.iter().map(|&width| "-".repeat(width)).collect();
+    let mut dashes = Vec::with_capacity(widths.len());
+    for width in widths {
+        dashes.push("-".repeat(*width));
+    }
     format!("{}\n", dashes.join("-+-"))
 }
 
@@ -276,7 +345,7 @@ fn avg(sum: i128, count: u64) -> i128 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::UNIX_EPOCH;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use straum_app::Lsn;
     use straum_domain::Answer;
@@ -344,6 +413,23 @@ mod tests {
     }
 
     #[test]
+    fn writes_rows_as_json() {
+        let rows = vec![
+            row(Datum::Bool(true), Value::Int(123_456)),
+            row(Datum::Null, Value::Null),
+        ];
+        let json = String::from_utf8(write(&answered(rows))).unwrap();
+        assert_eq!(
+            json,
+            concat!(
+                r#"{"as_of":"1970-01-01T00:00:00Z","rows":["#,
+                r#"{"bucket":"1970-01-02T00:00:00Z","shared":true,"fare":1234.56},"#,
+                r#"{"bucket":"1970-01-02T00:00:00Z","shared":null,"fare":null}]}"#
+            )
+        );
+    }
+
+    #[test]
     fn a_table_lines_numbers_up_on_the_right() {
         let rows = vec![
             row(Datum::Bool(true), Value::Int(123_456)),
@@ -403,7 +489,7 @@ bucket | shared | fare
     #[test]
     fn an_as_of_past_jiff_is_1970() {
         let answered = Answered {
-            as_of: UNIX_EPOCH + std::time::Duration::from_secs(400_000_000_000),
+            as_of: UNIX_EPOCH + Duration::from_secs(400_000_000_000),
             ..answered(Vec::new())
         };
         let json = String::from_utf8(write(&answered)).unwrap();

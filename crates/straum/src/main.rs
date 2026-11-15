@@ -23,6 +23,8 @@ use std::time::Duration;
 use rustyline::error::ReadlineError;
 use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
+use straum_http::QueryError;
+use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, Postgres};
 
 use crate::client::ClientError;
@@ -209,9 +211,29 @@ fn plan(
     Ok(())
 }
 
-fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
-    straum_notation::parse_ask(query, parameters)
-        .map_err(|errors| errors.iter().map(ToString::to_string).collect())
+/// Reads an ask's query as Straum SQL, for `straum-http`.
+fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<QueryError>> {
+    let sql_errors = match straum_notation::parse_ask(query, parameters) {
+        Ok(ask) => return Ok(ask),
+        Err(sql_errors) => sql_errors,
+    };
+    let mut errors = Vec::with_capacity(sql_errors.len());
+    for sql_error in sql_errors {
+        errors.push(query_error(sql_error));
+    }
+    Err(errors)
+}
+
+fn query_error(error: SqlError) -> QueryError {
+    // Straum SQL says 0 when the line is already in the message.
+    let line = match error.line {
+        0 => None,
+        line => Some(line),
+    };
+    QueryError {
+        line,
+        message: error.message,
+    }
 }
 
 /// From the file, else from `STRAUM_DSN`. Never from the command line, where
