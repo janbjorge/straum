@@ -160,7 +160,15 @@ are open.
 - **Bound cells** (`Bound`): a second rollup of a fact whose joins all
   read fact columns, one of them a column no key reads, keyed by the
   dim columns' values: fewer than its cells, and an ask reads no
-  projection (ADR-0038, ADR-0042).
+  projection (ADR-0038, ADR-0042). The fact's own cells, keyed by its
+  join columns, are its **keyed cells** (`Read::Keyed`).
+- **Pour** (`pour`, `Store::pour_bucket`): move every cell of a hot
+  keyed bucket into the bound cells its join rows resolve to now, or
+  back out of them, as a dim is replaced or a bucket sealed or
+  unsealed.
+- **Overlay** (`Overlay`): the rows one dim key held before a change,
+  read in place of the projection so the bound cells can drop what
+  those rows joined.
 - **Store** (`Store`): the rollups of every fact and the projection of
   every dim, behind one `RwLock` (ADR-0009).
 
