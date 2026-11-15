@@ -12,7 +12,7 @@ use crate::catalog::Checked;
 use crate::error::Error;
 use crate::pgoutput::{self, Field, Message, Relation, RelationColumn, Tuple};
 use crate::problem::{ColumnProblem, Problem, TableNames};
-use crate::value::{read, type_of};
+use crate::value::{Oid, read, type_of};
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
 /// it: `Fact::columns` or `Dim::columns`.
@@ -22,7 +22,7 @@ pub(crate) struct Decoder {
     tables: Vec<Checked>,
     /// By relation id. A table read by two members of the spec maps to
     /// both.
-    relations: HashMap<u32, Vec<Mapping>>,
+    relations: HashMap<Oid, Vec<Mapping>>,
     transaction: Transaction,
 }
 
@@ -37,12 +37,17 @@ struct Transaction {
 
 /// Where a table's columns sit in a relation's tuples.
 struct Mapping {
-    /// The table's index in `Decoder::tables`.
-    table: usize,
+    table: TableIndex,
+    /// For each column the table reads, its place in the relation's tuples.
     positions: Vec<usize>,
     types: Vec<ColumnType>,
+    /// How many columns the relation's tuples have.
     width: usize,
 }
+
+/// A table's place in `Decoder::tables`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TableIndex(usize);
 
 impl Decoder {
     /// `tables` are the spec's tables, dims and facts; `limit` is the
@@ -88,7 +93,7 @@ impl Decoder {
         for &relation in relations {
             // A relation outside the spec holds none of its tables.
             for mapping in self.relations.get(&relation).into_iter().flatten() {
-                let table = &self.tables[mapping.table];
+                let table = &self.tables[mapping.table.0];
                 let change = match mapping.change(table, message)? {
                     Some(change) => change,
                     None => unfit(table),
@@ -102,11 +107,11 @@ impl Decoder {
     /// Every table of the spec `relation` holds no longer reads as
     /// loaded, though no message says how: the physical stream's tables
     /// rewritten or dropped. Between a Begin and its Commit.
-    pub(crate) fn unfit(&mut self, relation: u32) {
+    pub(crate) fn unfit(&mut self, relation: Oid) {
         for mapping in self.relations.get(&relation).into_iter().flatten() {
             self.transaction
                 .changes
-                .push(unfit(&self.tables[mapping.table]));
+                .push(unfit(&self.tables[mapping.table.0]));
         }
     }
 
@@ -145,7 +150,7 @@ impl Decoder {
                 table.types.clone_from(&types);
             }
             mappings.push(Mapping {
-                table: index,
+                table: TableIndex(index),
                 positions,
                 types,
                 width: relation.columns.len(),
@@ -268,13 +273,14 @@ impl Mapping {
     ) -> Result<Option<Vec<Datum>>, Error> {
         self.fits(tuple)?;
         let mut row = Vec::with_capacity(self.positions.len());
-        for (i, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate() {
+        for (index, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate()
+        {
             let datum = match (&tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
                 (Field::Text(text), _) => read(*column_type, text)
-                    .map_err(|error| error.at(&table.qualified(), &table.columns[i]))?,
+                    .map_err(|error| error.at(&table.qualified(), &table.columns[index]))?,
                 (Field::Datum(datum), _) => datum.clone(),
-                (Field::Unchanged, Some(old)) => old[i].clone(),
+                (Field::Unchanged, Some(old)) => old[index].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };
             row.push(datum);

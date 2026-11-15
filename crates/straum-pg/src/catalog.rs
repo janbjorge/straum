@@ -12,7 +12,7 @@ use crate::problem::{
     ColumnFix, ColumnProblem, Filter, Problem, ServerProblem, TableNames, TableProblem, ViewProblem,
 };
 use crate::source::Replication;
-use crate::value::type_of;
+use crate::value::{Oid, type_of};
 use crate::wire::Connection;
 
 /// `server_version_num` is the major times 10 000, plus the minor.
@@ -36,7 +36,7 @@ pub(crate) struct Checked {
     /// The enum types its `::text` columns have, by OID. An enum's OID is
     /// its own, so the stream can't know one from a type Straum doesn't
     /// read without this list.
-    pub(crate) enums: Vec<u32>,
+    pub(crate) enums: Vec<Oid>,
 }
 
 impl Checked {
@@ -144,7 +144,7 @@ pub(crate) struct Catalog {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnumLabel {
-    pub(crate) type_oid: u32,
+    pub(crate) type_oid: Oid,
     pub(crate) label: String,
 }
 
@@ -167,7 +167,7 @@ pub(crate) struct Class {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Column {
     pub(crate) name: String,
-    pub(crate) type_oid: u32,
+    pub(crate) type_oid: Oid,
     pub(crate) typmod: i32,
     /// As `format_type` prints it, for messages.
     pub(crate) type_name: String,
@@ -690,7 +690,7 @@ struct ColumnReader<'a> {
 struct ReadColumns {
     columns: Vec<Identifier>,
     types: Vec<ColumnType>,
-    enums: Vec<u32>,
+    enums: Vec<Oid>,
 }
 
 impl ColumnReader<'_> {
@@ -721,7 +721,7 @@ impl ColumnReader<'_> {
         &self,
         column_name: &Identifier,
         purpose: Purpose,
-        enums: &mut Vec<u32>,
+        enums: &mut Vec<Oid>,
     ) -> Result<ColumnType, Problem> {
         let Some(column) = self.class.column(column_name) else {
             return Err(self.problem(column_name, ColumnProblem::Missing));

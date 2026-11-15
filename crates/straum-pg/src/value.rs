@@ -9,16 +9,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use straum_domain::{ColumnType, Datum, Identifier};
 
-pub(crate) const BOOL: u32 = 16;
-pub(crate) const INT8: u32 = 20;
-pub(crate) const INT2: u32 = 21;
-pub(crate) const INT4: u32 = 23;
-pub(crate) const TEXT: u32 = 25;
-pub(crate) const BPCHAR: u32 = 1042;
-pub(crate) const VARCHAR: u32 = 1043;
-pub(crate) const TIMESTAMP: u32 = 1114;
-pub(crate) const TIMESTAMPTZ: u32 = 1184;
-pub(crate) const NUMERIC: u32 = 1700;
+/// An object id: how PostgreSQL names a row of its catalog, such as a
+/// table (`pg_class`), a type (`pg_type`) or an enum label (`pg_enum`).
+pub(crate) type Oid = u32;
+
+pub(crate) const BOOL: Oid = 16;
+pub(crate) const INT8: Oid = 20;
+pub(crate) const INT2: Oid = 21;
+pub(crate) const INT4: Oid = 23;
+pub(crate) const TEXT: Oid = 25;
+pub(crate) const BPCHAR: Oid = 1042;
+pub(crate) const VARCHAR: Oid = 1043;
+pub(crate) const TIMESTAMP: Oid = 1114;
+pub(crate) const TIMESTAMPTZ: Oid = 1184;
+pub(crate) const NUMERIC: Oid = 1700;
 
 /// `VARHDRSZ`, which a numeric typmod adds to precision and scale.
 const TYPMOD_HEADER: i32 = 4;
@@ -61,7 +65,7 @@ const DECIMAL_DIGITS: i32 = 4;
 /// `10^-s`, `text`, `varchar` and `bpchar` as text, `timestamptz` as Unix
 /// seconds, rounded down, and `timestamp` as the Unix seconds its wall
 /// clock reading would be in UTC. `None` for a type Straum doesn't read.
-pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
+pub(crate) fn type_of(type_oid: Oid, typmod: i32) -> Option<ColumnType> {
     match type_oid {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
         NUMERIC => {

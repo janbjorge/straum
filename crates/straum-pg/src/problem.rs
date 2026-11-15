@@ -10,6 +10,9 @@ use straum_domain::{ColumnType, Identifier};
 
 use crate::catalog::Purpose;
 
+/// A transaction id, as PostgreSQL numbers transactions in its WAL.
+pub(crate) type Xid = u32;
+
 /// One line of a failed setup check, naming what is wrong and what to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Problem {
@@ -165,10 +168,10 @@ pub(crate) enum WaitProblem {
     /// PostgreSQL to log which transactions run.
     NotLogged,
     /// These transactions, open before the start, to end.
-    OpenTransactions(Vec<u32>),
+    OpenTransactions(Vec<Xid>),
     /// These transactions, whose commits the stream read, to show in the
     /// load's snapshot.
-    InvisibleCommits(Vec<u32>),
+    InvisibleCommits(Vec<Xid>),
 }
 
 impl fmt::Display for Problem {
@@ -363,7 +366,7 @@ pub(crate) fn lines(problems: &[Problem]) -> Vec<String> {
 }
 
 /// Transaction ids, comma-separated.
-fn xid_list(xids: &[u32]) -> String {
+fn xid_list(xids: &[Xid]) -> String {
     let mut texts = Vec::new();
     for xid in xids {
         texts.push(xid.to_string());

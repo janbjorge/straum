@@ -17,7 +17,7 @@ use crate::error::Error;
 use crate::pgoutput::{Relation, RelationColumn};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::POLL;
-use crate::value::{read, type_of};
+use crate::value::{Oid, read, type_of};
 use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
@@ -270,12 +270,12 @@ fn table_names(checked: &[Checked]) -> String {
 /// A row of the layouts query: one attribute of a table, dropped ones
 /// too.
 struct AttributeRow<'a> {
-    table_oid: u32,
+    table_oid: Oid,
     schema: &'a str,
     table: &'a str,
     file: RelationFile,
     name: &'a str,
-    type_oid: u32,
+    type_oid: Oid,
     typmod: i32,
     length: i16,
     align: usize,
@@ -356,7 +356,7 @@ fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Er
 
 /// The labels of the enums the named tables' columns have, by `pg_enum`
 /// OID, which is what a row stores.
-fn labels(connection: &mut Connection, names: &str) -> Result<HashMap<u32, String>, Error> {
+fn labels(connection: &mut Connection, names: &str) -> Result<HashMap<Oid, String>, Error> {
     let rows = connection.rows(&format!(
         "SELECT DISTINCT e.oid, e.enumlabel
          FROM pg_enum e

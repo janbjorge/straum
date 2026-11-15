@@ -346,6 +346,11 @@ are open.
 - **LSN** (`Lsn`): a WAL position, printed as PostgreSQL does. A
   `Wal` reading holds three: `written`, `confirmed` (the slot's
   `confirmed_flush_lsn`) and `restart` (its `restart_lsn`).
+- **OID** (`Oid`): an object id, how PostgreSQL names a row of its
+  catalog: a table, a type, an enum label. pgoutput names a table by
+  its OID, the relation id. Code writes `oid`, PostgreSQL's word.
+- **xid** (`Xid`): a transaction id, as PostgreSQL numbers
+  transactions in its WAL and its snapshots.
 - **Catalog** (`Catalog`, `Class`, `Column`): PostgreSQL's system
   tables as the setup check reads them.
 - **Old row** (`Change::Update::old`): the row before an update or

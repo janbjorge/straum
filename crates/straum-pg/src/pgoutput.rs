@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use straum_domain::Datum;
 
-use crate::value;
+use crate::value::{self, Oid};
 
 /// The sizes of fields Straum steps over.
 const LSN_SIZE: usize = 8;
@@ -30,20 +30,20 @@ pub(crate) enum Message<'a> {
     },
     Relation(Relation),
     Insert {
-        relation: u32,
+        relation: Oid,
         new: Tuple<'a>,
     },
     Update {
-        relation: u32,
+        relation: Oid,
         old: Option<Old<'a>>,
         new: Tuple<'a>,
     },
     Delete {
-        relation: u32,
+        relation: Oid,
         old: Old<'a>,
     },
     Truncate {
-        relations: Vec<u32>,
+        relations: Vec<Oid>,
     },
     /// Origin, Type and logical decoding messages, which Straum doesn't use.
     Other,
@@ -52,7 +52,7 @@ pub(crate) enum Message<'a> {
 /// A table's shape, sent before its first change and again after it changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relation {
-    pub(crate) id: u32,
+    pub(crate) id: Oid,
     pub(crate) schema: String,
     pub(crate) name: String,
     pub(crate) columns: Vec<RelationColumn>,
@@ -61,7 +61,7 @@ pub(crate) struct Relation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelationColumn {
     pub(crate) name: String,
-    pub(crate) type_oid: u32,
+    pub(crate) type_oid: Oid,
     pub(crate) typmod: i32,
 }
 
