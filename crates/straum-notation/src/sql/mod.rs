@@ -26,16 +26,16 @@ const QUOTE_LEN: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlError {
-    /// 1-based; 0 when `sqlparser` puts the position in `msg`.
+    /// 1-based; 0 when `sqlparser` puts the position in `message`.
     pub line: u64,
-    pub msg: String,
+    pub message: String,
 }
 
 fn statements(src: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
     Parser::parse_sql(&PostgreSqlDialect {}, src).map_err(|error| {
         vec![SqlError {
             line: 0,
-            msg: error.to_string(),
+            message: error.to_string(),
         }]
     })
 }
@@ -61,8 +61,8 @@ enum Names<'n, 'p> {
 }
 
 impl Walker {
-    fn error(&mut self, line: u64, msg: String) {
-        self.errors.push(SqlError { line, msg });
+    fn error(&mut self, line: u64, message: String) {
+        self.errors.push(SqlError { line, message });
     }
 
     fn finish<T>(self, value: Option<T>) -> Result<T, Vec<SqlError>> {

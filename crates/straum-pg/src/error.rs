@@ -161,8 +161,8 @@ mod tests {
             ),
             (Error::Stopped, "the replication stream stopped"),
         ];
-        for (err, msg) in cases {
-            assert_eq!(err.to_string(), msg);
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
         }
     }
 }

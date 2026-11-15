@@ -2647,8 +2647,8 @@ fn row_error_display() {
         (RowError::Missing, "removed row was never added"),
         (RowError::Sealed, "row falls in a sealed bucket"),
     ];
-    for (err, msg) in cases {
-        assert_eq!(err.to_string(), msg);
+    for (error, message) in cases {
+        assert_eq!(error.to_string(), message);
     }
 }
 

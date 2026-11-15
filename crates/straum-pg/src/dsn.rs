@@ -361,8 +361,8 @@ mod tests {
                 "DSN parameter x=1 is not supported",
             ),
         ];
-        for (err, msg) in cases {
-            assert_eq!(err.to_string(), msg);
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
         }
     }
 }

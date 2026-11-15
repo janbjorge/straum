@@ -226,7 +226,7 @@ fn buckets_are_required_and_start_at_the_grain() {
     let errors = sql_errors(&base("VIEW t WITH (buckets = '1 hour') AS", "VIEW t AS"));
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
-        errors[0].msg,
+        errors[0].message,
         "view t needs WITH (buckets = '<n> <unit>, ...'): every width Straum keeps, \
          the date_bin width first"
     );
@@ -236,14 +236,14 @@ fn buckets_are_required_and_start_at_the_grain() {
         assert_eq!(errors.len(), 1, "{wrong}: {errors:?}");
         assert!(
             errors[0]
-                .msg
+                .message
                 .ends_with("but date_bin is 3600s: list every width, the date_bin width first"),
             "{wrong}: {errors:?}"
         );
     }
     assert!(
         sql_errors(&base("buckets = '1 hour'", "buckets = '1 day, 1 hour'"))[0]
-            .msg
+            .message
             .starts_with("view t: buckets starts with 86400s but")
     );
 }
@@ -304,7 +304,7 @@ fn a_column_measure_takes_a_filter() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
         errors[0]
-            .msg
+            .message
             .starts_with("filter condition, write = or IN joined by AND, `f.a > 1`"),
         "{errors:?}"
     );
@@ -469,7 +469,7 @@ fn a_ref_on_two_columns_rejected() {
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
-        errors[0].msg,
+        errors[0].message,
         "g is a left outer join and selects no column of it; select one or drop the join"
     );
     // Another view joins the dim on another key list: fewer columns, or
@@ -486,7 +486,9 @@ fn a_ref_on_two_columns_rejected() {
             errors,
             [SqlError {
                 line: 7,
-                msg: format!("public.g is joined on {found} here and on org_id, grp_id elsewhere")
+                message: format!(
+                    "public.g is joined on {found} here and on org_id, grp_id elsewhere"
+                )
             }]
         );
     }
@@ -541,7 +543,8 @@ fn a_ref_reads_what_the_view_selects() {
         errors,
         [SqlError {
             line: 2,
-            msg: "GROUP BY 1, 2 must list the keys' positions in SELECT: GROUP BY 1, 2, 3".into()
+            message: "GROUP BY 1, 2 must list the keys' positions in SELECT: GROUP BY 1, 2, 3"
+                .into()
         }]
     );
 }
@@ -664,7 +667,7 @@ fn null_ness_keys_rejected() {
         assert!(NULLS.contains(from), "{from}");
         let errors = sql_errors(&NULLS.replacen(from, to, 1));
         assert!(
-            errors.iter().any(|error| error.msg.contains(fragment)),
+            errors.iter().any(|error| error.message.contains(fragment)),
             "{to}: {errors:?}"
         );
     }
@@ -673,7 +676,7 @@ fn null_ness_keys_rejected() {
     assert!(
         errors
             .iter()
-            .any(|error| error.msg == "the IS NULL column must be a f column"),
+            .any(|error| error.message == "the IS NULL column must be a f column"),
         "{errors:?}"
     );
     let no_time = base("f.a AS a,", "f.a AS a, (f.at IS NULL) AS no_time,")
@@ -716,7 +719,7 @@ fn views_share_a_dim() {
         sql_errors(&clash),
         [SqlError {
             line: 7,
-            msg: "public.z is joined on code here and on id elsewhere".into()
+            message: "public.z is joined on code here and on id elsewhere".into()
         }]
     );
 }
@@ -786,7 +789,7 @@ fn rejects(cases: &[(&str, &str, u64, &str)]) {
         };
         if !errors
             .iter()
-            .any(|error| error.line == line && error.msg.contains(fragment))
+            .any(|error| error.line == line && error.message.contains(fragment))
         {
             failed.push(format!(
                 "{to}: expected line {line}: {fragment}, got {errors:?}"
@@ -1783,13 +1786,13 @@ fn other_statements_are_rejected() {
         [
             SqlError {
                 line: 1,
-                msg:
+                message:
                     "statement `SELECT 1` is not in Straum SQL, the PostgreSQL subset made only for Straum"
                         .into()
             },
             SqlError {
                 line: 2,
-                msg: "statement `CREATE TABLE t (a INT)` is not in Straum SQL, \
+                message: "statement `CREATE TABLE t (a INT)` is not in Straum SQL, \
                       the PostgreSQL subset made only for Straum"
                     .into()
             },
@@ -1804,8 +1807,11 @@ fn long_sql_is_cut_in_errors() {
         "b".repeat(80)
     );
     let errors = sql_errors(&base("count(*) AS n", &long));
-    assert!(errors[0].msg.contains("f.a = 1 OR f.bbbb"), "{errors:?}");
-    assert!(errors[0].msg.contains("...`"), "{errors:?}");
+    assert!(
+        errors[0].message.contains("f.a = 1 OR f.bbbb"),
+        "{errors:?}"
+    );
+    assert!(errors[0].message.contains("...`"), "{errors:?}");
 }
 
 #[test]
@@ -1813,10 +1819,10 @@ fn parser_errors_and_deep_nesting_are_errors() {
     let errors = sql_errors("CREATE VIEW t AS SELEC 1");
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].line, 0);
-    assert!(errors[0].msg.contains("Line: 1"), "{errors:?}");
+    assert!(errors[0].message.contains("Line: 1"), "{errors:?}");
     assert_eq!(
         parse("CREATE VIEW t AS SELEC 1").unwrap_err().to_string(),
-        errors[0].msg
+        errors[0].message
     );
 
     let deep = format!("{}1{}", "(".repeat(500), ")".repeat(500));
@@ -1824,7 +1830,7 @@ fn parser_errors_and_deep_nesting_are_errors() {
         "count(*) AS n",
         &format!("count(*) FILTER (WHERE f.a = {deep}) AS n"),
     ));
-    assert!(errors[0].msg.contains("recursion limit"), "{errors:?}");
+    assert!(errors[0].message.contains("recursion limit"), "{errors:?}");
 }
 
 #[test]
