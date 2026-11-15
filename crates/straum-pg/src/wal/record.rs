@@ -1,4 +1,12 @@
-//! One WAL record and its block references.
+//! One WAL record, read from its bytes: the second step of the physical
+//! stream, after `reader.rs` has put the record together from its pages
+//! and before `heap/` and `xact.rs` read what it says. A record is a
+//! header (`XLogRecord`), then a header per page it changes (its block
+//! references, `XLogRecordBlockHeader`), then their payloads and the main
+//! data. Layouts: `src/include/access/xlogrecord.h`, read as
+//! `DecodeXLogRecord` in `src/backend/access/transam/xlogreader.c` does.
+//! A `Record` keeps the bytes and ranges into them, so reading one copies
+//! nothing.
 
 use std::ops::Range;
 
@@ -14,63 +22,92 @@ pub(super) const BLOCK_SIZE_U16: u16 = BLOCK_SIZE as u16;
 /// `SizeOfXLogRecord`, `XLogRecord`: `xl_tot_len`, `xl_xid`, `xl_prev`,
 /// `xl_info`, `xl_rmid`, two bytes of padding, `xl_crc`.
 pub(super) const RECORD_HEADER: usize = 24;
+/// `xl_tot_len`: the whole record's length.
 pub(super) const RECORD_LENGTH: Range<usize> = 0..4;
+/// `xl_xid`: the transaction that wrote the record.
 pub(super) const RECORD_XID: Range<usize> = 4..8;
+/// `xl_info`: the record's kind and flags.
 pub(super) const RECORD_INFO: usize = 16;
+/// `xl_rmid`: the resource manager that wrote it.
 pub(super) const RECORD_RESOURCE_MANAGER: usize = 17;
+/// `xl_crc`: the record's checksum.
 pub(super) const RECORD_CHECKSUM: Range<usize> = 20..24;
 /// `MAXALIGN`: records start on 8-byte boundaries.
 pub(super) const RECORD_ALIGNMENT: u64 = 8;
 /// `XLR_BLOCK_ID_ORIGIN` is followed by a `RepOriginId`, a `uint16`.
 pub(super) const ORIGIN_SIZE: usize = 2;
 
+/// `XLOG_SWITCH`: the record ends its WAL segment.
 pub(super) const XLOG_SWITCH: u8 = 0x40;
 
+/// `XLR_BLOCK_ID_DATA_SHORT`: main data, its length in one byte.
 pub(super) const DATA_SHORT: u8 = 255;
+/// `XLR_BLOCK_ID_DATA_LONG`: main data, its length in four bytes.
 pub(super) const DATA_LONG: u8 = 254;
+/// `XLR_BLOCK_ID_ORIGIN`: the replication origin that wrote the record.
 pub(super) const ORIGIN: u8 = 253;
+/// `XLR_BLOCK_ID_TOPLEVEL_XID`: the top transaction of a subtransaction.
 pub(super) const TOPLEVEL_XID: u8 = 252;
+/// `XLR_MAX_BLOCK_ID`: ids up to it are block references.
 pub(super) const MAX_BLOCK_ID: u8 = 32;
 
+/// `BKPBLOCK_FORK_MASK`: which fork of the relation the page is in.
 pub(super) const FORK_MASK: u8 = 0x0F;
+/// `BKPBLOCK_HAS_IMAGE`: a full-page image follows.
 pub(super) const HAS_IMAGE: u8 = 0x10;
+/// `BKPBLOCK_HAS_DATA`: the record has data for the page.
 pub(super) const HAS_DATA: u8 = 0x20;
+/// `BKPBLOCK_WILL_INIT`: redo starts the page afresh.
 pub(super) const WILL_INIT: u8 = 0x40;
+/// `BKPBLOCK_SAME_REL`: the relation file is the previous block's.
 pub(super) const SAME_RELATION: u8 = 0x80;
 
+/// `BKPIMAGE_HAS_HOLE`: the image leaves out the page's empty middle.
 pub(super) const IMAGE_HAS_HOLE: u8 = 0x01;
+/// `BKPIMAGE_APPLY`: redo restores the page from the image.
 pub(super) const IMAGE_APPLY: u8 = 0x02;
+/// `BKPIMAGE_COMPRESS_PGLZ`.
 pub(super) const IMAGE_PGLZ: u8 = 0x04;
+/// `BKPIMAGE_COMPRESS_LZ4`.
 pub(super) const IMAGE_LZ4: u8 = 0x08;
+/// `BKPIMAGE_COMPRESS_ZSTD`.
 pub(super) const IMAGE_ZSTD: u8 = 0x10;
 
 /// One WAL record. Owns its bytes, since a record split across pages has
 /// to be put back together anyway; `Records` lends out the one it reuses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Record {
+    /// Where the record starts in the WAL.
     pub(crate) lsn: u64,
     /// The end of the record, before the alignment to the next.
     pub(crate) end: u64,
     pub(crate) xid: TransactionId,
     pub(crate) resource_manager: u8,
-    /// The record kind within its resource manager, with its flag bits.
+    /// `xl_info`: the record kind within its resource manager, with its
+    /// flag bits.
     pub(crate) info: u8,
     /// The top transaction, when `xid` is a subtransaction it names first.
     pub(crate) toplevel_xid: Option<TransactionId>,
     pub(crate) blocks: Vec<Block>,
+    /// Where the main data lies in `bytes`.
     main: Range<usize>,
+    /// The whole record, its header first.
     pub(super) bytes: Vec<u8>,
 }
 
+/// A block reference: a page the record changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Block {
+    /// The block's id within the record, 0 to `XLR_MAX_BLOCK_ID`.
     pub(crate) id: u8,
+    /// `ForkNumber`: 0 is the table's rows, the others its maps.
     pub(crate) fork: u8,
     /// Redo starts the page afresh, so no earlier state of it is needed.
     pub(crate) will_init: bool,
     pub(crate) file: RelationFile,
     pub(crate) number: BlockNumber,
     pub(crate) image: Option<Image>,
+    /// Where the record's data for the page lies in its bytes.
     data: Range<usize>,
 }
 
@@ -79,20 +116,25 @@ pub(crate) struct Block {
 pub(crate) struct RelationFile {
     pub(crate) tablespace: Oid,
     pub(crate) database: Oid,
+    /// The file node, which is the table's OID until a rewrite gives it a
+    /// new file.
     pub(crate) relation: Oid,
 }
 
 /// A full-page image, as logged: maybe compressed, without its hole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Image {
+    /// Where on the page the left-out hole starts.
     pub(crate) hole_offset: u16,
     pub(crate) hole_length: u16,
     pub(crate) compression: Option<Compression>,
     /// Redo restores it; otherwise it is there only for consistency checks.
     pub(crate) apply: bool,
+    /// Where the image's bytes lie in the record's bytes.
     bytes: Range<usize>,
 }
 
+/// How `wal_compression` packed a full-page image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Compression {
     Pglz,
@@ -101,6 +143,7 @@ pub(crate) enum Compression {
 }
 
 impl Record {
+    /// A record with nothing in it yet, to read records into.
     pub(super) fn empty() -> Record {
         Record {
             lsn: 0,
@@ -115,14 +158,17 @@ impl Record {
         }
     }
 
+    /// The record's main data, which its resource manager reads.
     pub(crate) fn main_data(&self) -> &[u8] {
         &self.bytes[self.main.clone()]
     }
 
+    /// The record's data for `block`.
     pub(crate) fn block_data(&self, block: &Block) -> &[u8] {
         &self.bytes[block.data.clone()]
     }
 
+    /// The bytes of `image`, as logged.
     pub(crate) fn image_bytes(&self, image: &Image) -> &[u8] {
         &self.bytes[image.bytes.clone()]
     }
@@ -146,7 +192,8 @@ impl Record {
     }
 }
 
-/// Reads `record`'s bytes into the rest of it.
+/// Reads `record`'s bytes, which start at `lsn` and end at `end`, into
+/// the rest of it.
 pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(), WalError> {
     let short = at(lsn, Problem::Blocks);
     let bytes = &record.bytes;
@@ -175,11 +222,13 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
             }
             TOPLEVEL_XID => toplevel_xid = Some(cursor.u32().ok_or(short)?),
             id if id <= MAX_BLOCK_ID => {
-                let previous = blocks.last();
-                if previous.is_some_and(|block| block.id >= id) {
-                    return Err(short);
+                let mut previous_file = None;
+                if let Some(previous) = blocks.last() {
+                    if previous.id >= id {
+                        return Err(short);
+                    }
+                    previous_file = Some(previous.file);
                 }
-                let previous_file = previous.map(|block| block.file);
                 let block = read_block_header(&mut cursor, id, previous_file).ok_or(short)?;
                 payload += block.data.len();
                 if let Some(image) = &block.image {
@@ -216,11 +265,10 @@ fn read_block_header(
     if (flags & HAS_DATA != 0) != (data_length != 0) {
         return None;
     }
-    let image = if flags & HAS_IMAGE != 0 {
-        Some(read_image_header(cursor)?)
-    } else {
-        None
-    };
+    let mut image = None;
+    if flags & HAS_IMAGE != 0 {
+        image = Some(read_image_header(cursor)?);
+    }
     let file = if flags & SAME_RELATION != 0 {
         previous_file?
     } else {
@@ -247,39 +295,52 @@ fn read_block_header(
 fn read_image_header(cursor: &mut Cursor) -> Option<Image> {
     let length = cursor.u16()?;
     let hole_offset = cursor.u16()?;
-    let info = cursor.u8()?;
-    let compression = match info & (IMAGE_PGLZ | IMAGE_LZ4 | IMAGE_ZSTD) {
+    let flags = cursor.u8()?;
+    let compression = match flags & (IMAGE_PGLZ | IMAGE_LZ4 | IMAGE_ZSTD) {
         0 => None,
         IMAGE_PGLZ => Some(Compression::Pglz),
         IMAGE_LZ4 => Some(Compression::Lz4),
         IMAGE_ZSTD => Some(Compression::Zstd),
         _ => return None,
     };
-    let has_hole = info & IMAGE_HAS_HOLE != 0;
+    let has_hole = flags & IMAGE_HAS_HOLE != 0;
     let hole_length = match (compression, has_hole) {
         (Some(_), true) => cursor.u16()?,
         (Some(_), false) => 0,
+        // An uncompressed image is the page less its hole.
         (None, _) => BLOCK_SIZE_U16.wrapping_sub(length),
     };
-    let valid = usize::from(length) <= BLOCK_SIZE
-        && if has_hole {
-            hole_offset != 0 && hole_length != 0 && length != BLOCK_SIZE_U16
-        } else {
-            hole_offset == 0
-                && hole_length == 0
-                && (compression.is_some() || length == BLOCK_SIZE_U16)
-        }
-        && (compression.is_none() || length != BLOCK_SIZE_U16);
-    if !valid {
-        return None;
-    }
-    Some(Image {
+    let image = Image {
         hole_offset,
         hole_length,
         compression,
-        apply: info & IMAGE_APPLY != 0,
+        apply: flags & IMAGE_APPLY != 0,
         bytes: 0..usize::from(length),
-    })
+    };
+    if !image_fits(&image, has_hole) {
+        return None;
+    }
+    Some(image)
+}
+
+/// The checks `DecodeXLogRecord` makes of an image header: a hole is
+/// somewhere and something, no hole is nowhere and nothing, and only an
+/// uncompressed image without a hole is the whole page.
+fn image_fits(image: &Image, has_hole: bool) -> bool {
+    let length = image.bytes.len();
+    if length > BLOCK_SIZE {
+        return false;
+    }
+    let whole_page = length == BLOCK_SIZE;
+    let compressed = image.compression.is_some();
+    if compressed && whole_page {
+        return false;
+    }
+    if has_hole {
+        image.hole_offset != 0 && image.hole_length != 0 && !whole_page
+    } else {
+        image.hole_offset == 0 && image.hole_length == 0 && (compressed || whole_page)
+    }
 }
 
 /// Moves each block's payload ranges to where they lie from `start`:
@@ -298,12 +359,17 @@ fn place_payloads(blocks: &mut [Block], start: usize) -> usize {
     offset
 }
 
+/// Reads a record's headers front to back.
+// It borrows the record's bytes (`'a`) and reads them in place: a cursor
+// that owned them would copy every record.
 struct Cursor<'a> {
     bytes: &'a [u8],
+    /// Where the next read starts.
     at: usize,
 }
 
 impl Cursor<'_> {
+    /// The next `length` bytes, if there are that many.
     fn take(&mut self, length: usize) -> Option<&[u8]> {
         let bytes = self.bytes.get(self.at..self.at.checked_add(length)?)?;
         self.at += length;
@@ -311,18 +377,22 @@ impl Cursor<'_> {
     }
 
     fn u8(&mut self) -> Option<u8> {
-        self.take(1).map(|bytes| bytes[0])
+        let bytes = self.take(size_of::<u8>())?;
+        Some(bytes[0])
     }
 
     fn u16(&mut self) -> Option<u16> {
-        self.take(2).map(read_u16)
+        let bytes = self.take(size_of::<u16>())?;
+        Some(read_u16(bytes))
     }
 
     fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(read_u32)
+        let bytes = self.take(size_of::<u32>())?;
+        Some(read_u32(bytes))
     }
 }
 
+/// `lsn` rounded up to where a record may start.
 pub(super) fn align(lsn: u64) -> u64 {
     lsn.div_ceil(RECORD_ALIGNMENT) * RECORD_ALIGNMENT
 }
@@ -340,47 +410,73 @@ mod tests {
     use crate::wal::reader::LONG_HEADER;
     use crate::wal::test_support::*;
 
-    #[test]
-    fn refuses_block_headers_that_do_not_add_up() {
-        let at_flags = RECORD_HEADER + 1;
-        let lsn = SEGMENT + LONG_HEADER;
-        let expected = at(lsn, Problem::Blocks);
+    /// The first block header's id, right after the record header.
+    const FIRST_BLOCK_ID: usize = RECORD_HEADER;
+    /// `fork_flags`, after the id in `XLogRecordBlockHeader`.
+    const FIRST_BLOCK_FLAGS: usize = FIRST_BLOCK_ID + 1;
+    /// `SizeOfXLogRecordBlockHeader`: `id`, `fork_flags`, `data_length`.
+    const BLOCK_HEADER_SIZE: usize = 4;
+    /// `bimg_info` in `XLogRecordBlockImageHeader`, after `length` and
+    /// `hole_offset`.
+    const IMAGE_FLAGS_OFFSET: usize = 4;
+    /// `bimg_info` of the first block's image, which follows its header.
+    const FIRST_IMAGE_FLAGS: usize = FIRST_BLOCK_ID + BLOCK_HEADER_SIZE + IMAGE_FLAGS_OFFSET;
 
-        // Data flagged but none counted, and data counted but not flagged.
-        let mut record = assemble(&plain_block(None, vec![7; 4]));
-        record[at_flags] &= !HAS_DATA;
-        assert_eq!(decode_error(record), expected);
-        let mut record = assemble(&plain_block(None, Vec::new()));
-        record[at_flags] |= HAS_DATA;
-        assert_eq!(decode_error(record), expected);
+    /// The error a lone test record at the start of a segment stops at.
+    fn blocks_problem() -> WalError {
+        at(SEGMENT + LONG_HEADER, Problem::Blocks)
+    }
 
-        // A block naming the same relation as a block before it, first.
-        let mut record = assemble(&plain_block(None, vec![7; 4]));
-        record[at_flags] |= SAME_RELATION;
-        assert_eq!(decode_error(record), expected);
-
-        // An unknown block id, and blocks out of order.
-        let mut record = assemble(&plain_block(None, vec![7; 4]));
-        record[RECORD_HEADER] = 100;
-        assert_eq!(decode_error(record), expected);
-        let mut spec = plain_block(None, vec![7; 4]);
-        let mut second = spec.blocks[0].clone();
-        second.id = 0;
-        spec.blocks.push(second);
-        assert_eq!(decode_error(assemble(&spec)), expected);
-
-        // Two kinds of compression at once.
-        let image = ImageSpec {
+    /// A compressed image of 50 bytes, without a hole.
+    fn compressed_image() -> ImageSpec {
+        ImageSpec {
             hole_offset: 0,
             hole_length: 0,
             compression: Some(Compression::Lz4),
             apply: true,
             bytes: vec![1; 50],
-        };
-        let mut record = assemble(&plain_block(Some(image.clone()), Vec::new()));
-        record[RECORD_HEADER + 8] |= IMAGE_PGLZ;
-        assert_eq!(decode_error(record), expected);
+        }
+    }
 
+    #[test]
+    fn refuses_data_flags_that_do_not_match_lengths() {
+        // Data flagged but none counted, and data counted but not flagged.
+        let mut record = assemble(&plain_block(None, vec![7; 4]));
+        record[FIRST_BLOCK_FLAGS] &= !HAS_DATA;
+        assert_eq!(decode_error(record), blocks_problem());
+        let mut record = assemble(&plain_block(None, Vec::new()));
+        record[FIRST_BLOCK_FLAGS] |= HAS_DATA;
+        assert_eq!(decode_error(record), blocks_problem());
+    }
+
+    #[test]
+    fn refuses_a_first_block_that_names_the_relation_before_it() {
+        let mut record = assemble(&plain_block(None, vec![7; 4]));
+        record[FIRST_BLOCK_FLAGS] |= SAME_RELATION;
+        assert_eq!(decode_error(record), blocks_problem());
+    }
+
+    #[test]
+    fn refuses_unknown_and_unordered_block_ids() {
+        // Past `XLR_MAX_BLOCK_ID`, short of the special ids.
+        let unknown_id = 100;
+        let mut record = assemble(&plain_block(None, vec![7; 4]));
+        record[FIRST_BLOCK_ID] = unknown_id;
+        assert_eq!(decode_error(record), blocks_problem());
+        let mut spec = plain_block(None, vec![7; 4]);
+        let mut second = spec.blocks[0].clone();
+        second.id = 0;
+        spec.blocks.push(second);
+        assert_eq!(decode_error(assemble(&spec)), blocks_problem());
+    }
+
+    #[test]
+    fn refuses_image_headers_that_do_not_fit() {
+        // Two kinds of compression at once.
+        let image = compressed_image();
+        let mut record = assemble(&plain_block(Some(image.clone()), Vec::new()));
+        record[FIRST_IMAGE_FLAGS] |= IMAGE_PGLZ;
+        assert_eq!(decode_error(record), blocks_problem());
         // A hole flagged on an uncompressed whole page.
         let whole = ImageSpec {
             compression: None,
@@ -388,26 +484,25 @@ mod tests {
             ..image.clone()
         };
         let mut record = assemble(&plain_block(Some(whole), Vec::new()));
-        record[RECORD_HEADER + 8] |= IMAGE_HAS_HOLE;
-        assert_eq!(decode_error(record), expected);
-
+        record[FIRST_IMAGE_FLAGS] |= IMAGE_HAS_HOLE;
+        assert_eq!(decode_error(record), blocks_problem());
         // A short uncompressed image without a hole.
         let short = ImageSpec {
             compression: None,
             bytes: vec![1; 100],
             ..image
         };
-        assert_eq!(
-            decode_error(assemble(&plain_block(Some(short), Vec::new()))),
-            expected
-        );
+        let record = assemble(&plain_block(Some(short), Vec::new()));
+        assert_eq!(decode_error(record), blocks_problem());
+    }
 
-        // More bytes than the headers account for.
+    #[test]
+    fn refuses_bytes_the_headers_do_not_account_for() {
         let mut record = assemble(&plain_block(None, vec![7; 4]));
         record.push(0);
         let total = u32::try_from(record.len()).unwrap();
         record[RECORD_LENGTH].copy_from_slice(&total.to_le_bytes());
-        assert_eq!(decode_error(record), expected);
+        assert_eq!(decode_error(record), blocks_problem());
     }
 
     #[test]

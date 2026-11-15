@@ -97,6 +97,8 @@ fn read_u64(bytes: &[u8]) -> u64 {
 pub(crate) enum WalError {
     /// Bytes came for an LSN other than the one after the last.
     Gap { wanted: u64, got: u64 },
+    /// A long page header names a segment or page size other than the
+    /// server's.
     Sizes {
         segment_size: u64,
         page_size: u64,
@@ -186,26 +188,34 @@ impl fmt::Display for Problem {
     }
 }
 
+/// The error of `problem` at `lsn`.
 fn at(lsn: u64, problem: Problem) -> WalError {
     WalError::At { lsn, problem }
 }
 
 impl fmt::Display for WalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WalError::Gap { wanted, got } => {
-                write!(f, "WAL came at {}, not at {}", Lsn(*got), Lsn(*wanted))
+                write!(
+                    formatter,
+                    "WAL came at {}, not at {}",
+                    Lsn(*got),
+                    Lsn(*wanted)
+                )
             }
             WalError::Sizes {
                 segment_size,
                 page_size,
                 expected_segment_size,
             } => write!(
-                f,
+                formatter,
                 "WAL has {segment_size}-byte segments and {page_size}-byte pages; \
                  Straum expected {expected_segment_size} and {PAGE_SIZE}"
             ),
-            WalError::At { lsn, problem } => write!(f, "WAL at {} has {problem}", Lsn(*lsn)),
+            WalError::At { lsn, problem } => {
+                write!(formatter, "WAL at {} has {problem}", Lsn(*lsn))
+            }
         }
     }
 }
