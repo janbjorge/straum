@@ -9,6 +9,8 @@
 use std::fmt;
 use std::ops::Range;
 
+use straum_app::Lsn;
+
 mod compress;
 pub(crate) mod heap;
 pub(crate) mod messages;
@@ -196,34 +198,31 @@ impl Records {
                 return Ok(None);
             };
             if self.next < page + header.length {
-                return Err(WalError::Continuation { lsn: page });
+                return Err(at(page, CONTINUATION));
             }
             self.unchecked = None;
         }
-        let mut at = self.next;
-        if at.is_multiple_of(PAGE_SIZE) {
-            let Some(header) = self.page_header(at)? else {
+        let mut position = self.next;
+        if position.is_multiple_of(PAGE_SIZE) {
+            let Some(header) = self.page_header(position)? else {
                 return Ok(None);
             };
             if header.flags & FIRST_IS_OVERWRITE != 0 {
-                return Err(WalError::Overwritten { lsn: at });
+                return Err(at(position, OVERWRITTEN));
             }
             if header.flags & FIRST_IS_CONTINUATION != 0 {
-                return Err(WalError::Continuation { lsn: at });
+                return Err(at(position, CONTINUATION));
             }
-            at += header.length;
+            position += header.length;
         }
-        let Some((head, _)) = self.gather(at, RECORD_HEADER)? else {
+        let Some((head, _)) = self.gather(position, RECORD_HEADER)? else {
             return Ok(None);
         };
         let total = le_u32(&head[0..4]);
         if !(RECORD_HEADER as u32..=MAX_RECORD).contains(&total) {
-            return Err(WalError::Length {
-                lsn: at,
-                length: total,
-            });
+            return Err(at(position, LENGTH));
         }
-        let Some((bytes, end)) = self.gather(at, total as usize)? else {
+        let Some((bytes, end)) = self.gather(position, total as usize)? else {
             return Ok(None);
         };
         let stored = le_u32(&bytes[20..24]);
@@ -232,9 +231,9 @@ impl Records {
             &bytes[..20],
         );
         if stored != computed {
-            return Err(WalError::Checksum { lsn: at });
+            return Err(at(position, CHECKSUM));
         }
-        let record = decode(at, end, bytes)?;
+        let record = decode(position, end, bytes)?;
         self.next = if record.is_switch() {
             end.div_ceil(self.segment_size) * self.segment_size
         } else {
@@ -258,29 +257,29 @@ impl Records {
         self.buffer.get(from..to)
     }
 
-    fn page_header(&mut self, at: u64) -> Result<Option<PageHeader>, WalError> {
-        let Some(short) = self.slice(at, SHORT_HEADER) else {
+    fn page_header(&mut self, page: u64) -> Result<Option<PageHeader>, WalError> {
+        let Some(short) = self.slice(page, SHORT_HEADER) else {
             return Ok(None);
         };
         let magic = le_u16(&short[0..2]);
         let flags = le_u16(&short[2..4]);
         let address = le_u64(&short[8..16]);
         let remaining = le_u32(&short[16..20]);
-        if address != at {
-            return Err(WalError::PageAddress { lsn: at, address });
+        if address != page {
+            return Err(at(page, PAGE_ADDRESS));
         }
         if flags & !ALL_PAGE_FLAGS != 0 {
-            return Err(WalError::PageFlags { lsn: at, flags });
+            return Err(at(page, PAGE_FLAGS));
         }
         match self.magic {
             None => self.magic = Some(magic),
             Some(known) if known != magic => {
-                return Err(WalError::Magic { lsn: at, magic });
+                return Err(at(page, OTHER_FORMAT));
             }
             Some(_) => {}
         }
         let length = if flags & LONG_PAGE_HEADER != 0 {
-            let Some(long) = self.slice(at, LONG_HEADER) else {
+            let Some(long) = self.slice(page, LONG_HEADER) else {
                 return Ok(None);
             };
             let segment_size = u64::from(le_u32(&long[32..36]));
@@ -303,11 +302,11 @@ impl Records {
         }))
     }
 
-    /// `length` bytes of the record at `at`, without the page headers it
+    /// `length` bytes of the record at `start`, without the page headers it
     /// runs across, and where they end.
-    fn gather(&mut self, at: u64, length: usize) -> Result<Option<(Vec<u8>, u64)>, WalError> {
+    fn gather(&mut self, start: u64, length: usize) -> Result<Option<(Vec<u8>, u64)>, WalError> {
         let mut out = Vec::with_capacity(length);
-        let mut position = at;
+        let mut position = start;
         while out.len() < length {
             if position.is_multiple_of(PAGE_SIZE) {
                 let Some(header) = self.page_header(position)? else {
@@ -323,7 +322,7 @@ impl Records {
                 if header.flags & FIRST_IS_CONTINUATION == 0
                     || expected.is_some_and(|left| u64::from(header.remaining) != left)
                 {
-                    return Err(WalError::Continuation { lsn: position });
+                    return Err(at(position, CONTINUATION));
                 }
                 position += header.length;
             }
@@ -346,7 +345,7 @@ struct PageHeader {
 }
 
 fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
-    let short = WalError::Record { lsn };
+    let short = at(lsn, BLOCKS);
     let mut r = Cursor {
         bytes: &bytes,
         at: RECORD_HEADER,
@@ -448,14 +447,14 @@ fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
         return Err(short);
     }
     // Payloads follow the headers in block order: image, then data.
-    let mut at = r.at;
+    let mut offset = r.at;
     for block in &mut blocks {
         if let Some(image) = &mut block.image {
-            image.bytes = at..at + image.bytes.len();
-            at = image.bytes.end;
+            image.bytes = offset..offset + image.bytes.len();
+            offset = image.bytes.end;
         }
-        block.data = at..at + block.data.len();
-        at = block.data.end;
+        block.data = offset..offset + block.data.len();
+        offset = block.data.end;
     }
     Ok(Record {
         lsn,
@@ -465,7 +464,7 @@ fn decode(lsn: u64, end: u64, bytes: Vec<u8>) -> Result<Record, WalError> {
         resource_manager: bytes[17],
         toplevel_xid,
         blocks,
-        main: at..at + main_length,
+        main: offset..offset + main_length,
         bytes,
     })
 }
@@ -545,74 +544,36 @@ fn crc32c(crc: u32, bytes: &[u8]) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WalError {
     /// Bytes came for an LSN other than the one after the last.
-    Gap {
-        wanted: u64,
-        got: u64,
-    },
-    /// A page header names another page than where it is.
-    PageAddress {
-        lsn: u64,
-        address: u64,
-    },
-    PageFlags {
-        lsn: u64,
-        flags: u16,
-    },
-    /// The WAL format changed in the stream.
-    Magic {
-        lsn: u64,
-        magic: u16,
-    },
+    Gap { wanted: u64, got: u64 },
     Sizes {
         segment_size: u64,
         page_size: u64,
         expected_segment_size: u64,
     },
-    /// A page that should carry on a record doesn't.
-    Continuation {
-        lsn: u64,
-    },
-    /// After a crash, PostgreSQL wrote over a record it never finished.
-    Overwritten {
-        lsn: u64,
-    },
-    Length {
-        lsn: u64,
-        length: u32,
-    },
-    Checksum {
-        lsn: u64,
-    },
-    /// The record's block headers don't add up.
-    Record {
-        lsn: u64,
-    },
-    /// A heap record Straum can't apply to the pages it keeps.
-    Heap {
-        lsn: u64,
-        problem: &'static str,
-    },
+    /// The page or record at `lsn` has `problem`.
+    At { lsn: u64, problem: &'static str },
+}
+
+const PAGE_ADDRESS: &str = "a page header that names another page";
+const PAGE_FLAGS: &str = "a page header with unknown flags";
+/// The WAL format changed in the stream.
+const OTHER_FORMAT: &str = "a page in another WAL format";
+const CONTINUATION: &str = "a page that doesn't carry on the record before it";
+/// After a crash, PostgreSQL wrote over a record it never finished.
+const OVERWRITTEN: &str = "a record written over one a crash cut off";
+const LENGTH: &str = "a record length out of range";
+const CHECKSUM: &str = "a record that fails its checksum";
+const BLOCKS: &str = "a record whose block headers don't add up";
+
+fn at(lsn: u64, problem: &'static str) -> WalError {
+    WalError::At { lsn, problem }
 }
 
 impl fmt::Display for WalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lsn = |lsn: &u64| format!("{:X}/{:08X}", lsn >> 32, lsn & 0xFFFF_FFFF);
         match self {
             WalError::Gap { wanted, got } => {
-                write!(f, "WAL came at {}, not at {}", lsn(got), lsn(wanted))
-            }
-            WalError::PageAddress { lsn: at, address } => {
-                write!(f, "WAL page at {} says it is at {}", lsn(at), lsn(address))
-            }
-            WalError::PageFlags { lsn: at, flags } => {
-                write!(f, "WAL page at {} has unknown flags {flags:#06x}", lsn(at))
-            }
-            WalError::Magic { lsn: at, magic } => {
-                write!(
-                    f,
-                    "WAL page at {} has another format, {magic:#06x}",
-                    lsn(at)
-                )
+                write!(f, "WAL came at {}, not at {}", Lsn(*got), Lsn(*wanted))
             }
             WalError::Sizes {
                 segment_size,
@@ -623,36 +584,7 @@ impl fmt::Display for WalError {
                 "WAL has {segment_size}-byte segments and {page_size}-byte pages; \
                  Straum expected {expected_segment_size} and {PAGE_SIZE}"
             ),
-            WalError::Continuation { lsn: at } => {
-                write!(
-                    f,
-                    "WAL page at {} doesn't carry on the record before it",
-                    lsn(at)
-                )
-            }
-            WalError::Overwritten { lsn: at } => {
-                write!(
-                    f,
-                    "WAL at {} overwrites a record cut off by a crash",
-                    lsn(at)
-                )
-            }
-            WalError::Length { lsn: at, length } => {
-                write!(f, "WAL record at {} has length {length}", lsn(at))
-            }
-            WalError::Checksum { lsn: at } => {
-                write!(f, "WAL record at {} fails its checksum", lsn(at))
-            }
-            WalError::Record { lsn: at } => {
-                write!(
-                    f,
-                    "WAL record at {} has block headers that don't add up",
-                    lsn(at)
-                )
-            }
-            WalError::Heap { lsn: at, problem } => {
-                write!(f, "WAL record at {} has {problem}", lsn(at))
-            }
+            WalError::At { lsn, problem } => write!(f, "WAL at {} has {problem}", Lsn(*lsn)),
         }
     }
 }
@@ -1103,10 +1035,7 @@ pub(crate) mod tests {
     fn refuses_a_flipped_byte() {
         let (mut wal, lsns) = one_record();
         wal[(lsns[0] - SEGMENT) as usize + 30] ^= 1;
-        assert_eq!(
-            first_error(&wal, lsns[0]),
-            WalError::Checksum { lsn: lsns[0] }
-        );
+        assert_eq!(first_error(&wal, lsns[0]), at(lsns[0], CHECKSUM));
     }
 
     #[test]
@@ -1115,7 +1044,10 @@ pub(crate) mod tests {
         wal[8] ^= 1;
         assert!(matches!(
             first_error(&wal, lsns[0]),
-            WalError::PageAddress { .. }
+            WalError::At {
+                problem: PAGE_ADDRESS,
+                ..
+            }
         ));
     }
 
@@ -1125,7 +1057,10 @@ pub(crate) mod tests {
         wal[2] |= 0x80;
         assert!(matches!(
             first_error(&wal, lsns[0]),
-            WalError::PageFlags { .. }
+            WalError::At {
+                problem: PAGE_FLAGS,
+                ..
+            }
         ));
     }
 
@@ -1145,7 +1080,13 @@ pub(crate) mod tests {
         let (mut wal, lsns) = lay_out(SEGMENT, &[assemble(&spec)]);
         let second_page = PAGE_SIZE as usize;
         wal[second_page] ^= 1;
-        assert!(matches!(first_error(&wal, lsns[0]), WalError::Magic { .. }));
+        assert!(matches!(
+            first_error(&wal, lsns[0]),
+            WalError::At {
+                problem: OTHER_FORMAT,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1158,13 +1099,19 @@ pub(crate) mod tests {
         wal[second_page + 2] &= !(FIRST_IS_CONTINUATION as u8);
         assert!(matches!(
             first_error(&wal, lsns[0]),
-            WalError::Continuation { .. }
+            WalError::At {
+                problem: CONTINUATION,
+                ..
+            }
         ));
         let (mut wal, lsns) = lay_out(SEGMENT, &[assemble(&spec)]);
         wal[second_page + 16] ^= 1;
         assert!(matches!(
             first_error(&wal, lsns[0]),
-            WalError::Continuation { .. }
+            WalError::At {
+                problem: CONTINUATION,
+                ..
+            }
         ));
     }
 
@@ -1174,7 +1121,10 @@ pub(crate) mod tests {
         wal[2] |= FIRST_IS_CONTINUATION as u8;
         assert!(matches!(
             first_error(&wal, SEGMENT),
-            WalError::Continuation { .. }
+            WalError::At {
+                problem: CONTINUATION,
+                ..
+            }
         ));
     }
 
@@ -1183,7 +1133,10 @@ pub(crate) mod tests {
         let (wal, _) = one_record();
         assert!(matches!(
             first_error(&wal, SEGMENT + 8),
-            WalError::Continuation { .. }
+            WalError::At {
+                problem: CONTINUATION,
+                ..
+            }
         ));
     }
 
@@ -1193,7 +1146,10 @@ pub(crate) mod tests {
         wal[2] |= FIRST_IS_OVERWRITE as u8;
         assert!(matches!(
             first_error(&wal, SEGMENT),
-            WalError::Overwritten { .. }
+            WalError::At {
+                problem: OVERWRITTEN,
+                ..
+            }
         ));
     }
 
@@ -1204,7 +1160,10 @@ pub(crate) mod tests {
         wal[at..at + 4].copy_from_slice(&3u32.to_le_bytes());
         assert!(matches!(
             first_error(&wal, lsns[0]),
-            WalError::Length { length: 3, .. }
+            WalError::At {
+                problem: LENGTH,
+                ..
+            }
         ));
     }
 
@@ -1251,7 +1210,7 @@ pub(crate) mod tests {
     fn refuses_block_headers_that_do_not_add_up() {
         let at_flags = RECORD_HEADER + 1;
         let lsn = SEGMENT + LONG_HEADER;
-        let expected = WalError::Record { lsn };
+        let expected = at(lsn, BLOCKS);
 
         // Data flagged but none counted, and data counted but not flagged.
         let mut record = assemble(&plain_block(None, vec![7; 4]));
@@ -1326,23 +1285,16 @@ pub(crate) mod tests {
     #[test]
     fn says_what_went_wrong() {
         assert_eq!(
-            WalError::Checksum { lsn: 0x1_0000_0028 }.to_string(),
-            "WAL record at 1/00000028 fails its checksum"
+            at(0x1_0000_0028, CHECKSUM).to_string(),
+            "WAL at 1/28 has a record that fails its checksum"
         );
         for error in [
             WalError::Gap { wanted: 1, got: 2 },
-            WalError::PageAddress { lsn: 1, address: 2 },
-            WalError::PageFlags { lsn: 1, flags: 8 },
-            WalError::Magic { lsn: 1, magic: 2 },
             WalError::Sizes {
                 segment_size: 1,
                 page_size: 2,
                 expected_segment_size: 3,
             },
-            WalError::Continuation { lsn: 1 },
-            WalError::Overwritten { lsn: 1 },
-            WalError::Length { lsn: 1, length: 3 },
-            WalError::Record { lsn: 1 },
         ] {
             assert!(error.to_string().starts_with("WAL "));
         }

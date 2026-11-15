@@ -183,7 +183,7 @@ fn fields(
 }
 
 fn problem(lsn: u64, problem: &'static str) -> Error {
-    Error::Wal(WalError::Heap { lsn, problem })
+    Error::Wal(WalError::At { lsn, problem })
 }
 
 #[cfg(test)]
@@ -378,13 +378,13 @@ mod tests {
         let insert = |file, new| vec![Change::Insert { file, new }];
         assert_eq!(
             message(publish(insert(other, row(1, &short("a"))))),
-            "WAL record at 0/00000100 has a change to a table Straum doesn't read"
+            "WAL at 0/100 has a change to a table Straum doesn't read"
         );
         let mut cut = row(1, &short("a"));
         cut.body.truncate(6);
         assert_eq!(
             message(publish(insert(FILE, cut))),
-            "WAL record at 0/00000100 has a row shorter than its columns"
+            "WAL at 0/100 has a row shorter than its columns"
         );
         // A row from before `late` was added holds no value for it; the
         // catalog's default is the value, which Straum doesn't read.

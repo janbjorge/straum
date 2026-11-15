@@ -78,7 +78,7 @@ pub(crate) struct Running {
 
 /// The event `record` is, if any. `major` picks the layout.
 pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalError> {
-    let short = WalError::Heap {
+    let short = WalError::At {
         lsn: record.lsn,
         problem: "a transaction record shorter than its kind",
     };
@@ -341,7 +341,7 @@ mod tests {
             let main = full[..length].to_vec();
             let got = event(&record(RM_XACT, XACT_COMMIT | XACT_HAS_INFO, 1, main), 18);
             assert!(
-                matches!(got, Err(WalError::Heap { problem, .. })
+                matches!(got, Err(WalError::At { problem, .. })
                     if problem == "a transaction record shorter than its kind"),
                 "{length}: {got:?}"
             );
@@ -349,11 +349,11 @@ mod tests {
         let mut running = words(&[3, 0, 0, 760]);
         running.extend(words(&[0, 0, 751, 752]));
         let got = event(&record(RM_STANDBY, STANDBY_RUNNING_XACTS, 0, running), 18);
-        assert!(matches!(got, Err(WalError::Heap { .. })), "{got:?}");
+        assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
         let got = event(
             &record(RM_STANDBY, STANDBY_RUNNING_XACTS, 0, words(&[0, 0])),
             18,
         );
-        assert!(matches!(got, Err(WalError::Heap { .. })), "{got:?}");
+        assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
     }
 }

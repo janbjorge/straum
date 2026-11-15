@@ -332,7 +332,7 @@ fn page_id(block: &Block) -> PageId {
 }
 
 fn problem(lsn: u64, problem: &'static str) -> WalError {
-    WalError::Heap { lsn, problem }
+    WalError::At { lsn, problem }
 }
 
 /// One record being applied.
@@ -1272,7 +1272,7 @@ mod tests {
 
     fn error(heap: &mut Heap, record: &Record) -> &'static str {
         match heap.apply(record) {
-            Err(WalError::Heap { problem, .. }) => problem,
+            Err(WalError::At { problem, .. }) => problem,
             other => panic!("{other:?}"),
         }
     }
@@ -1413,9 +1413,6 @@ mod tests {
     #[test]
     fn says_what_went_wrong() {
         let error = problem(0x1_0000_0028, "a row in slot 0");
-        assert_eq!(
-            error.to_string(),
-            "WAL record at 1/00000028 has a row in slot 0"
-        );
+        assert_eq!(error.to_string(), "WAL at 1/28 has a row in slot 0");
     }
 }
