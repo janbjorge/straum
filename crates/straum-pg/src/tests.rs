@@ -2674,18 +2674,21 @@ fn commits_what_logical_decoding_commits() {
          ON CONFLICT (id) DO UPDATE SET fare = excluded.fare",
     );
     db.run("VACUUM $S.trips");
-    db.run("UPDATE $S.trips SET rider = 'di' WHERE id % 11 = 0");
-    let last = parse_lsn(
+    // Read before the last commit: other WAL, autovacuum's or a
+    // RUNNING_XACTS, may follow it, which the logical slot sends nothing
+    // for.
+    let before = parse_lsn(
         db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
             .as_deref()
             .unwrap(),
     )
     .unwrap();
+    db.run("UPDATE $S.trips SET rider = 'di' WHERE id % 11 = 0");
 
     let mut theirs = Vec::new();
     let deadline = Instant::now() + LONG;
-    while theirs.last().is_none_or(|c: &Commit| c.lsn < last) {
-        assert!(Instant::now() < deadline, "no logical commit past {last}");
+    while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
+        assert!(Instant::now() < deadline, "no logical commit past {before}");
         theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
     }
 
@@ -2725,20 +2728,22 @@ fn commits_what_logical_decoding_commits_at_random() {
             workload.step(&mut rng, &mut db);
         }
         workload.finish(&mut db);
-        // A published commit last, for the logical slot to reach.
-        db.run(&rng.trip(u64::MAX >> 8));
-        let last = parse_lsn(
+        // A published commit last, for the logical slot to reach, past
+        // a position read before it: other WAL, autovacuum's or a
+        // RUNNING_XACTS, may follow it, which the slot sends nothing for.
+        let before = parse_lsn(
             db.rows("SELECT pg_current_wal_insert_lsn()")[0][0]
                 .as_deref()
                 .unwrap(),
         )
         .unwrap();
+        db.run(&rng.trip(u64::MAX >> 8));
         let mut theirs = Vec::new();
         let deadline = Instant::now() + LONG;
-        while theirs.last().is_none_or(|c: &Commit| c.lsn < last) {
+        while theirs.last().is_none_or(|c: &Commit| c.lsn <= before) {
             assert!(
                 Instant::now() < deadline,
-                "seed {seed}: no logical commit past {last}"
+                "seed {seed}: no logical commit past {before}"
             );
             theirs.extend(logical.next_commit(Duration::from_millis(100)).unwrap());
         }
