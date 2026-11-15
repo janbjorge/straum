@@ -1,37 +1,83 @@
 //! The spec examples in the README and the guide parse, so an example can't
-//! drift from the grammar without a test saying which one.
+//! drift from the grammar without a test saying which one. Each page's
+//! `sql` fences that hold a whole spec are cut out and parsed.
 
-const DOCS: [(&str, &str); 3] = [
-    ("README.md", include_str!("../../../README.md")),
-    (
-        "docs/src/spec.md",
-        include_str!("../../../docs/src/spec.md"),
-    ),
-    (
-        "docs/src/quick-start.md",
-        include_str!("../../../docs/src/quick-start.md"),
-    ),
+use std::fmt;
+
+const DOCS: [Page; 3] = [
+    Page {
+        name: "README.md",
+        markdown: include_str!("../../../README.md"),
+    },
+    Page {
+        name: "docs/src/spec.md",
+        markdown: include_str!("../../../docs/src/spec.md"),
+    },
+    Page {
+        name: "docs/src/quick-start.md",
+        markdown: include_str!("../../../docs/src/quick-start.md"),
+    },
 ];
+
+/// A page of the docs, by its path in the repository.
+struct Page {
+    name: &'static str,
+    markdown: &'static str,
+}
+
+/// A spec in a `sql` fence, and the line the fence opens on.
+#[derive(Debug, PartialEq)]
+struct Example {
+    line: usize,
+    text: String,
+}
+
+/// An example that failed to parse, named by file and fence line.
+#[derive(Debug)]
+struct ExampleError {
+    name: String,
+    line: usize,
+    error: straum_notation::Error,
+}
+
+impl fmt::Display for ExampleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}: {}", self.name, self.line, self.error)
+    }
+}
+
+/// An open `sql` fence: the line it opens on and the lines so far.
+// Holds lines of the page, borrowed until the fence closes.
+struct Fence<'page> {
+    line: usize,
+    lines: Vec<&'page str>,
+}
 
 /// The `sql` fences that hold a whole spec, each with the line its fence
 /// opens on. Fragments, such as a lone `date_bin` call, are skipped.
-fn specs(markdown: &str) -> Vec<(usize, String)> {
+fn specs(markdown: &str) -> Vec<Example> {
     let mut specs = Vec::new();
-    let mut fence: Option<(usize, Vec<&str>)> = None;
-    for (i, line) in markdown.lines().enumerate() {
-        let Some((at, lines)) = &mut fence else {
+    let mut fence: Option<Fence> = None;
+    for (index, line) in markdown.lines().enumerate() {
+        let Some(open) = &mut fence else {
             if line.trim_end() == "```sql" {
-                fence = Some((i + 1, Vec::new()));
+                fence = Some(Fence {
+                    line: index + 1,
+                    lines: Vec::new(),
+                });
             }
             continue;
         };
         if line.trim_end() != "```" {
-            lines.push(line);
+            open.lines.push(line);
             continue;
         }
-        let text = lines.join("\n");
+        let text = open.lines.join("\n");
         if text.trim_start().starts_with("CREATE VIEW") {
-            specs.push((*at, text));
+            specs.push(Example {
+                line: open.line,
+                text,
+            });
         }
         fence = None;
     }
@@ -40,19 +86,28 @@ fn specs(markdown: &str) -> Vec<(usize, String)> {
 
 /// Parses every spec in `markdown`: how many, or the first failure named by
 /// file and fence line.
-fn check(name: &str, markdown: &str) -> Result<usize, String> {
+fn check(name: &str, markdown: &str) -> Result<usize, ExampleError> {
     let specs = specs(markdown);
-    for (line, spec) in &specs {
-        straum_notation::parse(spec).map_err(|error| format!("{name}:{line}: {error}"))?;
+    for example in &specs {
+        if let Err(error) = straum_notation::parse(&example.text) {
+            return Err(ExampleError {
+                name: name.to_owned(),
+                line: example.line,
+                error,
+            });
+        }
     }
     Ok(specs.len())
 }
 
 #[test]
 fn every_doc_example_parses() {
-    for (name, markdown) in DOCS {
-        let parsed = check(name, markdown).unwrap_or_else(|error| panic!("{error}"));
-        assert!(parsed > 0, "{name} has no spec example");
+    for page in DOCS {
+        let parsed = match check(page.name, page.markdown) {
+            Ok(parsed) => parsed,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(parsed > 0, "{} has no spec example", page.name);
     }
 }
 
@@ -62,17 +117,22 @@ fn fragments_and_other_fences_are_skipped() {
                     ```sql\n\nCREATE VIEW v AS SELECT 1;\n```\n";
     assert_eq!(
         specs(markdown),
-        [(9, "\nCREATE VIEW v AS SELECT 1;".to_owned())]
+        [Example {
+            line: 9,
+            text: "\nCREATE VIEW v AS SELECT 1;".to_owned()
+        }]
     );
 }
 
 #[test]
 fn a_broken_example_is_named_by_file_and_line() {
     let markdown = "text\n\n```sql\nCREATE VIEW broken AS SELECT 1;\n```\n";
-    let err = check("docs/src/example.md", markdown).unwrap_err();
+    let error = check("docs/src/example.md", markdown)
+        .unwrap_err()
+        .to_string();
     // The walker's own line numbers count from the fence, so both are kept.
-    let Some(rest) = err.strip_prefix("docs/src/example.md:3: ") else {
-        panic!("{err}");
+    let Some(rest) = error.strip_prefix("docs/src/example.md:3: ") else {
+        panic!("{error}");
     };
     assert!(
         rest.starts_with("line 1: ") && rest.contains("needs exactly one FROM table"),

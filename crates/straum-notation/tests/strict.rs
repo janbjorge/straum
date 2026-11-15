@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{edit, error_lines};
+use common::{any_contains, edit, error_lines};
 use straum_domain::{Literal, RefKind};
 use straum_notation::parse;
 
@@ -32,7 +32,7 @@ fn check(cases: &[(&str, &str, &str)]) {
     for (from, to, fragment) in cases {
         let errors = error_lines(&canon(from, to));
         assert!(
-            errors.iter().any(|error| error.contains(fragment)),
+            any_contains(&errors, fragment),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -111,7 +111,7 @@ fn one_join_spelling() {
     for (to, fragment) in cases {
         let errors = error_lines(&canon(join, &to));
         assert!(
-            errors.iter().any(|error| error.contains(fragment)),
+            any_contains(&errors, fragment),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -128,17 +128,14 @@ fn inner_join_and_exists_parse() {
          AND NOT EXISTS (SELECT 1 FROM shop.blocked AS blocked WHERE blocked.id = orders.customer_id)",
     );
     let spec = parse(&src).unwrap();
-    let kinds: Vec<_> = (spec.fact("orders").unwrap().refs.iter())
-        .map(|reference| (reference.alias.to_string(), reference.kind))
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            ("customers".into(), RefKind::Inner),
-            ("promos".into(), RefKind::Semi),
-            ("blocked".into(), RefKind::Anti),
-        ]
-    );
+    let mut aliases = Vec::new();
+    let mut kinds = Vec::new();
+    for reference in &spec.fact("orders").unwrap().refs {
+        aliases.push(reference.alias.to_string());
+        kinds.push(reference.kind);
+    }
+    assert_eq!(aliases, ["customers", "promos", "blocked"]);
+    assert_eq!(kinds, [RefKind::Inner, RefKind::Semi, RefKind::Anti]);
     for (to, fragment) in [
         (
             "WHERE orders.customer_id IN (SELECT id FROM shop.blocked AS blocked)",
@@ -158,7 +155,7 @@ fn inner_join_and_exists_parse() {
             &format!("{to} GROUP BY 1, 2, 3, 4, 5"),
         ));
         assert!(
-            errors.iter().any(|error| error.contains(fragment)),
+            any_contains(&errors, fragment),
             "{to}: {errors:?} has no {fragment:?}"
         );
     }
@@ -325,9 +322,9 @@ fn group_by_lists_the_key_positions() {
     ]);
 }
 
-/// Measures and conditions have one form each.
+/// A measure has one form.
 #[test]
-fn one_measure_and_condition_spelling() {
+fn one_measure_spelling() {
     check(&[
         (
             "count(*) AS orders",
@@ -354,6 +351,13 @@ fn one_measure_and_condition_spelling() {
             "count(orders.id + 1) AS orders",
             "column, write alias.column, `orders.id + 1`",
         ),
+    ]);
+}
+
+/// A condition has one form.
+#[test]
+fn one_condition_spelling() {
+    check(&[
         (
             "customers.country IN ('NO', 'SE')",
             "customers.country IN ('NO')",
@@ -527,10 +531,9 @@ fn a_dim_column_is_cast_alike_in_every_view() {
         cast_canon(),
         CANON.replace("VIEW orders", "VIEW orders_again")
     );
-    assert!(error_lines(&two).iter().any(|error| error.contains(
-        "shop.customers.country is read without ::text here and with it in another view; \
-         write it alike"
-    )));
+    let message = "shop.customers.country is read without ::text here and with it in another \
+                   view; write it alike";
+    assert!(any_contains(&error_lines(&two), message));
 }
 
 #[test]

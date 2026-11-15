@@ -1,6 +1,10 @@
+//! Asks that parse into an `Ask`, and the ones refused: each case names
+//! what is wrong, from the statement down to one parameter. Values come
+//! only as `$n` parameters, and both bucket bounds are written.
+
 mod common;
 
-use common::{FEB, JAN, condition, id, strings};
+use common::{FEB, JAN, any_contains, condition, id, strings};
 use straum_domain::{Ask, AskKey, Literal};
 use straum_notation::parse_ask;
 
@@ -114,7 +118,7 @@ fn assert_each_names_what_is_wrong(cases: &[(&str, &[Literal], &str)]) {
     for (query, parameters, fragment) in cases {
         let errors = errors(query, parameters);
         assert!(
-            errors.iter().any(|error| error.contains(fragment)),
+            any_contains(&errors, fragment),
             "{query}: {errors:?} has no {fragment:?}"
         );
     }
@@ -324,7 +328,7 @@ fn an_ask_is_one_select_from_one_view() {
 }
 
 #[test]
-fn select_and_group_by_name_the_keys() {
+fn select_items_go_by_name() {
     assert_each_names_what_is_wrong(&[
         (
             "SELECT trips AS n FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -359,6 +363,12 @@ fn select_and_group_by_name_the_keys() {
             &range(),
             "quoted identifier `\"Trips\"` is not in Straum SQL",
         ),
+    ]);
+}
+
+#[test]
+fn group_by_names_the_selected_keys() {
+    assert_each_names_what_is_wrong(&[
         (
             "SELECT bucket, trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
