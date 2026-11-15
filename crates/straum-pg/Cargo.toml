@@ -6,6 +6,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# CRC-32C on every WAL record with the CPU's instructions, as PostgreSQL
+# computes it; std has none, and a bitwise loop read 330 MiB/s at most.
+crc32c = "0.6.9"
 # Forced by postgres-protocol: its writers take BytesMut.
 bytes = "1.12.1"
 # Forced by postgres-protocol: its parsers return FallibleIterator.

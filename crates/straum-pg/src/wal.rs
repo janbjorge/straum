@@ -187,6 +187,13 @@ impl Records {
                 got: lsn,
             });
         }
+        // Read bytes go here, not as each record is read: by now only the
+        // unread tail of a record is left to move to the front.
+        let read = usize::try_from(page_start(self.next).saturating_sub(self.start))
+            .unwrap_or(usize::MAX)
+            .min(self.buffer.len());
+        self.buffer.drain(..read);
+        self.start += read as u64;
         self.buffer.extend_from_slice(bytes);
         Ok(())
     }
@@ -215,10 +222,17 @@ impl Records {
             }
             position += header.length;
         }
-        let Some((head, _)) = self.gather(position, RECORD_HEADER)? else {
-            return Ok(None);
+        let total = match self.slice(position, RECORD_HEADER as u64) {
+            Some(head) if position % PAGE_SIZE + RECORD_HEADER as u64 <= PAGE_SIZE => {
+                le_u32(&head[0..4])
+            }
+            _ => {
+                let Some((head, _)) = self.gather(position, RECORD_HEADER)? else {
+                    return Ok(None);
+                };
+                le_u32(&head[0..4])
+            }
         };
-        let total = le_u32(&head[0..4]);
         if !(RECORD_HEADER as u32..=MAX_RECORD).contains(&total) {
             return Err(at(position, LENGTH));
         }
@@ -226,10 +240,7 @@ impl Records {
             return Ok(None);
         };
         let stored = le_u32(&bytes[20..24]);
-        let computed = crc32c(
-            crc32c_update(CRC_INIT, &bytes[RECORD_HEADER..]),
-            &bytes[..20],
-        );
+        let computed = checksum(&bytes);
         if stored != computed {
             return Err(at(position, CHECKSUM));
         }
@@ -239,16 +250,7 @@ impl Records {
         } else {
             align(end)
         };
-        self.forget_before(page_start(self.next));
         Ok(Some(record))
-    }
-
-    fn forget_before(&mut self, lsn: u64) {
-        let drop = usize::try_from(lsn.saturating_sub(self.start))
-            .unwrap_or(usize::MAX)
-            .min(self.buffer.len());
-        self.buffer.drain(..drop);
-        self.start += drop as u64;
     }
 
     fn slice(&self, at: u64, length: u64) -> Option<&[u8]> {
@@ -523,26 +525,10 @@ fn align(lsn: u64) -> u64 {
     lsn.div_ceil(8) * 8
 }
 
-const CRC_INIT: u32 = 0xFFFF_FFFF;
-
-/// CRC-32C, the checksum on every WAL record. Bitwise, since records are
-/// small and std has none; a table would be faster if it ever shows.
-fn crc32c_update(mut crc: u32, bytes: &[u8]) -> u32 {
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0x82F6_3B78
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    crc
-}
-
-fn crc32c(crc: u32, bytes: &[u8]) -> u32 {
-    !crc32c_update(crc, bytes)
+/// The checksum a record carries: CRC-32C over the record after its
+/// header, then over the header up to the checksum, as `XLogRecord` has it.
+fn checksum(record: &[u8]) -> u32 {
+    crc32c::crc32c_append(crc32c::crc32c(&record[RECORD_HEADER..]), &record[..20])
 }
 
 /// WAL Straum can't read. Any of these ends the stream, and Straum starts
@@ -744,10 +730,7 @@ pub(crate) mod tests {
         record.extend([0; 4]);
         record.extend(headers);
         record.extend(payload);
-        let crc = crc32c(
-            crc32c_update(CRC_INIT, &record[RECORD_HEADER..]),
-            &record[..20],
-        );
+        let crc = checksum(&record);
         record[20..24].copy_from_slice(&crc.to_le_bytes());
         record
     }
@@ -1175,10 +1158,7 @@ pub(crate) mod tests {
 
     /// Re-checksums `record` after a test edits it.
     fn reseal(mut record: Vec<u8>) -> Vec<u8> {
-        let crc = crc32c(
-            crc32c_update(CRC_INIT, &record[RECORD_HEADER..]),
-            &record[..20],
-        );
+        let crc = checksum(&record);
         record[20..24].copy_from_slice(&crc.to_le_bytes());
         record
     }
@@ -1284,8 +1264,13 @@ pub(crate) mod tests {
 
     #[test]
     fn checksums_as_postgresql_does() {
-        // The CRC-32C check value from RFC 3720.
-        assert_eq!(crc32c(CRC_INIT, b"123456789"), 0xE306_9283);
+        // Bytes 0 to 63 as a record, summed bit by bit with the reflected
+        // Castagnoli polynomial 0x82F63B78: body first, then header.
+        let record: Vec<u8> = (0..64).collect();
+        assert_eq!(checksum(&record), 0xF711_C61A);
+        let mut flipped = record.clone();
+        flipped[RECORD_HEADER] ^= 1;
+        assert_ne!(checksum(&flipped), 0xF711_C61A);
     }
 
     #[test]
