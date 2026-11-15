@@ -15,6 +15,8 @@
 //! `bucket`, so it never clashes. Both bounds are written: an ask says
 //! what it reads.
 
+use std::fmt;
+
 use jiff::Timestamp;
 use sqlparser::ast as sql;
 use straum_domain::{Ask, AskKey, Condition, Identifier, Literal};
@@ -98,6 +100,25 @@ impl Bound {
 struct BucketBound<'tree> {
     end: End,
     value: &'tree sql::Expr,
+}
+
+/// Why a bucket bound is no instant.
+enum InstantError {
+    Boolean,
+    NotWholeSecond { text: String },
+    NotRfc3339 { text: String, error: jiff::Error },
+}
+
+impl fmt::Display for InstantError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InstantError::Boolean => formatter.write_str("is a boolean"),
+            InstantError::NotWholeSecond { text } => {
+                write!(formatter, "{text} is not a whole second")
+            }
+            InstantError::NotRfc3339 { text, error } => write!(formatter, "{text:?}: {error}"),
+        }
+    }
 }
 
 impl Walker {
@@ -317,7 +338,7 @@ impl Walker {
         let instant = match self.parameter(expression, parameters)? {
             Literal::Int(seconds) => Ok(seconds),
             Literal::Text(text) => rfc3339_seconds(&text),
-            Literal::Bool(_) => Err("is a boolean".into()),
+            Literal::Bool(_) => Err(InstantError::Boolean),
         };
         match instant {
             Ok(seconds) => Ok(seconds),
@@ -347,11 +368,16 @@ fn parameter_index(name: &str, count: usize) -> Option<usize> {
     Some(number - 1)
 }
 
-fn rfc3339_seconds(text: &str) -> Result<i64, String> {
+fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
     match text.parse::<Timestamp>() {
-        Ok(at) if at.subsec_nanosecond() != 0 => Err(format!("{text} is not a whole second")),
+        Ok(at) if at.subsec_nanosecond() != 0 => Err(InstantError::NotWholeSecond {
+            text: text.to_owned(),
+        }),
         Ok(at) => Ok(at.as_second()),
-        Err(error) => Err(format!("{text:?}: {error}")),
+        Err(error) => Err(InstantError::NotRfc3339 {
+            text: text.to_owned(),
+            error,
+        }),
     }
 }
 
