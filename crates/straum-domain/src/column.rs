@@ -1,73 +1,108 @@
-//! A bucket's numbers, one a cell. A column keeps them in as few bytes
-//! apiece as its widest takes: an hour's row counts fit two bytes and its
-//! sums four, where the widest a count or a sum can be takes eight and
-//! sixteen. A number its column can't hold moves the column to the next
-//! width that does.
+//! The numbers of a bucket's cells, one per cell, side by side: each
+//! cell's row count, null count, true and false counts and sums. A row
+//! added raises its cell's entries; an ask reads a whole column in one
+//! pass. A column keeps its numbers in as few bytes apiece as its widest
+//! takes: an hour's row counts fit two bytes and its sums four, where the
+//! widest a count or a sum can be takes eight and sixteen. A number its
+//! column can't hold moves the column to the next width that does.
 
-use std::ops::RangeInclusive;
+use std::ops::{Add, RangeInclusive};
+
+// The functions below are generic over the type of a column's entries
+// (`u8` up to `i128`): one body serves every byte width, where a copy per
+// width would be four or five functions alike but for a type.
 
 /// Room in a column for one more cell's `each` entries. A `Vec` doubles
 /// when full, which leaves a column a third empty on average; an eighth
 /// more leaves it a sixteenth.
-pub(crate) fn grow<T>(column: &mut Vec<T>, each: usize) {
+pub(crate) fn grow<Entry>(column: &mut Vec<Entry>, each: usize) {
     if column.len() + each > column.capacity() {
         column.reserve_exact((column.len() / 8).max(4 * each));
     }
 }
 
 /// A new cell's entry in a column.
-pub(crate) fn put<T>(column: &mut Vec<T>, entry: T) {
+pub(crate) fn put<Entry>(column: &mut Vec<Entry>, entry: Entry) {
     grow(column, 1);
     column.push(entry);
 }
 
-/// Entry `i` set to `n`, unless the column's type doesn't hold it.
-fn set<T: TryFrom<N>, N>(column: &mut [T], i: usize, n: N) -> bool {
-    let Ok(entry) = T::try_from(n) else {
+/// The entry of `cell` set to `number`, unless the column's type doesn't
+/// hold it.
+fn set<Entry: TryFrom<Wide>, Wide>(column: &mut [Entry], cell: usize, number: Wide) -> bool {
+    let Ok(entry) = Entry::try_from(number) else {
         return false;
     };
-    column[i] = entry;
+    column[cell] = entry;
     true
 }
 
-/// Entry `i` raised by `n`, unless the column's type doesn't hold the sum.
-fn raise<T: Copy + TryFrom<N>, N: From<T> + std::ops::Add<Output = N>>(
-    column: &mut [T],
-    i: usize,
-    n: N,
-) -> bool {
-    let entry = &mut column[i];
-    let Ok(sum) = T::try_from(N::from(*entry) + n) else {
+/// The entry of `cell` raised by `number`, unless the column's type
+/// doesn't hold the sum. `Wide` holds any entry and the sum.
+fn raise<Entry, Wide>(column: &mut [Entry], cell: usize, number: Wide) -> bool
+where
+    Entry: Copy + TryFrom<Wide>,
+    Wide: From<Entry> + Add<Output = Wide>,
+{
+    let entry = &mut column[cell];
+    let Ok(sum) = Entry::try_from(Wide::from(*entry) + number) else {
         return false;
     };
     *entry = sum;
     true
 }
 
-/// Entry `i` lowered by `n`, which is at most the entry.
-fn lower<T: Copy + TryFrom<u64>>(column: &mut [T], i: usize, n: u64)
+/// The entry of `cell` lowered by `number`, which is at most the entry.
+fn lower<Entry: Copy + TryFrom<u64>>(column: &mut [Entry], cell: usize, number: u64)
 where
-    u64: From<T>,
+    u64: From<Entry>,
 {
-    let entry = &mut column[i];
-    let left = T::try_from(u64::from(*entry) - n);
-    *entry = left.ok().expect("less than it was");
+    let entry = &mut column[cell];
+    let Ok(left) = Entry::try_from(u64::from(*entry) - number) else {
+        unreachable!("less than it was");
+    };
+    *entry = left;
 }
 
-/// Numbers a wider column held, in a type that holds them all.
-fn held<T: TryFrom<N>, N>(each: impl Iterator<Item = N>) -> Vec<T> {
-    each.map(|n| {
-        T::try_from(n)
-            .ok()
-            .expect("the type was picked to hold them")
-    })
-    .collect()
+/// `length` numbers a wider column held, in a type that holds them all.
+// An iterator in, so a column is copied straight into its new type with
+// no list of wide numbers between.
+fn held<Entry: TryFrom<Wide>, Wide>(
+    numbers: impl Iterator<Item = Wide>,
+    length: usize,
+) -> Vec<Entry> {
+    let mut column = Vec::with_capacity(length);
+    for number in numbers {
+        let Ok(entry) = Entry::try_from(number) else {
+            unreachable!("the type was picked to hold them");
+        };
+        column.push(entry);
+    }
+    column
 }
 
-fn walk<T: Copy, N: From<T>, G: Copy>(
-    column: &[T],
-    beside: &[G],
-    mut visit: impl FnMut(usize, G, N),
+/// The sum of a column's entries.
+fn total_of<Entry: Copy, Wide: From<Entry> + Add<Output = Wide>>(
+    column: &[Entry],
+    zero: Wide,
+) -> Wide {
+    let mut total = zero;
+    for &entry in column {
+        total = total + Wide::from(entry);
+    }
+    total
+}
+
+// `visit` is the caller's step per cell. Taking it as a closure puts the
+// caller's sum inside the loop over the column's own type, so an ask
+// reads each column in one tight pass, with no list of cells between.
+
+/// Calls `visit` with each cell's place, its entry of `beside` and its
+/// entry of `column`.
+fn walk<Entry: Copy, Wide: From<Entry>, Beside: Copy>(
+    column: &[Entry],
+    beside: &[Beside],
+    mut visit: impl FnMut(usize, Beside, Wide),
 ) {
     for (cell, (&entry, &beside_entry)) in column.iter().zip(beside).enumerate() {
         visit(cell, beside_entry, entry.into());
@@ -76,13 +111,13 @@ fn walk<T: Copy, N: From<T>, G: Copy>(
 
 /// As [`walk`], with each cell's entry of a column of counts too: one pass
 /// where reading the two apart would take the cells' places twice.
-fn walk_both<T: Copy, N: From<T>, C: Copy, G: Copy>(
-    column: &[T],
-    counts: &[C],
-    beside: &[G],
-    mut visit: impl FnMut(usize, G, N, u64),
+fn walk_both<Entry: Copy, Wide: From<Entry>, Count: Copy, Beside: Copy>(
+    column: &[Entry],
+    counts: &[Count],
+    beside: &[Beside],
+    mut visit: impl FnMut(usize, Beside, Wide, u64),
 ) where
-    u64: From<C>,
+    u64: From<Count>,
 {
     for (cell, ((&entry, &count), &beside_entry)) in
         column.iter().zip(counts).zip(beside).enumerate()
@@ -92,16 +127,18 @@ fn walk_both<T: Copy, N: From<T>, C: Copy, G: Copy>(
 }
 
 /// A column walked with a column of counts beside it.
-fn walk_with<T: Copy, N: From<T>, G: Copy>(
-    column: &[T],
+fn walk_with<Entry: Copy, Wide: From<Entry>, Beside: Copy>(
+    column: &[Entry],
     counts: &Counts,
-    beside: &[G],
-    mut visit: impl FnMut(usize, G, N, u64),
+    beside: &[Beside],
+    mut visit: impl FnMut(usize, Beside, Wide, u64),
 ) {
     match counts {
-        Counts::Zero(_) => walk(column, beside, |cell, beside_entry, entry| {
-            visit(cell, beside_entry, entry, 0);
-        }),
+        Counts::Zero(_) => {
+            for (cell, (&entry, &beside_entry)) in column.iter().zip(beside).enumerate() {
+                visit(cell, beside_entry, entry.into(), 0);
+            }
+        }
         Counts::U8(counts) => walk_both(column, counts, beside, visit),
         Counts::U16(counts) => walk_both(column, counts, beside, visit),
         Counts::U32(counts) => walk_both(column, counts, beside, visit),
@@ -114,6 +151,7 @@ fn walk_with<T: Copy, N: From<T>, G: Copy>(
 /// columns are.
 #[derive(Debug)]
 pub(crate) enum Counts {
+    /// Every count is zero; this many cells.
     Zero(usize),
     U8(Vec<u8>),
     U16(Vec<u16>),
@@ -122,25 +160,27 @@ pub(crate) enum Counts {
 }
 
 impl Counts {
-    /// `len` counts in the narrowest type that holds `most`.
-    fn holding(most: u64, len: usize, each: impl Iterator<Item = u64>) -> Counts {
+    /// `length` counts in the narrowest type that holds `most`.
+    fn holding(most: u64, length: usize, counts: impl Iterator<Item = u64>) -> Counts {
         match most {
-            0 => Counts::Zero(len),
-            1..=0xff => Counts::U8(held(each)),
-            0x100..=0xffff => Counts::U16(held(each)),
-            0x1_0000..=0xffff_ffff => Counts::U32(held(each)),
-            _ => Counts::U64(each.collect()),
+            0 => Counts::Zero(length),
+            1..=0xff => Counts::U8(held(counts, length)),
+            0x100..=0xffff => Counts::U16(held(counts, length)),
+            0x1_0000..=0xffff_ffff => Counts::U32(held(counts, length)),
+            _ => Counts::U64(held(counts, length)),
         }
     }
 
+    /// A column of `counts`, in the narrowest type that holds them.
     pub(crate) fn of(counts: &[u64]) -> Counts {
         let most = counts.iter().copied().max().unwrap_or(0);
         Counts::holding(most, counts.len(), counts.iter().copied())
     }
 
+    /// Cells counted.
     pub(crate) fn len(&self) -> usize {
         match self {
-            Counts::Zero(len) => *len,
+            Counts::Zero(length) => *length,
             Counts::U8(column) => column.len(),
             Counts::U16(column) => column.len(),
             Counts::U32(column) => column.len(),
@@ -148,58 +188,62 @@ impl Counts {
         }
     }
 
-    pub(crate) fn get(&self, i: usize) -> u64 {
+    /// The count of `cell`.
+    pub(crate) fn get(&self, cell: usize) -> u64 {
         match self {
             Counts::Zero(_) => 0,
-            Counts::U8(column) => column[i].into(),
-            Counts::U16(column) => column[i].into(),
-            Counts::U32(column) => column[i].into(),
-            Counts::U64(column) => column[i],
+            Counts::U8(column) => column[cell].into(),
+            Counts::U16(column) => column[cell].into(),
+            Counts::U32(column) => column[cell].into(),
+            Counts::U64(column) => column[cell],
         }
     }
 
-    pub(crate) fn set(&mut self, i: usize, n: u64) {
+    /// Sets the count of `cell`, widening the column if it must.
+    pub(crate) fn set(&mut self, cell: usize, number: u64) {
         let set = match self {
-            Counts::Zero(_) => n == 0,
-            Counts::U8(column) => set(column, i, n),
-            Counts::U16(column) => set(column, i, n),
-            Counts::U32(column) => set(column, i, n),
-            Counts::U64(column) => set(column, i, n),
+            Counts::Zero(_) => number == 0,
+            Counts::U8(column) => set(column, cell, number),
+            Counts::U16(column) => set(column, cell, number),
+            Counts::U32(column) => set(column, cell, number),
+            Counts::U64(column) => set(column, cell, number),
         };
         if !set {
-            *self = Counts::holding(n, self.len(), self.iter());
-            self.set(i, n);
+            *self = Counts::holding(number, self.len(), self.iter());
+            self.set(cell, number);
         }
     }
 
-    pub(crate) fn add(&mut self, i: usize, n: u64) {
+    /// Raises the count of `cell` by `number`, widening the column if it
+    /// must.
+    pub(crate) fn add(&mut self, cell: usize, number: u64) {
         let raised = match self {
-            Counts::Zero(_) => n == 0,
-            Counts::U8(column) => raise(column, i, n),
-            Counts::U16(column) => raise(column, i, n),
-            Counts::U32(column) => raise(column, i, n),
-            Counts::U64(column) => raise(column, i, n),
+            Counts::Zero(_) => number == 0,
+            Counts::U8(column) => raise(column, cell, number),
+            Counts::U16(column) => raise(column, cell, number),
+            Counts::U32(column) => raise(column, cell, number),
+            Counts::U64(column) => raise(column, cell, number),
         };
         if !raised {
-            self.set(i, self.get(i) + n);
+            self.set(cell, self.get(cell) + number);
         }
     }
 
-    /// `n` is at most the count.
-    pub(crate) fn sub(&mut self, i: usize, n: u64) {
+    /// Lowers the count of `cell` by `number`, which is at most the count.
+    pub(crate) fn sub(&mut self, cell: usize, number: u64) {
         match self {
-            Counts::Zero(_) => assert_eq!(n, 0, "more than the count"),
-            Counts::U8(column) => lower(column, i, n),
-            Counts::U16(column) => lower(column, i, n),
-            Counts::U32(column) => lower(column, i, n),
-            Counts::U64(column) => lower(column, i, n),
+            Counts::Zero(_) => assert_eq!(number, 0, "more than the count"),
+            Counts::U8(column) => lower(column, cell, number),
+            Counts::U16(column) => lower(column, cell, number),
+            Counts::U32(column) => lower(column, cell, number),
+            Counts::U64(column) => lower(column, cell, number),
         }
     }
 
     /// A new cell's count, zero.
     pub(crate) fn push(&mut self) {
         match self {
-            Counts::Zero(len) => *len += 1,
+            Counts::Zero(length) => *length += 1,
             Counts::U8(column) => put(column, 0),
             Counts::U16(column) => put(column, 0),
             Counts::U32(column) => put(column, 0),
@@ -207,34 +251,44 @@ impl Counts {
         }
     }
 
-    pub(crate) fn swap_remove(&mut self, i: usize) {
+    /// Drops the count of `cell`; the last cell's count takes its place.
+    pub(crate) fn swap_remove(&mut self, cell: usize) {
         match self {
-            Counts::Zero(len) => *len -= 1,
-            Counts::U8(column) => drop(column.swap_remove(i)),
-            Counts::U16(column) => drop(column.swap_remove(i)),
-            Counts::U32(column) => drop(column.swap_remove(i)),
-            Counts::U64(column) => drop(column.swap_remove(i)),
+            Counts::Zero(length) => *length -= 1,
+            Counts::U8(column) => drop(column.swap_remove(cell)),
+            Counts::U16(column) => drop(column.swap_remove(cell)),
+            Counts::U32(column) => drop(column.swap_remove(cell)),
+            Counts::U64(column) => drop(column.swap_remove(cell)),
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = u64> + '_ {
-        (0..self.len()).map(|i| self.get(i))
+    /// Each cell's count, in cell order.
+    pub(crate) fn iter(&self) -> CountsIter<'_> {
+        CountsIter {
+            counts: self,
+            next_cell: 0,
+        }
     }
 
+    /// Every cell's count added up.
     pub(crate) fn total(&self) -> u64 {
         match self {
             Counts::Zero(_) => 0,
-            Counts::U8(column) => column.iter().map(|&n| u64::from(n)).sum(),
-            Counts::U16(column) => column.iter().map(|&n| u64::from(n)).sum(),
-            Counts::U32(column) => column.iter().map(|&n| u64::from(n)).sum(),
-            Counts::U64(column) => column.iter().sum(),
+            Counts::U8(column) => total_of(column, 0),
+            Counts::U16(column) => total_of(column, 0),
+            Counts::U32(column) => total_of(column, 0),
+            Counts::U64(column) => total_of(column, 0),
         }
     }
 
     /// Calls `visit` with each cell's place, its entry of `beside` and its
     /// count. Not once for a column of zeros: every caller adds what it
     /// is given.
-    pub(crate) fn each<G: Copy>(&self, beside: &[G], visit: impl FnMut(usize, G, u64)) {
+    pub(crate) fn each<Beside: Copy>(
+        &self,
+        beside: &[Beside],
+        visit: impl FnMut(usize, Beside, u64),
+    ) {
         match self {
             Counts::Zero(_) => {}
             Counts::U8(column) => walk(column, beside, visit),
@@ -242,6 +296,31 @@ impl Counts {
             Counts::U32(column) => walk(column, beside, visit),
             Counts::U64(column) => walk(column, beside, visit),
         }
+    }
+}
+
+/// Each count of a column, in cell order.
+// Borrows the column, so reading it copies nothing.
+pub(crate) struct CountsIter<'column> {
+    counts: &'column Counts,
+    next_cell: usize,
+}
+
+impl Iterator for CountsIter<'_> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        if self.next_cell == self.counts.len() {
+            return None;
+        }
+        self.next_cell += 1;
+        Some(self.counts.get(self.next_cell - 1))
+    }
+
+    // Exact, so a column copied into a list allocates once.
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.counts.len() - self.next_cell;
+        (left, Some(left))
     }
 }
 
@@ -258,27 +337,36 @@ pub(crate) enum Sums {
 }
 
 impl Sums {
+    /// No cells yet, in the narrowest type.
     pub(crate) const fn new() -> Sums {
         Sums::I32(Vec::new())
     }
 
-    /// Sums in the narrowest type that holds `least` and `greatest`.
-    fn holding(least: i128, greatest: i128, each: impl Iterator<Item = i128>) -> Sums {
+    /// `length` sums in the narrowest type that holds `least` and
+    /// `greatest`.
+    fn holding(
+        least: i128,
+        greatest: i128,
+        length: usize,
+        sums: impl Iterator<Item = i128>,
+    ) -> Sums {
         if both_within(least, greatest, i32::MIN.into()..=i32::MAX.into()) {
-            Sums::I32(held(each))
+            Sums::I32(held(sums, length))
         } else if both_within(least, greatest, i64::MIN.into()..=i64::MAX.into()) {
-            Sums::I64(held(each))
+            Sums::I64(held(sums, length))
         } else {
-            Sums::I128(each.collect())
+            Sums::I128(held(sums, length))
         }
     }
 
+    /// A column of `sums`, in the narrowest type that holds them.
     pub(crate) fn of(sums: &[i128]) -> Sums {
         let least = sums.iter().copied().min().unwrap_or(0);
         let greatest = sums.iter().copied().max().unwrap_or(0);
-        Sums::holding(least, greatest, sums.iter().copied())
+        Sums::holding(least, greatest, sums.len(), sums.iter().copied())
     }
 
+    /// Cells summed.
     pub(crate) fn len(&self) -> usize {
         match self {
             Sums::I32(column) => column.len(),
@@ -287,25 +375,27 @@ impl Sums {
         }
     }
 
-    pub(crate) fn get(&self, i: usize) -> i128 {
+    /// The sum of `cell`.
+    pub(crate) fn get(&self, cell: usize) -> i128 {
         match self {
-            Sums::I32(column) => column[i].into(),
-            Sums::I64(column) => column[i].into(),
-            Sums::I128(column) => column[i],
+            Sums::I32(column) => column[cell].into(),
+            Sums::I64(column) => column[cell].into(),
+            Sums::I128(column) => column[cell],
         }
     }
 
-    pub(crate) fn add(&mut self, i: usize, n: i128) {
+    /// Adds `number` to the sum of `cell`, widening the column if it must.
+    pub(crate) fn add(&mut self, cell: usize, number: i128) {
         let raised = match self {
-            Sums::I32(column) => raise(column, i, n),
-            Sums::I64(column) => raise(column, i, n),
-            Sums::I128(column) => raise(column, i, n),
+            Sums::I32(column) => raise(column, cell, number),
+            Sums::I64(column) => raise(column, cell, number),
+            Sums::I128(column) => raise(column, cell, number),
         };
         if !raised {
             // The others fit a narrower type, so the sum is the end to hold.
-            let sum = self.get(i) + n;
-            *self = Sums::holding(sum.min(0), sum.max(0), self.iter());
-            self.add(i, n);
+            let sum = self.get(cell) + number;
+            *self = Sums::holding(sum.min(0), sum.max(0), self.len(), self.iter());
+            self.add(cell, number);
         }
     }
 
@@ -318,39 +408,70 @@ impl Sums {
         }
     }
 
-    pub(crate) fn swap_remove(&mut self, i: usize) {
+    /// Drops the sum of `cell`; the last cell's sum takes its place.
+    pub(crate) fn swap_remove(&mut self, cell: usize) {
         match self {
-            Sums::I32(column) => drop(column.swap_remove(i)),
-            Sums::I64(column) => drop(column.swap_remove(i)),
-            Sums::I128(column) => drop(column.swap_remove(i)),
+            Sums::I32(column) => drop(column.swap_remove(cell)),
+            Sums::I64(column) => drop(column.swap_remove(cell)),
+            Sums::I128(column) => drop(column.swap_remove(cell)),
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = i128> + '_ {
-        (0..self.len()).map(|i| self.get(i))
+    /// Each cell's sum, in cell order.
+    pub(crate) fn iter(&self) -> SumsIter<'_> {
+        SumsIter {
+            sums: self,
+            next_cell: 0,
+        }
     }
 
+    /// Every cell's sum added up.
     pub(crate) fn total(&self) -> i128 {
         match self {
-            Sums::I32(column) => column.iter().map(|&n| i128::from(n)).sum(),
-            Sums::I64(column) => column.iter().map(|&n| i128::from(n)).sum(),
-            Sums::I128(column) => column.iter().sum(),
+            Sums::I32(column) => total_of(column, 0),
+            Sums::I64(column) => total_of(column, 0),
+            Sums::I128(column) => total_of(column, 0),
         }
     }
 
     /// Calls `visit` with each cell's place, its entry of `beside`, its sum
     /// and its count among `counts`.
-    pub(crate) fn each<G: Copy>(
+    pub(crate) fn each<Beside: Copy>(
         &self,
         counts: &Counts,
-        beside: &[G],
-        visit: impl FnMut(usize, G, i128, u64),
+        beside: &[Beside],
+        visit: impl FnMut(usize, Beside, i128, u64),
     ) {
         match self {
             Sums::I32(column) => walk_with(column, counts, beside, visit),
             Sums::I64(column) => walk_with(column, counts, beside, visit),
             Sums::I128(column) => walk_with(column, counts, beside, visit),
         }
+    }
+}
+
+/// Each sum of a column, in cell order.
+// Borrows the column, so reading it copies nothing.
+pub(crate) struct SumsIter<'column> {
+    sums: &'column Sums,
+    next_cell: usize,
+}
+
+impl Iterator for SumsIter<'_> {
+    type Item = i128;
+
+    fn next(&mut self) -> Option<i128> {
+        if self.next_cell == self.sums.len() {
+            return None;
+        }
+        self.next_cell += 1;
+        Some(self.sums.get(self.next_cell - 1))
+    }
+
+    // Exact, so a column copied into a list allocates once.
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.sums.len() - self.next_cell;
+        (left, Some(left))
     }
 }
 
@@ -378,11 +499,41 @@ mod tests {
         }
     }
 
+    /// What a walk over a column gives one cell.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Visit<Number> {
+        cell: usize,
+        beside: usize,
+        number: Number,
+        count: u64,
+    }
+
     /// What a column of counts read beside `beside` gives each cell.
-    fn read(counts: &Counts, beside: &[usize]) -> Vec<(usize, usize, u64)> {
+    fn read(counts: &Counts, beside: &[usize]) -> Vec<Visit<u64>> {
         let mut seen = Vec::new();
-        counts.each(beside, |cell, group, count| seen.push((cell, group, count)));
+        counts.each(beside, |cell, beside, count| {
+            seen.push(Visit {
+                cell,
+                beside,
+                number: count,
+                count: 0,
+            });
+        });
         seen
+    }
+
+    /// Each entry of `list`, beside its own place.
+    fn every_cell<Number: Copy>(list: &[Number], count: u64) -> Vec<Visit<Number>> {
+        let mut visits = Vec::with_capacity(list.len());
+        for (cell, &number) in list.iter().enumerate() {
+            visits.push(Visit {
+                cell,
+                beside: cell,
+                number,
+                count,
+            });
+        }
+        visits
     }
 
     /// Cells come and go and their counts rise and fall, against a plain
@@ -402,21 +553,21 @@ mod tests {
                         counts.push();
                         list.push(0);
                     }
-                    (3, len) => {
-                        let i = rng.position_below(len);
-                        counts.swap_remove(i);
-                        list.swap_remove(i);
+                    (3, length) => {
+                        let cell = rng.position_below(length);
+                        counts.swap_remove(cell);
+                        list.swap_remove(cell);
                     }
-                    (4..=7, len) => {
-                        let (i, n) = (rng.position_below(len), rng.below(most));
-                        counts.add(i, n);
-                        list[i] += n;
+                    (4..=7, length) => {
+                        let (cell, number) = (rng.position_below(length), rng.below(most));
+                        counts.add(cell, number);
+                        list[cell] += number;
                     }
-                    (_, len) => {
-                        let i = rng.position_below(len);
-                        let n = rng.below(list[i] + 1);
-                        counts.sub(i, n);
-                        list[i] -= n;
+                    (_, length) => {
+                        let cell = rng.position_below(length);
+                        let number = rng.below(list[cell] + 1);
+                        counts.sub(cell, number);
+                        list[cell] -= number;
                     }
                 }
                 widest = widest.max(list.iter().copied().max().unwrap_or(0));
@@ -426,9 +577,12 @@ mod tests {
                     assert!(counts.iter().eq(list.iter().copied()), "{at}");
                     assert_eq!(counts.total(), list.iter().sum::<u64>(), "{at}");
                     let beside: Vec<usize> = (0..list.len()).collect();
-                    let all: Vec<_> = (list.iter().enumerate()).map(|(i, &n)| (i, i, n)).collect();
                     // A column of zeros is passed over whole.
-                    let expected = if widest == 0 { Vec::new() } else { all };
+                    let expected = if widest == 0 {
+                        Vec::new()
+                    } else {
+                        every_cell(&list, 0)
+                    };
                     assert_eq!(read(&counts, &beside), expected, "{at}");
                     let anew = Counts::of(&list);
                     assert!(anew.iter().eq(list.iter().copied()), "{at}");
@@ -476,17 +630,17 @@ mod tests {
                         sums.push();
                         list.push(0);
                     }
-                    (3, len) => {
-                        let i = rng.position_below(len);
-                        sums.swap_remove(i);
-                        list.swap_remove(i);
+                    (3, length) => {
+                        let cell = rng.position_below(length);
+                        sums.swap_remove(cell);
+                        list.swap_remove(cell);
                     }
-                    (_, len) => {
-                        let i = rng.position_below(len);
-                        let n = i128::from(rng.next()) % (2 * most + 1) - most;
-                        sums.add(i, n);
-                        list[i] += n;
-                        (least, greatest) = (least.min(list[i]), greatest.max(list[i]));
+                    (_, length) => {
+                        let cell = rng.position_below(length);
+                        let number = i128::from(rng.next()) % (2 * most + 1) - most;
+                        sums.add(cell, number);
+                        list[cell] += number;
+                        (least, greatest) = (least.min(list[cell]), greatest.max(list[cell]));
                     }
                 }
                 assert_eq!(sums.len(), list.len(), "{at}");
@@ -502,13 +656,15 @@ mod tests {
                     for counts in [0, 9, 300, 70_000, 5_000_000_000] {
                         let rows = Counts::of(&vec![counts; list.len()]);
                         let mut seen = Vec::new();
-                        sums.each(&rows, &beside, |cell, group, sum, count| {
-                            seen.push((cell, group, sum, count));
+                        sums.each(&rows, &beside, |cell, beside, sum, count| {
+                            seen.push(Visit {
+                                cell,
+                                beside,
+                                number: sum,
+                                count,
+                            });
                         });
-                        let all: Vec<_> = (list.iter().enumerate())
-                            .map(|(i, &sum)| (i, i, sum, counts))
-                            .collect();
-                        assert_eq!(seen, all, "{at}, beside {counts}");
+                        assert_eq!(seen, every_cell(&list, counts), "{at}, beside {counts}");
                     }
                     assert!(Sums::of(&list).iter().eq(list.iter().copied()), "{at}");
                 }
@@ -542,8 +698,8 @@ mod tests {
     #[test]
     fn a_column_grows_by_an_eighth() {
         let mut column: Vec<u64> = Vec::new();
-        for n in 0..10_000 {
-            put(&mut column, n);
+        for number in 0..10_000 {
+            put(&mut column, number);
             assert!(column.capacity() <= column.len() + (column.len() / 8).max(4));
         }
         assert!(column.iter().copied().eq(0..10_000));
