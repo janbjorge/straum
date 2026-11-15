@@ -48,9 +48,9 @@ take 2,474 MiB.
   the week and day asks, which read a week's or a day's. Straum's hardly
   changes from ask to ask: most of it is the HTTP round trip, reading
   the query and writing JSON.
-- The percentile asks are the exception: Straum gathers and sorts every
-  fare of the cells in range, so their time follows the fares the range
-  holds, as [Median and percentiles](aggregates.md#median-and-percentiles)
+- The percentile asks are the exception: Straum gathers every fare of
+  the cells in range, so their time follows the fares the range holds,
+  as [Median and percentiles](aggregates.md#median-and-percentiles)
   says.
 - Straum answers only what the views keep: these keys, on hour edges.
   PostgreSQL answers any query over the raw rows. Straum keeps its
