@@ -243,7 +243,7 @@ mod tests {
 
     /// A commit or abort with every part `ParseCommitRecord` reads before
     /// the two-phase xid, and an origin after it.
-    fn ending_main(info: u32, commit: bool, stat: usize) -> Vec<u8> {
+    fn ending_main(info: u32, outcome: Outcome, stat: usize) -> Vec<u8> {
         let mut main = 12_345i64.to_le_bytes().to_vec();
         main.extend(info.to_le_bytes());
         main.extend(words(&[5, 1663]));
@@ -252,7 +252,7 @@ mod tests {
         main.extend([7; RELATION_FILE]);
         main.extend(words(&[2]));
         main.extend(vec![8; 2 * stat]);
-        if commit {
+        if outcome == Outcome::Commit {
             main.extend(words(&[3]));
             // A catcache message, then the relcache of one table and of
             // all of database 5.
@@ -280,15 +280,15 @@ mod tests {
     #[test]
     fn reads_endings() {
         for (major, stat) in [(17, DROPPED_STAT_17), (18, DROPPED_STAT_18)] {
-            for (operation, commit) in [
-                (XACT_COMMIT, true),
-                (XACT_COMMIT_PREPARED, true),
-                (XACT_ABORT, false),
-                (XACT_ABORT_PREPARED, false),
+            for (operation, outcome) in [
+                (XACT_COMMIT, Outcome::Commit),
+                (XACT_COMMIT_PREPARED, Outcome::Commit),
+                (XACT_ABORT, Outcome::Abort),
+                (XACT_ABORT_PREPARED, Outcome::Abort),
             ] {
-                let main = ending_main(ALL, commit, stat);
+                let main = ending_main(ALL, outcome, stat);
                 let got = event(&record(RM_XACT, operation | XACT_HAS_INFO, 0, main), major);
-                let invalidated = if commit {
+                let invalidated = if outcome == Outcome::Commit {
                     [16_384, 0]
                         .map(|relation| Invalidated {
                             database: 5,
@@ -304,10 +304,9 @@ mod tests {
                     time: 12_345,
                     invalidated,
                 };
-                let expected = if commit {
-                    Event::Commit(ending)
-                } else {
-                    Event::Abort(ending)
+                let expected = match outcome {
+                    Outcome::Commit => Event::Commit(ending),
+                    Outcome::Abort => Event::Abort(ending),
                 };
                 assert_eq!(got, Ok(Some(expected)), "{major} {operation:#x}");
             }
@@ -358,7 +357,7 @@ mod tests {
 
     #[test]
     fn rejects_records_cut_short() {
-        let full = ending_main(ALL, true, DROPPED_STAT_18);
+        let full = ending_main(ALL, Outcome::Commit, DROPPED_STAT_18);
         // The two-phase xid is the last part read.
         let read = full.len() - 4 - 16;
         for length in 0..read {
