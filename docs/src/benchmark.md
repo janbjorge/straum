@@ -81,6 +81,11 @@ once the data is there.
 1,000 to 1,000,000 changed rows while a client asks Straum back to back,
 under [Transactions](#transactions).
 
+Each mode takes `--wal physical` to have Straum read the
+[physical WAL](postgresql.md#without-logical-decoding) in place of
+logical decoding. It turns `full_page_writes` back on after the load and
+checkpoints, since the physical stream needs page images.
+
 ## The views
 
 `bench/trips.sql` opens with `trips`, the [quick start's

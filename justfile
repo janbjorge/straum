@@ -18,6 +18,8 @@ seeds := env("STRAUM_TEST_SEEDS", "6")
 seed_from := env("STRAUM_TEST_SEED_FROM", "0")
 # Reads of each kind in wal-bench; the fastest counts
 runs := env("STRAUM_BENCH_RUNS", "3")
+# The WAL Straum reads in taxi: logical or physical
+wal := env("STRAUM_TAXI_WAL", "logical")
 # Line coverage cov fails under
 coverage := env("STRAUM_COVERAGE", "98")
 
@@ -84,7 +86,7 @@ docs-build:
 # Taxi trips in a throwaway PostgreSQL: asks, transactions or shell
 [group('taxi')]
 taxi mode="asks":
-    bench/taxi.py {{ mode }}
+    bench/taxi.py {{ mode }} --wal {{ wal }}
 
 # taxi.sql view against PostgreSQL (loads the taxi month, needs uv)
 [group('taxi')]

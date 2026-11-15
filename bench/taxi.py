@@ -29,6 +29,8 @@ takes its default from this table.
 
 shell: leaves you in `straum shell` at the trips.
 
+--wal physical has Straum read the physical WAL instead of logical decoding.
+
 Needs Docker, cargo and uv. Downloads go to bench/data, which git ignores.
 """
 
@@ -192,28 +194,52 @@ def main() -> int:
         "transactions: what one large transaction costs Straum; "
         "shell: open straum shell at the trips",
     )
+    parser.add_argument(
+        "--wal",
+        choices=["logical", "physical"],
+        default="logical",
+        help="the WAL Straum reads (default logical)",
+    )
     args = parser.parse_args()
     straum = build()
-    plan = subprocess.check_output([straum, "plan", "--spec", SPEC], text=True)
+    plan = subprocess.check_output(
+        [straum, "plan", "--spec", SPEC, "--wal", args.wal], text=True
+    )
     # Docker publishes the port on every interface while this runs.
     password = secrets.token_hex(16)
     postgres = container(password)
     log("starting PostgreSQL")
     with postgres:
-        return asyncio.run(run(postgres, straum, plan, password, args.mode))
+        return asyncio.run(run(postgres, straum, plan, password, args.mode, args.wal))
 
 
 async def run(
-    postgres: PostgresContainer, straum: str, plan: str, password: str, mode: str
+    postgres: PostgresContainer,
+    straum: str,
+    plan: str,
+    password: str,
+    mode: str,
+    wal: str,
 ) -> int:
     url = postgres.get_connection_url()
-    log(f"loading {MONTHS} months")
-    load(postgres)
     pg = await asyncpg.connect(url, server_settings=NEW_YORK)
     try:
+        # Set here, not on the command line, which ALTER SYSTEM can't
+        # override when --wal physical turns it back on.
+        await pg.execute("ALTER SYSTEM SET full_page_writes = off")
+        await pg.execute("SELECT pg_reload_conf()")
+        log(f"loading {MONTHS} months")
+        load(postgres)
         # The asks over a week or a day read this index.
         await pg.execute("CREATE INDEX ON yellow_trips (pickup_at)")
         await pg.execute("VACUUM ANALYZE")
+        if wal == "physical":
+            # The physical stream rebuilds rows from page images, which the
+            # load skipped; after this checkpoint each page's next change
+            # brings it whole.
+            await pg.execute("ALTER SYSTEM RESET full_page_writes")
+            await pg.execute("SELECT pg_reload_conf()")
+            await pg.execute("CHECKPOINT")
         # The plan writes a statement a line, and ALTER SYSTEM can't share a
         # query string with others.
         for line in plan.splitlines():
@@ -222,30 +248,31 @@ async def run(
         await pg.execute(f"ALTER ROLE straum PASSWORD '{password}'")
         host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
         dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
+        flags = ["--wal", wal]
         match mode:
             case "shell":
-                return await shell(straum, dsn)
+                return await shell(straum, dsn, flags)
             case "transactions":
-                return await transactions(pg, straum, dsn)
+                return await transactions(pg, straum, dsn, flags)
             case _:
-                return await asks(pg, straum, dsn)
+                return await asks(pg, straum, dsn, flags)
     finally:
         await pg.close()
 
 
-async def shell(straum: str, dsn: str) -> int:
-    async with serve(straum, dsn) as (_, loaded, _, url):
+async def shell(straum: str, dsn: str, flags: list[str]) -> int:
+    async with serve(straum, dsn, *flags) as (_, loaded, _, url):
         log(f"straum ready in {loaded:.1f} s")
         process = await asyncio.create_subprocess_exec(straum, "shell", "--url", url)
         return await process.wait()
 
 
-async def asks(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
+async def asks(pg: asyncpg.Connection, straum: str, dsn: str, flags: list[str]) -> int:
     version = (await pg.fetchval("SHOW server_version")).split()[0]
     trips, size = await pg.fetchrow(
         "SELECT count(*), pg_total_relation_size('yellow_trips') FROM yellow_trips"
     )
-    async with serve(straum, dsn) as (http, loaded, process, _):
+    async with serve(straum, dsn, *flags) as (http, loaded, process, _):
         rss = process.memory_info().rss
         log("asking")
         results = [await compare(pg, http, *each) for each in ASKS]
@@ -267,10 +294,12 @@ async def asks(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
     return 0
 
 
-async def transactions(pg: asyncpg.Connection, straum: str, dsn: str) -> int:
+async def transactions(
+    pg: asyncpg.Connection, straum: str, dsn: str, flags: list[str]
+) -> int:
     # The cap is out of the way: this measures what it would prevent.
     cap = str(10 * max(SIZES))
-    async with serve(straum, dsn, "--max-transaction-rows", cap) as (
+    async with serve(straum, dsn, *flags, "--max-transaction-rows", cap) as (
         http,
         loaded,
         process,
@@ -343,15 +372,14 @@ def load(postgres: PostgresContainer) -> None:
 
 def container(password: str) -> PostgresContainer:
     # Reads see the defaults but for shared_buffers, sized as a server
-    # would be. The rest only speed the load: no checkpoint midway, no page
-    # images or flush per commit, which a throwaway server never needs, and
-    # memory for the index builds.
+    # would be. The rest only speed the load: no checkpoint midway, no flush
+    # per commit, which a throwaway server never needs, and memory for the
+    # index builds. run() turns page images off for the load.
     settings = {
         "wal_level": "logical",
         "shared_buffers": "2GB",
         "max_wal_size": "16GB",
         "checkpoint_timeout": "1h",
-        "full_page_writes": "off",
         "synchronous_commit": "off",
         "maintenance_work_mem": "1GB",
         "max_parallel_maintenance_workers": "4",
