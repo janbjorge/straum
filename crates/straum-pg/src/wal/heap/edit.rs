@@ -50,10 +50,10 @@ pub(super) const OFFSET_NUMBER: usize = 2;
 /// `flags` alone, in two bytes.
 pub(super) const PRUNE_SIZE: usize = 2;
 /// `xl_heap_prune.flags` after `reason`, up to 18.
-const PRUNE_FLAGS_AFTER_REASON: usize = 1;
+pub(super) const PRUNE_FLAGS_AFTER_REASON: usize = 1;
 /// `xl_heap_prune.flags` first, from 19; its second byte is for the
 /// visibility map.
-const PRUNE_FLAGS_FIRST: usize = 0;
+pub(super) const PRUNE_FLAGS_FIRST: usize = 0;
 
 /// `xl_heap_insert`: `offnum`, then `flags`.
 pub(super) const INSERT_SIZE: usize = 3;
@@ -111,7 +111,7 @@ pub(super) const TRUNCATE_FLAGS: Range<usize> = 16..20;
 /// The block a heap record changes: for an update, the new row's page.
 pub(super) const MAIN_BLOCK: u8 = 0;
 /// An update's old row's page, when it is another than the new row's.
-const OLD_ROW_BLOCK: u8 = 1;
+pub(super) const OLD_ROW_BLOCK: u8 = 1;
 
 /// What one record does to the pages: the blocks a full-page image
 /// already set, and the row changes so far.
