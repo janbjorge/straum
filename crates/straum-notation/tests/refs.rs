@@ -393,3 +393,32 @@ fn spec_errors_pass_through() {
          name the column, join or measure otherwise"
     );
 }
+
+/// A join's near side may be the key column of a dim joined before: it
+/// reads the fact column that dim was joined on.
+#[test]
+fn a_join_through_a_dim_key_reads_the_fact_column() {
+    let chain = base(
+        "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
+        "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id\n\
+         LEFT OUTER JOIN public.w AS w ON w.id = z.id",
+    )
+    .replace(
+        "z.name AS name, count(*)",
+        "z.name AS name, w.label AS label, count(*)",
+    )
+    .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3, 4, 5");
+    let spec = parse(&chain).unwrap();
+    let refs = &spec.fact("t").unwrap().refs;
+    assert_eq!(refs[1].via, [Via::Fact(id("z_id"))]);
+    // Through a dim column that is no key, the dim carries the column.
+    let through = chain.replace("w.id = z.id", "w.id = z.name");
+    let spec = parse(&through).unwrap();
+    assert_eq!(
+        spec.fact("t").unwrap().refs[1].via,
+        [Via::Attribute {
+            through: 0,
+            column: id("name")
+        }]
+    );
+}

@@ -938,3 +938,68 @@ GROUP BY 1, 2, 3";
     let one = base.replace("count(*) AS n", "count(*) FILTER (WHERE f.a = 1) AS n");
     assert!(parse(&one).is_ok());
 }
+
+/// Clauses few would write, each rejected by name on its own line.
+#[test]
+fn rare_clauses_are_rejected_by_name() {
+    rejects(&[
+        (
+            "CREATE VIEW t",
+            "CREATE ALGORITHM = MERGE VIEW t",
+            1,
+            "ALGORITHM, DEFINER or SQL SECURITY is not in Straum SQL",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 1, 2, 3, 4 FOR XML RAW",
+            2,
+            "FOR is not in Straum SQL",
+        ),
+        (
+            "f.a AS a",
+            "CAST(f.a AS TEXT FORMAT 'x') AS a",
+            3,
+            "CAST ... FORMAT is not in Straum SQL",
+        ),
+        (
+            "f.a AS a",
+            "TRY_CAST(f.a AS TEXT) AS a",
+            3,
+            "cast `TRY_CAST(f.a AS TEXT)` is not in Straum SQL",
+        ),
+        (
+            "date_bin('1 hour', f.at, timestamptz 'epoch')",
+            "date_bin('1 hour', f.at, timestamptz 'epoch') WITHIN GROUP (ORDER BY f.a)",
+            2,
+            "WITHIN GROUP is not in Straum SQL",
+        ),
+    ]);
+}
+
+/// An `EXISTS` is one table and one condition: no GROUP BY, no join.
+#[test]
+fn exists_groups_by_nothing_and_joins_nothing() {
+    rejects(&[
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY p.k)\n\
+             GROUP BY 1, 2, 3, 4",
+            6,
+            "GROUP BY inside EXISTS is not in Straum SQL",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a GROUP BY ALL)\n\
+             GROUP BY 1, 2, 3, 4",
+            6,
+            "GROUP BY inside EXISTS is not in Straum SQL",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "WHERE EXISTS (SELECT 1 FROM public.p AS p JOIN public.q AS q ON q.a = p.a \
+             WHERE p.k = f.a)\nGROUP BY 1, 2, 3, 4",
+            6,
+            "a join inside EXISTS is not in Straum SQL",
+        ),
+    ]);
+}

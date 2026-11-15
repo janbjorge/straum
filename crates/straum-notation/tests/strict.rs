@@ -537,6 +537,19 @@ fn a_dim_column_is_cast_alike_in_every_view() {
 }
 
 #[test]
+fn a_dim_column_cast_in_a_later_view_is_named() {
+    // The first view reads it plain, the second as text.
+    let two = format!(
+        "{};\n{}",
+        CANON,
+        cast_canon().replace("VIEW orders", "VIEW orders_again")
+    );
+    let message = "shop.customers.country is read ::text here and without it in another \
+                   view; write it alike";
+    assert!(any_contains(&error_lines(&two), message));
+}
+
+#[test]
 fn a_cast_is_text_and_only_on_a_label() {
     check(&[
         (
