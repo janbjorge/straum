@@ -95,8 +95,8 @@ fn int(n: i64) -> Datum {
     Datum::Int(n)
 }
 
-fn text(s: &str) -> Datum {
-    Datum::Text(s.into())
+fn text(text: &str) -> Datum {
+    Datum::Text(text.into())
 }
 
 fn trip(hour: i64, kind: i64, zone: i64, fare: Datum) -> Vec<Datum> {
@@ -354,7 +354,7 @@ fn accept_picks_the_format_and_each_route_its_default() {
         let content_type = reply
             .head
             .lines()
-            .find_map(|l| l.strip_prefix("content-type: "));
+            .find_map(|line| line.strip_prefix("content-type: "));
         content_type.unwrap().to_owned()
     };
     let (json, text) = ("application/json", "text/plain; charset=utf-8");
@@ -661,7 +661,7 @@ fn ask_bodies_too_big_or_broken_are_refused() {
 fn server_timing(head: &str) -> Option<Vec<(String, f64)>> {
     let value = head
         .lines()
-        .find_map(|l| l.strip_prefix("server-timing: "))?;
+        .find_map(|line| line.strip_prefix("server-timing: "))?;
     let phases = value.split(", ").map(|phase| {
         let (name, dur) = phase.split_once(";dur=").unwrap();
         (name.to_owned(), dur.parse().unwrap())

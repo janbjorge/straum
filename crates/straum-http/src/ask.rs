@@ -18,7 +18,7 @@ use crate::json::Json;
 
 /// Every error found, each naming its field.
 pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
-    let json = Json::parse(body).map_err(|e| vec![e])?;
+    let json = Json::parse(body).map_err(|error| vec![error])?;
     let Json::Object(fields) = json else {
         return Err(vec![format!("an ask is an object, not {}", json.kind())]);
     };
@@ -30,11 +30,11 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
         match (field.as_str(), value) {
             ("query", Json::Text(text)) => query = Some(text),
             ("query", other) => {
-                errors.push(format!("\"query\" must be a string, not {}", other.kind()))
+                errors.push(format!("\"query\" must be a string, not {}", other.kind()));
             }
             ("parameters", Json::Array(items)) => {
-                for (i, item) in items.iter().enumerate() {
-                    match literal(i, item) {
+                for (index, item) in items.iter().enumerate() {
+                    match literal(index, item) {
                         Ok(literal) => parameters.push(literal),
                         Err(error) => errors.push(error),
                     }
@@ -56,15 +56,15 @@ pub(crate) fn read(body: &[u8]) -> Result<(String, Vec<Literal>), Vec<String>> {
     }
 }
 
-fn literal(i: usize, value: &Json) -> Result<Literal, String> {
+fn literal(index: usize, value: &Json) -> Result<Literal, String> {
     match value {
-        Json::Int(n) => Ok(Literal::Int(*n)),
-        Json::Text(s) => Ok(Literal::Text(s.clone())),
-        Json::Bool(b) => Ok(Literal::Bool(*b)),
+        Json::Int(integer) => Ok(Literal::Int(*integer)),
+        Json::Text(text) => Ok(Literal::Text(text.clone())),
+        Json::Bool(boolean) => Ok(Literal::Bool(*boolean)),
         // `= NULL` matches nothing in SQL, so it can only be a mistake.
         other => Err(format!(
-            "\"parameters[{i}]\" (${}) must be an integer, a string or a boolean, not {}",
-            i + 1,
+            "\"parameters[{index}]\" (${}) must be an integer, a string or a boolean, not {}",
+            index + 1,
             other.kind()
         )),
     }

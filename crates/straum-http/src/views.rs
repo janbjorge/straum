@@ -15,8 +15,10 @@
 //! `integer`, `numeric` with its `scale`, `boolean`, `text`,
 //! `timestamptz` or `timestamp`.
 
+use std::fmt::Write as _;
+
 use straum_app::{Held, HeldDim, HeldView};
-use straum_domain::ColumnType;
+use straum_domain::{ColumnType, Identifier};
 
 use crate::json::quoted;
 use crate::time::rfc3339;
@@ -47,11 +49,15 @@ fn view_json(view: &HeldView) -> String {
             quoted(type_name(column))
         )
     };
-    let keys = (view.keys.iter()).map(|k| key(k.name.as_str(), k.column_type));
+    let keys = (view.keys.iter()).map(|held| key(held.name.as_str(), held.column_type));
     let keys: Vec<String> = std::iter::once(key("bucket", view.bucket))
         .chain(keys)
         .collect();
-    let measures: Vec<String> = view.measures.iter().map(|m| quoted(m.as_str())).collect();
+    let measures: Vec<String> = view
+        .measures
+        .iter()
+        .map(|measure| quoted(measure.as_str()))
+        .collect();
     format!(
         "{{\"name\":{},\"from\":{},\"to\":{},\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
@@ -66,18 +72,18 @@ fn view(view: &HeldView) -> String {
     let widths: Vec<String> = view.widths.iter().map(ToString::to_string).collect();
     let mut holds = counted(view.cells, "cell");
     if let Some(bound) = view.bound_cells {
-        holds.push_str(&format!(" and {}", counted(bound, "bound cell")));
+        let _ = write!(holds, " and {}", counted(bound, "bound cell"));
     }
     if let Some(range) = &view.range {
         // The end is the first second past the last bucket, which is what
         // an ask's `bucket < $n` takes.
-        holds.push_str(&format!(", {} to {}", time(range.start), time(range.end)));
+        let _ = write!(holds, ", {} to {}", time(range.start), time(range.end));
     }
     let bucket = format!("bucket {}", column_type(view.bucket));
     let keys =
         (view.keys.iter()).map(|key| format!("{} {}", key.name, column_type(key.column_type)));
     let keys: Vec<String> = std::iter::once(bucket).chain(keys).collect();
-    let measures: Vec<&str> = view.measures.iter().map(|m| m.as_str()).collect();
+    let measures: Vec<&str> = view.measures.iter().map(Identifier::as_str).collect();
     format!(
         "view {}\n  buckets:  {}\n  holds:    {holds}\n  keys:     {}\n  measures: {}\n",
         view.name,
@@ -246,7 +252,7 @@ dim public.zones
             start,
             r#""from":"1970-01-01T00:00:00Z","to":null,"#,
             &format!(r#""keys":[{keys}],{measures}"#),
-            r#"]}"#,
+            "]}",
         ];
         assert_eq!(String::from_utf8(json(&held)).unwrap(), expected.concat());
     }

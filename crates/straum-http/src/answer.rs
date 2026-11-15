@@ -31,6 +31,7 @@
 //! 1 row, as of 2024-01-31T22:59:59.123456Z
 //! ```
 
+use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use jiff::Timestamp;
@@ -66,8 +67,8 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         .map(|column| quoted(&column.name))
         .collect();
     let mut out = format!("{{\"as_of\":{},\"rows\":[", quoted(&as_of_text(*as_of)));
-    for (i, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
-        if i > 0 {
+    for (row_index, AnswerRow { keys, values }) in answer.rows.iter().enumerate() {
+        if row_index > 0 {
             out.push(',');
         }
         let (key_columns, measure_columns) = answer.columns.split_at(keys.len());
@@ -78,8 +79,8 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         let values = (measure_columns.iter().zip(values))
             .map(|(column, value)| value_json(value, column.scale));
         out.push('{');
-        for (j, (name, cell)) in names.iter().zip(keys.chain(values)).enumerate() {
-            if j > 0 {
+        for (cell_index, (name, cell)) in names.iter().zip(keys.chain(values)).enumerate() {
+            if cell_index > 0 {
                 out.push(',');
             }
             out.push_str(name);
@@ -144,12 +145,17 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
         });
     let lines: Vec<Vec<Cell>> = std::iter::once(names).chain(rows).collect();
     let widths: Vec<usize> = (0..answer.columns.len())
-        .map(|i| lines.iter().map(|line| line[i].text.chars().count()).max())
+        .map(|column| {
+            lines
+                .iter()
+                .map(|line| line[column].text.chars().count())
+                .max()
+        })
         .map(|widest| widest.expect("the names are a line"))
         .collect();
 
     let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
+    for (line_index, line) in lines.iter().enumerate() {
         let cells: Vec<String> = (line.iter().zip(&widths))
             .map(|(Cell { text, number }, &width)| match number {
                 true => format!("{text:>width$}"),
@@ -158,7 +164,7 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
             .collect();
         out.push_str(cells.join(" | ").trim_end());
         out.push('\n');
-        if i == 0 {
+        if line_index == 0 {
             let rule: Vec<String> = widths.iter().map(|&width| "-".repeat(width)).collect();
             out.push_str(&rule.join("-+-"));
             out.push('\n');
@@ -169,15 +175,15 @@ pub(crate) fn table(answered: &Answered, limit: Option<usize>) -> String {
         rows if rows > shown => format!("{shown} of {rows} rows"),
         rows => format!("{rows} rows"),
     };
-    out.push_str(&format!("{rows}, as of {}\n", as_of_text(*as_of)));
+    let _ = writeln!(out, "{rows}, as of {}", as_of_text(*as_of));
     out
 }
 
 fn datum_json(datum: &Datum, scale: u32) -> String {
     match datum {
         Datum::Null => "null".to_owned(),
-        Datum::Bool(b) => b.to_string(),
-        Datum::Int(n) => decimal(i128::from(*n), scale),
+        Datum::Bool(boolean) => boolean.to_string(),
+        Datum::Int(integer) => decimal(i128::from(*integer), scale),
         Datum::Text(text) => quoted(text),
     }
 }
@@ -185,8 +191,8 @@ fn datum_json(datum: &Datum, scale: u32) -> String {
 fn value_json(value: &Value, scale: u32) -> String {
     match value {
         Value::Null => "null".to_owned(),
-        Value::Int(n) => decimal(*n, scale),
-        Value::Bool(b) => b.to_string(),
+        Value::Int(integer) => decimal(*integer, scale),
+        Value::Bool(boolean) => boolean.to_string(),
         Value::Avg { sum, count } => {
             let digits = decimal(avg(*sum, *count), scale + AVG_PLACES);
             // The places past the column's scale are only as long as they

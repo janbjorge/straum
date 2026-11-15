@@ -20,7 +20,7 @@ pub(crate) enum Json {
 
 impl Json {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Json, String> {
-        serde_json::from_slice(bytes).map_err(|e| e.to_string())
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
 
     /// What the value is, for errors.
@@ -48,32 +48,36 @@ struct JsonVisitor;
 impl<'de> Visitor<'de> for JsonVisitor {
     type Value = Json;
 
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a JSON value")
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
     }
 
     fn visit_unit<E>(self) -> Result<Json, E> {
         Ok(Json::Null)
     }
 
-    fn visit_bool<E>(self, v: bool) -> Result<Json, E> {
-        Ok(Json::Bool(v))
+    fn visit_bool<E>(self, value: bool) -> Result<Json, E> {
+        Ok(Json::Bool(value))
     }
 
-    fn visit_i64<E>(self, v: i64) -> Result<Json, E> {
-        Ok(Json::Int(v))
+    fn visit_i64<E>(self, value: i64) -> Result<Json, E> {
+        Ok(Json::Int(value))
     }
 
-    fn visit_u64<E>(self, v: u64) -> Result<Json, E> {
-        Ok(i64::try_from(v).map_or(Json::Float(v as f64), Json::Int))
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an integer past i64 is only ever named by its kind, never read as a number"
+    )]
+    fn visit_u64<E>(self, value: u64) -> Result<Json, E> {
+        Ok(i64::try_from(value).map_or(Json::Float(value as f64), Json::Int))
     }
 
-    fn visit_f64<E>(self, v: f64) -> Result<Json, E> {
-        Ok(Json::Float(v))
+    fn visit_f64<E>(self, value: f64) -> Result<Json, E> {
+        Ok(Json::Float(value))
     }
 
-    fn visit_str<E>(self, v: &str) -> Result<Json, E> {
-        Ok(Json::Text(v.to_owned()))
+    fn visit_str<E>(self, value: &str) -> Result<Json, E> {
+        Ok(Json::Text(value.to_owned()))
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
@@ -87,7 +91,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
         let mut fields: Vec<(String, Json)> = Vec::new();
         while let Some(key) = map.next_key::<String>()? {
-            if fields.iter().any(|(k, _)| *k == key) {
+            if fields.iter().any(|(seen, _)| *seen == key) {
                 return Err(de::Error::custom(format!("key {key:?} given twice")));
             }
             let value = map.next_value()?;
@@ -126,10 +130,7 @@ mod tests {
                 ("b".into(), Json::Float(18_446_744_073_709_551_615.0)),
             ]))
         );
-        assert_eq!(
-            Json::parse(br#"9223372036854775807"#),
-            Ok(Json::Int(i64::MAX))
-        );
+        assert_eq!(Json::parse(b"9223372036854775807"), Ok(Json::Int(i64::MAX)));
     }
 
     #[test]
@@ -186,9 +187,12 @@ mod tests {
         assert_eq!(quoted("a \"b\"\n\u{1}ø"), r#""a \"b\"\n\u0001ø""#);
 
         // The domain tests the digits; here, that they parse as JSON.
-        for (n, scale) in [(-1, 2), (i128::MIN, 0), (i128::MAX, 38)] {
-            let decimal = straum_domain::decimal(n, scale);
-            assert!(Json::parse(decimal.as_bytes()).is_ok(), "{n} at {scale}");
+        for (number, scale) in [(-1, 2), (i128::MIN, 0), (i128::MAX, 38)] {
+            let decimal = straum_domain::decimal(number, scale);
+            assert!(
+                Json::parse(decimal.as_bytes()).is_ok(),
+                "{number} at {scale}"
+            );
         }
     }
 }

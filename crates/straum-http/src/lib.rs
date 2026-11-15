@@ -198,12 +198,12 @@ async fn ask(
     let start = Instant::now();
     let body = match Limited::new(body, MAX_ASK).collect().await {
         Ok(body) => body.to_bytes(),
-        Err(e) if e.is::<LengthLimitError>() => {
+        Err(error) if error.is::<LengthLimitError>() => {
             let error = format!("an ask is at most {MAX_ASK} bytes");
             return format.errors(StatusCode::PAYLOAD_TOO_LARGE, &[error]);
         }
-        Err(e) => {
-            let error = format!("reading the ask: {e}");
+        Err(error) => {
+            let error = format!("reading the ask: {error}");
             return format.errors(StatusCode::BAD_REQUEST, &[error]);
         }
     };
@@ -211,7 +211,7 @@ async fn ask(
     let request =
         match ask::read(&body).and_then(|(query, parameters)| read_ask(&query, &parameters)) {
             Ok(ask) => ask,
-            Err(e) => return format.errors(StatusCode::BAD_REQUEST, &e),
+            Err(errors) => return format.errors(StatusCode::BAD_REQUEST, &errors),
         };
     answer(app, request, format, None, parsing.elapsed(), start).await
 }
@@ -269,7 +269,7 @@ async fn answer(
     .await;
     match answered {
         Ok(Ok(timed)) => answered_response(timed, format, parse, start),
-        Ok(Err(e)) => answer_error(&e, format),
+        Ok(Err(error)) => answer_error(&error, format),
         Err(_) => {
             let error = "Straum failed while answering; its log says why".to_owned();
             format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
@@ -305,14 +305,14 @@ fn answered_response(
     response
 }
 
-fn answer_error(e: &AnswerError, format: Format) -> Response<Full<Bytes>> {
-    let (status, errors) = match e {
+fn answer_error(error: &AnswerError, format: Format) -> Response<Full<Bytes>> {
+    let (status, errors) = match error {
         AnswerError::Invalid(invalid) => (
             StatusCode::BAD_REQUEST,
             invalid.iter().map(ToString::to_string).collect(),
         ),
-        AnswerError::NotReady => (StatusCode::SERVICE_UNAVAILABLE, vec![e.to_string()]),
-        AnswerError::Spill(_) => (StatusCode::INTERNAL_SERVER_ERROR, vec![e.to_string()]),
+        AnswerError::NotReady => (StatusCode::SERVICE_UNAVAILABLE, vec![error.to_string()]),
+        AnswerError::Spill(_) => (StatusCode::INTERNAL_SERVER_ERROR, vec![error.to_string()]),
     };
     format.errors(status, &errors)
 }

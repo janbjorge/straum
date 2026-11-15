@@ -1,6 +1,7 @@
 //! `/status`: what Straum has done, in plain text for people, as
 //! `straum status` prints it.
 
+use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use straum_app::{Failure, Status, mib};
@@ -80,7 +81,7 @@ pub(crate) fn write(status: &Status) -> String {
         let label = format!("{label}:");
         // An error of several lines keeps them under its value.
         let value = value.replace('\n', &format!("\n{:LABEL$}", ""));
-        out.push_str(&format!("{label:LABEL$}{value}\n"));
+        let _ = writeln!(out, "{label:LABEL$}{value}");
     }
     out
 }
@@ -98,12 +99,16 @@ mod tests {
 
     use super::*;
 
+    /// 2024-01-01 00:00 UTC, in Unix seconds.
+    const JAN_1: u64 = 1_704_067_200;
+    const JAN_2: u64 = JAN_1 + 86_400;
+
     fn status() -> Status {
         Status {
             ready: true,
             applied: Some(Lsn(0x16_B374_D848)),
             committed: Some(UNIX_EPOCH + Duration::from_micros(1_704_153_600_123_456)),
-            as_of: Some(UNIX_EPOCH + Duration::from_secs(1_704_153_660)),
+            as_of: Some(UNIX_EPOCH + Duration::from_secs(JAN_2 + 60)),
             lag: Some(Duration::from_millis(1_300)),
             wal: Some(Wal {
                 written: Lsn(0x16_C000_0000),
@@ -115,7 +120,7 @@ mod tests {
                 max_retained_wal: 4 << 30,
             },
             last_failure: Some(Failure {
-                at: UNIX_EPOCH + Duration::from_secs(1_704_067_200),
+                at: UNIX_EPOCH + Duration::from_secs(JAN_1),
                 error: "a change no longer fits trips".to_owned(),
             }),
             starts: 2,
