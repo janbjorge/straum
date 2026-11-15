@@ -1,12 +1,11 @@
-//! A store kept in step with a source by one writer, and read by asks while
-//! it writes. The writer holds the lock only to apply what it has read,
-//! never while it waits on the source, so asks never wait on PostgreSQL.
-//! With a spill, the writer seals `date_bin` buckets that ended
-//! `seal_after` ago into it and unseals one before a change reaches it;
-//! asks read sealed buckets from it (ADR-0033, ADR-0035).
+//! The heart of Straum: one store, filled and kept up to date by the
+//! `Writer`, and read by asks through `App`. The writer loads every table
+//! from the `Source`, then applies one commit at a time; it takes the lock
+//! only to apply what it has read, never while it waits on PostgreSQL, so
+//! asks never wait on the database. With a spill, the writer moves old
+//! `date_bin` buckets out to it and back again (ADR-0033, ADR-0035).
 
 use std::fmt;
-use std::iter;
 use std::ops::Range;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -53,6 +52,7 @@ pub struct App {
     spilling: Option<Spilling>,
 }
 
+/// Everything behind the lock: the store and what the writer did to it.
 struct State {
     store: Store,
     /// `None` until every table is loaded, and again after a failure.
@@ -80,6 +80,8 @@ struct Following {
 
 /// Reads the source and keeps an [`App`] in step with it: the loop that
 /// does the I/O. One writer per app.
+// Generic over the source: the binary runs it on PostgreSQL, the tests on
+// an in-memory fake.
 pub struct Writer<S> {
     source: S,
     app: App,
@@ -87,6 +89,7 @@ pub struct Writer<S> {
     wal_read_at: Instant,
 }
 
+/// What one [`Writer::step`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     /// Loaded every table from a new stream that starts here.
@@ -95,6 +98,7 @@ pub enum Step {
     Applied(Lsn),
 }
 
+/// An ask's answer, and how fresh it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answered {
     pub answer: Answer,
@@ -147,7 +151,7 @@ pub struct Failure {
     pub error: String,
 }
 
-/// What [`App::held`] reports, read at one moment.
+/// What [`App::held`] reports, read at one moment: every view and dim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     pub views: Vec<HeldView>,
@@ -174,12 +178,14 @@ pub struct HeldView {
     pub range: Option<Range<i64>>,
 }
 
+/// A key an ask may name, and the type of its values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldKey {
     pub name: Identifier,
     pub column_type: ColumnType,
 }
 
+/// A dim's table, and how many rows of it the store holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldDim {
     pub table: Table,
@@ -226,24 +232,36 @@ impl App {
         })
     }
 
+    /// How Straum stands now: loaded or not, how far behind, what failed.
     pub fn status(&self) -> Status {
         let state = self.read();
-        let following = state.following.as_ref();
-        let lag = following.map(|following| following.lag.behind(Instant::now()));
-        Status {
-            ready: lag.is_some_and(|lag| lag <= self.limits.max_lag),
-            applied: following.map(|following| following.applied),
-            committed: following.and_then(|following| following.committed),
-            as_of: following.map(Following::as_of),
-            lag,
-            wal: following.map(|following| following.wal),
+        let mut status = Status {
+            ready: false,
+            applied: None,
+            committed: None,
+            as_of: None,
+            lag: None,
+            wal: None,
             limits: self.limits,
             last_failure: state.last_failure.clone(),
             starts: state.starts,
             failures: state.failures,
-            sealed: self.spilling.as_ref().map(|_| state.store.sealed_count()),
+            sealed: None,
             unseals: state.unseals,
+        };
+        if let Some(following) = &state.following {
+            let lag = following.lag.behind(Instant::now());
+            status.ready = lag <= self.limits.max_lag;
+            status.applied = Some(following.applied);
+            status.committed = following.committed;
+            status.as_of = Some(following.as_of());
+            status.lag = Some(lag);
+            status.wal = Some(following.wal);
         }
+        if self.spilling.is_some() {
+            status.sealed = Some(state.store.sealed_count());
+        }
+        status
     }
 
     /// `None` until every table is loaded: only a load knows the types.
@@ -251,15 +269,17 @@ impl App {
         let state = self.read();
         state.following.as_ref()?;
         let store = &state.store;
-        let views = (store.spec().facts().iter())
-            .map(|fact| held_view(store, fact))
-            .collect();
-        let dims = (store.spec().dims().iter())
-            .map(|dim| HeldDim {
+        let mut views = Vec::new();
+        for fact in store.spec().facts() {
+            views.push(held_view(store, fact));
+        }
+        let mut dims = Vec::new();
+        for dim in store.spec().dims() {
+            dims.push(HeldDim {
                 table: dim.table.clone(),
                 rows: store.dim_rows(dim.name.as_str()).expect(IN_SPEC),
-            })
-            .collect();
+            });
+        }
         Some(Held { views, dims })
     }
 
@@ -271,16 +291,14 @@ impl App {
         let fact = state.store.spec().fact(view)?;
         // A view with no bucket is asked for one, and answers no rows.
         let range = (state.store.range(view)).unwrap_or(0..i64::from(fact.time.width.seconds));
+        let mut keys = vec![AskKey::Bucket];
+        for key in fact.keys() {
+            keys.push(AskKey::Key(key.clone()));
+        }
         Some(Ask {
             view: fact.name.clone(),
-            measures: fact
-                .measures
-                .iter()
-                .map(|measure| measure.name.clone())
-                .collect(),
-            keys: iter::once(AskKey::Bucket)
-                .chain(fact.keys().cloned().map(AskKey::Key))
-                .collect(),
+            measures: measure_names(fact),
+            keys,
             filter: Vec::new(),
             from: range.start,
             to: range.end,
@@ -312,15 +330,19 @@ fn held_view(store: &Store, fact: &Fact) -> HeldView {
         widths,
         bucket: fact.time.origin.column_type(),
         keys,
-        measures: fact
-            .measures
-            .iter()
-            .map(|measure| measure.name.clone())
-            .collect(),
+        measures: measure_names(fact),
         cells: store.cells(name).expect(IN_SPEC),
         bound_cells: store.bound_cells(name),
         range: store.range(name),
     }
+}
+
+fn measure_names(fact: &Fact) -> Vec<Identifier> {
+    let mut names = Vec::new();
+    for measure in &fact.measures {
+        names.push(measure.name.clone());
+    }
+    names
 }
 
 fn thaw_from_spill(
@@ -336,6 +358,7 @@ fn thaw_from_spill(
     Ok(thawed)
 }
 
+// Takes any printable error: the spill's own and a bucket that won't thaw.
 fn spill_error(error: impl fmt::Display) -> AnswerError {
     AnswerError::Spill(error.to_string())
 }
@@ -402,6 +425,7 @@ fn apply_change(store: &mut Store, change: &Change) -> bool {
 }
 
 impl<S: Source> Writer<S> {
+    /// A writer that has loaded nothing yet; its first step loads.
     pub fn new(app: App, source: S) -> Writer<S> {
         Writer {
             source,
@@ -410,6 +434,7 @@ impl<S: Source> Writer<S> {
         }
     }
 
+    /// The app this writer keeps in step, for asks.
     pub fn app(&self) -> &App {
         &self.app
     }
@@ -450,10 +475,12 @@ impl<S: Source> Writer<S> {
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
         let mut store = Store::new(spec.clone());
-        let dims = spec.dims().iter().map(|dim| &dim.name);
-        let facts = spec.facts().iter().map(|fact| &fact.name);
-        for table in dims.chain(facts) {
-            self.source.load(table, &mut store)?;
+        // Dims first, so a fact's rows find theirs when asked.
+        for dim in spec.dims() {
+            self.source.load(&dim.name, &mut store)?;
+        }
+        for fact in spec.facts() {
+            self.source.load(&fact.name, &mut store)?;
         }
         let wal = self.read_wal()?;
         let mut lag = Lag::new(opened);
@@ -503,8 +530,11 @@ impl<S: Source> Writer<S> {
         let Some(spilling) = &self.app.spilling else {
             return Ok(());
         };
-        let since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
-        let now = since_epoch.map_or(0, seconds);
+        // A clock set before 1970 seals as if it were 1970.
+        let now = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(since_epoch) => seconds(since_epoch),
+            Err(_) => 0,
+        };
         let before = now.saturating_sub(seconds(spilling.seal_after));
         let ids = self.app.read().store.sealable(before);
         for id in ids {
@@ -611,6 +641,7 @@ fn seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
+/// Why a [`Writer::step`] failed; the next step starts over.
 #[derive(Debug)]
 pub enum Error {
     Source(SourceError),
@@ -668,6 +699,7 @@ pub fn format_mebibytes(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / f64::from(BYTES_PER_MIB))
 }
 
+/// Why an ask got no answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnswerError {
     /// The tables are loading.
@@ -712,6 +744,8 @@ mod tests {
         Identifier::new(name).unwrap()
     }
 
+    const BYTES_PER_GIB: u64 = 1 << 30;
+
     fn spec() -> straum_domain::Spec {
         straum_notation::parse(
             "CREATE VIEW trips WITH (buckets = '1 hour') AS
@@ -728,7 +762,7 @@ mod tests {
             spec(),
             Limits {
                 max_lag: std::time::Duration::from_secs(30),
-                max_retained_wal: 4 << 30,
+                max_retained_wal: 4 * BYTES_PER_GIB,
             },
             None,
         )
@@ -764,7 +798,7 @@ mod tests {
         let app = app();
         follow(&app);
         let mut state = app.write();
-        let err = state.apply(Commit {
+        let applied = state.apply(Commit {
             lsn: Lsn(2),
             committed: SystemTime::UNIX_EPOCH,
             changes: vec![
@@ -775,7 +809,7 @@ mod tests {
                 Change::Unfit { table: id("trips") },
             ],
         });
-        assert!(err.is_err());
+        assert!(applied.is_err());
         assert!(state.following.is_none());
         // The insert landed. Nothing can answer it: the stream is already clear.
         assert!(state.store.cells("trips").unwrap() > 0);
@@ -799,10 +833,8 @@ mod tests {
                     }],
                 })
                 .unwrap();
-            assert_eq!(
-                state.following.as_ref().map(|following| following.applied),
-                Some(Lsn(2))
-            );
+            let following = state.following.as_ref().unwrap();
+            assert_eq!(following.applied, Lsn(2));
         }
         let answered = app.ask(&count()).unwrap();
         assert_eq!(answered.applied, Lsn(2));

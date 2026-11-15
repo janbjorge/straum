@@ -1,5 +1,7 @@
-//! How far Straum is behind the server, from readings of the server's WAL
-//! position a second or so apart.
+//! How far Straum is behind the server. The writer reads the server's WAL
+//! position a second or so apart and hands each reading to `Lag`, which
+//! keeps the ones the slot hasn't confirmed yet; `App::status` asks it how
+//! long ago Straum was last caught up.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -10,6 +12,7 @@ use crate::source::{Lsn, Wal};
 /// Past this the newest two merge, which can only make the lag longer.
 const READINGS: usize = 3_600;
 
+/// The WAL readings that tell how far behind the server Straum is.
 #[derive(Debug)]
 pub(crate) struct Lag {
     /// The server's position at each reading the slot hasn't confirmed
@@ -35,6 +38,7 @@ impl Lag {
         }
     }
 
+    /// Takes a reading of the server's WAL, made at `at`.
     pub(crate) fn read(&mut self, wal: &Wal, at: Instant) {
         let full = self.unconfirmed.len() == READINGS;
         match self.unconfirmed.back_mut() {
@@ -125,26 +129,40 @@ mod tests {
     /// after the last reading the slot had confirmed all of.
     struct Naive {
         start: Instant,
-        readings: Vec<(Instant, Wal)>,
+        readings: Vec<NaiveReading>,
+    }
+
+    struct NaiveReading {
+        at: Instant,
+        wal: Wal,
     }
 
     impl Naive {
+        fn read(&mut self, wal: Wal, at: Instant) {
+            self.readings.push(NaiveReading { at, wal });
+        }
+
         fn behind(&self, now: Instant) -> Duration {
-            let Some((_, last)) = self.readings.last() else {
+            let Some(last) = self.readings.last() else {
                 return Duration::ZERO;
             };
-            let confirmed = last.confirmed;
-            if last.written <= confirmed {
+            let confirmed = last.wal.confirmed;
+            if last.wal.written <= confirmed {
                 return Duration::ZERO;
             }
-            let since = (self.readings.iter().rev())
-                .find(|(_, wal)| wal.written <= confirmed)
-                .map_or(self.start, |(at, _)| *at);
+            let mut since = self.start;
+            for reading in self.readings.iter().rev() {
+                if reading.wal.written <= confirmed {
+                    since = reading.at;
+                    break;
+                }
+            }
             now.saturating_duration_since(since)
         }
     }
 
-    /// splitmix64.
+    /// splitmix64. `tests/app` has its own: a unit test can't reach an
+    /// integration test's helpers, and the crate exports no test code.
     struct Rng(u64);
 
     impl Rng {
@@ -161,23 +179,25 @@ mod tests {
     fn matches_every_reading_kept() {
         let start = Instant::now();
         for seed in 0..200 {
-            let mut rng = Rng(seed);
+            let mut random = Rng(seed);
             let mut lag = Lag::new(start);
             let mut naive = Naive {
                 start,
                 readings: Vec::new(),
             };
-            let (mut at, mut server, mut confirmed) = (start, 100, 100);
+            let mut at = start;
+            let mut server = 100;
+            let mut confirmed = 100;
             for _ in 0..200 {
-                at += Duration::from_millis(rng.below(2_000));
+                at += Duration::from_millis(random.below(2_000));
                 // The server stands still now and then; the slot confirms
                 // some, all or none of what it has.
-                server += rng.below(3) * rng.below(50);
-                confirmed += rng.below(server - confirmed + 1) * rng.below(2);
+                server += random.below(3) * random.below(50);
+                confirmed += random.below(server - confirmed + 1) * random.below(2);
                 let reading = wal(server, confirmed);
                 lag.read(&reading, at);
-                naive.readings.push((at, reading));
-                let now = at + Duration::from_millis(rng.below(3_000));
+                naive.read(reading, at);
+                let now = at + Duration::from_millis(random.below(3_000));
                 assert_eq!(lag.behind(now), naive.behind(now), "seed {seed}");
             }
         }
@@ -196,7 +216,7 @@ mod tests {
             let reading = wal(100 + second, 100);
             let at = start + secs(second);
             lag.read(&reading, at);
-            naive.readings.push((at, reading));
+            naive.read(reading, at);
         }
         assert_eq!(lag.unconfirmed.len(), READINGS);
         let end = start + secs(total);
@@ -205,7 +225,7 @@ mod tests {
         for confirmed in [100 + READINGS as u64, 100 + total - 1] {
             let reading = wal(100 + total, confirmed);
             lag.read(&reading, end);
-            naive.readings.push((end, reading));
+            naive.read(reading, end);
             assert!(lag.behind(end) >= naive.behind(end), "{confirmed}");
         }
         assert!(lag.behind(end) > naive.behind(end));

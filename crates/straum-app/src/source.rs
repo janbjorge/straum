@@ -1,8 +1,9 @@
-//! The port to PostgreSQL: facts and dims read at a snapshot, and the
-//! stream of commits after it. One port, since the first load reads the
-//! snapshot of the slot the stream comes from, on the same connection. A
-//! row comes as its table holds it: a fact's columns, or a dim's key and
-//! the columns the views read.
+//! The port to PostgreSQL, and the types that cross it. A source first
+//! loads every fact and dim as of one snapshot, then streams the commits
+//! made after it; the writer reads both. One port, since the first load
+//! reads the snapshot of the slot the stream comes from, on the same
+//! connection. A row comes as its table holds it: a fact's columns, or a
+//! dim's key and the columns the views read.
 
 use std::error;
 use std::fmt;
@@ -18,6 +19,7 @@ pub type SourceError = Box<dyn error::Error + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Lsn(pub u64);
 
+/// Where the rows come from: PostgreSQL in the binary, a fake in tests.
 pub trait Source {
     /// Checks the setup against the spec and starts a new stream, dropping
     /// any stream before it. Returns where it starts: commits up to there
@@ -103,6 +105,7 @@ pub enum Change {
 }
 
 impl Change {
+    /// The table the change is to.
     pub fn table(&self) -> &Identifier {
         match self {
             Change::Insert { table, .. }
