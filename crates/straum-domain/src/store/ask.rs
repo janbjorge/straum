@@ -153,7 +153,7 @@ impl Store {
         if by.is_empty() {
             // As in SQL without GROUP BY: one row even when nothing matches.
             groups.numbers.clear();
-            groups.insert(&by, rollup);
+            groups.insert();
         }
         CellLoop {
             rollup,

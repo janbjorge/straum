@@ -4,9 +4,6 @@
 //! most walks each cell once; one whose joins can repeat a cell walks it
 //! once per join row, as PostgreSQL repeats the fact row.
 
-use std::borrow::Cow;
-use std::cmp::Ordering;
-
 use crate::aggregate::Partials;
 use crate::ask::Ask;
 use crate::hash::FastMap;
@@ -28,7 +25,7 @@ use super::lookup::{ConditionCheck, JoinCheck, all_hold};
 pub(super) struct CellLoop<'s> {
     pub(super) rollup: &'s Rollup,
     pub(super) by: Vec<Grouping<'s>>,
-    pub(super) groups: Groups<'s>,
+    pub(super) groups: Groups,
     pub(super) filter: Vec<ConditionCheck<'s>>,
     pub(super) measures: Vec<Asked<'s>>,
 }
@@ -66,9 +63,7 @@ impl<'s> CellLoop<'s> {
         let mut measure_groups = Vec::new();
         for covered in buckets(rollup, ask) {
             let cells = cells_of(covered, loaded);
-            for grouping in &mut self.by {
-                grouping.enter(covered.id.start);
-            }
+            self.groups.enter(&mut self.by, covered.id.start);
             cell_groups.clear();
             cell_groups.resize(cells.len(), 1);
             for join in joins.iter_mut() {
@@ -106,9 +101,7 @@ impl<'s> CellLoop<'s> {
         let rollup = self.rollup;
         for covered in buckets(rollup, ask) {
             let cells = cells_of(covered, loaded);
-            for grouping in &mut self.by {
-                grouping.enter(covered.id.start);
-            }
+            self.groups.enter(&mut self.by, covered.id.start);
             for cell in 0..cells.len() {
                 for row in expander.expand(rollup, cells.key(cell)) {
                     if all_hold(&mut self.filter, rollup, cells, cell, row) {
@@ -127,7 +120,7 @@ impl<'s> CellLoop<'s> {
         for grouping in &self.by {
             groups.numbers.push(grouping.number_in(cells, cell, row));
         }
-        let group = groups.insert(&self.by, rollup);
+        let group = groups.insert();
         for measure in &mut self.measures {
             measure.partials.grow(groups.len());
             if all_hold(&mut measure.filter, rollup, cells, cell, row) {
@@ -137,19 +130,19 @@ impl<'s> CellLoop<'s> {
         }
     }
 
-    /// One row per group met that meets every HAVING check, sorted by its
-    /// keys. A group's checked measures are finished first; a group they
-    /// drop finishes no other measure, owns no keys and isn't sorted.
+    /// One row per group met that meets every HAVING check, in the order
+    /// of its keys. A group's checked measures are finished first; a group
+    /// they drop finishes no other measure and reads no keys.
     // Benchmark: `bench/taxi.py`'s ask by hour and zone over six months,
     // 509,200 groups, of which HAVING keeps one in eight.
     pub(super) fn answer_rows(self, having: &[HavingCheck]) -> Vec<AnswerRow> {
         let CellLoop {
+            rollup,
             by,
             groups,
             mut measures,
             ..
         } = self;
-        let key_count = by.len();
         let group_count = groups.len();
         let mut checked = vec![false; measures.len()];
         for check in having {
@@ -158,35 +151,28 @@ impl<'s> CellLoop<'s> {
         for measure in &mut measures {
             measure.partials.grow(group_count);
         }
-        let mut keys = groups.keys.into_iter();
         // Sized for every group, as without HAVING: growing by doubling
         // would hold two lists at once.
         let mut rows = Vec::with_capacity(groups.made);
         let mut values = vec![Value::Null; measures.len()];
-        for group in 1..=groups.made {
-            let group_keys = keys.by_ref().take(key_count);
-            finish_where(&mut measures, &checked, Which::Checked, group, &mut values);
+        for group in groups.in_key_order(&by, rollup) {
+            let place = group as usize;
+            finish_where(&mut measures, &checked, Which::Checked, place, &mut values);
             if !meets(&values, having) {
-                for _skipped in group_keys {}
                 continue;
             }
             finish_where(
                 &mut measures,
                 &checked,
                 Which::Unchecked,
-                group,
+                place,
                 &mut values,
             );
-            let mut owned = Vec::with_capacity(key_count);
-            for key in group_keys {
-                owned.push(Cow::into_owned(key));
-            }
             rows.push(AnswerRow {
-                keys: owned,
+                keys: groups.key_values(&by, rollup, group),
                 values: values.clone(),
             });
         }
-        rows.sort_by(by_keys);
         rows
     }
 }
@@ -218,10 +204,6 @@ fn finish_where(
             values[position] = measure.partials.finish(group);
         }
     }
-}
-
-fn by_keys(left: &AnswerRow, right: &AnswerRow) -> Ordering {
-    left.keys.cmp(&right.keys)
 }
 
 /// Enumerates how each cell's joins resolve, once per distinct tuple of
