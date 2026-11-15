@@ -1,5 +1,5 @@
 //! pgoutput protocol version 1, the logical replication messages inside
-//! XLogData. Text tuples only: Straum never asks for `binary`.
+//! `XLogData`. Text tuples only: Straum never asks for `binary`.
 //! <https://www.postgresql.org/docs/18/protocol-logicalrep-message-formats.html>
 
 use std::fmt;
@@ -9,6 +9,12 @@ use std::time::SystemTime;
 use straum_domain::Datum;
 
 use crate::value;
+
+/// The sizes of fields Straum steps over.
+const LSN_SIZE: usize = 8;
+const TIMESTAMP_SIZE: usize = 8;
+const XID_SIZE: usize = 4;
+const FLAGS_SIZE: usize = 1;
 
 /// One pgoutput message, borrowing its text from the received bytes.
 #[derive(Debug, PartialEq, Eq)]
@@ -73,17 +79,17 @@ pub(crate) type Tuple<'a> = Vec<Field<'a>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Field<'a> {
     Null,
-    /// A TOASTed value the change left alone, so PostgreSQL didn't send it.
+    /// A TOAST value the change left alone, so PostgreSQL didn't send it.
     Unchanged,
     Text(&'a str),
     /// A value the physical stream read off a page, already typed.
     Datum(Datum),
 }
 
-/// What a CopyData on a replication connection holds.
+/// What a `CopyData` on a replication connection holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CopyMessage<'a> {
-    /// XLogData: the bytes of the stream from `start`. On a logical
+    /// `XLogData`: the bytes of the stream from `start`. On a logical
     /// stream they are one pgoutput message, for [`decode`].
     XLogData { start: u64, bytes: &'a [u8] },
     /// The server's position, and whether it asks for a status update now.
@@ -91,22 +97,22 @@ pub(crate) enum CopyMessage<'a> {
 }
 
 pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError> {
-    let mut r = Reader { bytes };
-    match r.u8()? {
+    let mut reader = Reader { bytes };
+    match reader.u8()? {
         b'w' => {
-            let start = r.u64()?;
+            let start = reader.u64()?;
             // The WAL end and the send time.
-            r.skip(8 + 8)?;
+            reader.skip(LSN_SIZE + TIMESTAMP_SIZE)?;
             Ok(CopyMessage::XLogData {
                 start,
-                bytes: r.bytes,
+                bytes: reader.bytes,
             })
         }
         b'k' => {
-            let end = r.u64()?;
+            let end = reader.u64()?;
             // The send time.
-            r.skip(8)?;
-            let reply = r.u8()? == 1;
+            reader.skip(TIMESTAMP_SIZE)?;
+            let reply = reader.u8()? == 1;
             Ok(CopyMessage::Keepalive { end, reply })
         }
         other => Err(DecodeError::Tag(other)),
@@ -114,91 +120,38 @@ pub(crate) fn copy_message(bytes: &[u8]) -> Result<CopyMessage<'_>, DecodeError>
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Message<'_>, DecodeError> {
-    let mut r = Reader { bytes };
-    let message = match r.u8()? {
+    let mut reader = Reader { bytes };
+    let message = match reader.u8()? {
         b'B' => {
-            let final_lsn = r.u64()?;
+            let final_lsn = reader.u64()?;
             // Commit time, xid.
-            r.skip(8 + 4)?;
+            reader.skip(TIMESTAMP_SIZE + XID_SIZE)?;
             Message::Begin { final_lsn }
         }
         b'C' => {
             // Flags and the commit record's start, then its end, then the
             // commit time.
-            r.skip(1 + 8)?;
-            let end_lsn = r.u64()?;
-            let committed = r.time()?;
+            reader.skip(FLAGS_SIZE + LSN_SIZE)?;
+            let end_lsn = reader.u64()?;
+            let committed = reader.time()?;
             Message::Commit { end_lsn, committed }
         }
-        b'R' => {
-            let id = r.u32()?;
-            let schema = r.cstr()?.to_owned();
-            let name = r.cstr()?.to_owned();
-            // Replica identity setting.
-            r.skip(1)?;
-            let count = r.u16()?;
-            let mut columns = Vec::with_capacity(count.into());
-            for _ in 0..count {
-                // Flags: part of the key or not.
-                r.skip(1)?;
-                columns.push(Column {
-                    name: r.cstr()?.to_owned(),
-                    type_oid: r.u32()?,
-                    typmod: r.i32()?,
-                });
-            }
-            Message::Relation(Relation {
-                id,
-                schema,
-                name,
-                columns,
-            })
-        }
+        b'R' => Message::Relation(reader.relation()?),
         b'I' => {
-            let relation = r.u32()?;
-            r.expect(b'N')?;
+            let relation = reader.u32()?;
+            reader.expect(b'N')?;
             Message::Insert {
                 relation,
-                new: r.tuple()?,
+                new: reader.tuple()?,
             }
         }
-        b'U' => {
-            let relation = r.u32()?;
-            let old = match r.u8()? {
-                b'K' => Some(Old::Key(r.tuple()?)),
-                b'O' => Some(Old::Row(r.tuple()?)),
-                b'N' => None,
-                other => return Err(DecodeError::Tag(other)),
-            };
-            if old.is_some() {
-                r.expect(b'N')?;
-            }
-            Message::Update {
-                relation,
-                old,
-                new: r.tuple()?,
-            }
-        }
-        b'D' => {
-            let relation = r.u32()?;
-            let old = match r.u8()? {
-                b'K' => Old::Key(r.tuple()?),
-                b'O' => Old::Row(r.tuple()?),
-                other => return Err(DecodeError::Tag(other)),
-            };
-            Message::Delete { relation, old }
-        }
-        b'T' => {
-            let count = r.u32()?;
-            // Options: cascade, restart identity.
-            r.skip(1)?;
-            let relations = (0..count).map(|_| r.u32()).collect::<Result<_, _>>()?;
-            Message::Truncate { relations }
-        }
+        b'U' => reader.update()?,
+        b'D' => reader.delete()?,
+        b'T' => reader.truncate()?,
         b'O' | b'Y' | b'M' => return Ok(Message::Other),
         other => return Err(DecodeError::Tag(other)),
     };
-    if !r.bytes.is_empty() {
+    if !reader.bytes.is_empty() {
         return Err(DecodeError::Trailing);
     }
     Ok(message)
@@ -209,17 +162,81 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
-        if self.bytes.len() < n {
+    fn relation(&mut self) -> Result<Relation, DecodeError> {
+        let id = self.u32()?;
+        let schema = self.cstr()?.to_owned();
+        let name = self.cstr()?.to_owned();
+        // Replica identity setting.
+        self.skip(FLAGS_SIZE)?;
+        let count = self.u16()?;
+        let mut columns = Vec::with_capacity(count.into());
+        for _ in 0..count {
+            // Flags: part of the key or not.
+            self.skip(FLAGS_SIZE)?;
+            columns.push(Column {
+                name: self.cstr()?.to_owned(),
+                type_oid: self.u32()?,
+                typmod: self.i32()?,
+            });
+        }
+        Ok(Relation {
+            id,
+            schema,
+            name,
+            columns,
+        })
+    }
+
+    fn update(&mut self) -> Result<Message<'a>, DecodeError> {
+        let relation = self.u32()?;
+        let old = match self.u8()? {
+            b'K' => Some(Old::Key(self.tuple()?)),
+            b'O' => Some(Old::Row(self.tuple()?)),
+            b'N' => None,
+            other => return Err(DecodeError::Tag(other)),
+        };
+        if old.is_some() {
+            self.expect(b'N')?;
+        }
+        Ok(Message::Update {
+            relation,
+            old,
+            new: self.tuple()?,
+        })
+    }
+
+    fn delete(&mut self) -> Result<Message<'a>, DecodeError> {
+        let relation = self.u32()?;
+        let old = match self.u8()? {
+            b'K' => Old::Key(self.tuple()?),
+            b'O' => Old::Row(self.tuple()?),
+            other => return Err(DecodeError::Tag(other)),
+        };
+        Ok(Message::Delete { relation, old })
+    }
+
+    fn truncate(&mut self) -> Result<Message<'a>, DecodeError> {
+        let count = self.u32()?;
+        // Options: cascade, restart identity.
+        self.skip(FLAGS_SIZE)?;
+        let mut relations = Vec::new();
+        for _ in 0..count {
+            relations.push(self.u32()?);
+        }
+        Ok(Message::Truncate { relations })
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], DecodeError> {
+        if self.bytes.len() < length {
             return Err(DecodeError::Short);
         }
-        let (head, rest) = self.bytes.split_at(n);
+        let (head, rest) = self.bytes.split_at(length);
         self.bytes = rest;
         Ok(head)
     }
 
-    fn skip(&mut self, n: usize) -> Result<(), DecodeError> {
-        self.take(n).map(drop)
+    fn skip(&mut self, length: usize) -> Result<(), DecodeError> {
+        self.take(length).map(drop)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
@@ -255,7 +272,7 @@ impl<'a> Reader<'a> {
 
     fn expect(&mut self, tag: u8) -> Result<(), DecodeError> {
         match self.u8()? {
-            t if t == tag => Ok(()),
+            found if found == tag => Ok(()),
             other => Err(DecodeError::Tag(other)),
         }
     }
@@ -269,11 +286,12 @@ impl<'a> Reader<'a> {
         let end = self
             .bytes
             .iter()
-            .position(|&b| b == 0)
+            .position(|&byte| byte == 0)
             .ok_or(DecodeError::Short)?;
-        let s = Reader::text(self.take(end)?)?;
+        let text = Reader::text(self.take(end)?)?;
+        // The terminating zero.
         self.skip(1)?;
-        Ok(s)
+        Ok(text)
     }
 
     fn tuple(&mut self) -> Result<Tuple<'a>, DecodeError> {
@@ -284,8 +302,9 @@ impl<'a> Reader<'a> {
                 b'n' => Field::Null,
                 b'u' => Field::Unchanged,
                 b't' => {
-                    let len = self.u32()?;
-                    let bytes = self.take(usize::try_from(len).map_err(|_| DecodeError::Short)?)?;
+                    let length = self.u32()?;
+                    let length = usize::try_from(length).map_err(|_| DecodeError::Short)?;
+                    let bytes = self.take(length)?;
                     Field::Text(Reader::text(bytes)?)
                 }
                 other => return Err(DecodeError::Tag(other)),
@@ -309,12 +328,14 @@ pub(crate) enum DecodeError {
 }
 
 impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecodeError::Short => f.write_str("pgoutput message ends early"),
-            DecodeError::Trailing => f.write_str("pgoutput message has trailing bytes"),
-            DecodeError::Tag(tag) => write!(f, "unknown pgoutput tag {:?}", char::from(*tag)),
-            DecodeError::Utf8 => f.write_str("pgoutput text is not UTF-8"),
+            DecodeError::Short => formatter.write_str("pgoutput message ends early"),
+            DecodeError::Trailing => formatter.write_str("pgoutput message has trailing bytes"),
+            DecodeError::Tag(tag) => {
+                write!(formatter, "unknown pgoutput tag {:?}", char::from(*tag))
+            }
+            DecodeError::Utf8 => formatter.write_str("pgoutput text is not UTF-8"),
         }
     }
 }
@@ -332,47 +353,47 @@ mod tests {
     struct Bytes(Vec<u8>);
 
     impl Bytes {
-        fn tag(mut self, t: u8) -> Bytes {
-            self.0.push(t);
+        fn tag(mut self, tag: u8) -> Bytes {
+            self.0.push(tag);
             self
         }
 
-        fn u16(mut self, v: u16) -> Bytes {
-            self.0.extend(v.to_be_bytes());
+        fn u16(mut self, value: u16) -> Bytes {
+            self.0.extend(value.to_be_bytes());
             self
         }
 
-        fn u32(mut self, v: u32) -> Bytes {
-            self.0.extend(v.to_be_bytes());
+        fn u32(mut self, value: u32) -> Bytes {
+            self.0.extend(value.to_be_bytes());
             self
         }
 
-        fn i32(mut self, v: i32) -> Bytes {
-            self.0.extend(v.to_be_bytes());
+        fn i32(mut self, value: i32) -> Bytes {
+            self.0.extend(value.to_be_bytes());
             self
         }
 
-        fn u64(mut self, v: u64) -> Bytes {
-            self.0.extend(v.to_be_bytes());
+        fn u64(mut self, value: u64) -> Bytes {
+            self.0.extend(value.to_be_bytes());
             self
         }
 
-        fn i64(mut self, v: i64) -> Bytes {
-            self.0.extend(v.to_be_bytes());
+        fn i64(mut self, value: i64) -> Bytes {
+            self.0.extend(value.to_be_bytes());
             self
         }
 
-        fn cstr(mut self, s: &str) -> Bytes {
-            self.0.extend(s.as_bytes());
+        fn cstr(mut self, text: &str) -> Bytes {
+            self.0.extend(text.as_bytes());
             self.0.push(0);
             self
         }
 
-        fn text(self, s: &str) -> Bytes {
-            let len = u32::try_from(s.len()).unwrap();
-            let mut b = self.tag(b't').u32(len);
-            b.0.extend(s.as_bytes());
-            b
+        fn text(self, text: &str) -> Bytes {
+            let length = u32::try_from(text.len()).unwrap();
+            let mut bytes = self.tag(b't').u32(length);
+            bytes.0.extend(text.as_bytes());
+            bytes
         }
 
         /// `id`, null, unchanged.
@@ -385,24 +406,15 @@ mod tests {
         vec![Field::Text(id), Field::Null, Field::Unchanged]
     }
 
+    fn assert_decodes(cases: Vec<(Bytes, Message)>) {
+        for (bytes, message) in cases {
+            assert_eq!(decode(&bytes.0), Ok(message));
+        }
+    }
+
     #[test]
-    fn decodes_messages() {
-        let relation = Bytes::default()
-            .tag(b'R')
-            .u32(16_384)
-            .cstr("public")
-            .cstr("zones")
-            .tag(b'd')
-            .u16(2)
-            .tag(1)
-            .cstr("id")
-            .u32(23)
-            .i32(-1)
-            .tag(0)
-            .cstr("fare")
-            .u32(1700)
-            .i32(786_438);
-        let cases = [
+    fn decodes_begin_and_commit() {
+        assert_decodes(vec![
             (
                 Bytes::default().tag(b'B').u64(1).u64(2).u32(3),
                 Message::Begin { final_lsn: 1 },
@@ -427,26 +439,51 @@ mod tests {
                     committed: UNIX_EPOCH + Duration::from_secs(946_684_799),
                 },
             ),
-            (
-                relation,
-                Message::Relation(Relation {
-                    id: 16_384,
-                    schema: "public".into(),
-                    name: "zones".into(),
-                    columns: vec![
-                        Column {
-                            name: "id".into(),
-                            type_oid: 23,
-                            typmod: -1,
-                        },
-                        Column {
-                            name: "fare".into(),
-                            type_oid: 1700,
-                            typmod: 786_438,
-                        },
-                    ],
-                }),
-            ),
+        ]);
+    }
+
+    #[test]
+    fn decodes_a_relation() {
+        let relation = Bytes::default()
+            .tag(b'R')
+            .u32(16_384)
+            .cstr("public")
+            .cstr("zones")
+            .tag(b'd')
+            .u16(2)
+            .tag(1)
+            .cstr("id")
+            .u32(23)
+            .i32(-1)
+            .tag(0)
+            .cstr("fare")
+            .u32(1700)
+            .i32(786_438);
+        assert_decodes(vec![(
+            relation,
+            Message::Relation(Relation {
+                id: 16_384,
+                schema: "public".into(),
+                name: "zones".into(),
+                columns: vec![
+                    Column {
+                        name: "id".into(),
+                        type_oid: 23,
+                        typmod: -1,
+                    },
+                    Column {
+                        name: "fare".into(),
+                        type_oid: 1700,
+                        typmod: 786_438,
+                    },
+                ],
+            }),
+        )]);
+    }
+
+    #[test]
+    fn decodes_row_changes() {
+        assert_decodes(vec![
             (
                 Bytes::default().tag(b'I').u32(7).tag(b'N').tuple("1"),
                 Message::Insert {
@@ -513,10 +550,7 @@ mod tests {
             (Bytes::default().tag(b'O').u64(1).cstr("x"), Message::Other),
             (Bytes::default().tag(b'Y'), Message::Other),
             (Bytes::default().tag(b'M'), Message::Other),
-        ];
-        for (bytes, message) in cases {
-            assert_eq!(decode(&bytes.0), Ok(message));
-        }
+        ]);
     }
 
     #[test]
@@ -626,8 +660,8 @@ mod tests {
             (DecodeError::Tag(b'X'), "unknown pgoutput tag 'X'"),
             (DecodeError::Utf8, "pgoutput text is not UTF-8"),
         ];
-        for (err, msg) in cases {
-            assert_eq!(err.to_string(), msg);
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
         }
     }
 }
