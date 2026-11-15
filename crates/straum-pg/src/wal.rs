@@ -1,10 +1,11 @@
-//! Physical WAL as a physical slot streams it: 8 KiB pages, each opening
-//! with a header, holding records that may run across pages. PostgreSQL
-//! writes it in the server's byte order; Straum reads little-endian only,
-//! which every platform PostgreSQL ships on for these majors uses.
-//! Layouts: `src/include/access/xlog_internal.h` and `xlogrecord.h`,
-//! read as `DecodeXLogRecord` in `src/backend/access/transam/xlogreader.c`
-//! does.
+//! The physical WAL reader. PostgreSQL's write-ahead log (WAL) holds every
+//! change before it reaches a table's pages, and a physical slot streams it
+//! as raw bytes. They flow: `reader.rs` cuts WAL pages into records,
+//! `record.rs` reads a record's header and block references, `heap/`
+//! applies heap records to the pages Straum keeps and gives row changes,
+//! `xact.rs` and `transactions.rs` hold them until their transaction
+//! commits, `messages.rs` and `tuple.rs` turn a commit into the decoder's
+//! messages, and `pipeline.rs` runs the chain. This file holds what they share.
 
 use std::fmt;
 
@@ -25,7 +26,21 @@ pub(crate) mod xact;
 pub(crate) use reader::Records;
 pub(crate) use record::{Block, Compression, Image, Record, RelationFile};
 
-/// `XLOG_BLCKSZ`. The long page header names it, and Straum refuses others.
+/// A transaction id, PostgreSQL's `TransactionId`. It is 32 bits and wraps
+/// around, so which of two is later is [`transactions::follows`]'s to say.
+pub(crate) type TransactionId = u32;
+/// A page's number within its relation file, PostgreSQL's `BlockNumber`.
+pub(crate) type BlockNumber = u32;
+/// A row's slot on a heap page, counted from 1: PostgreSQL's
+/// `OffsetNumber`. The page's line pointer for the slot says where the
+/// row's bytes lie.
+pub(crate) type SlotNumber = u16;
+/// An object id, PostgreSQL's `Oid`: a table's, a database's, a
+/// tablespace's or an enum label's.
+pub(crate) type Oid = u32;
+
+/// `XLOG_BLCKSZ`, the size of a WAL page. The long page header names it,
+/// and Straum refuses others.
 pub(crate) const PAGE_SIZE: u64 = 8192;
 /// `BLCKSZ`, the size of a table page and of a full-page image.
 pub(crate) const BLOCK_SIZE: usize = 8192;
@@ -33,21 +48,44 @@ pub(crate) const BLOCK_SIZE: usize = 8192;
 /// `XLR_INFO_MASK`, the WAL insertion's own.
 pub(crate) const RESOURCE_MANAGER_INFO: u8 = 0xF0;
 
-fn le_u16(bytes: &[u8]) -> u16 {
+/// The resource managers whose records Straum reads, by `xl_rmid`. A
+/// resource manager is the part of PostgreSQL that writes a kind of record
+/// and replays it in recovery (`src/include/access/rmgrlist.h`).
+/// `RM_XLOG_ID`: checkpoints, full-page images, segment switches.
+pub(crate) const RESOURCE_MANAGER_XLOG: u8 = 0;
+/// `RM_XACT_ID`: commits and aborts.
+pub(crate) const RESOURCE_MANAGER_TRANSACTION: u8 = 1;
+/// `RM_SMGR_ID`: the storage manager, which truncates relation files.
+pub(crate) const RESOURCE_MANAGER_STORAGE: u8 = 2;
+/// `RM_STANDBY_ID`: the transactions running, for standbys.
+pub(crate) const RESOURCE_MANAGER_STANDBY: u8 = 8;
+/// `RM_HEAP2_ID`: prunes, vacuums and bulk inserts on heap pages.
+pub(crate) const RESOURCE_MANAGER_HEAP2: u8 = 9;
+/// `RM_HEAP_ID`: inserts, updates and deletes of single rows.
+pub(crate) const RESOURCE_MANAGER_HEAP: u8 = 10;
+
+// PostgreSQL writes WAL in the server's byte order. Straum reads it
+// little-endian only, which every platform PostgreSQL ships on for the
+// majors Straum reads uses.
+
+/// The first two bytes of `bytes`, little-endian.
+fn read_u16(bytes: &[u8]) -> u16 {
     u16::from_le_bytes([bytes[0], bytes[1]])
 }
 
-fn le_u32(bytes: &[u8]) -> u32 {
+/// The first four bytes of `bytes`, little-endian.
+fn read_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-/// The `u32` at `at`, if `bytes` reach that far.
+/// The four bytes at `at`, little-endian, if `bytes` reach that far.
 pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     let bytes = bytes.get(at..)?.first_chunk()?;
     Some(u32::from_le_bytes(*bytes))
 }
 
-fn le_u64(bytes: &[u8]) -> u64 {
+/// The first eight bytes of `bytes`, little-endian.
+fn read_u64(bytes: &[u8]) -> u64 {
     let mut array = [0; 8];
     array.copy_from_slice(&bytes[..8]);
     u64::from_le_bytes(array)

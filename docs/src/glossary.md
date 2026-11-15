@@ -340,6 +340,25 @@ are open.
 - **Pipeline** (`wal::pipeline::Pipeline`): the physical stream's pure
   path from records to commits: page state, held transactions, the
   publisher and the decoder.
+- **WAL record** (`wal::Record`, `Records`): one entry of the physical
+  WAL, written by one **resource manager** (`xl_rmid`), the part of
+  PostgreSQL that writes a kind of record and replays it in recovery:
+  heap, transaction, standby, storage, xlog. Records run across 8 KiB
+  WAL pages; `Records` cuts them out.
+- **Block reference** (`Block`): a page a record changes, named by its
+  **relation file** (`RelationFile`, PostgreSQL's `RelFileLocator`:
+  tablespace, database and file node) and **block number**
+  (`BlockNumber`), with the record's data for it and maybe a full-page
+  image.
+- **Slot on a page** (`SlotNumber`, PostgreSQL's `OffsetNumber`): where
+  a row sits on a heap page, counted from 1. Its line pointer says where
+  the row's bytes lie. Not a replication slot.
+- **xid** (`TransactionId`): a transaction id, 32 bits that wrap. A
+  **subtransaction** (subxact) is a savepoint's own xid; it commits with
+  its top transaction. `xact` is PostgreSQL's word for transaction, kept
+  as the name of the module that reads its records.
+- **WAL problem** (`wal::Problem`): what is wrong with WAL Straum can't
+  read, said after "WAL at LSN has". It stops the stream.
 - **Replication connection**: the connection that creates the slot,
   loads in its snapshot and then streams, all on one session
   (ADR-0010).
@@ -403,4 +422,5 @@ ADR-0035).
 | state | `app::State`; `source::State`; cell state (`State`); running states | qualify in prose |
 | the crate for Straum SQL | `straum-notation` | `straum-sql` needs an `ALLOWED` change in `scripts/check-layers.py`; not done |
 | cold | ADR-0033 title | sealed, hot; ADR text stays |
+| slot | replication slot; a row's slot on a heap page (`SlotNumber`) | qualify: "replication slot", "slot on a page" |
 | spill flags | `--spill-dir`, `--seal-after`, `straum-arrow` in ADR-0033, ADR-0034 | not shipped; `main.rs` passes `None` |

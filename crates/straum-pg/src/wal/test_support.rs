@@ -228,7 +228,7 @@ pub(crate) fn lay_out(start: u64, records: &[Vec<u8>]) -> (Vec<u8>, Vec<u64>) {
             written += take;
             position += take as u64;
         }
-        let is_switch = record[RECORD_RESOURCE_MANAGER] == XLOG_RESOURCE_MANAGER
+        let is_switch = record[RECORD_RESOURCE_MANAGER] == RESOURCE_MANAGER_XLOG
             && record[RECORD_INFO] & RESOURCE_MANAGER_INFO == XLOG_SWITCH;
         let next = if is_switch {
             position.div_ceil(SEGMENT) * SEGMENT
@@ -353,7 +353,7 @@ pub(crate) fn random_spec(rng: &mut Rng) -> Spec {
 pub(crate) fn switch() -> Spec {
     Spec {
         xid: 0,
-        resource_manager: XLOG_RESOURCE_MANAGER,
+        resource_manager: RESOURCE_MANAGER_XLOG,
         info: XLOG_SWITCH,
         toplevel_xid: None,
         origin: false,

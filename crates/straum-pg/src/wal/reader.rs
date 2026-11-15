@@ -5,7 +5,7 @@ use std::ops::Range;
 use super::record::{
     RECORD_CHECKSUM, RECORD_HEADER, RECORD_LENGTH, Record, align, checksum, decode_into,
 };
-use super::{PAGE_SIZE, Problem, WalError, at, le_u16, le_u32, le_u64};
+use super::{PAGE_SIZE, Problem, WalError, at, read_u16, read_u32, read_u64};
 
 /// `SizeOfXLogShortPHD`, `XLogPageHeaderData`: `xlp_magic`, `xlp_info`,
 /// `xlp_tli`, `xlp_pageaddr`, `xlp_rem_len`, padded to 8 bytes.
@@ -133,13 +133,13 @@ impl Records {
         }
         let total = match self.slice(position, RECORD_HEADER as u64) {
             Some(head) if position % PAGE_SIZE + RECORD_HEADER as u64 <= PAGE_SIZE => {
-                le_u32(&head[RECORD_LENGTH])
+                read_u32(&head[RECORD_LENGTH])
             }
             _ => {
                 if self.gather(position, RECORD_HEADER, bytes)?.is_none() {
                     return Ok(None);
                 }
-                le_u32(&bytes[RECORD_LENGTH])
+                read_u32(&bytes[RECORD_LENGTH])
             }
         };
         let Ok(total) = usize::try_from(total) else {
@@ -151,7 +151,7 @@ impl Records {
         let Some(end) = self.gather(position, total, bytes)? else {
             return Ok(None);
         };
-        let stored = le_u32(&bytes[RECORD_CHECKSUM]);
+        let stored = read_u32(&bytes[RECORD_CHECKSUM]);
         if stored != checksum(bytes) {
             return Err(at(position, Problem::Checksum));
         }
@@ -168,10 +168,10 @@ impl Records {
         let Some(short) = self.slice(page, SHORT_HEADER) else {
             return Ok(None);
         };
-        let magic = le_u16(&short[PAGE_MAGIC]);
-        let flags = le_u16(&short[PAGE_FLAGS_FIELD]);
-        let address = le_u64(&short[PAGE_ADDRESS_FIELD]);
-        let remaining = le_u32(&short[PAGE_REMAINING]);
+        let magic = read_u16(&short[PAGE_MAGIC]);
+        let flags = read_u16(&short[PAGE_FLAGS_FIELD]);
+        let address = read_u64(&short[PAGE_ADDRESS_FIELD]);
+        let remaining = read_u32(&short[PAGE_REMAINING]);
         if address != page {
             return Err(at(page, Problem::PageAddress));
         }
@@ -189,8 +189,8 @@ impl Records {
             let Some(long) = self.slice(page, LONG_HEADER) else {
                 return Ok(None);
             };
-            let segment_size = u64::from(le_u32(&long[PAGE_SEGMENT_SIZE]));
-            let page_size = u64::from(le_u32(&long[PAGE_BLOCK_SIZE]));
+            let segment_size = u64::from(read_u32(&long[PAGE_SEGMENT_SIZE]));
+            let page_size = u64::from(read_u32(&long[PAGE_BLOCK_SIZE]));
             if segment_size != self.segment_size || page_size != PAGE_SIZE {
                 return Err(WalError::Sizes {
                     segment_size,

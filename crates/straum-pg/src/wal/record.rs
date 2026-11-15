@@ -2,7 +2,10 @@
 
 use std::ops::Range;
 
-use super::{BLOCK_SIZE, Problem, RESOURCE_MANAGER_INFO, WalError, at, le_u16, le_u32};
+use super::{
+    BLOCK_SIZE, BlockNumber, Oid, Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_XLOG,
+    TransactionId, WalError, at, read_u16, read_u32,
+};
 
 /// An image header holds lengths within a page as `uint16`.
 #[expect(clippy::cast_possible_truncation, reason = "BLCKSZ, 8192, fits a u16")]
@@ -21,7 +24,6 @@ pub(super) const RECORD_ALIGNMENT: u64 = 8;
 /// `XLR_BLOCK_ID_ORIGIN` is followed by a `RepOriginId`, a `uint16`.
 pub(super) const ORIGIN_SIZE: usize = 2;
 
-pub(super) const XLOG_RESOURCE_MANAGER: u8 = 0;
 pub(super) const XLOG_SWITCH: u8 = 0x40;
 
 pub(super) const DATA_SHORT: u8 = 255;
@@ -49,12 +51,12 @@ pub(crate) struct Record {
     pub(crate) lsn: u64,
     /// The end of the record, before the alignment to the next.
     pub(crate) end: u64,
-    pub(crate) xid: u32,
+    pub(crate) xid: TransactionId,
     pub(crate) resource_manager: u8,
     /// The record kind within its resource manager, with its flag bits.
     pub(crate) info: u8,
     /// The top transaction, when `xid` is a subtransaction it names first.
-    pub(crate) toplevel_xid: Option<u32>,
+    pub(crate) toplevel_xid: Option<TransactionId>,
     pub(crate) blocks: Vec<Block>,
     main: Range<usize>,
     pub(super) bytes: Vec<u8>,
@@ -67,7 +69,7 @@ pub(crate) struct Block {
     /// Redo starts the page afresh, so no earlier state of it is needed.
     pub(crate) will_init: bool,
     pub(crate) file: RelationFile,
-    pub(crate) number: u32,
+    pub(crate) number: BlockNumber,
     pub(crate) image: Option<Image>,
     data: Range<usize>,
 }
@@ -75,9 +77,9 @@ pub(crate) struct Block {
 /// Where a relation's pages live: `RelFileLocator`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RelationFile {
-    pub(crate) tablespace: u32,
-    pub(crate) database: u32,
-    pub(crate) relation: u32,
+    pub(crate) tablespace: Oid,
+    pub(crate) database: Oid,
+    pub(crate) relation: Oid,
 }
 
 /// A full-page image, as logged: maybe compressed, without its hole.
@@ -139,7 +141,7 @@ impl Record {
 
     /// A switch record ends its segment: the rest of it is padding.
     pub(crate) fn is_switch(&self) -> bool {
-        self.resource_manager == XLOG_RESOURCE_MANAGER
+        self.resource_manager == RESOURCE_MANAGER_XLOG
             && self.info & RESOURCE_MANAGER_INFO == XLOG_SWITCH
     }
 }
@@ -192,7 +194,7 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
         return Err(short);
     }
     let main_start = place_payloads(blocks, cursor.at);
-    record.xid = le_u32(&bytes[RECORD_XID]);
+    record.xid = read_u32(&bytes[RECORD_XID]);
     record.info = bytes[RECORD_INFO];
     record.resource_manager = bytes[RECORD_RESOURCE_MANAGER];
     record.lsn = lsn;
@@ -313,11 +315,11 @@ impl Cursor<'_> {
     }
 
     fn u16(&mut self) -> Option<u16> {
-        self.take(2).map(le_u16)
+        self.take(2).map(read_u16)
     }
 
     fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(le_u32)
+        self.take(4).map(read_u32)
     }
 }
 

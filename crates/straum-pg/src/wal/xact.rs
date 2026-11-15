@@ -3,10 +3,10 @@
 //! `ParseCommitRecord`, `ParseAbortRecord` in
 //! `src/backend/access/rmgrdesc/xactdesc.c` and `standby_desc` do.
 
-use super::{Problem, RESOURCE_MANAGER_INFO, Record, WalError, u32_at};
-
-const RM_XACT: u8 = 1;
-const RM_STANDBY: u8 = 8;
+use super::{
+    Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION, Record,
+    WalError, u32_at,
+};
 
 const XACT_OPERATION: u8 = 0x70;
 const XACT_HAS_INFO: u8 = 0x80;
@@ -106,7 +106,7 @@ pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalErr
         problem: Problem::ShortTransactionRecord,
     };
     match record.resource_manager {
-        RM_XACT => {
+        RESOURCE_MANAGER_TRANSACTION => {
             let outcome = match record.info & XACT_OPERATION {
                 XACT_COMMIT | XACT_COMMIT_PREPARED => Outcome::Commit,
                 XACT_ABORT | XACT_ABORT_PREPARED => Outcome::Abort,
@@ -118,7 +118,9 @@ pub(crate) fn event(record: &Record, major: u32) -> Result<Option<Event>, WalErr
                 Outcome::Abort => Event::Abort(ending),
             }))
         }
-        RM_STANDBY if record.info & RESOURCE_MANAGER_INFO == STANDBY_RUNNING_XACTS => {
+        RESOURCE_MANAGER_STANDBY
+            if record.info & RESOURCE_MANAGER_INFO == STANDBY_RUNNING_XACTS =>
+        {
             let Some(running) = running(record.main_data()) else {
                 return Err(short);
             };
@@ -284,7 +286,15 @@ mod tests {
                 (XACT_ABORT_PREPARED, Outcome::Abort),
             ] {
                 let main = ending_main(ALL, outcome, stat);
-                let got = event(&record(RM_XACT, operation | XACT_HAS_INFO, 0, main), major);
+                let got = event(
+                    &record(
+                        RESOURCE_MANAGER_TRANSACTION,
+                        operation | XACT_HAS_INFO,
+                        0,
+                        main,
+                    ),
+                    major,
+                );
                 let invalidated = if outcome == Outcome::Commit {
                     [16_384, 0]
                         .map(|relation| Invalidated {
@@ -310,7 +320,12 @@ mod tests {
         }
         // No xinfo: the record's own xid, nothing else.
         let got = event(
-            &record(RM_XACT, XACT_COMMIT, 77, (-5i64).to_le_bytes().to_vec()),
+            &record(
+                RESOURCE_MANAGER_TRANSACTION,
+                XACT_COMMIT,
+                77,
+                (-5i64).to_le_bytes().to_vec(),
+            ),
             18,
         );
         let ending = Ending {
@@ -327,7 +342,10 @@ mod tests {
         let mut main = words(&[2, 1]);
         main.extend([0; 4]);
         main.extend(words(&[760, 750, 749, 751, 755, 752]));
-        let got = event(&record(RM_STANDBY, STANDBY_RUNNING_XACTS, 0, main), 18);
+        let got = event(
+            &record(RESOURCE_MANAGER_STANDBY, STANDBY_RUNNING_XACTS, 0, main),
+            18,
+        );
         let running = Running {
             next_xid: 760,
             oldest_xid: 750,
@@ -339,11 +357,11 @@ mod tests {
     #[test]
     fn passes_over_other_records() {
         for (resource_manager, info) in [
-            (RM_XACT, 0x10),
-            (RM_XACT, 0x50),
-            (RM_XACT, 0x60),
-            (RM_STANDBY, 0x00),
-            (RM_STANDBY, 0x20),
+            (RESOURCE_MANAGER_TRANSACTION, 0x10),
+            (RESOURCE_MANAGER_TRANSACTION, 0x50),
+            (RESOURCE_MANAGER_TRANSACTION, 0x60),
+            (RESOURCE_MANAGER_STANDBY, 0x00),
+            (RESOURCE_MANAGER_STANDBY, 0x20),
             (0, 0x00),
             (10, 0x00),
         ] {
@@ -359,7 +377,15 @@ mod tests {
         let read = full.len() - 4 - 16;
         for length in 0..read {
             let main = full[..length].to_vec();
-            let got = event(&record(RM_XACT, XACT_COMMIT | XACT_HAS_INFO, 1, main), 18);
+            let got = event(
+                &record(
+                    RESOURCE_MANAGER_TRANSACTION,
+                    XACT_COMMIT | XACT_HAS_INFO,
+                    1,
+                    main,
+                ),
+                18,
+            );
             assert!(
                 matches!(got, Err(WalError::At { problem, .. })
                     if problem == Problem::ShortTransactionRecord),
@@ -368,10 +394,18 @@ mod tests {
         }
         let mut running = words(&[3, 0, 0, 760]);
         running.extend(words(&[0, 0, 751, 752]));
-        let got = event(&record(RM_STANDBY, STANDBY_RUNNING_XACTS, 0, running), 18);
+        let got = event(
+            &record(RESOURCE_MANAGER_STANDBY, STANDBY_RUNNING_XACTS, 0, running),
+            18,
+        );
         assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
         let got = event(
-            &record(RM_STANDBY, STANDBY_RUNNING_XACTS, 0, words(&[0, 0])),
+            &record(
+                RESOURCE_MANAGER_STANDBY,
+                STANDBY_RUNNING_XACTS,
+                0,
+                words(&[0, 0]),
+            ),
             18,
         );
         assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
