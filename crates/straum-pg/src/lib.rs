@@ -25,6 +25,8 @@ mod tests;
 mod tls;
 mod value;
 mod wal;
+#[cfg(test)]
+mod wal_bench;
 mod wire;
 
 pub use dsn::{Dsn, DsnError};

@@ -211,6 +211,47 @@ at the limit holds the lock for 108 ms, and anything larger is cheaper to
 [start over](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 
+## Physical WAL
+
+```sh
+cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
+```
+
+It measures how fast Straum reads
+[physical WAL](https://github.com/janbjorge/straum/blob/main/docs/adr/0049-straum-reads-physical-wal-where-logical-decoding-is-off.md).
+It loads the taxi month with `bench/load_taxi_trips.py` into a
+PostgreSQL under `wal_level = replica`, so it needs uv. Then it takes a
+checkpoint and opens a physical slot. Four phases each change 1,000,000
+trips of `yellow_trips`: `COPY` in transactions of 250,000 rows, then
+`INSERT`, `UPDATE` and `DELETE` in transactions of 10,000. The slot
+streams the WAL, and Straum keeps it in memory. Straum then reads it
+again three times each way (`STRAUM_BENCH_RUNS`), with no socket in the
+way, and the fastest read counts. "Records read" splits pages into
+records only. "Pipeline read" goes all the way to the commits for
+`crates/straum-notation/tests/taxi.sql`. Every row changed must come
+out, and nothing may be unfit. Autovacuum is off and the checkpoint
+interval is an hour, so each run writes the same records.
+`STRAUM_TEST_POSTGRES` picks the major.
+
+One run on 2026-11-15, the machine of the [Results](#results), one
+thread, PostgreSQL 18:
+
+| Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| copy | 128.1 MiB | 1,044,746 | 12 | 1.8 s | 323 MiB/s | 143 MiB/s | 1,119,529 | 2.0x |
+| insert | 173.3 MiB | 2,033,148 | 3 | 1.7 s | 302 MiB/s | 143 MiB/s | 824,079 | 1.4x |
+| update | 356.9 MiB | 3,008,774 | 13,447 | 2.7 s | 318 MiB/s | 156 MiB/s | 436,803 | 1.2x |
+| delete | 137.7 MiB | 1,010,911 | 10,712 | 661.9 ms | 328 MiB/s | 141 MiB/s | 1,027,952 | 0.7x |
+| all | 795.9 MiB | | | 6.8 s | 317 MiB/s | 148 MiB/s | 745,035 | 1.3x |
+
+"Against PostgreSQL" divides the time PostgreSQL took to write a
+phase's WAL by the time the pipeline took to read it. Below 1x, as for
+the deletes, a writer that keeps that pace for long leaves Straum
+behind, and once the lag passes `--max-lag`, `/readyz` turns off. Images are
+the full-page images: the first change to a page after the checkpoint
+brings one. The pipeline held at most 481.5 MiB of rows, most of them
+the open `COPY` transactions' rows, which wait for their commit.
+
 ## Memory
 
 Memory follows cells, as [How Straum works](how-it-works.md#cells)

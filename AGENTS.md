@@ -34,12 +34,13 @@ over `public.events AS e` and `public.accounts AS a`.
 
 The `justfile` is the entry point to every tool: `just check <crate>`,
 `just cov <crate>`, `just docs` (live preview), `just docs-build`,
-`just chart`, `just taxi [asks|transactions|shell]`, `just taxi-month`.
-A new script, check or benchmark gets a recipe in the same commit. Keep
-it tidy: one recipe per tool, in a `[group]`, with a one-line comment;
-recipes are thin wrappers, logic stays in the script or test; drop a
-recipe when its tool goes. Nothing depends on it; the commands here and
-in `docs/src/benchmark.md` stay the reference. Keep them in step.
+`just chart`, `just taxi [asks|transactions|shell]`, `just taxi-month`,
+`just wal-bench`. A new script, check or benchmark gets a recipe in the
+same commit. Keep it tidy: one recipe per tool, in a `[group]`, with a
+one-line comment; recipes are thin wrappers, logic stays in the script or
+test; drop a recipe when its tool goes. Nothing depends on it; the
+commands here and in `docs/src/benchmark.md` stay the reference. Keep
+them in step.
 
 ## Documents
 

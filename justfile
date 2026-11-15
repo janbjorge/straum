@@ -42,3 +42,8 @@ taxi mode="asks":
 [group('taxi')]
 taxi-month:
     cargo test -p straum-pg --release taxi_month -- --ignored --nocapture
+
+# Physical WAL read speed over the taxi month (needs uv)
+[group('taxi')]
+wal-bench:
+    cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
