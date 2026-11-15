@@ -290,7 +290,12 @@ impl Walker {
     /// `key = value` and `key IN (values)` joined by `AND`, and in a view
     /// `column IS NULL` and `IS NOT NULL`, which count through a null-ness
     /// key; an ask names that key outright, `key = $n`.
-    fn conds(&mut self, expr: &sql::Expr, conds: &mut Vec<Condition>, names: &mut Names<'_, '_>) {
+    fn read_conditions(
+        &mut self,
+        expr: &sql::Expr,
+        conditions: &mut Vec<Condition>,
+        names: &mut Names<'_, '_>,
+    ) {
         let mut parts = Vec::new();
         and_parts(expr, &mut parts);
         for part in parts {
@@ -299,7 +304,7 @@ impl Walker {
                     let is_null = matches!(part, sql::Expr::IsNull(_));
                     match names {
                         Names::View(scope) => {
-                            conds.extend(self.null_cond(scope, part, column, is_null));
+                            conditions.extend(self.null_condition(scope, part, column, is_null));
                         }
                         Names::Ask(_) => self.refuse(line(part), CONDITION, part),
                     }
@@ -309,10 +314,10 @@ impl Walker {
                     op: sql::BinaryOperator::Eq,
                     right,
                 } => {
-                    let key = self.cond_key(names, left);
+                    let key = self.condition_key(names, left);
                     let literal = self.cond_value(names, right);
                     if let (Some(key), Some(literal)) = (key, literal) {
-                        conds.push(Condition {
+                        conditions.push(Condition {
                             key,
                             values: vec![literal],
                         });
@@ -327,7 +332,7 @@ impl Walker {
                         self.refuse(line(part), "IN with one value, write =,", part);
                         continue;
                     }
-                    let key = self.cond_key(names, inner);
+                    let key = self.condition_key(names, inner);
                     let mut values: Vec<Literal> = Vec::new();
                     for item in list {
                         values.extend(self.cond_value(names, item));
@@ -335,7 +340,7 @@ impl Walker {
                     if let Some(key) = key
                         && values.len() == list.len()
                     {
-                        conds.push(Condition { key, values });
+                        conditions.push(Condition { key, values });
                     }
                 }
                 sql::Expr::Nested(_) => self.refuse(line(part), PARENTHESES, part),
@@ -344,7 +349,7 @@ impl Walker {
         }
     }
 
-    fn cond_key(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Identifier> {
+    fn condition_key(&mut self, names: &mut Names<'_, '_>, expr: &sql::Expr) -> Option<Identifier> {
         match names {
             Names::View(scope) => self.key_of(scope, expr),
             Names::Ask(_) => self.ask_name(expr),

@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashSet};
 mod common;
 
 use common::{
-    Rng, Spilled, attr, col, cond, dim_row, holds, id, lit, percentile, percentile_disc, table,
-    text,
+    Rng, Spilled, attr, col, condition, dim_row, holds, id, lit, percentile, percentile_disc,
+    table, text,
 };
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskError, AskKey, ByKey, ColumnType,
@@ -237,7 +237,7 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
         new_measure(
             "card_tip_p90",
             percentile(90, 2, "tip"),
-            vec![cond("pay", vec![Literal::Int(1)])],
+            vec![condition("pay", vec![Literal::Int(1)])],
         ),
     ]
 }
@@ -252,49 +252,49 @@ fn average_count_and_bool_measures() -> Vec<Measure> {
         new_measure(
             "card",
             Aggregate::Count,
-            vec![cond("pay", vec![Literal::Int(1)])],
+            vec![condition("pay", vec![Literal::Int(1)])],
         ),
         new_measure(
             "shared_fare",
             Aggregate::Sum(id("fare")),
-            vec![cond("shared", vec![Literal::Bool(true)])],
+            vec![condition("shared", vec![Literal::Bool(true)])],
         ),
         new_measure(
             "mq_fare",
             Aggregate::Sum(id("fare")),
             vec![
-                cond("pickup_borough", vec![lit("m"), lit("q")]),
-                cond("vendor", vec![Literal::Int(2)]),
+                condition("pickup_borough", vec![lit("m"), lit("q")]),
+                condition("vendor", vec![Literal::Int(2)]),
             ],
         ),
         new_measure(
             "m_riders",
             Aggregate::CountDistinct(id("rider")),
-            vec![cond("dropoff_borough", vec![lit("m")])],
+            vec![condition("dropoff_borough", vec![lit("m")])],
         ),
         new_measure(
             "far_tip",
             Aggregate::Max(id("tip")),
-            vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
+            vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
         ),
         new_measure(
             "zone_four_distance",
             Aggregate::Avg(id("dist")),
-            vec![cond("pu", vec![Literal::Int(4)])],
+            vec![condition("pu", vec![Literal::Int(4)])],
         ),
         new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
         // Over text: a count reads no value, only that there is one.
         new_measure(
             "far_riders",
             Aggregate::CountNotNull(id("rider")),
-            vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
+            vec![condition("dro", vec![Literal::Int(3), Literal::Int(6)])],
         ),
         new_measure("all_tolled", Aggregate::BoolAnd(id("tolled")), vec![]),
         new_measure("any_tolled", Aggregate::BoolOr(id("tolled")), vec![]),
         new_measure(
             "card_tolled",
             Aggregate::BoolOr(id("tolled")),
-            vec![cond("pay", vec![Literal::Int(1)])],
+            vec![condition("pay", vec![Literal::Int(1)])],
         ),
     ]
 }
@@ -463,18 +463,18 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         by.insert(at, AskKey::Bucket);
     }
     let pool = [
-        cond("pay", vec![Literal::Int(1), Literal::Int(2)]),
-        cond("vendor", vec![Literal::Int(2)]),
-        cond("shared", vec![Literal::Bool(false)]),
-        cond("pickup_borough", vec![lit("m")]),
-        cond("dro", vec![Literal::Int(5)]),
-        cond("dropoff_zone", vec![lit("a"), lit("c")]),
-        cond("pu", vec![Literal::Int(1), Literal::Int(3)]),
-        cond("combo_label", vec![lit("x")]),
-        cond("known", vec![Literal::Bool(true)]),
-        cond("unpaid", vec![Literal::Bool(false)]),
-        cond("vend_label", vec![lit("v1")]),
-        cond("home_borough", vec![lit("q"), lit("b")]),
+        condition("pay", vec![Literal::Int(1), Literal::Int(2)]),
+        condition("vendor", vec![Literal::Int(2)]),
+        condition("shared", vec![Literal::Bool(false)]),
+        condition("pickup_borough", vec![lit("m")]),
+        condition("dro", vec![Literal::Int(5)]),
+        condition("dropoff_zone", vec![lit("a"), lit("c")]),
+        condition("pu", vec![Literal::Int(1), Literal::Int(3)]),
+        condition("combo_label", vec![lit("x")]),
+        condition("known", vec![Literal::Bool(true)]),
+        condition("unpaid", vec![Literal::Bool(false)]),
+        condition("vend_label", vec![lit("v1")]),
+        condition("home_borough", vec![lit("q"), lit("b")]),
     ];
     let filter = pool.into_iter().filter(|_| rng.chance(15)).collect();
     let all = &spec.fact("trips").unwrap().measures;
@@ -588,8 +588,8 @@ fn column(name: &str) -> usize {
     }
 }
 
-fn passes(row: &[Datum], conds: &[Condition], dims: &Dims) -> bool {
-    conds
+fn passes(row: &[Datum], filter: &[Condition], dims: &Dims) -> bool {
+    filter
         .iter()
         .all(|condition| holds(&value(row, &condition.key, dims), &condition.values))
 }
@@ -1793,7 +1793,7 @@ fn a_filter_on_a_composite_key_attribute_reads_the_dim() {
     assert_eq!(store.dim_rows("combos"), Some(2));
     // Filtered on the attribute too.
     let mut by_label = by_combo_label();
-    by_label.filter = vec![cond("combo_label", vec![lit("x")])];
+    by_label.filter = vec![condition("combo_label", vec![lit("x")])];
     by_label.keys.clear();
     let row = trip_at_start_from(&mut Rng(4), Datum::Int(1), Datum::Int(1));
     store.add_row("trips", &row).unwrap();
@@ -2345,17 +2345,17 @@ fn trips_filtered(filter: Vec<Condition>) -> Ask {
 fn filter_values_are_of_their_column_type() {
     let mut store = typed(&spec());
     let fits = vec![
-        cond("pay", vec![Literal::Int(1)]),
-        cond("shared", vec![Literal::Bool(true)]),
-        cond("pu", vec![Literal::Int(2)]),
-        cond("pickup_borough", vec![lit("m")]),
+        condition("pay", vec![Literal::Int(1)]),
+        condition("shared", vec![Literal::Bool(true)]),
+        condition("pu", vec![Literal::Int(2)]),
+        condition("pickup_borough", vec![lit("m")]),
     ];
     assert!(store.ask(&trips_filtered(fits)).is_ok());
 
     let wrong = vec![
-        cond("pay", vec![lit("1"), Literal::Int(1)]),
-        cond("shared", vec![Literal::Int(1)]),
-        cond("pickup_borough", vec![Literal::Bool(true)]),
+        condition("pay", vec![lit("1"), Literal::Int(1)]),
+        condition("shared", vec![Literal::Int(1)]),
+        condition("pickup_borough", vec![Literal::Bool(true)]),
     ];
     let errors: Vec<String> = (store.ask(&trips_filtered(wrong)).unwrap_err().iter())
         .map(ToString::to_string)
@@ -2370,7 +2370,7 @@ fn filter_values_are_of_their_column_type() {
     );
 
     // An integer reads as one only at scale 0.
-    let pay = trips_filtered(vec![cond("pay", vec![Literal::Int(1)])]);
+    let pay = trips_filtered(vec![condition("pay", vec![Literal::Int(1)])]);
     let mut types = trip_types();
     types[PAY] = ColumnType::Numeric { scale: 0 };
     store.set_types("trips", &types).unwrap();

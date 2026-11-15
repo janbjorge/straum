@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 mod common;
 
 use common::{
-    Rng, Spilled, cond, dim_row, holds, id, lit, percentile, percentile_disc, table, text,
+    Rng, Spilled, condition, dim_row, holds, id, lit, percentile, percentile_disc, table, text,
 };
 use straum_domain::{
     Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Attribute, ByKey, ColumnType,
@@ -196,7 +196,7 @@ fn measures() -> Vec<Measure> {
         measure("all_even", Aggregate::BoolAnd(id("even"))),
         measure("any_even", Aggregate::BoolOr(id("even"))),
         Measure {
-            filter: vec![cond("country", vec![lit("NO")])],
+            filter: vec![condition("country", vec![lit("NO")])],
             ..measure(FILTERED, Aggregate::Sum(id("qty")))
         },
     ]
@@ -373,8 +373,8 @@ fn value(row: &[Datum], joined: &JoinRow, key: &Identifier) -> Datum {
     }
 }
 
-fn passes(row: &[Datum], joined: &JoinRow, conds: &[Condition]) -> bool {
-    conds
+fn passes(row: &[Datum], joined: &JoinRow, filter: &[Condition]) -> bool {
+    filter
         .iter()
         .all(|condition| holds(&value(row, joined, &condition.key), &condition.values))
 }
@@ -879,7 +879,7 @@ fn a_chain_reads_through_the_first_dim() {
         vec![Datum::Int(10)],
         vec![text("vip")],
     );
-    let vip = ask(&["n"], &[], vec![cond("label", vec![lit("vip")])]);
+    let vip = ask(&["n"], &[], vec![condition("label", vec![lit("vip")])]);
     assert_eq!(values(&store, &vip), [Value::Int(4)]);
     check(&store, &spec, &dims, kinds, &orders, &vip);
 }
@@ -898,8 +898,8 @@ fn where_drops_rows_from_every_ask() {
     kinds[PROMOS] = RefKind::Left;
     kinds[BLOCKED] = RefKind::Left;
     let filter = vec![
-        cond("country", vec![lit("NO"), lit("SE")]),
-        cond("product", vec![Literal::Int(2)]),
+        condition("country", vec![lit("NO"), lit("SE")]),
+        condition("product", vec![Literal::Int(2)]),
     ];
     let (mut store, spec, mut dims) = small(kinds, filter, &orders);
     let all = ask(&["n", "q"], &[], vec![]);
@@ -1177,14 +1177,14 @@ impl Rng {
             measures.push("n");
         }
         let pool = [
-            cond("country", vec![lit("NO")]),
-            cond("label", vec![lit("gold"), lit("silver")]),
-            cond("tag", vec![lit("red")]),
-            cond("customer", vec![Literal::Int(1), Literal::Int(2)]),
-            cond("product", vec![Literal::Int(3)]),
+            condition("country", vec![lit("NO")]),
+            condition("label", vec![lit("gold"), lit("silver")]),
+            condition("tag", vec![lit("red")]),
+            condition("customer", vec![Literal::Int(1), Literal::Int(2)]),
+            condition("product", vec![Literal::Int(3)]),
         ];
         let filter = (pool.into_iter())
-            .filter(|cond| self.chance(20) && keyed(shape, cond.key.as_str()))
+            .filter(|condition| self.chance(20) && keyed(shape, condition.key.as_str()))
             .collect();
         let mut ask = ask(&measures, &by, filter);
         if self.chance(30) {
@@ -1275,7 +1275,7 @@ impl Walk {
     fn new(seed: u64, run: Run) -> Walk {
         let mut rng = Rng(seed);
         let filter = if rng.chance(50) {
-            vec![cond("country", vec![lit("NO"), lit("SE")])]
+            vec![condition("country", vec![lit("NO"), lit("SE")])]
         } else {
             Vec::new()
         };

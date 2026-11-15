@@ -1,6 +1,6 @@
 mod common;
 
-use common::{FEB, JAN, cond, edit, error_lines, id};
+use common::{FEB, JAN, condition, edit, error_lines, id};
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, Attribute, ByKey, Fraction, KeyPart, Literal, Origin,
     RefKind, Spec, SpecError, Via, Width,
@@ -102,7 +102,7 @@ fn taxi_parses() {
     );
     assert_eq!(
         trips.measure("card").unwrap().filter,
-        [cond("payment_type", vec![Literal::Int(1)])]
+        [condition("payment_type", vec![Literal::Int(1)])]
     );
     assert_eq!(
         trips.measure("manhattan_pickups").unwrap().filter[0].key,
@@ -172,8 +172,8 @@ fn keys_go_by_their_select_name() {
     assert_eq!(
         fact.measure("some").unwrap().filter,
         [
-            cond("kind", vec![Literal::Int(1)]),
-            cond("label", vec![Literal::Text("x".into())])
+            condition("kind", vec![Literal::Int(1)]),
+            condition("label", vec![Literal::Text("x".into())])
         ]
     );
     assert!(
@@ -277,11 +277,11 @@ fn literals_and_filters() {
     assert_eq!(
         spec.fact("t").unwrap().measure("n").unwrap().filter,
         [
-            cond("a", vec![Literal::Int(-1), Literal::Int(2)]),
-            cond("name", vec![Literal::Text("it's".into())]),
-            cond("z_id", vec![Literal::Int(3)]),
-            cond("z_id", vec![Literal::Int(4)]),
-            cond("a", vec![Literal::Bool(true)]),
+            condition("a", vec![Literal::Int(-1), Literal::Int(2)]),
+            condition("name", vec![Literal::Text("it's".into())]),
+            condition("z_id", vec![Literal::Int(3)]),
+            condition("z_id", vec![Literal::Int(4)]),
+            condition("a", vec![Literal::Bool(true)]),
         ]
     );
 }
@@ -295,7 +295,7 @@ fn a_column_measure_takes_a_filter() {
     let spec = parse(&src).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().measure("s").unwrap().filter,
-        [cond("a", vec![Literal::Int(1)])]
+        [condition("a", vec![Literal::Int(1)])]
     );
     let errors = sql_errors(&base(
         "count(*) AS n",
@@ -383,7 +383,7 @@ fn percentile_disc_takes_a_fraction_and_one_column() {
     let spec = parse(&base("count(*) AS n", filtered)).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().measures[0].filter,
-        [cond("a", vec![Literal::Int(1)])]
+        [condition("a", vec![Literal::Int(1)])]
     );
 }
 
@@ -516,7 +516,7 @@ fn a_ref_reads_what_the_view_selects() {
     assert_eq!(key_text(&spec, "t"), ["a", "z_id", "bucket"]);
     assert_eq!(
         fact.measure("named").unwrap().filter,
-        [cond("name", vec![Literal::Text("x".into())])]
+        [condition("name", vec![Literal::Text("x".into())])]
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
 
@@ -599,13 +599,13 @@ fn null_ness_keys() {
     assert_eq!(
         fact.measure("closed").unwrap().filter,
         [
-            cond("done", vec![Literal::Bool(true)]),
-            cond("open", vec![Literal::Bool(false)]),
+            condition("done", vec![Literal::Bool(true)]),
+            condition("open", vec![Literal::Bool(false)]),
         ]
     );
     assert_eq!(
         fact.measure("pending").unwrap().filter,
-        [cond("done", vec![Literal::Bool(false)])]
+        [condition("done", vec![Literal::Bool(false)])]
     );
     // A FILTER may come before the key it names.
     let filter_first = NULLS
@@ -630,7 +630,7 @@ fn null_ness_keys() {
         view: id("t"),
         measures: vec![id("n")],
         keys: vec![AskKey::Key(id("done"))],
-        filter: vec![cond("open", vec![Literal::Bool(true)])],
+        filter: vec![condition("open", vec![Literal::Bool(true)])],
         from: JAN,
         to: FEB,
     };
@@ -1716,8 +1716,8 @@ GROUP BY 1, 2, 3, 4";
     assert_eq!(
         fact.filter,
         [
-            cond("a", vec![Literal::Int(1), Literal::Int(2)]),
-            cond("name", vec![Literal::Text("x".into())]),
+            condition("a", vec![Literal::Int(1), Literal::Int(2)]),
+            condition("name", vec![Literal::Text("x".into())]),
         ]
     );
     // Only the fact-side join columns key the cells.

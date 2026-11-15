@@ -666,22 +666,22 @@ fn check_measures<'a>(
                 name: measure.name.clone(),
             });
         }
-        for cond in &measure.filter {
-            if fact.resolve(&cond.key).is_none() {
+        for condition in &measure.filter {
+            if fact.resolve(&condition.key).is_none() {
                 errors.push(SpecError::UnknownKey {
                     fact: name.clone(),
                     measure: Some(measure.name.clone()),
-                    key: cond.key.clone(),
+                    key: condition.key.clone(),
                 });
             }
         }
     }
-    for cond in &fact.filter {
-        if fact.resolve(&cond.key).is_none() {
+    for condition in &fact.filter {
+        if fact.resolve(&condition.key).is_none() {
             errors.push(SpecError::UnknownKey {
                 fact: name.clone(),
                 measure: None,
-                key: cond.key.clone(),
+                key: condition.key.clone(),
             });
         }
     }

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{FEB, JAN, cond, id, strings};
+use common::{FEB, JAN, condition, id, strings};
 use straum_domain::{Ask, AskKey, Literal};
 use straum_notation::parse_ask;
 
@@ -51,10 +51,10 @@ fn reads_every_part() {
                 key("borough"),
             ],
             filter: vec![
-                cond("borough", vec![text("Manhattan"), text("Queens")]),
-                cond("payment_type", vec![Literal::Int(1)]),
-                cond("shared", vec![Literal::Bool(false)]),
-                cond("vendor_id", vec![Literal::Int(1)]),
+                condition("borough", vec![text("Manhattan"), text("Queens")]),
+                condition("payment_type", vec![Literal::Int(1)]),
+                condition("shared", vec![Literal::Bool(false)]),
+                condition("vendor_id", vec![Literal::Int(1)]),
             ],
             from: JAN,
             to: FEB,

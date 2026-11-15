@@ -14,7 +14,7 @@ pub fn id(name: &str) -> Identifier {
     Identifier::new(name).unwrap()
 }
 
-pub fn cond(key: &str, values: Vec<Literal>) -> Condition {
+pub fn condition(key: &str, values: Vec<Literal>) -> Condition {
     Condition {
         key: id(key),
         values,

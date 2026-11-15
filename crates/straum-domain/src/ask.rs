@@ -68,9 +68,9 @@ impl Spec {
                 errors.push(AskError::AskedTwice(name.to_owned()));
             }
         }
-        for cond in &ask.filter {
-            if fact.resolve(&cond.key).is_none() {
-                errors.push(AskError::UnknownKey(cond.key.clone()));
+        for condition in &ask.filter {
+            if fact.resolve(&condition.key).is_none() {
+                errors.push(AskError::UnknownKey(condition.key.clone()));
             }
         }
 

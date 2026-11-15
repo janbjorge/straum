@@ -643,8 +643,8 @@ impl Store {
             })
             .collect();
         let mut groups = Groups::new(&by);
-        let mut filter = self.tests(fact, &read, &fact.filter);
-        filter.extend(self.tests(fact, &read, &ask.filter));
+        let mut filter = self.condition_checks(fact, &read, &fact.filter);
+        filter.extend(self.condition_checks(fact, &read, &ask.filter));
         let asked: Vec<&Measure> = (ask.measures.iter())
             .map(|name| fact.measure(name.as_str()).expect(CHECKED))
             .collect();
@@ -652,7 +652,7 @@ impl Store {
             .map(|measure| Asked {
                 partials: Partials::new(&measure.aggregate),
                 state: rollup.state_of(&measure.aggregate),
-                filter: self.tests(fact, &read, &measure.filter),
+                filter: self.condition_checks(fact, &read, &measure.filter),
             })
             .collect();
         let columns = answer_columns(ask, rollup, &by, &asked);
@@ -694,13 +694,13 @@ impl Store {
     /// [`Spec::check`].
     fn check_types(&self, fact: &Fact, read: &Read<'_>, ask: &Ask) -> Result<(), Vec<AskError>> {
         let mut wrong = Vec::new();
-        for cond in &ask.filter {
-            let lookup = self.lookup(fact, read, &cond.key);
+        for condition in &ask.filter {
+            let lookup = self.lookup(fact, read, &condition.key);
             let column = lookup.column_type(read.rollup());
-            for value in &cond.values {
+            for value in &condition.values {
                 if !column.fits(value) {
                     wrong.push(AskError::WrongType {
-                        key: cond.key.clone(),
+                        key: condition.key.clone(),
                         column,
                         value: value.clone(),
                     });
@@ -851,22 +851,22 @@ impl Store {
         }
     }
 
-    fn tests<'a>(
+    fn condition_checks<'a>(
         &self,
         fact: &Fact,
         read: &Read<'_>,
-        conds: &'a [Condition],
+        filter: &'a [Condition],
     ) -> Vec<ConditionCheck<'_, 'a>> {
-        let mut tests = Vec::with_capacity(conds.len());
-        for cond in conds {
-            let lookup = self.lookup(fact, read, &cond.key);
-            tests.push(ConditionCheck {
+        let mut checks = Vec::with_capacity(filter.len());
+        for condition in filter {
+            let lookup = self.lookup(fact, read, &condition.key);
+            checks.push(ConditionCheck {
                 memo: vec![Known::Unknown; lookup.bound(read.rollup())],
                 lookup,
-                values: &cond.values,
+                values: &condition.values,
             });
         }
-        tests
+        checks
     }
 }
 

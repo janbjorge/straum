@@ -202,7 +202,7 @@ impl Walker {
         if let Some(expr) = selection {
             and_parts(expr, &mut parts);
         }
-        let mut conds = Vec::new();
+        let mut filter = Vec::new();
         let (mut from, mut to) = (Bound::Missing, Bound::Missing);
         for part in parts {
             if let Some((end, value)) = bucket_bound(part) {
@@ -221,7 +221,7 @@ impl Walker {
                 };
                 continue;
             }
-            self.conds(part, &mut conds, &mut Names::Ask(params));
+            self.read_conditions(part, &mut filter, &mut Names::Ask(params));
         }
         for (end, bound) in [(End::From, &from), (End::To, &to)] {
             if matches!(bound, Bound::Missing) {
@@ -233,7 +233,7 @@ impl Walker {
             }
         }
         Where {
-            filter: conds,
+            filter,
             from: from.seconds(),
             to: to.seconds(),
         }

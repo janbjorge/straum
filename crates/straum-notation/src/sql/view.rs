@@ -434,7 +434,7 @@ impl Walker {
         }
         self.ref_attrs(at, &mut scope.refs, attrs);
         let as_text = cast_columns(&mut scope);
-        let filter = self.key_conds(&scope, conditions)?;
+        let filter = self.read_filter(&scope, conditions)?;
         if measures_share_filter(&measures) {
             self.error(
                 at,
@@ -523,20 +523,20 @@ impl Walker {
     /// The view's WHERE and a measure's FILTER alike: `=`, `IN`, `IS NULL`
     /// and `IS NOT NULL` on columns, joined by AND, each reaching the key
     /// that reads the column. `None` once a condition fails.
-    fn key_conds<'e>(
+    fn read_filter<'e>(
         &mut self,
         scope: &Scope,
         conditions: impl IntoIterator<Item = &'e sql::Expr>,
     ) -> Option<Vec<Condition>> {
-        let mut conds = Vec::new();
+        let mut filter = Vec::new();
         for condition in conditions {
             let before = self.errors.len();
-            self.conds(condition, &mut conds, &mut Names::View(scope));
+            self.read_conditions(condition, &mut filter, &mut Names::View(scope));
             if self.errors.len() > before {
                 return None;
             }
         }
-        Some(conds)
+        Some(filter)
     }
 
     /// A key item: a fact column, its null-ness, or a dim column through its
@@ -1169,7 +1169,7 @@ impl Walker {
 
     /// `FILTER (WHERE alias.column IS NULL)` counts through the null-ness
     /// key over that column, which holds for the rows the test picks out.
-    pub(super) fn null_cond(
+    pub(super) fn null_condition(
         &mut self,
         scope: &Scope,
         test: &sql::Expr,
@@ -1302,7 +1302,7 @@ impl Walker {
         match name.as_deref() {
             Some("percentile_disc") => {
                 let aggregate = self.percentile_disc(scope, function, &call);
-                let filter = self.key_conds(scope, function.filter.as_deref())?;
+                let filter = self.read_filter(scope, function.filter.as_deref())?;
                 return Some((aggregate?, filter));
             }
             Some("percentile_cont") => {
@@ -1358,7 +1358,7 @@ impl Walker {
                 of_column(self.uncast_fact_column(scope, arg, "an aggregated column")?)
             }
         };
-        let filter = self.key_conds(scope, function.filter.as_deref())?;
+        let filter = self.read_filter(scope, function.filter.as_deref())?;
         Some((aggregate, filter))
     }
 

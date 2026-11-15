@@ -61,7 +61,7 @@ pub fn lit(value: &str) -> Literal {
     Literal::Text(value.into())
 }
 
-pub fn cond(key: &str, values: Vec<Literal>) -> Condition {
+pub fn condition(key: &str, values: Vec<Literal>) -> Condition {
     Condition {
         key: id(key),
         values,

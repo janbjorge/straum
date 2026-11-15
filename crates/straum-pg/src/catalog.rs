@@ -756,10 +756,10 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
         let filters = (fact.measures.iter())
             .map(|measure| (format!("measure {}", measure.name), &measure.filter))
             .chain(std::iter::once(("WHERE".to_owned(), &fact.filter)));
-        for (what, conds) in filters {
-            for cond in conds {
+        for (what, filter) in filters {
+            for condition in filter {
                 let (table, column, column_type) =
-                    match fact.resolve(&cond.key).expect("checked by Spec::new") {
+                    match fact.resolve(&condition.key).expect("checked by Spec::new") {
                         Key::ByKey(ByKey::Column { column, .. }) => {
                             (facts, column, facts.column_type(column))
                         }
@@ -772,13 +772,13 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
                         }
                     };
                 let labels = catalog.labels(table, column);
-                for value in &cond.values {
+                for value in &condition.values {
                     // The rule asks follow too.
                     if !column_type.fits(value) {
                         problems.push(format!(
                             "view {}: {what} compares {} ({column_type}) with {}",
                             fact.name,
-                            cond.key,
+                            condition.key,
                             literal(value)
                         ));
                     } else if let (Some((type_name, labels)), Literal::Text(text)) =
@@ -788,7 +788,7 @@ fn check_refs(spec: &Spec, tables: &Tables, catalog: &Catalog, problems: &mut Ve
                         problems.push(format!(
                             "view {}: {what} compares {} with {}, which is no label of {type_name}",
                             fact.name,
-                            cond.key,
+                            condition.key,
                             literal(value)
                         ));
                     }
