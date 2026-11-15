@@ -13,7 +13,7 @@ use straum_app::{Commit, Lsn};
 
 use super::Record;
 use super::heap::{Change, Heap};
-use super::messages::{Publisher, Table};
+use super::messages::{Layouts, Publisher};
 use super::transactions::{Committed, Consistency, Snapshot, TooBig, Transactions};
 use super::xact;
 use crate::catalog::Checked;
@@ -51,17 +51,15 @@ pub(crate) struct Pipeline {
 }
 
 impl Pipeline {
-    /// `tables` are the layouts of `checked`, the spec's tables; `labels`
-    /// their enums' labels by OID.
+    /// `layouts` are those of `checked`, the spec's tables.
     pub(crate) fn new(
         checked: Vec<Checked>,
-        tables: Vec<Table>,
-        labels: HashMap<u32, String>,
+        layouts: Layouts,
         major: u32,
         limit: usize,
         max_bytes: usize,
     ) -> Pipeline {
-        let publisher = Publisher::new(tables, labels);
+        let publisher = Publisher::new(layouts);
         Pipeline {
             major,
             limit,
@@ -93,7 +91,7 @@ impl Pipeline {
     pub(crate) fn record(
         &mut self,
         record: &Record,
-        layouts: impl FnMut() -> Result<Vec<Table>, Error>,
+        layouts: impl FnMut() -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
         let commits = self.read(record, layouts)?;
         let held = self.bytes();
@@ -109,7 +107,7 @@ impl Pipeline {
     fn read(
         &mut self,
         record: &Record,
-        mut layouts: impl FnMut() -> Result<Vec<Table>, Error>,
+        mut layouts: impl FnMut() -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
         let changes = self.heap.apply(record)?;
         self.transactions.hold(record.xid, record.lsn, changes);
@@ -214,6 +212,7 @@ mod tests {
 
     use super::*;
     use crate::pgoutput::{Column, Relation};
+    use crate::wal::messages::Table;
     use crate::wal::tests::{BlockSpec, Spec, assemble};
     use crate::wal::tuple::{Attribute, Kind};
     use crate::wal::{RelationFile, decode};
@@ -252,8 +251,10 @@ mod tests {
         let checked = Checked::public("t", "t", &["id"], vec![ColumnType::Int]);
         Pipeline::new(
             vec![checked],
-            vec![table()],
-            HashMap::new(),
+            Layouts {
+                tables: vec![table()],
+                labels: HashMap::new(),
+            },
             18,
             2,
             max_bytes,
@@ -333,7 +334,7 @@ mod tests {
         }
     }
 
-    fn no_layouts() -> Result<Vec<Table>, Error> {
+    fn no_layouts() -> Result<Layouts, Error> {
         unreachable!("no commit here invalidates a table")
     }
 
@@ -457,7 +458,7 @@ mod tests {
         let calls = Cell::new(0);
         let layouts = || {
             calls.set(calls.get() + 1);
-            Ok(Vec::new())
+            Ok(Layouts::default())
         };
         // The table is gone now: its tables are unfit.
         let commits = pipeline.record(&ddl, layouts).unwrap();
@@ -489,7 +490,10 @@ mod tests {
         let calls = Cell::new(0);
         let layouts = || {
             calls.set(calls.get() + 1);
-            Ok(vec![table()])
+            Ok(Layouts {
+                tables: vec![table()],
+                labels: HashMap::new(),
+            })
         };
         let ddl = |wal: &mut Wal, xid: u32| {
             let mut main = 7i64.to_le_bytes().to_vec();

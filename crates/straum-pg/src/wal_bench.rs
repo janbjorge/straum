@@ -22,7 +22,7 @@ use crate::pgoutput::{self, CopyMessage};
 use crate::physical::tables;
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::{POLL, status_update};
-use crate::wal::messages::Table;
+use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, Snapshot};
 use crate::wal::{Record, Records};
@@ -140,7 +140,7 @@ fn physical_wal_bench() {
     );
     let major = number(&mut sql, "SELECT current_setting('server_version_num')") / 10_000;
     let major = u32::try_from(major).unwrap();
-    let (layouts, labels) = tables(&mut sql, &checked).unwrap();
+    let layouts = tables(&mut sql, &checked).unwrap();
     sql.execute("SELECT pg_log_standby_snapshot()").unwrap();
     let snapshot = sql.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
         .clone()
@@ -224,7 +224,6 @@ fn physical_wal_bench() {
         let mut pipeline = Pipeline::new(
             checked.clone(),
             layouts.clone(),
-            labels.clone(),
             major,
             COPY_BATCH,
             MAX_BYTES,
@@ -394,8 +393,8 @@ fn fastest(best: &mut [Read], read: &[Read]) {
 
 /// The workload changes no table: a commit that invalidates one is a
 /// statistic or a hint, and the layout stays.
-fn relayout(layouts: &[Table]) -> Result<Vec<Table>, crate::error::Error> {
-    Ok(layouts.to_vec())
+fn relayout(layouts: &Layouts) -> Result<Layouts, crate::error::Error> {
+    Ok(layouts.clone())
 }
 
 fn rows(commits: &[Commit]) -> usize {

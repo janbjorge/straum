@@ -32,6 +32,7 @@ use crate::stream::{Reader, Stream};
 use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, PageId, Tuple};
+use crate::wal::messages::Layouts;
 use crate::wal::transactions::{Committed, Snapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
@@ -1754,6 +1755,27 @@ fn follows_the_physical_wal() {
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }
 
+/// A column of an enum added while the physical stream runs reads as its
+/// label: the layouts read again after DDL bring their enums' labels.
+#[test]
+fn an_enum_column_added_while_streaming_reads_as_its_labels() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "added_enum", TABLES);
+    let mut rng = Rng::new(23);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    db.run(&rng.trip(1));
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let mut next = 1;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    db.run(
+        "CREATE TYPE $S.mood AS ENUM ('calm', 'rushed');
+         ALTER TABLE $S.trips ADD mood $S.mood",
+    );
+    db.run("UPDATE $S.trips SET mood = 'rushed', tip = tip + 1");
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
 /// A transaction prepared before the start holds it back until it ends,
 /// as it does a logical slot's creation: the WAL before the redo point
 /// may hold its changes. The error names it; once it ends Straum starts.
@@ -2346,7 +2368,7 @@ fn reads_the_values_select_reads() {
         types: Vec::new(),
         enums: Vec::new(),
     };
-    let (tables, labels) = physical::tables(&mut conn, &[checked]).unwrap();
+    let Layouts { tables, labels } = physical::tables(&mut conn, &[checked]).unwrap();
     let [table] = &tables[..] else {
         panic!("{tables:?}")
     };
@@ -3117,11 +3139,10 @@ impl Pipeline {
         let mut conn = Connection::connect(&pg.dsn, false).unwrap();
         let tables = catalog::read(&mut conn, spec, publication, PHYSICAL).unwrap();
         let checked: Vec<Checked> = tables.facts.into_iter().chain(tables.dims).collect();
-        let (layouts, labels) = physical::tables(&mut conn, &checked).unwrap();
+        let layouts = physical::tables(&mut conn, &checked).unwrap();
         let mut inner = crate::wal::pipeline::Pipeline::new(
             checked.clone(),
             layouts,
-            labels,
             major,
             ROW_LIMIT,
             PAGE_MEMORY,
@@ -3137,7 +3158,7 @@ impl Pipeline {
 
     fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
         let (conn, checked) = (&mut self.conn, &self.checked);
-        let layouts = || physical::tables(conn, checked).map(|(tables, _)| tables);
+        let layouts = || physical::tables(conn, checked);
         self.inner.record(record, layouts).unwrap()
     }
 

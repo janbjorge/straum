@@ -2,7 +2,6 @@
 //! the last checkpoint's redo point, and the WAL it streams, read as
 //! records. The stream carries the whole server's WAL, every database.
 
-use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,7 +16,7 @@ use crate::pgoutput::{Column, Relation};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::POLL;
 use crate::value::{read, type_of};
-use crate::wal::messages::Table;
+use crate::wal::messages::{Layouts, Table};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
@@ -179,7 +178,7 @@ impl Replay {
         let mut commits = Vec::new();
         while let Some(record) = self.records.next_record()? {
             let (catalog, checked) = (&mut self.catalog, &self.checked);
-            let layouts = || tables(catalog, checked).map(|(tables, _)| tables);
+            let layouts = || tables(catalog, checked);
             commits.extend(self.pipeline.record(record, layouts)?);
             self.read = record.next();
         }
@@ -191,12 +190,8 @@ impl Replay {
     }
 }
 
-/// The layout of each of `checked`'s tables, and the labels of the enums
-/// their columns have, by `pg_enum` OID, which is what a row stores.
-pub(crate) fn tables(
-    conn: &mut Connection,
-    checked: &[Checked],
-) -> Result<(Vec<Table>, HashMap<u32, String>), Error> {
+/// The layout of each of `checked`'s tables, and their enums' labels.
+pub(crate) fn tables(conn: &mut Connection, checked: &[Checked]) -> Result<Layouts, Error> {
     let names: Vec<String> = checked
         .iter()
         .map(|t| {
@@ -297,5 +292,5 @@ pub(crate) fn tables(
             _ => Err(shape()),
         })
         .collect::<Result<_, Error>>()?;
-    Ok((tables, labels))
+    Ok(Layouts { tables, labels })
 }

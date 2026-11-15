@@ -36,6 +36,14 @@ pub(crate) struct Table {
     pub(crate) missing: Vec<Datum>,
 }
 
+/// The tables the physical stream reads, and the labels of the enums
+/// their columns have, by `pg_enum` OID, which is what a row stores.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Layouts {
+    pub(crate) tables: Vec<Table>,
+    pub(crate) labels: HashMap<u32, String>,
+}
+
 pub(crate) struct Publisher {
     tables: FastMap<RelationFile, Table>,
     /// Enum labels by `pg_enum` OID.
@@ -47,10 +55,10 @@ pub(crate) struct Publisher {
 }
 
 impl Publisher {
-    pub(crate) fn new(tables: Vec<Table>, labels: HashMap<u32, String>) -> Publisher {
+    pub(crate) fn new(layouts: Layouts) -> Publisher {
         Publisher {
-            tables: tables.into_iter().map(|t| (t.file, t)).collect(),
-            labels,
+            tables: layouts.tables.into_iter().map(|t| (t.file, t)).collect(),
+            labels: layouts.labels,
             announced: HashSet::new(),
             unfit: Vec::new(),
         }
@@ -81,8 +89,9 @@ impl Publisher {
     /// now, rewritten or truncated, or gone, no longer reads as loaded:
     /// its pages went with the old file. Any other is announced again
     /// before its next change, as pgoutput does after an invalidation,
-    /// and the decoder sees what changed.
-    pub(crate) fn relayout(&mut self, stale: &[u32], fresh: Vec<Table>) {
+    /// and the decoder sees what changed. A column added may be of an
+    /// enum no table had before, so the labels come along.
+    pub(crate) fn relayout(&mut self, stale: &[u32], fresh: Layouts) {
         for &oid in stale {
             let Some(file) = (self.tables.values())
                 .find(|t| t.relation.id == oid)
@@ -90,7 +99,7 @@ impl Publisher {
             else {
                 continue;
             };
-            match fresh.iter().find(|t| t.relation.id == oid) {
+            match fresh.tables.iter().find(|t| t.relation.id == oid) {
                 Some(table) if table.file == file => {
                     self.tables.insert(file, table.clone());
                     self.announced.remove(&file);
@@ -98,6 +107,7 @@ impl Publisher {
                 _ => self.unfit.push(oid),
             }
         }
+        self.labels.extend(fresh.labels);
     }
 
     /// Feeds `committed` to `decoder` as messages: the commit it makes.
@@ -299,8 +309,15 @@ mod tests {
         }
     }
 
+    fn layouts(tables: Vec<Table>) -> Layouts {
+        Layouts {
+            tables,
+            labels: HashMap::new(),
+        }
+    }
+
     fn publish(changes: Vec<Change>) -> Result<Option<straum_app::Commit>, Error> {
-        let mut publisher = Publisher::new(vec![table()], HashMap::new());
+        let mut publisher = Publisher::new(layouts(vec![table()]));
         publisher.publish(&committed(changes), &mut decoder())
     }
 
@@ -347,7 +364,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            Publisher::new(vec![table()], HashMap::new()).files(),
+            Publisher::new(layouts(vec![table()])).files(),
             [FILE].into()
         );
     }
@@ -395,7 +412,7 @@ mod tests {
 
     #[test]
     fn reads_a_column_added_without_a_default_as_null() {
-        let mut publisher = Publisher::new(vec![table()], HashMap::new());
+        let mut publisher = Publisher::new(layouts(vec![table()]));
         let changes = vec![Change::Insert {
             file: FILE,
             new: row(2, &short("z")),
@@ -424,7 +441,7 @@ mod tests {
             vec![ColumnType::Int, ColumnType::Int],
         );
         let mut decoder = Decoder::new(vec![checked], 10);
-        let mut publisher = Publisher::new(vec![table], HashMap::new());
+        let mut publisher = Publisher::new(layouts(vec![table]));
         let changes = vec![Change::Insert {
             file: FILE,
             new: row(3, &short("c")),
@@ -442,7 +459,7 @@ mod tests {
 
     #[test]
     fn finds_the_tables_a_commit_invalidates() {
-        let publisher = Publisher::new(vec![table()], HashMap::new());
+        let publisher = Publisher::new(layouts(vec![table()]));
         assert_eq!(publisher.stale(&invalidating(5, 77).invalidated), [77]);
         assert_eq!(publisher.stale(&invalidating(5, 0).invalidated), [77]);
         assert_eq!(
@@ -461,7 +478,7 @@ mod tests {
 
     #[test]
     fn announces_a_table_again_after_it_changes() {
-        let mut publisher = Publisher::new(vec![table()], HashMap::new());
+        let mut publisher = Publisher::new(layouts(vec![table()]));
         let mut decoder = decoder();
         let insert = || {
             committed(vec![Change::Insert {
@@ -471,7 +488,7 @@ mod tests {
         };
         publisher.publish(&insert(), &mut decoder).unwrap();
         // Nothing changed for the decoder: rows read on.
-        publisher.relayout(&[77], vec![table()]);
+        publisher.relayout(&[77], layouts(vec![table()]));
         let commit = publisher.publish(&insert(), &mut decoder).unwrap().unwrap();
         assert!(matches!(commit.changes[..], [Applied::Insert { .. }]));
         // `name` now reads as another type: the decoder says unfit.
@@ -482,7 +499,7 @@ mod tests {
             align: 8,
             kind: INT,
         };
-        publisher.relayout(&[77], vec![retyped]);
+        publisher.relayout(&[77], layouts(vec![retyped]));
         let mut changes = Vec::new();
         let mut body = vec![0];
         body.extend(1i32.to_le_bytes());
@@ -505,7 +522,7 @@ mod tests {
             "{commit:?}"
         );
         // An OID it doesn't read: nothing.
-        publisher.relayout(&[78], Vec::new());
+        publisher.relayout(&[78], Layouts::default());
         assert_eq!(
             publisher
                 .publish(&committed(Vec::new()), &mut decoder)
@@ -524,9 +541,9 @@ mod tests {
             ..table()
         };
         for fresh in [vec![rewritten], Vec::new()] {
-            let mut publisher = Publisher::new(vec![table()], HashMap::new());
+            let mut publisher = Publisher::new(layouts(vec![table()]));
             let mut decoder = decoder();
-            publisher.relayout(&[77], fresh);
+            publisher.relayout(&[77], layouts(fresh));
             // Said even by a commit that changed no row.
             let commit = publisher.publish(&invalidating(5, 77), &mut decoder);
             let commit = commit.unwrap().unwrap();

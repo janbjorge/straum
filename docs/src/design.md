@@ -123,7 +123,8 @@ With `--wal physical`, step 2 differs (ADR-0049):
 
 The thread reads on through the load, so the walsender never waits on
 a reply. The pure parts, `wal/` and the pipeline, read no socket: a
-table's layout read again after DDL comes in through a closure.
+table's layout read again after DDL, with its enums' labels, comes in
+through a closure.
 
 ## The store
 
