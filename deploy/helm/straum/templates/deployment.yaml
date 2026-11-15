@@ -48,7 +48,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - run
-            - --spec
             - /etc/straum/spec.sql
             - --listen
             - 0.0.0.0:8080

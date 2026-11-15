@@ -326,7 +326,7 @@ impl Drop for Running {
 /// returns. The role `straum` gets its password from the DSN the plan
 /// reads, the one `straum run` connects with after.
 fn set_up(pg: &PostgresContainer, spec: &str, hold: Option<&str>) -> Vec<String> {
-    let mut plan = straum(&["plan", "--spec", spec]);
+    let mut plan = straum(&["plan", spec]);
     plan.env("STRAUM_DSN", pg.dsn("straum"));
     let (code, plan, _) = output(&mut plan);
     assert_eq!(code, Some(0));
@@ -358,15 +358,7 @@ fn serves_asks_from_postgres() {
     // From a file, as a mounted secret would give it.
     let dsn = scratch.file("dsn", &format!("{}\n", pg.dsn("straum")));
     let mut straum = run(
-        &[
-            "run",
-            "--spec",
-            &spec,
-            "--listen",
-            "127.0.0.1:0",
-            "--dsn-file",
-            &dsn,
-        ],
+        &["run", &spec, "--listen", "127.0.0.1:0", "--dsn-file", &dsn],
         "not a DSN",
     );
     straum.wait_for("ready", &Until::Ready);
@@ -543,7 +535,7 @@ fn waits_for_the_setup() {
     let spec = scratch.file("spec.sql", SPEC);
     let publication = set_up(&pg, &spec, Some("CREATE PUBLICATION"));
     let mut straum = run(
-        &["run", "--spec", &spec, "--listen", "127.0.0.1:0"],
+        &["run", &spec, "--listen", "127.0.0.1:0"],
         &pg.dsn("straum"),
     );
     // Each try waits twice as long as the one before.
@@ -573,7 +565,7 @@ fn plan_prints_the_setup_sql() {
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let parsed = straum_notation::parse(SPEC).unwrap();
-    let (code, stdout, stderr) = output(&mut straum(&["plan", "--spec", &spec]));
+    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec]));
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert_eq!(
         stdout,
@@ -585,7 +577,7 @@ fn plan_prints_the_setup_sql() {
             straum_pg::Replication::Logical
         )
     );
-    let mut custom = straum(&["plan", "--publication", "p", "--spec", &spec, "--role", "r"]);
+    let mut custom = straum(&["plan", "--publication", "p", &spec, "--role", "r"]);
     let (_, stdout, _) = output(&mut custom);
     assert_eq!(
         stdout,
@@ -596,7 +588,7 @@ fn plan_prints_the_setup_sql() {
     // --role still names the role. The password has a hyphen, which no
     // base64 verifier can contain, so the check can't trip on chance.
     let dsn = scratch.file("dsn", "postgres://reader:plain-pw@db/app\n");
-    let mut with_dsn = straum(&["plan", "--spec", &spec, "--dsn-file", &dsn]);
+    let mut with_dsn = straum(&["plan", &spec, "--dsn-file", &dsn]);
     let (code, stdout, stderr) = output(&mut with_dsn);
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     let role = "CREATE ROLE \"reader\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:";
@@ -605,14 +597,14 @@ fn plan_prints_the_setup_sql() {
         !stdout.contains("plain-pw") && !stdout.contains("\\password"),
         "{stdout}"
     );
-    let mut named = straum(&["plan", "--spec", &spec, "--role", "r"]);
+    let mut named = straum(&["plan", &spec, "--role", "r"]);
     named.env("STRAUM_DSN", "postgres://reader@db/app");
     let (_, stdout, _) = output(&mut named);
     assert!(
         stdout.contains("CREATE ROLE \"r\" LOGIN REPLICATION;\n"),
         "{stdout}"
     );
-    let mut bad = straum(&["plan", "--spec", &spec]);
+    let mut bad = straum(&["plan", &spec]);
     bad.env("STRAUM_DSN", "mysql://reader@db/app");
     let (code, _, stderr) = output(&mut bad);
     assert_eq!(code, Some(1));
@@ -641,10 +633,7 @@ fn prints_help_and_version() {
     }
     let (code, stdout, _) = output(&mut straum(&["plan", "--help"]));
     assert_eq!(code, Some(0));
-    assert!(
-        stdout.starts_with("usage: straum plan --spec FILE"),
-        "{stdout}"
-    );
+    assert!(stdout.starts_with("usage: straum plan FILE"), "{stdout}");
 }
 
 #[test]
@@ -683,34 +672,30 @@ fn says_what_is_wrong() {
     let not_found = format!("straum: reading {missing}: No such file or directory (os error 2)\n");
 
     let cases: &[(&[&str], Option<&str>, String)] = &[
-        (&["plan", "--spec", &missing], None, not_found.clone()),
+        (&["plan", &missing], None, not_found.clone()),
+        (&["plan", &bad], None, format!("straum: {bad}: line 1: ")),
         (
-            &["plan", "--spec", &bad],
-            None,
-            format!("straum: {bad}: line 1: "),
-        ),
-        (
-            &["run", "--spec", &spec],
+            &["run", &spec],
             None,
             "straum: set STRAUM_DSN or pass --dsn-file\n".to_owned(),
         ),
         (
-            &["run", "--spec", &spec],
+            &["run", &spec],
             Some("mysql://straum@db/straum"),
             "straum: DSN must start with postgres:// or postgresql://\n".to_owned(),
         ),
         (
-            &["run", "--spec", &spec, "--dsn-file", &missing],
+            &["run", &spec, "--dsn-file", &missing],
             Some("postgres://straum@db/straum"),
             not_found,
         ),
         (
-            &["run", "--spec", &spec, "--listen", "nowhere"],
+            &["run", &spec, "--listen", "nowhere"],
             Some("postgres://straum@db/straum"),
             "straum: listening on nowhere: invalid socket address\n".to_owned(),
         ),
         (
-            &["run", "--spec", &spec, "--listen", &taken],
+            &["run", &spec, "--listen", &taken],
             Some("postgres://straum:secret@db/straum"),
             format!("straum: listening on {taken}: Address already in use"),
         ),

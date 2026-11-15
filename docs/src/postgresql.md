@@ -26,7 +26,7 @@ the provider's parameter and restart there:
 
 ## 2. Run the setup SQL
 
-`straum plan --spec FILE` prints the SQL that lets Straum read the spec's
+`straum plan FILE` prints the SQL that lets Straum read the spec's
 tables. With `STRAUM_DSN` or `--dsn-file` set, the role is the DSN's
 user, and its password goes in as a SCRAM-SHA-256 verifier, so the
 password itself appears in neither the SQL nor the server's log. Without
@@ -142,9 +142,9 @@ slot and rebuilds each change from the pages it holds (ADR-0049). The
 commits it yields equal the logical stream's; the tests check that on a
 server with both.
 
-`straum plan --wal physical --spec FILE` prints the setup: the role and
-its grants, with no `wal_level` change, publication or `REPLICA
-IDENTITY FULL`:
+`straum plan FILE --wal physical` prints the setup: the role and its
+grants, with no `wal_level` change, publication or `REPLICA IDENTITY
+FULL`:
 
 ```sql
 -- Straum setup: run once, as an owner of the tables.

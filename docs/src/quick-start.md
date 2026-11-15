@@ -60,7 +60,7 @@ the tables and publishes them. Run the SQL as the tables' owner:
 ```sh
 export STRAUM_DSN='postgres://straum:straum@straum-pg:5432/postgres?sslmode=disable'
 docker run --rm -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
-  plan --spec /spec/trips.sql | docker exec -i straum-pg psql -U postgres
+  plan /spec/trips.sql | docker exec -i straum-pg psql -U postgres
 ```
 
 This container has no TLS, hence `sslmode=disable`. Otherwise Straum
@@ -69,7 +69,7 @@ always connects with TLS. Then run it:
 ```sh
 docker run --rm --name straum --network straum -p 8080:8080 \
   -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
-  run --spec /spec/trips.sql
+  run /spec/trips.sql
 ```
 
 ```text
@@ -173,11 +173,11 @@ The same steps work on a database you have:
 1. Take the `GROUP BY` your app runs most and write it as a view: the
    time column in `date_bin`, the columns it filters and groups by as
    keys, its aggregates as measures ([Writing a spec](spec.md)).
-2. `straum plan --spec FILE` prints the setup SQL, or what is wrong
-   with the spec. A table owner runs the SQL once. PostgreSQL 17 and
-   18 also need `wal_level = logical`, which takes a restart, or
+2. `straum plan FILE` prints the setup SQL, or what is wrong with the
+   spec. A table owner runs the SQL once. PostgreSQL 17 and 18 also
+   need `wal_level = logical`, which takes a restart, or
    `--wal physical` ([Setting up PostgreSQL](postgresql.md)).
-3. `straum run --spec FILE` with `STRAUM_DSN` set, then ask.
+3. `straum run FILE` with `STRAUM_DSN` set, then ask.
 
 Start with few keys. Memory follows cells, one per distinct
 combination of keys and bucket ([Cells](how-it-works.md#cells)).

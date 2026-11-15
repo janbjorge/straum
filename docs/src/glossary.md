@@ -29,7 +29,8 @@ are open.
 ## Spec
 
 - **Spec** (`Spec`): the file of `CREATE VIEW` statements Straum reads
-  at start, and the parsed whole. Also the `--spec FILE` flag.
+  at start, and the parsed whole. `straum run` and `straum plan` take
+  that file as `FILE`.
 - **View** (`Fact`): one `CREATE VIEW` in the spec, and the name asks
   read `FROM`. Never created in PostgreSQL. Errors say "view";
   `straum plan` and the setup check say "fact" and "dim" for a

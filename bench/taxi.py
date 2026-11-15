@@ -203,7 +203,7 @@ def main() -> int:
     args = parser.parse_args()
     straum = build()
     plan = subprocess.check_output(
-        [straum, "plan", "--spec", SPEC, "--wal", args.wal], text=True
+        [straum, "plan", SPEC, "--wal", args.wal], text=True
     )
     # Docker publishes the port on every interface while this runs.
     password = secrets.token_hex(16)
@@ -427,7 +427,6 @@ async def serve(straum: str, dsn: str, *flags: str):
     server = await asyncio.create_subprocess_exec(
         straum,
         "run",
-        "--spec",
         SPEC,
         "--listen",
         f"127.0.0.1:{port}",

@@ -1,8 +1,10 @@
 //! Reading a command line into a `Command`. `command` takes the words
-//! after `straum`: the first names the command, `Flags::read` checks the
-//! flags against the ones that command takes, and each `*_command`
-//! function builds the command from them, filling in defaults. A line
-//! Straum can't run becomes a `Usage` error that `main.rs` prints.
+//! after `straum`: the first names the command. `run` and `plan` take
+//! the spec as the one word that is not a flag; `ask` takes its query
+//! and parameters after the flags. `Flags::read` checks the flags
+//! against the ones that command takes, and each `*_command` function
+//! builds the command from them, filling in defaults. A line Straum
+//! can't run becomes a `Usage` error that `main.rs` prints.
 
 use std::fmt::{self, Display};
 use std::time::Duration;
@@ -88,7 +90,6 @@ impl Name {
     fn flags(self) -> &'static [&'static str] {
         match self {
             Name::Run => &[
-                "--spec",
                 "--listen",
                 "--wal",
                 "--publication",
@@ -98,7 +99,7 @@ impl Name {
                 "--max-transaction-rows",
                 "--max-page-memory",
             ],
-            Name::Plan => &["--spec", "--wal", "--publication", "--role", "--dsn-file"],
+            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
         }
     }
@@ -195,6 +196,7 @@ pub(crate) enum UsageError {
         value: String,
     },
     NeedsSpec(Name),
+    OneSpec(Name),
     BadWal(String),
 }
 
@@ -217,7 +219,10 @@ impl Display for UsageError {
                 write!(formatter, "{flag} takes {takes}, not {value:?}")
             }
             UsageError::NeedsSpec(command) => {
-                write!(formatter, "straum {} needs --spec", command.as_str())
+                write!(formatter, "straum {} needs a spec", command.as_str())
+            }
+            UsageError::OneSpec(command) => {
+                write!(formatter, "straum {} takes one spec", command.as_str())
             }
             UsageError::BadWal(value) => {
                 write!(formatter, "--wal takes logical or physical, not {value:?}")
@@ -294,24 +299,67 @@ fn query_at(rest: &[String]) -> usize {
 
 fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
     // The query and its parameters are read as written, so a parameter
-    // may be `-h` or a negative number.
-    let (rest, query) = match name {
-        Name::Ask => rest.split_at(query_at(rest)),
-        _ => (rest, &[][..]),
-    };
-    // -h anywhere asks for help, whatever else is on the line.
-    if asks_for_help(rest) {
+    // may be `-h` or a negative number. Everywhere else, -h anywhere
+    // asks for help.
+    if name != Name::Ask && asks_for_help(rest) {
         return Ok(Command::Help(Some(name)));
     }
-    let flags = Flags::read(name, rest)?;
     match name {
-        Name::Status => Ok(Command::Status { url: flags.url() }),
-        Name::Views => Ok(Command::Views { url: flags.url() }),
-        Name::Shell => Ok(Command::Shell { url: flags.url() }),
-        Name::Ask => ask_command(&flags, query),
-        Name::Plan => plan_command(&flags),
-        Name::Run => run_command(&flags),
+        Name::Status => Ok(Command::Status {
+            url: Flags::read(name, rest)?.url(),
+        }),
+        Name::Views => Ok(Command::Views {
+            url: Flags::read(name, rest)?.url(),
+        }),
+        Name::Shell => Ok(Command::Shell {
+            url: Flags::read(name, rest)?.url(),
+        }),
+        Name::Ask => {
+            let (rest, query) = rest.split_at(query_at(rest));
+            if asks_for_help(rest) {
+                return Ok(Command::Help(Some(name)));
+            }
+            ask_command(&Flags::read(name, rest)?, query)
+        }
+        Name::Plan => spec_command(name, rest, plan_command),
+        Name::Run => spec_command(name, rest, run_command),
     }
+}
+
+fn spec_command(
+    name: Name,
+    rest: &[String],
+    command: fn(&Flags, Option<String>) -> Result<Command, UsageError>,
+) -> Result<Command, UsageError> {
+    let (words, spec) = split_spec(name, rest)?;
+    command(&Flags::read(name, &words)?, spec)
+}
+
+/// A flag takes the next word, so the spec is whichever word is left.
+fn split_spec(name: Name, rest: &[String]) -> Result<(Vec<String>, Option<String>), UsageError> {
+    let mut words = Vec::new();
+    let mut spec = None;
+    let mut rest = rest.iter();
+    while let Some(word) = rest.next() {
+        if word.starts_with('-') {
+            if !name.flags().contains(&word.as_str()) {
+                return Err(UsageError::FlagNotTaken {
+                    command: name,
+                    flag: word.clone(),
+                });
+            }
+            let Some(value) = rest.next() else {
+                return Err(UsageError::NeedsValue(word.clone()));
+            };
+            words.push(word.clone());
+            words.push(value.clone());
+        } else if spec.is_some() {
+            return Err(UsageError::OneSpec(name));
+        } else {
+            spec = Some(word.clone());
+        }
+    }
+    Ok((words, spec))
 }
 
 fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
@@ -325,9 +373,12 @@ fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
     })
 }
 
-fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
+fn plan_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageError> {
+    let Some(spec) = spec else {
+        return Err(UsageError::NeedsSpec(Name::Plan));
+    };
     Ok(Command::Plan(Plan {
-        spec: flags.spec()?,
+        spec,
         replication: flags.replication()?,
         publication: flags.publication(),
         role: flags.text("--role"),
@@ -335,13 +386,14 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
     }))
 }
 
-fn run_command(flags: &Flags) -> Result<Command, UsageError> {
+fn run_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageError> {
     let is_physical = matches!(flags.replication()?, Replication::Physical { .. });
     if flags.value("--max-page-memory").is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
-    // The spec comes first: without one, nothing else on the line matters.
-    let spec = flags.spec()?;
+    let Some(spec) = spec else {
+        return Err(UsageError::NeedsSpec(Name::Run));
+    };
     let replication = flags.replication()?;
     let max_lag = flags.parsed(
         "--max-lag",
@@ -383,16 +435,12 @@ struct Given {
 
 /// The flags on one command's line, each with its value.
 struct Flags {
-    name: Name,
     given: Vec<Given>,
 }
 
 impl Flags {
     fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
-        let mut flags = Flags {
-            name,
-            given: Vec::new(),
-        };
+        let mut flags = Flags { given: Vec::new() };
         let mut rest = rest.iter();
         while let Some(flag) = rest.next() {
             if !name.flags().contains(&flag.as_str()) {
@@ -452,13 +500,6 @@ impl Flags {
             return Err(UsageError::BadValue { flag, takes, value });
         };
         Ok(parsed)
-    }
-
-    fn spec(&self) -> Result<String, UsageError> {
-        let Some(spec) = self.text("--spec") else {
-            return Err(UsageError::NeedsSpec(self.name));
-        };
-        Ok(spec)
     }
 
     fn publication(&self) -> String {
@@ -555,7 +596,7 @@ mod tests {
     #[test]
     fn reads_run_and_plan() {
         assert_eq!(
-            command(&args("run --spec s.sql")),
+            command(&args("run s.sql")),
             Ok(Command::Run(Run {
                 spec: "s.sql".into(),
                 listen: LISTEN.into(),
@@ -568,7 +609,7 @@ mod tests {
         );
         assert_eq!(
             command(&args(
-                "run --dsn-file d --listen 127.0.0.1:9 --publication p --spec s \
+                "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
                  --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
                  --max-page-memory 256Mi"
             )),
@@ -592,7 +633,7 @@ mod tests {
     #[test]
     fn reads_plan() {
         assert_eq!(
-            command(&args("plan --spec s")),
+            command(&args("plan s")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 replication: Replication::Logical,
@@ -602,7 +643,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            command(&args("plan --role r --spec s --dsn-file d --wal physical")),
+            command(&args("plan --role r s --dsn-file d --wal physical")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 replication: Replication::Physical {
@@ -666,7 +707,7 @@ mod tests {
         }
         for (line, name) in [
             ("help run", Name::Run),
-            ("run --spec s -h", Name::Run),
+            ("run s -h", Name::Run),
             ("plan --help", Name::Plan),
             ("status -h --url", Name::Status),
             ("views -h", Name::Views),
@@ -734,7 +775,7 @@ mod tests {
             ),
             (
                 "run",
-                "straum: straum run needs --spec\ntry: straum run --help",
+                "straum: straum run needs a spec\ntry: straum run --help",
             ),
             (
                 "status --spec s",
@@ -757,15 +798,14 @@ mod tests {
             ("help run plan", "straum help takes one command"),
             ("version run", "straum version takes nothing"),
             ("-V --spec s", "straum version takes nothing"),
-            ("run --spec", "--spec needs a value"),
-            ("run --spec a --spec b", "--spec given twice"),
-            (
-                "plan --spec s --listen x",
-                "straum plan takes no \"--listen\"",
-            ),
+            ("run --spec", "straum run takes no \"--spec\""),
+            ("run --spec a --spec b", "straum run takes no \"--spec\""),
+            ("run a b", "straum run takes one spec"),
+            ("plan a b", "straum plan takes one spec"),
+            ("plan s --listen x", "straum plan takes no \"--listen\""),
             ("run --spec=s", "straum run takes no \"--spec=s\""),
-            ("run", "straum run needs --spec"),
-            ("plan --role r", "straum plan needs --spec"),
+            ("run", "straum run needs a spec"),
+            ("plan --role r", "straum plan needs a spec"),
             ("status --spec s", "straum status takes no \"--spec\""),
             ("status --url", "--url needs a value"),
             ("views --spec s", "straum views takes no \"--spec\""),
@@ -784,38 +824,39 @@ mod tests {
     fn wal_flags_say_what_they_take() {
         let cases = [
             (
-                "run --spec s --wal Physical",
+                "run s --wal Physical",
                 "--wal takes logical or physical, not \"Physical\"",
             ),
             (
-                "plan --spec s --wal both",
+                "plan s --wal both",
                 "--wal takes logical or physical, not \"both\"",
             ),
-            ("run --spec s --wal", "--wal needs a value"),
+            ("run s --wal", "--wal needs a value"),
             (
-                "run --spec s --max-page-memory 1Gi",
+                "run s --max-page-memory 1Gi",
                 "--max-page-memory takes --wal physical",
             ),
             (
-                "run --spec s --wal logical --max-page-memory 1Gi",
+                "run --max-page-memory 1Gi",
                 "--max-page-memory takes --wal physical",
             ),
             (
-                "run --spec s --wal physical --max-page-memory 0",
+                "run s --wal logical --max-page-memory 1Gi",
+                "--max-page-memory takes --wal physical",
+            ),
+            (
+                "run s --wal physical --max-page-memory 0",
                 "--max-page-memory takes bytes above 0, as 1073741824 or 1Gi, not \"0\"",
             ),
             (
-                "run --spec s --wal physical --max-page-memory 1Pi",
+                "run s --wal physical --max-page-memory 1Pi",
                 "--max-page-memory takes bytes above 0, as 1073741824 or 1Gi, not \"1Pi\"",
             ),
             (
-                "plan --spec s --max-page-memory 1Gi",
+                "plan s --max-page-memory 1Gi",
                 "straum plan takes no \"--max-page-memory\"",
             ),
-            (
-                "plan --spec s --max-lag 5",
-                "straum plan takes no \"--max-lag\"",
-            ),
+            ("plan s --max-lag 5", "straum plan takes no \"--max-lag\""),
         ];
         for (line, error) in cases {
             assert_eq!(usage(line), error, "{line}");
@@ -825,7 +866,7 @@ mod tests {
     #[test]
     fn number_flags_say_what_they_take() {
         for lag in ["0", "-1", "1.5", "30s", ""] {
-            let line = format!("run --spec s --max-lag {lag}");
+            let line = format!("run s --max-lag {lag}");
             let error = if lag.is_empty() {
                 "--max-lag needs a value".to_owned()
             } else {
@@ -834,14 +875,14 @@ mod tests {
             assert_eq!(usage(&line), error, "{lag}");
         }
         for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
-            let line = format!("run --spec s --max-retained-wal {size}");
+            let line = format!("run s --max-retained-wal {size}");
             let error = format!(
                 "--max-retained-wal takes bytes above 0, as 4294967296 or 4Gi, not {size:?}"
             );
             assert_eq!(usage(&line), error, "{size}");
         }
         for rows in ["0", "-1", "1.5", "10k", "1Ki"] {
-            let line = format!("run --spec s --max-transaction-rows {rows}");
+            let line = format!("run s --max-transaction-rows {rows}");
             let error =
                 format!("--max-transaction-rows takes a count of rows above 0, not {rows:?}");
             assert_eq!(usage(&line), error, "{rows}");

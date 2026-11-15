@@ -297,7 +297,7 @@ the view needs the `has_device` key: Straum keeps nothing else about
 
 ## Checking a spec
 
-`straum plan --spec FILE` prints the setup SQL, or what is wrong and exits
+`straum plan FILE` prints the setup SQL, or what is wrong and exits
 1. Syntax outside the subset comes first, with its line, then every
 problem between declarations at once:
 

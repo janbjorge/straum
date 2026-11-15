@@ -4,12 +4,12 @@
 [Helm chart](#kubernetes):
 
 ```text
-straum run --spec FILE [--listen ADDRESS] [--wal logical|physical]
-           [--publication NAME] [--dsn-file FILE] [--max-lag SECONDS]
-           [--max-retained-wal BYTES] [--max-transaction-rows ROWS]
-           [--max-page-memory BYTES]
-straum plan --spec FILE [--wal logical|physical] [--publication NAME]
-            [--role NAME] [--dsn-file FILE]
+straum run FILE [--listen ADDRESS] [--wal logical|physical]
+                [--publication NAME] [--dsn-file FILE] [--max-lag SECONDS]
+                [--max-retained-wal BYTES] [--max-transaction-rows ROWS]
+                [--max-page-memory BYTES]
+straum plan FILE [--wal logical|physical] [--publication NAME]
+                 [--role NAME] [--dsn-file FILE]
 straum status [--url URL]
 straum views [--url URL]
 straum ask [--url URL] QUERY [PARAMETER...]
@@ -43,12 +43,11 @@ janbjorge/straum` does the same for an image.
 
 ## straum run
 
-Loads every table the spec names, follows their changes and answers asks
-over HTTP.
+`FILE` is the [spec](spec.md). Straum loads every table it names,
+follows their changes and answers asks over HTTP.
 
 | Flag | Meaning |
 | --- | --- |
-| `--spec FILE` | The [spec](spec.md). |
 | `--listen ADDRESS` | Where to serve HTTP. |
 | `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#without-logical-decoding) `wal_level = replica` writes. |
 | `--publication NAME` | The publication `straum plan` made. |

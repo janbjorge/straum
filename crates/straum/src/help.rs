@@ -22,12 +22,11 @@ Guide: https://janbjorge.github.io/straum/
 
 /// What `straum run --help` prints.
 pub(crate) const RUN_HELP: &str = "\
-usage: straum run --spec FILE [flags]
+usage: straum run FILE [flags]
 
 Loads every table FILE names, follows their changes and answers asks over
-HTTP. SIGTERM or SIGINT stops it.
+HTTP. SIGTERM or SIGINT stops it. FILE is the spec.
 
-  --spec FILE                  the spec; required
   --listen ADDRESS             where to serve HTTP (0.0.0.0:8080)
   --wal logical|physical       logical decoding through the publication, or
                                the physical WAL wal_level replica writes
@@ -47,14 +46,13 @@ Guide: https://janbjorge.github.io/straum/running.html#straum-run
 
 /// What `straum plan --help` prints.
 pub(crate) const PLAN_HELP: &str = "\
-usage: straum plan --spec FILE [flags]
+usage: straum plan FILE [flags]
 
-Prints the SQL that sets PostgreSQL up for FILE: logical decoding, the
-role, its grants and the publication. With --wal physical only the role and
-its grants. With a DSN the role is its user and gets its password, as a
-SCRAM-SHA-256 verifier.
+Prints the SQL that sets PostgreSQL up for FILE, the spec: logical
+decoding, the role, its grants and the publication. With --wal physical
+only the role and its grants. With a DSN the role is its user and gets
+its password, as a SCRAM-SHA-256 verifier.
 
-  --spec FILE         the spec; required
   --wal logical|physical
                       the WAL straum run reads (logical)
   --publication NAME  the publication to make (straum)
