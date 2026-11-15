@@ -161,10 +161,11 @@ fn header(data: &[u8]) -> Result<&[u8], Error> {
         .ok_or_else(|| Error::protocol("a copy that isn't binary"))?;
     let _flags: [u8; 4] = take(&mut data)?;
     let extension = u32::from_be_bytes(take(&mut data)?);
-    usize::try_from(extension)
-        .ok()
-        .and_then(|len| data.get(len..))
-        .ok_or_else(|| Error::protocol("a copy header cut short"))
+    let after = usize::try_from(extension).ok();
+    let Some(rest) = after.and_then(|length| data.get(length..)) else {
+        return Err(Error::protocol("a copy header cut short"));
+    };
+    Ok(rest)
 }
 
 /// The next `N` bytes.

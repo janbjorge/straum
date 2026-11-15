@@ -336,13 +336,21 @@ impl StreamThread {
 /// A standby status update saying everything before `done` is applied.
 pub(crate) fn status_update(done: u64) -> Vec<u8> {
     let now = value::timestamp_micros(SystemTime::now());
-    let mut message = Vec::with_capacity(34);
+    let mut message = Vec::with_capacity(STATUS_UPDATE_SIZE);
     message.push(b'r');
     // Written, flushed and applied are one point for straum.
-    for _ in 0..3 {
+    for _ in 0..STATUS_UPDATE_POSITIONS {
         message.extend(done.to_be_bytes());
     }
     message.extend(now.to_be_bytes());
+    // Asks for no reply.
     message.push(0);
     message
 }
+
+/// The positions a standby status update reports: written, flushed and
+/// applied.
+const STATUS_UPDATE_POSITIONS: usize = 3;
+/// The tag, eight bytes for each position and for the clock, and the
+/// reply flag.
+const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
