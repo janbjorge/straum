@@ -516,6 +516,14 @@ fn check_ref<'a>(
     keys: &mut HashSet<&'a Identifier>,
     errors: &mut Vec<SpecError>,
 ) {
+    check_vias(fact, position, dims, errors);
+    let join = &fact.refs[position];
+    let dim = check_ref_dim(fact, join, dims, errors);
+    check_ref_kind(fact, join, errors);
+    check_reads(fact, join, dim, keys, errors);
+}
+
+fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecError>) {
     let name = &fact.name;
     let join = &fact.refs[position];
     let mut via = HashSet::new();
@@ -542,6 +550,16 @@ fn check_ref<'a>(
             }
         }
     }
+}
+
+/// The dim the ref joins, when the spec declares one of that name.
+fn check_ref_dim<'d>(
+    fact: &Fact,
+    join: &Ref,
+    dims: &'d [Dim],
+    errors: &mut Vec<SpecError>,
+) -> Option<&'d Dim> {
+    let name = &fact.name;
     let dim = dims.iter().find(|dim| dim.name == join.dim);
     match dim {
         None => errors.push(SpecError::UnknownDim {
@@ -558,6 +576,11 @@ fn check_ref<'a>(
         }),
         Some(_) => {}
     }
+    dim
+}
+
+fn check_ref_kind(fact: &Fact, join: &Ref, errors: &mut Vec<SpecError>) {
+    let name = &fact.name;
     let reads = !join.reads.is_empty();
     match join.kind {
         RefKind::Left | RefKind::Inner if !reads => errors.push(SpecError::RefReadsNothing {
@@ -571,6 +594,16 @@ fn check_ref<'a>(
         }),
         _ => {}
     }
+}
+
+fn check_reads<'a>(
+    fact: &'a Fact,
+    join: &'a Ref,
+    dim: Option<&Dim>,
+    keys: &mut HashSet<&'a Identifier>,
+    errors: &mut Vec<SpecError>,
+) {
+    let name = &fact.name;
     let mut read = HashSet::new();
     for attr in &join.reads {
         if !read.insert(&attr.column) {
@@ -779,62 +812,7 @@ impl fmt::Display for SpecError {
                 "view {fact}: {name} asks whether the time column {column} is null, \
                  which no ask could see: a row with no time is never answered"
             ),
-            SpecError::ViaReused {
-                fact,
-                ref_name,
-                column,
-            } => write!(f, "view {fact}: join {ref_name} joins on {column} twice"),
-            SpecError::KeyLength {
-                fact,
-                ref_name,
-                via,
-                dim,
-                key,
-            } => write!(
-                f,
-                "view {fact}: join {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
-            ),
-            SpecError::RefReadsNothing { fact, ref_name } => {
-                write!(f, "view {fact}: join {ref_name} reads no column of its dim")
-            }
-            SpecError::RefReads {
-                fact,
-                ref_name,
-                kind,
-            } => write!(
-                f,
-                "view {fact}: join {ref_name} is {kind} and reads columns, which it has none of"
-            ),
-            SpecError::ChainColumn {
-                fact,
-                ref_name,
-                through,
-                column,
-            } => write!(
-                f,
-                "view {fact}: join {ref_name} joins through column {column} of join {through}, \
-                 which no join before it carries"
-            ),
-            SpecError::UnknownAttribute {
-                fact,
-                ref_name,
-                attr,
-                dim,
-            } => write!(
-                f,
-                "view {fact}: join {ref_name} reads {attr}, which dim {dim} has no column of"
-            ),
             SpecError::NoKey { dim } => write!(f, "dim {dim}: no key columns"),
-            SpecError::UnknownDim {
-                fact,
-                ref_name,
-                dim,
-            } => {
-                write!(
-                    f,
-                    "view {fact}: join {ref_name} points at unknown dim {dim}"
-                )
-            }
             SpecError::UnknownKey {
                 fact,
                 measure: Some(measure),
@@ -857,6 +835,77 @@ impl fmt::Display for SpecError {
                 "view {fact}: bucket is what asks call the time bucket; \
                  name the column, join or measure otherwise"
             ),
+            join_error => join_error.fmt_join(f),
+        }
+    }
+}
+
+impl SpecError {
+    /// The errors of one ref of a view.
+    fn fmt_join(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SpecError::ViaReused {
+                fact,
+                ref_name,
+                column,
+            } => write!(
+                formatter,
+                "view {fact}: join {ref_name} joins on {column} twice"
+            ),
+            SpecError::KeyLength {
+                fact,
+                ref_name,
+                via,
+                dim,
+                key,
+            } => write!(
+                formatter,
+                "view {fact}: join {ref_name} joins on {via} columns, but the key of dim {dim} has {key}"
+            ),
+            SpecError::RefReadsNothing { fact, ref_name } => {
+                write!(
+                    formatter,
+                    "view {fact}: join {ref_name} reads no column of its dim"
+                )
+            }
+            SpecError::RefReads {
+                fact,
+                ref_name,
+                kind,
+            } => write!(
+                formatter,
+                "view {fact}: join {ref_name} is {kind} and reads columns, which it has none of"
+            ),
+            SpecError::ChainColumn {
+                fact,
+                ref_name,
+                through,
+                column,
+            } => write!(
+                formatter,
+                "view {fact}: join {ref_name} joins through column {column} of join {through}, \
+                 which no join before it carries"
+            ),
+            SpecError::UnknownAttribute {
+                fact,
+                ref_name,
+                attr,
+                dim,
+            } => write!(
+                formatter,
+                "view {fact}: join {ref_name} reads {attr}, which dim {dim} has no column of"
+            ),
+            SpecError::UnknownDim {
+                fact,
+                ref_name,
+                dim,
+            } => {
+                write!(
+                    formatter,
+                    "view {fact}: join {ref_name} points at unknown dim {dim}"
+                )
+            }
+            _ => unreachable!("SpecError::fmt hands over the errors of a ref only"),
         }
     }
 }

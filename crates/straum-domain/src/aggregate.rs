@@ -107,6 +107,25 @@ fn lane(cell: usize, group: u32) -> usize {
     group as usize * LANES + cell % LANES
 }
 
+fn cell_lanes(groups: &[u32]) -> impl Iterator<Item = usize> + '_ {
+    groups
+        .iter()
+        .enumerate()
+        .map(|(cell, &group)| lane(cell, group))
+}
+
+fn add_counts(partials: &mut [u64], groups: &[u32], counts: &Counts) {
+    counts.each(groups, |cell, group, count| {
+        partials[lane(cell, group)] += count;
+    });
+}
+
+fn take_counts(partials: &mut [u64], groups: &[u32], counts: &Counts) {
+    counts.each(groups, |cell, group, count| {
+        partials[lane(cell, group)] -= count;
+    });
+}
+
 /// One measure merged over cells, per group: entries `group * LANES..`
 /// are group `group`'s. Group 0 takes the cells an ask passes over, so
 /// merging needs no test per cell; [`Partials::finish`] never reads it.
@@ -207,23 +226,11 @@ impl Partials {
         {
             return self.merge_into(first, rows, state);
         }
-        let cells = groups
-            .iter()
-            .enumerate()
-            .map(|(cell, &group)| lane(cell, group));
         match (self, state) {
-            (Partials::Count(counts), None) => {
-                rows.each(groups, |cell, group, count| {
-                    counts[lane(cell, group)] += count;
-                });
-            }
+            (Partials::Count(counts), None) => add_counts(counts, groups, rows),
             (Partials::Count(counts), Some(State::Count { nulls })) => {
-                rows.each(groups, |cell, group, count| {
-                    counts[lane(cell, group)] += count;
-                });
-                nulls.each(groups, |cell, group, count| {
-                    counts[lane(cell, group)] -= count;
-                });
+                add_counts(counts, groups, rows);
+                take_counts(counts, groups, nulls);
             }
             (
                 Partials::Sum { sums, counts, .. },
@@ -237,18 +244,16 @@ impl Partials {
                     sums[at] += sum;
                     counts[at] += count;
                 });
-                nulls.each(groups, |cell, group, count| {
-                    counts[lane(cell, group)] -= count;
-                });
+                take_counts(counts, groups, nulls);
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                for (at, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
+                for (at, (&min, &max)) in cell_lanes(groups).zip(mins.iter().zip(maxs)) {
                     values[at] = values[at].min(min);
                     seen[at] |= min <= max;
                 }
             }
             (Partials::Max { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
-                for (at, (&min, &max)) in cells.zip(mins.iter().zip(maxs)) {
+                for (at, (&min, &max)) in cell_lanes(groups).zip(mins.iter().zip(maxs)) {
                     values[at] = values[at].max(max);
                     seen[at] |= min <= max;
                 }
@@ -273,12 +278,8 @@ impl Partials {
                     falses: cell_falses,
                 }),
             ) => {
-                cell_trues.each(groups, |cell, group, count| {
-                    trues[lane(cell, group)] += count;
-                });
-                cell_falses.each(groups, |cell, group, count| {
-                    falses[lane(cell, group)] += count;
-                });
+                add_counts(trues, groups, cell_trues);
+                add_counts(falses, groups, cell_falses);
             }
             _ => unreachable!("Aggregate::state names the column the measure reads"),
         }

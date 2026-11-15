@@ -87,24 +87,6 @@ fn spec(kinds: [RefKind; 5], filter: Vec<Condition>) -> Spec {
 /// As [`spec`], in the `shape` given; unless chained, tiers are joined on
 /// the customer id itself, so every ref joins on a fact column.
 fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec {
-    let chained = shape == Shape::Chained;
-    let measure = |name, aggregate| Measure {
-        name: id(name),
-        aggregate,
-        filter: vec![],
-    };
-    // A semi or anti join reads nothing; the same ref as a left or inner
-    // join reads the dim's one column.
-    let join = |index: usize, name: &str, via: Via, attrs: Vec<Attribute>| Ref {
-        alias: id(name),
-        dim: id(name),
-        kind: kinds[index],
-        via: vec![via],
-        reads: match kinds[index] {
-            RefKind::Left | RefKind::Inner => attrs,
-            RefKind::Semi | RefKind::Anti => vec![],
-        },
-    };
     let orders = Fact {
         as_text: Vec::new(),
         name: id("orders"),
@@ -119,40 +101,7 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
             }],
             origin: Origin::Timestamptz,
         },
-        refs: vec![
-            join(
-                CUSTOMERS,
-                "customers",
-                Via::Fact(id("customer")),
-                vec![attr("country")],
-            ),
-            join(
-                TIERS,
-                "tiers",
-                if chained {
-                    Via::Attribute {
-                        through: CUSTOMERS,
-                        column: id("tier_id"),
-                    }
-                } else {
-                    Via::Fact(id("customer"))
-                },
-                vec![attr("label")],
-            ),
-            join(TAGS, "tags", Via::Fact(id("product")), vec![attr("tag")]),
-            join(
-                PROMOS,
-                "promos",
-                Via::Fact(id("product")),
-                vec![attr("note")],
-            ),
-            join(
-                BLOCKED,
-                "blocked",
-                Via::Fact(id("customer")),
-                vec![attr("reason")],
-            ),
-        ],
+        refs: refs(kinds, shape),
         by_keys: (["customer", "product"].into_iter())
             .filter(|key| shape != Shape::Bound || *key != "product")
             .map(|key| ByKey::Column {
@@ -160,21 +109,7 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
                 name: id(key),
             })
             .collect(),
-        measures: vec![
-            measure("n", Aggregate::Count),
-            measure("q", Aggregate::Sum(id("qty"))),
-            measure("q_max", Aggregate::Max(id("qty"))),
-            measure("q_min", Aggregate::Min(id("qty"))),
-            measure("q_median", percentile(5, 1, "qty")),
-            measure("products", Aggregate::CountDistinct(id("product"))),
-            measure("q_n", Aggregate::CountNotNull(id("qty"))),
-            measure("all_even", Aggregate::BoolAnd(id("even"))),
-            measure("any_even", Aggregate::BoolOr(id("even"))),
-            Measure {
-                filter: vec![cond("country", vec![lit("NO")])],
-                ..measure(FILTERED, Aggregate::Sum(id("qty")))
-            },
-        ],
+        measures: measures(),
         filter,
     };
     let dims = vec![
@@ -185,6 +120,86 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
         dim("blocked", &["id"], &["reason"]),
     ];
     Spec::new(dims, vec![orders]).unwrap()
+}
+
+/// The refs in join order, each of its kind in `kinds`.
+fn refs(kinds: [RefKind; 5], shape: Shape) -> Vec<Ref> {
+    let tiers_via = if shape == Shape::Chained {
+        Via::Attribute {
+            through: CUSTOMERS,
+            column: id("tier_id"),
+        }
+    } else {
+        Via::Fact(id("customer"))
+    };
+    vec![
+        join(
+            kinds[CUSTOMERS],
+            "customers",
+            Via::Fact(id("customer")),
+            vec![attr("country")],
+        ),
+        join(kinds[TIERS], "tiers", tiers_via, vec![attr("label")]),
+        join(
+            kinds[TAGS],
+            "tags",
+            Via::Fact(id("product")),
+            vec![attr("tag")],
+        ),
+        join(
+            kinds[PROMOS],
+            "promos",
+            Via::Fact(id("product")),
+            vec![attr("note")],
+        ),
+        join(
+            kinds[BLOCKED],
+            "blocked",
+            Via::Fact(id("customer")),
+            vec![attr("reason")],
+        ),
+    ]
+}
+
+/// A semi or anti join reads nothing; the same ref as a left or inner
+/// join reads the dim's one column.
+fn join(kind: RefKind, name: &str, via: Via, attrs: Vec<Attribute>) -> Ref {
+    Ref {
+        alias: id(name),
+        dim: id(name),
+        kind,
+        via: vec![via],
+        reads: match kind {
+            RefKind::Left | RefKind::Inner => attrs,
+            RefKind::Semi | RefKind::Anti => vec![],
+        },
+    }
+}
+
+fn measure(name: &str, aggregate: Aggregate) -> Measure {
+    Measure {
+        name: id(name),
+        aggregate,
+        filter: vec![],
+    }
+}
+
+fn measures() -> Vec<Measure> {
+    vec![
+        measure("n", Aggregate::Count),
+        measure("q", Aggregate::Sum(id("qty"))),
+        measure("q_max", Aggregate::Max(id("qty"))),
+        measure("q_min", Aggregate::Min(id("qty"))),
+        measure("q_median", percentile(5, 1, "qty")),
+        measure("products", Aggregate::CountDistinct(id("product"))),
+        measure("q_n", Aggregate::CountNotNull(id("qty"))),
+        measure("all_even", Aggregate::BoolAnd(id("even"))),
+        measure("any_even", Aggregate::BoolOr(id("even"))),
+        Measure {
+            filter: vec![cond("country", vec![lit("NO")])],
+            ..measure(FILTERED, Aggregate::Sum(id("qty")))
+        },
+    ]
 }
 
 /// Left, left, inner, semi, anti: one of each kind, and the chain.
@@ -395,7 +410,7 @@ fn reference(
         .into_iter()
         .map(|(keys, rows)| {
             let values = (ask.measures.iter())
-                .map(|name| measure(fact.measure(name.as_str()).unwrap(), &rows))
+                .map(|name| reference_value(fact.measure(name.as_str()).unwrap(), &rows))
                 .collect();
             AnswerRow { keys, values }
         })
@@ -421,7 +436,7 @@ fn reference(
     Answer { columns, rows }
 }
 
-fn measure(measure: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
+fn reference_value(measure: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
     let rows: Vec<_> = rows
         .iter()
         .filter(|(row, joined)| passes(row, joined, &measure.filter))
@@ -744,6 +759,27 @@ fn semi_counts_once_and_anti_counts_the_unmatched() {
     check(&store, &spec, &dims, &kinds, &orders, &n);
 }
 
+/// The answer to `ask`, an ask of one measure by one key, as key and value.
+fn labels(store: &Store, ask: &Ask) -> Vec<(Datum, Value)> {
+    (store.ask(ask).unwrap().rows.into_iter())
+        .map(|row| (row.keys[0].clone(), row.values[0].clone()))
+        .collect()
+}
+
+/// One dim row under a key of one column, `old` before and `new` after.
+struct Replaced {
+    dim: &'static str,
+    key: Datum,
+    old: Vec<Datum>,
+    new: Vec<Datum>,
+}
+
+fn replace_dim(store: &mut Store, dims: &mut Dims, replaced: Replaced) {
+    let key = vec![replaced.key];
+    remove_dim(store, dims, replaced.dim, &key, &replaced.old);
+    add_dim(store, dims, replaced.dim, key, replaced.new);
+}
+
 /// A join through another dim reads the second dim by the first's column:
 /// a customer's tier label, null when the customer has no tier or no row.
 #[test]
@@ -759,15 +795,10 @@ fn a_chain_reads_through_the_first_dim() {
     kinds[BLOCKED] = RefKind::Left;
     let (mut store, spec, mut dims) = small(kinds, vec![], &orders);
     let by_label = ask(&["q"], &["label"], vec![]);
-    let labels = |store: &Store| -> Vec<(Datum, Value)> {
-        (store.ask(&by_label).unwrap().rows.into_iter())
-            .map(|row| (row.keys[0].clone(), row.values[0].clone()))
-            .collect()
-    };
     // Customer 1 is gold; 2 has no tier; 3 has no row. Product 1 has two
     // tags, so every order counts twice.
     assert_eq!(
-        labels(&store),
+        labels(&store, &by_label),
         [
             (Datum::Null, Value::Int(32)),
             (text("gold"), Value::Int(10))
@@ -776,40 +807,26 @@ fn a_chain_reads_through_the_first_dim() {
     check(&store, &spec, &dims, &kinds, &orders, &by_label);
     // The tier relabelled, then customer 2 moved into it, then the tier
     // row gone: each moves the answer at once.
-    remove_dim(
-        &mut store,
-        &mut dims,
-        "tiers",
-        &[Datum::Int(10)],
-        &[text("gold")],
-    );
-    add_dim(
-        &mut store,
-        &mut dims,
-        "tiers",
-        vec![Datum::Int(10)],
-        vec![text("vip")],
-    );
+    let gold = Replaced {
+        dim: "tiers",
+        key: Datum::Int(10),
+        old: vec![text("gold")],
+        new: vec![text("vip")],
+    };
+    replace_dim(&mut store, &mut dims, gold);
     assert_eq!(
-        labels(&store),
+        labels(&store, &by_label),
         [(Datum::Null, Value::Int(32)), (text("vip"), Value::Int(10))]
     );
-    remove_dim(
-        &mut store,
-        &mut dims,
-        "customers",
-        &[Datum::Int(2)],
-        &[text("SE"), Datum::Null],
-    );
-    add_dim(
-        &mut store,
-        &mut dims,
-        "customers",
-        vec![Datum::Int(2)],
-        vec![text("SE"), Datum::Int(10)],
-    );
+    let untiered = Replaced {
+        dim: "customers",
+        key: Datum::Int(2),
+        old: vec![text("SE"), Datum::Null],
+        new: vec![text("SE"), Datum::Int(10)],
+    };
+    replace_dim(&mut store, &mut dims, untiered);
     assert_eq!(
-        labels(&store),
+        labels(&store, &by_label),
         [(Datum::Null, Value::Int(18)), (text("vip"), Value::Int(24))]
     );
     check(&store, &spec, &dims, &kinds, &orders, &by_label);
@@ -820,7 +837,7 @@ fn a_chain_reads_through_the_first_dim() {
         &[Datum::Int(10)],
         &[text("vip")],
     );
-    assert_eq!(labels(&store), [(Datum::Null, Value::Int(42))]);
+    assert_eq!(labels(&store, &by_label), [(Datum::Null, Value::Int(42))]);
     // Filtered on the chained value too.
     add_dim(
         &mut store,
@@ -1170,122 +1187,184 @@ struct Run {
 /// [`Shape::Bound`] fact answers from bound cells; the others read the
 /// keyed cells through the projections.
 fn run(seed: u64, run: Run) -> usize {
-    let Run {
-        kinds,
-        shape,
-        sealing,
-        one_row_a_key,
-    } = run;
-    let chained = shape == Shape::Chained;
-    let mut rng = Rng(seed);
-    let filter = if rng.chance(50) {
-        vec![cond("country", vec![lit("NO"), lit("SE")])]
-    } else {
-        Vec::new()
-    };
-    let spec = spec_with(kinds, filter, shape);
-    let mut store = typed(&spec);
-    let mut dims = Dims::new();
-    let mut rows: Vec<Vec<Datum>> = Vec::new();
-    let mut spilled = Spilled::new("orders");
-    let taken = |dims: &Dims, dim: &str, key: &Vec<Datum>| {
-        one_row_a_key && dims.get(dim).is_some_and(|rows| rows.contains_key(key))
-    };
-    for _ in 0..rng.below(30) {
-        let (dim, key, attrs) = rng.dim_row(chained);
-        if !taken(&dims, dim, &key) {
-            add_dim(&mut store, &mut dims, dim, key, attrs);
-        }
+    let mut walk = Walk::new(seed, run);
+    for _ in 0..walk.rng.below(30) {
+        walk.add_random_dim_row();
     }
     for step in 0..400 {
-        if sealing && rng.chance(10) {
-            let before = START + HOUR * rng.int(0, 60);
-            spilled.seal(&mut rng, &mut store, before);
-        }
-        match rng.below(40) {
-            0..=7 => {
-                let (dim, key, attrs) = rng.dim_row(chained);
-                if !taken(&dims, dim, &key) {
-                    add_dim(&mut store, &mut dims, dim, key, attrs);
-                }
-            }
-            8..=11 => {
-                let (dim, key, attrs) = rng.dim_row(chained);
-                let held = (dims.get(dim))
-                    .and_then(|by_key| by_key.get(&key))
-                    .is_some_and(|rows| rows.contains(&attrs));
-                if held {
-                    remove_dim(&mut store, &mut dims, dim, &key, &attrs);
-                }
-            }
-            // A dim or the orders truncated.
-            12 if rng.chance(20) => {
-                let (dim, _, _) = rng.dim_row(chained);
-                store.clear(dim);
-                dims.remove(dim);
-            }
-            13 if rng.chance(10) => {
-                store.clear("orders");
-                spilled.forget();
-                rows.clear();
-            }
-            14..=17 if !rows.is_empty() => {
-                let row = rows.swap_remove(rng.below(rows.len()));
-                spilled.unseal(&mut store, &row);
-                store.remove_row("orders", &row).unwrap();
-            }
-            18..=21 if !rows.is_empty() => {
-                let i = rng.below(rows.len());
-                let new = rng.random_order();
-                spilled.unseal(&mut store, &rows[i]);
-                spilled.unseal(&mut store, &new);
-                store.update_row("orders", &rows[i], &new).unwrap();
-                rows[i] = new;
-            }
-            _ => {
-                let row = rng.random_order();
-                spilled.unseal(&mut store, &row);
-                store.add_row("orders", &row).unwrap();
-                rows.push(row);
-            }
-        }
+        walk.take_a_step();
         if step % 50 == 49 {
-            let bound = store.bound_cells("orders").is_some();
-            assert_eq!(bound, shape == Shape::Bound, "seed {seed}, step {step}");
-            for dim in ["customers", "tiers", "tags", "promos", "blocked"] {
-                assert_eq!(
-                    store.dim_rows(dim),
-                    Some(held(&dims, dim)),
-                    "seed {seed}, step {step}: {dim} holds a row with a null key"
-                );
-            }
-            for _ in 0..6 {
-                let ask = rng.random_ask(shape);
-                assert_eq!(
-                    spilled.ask(&store, &ask),
-                    reference(&spec, &ask, &rows, &dims, &kinds),
-                    "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
-                );
-            }
+            walk.check(step);
         }
     }
-    for row in rows {
-        spilled.unseal(&mut store, &row);
-        store.remove_row("orders", &row).unwrap();
+    walk.drain()
+}
+
+/// A random run under way: the store, and beside it the rows and dims
+/// the reference joins.
+struct Walk {
+    seed: u64,
+    run: Run,
+    rng: Rng,
+    spec: Spec,
+    store: Store,
+    dims: Dims,
+    rows: Vec<Vec<Datum>>,
+    spilled: Spilled,
+}
+
+impl Walk {
+    fn new(seed: u64, run: Run) -> Walk {
+        let mut rng = Rng(seed);
+        let filter = if rng.chance(50) {
+            vec![cond("country", vec![lit("NO"), lit("SE")])]
+        } else {
+            Vec::new()
+        };
+        let spec = spec_with(run.kinds, filter, run.shape);
+        let store = typed(&spec);
+        Walk {
+            seed,
+            run,
+            rng,
+            spec,
+            store,
+            dims: Dims::new(),
+            rows: Vec::new(),
+            spilled: Spilled::new("orders"),
+        }
     }
-    assert_eq!(
-        store.cells("orders"),
-        Some(0),
-        "seed {seed}: a cell outlived its rows"
-    );
-    if shape == Shape::Bound {
+
+    fn chained(&self) -> bool {
+        self.run.shape == Shape::Chained
+    }
+
+    /// One change to the rows or the dims, after the buckets that end by
+    /// a random time are sealed, if the run seals.
+    fn take_a_step(&mut self) {
+        if self.run.sealing && self.rng.chance(10) {
+            let before = START + HOUR * self.rng.int(0, 60);
+            self.spilled.seal(&mut self.rng, &mut self.store, before);
+        }
+        match self.rng.below(40) {
+            0..=7 => self.add_random_dim_row(),
+            8..=11 => self.remove_random_dim_row(),
+            // A dim or the orders truncated.
+            12 if self.rng.chance(20) => {
+                let (dim, _, _) = self.rng.dim_row(self.chained());
+                self.store.clear(dim);
+                self.dims.remove(dim);
+            }
+            13 if self.rng.chance(10) => {
+                self.store.clear("orders");
+                self.spilled.forget();
+                self.rows.clear();
+            }
+            14..=17 if !self.rows.is_empty() => self.remove_random_order(),
+            18..=21 if !self.rows.is_empty() => self.update_random_order(),
+            _ => self.add_random_order(),
+        }
+    }
+
+    /// A random dim row, unless every key holds one row at most and its
+    /// key holds one already.
+    fn add_random_dim_row(&mut self) {
+        let (dim, key, attrs) = self.rng.dim_row(self.chained());
+        let taken = self.run.one_row_a_key
+            && (self.dims.get(dim)).is_some_and(|rows| rows.contains_key(&key));
+        if !taken {
+            add_dim(&mut self.store, &mut self.dims, dim, key, attrs);
+        }
+    }
+
+    /// A random dim row removed, if it is held.
+    fn remove_random_dim_row(&mut self) {
+        let (dim, key, attrs) = self.rng.dim_row(self.chained());
+        let held = (self.dims.get(dim))
+            .and_then(|by_key| by_key.get(&key))
+            .is_some_and(|rows| rows.contains(&attrs));
+        if held {
+            remove_dim(&mut self.store, &mut self.dims, dim, &key, &attrs);
+        }
+    }
+
+    fn add_random_order(&mut self) {
+        let row = self.rng.random_order();
+        self.spilled.unseal(&mut self.store, &row);
+        self.store.add_row("orders", &row).unwrap();
+        self.rows.push(row);
+    }
+
+    fn remove_random_order(&mut self) {
+        let row = self.rows.swap_remove(self.rng.below(self.rows.len()));
+        self.spilled.unseal(&mut self.store, &row);
+        self.store.remove_row("orders", &row).unwrap();
+    }
+
+    fn update_random_order(&mut self) {
+        let i = self.rng.below(self.rows.len());
+        let new = self.rng.random_order();
+        self.spilled.unseal(&mut self.store, &self.rows[i]);
+        self.spilled.unseal(&mut self.store, &new);
+        self.store
+            .update_row("orders", &self.rows[i], &new)
+            .unwrap();
+        self.rows[i] = new;
+    }
+
+    /// The cells the store keeps, the dim rows it holds, and random asks
+    /// against the reference.
+    fn check(&mut self, step: u32) {
+        let Run { kinds, shape, .. } = self.run;
+        let seed = self.seed;
+        let bound = self.store.bound_cells("orders").is_some();
+        assert_eq!(bound, shape == Shape::Bound, "seed {seed}, step {step}");
+        for dim in ["customers", "tiers", "tags", "promos", "blocked"] {
+            assert_eq!(
+                self.store.dim_rows(dim),
+                Some(held(&self.dims, dim)),
+                "seed {seed}, step {step}: {dim} holds a row with a null key"
+            );
+        }
+        for _ in 0..6 {
+            let ask = self.rng.random_ask(shape);
+            assert_eq!(
+                self.spilled.ask(&self.store, &ask),
+                reference(&self.spec, &ask, &self.rows, &self.dims, &kinds),
+                "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
+            );
+        }
+    }
+
+    /// Every row removed, and no cell left behind; returns the sealed
+    /// buckets asks read.
+    fn drain(self) -> usize {
+        let Walk {
+            seed,
+            run,
+            mut store,
+            rows,
+            mut spilled,
+            ..
+        } = self;
+        for row in rows {
+            spilled.unseal(&mut store, &row);
+            store.remove_row("orders", &row).unwrap();
+        }
         assert_eq!(
-            store.bound_cells("orders"),
+            store.cells("orders"),
             Some(0),
-            "seed {seed}: a bound cell outlived its rows"
+            "seed {seed}: a cell outlived its rows"
         );
+        if run.shape == Shape::Bound {
+            assert_eq!(
+                store.bound_cells("orders"),
+                Some(0),
+                "seed {seed}: a bound cell outlived its rows"
+            );
+        }
+        spilled.read
     }
-    spilled.read
 }
 
 /// Eight seeds of [`run`], each with the kinds [`kinds_of`] gives it;

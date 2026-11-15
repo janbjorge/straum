@@ -191,13 +191,9 @@ fn buckets_widen_by_whole_multiples() {
     );
 }
 
-#[test]
-fn every_error_is_reported_and_displayed() {
-    let mut twice = dim();
-    twice.attributes = vec![id("name"), id("name")];
-    let mut keyless = dim();
-    keyless.name = id("w");
-    keyless.key = vec![];
+/// A view named as a dim, with a width that doesn't divide a day, by keys
+/// twice and on the time column, a ref to no dim and a measure twice.
+fn bad_view() -> Fact {
     let mut view = fact();
     view.name = id("z");
     view.time.width = Width { seconds: 420 };
@@ -228,9 +224,13 @@ fn every_error_is_reported_and_displayed() {
             filter: vec![],
         },
     ];
-    // A ref on two columns to a key of one, one joining on a column twice,
-    // one reading nothing, and one reading an attribute the dim lacks and
-    // another twice.
+    view
+}
+
+/// A ref on two columns to a key of one, one joining on a column twice,
+/// one reading nothing, and one reading an attribute the dim lacks and
+/// another twice.
+fn bad_joins() -> Fact {
     let mut joins = fact();
     joins.name = id("u");
     joins.by_keys = vec![col("a"), col("z_id"), col("b")];
@@ -269,8 +269,18 @@ fn every_error_is_reported_and_displayed() {
         },
     ];
     joins.measures = vec![];
+    joins
+}
 
-    let errors = Spec::new(vec![twice, keyless], vec![view, joins]).unwrap_err();
+#[test]
+fn every_error_is_reported_and_displayed() {
+    let mut twice = dim();
+    twice.attributes = vec![id("name"), id("name")];
+    let mut keyless = dim();
+    keyless.name = id("w");
+    keyless.key = vec![];
+
+    let errors = Spec::new(vec![twice, keyless], vec![bad_view(), bad_joins()]).unwrap_err();
     let shown: Vec<String> = errors.iter().map(ToString::to_string).collect();
     assert_eq!(
         shown,

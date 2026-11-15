@@ -83,11 +83,6 @@ fn spec() -> Spec {
 /// the trips of a vendor with no row, so their buckets hold no bound
 /// cells.
 fn spec_joining(vend: RefKind) -> Spec {
-    let measure = |name, aggregate, filter| Measure {
-        name: id(name),
-        aggregate,
-        filter,
-    };
     let zones = Dim {
         as_text: Vec::new(),
         name: id("zones"),
@@ -125,143 +120,172 @@ fn spec_joining(vend: RefKind) -> Spec {
             ],
             origin: Origin::Timestamptz,
         },
-        refs: vec![
-            Ref {
-                alias: id("pickup"),
-                dim: id("zones"),
-                via: vec![Via::Fact(id("pu"))],
-                kind: RefKind::Left,
-                reads: vec![
-                    attr("pickup_borough", "borough"),
-                    attr("pickup_zone", "zone"),
-                ],
-            },
-            Ref {
-                alias: id("dropoff"),
-                dim: id("zones"),
-                via: vec![Via::Fact(id("dro"))],
-                kind: RefKind::Left,
-                reads: vec![
-                    attr("dropoff_borough", "borough"),
-                    attr("dropoff_zone", "zone"),
-                ],
-            },
-            Ref {
-                alias: id("combo"),
-                dim: id("combos"),
-                via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
-                kind: RefKind::Left,
-                reads: vec![attr("combo_label", "label")],
-            },
-            Ref {
-                alias: id("vend"),
-                dim: id("vendors"),
-                via: vec![Via::Fact(id("vendor"))],
-                kind: vend,
-                reads: vec![attr("vend_label", "label")],
-            },
-            // On a column that is no by key: trips from several home
-            // zones of one borough share a bound cell, so a zone that
-            // moves takes its trips out of a cell the others stay in.
-            Ref {
-                alias: id("home"),
-                dim: id("zones"),
-                via: vec![Via::Fact(id("home"))],
-                kind: RefKind::Left,
-                reads: vec![attr("home_borough", "borough")],
-            },
-        ],
-        by_keys: vec![
-            col("pay"),
-            col("vendor"),
-            col("shared"),
-            col("pu"),
-            col("dro"),
-            // Over by columns, which the row carries once: one key for
-            // each way round.
-            ByKey::IsNull {
-                column: id("shared"),
-                name: id("known"),
-                negated: true,
-            },
-            ByKey::IsNull {
-                column: id("pay"),
-                name: id("unpaid"),
-                negated: false,
-            },
-        ],
+        refs: trip_refs(vend),
+        by_keys: trip_by_keys(),
         filter: vec![],
-        measures: vec![
-            measure("trips", Aggregate::Count, vec![]),
-            measure("fare", Aggregate::Sum(id("fare")), vec![]),
-            measure("tip_min", Aggregate::Min(id("tip")), vec![]),
-            measure("tip_max", Aggregate::Max(id("tip")), vec![]),
-            measure("tip_median", percentile(5, 1, "tip"), vec![]),
-            measure("tip_lowest", percentile(0, 0, "tip"), vec![]),
-            measure("tip_highest", percentile(1, 0, "tip"), vec![]),
-            // A rank PostgreSQL's float8 puts one past exact math's at
-            // every hundred values.
-            measure("fare_p07", percentile(7, 2, "fare"), vec![]),
-            measure(
-                "card_tip_p90",
-                percentile(90, 2, "tip"),
-                vec![cond("pay", vec![Literal::Int(1)])],
-            ),
-            // A sum over a column the load groups by.
-            measure("tip_avg", Aggregate::Avg(id("tip")), vec![]),
-            measure("distance", Aggregate::Avg(id("dist")), vec![]),
-            measure("riders", Aggregate::CountDistinct(id("rider")), vec![]),
-            measure("pickups", Aggregate::CountDistinct(id("pu")), vec![]),
-            measure(
-                "card",
-                Aggregate::Count,
-                vec![cond("pay", vec![Literal::Int(1)])],
-            ),
-            measure(
-                "shared_fare",
-                Aggregate::Sum(id("fare")),
-                vec![cond("shared", vec![Literal::Bool(true)])],
-            ),
-            measure(
-                "mq_fare",
-                Aggregate::Sum(id("fare")),
-                vec![
-                    cond("pickup_borough", vec![lit("m"), lit("q")]),
-                    cond("vendor", vec![Literal::Int(2)]),
-                ],
-            ),
-            measure(
-                "m_riders",
-                Aggregate::CountDistinct(id("rider")),
-                vec![cond("dropoff_borough", vec![lit("m")])],
-            ),
-            measure(
-                "far_tip",
-                Aggregate::Max(id("tip")),
-                vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
-            ),
-            measure(
-                "zone_four_distance",
-                Aggregate::Avg(id("dist")),
-                vec![cond("pu", vec![Literal::Int(4)])],
-            ),
-            measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
-            // Over text: a count reads no value, only that there is one.
-            measure(
-                "far_riders",
-                Aggregate::CountNotNull(id("rider")),
-                vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
-            ),
-            measure("all_tolled", Aggregate::BoolAnd(id("tolled")), vec![]),
-            measure("any_tolled", Aggregate::BoolOr(id("tolled")), vec![]),
-            measure(
-                "card_tolled",
-                Aggregate::BoolOr(id("tolled")),
-                vec![cond("pay", vec![Literal::Int(1)])],
-            ),
-        ],
+        measures: [
+            count_sum_and_rank_measures(),
+            average_count_and_bool_measures(),
+        ]
+        .concat(),
     };
     Spec::new(vec![zones, combos, vendors], vec![trips]).unwrap()
+}
+
+fn new_measure(name: &str, aggregate: Aggregate, filter: Vec<Condition>) -> Measure {
+    Measure {
+        name: id(name),
+        aggregate,
+        filter,
+    }
+}
+
+fn trip_refs(vend: RefKind) -> Vec<Ref> {
+    vec![
+        Ref {
+            alias: id("pickup"),
+            dim: id("zones"),
+            via: vec![Via::Fact(id("pu"))],
+            kind: RefKind::Left,
+            reads: vec![
+                attr("pickup_borough", "borough"),
+                attr("pickup_zone", "zone"),
+            ],
+        },
+        Ref {
+            alias: id("dropoff"),
+            dim: id("zones"),
+            via: vec![Via::Fact(id("dro"))],
+            kind: RefKind::Left,
+            reads: vec![
+                attr("dropoff_borough", "borough"),
+                attr("dropoff_zone", "zone"),
+            ],
+        },
+        Ref {
+            alias: id("combo"),
+            dim: id("combos"),
+            via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
+            kind: RefKind::Left,
+            reads: vec![attr("combo_label", "label")],
+        },
+        Ref {
+            alias: id("vend"),
+            dim: id("vendors"),
+            via: vec![Via::Fact(id("vendor"))],
+            kind: vend,
+            reads: vec![attr("vend_label", "label")],
+        },
+        // On a column that is no by key: trips from several home
+        // zones of one borough share a bound cell, so a zone that
+        // moves takes its trips out of a cell the others stay in.
+        Ref {
+            alias: id("home"),
+            dim: id("zones"),
+            via: vec![Via::Fact(id("home"))],
+            kind: RefKind::Left,
+            reads: vec![attr("home_borough", "borough")],
+        },
+    ]
+}
+
+fn trip_by_keys() -> Vec<ByKey> {
+    vec![
+        col("pay"),
+        col("vendor"),
+        col("shared"),
+        col("pu"),
+        col("dro"),
+        // Over by columns, which the row carries once: one key for
+        // each way round.
+        ByKey::IsNull {
+            column: id("shared"),
+            name: id("known"),
+            negated: true,
+        },
+        ByKey::IsNull {
+            column: id("pay"),
+            name: id("unpaid"),
+            negated: false,
+        },
+    ]
+}
+
+fn count_sum_and_rank_measures() -> Vec<Measure> {
+    vec![
+        new_measure("trips", Aggregate::Count, vec![]),
+        new_measure("fare", Aggregate::Sum(id("fare")), vec![]),
+        new_measure("tip_min", Aggregate::Min(id("tip")), vec![]),
+        new_measure("tip_max", Aggregate::Max(id("tip")), vec![]),
+        new_measure("tip_median", percentile(5, 1, "tip"), vec![]),
+        new_measure("tip_lowest", percentile(0, 0, "tip"), vec![]),
+        new_measure("tip_highest", percentile(1, 0, "tip"), vec![]),
+        // A rank PostgreSQL's float8 puts one past exact math's at
+        // every hundred values.
+        new_measure("fare_p07", percentile(7, 2, "fare"), vec![]),
+        new_measure(
+            "card_tip_p90",
+            percentile(90, 2, "tip"),
+            vec![cond("pay", vec![Literal::Int(1)])],
+        ),
+    ]
+}
+
+fn average_count_and_bool_measures() -> Vec<Measure> {
+    vec![
+        // A sum over a column the load groups by.
+        new_measure("tip_avg", Aggregate::Avg(id("tip")), vec![]),
+        new_measure("distance", Aggregate::Avg(id("dist")), vec![]),
+        new_measure("riders", Aggregate::CountDistinct(id("rider")), vec![]),
+        new_measure("pickups", Aggregate::CountDistinct(id("pu")), vec![]),
+        new_measure(
+            "card",
+            Aggregate::Count,
+            vec![cond("pay", vec![Literal::Int(1)])],
+        ),
+        new_measure(
+            "shared_fare",
+            Aggregate::Sum(id("fare")),
+            vec![cond("shared", vec![Literal::Bool(true)])],
+        ),
+        new_measure(
+            "mq_fare",
+            Aggregate::Sum(id("fare")),
+            vec![
+                cond("pickup_borough", vec![lit("m"), lit("q")]),
+                cond("vendor", vec![Literal::Int(2)]),
+            ],
+        ),
+        new_measure(
+            "m_riders",
+            Aggregate::CountDistinct(id("rider")),
+            vec![cond("dropoff_borough", vec![lit("m")])],
+        ),
+        new_measure(
+            "far_tip",
+            Aggregate::Max(id("tip")),
+            vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
+        ),
+        new_measure(
+            "zone_four_distance",
+            Aggregate::Avg(id("dist")),
+            vec![cond("pu", vec![Literal::Int(4)])],
+        ),
+        new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
+        // Over text: a count reads no value, only that there is one.
+        new_measure(
+            "far_riders",
+            Aggregate::CountNotNull(id("rider")),
+            vec![cond("dro", vec![Literal::Int(3), Literal::Int(6)])],
+        ),
+        new_measure("all_tolled", Aggregate::BoolAnd(id("tolled")), vec![]),
+        new_measure("any_tolled", Aggregate::BoolOr(id("tolled")), vec![]),
+        new_measure(
+            "card_tolled",
+            Aggregate::BoolOr(id("tolled")),
+            vec![cond("pay", vec![Literal::Int(1)])],
+        ),
+    ]
 }
 
 impl Rng {
@@ -595,7 +619,14 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
             AnswerRow { keys, values }
         })
         .collect();
-    let columns = (ask.keys.iter().map(|asked| match asked {
+    Answer {
+        columns: reference_columns(fact, ask),
+        rows,
+    }
+}
+
+fn reference_columns(fact: &Fact, ask: &Ask) -> Vec<AnswerColumn> {
+    let keys = ask.keys.iter().map(|asked| match asked {
         AskKey::Key(name) => AnswerColumn {
             name: name.to_string(),
             scale: scale(name),
@@ -606,27 +637,30 @@ fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer
             scale: 0,
             is_time: true,
         },
-    }))
-    .chain(ask.measures.iter().map(|name| AnswerColumn {
+    });
+    let measures = ask.measures.iter().map(|name| AnswerColumn {
         name: name.to_string(),
-        scale: match &fact.measure(name.as_str()).unwrap().aggregate {
-            Aggregate::Count
-            | Aggregate::CountNotNull(_)
-            | Aggregate::CountDistinct(_)
-            | Aggregate::BoolAnd(_)
-            | Aggregate::BoolOr(_) => 0,
-            Aggregate::Sum(input)
-            | Aggregate::Min(input)
-            | Aggregate::Max(input)
-            | Aggregate::Avg(input)
-            | Aggregate::PercentileDisc { column: input, .. } => {
-                trip_types()[column(input.as_str())].scale()
-            }
-        },
+        scale: measure_scale(&fact.measure(name.as_str()).unwrap().aggregate),
         is_time: false,
-    }))
-    .collect();
-    Answer { columns, rows }
+    });
+    keys.chain(measures).collect()
+}
+
+fn measure_scale(aggregate: &Aggregate) -> u32 {
+    match aggregate {
+        Aggregate::Count
+        | Aggregate::CountNotNull(_)
+        | Aggregate::CountDistinct(_)
+        | Aggregate::BoolAnd(_)
+        | Aggregate::BoolOr(_) => 0,
+        Aggregate::Sum(input)
+        | Aggregate::Min(input)
+        | Aggregate::Max(input)
+        | Aggregate::Avg(input)
+        | Aggregate::PercentileDisc { column: input, .. } => {
+            trip_types()[column(input.as_str())].scale()
+        }
+    }
 }
 
 fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
@@ -706,97 +740,149 @@ fn near(rng: &mut Rng, row: &mut [Datum], other: &[Datum]) {
 /// rest the bound cells, which move with the dims. Halfway the trips
 /// are truncated. `vend` is how the vendors join.
 fn run(seed: u64, sealing: bool, vend: RefKind) -> usize {
-    let spec = spec_joining(vend);
-    let mut store = typed(&spec);
-    let mut rng = Rng(seed);
-    let mut rows: Vec<Vec<Datum>> = Vec::new();
-    let mut dims = random_dims(&mut rng);
-    let mut spilled = Spilled::new("trips");
-    load_dims(&mut store, &dims);
-
+    let mut workload = Workload::new(seed, vend);
     for step in 0..2_000 {
-        if sealing && rng.chance(5) {
-            let before = rng.int(START, END + 7 * 86_400);
-            spilled.seal(&mut rng, &mut store, before);
+        if sealing && workload.rng.chance(5) {
+            workload.seal_some();
         }
         if step == 1_000 {
-            store.clear("trips");
-            spilled.forget();
-            rows.clear();
-            assert_eq!(store.cells("trips"), Some(0), "seed {seed}");
-            assert_eq!(store.bound_cells("trips"), Some(0), "seed {seed}");
+            workload.truncate_trips();
         }
-        match rng.below(40) {
-            0..=3 => change_dim(&mut rng, &mut store, &mut dims),
-            4..=8 if !rows.is_empty() => {
-                let row = rows.swap_remove(rng.below(rows.len()));
-                spilled.unseal(&mut store, &row);
-                store.remove_row("trips", &row).unwrap();
-            }
-            9..=14 if !rows.is_empty() => {
-                // Often into the same cell, or the one beside it.
-                let i = rng.below(rows.len());
-                let mut new = trip(&mut rng);
-                if rng.chance(50) {
-                    near(&mut rng, &mut new, &rows[i]);
-                }
-                spilled.unseal(&mut store, &rows[i]);
-                spilled.unseal(&mut store, &new);
-                store.update_row("trips", &rows[i], &new).unwrap();
-                rows[i] = new;
-            }
-            _ => {
-                let mut row = trip(&mut rng);
-                // Often into a cell that already holds rows, or beside it.
-                if !rows.is_empty() && rng.chance(40) {
-                    let other = rng.below(rows.len());
-                    near(&mut rng, &mut row, &rows[other]);
-                }
-                spilled.unseal(&mut store, &row);
-                store.add_row("trips", &row).unwrap();
-                rows.push(row);
-            }
-        }
+        workload.change_one();
         if step % 100 == 99 {
-            for (dim, rows) in &dims {
-                assert_eq!(
-                    store.dim_rows(dim),
-                    Some(held(rows)),
-                    "seed {seed}, step {step}: {dim} holds a row with a null key"
-                );
-            }
-            for _ in 0..10 {
-                let ask = random_ask(&mut rng, &spec);
-                assert_eq!(
-                    spilled.ask(&store, &ask),
-                    reference(&spec, &ask, &rows, &dims),
-                    "seed {seed}, step {step}, {ask:?}"
-                );
-            }
+            workload.check(step);
+        }
+    }
+    workload.finish(sealing)
+}
+
+struct Workload {
+    seed: u64,
+    spec: Spec,
+    store: Store,
+    rng: Rng,
+    rows: Vec<Vec<Datum>>,
+    dims: Dims,
+    spilled: Spilled,
+}
+
+impl Workload {
+    fn new(seed: u64, vend: RefKind) -> Workload {
+        let spec = spec_joining(vend);
+        let mut store = typed(&spec);
+        let mut rng = Rng(seed);
+        let dims = random_dims(&mut rng);
+        load_dims(&mut store, &dims);
+        Workload {
+            seed,
+            spec,
+            store,
+            rng,
+            rows: Vec::new(),
+            dims,
+            spilled: Spilled::new("trips"),
         }
     }
 
-    assert!(store.cells("trips").unwrap() > 0);
-    // Home zones of one borough share bound cells, so these are fewer.
-    if !sealing {
-        let (keyed, bound) = (store.cells("trips"), store.bound_cells("trips"));
-        assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
+    fn seal_some(&mut self) {
+        let before = self.rng.int(START, END + 7 * 86_400);
+        self.spilled.seal(&mut self.rng, &mut self.store, before);
     }
-    for row in rows {
-        spilled.unseal(&mut store, &row);
-        store.remove_row("trips", &row).unwrap();
+
+    fn truncate_trips(&mut self) {
+        let seed = self.seed;
+        self.store.clear("trips");
+        self.spilled.forget();
+        self.rows.clear();
+        assert_eq!(self.store.cells("trips"), Some(0), "seed {seed}");
+        assert_eq!(self.store.bound_cells("trips"), Some(0), "seed {seed}");
     }
-    assert_eq!(
-        store.cells("trips").unwrap(),
-        0,
-        "seed {seed}: a cell outlived its rows"
-    );
-    assert_eq!(
-        store.bound_cells("trips"),
-        Some(0),
-        "seed {seed}: a bound cell outlived its rows"
-    );
-    spilled.read
+
+    fn change_one(&mut self) {
+        match self.rng.below(40) {
+            0..=3 => change_dim(&mut self.rng, &mut self.store, &mut self.dims),
+            4..=8 if !self.rows.is_empty() => self.remove_trip(),
+            9..=14 if !self.rows.is_empty() => self.update_trip(),
+            _ => self.add_trip(),
+        }
+    }
+
+    fn remove_trip(&mut self) {
+        let row = self.rows.swap_remove(self.rng.below(self.rows.len()));
+        self.spilled.unseal(&mut self.store, &row);
+        self.store.remove_row("trips", &row).unwrap();
+    }
+
+    fn update_trip(&mut self) {
+        // Often into the same cell, or the one beside it.
+        let index = self.rng.below(self.rows.len());
+        let mut new = trip(&mut self.rng);
+        if self.rng.chance(50) {
+            near(&mut self.rng, &mut new, &self.rows[index]);
+        }
+        self.spilled.unseal(&mut self.store, &self.rows[index]);
+        self.spilled.unseal(&mut self.store, &new);
+        self.store
+            .update_row("trips", &self.rows[index], &new)
+            .unwrap();
+        self.rows[index] = new;
+    }
+
+    fn add_trip(&mut self) {
+        let mut row = trip(&mut self.rng);
+        // Often into a cell that already holds rows, or beside it.
+        if !self.rows.is_empty() && self.rng.chance(40) {
+            let other = self.rng.below(self.rows.len());
+            near(&mut self.rng, &mut row, &self.rows[other]);
+        }
+        self.spilled.unseal(&mut self.store, &row);
+        self.store.add_row("trips", &row).unwrap();
+        self.rows.push(row);
+    }
+
+    fn check(&mut self, step: u32) {
+        let seed = self.seed;
+        for (dim, rows) in &self.dims {
+            assert_eq!(
+                self.store.dim_rows(dim),
+                Some(held(rows)),
+                "seed {seed}, step {step}: {dim} holds a row with a null key"
+            );
+        }
+        for _ in 0..10 {
+            let ask = random_ask(&mut self.rng, &self.spec);
+            assert_eq!(
+                self.spilled.ask(&self.store, &ask),
+                reference(&self.spec, &ask, &self.rows, &self.dims),
+                "seed {seed}, step {step}, {ask:?}"
+            );
+        }
+    }
+
+    fn finish(mut self, sealing: bool) -> usize {
+        let seed = self.seed;
+        assert!(self.store.cells("trips").unwrap() > 0);
+        // Home zones of one borough share bound cells, so these are fewer.
+        if !sealing {
+            let (keyed, bound) = (self.store.cells("trips"), self.store.bound_cells("trips"));
+            assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
+        }
+        for row in &self.rows {
+            self.spilled.unseal(&mut self.store, row);
+            self.store.remove_row("trips", row).unwrap();
+        }
+        assert_eq!(
+            self.store.cells("trips").unwrap(),
+            0,
+            "seed {seed}: a cell outlived its rows"
+        );
+        assert_eq!(
+            self.store.bound_cells("trips"),
+            Some(0),
+            "seed {seed}: a bound cell outlived its rows"
+        );
+        self.spilled.read
+    }
 }
 
 #[test]
@@ -1584,38 +1670,41 @@ fn a_dim_update_moves_the_bound_cells_when_it_reads_otherwise() {
     assert_eq!(store.bound_cells("trips"), Some(2));
 }
 
-/// A dim keyed by several columns matches on all of them; a via that is
-/// null joins nothing, even when a dim row has a null there.
-#[test]
-fn a_composite_key_matches_every_column() {
-    let spec = spec();
-    let mut store = typed(&spec);
-    store
-        .add_rows(
-            "combos",
-            &[
-                Datum::Int(1),
-                Datum::Int(1),
-                text("x"),
-                Datum::Int(1),
-                Datum::Int(2),
-                text("y"),
-                Datum::Null,
-                Datum::Int(2),
-                text("z"),
-            ],
-        )
-        .unwrap();
-    // A row with a null in its key is never held: nothing could join it.
-    assert_eq!(store.dim_rows("combos"), Some(2));
-    let mut by_label = Ask {
+fn two_combos() -> Vec<Datum> {
+    vec![
+        Datum::Int(1),
+        Datum::Int(1),
+        text("x"),
+        Datum::Int(1),
+        Datum::Int(2),
+        text("y"),
+    ]
+}
+
+fn trip_at_start_from(rng: &mut Rng, pu: Datum, vendor: Datum) -> Vec<Datum> {
+    let mut row = trip(rng);
+    row[AT] = Datum::Int(START);
+    row[PU] = pu;
+    row[VENDOR] = vendor;
+    row
+}
+
+fn by_combo_label() -> Ask {
+    Ask {
         view: id("trips"),
         measures: vec![id("trips")],
         keys: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
         from: START,
         to: END,
-    };
+    }
+}
+
+/// A dim keyed by several columns matches on all of them; a via that is
+/// null joins nothing, even when a dim row has a null there.
+#[test]
+fn a_composite_key_matches_every_column() {
+    let spec = spec();
     let mut rng = Rng(4);
     for (pu, vendor, label) in [
         (Datum::Int(1), Datum::Int(1), text("x")),
@@ -1624,34 +1713,28 @@ fn a_composite_key_matches_every_column() {
         (Datum::Null, Datum::Int(2), Datum::Null),
     ] {
         let mut store = typed(&spec);
-        store
-            .add_rows(
-                "combos",
-                &[
-                    Datum::Int(1),
-                    Datum::Int(1),
-                    text("x"),
-                    Datum::Int(1),
-                    Datum::Int(2),
-                    text("y"),
-                ],
-            )
-            .unwrap();
-        let mut row = trip(&mut rng);
-        row[AT] = Datum::Int(START);
-        row[PU] = pu;
-        row[VENDOR] = vendor;
+        store.add_rows("combos", &two_combos()).unwrap();
+        let row = trip_at_start_from(&mut rng, pu, vendor);
         store.add_row("trips", &row).unwrap();
-        let answer = store.ask(&by_label).unwrap();
+        let answer = store.ask(&by_combo_label()).unwrap();
         assert_eq!(answer.rows[0].keys, [label]);
     }
+}
+
+#[test]
+fn a_filter_on_a_composite_key_attribute_reads_the_dim() {
+    let mut store = typed(&spec());
+    let unkeyed = vec![Datum::Null, Datum::Int(2), text("z")];
+    store
+        .add_rows("combos", &[two_combos(), unkeyed].concat())
+        .unwrap();
+    // A row with a null in its key is never held: nothing could join it.
+    assert_eq!(store.dim_rows("combos"), Some(2));
     // Filtered on the attribute too.
+    let mut by_label = by_combo_label();
     by_label.filter = vec![cond("combo_label", vec![lit("x")])];
     by_label.keys.clear();
-    let mut row = trip(&mut rng);
-    row[AT] = Datum::Int(START);
-    row[PU] = Datum::Int(1);
-    row[VENDOR] = Datum::Int(1);
+    let row = trip_at_start_from(&mut Rng(4), Datum::Int(1), Datum::Int(1));
     store.add_row("trips", &row).unwrap();
     assert_eq!(
         store.ask(&by_label).unwrap().rows[0].values,
@@ -1950,6 +2033,71 @@ fn removing_an_extreme_reveals_the_next() {
     assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
 }
 
+fn buckets_holding_start() -> [(i64, i64); 4] {
+    // The one bucket of each width that holds START.
+    let week = START.div_euclid(604_800) * 604_800;
+    [
+        (START, START + i64::from(WIDTH)),
+        (START, START + 3_600),
+        (START, START + 86_400),
+        (week, week + 604_800),
+    ]
+}
+
+fn shuffle(tips: &mut [i64], rng: &mut Rng) {
+    for at in (1..tips.len()).rev() {
+        tips.swap(at, rng.below(at + 1));
+    }
+}
+
+fn end_value(end: Option<(&i64, &usize)>) -> Value {
+    end.map_or(Value::Null, |(&tip, _)| Value::Int(tip.into()))
+}
+
+fn check_ends(store: &Store, held: &BTreeMap<i64, usize>, sealed: Option<&Sealed>) {
+    let rows = held.values().sum::<usize>() as i128;
+    let expected = [
+        Value::Int(rows),
+        end_value(held.first_key_value()),
+        end_value(held.last_key_value()),
+    ];
+    for (from, to) in buckets_holding_start() {
+        let ask = Ask {
+            view: id("trips"),
+            measures: vec![id("trips"), id("tip_min"), id("tip_max")],
+            keys: Vec::new(),
+            filter: Vec::new(),
+            from,
+            to,
+        };
+        let thawed: Vec<_> = (store.sealed_read(&ask).unwrap().iter())
+            .map(|_| store.thaw(sealed.unwrap().clone()).unwrap())
+            .collect();
+        // Only the narrowest width is sealed, so only its ask thaws.
+        let narrowest = to - from == i64::from(WIDTH);
+        assert_eq!(thawed.len(), usize::from(sealed.is_some() && narrowest));
+        assert_eq!(
+            store.ask_with(&ask, &thawed).unwrap().rows[0].values,
+            expected,
+            "{} values, {} s wide",
+            held.len(),
+            to - from
+        );
+    }
+}
+
+// Sealed, an ask reads the keyed cells: the thawed bucket at the
+// narrowest width, the hot wider ones above it.
+fn check_ends_through_a_seal(store: &mut Store, held: &BTreeMap<i64, usize>) {
+    let bucket = sealed_id(i64::from(WIDTH), START);
+    check_ends(store, held, None);
+    let sealed = store.sealed_copy(&bucket).unwrap();
+    store.seal(&bucket).unwrap();
+    check_ends(store, held, Some(&sealed));
+    store.unseal(store.thaw(sealed).unwrap()).unwrap();
+    check_ends(store, held, None);
+}
+
 /// One cell through every form its count per value takes: a few values in
 /// the cell itself, a run of them, and past what a run holds several, then
 /// back down as the rows leave. All the way the min and max of every width
@@ -1959,14 +2107,6 @@ fn removing_an_extreme_reveals_the_next() {
 fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
     const VALUES: i64 = 3_000;
     let mut store = typed(&spec());
-    // The one bucket of each width that holds START.
-    let week = START.div_euclid(604_800) * 604_800;
-    let ranges = [
-        (START, START + i64::from(WIDTH)),
-        (START, START + 3_600),
-        (START, START + 86_400),
-        (week, week + 604_800),
-    ];
     let mut rng = Rng(7);
     let mut row = trip(&mut rng);
     row[AT] = Datum::Int(START);
@@ -1975,71 +2115,22 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
         .flat_map(|index| vec![index * 3 - VALUES; if index % 3 == 0 { 2 } else { 1 }])
         .collect();
     let mut held: BTreeMap<i64, usize> = BTreeMap::new();
-    let check = |store: &Store, held: &BTreeMap<i64, usize>, sealed: Option<&Sealed>| {
-        let end = |end: Option<(&i64, &usize)>| {
-            end.map_or(Value::Null, |(&tip, _)| Value::Int(tip.into()))
-        };
-        let rows = held.values().sum::<usize>() as i128;
-        let expected = [
-            Value::Int(rows),
-            end(held.first_key_value()),
-            end(held.last_key_value()),
-        ];
-        for (from, to) in ranges {
-            let ask = Ask {
-                view: id("trips"),
-                measures: vec![id("trips"), id("tip_min"), id("tip_max")],
-                keys: Vec::new(),
-                filter: Vec::new(),
-                from,
-                to,
-            };
-            let thawed: Vec<_> = (store.sealed_read(&ask).unwrap().iter())
-                .map(|_| store.thaw(sealed.unwrap().clone()).unwrap())
-                .collect();
-            // Only the narrowest width is sealed, so only its ask thaws.
-            let narrowest = to - from == i64::from(WIDTH);
-            assert_eq!(thawed.len(), usize::from(sealed.is_some() && narrowest));
-            assert_eq!(
-                store.ask_with(&ask, &thawed).unwrap().rows[0].values,
-                expected,
-                "{} values, {} s wide",
-                held.len(),
-                to - from
-            );
-        }
-    };
-    // Sealed, an ask reads the keyed cells: the thawed bucket at the
-    // narrowest width, the hot wider ones above it.
-    let bucket = sealed_id(i64::from(WIDTH), START);
-    let through_a_seal = |store: &mut Store, held: &BTreeMap<i64, usize>| {
-        check(store, held, None);
-        let sealed = store.sealed_copy(&bucket).unwrap();
-        store.seal(&bucket).unwrap();
-        check(store, held, Some(&sealed));
-        store.unseal(store.thaw(sealed).unwrap()).unwrap();
-        check(store, held, None);
-    };
     for round in 0..2 {
-        for at in (1..tips.len()).rev() {
-            tips.swap(at, rng.below(at + 1));
-        }
-        for (n, &tip) in tips.iter().enumerate() {
+        shuffle(&mut tips, &mut rng);
+        for (position, &tip) in tips.iter().enumerate() {
             row[TIP] = Datum::Int(tip);
             store.add_row("trips", &row).unwrap();
             *held.entry(tip).or_default() += 1;
             // One value, a few, a run more than half full, and several.
-            if [0, 3, 900, tips.len() - 1].contains(&n) {
-                through_a_seal(&mut store, &held);
-            } else if n % 97 == 0 {
-                check(&store, &held, None);
+            if [0, 3, 900, tips.len() - 1].contains(&position) {
+                check_ends_through_a_seal(&mut store, &held);
+            } else if position % 97 == 0 {
+                check_ends(&store, &held, None);
             }
         }
         assert_eq!(store.cells("trips"), Some(1));
-        for at in (1..tips.len()).rev() {
-            tips.swap(at, rng.below(at + 1));
-        }
-        for (n, &tip) in tips.iter().enumerate() {
+        shuffle(&mut tips, &mut rng);
+        for (position, &tip) in tips.iter().enumerate() {
             row[TIP] = Datum::Int(tip);
             store.remove_row("trips", &row).unwrap();
             let count = held.get_mut(&tip).unwrap();
@@ -2048,11 +2139,11 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
                 held.remove(&tip);
             }
             // Runs thinned, one down to a few values, and the last.
-            let left = tips.len() - 1 - n;
+            let left = tips.len() - 1 - position;
             if [2_000, 3, 1].contains(&left) {
-                through_a_seal(&mut store, &held);
-            } else if n % 97 == 0 {
-                check(&store, &held, None);
+                check_ends_through_a_seal(&mut store, &held);
+            } else if position % 97 == 0 {
+                check_ends(&store, &held, None);
             }
         }
         assert_eq!(store.cells("trips"), Some(0), "round {round}");
@@ -2365,17 +2456,16 @@ fn unknown_names() {
     );
 }
 
+fn base_trip_with(column: usize, datum: Datum) -> Vec<Datum> {
+    let mut row = trip(&mut Rng(3));
+    row[column] = datum;
+    row
+}
+
 #[test]
 fn row_errors() {
     let base = trip(&mut Rng(3));
-    let fresh = || Store::new(spec());
-    let with = |pos: usize, datum: Datum| {
-        let mut row = base.clone();
-        row[pos] = datum;
-        row
-    };
-
-    let mut store = fresh();
+    let mut store = Store::new(spec());
     assert_eq!(
         store.add_row("trips", &base[1..]),
         Err(RowError::Arity {
@@ -2384,27 +2474,38 @@ fn row_errors() {
         })
     );
     assert_eq!(
-        store.add_row("trips", &with(AT, text("noon"))),
+        store.add_row("trips", &base_trip_with(AT, text("noon"))),
         Err(RowError::NotInt { column: id("at") })
     );
     assert_eq!(
-        store.remove_row("trips", &with(TIP, Datum::Bool(true))),
+        store.remove_row("trips", &base_trip_with(TIP, Datum::Bool(true))),
         Err(RowError::NotInt { column: id("tip") })
     );
     assert_eq!(
-        store.add_row("trips", &with(TOLLED, Datum::Int(1))),
+        store.add_row("trips", &base_trip_with(TOLLED, Datum::Int(1))),
         Err(RowError::NotBool {
             column: id("tolled")
         })
     );
     // Count distinct takes any value.
     store
-        .add_row("trips", &with(RIDER, Datum::Bool(true)))
+        .add_row("trips", &base_trip_with(RIDER, Datum::Bool(true)))
         .unwrap();
     assert_eq!(store.remove_row("trips", &base), Err(RowError::Missing));
 
-    // Each kind of state notices a value it never saw.
-    let seen = with(FARE, Datum::Null);
+    let mut store = Store::new(spec());
+    assert_eq!(
+        store.set_types("trips", &[ColumnType::Int; ROW_LEN + 1]),
+        Err(RowError::Arity {
+            expected: ROW_LEN,
+            found: ROW_LEN + 1
+        })
+    );
+}
+
+#[test]
+fn each_kind_of_state_notices_a_value_it_never_saw() {
+    let seen = base_trip_with(FARE, Datum::Null);
     let untolled = Datum::Bool(seen[TOLLED] != Datum::Bool(true));
     for (pos, datum) in [
         (FARE, Datum::Int(1)),
@@ -2412,7 +2513,7 @@ fn row_errors() {
         (RIDER, text("zed")),
         (TOLLED, untolled),
     ] {
-        let mut store = fresh();
+        let mut store = Store::new(spec());
         store.add_row("trips", &seen).unwrap();
         let mut other = seen.clone();
         other[pos] = datum;
@@ -2422,13 +2523,16 @@ fn row_errors() {
             "{pos}"
         );
     }
+}
 
-    // A null is a value where a sum or a count reads the column, so one
-    // the cell never held is noticed too.
-    let mut full = with(FARE, Datum::Int(5));
+/// A null is a value where a sum or a count reads the column, so one
+/// the cell never held is noticed too.
+#[test]
+fn a_null_the_cell_never_held_is_noticed() {
+    let mut full = base_trip_with(FARE, Datum::Int(5));
     (full[TIP], full[RIDER]) = (Datum::Int(3), text("ann"));
     for pos in [FARE, TIP, RIDER] {
-        let mut store = fresh();
+        let mut store = Store::new(spec());
         store.add_row("trips", &full).unwrap();
         let mut other = full.clone();
         other[pos] = Datum::Null;
@@ -2439,22 +2543,13 @@ fn row_errors() {
         );
         // One it does hold leaves. A store that missed a row no longer
         // matches its table, so this is another.
-        let mut store = fresh();
+        let mut store = Store::new(spec());
         store.add_row("trips", &full).unwrap();
         store.add_row("trips", &other).unwrap();
         assert_eq!(store.remove_row("trips", &other), Ok(()), "a null at {pos}");
         assert_eq!(store.remove_row("trips", &full), Ok(()), "{pos}");
         assert_eq!(store.cells("trips"), Some(0), "{pos}");
     }
-
-    let mut store = fresh();
-    assert_eq!(
-        store.set_types("trips", &[ColumnType::Int; ROW_LEN + 1]),
-        Err(RowError::Arity {
-            expected: ROW_LEN,
-            found: ROW_LEN + 1
-        })
-    );
 }
 
 #[test]
@@ -2612,43 +2707,37 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
 
 type Change<'a> = dyn Fn(&mut Sealed) + 'a;
 
+struct SealedBucket {
+    store: Store,
+    good: Sealed,
+}
+
+impl SealedBucket {
+    fn new() -> SealedBucket {
+        let (mut store, _) = three_rows();
+        let bucket = sealed_id(i64::from(WIDTH), START);
+        let good = store.sealed_copy(&bucket).unwrap();
+        store.seal(&bucket).unwrap();
+        SealedBucket { store, good }
+    }
+
+    fn column(&self, is_kind: fn(&SealedColumn) -> bool) -> usize {
+        self.good.columns.iter().position(is_kind).unwrap()
+    }
+
+    fn assert_refused(&self, cases: &[(&str, &Change<'_>)]) {
+        for (reason, change) in cases {
+            let mut sealed = self.good.clone();
+            change(&mut sealed);
+            assert_eq!(self.store.thaw(sealed).unwrap_err().reason, *reason);
+        }
+        assert!(self.store.thaw(self.good.clone()).is_ok());
+    }
+}
+
 #[test]
-fn thaw_refuses_a_bucket_that_does_not_fit() {
-    let (mut store, _) = three_rows();
-    let bucket = sealed_id(i64::from(WIDTH), START);
-    let good = store.sealed_copy(&bucket).unwrap();
-    store.seal(&bucket).unwrap();
-    let refused = |change: &Change<'_>| {
-        let mut sealed = good.clone();
-        change(&mut sealed);
-        store.thaw(sealed).unwrap_err().reason
-    };
-    let extent = good
-        .columns
-        .iter()
-        .position(|column| matches!(column, SealedColumn::Extent { .. }))
-        .unwrap();
-    let distinct = good
-        .columns
-        .iter()
-        .position(|column| matches!(column, SealedColumn::Distinct { .. }))
-        .unwrap();
-    let count = good
-        .columns
-        .iter()
-        .position(|column| matches!(column, SealedColumn::Count { .. }))
-        .unwrap();
-    let bools = good
-        .columns
-        .iter()
-        .position(|column| matches!(column, SealedColumn::Bools { .. }))
-        .unwrap();
-    let sum = good
-        .columns
-        .iter()
-        .position(|column| matches!(column, SealedColumn::Sum { .. }))
-        .unwrap();
-    let cases: [(&str, &Change<'_>); 19] = [
+fn thaw_refuses_a_bucket_whose_id_or_keys_do_not_fit() {
+    SealedBucket::new().assert_refused(&[
         ("unknown fact", &|sealed| sealed.id.fact = id("nope")),
         ("no such width", &|sealed| sealed.id.width = 7),
         ("no cells", &|sealed| sealed.counts.clear()),
@@ -2657,6 +2746,17 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
             sealed.keys.pop();
         }),
         ("a code the store never gave", &|sealed| sealed.keys[0] = 99),
+    ]);
+}
+
+#[test]
+fn thaw_refuses_columns_that_do_not_fit_the_measures() {
+    let bucket = SealedBucket::new();
+    let extent = bucket.column(|column| matches!(column, SealedColumn::Extent { .. }));
+    let count = bucket.column(|column| matches!(column, SealedColumn::Count { .. }));
+    let bools = bucket.column(|column| matches!(column, SealedColumn::Bools { .. }));
+    let sum = bucket.column(|column| matches!(column, SealedColumn::Sum { .. }));
+    bucket.assert_refused(&[
         ("columns don't fit the measures", &|sealed| {
             sealed.columns.pop();
         }),
@@ -2690,6 +2790,15 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
                 falses: vec![],
             };
         }),
+    ]);
+}
+
+#[test]
+fn thaw_refuses_values_that_do_not_fit_their_cell() {
+    let bucket = SealedBucket::new();
+    let extent = bucket.column(|column| matches!(column, SealedColumn::Extent { .. }));
+    let distinct = bucket.column(|column| matches!(column, SealedColumn::Distinct { .. }));
+    bucket.assert_refused(&[
         ("columns don't fit the measures", &|sealed| {
             sealed.columns[extent] = SealedColumn::Extent {
                 values: vec![vec![(1, 0)]],
@@ -2716,11 +2825,7 @@ fn thaw_refuses_a_bucket_that_does_not_fit() {
         ("columns don't fit the measures", &|sealed| {
             sealed.columns[distinct] = SealedColumn::Distinct { values: vec![] };
         }),
-    ];
-    for (reason, change) in cases {
-        assert_eq!(refused(change), reason);
-    }
-    assert!(store.thaw(good).is_ok());
+    ]);
 }
 
 #[test]
