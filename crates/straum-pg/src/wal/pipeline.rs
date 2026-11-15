@@ -227,10 +227,10 @@ mod tests {
             attributes: vec![Attribute {
                 length: 4,
                 align: 4,
-                kind: Kind::Int,
+                kind: Kind::Read(ColumnType::Int),
             }],
             columns: vec![0],
-            missing: vec![None],
+            missing: vec![Datum::Null],
         }
     }
 

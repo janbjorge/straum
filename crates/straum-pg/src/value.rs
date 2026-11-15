@@ -85,9 +85,7 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
 pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum, ValueError> {
     let datum = match column_type {
         ColumnType::Int => int(bytes).map(Datum::Int),
-        ColumnType::Numeric { scale } => binary_decimal(bytes, scale)
-            .and_then(|v| i64::try_from(v).ok())
-            .map(Datum::Int),
+        ColumnType::Numeric { scale } => binary_decimal(bytes, scale).map(Datum::Int),
         ColumnType::Bool => match bytes {
             [0] => Some(Datum::Bool(false)),
             [1] => Some(Datum::Bool(true)),
@@ -96,15 +94,21 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
         ColumnType::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
         // Both types are microseconds since 2000-01-01, a `timestamp`'s
         // read as if UTC.
-        ColumnType::Time { .. } => match <[u8; 8]>::try_from(bytes).map(i64::from_be_bytes) {
-            // `infinity` and `-infinity`, a null time as the text reader
-            // has them.
-            Ok(i64::MIN | i64::MAX) => Some(Datum::Null),
-            Err(_) => None,
-            Ok(micros) => Some(Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH)),
-        },
+        ColumnType::Time { .. } => <[u8; 8]>::try_from(bytes)
+            .ok()
+            .map(|b| time(i64::from_be_bytes(b))),
     };
     datum.ok_or_else(|| ValueError::binary(column_type, bytes))
+}
+
+/// A timestamp, microseconds since PostgreSQL's epoch, as Straum reads
+/// it: Unix seconds, rounded down. `infinity` and `-infinity` are null,
+/// as the text reader has them.
+pub(crate) fn time(micros: i64) -> Datum {
+    match micros {
+        i64::MIN | i64::MAX => Datum::Null,
+        _ => Datum::Int(micros.div_euclid(MICROS_PER_SECOND) + PG_EPOCH),
+    }
 }
 
 /// A PostgreSQL timestamp, microseconds since its epoch, as a clock time.
@@ -135,22 +139,37 @@ fn int(bytes: &[u8]) -> Option<i64> {
 }
 
 /// A binary numeric: digit count, weight, sign and display scale, then
-/// base-10000 digits, the first worth `10000^weight`. Scaled as
-/// [`decimal`] does, with the same `None`s.
-fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i128> {
+/// big-endian base-10000 digits.
+fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i64> {
     let word = |i: usize| Some([*bytes.get(i)?, *bytes.get(i + 1)?]);
     let count = u16::from_be_bytes(word(0)?);
     let weight = i16::from_be_bytes(word(2)?);
-    let sign = u16::from_be_bytes(word(4)?);
+    let negative = match u16::from_be_bytes(word(4)?) {
+        NUMERIC_POS => false,
+        NUMERIC_NEG => true,
+        _ => return None,
+    };
     let (digits, odd) = bytes.get(8..)?.as_chunks::<2>();
     if !odd.is_empty() || digits.len() != usize::from(count) {
         return None;
     }
+    let digits = digits.iter().map(|pair| u16::from_be_bytes(*pair));
+    scaled(digits, weight.into(), negative, scale)
+}
+
+/// Base-10000 digits, the first worth `10000^weight`, in units of
+/// `10^-scale`, as [`decimal`] scales text. `None` for a digit below the
+/// scale, or past an `i64`.
+pub(crate) fn scaled(
+    digits: impl Iterator<Item = u16>,
+    weight: i32,
+    negative: bool,
+    scale: u32,
+) -> Option<i64> {
     let scale = i32::try_from(scale).ok()?;
     let mut value: i128 = 0;
-    for (i, &pair) in digits.iter().enumerate() {
-        let digit = u16::from_be_bytes(pair);
-        let exponent = 4 * (i32::from(weight) - i32::try_from(i).ok()?) + scale;
+    for (i, digit) in digits.enumerate() {
+        let exponent = 4 * (weight - i32::try_from(i).ok()?) + scale;
         let scaled = match u32::try_from(exponent) {
             Ok(exponent) => i128::from(digit).checked_mul(10_i128.checked_pow(exponent)?)?,
             // Below the scale a digit must be zero; a digit is below 10^4.
@@ -162,11 +181,7 @@ fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i128> {
         };
         value = value.checked_add(scaled)?;
     }
-    match sign {
-        NUMERIC_POS => Some(value),
-        NUMERIC_NEG => Some(-value),
-        _ => None,
-    }
+    i64::try_from(if negative { -value } else { value }).ok()
 }
 
 /// `-123.45` at scale 2 is -12345. More fraction digits than the scale, or
@@ -240,7 +255,7 @@ fn number(text: &str) -> Option<i64> {
 }
 
 /// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
-pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
+fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }

@@ -29,7 +29,7 @@ use crate::load;
 use crate::physical::{self, Physical};
 use crate::source::{Postgres, Replication, parse_lsn, read_wal};
 use crate::stream::{Reader, Stream};
-use crate::value::read;
+use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, PageId, Tuple};
 use crate::wal::transactions::{self as held, Committed, Snapshot, Transactions};
@@ -2275,13 +2275,13 @@ fn follow_to_now(db: &mut Db, physical: &mut Physical, relation: RelationFile) -
     }
 }
 
-/// Every value Straum reads off the pages of a table is the text a
-/// `SELECT` gets, which its type's output function prints, as pgoutput's
-/// does: each type Straum reads, nulls, values
+/// Every value Straum reads off the pages of a table is the datum the
+/// logical stream reads of the text a `SELECT` gets, which pgoutput's
+/// matches: each type Straum reads, nulls, values
 /// compressed with pglz and lz4, rows from before a column was dropped or
 /// added, and rows an update rebuilt from the old one.
 #[test]
-fn reads_the_values_select_prints() {
+fn reads_the_values_select_reads() {
     let pg = postgres_at_replica(&tag());
     let mut db = Db::new(
         &pg,
@@ -2360,7 +2360,15 @@ fn reads_the_values_select_prints() {
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(attributes.len(), live.len() + 1, "one dropped column");
-    let select = names.join(", ");
+    // A time as the binary load reads it: the text reader takes no
+    // year before 1 or past 9999.
+    let select: Vec<String> = (live.iter().zip(&names))
+        .map(|(&i, name)| match attributes[i].kind {
+            Kind::Read(ColumnType::Time { .. }) => format!("floor(extract(epoch FROM {name}))"),
+            _ => (*name).to_owned(),
+        })
+        .collect();
+    let select = select.join(", ");
     let expected = db.rows(&format!(
         "SELECT ctid::text, {select} FROM $S.v ORDER BY ctid"
     ));
@@ -2384,17 +2392,28 @@ fn reads_the_values_select_prints() {
         let values = row_values::values(tuple, attributes, &labels).unwrap();
         for ((&i, theirs), name) in live.iter().zip(&row[1..]).zip(&names) {
             let ours = &values[i];
+            // What the logical stream reads of PostgreSQL's text.
+            let read = |text: &str| match attributes[i].kind {
+                Kind::Read(ColumnType::Time { .. }) => match text {
+                    "Infinity" | "-Infinity" => Some(Datum::Null),
+                    seconds => seconds.parse().ok().map(Datum::Int),
+                },
+                Kind::Read(column_type) => value::read(column_type, text).ok(),
+                Kind::Enum => Some(Datum::Text(text.into())),
+                Kind::Other => Some(Datum::Null),
+            };
             let fits = match ours {
-                row_values::Value::Text(text) => theirs.as_ref() == Some(text),
-                row_values::Value::Null => theirs.is_none(),
-                row_values::Value::Skipped => attributes[i].kind == Kind::Other,
+                row_values::Value::Datum(datum) => {
+                    theirs.as_deref().map_or(Some(Datum::Null), read).as_ref() == Some(datum)
+                }
                 row_values::Value::External => {
                     seen[0] += 1;
                     theirs.as_ref().is_some_and(|t| t.len() > 8000)
                 }
                 row_values::Value::Missing => {
                     seen[1] += 1;
-                    *theirs == table.missing[i]
+                    theirs.as_deref().map_or(Some(Datum::Null), read).as_ref()
+                        == Some(&table.missing[i])
                 }
             };
             assert!(fits, "{ctid} {name}: ours {ours:?}, theirs {theirs:?}");
@@ -2532,9 +2551,11 @@ fn reads_the_endings_pg_waldump_reads() {
 /// An ending as [`described_ending`] puts it: xid, time as `pg_waldump`
 /// prints it, subtransactions.
 fn ending(ending: &xact::Ending) -> String {
+    let Datum::Int(seconds) = value::time(ending.time) else {
+        panic!("{ending:?}")
+    };
     let micros = ending.time.rem_euclid(1_000_000);
-    let whole = row_values::timestamp(ending.time - micros, false);
-    let mut text = format!("{} {whole}.{micros:06} UTC", ending.xid);
+    let mut text = format!("{} {seconds}.{micros:06}", ending.xid);
     for subxact in &ending.subxacts {
         text.push_str(&format!(" {subxact}"));
     }
@@ -2557,7 +2578,13 @@ fn described_ending(line: &str) -> Option<(u64, String)> {
                 Some((xid, time)) if xid.bytes().all(|b| b.is_ascii_digit()) => (xid, time),
                 _ => (tx, rest),
             };
-            let time = rest.split(';').next()?.trim();
+            // `2024-01-15 10:30:00.000001 UTC`, as Unix seconds.
+            let (whole, fraction) = rest.split(';').next()?.trim().split_once('.')?;
+            let Ok(Datum::Int(seconds)) = value::read(ColumnType::Time { zoned: false }, whole)
+            else {
+                return None;
+            };
+            let time = format!("{seconds}.{}", fraction.strip_suffix(" UTC")?);
             let mut text = format!(
                 "{} {xid} {time}",
                 &kind[..kind.find('_').unwrap_or(kind.len())]

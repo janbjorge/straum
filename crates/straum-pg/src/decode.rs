@@ -233,10 +233,11 @@ impl Mapping {
         self.fits(tuple)?;
         let mut row = Vec::with_capacity(self.positions.len());
         for (i, (&position, column_type)) in self.positions.iter().zip(&self.types).enumerate() {
-            let datum = match (tuple[position], old) {
+            let datum = match (&tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
                 (Field::Text(text), _) => read(*column_type, text)
                     .map_err(|e| e.at(&table.qualified(), &table.columns[i]))?,
+                (Field::Datum(datum), _) => datum.clone(),
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
             };

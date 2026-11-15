@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use postgres_protocol::escape::escape_literal;
 use straum_app::{Commit, Lsn};
+use straum_domain::Datum;
 
 use crate::catalog::Checked;
 use crate::dsn::Dsn;
@@ -15,10 +16,11 @@ use crate::error::Error;
 use crate::pgoutput::{Column, Relation};
 use crate::source::{parse_lsn, slot_name};
 use crate::stream::{POLL, Sight};
-use crate::wal::messages::{Table, element, kind};
+use crate::value::{read, type_of};
+use crate::wal::messages::Table;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, Snapshot};
-use crate::wal::tuple::Attribute;
+use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
 use crate::wire::Connection;
 
@@ -271,6 +273,7 @@ pub(crate) fn tables(
         }
         let table = tables.last_mut().ok_or_else(shape)?;
         let type_oid = number(7)?;
+        let typmod = field(8)?.parse().map_err(|_| shape())?;
         let dropped = field(11)? == "t";
         let align = match field(10)? {
             "c" => 1,
@@ -279,29 +282,35 @@ pub(crate) fn tables(
             "d" => 8,
             _ => return Err(shape()),
         };
-        let attribute = Attribute {
-            length: field(9)?.parse().map_err(|_| shape())?,
-            align,
-            kind: if dropped {
-                crate::wal::tuple::Kind::Other
-            } else {
-                kind(type_oid, field(13)? == "e")
-            },
+        // As the decoder reads the column: an enum as its label's text.
+        let kind = match type_of(type_oid, typmod) {
+            _ if dropped => Kind::Other,
+            Some(column_type) => Kind::Read(column_type),
+            None if field(13)? == "e" => Kind::Enum,
+            None => Kind::Other,
         };
         if !dropped {
             table.columns.push(table.attributes.len());
             table.relation.columns.push(Column {
                 name: field(6)?.to_owned(),
                 type_oid,
-                typmod: field(8)?.parse().map_err(|_| shape())?,
+                typmod,
             });
         }
-        table.attributes.push(attribute);
-        let missing = row.get(12).and_then(|v| v.as_deref());
-        let missing = missing
-            .map(|array| element(array).ok_or_else(shape))
-            .transpose()?;
-        table.missing.push(missing);
+        table.attributes.push(Attribute {
+            length: field(9)?.parse().map_err(|_| shape())?,
+            align,
+            kind,
+        });
+        let missing = match row.get(12).and_then(|v| v.as_deref()) {
+            None => None,
+            Some(array) => Some(element(array).ok_or_else(shape)?),
+        };
+        table.missing.push(match (missing, kind) {
+            (Some(text), Kind::Read(column_type)) => read(column_type, &text)?,
+            (Some(text), Kind::Enum) => Datum::Text(text.into()),
+            _ => Datum::Null,
+        });
     }
     let labels = conn.rows(&format!(
         "SELECT DISTINCT e.oid, e.enumlabel
@@ -319,4 +328,58 @@ pub(crate) fn tables(
         })
         .collect::<Result<_, Error>>()?;
     Ok((tables, labels))
+}
+
+/// The one element of an array literal, as `attmissingval::text`
+/// prints it: `{7}`, or quoted with backslash escapes when it holds a
+/// space, comma, quote, brace or backslash.
+fn element(array: &str) -> Option<String> {
+    let inner = array.strip_prefix('{')?.strip_suffix('}')?;
+    let Some(quoted) = inner.strip_prefix('"') else {
+        let plain = !inner.is_empty()
+            && !inner.contains([',', '"', '\\', '{', '}'])
+            && !inner.eq_ignore_ascii_case("null");
+        return plain.then(|| inner.to_owned());
+    };
+    let mut text = String::new();
+    let mut chars = quoted.chars();
+    loop {
+        match chars.next()? {
+            '"' => return chars.next().is_none().then_some(text),
+            '\\' => text.push(chars.next()?),
+            c => text.push(c),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_array_elements() {
+        let cases = [
+            ("{7}", Some("7")),
+            ("{-1.50}", Some("-1.50")),
+            (
+                "{\"2024-01-01 00:00:00+00\"}",
+                Some("2024-01-01 00:00:00+00"),
+            ),
+            ("{\"a,b\"}", Some("a,b")),
+            ("{\"say \\\"hi\\\" \\\\ back\"}", Some("say \"hi\" \\ back")),
+            ("{\"\"}", Some("")),
+            ("{\"NULL\"}", Some("NULL")),
+            ("{NULL}", None),
+            ("{}", None),
+            ("{a,b}", None),
+            ("7", None),
+            ("{7", None),
+            ("{\"open}", None),
+            ("{\"a\"b}", None),
+            ("{\"a\\\"}", None),
+        ];
+        for (array, expected) in cases {
+            assert_eq!(element(array).as_deref(), expected, "{array}");
+        }
+    }
 }

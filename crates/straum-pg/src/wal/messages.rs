@@ -7,18 +7,17 @@
 use std::collections::{HashMap, HashSet};
 
 use straum_app::Commit;
+use straum_domain::Datum;
 
 use super::heap::{Change, Tuple};
 use super::transactions::Committed;
-use super::tuple::{self, Attribute, Kind, Value};
+use super::tuple::{self, Attribute, Value};
 use super::xact::Invalidated;
 use super::{RelationFile, WalError};
 use crate::decode::Decoder;
 use crate::error::Error;
 use crate::pgoutput::{Field, Message, Old, Relation};
-use crate::value::{
-    BOOL, BPCHAR, INT2, INT4, INT8, NUMERIC, TEXT, TIMESTAMP, TIMESTAMPTZ, VARCHAR, system_time,
-};
+use crate::value::system_time;
 
 /// A table the physical stream reads: its file, as pgoutput announces
 /// it, and how its rows lie on its pages.
@@ -32,24 +31,9 @@ pub(crate) struct Table {
     pub(crate) attributes: Vec<Attribute>,
     /// The attribute each of `relation`'s columns is.
     pub(crate) columns: Vec<usize>,
-    /// By attribute: the value of a column added with a default, as text,
-    /// for the rows written before it, which don't hold it
-    /// (`attmissingval`).
-    pub(crate) missing: Vec<Option<String>>,
-}
-
-/// How a column of this type reads off a page.
-pub(crate) fn kind(type_oid: u32, enum_type: bool) -> Kind {
-    match type_oid {
-        INT2 | INT4 | INT8 => Kind::Int,
-        NUMERIC => Kind::Numeric,
-        BOOL => Kind::Bool,
-        TEXT | VARCHAR | BPCHAR => Kind::Text,
-        TIMESTAMP => Kind::Timestamp,
-        TIMESTAMPTZ => Kind::Timestamptz,
-        _ if enum_type => Kind::Enum,
-        _ => Kind::Other,
-    }
+    /// By attribute: the value of a column added with a default, for the
+    /// rows written before it, which don't hold it (`attmissingval`).
+    pub(crate) missing: Vec<Datum>,
 }
 
 pub(crate) struct Publisher {
@@ -60,13 +44,6 @@ pub(crate) struct Publisher {
     announced: HashSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
     unfit: Vec<u32>,
-}
-
-/// A value as a message holds it, owned until the message is built.
-enum Text {
-    Null,
-    Unchanged,
-    Value(String),
 }
 
 impl Publisher {
@@ -147,10 +124,10 @@ impl Publisher {
             decoder.unfit(oid);
         }
         for change in &committed.changes {
-            let (file, old, new) = match change {
-                Change::Insert { file, new } => (file, None, Some(new)),
-                Change::Update { file, old, new } => (file, Some(old), Some(new)),
-                Change::Delete { file, old } => (file, Some(old), None),
+            let file = match change {
+                Change::Insert { file, .. }
+                | Change::Update { file, .. }
+                | Change::Delete { file, .. } => file,
             };
             let table = self
                 .tables
@@ -159,30 +136,23 @@ impl Publisher {
             if self.announced.insert(*file) {
                 decoder.feed(Message::Relation(table.relation.clone()))?;
             }
-            let read = |tuple: Option<&Tuple>| {
-                tuple
-                    .map(|t| texts(table, t, &self.labels, committed.lsn))
-                    .transpose()
-            };
-            let (old, new) = (read(old)?, read(new)?);
+            let row = |tuple: &Tuple| fields(table, tuple, &self.labels, committed.lsn);
             let relation = table.relation.id;
-            let message = match (old.as_deref(), new.as_deref()) {
-                (None, Some(new)) => Message::Insert {
+            decoder.feed(match change {
+                Change::Insert { new, .. } => Message::Insert {
                     relation,
-                    new: fields(new),
+                    new: row(new)?,
                 },
-                (Some(old), Some(new)) => Message::Update {
+                Change::Update { old, new, .. } => Message::Update {
                     relation,
-                    old: Some(Old::Row(fields(old))),
-                    new: fields(new),
+                    old: Some(Old::Row(row(old)?)),
+                    new: row(new)?,
                 },
-                (Some(old), None) => Message::Delete {
+                Change::Delete { old, .. } => Message::Delete {
                     relation,
-                    old: Old::Row(fields(old)),
+                    old: Old::Row(row(old)?),
                 },
-                (None, None) => unreachable!("every change has a row"),
-            };
-            decoder.feed(message)?;
+            })?;
         }
         decoder.feed(Message::Commit {
             end_lsn: committed.end,
@@ -191,70 +161,29 @@ impl Publisher {
     }
 }
 
-/// The relation's columns of `tuple` as text.
-fn texts(
+/// The relation's columns of `tuple`, as a message holds them.
+fn fields(
     table: &Table,
     tuple: &Tuple,
     labels: &HashMap<u32, String>,
     lsn: u64,
-) -> Result<Vec<Text>, Error> {
+) -> Result<Vec<Field<'static>>, Error> {
     let values = tuple::values(tuple, &table.attributes, labels).map_err(|p| problem(lsn, p))?;
-    table
+    Ok(table
         .columns
         .iter()
-        .map(|&i| {
-            Ok(match &values[i] {
-                Value::Text(text) => Text::Value(text.clone()),
-                // Not a column Straum reads, which the decoder never looks
-                // at.
-                Value::Null | Value::Skipped => Text::Null,
-                // pgoutput, too, leaves out a value TOASTed out of line
-                // that the change kept.
-                Value::External => Text::Unchanged,
-                Value::Missing => match &table.missing[i] {
-                    Some(text) => Text::Value(text.clone()),
-                    None => Text::Null,
-                },
-            })
+        .map(|&i| match &values[i] {
+            Value::Datum(datum) => Field::Datum(datum.clone()),
+            // pgoutput, too, leaves out a value TOASTed out of line that
+            // the change kept.
+            Value::External => Field::Unchanged,
+            Value::Missing => Field::Datum(table.missing[i].clone()),
         })
-        .collect()
-}
-
-/// The one element of an array literal, as `attmissingval::text`
-/// prints it: `{7}`, or quoted with backslash escapes when it holds a
-/// space, comma, quote, brace or backslash.
-pub(crate) fn element(array: &str) -> Option<String> {
-    let inner = array.strip_prefix('{')?.strip_suffix('}')?;
-    let Some(quoted) = inner.strip_prefix('"') else {
-        let plain = !inner.is_empty()
-            && !inner.contains([',', '"', '\\', '{', '}'])
-            && !inner.eq_ignore_ascii_case("null");
-        return plain.then(|| inner.to_owned());
-    };
-    let mut text = String::new();
-    let mut chars = quoted.chars();
-    loop {
-        match chars.next()? {
-            '"' => return chars.next().is_none().then_some(text),
-            '\\' => text.push(chars.next()?),
-            c => text.push(c),
-        }
-    }
+        .collect())
 }
 
 fn problem(lsn: u64, problem: &'static str) -> Error {
     Error::Wal(WalError::Heap { lsn, problem })
-}
-
-fn fields(texts: &[Text]) -> Vec<Field<'_>> {
-    texts
-        .iter()
-        .map(|text| match text {
-            Text::Null => Field::Null,
-            Text::Unchanged => Field::Unchanged,
-            Text::Value(value) => Field::Text(value),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -267,6 +196,10 @@ mod tests {
     use super::*;
     use crate::catalog::Checked;
     use crate::pgoutput::Column;
+    use crate::value::{INT4, INT8, TEXT};
+    use crate::wal::tuple::Kind;
+
+    const INT: Kind = Kind::Read(ColumnType::Int);
 
     const FILE: RelationFile = RelationFile {
         tablespace: 1663,
@@ -301,14 +234,14 @@ mod tests {
                 ],
             },
             attributes: vec![
-                attribute(4, 4, Kind::Int),
+                attribute(4, 4, INT),
                 attribute(4, 4, Kind::Other),
-                attribute(-1, 4, Kind::Text),
+                attribute(-1, 4, Kind::Read(ColumnType::Text)),
                 attribute(16, 8, Kind::Other),
-                attribute(4, 4, Kind::Int),
+                attribute(4, 4, INT),
             ],
             columns: vec![0, 2, 3, 4],
-            missing: vec![None; 5],
+            missing: vec![Datum::Null; 5],
         }
     }
 
@@ -477,30 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn kinds_by_type() {
-        let cases = [
-            (INT2, false, Kind::Int),
-            (INT4, false, Kind::Int),
-            (INT8, false, Kind::Int),
-            (NUMERIC, false, Kind::Numeric),
-            (BOOL, false, Kind::Bool),
-            (TEXT, false, Kind::Text),
-            (VARCHAR, false, Kind::Text),
-            (BPCHAR, false, Kind::Text),
-            (TIMESTAMP, false, Kind::Timestamp),
-            (TIMESTAMPTZ, false, Kind::Timestamptz),
-            (90_000, true, Kind::Enum),
-            (600, false, Kind::Other),
-        ];
-        for (type_oid, enum_type, expected) in cases {
-            assert_eq!(kind(type_oid, enum_type), expected, "{type_oid}");
-        }
-    }
-
-    #[test]
     fn reads_the_default_of_a_column_added_later() {
         let mut table = table();
-        table.missing[4] = Some("7".to_owned());
+        table.missing[4] = Datum::Int(7);
         table.relation.columns[3].name = "late".to_owned();
         let checked = Checked::public(
             "zones",
@@ -523,33 +435,6 @@ mod tests {
                 row,
             }]
         );
-    }
-
-    #[test]
-    fn reads_array_elements() {
-        let cases = [
-            ("{7}", Some("7")),
-            ("{-1.50}", Some("-1.50")),
-            (
-                "{\"2024-01-01 00:00:00+00\"}",
-                Some("2024-01-01 00:00:00+00"),
-            ),
-            ("{\"a,b\"}", Some("a,b")),
-            ("{\"say \\\"hi\\\" \\\\ back\"}", Some("say \"hi\" \\ back")),
-            ("{\"\"}", Some("")),
-            ("{\"NULL\"}", Some("NULL")),
-            ("{NULL}", None),
-            ("{}", None),
-            ("{a,b}", None),
-            ("7", None),
-            ("{7", None),
-            ("{\"open}", None),
-            ("{\"a\"b}", None),
-            ("{\"a\\\"}", None),
-        ];
-        for (array, expected) in cases {
-            assert_eq!(element(array).as_deref(), expected, "{array}");
-        }
     }
 
     #[test]
@@ -592,7 +477,7 @@ mod tests {
         retyped.attributes[2] = Attribute {
             length: 8,
             align: 8,
-            kind: Kind::Int,
+            kind: INT,
         };
         publisher.relayout(&[77], vec![retyped]);
         let mut changes = Vec::new();

@@ -6,6 +6,8 @@ use std::fmt;
 use std::str;
 use std::time::SystemTime;
 
+use straum_domain::Datum;
+
 use crate::value;
 
 /// One pgoutput message, borrowing its text from the received bytes.
@@ -68,12 +70,14 @@ pub(crate) enum Old<'a> {
 
 pub(crate) type Tuple<'a> = Vec<Field<'a>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Field<'a> {
     Null,
     /// A TOASTed value the change left alone, so PostgreSQL didn't send it.
     Unchanged,
     Text(&'a str),
+    /// A value the physical stream read off a page, already typed.
+    Datum(Datum),
 }
 
 /// What a CopyData on a replication connection holds.

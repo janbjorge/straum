@@ -141,9 +141,9 @@ messages the logical slot sends, so one decoder serves both:
   from the old row: the page has the rest.
 - Transactions. Changes wait by transaction until its commit record,
   with its subtransactions', and go in WAL order; an abort drops them.
-- Rows. A row's bytes become text as PostgreSQL's output functions
-  print it, then the pgoutput messages: the old row of an update or
-  delete is whole, as under `REPLICA IDENTITY FULL`.
+- Rows. A row's bytes become the values the load reads from its
+  binary `COPY`, then the pgoutput messages: the old row of an update
+  or delete is whole, as under `REPLICA IDENTITY FULL`.
 - The load. Straum waits until every transaction open when the stream
   began has ended, so each later one is whole in the WAL it reads, then
   takes the load's snapshot. Commits the snapshot saw are in the load
