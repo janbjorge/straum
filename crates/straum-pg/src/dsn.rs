@@ -74,7 +74,7 @@ impl Dsn {
         }
         let mut plain = false;
         let mut root_cert = None;
-        for pair in query.split('&').filter(|p| !p.is_empty()) {
+        for pair in query.split('&').filter(|part| !part.is_empty()) {
             match pair.split_once('=') {
                 Some(("sslmode", "disable")) => plain = true,
                 Some(("sslmode", "require" | "verify-ca" | "verify-full")) => plain = false,
@@ -94,8 +94,8 @@ impl Dsn {
             },
         };
         let database = match decode(database)? {
-            d if d.is_empty() => user.clone(),
-            d => d,
+            decoded if decoded.is_empty() => user.clone(),
+            decoded => decoded,
         };
         Ok(Dsn {
             host: host.to_owned(),
@@ -109,17 +109,17 @@ impl Dsn {
 }
 
 /// Percent-decoding, for user names and passwords with reserved characters.
-fn decode(s: &str) -> Result<String, DsnError> {
-    let mut bytes = Vec::with_capacity(s.len());
-    let mut rest = s.as_bytes();
-    while let Some((&b, tail)) = rest.split_first() {
-        if b == b'%' {
+fn decode(text: &str) -> Result<String, DsnError> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        if byte == b'%' {
             let hex = tail.get(..2).ok_or(DsnError::Escape)?;
             let hex = std::str::from_utf8(hex).map_err(|_| DsnError::Escape)?;
             bytes.push(u8::from_str_radix(hex, 16).map_err(|_| DsnError::Escape)?);
             rest = &tail[2..];
         } else {
-            bytes.push(b);
+            bytes.push(byte);
             rest = tail;
         }
     }
@@ -128,29 +128,29 @@ fn decode(s: &str) -> Result<String, DsnError> {
 
 /// Says what Straum does: `require` and `verify-ca` show as `verify-full`.
 impl fmt::Display for Dsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            f,
+            formatter,
             "postgres://{}@{}:{}/{}",
             self.user, self.host, self.port, self.database
         )?;
         match &self.tls {
-            Tls::Off => f.write_str("?sslmode=disable"),
+            Tls::Off => formatter.write_str("?sslmode=disable"),
             Tls::Verify {
                 root_cert: None, ..
-            } => f.write_str("?sslmode=verify-full"),
+            } => formatter.write_str("?sslmode=verify-full"),
             Tls::Verify {
                 root_cert: Some(file),
                 ..
-            } => write!(f, "?sslmode=verify-full&sslrootcert={file}"),
+            } => write!(formatter, "?sslmode=verify-full&sslrootcert={file}"),
         }
     }
 }
 
 /// Never shows the password.
 impl fmt::Debug for Dsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dsn({self})")
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Dsn({self})")
     }
 }
 
@@ -171,24 +171,28 @@ pub enum DsnError {
 }
 
 impl fmt::Display for DsnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DsnError::Scheme => f.write_str("DSN must start with postgres:// or postgresql://"),
-            DsnError::User => f.write_str("DSN must name a user, as user@host"),
-            DsnError::Host => f.write_str("DSN must name a host"),
-            DsnError::Port => f.write_str("DSN port is not a port number"),
-            DsnError::Escape => f.write_str("DSN has a bad percent escape"),
+            DsnError::Scheme => {
+                formatter.write_str("DSN must start with postgres:// or postgresql://")
+            }
+            DsnError::User => formatter.write_str("DSN must name a user, as user@host"),
+            DsnError::Host => formatter.write_str("DSN must name a host"),
+            DsnError::Port => formatter.write_str("DSN port is not a port number"),
+            DsnError::Escape => formatter.write_str("DSN has a bad percent escape"),
             DsnError::Fallback(mode) => write!(
-                f,
+                formatter,
                 "sslmode={mode} may connect without TLS; use sslmode=verify-full, \
                  or sslmode=disable on a trusted network"
             ),
-            DsnError::RootCert => f.write_str("DSN gives sslrootcert with sslmode=disable"),
+            DsnError::RootCert => formatter.write_str("DSN gives sslrootcert with sslmode=disable"),
             DsnError::TlsHost(host) => write!(
-                f,
+                formatter,
                 "TLS needs a DNS name or IP address as the DSN host, not {host:?}"
             ),
-            DsnError::Parameter(p) => write!(f, "DSN parameter {p} is not supported"),
+            DsnError::Parameter(parameter) => {
+                write!(formatter, "DSN parameter {parameter} is not supported")
+            }
         }
     }
 }

@@ -10,7 +10,7 @@ use straum_domain::{ColumnType, Datum, Identifier};
 
 use crate::catalog::Checked;
 use crate::error::Error;
-use crate::pgoutput::{self, Field, Message, Relation, Tuple};
+use crate::pgoutput::{self, Column, Field, Message, Relation, Tuple};
 use crate::value::{read, type_of};
 
 /// Turns pgoutput messages into commits of rows, each as the stream brings
@@ -19,7 +19,7 @@ pub(crate) struct Decoder {
     /// Each with its types as last loaded or announced. A Relation that
     /// changes them changes what rows read as, so Straum starts over.
     tables: Vec<Checked>,
-    /// ByKey relation id. A table read by two members of the spec maps to
+    /// By relation id. A table read by two members of the spec maps to
     /// both.
     relations: HashMap<u32, Vec<Mapping>>,
     transaction: Transaction,
@@ -86,9 +86,9 @@ impl Decoder {
         };
         for &relation in relations {
             // A relation outside the spec holds none of its tables.
-            for m in self.relations.get(&relation).into_iter().flatten() {
-                let table = &self.tables[m.table];
-                let change = m.change(table, &message)?;
+            for mapping in self.relations.get(&relation).into_iter().flatten() {
+                let table = &self.tables[mapping.table];
+                let change = mapping.change(table, &message)?;
                 self.transaction
                     .hold(change.unwrap_or_else(|| unfit(table)))?;
             }
@@ -100,8 +100,10 @@ impl Decoder {
     /// loaded, though no message says how: the physical stream's tables
     /// rewritten or dropped. Between a Begin and its Commit.
     pub(crate) fn unfit(&mut self, relation: u32) {
-        for m in self.relations.get(&relation).into_iter().flatten() {
-            self.transaction.changes.push(unfit(&self.tables[m.table]));
+        for mapping in self.relations.get(&relation).into_iter().flatten() {
+            self.transaction
+                .changes
+                .push(unfit(&self.tables[mapping.table]));
         }
     }
 
@@ -117,30 +119,23 @@ impl Decoder {
     /// what is wrong.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
-        let tables = (self.tables.iter_mut().enumerate()).filter(|(_, t)| {
-            t.schema.as_str() == relation.schema && t.table.as_str() == relation.name
+        let tables = (self.tables.iter_mut().enumerate()).filter(|(_, table)| {
+            table.schema.as_str() == relation.schema && table.table.as_str() == relation.name
         });
         for (index, table) in tables {
-            let position = |column: &Identifier| {
-                relation
-                    .columns
-                    .iter()
-                    .position(|c| c.name == column.as_str())
-                    .ok_or_else(|| changed(table, column))
-            };
             let mut positions = Vec::new();
             let mut types = Vec::new();
             for column in &table.columns {
-                let i = position(column)?;
-                let c = &relation.columns[i];
-                positions.push(i);
-                let column_type = type_of(c.type_oid, c.typmod).or_else(|| {
-                    table
-                        .enums
-                        .contains(&c.type_oid)
-                        .then_some(ColumnType::Text)
-                });
-                types.push(column_type.ok_or_else(|| changed(table, column))?);
+                let Some(position) = (relation.columns.iter())
+                    .position(|candidate| candidate.name == column.as_str())
+                else {
+                    return Err(changed(table, column));
+                };
+                let Some(column_type) = read_as(table, &relation.columns[position]) else {
+                    return Err(changed(table, column));
+                };
+                positions.push(position);
+                types.push(column_type);
             }
             if table.types != types {
                 self.transaction.changes.push(unfit(table));
@@ -181,6 +176,18 @@ fn changed(table: &Checked, column: &Identifier) -> Error {
     )])
 }
 
+/// How the decoder reads a relation's column: an enum of the table's as
+/// its label's text.
+fn read_as(table: &Checked, column: &Column) -> Option<ColumnType> {
+    if let Some(column_type) = type_of(column.type_oid, column.typmod) {
+        return Some(column_type);
+    }
+    if table.enums.contains(&column.type_oid) {
+        return Some(ColumnType::Text);
+    }
+    None
+}
+
 fn unfit(table: &Checked) -> Change {
     Change::Unfit {
         table: table.name.clone(),
@@ -191,10 +198,12 @@ impl Mapping {
     /// The change a row message makes to the table; `None` when it can't
     /// be read whole.
     fn change(&self, table: &Checked, message: &Message) -> Result<Option<Change>, Error> {
-        let name = || table.name.clone();
         Ok(match message {
             Message::Insert { new, .. } => {
-                (self.row(table, new, None)?).map(|row| Change::Insert { table: name(), row })
+                (self.row(table, new, None)?).map(|row| Change::Insert {
+                    table: table.name.clone(),
+                    row,
+                })
             }
             Message::Update { old, new, .. } => {
                 let old = match old {
@@ -203,17 +212,20 @@ impl Mapping {
                 };
                 match (self.row(table, new, old.as_deref())?, old) {
                     (Some(new), Some(old)) => Some(Change::Update {
-                        table: name(),
+                        table: table.name.clone(),
                         old,
                         new,
                     }),
                     _ => None,
                 }
             }
-            Message::Delete { old, .. } => {
-                (self.old(table, old)?).map(|old| Change::Delete { table: name(), old })
-            }
-            Message::Truncate { .. } => Some(Change::Truncate { table: name() }),
+            Message::Delete { old, .. } => (self.old(table, old)?).map(|old| Change::Delete {
+                table: table.name.clone(),
+                old,
+            }),
+            Message::Truncate { .. } => Some(Change::Truncate {
+                table: table.name.clone(),
+            }),
             Message::Begin { .. }
             | Message::Commit { .. }
             | Message::Relation(_)
@@ -236,7 +248,7 @@ impl Mapping {
             let datum = match (&tuple[position], old) {
                 (Field::Null, _) => Datum::Null,
                 (Field::Text(text), _) => read(*column_type, text)
-                    .map_err(|e| e.at(&table.qualified(), &table.columns[i]))?,
+                    .map_err(|error| error.at(&table.qualified(), &table.columns[i]))?,
                 (Field::Datum(datum), _) => datum.clone(),
                 (Field::Unchanged, Some(old)) => old[i].clone(),
                 (Field::Unchanged, None) => return Ok(None),
@@ -286,13 +298,17 @@ mod tests {
     /// Changes a transaction may hold in these tests; the longest feeds ten.
     const LIMIT: usize = 16;
 
-    fn id(s: &str) -> Identifier {
-        Identifier::new(s).unwrap()
+    fn id(name: &str) -> Identifier {
+        Identifier::new(name).unwrap()
+    }
+
+    fn unfit_named(name: &str) -> Change {
+        Change::Unfit { table: id(name) }
     }
 
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
     /// `visits`, reading `name` alone.
-    fn decoder() -> Decoder {
+    fn zones_decoder() -> Decoder {
         let table =
             |name: &str, columns: &[&str], types| Checked::public(name, "zones", columns, types);
         Decoder::new(
@@ -334,8 +350,8 @@ mod tests {
 
     fn feed(decoder: &mut Decoder, messages: Vec<Message>) -> Result<Vec<Change>, Error> {
         decoder.feed(Message::Begin { final_lsn: 9 })?;
-        for m in messages {
-            decoder.feed(m)?;
+        for message in messages {
+            decoder.feed(message)?;
         }
         let time = UNIX_EPOCH + Duration::from_secs(9);
         let commit = (decoder.feed(Message::Commit {
@@ -351,8 +367,8 @@ mod tests {
         Datum::Int(n)
     }
 
-    fn text(s: &str) -> Datum {
-        Datum::Text(s.into())
+    fn text(value: &str) -> Datum {
+        Datum::Text(value.into())
     }
 
     /// An enum's OID is its own, so a relation names it only through the
@@ -363,9 +379,9 @@ mod tests {
             enums: vec![777],
             ..Checked::public("moods", "zones", &["mood"], vec![ColumnType::Text])
         };
-        let mut d = Decoder::new(vec![moods], LIMIT);
+        let mut decoder = Decoder::new(vec![moods], LIMIT);
         let changes = feed(
-            &mut d,
+            &mut decoder,
             vec![
                 relation(7, &[("mood", 777)]),
                 Message::Insert {
@@ -382,21 +398,21 @@ mod tests {
                 row: vec![text("ok")]
             }]
         );
-        let changed = feed(&mut d, vec![relation(7, &[("mood", 778)])]).unwrap_err();
+        let error = feed(&mut decoder, vec![relation(7, &[("mood", 778)])]).unwrap_err();
         assert!(
-            changed
+            error
                 .to_string()
                 .contains("moods: column mood of public.zones was dropped or changed type"),
-            "{changed}"
+            "{error}"
         );
     }
 
     #[test]
     fn rows_for_each_fact() {
-        let mut d = decoder();
-        let (z, v) = (id("zones"), id("visits"));
+        let mut decoder = zones_decoder();
+        let (zones_name, visits_name) = (id("zones"), id("visits"));
         let changes = feed(
-            &mut d,
+            &mut decoder,
             vec![
                 zones(),
                 Message::Insert {
@@ -428,33 +444,33 @@ mod tests {
             changes,
             [
                 Change::Insert {
-                    table: z.clone(),
+                    table: zones_name.clone(),
                     row: bronx.clone()
                 },
                 Change::Insert {
-                    table: v.clone(),
+                    table: visits_name.clone(),
                     row: vec![text("Bronx")]
                 },
                 Change::Update {
-                    table: z.clone(),
+                    table: zones_name.clone(),
                     old: bronx.clone(),
                     new: bronx
                 },
                 Change::Update {
-                    table: v.clone(),
+                    table: visits_name.clone(),
                     old: vec![text("Bronx")],
                     new: vec![text("Bronx")]
                 },
                 Change::Delete {
-                    table: z.clone(),
+                    table: zones_name.clone(),
                     old: vec![int(1), Datum::Null]
                 },
                 Change::Delete {
-                    table: v.clone(),
+                    table: visits_name.clone(),
                     old: vec![Datum::Null]
                 },
-                Change::Truncate { table: z },
-                Change::Truncate { table: v },
+                Change::Truncate { table: zones_name },
+                Change::Truncate { table: visits_name },
             ]
         );
     }
@@ -464,10 +480,10 @@ mod tests {
     /// value it kept was left out with no old row to take it from.
     #[test]
     fn changes_without_the_old_row_start_over() {
-        let mut d = decoder();
+        let mut decoder = zones_decoder();
         let unchanged = || row(Field::Text("1"), Field::Unchanged);
         let changes = feed(
-            &mut d,
+            &mut decoder,
             vec![
                 zones(),
                 Message::Insert {
@@ -500,37 +516,35 @@ mod tests {
             ],
         )
         .unwrap();
-        let unfit = |t: &str| Change::Unfit { table: id(t) };
-        let pair = [unfit("zones"), unfit("visits")];
+        let pair = [unfit_named("zones"), unfit_named("visits")];
         let expected: Vec<Change> = (0..6).flat_map(|_| pair.clone()).collect();
         assert_eq!(changes, expected);
     }
 
     #[test]
     fn a_relation_made_unfit_unfits_its_tables() {
-        let mut d = decoder();
+        let mut decoder = zones_decoder();
         let begin = Message::Begin { final_lsn: 0x10 };
         let commit = Message::Commit {
             end_lsn: 0x20,
             committed: UNIX_EPOCH,
         };
-        d.feed(zones()).unwrap();
-        d.feed(begin).unwrap();
+        decoder.feed(zones()).unwrap();
+        decoder.feed(begin).unwrap();
         // Not a relation the decoder knows: nothing to say.
-        d.unfit(8);
-        d.unfit(7);
-        let got = d.feed(commit).unwrap().unwrap();
-        let unfit = |name: &str| Change::Unfit { table: id(name) };
-        assert_eq!(got.changes, [unfit("zones"), unfit("visits")]);
+        decoder.unfit(8);
+        decoder.unfit(7);
+        let got = decoder.feed(commit).unwrap().unwrap();
+        assert_eq!(got.changes, [unfit_named("zones"), unfit_named("visits")]);
     }
 
     #[test]
     fn relations_that_change() {
-        let mut d = decoder();
+        let mut decoder = zones_decoder();
         // Not in the spec: its changes are skipped.
         let mut other = relation(8, &[("x", INT4)]);
-        if let Message::Relation(r) = &mut other {
-            r.name = "other".into();
+        if let Message::Relation(relation) = &mut other {
+            relation.name = "other".into();
         }
         // The same types in another order; then a column that reads
         // differently.
@@ -545,7 +559,7 @@ mod tests {
         );
         let retyped = relation(7, &[("ref", UUID), ("id", TEXT), ("name", TEXT)]);
         let changes = feed(
-            &mut d,
+            &mut decoder,
             vec![
                 other,
                 Message::Insert {
@@ -594,7 +608,7 @@ mod tests {
                 "zones: column id of public.zones was dropped or changed type",
             ),
         ] {
-            let err = decoder().feed(message).unwrap_err().to_string();
+            let err = zones_decoder().feed(message).unwrap_err().to_string();
             assert_eq!(err, expected);
         }
     }
@@ -608,17 +622,17 @@ mod tests {
             new: row(Field::Text("1"), Field::Text("Bronx")),
         };
         // LIMIT / 2 inserts make LIMIT changes: fine, twice over.
-        let mut d = decoder();
+        let mut decoder = zones_decoder();
         for _ in 0..2 {
             let messages = [zones()].into_iter().chain((0..LIMIT / 2).map(insert));
-            let changes = feed(&mut d, messages.collect()).unwrap();
+            let changes = feed(&mut decoder, messages.collect()).unwrap();
             assert_eq!(changes.len(), LIMIT);
         }
         // One more insert is one change past the limit, in the transaction
         // that commits at 9.
-        let mut d = decoder();
-        let messages = [zones()].into_iter().chain((0..LIMIT / 2 + 1).map(insert));
-        let err = feed(&mut d, messages.collect()).unwrap_err();
+        let mut decoder = zones_decoder();
+        let messages = [zones()].into_iter().chain((0..=LIMIT / 2).map(insert));
+        let err = feed(&mut decoder, messages.collect()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -629,7 +643,7 @@ mod tests {
             ),
             "{err:?}"
         );
-        assert!(d.in_transaction());
+        assert!(decoder.in_transaction());
     }
 
     #[test]
@@ -658,9 +672,9 @@ mod tests {
             ),
         ];
         for (message, expected) in cases {
-            let mut d = decoder();
-            d.feed(zones()).unwrap();
-            assert_eq!(d.feed(message).unwrap_err().to_string(), expected);
+            let mut decoder = zones_decoder();
+            decoder.feed(zones()).unwrap();
+            assert_eq!(decoder.feed(message).unwrap_err().to_string(), expected);
         }
     }
 }

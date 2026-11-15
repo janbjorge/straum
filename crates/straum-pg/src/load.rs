@@ -19,7 +19,7 @@ const SIGNATURE: &[u8] = b"PGCOPY\n\xff\r\n\0";
 /// The columns Straum reads of the table, as the catalog checked them.
 pub(crate) fn copy_sql(table: &Checked) -> String {
     let select: Vec<String> = (table.columns.iter())
-        .map(|c| escape_identifier(c.as_str()))
+        .map(|column| escape_identifier(column.as_str()))
         .collect();
     format!(
         "COPY (SELECT {} FROM {}) TO STDOUT (FORMAT binary)",
@@ -57,7 +57,7 @@ pub(crate) fn copy(
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A fact has its time column, a dim its key.
-    debug_assert!(!table.types.is_empty());
+    debug_assert_ne!(table.types.len(), 0);
     let width = table.types.len();
     let (full, filled) = mpsc::sync_channel::<Vec<Datum>>(IN_FLIGHT);
     let (spent, empty) = mpsc::channel::<Vec<Datum>>();
@@ -83,7 +83,9 @@ pub(crate) fn copy(
             let _ = spent.send(batch);
         }
         drop(filled);
-        let read = reader.join().unwrap_or_else(|e| panic::resume_unwind(e));
+        let read = reader
+            .join()
+            .unwrap_or_else(|payload| panic::resume_unwind(payload));
         result.and(read)
     })
 }
@@ -132,7 +134,7 @@ fn read(
                             .ok_or_else(|| Error::protocol("a copy value cut short"))?;
                         data = rest;
                         read_binary(*column_type, value)
-                            .map_err(|e| e.at(&table.qualified(), name))?
+                            .map_err(|error| error.at(&table.qualified(), name))?
                     }
                 });
             }

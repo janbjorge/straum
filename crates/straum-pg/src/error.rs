@@ -57,52 +57,52 @@ impl Error {
 }
 
 impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Error {
-        Error::Io(e)
+    fn from(error: io::Error) -> Error {
+        Error::Io(error)
     }
 }
 
 impl From<DecodeError> for Error {
-    fn from(e: DecodeError) -> Error {
-        Error::Decode(e)
+    fn from(error: DecodeError) -> Error {
+        Error::Decode(error)
     }
 }
 
 impl From<ValueError> for Error {
-    fn from(e: ValueError) -> Error {
-        Error::Value(e)
+    fn from(error: ValueError) -> Error {
+        Error::Value(error)
     }
 }
 
 impl From<WalError> for Error {
-    fn from(e: WalError) -> Error {
-        Error::Wal(e)
+    fn from(error: WalError) -> Error {
+        Error::Wal(error)
     }
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "connection to PostgreSQL: {e}"),
-            Error::Server { code, message } => write!(f, "PostgreSQL: {message} ({code})"),
-            Error::Protocol(what) => write!(f, "PostgreSQL sent {what}"),
-            Error::Decode(e) => write!(f, "{e}"),
-            Error::Value(e) => write!(f, "{e}"),
-            Error::Wal(e) => write!(f, "{e}"),
-            Error::Row(e) => write!(f, "loaded {e}"),
-            Error::Tls(e) => write!(f, "TLS to PostgreSQL: {e}"),
-            Error::Setup(problems) => f.write_str(&problems.join("\n")),
+            Error::Io(error) => write!(formatter, "connection to PostgreSQL: {error}"),
+            Error::Server { code, message } => write!(formatter, "PostgreSQL: {message} ({code})"),
+            Error::Protocol(what) => write!(formatter, "PostgreSQL sent {what}"),
+            Error::Decode(error) => write!(formatter, "{error}"),
+            Error::Value(error) => write!(formatter, "{error}"),
+            Error::Wal(error) => write!(formatter, "{error}"),
+            Error::Row(error) => write!(formatter, "loaded {error}"),
+            Error::Tls(error) => write!(formatter, "TLS to PostgreSQL: {error}"),
+            Error::Setup(problems) => formatter.write_str(&problems.join("\n")),
             Error::Transaction { lsn, limit } => write!(
-                f,
+                formatter,
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
                  the --max-transaction-rows limit; Straum starts over from a snapshot after it"
             ),
             Error::Memory { held, limit } => write!(
-                f,
+                formatter,
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
                  limit of {limit}; Straum starts over"
             ),
-            Error::Stopped => f.write_str("the replication stream stopped"),
+            Error::Stopped => formatter.write_str("the replication stream stopped"),
         }
     }
 }

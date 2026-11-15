@@ -28,16 +28,15 @@ pub fn plan(
     password: Option<&str>,
     replication: Replication,
 ) -> String {
-    let id = |s: &str| escape_identifier(s);
-    let qualified = |t: &straum_domain::Table| escaped(&t.schema, &t.name);
     let tables = spec.tables();
-    let schemas = once(tables.iter().map(|t| id(t.schema.as_str())));
+    let schemas = once((tables.iter()).map(|table| escape_identifier(table.schema.as_str())));
     let list = tables
         .iter()
-        .map(|t| qualified(t))
+        .map(|table| qualified(table))
         .collect::<Vec<_>>()
         .join(", ");
-    let (publication, role) = (id(publication), id(role));
+    let publication = escape_identifier(publication);
+    let role = escape_identifier(role);
 
     let mut sql = vec!["-- Straum setup: run once, as an owner of the tables.".to_owned()];
     match replication {
@@ -50,15 +49,14 @@ pub fn plan(
                 .to_owned(),
         ),
     }
-    match password {
-        Some(password) => sql.push(format!(
+    if let Some(password) = password {
+        sql.push(format!(
             "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",
             escape_literal(&scram_sha_256(password.as_bytes()))
-        )),
-        None => {
-            sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
-            sql.push(format!("-- Then give {role} a password: \\password {role}"));
-        }
+        ));
+    } else {
+        sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
+        sql.push(format!("-- Then give {role} a password: \\password {role}"));
     }
     sql.extend([
         format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
@@ -96,6 +94,10 @@ pub fn plan(
         ));
     }
     sql.join("\n") + "\n"
+}
+
+fn qualified(table: &straum_domain::Table) -> String {
+    escaped(&table.schema, &table.name)
 }
 
 /// Each item at its first place only.
@@ -157,7 +159,9 @@ mod tests {
         )
         .unwrap();
         let sql = plan(&spec, "p", "r", Some("s'cret"), Replication::Logical);
-        let line = sql.lines().find(|l| l.starts_with("CREATE ROLE")).unwrap();
+        let line = (sql.lines())
+            .find(|line| line.starts_with("CREATE ROLE"))
+            .unwrap();
         assert!(
             line.starts_with("CREATE ROLE \"r\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:"),
             "{line}"
@@ -176,7 +180,7 @@ mod tests {
 
     const PHYSICAL: Replication = Replication::Physical { max_page_memory: 1 };
 
-    /// Physical: no wal_level change, publication or replica identity;
+    /// Physical: no `wal_level` change, publication or replica identity;
     /// the grants, and the one that lets a start skip the wait.
     #[test]
     fn physical_needs_only_the_role_and_grants() {

@@ -117,7 +117,7 @@ impl Stream {
                 self.applied = commit.lsn;
                 Ok(Some(commit))
             }
-            Ok(Err(e)) => Err(e),
+            Ok(Err(error)) => Err(error),
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(Error::Stopped),
         }
@@ -143,7 +143,7 @@ impl Stream {
                 return Ok(consistency);
             }
             match self.commits.recv_timeout(left.min(WAIT)) {
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(error)) => return Err(error),
                 Ok(Ok(_)) => return Err(Error::protocol("a commit before the load's snapshot")),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Err(Error::Stopped),
@@ -160,9 +160,9 @@ impl Stream {
                 return Ok(sight);
             }
             // A thread that stopped left its error in the queue.
-            if self.thread.as_ref().is_none_or(|t| t.is_finished()) {
+            if self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
                 return Err(match self.commits.try_recv() {
-                    Ok(Err(e)) => e,
+                    Ok(Err(error)) => error,
                     _ => Error::Stopped,
                 });
             }
@@ -200,9 +200,9 @@ struct StreamThread {
 
 impl StreamThread {
     fn run(mut self) {
-        if let Err(e) = self.serve() {
+        if let Err(error) = self.serve() {
             // The writer may be gone, or the connection with it.
-            let _ = self.deliver(Err(e));
+            let _ = self.deliver(Err(error));
         }
     }
 

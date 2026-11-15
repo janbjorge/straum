@@ -3,8 +3,9 @@
 //! connect, and their binary form, which loads read. Also PostgreSQL's
 //! timestamps as clock times, as the stream reads and writes them.
 
+use std::fmt::{self, Write as _};
+use std::str;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fmt, str};
 
 use straum_domain::{ColumnType, Datum, Identifier};
 
@@ -21,9 +22,20 @@ pub(crate) const NUMERIC: u32 = 1700;
 
 /// `VARHDRSZ`, which a numeric typmod adds to precision and scale.
 const TYPMOD_HEADER: i32 = 4;
+/// Less `VARHDRSZ`, a numeric typmod holds the precision from bit 16 and
+/// the scale in the low 11 bits (`make_numeric_typmod`).
+const TYPMOD_PRECISION_SHIFT: i32 = 16;
+const TYPMOD_SCALE_MASK: i32 = 0x7ff;
+const TYPMOD_SCALE_SIGN: i32 = 0x400;
 /// The most digits an `i64` holds whole.
 const MAX_PRECISION: i32 = 18;
+const SECONDS_PER_MINUTE: i64 = 60;
+const SECONDS_PER_HOUR: i64 = 3_600;
 const SECONDS_PER_DAY: i64 = 86_400;
+const MAX_HOUR: i64 = 23;
+const MAX_MINUTE: i64 = 59;
+/// A leap second reads as `:60`.
+const MAX_SECOND: i64 = 60;
 /// Days from 0000-03-01 to 1970-01-01 in the proleptic Gregorian calendar.
 const UNIX_EPOCH_DAYS: i64 = 719_468;
 const DAYS_PER_ERA: i64 = 146_097;
@@ -35,6 +47,14 @@ const PG_EPOCH_AFTER_UNIX: Duration = Duration::from_secs(PG_EPOCH.unsigned_abs(
 /// The sign words of a binary numeric; NaN and the infinities have others.
 const NUMERIC_POS: u16 = 0x0000;
 const NUMERIC_NEG: u16 = 0x4000;
+/// `numeric_send`'s header, two bytes each: `ndigits`, `weight`, `sign`
+/// and `dscale`, then the digits.
+const NUMERIC_COUNT_AT: usize = 0;
+const NUMERIC_WEIGHT_AT: usize = 2;
+const NUMERIC_SIGN_AT: usize = 4;
+const NUMERIC_HEADER: usize = 8;
+/// `DEC_DIGITS`: the decimal digits in one base-10000 digit.
+const DECIMAL_DIGITS: i32 = 4;
 
 /// How Straum reads a column of this type: `int2`, `int4` and `int8` as
 /// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
@@ -46,10 +66,12 @@ pub(crate) fn type_of(type_oid: u32, typmod: i32) -> Option<ColumnType> {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
         NUMERIC => {
             // An unconstrained numeric (typmod -1) has no fixed scale.
-            let packed = typmod.checked_sub(TYPMOD_HEADER).filter(|p| *p >= 0)?;
-            let precision = packed >> 16;
+            let packed = typmod
+                .checked_sub(TYPMOD_HEADER)
+                .filter(|packed| *packed >= 0)?;
+            let precision = packed >> TYPMOD_PRECISION_SHIFT;
             // The low 11 bits hold the scale, signed since PostgreSQL 15.
-            let scale = ((packed & 0x7ff) ^ 1024) - 1024;
+            let scale = ((packed & TYPMOD_SCALE_MASK) ^ TYPMOD_SCALE_SIGN) - TYPMOD_SCALE_SIGN;
             let scale = u32::try_from(scale).ok()?;
             (precision <= MAX_PRECISION).then_some(ColumnType::Numeric { scale })
         }
@@ -65,7 +87,7 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
     let datum = match column_type {
         ColumnType::Int => text.parse().ok().map(Datum::Int),
         ColumnType::Numeric { scale } => decimal(text, scale)
-            .and_then(|v| i64::try_from(v).ok())
+            .and_then(|value| i64::try_from(value).ok())
             .map(Datum::Int),
         ColumnType::Bool => match text {
             "t" => Some(Datum::Bool(true)),
@@ -91,12 +113,14 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
             [1] => Some(Datum::Bool(true)),
             _ => None,
         },
-        ColumnType::Text => str::from_utf8(bytes).ok().map(|t| Datum::Text(t.into())),
+        ColumnType::Text => str::from_utf8(bytes)
+            .ok()
+            .map(|text| Datum::Text(text.into())),
         // Both types are microseconds since 2000-01-01, a `timestamp`'s
         // read as if UTC.
         ColumnType::Time { .. } => <[u8; 8]>::try_from(bytes)
             .ok()
-            .map(|b| time(i64::from_be_bytes(b))),
+            .map(|array| time(i64::from_be_bytes(array))),
     };
     datum.ok_or_else(|| ValueError::binary(column_type, bytes))
 }
@@ -125,15 +149,17 @@ pub(crate) fn system_time(micros: i64) -> SystemTime {
 /// A clock time as a PostgreSQL timestamp; 0 for one before its epoch.
 pub(crate) fn timestamp_micros(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH + PG_EPOCH_AFTER_UNIX)
-        .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
+        .map_or(0, |since| {
+            i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
+        })
 }
 
 /// `int2`, `int4` or `int8`, big-endian, told apart by length.
 fn int(bytes: &[u8]) -> Option<i64> {
-    match *bytes {
-        [a, b] => Some(i16::from_be_bytes([a, b]).into()),
-        [a, b, c, d] => Some(i32::from_be_bytes([a, b, c, d]).into()),
-        [a, b, c, d, e, f, g, h] => Some(i64::from_be_bytes([a, b, c, d, e, f, g, h])),
+    match bytes.len() {
+        2 => Some(i16::from_be_bytes(bytes.try_into().ok()?).into()),
+        4 => Some(i32::from_be_bytes(bytes.try_into().ok()?).into()),
+        8 => Some(i64::from_be_bytes(bytes.try_into().ok()?)),
         _ => None,
     }
 }
@@ -141,20 +167,24 @@ fn int(bytes: &[u8]) -> Option<i64> {
 /// A binary numeric: digit count, weight, sign and display scale, then
 /// big-endian base-10000 digits.
 fn binary_decimal(bytes: &[u8], scale: u32) -> Option<i64> {
-    let word = |i: usize| Some([*bytes.get(i)?, *bytes.get(i + 1)?]);
-    let count = u16::from_be_bytes(word(0)?);
-    let weight = i16::from_be_bytes(word(2)?);
-    let negative = match u16::from_be_bytes(word(4)?) {
+    let count = u16::from_be_bytes(word_at(bytes, NUMERIC_COUNT_AT)?);
+    let weight = i16::from_be_bytes(word_at(bytes, NUMERIC_WEIGHT_AT)?);
+    let negative = match u16::from_be_bytes(word_at(bytes, NUMERIC_SIGN_AT)?) {
         NUMERIC_POS => false,
         NUMERIC_NEG => true,
         _ => return None,
     };
-    let (digits, odd) = bytes.get(8..)?.as_chunks::<2>();
+    let (digits, odd) = bytes.get(NUMERIC_HEADER..)?.as_chunks::<2>();
     if !odd.is_empty() || digits.len() != usize::from(count) {
         return None;
     }
     let digits = digits.iter().map(|pair| u16::from_be_bytes(*pair));
     scaled(digits, weight.into(), negative, scale)
+}
+
+/// The two bytes at `at`, if `bytes` reach that far.
+fn word_at(bytes: &[u8], at: usize) -> Option<[u8; 2]> {
+    bytes.get(at..)?.first_chunk().copied()
 }
 
 /// Base-10000 digits, the first worth `10000^weight`, in units of
@@ -168,8 +198,8 @@ pub(crate) fn scaled(
 ) -> Option<i64> {
     let scale = i32::try_from(scale).ok()?;
     let mut value: i128 = 0;
-    for (i, digit) in digits.enumerate() {
-        let exponent = 4 * (weight - i32::try_from(i).ok()?) + scale;
+    for (position, digit) in digits.enumerate() {
+        let exponent = DECIMAL_DIGITS * (weight - i32::try_from(position).ok()?) + scale;
         let scaled = match u32::try_from(exponent) {
             Ok(exponent) => i128::from(digit).checked_mul(10_i128.checked_pow(exponent)?)?,
             // Below the scale a digit must be zero; a digit is below 10^4.
@@ -192,7 +222,6 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
         None => (false, text),
     };
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
-    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
     if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) {
         return None;
     }
@@ -207,11 +236,8 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
 /// and its text must have none. `BC` dates are `None`.
 fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     let (date, rest) = text.split_once(' ')?;
-    let (year, date) = date.rsplit_once('-').and_then(|(ym, day)| {
-        let (year, month) = ym.rsplit_once('-')?;
-        Some((year, (month, day)))
-    })?;
-    let (month, day) = date;
+    let (year_month, day) = date.rsplit_once('-')?;
+    let (year, month) = year_month.rsplit_once('-')?;
     let (clock, offset) = match rest.find(['+', '-']) {
         Some(at) if zoned => rest.split_at(at),
         None if !zoned => (rest, ""),
@@ -219,18 +245,23 @@ fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     };
     let (clock, _fraction) = clock.split_once('.').unwrap_or((clock, ""));
     let mut clock = clock.split(':');
-    let mut field = |max: i64| {
-        let n: i64 = number(clock.next()?)?;
-        (n <= max).then_some(n)
-    };
-    let (hour, minute, second) = (field(23)?, field(59)?, field(60)?);
+    let hour = clock_field(clock.next(), MAX_HOUR)?;
+    let minute = clock_field(clock.next(), MAX_MINUTE)?;
+    let second = clock_field(clock.next(), MAX_SECOND)?;
     if clock.next().is_some() {
         return None;
     }
     let days = days_from_civil(number(year)?, number(month)?, number(day)?)?;
-    let seconds = days * SECONDS_PER_DAY + hour * 3_600 + minute * 60 + second;
+    let seconds =
+        days * SECONDS_PER_DAY + hour * SECONDS_PER_HOUR + minute * SECONDS_PER_MINUTE + second;
     let offset = if zoned { offset_seconds(offset)? } else { 0 };
     Some(seconds - offset)
+}
+
+/// An hour, minute or second of a clock, at most `max`.
+fn clock_field(text: Option<&str>, max: i64) -> Option<i64> {
+    let value = number(text?)?;
+    (value <= max).then_some(value)
 }
 
 /// `+05:30` is 19800 seconds.
@@ -243,15 +274,19 @@ fn offset_seconds(text: &str) -> Option<i64> {
     if parts.next().is_some() {
         return None;
     }
-    Some(sign * (hours * 3_600 + minutes * 60 + seconds))
+    Some(sign * (hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds))
 }
 
 /// Digits only; no sign.
 fn number(text: &str) -> Option<i64> {
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+    if text.is_empty() || !all_digits(text) {
         return None;
     }
     text.parse().ok()
+}
+
+fn all_digits(text: &str) -> bool {
+    text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
@@ -294,7 +329,10 @@ impl ValueError {
 
     /// Shows the bytes in hex, as `bytea` prints.
     fn binary(column_type: ColumnType, bytes: &[u8]) -> ValueError {
-        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let mut hex = String::with_capacity(2 * bytes.len());
+        for byte in bytes {
+            write!(hex, "{byte:02x}").expect("a String takes any text");
+        }
         ValueError {
             column_type,
             text: format!("\\x{hex}"),
@@ -313,10 +351,14 @@ impl ValueError {
 }
 
 impl fmt::Display for ValueError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "can't read {:?} as {}", self.text, self.column_type)?;
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "can't read {:?} as {}",
+            self.text, self.column_type
+        )?;
         if let Some(Place { table, column }) = &self.place {
-            write!(f, " in column {column} of {table}")?;
+            write!(formatter, " in column {column} of {table}")?;
         }
         Ok(())
     }
@@ -329,12 +371,13 @@ mod tests {
     use super::*;
 
     fn numeric(precision: i32, scale: i32) -> i32 {
-        ((precision << 16) | (scale & 0x7ff)) + TYPMOD_HEADER
+        ((precision << TYPMOD_PRECISION_SHIFT) | (scale & TYPMOD_SCALE_MASK)) + TYPMOD_HEADER
     }
 
     #[test]
     fn timestamps_as_clock_times() {
-        let epoch = UNIX_EPOCH + Duration::from_secs(946_684_800);
+        // 10 957 days, from 1970-01-01 to 2000-01-01.
+        let epoch = UNIX_EPOCH + Duration::from_hours(262_968);
         assert_eq!(system_time(0), epoch);
         assert_eq!(system_time(-1), epoch - Duration::from_micros(1));
         for micros in [0, 1, 1_000_000, 758_629_800_500_000] {
@@ -382,7 +425,6 @@ mod tests {
 
     #[test]
     fn reads_values() {
-        let text = |s: &str| Datum::Text(s.into());
         let zoned = ColumnType::Time { zoned: true };
         let naive = ColumnType::Time { zoned: false };
         let cases = [
@@ -394,8 +436,12 @@ mod tests {
             (ColumnType::Numeric { scale: 0 }, "7", Datum::Int(7)),
             (ColumnType::Bool, "t", Datum::Bool(true)),
             (ColumnType::Bool, "f", Datum::Bool(false)),
-            (ColumnType::Text, "Upper East Side", text("Upper East Side")),
-            (ColumnType::Text, "", text("")),
+            (
+                ColumnType::Text,
+                "Upper East Side",
+                Datum::Text("Upper East Side".into()),
+            ),
+            (ColumnType::Text, "", Datum::Text("".into())),
             // Expected values from `date -u -d ... +%s`.
             (zoned, "2024-01-15 10:30:00+00", Datum::Int(1_705_314_600)),
             (
@@ -503,7 +549,7 @@ mod tests {
         bytes.extend(weight.to_be_bytes());
         bytes.extend(sign.to_be_bytes());
         bytes.extend(0_u16.to_be_bytes());
-        bytes.extend(digits.iter().flat_map(|d| d.to_be_bytes()));
+        bytes.extend(digits.iter().flat_map(|digit| digit.to_be_bytes()));
         bytes
     }
 
@@ -513,13 +559,21 @@ mod tests {
             .to_vec()
     }
 
+    fn assert_reads_binary(cases: &[(ColumnType, Vec<u8>, Datum)]) {
+        for (column_type, bytes, datum) in cases {
+            assert_eq!(
+                read_binary(*column_type, bytes),
+                Ok(datum.clone()),
+                "{column_type} {bytes:?}"
+            );
+        }
+    }
+
     #[test]
-    fn reads_binary_values() {
+    fn reads_binary_numbers() {
         let cents = ColumnType::Numeric { scale: 2 };
         let whole = ColumnType::Numeric { scale: 0 };
-        let zoned = ColumnType::Time { zoned: true };
-        let naive = ColumnType::Time { zoned: false };
-        let cases = [
+        assert_reads_binary(&[
             (ColumnType::Int, 7_i16.to_be_bytes().to_vec(), Datum::Int(7)),
             (
                 ColumnType::Int,
@@ -554,6 +608,14 @@ mod tests {
                 numeric_bytes(4, NUMERIC_POS, &[1]),
                 Datum::Int(10_000_000_000_000_000),
             ),
+        ]);
+    }
+
+    #[test]
+    fn reads_binary_bools_text_and_times() {
+        let zoned = ColumnType::Time { zoned: true };
+        let naive = ColumnType::Time { zoned: false };
+        assert_reads_binary(&[
             (ColumnType::Bool, vec![1], Datum::Bool(true)),
             (ColumnType::Bool, vec![0], Datum::Bool(false)),
             (
@@ -579,14 +641,7 @@ mod tests {
             (zoned, i64::MAX.to_be_bytes().to_vec(), Datum::Null),
             (zoned, i64::MIN.to_be_bytes().to_vec(), Datum::Null),
             (naive, i64::MIN.to_be_bytes().to_vec(), Datum::Null),
-        ];
-        for (column_type, bytes, datum) in cases {
-            assert_eq!(
-                read_binary(column_type, &bytes),
-                Ok(datum),
-                "{column_type} {bytes:?}"
-            );
-        }
+        ]);
     }
 
     #[test]
@@ -652,8 +707,8 @@ mod tests {
                 r#"can't read "x" as a timestamp"#,
             ),
         ];
-        for (column_type, text, msg) in cases {
-            assert_eq!(ValueError::new(column_type, text).to_string(), msg);
+        for (column_type, text, message) in cases {
+            assert_eq!(ValueError::new(column_type, text).to_string(), message);
         }
         let placed = ValueError::new(ColumnType::Int, "x")
             .at("public.trips", &Identifier::new("fare").unwrap());

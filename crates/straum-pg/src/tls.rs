@@ -47,7 +47,7 @@ pub(crate) fn start(
     let mut conn = ClientConnection::new(config, name.clone()).expect("the config is complete");
     while conn.is_handshaking() {
         conn.complete_io(&mut tcp)
-            .map_err(|e| Error::Tls(e.to_string()))?;
+            .map_err(|error| Error::Tls(error.to_string()))?;
     }
     Ok(StreamOwned::new(conn, tcp))
 }
@@ -61,7 +61,7 @@ fn config(root_cert: Option<&str>) -> Result<Arc<ClientConfig>, Error> {
         Some(file) => {
             let certs: Vec<CertificateDer> = CertificateDer::pem_file_iter(file)
                 .and_then(Iterator::collect)
-                .map_err(|e| Error::Tls(format!("reading {file}: {e}")))?;
+                .map_err(|error| Error::Tls(format!("reading {file}: {error}")))?;
             roots.add_parsable_certificates(certs);
             if roots.is_empty() {
                 return Err(Error::Tls(format!("{file} holds no CA certificate")));
