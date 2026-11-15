@@ -19,7 +19,12 @@ before it.
    asks, and `Writer`, the loop that loads the tables and applies the
    stream. `source.rs` is the one trait PostgreSQL sits behind.
 4. `straum-pg`: talks to PostgreSQL. `source.rs` is where it meets
-   `straum-app`; `wal/` reads the physical WAL.
+   `straum-app`; `wal/` reads the physical WAL. Read `wal.rs` first,
+   then the files in the order bytes pass through them: `reader.rs`
+   (pages into records), `record.rs` (one record), `heap.rs` and
+   `heap/` (row changes), `xact.rs` and `transactions.rs` (commits),
+   `tuple.rs` and `messages.rs` (values and messages), `pipeline.rs`
+   (all of it in a row).
 5. `straum-http`: serves asks and status over HTTP. `lib.rs` is the
    server loop; `routes.rs` picks the handler for each request.
 6. `straum`: the binary. `main.rs` starts it all.
@@ -138,6 +143,28 @@ other crates, `pub(crate)` only inside this one, nothing at all only
 inside the file. `#[cfg(test)] mod tests` at the end of a file holds
 its unit tests; `tests/` beside `src/` holds the tests that use the
 crate from outside.
+
+**Type aliases.** `type TransactionId = u32;` gives `u32` a second
+name, so `xid: TransactionId` says what the number is. The two are the
+same type: the compiler doesn't stop a slot number going where an xid
+should, it only tells the reader.
+
+**Reading bytes.** The WAL code reads PostgreSQL's structs from raw
+bytes. A field's place is a named constant, often a range:
+`RECORD_XID: Range<usize> = 4..8` is bytes 4 to 7, and
+`&bytes[RECORD_XID]` is those four bytes, borrowed. Indexing past the
+end panics, so code that reads input it hasn't checked uses
+`bytes.get(4..8)`, which gives `None` instead. `u32::from_le_bytes`
+turns four bytes, least significant first ("little-endian"), into a
+`u32`; `read_u32` in `wal.rs` wraps it. `first_chunk()` takes the first
+bytes as a fixed-size array, if there are enough, and
+`as_chunks::<2>()` cuts a slice into two-byte arrays.
+
+**Shared and maybe-copied bytes.** `Arc<[u8]>` is bytes several owners
+share without copying: a row on a page and the change that names it.
+`Cow<'_, [u8]>` is bytes that are either borrowed (`Cow::Borrowed`) or,
+when they had to be changed, such as decompressed, owned
+(`Cow::Owned`).
 
 **Dense code.** Where a loop would be slower in a way a benchmark
 measured, the code keeps a denser form and a comment names the
