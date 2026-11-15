@@ -212,10 +212,11 @@ mod tests {
 
     use super::*;
     use crate::pgoutput::{Relation, RelationColumn};
+    use crate::wal::RelationFile;
     use crate::wal::messages::Layout;
-    use crate::wal::tests::{BlockSpec, Spec, assemble};
+    use crate::wal::test_support::decode;
+    use crate::wal::test_support::{BlockSpec, Spec, assemble};
     use crate::wal::tuple::{Attribute, Kind};
-    use crate::wal::{RelationFile, decode};
 
     const FILE: RelationFile = RelationFile {
         tablespace: 1663,

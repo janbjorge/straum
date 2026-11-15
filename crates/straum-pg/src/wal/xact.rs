@@ -214,8 +214,8 @@ fn running(data: &[u8]) -> Option<Running> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wal::decode;
-    use crate::wal::tests::{Spec, assemble};
+    use crate::wal::test_support::decode;
+    use crate::wal::test_support::{Spec, assemble};
 
     fn record(resource_manager: u8, info: u8, xid: u32, main: Vec<u8>) -> Record {
         let spec = Spec {
