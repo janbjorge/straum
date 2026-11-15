@@ -360,9 +360,12 @@ fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Er
     Ok(())
 }
 
+/// Each enum label's text by its `pg_enum` OID.
+type LabelsByOid = HashMap<Oid, String>;
+
 /// The labels of the enums the named tables' columns have, by `pg_enum`
 /// OID, which is what a row stores.
-fn labels(connection: &mut Connection, names: &str) -> Result<HashMap<Oid, String>, Error> {
+fn labels(connection: &mut Connection, names: &str) -> Result<LabelsByOid, Error> {
     let rows = connection.rows(&format!(
         "SELECT DISTINCT e.oid, e.enumlabel
          FROM pg_enum e
