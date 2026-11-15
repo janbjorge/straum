@@ -13,7 +13,10 @@ use std::thread;
 use std::time::Duration;
 
 use straum_app::{App, Limits, Lsn, Step, Writer};
-use straum_domain::{Ask, AskKey, Condition, Datum, Identifier, Literal, Spec, Value, decimal};
+use straum_domain::{
+    Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Value,
+    decimal,
+};
 use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
 use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
@@ -320,6 +323,7 @@ pub(super) fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         measures: measures.iter().copied().map(id).collect(),
         keys: by.iter().copied().map(ask_key).collect(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: 0,
         to: END,
     }
@@ -342,6 +346,23 @@ pub(super) fn where_is(ask: Ask, key: &str, value: Literal) -> Ask {
             values: vec![value],
         }],
         ..ask
+    }
+}
+
+/// `ask` kept by `conditions`.
+pub(super) fn having(ask: Ask, conditions: Vec<MeasureCondition>) -> Ask {
+    Ask {
+        having: conditions,
+        ..ask
+    }
+}
+
+/// `measure comparison value`, as HAVING writes it.
+pub(super) fn compared(measure: &str, comparison: Comparison, value: Literal) -> MeasureCondition {
+    MeasureCondition {
+        measure: id(measure),
+        comparison,
+        value,
     }
 }
 

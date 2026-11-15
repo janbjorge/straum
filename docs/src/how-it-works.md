@@ -191,8 +191,8 @@ answer: eu 2 220.00, us 273 14769.29
 ```
 
 An ask reads the cells of the buckets in its range, adds each to its
-group and to each measure whose filter holds, and sorts the rows by
-key. It never touches PostgreSQL and never reads a row, so its cost
+group and to each measure whose filter holds, keeps the groups that
+meet its `HAVING`, and sorts the rows by key. It never touches PostgreSQL and never reads a row, so its cost
 follows the number of cells it reads.
 
 ![How an ask range is read](diagrams/cover.svg)

@@ -3,8 +3,8 @@
 //! `hint` take those views and the line being edited and look at the words
 //! before the cursor: a view after `FROM`, its keys and measures after
 //! `SELECT`, a whole condition after `WHERE`, the selected keys after
-//! `GROUP BY`, the bounds of the buckets held where a parameter is a
-//! bound. Plain functions, with no terminal and no network: `shell.rs`
+//! `GROUP BY`, a selected measure and a comparison after `HAVING`, the
+//! bounds of the buckets held where a parameter is a bound. Plain functions, with no terminal and no network: `shell.rs`
 //! calls them. A line is split into words, never parsed: Straum checks the
 //! ask.
 
@@ -14,6 +14,8 @@ use serde_json::Value;
 
 const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
 const BUCKET: &str = "bucket";
+/// What HAVING compares a measure with, as the ask writes it.
+const COMPARISONS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 
 /// A view as `GET /views` describes it in JSON: what a line may name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +38,15 @@ impl View {
             }
         }
         None
+    }
+
+    fn has_measure(&self, name: &str) -> bool {
+        for measure in &self.measures {
+            if measure == name {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -282,6 +293,9 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     let view = view_after_from(views, &all);
     let selected = selected_keys(view.as_ref(), &all);
 
+    if let Some(conditions) = after(&before, "HAVING") {
+        return having_candidates(view.as_ref(), &all, &conditions);
+    }
     if let Some(listed) = after(&before, "GROUP") {
         return group_by_candidates(&selected, &listed);
     }
@@ -331,7 +345,7 @@ fn group_by_candidates(selected: &[String], listed: &[String]) -> Vec<String> {
                 }
             }
             if left.is_empty() {
-                vec!["; ".to_owned()]
+                vec!["; ".to_owned(), "HAVING ".to_owned()]
             } else {
                 left
             }
@@ -424,11 +438,51 @@ fn after_a_condition(bounds: Bounds, selected: &[String]) -> Vec<String> {
     if bounds.has_from && bounds.has_to {
         if selected.is_empty() {
             next.push("; ".to_owned());
+            next.push("HAVING ".to_owned());
         } else {
-            next.push(format!("GROUP BY {}; ", selected.join(", ")));
+            let keys = selected.join(", ");
+            next.push(format!("GROUP BY {keys}; "));
+            next.push(format!("GROUP BY {keys} HAVING "));
         }
     }
     next
+}
+
+/// What may come next in `HAVING`: a selected measure, then a comparison
+/// with the next free `$n`, then what joins and ends conditions.
+fn having_candidates(view: Option<&View>, all: &[String], conditions: &[String]) -> Vec<String> {
+    let Some(view) = view else {
+        return Vec::new();
+    };
+    let number = next_parameter_number(all);
+    match conditions.last() {
+        Some(last) if last.starts_with('$') => vec!["AND ".to_owned(), "; ".to_owned()],
+        Some(last) if view.has_measure(last) => {
+            let mut next = Vec::with_capacity(COMPARISONS.len());
+            for comparison in COMPARISONS {
+                next.push(format!("{comparison} {number}"));
+            }
+            next
+        }
+        Some(last) if !is(last, "AND") => Vec::new(),
+        _ => selected_measures(view, all),
+    }
+}
+
+/// The measures between `SELECT` and `FROM`, the ones HAVING may compare,
+/// each with the space after it.
+fn selected_measures(view: &View, all: &[String]) -> Vec<String> {
+    let listed = after(all, "SELECT").unwrap_or_default();
+    let mut selected = Vec::new();
+    for word in listed {
+        if is(&word, "FROM") {
+            break;
+        }
+        if view.has_measure(&word) {
+            selected.push(format!("{word} "));
+        }
+    }
+    selected
 }
 
 /// The conditions that may start here: the bounds not yet written, then
@@ -518,7 +572,13 @@ fn slot(views: &[View], query: &str, given: &str) -> Option<Slot> {
     for word in &query {
         if let Some(named) = view.key(word) {
             key = Some(named.clone());
-        } else if ["=", ">=", "<"].contains(&word.as_str()) || is(word, "IN") {
+        } else if view.has_measure(word) {
+            // `/views` gives no measure's type.
+            key = Some(Key {
+                name: word.clone(),
+                column_type: String::new(),
+            });
+        } else if COMPARISONS.contains(&word.as_str()) || is(word, "IN") {
             operator.clone_from(word);
         } else if parameter_number(word) == Some(number) {
             return Some(Slot {
@@ -553,8 +613,13 @@ pub(crate) fn hint(views: &[View], line: &str, cursor: usize) -> Option<String> 
         Some(value) if slot.key.name == BUCKET => format!(", Tab gives {}", value.trim_end()),
         _ => String::new(),
     };
+    let column_type = if column_type.is_empty() {
+        String::new()
+    } else {
+        format!(" {column_type}")
+    };
     Some(format!(
-        "{gap}{}: {name} {} {column_type}{tab}",
+        "{gap}{}: {name} {}{column_type}{tab}",
         slot.number, slot.operator
     ))
 }
@@ -773,17 +838,21 @@ mod tests {
         );
         assert_eq!(
             offers(&format!("SELECT orders FROM orders {bounds}")),
-            ["AND ", "; "]
+            ["AND ", "; ", "HAVING "]
         );
         assert_eq!(
             offers(&format!(
                 "SELECT status, country, orders FROM orders {bounds}"
             )),
-            ["AND ", "GROUP BY status, country; "]
+            [
+                "AND ",
+                "GROUP BY status, country; ",
+                "GROUP BY status, country HAVING "
+            ]
         );
         assert_eq!(
             offers(&format!("SELECT bucket, orders FROM orders {bounds}g")),
-            ["GROUP BY bucket; "]
+            ["GROUP BY bucket; ", "GROUP BY bucket HAVING "]
         );
     }
 
@@ -794,7 +863,39 @@ mod tests {
         assert_eq!(offers(line), ["BY "]);
         assert_eq!(offers(&format!("{line}BY ")), ["status, country"]);
         assert_eq!(offers(&format!("{line}BY country, ")), ["status"]);
-        assert_eq!(offers(&format!("{line}BY country, status ")), ["; "]);
+        assert_eq!(
+            offers(&format!("{line}BY country, status ")),
+            ["; ", "HAVING "]
+        );
+    }
+
+    #[test]
+    fn having_offers_selected_measures_then_comparisons() {
+        let grouped = "SELECT status, orders, revenue FROM orders \
+                       WHERE bucket >= $1 AND bucket < $2 GROUP BY status ";
+        assert_eq!(offers(grouped), ["; ", "HAVING "]);
+        let having = format!("{grouped}HAVING ");
+        assert_eq!(offers(&having), ["orders ", "revenue "]);
+        assert_eq!(
+            offers(&format!("{having}orders ")),
+            ["= $3", "<> $3", "< $3", "<= $3", "> $3", ">= $3"]
+        );
+        assert_eq!(offers(&format!("{having}orders > $3 ")), ["AND ", "; "]);
+        assert_eq!(
+            offers(&format!("{having}orders > $3 AND ")),
+            ["orders ", "revenue "]
+        );
+        // Nothing mid-condition, for a key, or for an unknown view.
+        assert_eq!(offers(&format!("{having}orders > ")), Vec::<String>::new());
+        assert_eq!(offers(&format!("{having}status ")), Vec::<String>::new());
+        assert_eq!(
+            offers("SELECT x FROM nope WHERE bucket >= $1 AND bucket < $2 HAVING "),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            hinted(&format!("{having}revenue >= $3; a b ")).as_deref(),
+            Some("$3: revenue >=")
+        );
     }
 
     #[test]

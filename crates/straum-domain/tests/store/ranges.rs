@@ -77,6 +77,7 @@ fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
         measures: vec![id("trips")],
         keys,
         filter: Vec::new(),
+        having: Vec::new(),
         from,
         to,
     }

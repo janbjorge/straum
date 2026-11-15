@@ -5,8 +5,12 @@
 use std::collections::BTreeMap;
 
 use crate::common::{Rng, condition, dim_row, id, lit, text};
+use crate::reference::measure_scale;
 use crate::{DRO, DimRows, Dims, END, HOME, KEYS, START, WIDTH};
-use straum_domain::{Ask, AskKey, Condition, Datum, Identifier, Literal, Spec, Store};
+use straum_domain::{
+    Aggregate, Answer, Ask, AskKey, Comparison, Condition, Datum, Fact, Identifier, Literal,
+    MeasureCondition, Spec, Store, Value,
+};
 
 impl Rng {
     /// One of a few texts, or null `percent` percent of the time, as a
@@ -222,6 +226,12 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     if measures.is_empty() {
         measures.push(rng.pick(all).name.clone());
     }
+    let fact = spec.fact("trips").unwrap();
+    let mut having = Vec::new();
+    while rng.chance(30) {
+        let measure = rng.pick(&measures).clone();
+        having.push(random_having(rng, fact, measure));
+    }
     let buckets = (END - START) / i64::from(WIDTH);
     let from = START + i64::from(WIDTH) * rng.int(-10, buckets);
     let to = from + i64::from(WIDTH) * rng.int(1, buckets + 20);
@@ -230,8 +240,80 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         measures,
         keys: by,
         filter,
+        having,
         from,
         to,
+    }
+}
+
+/// A HAVING condition on `measure`, its value near what the measure
+/// answers: a boolean, an integer, or a decimal at the measure's scale or
+/// one finer, so equal groups come up as well as larger and smaller.
+fn random_having(rng: &mut Rng, fact: &Fact, measure: Identifier) -> MeasureCondition {
+    let aggregate = &fact.measure(measure.as_str()).unwrap().aggregate;
+    if matches!(aggregate, Aggregate::BoolAnd(_) | Aggregate::BoolOr(_)) {
+        let comparison = *rng.pick(&[Comparison::Equal, Comparison::NotEqual]);
+        let value = Literal::Bool(rng.chance(50));
+        return MeasureCondition {
+            measure,
+            comparison,
+            value,
+        };
+    }
+    let comparison = *rng.pick(&[
+        Comparison::Equal,
+        Comparison::NotEqual,
+        Comparison::Less,
+        Comparison::LessOrEqual,
+        Comparison::Greater,
+        Comparison::GreaterOrEqual,
+    ]);
+    let scale = measure_scale(aggregate);
+    let value = match rng.below(4) {
+        0 => Literal::Int(rng.int(-2, 12)),
+        // Past an i128 at the measure's scale.
+        1 => Literal::Int(*rng.pick(&[i64::MIN, -1 - i64::MAX / 2, i64::MAX])),
+        2 => Literal::Decimal {
+            units: i128::from(rng.int(-500, 10_000)),
+            scale,
+        },
+        _ => Literal::Decimal {
+            units: i128::from(rng.int(-5_000, 100_000)),
+            scale: scale + 1,
+        },
+    };
+    MeasureCondition {
+        measure,
+        comparison,
+        value,
+    }
+}
+
+/// Sets half the number values of `ask`'s HAVING to what a group of
+/// `answer`, the ask without HAVING, holds, so a boundary is met exactly:
+/// `>` and `>=` part there. An average that is no whole number of its
+/// scale's units gives the one below, which only its fraction parts from.
+pub(crate) fn meet_a_group(rng: &mut Rng, ask: &mut Ask, answer: &Answer) {
+    if answer.rows.is_empty() {
+        return;
+    }
+    let key_count = ask.keys.len();
+    for condition in &mut ask.having {
+        if matches!(condition.value, Literal::Bool(_)) || rng.chance(50) {
+            continue;
+        }
+        let mut position = 0;
+        while ask.measures[position] != condition.measure {
+            position += 1;
+        }
+        let scale = answer.columns[key_count + position].scale;
+        let row = rng.pick(&answer.rows);
+        let units = match row.values[position] {
+            Value::Int(units) => units,
+            Value::Avg { sum, count } => sum.div_euclid(i128::from(count)),
+            _ => continue,
+        };
+        condition.value = Literal::Decimal { units, scale };
     }
 }
 

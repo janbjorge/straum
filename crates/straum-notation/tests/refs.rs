@@ -258,6 +258,7 @@ fn null_ness_keys() {
         measures: vec![id("n")],
         keys: vec![AskKey::Key(id("done"))],
         filter: vec![condition("open", vec![Literal::Bool(true)])],
+        having: Vec::new(),
         from: JAN,
         to: FEB,
     };

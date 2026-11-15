@@ -58,6 +58,8 @@ fn line(node: &impl Spanned) -> u64 {
 }
 
 const CONDITION: &str = "filter condition, write = or IN joined by AND,";
+const ASK_COMPARISON: &str =
+    "comparison, WHERE takes = or IN on a key; compare a measure in HAVING,";
 const PARENTHESES: &str = "parentheses, write the condition without them,";
 
 /// Walks one spec or one ask, keeping every error in the order met, so a
@@ -265,8 +267,8 @@ impl Walker {
         }
     }
 
-    /// Rejects every `SELECT` clause but the list, FROM, WHERE and GROUP
-    /// BY, which each caller reads its own way. Returns its line.
+    /// Rejects every `SELECT` clause but the list, FROM, WHERE, GROUP BY
+    /// and HAVING, which each caller reads its own way. Returns its line.
     fn select_clauses(&mut self, select: &sql::Select) -> u64 {
         let sql::Select {
             select_token,
@@ -288,7 +290,7 @@ impl Walker {
             cluster_by,
             distribute_by,
             sort_by,
-            having,
+            having: _,
             named_window,
             qualify,
             // Only says where QUALIFY was written, which is rejected.
@@ -315,7 +317,6 @@ impl Walker {
         self.reject_if_present(at, !cluster_by.is_empty(), "CLUSTER BY");
         self.reject_if_present(at, !distribute_by.is_empty(), "DISTRIBUTE BY");
         self.reject_if_present(at, !sort_by.is_empty(), "SORT BY");
-        self.reject_if_present(at, having.is_some(), "HAVING");
         self.reject_if_present(at, !named_window.is_empty(), "WINDOW");
         self.reject_if_present(at, qualify.is_some(), "QUALIFY");
         self.reject_if_present(at, value_table_mode.is_some(), "SELECT AS VALUE or STRUCT");
@@ -386,7 +387,13 @@ impl Walker {
                     }
                 }
                 sql::Expr::Nested(_) => self.refuse(line(part), PARENTHESES, part),
-                other => self.refuse(line(other), CONDITION, other),
+                other => {
+                    let what = match names {
+                        Names::Ask(_) if compares_a_name(other) => ASK_COMPARISON,
+                        _ => CONDITION,
+                    };
+                    self.refuse(line(other), what, other);
+                }
             }
         }
     }
@@ -435,6 +442,26 @@ impl Walker {
             Names::Ask(parameters) => self.parameter(expression, parameters),
         }
     }
+}
+
+/// `name <> value`, `<`, `<=`, `>` or `>=`, the name not `bucket`: what
+/// HAVING writes, so likely meant for a measure.
+fn compares_a_name(expression: &sql::Expr) -> bool {
+    let sql::Expr::BinaryOp { left, op, .. } = expression else {
+        return false;
+    };
+    let sql::Expr::Identifier(name) = left.as_ref() else {
+        return false;
+    };
+    let compares = matches!(
+        op,
+        sql::BinaryOperator::NotEq
+            | sql::BinaryOperator::Lt
+            | sql::BinaryOperator::LtEq
+            | sql::BinaryOperator::Gt
+            | sql::BinaryOperator::GtEq
+    );
+    compares && !name.value.eq_ignore_ascii_case("bucket")
 }
 
 /// A table reference's name and alias, as written.

@@ -13,7 +13,8 @@
 //!
 //! - `query` is required; what it may say is up to the `ReadAsk` `serve`
 //!   is given.
-//! - `parameters`: integers, strings and booleans, `$1` first.
+//! - `parameters`: numbers, strings and booleans, `$1` first. A number
+//!   with a fraction stays exactly as written, `20.5` being 205 tenths.
 
 use std::fmt;
 
@@ -48,10 +49,15 @@ pub(crate) enum BodyError {
     },
     UnknownField(String),
     QueryMissing,
-    /// A parameter that is not an integer, a string or a boolean.
+    /// A parameter that is not a number, a string or a boolean.
     ParameterType {
         index: ParameterIndex,
         kind: &'static str,
+    },
+    /// A number with more digits than an `i128` holds.
+    NumberTooLong {
+        index: ParameterIndex,
+        number: String,
     },
 }
 
@@ -70,7 +76,13 @@ impl fmt::Display for BodyError {
             BodyError::QueryMissing => formatter.write_str("\"query\" is missing"),
             BodyError::ParameterType { index, kind } => write!(
                 formatter,
-                "\"parameters[{}]\" (${}) must be an integer, a string or a boolean, not {kind}",
+                "\"parameters[{}]\" (${}) must be a number, a string or a boolean, not {kind}",
+                index.0,
+                index.0 + 1
+            ),
+            BodyError::NumberTooLong { index, number } => write!(
+                formatter,
+                "\"parameters[{}]\" (${}) {number} has more digits than Straum keeps exactly",
                 index.0,
                 index.0 + 1
             ),
@@ -133,12 +145,41 @@ fn literal(index: ParameterIndex, value: &Json) -> Result<Literal, BodyError> {
         Json::Int(integer) => Ok(Literal::Int(*integer)),
         Json::Text(text) => Ok(Literal::Text(text.clone())),
         Json::Bool(boolean) => Ok(Literal::Bool(*boolean)),
+        Json::Number(number) => exact(number).ok_or_else(|| BodyError::NumberTooLong {
+            index,
+            number: number.clone(),
+        }),
         // `= NULL` matches nothing in SQL, so it can only be a mistake.
         other => Err(BodyError::ParameterType {
             index,
             kind: other.kind(),
         }),
     }
+}
+
+/// A JSON number as a decimal, exactly: the digits as written, the point
+/// moved by the exponent, trailing zeros after it dropped. `None` past
+/// what an `i128` holds.
+fn exact(number: &str) -> Option<Literal> {
+    let (mantissa, exponent) = match number.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i64>().ok()?),
+        None => (number, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let fraction = fraction.trim_end_matches('0');
+    let units: i128 = format!("{whole}{fraction}").parse().ok()?;
+    let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
+    if scale >= 0 {
+        let scale = u32::try_from(scale).ok()?;
+        return Some(Literal::Decimal { units, scale });
+    }
+    let places = u32::try_from(scale.unsigned_abs()).ok()?;
+    let units = if units == 0 {
+        0
+    } else {
+        units.checked_mul(10_i128.checked_pow(places)?)?
+    };
+    Some(Literal::Decimal { units, scale: 0 })
 }
 
 #[cfg(test)]
@@ -182,6 +223,41 @@ mod tests {
     }
 
     #[test]
+    fn numbers_stay_as_written() {
+        let cases = [
+            ("20.5", 205, 1),
+            ("-0.05", -5, 2),
+            ("20.50", 205, 1),
+            ("2.5e3", 2500, 0),
+            ("25E-1", 25, 1),
+            ("0e5", 0, 0),
+            ("9223372036854775808", 9_223_372_036_854_775_808, 0),
+            ("1e38", 10_i128.pow(38), 0),
+        ];
+        for (number, units, scale) in cases {
+            let body = format!(r#"{{"query": "SELECT", "parameters": [{number}]}}"#);
+            assert_eq!(
+                read_str(&body).parameters,
+                [Literal::Decimal { units, scale }],
+                "{number}"
+            );
+        }
+    }
+
+    #[test]
+    fn numbers_past_an_i128_are_refused() {
+        let body = r#"{"query": "SELECT", "parameters": [1.5, 1e39, 1e99999999999999999999, 340282366920938463463374607431768211456]}"#;
+        assert_eq!(
+            errors_of(body),
+            [
+                r#""parameters[1]" ($2) 1e+39 has more digits than Straum keeps exactly"#,
+                r#""parameters[2]" ($3) 1e+99999999999999999999 has more digits than Straum keeps exactly"#,
+                r#""parameters[3]" ($4) 340282366920938463463374607431768211456 has more digits than Straum keeps exactly"#,
+            ]
+        );
+    }
+
+    #[test]
     fn every_error_names_its_field() {
         let cases = [
             ("[]", vec!["an ask is an object, not an array"]),
@@ -196,12 +272,11 @@ mod tests {
                 ],
             ),
             (
-                r#"{"query": "SELECT", "parameters": [1, null, 2.5, [], {}]}"#,
+                r#"{"query": "SELECT", "parameters": [1, null, [], {}]}"#,
                 vec![
-                    r#""parameters[1]" ($2) must be an integer, a string or a boolean, not null"#,
-                    r#""parameters[2]" ($3) must be an integer, a string or a boolean, not a number that isn't an integer"#,
-                    r#""parameters[3]" ($4) must be an integer, a string or a boolean, not an array"#,
-                    r#""parameters[4]" ($5) must be an integer, a string or a boolean, not an object"#,
+                    r#""parameters[1]" ($2) must be a number, a string or a boolean, not null"#,
+                    r#""parameters[2]" ($3) must be a number, a string or a boolean, not an array"#,
+                    r#""parameters[3]" ($4) must be a number, a string or a boolean, not an object"#,
                 ],
             ),
         ];

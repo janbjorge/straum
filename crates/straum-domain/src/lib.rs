@@ -30,7 +30,7 @@ mod value;
 mod value_counts;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
-pub use ask::{Ask, AskError, AskKey};
+pub use ask::{Ask, AskError, AskKey, Comparison, MeasureCondition};
 pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
@@ -41,4 +41,4 @@ pub use spec::{
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
-pub use value::{ColumnType, Datum, Value, decimal};
+pub use value::{ColumnType, Datum, MAX_SCALE, Value, decimal};

@@ -4,7 +4,7 @@
 //! of the ask's range, and turns the groups met into answer rows.
 
 use crate::aggregate::Partials;
-use crate::ask::{Ask, AskError, AskKey};
+use crate::ask::{Ask, AskError, AskKey, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::projection::AttributeIndex;
@@ -17,6 +17,8 @@ use super::groups::{Grouping, Groups};
 use super::lookup::{
     AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, Known, Lookup, Memo, UNKNOWN,
 };
+use crate::value::{Threshold, Value};
+
 use super::{Answer, AnswerColumn, CHECKED, Store, bound_part_of, key_part_of, position_of};
 
 /// Thawed cells an ask reads, by bucket.
@@ -89,7 +91,8 @@ impl Store {
             }
             Some(mut expander) => cell_loop.ask_expanded(ask, &loaded, &mut expander),
         }
-        let rows = cell_loop.answer_rows();
+        let checks = having_checks(ask, &columns);
+        let rows = cell_loop.answer_rows(&checks);
         Ok(Answer { columns, rows })
     }
 
@@ -353,6 +356,44 @@ pub(super) fn cells_of<'r>(covered: CoveredBucket<'r>, loaded: &ThawedCells<'r>)
 }
 
 /// The `by` keys, then the measures, as the ask names them.
+/// A HAVING condition made ready for the groups: where its measure sits
+/// among a row's values, and the value scaled to the measure's scale.
+pub(super) struct HavingCheck {
+    pub(super) position: usize,
+    comparison: Comparison,
+    threshold: Threshold,
+}
+
+/// The ask's HAVING conditions, each scaled once to its measure's scale.
+fn having_checks(ask: &Ask, columns: &[AnswerColumn]) -> Vec<HavingCheck> {
+    let mut checks = Vec::with_capacity(ask.having.len());
+    for condition in &ask.having {
+        let position = position_of(&ask.measures, &condition.measure);
+        let scale = columns[ask.keys.len() + position].scale;
+        let threshold = Threshold::new(scale, &condition.value).expect(CHECKED);
+        checks.push(HavingCheck {
+            position,
+            comparison: condition.comparison,
+            threshold,
+        });
+    }
+    checks
+}
+
+/// Whether a group's measure `values` meet every check. The values a
+/// check doesn't read may not be finished yet.
+pub(super) fn meets(values: &[Value], checks: &[HavingCheck]) -> bool {
+    for check in checks {
+        let Some(order) = values[check.position].order_against(check.threshold) else {
+            return false;
+        };
+        if !check.comparison.holds(order) {
+            return false;
+        }
+    }
+    true
+}
+
 fn answer_columns(
     ask: &Ask,
     rollup: &Rollup,

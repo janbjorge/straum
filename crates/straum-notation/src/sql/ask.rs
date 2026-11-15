@@ -19,9 +19,16 @@ use std::fmt;
 
 use jiff::Timestamp;
 use sqlparser::ast as sql;
-use straum_domain::{Ask, AskKey, Condition, Identifier, Literal};
+use sqlparser::ast::Spanned;
+use sqlparser::tokenizer::Location;
+use straum_domain::{
+    Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
+};
 
-use super::{Names, Reported, SqlError, Walker, and_parts, line, statements};
+use super::{Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements};
+
+const MEASURE_CONDITION: &str =
+    "HAVING condition, write a measure, = <> < <= > or >=, and $n, joined by AND,";
 
 /// An ask, its values taken from `parameters` by `$n`.
 pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
@@ -32,7 +39,7 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
         used: vec![false; parameters.len()],
     };
     let ask = match statements.as_slice() {
-        [sql::Statement::Query(query)] => walker.ask(query, &mut parameters),
+        [sql::Statement::Query(parsed)] => walker.ask(parsed, query, &mut parameters),
         [other] => {
             walker.refuse(line(other), "statement", other);
             Err(Reported)
@@ -122,7 +129,12 @@ impl fmt::Display for InstantError {
 }
 
 impl Walker {
-    fn ask(&mut self, query: &sql::Query, parameters: &mut Parameters) -> Result<Ask, Reported> {
+    fn ask(
+        &mut self,
+        query: &sql::Query,
+        text: &str,
+        parameters: &mut Parameters,
+    ) -> Result<Ask, Reported> {
         let select = self.one_select(query, "ask")?;
         let at = self.select_clauses(select);
         let view = if let [sql::TableWithJoins { relation, joins }] = select.from.as_slice() {
@@ -142,11 +154,13 @@ impl Walker {
             }
         }
         let Where { filter, from, to } = self.ask_where(at, select.selection.as_ref(), parameters);
+        let having = self.ask_having(select.having.as_ref(), text, parameters);
         Ok(Ask {
             view: view?,
             measures,
             keys,
             filter,
+            having,
             from: from.seconds()?,
             to: to.seconds()?,
         })
@@ -276,6 +290,54 @@ impl Walker {
         Where { filter, from, to }
     }
 
+    /// `measure op $n` joined by AND, `op` one of `= <> < <= > >=`.
+    /// The spec decides whether the name is a measure.
+    fn ask_having(
+        &mut self,
+        having: Option<&sql::Expr>,
+        text: &str,
+        parameters: &mut Parameters,
+    ) -> Vec<MeasureCondition> {
+        let mut parts = Vec::new();
+        if let Some(expression) = having {
+            and_parts(expression, &mut parts);
+        }
+        let mut conditions = Vec::with_capacity(parts.len());
+        for part in parts {
+            let sql::Expr::BinaryOp { left, op, right } = part else {
+                let what = match part {
+                    sql::Expr::Nested(_) => PARENTHESES,
+                    _ => MEASURE_CONDITION,
+                };
+                self.refuse(line(part), what, part);
+                continue;
+            };
+            let Some(comparison) = comparison(op) else {
+                self.refuse(line(part), MEASURE_CONDITION, part);
+                continue;
+            };
+            // Both sides are walked before either is judged, so each
+            // reports its own errors and the parameter counts as used.
+            let measure = self.ask_name(left);
+            let value = self.parameter(right, parameters);
+            // sqlparser reads != as <>, and prints it so; the text tells.
+            if written_between(text, left.span().end, right.span().start).contains("!=") {
+                self.error(line(part), "write <> for not equal, not !=".into());
+                continue;
+            }
+            if let Ok(measure) = measure
+                && let Ok(value) = value
+            {
+                conditions.push(MeasureCondition {
+                    measure,
+                    comparison,
+                    value,
+                });
+            }
+        }
+        conditions
+    }
+
     fn missing_bound(&mut self, at: u64, end: &End) {
         let operator = end.spelling();
         self.error(
@@ -339,6 +401,9 @@ impl Walker {
             Literal::Int(seconds) => Ok(seconds),
             Literal::Text(text) => rfc3339_seconds(&text),
             Literal::Bool(_) => Err(InstantError::Boolean),
+            Literal::Decimal { units, scale } => Err(InstantError::NotWholeSecond {
+                text: decimal(units, scale),
+            }),
         };
         match instant {
             Ok(seconds) => Ok(seconds),
@@ -379,6 +444,35 @@ fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
             error,
         }),
     }
+}
+
+/// The comparison `operator` writes, if HAVING takes it.
+fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
+    match operator {
+        sql::BinaryOperator::Eq => Some(Comparison::Equal),
+        sql::BinaryOperator::NotEq => Some(Comparison::NotEqual),
+        sql::BinaryOperator::Lt => Some(Comparison::Less),
+        sql::BinaryOperator::LtEq => Some(Comparison::LessOrEqual),
+        sql::BinaryOperator::Gt => Some(Comparison::Greater),
+        sql::BinaryOperator::GtEq => Some(Comparison::GreaterOrEqual),
+        _ => None,
+    }
+}
+
+/// The text from `start` to `end`, located as sqlparser does: lines and
+/// columns from 1, columns in characters.
+fn written_between(text: &str, start: Location, end: Location) -> String {
+    let mut between = String::new();
+    for (line_index, line_text) in text.lines().enumerate() {
+        let line_number = line_index as u64 + 1;
+        for (column_index, character) in line_text.chars().enumerate() {
+            let at = Location::new(line_number, column_index as u64 + 1);
+            if at >= start && at < end {
+                between.push(character);
+            }
+        }
+    }
+    between
 }
 
 /// `bucket >= value` or `bucket < value`; `None` for any other condition.

@@ -14,8 +14,9 @@ pub(crate) enum Json {
     Null,
     Bool(bool),
     Int(i64),
-    /// A number with a fraction or exponent, or an integer past `i64`.
-    Float(f64),
+    /// A number with a fraction or exponent, or an integer past `i64`,
+    /// as written.
+    Number(String),
     Text(String),
     Array(Vec<Json>),
     /// In the order sent, each key once.
@@ -56,7 +57,7 @@ impl Json {
             Json::Null => "null",
             Json::Bool(_) => "a boolean",
             Json::Int(_) => "an integer",
-            Json::Float(_) => "a number that isn't an integer",
+            Json::Number(_) => "a number that isn't an integer",
             Json::Text(_) => "a string",
             Json::Array(_) => "an array",
             Json::Object(_) => "an object",
@@ -71,6 +72,12 @@ impl<'de> Deserialize<'de> for Json {
         deserializer.deserialize_any(JsonVisitor)
     }
 }
+
+/// The one key of the map `serde_json` hands over in place of a number
+/// that isn't an `i64` or `u64`, with the number's text as its value: its
+/// `arbitrary_precision` feature keeps the digits a float would round.
+/// The name is `serde_json`'s own; `reads_json` fails if it changes.
+const NUMBER: &str = "$serde_json::private::Number";
 
 /// What serde calls back with each value it reads.
 struct JsonVisitor;
@@ -95,19 +102,11 @@ impl<'de> Visitor<'de> for JsonVisitor {
         Ok(Json::Int(value))
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "an integer past i64 is only ever named by its kind, never read as a number"
-    )]
     fn visit_u64<E>(self, value: u64) -> Result<Json, E> {
         match i64::try_from(value) {
             Ok(integer) => Ok(Json::Int(integer)),
-            Err(_) => Ok(Json::Float(value as f64)),
+            Err(_) => Ok(Json::Number(value.to_string())),
         }
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Json, E> {
-        Ok(Json::Float(value))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Json, E> {
@@ -125,6 +124,9 @@ impl<'de> Visitor<'de> for JsonVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
         let mut fields: Vec<Field> = Vec::new();
         while let Some(name) = map.next_key::<String>()? {
+            if fields.is_empty() && name == NUMBER {
+                return Ok(Json::Number(map.next_value()?));
+            }
             if has_field(&fields, &name) {
                 return Err(de::Error::custom(format!("key {name:?} given twice")));
             }
@@ -167,23 +169,25 @@ mod tests {
     #[test]
     fn reads_json() {
         let json =
-            Json::parse(br#"{"a": [null, true, -1, 1.5, "x", {}], "b": 18446744073709551615}"#);
+            Json::parse(br#"{"a": [null, true, -1, 1.5, "x", {}], "b": 9223372036854775807, "c": 18446744073709551616, "d": -20.50e-1}"#);
         let array = Json::Array(vec![
             Json::Null,
             Json::Bool(true),
             Json::Int(-1),
-            Json::Float(1.5),
+            Json::Number("1.5".into()),
             Json::Text("x".into()),
             Json::Object(Vec::new()),
         ]);
         let expected = Json::Object(vec![
             field("a", array),
-            field("b", Json::Float(18_446_744_073_709_551_615.0)),
+            field("b", Json::Int(i64::MAX)),
+            field("c", Json::Number("18446744073709551616".into())),
+            field("d", Json::Number("-20.50e-1".into())),
         ]);
         assert_eq!(json.unwrap(), expected);
         assert_eq!(
-            Json::parse(b"9223372036854775807").unwrap(),
-            Json::Int(i64::MAX)
+            Json::parse(b"9223372036854775808").unwrap(),
+            Json::Number("9223372036854775808".into())
         );
     }
 
@@ -212,7 +216,7 @@ mod tests {
             Json::Null,
             Json::Bool(false),
             Json::Int(0),
-            Json::Float(0.5),
+            Json::Number("0.5".into()),
             Json::Text(String::new()),
             Json::Array(Vec::new()),
             Json::Object(Vec::new()),

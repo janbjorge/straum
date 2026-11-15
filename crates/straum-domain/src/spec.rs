@@ -249,6 +249,12 @@ pub enum Literal {
     Int(i64),
     Text(String),
     Bool(bool),
+    /// A number with digits after the point, exactly as written: `units`
+    /// in units of `10^-scale`, so `20.50` is 2050 at scale 2.
+    Decimal {
+        units: i128,
+        scale: u32,
+    },
 }
 
 /// What a name in a view points at.

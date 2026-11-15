@@ -13,10 +13,10 @@ use crate::hash::FastMap;
 use crate::projection::{AttributeIndex, Projection};
 use crate::rollup::{Cells, InputIndex, PartIndex, Rollup, State};
 use crate::spec::RefKind;
-use crate::value::Datum;
+use crate::value::{Datum, Value};
 
 use super::AnswerRow;
-use super::ask::{ThawedCells, buckets, cells_of};
+use super::ask::{HavingCheck, ThawedCells, buckets, cells_of, meets};
 use super::bound::{JoinRow, keep};
 use super::groups::{Grouping, Groups};
 use super::lookup::{ConditionCheck, JoinCheck, all_hold};
@@ -137,8 +137,12 @@ impl<'s> CellLoop<'s> {
         }
     }
 
-    /// One row per group met, sorted by its keys.
-    pub(super) fn answer_rows(self) -> Vec<AnswerRow> {
+    /// One row per group met that meets every HAVING check, sorted by its
+    /// keys. A group's checked measures are finished first; a group they
+    /// drop finishes no other measure, owns no keys and isn't sorted.
+    // Benchmark: `bench/taxi.py`'s ask by hour and zone over six months,
+    // 509,200 groups, of which HAVING keeps one in eight.
+    pub(super) fn answer_rows(self, having: &[HavingCheck]) -> Vec<AnswerRow> {
         let CellLoop {
             by,
             groups,
@@ -147,23 +151,72 @@ impl<'s> CellLoop<'s> {
         } = self;
         let key_count = by.len();
         let group_count = groups.len();
+        let mut checked = vec![false; measures.len()];
+        for check in having {
+            checked[check.position] = true;
+        }
         for measure in &mut measures {
             measure.partials.grow(group_count);
         }
-        let mut keys = groups.keys.into_iter().map(Cow::into_owned);
+        let mut keys = groups.keys.into_iter();
+        // Sized for every group, as without HAVING: growing by doubling
+        // would hold two lists at once.
         let mut rows = Vec::with_capacity(groups.made);
+        let mut values = vec![Value::Null; measures.len()];
         for group in 1..=groups.made {
-            let mut values = Vec::with_capacity(measures.len());
-            for measure in &mut measures {
-                values.push(measure.partials.finish(group));
+            let group_keys = keys.by_ref().take(key_count);
+            finish_where(&mut measures, &checked, Which::Checked, group, &mut values);
+            if !meets(&values, having) {
+                for _skipped in group_keys {}
+                continue;
+            }
+            finish_where(
+                &mut measures,
+                &checked,
+                Which::Unchecked,
+                group,
+                &mut values,
+            );
+            let mut owned = Vec::with_capacity(key_count);
+            for key in group_keys {
+                owned.push(Cow::into_owned(key));
             }
             rows.push(AnswerRow {
-                keys: keys.by_ref().take(key_count).collect(),
-                values,
+                keys: owned,
+                values: values.clone(),
             });
         }
         rows.sort_by(by_keys);
         rows
+    }
+}
+
+/// Which of a group's measures to finish: those a HAVING check reads, or
+/// the rest.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Checked,
+    Unchecked,
+}
+
+/// Finishes `group`'s measures of the kind `which` into their place among
+/// `values`.
+fn finish_where(
+    measures: &mut [Asked<'_>],
+    checked: &[bool],
+    which: Which,
+    group: usize,
+    values: &mut [Value],
+) {
+    for (position, measure) in measures.iter_mut().enumerate() {
+        let kind = if checked[position] {
+            Which::Checked
+        } else {
+            Which::Unchecked
+        };
+        if kind == which {
+            values[position] = measure.partials.finish(group);
+        }
     }
 }
 

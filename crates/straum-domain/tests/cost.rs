@@ -254,6 +254,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         keys,
         filter: vec![],
+        having: Vec::new(),
         from: from * i64::from(HOUR),
         to: to * i64::from(HOUR),
     }

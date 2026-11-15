@@ -32,6 +32,7 @@ fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
         measures: names,
         keys: vec![AskKey::Key(id("pay"))],
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -133,6 +134,7 @@ fn removing_an_extreme_reveals_the_next() {
         measures: vec![id("tip_min"), id("tip_max")],
         keys: Vec::new(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -174,6 +176,7 @@ fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
         measures: vec![id("trips"), id("tipped")],
         keys,
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: START + i64::from(HOUR),
     };

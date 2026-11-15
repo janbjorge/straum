@@ -296,6 +296,7 @@ pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
         measures: names(measures),
         keys,
         filter,
+        having: Vec::new(),
         from: START,
         to: END,
     }

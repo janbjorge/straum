@@ -108,7 +108,8 @@ impl Walker {
     ) -> Result<JoinedRef, Reported> {
         let at = line(expression);
         let select = self.one_select(subquery, "EXISTS")?;
-        self.select_clauses(select);
+        let clauses_at = self.select_clauses(select);
+        self.reject_if_present(clauses_at, select.having.is_some(), "HAVING");
         if !selects_one(&select.projection) {
             self.refuse(at, "EXISTS, write EXISTS (SELECT 1 FROM ...),", expression);
             return Err(Reported);

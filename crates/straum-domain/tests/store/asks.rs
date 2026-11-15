@@ -16,6 +16,7 @@ fn trips_filtered(filter: Vec<Condition>) -> Ask {
         measures: vec![id("trips")],
         keys: Vec::new(),
         filter,
+        having: Vec::new(),
         from: START,
         to: END,
     }
@@ -81,6 +82,7 @@ fn types_stay_through_clear() {
         measures: vec![id("trips"), id("fare"), id("tip_max")],
         keys: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -108,6 +110,7 @@ fn columns_name_keys_and_measures_as_asked() {
         measures: vec![id("fare"), id("trips")],
         keys: vec![AskKey::Key(id("pickup_zone")), AskKey::Bucket],
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -135,6 +138,7 @@ fn ask_without_by_answers_one_row() {
         measures,
         keys: Vec::new(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -184,6 +188,7 @@ fn unknown_names() {
         measures: vec![id("trips")],
         keys: Vec::new(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };

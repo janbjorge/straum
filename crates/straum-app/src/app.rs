@@ -300,6 +300,7 @@ impl App {
             measures: measure_names(fact),
             keys,
             filter: Vec::new(),
+            having: Vec::new(),
             from: range.start,
             to: range.end,
         })
@@ -786,6 +787,7 @@ mod tests {
             measures: vec![id("trips")],
             keys: Vec::new(),
             filter: Vec::new(),
+            having: Vec::new(),
             from: 0,
             to: 3_600,
         }

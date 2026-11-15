@@ -188,8 +188,9 @@ A command line holds only text, so a parameter's type is read from it:
 | Written | Sent as |
 | --- | --- |
 | `7`, `-7` | An integer. |
+| `20.5`, `-0.05` | A number, exactly as written. |
 | `true`, `false` | A boolean. |
-| `'7'`, `'true'` | The string inside the single quotes. |
+| `'7'`, `'20.5'`, `'true'` | The string inside the single quotes. |
 | Anything else | A string, such as `Queens` or `2024-01-17T05:00:00Z`. |
 
 The shell takes single quotes for itself, so the string 7 is written
@@ -243,8 +244,9 @@ long as an ask over all its buckets.
 
 At a terminal, Tab completes by where the cursor is: keys and measures
 after `SELECT`, views after `FROM`, a whole condition with the next
-free parameter after `WHERE` or `AND`, and past the semicolon the
-start or end of the buckets held for a bound. The ask above is `SEL`
+free parameter after `WHERE` or `AND`, a selected measure and then a
+comparison after `HAVING`, and past the semicolon the start or end of
+the buckets held for a bound. The ask above is `SEL`
 Tab `pa` Tab `, t` Tab ` FR` Tab `t` Tab `W` Tab `bu` Tab ` G` Tab Tab
 Tab. Completion offers what is likely next, not only what is valid:
 Straum still checks the ask.

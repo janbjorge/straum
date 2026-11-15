@@ -159,6 +159,7 @@ pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         measures: measures.iter().copied().map(id).collect(),
         keys: by.iter().copied().map(ask_key).collect(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: 0,
         to: RANGE,
     }

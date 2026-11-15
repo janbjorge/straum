@@ -80,6 +80,7 @@ fn check_ends(store: &Store, held: &TipCounts, sealed: Option<&Sealed>) {
             measures: vec![id("trips"), id("tip_min"), id("tip_max")],
             keys: Vec::new(),
             filter: Vec::new(),
+            having: Vec::new(),
             from: range.from,
             to: range.to,
         };
@@ -222,6 +223,7 @@ fn whole_range(by: Vec<AskKey>) -> Ask {
         measures: vec![id("trips"), id("tip_min"), id("tip_max"), id("riders")],
         keys: by,
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: START + i64::from(WEEK),
     }

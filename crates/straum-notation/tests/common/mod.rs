@@ -136,6 +136,7 @@ pub fn ask_view_t(by: &[&str]) -> Ask {
         measures: vec![id("n")],
         keys,
         filter: vec![],
+        having: Vec::new(),
         from: JAN,
         to: FEB,
     }

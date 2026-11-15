@@ -11,6 +11,7 @@ mod common;
 mod asks;
 mod bound;
 mod dims;
+mod having;
 mod measures;
 mod random;
 mod ranges;

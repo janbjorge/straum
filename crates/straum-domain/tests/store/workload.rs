@@ -4,7 +4,9 @@
 //! reference. Also rows loaded in batches against rows added one by one.
 
 use crate::common::{Rng, Spilled, dim_row, id};
-use crate::random::{change_dim, held, load_dims, near, random_ask, random_dims, trip, trips};
+use crate::random::{
+    change_dim, held, load_dims, meet_a_group, near, random_ask, random_dims, trip, trips,
+};
 use crate::reference::reference;
 use crate::views::{spec, spec_joining, typed};
 use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, END, KEYS, ROW_COLUMNS, SEEDS, START, STEPS, WEEK};
@@ -139,7 +141,11 @@ impl Workload {
             );
         }
         for _ in 0..ASKS_PER_CHECK {
-            let ask = random_ask(&mut self.rng, &self.spec);
+            let mut ask = random_ask(&mut self.rng, &self.spec);
+            let mut every_group = ask.clone();
+            every_group.having.clear();
+            let groups = reference(&self.spec, &every_group, &self.rows, &self.dims);
+            meet_a_group(&mut self.rng, &mut ask, &groups);
             assert_eq!(
                 self.spilled.ask(&self.store, &ask),
                 reference(&self.spec, &ask, &self.rows, &self.dims),
@@ -285,6 +291,7 @@ fn every_key_at_once_uses_the_sparse_index() {
         measures: vec![id("trips"), id("riders")],
         keys,
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };

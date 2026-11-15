@@ -5,7 +5,7 @@
 mod common;
 
 use common::{FEB, JAN, any_contains, condition, id, strings};
-use straum_domain::{Ask, AskKey, Literal};
+use straum_domain::{Ask, AskKey, Comparison, Literal, MeasureCondition};
 use straum_notation::parse_ask;
 
 fn key(name: &str) -> AskKey {
@@ -60,6 +60,7 @@ fn reads_every_part() {
                 condition("shared", vec![Literal::Bool(false)]),
                 condition("vendor_id", vec![Literal::Int(1)]),
             ],
+            having: Vec::new(),
             from: JAN,
             to: FEB,
         }
@@ -203,6 +204,17 @@ fn bucket_bounds_come_once_each() {
             &[text("2024-01-01T00:00:00.5Z"), Literal::Int(FEB)],
             "2024-01-01T00:00:00.5Z is not a whole second",
         ),
+        (
+            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
+            &[
+                Literal::Decimal {
+                    units: 17_040_672_005,
+                    scale: 1,
+                },
+                Literal::Int(FEB),
+            ],
+            "bucket bound $1 must be RFC 3339 or Unix seconds: 1704067200.5 is not a whole second",
+        ),
     ]);
 }
 
@@ -237,7 +249,7 @@ fn conditions_are_equalities_joined_by_and() {
         (
             "SELECT trips FROM t WHERE kind <> $1 AND bucket >= $1 AND bucket < $2",
             &range(),
-            "filter condition, write = or IN joined by AND, `kind <> $1`",
+            "comparison, WHERE takes = or IN on a key; compare a measure in HAVING, `kind <> $1`",
         ),
         (
             "SELECT trips FROM t WHERE NOT kind = $1 AND bucket >= $1 AND bucket < $2",
@@ -317,11 +329,6 @@ fn an_ask_is_one_select_from_one_view() {
             "SELECT DISTINCT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &range(),
             "SELECT DISTINCT is not in Straum SQL",
-        ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING trips = $1",
-            &range(),
-            "HAVING is not in Straum SQL",
         ),
         ("SELECT trips FROM t WHERE", &[], "sql parser error"),
     ]);
@@ -405,4 +412,99 @@ fn group_by_names_the_selected_keys() {
             "is not in Straum SQL",
         ),
     ]);
+}
+
+fn compared(measure: &str, comparison: Comparison, value: &Literal) -> MeasureCondition {
+    MeasureCondition {
+        measure: id(measure),
+        comparison,
+        value: value.clone(),
+    }
+}
+
+#[test]
+fn having_compares_measures_with_parameters() {
+    let ask = parse_ask(
+        "SELECT kind, trips, fare FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY kind
+         HAVING trips = $3 AND trips <> $3 AND fare < $4 AND fare <= $4
+            AND fare > $4 AND trips >= $3",
+        &[
+            Literal::Int(JAN),
+            Literal::Int(FEB),
+            Literal::Int(7),
+            Literal::Decimal {
+                units: 205,
+                scale: 1,
+            },
+        ],
+    )
+    .unwrap();
+    let seven = Literal::Int(7);
+    let fare = Literal::Decimal {
+        units: 205,
+        scale: 1,
+    };
+    assert_eq!(
+        ask.having,
+        [
+            compared("trips", Comparison::Equal, &seven),
+            compared("trips", Comparison::NotEqual, &seven),
+            compared("fare", Comparison::Less, &fare),
+            compared("fare", Comparison::LessOrEqual, &fare),
+            compared("fare", Comparison::Greater, &fare),
+            compared("trips", Comparison::GreaterOrEqual, &seven),
+        ]
+    );
+}
+
+#[test]
+fn having_takes_one_spelling() {
+    let three = [Literal::Int(JAN), Literal::Int(FEB), Literal::Int(7)];
+    let ask = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING ";
+    let cases = [
+        ("trips != $3", "write <> for not equal, not !="),
+        (
+            "trips > $3 OR trips < $3",
+            "HAVING condition, write a measure, = <> < <= > or >=, and $n, joined by AND, `trips > $3 OR trips < $3`",
+        ),
+        (
+            "(trips > $3)",
+            "parentheses, write the condition without them, `(trips > $3)`",
+        ),
+        (
+            "trips IS NULL AND trips = $3",
+            "HAVING condition, write a measure, = <> < <= > or >=, and $n, joined by AND, `trips IS NULL`",
+        ),
+        (
+            "trips + 1 > $3",
+            "expression, write the name the view gives the key or measure, `trips + 1`",
+        ),
+        (
+            "count(*) > $3",
+            "expression, write the name the view gives the key or measure, `count(*)`",
+        ),
+        (
+            "$3 < trips",
+            "expression, write the name the view gives the key or measure, `$3`",
+        ),
+        (
+            "trips > 7 AND trips > $3",
+            "value, use a parameter such as $1, `7`",
+        ),
+        (
+            "bucket > $3",
+            "bucket takes only bucket >= $n AND bucket < $m",
+        ),
+        ("trips > $4", "$4 is not a parameter: there are 3, $1 on"),
+    ];
+    for (having, error) in cases {
+        let query = format!("{ask}{having}");
+        let found = errors(&query, &three);
+        assert!(any_contains(&found, error), "{query}: {found:?}");
+    }
+    // A refused != still uses its parameter.
+    assert_eq!(
+        errors(&format!("{ask}trips != $3"), &three),
+        ["line 1: write <> for not equal, not !="]
+    );
 }

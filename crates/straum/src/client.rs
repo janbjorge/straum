@@ -188,16 +188,40 @@ pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<Strin
 }
 
 /// A parameter as JSON. A command line holds only text, so the text says
-/// which type it is: an integer, `true` or `false`, else a string. Quotes
-/// make a string of what would read as one of the others.
+/// which type it is: an integer, a decimal such as `20.5`, `true` or
+/// `false`, else a string. Quotes make a string of what would read as one
+/// of the others.
 fn parameter(text: &str) -> String {
     if let Ok(integer) = text.parse::<i64>() {
         return integer.to_string();
     }
-    if text == "true" || text == "false" {
+    if is_decimal(text) || text == "true" || text == "false" {
         return text.to_owned();
     }
     json_string(unquoted(text))
+}
+
+/// Digits, a point and digits, maybe after a minus, written as JSON
+/// writes a number: the whole part `0` or without a leading zero.
+fn is_decimal(text: &str) -> bool {
+    let unsigned = text.strip_prefix('-').unwrap_or(text);
+    let Some((whole, fraction)) = unsigned.split_once('.') else {
+        return false;
+    };
+    all_digits(whole) && all_digits(fraction) && (whole == "0" || !whole.starts_with('0'))
+}
+
+/// At least one character, every one an ASCII digit.
+fn all_digits(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    for byte in text.bytes() {
+        if !byte.is_ascii_digit() {
+            return false;
+        }
+    }
+    true
 }
 
 /// `text` without the single quotes around it, if it has them.
@@ -400,12 +424,21 @@ mod tests {
             ("false", "false"),
             ("paid", "\"paid\""),
             ("2026-01-01T00:00:00Z", "\"2026-01-01T00:00:00Z\""),
-            ("1.5", "\"1.5\""),
+            ("1.5", "1.5"),
+            ("-0.05", "-0.05"),
+            // A decimal as JSON writes one, else a string.
+            ("1.", "\"1.\""),
+            (".5", "\".5\""),
+            ("00.5", "\"00.5\""),
+            ("+1.5", "\"+1.5\""),
+            ("1.2.3", "\"1.2.3\""),
+            ("1e5", "\"1e5\""),
             ("True", "\"True\""),
             ("", "\"\""),
             // Quotes make a string of an integer or a boolean.
             ("'7'", "\"7\""),
             ("'true'", "\"true\""),
+            ("'1.5'", "\"1.5\""),
             ("''", "\"\""),
             ("'", "\"'\""),
             ("it's", "\"it's\""),

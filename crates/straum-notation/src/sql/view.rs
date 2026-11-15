@@ -304,6 +304,7 @@ impl Walker {
 
     fn select(&mut self, select: &sql::Select) -> Result<Body, Reported> {
         let at = self.select_clauses(select);
+        self.reject_if_present(at, select.having.is_some(), "HAVING");
         let [from] = select.from.as_slice() else {
             self.error(
                 at,

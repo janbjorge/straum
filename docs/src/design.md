@@ -230,8 +230,9 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
    through the join id in the cell key, as the dim is now, and a cell
    whose join keeps no row is passed over. Add each cell to its group,
    and to each measure whose filter holds; filters name only parts of
-   the cell key, so a cell counts whole or not at all. Sort rows by
-   key.
+   the cell key, so a cell counts whole or not at all. Keep the groups
+   whose measures meet every `HAVING` comparison, exactly, a null
+   meeting none. Sort rows by key.
 7. Answer with `as_of` from the **Lag** and the applied LSN in the
    `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
    plain text for an ask sent with `Accept: text/plain`.

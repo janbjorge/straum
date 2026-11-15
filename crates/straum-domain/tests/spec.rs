@@ -468,6 +468,7 @@ fn ask() -> Ask {
             key: id("name"),
             values: vec![Literal::Text("x".into())],
         }],
+        having: Vec::new(),
         from: 0,
         to: 86_400,
     }

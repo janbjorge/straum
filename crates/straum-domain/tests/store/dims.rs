@@ -100,6 +100,7 @@ fn a_dim_change_moves_the_answer_at_once() {
         measures: vec![id("trips")],
         keys: vec![AskKey::Key(id("vend_label"))],
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };
@@ -203,6 +204,7 @@ fn by_combo_label() -> Ask {
         measures: vec![id("trips")],
         keys: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     }
@@ -276,6 +278,7 @@ fn a_filter_on_an_attribute_reads_the_dim() {
         measures: vec![id("mq_fare")],
         keys: Vec::new(),
         filter: Vec::new(),
+        having: Vec::new(),
         from: START,
         to: END,
     };

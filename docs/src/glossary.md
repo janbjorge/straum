@@ -182,8 +182,9 @@ are open.
   parameters. `straum-http` calls the parsed form `asked`.
 - **Query**: the ask's `query` field, one `SELECT` over a view in
   Straum SQL (ADR-0006).
-- **Parameter** (`Literal`): a `$n` value of an ask: integer, string
-  or boolean, with its column's type and no conversion. `straum ask`
+- **Parameter** (`Literal`): a `$n` value of an ask: number, string
+  or boolean, with its column's type and no conversion. A number with
+  a fraction is a `Literal::Decimal`, exact as written. `straum ask`
   reads each one's type from its text (ADR-0039).
 - **Literal** (`Literal`): a constant in a spec's `FILTER` or `WHERE`:
   an integer, `'text'`, `true` or `false`.
@@ -193,6 +194,9 @@ are open.
   (`Fact::filter`) or an ask's `WHERE`. `store/lookup.rs` evaluates one as a
   `ConditionCheck`, and an inner, semi or anti join that keeps or
   drops whole cells as a `JoinCheck`.
+- **Comparison** (`MeasureCondition`, `Comparison`): `measure op $n` in
+  an ask's `HAVING`, `op` one of `= <> < <= > >=`. It keeps or drops a
+  whole group of the answer by a measure the ask selects (ADR-0055).
 - **Range** (`Ask::from`, `Ask::to`): the half-open `[from, to)` an
   ask reads, on bucket edges. Its **bounds** are `bucket >= $n` and
   `bucket < $m`, both required. The tests say "window" for a range

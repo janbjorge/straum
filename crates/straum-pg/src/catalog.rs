@@ -7,7 +7,7 @@
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_domain::{
-    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via,
+    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via, decimal,
 };
 
 use crate::error::Error;
@@ -925,5 +925,6 @@ fn literal(value: &Literal) -> String {
         Literal::Int(number) => number.to_string(),
         Literal::Text(text) => escape_literal(text),
         Literal::Bool(boolean) => boolean.to_string(),
+        Literal::Decimal { units, scale } => decimal(*units, *scale),
     }
 }

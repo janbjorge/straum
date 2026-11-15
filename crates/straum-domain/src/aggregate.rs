@@ -26,6 +26,16 @@ pub enum Reads {
     Booleans,
 }
 
+/// What a measure gives an answer, which decides what HAVING may compare
+/// it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Answers {
+    /// Integers in the column's scale, or an average of them.
+    Numbers,
+    /// True or false.
+    Booleans,
+}
+
 /// The aggregate function of a measure, and the column it reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Aggregate {
@@ -94,6 +104,22 @@ impl Aggregate {
             | Aggregate::CountDistinct(column)
             | Aggregate::BoolAnd(column)
             | Aggregate::BoolOr(column) => Some(column),
+        }
+    }
+
+    /// What the measure's answer is: a number, or for `bool_and` and
+    /// `bool_or` true or false.
+    pub(crate) fn answers(&self) -> Answers {
+        match self {
+            Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Answers::Booleans,
+            Aggregate::Count
+            | Aggregate::CountNotNull(_)
+            | Aggregate::Sum(_)
+            | Aggregate::Avg(_)
+            | Aggregate::Min(_)
+            | Aggregate::Max(_)
+            | Aggregate::PercentileDisc { .. }
+            | Aggregate::CountDistinct(_) => Answers::Numbers,
         }
     }
 

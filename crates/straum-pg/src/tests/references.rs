@@ -4,7 +4,7 @@
 //! same rows.
 
 use straum_app::{AnswerError, App};
-use straum_domain::{Answer, AnswerRow, Ask, Literal};
+use straum_domain::{Answer, AnswerRow, Ask, Comparison, Literal};
 
 use super::support::*;
 
@@ -193,7 +193,50 @@ pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
             0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
         ],
     };
-    vec![trips, logins, window]
+    vec![trips, logins, window, kept_by_having(fare_scale)]
+}
+
+/// The window's groups PostgreSQL's HAVING keeps: fares run from 0 to
+/// 80, so the average splits them, and the integer, the decimal and the
+/// `<>` each decide some group.
+fn kept_by_having(fare_scale: u32) -> Reference {
+    Reference {
+        sql: format!(
+            "SELECT f.kind, f.zone_id, pickup.borough, count(*), round(avg(f.fare), 6),
+                    max(f.fare)
+               FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
+              WHERE f.at >= to_timestamp({WINDOW_FROM}) AND f.at < to_timestamp({WINDOW_TO})
+              GROUP BY 1, 2, 3
+             HAVING count(*) > 1 AND avg(f.fare) >= 39.5 AND max(f.fare) <> 79.99"
+        ),
+        ask: having(
+            in_window(ask(
+                "trips",
+                &["trips", "fare_avg", "fare_max"],
+                &["kind", "zone_id", "borough"],
+            )),
+            vec![
+                compared("trips", Comparison::Greater, Literal::Int(1)),
+                compared(
+                    "fare_avg",
+                    Comparison::GreaterOrEqual,
+                    Literal::Decimal {
+                        units: 395,
+                        scale: 1,
+                    },
+                ),
+                compared(
+                    "fare_max",
+                    Comparison::NotEqual,
+                    Literal::Decimal {
+                        units: 7999,
+                        scale: 2,
+                    },
+                ),
+            ],
+        ),
+        scales: vec![0, 0, 0, 0, fare_scale, fare_scale],
+    }
 }
 
 /// The tasks spec's references: by bucket, organization, task group and

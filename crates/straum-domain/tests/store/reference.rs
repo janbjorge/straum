@@ -2,14 +2,15 @@
 //! the dims as they are now, with no cells, buckets or codes. The workload
 //! compares every answer of the store against it.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
 use crate::common::{holds, percentile_disc};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
-    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Condition, Datum, Fact, Identifier,
-    Measure, RefKind, Spec, Value, Width,
+    Aggregate, Answer, AnswerColumn, AnswerRow, Ask, AskKey, Comparison, Condition, Datum, Fact,
+    Identifier, Literal, Measure, RefKind, Spec, Value, Width,
 };
 
 /// Where a zone's borough and name lie among its attributes, and a combo's
@@ -94,18 +95,82 @@ fn passes(row: &[Datum], filter: &[Condition], dims: &Dims) -> bool {
 pub(crate) fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims) -> Answer {
     let fact = spec.fact("trips").unwrap();
     let groups = groups(fact, ask, rows, dims);
+    let columns = reference_columns(fact, ask);
     let mut answer_rows = Vec::with_capacity(groups.len());
     for (keys, rows) in groups {
         let mut values = Vec::with_capacity(ask.measures.len());
         for name in &ask.measures {
             values.push(measure(fact.measure(name.as_str()).unwrap(), &rows, dims));
         }
-        answer_rows.push(AnswerRow { keys, values });
+        let row = AnswerRow { keys, values };
+        if meets_having(ask, &columns, &row) {
+            answer_rows.push(row);
+        }
     }
     Answer {
-        columns: reference_columns(fact, ask),
+        columns,
         rows: answer_rows,
     }
+}
+
+/// Whether the row's measures meet every HAVING condition, by
+/// cross-multiplying, which the small values here never overflow.
+fn meets_having(ask: &Ask, columns: &[AnswerColumn], row: &AnswerRow) -> bool {
+    for condition in &ask.having {
+        let mut position = 0;
+        while ask.measures[position] != condition.measure {
+            position += 1;
+        }
+        let scale = columns[ask.keys.len() + position].scale;
+        let Some(order) = order(&row.values[position], scale, &condition.value) else {
+            return false;
+        };
+        let holds = match condition.comparison {
+            Comparison::Equal => order.is_eq(),
+            Comparison::NotEqual => order.is_ne(),
+            Comparison::Less => order.is_lt(),
+            Comparison::LessOrEqual => order.is_le(),
+            Comparison::Greater => order.is_gt(),
+            Comparison::GreaterOrEqual => order.is_ge(),
+        };
+        if !holds {
+            return false;
+        }
+    }
+    true
+}
+
+/// `value` at `scale` against `wanted`: `numerator / (count * 10^scale)`
+/// against `units / 10^wanted_scale`, both sides brought to the finer
+/// scale and multiplied out. None for null.
+fn order(value: &Value, scale: u32, wanted: &Literal) -> Option<Ordering> {
+    let (numerator, count) = match value {
+        Value::Null => return None,
+        Value::Bool(held) => {
+            let Literal::Bool(wanted) = wanted else {
+                panic!("a boolean measure is compared with a boolean")
+            };
+            return Some(held.cmp(wanted));
+        }
+        Value::Int(units) => (*units, 1),
+        Value::Avg { sum, count } => (*sum, i128::from(*count)),
+    };
+    let (units, wanted_scale) = match wanted {
+        Literal::Int(integer) => (i128::from(*integer), 0),
+        Literal::Decimal { units, scale } => (*units, *scale),
+        other => panic!("a number measure is compared with a number, not {other:?}"),
+    };
+    let finer = scale.max(wanted_scale);
+    let held = numerator * 10_i128.pow(finer - scale);
+    let Some(asked) = units
+        .checked_mul(count)
+        .and_then(|product| product.checked_mul(10_i128.pow(finer - wanted_scale)))
+    else {
+        // Only an i64 extreme against a fine scale gets here: past any
+        // held value, on its side of zero.
+        return Some(0.cmp(&units));
+    };
+    Some(held.cmp(&asked))
 }
 
 /// The rows the ask reads, grouped by the values of its keys. Without
@@ -181,7 +246,7 @@ fn reference_columns(fact: &Fact, ask: &Ask) -> Vec<AnswerColumn> {
 }
 
 /// A measure over numbers keeps its column's scale; a count has none.
-fn measure_scale(aggregate: &Aggregate) -> u32 {
+pub(crate) fn measure_scale(aggregate: &Aggregate) -> u32 {
     match aggregate {
         Aggregate::Count
         | Aggregate::CountNotNull(_)

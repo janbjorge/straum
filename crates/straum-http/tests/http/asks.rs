@@ -376,6 +376,7 @@ fn trips_from(from: i64) -> Ask {
         measures: vec![Identifier::new("trips").unwrap()],
         keys: Vec::new(),
         filter: Vec::new(),
+        having: Vec::new(),
         from,
         to: JAN_1 + 24 * HOUR,
     }

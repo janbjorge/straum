@@ -507,6 +507,7 @@ bucket | shared | fare
             measures: Vec::new(),
             keys: Vec::new(),
             filter: Vec::new(),
+            having: Vec::new(),
             from,
             to,
         }

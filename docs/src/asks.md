@@ -24,9 +24,11 @@ SELECT [key, ...] measure, ...
 FROM view
 WHERE [condition AND ...] bucket >= $n AND bucket < $n
 [GROUP BY key, ...]
+[HAVING comparison [AND ...]]
 
-condition  key = $n
-           key IN ($n, $n, ...)
+condition   key = $n
+            key IN ($n, $n, ...)
+comparison  measure { = | <> | < | <= | > | >= } $n
 ```
 
 The notation is that of the [spec's synopsis](spec.md#synopsis), and
@@ -49,18 +51,44 @@ SELECT events, amount FROM usage WHERE bucket >= $1 AND bucket < $2
   are written: an ask says what it reads. They and the conditions come
   in any order. No condition is put in parentheses.
 
+## HAVING
+
+`WHERE` picks the rows by their keys; `HAVING` picks the groups by their
+measures, after Straum has added them up. This asks for the regions
+with more than 40 purchases in an hour, and their amounts:
+
+```sql
+SELECT bucket, region, events, amount FROM usage WHERE kind = $1 AND bucket >= $2 AND bucket < $3 GROUP BY bucket, region HAVING events > $4
+```
+
+- A comparison names a measure the ask selects, so the answer shows
+  every value a group was kept for. A key goes in `WHERE`, a measure in
+  `HAVING`; each refuses the other and says where it goes.
+- Not equal is `<>`; `!=` is refused. Comparisons join by `AND`.
+- A measure that is null meets no comparison, `<>` included, as in
+  PostgreSQL, so its group is left out.
+- A count, sum, min, max, percentile or average compares with a number
+  parameter, exactly: `avg_amount > 44.27` is true of 44.273058, and
+  `amount = 1875.7` of 1875.70. Up to 38 digits may follow the point.
+- `bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
+- An ask without keys answers its one row only if it meets every
+  comparison; otherwise none.
+
 ## Parameters
 
 Every value is a parameter: a value written into the query, such as
 `region = 'eu'`, is an error, so a value can never change what the
-query says. Parameters are integers, strings or booleans, `$1` first.
-Each must be used, and one can be used more than once.
+query says. Parameters are numbers, strings or booleans, `$1` first.
+Each must be used, and one can be used more than once. A number with a
+fraction or exponent is read exactly as written, never as a float:
+`44.27` is 4427 hundredths.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
 for a boolean or a null-ness key. `account_id = $1` with `"7"` is an
-error, not an answer with no rows. A `numeric` with a scale above 0
-can't be filtered on: at scale 2, `1` could mean 1 or 0.01.
+error, not an answer with no rows. A `numeric` key with a scale above 0
+can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
+[HAVING](#having) comparison takes a number of any scale.
 
 The `bucket` bounds are RFC 3339 times, such as `"2026-11-13T00:00:00-05:00"`,
 or Unix seconds. Both must fall on an edge of the view's `date_bin`
