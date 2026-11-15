@@ -1,8 +1,10 @@
-//! The hasher of the maps a row probes on its way into a rollup, and of
-//! the physical stream's pages and transactions. Std's `SipHash` was a fifth
-//! of a load. A folded multiply, as `foldhash` does,
-//! with a seed per map from std's random keys, so values from the source
-//! can't be picked to collide without knowing it.
+//! The hash function behind Straum's maps: the codes a row's values get
+//! on their way into a rollup, a bucket's cell index, and the physical
+//! stream's pages and transactions. Each word of a key is folded into the
+//! hash by one multiply, as the `foldhash` crate does; std's `SipHash`
+//! was a fifth of a load. Each map takes a seed from std's random keys,
+//! so values from the source can't be picked to collide without knowing
+//! it.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher, RandomState};
@@ -10,9 +12,12 @@ use std::hash::{BuildHasher, Hasher, RandomState};
 /// From the fractional digits of pi, as `foldhash` takes them.
 const MULTIPLE: u64 = 0x243f_6a88_85a3_08d3;
 
-pub type FastMap<K, V> = HashMap<K, V, Seeded>;
-pub type FastSet<K> = HashSet<K, Seeded>;
+/// A `HashMap` hashed with [`Folded`].
+pub type FastMap<Key, Value> = HashMap<Key, Value, Seeded>;
+/// A `HashSet` hashed with [`Folded`].
+pub type FastSet<Item> = HashSet<Item, Seeded>;
 
+/// The seed of one map, from which each of its hashes starts.
 #[derive(Debug)]
 pub struct Seeded(u64);
 
@@ -30,8 +35,10 @@ impl BuildHasher for Seeded {
     }
 }
 
+/// One hash being worked out: the seed with each word folded in.
 pub struct Folded(u64);
 
+/// The low and high halves of `left` times `right`, folded together.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the product's low and high halves are each wanted"
