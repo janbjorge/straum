@@ -13,7 +13,7 @@ use straum_app::{Commit, Lsn};
 use super::Record;
 use super::heap::{Heap, HeapChange};
 use super::messages::{Layouts, Publisher};
-use super::transactions::{Committed, Consistency, Snapshot, TooBig, Transactions};
+use super::transactions::{Committed, Consistency, TooBig, TransactionSnapshot, Transactions};
 use super::xact;
 use crate::catalog::Checked;
 use crate::decode::Decoder;
@@ -46,7 +46,7 @@ pub(crate) struct Pipeline {
     /// Commits past the limit read before it: only those the load
     /// doesn't see stop the stream.
     too_big: Vec<TooBig>,
-    snapshot: Option<Snapshot>,
+    snapshot: Option<TransactionSnapshot>,
 }
 
 impl Pipeline {
@@ -171,7 +171,7 @@ impl Pipeline {
     /// for a synchronous standby. A later snapshot sees it.
     pub(crate) fn see(
         &mut self,
-        snapshot: Snapshot,
+        snapshot: TransactionSnapshot,
         at: Lsn,
     ) -> Result<(Sight, Vec<Commit>), Error> {
         let blind = self.transactions.unseen_dropped(&snapshot);
@@ -418,7 +418,7 @@ mod tests {
         // The changes moved from open transactions to held commits.
         assert_eq!(pipeline.bytes(), before);
         // The snapshot saw 101, not 100.
-        let snapshot = Snapshot::parse("100:102:100").unwrap();
+        let snapshot = TransactionSnapshot::parse("100:102:100").unwrap();
         let (sight, released) = pipeline.see(snapshot, Lsn(u64::MAX)).unwrap();
         assert_eq!(ids(&released), [1]);
         // The load has every commit before the first it didn't see.
@@ -444,7 +444,7 @@ mod tests {
             block: 0,
         };
         let mut big = pipeline(1 << 20);
-        big.see(Snapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
+        big.see(TransactionSnapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
             .map(|(_, commits)| commits)
             .unwrap();
         let records = [
@@ -477,7 +477,7 @@ mod tests {
             block: 0,
         };
         pipeline
-            .see(Snapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
+            .see(TransactionSnapshot::parse("1:1:").unwrap(), Lsn(u64::MAX))
             .map(|(_, commits)| commits)
             .unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
@@ -529,7 +529,10 @@ mod tests {
         assert_eq!(calls.get(), 1);
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         pipeline
-            .see(Snapshot::parse("100:102:").unwrap(), Lsn(u64::MAX))
+            .see(
+                TransactionSnapshot::parse("100:102:").unwrap(),
+                Lsn(u64::MAX),
+            )
             .map(|(_, commits)| commits)
             .unwrap();
         // Seen by the load: dropped, yet laid out again.
@@ -555,19 +558,28 @@ mod tests {
         let mut seen = pipeline(1 << 20);
         read_all(&mut seen, &records).unwrap();
         let released = seen
-            .see(Snapshot::parse("102:102:").unwrap(), Lsn(u64::MAX))
+            .see(
+                TransactionSnapshot::parse("102:102:").unwrap(),
+                Lsn(u64::MAX),
+            )
             .map(|(_, commits)| commits);
         assert_eq!(released.unwrap(), []);
         assert_too_big(
             before
-                .see(Snapshot::parse("101:102:101").unwrap(), Lsn(u64::MAX))
+                .see(
+                    TransactionSnapshot::parse("101:102:101").unwrap(),
+                    Lsn(u64::MAX),
+                )
                 .map(|(_, commits)| commits),
         );
         // After the snapshot: 102 it saw, 103 it didn't.
         let mut after = pipeline(1 << 20);
         after.record(&wal.running(102, &[]), no_layouts).unwrap();
         after
-            .see(Snapshot::parse("103:103:").unwrap(), Lsn(u64::MAX))
+            .see(
+                TransactionSnapshot::parse("103:103:").unwrap(),
+                Lsn(u64::MAX),
+            )
             .map(|(_, commits)| commits)
             .unwrap();
         let seen_by_load = big_transaction(&mut wal, 102);
@@ -594,12 +606,12 @@ mod tests {
             assert_eq!(pipeline.record(&record, no_layouts).unwrap(), []);
         }
         assert_eq!(pipeline.consistency(), Consistency::Consistent);
-        let blind = Snapshot::parse("99:101:99").unwrap();
+        let blind = TransactionSnapshot::parse("99:101:99").unwrap();
         assert_eq!(
             pipeline.see(blind, Lsn(7)).unwrap(),
             (Sight::Blind(vec![99]), Vec::new())
         );
-        let fine = Snapshot::parse("101:101:").unwrap();
+        let fine = TransactionSnapshot::parse("101:101:").unwrap();
         assert_eq!(
             pipeline.see(fine, Lsn(7)).unwrap(),
             (Sight::Through(Lsn(7)), Vec::new())

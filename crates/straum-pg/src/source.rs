@@ -23,7 +23,7 @@ use crate::load;
 use crate::physical::{self, Physical};
 use crate::stream::{Reader, Stream};
 use crate::wal::pipeline::{Pipeline, Sight};
-use crate::wal::transactions::{Consistency, Snapshot as Seen};
+use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wire::{Connection, ConnectionKind, first_row_value};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
@@ -188,7 +188,7 @@ fn physical_snapshot(
         conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
         let taken = conn.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
         let seen = first_row_value(&taken, 0)
-            .and_then(Seen::parse)
+            .and_then(TransactionSnapshot::parse)
             .ok_or_else(|| Error::protocol("a snapshot of an unknown shape"))?;
         let written = first_row_value(&taken, 1)
             .and_then(parse_lsn)

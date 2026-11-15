@@ -235,7 +235,7 @@ impl Transactions {
 
     /// The commits dropped as not whole that `snapshot` doesn't see: it
     /// was taken before PostgreSQL ended them, and can't be the load's.
-    pub(crate) fn unseen_dropped(&self, snapshot: &Snapshot) -> Vec<u32> {
+    pub(crate) fn unseen_dropped(&self, snapshot: &TransactionSnapshot) -> Vec<u32> {
         let mut xids: Vec<u32> = (self.dropped.iter().flatten())
             .copied()
             .filter(|xid| !snapshot.sees(*xid))
@@ -289,13 +289,13 @@ pub(crate) fn follows(xid: u32, from: u32) -> bool {
 /// What a load's snapshot sees: `pg_current_snapshot()`, as
 /// `xmin:xmax:xip,...` of 64-bit xids.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Snapshot {
+pub(crate) struct TransactionSnapshot {
     xmax: u64,
     running: HashSet<u64>,
 }
 
-impl Snapshot {
-    pub(crate) fn parse(text: &str) -> Option<Snapshot> {
+impl TransactionSnapshot {
+    pub(crate) fn parse(text: &str) -> Option<TransactionSnapshot> {
         let mut parts = text.split(':');
         let xmin: u64 = parts.next()?.parse().ok()?;
         let xmax: u64 = parts.next()?.parse().ok()?;
@@ -306,7 +306,7 @@ impl Snapshot {
                 running.insert(xid.parse().ok()?);
             }
         }
-        (parts.next().is_none() && xmin <= xmax).then_some(Snapshot { xmax, running })
+        (parts.next().is_none() && xmin <= xmax).then_some(TransactionSnapshot { xmax, running })
     }
 
     /// The snapshot sees `xid`'s commit: it ended before the snapshot. A
@@ -396,8 +396,8 @@ mod tests {
     }
 
     /// A snapshot that sees nothing.
-    fn blind() -> Snapshot {
-        Snapshot::parse("0:0:").unwrap()
+    fn blind() -> TransactionSnapshot {
+        TransactionSnapshot::parse("0:0:").unwrap()
     }
 
     /// A transaction and the changes a reference keeps of it.
@@ -739,9 +739,9 @@ mod tests {
         );
         // 5 ended before 6, the oldest running then: every snapshot sees it.
         assert_eq!(transactions.unseen_dropped(&blind), [6]);
-        let before = Snapshot::parse("6:9:6").unwrap();
+        let before = TransactionSnapshot::parse("6:9:6").unwrap();
         assert_eq!(transactions.unseen_dropped(&before), [6]);
-        let after = Snapshot::parse("9:9:").unwrap();
+        let after = TransactionSnapshot::parse("9:9:").unwrap();
         assert_eq!(transactions.unseen_dropped(&after), Vec::<u32>::new());
         assert_eq!(transactions.event(running(9, 7, vec![]), 56, 60), Ok(None));
         assert_eq!(transactions.unseen_dropped(&blind), Vec::<u32>::new());
@@ -775,7 +775,8 @@ mod tests {
 
     #[test]
     fn snapshots_see_what_ended_before_them() {
-        let snapshot = Snapshot::parse("4294967290:4294967300:4294967295,4294967298").unwrap();
+        let snapshot =
+            TransactionSnapshot::parse("4294967290:4294967300:4294967295,4294967298").unwrap();
         // 4294967296 is xid 0 of epoch 1; the 32-bit xids around it wrap.
         for (xid, seen) in [
             (4_294_967_289, true),
@@ -791,14 +792,14 @@ mod tests {
         ] {
             assert_eq!(snapshot.sees(xid), seen, "{xid}");
         }
-        let empty = Snapshot::parse("750:750:").unwrap();
+        let empty = TransactionSnapshot::parse("750:750:").unwrap();
         assert!(empty.sees(749) && !empty.sees(750) && !empty.sees(751));
-        let early = Snapshot::parse("3:5:").unwrap();
+        let early = TransactionSnapshot::parse("3:5:").unwrap();
         assert!(early.sees(4) && !early.sees(u32::MAX));
         for bad in [
             "", "1", "1:2", "2:1:", "1:2:x", "1:2:3:4", "a:2:", "1:b:", "1:2:3,",
         ] {
-            assert_eq!(Snapshot::parse(bad), None, "{bad}");
+            assert_eq!(TransactionSnapshot::parse(bad), None, "{bad}");
         }
     }
 }

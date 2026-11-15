@@ -34,7 +34,7 @@ use crate::value::{self, read};
 use crate::wal::RelationFile;
 use crate::wal::heap::{Heap, HeapTuple, PageId};
 use crate::wal::messages::{Layouts, Table};
-use crate::wal::transactions::{Committed, Snapshot, Transactions};
+use crate::wal::transactions::{Committed, TransactionSnapshot, Transactions};
 use crate::wal::tuple::{self as row_values, Kind};
 use crate::wal::xact::{self, Event};
 use crate::wire::{Connection, ConnectionKind};
@@ -3344,7 +3344,7 @@ impl Pipeline {
             ROW_LIMIT,
             PAGE_MEMORY,
         );
-        let nothing = Snapshot::parse("1:1:").unwrap();
+        let nothing = TransactionSnapshot::parse("1:1:").unwrap();
         assert_eq!(inner.see(nothing, Lsn(0)).unwrap().1, []);
         Pipeline {
             conn,
@@ -3532,7 +3532,7 @@ fn checkpoint_then_stop(db: &mut Db, stop: &AtomicBool, writers: Vec<thread::Joi
 /// What a load in a repeatable-read snapshot reads: the snapshot, and the
 /// trips it sees.
 struct Load {
-    snapshot: Snapshot,
+    snapshot: TransactionSnapshot,
     rows: i64,
 }
 
@@ -3540,7 +3540,7 @@ fn load(conn: &mut Connection, db: &Db) -> Load {
     conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         .unwrap();
     let snapshot = conn.rows("SELECT pg_current_snapshot()").unwrap();
-    let snapshot = Snapshot::parse(snapshot[0][0].as_deref().unwrap()).unwrap();
+    let snapshot = TransactionSnapshot::parse(snapshot[0][0].as_deref().unwrap()).unwrap();
     let rows = conn.rows(&db.sql("SELECT count(*) FROM $S.trips")).unwrap();
     let rows = rows[0][0].as_deref().unwrap().parse().unwrap();
     conn.execute("COMMIT").unwrap();
@@ -3563,7 +3563,7 @@ struct Unseen {
 
 /// Reads to the switch record at or past `last`, counting the commits
 /// `snapshot` doesn't see.
-fn unseen_through(reader: &mut WalReader, snapshot: &Snapshot, last: Lsn) -> Unseen {
+fn unseen_through(reader: &mut WalReader, snapshot: &TransactionSnapshot, last: Lsn) -> Unseen {
     let mut unseen = Unseen {
         rows: 0,
         commits: 0,

@@ -18,7 +18,7 @@ use crate::pgoutput::{self, CopyMessage};
 use crate::physical::Replay;
 use crate::value;
 use crate::wal::pipeline::Sight;
-use crate::wal::transactions::{Consistency, Snapshot};
+use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wire::{Closer, Connection, server_error};
 
 /// How long a read waits before the thread checks whether a status update
@@ -70,7 +70,7 @@ struct Shared {
     /// position it was taken at, for the thread to take, and what the
     /// thread made of it.
     consistency: Mutex<Consistency>,
-    snapshot: Mutex<Option<(Snapshot, Lsn)>>,
+    snapshot: Mutex<Option<(TransactionSnapshot, Lsn)>>,
     sight: Mutex<Option<Sight>>,
 }
 
@@ -153,7 +153,7 @@ impl Stream {
 
     /// For a physical stream: hands the thread the load's snapshot, taken
     /// with the server's WAL at `at`, and says what it made of it.
-    pub(crate) fn see(&mut self, snapshot: Snapshot, at: Lsn) -> Result<Sight, Error> {
+    pub(crate) fn see(&mut self, snapshot: TransactionSnapshot, at: Lsn) -> Result<Sight, Error> {
         *self.shared.snapshot.lock().map_err(|_| Error::Stopped)? = Some((snapshot, at));
         loop {
             if let Some(sight) = self.shared.sight.lock().map_err(|_| Error::Stopped)?.take() {

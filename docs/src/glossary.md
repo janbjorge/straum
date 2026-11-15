@@ -231,7 +231,7 @@ are open.
   consistent point, seen by a read-only repeatable-read transaction on
   the replication connection. It ends with the last load (ADR-0010).
   With `--wal physical` it is on a plain connection, and the stream
-  drops the commits it saw (`wal::transactions::Snapshot`, read from
+  drops the commits it saw (`TransactionSnapshot`, read from
   `pg_current_snapshot()`).
 - **Consistent point** (`Snapshot::at`): the LSN a new slot reports,
   where the snapshot is taken and the stream starts. The guide says

@@ -24,7 +24,7 @@ use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::{POLL, status_update};
 use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
-use crate::wal::transactions::{Consistency, Snapshot};
+use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wal::{Record, Records};
 use crate::wire::{Connection, ConnectionKind, server_error};
 
@@ -85,7 +85,7 @@ struct Setup {
     checked: Vec<Checked>,
     copies: Vec<Vec<u8>>,
     layouts: Layouts,
-    snapshot: Snapshot,
+    snapshot: TransactionSnapshot,
     slot: String,
     start: u64,
     segment_size: u64,
@@ -211,7 +211,7 @@ fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
     let snapshot = sql.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
         .clone()
         .unwrap();
-    let snapshot = Snapshot::parse(&snapshot).unwrap();
+    let snapshot = TransactionSnapshot::parse(&snapshot).unwrap();
     Setup {
         checked,
         copies,
