@@ -327,8 +327,8 @@ mod tests {
                 DsnError::Parameter("sslmode".into()),
             ),
         ];
-        for (url, err) in cases {
-            assert_eq!(Dsn::parse(url), Err(err), "{url}");
+        for (url, error) in cases {
+            assert_eq!(Dsn::parse(url), Err(error), "{url}");
         }
     }
 

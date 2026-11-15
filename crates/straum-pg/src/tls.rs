@@ -44,12 +44,14 @@ pub(crate) fn start(
             )));
         }
     }
-    let mut conn = ClientConnection::new(config, name.clone()).expect("the config is complete");
-    while conn.is_handshaking() {
-        conn.complete_io(&mut tcp)
+    let mut connection =
+        ClientConnection::new(config, name.clone()).expect("the config is complete");
+    while connection.is_handshaking() {
+        connection
+            .complete_io(&mut tcp)
             .map_err(|error| Error::Tls(error.to_string()))?;
     }
-    Ok(StreamOwned::new(conn, tcp))
+    Ok(StreamOwned::new(connection, tcp))
 }
 
 /// Built for every connection, so a CA file replaced on disk counts from

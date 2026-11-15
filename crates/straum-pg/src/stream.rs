@@ -77,9 +77,13 @@ struct Shared {
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
     /// streaming from `start`.
-    pub(crate) fn start(conn: Connection, reader: Reader, start: Lsn) -> Result<Stream, Error> {
-        conn.set_read_timeout(POLL)?;
-        let closer = conn.closer()?;
+    pub(crate) fn start(
+        connection: Connection,
+        reader: Reader,
+        start: Lsn,
+    ) -> Result<Stream, Error> {
+        connection.set_read_timeout(POLL)?;
+        let closer = connection.closer()?;
         let (commits, receiver) = mpsc::sync_channel(QUEUE);
         let shared = Arc::new(Shared {
             applied: AtomicU64::new(start.0),
@@ -89,7 +93,7 @@ impl Stream {
             sight: Mutex::new(None),
         });
         let thread = StreamThread {
-            conn,
+            connection,
             reader,
             commits,
             shared: Arc::clone(&shared),
@@ -186,7 +190,7 @@ impl Drop for Stream {
 
 /// The thread's end: the socket, the reader and what it has reported.
 struct StreamThread {
-    conn: Connection,
+    connection: Connection,
     reader: Reader,
     commits: SyncSender<Result<Commit, Error>>,
     shared: Arc<Shared>,
@@ -211,7 +215,7 @@ impl StreamThread {
             if !self.before_load()? {
                 return Ok(());
             }
-            match self.conn.try_read()? {
+            match self.connection.try_read()? {
                 None => {}
                 Some(Backend::CopyData(body)) => {
                     if !self.copy_data(body.data())? {
@@ -327,7 +331,7 @@ impl StreamThread {
         } else {
             applied
         };
-        self.conn.send_copy_data(&status_update(done))?;
+        self.connection.send_copy_data(&status_update(done))?;
         self.last_report = Instant::now();
         Ok(())
     }

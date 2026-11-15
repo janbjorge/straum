@@ -164,8 +164,8 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn relation(&mut self) -> Result<Relation, DecodeError> {
         let id = self.u32()?;
-        let schema = self.cstr()?.to_owned();
-        let name = self.cstr()?.to_owned();
+        let schema = self.null_terminated()?.to_owned();
+        let name = self.null_terminated()?.to_owned();
         // Replica identity setting.
         self.skip(FLAGS_SIZE)?;
         let count = self.u16()?;
@@ -174,7 +174,7 @@ impl<'a> Reader<'a> {
             // Flags: part of the key or not.
             self.skip(FLAGS_SIZE)?;
             columns.push(RelationColumn {
-                name: self.cstr()?.to_owned(),
+                name: self.null_terminated()?.to_owned(),
                 type_oid: self.u32()?,
                 typmod: self.i32()?,
             });
@@ -282,7 +282,7 @@ impl<'a> Reader<'a> {
     }
 
     /// A null-terminated string.
-    fn cstr(&mut self) -> Result<&'a str, DecodeError> {
+    fn null_terminated(&mut self) -> Result<&'a str, DecodeError> {
         let end = self
             .bytes
             .iter()
@@ -383,7 +383,7 @@ mod tests {
             self
         }
 
-        fn cstr(mut self, text: &str) -> Bytes {
+        fn null_terminated(mut self, text: &str) -> Bytes {
             self.0.extend(text.as_bytes());
             self.0.push(0);
             self
@@ -447,16 +447,16 @@ mod tests {
         let relation = Bytes::default()
             .tag(b'R')
             .u32(16_384)
-            .cstr("public")
-            .cstr("zones")
+            .null_terminated("public")
+            .null_terminated("zones")
             .tag(b'd')
             .u16(2)
             .tag(1)
-            .cstr("id")
+            .null_terminated("id")
             .u32(23)
             .i32(-1)
             .tag(0)
-            .cstr("fare")
+            .null_terminated("fare")
             .u32(1700)
             .i32(786_438);
         assert_decodes(vec![(
@@ -547,7 +547,10 @@ mod tests {
                     relations: vec![7, 8],
                 },
             ),
-            (Bytes::default().tag(b'O').u64(1).cstr("x"), Message::Other),
+            (
+                Bytes::default().tag(b'O').u64(1).null_terminated("x"),
+                Message::Other,
+            ),
             (Bytes::default().tag(b'Y'), Message::Other),
             (Bytes::default().tag(b'M'), Message::Other),
         ]);
@@ -603,8 +606,8 @@ mod tests {
                 DecodeError::Short,
             ),
         ];
-        for (bytes, err) in cases {
-            assert_eq!(decode(&bytes.0), Err(err), "{:?}", bytes.0);
+        for (bytes, error) in cases {
+            assert_eq!(decode(&bytes.0), Err(error), "{:?}", bytes.0);
         }
         let mut invalid = Bytes::default().tag(b'R').u32(1).0;
         invalid.extend([0xff, 0]);
@@ -647,8 +650,8 @@ mod tests {
             (Bytes::default().tag(b'k').u64(7).i64(3), DecodeError::Short),
             (Bytes::default().tag(b'x'), DecodeError::Tag(b'x')),
         ];
-        for (bytes, err) in cases {
-            assert_eq!(copy_message(&bytes.0), Err(err), "{:?}", bytes.0);
+        for (bytes, error) in cases {
+            assert_eq!(copy_message(&bytes.0), Err(error), "{:?}", bytes.0);
         }
     }
 

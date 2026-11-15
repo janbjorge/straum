@@ -608,8 +608,8 @@ mod tests {
                 "zones: column id of public.zones was dropped or changed type",
             ),
         ] {
-            let err = zones_decoder().feed(&message).unwrap_err().to_string();
-            assert_eq!(err, expected);
+            let error = zones_decoder().feed(&message).unwrap_err().to_string();
+            assert_eq!(error, expected);
         }
     }
 
@@ -632,16 +632,16 @@ mod tests {
         // that commits at 9.
         let mut decoder = zones_decoder();
         let messages = [zones()].into_iter().chain((0..=LIMIT / 2).map(insert));
-        let err = feed(&mut decoder, messages.collect()).unwrap_err();
+        let error = feed(&mut decoder, messages.collect()).unwrap_err();
         assert!(
             matches!(
-                err,
+                error,
                 Error::Transaction {
                     lsn: Lsn(9),
                     limit: LIMIT
                 }
             ),
-            "{err:?}"
+            "{error:?}"
         );
         assert!(decoder.in_transaction());
     }

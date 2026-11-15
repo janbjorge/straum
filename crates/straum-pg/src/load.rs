@@ -29,13 +29,13 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
 }
 
 pub(crate) fn table(
-    conn: &mut Connection,
+    connection: &mut Connection,
     table: &Checked,
     store: &mut Store,
 ) -> Result<(), Error> {
     let name = table.name.as_str();
     store.set_types(name, &table.types).map_err(Error::Row)?;
-    copy(conn, table, |rows| {
+    copy(connection, table, |rows| {
         store.add_rows(name, rows).map_err(Error::Row)
     })
 }
@@ -52,7 +52,7 @@ const IN_FLIGHT: usize = 4;
 /// rows, laid end to end. A second thread reads and decodes the next batch
 /// meanwhile; spent buffers go back to it.
 pub(crate) fn copy(
-    conn: &mut Connection,
+    connection: &mut Connection,
     table: &Checked,
     mut each: impl FnMut(&[Datum]) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -63,7 +63,7 @@ pub(crate) fn copy(
     let (spent, empty) = mpsc::channel::<Vec<Datum>>();
     thread::scope(|scope| {
         let reader = scope.spawn(move || {
-            read(conn, table, |batch| {
+            read(connection, table, |batch| {
                 let next = empty
                     .try_recv()
                     .unwrap_or_else(|_| Vec::with_capacity(BATCH * width));
@@ -94,7 +94,7 @@ pub(crate) fn copy(
 /// calling `hand_over` with each full one and the last, which it swaps for
 /// an empty one.
 fn read(
-    conn: &mut Connection,
+    connection: &mut Connection,
     table: &Checked,
     mut hand_over: impl FnMut(&mut Vec<Datum>) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -102,7 +102,7 @@ fn read(
     let mut batch = Vec::with_capacity(BATCH * types.len());
     let mut started = false;
     let mut ended = false;
-    conn.copy_out(&copy_sql(table), |mut data| {
+    connection.copy_out(&copy_sql(table), |mut data| {
         if !started {
             data = header(data)?;
             started = true;
@@ -124,13 +124,13 @@ fn read(
                 )));
             }
             for (name, column_type) in table.columns.iter().zip(types) {
-                let len = i32::from_be_bytes(take(&mut data)?);
-                batch.push(match usize::try_from(len) {
+                let length = i32::from_be_bytes(take(&mut data)?);
+                batch.push(match usize::try_from(length) {
                     // -1 is null.
                     Err(_) => Datum::Null,
-                    Ok(len) => {
+                    Ok(length) => {
                         let (value, rest) = data
-                            .split_at_checked(len)
+                            .split_at_checked(length)
                             .ok_or_else(|| Error::protocol("a copy value cut short"))?;
                         data = rest;
                         read_binary(*column_type, value)

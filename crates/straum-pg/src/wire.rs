@@ -89,12 +89,12 @@ impl Connection {
                 Socket::Tls(Box::new(tls::start(tcp, name, root_cert.as_deref())?))
             }
         };
-        let mut conn = Connection {
+        let mut connection = Connection {
             socket,
             input: BytesMut::new(),
             output: BytesMut::new(),
         };
-        let mut params = vec![
+        let mut parameters = vec![
             ("user", dsn.user.as_str()),
             ("database", dsn.database.as_str()),
             ("application_name", "straum"),
@@ -103,12 +103,12 @@ impl Connection {
             ("TimeZone", "UTC"),
         ];
         if kind == ConnectionKind::Replication {
-            params.push(("replication", "database"));
+            parameters.push(("replication", "database"));
         }
-        frontend::startup_message(params, &mut conn.output)?;
-        conn.flush()?;
-        conn.authenticate(dsn)?;
-        Ok(conn)
+        frontend::startup_message(parameters, &mut connection.output)?;
+        connection.flush()?;
+        connection.authenticate(dsn)?;
+        Ok(connection)
     }
 
     fn authenticate(&mut self, dsn: &Dsn) -> Result<(), Error> {
@@ -229,7 +229,7 @@ impl Connection {
         loop {
             if self.next_tag()? == COPY_BOTH {
                 let header = Header::parse(&self.input)?.expect("a whole message is buffered");
-                self.input.advance(frame_len(header));
+                self.input.advance(frame_length(header));
                 return Ok(());
             }
             match self.read()? {
@@ -289,7 +289,8 @@ impl Connection {
     }
 
     fn whole(&self) -> io::Result<bool> {
-        Ok(Header::parse(&self.input)?.is_some_and(|header| self.input.len() >= frame_len(header)))
+        Ok(Header::parse(&self.input)?
+            .is_some_and(|header| self.input.len() >= frame_length(header)))
     }
 
     fn fill(&mut self) -> io::Result<()> {
@@ -344,7 +345,7 @@ impl Closer {
 }
 
 /// The tag byte plus the length, which counts itself.
-fn frame_len(header: Header) -> usize {
+fn frame_length(header: Header) -> usize {
     1 + usize::try_from(header.len()).expect("Header::parse rejects lengths below 4")
 }
 

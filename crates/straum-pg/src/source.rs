@@ -80,7 +80,7 @@ enum State {
 /// database as of where the stream starts: the logical slot's own
 /// connection, or a plain one beside a physical stream already reading.
 struct Snapshot {
-    conn: Connection,
+    connection: Connection,
     slot: String,
     at: Lsn,
     tables: Tables,
@@ -115,28 +115,28 @@ impl Postgres {
 /// A new temporary slot, and a transaction on its connection that sees
 /// the database as of the slot's consistent point.
 fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
-    let mut conn = Connection::connect(dsn, ConnectionKind::Replication)?;
-    conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+    let mut connection = Connection::connect(dsn, ConnectionKind::Replication)?;
+    connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = slot_name();
-    let created = match conn.rows(&format!(
+    let created = match connection.rows(&format!(
         "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')"
     )) {
         Ok(created) => created,
         // Without the wal_level logical decoding needs, PostgreSQL's error
         // names no fix; the setup check says what to change.
         Err(error) => {
-            conn.execute("ROLLBACK")?;
-            catalog::read(&mut conn, spec, publication, Replication::Logical)?;
+            connection.execute("ROLLBACK")?;
+            catalog::read(&mut connection, spec, publication, Replication::Logical)?;
             return Err(error);
         }
     };
     let at = first_row_value(&created, 1)
         .and_then(parse_lsn)
         .ok_or_else(|| Error::protocol("a slot without a consistent point"))?;
-    let tables = catalog::read(&mut conn, spec, publication, Replication::Logical)?;
+    let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
-        conn,
+        connection,
         slot,
         at,
         tables,
@@ -157,13 +157,13 @@ fn physical_snapshot(
     wait: Duration,
 ) -> Result<Snapshot, Error> {
     let physical = Replication::Physical { max_page_memory };
-    let mut conn = Connection::connect(dsn, ConnectionKind::Sql)?;
-    let tables = catalog::read(&mut conn, spec, publication, physical)?;
+    let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    let tables = catalog::read(&mut connection, spec, publication, physical)?;
     let checked = checked(tables);
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
     let (stream, start) = Physical::start(dsn)?;
-    let layouts = physical::read_layouts(&mut conn, &checked)?;
+    let layouts = physical::read_layouts(&mut connection, &checked)?;
     let slot = stream.slot().to_owned();
     let pipeline = Pipeline::new(
         checked.clone(),
@@ -172,12 +172,12 @@ fn physical_snapshot(
         limit,
         max_page_memory,
     );
-    let layouts_conn = Connection::connect(dsn, ConnectionKind::Sql)?;
-    let (replication, replay) = stream.into_replay(pipeline, layouts_conn, checked);
+    let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
     let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
-    let _ = conn.execute("SELECT pg_log_standby_snapshot()");
+    let _ = connection.execute("SELECT pg_log_standby_snapshot()");
     wait_consistent(&mut stream, wait)?;
     let waited = wait.as_secs();
     // PostgreSQL logs a commit before snapshots see it, and waits for
@@ -185,8 +185,8 @@ fn physical_snapshot(
     // read as before its start would lose it, so another is taken.
     let deadline = Instant::now() + wait;
     let at = loop {
-        conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
-        let taken = conn.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
+        connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+        let taken = connection.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
         let seen = first_row_value(&taken, 0)
             .and_then(TransactionSnapshot::parse)
             .ok_or_else(|| Error::protocol("a snapshot of an unknown shape"))?;
@@ -196,7 +196,7 @@ fn physical_snapshot(
         match stream.see(seen, written)? {
             Sight::Through(at) => break at,
             Sight::Blind(xids) => {
-                conn.execute("ROLLBACK")?;
+                connection.execute("ROLLBACK")?;
                 if Instant::now() >= deadline {
                     let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
                     return Err(Error::Setup(vec![format!(
@@ -209,10 +209,10 @@ fn physical_snapshot(
             }
         }
     };
-    let tables = catalog::read(&mut conn, spec, publication, physical)?;
+    let tables = catalog::read(&mut connection, spec, publication, physical)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
-        conn,
+        connection,
         slot,
         at,
         tables,
@@ -299,7 +299,7 @@ impl Source for Postgres {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        load::table(&mut snapshot.conn, snapshot.tables.get(table), store)?;
+        load::table(&mut snapshot.connection, snapshot.tables.get(table), store)?;
         loaded(snapshot, table)
     }
 
@@ -322,7 +322,8 @@ impl Source for Postgres {
         if matches!(self.state, State::Closed) {
             return Err(Error::Stopped.into());
         }
-        let wal = plain(&mut self.plain, &self.dsn).and_then(|conn| read_wal(conn, &self.slot));
+        let wal = plain(&mut self.plain, &self.dsn)
+            .and_then(|connection| read_wal(connection, &self.slot));
         if wal.is_err() {
             self.plain = None;
         }
@@ -334,15 +335,15 @@ impl Source for Postgres {
 fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), SourceError> {
     snapshot.unloaded.retain(|unloaded| unloaded != table);
     if snapshot.unloaded.is_empty() {
-        snapshot.conn.execute("COMMIT")?;
+        snapshot.connection.execute("COMMIT")?;
     }
     Ok(())
 }
 
 /// The server's WAL position, and how far the slot has confirmed and keeps
 /// WAL.
-pub(crate) fn read_wal(conn: &mut Connection, slot: &str) -> Result<Wal, Error> {
-    let rows = conn.rows(&format!(
+pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, Error> {
+    let rows = connection.rows(&format!(
         "SELECT pg_current_wal_lsn(), coalesce(confirmed_flush_lsn, restart_lsn), restart_lsn \
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
@@ -364,18 +365,18 @@ pub(crate) fn read_wal(conn: &mut Connection, slot: &str) -> Result<Wal, Error> 
 /// can't load any more.
 fn stream(mut snapshot: Snapshot, publication: &str, limit: usize) -> Result<Stream, Error> {
     if !snapshot.unloaded.is_empty() {
-        snapshot.conn.execute("COMMIT")?;
+        snapshot.connection.execute("COMMIT")?;
     }
     if let Some(stream) = snapshot.stream {
         return Ok(stream);
     }
     let names = escape_literal(&escape_identifier(publication));
-    snapshot.conn.copy_both(&format!(
+    snapshot.connection.copy_both(&format!(
         "START_REPLICATION SLOT {} LOGICAL {} (proto_version '1', publication_names {names})",
         snapshot.slot, snapshot.at
     ))?;
     let reader = Reader::Logical(Decoder::new(checked(snapshot.tables), limit));
-    Stream::start(snapshot.conn, reader, snapshot.at)
+    Stream::start(snapshot.connection, reader, snapshot.at)
 }
 
 /// `16/B374D848`, as PostgreSQL prints an LSN.

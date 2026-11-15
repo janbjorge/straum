@@ -152,26 +152,26 @@ pub(crate) struct Column {
 
 /// Reads the catalog and checks it against the spec.
 pub(crate) fn read(
-    conn: &mut Connection,
+    connection: &mut Connection,
     spec: &Spec,
     publication: &str,
     replication: Replication,
 ) -> Result<Tables, Error> {
-    let catalog = query(conn, spec, publication)?;
+    let catalog = query(connection, spec, publication)?;
     check(spec, &catalog, publication, replication).map_err(Error::Setup)
 }
 
 pub(crate) fn query(
-    conn: &mut Connection,
+    connection: &mut Connection,
     spec: &Spec,
     publication: &str,
 ) -> Result<Catalog, Error> {
     let publication = escape_literal(publication);
     let tables = table_list(spec);
-    let mut catalog = settings(conn, &publication)?;
-    catalog.classes = classes(conn, &publication, &tables)?;
-    read_columns(conn, &tables, &mut catalog.classes)?;
-    catalog.labels = labels(conn, &tables)?;
+    let mut catalog = settings(connection, &publication)?;
+    catalog.classes = classes(connection, &publication, &tables)?;
+    read_columns(connection, &tables, &mut catalog.classes)?;
+    catalog.labels = labels(connection, &tables)?;
     Ok(catalog)
 }
 
@@ -190,8 +190,8 @@ fn table_list(spec: &Spec) -> String {
 }
 
 /// The server's settings, in a catalog with nothing else yet.
-fn settings(conn: &mut Connection, publication: &str) -> Result<Catalog, Error> {
-    let settings = conn.rows(&format!(
+fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, Error> {
+    let settings = connection.rows(&format!(
         "SELECT current_setting('server_version_num'), current_setting('wal_level'),
                 current_setting('full_page_writes'), current_setting('wal_compression'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
@@ -221,8 +221,12 @@ fn settings(conn: &mut Connection, publication: &str) -> Result<Catalog, Error> 
 }
 
 /// The spec's tables as `pg_class` has them, with no columns yet.
-fn classes(conn: &mut Connection, publication: &str, tables: &str) -> Result<Vec<Class>, Error> {
-    let rows = conn.rows(&format!(
+fn classes(
+    connection: &mut Connection,
+    publication: &str,
+    tables: &str,
+) -> Result<Vec<Class>, Error> {
+    let rows = connection.rows(&format!(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
                 array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL
@@ -262,8 +266,12 @@ fn comma_list(text: &str) -> Vec<String> {
 }
 
 /// Adds each class's columns, dropped ones left out.
-fn read_columns(conn: &mut Connection, tables: &str, classes: &mut [Class]) -> Result<(), Error> {
-    let rows = conn.rows(&format!(
+fn read_columns(
+    connection: &mut Connection,
+    tables: &str,
+    classes: &mut [Class],
+) -> Result<(), Error> {
+    let rows = connection.rows(&format!(
         "SELECT n.nspname, c.relname, a.attname, a.atttypid, a.atttypmod,
                 format_type(a.atttypid, a.atttypmod), t.typtype
            FROM pg_attribute a
@@ -296,8 +304,8 @@ fn read_columns(conn: &mut Connection, tables: &str, classes: &mut [Class]) -> R
 }
 
 /// Every label of every enum type a column of the tables has.
-fn labels(conn: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, Error> {
-    let rows = conn.rows(&format!(
+fn labels(connection: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, Error> {
+    let rows = connection.rows(&format!(
         "SELECT e.enumtypid, e.enumlabel
            FROM pg_enum e
           WHERE e.enumtypid IN (SELECT a.atttypid

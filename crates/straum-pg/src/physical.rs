@@ -35,7 +35,7 @@ const FLUSH_POLL: Duration = Duration::from_millis(10);
 /// A temporary physical slot streaming from its redo point, before the
 /// stream's thread takes it over.
 pub(crate) struct Physical {
-    conn: Connection,
+    connection: Connection,
     slot: String,
     records: Records,
     start: u64,
@@ -47,21 +47,21 @@ impl Physical {
     /// record, the redo point: every page changed since then comes with a
     /// full image the first time.
     pub(crate) fn start(dsn: &Dsn) -> Result<(Physical, Lsn), Error> {
-        let mut conn = Connection::connect(dsn, ConnectionKind::Replication)?;
+        let mut connection = Connection::connect(dsn, ConnectionKind::Replication)?;
         let slot = slot_name();
-        conn.execute(&format!(
+        connection.execute(&format!(
             "CREATE_REPLICATION_SLOT {slot} TEMPORARY PHYSICAL (RESERVE_WAL)"
         ))?;
-        let reserved = reserved(&mut conn, &slot)?;
+        let reserved = reserved(&mut connection, &slot)?;
         let records = Records::new(reserved.start.0, reserved.segment_size);
-        wait_for_flush(&mut conn, reserved.start)?;
-        conn.copy_both(&format!(
+        wait_for_flush(&mut connection, reserved.start)?;
+        connection.copy_both(&format!(
             "START_REPLICATION SLOT {slot} PHYSICAL {}",
             Lsn(records.wanted())
         ))?;
-        conn.set_read_timeout(POLL)?;
+        connection.set_read_timeout(POLL)?;
         let physical = Physical {
-            conn,
+            connection,
             slot,
             records,
             start: reserved.start.0,
@@ -83,13 +83,13 @@ impl Physical {
             if let Some(record) = self.records.next_record()? {
                 return Ok(Some(record.clone()));
             }
-            match self.conn.try_read()? {
+            match self.connection.try_read()? {
                 None => return Ok(None),
                 Some(Backend::CopyData(body)) => match pgoutput::copy_message(body.data())? {
                     CopyMessage::XLogData { start, bytes } => self.records.feed(start, bytes)?,
                     CopyMessage::Keepalive { reply, .. } => {
                         if reply {
-                            self.conn.send_copy_data(&status_update(self.start))?;
+                            self.connection.send_copy_data(&status_update(self.start))?;
                         }
                     }
                 },
@@ -123,7 +123,7 @@ impl Physical {
             checked,
             read: self.start,
         };
-        (self.conn, replay)
+        (self.connection, replay)
     }
 }
 
@@ -146,10 +146,10 @@ struct Reserved {
     major: u32,
 }
 
-fn reserved(conn: &mut Connection, slot: &str) -> Result<Reserved, Error> {
+fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> {
     // The command's consistent point is a logical slot's; a physical
     // slot reserves from the redo point, which only the view shows.
-    let rows = conn.rows(&format!(
+    let rows = connection.rows(&format!(
         "SELECT restart_lsn, setting, current_setting('server_version_num') \
          FROM pg_replication_slots, pg_settings \
          WHERE slot_name = {} AND name = 'wal_segment_size'",
@@ -174,10 +174,10 @@ fn reserved(conn: &mut Connection, slot: &str) -> Result<Reserved, Error> {
 /// The slot keeps WAL from the redo point (`GetRedoRecPtr`), which a
 /// checkpoint in progress may have set past what PostgreSQL has flushed,
 /// and the server streams nothing it hasn't flushed.
-fn wait_for_flush(conn: &mut Connection, start: Lsn) -> Result<(), Error> {
+fn wait_for_flush(connection: &mut Connection, start: Lsn) -> Result<(), Error> {
     let deadline = Instant::now() + FLUSH_WAIT;
     loop {
-        let rows = conn.rows("SELECT pg_current_wal_flush_lsn()")?;
+        let rows = connection.rows("SELECT pg_current_wal_flush_lsn()")?;
         let flushed = first_row_value(&rows, 0)
             .and_then(parse_lsn)
             .ok_or_else(|| Error::protocol("no WAL flush position"))?;
@@ -214,12 +214,15 @@ impl Replay {
 }
 
 /// The layout of each of `checked`'s tables, and their enums' labels.
-pub(crate) fn read_layouts(conn: &mut Connection, checked: &[Checked]) -> Result<Layouts, Error> {
+pub(crate) fn read_layouts(
+    connection: &mut Connection,
+    checked: &[Checked],
+) -> Result<Layouts, Error> {
     let names = table_names(checked);
     // A dropped column has no type, and its bytes stay in older rows, so
     // the join to pg_type keeps it. A missing value is a one-element
     // array of the column's type.
-    let rows = conn.rows(&format!(
+    let rows = connection.rows(&format!(
         "SELECT c.oid, n.nspname, c.relname,
                 CASE c.reltablespace WHEN 0 THEN d.dattablespace ELSE c.reltablespace END,
                 d.oid, pg_relation_filenode(c.oid), a.attname, a.atttypid, a.atttypmod,
@@ -246,7 +249,7 @@ pub(crate) fn read_layouts(conn: &mut Connection, checked: &[Checked]) -> Result
         let table = tables.last_mut().ok_or_else(unknown_shape)?;
         push_attribute(table, &attribute)?;
     }
-    let labels = labels(conn, &names)?;
+    let labels = labels(connection, &names)?;
     Ok(Layouts { tables, labels })
 }
 
@@ -356,8 +359,8 @@ fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Er
 
 /// The labels of the enums the named tables' columns have, by `pg_enum`
 /// OID, which is what a row stores.
-fn labels(conn: &mut Connection, names: &str) -> Result<HashMap<u32, String>, Error> {
-    let rows = conn.rows(&format!(
+fn labels(connection: &mut Connection, names: &str) -> Result<HashMap<u32, String>, Error> {
+    let rows = connection.rows(&format!(
         "SELECT DISTINCT e.oid, e.enumlabel
          FROM pg_enum e
          JOIN pg_attribute a ON a.atttypid = e.enumtypid
