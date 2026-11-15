@@ -1,6 +1,11 @@
-//! Helpers the tests share.
+//! Helpers the test binaries share: builders for spec pieces, the SQL
+//! rules a reference needs (`=` and `percentile_disc`), a seeded random
+//! number source, and `Spilled`, which seals and thaws buckets beside a
+//! store the way the writer and a spill do.
 
 // Every test binary compiles this module and uses only some of it.
+// `#[expect(dead_code)]` would fail in a binary that uses all of it,
+// so this is the one `allow` AGENTS.md permits.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -10,6 +15,7 @@ use straum_domain::{
     Sealed, SealedId, Store, Table, Value,
 };
 
+/// `percentile_disc(units / 10^places)` over `column`.
 pub fn percentile(units: u64, places: u32, column: &str) -> Aggregate {
     Aggregate::PercentileDisc {
         fraction: Fraction::new(units, places).unwrap(),
@@ -35,10 +41,12 @@ pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
     }
 }
 
+/// An identifier known to be valid.
 pub fn id(name: &str) -> Identifier {
     Identifier::new(name).unwrap()
 }
 
+/// A by key that reads the column of the same name.
 pub fn by_key(name: &str) -> ByKey {
     ByKey::Column {
         column: id(name),
@@ -46,6 +54,7 @@ pub fn by_key(name: &str) -> ByKey {
     }
 }
 
+/// A dim column a join reads, named `name` in the view.
 pub fn attribute(name: &str, column: &str) -> Attribute {
     Attribute {
         name: id(name),
@@ -53,14 +62,17 @@ pub fn attribute(name: &str, column: &str) -> Attribute {
     }
 }
 
+/// A text value.
 pub fn text(value: &str) -> Datum {
     Datum::Text(value.into())
 }
 
+/// A text literal.
 pub fn lit(value: &str) -> Literal {
     Literal::Text(value.into())
 }
 
+/// `key IN (values)`.
 pub fn condition(key: &str, values: Vec<Literal>) -> Condition {
     Condition {
         key: id(key),
@@ -68,6 +80,7 @@ pub fn condition(key: &str, values: Vec<Literal>) -> Condition {
     }
 }
 
+/// `public.name`.
 pub fn table(name: &str) -> Table {
     Table {
         schema: id("public"),
@@ -82,53 +95,71 @@ pub fn dim_row(key: &[Datum], attributes: &[Datum]) -> Vec<Datum> {
 
 /// SQL `=`: null matches nothing.
 pub fn holds(value: &Datum, values: &[Literal]) -> bool {
-    values.iter().any(|literal| match (value, literal) {
+    for literal in values {
+        if equals(value, literal) {
+            return true;
+        }
+    }
+    false
+}
+
+fn equals(value: &Datum, literal: &Literal) -> bool {
+    match (value, literal) {
         (Datum::Int(found), Literal::Int(wanted)) => found == wanted,
         (Datum::Text(found), Literal::Text(wanted)) => **found == **wanted,
         (Datum::Bool(found), Literal::Bool(wanted)) => found == wanted,
         _ => false,
-    })
+    }
 }
 
 /// Of the buckets [`Spilled::seal`] may seal, the share it does seal.
 const SEALED_PERCENT: usize = 70;
 
-/// splitmix64; the tests need no crate for randomness.
+/// A splitmix64 sequence from its seed, the one field; the tests need no
+/// crate for randomness. The unit tests in `src/` have their own copy,
+/// which these tests can't reach.
 pub struct Rng(pub u64);
 
 impl Rng {
+    /// The next number of the sequence.
     pub fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
+        let mut mixed = self.0;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^ (mixed >> 31)
     }
 
-    pub fn below(&mut self, n: usize) -> usize {
-        usize::try_from(self.next() % n as u64).unwrap()
+    /// A number from 0 up to, not including, `bound`.
+    pub fn below(&mut self, bound: usize) -> usize {
+        usize::try_from(self.next() % bound as u64).unwrap()
     }
 
+    /// True `percent` percent of the time.
     pub fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }
 
-    pub fn int(&mut self, lo: i64, hi: i64) -> i64 {
-        let offset = self.next() % hi.abs_diff(lo);
-        lo.checked_add_unsigned(offset).unwrap()
+    /// An integer in `low..high`.
+    pub fn int(&mut self, low: i64, high: i64) -> i64 {
+        let offset = self.next() % high.abs_diff(low);
+        low.checked_add_unsigned(offset).unwrap()
     }
 
-    /// An integer in `lo..hi`, or null `percent` percent of the time.
-    pub fn maybe(&mut self, lo: i64, hi: i64, percent: usize) -> Datum {
+    /// An integer in `low..high`, or null `percent` percent of the time.
+    pub fn maybe(&mut self, low: i64, high: i64, percent: usize) -> Datum {
         if self.chance(percent) {
             Datum::Null
         } else {
-            Datum::Int(self.int(lo, hi))
+            Datum::Int(self.int(low, high))
         }
     }
 
-    pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
+    /// One item of `items`.
+    // Generic, and borrowing the item: the tests pick from lists of
+    // names, rows and kinds alike, and use the pick in place.
+    pub fn pick<'a, Item>(&mut self, items: &'a [Item]) -> &'a Item {
+        &items[self.below(items.len())]
     }
 }
 
@@ -181,9 +212,10 @@ impl Spilled {
         let mut kept: Vec<&SealedId> = self.buckets.keys().collect();
         kept.sort();
         assert_eq!(kept, store.sealed(self.fact).iter().collect::<Vec<_>>());
-        let thawed: Vec<_> = (store.sealed_read(ask).unwrap().iter())
-            .map(|id| store.thaw(self.buckets[id].clone()).unwrap())
-            .collect();
+        let mut thawed = Vec::new();
+        for id in store.sealed_read(ask).unwrap() {
+            thawed.push(store.thaw(self.buckets[&id].clone()).unwrap());
+        }
         self.read += thawed.len();
         store.ask_with(ask, &thawed).unwrap()
     }
