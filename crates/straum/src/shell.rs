@@ -20,9 +20,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
-use crate::SHELL_HELP;
 use crate::client::{ClientError, ask, load_views, rows, views};
 use crate::complete::{Completion, View, complete, hint};
+use crate::help::SHELL_HELP;
 
 const PROMPT: &str = "straum> ";
 // ANSI escapes that dim a hint and end the dimming, so it reads as a note.
