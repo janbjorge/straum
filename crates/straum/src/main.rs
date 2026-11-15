@@ -13,17 +13,20 @@ use std::fmt::{self, Display};
 use std::fs;
 use std::future::poll_fn;
 use std::io::{self, IsTerminal, Write};
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::panic;
 use std::process::{self, ExitCode};
 use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
+use rustyline::error::ReadlineError;
 use straum_app::{App, Limits, Step, Writer};
 use straum_domain::{Ask, Literal, Spec};
-use straum_pg::{Dsn, Postgres, Replication};
+use straum_pg::{Dsn, DsnError, Postgres, Replication};
 use tokio::signal::unix::{Signal, SignalKind, signal};
+
+use crate::client::ClientError;
 
 const HELP: &str = "\
 Straum follows tables in PostgreSQL and answers asks over HTTP.
@@ -271,53 +274,174 @@ struct Plan {
     dsn_file: Option<String>,
 }
 
+/// A command line Straum can't run, printed with a hint at the help.
 #[derive(Debug, PartialEq, Eq)]
-enum Exit {
+enum Usage {
     NoCommand,
-    Usage {
-        message: String,
+    Wrong {
+        error: UsageError,
         command: Option<Name>,
     },
-    Runtime(String),
 }
 
-impl Exit {
-    fn exit_code(&self) -> ExitCode {
+impl Display for Usage {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Exit::NoCommand | Exit::Usage { .. } => ExitCode::from(USAGE_FAILURE),
-            Exit::Runtime(_) => ExitCode::FAILURE,
+            Usage::NoCommand => formatter.write_str(HELP.trim_end()),
+            Usage::Wrong { error, command } => {
+                let hint = match command {
+                    Some(name) => format!("{} --help", name.as_str()),
+                    None => "help".to_owned(),
+                };
+                write!(formatter, "straum: {error}\ntry: straum {hint}")
+            }
         }
     }
 }
 
-impl Display for Exit {
+#[derive(Debug, PartialEq, Eq)]
+enum UsageError {
+    UnknownCommand(String),
+    HelpTakesOneCommand,
+    VersionTakesNothing,
+    AskNeedsQuery,
+    PageMemoryNeedsPhysical,
+    FlagNotTaken {
+        command: Name,
+        flag: String,
+    },
+    GivenTwice(String),
+    NeedsValue(String),
+    BadValue {
+        flag: &'static str,
+        takes: &'static str,
+        value: String,
+    },
+    NeedsSpec(Name),
+    BadWal(String),
+}
+
+impl Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Exit::NoCommand => formatter.write_str(HELP.trim_end()),
-            Exit::Usage { message, command } => {
-                let hint =
-                    command.map_or("help".into(), |name| format!("{} --help", name.as_str()));
-                write!(formatter, "straum: {message}\ntry: straum {hint}")
+            UsageError::UnknownCommand(text) => write!(formatter, "unknown command {text:?}"),
+            UsageError::HelpTakesOneCommand => formatter.write_str("straum help takes one command"),
+            UsageError::VersionTakesNothing => formatter.write_str("straum version takes nothing"),
+            UsageError::AskNeedsQuery => formatter.write_str("straum ask needs a query"),
+            UsageError::PageMemoryNeedsPhysical => {
+                formatter.write_str("--max-page-memory takes --wal physical")
             }
-            Exit::Runtime(message) => write!(formatter, "straum: {message}"),
+            UsageError::FlagNotTaken { command, flag } => {
+                write!(formatter, "straum {} takes no {flag:?}", command.as_str())
+            }
+            UsageError::GivenTwice(flag) => write!(formatter, "{flag} given twice"),
+            UsageError::NeedsValue(flag) => write!(formatter, "{flag} needs a value"),
+            UsageError::BadValue { flag, takes, value } => {
+                write!(formatter, "{flag} takes {takes}, not {value:?}")
+            }
+            UsageError::NeedsSpec(command) => {
+                write!(formatter, "straum {} needs --spec", command.as_str())
+            }
+            UsageError::BadWal(value) => {
+                write!(formatter, "--wal takes logical or physical, not {value:?}")
+            }
         }
+    }
+}
+
+/// A command that started and failed.
+#[derive(Debug)]
+enum Failure {
+    Client(ClientError),
+    Terminal(ReadlineError),
+    LinesFailed(usize),
+    ReadingCommands(io::Error),
+    WritingAnswer(io::Error),
+    ReadingFile {
+        path: String,
+        error: io::Error,
+    },
+    Spec {
+        path: String,
+        error: straum_notation::Error,
+    },
+    Dsn(DsnError),
+    NoDsn,
+    Listening {
+        address: String,
+        error: io::Error,
+    },
+    StartingWriter(io::Error),
+    StartingTokio(io::Error),
+    HandlingSignal {
+        name: &'static str,
+        error: io::Error,
+    },
+    Serving(io::Error),
+}
+
+impl Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Failure::Client(error) => error.fmt(formatter),
+            Failure::Terminal(error) => write!(formatter, "reading the terminal: {error}"),
+            Failure::LinesFailed(count) => write!(formatter, "lines that failed: {count}"),
+            Failure::ReadingCommands(error) => write!(formatter, "reading commands: {error}"),
+            Failure::WritingAnswer(error) => write!(formatter, "writing the answer: {error}"),
+            Failure::ReadingFile { path, error } => write!(formatter, "reading {path}: {error}"),
+            Failure::Spec { path, error } => {
+                // Each line names the file, as a compiler's errors do.
+                let text = error.to_string();
+                let lines: Vec<String> =
+                    text.lines().map(|line| format!("{path}: {line}")).collect();
+                formatter.write_str(&lines.join("\n"))
+            }
+            Failure::Dsn(error) => error.fmt(formatter),
+            Failure::NoDsn => formatter.write_str("set STRAUM_DSN or pass --dsn-file"),
+            Failure::Listening { address, error } => {
+                write!(formatter, "listening on {address}: {error}")
+            }
+            Failure::StartingWriter(error) => write!(formatter, "starting the writer: {error}"),
+            Failure::StartingTokio(error) => write!(formatter, "starting tokio: {error}"),
+            Failure::HandlingSignal { name, error } => {
+                write!(formatter, "handling {name}: {error}")
+            }
+            Failure::Serving(error) => write!(formatter, "serving HTTP: {error}"),
+        }
+    }
+}
+
+impl From<ClientError> for Failure {
+    fn from(error: ClientError) -> Failure {
+        Failure::Client(error)
+    }
+}
+
+impl From<DsnError> for Failure {
+    fn from(error: DsnError) -> Failure {
+        Failure::Dsn(error)
     }
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let exit = match command(&args) {
-        Ok(command) => match execute(command) {
-            Ok(()) => return ExitCode::SUCCESS,
-            Err(message) => Exit::Runtime(message),
-        },
-        Err(exit) => exit,
+    let command = match command(&args) {
+        Ok(command) => command,
+        Err(usage) => {
+            eprintln!("{usage}");
+            return ExitCode::from(USAGE_FAILURE);
+        }
     };
-    eprintln!("{exit}");
-    exit.exit_code()
+    match execute(command) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failure) => {
+            log(failure);
+            ExitCode::FAILURE
+        }
+    }
 }
 
-fn execute(command: Command) -> Result<(), String> {
+fn execute(command: Command) -> Result<(), Failure> {
     match command {
         Command::Help(topic) => {
             print!("{}", topic.map_or(HELP, Name::help));
@@ -343,12 +467,12 @@ fn execute(command: Command) -> Result<(), String> {
             // A prompt is for a person at both ends: not for a script
             // that feeds lines, nor for output that goes to a file.
             if input.is_terminal() && output.is_terminal() {
-                return shell::interactive(&url);
+                return shell::interactive(&url).map_err(Failure::Terminal);
             }
             match shell::piped(&url, input.lock(), output.lock(), io::stderr().lock()) {
                 Ok(0) => Ok(()),
-                Ok(failed) => Err(format!("lines that failed: {failed}")),
-                Err(error) => Err(format!("reading commands: {error}")),
+                Ok(failed) => Err(Failure::LinesFailed(failed)),
+                Err(error) => Err(Failure::ReadingCommands(error)),
             }
         }
     }
@@ -356,51 +480,48 @@ fn execute(command: Command) -> Result<(), String> {
 
 /// Writes an answer to stdout. A reader that has left, as `head` does
 /// after its lines, is no failure.
-fn print(text: &str) -> Result<(), String> {
+fn print(text: &str) -> Result<(), Failure> {
     match io::stdout().write_all(text.as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
-            Err(format!("writing the answer: {error}"))
+            Err(Failure::WritingAnswer(error))
         }
         _ => Ok(()),
     }
 }
 
-fn command(args: &[String]) -> Result<Command, Exit> {
+fn command(args: &[String]) -> Result<Command, Usage> {
     let Some((first, rest)) = args.split_first() else {
-        return Err(Exit::NoCommand);
+        return Err(Usage::NoCommand);
     };
     let name = Name::parse(first);
     let parsed = match name {
         Some(name) => flags(name, rest),
         None => help_or_version(first, rest),
     };
-    parsed.map_err(|message| Exit::Usage {
-        message,
+    parsed.map_err(|error| Usage::Wrong {
+        error,
         command: name,
     })
 }
 
-fn unknown(text: &str) -> String {
-    format!("unknown command {text:?}")
-}
-
-fn help_or_version(word: &str, rest: &[String]) -> Result<Command, String> {
+fn help_or_version(word: &str, rest: &[String]) -> Result<Command, UsageError> {
     if ["help", "--help", "-h"].contains(&word) {
         return match rest {
             [] => Ok(Command::Help(None)),
-            [topic] => Name::parse(topic)
-                .map(|name| Command::Help(Some(name)))
-                .ok_or_else(|| unknown(topic)),
-            _ => Err("straum help takes one command".into()),
+            [topic] => match Name::parse(topic) {
+                Some(name) => Ok(Command::Help(Some(name))),
+                None => Err(UsageError::UnknownCommand(topic.clone())),
+            },
+            _ => Err(UsageError::HelpTakesOneCommand),
         };
     }
     if ["version", "--version", "-V"].contains(&word) {
         return match rest {
             [] => Ok(Command::Version),
-            _ => Err("straum version takes nothing".into()),
+            _ => Err(UsageError::VersionTakesNothing),
         };
     }
-    Err(unknown(word))
+    Err(UsageError::UnknownCommand(word.to_owned()))
 }
 
 fn is_help(arg: &str) -> bool {
@@ -417,7 +538,7 @@ fn query_at(rest: &[String]) -> usize {
     at.min(rest.len())
 }
 
-fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
+fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
     // The query and its parameters are read as written, so a parameter
     // may be `-h` or a negative number.
     let (rest, query) = match name {
@@ -439,9 +560,9 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
     }
 }
 
-fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, String> {
+fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
     let Some((query, parameters)) = query.split_first() else {
-        return Err("straum ask needs a query".into());
+        return Err(UsageError::AskNeedsQuery);
     };
     Ok(Command::Ask {
         url: flags.url(),
@@ -450,7 +571,7 @@ fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, String> {
     })
 }
 
-fn plan_command(flags: &Flags) -> Result<Command, String> {
+fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
     Ok(Command::Plan(Plan {
         spec: flags.spec()?,
         replication: flags.replication()?,
@@ -460,10 +581,10 @@ fn plan_command(flags: &Flags) -> Result<Command, String> {
     }))
 }
 
-fn run_command(flags: &Flags) -> Result<Command, String> {
+fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     let is_physical = matches!(flags.replication()?, Replication::Physical { .. });
     if flags.value("--max-page-memory").is_some() && !is_physical {
-        return Err("--max-page-memory takes --wal physical".into());
+        return Err(UsageError::PageMemoryNeedsPhysical);
     }
     // The spec comes first: without one, nothing else on the line matters.
     let spec = flags.spec()?;
@@ -512,7 +633,7 @@ struct Flags<'a> {
 }
 
 impl<'a> Flags<'a> {
-    fn read(name: Name, rest: &'a [String]) -> Result<Flags<'a>, String> {
+    fn read(name: Name, rest: &'a [String]) -> Result<Flags<'a>, UsageError> {
         let mut flags = Flags {
             name,
             given: Vec::new(),
@@ -520,13 +641,16 @@ impl<'a> Flags<'a> {
         let mut rest = rest.iter();
         while let Some(flag) = rest.next() {
             if !name.flags().contains(&flag.as_str()) {
-                return Err(format!("straum {} takes no {flag:?}", name.as_str()));
+                return Err(UsageError::FlagNotTaken {
+                    command: name,
+                    flag: flag.clone(),
+                });
             }
             if flags.value(flag).is_some() {
-                return Err(format!("{flag} given twice"));
+                return Err(UsageError::GivenTwice(flag.clone()));
             }
             let Some(value) = rest.next() else {
-                return Err(format!("{flag} needs a value"));
+                return Err(UsageError::NeedsValue(flag.clone()));
             };
             flags.given.push(Given { flag, value });
         }
@@ -544,20 +668,24 @@ impl<'a> Flags<'a> {
 
     fn parsed<T>(
         &self,
-        flag: &str,
+        flag: &'static str,
         default: T,
         parse: fn(&str) -> Option<T>,
-        takes: &str,
-    ) -> Result<T, String> {
+        takes: &'static str,
+    ) -> Result<T, UsageError> {
         let Some(value) = self.value(flag) else {
             return Ok(default);
         };
-        parse(value).ok_or_else(|| format!("{flag} takes {takes}, not {value:?}"))
+        let Some(parsed) = parse(value) else {
+            let value = value.to_owned();
+            return Err(UsageError::BadValue { flag, takes, value });
+        };
+        Ok(parsed)
     }
 
-    fn spec(&self) -> Result<String, String> {
+    fn spec(&self) -> Result<String, UsageError> {
         let Some(spec) = self.text("--spec") else {
-            return Err(format!("straum {} needs --spec", self.name.as_str()));
+            return Err(UsageError::NeedsSpec(self.name));
         };
         Ok(spec)
     }
@@ -571,7 +699,7 @@ impl<'a> Flags<'a> {
         self.text("--url").unwrap_or_else(|| URL.into())
     }
 
-    fn replication(&self) -> Result<Replication, String> {
+    fn replication(&self) -> Result<Replication, UsageError> {
         match self.value("--wal") {
             None | Some("logical") => Ok(Replication::Logical),
             Some("physical") => {
@@ -583,7 +711,7 @@ impl<'a> Flags<'a> {
                 )?;
                 Ok(Replication::Physical { max_page_memory })
             }
-            Some(other) => Err(format!("--wal takes logical or physical, not {other:?}")),
+            Some(other) => Err(UsageError::BadWal(other.to_owned())),
         }
     }
 }
@@ -613,18 +741,25 @@ fn bytes(text: &str) -> Option<u64> {
     positive(count)?.checked_mul(1 << shift)
 }
 
-fn read_file(path: &str) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|error| format!("reading {path}: {error}"))
+fn read_file(path: &str) -> Result<String, Failure> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) => {
+            let path = path.to_owned();
+            Err(Failure::ReadingFile { path, error })
+        }
+    }
 }
 
-fn read_spec(path: &str) -> Result<Spec, String> {
+fn read_spec(path: &str) -> Result<Spec, Failure> {
     let text = read_file(path)?;
-    straum_notation::parse(&text).map_err(|error| {
-        let lines: Vec<String> = (error.to_string().lines())
-            .map(|line| format!("{path}: {line}"))
-            .collect();
-        lines.join("\n")
-    })
+    match straum_notation::parse(&text) {
+        Ok(spec) => Ok(spec),
+        Err(error) => {
+            let path = path.to_owned();
+            Err(Failure::Spec { path, error })
+        }
+    }
 }
 
 /// The role and its password come from the DSN when there is one, so the
@@ -637,7 +772,7 @@ fn plan(
         role,
         dsn_file,
     }: Plan,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let spec = read_spec(&spec)?;
     let dsn = read_dsn(dsn_file.as_deref())?;
     let role = (role.as_deref())
@@ -656,15 +791,13 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<String>> {
 
 /// From the file, else from `STRAUM_DSN`. Never from the command line, where
 /// other users of the machine can read it.
-fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, String> {
+fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, Failure> {
     let text = match (file, env::var("STRAUM_DSN")) {
         (Some(path), _) => read_file(path)?,
         (None, Ok(text)) => text,
         (None, Err(_)) => return Ok(None),
     };
-    Dsn::parse(text.trim())
-        .map(Some)
-        .map_err(|error| error.to_string())
+    Ok(Some(Dsn::parse(text.trim())?))
 }
 
 fn run(
@@ -677,12 +810,18 @@ fn run(
         limits,
         max_transaction_rows,
     }: Run,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let spec = read_spec(&spec)?;
-    let dsn = read_dsn(dsn_file.as_deref())?.ok_or("set STRAUM_DSN or pass --dsn-file")?;
-    let listening = |error: io::Error| format!("listening on {listen}: {error}");
-    let listener = TcpListener::bind(&listen).map_err(listening)?;
-    let address = listener.local_addr().map_err(listening)?;
+    let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
+        return Err(Failure::NoDsn);
+    };
+    let (listener, address) = match bind(&listen) {
+        Ok(bound) => bound,
+        Err(error) => {
+            let address = listen;
+            return Err(Failure::Listening { address, error });
+        }
+    };
 
     // After a panic the store may be half written, or nothing writes it
     // any more. Stop, rather than answer from it.
@@ -700,12 +839,12 @@ fn run(
     thread::Builder::new()
         .name("straum-writer".into())
         .spawn(move || run_writer(writer))
-        .map_err(|error| format!("starting the writer: {error}"))?;
+        .map_err(Failure::StartingWriter)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|error| format!("starting tokio: {error}"))?;
+        .map_err(Failure::StartingTokio)?;
     let (mut terminate, mut interrupt) = {
         let _entered = runtime.enter();
         (
@@ -730,15 +869,21 @@ fn run(
             log(format!("listening on {address}"));
             straum_http::serve(listener, app, read_ask, stop).await
         })
-        .map_err(|error| format!("serving HTTP: {error}"))?;
+        .map_err(Failure::Serving)?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops
     // their temporary slots.
     Ok(())
 }
 
-fn handle_signal(name: &str, kind: SignalKind) -> Result<Signal, String> {
-    signal(kind).map_err(|error| format!("handling {name}: {error}"))
+fn bind(listen: &str) -> io::Result<(TcpListener, SocketAddr)> {
+    let listener = TcpListener::bind(listen)?;
+    let address = listener.local_addr()?;
+    Ok((listener, address))
+}
+
+fn handle_signal(name: &'static str, kind: SignalKind) -> Result<Signal, Failure> {
+    signal(kind).map_err(|error| Failure::HandlingSignal { name, error })
 }
 
 fn run_writer(mut writer: Writer<Postgres>) {
@@ -922,15 +1067,15 @@ mod tests {
 
     fn usage(line: &str) -> String {
         match command(&args(line)) {
-            Err(Exit::Usage { message, .. }) => message,
+            Err(Usage::Wrong { error, .. }) => error.to_string(),
             other => panic!("{line}: {other:?}"),
         }
     }
 
     #[test]
     fn failures_say_what_to_try() {
-        assert_eq!(command(&[]), Err(Exit::NoCommand));
-        assert_eq!(Exit::NoCommand.to_string(), HELP.trim_end());
+        assert_eq!(command(&[]), Err(Usage::NoCommand));
+        assert_eq!(Usage::NoCommand.to_string(), HELP.trim_end());
         let cases = [
             (
                 "serve",
@@ -950,13 +1095,51 @@ mod tests {
             ),
         ];
         for (line, printed) in cases {
-            let exit = command(&args(line)).unwrap_err();
-            assert_eq!(exit.to_string(), printed, "{line}");
-            assert_eq!(exit.exit_code(), ExitCode::from(USAGE_FAILURE), "{line}");
+            let usage = command(&args(line)).unwrap_err();
+            assert_eq!(usage.to_string(), printed, "{line}");
         }
-        let exit = Exit::Runtime("reading s: gone".into());
-        assert_eq!(exit.to_string(), "straum: reading s: gone");
-        assert_eq!(exit.exit_code(), ExitCode::FAILURE);
+    }
+
+    fn gone() -> io::Error {
+        io::Error::new(io::ErrorKind::NotFound, "gone")
+    }
+
+    #[test]
+    fn failures_say_what_failed() {
+        let cases = [
+            (
+                Failure::ReadingFile {
+                    path: "s".into(),
+                    error: gone(),
+                },
+                "reading s: gone",
+            ),
+            (Failure::NoDsn, "set STRAUM_DSN or pass --dsn-file"),
+            (Failure::LinesFailed(2), "lines that failed: 2"),
+            (Failure::ReadingCommands(gone()), "reading commands: gone"),
+            (Failure::WritingAnswer(gone()), "writing the answer: gone"),
+            (
+                Failure::Listening {
+                    address: "x".into(),
+                    error: gone(),
+                },
+                "listening on x: gone",
+            ),
+        ];
+        for (failure, said) in cases {
+            assert_eq!(failure.to_string(), said);
+        }
+        let error = straum_notation::parse("nonsense").unwrap_err();
+        let failure = Failure::Spec {
+            path: "s".into(),
+            error,
+        };
+        assert!(
+            failure
+                .to_string()
+                .lines()
+                .all(|line| line.starts_with("s: "))
+        );
     }
 
     #[test]

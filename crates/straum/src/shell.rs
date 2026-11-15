@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::env;
 use std::ffi::OsString;
+use std::fmt::{self, Display};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
 use crate::SHELL_HELP;
-use crate::client::{ask, load_views, rows, views};
+use crate::client::{ClientError, ask, load_views, rows, views};
 use crate::complete::{Completion, View, complete, hint};
 
 const PROMPT: &str = "straum> ";
@@ -28,24 +29,48 @@ const PROMPT: &str = "straum> ";
 const DIM: &str = "\x1b[2m";
 const UNDIM: &str = "\x1b[0m";
 
+#[derive(Debug)]
+enum LineError {
+    NoSuchCommand(String),
+    Client(ClientError),
+}
+
+impl Display for LineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            LineError::NoSuchCommand(line) => {
+                write!(formatter, "no command {line:?}; \\? lists them")
+            }
+            LineError::Client(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl From<ClientError> for LineError {
+    fn from(error: ClientError) -> LineError {
+        LineError::Client(error)
+    }
+}
+
 /// What one line asks for; `None` to leave.
-fn answer(url: &str, line: &str) -> Option<Result<String, String>> {
+fn answer(url: &str, line: &str) -> Option<Result<String, LineError>> {
     let words: Vec<&str> = line.split_whitespace().collect();
-    Some(match words[..] {
+    let answered = match words[..] {
         [] => Ok(String::new()),
         ["\\q"] => return None,
         ["\\?"] => Ok(shell_commands()),
         ["\\d"] => views(url),
         ["\\rows", view] => rows(url, view),
         [command, ..] if command.starts_with('\\') => {
-            Err(format!("no command {line:?}; \\? lists them"))
+            return Some(Err(LineError::NoSuchCommand(line.to_owned())));
         }
         _ => {
             let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
             let parameters: Vec<&str> = parameters.split_whitespace().collect();
             ask(url, query.trim_end(), &parameters)
         }
-    })
+    };
+    Some(answered.map_err(LineError::from))
 }
 
 fn shell_commands() -> String {
@@ -106,12 +131,11 @@ fn absolute(path: OsString) -> Option<PathBuf> {
 }
 
 /// The prompt at a terminal, with line editing, history and completion.
-pub(crate) fn interactive(url: &str) -> Result<(), String> {
-    let failed = |error: ReadlineError| format!("reading the terminal: {error}");
+pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .build();
-    let mut editor: Editor<Names, DefaultHistory> = Editor::with_config(config).map_err(failed)?;
+    let mut editor: Editor<Names, DefaultHistory> = Editor::with_config(config)?;
     editor.set_helper(Some(Names { views: Vec::new() }));
     let history = history_file(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     if let Some(file) = &history {
@@ -129,9 +153,9 @@ pub(crate) fn interactive(url: &str) -> Result<(), String> {
             // Ctrl-C drops the line, as in psql.
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => break Ok(()),
-            Err(error) => break Err(failed(error)),
+            Err(error) => break Err(error),
         };
-        editor.add_history_entry(line.trim()).map_err(failed)?;
+        editor.add_history_entry(line.trim())?;
         match answer(url, line.trim()) {
             None => break Ok(()),
             Some(Ok(text)) => print!("{text}"),
