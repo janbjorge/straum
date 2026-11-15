@@ -12,12 +12,15 @@ use straum_domain::{Answer, AnswerRow, Ask, AskKey, Datum, Spec, Value};
 
 use crate::fake::{Database, Fake, Identity, Published, Row, Write, id};
 
+/// Seconds in a day.
 pub const DAY: i64 = 86_400;
 /// Every row's time falls in `[0, RANGE)`.
 pub const RANGE: i64 = 3 * DAY;
 
+/// Bytes in a gibibyte.
 pub const BYTES_PER_GIB: u64 = 1 << 30;
 
+/// Limits no case reaches unless it means to.
 pub const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: 4 * BYTES_PER_GIB,
@@ -67,7 +70,9 @@ const TABLES: [Published; 4] = [
     },
 ];
 
+/// The boroughs zones lie in.
 pub const BOROUGHS: [&str; 3] = ["Bronx", "Brooklyn", "Queens"];
+/// The riders trips name.
 pub const RIDERS: [&str; 5] = ["ann", "bo", "cy", "di", "ed"];
 
 /// A writer over a fake database, and the database, to write to while the
@@ -77,14 +82,17 @@ pub struct Harness {
     pub writer: Writer<Fake>,
 }
 
+/// The spec of the `trips` and `logins` views.
 pub fn spec() -> Spec {
     straum_notation::parse(SPEC).unwrap()
 }
 
+/// An integer as a row holds it.
 pub fn int(value: i64) -> Datum {
     Datum::Int(value)
 }
 
+/// Text as a row holds it.
 pub fn text(value: &str) -> Datum {
     Datum::Text(value.into())
 }
@@ -116,6 +124,7 @@ pub fn watched(app: App, mut on_load: impl FnMut(&App, &str) + 'static) -> Harne
     }
 }
 
+/// A new row under primary key `key`.
 pub fn insert(table: &'static str, key: i64, row: Row) -> Write {
     Write::Insert {
         table,
@@ -124,6 +133,7 @@ pub fn insert(table: &'static str, key: i64, row: Row) -> Write {
     }
 }
 
+/// A zone row, `[id, borough]`.
 pub fn zone(key: i64, borough: &str) -> Write {
     insert("zones", key, vec![int(key), text(borough)])
 }
@@ -142,6 +152,7 @@ pub fn login(key: i64, zone: i64) -> Write {
     insert("logins", key, vec![int(0), int(zone)])
 }
 
+/// An ask of the fact's measures by these keys, over the whole range.
 pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     Ask {
         view: id(fact),
@@ -153,6 +164,7 @@ pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
     }
 }
 
+/// `bucket`, or a key by its name.
 pub fn ask_key(name: &str) -> AskKey {
     match name {
         "bucket" => AskKey::Bucket,
@@ -166,6 +178,7 @@ pub fn count(app: &App, fact: &str) -> Result<Value, AnswerError> {
     Ok(answered.answer.rows[0].values[0].clone())
 }
 
+/// The answer a fresh load of the database gives now.
 pub fn reference_answer(database: &Database, ask: &Ask) -> Answer {
     database.store_at(&spec(), database.lsn()).ask(ask).unwrap()
 }
@@ -195,6 +208,7 @@ pub fn aside(app: &App, ask: Ask) -> Result<Answered, AnswerError> {
         .expect("the writer held the store while it loaded")
 }
 
+/// A WAL reading whose slot holds WAL from `confirmed` on.
 pub fn wal(written: u64, confirmed: u64) -> Wal {
     Wal {
         written: Lsn(written),

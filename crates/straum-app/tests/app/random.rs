@@ -294,6 +294,7 @@ fn random_ask(random: &mut Rng) -> Ask {
 }
 
 /// Each item, kept `percent` times in a hundred.
+// The names are literals; the chosen ones stay borrowed, uncopied.
 fn some_of<'a>(random: &mut Rng, items: &[&'a str], percent: usize) -> Vec<&'a str> {
     let mut chosen = Vec::new();
     for item in items {

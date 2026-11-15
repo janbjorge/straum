@@ -39,6 +39,8 @@ pub(super) struct FromClause<'tree> {
 impl Walker {
     /// The fact, its joins, and the semi and anti joins in WHERE; the rest
     /// of WHERE waits for the keys, which it names.
+    // Hands back WHERE's conditions borrowed from the tree, which outlives
+    // the walk.
     pub(super) fn from<'tree>(
         &mut self,
         from: &sql::TableWithJoins,

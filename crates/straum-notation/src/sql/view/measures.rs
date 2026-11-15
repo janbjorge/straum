@@ -58,12 +58,14 @@ enum Over {
 }
 
 /// A fraction's digits before and after its point.
+// Two slices of the fraction as written, so nothing is copied.
 struct Decimal<'text> {
     whole: &'text str,
     places: &'text str,
 }
 
 impl Walker {
+    /// A measure item: an aggregate `AS` its name.
     pub(super) fn measure(
         &mut self,
         scope: &Scope,
@@ -325,6 +327,7 @@ impl Walker {
 
     /// As [`Walker::call`], with what `WITHIN GROUP (ORDER BY ...)` lists,
     /// for the one aggregate that takes it.
+    // Borrows the arguments from the tree, which outlives the walk.
     fn ordered_call<'tree>(
         &mut self,
         function: &'tree sql::Function,
