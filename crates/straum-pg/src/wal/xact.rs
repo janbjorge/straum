@@ -9,12 +9,12 @@ use super::{
 };
 
 const XACT_OPERATION: u8 = 0x70;
-const XACT_HAS_INFO: u8 = 0x80;
-const XACT_COMMIT: u8 = 0x00;
+pub(super) const XACT_HAS_INFO: u8 = 0x80;
+pub(super) const XACT_COMMIT: u8 = 0x00;
 const XACT_ABORT: u8 = 0x20;
 const XACT_COMMIT_PREPARED: u8 = 0x30;
 const XACT_ABORT_PREPARED: u8 = 0x40;
-const STANDBY_RUNNING_XACTS: u8 = 0x10;
+pub(super) const STANDBY_RUNNING_XACTS: u8 = 0x10;
 
 const HAS_DATABASE: u32 = 1 << 0;
 const HAS_SUBXACTS: u32 = 1 << 1;
@@ -214,10 +214,32 @@ fn running(data: &[u8]) -> Option<Running> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::wal::test_support::decode;
-    use crate::wal::test_support::{Spec, assemble};
+    use crate::wal::test_support::{Spec, assemble, decode};
+    use crate::wal::{RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_XLOG};
+
+    /// `XACT_XINFO_HAS_ORIGIN`: an `xl_xact_origin` comes last.
+    const HAS_ORIGIN: u32 = 1 << 5;
+    /// `XACT_XINFO_HAS_GID`: a prepared transaction's name follows its xid.
+    const HAS_GID: u32 = 1 << 7;
+    /// `xl_xact_origin`: `origin_lsn` and `origin_timestamp`, 8 bytes each.
+    const ORIGIN_SIZE: usize = 16;
+    /// A prepared transaction's name, `twophase_gid`, with its zero byte.
+    const GID: &[u8] = b"gid\0";
+    /// `XLOG_XACT_PREPARE`, `XLOG_XACT_ASSIGNMENT`, `XLOG_XACT_INVALIDATIONS`:
+    /// transaction records that end nothing.
+    const XACT_PREPARE: u8 = 0x10;
+    const XACT_ASSIGNMENT: u8 = 0x50;
+    const XACT_INVALIDATIONS: u8 = 0x60;
+    /// `XLOG_STANDBY_LOCK` and `XLOG_INVALIDATIONS`: standby records other
+    /// than `RUNNING_XACTS`.
+    const STANDBY_LOCK: u8 = 0x00;
+    const STANDBY_INVALIDATIONS: u8 = 0x20;
+    /// `xl_running_xacts.latestCompletedXid`.
+    const RUNNING_LATEST_COMPLETED_XID: usize = 20;
+    /// `xl_running_xacts.subxcnt`.
+    const RUNNING_SUBXACT_COUNT: usize = 4;
 
     fn record(resource_manager: u8, info: u8, xid: u32, main: Vec<u8>) -> Record {
         let spec = Spec {
@@ -233,6 +255,7 @@ mod tests {
         decode(0x100_0028, 0x100_0028 + bytes.len() as u64, bytes).unwrap()
     }
 
+    /// `values` as `uint32`s, one after another.
     fn words(values: &[u32]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for value in values {
@@ -241,11 +264,48 @@ mod tests {
         bytes
     }
 
+    /// A relcache `SharedInvalidationMessage` for `relation` of `database`.
+    pub(crate) fn relcache_invalidation(database: u32, relation: u32) -> [u8; INVALIDATION] {
+        let mut message = [0; INVALIDATION];
+        message[0] = INVALIDATE_RELCACHE;
+        message[RELCACHE_DATABASE..RELCACHE_DATABASE + XID_SIZE]
+            .copy_from_slice(&database.to_le_bytes());
+        message[RELCACHE_RELATION..RELCACHE_RELATION + XID_SIZE]
+            .copy_from_slice(&relation.to_le_bytes());
+        message
+    }
+
+    /// The main data of a commit at `time` whose only part is one relcache
+    /// invalidation of `relation` in `database`.
+    pub(crate) fn invalidating_commit(time: i64, database: u32, relation: u32) -> Vec<u8> {
+        let mut main = time.to_le_bytes().to_vec();
+        main.extend(HAS_INVALIDATIONS.to_le_bytes());
+        main.extend(1u32.to_le_bytes());
+        main.extend(relcache_invalidation(database, relation));
+        main
+    }
+
+    /// An `xl_running_xacts` naming `xids`, with no subtransactions.
+    pub(crate) fn running_main(count: u32, next: u32, oldest: u32, xids: &[u32]) -> Vec<u8> {
+        let mut main = vec![0; RUNNING_HEADER];
+        let latest = next.wrapping_sub(1);
+        for (at, value) in [
+            (RUNNING_COUNT, count),
+            (RUNNING_NEXT_XID, next),
+            (RUNNING_OLDEST_XID, oldest),
+            (RUNNING_LATEST_COMPLETED_XID, latest),
+        ] {
+            main[at..at + XID_SIZE].copy_from_slice(&value.to_le_bytes());
+        }
+        main.extend(words(xids));
+        main
+    }
+
     /// A commit or abort with every part `ParseCommitRecord` reads before
-    /// the two-phase xid, and an origin after it.
-    fn ending_main(info: u32, outcome: Outcome, stat: usize) -> Vec<u8> {
+    /// the two-phase xid, and a gid and an origin after it.
+    fn ending_main(xinfo: u32, outcome: Outcome, stat: usize) -> Vec<u8> {
         let mut main = 12_345i64.to_le_bytes().to_vec();
-        main.extend(info.to_le_bytes());
+        main.extend(xinfo.to_le_bytes());
         main.extend(words(&[5, 1663]));
         main.extend(words(&[2, 801, 802]));
         main.extend(words(&[1]));
@@ -258,13 +318,12 @@ mod tests {
             // all of database 5.
             main.extend([9; INVALIDATION]);
             for relation in [16_384, 0] {
-                main.extend([INVALIDATE_RELCACHE, 0, 0, 0]);
-                main.extend(words(&[5, relation, 0]));
+                main.extend(relcache_invalidation(5, relation));
             }
         }
         main.extend(words(&[900]));
-        main.extend(b"gid\0");
-        main.extend([0; 16]);
+        main.extend(GID);
+        main.extend([0; ORIGIN_SIZE]);
         main
     }
 
@@ -274,8 +333,31 @@ mod tests {
         | HAS_INVALIDATIONS
         | HAS_TWO_PHASE
         | HAS_DROPPED_STATS
-        | 1 << 5
-        | 1 << 7;
+        | HAS_ORIGIN
+        | HAS_GID;
+
+    /// What `ending_main` says, as an event.
+    fn expected_ending(outcome: Outcome) -> Event {
+        let mut invalidated = Vec::new();
+        if outcome == Outcome::Commit {
+            for relation in [16_384, 0] {
+                invalidated.push(Invalidated {
+                    database: 5,
+                    relation,
+                });
+            }
+        }
+        let ending = Ending {
+            xid: 900,
+            subxacts: vec![801, 802],
+            time: 12_345,
+            invalidated,
+        };
+        match outcome {
+            Outcome::Commit => Event::Commit(ending),
+            Outcome::Abort => Event::Abort(ending),
+        }
+    }
 
     #[test]
     fn reads_endings() {
@@ -287,50 +369,16 @@ mod tests {
                 (XACT_ABORT_PREPARED, Outcome::Abort),
             ] {
                 let main = ending_main(ALL, outcome, stat);
-                let got = event(
-                    &record(
-                        RESOURCE_MANAGER_TRANSACTION,
-                        operation | XACT_HAS_INFO,
-                        0,
-                        main,
-                    ),
-                    major,
-                );
-                let invalidated = if outcome == Outcome::Commit {
-                    vec![
-                        Invalidated {
-                            database: 5,
-                            relation: 16_384,
-                        },
-                        Invalidated {
-                            database: 5,
-                            relation: 0,
-                        },
-                    ]
-                } else {
-                    Vec::new()
-                };
-                let ending = Ending {
-                    xid: 900,
-                    subxacts: vec![801, 802],
-                    time: 12_345,
-                    invalidated,
-                };
-                let expected = match outcome {
-                    Outcome::Commit => Event::Commit(ending),
-                    Outcome::Abort => Event::Abort(ending),
-                };
+                let info = operation | XACT_HAS_INFO;
+                let got = event(&record(RESOURCE_MANAGER_TRANSACTION, info, 0, main), major);
+                let expected = expected_ending(outcome);
                 assert_eq!(got, Ok(Some(expected)), "{major} {operation:#x}");
             }
         }
         // No xinfo: the record's own xid, nothing else.
+        let main = (-5i64).to_le_bytes().to_vec();
         let got = event(
-            &record(
-                RESOURCE_MANAGER_TRANSACTION,
-                XACT_COMMIT,
-                77,
-                (-5i64).to_le_bytes().to_vec(),
-            ),
+            &record(RESOURCE_MANAGER_TRANSACTION, XACT_COMMIT, 77, main),
             18,
         );
         let ending = Ending {
@@ -344,9 +392,10 @@ mod tests {
 
     #[test]
     fn reads_running_transactions() {
-        let mut main = words(&[2, 1]);
-        main.extend([0; 4]);
-        main.extend(words(&[760, 750, 749, 751, 755, 752]));
+        // Two running, then one subtransaction, which Straum passes over.
+        let mut main = running_main(2, 760, 750, &[751, 755, 752]);
+        main[RUNNING_SUBXACT_COUNT..RUNNING_SUBXACT_COUNT + XID_SIZE]
+            .copy_from_slice(&1u32.to_le_bytes());
         let got = event(
             &record(RESOURCE_MANAGER_STANDBY, STANDBY_RUNNING_XACTS, 0, main),
             18,
@@ -362,13 +411,13 @@ mod tests {
     #[test]
     fn passes_over_other_records() {
         for (resource_manager, info) in [
-            (RESOURCE_MANAGER_TRANSACTION, 0x10),
-            (RESOURCE_MANAGER_TRANSACTION, 0x50),
-            (RESOURCE_MANAGER_TRANSACTION, 0x60),
-            (RESOURCE_MANAGER_STANDBY, 0x00),
-            (RESOURCE_MANAGER_STANDBY, 0x20),
-            (0, 0x00),
-            (10, 0x00),
+            (RESOURCE_MANAGER_TRANSACTION, XACT_PREPARE),
+            (RESOURCE_MANAGER_TRANSACTION, XACT_ASSIGNMENT),
+            (RESOURCE_MANAGER_TRANSACTION, XACT_INVALIDATIONS),
+            (RESOURCE_MANAGER_STANDBY, STANDBY_LOCK),
+            (RESOURCE_MANAGER_STANDBY, STANDBY_INVALIDATIONS),
+            (RESOURCE_MANAGER_XLOG, 0x00),
+            (RESOURCE_MANAGER_HEAP, 0x00),
         ] {
             let got = event(&record(resource_manager, info, 1, vec![0; 64]), 18);
             assert_eq!(got, Ok(None), "{resource_manager} {info:#x}");
@@ -379,40 +428,27 @@ mod tests {
     fn rejects_records_cut_short() {
         let full = ending_main(ALL, Outcome::Commit, DROPPED_STAT_18);
         // The two-phase xid is the last part read.
-        let read = full.len() - 4 - 16;
+        let read = full.len() - GID.len() - ORIGIN_SIZE;
         for length in 0..read {
             let main = full[..length].to_vec();
-            let got = event(
-                &record(
-                    RESOURCE_MANAGER_TRANSACTION,
-                    XACT_COMMIT | XACT_HAS_INFO,
-                    1,
-                    main,
-                ),
-                18,
-            );
-            assert!(
-                matches!(got, Err(WalError::At { problem, .. })
-                    if problem == Problem::ShortTransactionRecord),
-                "{length}: {got:?}"
+            let info = XACT_COMMIT | XACT_HAS_INFO;
+            let got = event(&record(RESOURCE_MANAGER_TRANSACTION, info, 1, main), 18);
+            assert_eq!(
+                got,
+                Err(WalError::At {
+                    lsn: 0x100_0028,
+                    problem: Problem::ShortTransactionRecord
+                }),
+                "{length}"
             );
         }
-        let mut running = words(&[3, 0, 0, 760]);
-        running.extend(words(&[0, 0, 751, 752]));
-        let got = event(
-            &record(RESOURCE_MANAGER_STANDBY, STANDBY_RUNNING_XACTS, 0, running),
-            18,
-        );
-        assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
-        let got = event(
-            &record(
-                RESOURCE_MANAGER_STANDBY,
-                STANDBY_RUNNING_XACTS,
-                0,
-                words(&[0, 0]),
-            ),
-            18,
-        );
-        assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
+        // Three running named, two there; then a header cut short.
+        for main in [running_main(3, 760, 0, &[751, 752]), words(&[0, 0])] {
+            let got = event(
+                &record(RESOURCE_MANAGER_STANDBY, STANDBY_RUNNING_XACTS, 0, main),
+                18,
+            );
+            assert!(matches!(got, Err(WalError::At { .. })), "{got:?}");
+        }
     }
 }

@@ -215,10 +215,29 @@ mod tests {
 
     use super::*;
     use crate::pgoutput::{Relation, RelationColumn};
+    use crate::value::INT4;
     use crate::wal::messages::Layout;
     use crate::wal::test_support::decode;
     use crate::wal::test_support::{BlockSpec, FILE, Spec, assemble};
     use crate::wal::tuple::{Attribute, Kind};
+    use crate::wal::xact::tests::{invalidating_commit, running_main};
+    use crate::wal::xact::{STANDBY_RUNNING_XACTS, XACT_COMMIT, XACT_HAS_INFO};
+    use crate::wal::{
+        RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_TRANSACTION,
+    };
+
+    /// `XLOG_HEAP_INSERT`, and `XLOG_HEAP_INIT_PAGE`: the record starts its
+    /// page afresh.
+    const HEAP_INSERT: u8 = 0x00;
+    const INIT_PAGE: u8 = 0x80;
+    /// `t_hoff` of a row without nulls: `SizeofHeapTupleHeader`, 23,
+    /// rounded up to `MAXALIGN`, so one byte of padding before the columns.
+    const ROW_HEADER: u8 = 24;
+    const ROW_PADDING: usize = 1;
+    /// `MAXALIGN`: records start on 8-byte boundaries.
+    const RECORD_ALIGNMENT: u64 = 8;
+    /// The commit time of every test commit, in microseconds since 2000.
+    const COMMIT_TIME: i64 = 7;
 
     /// `public.t (id int4)`, read by the spec as `t`.
     fn table() -> Layout {
@@ -230,7 +249,7 @@ mod tests {
                 name: "t".to_owned(),
                 columns: vec![RelationColumn {
                     name: "id".to_owned(),
-                    type_oid: 23,
+                    type_oid: INT4,
                     typmod: -1,
                 }],
             },
@@ -285,14 +304,17 @@ mod tests {
             let bytes = assemble(&spec);
             let lsn = self.lsn;
             let end = lsn + bytes.len() as u64;
-            self.lsn = end.next_multiple_of(8);
+            self.lsn = end.next_multiple_of(RECORD_ALIGNMENT);
             decode(lsn, end, bytes).unwrap()
         }
 
         /// A row `id` inserted on a page of its own.
         fn insert(&mut self, xid: u32, id: i32) -> Record {
-            let mut data = vec![1, 0, 0, 0, 24];
-            data.push(0);
+            // `xl_heap_header`: one column, no flags, then the row.
+            let mut data = 1u16.to_le_bytes().to_vec();
+            data.extend(0u16.to_le_bytes());
+            data.push(ROW_HEADER);
+            data.extend([0; ROW_PADDING]);
             data.extend(id.to_le_bytes());
             let block = BlockSpec {
                 id: 0,
@@ -304,30 +326,30 @@ mod tests {
                 data,
             };
             self.block += 1;
-            self.record(10, 0x80, xid, vec![1, 0, 0], vec![block])
+            // `xl_heap_insert`: slot 1, no flags.
+            let mut main = 1u16.to_le_bytes().to_vec();
+            main.push(0);
+            let info = HEAP_INSERT | INIT_PAGE;
+            self.record(RESOURCE_MANAGER_HEAP, info, xid, main, vec![block])
         }
 
         fn commit(&mut self, xid: u32) -> Record {
-            self.record(1, 0x00, xid, 7i64.to_le_bytes().to_vec(), Vec::new())
+            let main = COMMIT_TIME.to_le_bytes().to_vec();
+            self.record(
+                RESOURCE_MANAGER_TRANSACTION,
+                XACT_COMMIT,
+                xid,
+                main,
+                Vec::new(),
+            )
         }
 
         fn running(&mut self, next: u32, xids: &[u32]) -> Record {
-            let mut main = Vec::new();
             let oldest = xids.iter().copied().min().unwrap_or(next);
-            for word in [
-                u32::try_from(xids.len()).unwrap(),
-                0,
-                0,
-                next,
-                oldest,
-                next - 1,
-            ] {
-                main.extend(word.to_le_bytes());
-            }
-            for xid in xids {
-                main.extend(xid.to_le_bytes());
-            }
-            self.record(8, 0x10, 0, main, Vec::new())
+            let count = u32::try_from(xids.len()).unwrap();
+            let main = running_main(count, next, oldest, xids);
+            let info = STANDBY_RUNNING_XACTS;
+            self.record(RESOURCE_MANAGER_STANDBY, info, 0, main, Vec::new())
         }
     }
 
@@ -391,14 +413,9 @@ mod tests {
 
     /// A commit of `xid` with one relcache invalidation, of table 77.
     fn ddl(wal: &mut Wal, xid: u32) -> Record {
-        let mut main = 7i64.to_le_bytes().to_vec();
-        main.extend((1u32 << 3).to_le_bytes());
-        main.extend(1u32.to_le_bytes());
-        main.extend([0xFE, 0, 0, 0]);
-        for word in [5u32, 77, 0] {
-            main.extend(word.to_le_bytes());
-        }
-        wal.record(1, 0x80, xid, main, Vec::new())
+        let main = invalidating_commit(COMMIT_TIME, 5, 77);
+        let info = XACT_COMMIT | XACT_HAS_INFO;
+        wal.record(RESOURCE_MANAGER_TRANSACTION, info, xid, main, Vec::new())
     }
 
     /// Three inserts by `xid`, past the limit of 2, and its commit.
@@ -513,7 +530,13 @@ mod tests {
             changes.extend(&commit.changes);
         }
         assert_eq!(changes, [&unfit]);
-        let again = wal.record(1, 0x80, 101, ddl.main_data().to_vec(), Vec::new());
+        let again = wal.record(
+            RESOURCE_MANAGER_TRANSACTION,
+            XACT_COMMIT | XACT_HAS_INFO,
+            101,
+            ddl.main_data().to_vec(),
+            Vec::new(),
+        );
         assert!(matches!(
             pipeline.record(&again, failing_layouts),
             Err(Error::Stopped)

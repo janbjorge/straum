@@ -18,8 +18,16 @@ use super::compress;
 use super::heap::HeapTuple;
 use crate::value::{scaled, time};
 
+/// `HEAP_HASNULL` in `t_infomask`: the row has a null bitmap.
 const HAS_NULL: u16 = 0x0001;
-const NATTS_MASK: u16 = 0x07FF;
+/// `HEAP_COLUMN_COUNT_MASK`: the bits of `t_infomask2` that count the columns.
+const COLUMN_COUNT_MASK: u16 = 0x07FF;
+/// The null bitmap holds a bit per column, eight to a byte.
+const BITS_PER_BYTE: usize = 8;
+/// `attlen` of a varlena, a value that carries its own length.
+pub(crate) const VARLENA_LENGTH: i16 = -1;
+/// `attlen` of a C string, a value that ends at a zero byte.
+pub(crate) const C_STRING_LENGTH: i16 = -2;
 
 /// A varlena header's first byte, little-endian (`varatt.h`): exactly
 /// 0x01 for a TOAST pointer (`VARATT_IS_1B_E`), low bit set for a
@@ -31,10 +39,16 @@ const VARLENA_ONE_BYTE: u8 = 0x01;
 const VARLENA_COMPRESSED: u8 = 0x02;
 const ONE_BYTE_HEADER: usize = 1;
 const FOUR_BYTE_HEADER: usize = 4;
+/// How far each header shifts the size it holds, past its flag bits.
+const ONE_BYTE_SIZE_SHIFT: u8 = 1;
+const FOUR_BYTE_SIZE_SHIFT: u32 = 2;
 /// `varattrib_4b.va_compressed`: the header, then `va_tcinfo`.
 const COMPRESSED_HEADER: usize = 8;
 const TCINFO: Range<usize> = 4..8;
-/// `VARTAG_ONDISK` and the size of the `varatt_external` after it.
+/// A TOAST pointer: `varattrib_1b_e`'s header byte and `va_tag`, then,
+/// for `VARTAG_ONDISK`, a `varatt_external`.
+const EXTERNAL_HEADER: usize = 2;
+const VARTAG: usize = 1;
 const VARTAG_ON_DISK: u8 = 18;
 const EXTERNAL_POINTER: usize = 16;
 /// `va_tcinfo`: the raw size in 30 bits, the method in the top two
@@ -51,6 +65,12 @@ const NUMERIC_SPECIAL: u16 = 0xC000;
 const NUMERIC_SHORT_SIGN: u16 = 0x2000;
 const NUMERIC_SHORT_WEIGHT_SIGN: u16 = 0x0040;
 const NUMERIC_SHORT_WEIGHT_MASK: u16 = 0x003F;
+/// `NumericData`: `n_header`, then for a short numeric the digits, for a
+/// long one `n_weight` and then the digits, each a two-byte `NumericDigit`.
+const NUMERIC_HEADER: usize = 2;
+const NUMERIC_LONG_WEIGHT: usize = 2;
+const NUMERIC_LONG_DIGITS: usize = 4;
+const NUMERIC_DIGIT_SIZE: usize = 2;
 
 /// A column of the table as `pg_attribute` has it, dropped ones too:
 /// a row holds their bytes until it is rewritten.
@@ -91,39 +111,45 @@ pub(crate) fn values(
     labels: &HashMap<u32, String>,
 ) -> Result<Vec<Value>, Problem> {
     let short = Problem::ShortRow;
-    let natts = usize::from(tuple.infomask2 & NATTS_MASK);
-    if natts > attributes.len() {
+    let column_count = usize::from(tuple.infomask2 & COLUMN_COUNT_MASK);
+    if column_count > attributes.len() {
         return Err(Problem::TooManyColumns);
     }
     let bitmap = if tuple.infomask & HAS_NULL == 0 {
         None
     } else {
-        Some(tuple.body.get(..natts.div_ceil(8)).ok_or(short)?)
+        Some(
+            tuple
+                .body
+                .get(..column_count.div_ceil(BITS_PER_BYTE))
+                .ok_or(short)?,
+        )
     };
     let data = tuple.columns().ok_or(short)?;
     let mut at = 0;
     let mut values = Vec::with_capacity(attributes.len());
     for (index, attribute) in attributes.iter().enumerate() {
-        if index >= natts {
+        if index >= column_count {
             values.push(Value::Missing);
             continue;
         }
         if let Some(bits) = bitmap
-            && bits[index / 8] >> (index % 8) & 1 == 0
+            && bits[index / BITS_PER_BYTE] >> (index % BITS_PER_BYTE) & 1 == 0
         {
             values.push(Value::Datum(Datum::Null));
             continue;
         }
         // A varlena with a one-byte header isn't aligned, and its first
         // byte is never zero, which padding always is.
-        let unaligned = attribute.length == -1 && matches!(data.get(at), Some(byte) if *byte != 0);
+        let unaligned =
+            attribute.length == VARLENA_LENGTH && matches!(data.get(at), Some(byte) if *byte != 0);
         if !unaligned {
             at = at.next_multiple_of(attribute.align.max(1));
         }
         let rest = data.get(at..).ok_or(short)?;
         let size = match attribute.length {
-            -1 => varlena_size(rest).ok_or(short)?,
-            -2 => c_string_size(rest).ok_or(short)?,
+            VARLENA_LENGTH => varlena_size(rest).ok_or(short)?,
+            C_STRING_LENGTH => c_string_size(rest).ok_or(short)?,
             length => match usize::try_from(length) {
                 Ok(length) => length,
                 Err(_) => return Err(Problem::UnknownLength),
@@ -152,16 +178,16 @@ fn varlena_size(bytes: &[u8]) -> Option<usize> {
     let first = *bytes.first()?;
     if first == VARLENA_EXTERNAL {
         // The header, then `va_tag`, then the pointer.
-        if *bytes.get(1)? != VARTAG_ON_DISK {
+        if *bytes.get(VARTAG)? != VARTAG_ON_DISK {
             return None;
         }
-        return Some(2 + EXTERNAL_POINTER);
+        return Some(EXTERNAL_HEADER + EXTERNAL_POINTER);
     }
     let (size, header) = if first & VARLENA_ONE_BYTE != 0 {
-        (usize::from(first >> 1), ONE_BYTE_HEADER)
+        (usize::from(first >> ONE_BYTE_SIZE_SHIFT), ONE_BYTE_HEADER)
     } else {
         let four: [u8; FOUR_BYTE_HEADER] = *bytes.first_chunk()?;
-        let size = usize::try_from(u32::from_le_bytes(four) >> 2).ok()?;
+        let size = usize::try_from(u32::from_le_bytes(four) >> FOUR_BYTE_SIZE_SHIFT).ok()?;
         (size, FOUR_BYTE_HEADER)
     };
     if size < header {
@@ -233,7 +259,7 @@ fn value(
             time(i64::from_le_bytes(micros))
         }
         ColumnType::Numeric { .. } | ColumnType::Text => {
-            if attribute.length != -1 {
+            if attribute.length != VARLENA_LENGTH {
                 return Err(wrong);
             }
             let Some(raw) = detoast(bytes)? else {
@@ -268,7 +294,7 @@ fn integer(bytes: &[u8]) -> Option<i64> {
 /// base-10000 digits, in units of `10^-scale`. `NaN` and the infinities
 /// are `None`, as the text reader has them.
 fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
-    let header = u16::from_le_bytes([*bytes.first()?, *bytes.get(1)?]);
+    let header = u16::from_le_bytes(*bytes.first_chunk::<NUMERIC_HEADER>()?);
     let (negative, weight, digits) = match header & NUMERIC_SIGN_MASK {
         NUMERIC_SPECIAL => return None,
         NUMERIC_SHORT => {
@@ -278,14 +304,23 @@ fn numeric(bytes: &[u8], scale: u32) -> Option<i64> {
             } else {
                 bits - i32::from(NUMERIC_SHORT_WEIGHT_SIGN)
             };
-            (header & NUMERIC_SHORT_SIGN != 0, weight, bytes.get(2..)?)
+            (
+                header & NUMERIC_SHORT_SIGN != 0,
+                weight,
+                bytes.get(NUMERIC_HEADER..)?,
+            )
         }
         sign => {
-            let weight = i16::from_le_bytes([*bytes.get(2)?, *bytes.get(3)?]);
-            (sign == NUMERIC_NEG, weight.into(), bytes.get(4..)?)
+            let weight = bytes.get(NUMERIC_LONG_WEIGHT..NUMERIC_LONG_DIGITS)?;
+            let weight = i16::from_le_bytes([weight[0], weight[1]]);
+            (
+                sign == NUMERIC_NEG,
+                weight.into(),
+                bytes.get(NUMERIC_LONG_DIGITS..)?,
+            )
         }
     };
-    let (digits, odd) = digits.as_chunks::<2>();
+    let (digits, odd) = digits.as_chunks::<NUMERIC_DIGIT_SIZE>();
     if !odd.is_empty() {
         return None;
     }
@@ -302,23 +337,41 @@ mod tests {
     const INT: Kind = Kind::Read(ColumnType::Int);
     const TEXT: Kind = Kind::Read(ColumnType::Text);
     const TIME: Kind = Kind::Read(ColumnType::Time { zoned: true });
+    /// `SizeofHeapTupleHeader`: the fixed part of a row's header.
+    const TUPLE_HEADER: usize = 23;
+    /// `MAXALIGN`: where a row's columns start is a multiple of it.
+    const MAXALIGN: usize = 8;
+    /// `va_tcinfo`'s method for zstd, which Straum doesn't read.
+    const METHOD_ZSTD: u32 = 2;
+    /// `VARTAG_INDIRECT`: a TOAST pointer to memory, never on a page.
+    const VARTAG_INDIRECT: u8 = 1;
+    /// `NUMERIC_PINF`: positive infinity.
+    const NUMERIC_POSITIVE_INFINITY: u16 = 0xD000;
+    /// A short numeric's header: the display scale in six bits from bit 7,
+    /// the sign and the weight in the seven below.
+    const NUMERIC_SHORT_SCALE_SHIFT: u16 = 7;
+    const NUMERIC_SHORT_WEIGHT_BITS: u16 = 0x7F;
 
     /// A row of `columns`, nulls where `None`, as `heap_form_tuple` lays
-    /// it out with a 24-byte header.
+    /// it out.
     fn row(attributes: &[Attribute], columns: &[Option<&[u8]>]) -> HeapTuple {
         let nulls = columns.iter().any(Option::is_none);
-        let bitmap = if nulls { columns.len().div_ceil(8) } else { 0 };
-        let hoff = (23 + bitmap).next_multiple_of(8);
-        let mut body = vec![0; hoff - 23];
+        let bitmap = if nulls {
+            columns.len().div_ceil(BITS_PER_BYTE)
+        } else {
+            0
+        };
+        let hoff = (TUPLE_HEADER + bitmap).next_multiple_of(MAXALIGN);
+        let mut body = vec![0; hoff - TUPLE_HEADER];
         for (index, column) in columns.iter().enumerate() {
             if column.is_some() && nulls {
-                body[index / 8] |= 1 << (index % 8);
+                body[index / BITS_PER_BYTE] |= 1 << (index % BITS_PER_BYTE);
             }
         }
         let mut data = Vec::new();
         for (attribute, column) in attributes.iter().zip(columns) {
             let Some(bytes) = column else { continue };
-            let short = attribute.length == -1 && bytes[0] & 0x01 == 1;
+            let short = attribute.length == VARLENA_LENGTH && bytes[0] & VARLENA_ONE_BYTE != 0;
             if !short {
                 data.resize(data.len().next_multiple_of(attribute.align), 0);
             }
@@ -334,7 +387,8 @@ mod tests {
     }
 
     fn long_varlena(payload: &[u8]) -> Vec<u8> {
-        let mut bytes = u32::try_from((payload.len() + 4) << 2)
+        let size = payload.len() + FOUR_BYTE_HEADER;
+        let mut bytes = u32::try_from(size << FOUR_BYTE_SIZE_SHIFT)
             .unwrap()
             .to_le_bytes()
             .to_vec();
@@ -356,14 +410,14 @@ mod tests {
     fn walks_aligned_columns_and_nulls() {
         let attributes = [
             attribute(2, 2, INT),
-            attribute(-1, 4, TEXT),
+            attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(8, 8, INT),
             attribute(1, 1, Kind::Read(ColumnType::Bool)),
             attribute(4, 4, INT),
-            attribute(-1, 4, TEXT),
+            attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(4, 4, Kind::Other),
             attribute(4, 4, Kind::Enum),
-            attribute(-1, 4, TEXT),
+            attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(8, 8, TIME),
         ];
         let long = "l".repeat(200);
@@ -407,8 +461,8 @@ mod tests {
     #[test]
     fn walks_c_strings_and_external_pointers() {
         let attributes = [
-            attribute(-2, 1, Kind::Other),
-            attribute(-1, 4, TEXT),
+            attribute(C_STRING_LENGTH, 1, Kind::Other),
+            attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(4, 4, INT),
         ];
         let mut pointer = vec![0x01, VARTAG_ON_DISK];
@@ -421,7 +475,7 @@ mod tests {
 
     #[test]
     fn reads_compressed_values() {
-        let attributes = [attribute(-1, 4, TEXT)];
+        let attributes = [attribute(VARLENA_LENGTH, 4, TEXT)];
         let plain = b"abcabcabcabc";
         // pglz: one literal group of 3 bytes, then a match of 9 back 3.
         let pglz = [0b0000_1000, b'a', b'b', b'c', 0x06, 0x03];
@@ -429,10 +483,7 @@ mod tests {
         let lz4 = [0x35, b'a', b'b', b'c', 0x03, 0x00, 0x00];
         for (method, stored) in [(METHOD_PGLZ, &pglz[..]), (METHOD_LZ4, &lz4[..])] {
             let info = u32::try_from(plain.len()).unwrap() | method << METHOD_SHIFT;
-            let mut bytes = u32::try_from((stored.len() + 8) << 2 | 2)
-                .unwrap()
-                .to_le_bytes()
-                .to_vec();
+            let mut bytes = compressed_header(stored.len()).to_vec();
             bytes.extend(info.to_le_bytes());
             bytes.extend(stored);
             let got = values(
@@ -442,7 +493,7 @@ mod tests {
             );
             assert_eq!(got, Ok(vec![text("abcabcabcabc")]), "method {method}");
             let mut bad = bytes.clone();
-            bad[4..8].copy_from_slice(&(info + 1).to_le_bytes());
+            bad[TCINFO].copy_from_slice(&(info + 1).to_le_bytes());
             let got = values(
                 &row(&attributes, &[Some(&bad)]),
                 &attributes,
@@ -450,9 +501,9 @@ mod tests {
             );
             assert_eq!(got, Err(Problem::ValueNotDecompressing));
         }
-        let mut zstd = u32::try_from(10 << 2 | 2).unwrap().to_le_bytes().to_vec();
-        // Method 2, zstd, and a raw size of 12.
-        zstd.extend(((0b10 << METHOD_SHIFT) + 12u32).to_le_bytes());
+        // zstd, and a raw size of 12, from two stored bytes.
+        let mut zstd = compressed_header(2).to_vec();
+        zstd.extend(((METHOD_ZSTD << METHOD_SHIFT) + 12u32).to_le_bytes());
         zstd.extend([0, 0]);
         let got = values(
             &row(&attributes, &[Some(&zstd)]),
@@ -460,6 +511,14 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(got, Err(Problem::UnknownCompression));
+    }
+
+    /// A compressed varlena's four-byte header, for `stored` bytes after
+    /// `va_tcinfo`.
+    fn compressed_header(stored: usize) -> [u8; FOUR_BYTE_HEADER] {
+        let size = stored + COMPRESSED_HEADER;
+        let header = size << FOUR_BYTE_SIZE_SHIFT | usize::from(VARLENA_COMPRESSED);
+        u32::try_from(header).unwrap().to_le_bytes()
     }
 
     fn check(tuple: &HeapTuple, attributes: &[Attribute], problem: Problem) {
@@ -473,7 +532,7 @@ mod tests {
     #[test]
     fn rejects_rows_that_dont_fit() {
         let int = attribute(4, 4, INT);
-        let text_column = attribute(-1, 4, TEXT);
+        let text_column = attribute(VARLENA_LENGTH, 4, TEXT);
         let fits = four_byte_row();
         check(&fits, &[], Problem::TooManyColumns);
         let mut cut = fits.clone();
@@ -482,13 +541,13 @@ mod tests {
         let mut no_header = fits.clone();
         no_header.hoff = 8;
         check(&no_header, &[int], Problem::ShortRow);
-        let other_tag = [0x01, 1, 0, 0];
+        let other_tag = [VARLENA_EXTERNAL, VARTAG_INDIRECT, 0, 0];
         check(
             &row(&[text_column], &[Some(&other_tag)]),
             &[text_column],
             Problem::ShortRow,
         );
-        let half = [10 << 2 | 2, 0, 0, 0, 0, 0];
+        let half = [compressed_header(2).as_slice(), &[0, 0]].concat();
         check(
             &row(&[text_column], &[Some(&half)]),
             &[text_column],
@@ -496,7 +555,10 @@ mod tests {
         );
         // A four-byte header naming fewer bytes than itself.
         check(
-            &row(&[text_column], &[Some(&[0x04, 0, 0, 0])]),
+            &row(
+                &[text_column],
+                &[Some(&1u32.wrapping_shl(FOUR_BYTE_SIZE_SHIFT).to_le_bytes())],
+            ),
             &[text_column],
             Problem::ShortRow,
         );
@@ -505,7 +567,7 @@ mod tests {
     #[test]
     fn rejects_values_that_dont_fit() {
         let int = attribute(4, 4, INT);
-        let text_column = attribute(-1, 4, TEXT);
+        let text_column = attribute(VARLENA_LENGTH, 4, TEXT);
         let fits = four_byte_row();
         check(&fits, &[attribute(-3, 1, INT)], Problem::UnknownLength);
         check(
@@ -530,7 +592,11 @@ mod tests {
             &[text_column],
             Problem::NotUtf8,
         );
-        let numeric = attribute(-1, 4, Kind::Read(ColumnType::Numeric { scale: 0 }));
+        let numeric = attribute(
+            VARLENA_LENGTH,
+            4,
+            Kind::Read(ColumnType::Numeric { scale: 0 }),
+        );
         check(
             &row(&[numeric], &[Some(&short_varlena("\u{1}"))]),
             &[numeric],
@@ -550,10 +616,10 @@ mod tests {
     }
 
     fn short_numeric(negative: bool, scale: u16, weight: i16, digits: &[i16]) -> Vec<u8> {
-        let weight_bits = u16::from_le_bytes(weight.to_le_bytes()) & 0x7F;
+        let weight_bits = u16::from_le_bytes(weight.to_le_bytes()) & NUMERIC_SHORT_WEIGHT_BITS;
         let header = NUMERIC_SHORT
             | if negative { NUMERIC_SHORT_SIGN } else { 0 }
-            | scale << 7
+            | scale << NUMERIC_SHORT_SCALE_SHIFT
             | weight_bits;
         let mut payload = header.to_le_bytes().to_vec();
         for digit in digits {
@@ -588,8 +654,8 @@ mod tests {
         }
         // NaN, the infinities and bytes that aren't a numeric.
         for bytes in [
-            &0xC000u16.to_le_bytes()[..],
-            &0xD000u16.to_le_bytes(),
+            &NUMERIC_SPECIAL.to_le_bytes()[..],
+            &NUMERIC_POSITIVE_INFINITY.to_le_bytes(),
             &[0],
             &[0, 0, 0],
             &[0, 0, 0, 0, 1],

@@ -18,6 +18,10 @@ use straum_domain::FastMap;
 use super::heap::HeapChange;
 use super::xact::{Ending, Event, Invalidated, Running};
 
+/// The bits of a 64-bit xid that a 32-bit one keeps; the bits above count
+/// how often the 32-bit xids wrapped, the epoch.
+const LOW_32_BITS: u64 = 0xFFFF_FFFF;
+
 /// A transaction that committed, with every change it made to the
 /// tracked tables, in WAL order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,7 +362,7 @@ impl TransactionSnapshot {
     /// The snapshot sees `xid`'s commit: it ended before the snapshot. A
     /// 32-bit xid is read as the 64-bit one nearest `xmax`.
     pub(crate) fn sees(&self, xid: u32) -> bool {
-        let low = u32::try_from(self.xmax & 0xFFFF_FFFF).unwrap_or(0);
+        let low = u32::try_from(self.xmax & LOW_32_BITS).unwrap_or(0);
         let distance = i64::from(i32::from_ne_bytes(xid.wrapping_sub(low).to_ne_bytes()));
         let Some(full) = self.xmax.checked_add_signed(distance) else {
             return false;

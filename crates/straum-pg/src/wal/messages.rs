@@ -241,9 +241,23 @@ mod tests {
     use crate::pgoutput::RelationColumn;
     use crate::value::{INT4, INT8, TEXT};
     use crate::wal::test_support::{FILE, attribute, short_varlena as short};
-    use crate::wal::tuple::Kind;
+    use crate::wal::tuple::{Kind, VARLENA_LENGTH};
 
     const INT: Kind = Kind::Read(ColumnType::Int);
+    /// `point`'s type OID, a type Straum doesn't read.
+    const POINT: u32 = 600;
+    /// `sizeof(Point)`: two `float8`s, aligned to 8.
+    const POINT_SIZE: usize = 16;
+    const POINT_LENGTH: i16 = 16;
+    const POINT_ALIGN: usize = 8;
+    /// `t_hoff` of a row without nulls: `SizeofHeapTupleHeader`, 23,
+    /// rounded up to `MAXALIGN`, so one byte of padding before the columns.
+    const ROW_HEADER: u8 = 24;
+    const ROW_PADDING: usize = 1;
+    /// A TOAST pointer to a value on disk: `varattrib_1b_e`'s header byte
+    /// and `va_tag` `VARTAG_ONDISK`, then a 16-byte `varatt_external`.
+    const TOAST_POINTER: [u8; 2] = [0x01, 18];
+    const EXTERNAL_POINTER: usize = 16;
 
     fn column(name: &str, type_oid: u32) -> RelationColumn {
         RelationColumn {
@@ -265,15 +279,15 @@ mod tests {
                 columns: vec![
                     column("id", INT4),
                     column("name", TEXT),
-                    column("p", 600),
+                    column("p", POINT),
                     column("late", INT4),
                 ],
             },
             attributes: vec![
                 attribute(4, 4, INT),
                 attribute(4, 4, Kind::Other),
-                attribute(-1, 4, Kind::Read(ColumnType::Text)),
-                attribute(16, 8, Kind::Other),
+                attribute(VARLENA_LENGTH, 4, Kind::Read(ColumnType::Text)),
+                attribute(POINT_LENGTH, POINT_ALIGN, Kind::Other),
                 attribute(4, 4, INT),
             ],
             columns: vec![0, 2, 3, 4],
@@ -294,16 +308,18 @@ mod tests {
     /// A row of the first four attributes: `name` as given, its varlena
     /// header included.
     fn row(id: i32, name: &[u8]) -> HeapTuple {
-        let mut body = vec![0];
+        let mut body = vec![0; ROW_PADDING];
         body.extend(id.to_le_bytes());
         body.extend(9i32.to_le_bytes());
         body.extend(name);
-        body.resize(body.len().next_multiple_of(8) + 1, 0);
-        body.extend([1; 16]);
+        // The point aligns from where the columns start, past the padding.
+        let columns = body.len() - ROW_PADDING;
+        body.resize(columns.next_multiple_of(POINT_ALIGN) + ROW_PADDING, 0);
+        body.extend([1; POINT_SIZE]);
         HeapTuple {
             infomask2: 4,
             infomask: 0,
-            hoff: 24,
+            hoff: ROW_HEADER,
             body: body.into(),
         }
     }
@@ -394,8 +410,8 @@ mod tests {
 
     #[test]
     fn leaves_out_values_toasted_out_of_line() {
-        let mut pointer = vec![0x01, 18];
-        pointer.extend([0; 16]);
+        let mut pointer = TOAST_POINTER.to_vec();
+        pointer.extend([0; EXTERNAL_POINTER]);
         let toasted = row(1, &pointer);
         let changes = vec![HeapChange::Update {
             file: FILE,
@@ -436,7 +452,8 @@ mod tests {
             "WAL at 0/100 has a change to a table Straum doesn't read"
         );
         let mut cut = row(1, &short("a"));
-        cut.body = cut.body[..6].into();
+        // The padding, `id` and one byte of the dropped column.
+        cut.body = cut.body[..ROW_PADDING + 5].into();
         assert_eq!(
             message(publish(vec![HeapChange::Insert {
                 file: FILE,
@@ -535,17 +552,18 @@ mod tests {
         };
         publisher.relayout(&[77], layouts(vec![retyped]));
         let mut changes = Vec::new();
-        let mut body = vec![0];
+        // `id`, the dropped `int4`, `name` now an `int8`, then the point.
+        let mut body = vec![0; ROW_PADDING];
         body.extend(1i32.to_le_bytes());
         body.extend([0; 4]);
         body.extend(5i64.to_le_bytes());
-        body.extend([1; 16]);
+        body.extend([1; POINT_SIZE]);
         changes.push(HeapChange::Insert {
             file: FILE,
             new: HeapTuple {
                 infomask2: 4,
                 infomask: 0,
-                hoff: 24,
+                hoff: ROW_HEADER,
                 body: body.into(),
             },
         });

@@ -10,6 +10,10 @@ const PGLZ_OFFSET_HIGH: usize = 0xF0;
 const PGLZ_LENGTH: usize = 0x0F;
 const PGLZ_SHORTEST_COPY: usize = 3;
 const PGLZ_LONG_COPY: usize = 18;
+/// How far the offset's high nibble moves up, above its low byte.
+const PGLZ_OFFSET_HIGH_SHIFT: usize = 4;
+/// A control byte says, bit by bit, what each of the next eight items is.
+const PGLZ_ITEMS_PER_CONTROL: usize = 8;
 /// An LZ4 token: the literals' length nibble high, the match's low. A
 /// nibble of 15 goes on in the bytes after, while they are 255; a match is
 /// 4 bytes at least.
@@ -18,6 +22,8 @@ const LZ4_MATCH_LENGTH: u8 = 0x0F;
 const LZ4_LONG_LENGTH: usize = 15;
 const LZ4_MORE_LENGTH: u8 = 255;
 const LZ4_SHORTEST_MATCH: usize = 4;
+/// A match's offset back: a little-endian `uint16`.
+const LZ4_OFFSET_SIZE: usize = 2;
 
 /// A pglz stream: control bytes, each saying which of the next eight
 /// items are literals and which copy from what came out before.
@@ -27,7 +33,7 @@ pub(crate) fn pglz(source: &[u8], size: usize) -> Option<Vec<u8>> {
     while at < source.len() && out.len() < size {
         let mut control = source[at];
         at += 1;
-        for _ in 0..8 {
+        for _ in 0..PGLZ_ITEMS_PER_CONTROL {
             if at >= source.len() || out.len() >= size {
                 break;
             }
@@ -39,7 +45,7 @@ pub(crate) fn pglz(source: &[u8], size: usize) -> Option<Vec<u8>> {
                 let second = usize::from(*source.get(at + 1)?);
                 at += 2;
                 let mut length = (first & PGLZ_LENGTH) + PGLZ_SHORTEST_COPY;
-                let offset = ((first & PGLZ_OFFSET_HIGH) << 4) | second;
+                let offset = ((first & PGLZ_OFFSET_HIGH) << PGLZ_OFFSET_HIGH_SHIFT) | second;
                 if length == PGLZ_LONG_COPY {
                     length += usize::from(*source.get(at)?);
                     at += 1;
@@ -73,8 +79,9 @@ pub(crate) fn lz4(source: &[u8], size: usize) -> Option<Vec<u8>> {
         if at == source.len() {
             break;
         }
-        let offset = usize::from(u16::from_le_bytes([*source.get(at)?, *source.get(at + 1)?]));
-        at += 2;
+        let offset = source.get(at..at + LZ4_OFFSET_SIZE)?;
+        let offset = usize::from(u16::from_le_bytes([offset[0], offset[1]]));
+        at += LZ4_OFFSET_SIZE;
         let nibble = usize::from(token & LZ4_MATCH_LENGTH);
         let length = lz4_length(source, &mut at, nibble)? + LZ4_SHORTEST_MATCH;
         if offset == 0 || offset > out.len() || out.len() + length > size {
@@ -117,6 +124,15 @@ fn copy_back(out: &mut Vec<u8>, offset: usize, length: usize) {
 mod tests {
     use super::*;
     use crate::wal::test_support::Rng;
+
+    /// `PGLZ_MAX_OFFSET` and `PGLZ_MAX_MATCH`: how far back and how long
+    /// a pglz copy may reach.
+    const PGLZ_MAX_OFFSET: usize = 4095;
+    const PGLZ_MAX_MATCH: usize = 273;
+    /// How far back an LZ4 match may reach, and `LASTLITERALS`: the bytes
+    /// at the end of a block that stay literal.
+    const LZ4_MAX_OFFSET: usize = 65_535;
+    const LZ4_LAST_LITERALS: usize = 5;
 
     /// Data with repeats near and far, like a page of tuples.
     fn page_like(rng: &mut Rng, size: usize) -> Vec<u8> {
@@ -178,10 +194,10 @@ mod tests {
                 if at >= data.len() {
                     break;
                 }
-                let Match { offset, length } = longest(data, at, 4095, 273);
+                let Match { offset, length } = longest(data, at, PGLZ_MAX_OFFSET, PGLZ_MAX_MATCH);
                 if length >= PGLZ_SHORTEST_COPY {
                     out[control] |= 1 << bit;
-                    let offset_high = (offset >> 4) & PGLZ_OFFSET_HIGH;
+                    let offset_high = (offset >> PGLZ_OFFSET_HIGH_SHIFT) & PGLZ_OFFSET_HIGH;
                     let offset_low = offset.to_le_bytes()[0];
                     if length >= PGLZ_LONG_COPY {
                         out.push(byte(offset_high | PGLZ_LENGTH));
@@ -205,10 +221,16 @@ mod tests {
         u8::try_from(value).unwrap()
     }
 
+    /// A length's nibble in a token: 15 says more bytes follow.
+    fn lz4_nibble(length: usize) -> u8 {
+        byte(length.min(LZ4_LONG_LENGTH))
+    }
+
     fn lz4_length_bytes(out: &mut Vec<u8>, mut rest: usize) {
-        while rest >= 255 {
-            out.push(255);
-            rest -= 255;
+        let more = usize::from(LZ4_MORE_LENGTH);
+        while rest >= more {
+            out.push(LZ4_MORE_LENGTH);
+            rest -= more;
         }
         out.push(byte(rest));
     }
@@ -219,30 +241,32 @@ mod tests {
         let mut out = Vec::new();
         let mut literal_start = 0;
         let mut at = 0;
-        while at + 5 < data.len() {
-            let Match { offset, length } = longest(data, at, 65_535, data.len() - 5 - at);
-            if length < 4 {
+        while at + LZ4_LAST_LITERALS < data.len() {
+            let most = data.len() - LZ4_LAST_LITERALS - at;
+            let Match { offset, length } = longest(data, at, LZ4_MAX_OFFSET, most);
+            if length < LZ4_SHORTEST_MATCH {
                 at += 1;
                 continue;
             }
             let literals = at - literal_start;
-            let token = byte(literals.min(15) << 4) | byte((length - 4).min(15));
+            let extra = length - LZ4_SHORTEST_MATCH;
+            let token = lz4_nibble(literals) << LZ4_LITERALS_SHIFT | lz4_nibble(extra);
             out.push(token);
-            if literals >= 15 {
-                lz4_length_bytes(&mut out, literals - 15);
+            if literals >= LZ4_LONG_LENGTH {
+                lz4_length_bytes(&mut out, literals - LZ4_LONG_LENGTH);
             }
             out.extend_from_slice(&data[literal_start..at]);
             out.extend_from_slice(&u16::try_from(offset).unwrap().to_le_bytes());
-            if length - 4 >= 15 {
-                lz4_length_bytes(&mut out, length - 4 - 15);
+            if extra >= LZ4_LONG_LENGTH {
+                lz4_length_bytes(&mut out, extra - LZ4_LONG_LENGTH);
             }
             at += length;
             literal_start = at;
         }
         let literals = data.len() - literal_start;
-        out.push(byte(literals.min(15) << 4));
-        if literals >= 15 {
-            lz4_length_bytes(&mut out, literals - 15);
+        out.push(lz4_nibble(literals) << LZ4_LITERALS_SHIFT);
+        if literals >= LZ4_LONG_LENGTH {
+            lz4_length_bytes(&mut out, literals - LZ4_LONG_LENGTH);
         }
         out.extend_from_slice(&data[literal_start..]);
         out
