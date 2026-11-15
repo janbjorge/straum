@@ -280,9 +280,9 @@ name one input column (`Aggregate::input`).
   another dim comes after it (`Via::Attribute::through` is an index
   into `Fact::refs` before it).
 - A **Ref** points at a dim by name, with as many **Via** columns as
-  the dim's key has (`SpecError::KeyLength`). Left and inner refs read
+  the dim's key has (`JoinError::KeyLength`). Left and inner refs read
   at least one **Attribute**; semi and anti read none
-  (`SpecError::RefReadsNothing`, `SpecError::RefReads`).
+  (`JoinError::ReadsNothing`, `JoinError::ReadsColumns`).
 - Keys, attributes and measures share one namespace per view, and
   nothing may be named `bucket` (`SpecError::NamedBucket`). An ask
   reaches any of them by that name alone (`Fact::resolve`).

@@ -10,9 +10,10 @@ model behind the code; the [glossary](glossary.md) names each thing.
 Read the crates from the inside out. Each one only uses the ones
 before it.
 
-1. `straum-domain`: what a view is and how its cells add up. No I/O,
-   no threads. Start with `spec.rs` (the parsed views), then
-   `store.rs` (where rows land and asks read).
+1. `straum-domain`: what a view is and how its cells add up. No I/O.
+   Start with `spec.rs` (the parsed views), then `store/mod.rs`
+   (where rows land), `store/ask.rs` and `store/cell_loop.rs` (how an
+   ask reads the cells). `lib.rs` lists the rest in reading order.
 2. `straum-notation`: reads Straum SQL, the `CREATE VIEW` statements
    and the asks, into the domain's types.
 3. `straum-app`: the use cases. `app.rs` holds `App`, which answers
@@ -99,6 +100,37 @@ an earlier `let` took out.
 `Direction::Add` carries none, `Step::Started(lsn)` carries a
 position in the WAL. `match` takes them out again.
 
+**Named index types.** `struct FactIndex(usize);` is a struct with
+one unnamed field, read as `fact.0`. It costs nothing at run time and
+makes a signature say what a number points at: `fn bind(&mut self,
+fact: FactIndex, ..)` takes a position among the facts, and the
+compiler refuses a `DimIndex` there. `PartIndex`, `AttributeIndex`
+and `InputIndex` do the same for a part of the rollup key, a dim's
+attribute and a cell state.
+
+**Iterators.** `for row in rows` walks anything that is an
+`Iterator`: a type with a `next` function that hands out one item at
+a time until it returns `None`. `impl Iterator<Item = CoveredBucket>`
+as a return type means "some iterator of buckets", without naming
+it. The domain returns one where a `Vec` would allocate on a path a
+test counts allocations on, such as `Rollup::cover`; elsewhere it
+returns a `Vec`. `Entries` in `value_counts/` is an iterator written
+out as a struct, `impl Iterator for Entries` its `next`.
+
+**Closures.** `|cell, group, count| partials[..] += count` is a
+function without a name, written where it is passed. The code binds
+none to a `let`. A few stay where a named function won't do:
+`Counts::each` hands each count to one because a loop calling
+`Counts::get` per cell measured half again slower, and
+`thread::scope(|scope| ..)` runs the wider widths of a load on
+threads of their own. `move` before a closure makes it keep copies
+of what it uses rather than borrow them.
+
+**`Cow`: borrowed or owned.** `Cow<'_, Datum>` holds either a
+borrowed value or one of its own. A rollup key part reads a column's
+value in place, and only a null-ness key makes a new `Datum`, so no
+row's text is copied.
+
 **`impl` blocks and `self`.** `impl Store { .. }` holds the functions
 of a `Store`. A first parameter `&self` reads the store, `&mut self`
 changes it, `self` uses it up.
@@ -151,11 +183,13 @@ read back as `.0`.
 threads share it, `RwLock` lets many asks read at once while one
 commit writes. `read()` and `write()` in `app.rs` take the lock.
 
-**Modules.** `mod store;` pulls in `store.rs`. `pub` is visible to
-other crates, `pub(crate)` only inside this one, nothing at all only
-inside the file. `#[cfg(test)] mod tests` at the end of a file holds
-its unit tests; `tests/` beside `src/` holds the tests that use the
-crate from outside.
+**Modules.** `mod store;` pulls in `store.rs`, or `store/mod.rs`
+when the module is a folder of files. `pub` is visible to
+other crates, `pub(crate)` only inside this one, `pub(super)` only
+in the folder's other files, nothing at all only inside the file.
+`#[cfg(test)] mod tests` at the end of a file holds its unit tests;
+`tests/` beside `src/` holds the tests that use the crate from
+outside.
 
 **Type aliases.** `type TransactionId = u32;` gives `u32` a second
 name, so `xid: TransactionId` says what the number is. The two are the

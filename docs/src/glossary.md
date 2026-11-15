@@ -82,7 +82,8 @@ are open.
   use.
 - **Ref** (`Ref`, `RefKind`): the join as the domain holds it. ADR-0030
   calls a view "a tree of refs rooted at the fact". Errors and the
-  guide say join.
+  guide say join. What is wrong with one join of a view is a
+  `JoinError`, inside `SpecError::Join`.
 - **Join kind** (`RefKind`): left, inner, semi or anti.
 - **Join column** (`Via::Fact`): the fact column a join reads its key
   from, `e.account_id`. It keys the cells whether selected or
@@ -100,7 +101,7 @@ are open.
 - **Time column** (`Time::column`): the `timestamptz` or `timestamp`
   column inside `date_bin`.
 - **Bucket**: one span of the time column, floored to a width from
-  the epoch, and `bucket`, the name of the time key. In `rollup.rs`,
+  the epoch, and `bucket`, the name of the time key. In `rollup/`,
   `Bucket` is also the cells of one such span, hot or sealed.
 - **Bucket width** (`Width`): `<n> seconds`, `minutes`, `hours` or
   `days`, at most a day and dividing it; each wider one a whole
@@ -189,7 +190,7 @@ are open.
 - **Condition** (`Condition`): `key = value`, `key IN (values)`, or in
   a view `column IS NULL` and `IS NOT NULL`. A **filter** is
   conditions joined by `AND`: a measure's `FILTER`, the view's `WHERE`
-  (`Fact::filter`) or an ask's `WHERE`. `store.rs` evaluates one as a
+  (`Fact::filter`) or an ask's `WHERE`. `store/lookup.rs` evaluates one as a
   `ConditionCheck`, and an inner, semi or anti join that keeps or
   drops whole cells as a `JoinCheck`.
 - **Range** (`Ask::from`, `Ask::to`): the half-open `[from, to)` an
