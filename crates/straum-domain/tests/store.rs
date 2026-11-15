@@ -22,6 +22,17 @@ const WIDTH: u32 = 900;
 const START: i64 = 1_705_276_800;
 const END: i64 = 1_713_139_200;
 
+const HOUR: u32 = 3_600;
+const DAY: u32 = 86_400;
+const WEEK: u32 = 604_800;
+
+// Seeds of the random workload, and its size: the steps, how often it
+// asks, and how many asks then.
+const SEEDS: u64 = 16;
+const STEPS: u32 = 2_000;
+const CHECK_EVERY: u32 = 100;
+const ASKS_PER_CHECK: usize = 10;
+
 // Row positions; `columns` and `rollup_key` check them.
 const AT: usize = 0;
 const PAY: usize = 1;
@@ -114,9 +125,9 @@ fn spec_joining(vend: RefKind) -> Spec {
             width: Width { seconds: WIDTH },
             // Hours, days and weeks, so random ranges read every width.
             wider: vec![
-                Width { seconds: 3_600 },
-                Width { seconds: 86_400 },
-                Width { seconds: 604_800 },
+                Width { seconds: HOUR },
+                Width { seconds: DAY },
+                Width { seconds: WEEK },
             ],
             origin: Origin::Timestamptz,
         },
@@ -491,33 +502,32 @@ fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
 /// A key's value for a row: a column, a null-ness key, or a dim value
 /// joined as the dims are now, null when the join finds no row.
 fn value(row: &[Datum], key: &Identifier, dims: &Dims) -> Datum {
-    let joined = |dim: &str, key: Vec<Datum>, attr: usize| -> Datum {
-        if key.contains(&Datum::Null) {
-            return Datum::Null;
-        }
-        dims[dim]
-            .get(&key)
-            .map_or(Datum::Null, |attrs| attrs[attr].clone())
-    };
     match key.as_str() {
         "known" => Datum::Bool(row[SHARED] != Datum::Null),
         "unpaid" => Datum::Bool(row[PAY] == Datum::Null),
-        "home_borough" => joined("zones", vec![row[HOME].clone()], 0),
-        "pickup_borough" => joined("zones", vec![row[PU].clone()], 0),
-        "pickup_zone" => joined("zones", vec![row[PU].clone()], 1),
-        "dropoff_borough" => joined("zones", vec![row[DRO].clone()], 0),
-        "dropoff_zone" => joined("zones", vec![row[DRO].clone()], 1),
-        "combo_label" => joined("combos", vec![row[PU].clone(), row[VENDOR].clone()], 0),
-        "vend_label" => joined("vendors", vec![row[VENDOR].clone()], 0),
+        "home_borough" => joined(dims, "zones", &[row[HOME].clone()], 0),
+        "pickup_borough" => joined(dims, "zones", &[row[PU].clone()], 0),
+        "pickup_zone" => joined(dims, "zones", &[row[PU].clone()], 1),
+        "dropoff_borough" => joined(dims, "zones", &[row[DRO].clone()], 0),
+        "dropoff_zone" => joined(dims, "zones", &[row[DRO].clone()], 1),
+        "combo_label" => joined(dims, "combos", &[row[PU].clone(), row[VENDOR].clone()], 0),
+        "vend_label" => joined(dims, "vendors", &[row[VENDOR].clone()], 0),
         name => row[column(name)].clone(),
     }
 }
 
+fn joined(dims: &Dims, dim: &str, key: &[Datum], attribute: usize) -> Datum {
+    if key.contains(&Datum::Null) {
+        return Datum::Null;
+    }
+    let Some(attributes) = dims[dim].get(key) else {
+        return Datum::Null;
+    };
+    attributes[attribute].clone()
+}
+
 /// The column types `run` sets.
 fn trip_types() -> Vec<ColumnType> {
-    let numeric = |column: usize| ColumnType::Numeric {
-        scale: TRIP_SCALES + u32::try_from(column).expect("a row position fits a scale"),
-    };
     let types = vec![
         ColumnType::Time { zoned: true },
         ColumnType::Int,
@@ -526,14 +536,20 @@ fn trip_types() -> Vec<ColumnType> {
         ColumnType::Int,
         ColumnType::Int,
         ColumnType::Int,
-        numeric(FARE),
-        numeric(TIP),
-        numeric(DIST),
+        trip_numeric(FARE),
+        trip_numeric(TIP),
+        trip_numeric(DIST),
         ColumnType::Text,
         ColumnType::Bool,
     ];
     assert_eq!(types.len(), ROW_LEN);
     types
+}
+
+fn trip_numeric(column: usize) -> ColumnType {
+    ColumnType::Numeric {
+        scale: TRIP_SCALES + u32::try_from(column).expect("a row position fits a scale"),
+    }
 }
 
 /// A store with the types a load would set, for the fact and the dims.
@@ -664,28 +680,9 @@ fn measure_scale(aggregate: &Aggregate) -> u32 {
 }
 
 fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
-    let rows: Vec<_> = rows
-        .iter()
+    let rows: Vec<&[Datum]> = (rows.iter().copied())
         .filter(|row| passes(row, &measure.filter, dims))
         .collect();
-    let ints = |input: &Identifier| -> Vec<i128> {
-        rows.iter()
-            .filter_map(|row| match row[column(input.as_str())] {
-                Datum::Int(int) => Some(i128::from(int)),
-                _ => None,
-            })
-            .collect()
-    };
-    let or_null = |found: Option<i128>| found.map_or(Value::Null, Value::Int);
-    let bools = |input: &Identifier| -> Vec<bool> {
-        rows.iter()
-            .filter_map(|row| match row[column(input.as_str())] {
-                Datum::Bool(flag) => Some(flag),
-                _ => None,
-            })
-            .collect()
-    };
-    let or_null_bool = |found: Option<bool>| found.map_or(Value::Null, Value::Bool);
     match &measure.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
         Aggregate::CountNotNull(input) => {
@@ -695,11 +692,11 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
             Value::Int(values.count() as i128)
         }
         Aggregate::Sum(input) => {
-            let values = ints(input);
-            or_null((!values.is_empty()).then(|| values.iter().sum()))
+            let values = ints_in(&rows, input);
+            int_or_null((!values.is_empty()).then(|| values.iter().sum()))
         }
         Aggregate::Avg(input) => {
-            let values = ints(input);
+            let values = ints_in(&rows, input);
             if values.is_empty() {
                 Value::Null
             } else {
@@ -709,8 +706,8 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
                 }
             }
         }
-        Aggregate::Min(input) => or_null(ints(input).into_iter().min()),
-        Aggregate::Max(input) => or_null(ints(input).into_iter().max()),
+        Aggregate::Min(input) => int_or_null(ints_in(&rows, input).into_iter().min()),
+        Aggregate::Max(input) => int_or_null(ints_in(&rows, input).into_iter().max()),
         Aggregate::CountDistinct(input) => {
             let seen: HashSet<_> = rows
                 .iter()
@@ -719,10 +716,40 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
                 .collect();
             Value::Int(seen.len() as i128)
         }
-        Aggregate::BoolAnd(input) => or_null_bool(bools(input).into_iter().min()),
-        Aggregate::BoolOr(input) => or_null_bool(bools(input).into_iter().max()),
-        Aggregate::PercentileDisc { fraction, column } => percentile_disc(ints(column), *fraction),
+        Aggregate::BoolAnd(input) => bool_or_null(bools_in(&rows, input).into_iter().min()),
+        Aggregate::BoolOr(input) => bool_or_null(bools_in(&rows, input).into_iter().max()),
+        Aggregate::PercentileDisc { fraction, column } => {
+            percentile_disc(ints_in(&rows, column), *fraction)
+        }
     }
+}
+
+fn ints_in(rows: &[&[Datum]], input: &Identifier) -> Vec<i128> {
+    let mut ints = Vec::new();
+    for row in rows {
+        if let Datum::Int(int) = row[column(input.as_str())] {
+            ints.push(i128::from(int));
+        }
+    }
+    ints
+}
+
+fn bools_in(rows: &[&[Datum]], input: &Identifier) -> Vec<bool> {
+    let mut bools = Vec::new();
+    for row in rows {
+        if let Datum::Bool(flag) = row[column(input.as_str())] {
+            bools.push(flag);
+        }
+    }
+    bools
+}
+
+fn int_or_null(found: Option<i128>) -> Value {
+    found.map_or(Value::Null, Value::Int)
+}
+
+fn bool_or_null(found: Option<bool>) -> Value {
+    found.map_or(Value::Null, Value::Bool)
 }
 
 /// Makes `row` fall in the cell of `other`, or beside it: the same keys
@@ -733,23 +760,29 @@ fn near(rng: &mut Rng, row: &mut [Datum], other: &[Datum]) {
     row[..=same].clone_from_slice(&other[..=same]);
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sealing {
+    Never,
+    AtRandom,
+}
+
 /// Random changes to trips and dims, and asks against the reference.
 /// With `sealing`, buckets are sealed and unsealed at random as they go,
 /// and the answers must not change; returns the sealed buckets asks
 /// read. An ask that overlaps a sealed bucket reads the keyed cells, the
 /// rest the bound cells, which move with the dims. Halfway the trips
 /// are truncated. `vend` is how the vendors join.
-fn run(seed: u64, sealing: bool, vend: RefKind) -> usize {
+fn run(seed: u64, sealing: Sealing, vend: RefKind) -> usize {
     let mut workload = Workload::new(seed, vend);
-    for step in 0..2_000 {
-        if sealing && workload.rng.chance(5) {
+    for step in 0..STEPS {
+        if sealing == Sealing::AtRandom && workload.rng.chance(5) {
             workload.seal_some();
         }
-        if step == 1_000 {
+        if step == STEPS / 2 {
             workload.truncate_trips();
         }
         workload.change_one();
-        if step % 100 == 99 {
+        if step % CHECK_EVERY == CHECK_EVERY - 1 {
             workload.check(step);
         }
     }
@@ -785,7 +818,7 @@ impl Workload {
     }
 
     fn seal_some(&mut self) {
-        let before = self.rng.int(START, END + 7 * 86_400);
+        let before = self.rng.int(START, END + i64::from(WEEK));
         self.spilled.seal(&mut self.rng, &mut self.store, before);
     }
 
@@ -849,7 +882,7 @@ impl Workload {
                 "seed {seed}, step {step}: {dim} holds a row with a null key"
             );
         }
-        for _ in 0..10 {
+        for _ in 0..ASKS_PER_CHECK {
             let ask = random_ask(&mut self.rng, &self.spec);
             assert_eq!(
                 self.spilled.ask(&self.store, &ask),
@@ -859,11 +892,11 @@ impl Workload {
         }
     }
 
-    fn finish(mut self, sealing: bool) -> usize {
+    fn finish(mut self, sealing: Sealing) -> usize {
         let seed = self.seed;
         assert!(self.store.cells("trips").unwrap() > 0);
         // Home zones of one borough share bound cells, so these are fewer.
-        if !sealing {
+        if sealing == Sealing::Never {
             let (keyed, bound) = (self.store.cells("trips"), self.store.bound_cells("trips"));
             assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
         }
@@ -887,8 +920,8 @@ impl Workload {
 
 #[test]
 fn store_matches_naive_reference() {
-    for seed in 0..16 {
-        assert_eq!(run(seed, false, RefKind::Left), 0);
+    for seed in 0..SEEDS {
+        assert_eq!(run(seed, Sealing::Never, RefKind::Left), 0);
     }
 }
 
@@ -896,7 +929,9 @@ fn store_matches_naive_reference() {
 /// cells, thawed; the rest read the bound cells.
 #[test]
 fn sealed_store_matches_naive_reference() {
-    let read: usize = (0..16).map(|seed| run(seed, true, RefKind::Left)).sum();
+    let read: usize = (0..SEEDS)
+        .map(|seed| run(seed, Sealing::AtRandom, RefKind::Left))
+        .sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
 }
 
@@ -904,13 +939,21 @@ fn sealed_store_matches_naive_reference() {
 /// cells when it is sealed, and gains them when the vendor's row comes.
 #[test]
 fn sealed_inner_store_matches_naive_reference() {
-    let read: usize = (0..16).map(|seed| run(seed, true, RefKind::Inner)).sum();
+    let read: usize = (0..SEEDS)
+        .map(|seed| run(seed, Sealing::AtRandom, RefKind::Inner))
+        .sum();
     assert!(read > 1_000, "asks read {read} sealed buckets");
+}
+
+#[derive(Clone, Copy)]
+enum Widths {
+    Quarter,
+    QuarterAndHour,
 }
 
 /// Trips by pay, joined to zones for the borough as `pickup` says, or
 /// with no join at all.
-fn zones_spec(pickup: Option<RefKind>, hour: bool) -> Spec {
+fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
     let zones = Dim {
         as_text: Vec::new(),
         name: id("zones"),
@@ -932,10 +975,9 @@ fn zones_spec(pickup: Option<RefKind>, hour: bool) -> Spec {
         time: Time {
             column: id("at"),
             width: Width { seconds: WIDTH },
-            wider: if hour {
-                vec![Width { seconds: 3_600 }]
-            } else {
-                Vec::new()
+            wider: match widths {
+                Widths::Quarter => Vec::new(),
+                Widths::QuarterAndHour => vec![Width { seconds: HOUR }],
             },
             origin: Origin::Timestamptz,
         },
@@ -954,7 +996,7 @@ fn zones_spec(pickup: Option<RefKind>, hour: bool) -> Spec {
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
 /// `START`.
 fn zoned_store() -> Store {
-    let mut store = Store::new(zones_spec(Some(RefKind::Left), false));
+    let mut store = Store::new(zones_spec(Some(RefKind::Left), Widths::Quarter));
     for zone in 1..7 {
         let borough = if zone < 4 { "m" } else { "q" };
         store
@@ -973,13 +1015,17 @@ fn zoned_store() -> Store {
 }
 
 fn by_borough() -> Ask {
+    by_borough_over(START, END)
+}
+
+fn by_borough_over(from: i64, to: i64) -> Ask {
     Ask {
         view: id("trips"),
         measures: vec![id("trips")],
         keys: vec![AskKey::Key(id("borough"))],
         filter: Vec::new(),
-        from: START,
-        to: END,
+        from,
+        to,
     }
 }
 
@@ -1009,11 +1055,6 @@ fn bound_cells_follow_the_dim_column() {
 }
 
 fn percentile_spec() -> Spec {
-    let measure = |name: &str, aggregate| Measure {
-        name: id(name),
-        aggregate,
-        filter: vec![],
-    };
     let trips = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -1028,12 +1069,12 @@ fn percentile_spec() -> Spec {
         by_keys: vec![col("pay")],
         filter: vec![],
         measures: vec![
-            measure("top", Aggregate::Max(id("fare"))),
-            measure("median", percentile(5, 1, "fare")),
-            measure("p99", percentile(99, 2, "fare")),
-            measure("lowest", percentile(0, 0, "fare")),
-            measure("highest", percentile(1, 0, "fare")),
-            measure("p07", percentile(7, 2, "fare")),
+            new_measure("top", Aggregate::Max(id("fare")), vec![]),
+            new_measure("median", percentile(5, 1, "fare"), vec![]),
+            new_measure("p99", percentile(99, 2, "fare"), vec![]),
+            new_measure("lowest", percentile(0, 0, "fare"), vec![]),
+            new_measure("highest", percentile(1, 0, "fare"), vec![]),
+            new_measure("p07", percentile(7, 2, "fare"), vec![]),
         ],
     };
     Spec::new(vec![], vec![trips]).unwrap()
@@ -1053,6 +1094,10 @@ fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
         .collect()
 }
 
+fn fare_row(at: i64, pay: i64, fare: i64) -> [Datum; 3] {
+    [Datum::Int(at), Datum::Int(pay), Datum::Int(fare)]
+}
+
 /// Pay 1 holds 10 and 20 in one bucket, 20, 40 and 90 in the next; pay 2
 /// one row of 5. Five values put the median at rank 3 and p99 at 5; a
 /// delete moves p99 to the next value down.
@@ -1060,11 +1105,12 @@ fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
 fn a_percentile_picks_the_value_at_its_rank() {
     let mut store = Store::new(percentile_spec());
     let width = i64::from(WIDTH);
-    let row = |at: i64, pay: i64, fare: i64| [Datum::Int(at), Datum::Int(pay), Datum::Int(fare)];
     for (at, fare) in [(0, 10), (0, 20), (width, 20), (width, 40), (width, 90)] {
-        store.add_row("trips", &row(START + at, 1, fare)).unwrap();
+        store
+            .add_row("trips", &fare_row(START + at, 1, fare))
+            .unwrap();
     }
-    store.add_row("trips", &row(START, 2, 5)).unwrap();
+    store.add_row("trips", &fare_row(START, 2, 5)).unwrap();
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(2), Datum::Null])
         .unwrap();
@@ -1079,9 +1125,9 @@ fn a_percentile_picks_the_value_at_its_rank() {
     );
 
     store
-        .remove_row("trips", &row(START + width, 1, 90))
+        .remove_row("trips", &fare_row(START + width, 1, 90))
         .unwrap();
-    store.remove_row("trips", &row(START, 2, 5)).unwrap();
+    store.remove_row("trips", &fare_row(START, 2, 5)).unwrap();
     assert_eq!(
         percentiles(&store, &asked),
         [
@@ -1111,7 +1157,7 @@ fn a_percentile_ranks_in_float8_as_postgresql_does() {
 /// answer, however its rows come.
 #[test]
 fn a_fact_without_refs_keeps_no_bound_cells() {
-    let mut store = Store::new(zones_spec(None, false));
+    let mut store = Store::new(zones_spec(None, Widths::Quarter));
     // Without the join, a row carries no zone.
     store
         .add_row("trips", &[Datum::Int(START), Datum::Int(1)])
@@ -1123,23 +1169,32 @@ fn a_fact_without_refs_keeps_no_bound_cells() {
     assert_eq!(store.bound_cells("trips"), None);
 }
 
+fn paid_trip_at(time: Datum) -> [Datum; 2] {
+    [time, Datum::Int(1)]
+}
+
 /// The range runs from the first `date_bin` bucket's start to the last
 /// one's end, and a row without a time is in neither.
 #[test]
 fn the_range_spans_the_buckets_held() {
-    let mut store = Store::new(zones_spec(None, true));
+    let mut store = Store::new(zones_spec(None, Widths::QuarterAndHour));
     assert_eq!(store.range("trips"), None);
     assert_eq!(store.range("zones"), None);
     let width = i64::from(WIDTH);
-    let at = |time| [time, Datum::Int(1)];
-    store.add_row("trips", &at(Datum::Null)).unwrap();
+    store.add_row("trips", &paid_trip_at(Datum::Null)).unwrap();
     assert_eq!(store.range("trips"), None);
-    store.add_row("trips", &at(Datum::Int(START + 1))).unwrap();
+    store
+        .add_row("trips", &paid_trip_at(Datum::Int(START + 1)))
+        .unwrap();
     assert_eq!(store.range("trips"), Some(START..START + width));
     store
-        .add_row("trips", &at(Datum::Int(START + 3 * width)))
+        .add_row("trips", &paid_trip_at(Datum::Int(START + 3 * width)))
         .unwrap();
     assert_eq!(store.range("trips"), Some(START..START + 4 * width));
+}
+
+fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
+    store.key_type("trips", &id(name))
 }
 
 /// A key has the type the load set: a fact column's, a boolean for a
@@ -1147,14 +1202,16 @@ fn the_range_spans_the_buckets_held() {
 #[test]
 fn a_key_has_the_type_the_load_set() {
     let store = typed(&spec());
-    let key_type = |name: &str| store.key_type("trips", &id(name));
-    assert_eq!(key_type("pay"), Some(ColumnType::Int));
-    assert_eq!(key_type("shared"), Some(ColumnType::Bool));
-    assert_eq!(key_type("known"), Some(ColumnType::Bool));
-    assert_eq!(key_type("pickup_borough"), Some(ColumnType::Text));
-    assert_eq!(key_type("combo_label"), Some(ColumnType::Text));
-    assert_eq!(key_type("trips"), None);
-    assert_eq!(key_type("bucket"), None);
+    assert_eq!(trip_key_type(&store, "pay"), Some(ColumnType::Int));
+    assert_eq!(trip_key_type(&store, "shared"), Some(ColumnType::Bool));
+    assert_eq!(trip_key_type(&store, "known"), Some(ColumnType::Bool));
+    assert_eq!(
+        trip_key_type(&store, "pickup_borough"),
+        Some(ColumnType::Text)
+    );
+    assert_eq!(trip_key_type(&store, "combo_label"), Some(ColumnType::Text));
+    assert_eq!(trip_key_type(&store, "trips"), None);
+    assert_eq!(trip_key_type(&store, "bucket"), None);
     assert_eq!(store.key_type("zones", &id("pay")), None);
 }
 
@@ -1202,7 +1259,7 @@ fn a_fact_row_still_comes_out_after_its_dim_changes() {
 /// the bound cells stay and bind the rows that come after it.
 #[test]
 fn a_dim_change_under_no_rows_keeps_the_bound_cells() {
-    let mut store = Store::new(zones_spec(Some(RefKind::Left), false));
+    let mut store = Store::new(zones_spec(Some(RefKind::Left), Widths::Quarter));
     store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
     store
         .remove_row("zones", &[Datum::Int(1), text("m")])
@@ -1251,31 +1308,32 @@ fn a_sealed_bucket_is_read_through_its_keyed_cells() {
     );
 }
 
+fn load_three_zones_and_trips(store: &mut Store) {
+    store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+    store.add_row("zones", &[Datum::Int(2), text("m")]).unwrap();
+    store.add_row("zones", &[Datum::Int(3), text("m")]).unwrap();
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
+        .unwrap();
+    let later = START + i64::from(WIDTH);
+    store
+        .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(2)])
+        .unwrap();
+    store
+        .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(3)])
+        .unwrap();
+}
+
 /// A sealed quarter stays on the keyed cells, including the hour that
 /// contains it. The next quarter, which the seal does not cover, keeps
 /// its bound cells after a dim change.
 #[test]
 fn a_hot_quarter_keeps_bound_cells_beside_a_sealed_one() {
-    let spec = zones_spec(Some(RefKind::Left), true);
-    let load = |store: &mut Store| {
-        store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
-        store.add_row("zones", &[Datum::Int(2), text("m")]).unwrap();
-        store.add_row("zones", &[Datum::Int(3), text("m")]).unwrap();
-        store
-            .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
-            .unwrap();
-        let later = START + i64::from(WIDTH);
-        store
-            .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(2)])
-            .unwrap();
-        store
-            .add_row("trips", &[Datum::Int(later), Datum::Int(1), Datum::Int(3)])
-            .unwrap();
-    };
+    let spec = zones_spec(Some(RefKind::Left), Widths::QuarterAndHour);
     let mut sealed = Store::new(spec.clone());
     let mut reference = Store::new(spec);
-    load(&mut sealed);
-    load(&mut reference);
+    load_three_zones_and_trips(&mut sealed);
+    load_three_zones_and_trips(&mut reference);
     let sealed_id = sealed.sealable(START + i64::from(WIDTH)).remove(0);
     let copy = sealed.sealed_copy(&sealed_id).unwrap();
     sealed.seal(&sealed_id).unwrap();
@@ -1284,17 +1342,9 @@ fn a_hot_quarter_keeps_bound_cells_beside_a_sealed_one() {
     sealed.update_row("zones", &old, &new).unwrap();
     reference.update_row("zones", &old, &new).unwrap();
 
-    let ask = |from, to| Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: vec![AskKey::Key(id("borough"))],
-        filter: Vec::new(),
-        from,
-        to,
-    };
-    let hot = ask(START + i64::from(WIDTH), START + 2 * i64::from(WIDTH));
-    let hour = ask(START, START + 3_600);
-    assert!(sealed.sealed_read(&hot).unwrap().is_empty());
+    let hot = by_borough_over(START + i64::from(WIDTH), START + 2 * i64::from(WIDTH));
+    let hour = by_borough_over(START, START + i64::from(HOUR));
+    assert_eq!(sealed.sealed_read(&hot).unwrap(), []);
     // Two keyed cells, one borough: the bound cells answer.
     assert_eq!(sealed.cells_read(&hot).unwrap(), 1);
     assert_eq!(sealed.ask(&hot).unwrap(), reference.ask(&hot).unwrap());
@@ -1329,19 +1379,41 @@ fn without_a_seal(store: &mut Store, between: impl Fn(&mut Store)) {
         .unwrap();
 }
 
+fn move_zone_six_to_m(store: &mut Store) {
+    let old = [Datum::Int(6), text("q")];
+    let new = [Datum::Int(6), text("m")];
+    store.update_row("zones", &old, &new).unwrap();
+}
+
+fn truncate_zones(store: &mut Store) {
+    store.clear("zones");
+}
+
+fn reload_zones_into_b(store: &mut Store) {
+    store.clear("zones");
+    let rows = [Datum::Int(1), text("b"), Datum::Int(2), text("b")];
+    store.add_rows("zones", &rows).unwrap();
+}
+
+fn insert_zone_one(store: &mut Store) {
+    store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+}
+
+fn inner_zoned_store_with(trip: &[Datum]) -> Store {
+    let mut store = Store::new(zones_spec(Some(RefKind::Inner), Widths::Quarter));
+    store.add_row("trips", trip).unwrap();
+    assert_eq!(store.bound_cells("trips"), Some(0));
+    store
+}
+
 /// A dim row that changes while a bucket is sealed reaches the bucket's
 /// trips once it is back: the bound cells answer, as they would had it
 /// never been sealed, and every trip still comes out.
 #[test]
 fn a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed() {
-    let change = |store: &mut Store| {
-        let old = [Datum::Int(6), text("q")];
-        let new = [Datum::Int(6), text("m")];
-        store.update_row("zones", &old, &new).unwrap();
-    };
     let (mut sealed, mut hot) = (zoned_store(), zoned_store());
-    through_a_seal(&mut sealed, change);
-    without_a_seal(&mut hot, change);
+    through_a_seal(&mut sealed, move_zone_six_to_m);
+    without_a_seal(&mut hot, move_zone_six_to_m);
     let by_borough = by_borough();
     assert_eq!(sealed.cells_read(&by_borough), Ok(2));
     let answer = sealed.ask(&by_borough).unwrap();
@@ -1361,10 +1433,9 @@ fn a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed() {
 /// only the one that came after.
 #[test]
 fn a_dim_truncate_under_a_sealed_bucket_keeps_its_trips() {
-    let truncate = |store: &mut Store| store.clear("zones");
     let (mut sealed, mut hot) = (zoned_store(), zoned_store());
-    through_a_seal(&mut sealed, truncate);
-    without_a_seal(&mut hot, truncate);
+    through_a_seal(&mut sealed, truncate_zones);
+    without_a_seal(&mut hot, truncate_zones);
     let by_borough = by_borough();
     let answer = sealed.ask(&by_borough).unwrap();
     assert_eq!(answer, hot.ask(&by_borough).unwrap());
@@ -1375,14 +1446,9 @@ fn a_dim_truncate_under_a_sealed_bucket_keeps_its_trips() {
 /// As the truncate, for a dim loaded while the bucket is sealed.
 #[test]
 fn a_dim_load_under_a_sealed_bucket_keeps_its_trips() {
-    let load = |store: &mut Store| {
-        store.clear("zones");
-        let rows = [Datum::Int(1), text("b"), Datum::Int(2), text("b")];
-        store.add_rows("zones", &rows).unwrap();
-    };
     let (mut sealed, mut hot) = (zoned_store(), zoned_store());
-    through_a_seal(&mut sealed, load);
-    without_a_seal(&mut hot, load);
+    through_a_seal(&mut sealed, reload_zones_into_b);
+    without_a_seal(&mut hot, reload_zones_into_b);
     let by_borough = by_borough();
     let answer = sealed.ask(&by_borough).unwrap();
     assert_eq!(answer, hot.ask(&by_borough).unwrap());
@@ -1396,17 +1462,13 @@ fn a_dim_load_under_a_sealed_bucket_keeps_its_trips() {
 /// is back, and both still come out.
 #[test]
 fn a_sealed_bucket_without_bound_cells_gains_them_from_a_dim_insert() {
-    let insert = |store: &mut Store| store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
     let first = [Datum::Int(START), Datum::Int(2), Datum::Int(1)];
-    let load = || {
-        let mut store = Store::new(zones_spec(Some(RefKind::Inner), false));
-        store.add_row("trips", &first).unwrap();
-        assert_eq!(store.bound_cells("trips"), Some(0));
-        store
-    };
-    let (mut sealed, mut hot) = (load(), load());
-    through_a_seal(&mut sealed, insert);
-    without_a_seal(&mut hot, insert);
+    let (mut sealed, mut hot) = (
+        inner_zoned_store_with(&first),
+        inner_zoned_store_with(&first),
+    );
+    through_a_seal(&mut sealed, insert_zone_one);
+    without_a_seal(&mut hot, insert_zone_one);
     let by_borough = by_borough();
     let answer = sealed.ask(&by_borough).unwrap();
     assert_eq!(answer, hot.ask(&by_borough).unwrap());
@@ -1471,33 +1533,31 @@ fn a_range_cuts_at_both_ends() {
     let mut store = typed(&spec);
     let mut rng = Rng(5);
     let mut rows = Vec::new();
-    for i in 0..4 {
+    for bucket in 0..4 {
         let mut row = trip(&mut rng);
-        row[AT] = Datum::Int(START + i64::from(WIDTH) * i);
+        row[AT] = Datum::Int(START + i64::from(WIDTH) * bucket);
         store.add_row("trips", &row).unwrap();
         rows.push(row);
     }
-    let ask = |from, to| Ask {
-        view: id("trips"),
-        measures: vec![id("trips")],
-        keys: Vec::new(),
-        filter: Vec::new(),
-        from,
-        to,
-    };
-    let trips = |ask: &Ask| store.ask(ask).unwrap().rows[0].values[0].clone();
-    let count = |n: i128| Value::Int(n);
     let width = i64::from(WIDTH);
-    assert_eq!(trips(&ask(START - width, END + width)), count(4));
-    assert_eq!(trips(&ask(START + width, END)), count(3));
-    assert_eq!(trips(&ask(START, START + width)), count(1));
-    assert_eq!(trips(&ask(START - width, START)), count(0));
-    assert_eq!(trips(&ask(END, END + width)), count(0));
-    let empty = typed(&spec);
     assert_eq!(
-        empty.ask(&ask(START, END)).unwrap().rows[0].values[0],
-        count(0)
+        trips_counted(&store, START - width, END + width),
+        Value::Int(4)
     );
+    assert_eq!(trips_counted(&store, START + width, END), Value::Int(3));
+    assert_eq!(trips_counted(&store, START, START + width), Value::Int(1));
+    assert_eq!(trips_counted(&store, START - width, START), Value::Int(0));
+    assert_eq!(trips_counted(&store, END, END + width), Value::Int(0));
+    let empty = typed(&spec);
+    assert_eq!(trips_counted(&empty, START, END), Value::Int(0));
+}
+
+fn first_value(store: &Store, ask: &Ask) -> Value {
+    store.ask(ask).unwrap().rows[0].values[0].clone()
+}
+
+fn trips_counted(store: &Store, from: i64, to: i64) -> Value {
+    first_value(store, &trips_over(from, to, Vec::new()))
 }
 
 /// The count of trips, by bucket or not, over a range.
@@ -1535,7 +1595,7 @@ fn a_time_before_the_epoch_floors_to_its_bucket() {
         []
     );
     // The week before 1970 holds it, the one after does not.
-    let week = 604_800;
+    let week = i64::from(WEEK);
     assert_eq!(store.cells_read(&trips_over(-week, 0, Vec::new())), Ok(1));
     assert_eq!(store.cells_read(&trips_over(0, week, Vec::new())), Ok(0));
     store.remove_row("trips", &row).unwrap();
@@ -1576,6 +1636,12 @@ fn a_row_without_a_time_is_kept_and_never_answered() {
     assert_eq!(store.remove_row("trips", &untimed), Err(RowError::Missing));
 }
 
+fn first_keys(store: &Store, ask: &Ask) -> Vec<Datum> {
+    (store.ask(ask).unwrap().rows.into_iter())
+        .map(|row| row.keys[0].clone())
+        .collect()
+}
+
 /// A cell is keyed by the join column, not the dim's value, so a dim row
 /// relabelled, removed or added moves the answer at once and moves no
 /// cell. A key with no dim row reads null, as the join gives.
@@ -1598,12 +1664,7 @@ fn a_dim_change_moves_the_answer_at_once() {
         from: START,
         to: END,
     };
-    let labels = |store: &Store| -> Vec<Datum> {
-        (store.ask(&by_label).unwrap().rows.into_iter())
-            .map(|row| row.keys[0].clone())
-            .collect()
-    };
-    assert_eq!(labels(&store), [text("v1")]);
+    assert_eq!(first_keys(&store, &by_label), [text("v1")]);
     let cells = store.cells("trips");
     assert_eq!(store.bound_cells("trips"), cells);
 
@@ -1611,21 +1672,21 @@ fn a_dim_change_moves_the_answer_at_once() {
         .remove_row("vendors", &[Datum::Int(1), text("v1")])
         .unwrap();
     assert_eq!(store.bound_cells("trips"), cells);
-    assert_eq!(labels(&store), [Datum::Null]);
+    assert_eq!(first_keys(&store, &by_label), [Datum::Null]);
     store
         .add_row("vendors", &[Datum::Int(1), text("v2")])
         .unwrap();
-    assert_eq!(labels(&store), [text("v2")]);
+    assert_eq!(first_keys(&store, &by_label), [text("v2")]);
     assert_eq!(store.cells("trips"), cells);
     // Another vendor's row changes nothing here.
     store
         .add_row("vendors", &[Datum::Int(2), text("v9")])
         .unwrap();
-    assert_eq!(labels(&store), [text("v2")]);
+    assert_eq!(first_keys(&store, &by_label), [text("v2")]);
     assert_eq!(store.bound_cells("trips"), cells);
     store.clear("vendors");
     assert_eq!(store.bound_cells("trips"), cells);
-    assert_eq!(labels(&store), [Datum::Null]);
+    assert_eq!(first_keys(&store, &by_label), [Datum::Null]);
     assert_eq!(store.dim_rows("vendors"), Some(0));
     // The fact row comes out as it went in, whatever the dim did.
     store.remove_row("trips", &row).unwrap();
@@ -1771,15 +1832,14 @@ fn a_filter_on_an_attribute_reads_the_dim() {
         from: START,
         to: END,
     };
-    let fare = |store: &Store| store.ask(&mq_fare).unwrap().rows[0].values[0].clone();
-    assert_eq!(fare(&store), Value::Int(100));
+    assert_eq!(first_value(&store, &mq_fare), Value::Int(100));
     store
         .remove_row("zones", &[Datum::Int(2), text("m"), text("a")])
         .unwrap();
     store
         .add_row("zones", &[Datum::Int(2), text("b"), text("a")])
         .unwrap();
-    assert_eq!(fare(&store), Value::Null);
+    assert_eq!(first_value(&store, &mq_fare), Value::Null);
 }
 
 /// Every key at once, so the group table is sparse and a cell's group is
@@ -1993,6 +2053,10 @@ fn rows_collapse_into_cells() {
     assert_eq!(store.cells("trips"), Some(3));
 }
 
+fn first_values(store: &Store, ask: &Ask) -> Vec<Value> {
+    store.ask(ask).unwrap().rows[0].values.clone()
+}
+
 #[test]
 fn removing_an_extreme_reveals_the_next() {
     let mut store = Store::new(spec());
@@ -2004,7 +2068,6 @@ fn removing_an_extreme_reveals_the_next() {
         from: START,
         to: END,
     };
-    let extremes = |store: &Store| store.ask(&ask).unwrap().rows[0].values.clone();
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
     let rows: Vec<_> = [5, 9, 9, 2, 7]
@@ -2018,29 +2081,29 @@ fn removing_an_extreme_reveals_the_next() {
         store.add_row("trips", row).unwrap();
     }
     assert_eq!(store.cells("trips"), Some(1));
-    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
+    assert_eq!(first_values(&store, &ask), [Value::Int(2), Value::Int(9)]);
 
     // One of two 9s out: the max stays.
     store.remove_row("trips", &rows[1]).unwrap();
-    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(9)]);
+    assert_eq!(first_values(&store, &ask), [Value::Int(2), Value::Int(9)]);
     store.remove_row("trips", &rows[2]).unwrap();
-    assert_eq!(extremes(&store), [Value::Int(2), Value::Int(7)]);
+    assert_eq!(first_values(&store, &ask), [Value::Int(2), Value::Int(7)]);
     store.remove_row("trips", &rows[3]).unwrap();
-    assert_eq!(extremes(&store), [Value::Int(5), Value::Int(7)]);
+    assert_eq!(first_values(&store, &ask), [Value::Int(5), Value::Int(7)]);
     // A value past the old extremes after they went.
     row[TIP] = Datum::Int(1);
     store.add_row("trips", &row).unwrap();
-    assert_eq!(extremes(&store), [Value::Int(1), Value::Int(7)]);
+    assert_eq!(first_values(&store, &ask), [Value::Int(1), Value::Int(7)]);
 }
 
 fn buckets_holding_start() -> [(i64, i64); 4] {
     // The one bucket of each width that holds START.
-    let week = START.div_euclid(604_800) * 604_800;
+    let week = START.div_euclid(i64::from(WEEK)) * i64::from(WEEK);
     [
         (START, START + i64::from(WIDTH)),
-        (START, START + 3_600),
-        (START, START + 86_400),
-        (week, week + 604_800),
+        (START, START + i64::from(HOUR)),
+        (START, START + i64::from(DAY)),
+        (week, week + i64::from(WEEK)),
     ]
 }
 
@@ -2150,17 +2213,34 @@ fn a_cell_of_many_values_keeps_its_ends_at_every_width() {
     }
 }
 
+// The fact's columns: its time, its key, the column it counts.
+fn tip_row(pay: i64, tip: Datum) -> Vec<Datum> {
+    vec![Datum::Int(START), Datum::Int(pay), tip]
+}
+
+fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
+    let ask = Ask {
+        view: id("trips"),
+        measures: vec![id("trips"), id("tipped")],
+        keys,
+        filter: Vec::new(),
+        from: START,
+        to: START + i64::from(HOUR),
+    };
+    let rows = store.ask(&ask).unwrap().rows;
+    rows.into_iter().map(|row| row.values).collect()
+}
+
+fn trips_and_tipped_pair(trips: i128, tipped: i128) -> Vec<Value> {
+    vec![Value::Int(trips), Value::Int(tipped)]
+}
+
 /// A count of a column that nothing else reads: no sum, min or max is
 /// there to notice a value its cell lacks, so the count has to. It counts
 /// the nulls among a cell's rows, and tells from them both a null the
 /// cell never held and a value where it holds only nulls.
 #[test]
 fn a_count_alone_notices_a_value_its_cell_lacks() {
-    let measure = |name, aggregate| Measure {
-        name: id(name),
-        aggregate,
-        filter: vec![],
-    };
     let trips = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -2168,33 +2248,18 @@ fn a_count_alone_notices_a_value_its_cell_lacks() {
         time: Time {
             column: id("at"),
             width: Width { seconds: WIDTH },
-            wider: vec![Width { seconds: 3600 }],
+            wider: vec![Width { seconds: HOUR }],
             origin: Origin::Timestamptz,
         },
         refs: Vec::new(),
         by_keys: vec![col("pay")],
         filter: vec![],
         measures: vec![
-            measure("trips", Aggregate::Count),
-            measure("tipped", Aggregate::CountNotNull(id("tip"))),
+            new_measure("trips", Aggregate::Count, vec![]),
+            new_measure("tipped", Aggregate::CountNotNull(id("tip")), vec![]),
         ],
     };
     let spec = Spec::new(Vec::new(), vec![trips]).unwrap();
-    // The fact's columns: its time, its key, the column it counts.
-    let row = |pay: i64, tip: Datum| vec![Datum::Int(START), Datum::Int(pay), tip];
-    let counted = |store: &Store, keys: Vec<AskKey>| -> Vec<Vec<Value>> {
-        let ask = Ask {
-            view: id("trips"),
-            measures: vec![id("trips"), id("tipped")],
-            keys,
-            filter: Vec::new(),
-            from: START,
-            to: START + 3600,
-        };
-        let rows = store.ask(&ask).unwrap().rows;
-        rows.into_iter().map(|row| row.values).collect()
-    };
-    let pair = |trips: i128, tipped: i128| vec![Value::Int(trips), Value::Int(tipped)];
     // What the count makes of a row that holds each of the two.
     for (held, lacked, of_held, of_lacked) in [
         (Datum::Null, Datum::Int(5), 0, 1),
@@ -2203,27 +2268,30 @@ fn a_count_alone_notices_a_value_its_cell_lacks() {
         let mut store = Store::new(spec.clone());
         // Two cells, so an ask merges them into one group and into two.
         for pay in [1, 1, 2] {
-            store.add_row("trips", &row(pay, held.clone())).unwrap();
+            store.add_row("trips", &tip_row(pay, held.clone())).unwrap();
         }
-        store.add_row("trips", &row(2, lacked.clone())).unwrap();
+        store.add_row("trips", &tip_row(2, lacked.clone())).unwrap();
         assert_eq!(
-            counted(&store, Vec::new()),
-            [pair(4, 3 * of_held + of_lacked)]
+            trips_and_tipped(&store, Vec::new()),
+            [trips_and_tipped_pair(4, 3 * of_held + of_lacked)]
         );
         assert_eq!(
-            counted(&store, vec![AskKey::Key(id("pay"))]),
-            [pair(2, 2 * of_held), pair(2, of_held + of_lacked)]
+            trips_and_tipped(&store, vec![AskKey::Key(id("pay"))]),
+            [
+                trips_and_tipped_pair(2, 2 * of_held),
+                trips_and_tipped_pair(2, of_held + of_lacked)
+            ]
         );
         assert_eq!(
-            store.remove_row("trips", &row(1, lacked)),
+            store.remove_row("trips", &tip_row(1, lacked)),
             Err(RowError::Missing),
             "{held:?} held"
         );
         // What a cell holds leaves it. The store above missed a row, so
         // it no longer matches its table.
         let mut store = Store::new(spec.clone());
-        store.add_row("trips", &row(1, held.clone())).unwrap();
-        assert_eq!(store.remove_row("trips", &row(1, held)), Ok(()));
+        store.add_row("trips", &tip_row(1, held.clone())).unwrap();
+        assert_eq!(store.remove_row("trips", &tip_row(1, held)), Ok(()));
         assert_eq!(store.cells("trips"), Some(0));
     }
 }
@@ -2262,31 +2330,34 @@ fn clear_drops_every_row() {
     assert_eq!(store.cells("trips"), Some(1));
 }
 
-#[test]
-fn filter_values_are_of_their_column_type() {
-    let mut store = typed(&spec());
-    let ask = |filter| Ask {
+fn trips_filtered(filter: Vec<Condition>) -> Ask {
+    Ask {
         view: id("trips"),
         measures: vec![id("trips")],
         keys: Vec::new(),
         filter,
         from: START,
         to: END,
-    };
+    }
+}
+
+#[test]
+fn filter_values_are_of_their_column_type() {
+    let mut store = typed(&spec());
     let fits = vec![
         cond("pay", vec![Literal::Int(1)]),
         cond("shared", vec![Literal::Bool(true)]),
         cond("pu", vec![Literal::Int(2)]),
         cond("pickup_borough", vec![lit("m")]),
     ];
-    assert!(store.ask(&ask(fits)).is_ok());
+    assert!(store.ask(&trips_filtered(fits)).is_ok());
 
     let wrong = vec![
         cond("pay", vec![lit("1"), Literal::Int(1)]),
         cond("shared", vec![Literal::Int(1)]),
         cond("pickup_borough", vec![Literal::Bool(true)]),
     ];
-    let errors: Vec<String> = (store.ask(&ask(wrong)).unwrap_err().iter())
+    let errors: Vec<String> = (store.ask(&trips_filtered(wrong)).unwrap_err().iter())
         .map(ToString::to_string)
         .collect();
     assert_eq!(
@@ -2299,17 +2370,22 @@ fn filter_values_are_of_their_column_type() {
     );
 
     // An integer reads as one only at scale 0.
-    let pay = || ask(vec![cond("pay", vec![Literal::Int(1)])]);
+    let pay = trips_filtered(vec![cond("pay", vec![Literal::Int(1)])]);
     let mut types = trip_types();
     types[PAY] = ColumnType::Numeric { scale: 0 };
     store.set_types("trips", &types).unwrap();
-    assert!(store.ask(&pay()).is_ok());
+    assert!(store.ask(&pay).is_ok());
     types[PAY] = ColumnType::Numeric { scale: 2 };
     store.set_types("trips", &types).unwrap();
     assert_eq!(
-        store.ask(&pay()).unwrap_err()[0].to_string(),
+        store.ask(&pay).unwrap_err()[0].to_string(),
         "pay is a numeric of scale 2, so it can't be the integer 1"
     );
+}
+
+fn answer_scales(store: &Store, ask: &Ask) -> Vec<u32> {
+    let answer = store.ask(ask).unwrap();
+    answer.columns.iter().map(|column| column.scale).collect()
 }
 
 #[test]
@@ -2323,11 +2399,7 @@ fn types_stay_through_clear() {
         from: START,
         to: END,
     };
-    let scales = |store: &Store| -> Vec<u32> {
-        let answer = store.ask(&ask).unwrap();
-        answer.columns.iter().map(|column| column.scale).collect()
-    };
-    assert_eq!(scales(&store), [0, 0, 0, 0, 0]);
+    assert_eq!(answer_scales(&store, &ask), [0, 0, 0, 0, 0]);
     let mut types = vec![ColumnType::Int; ROW_LEN];
     types[PAY] = ColumnType::Numeric { scale: 3 };
     types[FARE] = ColumnType::Numeric { scale: 2 };
@@ -2340,7 +2412,7 @@ fn types_stay_through_clear() {
         .unwrap();
     store.clear("trips");
     store.clear("zones");
-    assert_eq!(scales(&store), [3, 4, 0, 2, 1]);
+    assert_eq!(answer_scales(&store, &ask), [3, 4, 0, 2, 1]);
 }
 
 #[test]
@@ -2613,7 +2685,7 @@ fn whole_range(by: Vec<AskKey>) -> Ask {
         keys: by,
         filter: Vec::new(),
         from: START,
-        to: START + 604_800,
+        to: START + i64::from(WEEK),
     }
 }
 
@@ -2641,13 +2713,17 @@ fn a_sealed_bucket_answers_as_before() {
     assert_eq!(store.ask(&ask).unwrap(), before);
 }
 
+fn seal_refusal(store: &mut Store, id: &SealedId) -> &'static str {
+    store.seal(id).unwrap_err().reason
+}
+
 #[test]
 fn sealable_buckets_end_by_the_cutoff() {
     let (mut store, _) = three_rows();
     let width = i64::from(WIDTH);
     assert_eq!(store.sealable(START + width - 1), []);
     assert_eq!(store.sealable(START + width), [sealed_id(width, START)]);
-    let all = store.sealable(START + 604_800 * 2);
+    let all = store.sealable(START + i64::from(WEEK) * 2);
     // The two buckets of 15 minutes; wider widths stay in memory.
     assert_eq!(
         all,
@@ -2658,29 +2734,34 @@ fn sealable_buckets_end_by_the_cutoff() {
         store.seal(id).unwrap();
     }
     assert_eq!(store.seal(&all[0]).unwrap_err().reason, "sealed already");
-    assert_eq!(store.sealable(START + 604_800 * 2), []);
+    assert_eq!(store.sealable(START + i64::from(WEEK) * 2), []);
     assert_eq!(store.sealed("trips"), all);
     assert_eq!(store.sealed_count(), 2);
     store.clear("trips");
     assert_eq!(store.sealed("trips"), []);
     assert_eq!(store.sealed_count(), 0);
     // Gone with the truncate, or never there.
-    let mut reason = |id: &SealedId| store.seal(id).unwrap_err().reason;
-    assert_eq!(reason(&all[0]), "no such bucket");
-    assert_eq!(reason(&sealed_id(width, START - width)), "no such bucket");
-    assert_eq!(reason(&sealed_id(7, START)), "no such width");
+    assert_eq!(seal_refusal(&mut store, &all[0]), "no such bucket");
+    assert_eq!(
+        seal_refusal(&mut store, &sealed_id(width, START - width)),
+        "no such bucket"
+    );
+    assert_eq!(
+        seal_refusal(&mut store, &sealed_id(7, START)),
+        "no such width"
+    );
     let nope = SealedId {
         fact: id("nope"),
         ..all[0].clone()
     };
-    assert_eq!(reason(&nope), "unknown fact");
+    assert_eq!(seal_refusal(&mut store, &nope), "unknown fact");
     assert_eq!(store.sealed_copy(&all[0]), None);
 }
 
 #[test]
 fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     let (mut store, rows) = three_rows();
-    let id = sealed_id(86_400, START);
+    let id = sealed_id(i64::from(DAY), START);
     let sealed = store.sealed_copy(&id).unwrap();
     store.seal(&id).unwrap();
     assert_eq!(
@@ -2695,7 +2776,7 @@ fn a_row_in_a_sealed_bucket_waits_for_unseal() {
     assert_eq!(store.add_rows("trips", &many), Err(RowError::Sealed));
     // A row of another day goes in.
     let mut later = rows[0].clone();
-    later[AT] = Datum::Int(START + 86_400);
+    later[AT] = Datum::Int(START + i64::from(DAY));
     assert_eq!(store.sealed_touched("trips", &later), []);
     store.add_row("trips", &later).unwrap();
 
@@ -2831,7 +2912,7 @@ fn thaw_refuses_values_that_do_not_fit_their_cell() {
 #[test]
 fn unseal_refuses_a_bucket_not_sealed_or_keyed_twice() {
     let (mut store, _) = three_rows();
-    let id = sealed_id(86_400, START);
+    let id = sealed_id(i64::from(DAY), START);
     let mut sealed = store.sealed_copy(&id).unwrap();
     let err = store
         .unseal(store.thaw(sealed.clone()).unwrap())
@@ -2876,7 +2957,7 @@ fn sealed_error_display() {
 fn a_row_of_a_bucket_never_filled_is_missing() {
     let (mut store, rows) = three_rows();
     let mut elsewhere = rows[0].clone();
-    elsewhere[AT] = Datum::Int(START + 86_400);
+    elsewhere[AT] = Datum::Int(START + i64::from(DAY));
     assert_eq!(
         store.remove_row("trips", &elsewhere),
         Err(RowError::Missing)

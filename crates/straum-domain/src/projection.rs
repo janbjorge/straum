@@ -19,7 +19,7 @@ pub(crate) struct Projection {
     /// One per attribute, with `Null` under code 0, so a key with no row
     /// and a null value read alike without a lookup.
     codes: Vec<Codes>,
-    /// ByKey key: the attribute codes of each row under it, in arrival order.
+    /// `ByKey` key: the attribute codes of each row under it, in arrival order.
     rows: FastMap<Box<[Datum]>, Vec<Box<[u32]>>>,
     /// Rows held, over every key.
     held: usize,
@@ -134,14 +134,9 @@ impl Projection {
             return Ok(());
         }
         let held = self.rows.get_mut(key).ok_or(RowError::Missing)?;
-        let same = |codes: &[u32]| {
-            (attrs.iter().zip(&self.codes).zip(codes))
-                .all(|((value, known), &code)| known.get(value) == Some(code))
+        let Some(i) = (held.iter()).position(|codes| codes_match(&self.codes, attrs, codes)) else {
+            return Err(RowError::Missing);
         };
-        let i = held
-            .iter()
-            .position(|codes| same(codes))
-            .ok_or(RowError::Missing)?;
         held.swap_remove(i);
         self.held -= 1;
         if held.len() == 1 {
@@ -178,4 +173,9 @@ impl Projection {
     pub(crate) fn check(&self, row: &[Datum]) -> Result<(), RowError> {
         arity(self.row_len(), row.len())
     }
+}
+
+fn codes_match(known: &[Codes], attrs: &[Datum], codes: &[u32]) -> bool {
+    (attrs.iter().zip(known).zip(codes))
+        .all(|((value, known), &code)| known.get(value) == Some(code))
 }

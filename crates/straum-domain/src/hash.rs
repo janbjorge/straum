@@ -1,5 +1,5 @@
 //! The hasher of the maps a row probes on its way into a rollup, and of
-//! the physical stream's pages and transactions. Std's SipHash was a fifth
+//! the physical stream's pages and transactions. Std's `SipHash` was a fifth
 //! of a load. A folded multiply, as `foldhash` does,
 //! with a seed per map from std's random keys, so values from the source
 //! can't be picked to collide without knowing it.

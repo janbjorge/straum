@@ -90,6 +90,9 @@ pub fn holds(value: &Datum, values: &[Literal]) -> bool {
     })
 }
 
+/// Of the buckets [`Spilled::seal`] may seal, the share it does seal.
+const SEALED_PERCENT: usize = 70;
+
 /// splitmix64; the tests need no crate for randomness.
 pub struct Rng(pub u64);
 
@@ -149,7 +152,7 @@ impl Spilled {
     /// Seals every bucket that ends by `before`, or some of them.
     pub fn seal(&mut self, rng: &mut Rng, store: &mut Store, before: i64) {
         for id in store.sealable(before) {
-            if rng.chance(70) {
+            if rng.chance(SEALED_PERCENT) {
                 let sealed = store.sealed_copy(&id).unwrap();
                 store.seal(&id).unwrap();
                 self.buckets.insert(id, sealed);

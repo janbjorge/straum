@@ -338,13 +338,12 @@ impl Fact {
         if let Some(by) = self.by_keys.iter().find(|by| by.name() == name) {
             return Some(Key::ByKey(by));
         }
-        self.refs.iter().find_map(|join| {
-            let attr = join
-                .reads
-                .iter()
-                .find(|attribute| attribute.name == *name)?;
-            Some(Key::Attribute(join, attr))
-        })
+        for join in &self.refs {
+            if let Some(attr) = join.reads.iter().find(|attribute| attribute.name == *name) {
+                return Some(Key::Attribute(join, attr));
+            }
+        }
+        None
     }
 
     /// Every name an ask may group or filter by, keys then attributes.
@@ -535,24 +534,38 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
                 column: via_name(column, &fact.refs),
             });
         }
-        if let Via::Attribute { through, column } = column {
-            let parent = (*through < position).then(|| &fact.refs[*through]);
-            let carried = parent
-                .and_then(|parent| dims.iter().find(|dim| dim.name == parent.dim))
-                .is_some_and(|dim| dim.attributes.contains(column));
-            if !carried {
-                errors.push(SpecError::ChainColumn {
-                    fact: name.clone(),
-                    ref_name: join.alias.clone(),
-                    through: *through,
-                    column: column.clone(),
-                });
-            }
+        if let Via::Attribute { through, column } = column
+            && !carried_before(fact, position, dims, *through, column)
+        {
+            errors.push(SpecError::ChainColumn {
+                fact: name.clone(),
+                ref_name: join.alias.clone(),
+                through: *through,
+                column: column.clone(),
+            });
         }
     }
 }
 
-/// The dim the ref joins, when the spec declares one of that name.
+// A chain reads its key from a ref joined before it, whose dim must have
+// the column.
+fn carried_before(
+    fact: &Fact,
+    position: usize,
+    dims: &[Dim],
+    through: usize,
+    column: &Identifier,
+) -> bool {
+    if through >= position {
+        return false;
+    }
+    let parent = &fact.refs[through];
+    let Some(dim) = dims.iter().find(|dim| dim.name == parent.dim) else {
+        return false;
+    };
+    dim.attributes.contains(column)
+}
+
 fn check_ref_dim<'d>(
     fact: &Fact,
     join: &Ref,
@@ -841,7 +854,6 @@ impl fmt::Display for SpecError {
 }
 
 impl SpecError {
-    /// The errors of one ref of a view.
     fn fmt_join(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SpecError::ViaReused {

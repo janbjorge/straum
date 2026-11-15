@@ -43,6 +43,19 @@ pub(crate) enum ValueCounts {
 // A column of these is a third of what a min or max holds beside its runs.
 const _: () = assert!(mem::size_of::<ValueCounts>() == 32);
 
+/// Bytes of a record's value and of its count.
+#[derive(Clone, Copy)]
+struct Widths {
+    value: usize,
+    count: usize,
+}
+
+impl Widths {
+    fn size(self) -> usize {
+        self.value + self.count
+    }
+}
+
 /// Records where they lie: `len` of them in `bytes` from `start` on.
 #[derive(Clone, Copy)]
 struct Records<'a> {
@@ -77,8 +90,15 @@ impl<'a> Records<'a> {
         }
     }
 
+    fn widths(self) -> Widths {
+        Widths {
+            value: self.value_width,
+            count: self.count_width,
+        }
+    }
+
     fn size(self) -> usize {
-        self.value_width + self.count_width
+        self.widths().size()
     }
 
     /// Where record `i` starts in the bytes.
@@ -261,9 +281,14 @@ fn write(bytes: &mut [u8], end: usize, width: usize, n: u64) {
 }
 
 /// Writes a record at `at`: `offset`, then `count` less one.
-fn record(bytes: &mut [u8], at: usize, widths: (usize, usize), offset: i64, count: u64) {
-    write(bytes, at + widths.0, widths.0, offset.cast_unsigned());
-    write(bytes, at + widths.0 + widths.1, widths.1, count - 1);
+fn record(bytes: &mut [u8], at: usize, widths: Widths, offset: i64, count: u64) {
+    write(
+        bytes,
+        at + widths.value,
+        widths.value,
+        offset.cast_unsigned(),
+    );
+    write(bytes, at + widths.size(), widths.count, count - 1);
 }
 
 fn set_len(run: &mut [u8], len: usize) {
@@ -275,12 +300,12 @@ fn set_len(run: &mut [u8], len: usize) {
 /// the run's widths don't hold that or the run is full.
 fn put(run: &mut Vec<u8>, value: i64, count: u64) -> bool {
     let records = Records::of(run);
-    let (size, widths) = (records.size(), (records.value_width, records.count_width));
+    let (size, widths) = (records.size(), records.widths());
     let len = run.len();
     match records.place(value, count) {
         Some(Ok((i, new_count))) => {
             let end = records.at(i + 1);
-            write(run, end, widths.1, new_count - 1);
+            write(run, end, widths.count, new_count - 1);
         }
         Some(Err(i)) if len + size <= RUN_MAX => {
             let (at, offset, held) = (records.at(i), value.wrapping_sub(records.base), records.len);
@@ -328,8 +353,11 @@ fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
         // As in `Records::holds`.
         _ => 8,
     };
-    let widths = (value_width, count_width(pairs));
-    let size = widths.0 + widths.1;
+    let widths = Widths {
+        value: value_width,
+        count: count_width(pairs),
+    };
+    let size = widths.size();
     let len = HEADER + pairs.len() * size;
     if len > RUN_MAX {
         let (low, high) = pairs.split_at(pairs.len() / 2);
@@ -338,8 +366,8 @@ fn runs_into(pairs: &[(i64, u64)], runs: &mut BTreeMap<i64, Vec<u8>>) {
         return;
     }
     let mut run = vec![0; len];
-    run[0] = byte(widths.0);
-    run[1] = byte(widths.1);
+    run[0] = byte(widths.value);
+    run[1] = byte(widths.count);
     set_len(&mut run, pairs.len());
     run[4..HEADER].copy_from_slice(&base.to_le_bytes());
     for (i, &(value, count)) in pairs.iter().enumerate() {
@@ -387,17 +415,17 @@ impl ValueCounts {
         let (Some(&(least, _)), Some(&(greatest, _))) = (pairs.first(), pairs.last()) else {
             return ValueCounts::EMPTY;
         };
-        let widths = (
-            signed_width(least).max(signed_width(greatest)),
-            count_width(pairs),
-        );
-        let size = widths.0 + widths.1;
+        let widths = Widths {
+            value: signed_width(least).max(signed_width(greatest)),
+            count: count_width(pairs),
+        };
+        let size = widths.size();
         if pairs.len() * size <= INLINE {
             let mut cell = [0; CELL_HEADER + INLINE];
             cell[..CELL_HEADER].copy_from_slice(&[
                 byte(pairs.len()),
-                byte(widths.0),
-                byte(widths.1),
+                byte(widths.value),
+                byte(widths.count),
             ]);
             for (i, &(value, count)) in pairs.iter().enumerate() {
                 record(&mut cell, CELL_HEADER + i * size, widths, value, count);
@@ -417,12 +445,12 @@ impl ValueCounts {
         match self {
             ValueCounts::Inline(cell) => {
                 let held = Records::in_cell(cell);
-                let (size, widths) = (held.size(), (held.value_width, held.count_width));
+                let (size, widths) = (held.size(), held.widths());
                 let end = held.at(held.len);
                 match held.place(value, count) {
                     Some(Ok((i, new_count))) => {
                         let end = held.at(i + 1);
-                        write(cell, end, widths.1, new_count - 1);
+                        write(cell, end, widths.count, new_count - 1);
                     }
                     Some(Err(i)) if end + size <= cell.len() => {
                         let at = held.at(i);
@@ -468,12 +496,13 @@ impl ValueCounts {
             ValueCounts::Inline(cell) => {
                 let held = Records::in_cell(cell);
                 let (size, width, end) = (held.size(), held.count_width, held.at(held.len));
-                let Some((i, held_count)) = (held.find(value).ok())
-                    .map(|i| (i, held.count(i)))
-                    .filter(|&(_, held_count)| held_count >= count)
-                else {
+                let Ok(i) = held.find(value) else {
                     return false;
                 };
+                let held_count = held.count(i);
+                if held_count < count {
+                    return false;
+                }
                 let at = held.at(i);
                 if held_count > count {
                     write(cell, at + size, width, held_count - count - 1);
@@ -489,7 +518,7 @@ impl ValueCounts {
                 let Some(last) = take(run, value, count) else {
                     return false;
                 };
-                if let Some(moved) = last.then(|| settled(run)).flatten() {
+                if last && let Some(moved) = settled(run) {
                     *self = moved;
                 }
             }
@@ -535,7 +564,13 @@ impl ValueCounts {
             ValueCounts::Runs(runs) => runs.get(&key_of(runs, value)).map(|run| Records::of(run)),
             _ => self.flat(),
         };
-        records.is_some_and(|records| records.find(value).is_ok_and(|i| records.count(i) >= count))
+        let Some(records) = records else {
+            return false;
+        };
+        let Ok(i) = records.find(value) else {
+            return false;
+        };
+        records.count(i) >= count
     }
 
     /// The records of a cell that holds them in itself or in one run.
@@ -559,21 +594,30 @@ impl ValueCounts {
 
     /// The least and greatest value, `i64::MAX` and `i64::MIN` if none.
     pub(crate) fn ends(&self) -> (i64, i64) {
-        let (first, last) = match self {
-            ValueCounts::Runs(runs) => (
+        let (first, last) = if let ValueCounts::Runs(runs) = self {
+            (
                 runs.values().next().map(|run| Records::of(run)),
                 runs.values().next_back().map(|run| Records::of(run)),
-            ),
-            _ => {
-                let records = self.flat();
-                (records, records)
-            }
+            )
+        } else {
+            let records = self.flat();
+            (records, records)
         };
-        let held = |records: &Records| records.len > 0;
-        (
-            (first.filter(held)).map_or(i64::MAX, |records| records.value(0)),
-            (last.filter(held)).map_or(i64::MIN, |records| records.value(records.len - 1)),
-        )
+        (least_in(first), greatest_in(last))
+    }
+}
+
+fn least_in(records: Option<Records<'_>>) -> i64 {
+    match records {
+        Some(records) if records.len > 0 => records.value(0),
+        _ => i64::MAX,
+    }
+}
+
+fn greatest_in(records: Option<Records<'_>>) -> i64 {
+    match records {
+        Some(records) if records.len > 0 => records.value(records.len - 1),
+        _ => i64::MIN,
     }
 }
 
@@ -780,22 +824,23 @@ mod tests {
         }
     }
 
+    fn draw(rng: &mut Rng, values: u64) -> BTreeMap<i64, u64> {
+        let mut held = BTreeMap::new();
+        for _ in 0..values {
+            *held
+                .entry(rng.below(20_000).cast_signed() * 70)
+                .or_default() += 1 + rng.below(3);
+        }
+        held
+    }
+
     /// A cell's counts fold into another's and come back out, as when a
     /// dim row moves its cells; a cell covers only what it holds.
     #[test]
     fn counts_fold_in_and_come_out_again() {
         for (ours, theirs) in [(3, 2), (300, 40), (9_000, 9_000), (0, 5)] {
             let mut rng = Rng(5);
-            let mut draw = |values: u64| {
-                let mut held = BTreeMap::new();
-                for _ in 0..values {
-                    *held
-                        .entry(rng.below(20_000).cast_signed() * 70)
-                        .or_default() += 1 + rng.below(3);
-                }
-                held
-            };
-            let (our_held, their_held) = (draw(ours), draw(theirs));
+            let (our_held, their_held) = (draw(&mut rng, ours), draw(&mut rng, theirs));
             let mut counts = ValueCounts::from_pairs(&pairs_of(&our_held));
             let other = ValueCounts::from_pairs(&pairs_of(&their_held));
             counts.add_counts(&other);
@@ -836,33 +881,45 @@ mod tests {
         }
     }
 
-    /// Where a cell keeps its values, and in how many bytes.
-    #[test]
-    fn a_cell_keeps_its_values_in_the_fewest_bytes() {
-        let shape = |pairs: &[(i64, u64)]| match ValueCounts::from_pairs(pairs) {
+    /// The form pairs are encoded in, how many records or runs or bytes
+    /// it holds, and its value and count widths.
+    fn layout(pairs: &[(i64, u64)]) -> (&'static str, usize, u8, u8) {
+        match ValueCounts::from_pairs(pairs) {
             ValueCounts::Inline(cell) => ("cell", usize::from(cell[0]), cell[1], cell[2]),
             ValueCounts::Run(run) => ("run", run.len(), run[0], run[1]),
             ValueCounts::Runs(runs) => ("runs", runs.len(), 0, 0),
-        };
+        }
+    }
+
+    fn once(values: i64, least: i64, step: i64) -> Vec<(i64, u64)> {
+        (0..values).map(|index| (least + index * step, 1)).collect()
+    }
+
+    /// Where a cell keeps its values, and in how many bytes.
+    #[test]
+    fn a_cell_keeps_its_values_in_the_fewest_bytes() {
         // Three fares seen once: two bytes each, and none for the counts.
-        assert_eq!(shape(&[(1280, 1), (1350, 1), (1420, 1)]), ("cell", 3, 2, 0));
+        assert_eq!(
+            layout(&[(1280, 1), (1350, 1), (1420, 1)]),
+            ("cell", 3, 2, 0)
+        );
         // A fare seen twice gives every count a byte.
-        assert_eq!(shape(&[(1280, 2), (1350, 1), (1420, 1)]), ("cell", 3, 2, 1));
-        assert_eq!(shape(&[]), ("cell", 0, 1, 0));
-        let once = |values: i64, least: i64, step: i64| -> Vec<(i64, u64)> {
-            (0..values).map(|index| (least + index * step, 1)).collect()
-        };
+        assert_eq!(
+            layout(&[(1280, 2), (1350, 1), (1420, 1)]),
+            ("cell", 3, 2, 1)
+        );
+        assert_eq!(layout(&[]), ("cell", 0, 1, 0));
         // What a cell holds itself, and one value more.
-        assert_eq!(shape(&once(28, 0, 1)), ("cell", 28, 1, 0));
-        assert_eq!(shape(&once(29, 0, 1)), ("run", HEADER + 29, 1, 0));
+        assert_eq!(layout(&once(28, 0, 1)), ("cell", 28, 1, 0));
+        assert_eq!(layout(&once(29, 0, 1)), ("run", HEADER + 29, 1, 0));
         // A run's values are kept from its middle one, so far from zero
         // they are as narrow as near it.
-        assert_eq!(shape(&once(40, 0, 70)), ("run", HEADER + 80, 2, 0));
-        assert_eq!(shape(&once(40, 1 << 50, 70)), ("run", HEADER + 80, 2, 0));
+        assert_eq!(layout(&once(40, 0, 70)), ("run", HEADER + 80, 2, 0));
+        assert_eq!(layout(&once(40, 1 << 50, 70)), ("run", HEADER + 80, 2, 0));
         // A run takes RUN_MAX bytes, and one record more makes two.
         let full = i64::try_from((RUN_MAX - HEADER) / 2).expect("a run's records");
-        assert_eq!(shape(&once(full, 0, 5)), ("run", RUN_MAX, 2, 0));
-        assert_eq!(shape(&once(full + 1, 0, 5)), ("runs", 2, 0, 0));
+        assert_eq!(layout(&once(full, 0, 5)), ("run", RUN_MAX, 2, 0));
+        assert_eq!(layout(&once(full + 1, 0, 5)), ("runs", 2, 0, 0));
     }
 
     /// Each width a value or a count takes, at its ends, read back as

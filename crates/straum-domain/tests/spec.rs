@@ -50,17 +50,16 @@ fn fact() -> Fact {
 
 #[test]
 fn what_each_measure_reads() {
-    let x = || id("x");
     let cases = [
-        (Aggregate::Sum(x()), Some(Reads::Numbers)),
-        (Aggregate::Min(x()), Some(Reads::Numbers)),
-        (Aggregate::Max(x()), Some(Reads::Numbers)),
+        (Aggregate::Sum(id("x")), Some(Reads::Numbers)),
+        (Aggregate::Min(id("x")), Some(Reads::Numbers)),
+        (Aggregate::Max(id("x")), Some(Reads::Numbers)),
         (percentile(5, 1, "x"), Some(Reads::Numbers)),
-        (Aggregate::Avg(x()), Some(Reads::Numbers)),
-        (Aggregate::CountDistinct(x()), Some(Reads::Values)),
-        (Aggregate::CountNotNull(x()), Some(Reads::Nullness)),
-        (Aggregate::BoolAnd(x()), Some(Reads::Booleans)),
-        (Aggregate::BoolOr(x()), Some(Reads::Booleans)),
+        (Aggregate::Avg(id("x")), Some(Reads::Numbers)),
+        (Aggregate::CountDistinct(id("x")), Some(Reads::Values)),
+        (Aggregate::CountNotNull(id("x")), Some(Reads::Nullness)),
+        (Aggregate::BoolAnd(id("x")), Some(Reads::Booleans)),
+        (Aggregate::BoolOr(id("x")), Some(Reads::Booleans)),
         (Aggregate::Count, None),
     ];
     for (aggregate, reads) in cases {
@@ -367,6 +366,24 @@ fn chained() -> Fact {
     view
 }
 
+/// The errors of [`chained`] once `change` is made to it.
+fn refused(change: &dyn Fn(&mut Fact)) -> Vec<String> {
+    let mut view = chained();
+    change(&mut view);
+    let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
+    errors.iter().map(ToString::to_string).collect()
+}
+
+/// A change that joins the second ref through `column` of join `through`.
+fn through(through: usize, column: &str) -> impl Fn(&mut Fact) {
+    move |view: &mut Fact| {
+        view.refs[1].via = vec![Via::Attribute {
+            through,
+            column: id(column),
+        }];
+    }
+}
+
 /// What Straum SQL refuses in its own words before the spec sees it: a
 /// semi or anti join that reads a column, a join through a column no
 /// join before it carries, and a `WHERE` on something that is no key.
@@ -374,12 +391,6 @@ fn chained() -> Fact {
 fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     assert!(Spec::new(vec![dim()], vec![chained()]).is_ok());
 
-    let refused = |change: &dyn Fn(&mut Fact)| -> Vec<String> {
-        let mut view = chained();
-        change(&mut view);
-        let errors = Spec::new(vec![dim()], vec![view]).unwrap_err();
-        errors.iter().map(ToString::to_string).collect()
-    };
     let reads = vec![attr("through_name", "name")];
     assert_eq!(
         refused(&|view| view.refs[1].reads.clone_from(&reads)),
@@ -392,14 +403,6 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
         }),
         ["view t: join through is an anti join and reads columns, which it has none of"]
     );
-    let through = |through, column| {
-        move |view: &mut Fact| {
-            view.refs[1].via = vec![Via::Attribute {
-                through,
-                column: id(column),
-            }];
-        }
-    };
     // A column the dim before it doesn't carry, then the join itself
     // and one that isn't there.
     assert_eq!(

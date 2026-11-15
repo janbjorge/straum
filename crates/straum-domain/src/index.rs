@@ -45,7 +45,9 @@ impl Index {
         // in and its bytes copied out first, and a bucket's keys are all
         // of one length.
         let mut hasher = self.seed.build_hasher();
-        key.iter().for_each(|&code| hasher.write_u32(code));
+        for &code in key {
+            hasher.write_u32(code);
+        }
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the mask keeps only low bits"

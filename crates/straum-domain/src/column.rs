@@ -4,6 +4,8 @@
 //! sixteen. A number its column can't hold moves the column to the next
 //! width that does.
 
+use std::ops::RangeInclusive;
+
 /// Room in a column for one more cell's `each` entries. A `Vec` doubles
 /// when full, which leaves a column a third empty on average; an eighth
 /// more leaves it a sixteenth.
@@ -21,7 +23,11 @@ pub(crate) fn put<T>(column: &mut Vec<T>, entry: T) {
 
 /// Entry `i` set to `n`, unless the column's type doesn't hold it.
 fn set<T: TryFrom<N>, N>(column: &mut [T], i: usize, n: N) -> bool {
-    T::try_from(n).map(|n| column[i] = n).is_ok()
+    let Ok(entry) = T::try_from(n) else {
+        return false;
+    };
+    column[i] = entry;
+    true
 }
 
 /// Entry `i` raised by `n`, unless the column's type doesn't hold the sum.
@@ -31,9 +37,11 @@ fn raise<T: Copy + TryFrom<N>, N: From<T> + std::ops::Add<Output = N>>(
     n: N,
 ) -> bool {
     let entry = &mut column[i];
-    T::try_from(N::from(*entry) + n)
-        .map(|sum| *entry = sum)
-        .is_ok()
+    let Ok(sum) = T::try_from(N::from(*entry) + n) else {
+        return false;
+    };
+    *entry = sum;
+    true
 }
 
 /// Entry `i` lowered by `n`, which is at most the entry.
@@ -237,6 +245,10 @@ impl Counts {
     }
 }
 
+fn both_within(least: i128, greatest: i128, range: RangeInclusive<i128>) -> bool {
+    range.contains(&least) && range.contains(&greatest)
+}
+
 /// Sums, one a cell.
 #[derive(Debug)]
 pub(crate) enum Sums {
@@ -252,10 +264,9 @@ impl Sums {
 
     /// Sums in the narrowest type that holds `least` and `greatest`.
     fn holding(least: i128, greatest: i128, each: impl Iterator<Item = i128>) -> Sums {
-        let holds = |low: i128, high: i128| low <= least && greatest <= high;
-        if holds(i32::MIN.into(), i32::MAX.into()) {
+        if both_within(least, greatest, i32::MIN.into()..=i32::MAX.into()) {
             Sums::I32(held(each))
-        } else if holds(i64::MIN.into(), i64::MAX.into()) {
+        } else if both_within(least, greatest, i64::MIN.into()..=i64::MAX.into()) {
             Sums::I64(held(each))
         } else {
             Sums::I128(each.collect())

@@ -28,13 +28,24 @@ thread_local! {
     static PEAK: Cell<isize> = const { Cell::new(0) };
 }
 
+#[derive(Clone, Copy)]
+enum Change {
+    Allocated,
+    Freed,
+}
+
 #[expect(
     clippy::cast_possible_wrap,
     reason = "a layout's size is at most isize::MAX"
 )]
-fn grow(bytes: usize, by: isize) {
+fn grow(bytes: usize, change: Change) {
+    let bytes = bytes as isize;
+    let by = match change {
+        Change::Allocated => bytes,
+        Change::Freed => -bytes,
+    };
     let live = LIVE.with(|n| {
-        n.set(n.get() + by * bytes as isize);
+        n.set(n.get() + by);
         n.get()
     });
     PEAK.with(|n| n.set(n.get().max(live)));
@@ -50,19 +61,19 @@ struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(layout.size(), 1);
+        grow(layout.size(), Change::Allocated);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        grow(layout.size(), -1);
+        grow(layout.size(), Change::Freed);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.with(|n| n.set(n.get() + 1));
-        grow(new_size, 1);
-        grow(layout.size(), -1);
+        grow(new_size, Change::Allocated);
+        grow(layout.size(), Change::Freed);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -81,7 +92,13 @@ fn key(name: &str) -> AskKey {
 /// The fact, with `buckets` (in hours) beside its one-hour width, joined
 /// to the zones on a `by` key.
 fn spec(buckets: &[u32]) -> Spec {
-    spec_of(buckets, true)
+    spec_of(buckets, Zones::Joined)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Zones {
+    Joined,
+    Apart,
 }
 
 fn measure(name: &str, aggregate: Aggregate) -> Measure {
@@ -92,17 +109,18 @@ fn measure(name: &str, aggregate: Aggregate) -> Measure {
     }
 }
 
-/// As [`spec`]; unless `joined`, without the zones.
-fn spec_of(buckets: &[u32], joined: bool) -> Spec {
+/// As [`spec`]; with the zones apart, without them.
+fn spec_of(buckets: &[u32], zones: Zones) -> Spec {
     let measures = vec![
         measure("trips", Aggregate::Count),
         measure("fare", Aggregate::Sum(id("fare"))),
         measure("tip_max", Aggregate::Max(id("tip"))),
     ];
-    spec_measuring(buckets, joined, measures)
+    spec_measuring(buckets, zones, measures)
 }
 
-fn spec_measuring(buckets: &[u32], joined: bool, measures: Vec<Measure>) -> Spec {
+fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec {
+    let joined = zones == Zones::Joined;
     let zones = Dim {
         as_text: Vec::new(),
         name: id("zones"),
@@ -165,7 +183,7 @@ fn store_with(cells: i64, buckets: &[u32]) -> Store {
 /// A store of `spec` whose rollup holds `cells` cells, each of `tips`
 /// rows that differ in their tip.
 fn store_of(spec: Spec, cells: i64, tips: i64) -> Store {
-    let columns = spec.fact("trips").unwrap().columns().to_vec();
+    let columns = spec.fact("trips").unwrap().columns().clone();
     let joined = !spec.dims().is_empty();
     let mut store = Store::new(spec);
     if joined {
@@ -258,7 +276,7 @@ fn an_ask_reads_only_the_buckets_in_its_range() {
 /// runs on request:
 /// `cargo test -p straum-domain --release --test cost -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "timing depends on the machine and the build"]
 fn an_ask_stays_within_its_time_per_cell() {
     const CELLS: i64 = 173_600;
     const REPS: u32 = 20;
@@ -324,8 +342,8 @@ fn held(build: impl FnOnce() -> Store) -> isize {
 /// a second set of cells would hold every value twice too.
 #[test]
 fn a_join_on_a_by_key_keeps_one_set_of_cells() {
-    let plain = held(|| store_of(spec_of(&[24], false), 20_000, 4));
-    let joined = held(|| store_of(spec_of(&[24], true), 20_000, 4));
+    let plain = held(|| store_of(spec_of(&[24], Zones::Apart), 20_000, 4));
+    let joined = held(|| store_of(spec_of(&[24], Zones::Joined), 20_000, 4));
     eprintln!("{plain} bytes without the join, {joined} with it");
     assert!(joined - plain < 16 << 10, "{joined} bytes against {plain}");
 }
@@ -393,16 +411,18 @@ fn tip_median() -> Measure {
     measure("tip_median", percentile(5, 1, "tip"))
 }
 
+/// The heap a store of the `measures` holds, 2,000 cells of 40 tips each.
+/// The measures are made inside, so the store frees all it took.
+fn held_by(measures: fn() -> Vec<Measure>) -> isize {
+    const CELLS: i64 = 2_000;
+    held(|| store_of(spec_measuring(&[], Zones::Apart, measures()), CELLS, 40))
+}
+
 /// A percentile reads the values a min or max on its column keeps: beside
 /// one, or in its place, it holds no byte more than a max but its name in
 /// the spec. A second set of values would be over 100 KiB here.
 #[test]
 fn a_percentile_holds_what_a_max_holds() {
-    const CELLS: i64 = 2_000;
-    // The measures are made inside, so the store frees all it took.
-    let held_by = |measures: fn() -> Vec<Measure>| {
-        held(|| store_of(spec_measuring(&[], false, measures()), CELLS, 40))
-    };
     let alone = held_by(|| vec![tip_max()]);
     let beside = held_by(|| vec![tip_max(), tip_median()]);
     let instead = held_by(|| vec![tip_median()]);
@@ -425,6 +445,11 @@ fn peak(store: &Store, by: &[&str], from: i64, to: i64) -> isize {
     PEAK.with(Cell::get) - before
 }
 
+/// The fact joined to the zones, measuring the median tip alone.
+fn median_spec() -> Spec {
+    spec_measuring(&[], Zones::Joined, vec![tip_median()])
+}
+
 /// An ask of a percentile gathers each value of its range once a cell,
 /// a pair of 16 bytes, in a list that may have doubled past them: here 80
 /// cells an hour, 4 tips each. Cells outside the range add nothing.
@@ -433,9 +458,8 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
     const HOURS: i64 = 100;
     const TIPS: i64 = 4;
     let per_hour = 2 * ZONES;
-    let spec = || spec_measuring(&[], true, vec![tip_median()]);
-    let small = store_of(spec(), HOURS * per_hour, TIPS);
-    let big = store_of(spec(), 8 * HOURS * per_hour, TIPS);
+    let small = store_of(median_spec(), HOURS * per_hour, TIPS);
+    let big = store_of(median_spec(), 8 * HOURS * per_hour, TIPS);
     for (by, from, to) in [(&[][..], 24, 48), (&["pay"], 0, 100), (&["pu"], 99, 100)] {
         let values = (to - from) * per_hour * TIPS;
         let most = isize::try_from(2 * 16 * values + (4 << 10)).unwrap();
@@ -446,29 +470,30 @@ fn a_percentile_ask_holds_the_values_of_its_range() {
     }
 }
 
+/// The allocations an ask of the median by `by` makes, the answer dropped.
+fn median_allocs(store: &Store, by: &[&str]) -> usize {
+    let mut ask = ask(by, 0, 1000);
+    ask.measures = vec![id("tip_median")];
+    let before = ALLOCS.with(Cell::get);
+    drop(store.ask(&ask).unwrap());
+    ALLOCS.with(Cell::get) - before
+}
+
 /// An ask of a percentile allocates once more each time a group's list
 /// of values doubles, not once a value: 8 times the values add about 3
 /// allocations a group.
 #[test]
 fn a_percentile_ask_allocates_per_doubling_of_its_values() {
     const CELLS: i64 = 4_000;
-    let spec = || spec_measuring(&[], true, vec![tip_median()]);
-    let allocs = |store: &Store, by: &[&str]| {
-        let mut ask = ask(by, 0, 1000);
-        ask.measures = vec![id("tip_median")];
-        let before = ALLOCS.with(Cell::get);
-        drop(store.ask(&ask).unwrap());
-        ALLOCS.with(Cell::get) - before
-    };
-    let few = store_of(spec(), CELLS, 2);
-    let many = store_of(spec(), CELLS, 16);
+    let few = store_of(median_spec(), CELLS, 2);
+    let many = store_of(median_spec(), CELLS, 16);
     for (by, groups) in [
         (&[][..], 1),
         (&["pay"], 2),
         (&["borough"], 4),
         (&["pu"], 40),
     ] {
-        let (few, many) = (allocs(&few, by), allocs(&many, by));
+        let (few, many) = (median_allocs(&few, by), median_allocs(&many, by));
         eprintln!("by {by:?}: {few} allocations, {many} with 8x the values");
         assert!(many - few <= 3 * groups, "by {by:?}: {few} then {many}");
     }

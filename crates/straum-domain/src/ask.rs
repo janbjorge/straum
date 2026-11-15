@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::mem;
 
 use crate::ident::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec, Width};
@@ -51,9 +50,10 @@ impl Spec {
                     }
                 }
                 AskKey::Bucket => {
-                    if mem::replace(&mut bucket, true) {
+                    if bucket {
                         errors.push(AskError::TimeKeyTwice);
                     }
+                    bucket = true;
                 }
             }
         }

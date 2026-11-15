@@ -103,7 +103,7 @@ fn spec_with(kinds: [RefKind; 5], filter: Vec<Condition>, shape: Shape) -> Spec 
         },
         refs: refs(kinds, shape),
         by_keys: (["customer", "product"].into_iter())
-            .filter(|key| shape != Shape::Bound || *key != "product")
+            .filter(|key| keyed(shape, key))
             .map(|key| ByKey::Column {
                 column: id(key),
                 name: id(key),
@@ -284,7 +284,7 @@ fn remove_dim(
     }
 }
 
-/// `even` is whether `qty` is, a boolean for the bool_and and bool_or.
+/// `even` is whether `qty` is, a boolean for the `bool_and` and `bool_or`.
 fn order(at: i64, customer: Datum, product: Datum, qty: Datum) -> Vec<Datum> {
     let even = match qty {
         Datum::Int(qty) => Datum::Bool(qty % 2 == 0),
@@ -298,16 +298,7 @@ type JoinRow = Vec<Option<Vec<Datum>>>;
 
 /// Every way an order's joins resolve under `kinds`, in ref order, as
 /// PostgreSQL would repeat the row.
-fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) -> Vec<JoinRow> {
-    let matches = |dim: &str, key: &Datum| -> Vec<Vec<Datum>> {
-        if *key == Datum::Null {
-            return Vec::new();
-        }
-        dims.get(dim)
-            .and_then(|rows| rows.get(&vec![key.clone()]))
-            .cloned()
-            .unwrap_or_default()
-    };
+fn join_rows(row: &[Datum], dims: &Dims, kinds: [RefKind; 5], chained: bool) -> Vec<JoinRow> {
     let mut rows: Vec<JoinRow> = vec![Vec::new()];
     for (index, (dim, kind)) in ["customers", "tiers", "tags", "promos", "blocked"]
         .into_iter()
@@ -317,27 +308,24 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) ->
         let mut next = Vec::new();
         for joined in &rows {
             let key = match index {
-                CUSTOMERS | BLOCKED => row[CUSTOMER].clone(),
-                TIERS if chained => {
-                    (joined[CUSTOMERS].as_ref()).map_or(Datum::Null, |customer| customer[1].clone())
-                }
-                TIERS => row[CUSTOMER].clone(),
+                TIERS if chained => joined_value(joined, CUSTOMERS, 1),
+                CUSTOMERS | TIERS | BLOCKED => row[CUSTOMER].clone(),
                 _ => row[PRODUCT].clone(),
             };
-            let found = matches(dim, &key);
-            let with = |matched: Option<Vec<Datum>>| {
-                let mut joined = joined.clone();
-                joined.push(matched);
-                joined
+            let found = matching_rows(dims, dim, &key);
+            // A left join keeps a row no dim row matches, once; a semi
+            // join keeps a matched row once, an anti join an unmatched one.
+            let kept_once = match kind {
+                RefKind::Left | RefKind::Anti => found.is_empty(),
+                RefKind::Semi => !found.is_empty(),
+                RefKind::Inner => false,
             };
-            match kind {
-                RefKind::Left if found.is_empty() => next.push(with(None)),
-                RefKind::Left | RefKind::Inner => {
-                    next.extend(found.into_iter().map(|matched| with(Some(matched))))
+            if kept_once {
+                next.push(joined_with(joined, None));
+            } else if matches!(kind, RefKind::Left | RefKind::Inner) {
+                for matched in found {
+                    next.push(joined_with(joined, Some(matched)));
                 }
-                RefKind::Semi if !found.is_empty() => next.push(with(None)),
-                RefKind::Anti if found.is_empty() => next.push(with(None)),
-                RefKind::Semi | RefKind::Anti => {}
             }
         }
         rows = next;
@@ -345,17 +333,42 @@ fn join_rows(row: &[Datum], dims: &Dims, kinds: &[RefKind; 5], chained: bool) ->
     rows
 }
 
+/// The dim rows under `key`: none for a null key, which joins nothing.
+fn matching_rows(dims: &Dims, dim: &str, key: &Datum) -> Vec<Vec<Datum>> {
+    if *key == Datum::Null {
+        return Vec::new();
+    }
+    let Some(rows) = dims
+        .get(dim)
+        .and_then(|by_key| by_key.get(&vec![key.clone()]))
+    else {
+        return Vec::new();
+    };
+    rows.clone()
+}
+
+fn joined_with(joined: &JoinRow, matched: Option<Vec<Datum>>) -> JoinRow {
+    let mut joined = joined.clone();
+    joined.push(matched);
+    joined
+}
+
+/// A column of the dim row a join matched, null if it matched none.
+fn joined_value(joined: &JoinRow, join: usize, column: usize) -> Datum {
+    match &joined[join] {
+        Some(matched) => matched[column].clone(),
+        None => Datum::Null,
+    }
+}
+
 /// A key's value for one order under one way its joins resolved.
 fn value(row: &[Datum], joined: &JoinRow, key: &Identifier) -> Datum {
-    let attr = |join: usize, column: usize| {
-        (joined[join].as_ref()).map_or(Datum::Null, |matched| matched[column].clone())
-    };
     match key.as_str() {
         "customer" => row[CUSTOMER].clone(),
         "product" => row[PRODUCT].clone(),
-        "country" => attr(CUSTOMERS, 0),
-        "label" => attr(TIERS, 0),
-        "tag" => attr(TAGS, 0),
+        "country" => joined_value(joined, CUSTOMERS, 0),
+        "label" => joined_value(joined, TIERS, 0),
+        "tag" => joined_value(joined, TAGS, 0),
         other => panic!("no key {other}"),
     }
 }
@@ -373,7 +386,7 @@ fn reference(
     ask: &Ask,
     rows: &[Vec<Datum>],
     dims: &Dims,
-    kinds: &[RefKind; 5],
+    kinds: [RefKind; 5],
 ) -> Answer {
     let fact = spec.fact("orders").unwrap();
     let chained = matches!(fact.refs[TIERS].via[0], Via::Attribute { .. });
@@ -441,34 +454,20 @@ fn reference_value(measure: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
         .iter()
         .filter(|(row, joined)| passes(row, joined, &measure.filter))
         .collect();
-    let ints = |pos: usize| -> Vec<i128> {
-        rows.iter()
-            .filter_map(|(row, _)| match row[pos] {
-                Datum::Int(value) => Some(i128::from(value)),
-                _ => None,
-            })
-            .collect()
-    };
-    let or_null = |value: Option<i128>| value.map_or(Value::Null, Value::Int);
-    let bools = || -> Vec<bool> {
-        rows.iter()
-            .filter_map(|(row, _)| match row[EVEN] {
-                Datum::Bool(value) => Some(value),
-                _ => None,
-            })
-            .collect()
-    };
-    let or_null_bool = |value: Option<bool>| value.map_or(Value::Null, Value::Bool);
     match &measure.aggregate {
         Aggregate::Count => Value::Int(rows.len() as i128),
-        Aggregate::CountNotNull(_) => Value::Int(ints(QTY).len() as i128),
+        Aggregate::CountNotNull(_) => Value::Int(quantities(&rows).len() as i128),
         Aggregate::Sum(_) => {
-            let values = ints(QTY);
-            or_null((!values.is_empty()).then(|| values.iter().sum()))
+            let values = quantities(&rows);
+            if values.is_empty() {
+                Value::Null
+            } else {
+                Value::Int(values.iter().sum())
+            }
         }
-        Aggregate::Max(_) => or_null(ints(QTY).into_iter().max()),
-        Aggregate::Min(_) => or_null(ints(QTY).into_iter().min()),
-        Aggregate::PercentileDisc { fraction, .. } => percentile_disc(ints(QTY), *fraction),
+        Aggregate::Max(_) => int_or_null(quantities(&rows).into_iter().max()),
+        Aggregate::Min(_) => int_or_null(quantities(&rows).into_iter().min()),
+        Aggregate::PercentileDisc { fraction, .. } => percentile_disc(quantities(&rows), *fraction),
         Aggregate::CountDistinct(_) => {
             let seen: HashSet<_> = rows
                 .iter()
@@ -477,9 +476,45 @@ fn reference_value(measure: &Measure, rows: &[(&[Datum], JoinRow)]) -> Value {
                 .collect();
             Value::Int(seen.len() as i128)
         }
-        Aggregate::BoolAnd(_) => or_null_bool(bools().into_iter().min()),
-        Aggregate::BoolOr(_) => or_null_bool(bools().into_iter().max()),
+        Aggregate::BoolAnd(_) => bool_or_null(evens(&rows).into_iter().min()),
+        Aggregate::BoolOr(_) => bool_or_null(evens(&rows).into_iter().max()),
         Aggregate::Avg(_) => unreachable!("no average here"),
+    }
+}
+
+/// The quantities of the rows that have one.
+fn quantities(rows: &[&(&[Datum], JoinRow)]) -> Vec<i128> {
+    let mut quantities = Vec::new();
+    for (row, _) in rows {
+        if let Datum::Int(quantity) = row[QTY] {
+            quantities.push(i128::from(quantity));
+        }
+    }
+    quantities
+}
+
+/// Whether each row's quantity is even, for the rows that have one.
+fn evens(rows: &[&(&[Datum], JoinRow)]) -> Vec<bool> {
+    let mut evens = Vec::new();
+    for (row, _) in rows {
+        if let Datum::Bool(even) = row[EVEN] {
+            evens.push(even);
+        }
+    }
+    evens
+}
+
+fn int_or_null(value: Option<i128>) -> Value {
+    match value {
+        Some(value) => Value::Int(value),
+        None => Value::Null,
+    }
+}
+
+fn bool_or_null(value: Option<bool>) -> Value {
+    match value {
+        Some(value) => Value::Bool(value),
+        None => Value::Null,
     }
 }
 
@@ -504,28 +539,18 @@ fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
 /// with none; product 1 on promo; customer 2 blocked.
 fn small_dims() -> Dims {
     let mut dims = Dims::new();
-    let mut put = |dim: &'static str, key: Vec<Datum>, attrs: Vec<Datum>| {
-        dims.entry(dim)
-            .or_default()
-            .entry(key)
-            .or_default()
-            .push(attrs);
-    };
-    put(
-        "customers",
-        vec![Datum::Int(1)],
-        vec![text("NO"), Datum::Int(10)],
-    );
-    put(
-        "customers",
-        vec![Datum::Int(2)],
-        vec![text("SE"), Datum::Null],
-    );
-    put("tiers", vec![Datum::Int(10)], vec![text("gold")]);
-    put("tags", vec![Datum::Int(1)], vec![text("red")]);
-    put("tags", vec![Datum::Int(1)], vec![text("big")]);
-    put("promos", vec![Datum::Int(1)], vec![text("x")]);
-    put("blocked", vec![Datum::Int(2)], vec![text("y")]);
+    for (dim, key, attrs) in [
+        ("customers", 1, vec![text("NO"), Datum::Int(10)]),
+        ("customers", 2, vec![text("SE"), Datum::Null]),
+        ("tiers", 10, vec![text("gold")]),
+        ("tags", 1, vec![text("red")]),
+        ("tags", 1, vec![text("big")]),
+        ("promos", 1, vec![text("x")]),
+        ("blocked", 2, vec![text("y")]),
+    ] {
+        let rows = dims.entry(dim).or_default();
+        rows.entry(vec![Datum::Int(key)]).or_default().push(attrs);
+    }
     dims
 }
 
@@ -561,7 +586,7 @@ fn check(
     store: &Store,
     spec: &Spec,
     dims: &Dims,
-    kinds: &[RefKind; 5],
+    kinds: [RefKind; 5],
     rows: &[Vec<Datum>],
     ask: &Ask,
 ) {
@@ -570,6 +595,14 @@ fn check(
         reference(spec, ask, rows, dims, kinds),
         "{ask:?}"
     );
+}
+
+/// A row of an answer by one text key, of two integer measures.
+fn text_row(key: &str, first: i128, second: i128) -> AnswerRow {
+    AnswerRow {
+        keys: vec![text(key)],
+        values: vec![Value::Int(first), Value::Int(second)],
+    }
 }
 
 /// A row of an answer without keys: the measures asked.
@@ -608,7 +641,7 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
         values(&store, &ask(&["n", "q"], &[], vec![])),
         [Value::Int(2), Value::Int(10)]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &by_tag);
+    check(&store, &spec, &dims, kinds, &orders, &by_tag);
 
     kinds[TAGS] = RefKind::Left;
     let (store, spec, dims) = small(kinds, vec![], &orders);
@@ -633,7 +666,7 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
         values(&store, &ask(&["n", "q"], &[], vec![])),
         [Value::Int(3), Value::Int(17)]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &by_tag);
+    check(&store, &spec, &dims, kinds, &orders, &by_tag);
 }
 
 /// Several dim rows under one key multiply a count and a sum, and leave a
@@ -658,7 +691,7 @@ fn many_matches_multiply_counts_and_sums_only() {
         Value::Bool(false),
     ];
     assert_eq!(values(&store, &all), two);
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
     // A third tag, then one gone: the multiplicity follows the dim.
     add_dim(
         &mut store,
@@ -696,7 +729,7 @@ fn many_matches_multiply_counts_and_sums_only() {
             Value::Bool(false),
         ]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
 }
 
 /// A semi join counts an order once however many rows match, and not at
@@ -714,7 +747,7 @@ fn semi_counts_once_and_anti_counts_the_unmatched() {
     let n = ask(&["n", "q"], &[], vec![]);
     // Order 1: on promo, customer not blocked. Order 2: no promo.
     assert_eq!(values(&store, &n), [Value::Int(2), Value::Int(10)]);
-    check(&store, &spec, &dims, &kinds, &orders, &n);
+    check(&store, &spec, &dims, kinds, &orders, &n);
     // A second promo row for product 1 changes nothing; blocking customer
     // 1 drops the order; unblocking customer 2 still leaves it off promo.
     add_dim(
@@ -749,14 +782,14 @@ fn semi_counts_once_and_anti_counts_the_unmatched() {
         vec![text("x")],
     );
     assert_eq!(values(&store, &n), [Value::Int(1), Value::Int(7)]);
-    check(&store, &spec, &dims, &kinds, &orders, &n);
+    check(&store, &spec, &dims, kinds, &orders, &n);
 
     // Swapped: semi on blocked, anti on promos.
     kinds[PROMOS] = RefKind::Anti;
     kinds[BLOCKED] = RefKind::Semi;
     let (store, spec, dims) = small(kinds, vec![], &orders);
     assert_eq!(values(&store, &n), [Value::Int(1), Value::Int(7)]);
-    check(&store, &spec, &dims, &kinds, &orders, &n);
+    check(&store, &spec, &dims, kinds, &orders, &n);
 }
 
 /// The answer to `ask`, an ask of one measure by one key, as key and value.
@@ -804,7 +837,7 @@ fn a_chain_reads_through_the_first_dim() {
             (text("gold"), Value::Int(10))
         ]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &by_label);
+    check(&store, &spec, &dims, kinds, &orders, &by_label);
     // The tier relabelled, then customer 2 moved into it, then the tier
     // row gone: each moves the answer at once.
     let gold = Replaced {
@@ -829,7 +862,7 @@ fn a_chain_reads_through_the_first_dim() {
         labels(&store, &by_label),
         [(Datum::Null, Value::Int(18)), (text("vip"), Value::Int(24))]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &by_label);
+    check(&store, &spec, &dims, kinds, &orders, &by_label);
     remove_dim(
         &mut store,
         &mut dims,
@@ -848,7 +881,7 @@ fn a_chain_reads_through_the_first_dim() {
     );
     let vip = ask(&["n"], &[], vec![cond("label", vec![lit("vip")])]);
     assert_eq!(values(&store, &vip), [Value::Int(4)]);
-    check(&store, &spec, &dims, &kinds, &orders, &vip);
+    check(&store, &spec, &dims, kinds, &orders, &vip);
 }
 
 /// The view's `WHERE` drops rows from every measure of every ask, and
@@ -879,8 +912,8 @@ fn where_drops_rows_from_every_ask() {
             values: vec![Value::Int(1)]
         }]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &all);
-    check(&store, &spec, &dims, &kinds, &orders, &by_customer);
+    check(&store, &spec, &dims, kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &by_customer);
     // Customer 3 gets a row in NO: its order now passes.
     add_dim(
         &mut store,
@@ -890,11 +923,11 @@ fn where_drops_rows_from_every_ask() {
         vec![text("NO"), Datum::Null],
     );
     assert_eq!(values(&store, &all), [Value::Int(2), Value::Int(16)]);
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
     // Without the WHERE every order counts, the one with two tags twice.
     let (store, spec, dims) = small(kinds, vec![], &orders);
     assert_eq!(values(&store, &all), [Value::Int(4), Value::Int(26)]);
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
 }
 
 /// A chain's key or a semi join's key that is null joins nothing, and an
@@ -913,15 +946,15 @@ fn null_keys_join_nothing() {
     // order has two tags.
     let all = ask(&["n"], &[], vec![]);
     assert_eq!(values(&store, &all), [Value::Int(2)]);
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
     let by = ask(&["n"], &["country", "label", "tag"], vec![]);
-    check(&store, &spec, &dims, &kinds, &orders, &by);
+    check(&store, &spec, &dims, kinds, &orders, &by);
 
     kinds[TAGS] = RefKind::Left;
     kinds[PROMOS] = RefKind::Semi;
     let (store, spec, dims) = small(kinds, vec![], &orders);
     assert_eq!(values(&store, &all), [Value::Int(2)]);
-    check(&store, &spec, &dims, &kinds, &orders, &all);
+    check(&store, &spec, &dims, kinds, &orders, &all);
 }
 
 /// Joined on its `by` keys alone, a fact keeps no bound cells: they
@@ -941,12 +974,8 @@ fn joins_on_by_keys_keep_no_bound_cells() {
     assert_eq!(store.bound_cells("orders"), None);
     // Product 2 has no tag and is on no promo; customer 2 is blocked.
     let by_tag = ask(&["n", "q"], &["tag"], vec![]);
-    let row = |tag: &str, count: i128, quantity: i128| AnswerRow {
-        keys: vec![text(tag)],
-        values: vec![Value::Int(count), Value::Int(quantity)],
-    };
-    assert_eq!(store.ask(&by_tag).unwrap().rows, [row("red", 1, 5)]);
-    check(&store, &spec, &dims, &KINDS, &orders, &by_tag);
+    assert_eq!(store.ask(&by_tag).unwrap().rows, [text_row("red", 1, 5)]);
+    check(&store, &spec, &dims, KINDS, &orders, &by_tag);
     // The next ask reads the dims as they are then.
     for (dim, attr) in [("tags", "big"), ("promos", "x")] {
         add_dim(
@@ -959,7 +988,7 @@ fn joins_on_by_keys_keep_no_bound_cells() {
     }
     assert_eq!(
         store.ask(&by_tag).unwrap().rows,
-        [row("big", 1, 7), row("red", 1, 5)]
+        [text_row("big", 1, 7), text_row("red", 1, 5)]
     );
     remove_dim(
         &mut store,
@@ -970,9 +999,9 @@ fn joins_on_by_keys_keep_no_bound_cells() {
     );
     assert_eq!(
         store.ask(&by_tag).unwrap().rows,
-        [row("big", 1, 7), row("red", 2, 14)]
+        [text_row("big", 1, 7), text_row("red", 2, 14)]
     );
-    check(&store, &spec, &dims, &KINDS, &orders, &by_tag);
+    check(&store, &spec, &dims, KINDS, &orders, &by_tag);
     assert_eq!(store.bound_cells("orders"), None);
 }
 
@@ -992,23 +1021,19 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
     let (mut store, spec, mut dims) = small_in(spec, one_row_dims(), &orders);
     assert_eq!(store.bound_cells("orders"), None);
     let ends = ask(&["q_max", "q_min"], &["country"], vec![]);
-    let row = |country: &str, max: i128, min: i128| AnswerRow {
-        keys: vec![text(country)],
-        values: vec![Value::Int(max), Value::Int(min)],
-    };
     assert_eq!(
         store.ask(&ends).unwrap().rows,
-        [row("NO", 9, 5), row("SE", 3, 3)]
+        [text_row("NO", 9, 5), text_row("SE", 3, 3)]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &ends);
+    check(&store, &spec, &dims, kinds, &orders, &ends);
 
     let largest = orders.remove(1);
     store.remove_row("orders", &largest).unwrap();
     assert_eq!(
         store.ask(&ends).unwrap().rows,
-        [row("NO", 7, 5), row("SE", 3, 3)]
+        [text_row("NO", 7, 5), text_row("SE", 3, 3)]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &ends);
+    check(&store, &spec, &dims, kinds, &orders, &ends);
 
     let home = [text("NO"), Datum::Int(10)];
     remove_dim(&mut store, &mut dims, "customers", &[Datum::Int(1)], &home);
@@ -1019,8 +1044,8 @@ fn a_max_over_joined_keys_follows_deletes_and_dims() {
         vec![Datum::Int(1)],
         vec![text("SE"), Datum::Int(10)],
     );
-    assert_eq!(store.ask(&ends).unwrap().rows, [row("SE", 7, 3)]);
-    check(&store, &spec, &dims, &kinds, &orders, &ends);
+    assert_eq!(store.ask(&ends).unwrap().rows, [text_row("SE", 7, 3)]);
+    check(&store, &spec, &dims, kinds, &orders, &ends);
 }
 
 /// Joined on a column no `by` key reads, a fact keeps bound cells, fewer
@@ -1055,25 +1080,35 @@ fn a_join_off_the_by_keys_keeps_fewer_bound_cells() {
             },
         ]
     );
-    check(&store, &spec, &dims, &kinds, &orders, &by_tag);
+    check(&store, &spec, &dims, kinds, &orders, &by_tag);
 }
 
 /// The kinds a seed runs with. Over eight seeds: every way the three
 /// joins that read a column are left or inner, and each kind twice for
 /// each of the two that may read none.
 fn kinds_of(seed: u64) -> [RefKind; 5] {
-    let reads = |bit: u64| match seed >> bit & 1 {
-        0 => RefKind::Left,
-        _ => RefKind::Inner,
-    };
     let any = [RefKind::Left, RefKind::Inner, RefKind::Semi, RefKind::Anti];
     [
-        reads(0),
-        reads(1),
-        reads(2),
+        left_or_inner(seed, 0),
+        left_or_inner(seed, 1),
+        left_or_inner(seed, 2),
         any[usize::try_from(seed % 4).unwrap()],
         any[usize::try_from((seed / 2 + 1) % 4).unwrap()],
     ]
+}
+
+/// Left or inner, as bit `bit` of `seed` is unset or set.
+fn left_or_inner(seed: u64, bit: u64) -> RefKind {
+    match seed >> bit & 1 {
+        0 => RefKind::Left,
+        _ => RefKind::Inner,
+    }
+}
+
+/// Whether a view of `shape` has `key`: the product is one unless the
+/// view is [`Shape::Bound`].
+fn keyed(shape: Shape, key: &str) -> bool {
+    shape != Shape::Bound || key != "product"
 }
 
 impl Rng {
@@ -1131,9 +1166,8 @@ impl Rng {
     /// An ask of the keys the view has: the product is one unless the
     /// view is [`Shape::Bound`].
     fn random_ask(&mut self, shape: Shape) -> Ask {
-        let keyed = |key: &str| shape != Shape::Bound || key != "product";
         let by: Vec<&str> = (KEYS.iter().copied())
-            .filter(|key| self.chance(30) && keyed(key))
+            .filter(|key| self.chance(30) && keyed(shape, key))
             .collect();
         let mut measures: Vec<&str> = (MEASURES.iter().copied())
             .chain([FILTERED])
@@ -1150,7 +1184,7 @@ impl Rng {
             cond("product", vec![Literal::Int(3)]),
         ];
         let filter = (pool.into_iter())
-            .filter(|cond| self.chance(20) && keyed(cond.key.as_str()))
+            .filter(|cond| self.chance(20) && keyed(shape, cond.key.as_str()))
             .collect();
         let mut ask = ask(&measures, &by, filter);
         if self.chance(30) {
@@ -1175,12 +1209,36 @@ fn held(dims: &Dims, dim: &str) -> usize {
 struct Run {
     kinds: [RefKind; 5],
     shape: Shape,
+    sealing: Sealing,
+    rows_a_key: RowsAKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sealing {
+    Never,
     /// Buckets are sealed and unsealed as the run goes, and an ask over
     /// one reads the keyed cells, thawed.
-    sealing: bool,
-    /// No dim key holds a second row, so no join repeats a cell.
-    one_row_a_key: bool,
+    AsItGoes,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowsAKey {
+    Any,
+    /// No dim key holds a second row, so no join repeats a cell.
+    One,
+}
+
+/// Seeds a test runs, each with the kinds [`kinds_of`] gives it.
+const SEEDS: u64 = 8;
+/// Dim rows a run starts with, at most.
+const FIRST_DIM_ROWS: usize = 30;
+const STEPS: u32 = 400;
+/// Steps between checks against the reference.
+const CHECK_EVERY: u32 = 50;
+const ASKS_A_CHECK: usize = 6;
+/// Sealed buckets the asks of a sealing test read, at least: fewer would
+/// leave the thawed cells barely tested.
+const SEALED_READS: usize = 500;
 
 /// Random rows, dims and changes to both, checked against the reference
 /// every few steps; returns the sealed buckets asks read. Only a
@@ -1188,12 +1246,12 @@ struct Run {
 /// keyed cells through the projections.
 fn run(seed: u64, run: Run) -> usize {
     let mut walk = Walk::new(seed, run);
-    for _ in 0..walk.rng.below(30) {
+    for _ in 0..walk.rng.below(FIRST_DIM_ROWS) {
         walk.add_random_dim_row();
     }
-    for step in 0..400 {
+    for step in 0..STEPS {
         walk.take_a_step();
-        if step % 50 == 49 {
+        if step % CHECK_EVERY == CHECK_EVERY - 1 {
             walk.check(step);
         }
     }
@@ -1242,7 +1300,7 @@ impl Walk {
     /// One change to the rows or the dims, after the buckets that end by
     /// a random time are sealed, if the run seals.
     fn take_a_step(&mut self) {
-        if self.run.sealing && self.rng.chance(10) {
+        if self.run.sealing == Sealing::AsItGoes && self.rng.chance(10) {
             let before = START + HOUR * self.rng.int(0, 60);
             self.spilled.seal(&mut self.rng, &mut self.store, before);
         }
@@ -1270,7 +1328,7 @@ impl Walk {
     /// key holds one already.
     fn add_random_dim_row(&mut self) {
         let (dim, key, attrs) = self.rng.dim_row(self.chained());
-        let taken = self.run.one_row_a_key
+        let taken = self.run.rows_a_key == RowsAKey::One
             && (self.dims.get(dim)).is_some_and(|rows| rows.contains_key(&key));
         if !taken {
             add_dim(&mut self.store, &mut self.dims, dim, key, attrs);
@@ -1326,11 +1384,11 @@ impl Walk {
                 "seed {seed}, step {step}: {dim} holds a row with a null key"
             );
         }
-        for _ in 0..6 {
+        for _ in 0..ASKS_A_CHECK {
             let ask = self.rng.random_ask(shape);
             assert_eq!(
                 self.spilled.ask(&self.store, &ask),
-                reference(&self.spec, &ask, &self.rows, &self.dims, &kinds),
+                reference(&self.spec, &ask, &self.rows, &self.dims, kinds),
                 "seed {seed}, step {step}, kinds {kinds:?}, {ask:?}"
             );
         }
@@ -1367,10 +1425,10 @@ impl Walk {
     }
 }
 
-/// Eight seeds of [`run`], each with the kinds [`kinds_of`] gives it;
+/// [`SEEDS`] seeds of [`run`], each with the kinds [`kinds_of`] gives it;
 /// returns the sealed buckets asks read.
-fn runs(shape: Shape, sealing: bool, one_row_a_key: bool) -> usize {
-    (0..8)
+fn runs(shape: Shape, sealing: Sealing, rows_a_key: RowsAKey) -> usize {
+    (0..SEEDS)
         .map(|seed| {
             let kinds = kinds_of(seed);
             run(
@@ -1379,7 +1437,7 @@ fn runs(shape: Shape, sealing: bool, one_row_a_key: bool) -> usize {
                     kinds,
                     shape,
                     sealing,
-                    one_row_a_key,
+                    rows_a_key,
                 },
             )
         })
@@ -1388,12 +1446,12 @@ fn runs(shape: Shape, sealing: bool, one_row_a_key: bool) -> usize {
 
 #[test]
 fn joins_match_the_naive_reference() {
-    assert_eq!(runs(Shape::Chained, false, false), 0);
+    assert_eq!(runs(Shape::Chained, Sealing::Never, RowsAKey::Any), 0);
 }
 
 #[test]
 fn by_key_joins_match_the_naive_reference() {
-    assert_eq!(runs(Shape::ByKeys, false, false), 0);
+    assert_eq!(runs(Shape::ByKeys, Sealing::Never, RowsAKey::Any), 0);
 }
 
 /// With one row a key no join repeats a cell, so an ask over the keyed
@@ -1401,36 +1459,36 @@ fn by_key_joins_match_the_naive_reference() {
 /// anti join drops.
 #[test]
 fn one_row_a_key_joins_match_the_naive_reference() {
-    assert_eq!(runs(Shape::ByKeys, false, true), 0);
+    assert_eq!(runs(Shape::ByKeys, Sealing::Never, RowsAKey::One), 0);
 }
 
 #[test]
 fn bound_joins_match_the_naive_reference() {
-    assert_eq!(runs(Shape::Bound, false, false), 0);
+    assert_eq!(runs(Shape::Bound, Sealing::Never, RowsAKey::Any), 0);
 }
 
 #[test]
 fn sealed_joins_match_the_naive_reference() {
-    let read = runs(Shape::Chained, true, false);
-    assert!(read > 500, "asks read {read} sealed buckets");
+    let read = runs(Shape::Chained, Sealing::AsItGoes, RowsAKey::Any);
+    assert!(read > SEALED_READS, "asks read {read} sealed buckets");
 }
 
 #[test]
 fn sealed_by_key_joins_match_the_naive_reference() {
-    let read = runs(Shape::ByKeys, true, false);
-    assert!(read > 500, "asks read {read} sealed buckets");
+    let read = runs(Shape::ByKeys, Sealing::AsItGoes, RowsAKey::Any);
+    assert!(read > SEALED_READS, "asks read {read} sealed buckets");
 }
 
 #[test]
 fn sealed_one_row_a_key_joins_match_the_naive_reference() {
-    let read = runs(Shape::ByKeys, true, true);
-    assert!(read > 500, "asks read {read} sealed buckets");
+    let read = runs(Shape::ByKeys, Sealing::AsItGoes, RowsAKey::One);
+    assert!(read > SEALED_READS, "asks read {read} sealed buckets");
 }
 
 #[test]
 fn sealed_bound_joins_match_the_naive_reference() {
-    let read = runs(Shape::Bound, true, false);
-    assert!(read > 500, "asks read {read} sealed buckets");
+    let read = runs(Shape::Bound, Sealing::AsItGoes, RowsAKey::Any);
+    assert!(read > SEALED_READS, "asks read {read} sealed buckets");
 }
 
 /// Left joins alone count a cell once while every dim key holds one
@@ -1438,18 +1496,18 @@ fn sealed_bound_joins_match_the_naive_reference() {
 /// keyed cells as in the bound cells.
 #[test]
 fn sealed_left_joins_match_the_naive_reference() {
-    let read: usize = (0..8)
+    let read: usize = (0..SEEDS)
         .map(|seed| {
             run(
                 seed,
                 Run {
                     kinds: [RefKind::Left; 5],
                     shape: Shape::Bound,
-                    sealing: true,
-                    one_row_a_key: false,
+                    sealing: Sealing::AsItGoes,
+                    rows_a_key: RowsAKey::Any,
                 },
             )
         })
         .sum();
-    assert!(read > 500, "asks read {read} sealed buckets");
+    assert!(read > SEALED_READS, "asks read {read} sealed buckets");
 }

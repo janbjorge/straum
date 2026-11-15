@@ -7,6 +7,7 @@ use crate::column::Counts;
 use crate::ident::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
+use crate::value_counts::ValueCounts;
 
 /// What a measure reads of its input column, which decides the types the
 /// column may have.
@@ -154,7 +155,7 @@ pub(crate) enum Partials {
         fraction: Fraction,
         values: Vec<Vec<(i64, u64)>>,
     },
-    /// A bool_and and a bool_or merge alike and part only when finished.
+    /// A `bool_and` and a `bool_or` merge alike and part only when finished.
     Bools {
         trues: Vec<u64>,
         falses: Vec<u64>,
@@ -260,15 +261,17 @@ impl Partials {
             }
             (Partials::Distinct(seen), Some(State::Distinct(counts))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
-                for (&group, counts) in groups.iter().zip(counts).filter(|&(&group, _)| group != 0)
-                {
-                    seen[group as usize].extend(counts.keys().cloned());
+                for (&group, counts) in groups.iter().zip(counts) {
+                    if group != 0 {
+                        seen[group as usize].extend(counts.keys().cloned());
+                    }
                 }
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) => {
-                for (&group, counts) in groups.iter().zip(counts).filter(|&(&group, _)| group != 0)
-                {
-                    values[group as usize].extend(counts.iter());
+                for (&group, counts) in groups.iter().zip(counts) {
+                    if group != 0 {
+                        values[group as usize].extend(counts.iter());
+                    }
                 }
             }
             (
@@ -321,13 +324,14 @@ impl Partials {
             (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
                 seen[group as usize].extend(counts[cell].keys().cloned());
             }
-            (Partials::Distinct(_), Some(State::Distinct(_))) => {}
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
                 values[group as usize].extend(counts[cell].iter());
             }
-            (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
+            // Group 0 is never finished, and a value set or list costs its merge.
+            (Partials::Distinct(_), Some(State::Distinct(_)))
+            | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
                 Some(State::Bools {
@@ -373,13 +377,14 @@ impl Partials {
             (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
                 seen[group].extend(counts.iter().flat_map(|cell| cell.keys().cloned()));
             }
-            (Partials::Distinct(_), Some(State::Distinct(_))) => {}
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
-                values[group].extend(counts.iter().flat_map(|cell| cell.iter()));
+                values[group].extend(counts.iter().flat_map(ValueCounts::iter));
             }
-            (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
+            // Group 0 is never finished, and a value set or list costs its merge.
+            (Partials::Distinct(_), Some(State::Distinct(_)))
+            | (Partials::Percentile { .. }, Some(State::Extent { .. })) => {}
             (
                 Partials::Bools { trues, falses, .. },
                 Some(State::Bools {
@@ -440,13 +445,13 @@ impl Partials {
                 }
                 let rank = fraction.rank(total);
                 let mut seen = 0;
-                let (value, _) = (values.iter())
-                    .find(|&&(_, count)| {
-                        seen += count;
-                        seen >= rank
-                    })
-                    .expect("rank is at most the values' count");
-                Value::Int((*value).into())
+                for &(value, count) in values.iter() {
+                    seen += count;
+                    if seen >= rank {
+                        return Value::Int(value.into());
+                    }
+                }
+                unreachable!("rank is at most the values' count")
             }
             Partials::Bools { trues, falses, all } => {
                 let any_true = trues[lanes.clone()].iter().any(|&count| count > 0);

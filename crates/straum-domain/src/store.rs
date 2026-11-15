@@ -6,7 +6,8 @@ use crate::ask::{Ask, AskError, AskKey};
 use crate::hash::FastMap;
 use crate::ident::Identifier;
 use crate::projection::{NULL, Projection};
-use crate::rollup::{Bucket, Cells, Rollup, RowError};
+use crate::rollup::{Bucket, Cells, Direction, Rollup, RowError};
+
 use crate::sealed::{Sealed, SealedError, SealedId, Thawed};
 use crate::spec::{
     Condition, Fact, Key, KeyPart, Literal, Measure, Ref, RefKind, Spec, Via, Width,
@@ -65,40 +66,45 @@ struct BoundRef {
     attrs: Vec<usize>,
 }
 
+impl BoundRef {
+    fn new(spec: &Spec, keyed: &Rollup, columns: &[Identifier], reference: &Ref) -> BoundRef {
+        let dim = dim_index(spec, reference.dim.as_str()).expect(CHECKED);
+        let mut via = Vec::with_capacity(reference.via.len());
+        for column in &reference.via {
+            let Via::Fact(column) = column else {
+                unreachable!("every ref is direct");
+            };
+            via.push(position_of(columns, column));
+        }
+        let via_parts = (via.iter())
+            .map(|&column| keyed.part_of_column(column).expect(CHECKED))
+            .collect();
+        let attributes = &spec.dims()[dim].attributes;
+        let attrs = (reference.reads.iter())
+            .map(|read| position_of(attributes, &read.column))
+            .collect();
+        BoundRef {
+            dim,
+            kind: reference.kind,
+            via,
+            via_parts,
+            attrs,
+        }
+    }
+}
+
+fn position_of(names: &[Identifier], name: &Identifier) -> usize {
+    names.iter().position(|each| each == name).expect(CHECKED)
+}
+
 impl Bound {
     fn new(spec: &Spec, fact: &Fact, keyed: &Rollup) -> Option<Bound> {
         if fact.refs.is_empty() || !fact.is_direct() || !fact.vias_add_parts() {
             return None;
         }
         let columns = fact.columns();
-        let position = |column: &Identifier| columns.iter().position(|name| name == column);
         let refs = (fact.refs.iter())
-            .map(|reference| {
-                let dim = dim_index(spec, reference.dim.as_str()).expect(CHECKED);
-                let attributes = &spec.dims()[dim].attributes;
-                let via: Vec<usize> = (reference.via.iter())
-                    .map(|via| match via {
-                        Via::Fact(column) => position(column).expect(CHECKED),
-                        Via::Attribute { .. } => unreachable!("every ref is direct"),
-                    })
-                    .collect();
-                BoundRef {
-                    dim,
-                    kind: reference.kind,
-                    via_parts: (via.iter())
-                        .map(|&column| keyed.part_of_column(column).expect(CHECKED))
-                        .collect(),
-                    via,
-                    attrs: (reference.reads.iter())
-                        .map(|read| {
-                            attributes
-                                .iter()
-                                .position(|attribute| *attribute == read.column)
-                                .expect(CHECKED)
-                        })
-                        .collect(),
-                }
-            })
+            .map(|reference| BoundRef::new(spec, keyed, &columns, reference))
             .collect();
         Some(Bound {
             rollup: Rollup::bound(fact),
@@ -203,12 +209,11 @@ impl Store {
     /// a dim's [`Dim::columns`]. Only the source knows them, so a load
     /// sets them.
     pub fn set_types(&mut self, table: &str, types: &[ColumnType]) -> Result<(), RowError> {
-        match self.fact_index(table) {
-            Some(fact) => self.rollups[fact].set_types(types)?,
-            None => {
-                let dim = self.dim_index(table).expect(IN_SPEC);
-                self.projections[dim].set_types(types)?;
-            }
+        if let Some(fact) = self.fact_index(table) {
+            self.rollups[fact].set_types(types)?;
+        } else {
+            let dim = self.dim_index(table).expect(IN_SPEC);
+            self.projections[dim].set_types(types)?;
         }
         // A bound row's types are the fact's and its dims', whichever
         // came last.
@@ -259,7 +264,7 @@ impl Store {
     pub fn add_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
             self.rollups[fact].add(row)?;
-            return self.bind(fact, row, true);
+            return self.bind(fact, row, Direction::Add);
         }
         self.change_dim(table, row, Projection::add)
     }
@@ -269,7 +274,7 @@ impl Store {
     pub fn remove_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
             self.rollups[fact].remove(row)?;
-            return self.bind(fact, row, false);
+            return self.bind(fact, row, Direction::Remove);
         }
         self.change_dim(table, row, Projection::remove)
     }
@@ -330,17 +335,16 @@ impl Store {
 
     /// Adds or removes a fact row's bound rows, as the refs resolve it
     /// now.
-    fn bind(&mut self, fact: usize, row: &[Datum], add: bool) -> Result<(), RowError> {
+    fn bind(&mut self, fact: usize, row: &[Datum], direction: Direction) -> Result<(), RowError> {
         let Some(bound) = &mut self.bound[fact] else {
             return Ok(());
         };
         let mut out = Vec::new();
         bound.rows(&self.projections, row, &mut out);
         for row in out.chunks_exact(bound.width) {
-            if add {
-                bound.rollup.add(row)?;
-            } else {
-                bound.rollup.remove(row)?;
+            match direction {
+                Direction::Add => bound.rollup.add(row)?,
+                Direction::Remove => bound.rollup.remove(row)?,
             }
         }
         Ok(())
@@ -393,14 +397,19 @@ impl Store {
                 }
                 let count = cells.rows().get(cell);
                 for key in &old_keys {
-                    bound
-                        .rollup
-                        .adjust(start, key, count, cells.states(), cell, false)?;
+                    bound.rollup.adjust(
+                        start,
+                        key,
+                        count,
+                        cells.states(),
+                        cell,
+                        Direction::Remove,
+                    )?;
                 }
                 for key in &new_keys {
                     bound
                         .rollup
-                        .adjust(start, key, count, cells.states(), cell, true)?;
+                        .adjust(start, key, count, cells.states(), cell, Direction::Add)?;
                 }
             }
         }
@@ -432,7 +441,7 @@ impl Store {
         let keyed = &rollups[fact];
         for start in keyed.hot_date_bin_starts() {
             let cells = keyed.hot_date_bin(start).expect(HOT);
-            pour(bound, keyed, projections, start, cells, true).expect(POURED);
+            pour(bound, keyed, projections, start, cells, Direction::Add).expect(POURED);
         }
     }
 
@@ -509,14 +518,19 @@ impl Store {
     /// cells hold the hot buckets and no other, so a dim change moves all
     /// of them, and an ask over a sealed bucket reads the keyed cells.
     pub fn seal(&mut self, id: &SealedId) -> Result<(), SealedError> {
-        let error = |reason| SealedError {
-            id: id.clone(),
-            reason,
+        let Some(fact) = self.fact_index(id.fact.as_str()) else {
+            return Err(sealed_error(id, "unknown fact"));
         };
-        let fact = (self.fact_index(id.fact.as_str())).ok_or_else(|| error("unknown fact"))?;
-        self.pour_bucket(fact, id.width, id.bucket_start, false)
-            .map_err(|_| error("bound cells don't hold the bucket"))?;
-        (self.rollups[fact].seal(id.width, id.bucket_start)).map_err(error)
+        if self
+            .pour_bucket(fact, id.width, id.bucket_start, Direction::Remove)
+            .is_err()
+        {
+            return Err(sealed_error(id, "bound cells don't hold the bucket"));
+        }
+        match self.rollups[fact].seal(id.width, id.bucket_start) {
+            Ok(()) => Ok(()),
+            Err(reason) => Err(sealed_error(id, reason)),
+        }
     }
 
     /// Binds a hot `date_bin` bucket's cells into the bound cells, or
@@ -527,7 +541,7 @@ impl Store {
         fact: usize,
         width: i64,
         start: i64,
-        add: bool,
+        direction: Direction,
     ) -> Result<(), RowError> {
         let Store {
             rollups,
@@ -542,7 +556,7 @@ impl Store {
             return Ok(());
         }
         match keyed.hot_date_bin(Some(start)) {
-            Some(cells) => pour(bound, keyed, projections, Some(start), cells, add),
+            Some(cells) => pour(bound, keyed, projections, Some(start), cells, direction),
             None => Ok(()),
         }
     }
@@ -592,7 +606,8 @@ impl Store {
         let fact = self.fact_index(id.fact.as_str()).expect(IN_SPEC);
         match self.rollups[fact].unseal(id.width, id.bucket_start, cells) {
             Ok(()) => {
-                (self.pour_bucket(fact, id.width, id.bucket_start, true)).expect(POURED);
+                let poured = self.pour_bucket(fact, id.width, id.bucket_start, Direction::Add);
+                poured.expect(POURED);
                 Ok(())
             }
             Err(reason) => Err(SealedError { id, reason }),
@@ -668,43 +683,30 @@ impl Store {
                 ask_once(&mut each, &mut joins, cover(rollup, ask, &loaded));
             }
             Some(mut expander) => {
-                ask_expanded(&mut each, cover(rollup, ask, &loaded), &mut expander)
+                ask_expanded(&mut each, cover(rollup, ask, &loaded), &mut expander);
             }
         }
-
-        measures
-            .iter_mut()
-            .for_each(|measure| measure.partials.grow(groups.len()));
-        let mut keys = groups.keys.into_iter().map(Cow::into_owned);
-        let mut rows: Vec<AnswerRow> = (1..=groups.made)
-            .map(|group| AnswerRow {
-                keys: keys.by_ref().take(by.len()).collect(),
-                values: (measures.iter_mut())
-                    .map(|measure| measure.partials.finish(group))
-                    .collect(),
-            })
-            .collect();
-        rows.sort_by(|left, right| left.keys.cmp(&right.keys));
+        let rows = answer_rows(groups, &mut measures, by.len());
         Ok(Answer { columns, rows })
     }
 
     /// Only the load knows the types, so this check comes after
     /// [`Spec::check`].
     fn check_types(&self, fact: &Fact, read: &Read<'_>, ask: &Ask) -> Result<(), Vec<AskError>> {
-        let wrong: Vec<AskError> = (ask.filter.iter())
-            .flat_map(|cond| {
-                let column = self
-                    .lookup(fact, read, &cond.key)
-                    .column_type(read.rollup());
-                (cond.values.iter())
-                    .filter(move |value| !column.fits(value))
-                    .map(move |value| AskError::WrongType {
+        let mut wrong = Vec::new();
+        for cond in &ask.filter {
+            let lookup = self.lookup(fact, read, &cond.key);
+            let column = lookup.column_type(read.rollup());
+            for value in &cond.values {
+                if !column.fits(value) {
+                    wrong.push(AskError::WrongType {
                         key: cond.key.clone(),
                         column,
                         value: value.clone(),
-                    })
-            })
-            .collect();
+                    });
+                }
+            }
+        }
         if wrong.is_empty() { Ok(()) } else { Err(wrong) }
     }
 
@@ -714,43 +716,9 @@ impl Store {
     /// [`Store::presences`] tells apart.
     fn expander(&self, fact: &Fact) -> Option<Expander<'_>> {
         let plans: Vec<RefPlan<'_>> = (fact.refs.iter())
-            .map(|reference| {
-                let via = (reference.via.iter())
-                    .map(|via| match via {
-                        Via::Fact(column) => {
-                            ViaFrom::KeyPart(key_part_of(fact, KeyPart::Column(column)))
-                        }
-                        Via::Attribute { through, column } => {
-                            let parent = self.spec.dim(fact.refs[*through].dim.as_str());
-                            let attr = (parent.expect(CHECKED).attributes.iter())
-                                .position(|attribute| attribute == column)
-                                .expect(CHECKED);
-                            ViaFrom::Through {
-                                reference: *through,
-                                attr,
-                            }
-                        }
-                    })
-                    .collect();
-                RefPlan {
-                    kind: reference.kind,
-                    projection: self.projection(reference.dim.as_str()),
-                    via,
-                }
-            })
+            .map(|reference| self.ref_plan(fact, reference))
             .collect();
-        let once = plans.iter().all(|plan| {
-            let repeats = match plan.kind {
-                RefKind::Left | RefKind::Inner => !plan.projection.is_unique(),
-                RefKind::Semi | RefKind::Anti => false,
-            };
-            !repeats
-                && plan
-                    .via
-                    .iter()
-                    .all(|via| matches!(via, ViaFrom::KeyPart(_)))
-        });
-        if once {
+        if plans.iter().all(RefPlan::counts_once) {
             return None;
         }
         let mut parts = Vec::new();
@@ -766,6 +734,31 @@ impl Store {
             parts,
             memo: FastMap::default(),
         })
+    }
+
+    fn ref_plan(&self, fact: &Fact, reference: &Ref) -> RefPlan<'_> {
+        let mut via = Vec::with_capacity(reference.via.len());
+        for column in &reference.via {
+            via.push(self.via_from(fact, column));
+        }
+        RefPlan {
+            kind: reference.kind,
+            projection: self.projection(reference.dim.as_str()),
+            via,
+        }
+    }
+
+    fn via_from(&self, fact: &Fact, via: &Via) -> ViaFrom {
+        match via {
+            Via::Fact(column) => ViaFrom::KeyPart(key_part_of(fact, KeyPart::Column(column))),
+            Via::Attribute { through, column } => {
+                let parent = self.spec.dim(fact.refs[*through].dim.as_str());
+                ViaFrom::Through {
+                    reference: *through,
+                    attr: position_of(&parent.expect(CHECKED).attributes, column),
+                }
+            }
+        }
     }
 
     /// The joins that keep or drop a whole cell, for a view that counts
@@ -848,17 +841,10 @@ impl Store {
             Key::ByKey(by) => Lookup::KeyPart(key_part_of(fact, by.key_part())),
             Key::Attribute(reference, attr) => {
                 let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
+                let at = (fact.refs.iter()).position(|other| other.alias == reference.alias);
                 Lookup::Attribute(AttributeLookup {
-                    reference: fact
-                        .refs
-                        .iter()
-                        .position(|other| other.alias == reference.alias)
-                        .expect(CHECKED),
-                    attr: dim
-                        .attributes
-                        .iter()
-                        .position(|column| *column == attr.column)
-                        .expect(CHECKED),
+                    reference: at.expect(CHECKED),
+                    attr: position_of(&dim.attributes, &attr.column),
                     joined: self.joined(fact, reference, rollup),
                 })
             }
@@ -871,17 +857,16 @@ impl Store {
         read: &Read<'_>,
         conds: &'a [Condition],
     ) -> Vec<Match<'_, 'a>> {
-        conds
-            .iter()
-            .map(|cond| {
-                let lookup = self.lookup(fact, read, &cond.key);
-                Match {
-                    memo: vec![Known::Unknown; lookup.bound(read.rollup())],
-                    lookup,
-                    values: &cond.values,
-                }
-            })
-            .collect()
+        let mut tests = Vec::with_capacity(conds.len());
+        for cond in conds {
+            let lookup = self.lookup(fact, read, &cond.key);
+            tests.push(Match {
+                memo: vec![Known::Unknown; lookup.bound(read.rollup())],
+                lookup,
+                values: &cond.values,
+            });
+        }
+        tests
     }
 }
 
@@ -994,6 +979,31 @@ fn ask_expanded<'s>(
     }
 }
 
+/// One row per group met, sorted by its keys.
+fn answer_rows(
+    groups: Groups<'_>,
+    measures: &mut [Asked<'_, '_>],
+    key_count: usize,
+) -> Vec<AnswerRow> {
+    let group_count = groups.len();
+    for measure in measures.iter_mut() {
+        measure.partials.grow(group_count);
+    }
+    let mut keys = groups.keys.into_iter().map(Cow::into_owned);
+    let mut rows = Vec::with_capacity(groups.made);
+    for group in 1..=groups.made {
+        let values = (measures.iter_mut())
+            .map(|measure| measure.partials.finish(group))
+            .collect();
+        rows.push(AnswerRow {
+            keys: keys.by_ref().take(key_count).collect(),
+            values,
+        });
+    }
+    rows.sort_by(|left, right| left.keys.cmp(&right.keys));
+    rows
+}
+
 /// The `by` keys, then the measures, as the ask names them.
 fn answer_columns(
     ask: &Ask,
@@ -1012,6 +1022,13 @@ fn answer_columns(
         is_time: false,
     });
     keys.chain(values).collect()
+}
+
+fn sealed_error(id: &SealedId, reason: &'static str) -> SealedError {
+    SealedError {
+        id: id.clone(),
+        reason,
+    }
 }
 
 fn sealed_ids(fact: &Fact, buckets: impl Iterator<Item = (i64, i64)>) -> Vec<SealedId> {
@@ -1125,12 +1142,12 @@ fn pour(
     projections: &[Projection],
     start: Option<i64>,
     cells: &Cells,
-    add: bool,
+    direction: Direction,
 ) -> Result<(), RowError> {
     for cell in 0..cells.len() {
         let count = cells.rows().get(cell);
         for key in &bound_keys(bound, keyed, cells, cell, projections, None) {
-            (bound.rollup).adjust(start, key, count, cells.states(), cell, add)?;
+            (bound.rollup).adjust(start, key, count, cells.states(), cell, direction)?;
         }
     }
     Ok(())
@@ -1192,6 +1209,20 @@ struct RefPlan<'s> {
     via: Vec<ViaFrom>,
 }
 
+impl RefPlan<'_> {
+    /// Whether the ref keeps or drops a cell without repeating it: its key
+    /// finds one row at most, or its join keeps no row, and its key comes
+    /// from the cell alone.
+    fn counts_once(&self) -> bool {
+        let repeats = match self.kind {
+            RefKind::Left | RefKind::Inner => !self.projection.is_unique(),
+            RefKind::Semi | RefKind::Anti => false,
+        };
+        let from_cell = (self.via.iter()).all(|via| matches!(via, ViaFrom::KeyPart(_)));
+        !repeats && from_cell
+    }
+}
+
 /// Where a ref's key column comes from: a cell's part, or an attribute
 /// of a ref before it.
 enum ViaFrom {
@@ -1247,20 +1278,25 @@ fn keep<'s>(
     row: &JoinRow<'s>,
     next: &mut Vec<JoinRow<'s>>,
 ) {
-    let with = |found: Option<&'s [u32]>| {
-        let mut row = row.clone();
-        row.push(found);
-        row
-    };
     match kind {
-        RefKind::Left if matches.is_empty() => next.push(with(None)),
+        RefKind::Left if matches.is_empty() => next.push(extended(row, None)),
         RefKind::Left | RefKind::Inner => {
-            next.extend(matches.iter().map(|found| with(Some(found))));
+            next.extend(matches.iter().map(|found| extended(row, Some(found))));
         }
-        RefKind::Semi if !matches.is_empty() => next.push(with(None)),
-        RefKind::Anti if matches.is_empty() => next.push(with(None)),
-        RefKind::Semi | RefKind::Anti => {}
+        // A semi join keeps the row when the key finds one, an anti join
+        // when it finds none.
+        RefKind::Semi | RefKind::Anti => {
+            if matches.is_empty() == (kind == RefKind::Anti) {
+                next.push(extended(row, None));
+            }
+        }
     }
+}
+
+fn extended<'s>(row: &JoinRow<'s>, found: Option<&'s [u32]>) -> JoinRow<'s> {
+    let mut row = row.clone();
+    row.push(found);
+    row
 }
 
 /// Where a key's values come from.
@@ -1538,7 +1574,9 @@ impl<'s> Grouping<'s> {
         match self {
             Grouping::Time { bucket_starts, .. } => {
                 let offset = (bucket_starts.len() - 1) * stride;
-                at.iter_mut().for_each(|place| *place += offset);
+                for place in at.iter_mut() {
+                    *place += offset;
+                }
             }
             // Cells passed over too, as a branch costs more than their
             // entries, which nothing reads.
@@ -1717,13 +1755,14 @@ impl<'a> Groups<'a> {
                 table[at]
             }
             // Looked up before inserting, so only a new group allocates.
-            GroupIndex::Sparse(map) => match map.get(self.numbers.as_slice()) {
-                Some(&group) => group,
-                None => {
+            GroupIndex::Sparse(map) => {
+                if let Some(&group) = map.get(self.numbers.as_slice()) {
+                    group
+                } else {
                     map.insert(self.numbers.as_slice().into(), next);
                     next
                 }
-            },
+            }
         };
         if group == next {
             let values = (self.numbers.iter().zip(by))
