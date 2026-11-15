@@ -1,8 +1,10 @@
 //! How fast Straum reads physical WAL: PostgreSQL under `replica` writes
 //! the WAL of four phases of taxi trip changes, the physical slot streams
 //! it, and Straum reads the captured bytes again and again, with no
-//! socket in the way. Once as records only, the pages and record headers,
-//! and once through the whole pipeline to commits.
+//! socket in the way. Once as records only, through `wal::Records`, which
+//! cuts pages into records, and once through the whole `wal::Pipeline`,
+//! from records to commits. Each phase's fastest read counts; the report
+//! sets it beside how long PostgreSQL took to write the same WAL.
 
 use std::io::Write;
 use std::path::Path;
@@ -40,6 +42,10 @@ const MAX_BYTES: usize = 8 << 30;
 const COLUMNS: &str = "vendor_id, pickup_at, pu_location_id, do_location_id, \
                        payment_type, fare_amount, tip_amount, trip_distance";
 const MEBIBYTE: f64 = 1_048_576.0;
+/// The reads of each kind, unless `STRAUM_BENCH_RUNS` says.
+const DEFAULT_RUNS: usize = 3;
+/// The PostgreSQL major, unless `STRAUM_TEST_POSTGRES` says.
+const DEFAULT_POSTGRES: &str = "18";
 
 /// A run of the workload: the WAL from `from` to `to`, and how long
 /// PostgreSQL took to write it.
@@ -74,6 +80,7 @@ struct Wal {
     chunks: Vec<Chunk>,
 }
 
+/// One piece of streamed WAL: the bytes from `start`.
 struct Chunk {
     start: u64,
     bytes: Vec<u8>,
@@ -100,6 +107,25 @@ struct Fastest {
     peak: usize,
 }
 
+/// The ids of one transaction's rows: above `low`, up to `high`.
+struct IdRange {
+    low: usize,
+    high: usize,
+}
+
+/// What a phase of the workload does.
+#[derive(Clone, Copy)]
+enum Work {
+    /// `COPY` trips a month later, from scripts made before.
+    Copy,
+    /// `INSERT ... SELECT` trips two months later.
+    Insert,
+    /// `UPDATE` every trip's fare.
+    Update,
+    /// `DELETE` the trips the copy phase wrote.
+    Delete,
+}
+
 /// Run `cargo test -p straum-pg --release physical_wal_bench -- --ignored
 /// --nocapture`. Loads the taxi month with `bench/load_taxi_trips.py`, so
 /// it needs uv. `STRAUM_TEST_POSTGRES` picks the major, `STRAUM_BENCH_RUNS`
@@ -108,9 +134,10 @@ struct Fastest {
 #[ignore = "a benchmark: it needs uv and the taxi month, and runs for minutes"]
 fn physical_wal_bench() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let runs: usize = std::env::var("STRAUM_BENCH_RUNS").map_or(3, |runs| {
-        runs.parse().expect("STRAUM_BENCH_RUNS is a count")
-    });
+    let runs = match std::env::var("STRAUM_BENCH_RUNS") {
+        Ok(runs) => runs.parse().expect("STRAUM_BENCH_RUNS is a count"),
+        Err(_) => DEFAULT_RUNS,
+    };
     let (container, dsn) = start_postgres();
     load_month(&root, &container);
     let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
@@ -133,7 +160,8 @@ fn physical_wal_bench() {
         chunks: capture(&mut stream, setup.start, flushed),
     };
     let fastest = read_fastest(&wal, &phases, &setup, runs);
-    for (phase, read) in phases.iter().zip(&fastest.piped) {
+    for (index, phase) in phases.iter().enumerate() {
+        let read = &fastest.piped[index];
         assert_eq!(read.rows, phase.rows, "rows read in {}", phase.name);
     }
     report(&phases, &fastest, setup.major);
@@ -141,7 +169,10 @@ fn physical_wal_bench() {
 
 /// PostgreSQL in Docker, and how to reach it.
 fn start_postgres() -> (Container<GenericImage>, Dsn) {
-    let major = std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned());
+    let major = match std::env::var("STRAUM_TEST_POSTGRES") {
+        Ok(major) => major,
+        Err(_) => DEFAULT_POSTGRES.to_owned(),
+    };
     // One redo point, the one taken before the slot, and no autovacuum:
     // every run writes the same kinds of records.
     let container = GenericImage::new("postgres", &major)
@@ -224,34 +255,6 @@ fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
     }
 }
 
-/// The phases timed so far, and where the next one's WAL starts.
-struct Phases {
-    phases: Vec<Phase>,
-    from: u64,
-}
-
-impl Phases {
-    fn run(
-        &mut self,
-        sql: &mut Connection,
-        name: &'static str,
-        work: impl FnOnce(&mut Connection),
-    ) {
-        let clock = Instant::now();
-        work(sql);
-        let took = clock.elapsed();
-        let to = lsn(sql, "SELECT pg_current_wal_insert_lsn()");
-        self.phases.push(Phase {
-            name,
-            from: self.from,
-            to,
-            took,
-            rows: ROWS,
-        });
-        self.from = to;
-    }
-}
-
 /// The four phases of changes, from `start`, each timed.
 fn write_phases(
     sql: &mut Connection,
@@ -259,92 +262,176 @@ fn write_phases(
     copies: &[Vec<u8>],
     start: u64,
 ) -> Vec<Phase> {
-    let mut phases = Phases {
-        phases: Vec::new(),
-        from: start,
-    };
-    phases.run(sql, "copy", |_| {
-        for copy in copies {
-            psql(container, copy);
+    let mut phases = Vec::new();
+    let mut from = start;
+    for (name, work) in [
+        ("copy", Work::Copy),
+        ("insert", Work::Insert),
+        ("update", Work::Update),
+        ("delete", Work::Delete),
+    ] {
+        let clock = Instant::now();
+        write_phase(work, sql, container, copies);
+        let took = clock.elapsed();
+        let to = lsn(sql, "SELECT pg_current_wal_insert_lsn()");
+        phases.push(Phase {
+            name,
+            from,
+            to,
+            took,
+            rows: ROWS,
+        });
+        from = to;
+    }
+    phases
+}
+
+/// Writes one phase's changes.
+fn write_phase(
+    work: Work,
+    sql: &mut Connection,
+    container: &Container<GenericImage>,
+    copies: &[Vec<u8>],
+) {
+    match work {
+        Work::Copy => {
+            for copy in copies {
+                psql(container, copy);
+            }
         }
-    });
-    phases.run(sql, "insert", |sql| {
-        for (low, high) in batches(0) {
-            sql.execute(&format!(
-                "INSERT INTO yellow_trips ({COLUMNS})
-                 SELECT vendor_id, pickup_at + interval '62 days', pu_location_id,
-                        do_location_id, payment_type, fare_amount, tip_amount, trip_distance
-                   FROM yellow_trips WHERE id > {low} AND id <= {high}"
-            ))
-            .unwrap();
+        Work::Insert => {
+            for IdRange { low, high } in batches(0) {
+                sql.execute(&format!(
+                    "INSERT INTO yellow_trips ({COLUMNS})
+                     SELECT vendor_id, pickup_at + interval '62 days', pu_location_id,
+                            do_location_id, payment_type, fare_amount, tip_amount, trip_distance
+                       FROM yellow_trips WHERE id > {low} AND id <= {high}"
+                ))
+                .unwrap();
+            }
         }
-    });
-    phases.run(sql, "update", |sql| {
-        for (low, high) in batches(0) {
-            sql.execute(&format!(
-                "UPDATE yellow_trips SET fare_amount = fare_amount + 1
-                  WHERE id > {low} AND id <= {high}"
-            ))
-            .unwrap();
+        Work::Update => {
+            for IdRange { low, high } in batches(0) {
+                sql.execute(&format!(
+                    "UPDATE yellow_trips SET fare_amount = fare_amount + 1
+                      WHERE id > {low} AND id <= {high}"
+                ))
+                .unwrap();
+            }
         }
-    });
-    phases.run(sql, "delete", |sql| {
-        for (low, high) in batches(ROWS) {
-            sql.execute(&format!(
-                "DELETE FROM yellow_trips WHERE id > {low} AND id <= {high}"
-            ))
-            .unwrap();
+        Work::Delete => {
+            for IdRange { low, high } in batches(ROWS) {
+                sql.execute(&format!(
+                    "DELETE FROM yellow_trips WHERE id > {low} AND id <= {high}"
+                ))
+                .unwrap();
+            }
         }
-    });
-    phases.phases
+    }
+}
+
+/// How a replay reads each record: as a record only, or through the
+/// pipeline to commits.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one reader a replay, made once: its size costs nothing"
+)]
+enum Reader {
+    Records,
+    Pipeline(PipelineRead),
+}
+
+/// A pipeline as a replay drives it: it takes the load's snapshot once
+/// consistent, and keeps the most bytes it held.
+struct PipelineRead {
+    pipeline: Pipeline,
+    layouts: Layouts,
+    snapshot: Option<TransactionSnapshot>,
+    peak: usize,
+}
+
+impl Reader {
+    /// What `record` counts.
+    fn count(&mut self, record: &Record) -> Counted {
+        match self {
+            Reader::Records => Counted {
+                images: count_images(record),
+                rows: 0,
+            },
+            Reader::Pipeline(read) => Counted {
+                images: 0,
+                rows: read.commit_rows(record),
+            },
+        }
+    }
+}
+
+impl PipelineRead {
+    fn new(setup: &Setup) -> PipelineRead {
+        PipelineRead {
+            pipeline: Pipeline::new(
+                setup.checked.clone(),
+                setup.layouts.clone(),
+                setup.major,
+                COPY_BATCH,
+                MAX_BYTES,
+            ),
+            layouts: setup.layouts.clone(),
+            snapshot: Some(setup.snapshot.clone()),
+            peak: 0,
+        }
+    }
+
+    /// Reads `record` through the pipeline: the rows of the commits it
+    /// ends.
+    fn commit_rows(&mut self, record: &Record) -> usize {
+        // The workload changes no table: a commit that invalidates one is
+        // a statistic or a hint, and the layout stays.
+        let layouts = &self.layouts;
+        let mut commits = (self.pipeline.record(record, || Ok(layouts.clone()))).unwrap();
+        if self.pipeline.consistency() == Consistency::Consistent
+            && let Some(snapshot) = self.snapshot.take()
+        {
+            commits.extend(self.pipeline.see(snapshot, Lsn(0)).unwrap().1);
+        }
+        self.peak = self.peak.max(self.pipeline.bytes());
+        rows(&commits)
+    }
 }
 
 /// Reads the WAL `runs` times each way, keeping each phase's fastest.
 fn read_fastest(wal: &Wal, phases: &[Phase], setup: &Setup, runs: usize) -> Fastest {
-    let ends: Vec<u64> = phases.iter().map(|phase| phase.to).collect();
+    let mut ends = Vec::new();
+    for phase in phases {
+        ends.push(phase.to);
+    }
     let mut fastest = Fastest {
         parsed: vec![Read::default(); phases.len()],
         piped: vec![Read::default(); phases.len()],
         peak: 0,
     };
     for _ in 0..runs {
-        let read = replay(wal, &ends, count_images);
+        let read = replay(wal, &ends, &mut Reader::Records);
         keep_fastest(&mut fastest.parsed, &read);
-        let mut pipeline = Pipeline::new(
-            setup.checked.clone(),
-            setup.layouts.clone(),
-            setup.major,
-            COPY_BATCH,
-            MAX_BYTES,
-        );
-        let mut snapshot = Some(setup.snapshot.clone());
-        let mut held = 0;
-        let read = replay(wal, &ends, |record| {
-            // The workload changes no table: a commit that invalidates one
-            // is a statistic or a hint, and the layout stays.
-            let mut commits = (pipeline.record(record, || Ok(setup.layouts.clone()))).unwrap();
-            if pipeline.consistency() == Consistency::Consistent
-                && let Some(snapshot) = snapshot.take()
-            {
-                commits.extend(pipeline.see(snapshot, Lsn(0)).unwrap().1);
-            }
-            held = held.max(pipeline.bytes());
-            Counted {
-                images: 0,
-                rows: rows(&commits),
-            }
-        });
-        fastest.peak = held;
+        let mut reader = Reader::Pipeline(PipelineRead::new(setup));
+        let read = replay(wal, &ends, &mut reader);
+        if let Reader::Pipeline(piped) = reader {
+            fastest.peak = piped.peak;
+        }
         keep_fastest(&mut fastest.piped, &read);
     }
     fastest
 }
 
-fn count_images(record: &Record) -> Counted {
-    let images = (record.blocks.iter())
-        .filter(|block| block.image.is_some())
-        .count();
-    Counted { images, rows: 0 }
+/// The full-page images `record` carries.
+fn count_images(record: &Record) -> usize {
+    let mut images = 0;
+    for block in &record.blocks {
+        if block.image.is_some() {
+            images += 1;
+        }
+    }
+    images
 }
 
 /// The taxi month in PostgreSQL, as `taxi_month` loads it.
@@ -380,6 +467,7 @@ fn copies(sql: &mut Connection) -> Vec<Vec<u8>> {
             "\\set ON_ERROR_STOP on\nCOPY yellow_trips ({COLUMNS}) FROM stdin WITH (FORMAT csv);\n"
         )
         .into_bytes();
+        // `copy_out` hands each piece of the copy to the closure.
         sql.copy_out(
             &format!(
                 "COPY (SELECT vendor_id, pickup_at + interval '31 days', pu_location_id,
@@ -400,6 +488,7 @@ fn copies(sql: &mut Connection) -> Vec<Vec<u8>> {
     scripts
 }
 
+/// Runs `script` in `psql` inside the container.
 fn psql(container: &Container<GenericImage>, script: &[u8]) {
     let mut psql = process::Command::new("docker")
         .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
@@ -412,15 +501,24 @@ fn psql(container: &Container<GenericImage>, script: &[u8]) {
 }
 
 /// The id ranges of one phase's transactions, past `skip`.
-fn batches(skip: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..ROWS / BATCH).map(move |index| (skip + index * BATCH, skip + (index + 1) * BATCH))
+fn batches(skip: usize) -> Vec<IdRange> {
+    let mut ranges = Vec::new();
+    for index in 0..ROWS / BATCH {
+        ranges.push(IdRange {
+            low: skip + index * BATCH,
+            high: skip + (index + 1) * BATCH,
+        });
+    }
+    ranges
 }
 
+/// The number `query` returns.
 fn number(sql: &mut Connection, query: &str) -> u64 {
     let rows = sql.rows(query).unwrap();
     rows[0][0].as_deref().unwrap().parse().unwrap()
 }
 
+/// The LSN `query` returns.
 fn lsn(sql: &mut Connection, query: &str) -> u64 {
     let rows = sql.rows(query).unwrap();
     parse_lsn(rows[0][0].as_deref().unwrap()).unwrap().0
@@ -455,9 +553,9 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<Chunk> {
     chunks
 }
 
-/// Reads the WAL once, timing each phase; `each` counts a record's full
-/// page images and the rows it ends with.
-fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> Counted) -> Vec<Read> {
+/// Reads the WAL once, timing each phase; `reader` counts each record's
+/// full-page images and the rows it ends with.
+fn replay(wal: &Wal, ends: &[u64], reader: &mut Reader) -> Vec<Read> {
     let mut reads = vec![Read::default(); ends.len()];
     let mut records = Records::new(wal.start, wal.segment_size);
     let mut phase = 0;
@@ -472,7 +570,7 @@ fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> Counted) -> 
                 clock = Instant::now();
                 phase += 1;
             }
-            let counted = each(record);
+            let counted = reader.count(record);
             let read = &mut reads[phase];
             read.records += 1;
             read.images += counted.images;
@@ -483,23 +581,31 @@ fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> Counted) -> 
     reads
 }
 
+/// Keeps in `best` each phase's faster read of the two.
 fn keep_fastest(best: &mut [Read], read: &[Read]) {
-    for (best, read) in best.iter_mut().zip(read) {
+    for (index, best) in best.iter_mut().enumerate() {
+        let read = read[index];
         if best.took.is_zero() || read.took < best.took {
             *best = Read {
                 images: read.images.max(best.images),
                 rows: read.rows.max(best.rows),
-                ..*read
+                ..read
             };
         }
     }
 }
 
+/// The rows `commits` change. None may be unfit: the bench changes no
+/// table's layout.
 fn rows(commits: &[Commit]) -> usize {
-    let changes = commits.iter().flat_map(|commit| &commit.changes);
-    changes
-        .inspect(|change| assert!(!matches!(change, Change::Unfit { .. }), "{change:?}"))
-        .count()
+    let mut rows = 0;
+    for commit in commits {
+        for change in &commit.changes {
+            assert!(!matches!(change, Change::Unfit { .. }), "{change:?}");
+            rows += 1;
+        }
+    }
+    rows
 }
 
 #[expect(
@@ -532,6 +638,8 @@ struct Totals {
     rows: usize,
 }
 
+/// Prints a table of each phase's fastest reads against PostgreSQL's
+/// writing, in markdown.
 fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
     eprintln!("\nPostgreSQL {major}, wal_level = replica; the fastest read of each kind:\n");
     eprintln!(
@@ -539,7 +647,9 @@ fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
     );
     eprintln!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     let mut total = Totals::default();
-    for ((phase, parsed), piped) in phases.iter().zip(&fastest.parsed).zip(&fastest.piped) {
+    for (index, phase) in phases.iter().enumerate() {
+        let parsed = &fastest.parsed[index];
+        let piped = &fastest.piped[index];
         let bytes = phase.to - phase.from;
         total.bytes += bytes;
         total.wrote += phase.took;
