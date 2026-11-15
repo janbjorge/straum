@@ -142,11 +142,19 @@ slot and rebuilds each change from the pages it holds (ADR-0049). The
 commits it yields equal the logical stream's; the tests check that on a
 server with both.
 
-The role needs what step 2 grants but the publication: `REPLICATION`,
-`USAGE` on the schemas and `SELECT` on the tables. There is no
-`wal_level` change and no `REPLICA IDENTITY FULL`. A superuser may also
-grant `EXECUTE ON FUNCTION pg_log_standby_snapshot()`, so a start
-needn't wait for the next checkpoint.
+`straum plan --wal physical --spec FILE` prints the setup: the role and
+its grants, with no `wal_level` change, publication or `REPLICA
+IDENTITY FULL`:
+
+```sql
+-- Straum setup: run once, as an owner of the tables.
+-- --wal physical: wal_level replica and full_page_writes on, the defaults.
+CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
+GRANT USAGE ON SCHEMA "public" TO "straum";
+GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
+-- Lets Straum start without waiting for the next checkpoint; a superuser grants it.
+GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO "straum";
+```
 
 The server needs `full_page_writes = on` and a `wal_compression` of
 `off`, `pglz` or `lz4`; the start says so when it isn't:

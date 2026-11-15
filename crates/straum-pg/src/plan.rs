@@ -5,6 +5,7 @@ use postgres_protocol::password::scram_sha_256;
 use straum_domain::Spec;
 
 use crate::catalog::escaped;
+use crate::source::Replication;
 
 /// Turns on logical decoding, creates `role` with the replication
 /// attribute, lets it read the spec's tables, and publishes every one of
@@ -12,10 +13,21 @@ use crate::catalog::escaped;
 /// or delete carries the old row Straum takes out of its cell or its
 /// projection.
 ///
+/// With [`Replication::Physical`] none of that is needed: the physical
+/// WAL `wal_level = replica` writes holds every change and the pages hold
+/// the old rows (ADR-0049). The role may log which transactions run, so
+/// a start needn't wait for the next checkpoint.
+///
 /// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so
 /// neither the SQL nor the server's statement log holds the password
 /// itself. Without one, the SQL says how to set it.
-pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) -> String {
+pub fn plan(
+    spec: &Spec,
+    publication: &str,
+    role: &str,
+    password: Option<&str>,
+    replication: Replication,
+) -> String {
     let id = |s: &str| escape_identifier(s);
     let qualified = |t: &straum_domain::Table| escaped(&t.schema, &t.name);
     let tables = spec.tables();
@@ -27,11 +39,17 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
         .join(", ");
     let (publication, role) = (id(publication), id(role));
 
-    let mut sql = vec![
-        "-- Straum setup: run once, as an owner of the tables.".to_owned(),
-        "-- wal_level takes a restart. On Azure, set the server parameter instead.".to_owned(),
-        "ALTER SYSTEM SET wal_level = logical;".to_owned(),
-    ];
+    let mut sql = vec!["-- Straum setup: run once, as an owner of the tables.".to_owned()];
+    match replication {
+        Replication::Logical => sql.extend([
+            "-- wal_level takes a restart. On Azure, set the server parameter instead.".to_owned(),
+            "ALTER SYSTEM SET wal_level = logical;".to_owned(),
+        ]),
+        Replication::Physical { .. } => sql.push(
+            "-- --wal physical: wal_level replica and full_page_writes on, the defaults."
+                .to_owned(),
+        ),
+    }
     match password {
         Some(password) => sql.push(format!(
             "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",
@@ -45,8 +63,18 @@ pub fn plan(spec: &Spec, publication: &str, role: &str, password: Option<&str>) 
     sql.extend([
         format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
         format!("GRANT SELECT ON {list} TO {role};"),
-        format!("CREATE PUBLICATION {publication} FOR TABLE {list};"),
     ]);
+    if matches!(replication, Replication::Physical { .. }) {
+        sql.extend([
+            "-- Lets Straum start without waiting for the next checkpoint; a superuser grants it."
+                .to_owned(),
+            format!("GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO {role};"),
+        ]);
+        return sql.join("\n") + "\n";
+    }
+    sql.push(format!(
+        "CREATE PUBLICATION {publication} FOR TABLE {list};"
+    ));
     for fact in spec.facts() {
         sql.push(format!(
             "-- fact {}: Straum needs the old row of every update and delete; inserts cost no more.",
@@ -97,7 +125,13 @@ mod tests {
             )
         };
         let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
-        let sql = plan(&straum_notation::parse(&views).unwrap(), "p", "r", None);
+        let sql = plan(
+            &straum_notation::parse(&views).unwrap(),
+            "p",
+            "r",
+            None,
+            Replication::Logical,
+        );
         assert!(
             sql.contains("GRANT USAGE ON SCHEMA \"a\", \"b\" TO \"r\";\n"),
             "{sql}"
@@ -122,7 +156,7 @@ mod tests {
              FROM a.t AS f GROUP BY 1;",
         )
         .unwrap();
-        let sql = plan(&spec, "p", "r", Some("s'cret"));
+        let sql = plan(&spec, "p", "r", Some("s'cret"), Replication::Logical);
         let line = sql.lines().find(|l| l.starts_with("CREATE ROLE")).unwrap();
         assert!(
             line.starts_with("CREATE ROLE \"r\" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:"),
@@ -134,6 +168,34 @@ mod tests {
             "{sql}"
         );
         // A fresh salt each time, so two plans never share a verifier.
-        assert_ne!(sql, plan(&spec, "p", "r", Some("s'cret")));
+        assert_ne!(
+            sql,
+            plan(&spec, "p", "r", Some("s'cret"), Replication::Logical)
+        );
+    }
+
+    const PHYSICAL: Replication = Replication::Physical { max_page_memory: 1 };
+
+    /// Physical: no wal_level change, publication or replica identity;
+    /// the grants, and the one that lets a start skip the wait.
+    #[test]
+    fn physical_needs_only_the_role_and_grants() {
+        let spec = straum_notation::parse(
+            "CREATE VIEW x WITH (buckets = '1 hour') AS
+             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+             FROM a.t AS f GROUP BY 1;",
+        )
+        .unwrap();
+        let sql = plan(&spec, "p", "r", None, PHYSICAL);
+        for absent in ["wal_level =", "PUBLICATION", "REPLICA IDENTITY"] {
+            assert!(!sql.contains(absent), "{absent}: {sql}");
+        }
+        for present in [
+            "CREATE ROLE \"r\" LOGIN REPLICATION;\n",
+            "GRANT SELECT ON \"a\".\"t\" TO \"r\";\n",
+            "GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO \"r\";\n",
+        ] {
+            assert!(sql.contains(present), "{present}: {sql}");
+        }
     }
 }

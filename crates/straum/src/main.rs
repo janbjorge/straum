@@ -70,10 +70,13 @@ const PLAN_HELP: &str = "\
 usage: straum plan --spec FILE [flags]
 
 Prints the SQL that sets PostgreSQL up for FILE: logical decoding, the
-role, its grants and the publication. With a DSN the role is its user and
-gets its password, as a SCRAM-SHA-256 verifier.
+role, its grants and the publication. With --wal physical only the role and
+its grants. With a DSN the role is its user and gets its password, as a
+SCRAM-SHA-256 verifier.
 
   --spec FILE         the spec; required
+  --wal logical|physical
+                      the WAL straum run reads (logical)
   --publication NAME  the publication to make (straum)
   --role NAME         the role straum run connects as (the DSN's user,
                       else straum)
@@ -216,7 +219,7 @@ impl Name {
                 "--max-transaction-rows",
                 "--max-page-memory",
             ],
-            Name::Plan => &["--spec", "--publication", "--role", "--dsn-file"],
+            Name::Plan => &["--spec", "--wal", "--publication", "--role", "--dsn-file"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
         }
     }
@@ -259,6 +262,7 @@ struct Run {
 #[derive(Debug, PartialEq, Eq)]
 struct Plan {
     spec: String,
+    replication: Replication,
     publication: String,
     role: Option<String>,
     dsn_file: Option<String>,
@@ -465,6 +469,7 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, String> {
         },
         Name::Plan => Command::Plan(Plan {
             spec: spec()?,
+            replication: replication()?,
             publication: publication(),
             role: text("--role"),
             dsn_file: text("--dsn-file"),
@@ -571,6 +576,7 @@ fn read_spec(path: &str) -> Result<Spec, String> {
 fn plan(
     Plan {
         spec,
+        replication,
         publication,
         role,
         dsn_file,
@@ -582,7 +588,8 @@ fn plan(
         .or_else(|| dsn.as_ref().map(Dsn::user))
         .unwrap_or(ROLE);
     let password = dsn.as_ref().and_then(Dsn::password);
-    print!("{}", straum_pg::plan(&spec, &publication, role, password));
+    let sql = straum_pg::plan(&spec, &publication, role, password, replication);
+    print!("{sql}");
     Ok(())
 }
 
@@ -743,15 +750,19 @@ mod tests {
             command(&args("plan --spec s")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
+                replication: Replication::Logical,
                 publication: PUBLICATION.into(),
                 role: None,
                 dsn_file: None,
             }))
         );
         assert_eq!(
-            command(&args("plan --role r --spec s --dsn-file d")),
+            command(&args("plan --role r --spec s --dsn-file d --wal physical")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
+                replication: Replication::Physical {
+                    max_page_memory: MAX_PAGE_MEMORY,
+                },
                 publication: PUBLICATION.into(),
                 role: Some("r".into()),
                 dsn_file: Some("d".into()),
@@ -898,6 +909,10 @@ mod tests {
             (
                 "run --spec s --wal Physical",
                 "--wal takes logical or physical, not \"Physical\"",
+            ),
+            (
+                "plan --spec s --wal both",
+                "--wal takes logical or physical, not \"both\"",
             ),
             ("run --spec s --wal", "--wal needs a value"),
             (

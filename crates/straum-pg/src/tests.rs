@@ -885,7 +885,7 @@ fn follows_the_task_tables() {
            (1003, 2, 2, '-infinity', NULL, 2)"
     ));
     let spec = db.spec(TASKS_SPEC);
-    assert!(crate::plan(&spec, "p", "r", None).contains(
+    assert!(crate::plan(&spec, "p", "r", None, Replication::Logical).contains(
         "-- dim taskgroups: Straum holds its key and the columns the views read, and follows it."
     ));
     let mut writer = db.writer(TASKS_SPEC);
@@ -3206,7 +3206,7 @@ fn plan_sets_up_what_straum_needs() {
     let mut db = Db::new(&pg, "plan", &TABLES.replace("CREATE PUBLICATION", "-- "));
     db.run("ALTER TABLE $S.trips REPLICA IDENTITY DEFAULT");
     let spec = db.spec(SPEC);
-    let sql = crate::plan(&spec, "plan", "straum_plan", None);
+    let sql = crate::plan(&spec, "plan", "straum_plan", None, Replication::Logical);
     assert_eq!(
         sql,
         "-- Straum setup: run once, as an owner of the tables.
