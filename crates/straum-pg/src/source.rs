@@ -24,7 +24,7 @@ use crate::physical::{self, Physical};
 use crate::stream::{Reader, Stream};
 use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::transactions::{Consistency, Snapshot as Seen};
-use crate::wire::Connection;
+use crate::wire::{Connection, first_row_value};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
 /// or the physical WAL, which `wal_level = replica` writes (ADR-0049).
@@ -124,16 +124,14 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
         Ok(created) => created,
         // Without the wal_level logical decoding needs, PostgreSQL's error
         // names no fix; the setup check says what to change.
-        Err(e) => {
+        Err(error) => {
             conn.execute("ROLLBACK")?;
             catalog::read(&mut conn, spec, publication, Replication::Logical)?;
-            return Err(e);
+            return Err(error);
         }
     };
-    let at = created
-        .first()
-        .and_then(|row| row.get(1))
-        .and_then(|point| parse_lsn(point.as_deref()?))
+    let at = first_row_value(&created, 1)
+        .and_then(parse_lsn)
         .ok_or_else(|| Error::protocol("a slot without a consistent point"))?;
     let tables = catalog::read(&mut conn, spec, publication, Replication::Logical)?;
     let unloaded = unloaded(&tables);
@@ -180,24 +178,8 @@ fn physical_snapshot(
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
     let _ = conn.execute("SELECT pg_log_standby_snapshot()");
+    wait_consistent(&mut stream, wait)?;
     let waited = wait.as_secs();
-    match stream.wait_consistent(wait)? {
-        Consistency::Consistent => {}
-        Consistency::Unknown => {
-            return Err(Error::Setup(vec![format!(
-                "--wal physical waited {waited} s for PostgreSQL to log which transactions run; \
-                 GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role"
-            )]));
-        }
-        Consistency::Waiting(xids) => {
-            let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
-            return Err(Error::Setup(vec![format!(
-                "--wal physical waited {waited} s for transactions open before it started to end: \
-                 xid {}; a long or prepared one (pg_prepared_xacts) holds the start back",
-                xids.join(", ")
-            )]));
-        }
-    }
     // PostgreSQL logs a commit before snapshots see it, and waits for
     // synchronous standbys in between: a snapshot blind to one the stream
     // read as before its start would lose it, so another is taken.
@@ -205,11 +187,10 @@ fn physical_snapshot(
     let at = loop {
         conn.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
         let taken = conn.rows("SELECT pg_current_snapshot(), pg_current_wal_insert_lsn()")?;
-        let field = |i: usize| taken.first().and_then(|row| row.get(i)?.as_deref());
-        let seen = field(0)
+        let seen = first_row_value(&taken, 0)
             .and_then(Seen::parse)
             .ok_or_else(|| Error::protocol("a snapshot of an unknown shape"))?;
-        let written = field(1)
+        let written = first_row_value(&taken, 1)
             .and_then(parse_lsn)
             .ok_or_else(|| Error::protocol("no WAL position"))?;
         match stream.see(seen, written)? {
@@ -240,9 +221,30 @@ fn physical_snapshot(
     })
 }
 
+/// Waits at most `wait` for the physical stream to be consistent; past
+/// it, says what holds it back.
+fn wait_consistent(stream: &mut Stream, wait: Duration) -> Result<(), Error> {
+    let waited = wait.as_secs();
+    match stream.wait_consistent(wait)? {
+        Consistency::Consistent => Ok(()),
+        Consistency::Unknown => Err(Error::Setup(vec![format!(
+            "--wal physical waited {waited} s for PostgreSQL to log which transactions run; \
+             GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role"
+        )])),
+        Consistency::Waiting(xids) => {
+            let xids: Vec<String> = xids.iter().map(u32::to_string).collect();
+            Err(Error::Setup(vec![format!(
+                "--wal physical waited {waited} s for transactions open before it started to end: \
+                 xid {}; a long or prepared one (pg_prepared_xacts) holds the start back",
+                xids.join(", ")
+            )]))
+        }
+    }
+}
+
 fn unloaded(tables: &Tables) -> Vec<Identifier> {
     (tables.dims.iter().chain(&tables.facts))
-        .map(|t| t.name.clone())
+        .map(|table| table.name.clone())
         .collect()
 }
 
@@ -258,7 +260,7 @@ pub(crate) fn slot_name() -> String {
         process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos()),
+            .map_or(0, |since| since.as_nanos()),
         SLOTS.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -330,7 +332,7 @@ impl Source for Postgres {
 
 /// The table is loaded; the snapshot's transaction ends with the last one.
 fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), SourceError> {
-    snapshot.unloaded.retain(|t| t != table);
+    snapshot.unloaded.retain(|unloaded| unloaded != table);
     if snapshot.unloaded.is_empty() {
         snapshot.conn.execute("COMMIT")?;
     }

@@ -2,6 +2,8 @@
 //! the last checkpoint's redo point, and the WAL it streams, read as
 //! records. The stream carries the whole server's WAL, every database.
 
+use std::collections::HashMap;
+use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,7 +11,7 @@ use postgres_protocol::escape::escape_literal;
 use straum_app::{Commit, Lsn};
 use straum_domain::Datum;
 
-use crate::catalog::Checked;
+use crate::catalog::{Checked, VERSION_NUM_PER_MAJOR};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::pgoutput::{Column, Relation};
@@ -20,12 +22,15 @@ use crate::wal::messages::{Layouts, Table};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
-use crate::wire::Connection;
+use crate::wire::{Connection, first_row_value};
 
 /// How long a start waits for PostgreSQL to flush the WAL up to the redo
 /// point, which a checkpoint in progress sets where WAL is still being
 /// written.
 const FLUSH_WAIT: Duration = Duration::from_secs(10);
+
+/// How often a start asks how far PostgreSQL has flushed the WAL.
+const FLUSH_POLL: Duration = Duration::from_millis(10);
 
 /// A temporary physical slot streaming from its redo point, before the
 /// stream's thread takes it over.
@@ -47,47 +52,9 @@ impl Physical {
         conn.execute(&format!(
             "CREATE_REPLICATION_SLOT {slot} TEMPORARY PHYSICAL (RESERVE_WAL)"
         ))?;
-        // The command's consistent point is a logical slot's; a physical
-        // slot reserves from the redo point, which only the view shows.
-        let rows = conn.rows(&format!(
-            "SELECT restart_lsn, setting, current_setting('server_version_num') \
-             FROM pg_replication_slots, pg_settings \
-             WHERE slot_name = {} AND name = 'wal_segment_size'",
-            escape_literal(&slot)
-        ))?;
-        let row = rows.first();
-        let field = |i: usize| row.and_then(|row| row.get(i)?.as_deref());
-        let start = field(0)
-            .and_then(parse_lsn)
-            .ok_or_else(|| Error::protocol("a physical slot without a restart LSN"))?;
-        let segment_size = field(1)
-            .and_then(|size| size.parse::<u64>().ok())
-            .ok_or_else(|| Error::protocol("no wal_segment_size"))?;
-        let major = field(2)
-            .and_then(|version| version.parse::<u32>().ok())
-            .ok_or_else(|| Error::protocol("no server_version_num"))?
-            / 10_000;
-        let records = Records::new(start.0, segment_size);
-        // The slot keeps WAL from the redo point (`GetRedoRecPtr`), which
-        // a checkpoint in progress may have set past what PostgreSQL has
-        // flushed, and the server streams nothing it hasn't flushed.
-        let deadline = Instant::now() + FLUSH_WAIT;
-        loop {
-            let rows = conn.rows("SELECT pg_current_wal_flush_lsn()")?;
-            let flushed = (rows.first())
-                .and_then(|row| row.first()?.as_deref())
-                .and_then(parse_lsn)
-                .ok_or_else(|| Error::protocol("no WAL flush position"))?;
-            if flushed.0 >= start.0 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::protocol(
-                    "PostgreSQL never flushed the WAL up to the redo point",
-                ));
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        let reserved = reserved(&mut conn, &slot)?;
+        let records = Records::new(reserved.start.0, reserved.segment_size);
+        wait_for_flush(&mut conn, reserved.start)?;
         conn.copy_both(&format!(
             "START_REPLICATION SLOT {slot} PHYSICAL {}",
             Lsn(records.wanted())
@@ -97,10 +64,10 @@ impl Physical {
             conn,
             slot,
             records,
-            start: start.0,
-            major,
+            start: reserved.start.0,
+            major: reserved.major,
         };
-        Ok((physical, start))
+        Ok((physical, reserved.start))
     }
 
     /// The next record, or `None` if none came within the read timeout,
@@ -171,15 +138,69 @@ pub(crate) struct Replay {
     read: u64,
 }
 
+/// What a new physical slot reserved, on which server.
+struct Reserved {
+    /// The redo point, where the slot keeps WAL from.
+    start: Lsn,
+    segment_size: u64,
+    major: u32,
+}
+
+fn reserved(conn: &mut Connection, slot: &str) -> Result<Reserved, Error> {
+    // The command's consistent point is a logical slot's; a physical
+    // slot reserves from the redo point, which only the view shows.
+    let rows = conn.rows(&format!(
+        "SELECT restart_lsn, setting, current_setting('server_version_num') \
+         FROM pg_replication_slots, pg_settings \
+         WHERE slot_name = {} AND name = 'wal_segment_size'",
+        escape_literal(slot)
+    ))?;
+    let start = first_row_value(&rows, 0)
+        .and_then(parse_lsn)
+        .ok_or_else(|| Error::protocol("a physical slot without a restart LSN"))?;
+    let segment_size = first_row_value(&rows, 1)
+        .and_then(|size| size.parse::<u64>().ok())
+        .ok_or_else(|| Error::protocol("no wal_segment_size"))?;
+    let version = first_row_value(&rows, 2)
+        .and_then(|version| version.parse::<u32>().ok())
+        .ok_or_else(|| Error::protocol("no server_version_num"))?;
+    Ok(Reserved {
+        start,
+        segment_size,
+        major: version / VERSION_NUM_PER_MAJOR,
+    })
+}
+
+/// The slot keeps WAL from the redo point (`GetRedoRecPtr`), which a
+/// checkpoint in progress may have set past what PostgreSQL has flushed,
+/// and the server streams nothing it hasn't flushed.
+fn wait_for_flush(conn: &mut Connection, start: Lsn) -> Result<(), Error> {
+    let deadline = Instant::now() + FLUSH_WAIT;
+    loop {
+        let rows = conn.rows("SELECT pg_current_wal_flush_lsn()")?;
+        let flushed = first_row_value(&rows, 0)
+            .and_then(parse_lsn)
+            .ok_or_else(|| Error::protocol("no WAL flush position"))?;
+        if flushed.0 >= start.0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::protocol(
+                "PostgreSQL never flushed the WAL up to the redo point",
+            ));
+        }
+        thread::sleep(FLUSH_POLL);
+    }
+}
+
 impl Replay {
     /// Reads `bytes` of WAL from `start`: the commits they finish.
     pub(crate) fn feed(&mut self, start: u64, bytes: &[u8]) -> Result<Vec<Commit>, Error> {
         self.records.feed(start, bytes)?;
         let mut commits = Vec::new();
         while let Some(record) = self.records.next_record()? {
-            let (catalog, checked) = (&mut self.catalog, &self.checked);
-            let layouts = || tables(catalog, checked);
-            commits.extend(self.pipeline.record(record, layouts)?);
+            let read_layouts = || tables(&mut self.catalog, &self.checked);
+            commits.extend(self.pipeline.record(record, read_layouts)?);
             self.read = record.next();
         }
         Ok(commits)
@@ -192,17 +213,7 @@ impl Replay {
 
 /// The layout of each of `checked`'s tables, and their enums' labels.
 pub(crate) fn tables(conn: &mut Connection, checked: &[Checked]) -> Result<Layouts, Error> {
-    let names: Vec<String> = checked
-        .iter()
-        .map(|t| {
-            format!(
-                "({}, {})",
-                escape_literal(t.schema.as_str()),
-                escape_literal(t.table.as_str())
-            )
-        })
-        .collect();
-    let names = names.join(", ");
+    let names = table_names(checked);
     // A dropped column has no type, and its bytes stay in older rows, so
     // the join to pg_type keeps it. A missing value is a one-element
     // array of the column's type.
@@ -221,63 +232,130 @@ pub(crate) fn tables(conn: &mut Connection, checked: &[Checked]) -> Result<Layou
          WHERE (n.nspname, c.relname) IN ({names})
          ORDER BY c.oid, a.attnum"
     ))?;
-    let shape = || Error::protocol("a table layout of an unknown shape");
     let mut tables: Vec<Table> = Vec::new();
-    for row in rows {
-        let field = |i: usize| row.get(i).and_then(|v| v.as_deref()).ok_or_else(shape);
-        let number = |i: usize| field(i)?.parse::<u32>().map_err(|_| shape());
-        let oid = number(0)?;
-        if tables.last().is_none_or(|t| t.relation.id != oid) {
-            tables.push(Table {
-                file: RelationFile {
-                    tablespace: number(3)?,
-                    database: number(4)?,
-                    relation: number(5)?,
-                },
-                relation: Relation {
-                    id: oid,
-                    schema: field(1)?.to_owned(),
-                    name: field(2)?.to_owned(),
-                    columns: Vec::new(),
-                },
-                attributes: Vec::new(),
+    for row in &rows {
+        let attribute = AttributeRow::parse(row)?;
+        let is_next_table = tables
+            .last()
+            .is_none_or(|table| table.relation.id != attribute.table_oid);
+        if is_next_table {
+            tables.push(attribute.empty_table());
+        }
+        let table = tables.last_mut().ok_or_else(unknown_shape)?;
+        push_attribute(table, &attribute)?;
+    }
+    let labels = labels(conn, &names)?;
+    Ok(Layouts { tables, labels })
+}
+
+/// The `(schema, table)` pairs of `checked`, as an SQL list.
+fn table_names(checked: &[Checked]) -> String {
+    let names: Vec<String> = checked
+        .iter()
+        .map(|table| {
+            format!(
+                "({}, {})",
+                escape_literal(table.schema.as_str()),
+                escape_literal(table.table.as_str())
+            )
+        })
+        .collect();
+    names.join(", ")
+}
+
+/// A row of the layouts query: one attribute of a table, dropped ones
+/// too.
+struct AttributeRow<'a> {
+    table_oid: u32,
+    schema: &'a str,
+    table: &'a str,
+    file: RelationFile,
+    name: &'a str,
+    type_oid: u32,
+    typmod: i32,
+    length: i16,
+    align: usize,
+    dropped: bool,
+    missing: Option<&'a str>,
+    is_enum: bool,
+}
+
+impl<'a> AttributeRow<'a> {
+    /// Reads the query's columns, in its order.
+    fn parse(row: &'a [Option<String>]) -> Result<AttributeRow<'a>, Error> {
+        Ok(AttributeRow {
+            table_oid: parsed(row, 0)?,
+            schema: text(row, 1)?,
+            table: text(row, 2)?,
+            file: RelationFile {
+                tablespace: parsed(row, 3)?,
+                database: parsed(row, 4)?,
+                relation: parsed(row, 5)?,
+            },
+            name: text(row, 6)?,
+            type_oid: parsed(row, 7)?,
+            typmod: parsed(row, 8)?,
+            length: parsed(row, 9)?,
+            align: parsed(row, 10)?,
+            dropped: text(row, 11)? == "t",
+            missing: row.get(12).and_then(Option::as_deref),
+            is_enum: row
+                .get(13)
+                .is_some_and(|value| value.as_deref() == Some("t")),
+        })
+    }
+
+    /// The attribute's table, with no attributes yet.
+    fn empty_table(&self) -> Table {
+        Table {
+            file: self.file,
+            relation: Relation {
+                id: self.table_oid,
+                schema: self.schema.to_owned(),
+                name: self.table.to_owned(),
                 columns: Vec::new(),
-                missing: Vec::new(),
-            });
+            },
+            attributes: Vec::new(),
+            columns: Vec::new(),
+            missing: Vec::new(),
         }
-        let table = tables.last_mut().ok_or_else(shape)?;
-        let type_oid = number(7)?;
-        let typmod = field(8)?.parse().map_err(|_| shape())?;
-        let dropped = field(11)? == "t";
-        let align = field(10)?.parse().map_err(|_| shape())?;
-        // As the decoder reads the column: an enum as its label's text.
-        let kind = match type_of(type_oid, typmod) {
-            _ if dropped => Kind::Other,
-            Some(column_type) => Kind::Read(column_type),
-            None if row.get(13).is_some_and(|e| e.as_deref() == Some("t")) => Kind::Enum,
-            None => Kind::Other,
-        };
-        if !dropped {
-            table.columns.push(table.attributes.len());
-            table.relation.columns.push(Column {
-                name: field(6)?.to_owned(),
-                type_oid,
-                typmod,
-            });
-        }
-        table.attributes.push(Attribute {
-            length: field(9)?.parse().map_err(|_| shape())?,
-            align,
-            kind,
-        });
-        let missing = row.get(12).cloned().flatten();
-        table.missing.push(match (missing, kind) {
-            (Some(text), Kind::Read(column_type)) => read(column_type, &text)?,
-            (Some(text), Kind::Enum) => Datum::Text(text.into()),
-            _ => Datum::Null,
+    }
+}
+
+/// Adds `attribute` to `table`, and its column unless it was dropped.
+fn push_attribute(table: &mut Table, attribute: &AttributeRow) -> Result<(), Error> {
+    // As the decoder reads the column: an enum as its label's text.
+    let kind = match type_of(attribute.type_oid, attribute.typmod) {
+        _ if attribute.dropped => Kind::Other,
+        Some(column_type) => Kind::Read(column_type),
+        None if attribute.is_enum => Kind::Enum,
+        None => Kind::Other,
+    };
+    if !attribute.dropped {
+        table.columns.push(table.attributes.len());
+        table.relation.columns.push(Column {
+            name: attribute.name.to_owned(),
+            type_oid: attribute.type_oid,
+            typmod: attribute.typmod,
         });
     }
-    let labels = conn.rows(&format!(
+    table.attributes.push(Attribute {
+        length: attribute.length,
+        align: attribute.align,
+        kind,
+    });
+    table.missing.push(match (attribute.missing, kind) {
+        (Some(text), Kind::Read(column_type)) => read(column_type, text)?,
+        (Some(text), Kind::Enum) => Datum::Text(text.into()),
+        _ => Datum::Null,
+    });
+    Ok(())
+}
+
+/// The labels of the enums the named tables' columns have, by `pg_enum`
+/// OID, which is what a row stores.
+fn labels(conn: &mut Connection, names: &str) -> Result<HashMap<u32, String>, Error> {
+    let rows = conn.rows(&format!(
         "SELECT DISTINCT e.oid, e.enumlabel
          FROM pg_enum e
          JOIN pg_attribute a ON a.atttypid = e.enumtypid
@@ -285,12 +363,30 @@ pub(crate) fn tables(conn: &mut Connection, checked: &[Checked]) -> Result<Layou
          JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE (n.nspname, c.relname) IN ({names})"
     ))?;
-    let labels = labels
-        .into_iter()
-        .map(|row| match &row[..] {
-            [Some(oid), Some(label)] => Ok((oid.parse().map_err(|_| shape())?, label.clone())),
-            _ => Err(shape()),
-        })
-        .collect::<Result<_, Error>>()?;
-    Ok(Layouts { tables, labels })
+    let mut labels = HashMap::new();
+    for row in rows {
+        let [Some(oid), Some(label)] = row.as_slice() else {
+            return Err(unknown_shape());
+        };
+        labels.insert(parsed_text(oid)?, label.clone());
+    }
+    Ok(labels)
+}
+
+fn unknown_shape() -> Error {
+    Error::protocol("a table layout of an unknown shape")
+}
+
+fn text(row: &[Option<String>], column: usize) -> Result<&str, Error> {
+    row.get(column)
+        .and_then(Option::as_deref)
+        .ok_or_else(unknown_shape)
+}
+
+fn parsed<T: FromStr>(row: &[Option<String>], column: usize) -> Result<T, Error> {
+    parsed_text(text(row, column)?)
+}
+
+fn parsed_text<T: FromStr>(text: &str) -> Result<T, Error> {
+    text.parse().map_err(|_| unknown_shape())
 }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use bytes::{Buf, BytesMut};
 use fallible_iterator::FallibleIterator;
 use postgres_protocol::authentication::sasl::{ChannelBinding, SCRAM_SHA_256, ScramSha256};
-use postgres_protocol::message::backend::{ErrorResponseBody, Header, Message};
+use postgres_protocol::message::backend::{DataRowBody, ErrorResponseBody, Header, Message};
 use postgres_protocol::message::frontend;
 
 use crate::dsn::{Dsn, Tls};
@@ -20,7 +20,7 @@ use crate::tls::{self, TlsStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
-/// CopyBothResponse, which `postgres_protocol` doesn't parse.
+/// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
 pub(crate) struct Connection {
@@ -74,17 +74,7 @@ impl Connection {
     /// replication commands as well as SQL. Every connection reads dates as
     /// ISO in UTC, which `value` expects.
     pub(crate) fn connect(dsn: &Dsn, replication: bool) -> Result<Connection, Error> {
-        let mut failure = None;
-        let tcp = (dsn.host.as_str(), dsn.port)
-            .to_socket_addrs()?
-            .find_map(|addr| {
-                TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
-                    .map_err(|e| failure = Some(e))
-                    .ok()
-            })
-            .ok_or_else(|| {
-                failure.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))
-            })?;
+        let tcp = connect_tcp(dsn)?;
         tcp.set_nodelay(true)?;
         let socket = match &dsn.tls {
             Tls::Off => Socket::Plain(tcp),
@@ -180,19 +170,7 @@ impl Connection {
         let mut error = None;
         loop {
             match self.read()? {
-                Message::DataRow(row) => {
-                    let buffer = row.buffer();
-                    let fields = row
-                        .ranges()
-                        .map(|range| {
-                            range
-                                .map(|r| str::from_utf8(&buffer[r]).map(str::to_owned))
-                                .transpose()
-                                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-                        })
-                        .collect()?;
-                    rows.push(fields);
-                }
+                Message::DataRow(row) => rows.push(row_fields(&row)?),
                 Message::RowDescription(_)
                 | Message::CommandComplete(_)
                 | Message::EmptyQueryResponse
@@ -207,7 +185,7 @@ impl Connection {
         }
     }
 
-    /// Runs a `COPY ... TO STDOUT`, calling `each` with every CopyData as
+    /// Runs a `COPY ... TO STDOUT`, calling `each` with every `CopyData` as
     /// it comes, so a load holds one message of the table at a time. After
     /// an error the connection is mid-copy; drop it.
     pub(crate) fn copy_out(
@@ -236,7 +214,7 @@ impl Connection {
         self.rows(sql).map(drop)
     }
 
-    /// Sends a command that answers with CopyBothResponse, such as
+    /// Sends a command that answers with `CopyBothResponse`, such as
     /// `START_REPLICATION`, and waits for that answer.
     pub(crate) fn copy_both(&mut self, command: &str) -> Result<(), Error> {
         frontend::query(command, &mut self.output)?;
@@ -264,9 +242,9 @@ impl Connection {
     pub(crate) fn try_read(&mut self) -> Result<Option<Message>, Error> {
         if !self.whole()? {
             match self.fill() {
-                Err(e)
+                Err(error)
                     if matches!(
-                        e.kind(),
+                        error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) =>
                 {
@@ -304,7 +282,7 @@ impl Connection {
     }
 
     fn whole(&self) -> io::Result<bool> {
-        Ok(Header::parse(&self.input)?.is_some_and(|h| self.input.len() >= frame_len(h)))
+        Ok(Header::parse(&self.input)?.is_some_and(|header| self.input.len() >= frame_len(header)))
     }
 
     fn fill(&mut self) -> io::Result<()> {
@@ -312,13 +290,13 @@ impl Connection {
         self.input.resize(start + READ_CHUNK, 0);
         let read = loop {
             match self.socket.read(&mut self.input[start..]) {
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 other => break other,
             }
         };
-        let n = read.inspect_err(|_| self.input.truncate(start))?;
-        self.input.truncate(start + n);
-        if n == 0 {
+        let received = read.inspect_err(|_| self.input.truncate(start))?;
+        self.input.truncate(start + received);
+        if received == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "PostgreSQL closed the connection",
@@ -361,6 +339,41 @@ impl Closer {
 /// The tag byte plus the length, which counts itself.
 fn frame_len(header: Header) -> usize {
     1 + usize::try_from(header.len()).expect("Header::parse rejects lengths below 4")
+}
+
+/// The first of the host's addresses that answers, or the last failure.
+fn connect_tcp(dsn: &Dsn) -> io::Result<TcpStream> {
+    let mut failure = io::Error::new(io::ErrorKind::NotFound, "no address");
+    for address in (dsn.host.as_str(), dsn.port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+            Ok(tcp) => return Ok(tcp),
+            Err(error) => failure = error,
+        }
+    }
+    Err(failure)
+}
+
+/// A row's values as text; `None` for a null.
+fn row_fields(row: &DataRowBody) -> Result<Vec<Option<String>>, Error> {
+    let buffer = row.buffer();
+    let mut fields = Vec::new();
+    let mut ranges = row.ranges();
+    while let Some(range) = ranges.next()? {
+        let Some(range) = range else {
+            fields.push(None);
+            continue;
+        };
+        let text = str::from_utf8(&buffer[range])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fields.push(Some(text.to_owned()));
+    }
+    Ok(fields)
+}
+
+/// The value in `column` of the first of `rows`, if there is one.
+pub(crate) fn first_row_value(rows: &[Vec<Option<String>>], column: usize) -> Option<&str> {
+    let row = rows.first()?;
+    row.get(column)?.as_deref()
 }
 
 /// The message and, when given, the detail.
