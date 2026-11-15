@@ -39,6 +39,7 @@ const COPY_BATCH: usize = 250_000;
 const MAX_BYTES: usize = 8 << 30;
 const COLUMNS: &str = "vendor_id, pickup_at, pu_location_id, do_location_id, \
                        payment_type, fare_amount, tip_amount, trip_distance";
+const MEBIBYTE: f64 = 1_048_576.0;
 
 /// A run of the workload: the WAL from `from` to `to`, and how long
 /// PostgreSQL took to write it.
@@ -59,10 +60,44 @@ struct Read {
     rows: usize,
 }
 
+/// What one record counted: its full-page images and the rows of the
+/// commits it ends.
+struct Counted {
+    images: usize,
+    rows: usize,
+}
+
+/// WAL as the slot streamed it, in the pieces it came in.
 struct Wal {
     start: u64,
     segment_size: u64,
-    chunks: Vec<(u64, Vec<u8>)>,
+    chunks: Vec<Chunk>,
+}
+
+struct Chunk {
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+/// The tables the bench reads, the copy phase's scripts, and where the
+/// slot it reads with stands.
+struct Setup {
+    checked: Vec<Checked>,
+    copies: Vec<Vec<u8>>,
+    layouts: Layouts,
+    snapshot: Snapshot,
+    slot: String,
+    start: u64,
+    segment_size: u64,
+    major: u32,
+}
+
+/// The fastest reads of each phase: as records, and through the pipeline,
+/// with the most bytes the pipeline held.
+struct Fastest {
+    parsed: Vec<Read>,
+    piped: Vec<Read>,
+    peak: usize,
 }
 
 /// Run `cargo test -p straum-pg --release physical_wal_bench -- --ignored
@@ -70,13 +105,43 @@ struct Wal {
 /// it needs uv. `STRAUM_TEST_POSTGRES` picks the major, `STRAUM_BENCH_RUNS`
 /// the reads of each kind (3), of which the fastest counts.
 #[test]
-#[ignore]
+#[ignore = "a benchmark: it needs uv and the taxi month, and runs for minutes"]
 fn physical_wal_bench() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let major = std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned());
     let runs: usize = std::env::var("STRAUM_BENCH_RUNS").map_or(3, |runs| {
         runs.parse().expect("STRAUM_BENCH_RUNS is a count")
     });
+    let (container, dsn) = start_postgres();
+    load_month(&root, &container);
+    let mut sql = Connection::connect(&dsn, false).unwrap();
+    let mut stream = Connection::connect(&dsn, true).unwrap();
+    let setup = set_up(&root, &mut sql, &mut stream);
+    let phases = write_phases(&mut sql, &container, &setup.copies, setup.start);
+    let flushed = lsn(&mut sql, "SELECT pg_current_wal_flush_lsn()");
+    let records = Records::new(setup.start, setup.segment_size);
+    stream
+        .copy_both(&format!(
+            "START_REPLICATION SLOT {} PHYSICAL {}",
+            setup.slot,
+            Lsn(records.wanted())
+        ))
+        .unwrap();
+    stream.set_read_timeout(POLL).unwrap();
+    let wal = Wal {
+        start: setup.start,
+        segment_size: setup.segment_size,
+        chunks: capture(&mut stream, setup.start, flushed),
+    };
+    let fastest = read_fastest(&wal, &phases, &setup, runs);
+    for (phase, read) in phases.iter().zip(&fastest.piped) {
+        assert_eq!(read.rows, phase.rows, "rows read in {}", phase.name);
+    }
+    report(&phases, &fastest, setup.major);
+}
+
+/// PostgreSQL in Docker, and how to reach it.
+fn start_postgres() -> (Container<GenericImage>, Dsn) {
+    let major = std::env::var("STRAUM_TEST_POSTGRES").unwrap_or_else(|_| "18".to_owned());
     // One redo point, the one taken before the slot, and no autovacuum:
     // every run writes the same kinds of records.
     let container = GenericImage::new("postgres", &major)
@@ -98,32 +163,33 @@ fn physical_wal_bench() {
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
         .start()
         .expect("Docker runs postgres");
-    let port = (0..50)
-        .find_map(|_| {
-            let port = container.get_host_port_ipv4(5432).ok();
-            if port.is_none() {
-                thread::sleep(Duration::from_millis(100));
-            }
-            port
-        })
-        .expect("Docker publishes port 5432");
+    let mut port = None;
+    for _ in 0..50 {
+        port = container.get_host_port_ipv4(5432).ok();
+        if port.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let port = port.expect("Docker publishes port 5432");
     let url = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
-    let dsn = Dsn::parse(&url).unwrap();
-    load_month(&root, &container);
+    (container, Dsn::parse(&url).unwrap())
+}
 
+/// Reads the spec's tables, makes the copy phase's scripts, then takes a
+/// checkpoint and the slot, so the WAL read starts at a redo point with
+/// every page whole.
+fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
     let spec_text =
         std::fs::read_to_string(root.join("crates/straum-notation/tests/taxi.sql")).unwrap();
     let spec = straum_notation::parse(&spec_text).unwrap();
-    let mut sql = Connection::connect(&dsn, false).unwrap();
     let physical = Replication::Physical {
         max_page_memory: MAX_BYTES,
     };
-    let checked = catalog::read(&mut sql, &spec, "straum", physical).unwrap();
+    let checked = catalog::read(sql, &spec, "straum", physical).unwrap();
     let checked: Vec<Checked> = (checked.facts.into_iter()).chain(checked.dims).collect();
-    let copies = copies(&mut sql);
+    let copies = copies(sql);
     sql.execute("CHECKPOINT").unwrap();
-
-    let mut stream = Connection::connect(&dsn, true).unwrap();
     let slot = slot_name();
     stream
         .execute(&format!(
@@ -131,44 +197,78 @@ fn physical_wal_bench() {
         ))
         .unwrap();
     let start = lsn(
-        &mut sql,
+        sql,
         &format!("SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = '{slot}'"),
     );
     let segment_size = number(
-        &mut sql,
+        sql,
         "SELECT setting FROM pg_settings WHERE name = 'wal_segment_size'",
     );
-    let major = number(&mut sql, "SELECT current_setting('server_version_num')") / 10_000;
+    let major = number(sql, "SELECT current_setting('server_version_num')") / 10_000;
     let major = u32::try_from(major).unwrap();
-    let layouts = tables(&mut sql, &checked).unwrap();
+    let layouts = tables(sql, &checked).unwrap();
     sql.execute("SELECT pg_log_standby_snapshot()").unwrap();
     let snapshot = sql.rows("SELECT pg_current_snapshot()").unwrap()[0][0]
         .clone()
         .unwrap();
     let snapshot = Snapshot::parse(&snapshot).unwrap();
+    Setup {
+        checked,
+        copies,
+        layouts,
+        snapshot,
+        slot,
+        start,
+        segment_size,
+        major,
+    }
+}
 
-    let mut phases = Vec::new();
-    let mut from = start;
-    let mut phase = |sql: &mut Connection, name, rows, work: &mut dyn FnMut(&mut Connection)| {
+/// The phases timed so far, and where the next one's WAL starts.
+struct Phases {
+    phases: Vec<Phase>,
+    from: u64,
+}
+
+impl Phases {
+    fn run(
+        &mut self,
+        sql: &mut Connection,
+        name: &'static str,
+        work: impl FnOnce(&mut Connection),
+    ) {
         let clock = Instant::now();
         work(sql);
         let took = clock.elapsed();
         let to = lsn(sql, "SELECT pg_current_wal_insert_lsn()");
-        phases.push(Phase {
+        self.phases.push(Phase {
             name,
-            from,
+            from: self.from,
             to,
             took,
-            rows,
+            rows: ROWS,
         });
-        from = to;
+        self.from = to;
+    }
+}
+
+/// The four phases of changes, from `start`, each timed.
+fn write_phases(
+    sql: &mut Connection,
+    container: &Container<GenericImage>,
+    copies: &[Vec<u8>],
+    start: u64,
+) -> Vec<Phase> {
+    let mut phases = Phases {
+        phases: Vec::new(),
+        from: start,
     };
-    phase(&mut sql, "copy", ROWS, &mut |_| {
-        for copy in &copies {
-            psql(&container, copy);
+    phases.run(sql, "copy", |_| {
+        for copy in copies {
+            psql(container, copy);
         }
     });
-    phase(&mut sql, "insert", ROWS, &mut |sql| {
+    phases.run(sql, "insert", |sql| {
         for (low, high) in batches(0) {
             sql.execute(&format!(
                 "INSERT INTO yellow_trips ({COLUMNS})
@@ -179,7 +279,7 @@ fn physical_wal_bench() {
             .unwrap();
         }
     });
-    phase(&mut sql, "update", ROWS, &mut |sql| {
+    phases.run(sql, "update", |sql| {
         for (low, high) in batches(0) {
             sql.execute(&format!(
                 "UPDATE yellow_trips SET fare_amount = fare_amount + 1
@@ -188,7 +288,7 @@ fn physical_wal_bench() {
             .unwrap();
         }
     });
-    phase(&mut sql, "delete", ROWS, &mut |sql| {
+    phases.run(sql, "delete", |sql| {
         for (low, high) in batches(ROWS) {
             sql.execute(&format!(
                 "DELETE FROM yellow_trips WHERE id > {low} AND id <= {high}"
@@ -196,57 +296,55 @@ fn physical_wal_bench() {
             .unwrap();
         }
     });
-    let flushed = lsn(&mut sql, "SELECT pg_current_wal_flush_lsn()");
-    let records = Records::new(start, segment_size);
-    stream
-        .copy_both(&format!(
-            "START_REPLICATION SLOT {slot} PHYSICAL {}",
-            Lsn(records.wanted())
-        ))
-        .unwrap();
-    stream.set_read_timeout(POLL).unwrap();
-    let wal = Wal {
-        start,
-        segment_size,
-        chunks: capture(&mut stream, start, flushed),
-    };
-    let ends: Vec<u64> = phases.iter().map(|p| p.to).collect();
+    phases.phases
+}
 
-    let mut parsed = vec![Read::default(); phases.len()];
-    let mut piped = vec![Read::default(); phases.len()];
-    let mut peak = 0;
+/// Reads the WAL `runs` times each way, keeping each phase's fastest.
+fn read_fastest(wal: &Wal, phases: &[Phase], setup: &Setup, runs: usize) -> Fastest {
+    let ends: Vec<u64> = phases.iter().map(|phase| phase.to).collect();
+    let mut fastest = Fastest {
+        parsed: vec![Read::default(); phases.len()],
+        piped: vec![Read::default(); phases.len()],
+        peak: 0,
+    };
     for _ in 0..runs {
-        let read = replay(&wal, &ends, |record| {
-            let images = record.blocks.iter().filter(|b| b.image.is_some()).count();
-            (images, 0)
-        });
-        fastest(&mut parsed, &read);
+        let read = replay(wal, &ends, count_images);
+        keep_fastest(&mut fastest.parsed, &read);
         let mut pipeline = Pipeline::new(
-            checked.clone(),
-            layouts.clone(),
-            major,
+            setup.checked.clone(),
+            setup.layouts.clone(),
+            setup.major,
             COPY_BATCH,
             MAX_BYTES,
         );
-        let mut snapshot = Some(snapshot.clone());
+        let mut snapshot = Some(setup.snapshot.clone());
         let mut held = 0;
-        let read = replay(&wal, &ends, |record| {
-            let mut commits = pipeline.record(record, || relayout(&layouts)).unwrap();
+        let read = replay(wal, &ends, |record| {
+            // The workload changes no table: a commit that invalidates one
+            // is a statistic or a hint, and the layout stays.
+            let mut commits = (pipeline.record(record, || Ok(setup.layouts.clone()))).unwrap();
             if pipeline.consistency() == Consistency::Consistent
                 && let Some(snapshot) = snapshot.take()
             {
                 commits.extend(pipeline.see(snapshot, Lsn(0)).unwrap().1);
             }
             held = held.max(pipeline.bytes());
-            (0, rows(&commits))
+            Counted {
+                images: 0,
+                rows: rows(&commits),
+            }
         });
-        peak = held;
-        fastest(&mut piped, &read);
+        fastest.peak = held;
+        keep_fastest(&mut fastest.piped, &read);
     }
-    for (phase, read) in phases.iter().zip(&piped) {
-        assert_eq!(read.rows, phase.rows, "rows read in {}", phase.name);
-    }
-    report(&phases, &parsed, &piped, peak, major);
+    fastest
+}
+
+fn count_images(record: &Record) -> Counted {
+    let images = (record.blocks.iter())
+        .filter(|block| block.image.is_some())
+        .count();
+    Counted { images, rows: 0 }
 }
 
 /// The taxi month in PostgreSQL, as `taxi_month` loads it.
@@ -258,45 +356,48 @@ fn load_month(root: &Path, container: &Container<GenericImage>) {
         .stdout(process::Stdio::piped())
         .spawn()
         .expect("bench/load_taxi_trips.py runs with uv");
-    let psql = process::Command::new("docker")
+    let psql_status = process::Command::new("docker")
         .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
         .stdin(loader.stdout.take().unwrap())
         .status()
         .unwrap();
-    assert!(psql.success(), "psql: {psql}");
-    let loaded = loader.wait().unwrap();
-    assert!(loaded.success(), "bench/load_taxi_trips.py: {loaded}");
+    assert!(psql_status.success(), "psql: {psql_status}");
+    let loader_status = loader.wait().unwrap();
+    assert!(
+        loader_status.success(),
+        "bench/load_taxi_trips.py: {loader_status}"
+    );
     eprintln!("loaded the taxi month in {:.1?}", clock.elapsed());
 }
 
 /// The scripts of the copy phase, each one `COPY` of trips already there,
 /// a month later. Made before the phase, so it times only the copies.
 fn copies(sql: &mut Connection) -> Vec<Vec<u8>> {
-    (0..ROWS / COPY_BATCH)
-        .map(|k| {
-            let (low, high) = (k * COPY_BATCH, (k + 1) * COPY_BATCH);
-            let mut script = format!(
-                "\\set ON_ERROR_STOP on\nCOPY yellow_trips ({COLUMNS}) FROM stdin WITH (FORMAT csv);\n"
-            )
-            .into_bytes();
-            sql.copy_out(
-                &format!(
-                    "COPY (SELECT vendor_id, pickup_at + interval '31 days', pu_location_id,
-                                  do_location_id, payment_type, fare_amount, tip_amount,
-                                  trip_distance
-                             FROM yellow_trips WHERE id > {low} AND id <= {high})
-                     TO STDOUT WITH (FORMAT csv)"
-                ),
-                |data| {
-                    script.extend_from_slice(data);
-                    Ok(())
-                },
-            )
-            .unwrap();
-            script.extend_from_slice(b"\\.\n");
-            script
-        })
-        .collect()
+    let mut scripts = Vec::new();
+    for index in 0..ROWS / COPY_BATCH {
+        let (low, high) = (index * COPY_BATCH, (index + 1) * COPY_BATCH);
+        let mut script = format!(
+            "\\set ON_ERROR_STOP on\nCOPY yellow_trips ({COLUMNS}) FROM stdin WITH (FORMAT csv);\n"
+        )
+        .into_bytes();
+        sql.copy_out(
+            &format!(
+                "COPY (SELECT vendor_id, pickup_at + interval '31 days', pu_location_id,
+                              do_location_id, payment_type, fare_amount, tip_amount,
+                              trip_distance
+                         FROM yellow_trips WHERE id > {low} AND id <= {high})
+                 TO STDOUT WITH (FORMAT csv)"
+            ),
+            |data| {
+                script.extend_from_slice(data);
+                Ok(())
+            },
+        )
+        .unwrap();
+        script.extend_from_slice(b"\\.\n");
+        scripts.push(script);
+    }
+    scripts
 }
 
 fn psql(container: &Container<GenericImage>, script: &[u8]) {
@@ -312,7 +413,7 @@ fn psql(container: &Container<GenericImage>, script: &[u8]) {
 
 /// The id ranges of one phase's transactions, past `skip`.
 fn batches(skip: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..ROWS / BATCH).map(move |k| (skip + k * BATCH, skip + (k + 1) * BATCH))
+    (0..ROWS / BATCH).map(move |index| (skip + index * BATCH, skip + (index + 1) * BATCH))
 }
 
 fn number(sql: &mut Connection, query: &str) -> u64 {
@@ -326,7 +427,7 @@ fn lsn(sql: &mut Connection, query: &str) -> u64 {
 }
 
 /// The WAL the slot streams, up to `until`, in the pieces it came in.
-fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<(u64, Vec<u8>)> {
+fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let mut end = 0;
     while end < until {
@@ -335,7 +436,10 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<(u64, Vec<u8>
             Some(Backend::CopyData(body)) => match pgoutput::copy_message(body.data()).unwrap() {
                 CopyMessage::XLogData { start, bytes } => {
                     end = start + bytes.len() as u64;
-                    chunks.push((start, bytes.to_vec()));
+                    chunks.push(Chunk {
+                        start,
+                        bytes: bytes.to_vec(),
+                    });
                 }
                 CopyMessage::Keepalive { reply, .. } => {
                     if reply {
@@ -353,13 +457,13 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<(u64, Vec<u8>
 
 /// Reads the WAL once, timing each phase; `each` counts a record's full
 /// page images and the rows it ends with.
-fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> (usize, usize)) -> Vec<Read> {
+fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> Counted) -> Vec<Read> {
     let mut reads = vec![Read::default(); ends.len()];
     let mut records = Records::new(wal.start, wal.segment_size);
     let mut phase = 0;
     let mut clock = Instant::now();
-    for (start, bytes) in &wal.chunks {
-        records.feed(*start, bytes).unwrap();
+    for chunk in &wal.chunks {
+        records.feed(chunk.start, &chunk.bytes).unwrap();
         while let Some(record) = records.next_record().unwrap() {
             // A record past the last phase is a keepalive's, or the
             // standby snapshot after it: the last phase takes it.
@@ -368,18 +472,18 @@ fn replay(wal: &Wal, ends: &[u64], mut each: impl FnMut(&Record) -> (usize, usiz
                 clock = Instant::now();
                 phase += 1;
             }
-            let (images, rows) = each(record);
+            let counted = each(record);
             let read = &mut reads[phase];
             read.records += 1;
-            read.images += images;
-            read.rows += rows;
+            read.images += counted.images;
+            read.rows += counted.rows;
         }
     }
     reads[phase].took += clock.elapsed();
     reads
 }
 
-fn fastest(best: &mut [Read], read: &[Read]) {
+fn keep_fastest(best: &mut [Read], read: &[Read]) {
     for (best, read) in best.iter_mut().zip(read) {
         if best.took.is_zero() || read.took < best.took {
             *best = Read {
@@ -391,60 +495,83 @@ fn fastest(best: &mut [Read], read: &[Read]) {
     }
 }
 
-/// The workload changes no table: a commit that invalidates one is a
-/// statistic or a hint, and the layout stays.
-fn relayout(layouts: &Layouts) -> Result<Layouts, crate::error::Error> {
-    Ok(layouts.clone())
-}
-
 fn rows(commits: &[Commit]) -> usize {
-    let changes = commits.iter().flat_map(|c| &c.changes);
+    let changes = commits.iter().flat_map(|commit| &commit.changes);
     changes
         .inspect(|change| assert!(!matches!(change, Change::Unfit { .. }), "{change:?}"))
         .count()
 }
 
-fn report(phases: &[Phase], parsed: &[Read], piped: &[Read], peak: usize, major: u32) {
-    let mib = |bytes: u64| bytes as f64 / f64::from(1 << 20);
-    let per_second = |n: f64, took: Duration| n / took.as_secs_f64();
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a report's figure: f64 is exact far past the bytes a bench writes"
+)]
+fn mebibytes(bytes: u64) -> f64 {
+    bytes as f64 / MEBIBYTE
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a report's figure: f64 is exact far past the rows a bench writes"
+)]
+fn per_second(count: usize, took: Duration) -> f64 {
+    count as f64 / took.as_secs_f64()
+}
+
+fn mebibytes_per_second(bytes: u64, took: Duration) -> f64 {
+    mebibytes(bytes) / took.as_secs_f64()
+}
+
+/// Every phase's figures, summed.
+#[derive(Default)]
+struct Totals {
+    bytes: u64,
+    wrote: Duration,
+    parsed: Duration,
+    piped: Duration,
+    rows: usize,
+}
+
+fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
     eprintln!("\nPostgreSQL {major}, wal_level = replica; the fastest read of each kind:\n");
     eprintln!(
         "| Phase | WAL | Records | Images | Rows | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |"
     );
     eprintln!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
-    let mut total = (0, Duration::ZERO, Duration::ZERO, Duration::ZERO, 0);
-    for ((phase, parsed), piped) in phases.iter().zip(parsed).zip(piped) {
+    let mut total = Totals::default();
+    for ((phase, parsed), piped) in phases.iter().zip(&fastest.parsed).zip(&fastest.piped) {
         let bytes = phase.to - phase.from;
-        total.0 += bytes;
-        total.1 += phase.took;
-        total.2 += parsed.took;
-        total.3 += piped.took;
-        total.4 += piped.rows;
+        total.bytes += bytes;
+        total.wrote += phase.took;
+        total.parsed += parsed.took;
+        total.piped += piped.took;
+        total.rows += piped.rows;
         let faster = phase.took.as_secs_f64() / piped.took.as_secs_f64();
         eprintln!(
             "| {} | {:.1} MiB | {} | {} | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {faster:.1}x |",
             phase.name,
-            mib(bytes),
+            mebibytes(bytes),
             parsed.records,
             parsed.images,
             piped.rows,
             phase.took,
-            per_second(mib(bytes), parsed.took),
-            per_second(mib(bytes), piped.took),
-            per_second(piped.rows as f64, piped.took),
+            mebibytes_per_second(bytes, parsed.took),
+            mebibytes_per_second(bytes, piped.took),
+            per_second(piped.rows, piped.took),
         );
     }
-    let (bytes, wrote, parsed, piped, rows) = total;
     eprintln!(
-        "| all | {:.1} MiB | | | {rows} | {wrote:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {:.1}x |",
-        mib(bytes),
-        per_second(mib(bytes), parsed),
-        per_second(mib(bytes), piped),
-        per_second(rows as f64, piped),
-        wrote.as_secs_f64() / piped.as_secs_f64(),
+        "| all | {:.1} MiB | | | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {:.1}x |",
+        mebibytes(total.bytes),
+        total.rows,
+        total.wrote,
+        mebibytes_per_second(total.bytes, total.parsed),
+        mebibytes_per_second(total.bytes, total.piped),
+        per_second(total.rows, total.piped),
+        total.wrote.as_secs_f64() / total.piped.as_secs_f64(),
     );
     eprintln!(
         "\nThe pipeline held at most {:.1} MiB of rows.",
-        mib(peak as u64)
+        mebibytes(fastest.peak as u64)
     );
 }
