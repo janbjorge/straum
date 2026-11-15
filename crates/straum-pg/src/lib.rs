@@ -25,7 +25,9 @@ mod tests;
 mod tls;
 mod value;
 mod wal;
-#[cfg(test)]
+// An ignored benchmark, never run by the tests that measure coverage;
+// cargo-llvm-cov sets `coverage`.
+#[cfg(all(test, not(coverage)))]
 mod wal_bench;
 mod wire;
 
