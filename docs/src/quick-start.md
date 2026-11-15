@@ -174,7 +174,7 @@ The same steps work on a database you have:
    time column in `date_bin`, the columns it filters and groups by as
    keys, its aggregates as measures ([Writing a spec](spec.md)).
 2. `straum plan --spec FILE` prints the setup SQL, or what is wrong
-   with the spec. A table owner runs the SQL once. PostgreSQL 16 to
+   with the spec. A table owner runs the SQL once. PostgreSQL 17 and
    18 also need `wal_level = logical`, which takes a restart, or
    `--wal physical` ([Setting up PostgreSQL](postgresql.md)).
 3. `straum run --spec FILE` with `STRAUM_DSN` set, then ask.

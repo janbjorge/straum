@@ -33,7 +33,8 @@ const HEAP_UPDATE: u8 = 0x20;
 const HEAP_HOT_UPDATE: u8 = 0x40;
 const HEAP_CONFIRM: u8 = 0x50;
 
-/// 16's `PRUNE` and `VACUUM`; from 17 one prune record takes all three.
+/// `PRUNE_ON_ACCESS`, `PRUNE_VACUUM_SCAN` and `PRUNE_VACUUM_CLEANUP`: one
+/// layout, prune, vacuum and freeze in one record.
 const HEAP2_PRUNE: u8 = 0x10;
 const HEAP2_VACUUM: u8 = 0x20;
 const HEAP2_PRUNE_CLEANUP: u8 = 0x30;
@@ -175,8 +176,6 @@ pub(crate) struct Heap {
     pages: HashMap<PageId, Page>,
     /// The pages' footprints, summed.
     bytes: usize,
-    /// 17 and later log pruning, vacuuming and freezing in one record.
-    prune_freeze: bool,
     /// 19 drops the reason byte before the prune flags and widens them to
     /// two bytes, the second for the visibility map.
     prune_flags_first: bool,
@@ -188,7 +187,6 @@ impl Heap {
             tracked,
             pages: HashMap::new(),
             bytes: 0,
-            prune_freeze: major >= 17,
             prune_flags_first: major >= 19,
         }
     }
@@ -305,8 +303,7 @@ impl Heap {
             },
             RM_HEAP2 => match operation {
                 HEAP2_MULTI_INSERT => edit.multi_insert()?,
-                HEAP2_PRUNE | HEAP2_VACUUM => edit.prune()?,
-                HEAP2_PRUNE_CLEANUP if edit.heap.prune_freeze => edit.prune()?,
+                HEAP2_PRUNE | HEAP2_VACUUM | HEAP2_PRUNE_CLEANUP => edit.prune()?,
                 _ => {}
             },
             RM_SMGR if operation & 0xF0 == SMGR_TRUNCATE => edit.truncate()?,
@@ -510,37 +507,17 @@ impl<'a> Edit<'a> {
         Ok(())
     }
 
-    /// Pruning, vacuuming and freezing: the slots whose rows go. 16 logs
-    /// a prune's redirected, dead and unused slots, then a vacuum's
-    /// unused ones; 17 and later log freeze plans, then redirected, dead
-    /// and now unused slots, each list there only if its flag says so.
+    /// Pruning, vacuuming and freezing: the slots whose rows go.
     fn prune(&mut self) -> Result<(), WalError> {
-        let operation = self.record.info & OPERATION;
-        let pruning_16 = !self.heap.prune_freeze && operation == HEAP2_PRUNE;
-        let main = self.main(if pruning_16 { 8 } else { 2 })?;
+        let main = self.main(2)?;
         let Some(block) = self.block(0)? else {
             return Ok(());
         };
         if !self.redo(block) {
             return Ok(());
         }
-        let data = self.record.block_data(block);
-        let gone = if self.heap.prune_freeze {
-            let flags = main[usize::from(!self.heap.prune_flags_first)];
-            prune_freeze_slots(data, flags)
-        } else if pruning_16 {
-            let redirected = 2 * usize::from(le_u16(&main[4..6]));
-            let dead = usize::from(le_u16(&main[6..8]));
-            let all: Vec<u16> = slots(data).collect();
-            // Of a redirect, the slot it points from goes.
-            (all.len() >= redirected + dead).then(|| {
-                let from = all[..redirected].iter().step_by(2);
-                from.chain(&all[redirected..]).copied().collect()
-            })
-        } else {
-            Some(slots(data).collect())
-        };
-        let gone = gone.ok_or_else(|| self.short())?;
+        let flags = main[usize::from(!self.heap.prune_flags_first)];
+        let gone = prune_slots(self.record.block_data(block), flags).ok_or_else(|| self.short())?;
         let page = self.page(block)?;
         for offnum in gone {
             page.remove(offnum);
@@ -564,17 +541,10 @@ impl<'a> Edit<'a> {
     }
 }
 
-fn slots(bytes: &[u8]) -> impl Iterator<Item = u16> {
-    bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|n| u16::from_le_bytes(*n))
-}
-
-/// 17 and later: the slots a prune record's lists name. The freeze
-/// plans come first, at the alignment of their transaction ids.
-fn prune_freeze_slots(data: &[u8], flags: u8) -> Option<Vec<u16>> {
+/// The slots a prune record's lists name: freeze plans first, at the
+/// alignment of their transaction ids, then redirected, dead and now
+/// unused slots, each list there only if its flag says so.
+fn prune_slots(data: &[u8], flags: u8) -> Option<Vec<u16>> {
     let count = |at: usize| data.get(at..at + 2).map(|n| usize::from(le_u16(n)));
     let mut at = 0;
     if flags & PRUNE_HAS_FREEZE_PLANS != 0 {
@@ -1065,30 +1035,6 @@ mod tests {
 
     fn slots(heap: &Heap) -> Vec<u16> {
         at(heap, 0).rows().map(|(offnum, _)| offnum).collect()
-    }
-
-    #[test]
-    fn prunes_as_16_logs_it() {
-        let mut heap = heap(16);
-        five_rows(&mut heap);
-        // Redirect 1 to 2, 3 dead, 4 unused.
-        let main = [&[0; 4][..], &1u16.to_le_bytes(), &1u16.to_le_bytes(), &[0]].concat();
-        let prune = record(
-            RM_HEAP2,
-            HEAP2_PRUNE,
-            main,
-            vec![block(0, 0, offnums(&[1, 2, 3, 4]), None)],
-        );
-        assert_eq!(heap.apply(&prune), Ok(vec![]));
-        assert_eq!(slots(&heap), vec![2, 5]);
-        let vacuum = record(
-            RM_HEAP2,
-            HEAP2_VACUUM,
-            1u16.to_le_bytes().to_vec(),
-            vec![block(0, 0, offnums(&[5]), None)],
-        );
-        assert_eq!(heap.apply(&vacuum), Ok(vec![]));
-        assert_eq!(slots(&heap), vec![2]);
     }
 
     /// Two freeze plans, then redirected 1 to 2, 3 dead, 4 unused, then

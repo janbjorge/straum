@@ -4280,8 +4280,8 @@ fn binary_copies_read_as_text_does() {
 }
 
 /// `--wal physical` needs neither the publication nor `REPLICA IDENTITY
-/// FULL`, takes `wal_level` replica from 16, and needs full-page writes
-/// and a `wal_compression` it reads.
+/// FULL`, takes `wal_level` replica, and needs PostgreSQL 17 or newer,
+/// full-page writes and a `wal_compression` it reads.
 #[test]
 fn checks_what_the_physical_wal_needs() {
     let pg = postgres_at_replica(&tag());
@@ -4311,15 +4311,18 @@ fn checks_what_the_physical_wal_needs() {
             .any(|p| p.contains("publication needs does not exist"))
     );
     for (version, wal_level, fpw, compression, problems) in [
-        (160_000, "replica", "on", "lz4", vec![]),
+        (170_000, "replica", "on", "lz4", vec![]),
         (180_000, "logical", "on", "pglz", vec![]),
-        (170_000, "replica", "on", "on", vec![]),
+        (190_000, "replica", "on", "on", vec![]),
         (
-            160_000,
+            160_009,
             "minimal",
             "on",
             "off",
-            vec!["wal_level is minimal; Straum needs replica or logical, which takes a restart"],
+            vec![
+                "PostgreSQL 16 is too old; Straum needs 17 or newer",
+                "wal_level is minimal; Straum needs replica or logical, which takes a restart",
+            ],
         ),
         (
             180_000,
@@ -4395,8 +4398,8 @@ fn reports_wal_level_and_read_access() {
         major.parse::<u32>().unwrap()
     );
     for (version, wal_level, needs) in [
-        (160_000, "replica", Some("logical")),
         (170_000, "replica", Some("logical")),
+        (170_000, "logical", None),
         (180_000, "replica", Some("logical")),
         (180_000, "logical", None),
         (190_000, "replica", None),
@@ -4417,6 +4420,14 @@ fn reports_wal_level_and_read_access() {
             "{version} {wal_level}"
         );
     }
+    catalog.server_version = 160_009;
+    catalog.wal_level = "logical".into();
+    assert_eq!(
+        catalog::check(&spec, &catalog, "access", Replication::Logical).err(),
+        Some(vec![
+            "PostgreSQL 16 is too old; Straum needs 17 or newer".to_owned()
+        ])
+    );
 
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");

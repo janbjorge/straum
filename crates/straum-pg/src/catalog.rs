@@ -352,6 +352,13 @@ pub(crate) fn check(
     replication: Replication,
 ) -> Result<Tables, Vec<String>> {
     let mut problems = Vec::new();
+    // ADR-0051.
+    if catalog.server_version < 170_000 {
+        problems.push(format!(
+            "PostgreSQL {} is too old; Straum needs 17 or newer",
+            catalog.server_version / 10_000
+        ));
+    }
     // From 19, a logical slot turns logical decoding on under replica.
     // The physical WAL holds every change from replica on (ADR-0049).
     let enough: &[&str] = match replication {

@@ -58,7 +58,7 @@ jobs:
       matrix:
         # 19rc1 until PostgreSQL 19 ships. 18, the tests' default, runs in
         # coverage.
-        postgres: ["16", "17", "19rc1"]
+        postgres: ["17", "19rc1"]
     env:
       STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
     steps:
@@ -77,7 +77,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: ["16", "17", "18", "19rc1"]
+        postgres: ["17", "18", "19rc1"]
     env:
       STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
       STRAUM_TEST_SEEDS: "50"

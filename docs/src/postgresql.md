@@ -1,7 +1,7 @@
 # Setting up PostgreSQL
 
-Straum supports PostgreSQL 16 and newer, self-hosted or managed; its
-tests run on 16, 17, 18 and the 19 release candidate. It uses logical
+Straum supports PostgreSQL 17 and newer, self-hosted or managed; its
+tests run on 17, 18 and the 19 release candidate. It uses logical
 replication with `pgoutput`, a temporary slot and an exported snapshot,
 with no extension and no superuser. Setup is three steps, done once.
 Where `wal_level = logical` can't be had, Straum can read the physical
@@ -9,7 +9,7 @@ WAL instead: see [Without logical decoding](#without-logical-decoding).
 
 ## 1. Turn on logical decoding
 
-PostgreSQL 16 to 18 need `wal_level = logical`, which takes a restart.
+PostgreSQL 17 and 18 need `wal_level = logical`, which takes a restart.
 On your own server, run `ALTER SYSTEM SET wal_level = logical;` and
 restart. From PostgreSQL 19, `replica`, the default, is enough: a logical
 slot turns logical decoding on while it exists. On a managed service, set
@@ -135,7 +135,7 @@ view usage: join a joins account_id (an integer) to id (text); they must read al
 
 ## Without logical decoding
 
-PostgreSQL 16 to 18 refuse a logical slot under `wal_level = replica`,
+PostgreSQL 17 and 18 refuse a logical slot under `wal_level = replica`,
 the default, and changing it takes a restart. `straum run --wal physical`
 needs neither: it streams the physical WAL through a temporary physical
 slot and rebuilds each change from the pages it holds (ADR-0049). The

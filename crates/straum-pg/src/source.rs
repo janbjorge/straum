@@ -48,7 +48,7 @@ const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
 /// Slots made by this process, for unique names.
 static SLOTS: AtomicU64 = AtomicU64::new(0);
 
-/// Straum's [`Source`] over PostgreSQL 16 and newer with
+/// Straum's [`Source`] over PostgreSQL 17 and newer with
 /// `wal_level = logical`, or `replica` from 19 (ADR-0046).
 pub struct Postgres {
     dsn: Dsn,
