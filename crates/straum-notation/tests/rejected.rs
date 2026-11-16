@@ -448,12 +448,6 @@ fn select_items_are_named_and_columns_owned() {
             "quoted identifier `\"A\"` is not",
         ),
         (
-            "f.z_id AS z_id, z.name AS name, ",
-            "f.z_id AS z_id, ",
-            2,
-            "z is a left outer join and selects no column of it; select one or drop the join",
-        ),
-        (
             "count(*) AS n",
             "count(*) FILTER (WHERE z.code = 'x') AS n",
             3,
@@ -830,40 +824,38 @@ FROM public.t AS f
 INNER JOIN public.z AS z ON z.id = f.z_id
 WHERE EXISTS (SELECT 1 FROM public.p AS p WHERE p.k = f.a)
 GROUP BY 1, 2, 3";
-    for (from, to, fragment) in [
+    // Each case: the edit, the GROUP BY its keys need, and the error.
+    for (from, to, group_by, fragment) in [
         // A semi join has no columns to select.
         (
             "z.name AS name,",
             "z.name AS name, p.x AS x,",
-            "p is a semi join and has no columns to select; select none of it",
+            "GROUP BY 1, 2, 3, 4",
+            "join p is a semi join and reads columns, which it has none of",
         ),
         // Nor to join through.
         (
             "GROUP BY",
             "AND EXISTS (SELECT 1 FROM public.q AS q WHERE q.k = p.x)\nGROUP BY",
+            "GROUP BY 1, 2, 3",
             "join ON q.<key> = f.<column>",
         ),
         // An inner join that selects nothing.
         (
             "z.name AS name,",
             "",
-            "z is an inner join and selects no column of it; select one or drop the join",
+            "GROUP BY 1, 2",
+            "join z reads no column of its dim",
         ),
         // The same FILTER on every measure is the view's WHERE.
         (
             "count(*) AS n",
             "count(*) FILTER (WHERE f.a = 1) AS n, count(*) FILTER (WHERE f.a = 1) AS m",
+            "GROUP BY 1, 2, 3",
             "every measure has the same FILTER; write it as the view's WHERE",
         ),
     ] {
-        let text = edit(base, from, to).replace(
-            "GROUP BY 1, 2, 3",
-            if to.is_empty() {
-                "GROUP BY 1, 2"
-            } else {
-                "GROUP BY 1, 2, 3"
-            },
-        );
+        let text = edit(base, from, to).replace("GROUP BY 1, 2, 3", group_by);
         let errors = error_lines(&text);
         assert!(
             any_contains(&errors, fragment),

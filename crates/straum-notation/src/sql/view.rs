@@ -11,7 +11,7 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, RefKind, Table, Time, Width,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Width,
 };
 
 use super::{Names, NullTest, Reported, SqlError, Walker, line, statements};
@@ -331,7 +331,11 @@ impl Walker {
         for _ in buckets {
             self.error(at, "SELECT has more than one date_bin bucket".into());
         }
-        self.ref_attributes(at, &mut scope.refs, attributes);
+        // A ref reads the dim columns the view selects; `Spec::new` checks
+        // that a join's kind fits what it reads.
+        for (joined, reads) in scope.refs.iter_mut().zip(attributes) {
+            joined.reference.reads = reads;
+        }
         let as_text = cast_columns(&mut scope);
         let filter = self.read_filter(&scope, &conditions)?;
         if measures_share_filter(&measures) {
@@ -428,34 +432,6 @@ impl Walker {
             }
         }
         measures
-    }
-
-    /// A ref reads the dim columns the view selects, through the via
-    /// columns that key its cells. A join that selects nothing would do
-    /// nothing; a semi or anti join selects nothing by nature.
-    fn ref_attributes(&mut self, at: u64, refs: &mut [JoinedRef], attributes: Vec<Vec<Attribute>>) {
-        for (index, reads) in attributes.into_iter().enumerate() {
-            let reference = &mut refs[index].reference;
-            let selects_none = reads.is_empty();
-            match reference.kind {
-                RefKind::Left | RefKind::Inner if selects_none => self.error(
-                    at,
-                    format!(
-                        "{} is {} and selects no column of it; select one or drop the join",
-                        reference.alias, reference.kind
-                    ),
-                ),
-                RefKind::Semi | RefKind::Anti if !selects_none => self.error(
-                    at,
-                    format!(
-                        "{} is {} and has no columns to select; select none of it",
-                        reference.alias, reference.kind
-                    ),
-                ),
-                _ => {}
-            }
-            reference.reads = reads;
-        }
     }
 
     /// The view's WHERE and a measure's FILTER alike: `=`, `IN`, `IS NULL`

@@ -7,7 +7,7 @@ mod common;
 
 use common::{
     BASE, FEB, JAN, any_message, ask_view_t, attribute, base, by_key, condition, id, key_text,
-    rejects, spec_errors, sql_errors,
+    rejects, spec_errors, sql_errors, strings,
 };
 use straum_domain::{Ask, AskError, AskKey, ByKey, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
@@ -84,7 +84,7 @@ fn a_ref_on_two_columns_rejected() {
         [Via::Fact(id("org")), Via::Fact(id("grp"))]
     );
     assert_eq!(fact.refs[0].reads, [attribute("label", "label")]);
-    let errors = sql_errors(
+    let errors = spec_errors(
         &GROUPED
             .replace(
                 "f.org AS org, f.grp AS grp, g.label AS label,",
@@ -92,10 +92,9 @@ fn a_ref_on_two_columns_rejected() {
             )
             .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2"),
     );
-    assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(
-        errors[0].message,
-        "g is a left outer join and selects no column of it; select one or drop the join"
+        strings(&errors),
+        ["view t: join g reads no column of its dim"]
     );
     // Another view joins the dim on another key list: fewer columns, or
     // as many but not the same.
