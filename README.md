@@ -6,13 +6,9 @@
 
 Straum keeps the aggregates a spec declares as cells in memory, loaded
 from a snapshot and kept current by every commit after it, and answers
-asks about them over HTTP. In the
-[benchmark](https://janbjorge.github.io/straum/performance.html) its counts
-and sums answer in 166 to 413 µs where PostgreSQL takes 22.3 to 2,376.2
-ms, and a median fare in 32 ms where it takes 6.6 s, from 113 MiB.
-The target is under 1 ms for every ask. The two percentile asks over
-every trip miss it. PostgreSQL stays the source of truth; Straum
-keeps nothing on disk. A crash leaves no slot behind holding WAL.
+asks about them over HTTP in microseconds
+([performance](https://janbjorge.github.io/straum/performance.html)).
+PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 
 **Not stable.** The spec, the asks and the flags may change.
 
@@ -57,28 +53,10 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer. The guide's [quick
-start](https://janbjorge.github.io/straum/quick-start.html) runs Straum
-from the `ghcr.io/janbjorge/straum` image against PostgreSQL in Docker,
-in four steps, on a month of New York taxi trips.
-
-Straum is not a SQL engine, a replica, a cache or a durable store. It
-answers only what its spec declares. It needs PostgreSQL 17 or newer as
-shipped, with no extension and no superuser
-([setup](https://janbjorge.github.io/straum/postgresql.html)). The
-logical stream uses stock logical replication. Where
-`wal_level = logical` can't be had, `--wal physical` reads the WAL
-`replica` writes instead.
-
-## How it works
-
-![Straum between PostgreSQL and the apps that ask it](docs/src/diagrams/overview.svg)
-
-One writer loads every table from one snapshot and applies every
-commit after it, and asks read meanwhile. The guide's [How Straum
-works](https://janbjorge.github.io/straum/how-it-works.html) is the
-model; [Design](https://janbjorge.github.io/straum/design.html) is
-the same model with the code's names, for contributors.
+Every commit made before `as_of` is in the answer. Straum needs
+PostgreSQL 17 or newer, with no extension and no superuser. The
+[quick start](https://janbjorge.github.io/straum/quick-start.html) runs
+it in Docker in four steps.
 
 ## Development
 
