@@ -25,6 +25,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Postgres, Replication, parse_lsn};
 use crate::wal::RelationFile;
+use crate::wal::test_support::Rng as SplitMix;
 use crate::wire::{Connection, ConnectionKind};
 
 /// The password of the `postgres` role in every container.
@@ -436,7 +437,7 @@ pub(super) fn applied_or_started(writer: &mut Writer<Postgres>) {
 /// Seeded random numbers by splitmix64, and the hours from `START` that
 /// trips fall in.
 pub(super) struct Rng {
-    state: u64,
+    numbers: SplitMix,
     hours: u64,
 }
 
@@ -448,21 +449,15 @@ impl Rng {
 
     /// Numbers from `seed`, with times within `hours` of `START`.
     pub(super) fn within_hours(seed: u64, hours: u64) -> Rng {
-        Rng { state: seed, hours }
-    }
-
-    /// The next number.
-    pub(super) fn next(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut mixed = self.state;
-        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        mixed ^ (mixed >> 31)
+        Rng {
+            numbers: SplitMix(seed),
+            hours,
+        }
     }
 
     /// A number from 0 up to, not including, `bound`.
     pub(super) fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
+        self.numbers.below(bound)
     }
 
     /// A second within `hours` of `START`.
@@ -477,8 +472,7 @@ impl Rng {
 
     /// An index into something `length` long.
     pub(super) fn index(&mut self, length: usize) -> usize {
-        let length = u64::try_from(length).unwrap();
-        usize::try_from(self.below(length)).unwrap()
+        self.numbers.below_usize(length)
     }
 
     /// One of `choices`.
