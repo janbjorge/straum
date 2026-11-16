@@ -26,8 +26,8 @@ const DOCS: [Page; 6] = [
         markdown: include_str!("../../../docs/src/aggregates.md"),
     },
     Page {
-        name: "docs/src/benchmark.md",
-        markdown: include_str!("../../../docs/src/benchmark.md"),
+        name: "docs/src/performance.md",
+        markdown: include_str!("../../../docs/src/performance.md"),
     },
 ];
 

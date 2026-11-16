@@ -37,7 +37,7 @@ goes in a `Straum-LSN` header. avg rounds half to even four places past
 its column's scale, trailing zeros dropped, in `straum-http`.
 
 Every ask in `bench/taxi.py` answers in under 1 ms, HTTP round trip
-included, on the machine `docs/src/benchmark.md` names. An aggregate
+included, on the machine `docs/src/performance.md` names. An aggregate
 whose asks miss it is not done, and a new one gets an ask there before
 it lands.
 

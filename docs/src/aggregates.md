@@ -99,7 +99,7 @@ Two things follow that a spec's author can see:
   distinct values in each cell; a percentile beside a `min` or `max`
   on its column costs nothing more. A `min` or `max` keeps a value in as few bytes as its cell's
   values need: `max(fare_amount)` per hour and dropoff zone keeps
-  14,943,826 fares of the [taxi trips](benchmark.md) in 76 MiB. A
+  14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
   `count(DISTINCT c)` over a column with many values holds every one
   of them.
 - **Rows counted twice.** A join whose dim holds a key twice counts the
@@ -159,7 +159,7 @@ gathers every value of every cell in its range and finds the one at its
 rank, splitting the values left at their middle one each step without
 sorting them all. An ask over a long range of many values takes
 milliseconds where the others take microseconds: the median fare over
-the six months of [benchmark](benchmark.md) trips takes about 30 ms.
+the six months of [benchmark](performance.md) trips takes about 30 ms.
 
 Other systems answer with a sketch: a small summary that merges and
 gives an approximate answer, t-digest, KLL and DDSketch for

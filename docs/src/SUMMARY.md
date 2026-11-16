@@ -16,7 +16,7 @@
 
 - [How Straum works](how-it-works.md)
 - [Aggregates 101](aggregates.md)
-- [Benchmark](benchmark.md)
+- [Performance](performance.md)
 
 # Contributing
 

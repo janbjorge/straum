@@ -45,7 +45,7 @@ benchmark or setting gets a recipe or variable in the same commit, with
 the same default as the code. Keep it tidy: one recipe per tool, in a
 `[group]`, with a one-line comment; recipes are thin wrappers, logic
 stays in the script or test; drop a recipe when its tool goes. Nothing
-depends on it; the commands here and in `docs/src/benchmark.md` stay the
+depends on it; the commands here and in `docs/src/performance.md` stay the
 reference. Keep them in step.
 
 ## Documents

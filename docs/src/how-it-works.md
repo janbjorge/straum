@@ -63,7 +63,7 @@ cells <= min(rows, distinct key combinations x buckets)
 
 Keys that are nearly unique per row keep nearly a cell per row. Fewer
 keys, keys with fewer values and wider buckets collapse more rows into
-each cell. The [benchmark](benchmark.md#memory) has what real tables
+each cell. The [benchmark](performance.md#memory) has what real tables
 measured.
 
 ## Dims
@@ -123,7 +123,7 @@ differently, or a transaction above `--max-transaction-rows`. The
 last is on purpose: a transaction waits in memory until its commit,
 and the new slot's snapshot is after the big commit, so its rows come
 in through the bulk `COPY` instead; the
-[benchmark](benchmark.md#transactions) sets the default. A lost
+[benchmark](performance.md#transactions) sets the default. A lost
 connection or WAL past `--max-retained-wal` starts Straum over too
 ([States](deploy.md#states)).
 

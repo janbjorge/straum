@@ -347,7 +347,7 @@ views.
 4. What REPLICA IDENTITY FULL costs the primary at the real write rate
    (§6).
 5. Low collapse: warn in `straum plan`, or leave it to the spec author
-   (`docs/src/benchmark.md`).
+   (`docs/src/performance.md`).
 6. What clients do while Straum is not ready: retry, or ask PostgreSQL.
 7. Long asks delay the writer while they hold the read lock (ADR-0002).
 8. `helm template` output committed to the deploy repo, or a

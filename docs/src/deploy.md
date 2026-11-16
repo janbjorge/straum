@@ -118,4 +118,4 @@ volume is the spec.
 > The chart mounts no CA bundle, so a server whose certificate needs
 > `sslrootcert` can't be reached through the chart yet.
 
-Next: [Performance](benchmark.md), what to expect from a deployment.
+Next: [Performance](performance.md), what to expect from a deployment.

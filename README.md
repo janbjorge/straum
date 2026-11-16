@@ -7,7 +7,7 @@
 Straum keeps the aggregates a spec declares as cells in memory, loaded
 from a snapshot and kept current by every commit after it, and answers
 asks about them over HTTP. In the
-[benchmark](https://janbjorge.github.io/straum/benchmark.html) its counts
+[benchmark](https://janbjorge.github.io/straum/performance.html) its counts
 and sums answer in 166 to 413 µs where PostgreSQL takes 22.3 to 2,376.2
 ms, and a median fare in 32 ms where it takes 6.6 s, from 113 MiB.
 The target is under 1 ms for every ask. The two percentile asks over

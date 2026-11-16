@@ -1,5 +1,5 @@
 # Entry point to every tool. The commands in AGENTS.md and
-# docs/src/benchmark.md stay the reference.
+# docs/src/performance.md stay the reference.
 #
 # With no crate named, a recipe takes the crates changed since HEAD,
 # untracked files included. Name crates to override: just test straum-pg

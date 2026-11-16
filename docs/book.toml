@@ -13,5 +13,7 @@ edit-url-template = "https://github.com/janbjorge/straum/edit/main/docs/{path}"
 site-url = "/straum/"
 
 [output.html.redirect]
-"/sizing.html" = "benchmark.html#memory"
-"/kubernetes.html" = "running.html#kubernetes"
+"/sizing.html" = "performance.html#memory"
+"/kubernetes.html" = "deploy.html#kubernetes"
+"/running.html" = "deploy.html"
+"/benchmark.html" = "performance.html"
