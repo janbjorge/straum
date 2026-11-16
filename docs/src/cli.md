@@ -2,7 +2,9 @@
 
 `straum` is one binary with eight commands: `run`, `plan`, `status`,
 `views`, `ask`, `shell`, `version` and `help`. `straum <command> --help`
-prints a command's flags with their defaults. The examples run against
+prints a command's flags with their defaults. A flag takes its value as
+the next word or after `=`: `--url http://straum:8080` or
+`--url=http://straum:8080`. The examples run against
 the [quick start](quick-start.md)'s trips.
 
 `status`, `views`, `ask` and `shell` talk to a running Straum. They find

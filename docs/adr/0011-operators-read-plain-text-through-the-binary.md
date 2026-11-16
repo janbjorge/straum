@@ -15,7 +15,8 @@ was one block printed on every argument error.
 ## Decision
 
 The DSN comes from `STRAUM_DSN` or `--dsn-file`, never an argument.
-Arguments are read by hand. `straum plan` makes the DSN's user the
+Arguments are read by hand, as getopt reads long options: a flag
+takes the next word or the text after `=`. `straum plan` makes the DSN's user the
 role, with its password as a SCRAM-SHA-256 verifier; without a DSN it
 prints a setup for the default role `straum`.
 

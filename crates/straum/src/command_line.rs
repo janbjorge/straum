@@ -207,6 +207,7 @@ pub(crate) enum UsageError {
     },
     GivenTwice(String),
     NeedsValue(String),
+    SwitchTakesNoValue(String),
     BadValue {
         flag: &'static str,
         takes: &'static str,
@@ -242,6 +243,7 @@ impl Display for UsageError {
             }
             UsageError::GivenTwice(flag) => write!(formatter, "{flag} given twice"),
             UsageError::NeedsValue(flag) => write!(formatter, "{flag} needs a value"),
+            UsageError::SwitchTakesNoValue(flag) => write!(formatter, "{flag} takes no value"),
             UsageError::BadValue { flag, takes, value } => {
                 write!(formatter, "{flag} takes {takes}, not {value:?}")
             }
@@ -336,15 +338,17 @@ fn asks_for_help(args: &[String]) -> bool {
     false
 }
 
-/// Where an ask's flags end and its query begins: each flag takes one
-/// value, a call for help or a switch none.
+/// Where an ask's flags end and its query begins: each flag takes the
+/// next word as its value unless it has one after `=`; a call for help or
+/// a switch takes none.
 fn query_at(rest: &[String]) -> usize {
     let mut at = 0;
     while let Some(arg) = rest.get(at) {
         if !arg.starts_with('-') {
             break;
         }
-        at += if is_help(arg) || Name::Ask.switches().contains(&arg.as_str()) {
+        let alone = is_help(arg) || Name::Ask.switches().contains(&arg.as_str());
+        at += if alone || Written::of(arg).attached.is_some() {
             1
         } else {
             2
@@ -456,6 +460,31 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     }))
 }
 
+/// A word that starts a flag: `--url`, or `--url=VALUE` with its value
+/// attached, as getopt reads a long option.
+struct Written<'a> {
+    flag: &'a str,
+    attached: Option<&'a str>,
+}
+
+impl Written<'_> {
+    // A lifetime: the flag and its value are slices of the word read.
+    fn of(word: &str) -> Written<'_> {
+        if word.starts_with("--")
+            && let Some((flag, value)) = word.split_once('=')
+        {
+            return Written {
+                flag,
+                attached: Some(value),
+            };
+        }
+        Written {
+            flag: word,
+            attached: None,
+        }
+    }
+}
+
 /// One flag on the line and the value after it.
 struct Given {
     flag: String,
@@ -481,36 +510,47 @@ impl Flags {
             spec: None,
         };
         let mut rest = rest.iter();
-        while let Some(flag) = rest.next() {
-            if takes_spec && !flag.starts_with('-') {
+        while let Some(word) = rest.next() {
+            if takes_spec && !word.starts_with('-') {
                 if flags.spec.is_some() {
                     return Err(UsageError::OneSpec(name));
                 }
-                flags.spec = Some(flag.clone());
+                flags.spec = Some(word.clone());
                 continue;
             }
-            if name.switches().contains(&flag.as_str()) {
-                if flags.switches.contains(flag) {
-                    return Err(UsageError::GivenTwice(flag.clone()));
+            let Written { flag, attached } = Written::of(word);
+            if name.switches().contains(&flag) {
+                if attached.is_some() {
+                    return Err(UsageError::SwitchTakesNoValue(flag.to_owned()));
                 }
-                flags.switches.push(flag.clone());
+                if flags.switches.contains(word) {
+                    return Err(UsageError::GivenTwice(flag.to_owned()));
+                }
+                flags.switches.push(word.clone());
                 continue;
             }
-            if !name.flags().contains(&flag.as_str()) {
+            if !name.flags().contains(&flag) {
                 return Err(UsageError::FlagNotTaken {
                     command: name,
-                    flag: flag.clone(),
+                    flag: flag.to_owned(),
                 });
             }
             if flags.value(flag).is_some() {
-                return Err(UsageError::GivenTwice(flag.clone()));
+                return Err(UsageError::GivenTwice(flag.to_owned()));
             }
-            let Some(value) = rest.next() else {
-                return Err(UsageError::NeedsValue(flag.clone()));
+            let value = match attached {
+                Some(value) => value,
+                None => match rest.next() {
+                    Some(next) => next.as_str(),
+                    None => "",
+                },
             };
+            if value.is_empty() {
+                return Err(UsageError::NeedsValue(flag.to_owned()));
+            }
             flags.given.push(Given {
-                flag: flag.clone(),
-                value: value.clone(),
+                flag: flag.to_owned(),
+                value: value.to_owned(),
             });
         }
         Ok(flags)
@@ -807,6 +847,53 @@ mod tests {
     }
 
     #[test]
+    fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
+        for line in [
+            "status --url=http://straum:9",
+            "status --url http://straum:9",
+        ] {
+            let status = Command::Status {
+                url: "http://straum:9".into(),
+                output: Output::Text,
+            };
+            assert_eq!(command_of(&args(line)), Ok(status), "{line}");
+        }
+        // The value is all after the first =, which a URL may hold again.
+        let Ok(Command::Run(run)) = command_of(&args("run s --listen=a=b --wal=physical")) else {
+            panic!("run");
+        };
+        assert_eq!(run.listen, "a=b");
+        assert!(matches!(run.replication, Replication::Physical { .. }));
+        // An ask's query starts after a flag with its value attached.
+        let ask = command_of(&args("ask --url=http://straum:9 SELECT --url=x"));
+        let Ok(Command::Ask {
+            url,
+            query,
+            parameters,
+            ..
+        }) = ask
+        else {
+            panic!("{ask:?}");
+        };
+        assert_eq!(
+            (url.as_str(), query.as_str()),
+            ("http://straum:9", "SELECT")
+        );
+        assert_eq!(parameters, args("--url=x"));
+        for (line, error) in [
+            ("status --url=", "--url needs a value"),
+            ("status --url=a --url b", "--url given twice"),
+            ("status --json=yes", "--json takes no value"),
+            (
+                "ask --ulr=x SELECT",
+                "straum ask takes no \"--ulr\"; did you mean --url?",
+            ),
+        ] {
+            assert_eq!(usage(line), error, "{line}");
+        }
+    }
+
+    #[test]
     fn json_is_a_switch_of_the_commands_that_print_what_straum_says() {
         let status = command_of(&args("status --json --url http://straum:9"));
         let json_status = Command::Status {
@@ -993,7 +1080,7 @@ mod tests {
             ("run a b", "straum run takes one spec"),
             ("plan a b", "straum plan takes one spec"),
             ("plan s --listen x", "straum plan takes no \"--listen\""),
-            ("run --spec=s", "straum run takes no \"--spec=s\""),
+            ("run --spec=s", "straum run takes no \"--spec\""),
             ("run", "straum run needs a spec"),
             ("plan --role r", "straum plan needs a spec"),
             ("status --spec s", "straum status takes no \"--spec\""),
