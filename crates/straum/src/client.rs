@@ -10,6 +10,8 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use crate::complete::{View, read_views};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -235,20 +237,9 @@ fn unquoted(text: &str) -> &str {
     inside
 }
 
+/// `text` as a JSON string, quoted and escaped.
 fn json_string(text: &str) -> String {
-    let mut json = String::from('"');
-    for character in text.chars() {
-        match character {
-            '"' | '\\' => json.extend(['\\', character]),
-            '\0'..='\x1f' => {
-                // Writing to a String can't fail.
-                let _ = write!(json, "\\u{:04x}", u32::from(character));
-            }
-            _ => json.push(character),
-        }
-    }
-    json.push('"');
-    json
+    Value::String(text.to_owned()).to_string()
 }
 
 /// The `HOST:PORT` of an `http://HOST:PORT` URL, which may end in `/`.
@@ -443,7 +434,7 @@ mod tests {
             ("'", "\"'\""),
             ("it's", "\"it's\""),
             ("a\"b\\c", "\"a\\\"b\\\\c\""),
-            ("a\nb\u{1}", "\"a\\u000ab\\u0001\""),
+            ("a\nb\u{1}", "\"a\\nb\\u0001\""),
             ("blåbær", "\"blåbær\""),
         ];
         for (text, json) in cases {
