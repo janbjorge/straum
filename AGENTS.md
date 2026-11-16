@@ -37,18 +37,18 @@ The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
-`just wal-bench`. With no crate named, crate recipes take the crates
-changed since HEAD. Every setting has a default, overridden on the
-command line (`just postgres=17 seeds=50 correctness`) or through its
-environment variable; `just --evaluate` shows them. A new script, check,
-benchmark or setting gets a recipe or variable in the same commit, with
-the same default as the code. Keep it tidy: one recipe per tool, in a
-`[group]`, with a one-line comment; recipes are thin wrappers, logic
-stays in the script or test. The script is Python, run with uv, as
-`scripts/` and `bench/` are. No shell script: no `.sh` file, and no
-bash body in a recipe. Drop a recipe when its tool goes. Nothing
-depends on it; the commands here and in `docs/src/performance.md` stay the
-reference. Keep them in step.
+`just wal-bench`, `just demo`. With no crate named, crate recipes
+take the crates changed since HEAD. Every setting has a default,
+overridden on the command line (`just postgres=17 seeds=50 correctness`)
+or through its environment variable; `just --evaluate` shows them.
+A new script, check, benchmark or setting gets a recipe or variable
+in the same commit, with the same default as the code. Keep it tidy:
+one recipe per tool, in a `[group]`, with a one-line comment; recipes
+are thin wrappers, logic stays in the script or test. The script is
+Python, run with uv, as `scripts/` and `bench/` are. No shell script:
+no `.sh` file, and no bash body in a recipe. Drop a recipe when its
+tool goes. Nothing depends on it; the commands here and in
+`docs/src/performance.md` stay the reference. Keep them in step.
 
 ## Documents
 

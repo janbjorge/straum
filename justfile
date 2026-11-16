@@ -98,6 +98,11 @@ taxi-month:
 wal-bench:
     cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
 
+# January on the published image: one ask, a delete, a borough move
+[group('taxi')]
+demo:
+    bench/demo.py
+
 [private]
 _named crates:
     @[ -n "{{ crates }}" ] || { echo "no crate changed since HEAD; name one, as in just test straum-pg" >&2; exit 1; }

@@ -10,7 +10,23 @@ asks about them over HTTP in microseconds
 ([performance](https://janbjorge.github.io/straum/performance.html)).
 PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 
-**Not stable.** The spec, the asks and the flags may change.
+On six months of New York taxi trips, 20,332,093 of them, tips by
+dropoff borough take PostgreSQL 2,376.2 ms and Straum 250 µs, 9,492x
+faster. One run on an Apple M2 Pro with 16 GB, on 2026-11-15. The
+[performance](https://janbjorge.github.io/straum/performance.html) page
+has every ask, including the median fare, which takes Straum 32.3 ms.
+
+`bench/demo.py` loads January and times trips by pickup borough on your
+machine, then inserts a trip, deletes it, and moves two zones into a
+borough of their own. It needs Docker and
+[uv](https://docs.astral.sh/uv/). The times it prints are not the
+9,492x above.
+
+**Not stable.** The spec, the asks and the flags may change. Straum
+needs PostgreSQL 17 or newer, with no extension and no superuser.
+`--wal physical` reads the WAL a server you run already writes; RDS,
+Aurora and Cloud SQL do not hand out that stream
+([setup](https://janbjorge.github.io/straum/postgresql.html#without-logical-decoding)).
 
 ## What it looks like
 
@@ -53,8 +69,7 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer. Straum needs
-PostgreSQL 17 or newer, with no extension and no superuser. The
+Every commit made before `as_of` is in the answer. The
 [quick start](https://janbjorge.github.io/straum/quick-start.html) runs
 it in Docker in four steps.
 
