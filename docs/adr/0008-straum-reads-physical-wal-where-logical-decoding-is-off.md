@@ -21,7 +21,9 @@ into the messages the logical stream yields, `Begin`, `Relation`,
 one decoder feeds the store from both streams. Values are read from
 the row's bytes as the load reads binary `COPY`, sharing `value.rs`;
 printing them as text to parse back was dropped, and its reader
-refused years before 1 or after 9999. The load is plain SQL in a
+refused years before 1 or after 9999. Only the columns the spec reads
+are decoded; the others are stepped over, as a busy table's other
+values were most of the decoding. The load is plain SQL in a
 `REPEATABLE READ` transaction, and commits its snapshot saw are
 skipped. A table rewrite, DDL or a TOASTed value Straum can't rebuild
 is `Unfit` and starts Straum over. `--wal logical` stays the default.

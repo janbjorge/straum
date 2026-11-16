@@ -320,7 +320,7 @@ pub(crate) fn read_layouts(
             tables.push(attribute.empty_table());
         }
         let table = tables.last_mut().ok_or_else(unknown_shape)?;
-        push_attribute(table, &attribute)?;
+        push_attribute(table, &attribute, spec_use(checked, &attribute))?;
     }
     let mut labels = HashMap::new();
     for label in catalog::labels(connection, &names)? {
@@ -400,11 +400,40 @@ impl<'a> AttributeRow<'a> {
     }
 }
 
-/// Adds `attribute` to `table`, and its column unless it was dropped.
-fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Error> {
+/// Whether the spec reads a column of a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecUse {
+    Reads,
+    Skips,
+}
+
+/// Whether one of `checked`'s tables reads `attribute`.
+fn spec_use(checked: &[Checked], attribute: &AttributeRow) -> SpecUse {
+    for table in checked {
+        if table.schema.as_str() != attribute.schema || table.table_name.as_str() != attribute.table
+        {
+            continue;
+        }
+        for column in &table.columns {
+            if column.as_str() == attribute.name {
+                return SpecUse::Reads;
+            }
+        }
+    }
+    SpecUse::Skips
+}
+
+/// Adds `attribute` to `table`, and its column unless it was dropped. A
+/// column the spec skips is only stepped over: on a busy table, values no
+/// view reads were most of what the stream decoded.
+fn push_attribute(
+    table: &mut Layout,
+    attribute: &AttributeRow,
+    spec_use: SpecUse,
+) -> Result<(), Error> {
     // As the decoder reads the column: an enum as its label's text.
     let kind = match type_of(attribute.type_oid, attribute.typmod) {
-        _ if attribute.dropped => Kind::Other,
+        _ if attribute.dropped || spec_use == SpecUse::Skips => Kind::Other,
         Some(column_type) => Kind::Read(column_type),
         None if attribute.is_enum => Kind::Enum,
         None => Kind::Other,
@@ -448,4 +477,79 @@ fn parsed<T: FromStr>(row: &[Option<String>], column: usize) -> Result<T, Error>
 
 fn parsed_text<T: FromStr>(text: &str) -> Result<T, Error> {
     text.parse().map_err(|_| unknown_shape())
+}
+
+#[cfg(test)]
+mod tests {
+    use straum_domain::{ColumnType, Identifier};
+
+    use super::*;
+    use crate::value::{INT4, TEXT};
+
+    fn id(name: &str) -> Identifier {
+        Identifier::new(name).unwrap()
+    }
+
+    /// `public.t`, of which the spec reads `kept`.
+    fn checked() -> Checked {
+        Checked {
+            name: id("t"),
+            schema: id("public"),
+            table_name: id("t"),
+            columns: vec![id("kept")],
+            types: vec![ColumnType::Text],
+            enums: Vec::new(),
+        }
+    }
+
+    /// A text column of `public.t` named `name`, added with a default.
+    fn text_column(name: &str) -> AttributeRow<'_> {
+        AttributeRow {
+            table_oid: 77,
+            schema: "public",
+            table: "t",
+            file: RelationFile {
+                tablespace: 1663,
+                database: 5,
+                relation: 77,
+            },
+            name,
+            type_oid: TEXT,
+            typmod: -1,
+            length: -1,
+            align: 4,
+            dropped: false,
+            missing: Some("late"),
+            is_enum: false,
+        }
+    }
+
+    fn layout_of(columns: &[AttributeRow]) -> Layout {
+        let mut table = columns[0].empty_table();
+        for column in columns {
+            push_attribute(&mut table, column, spec_use(&[checked()], column)).unwrap();
+        }
+        table
+    }
+
+    #[test]
+    fn reads_only_the_columns_the_spec_reads() {
+        let table = layout_of(&[text_column("kept"), text_column("skipped")]);
+        assert_eq!(table.attributes[0].kind, Kind::Read(ColumnType::Text));
+        assert_eq!(table.missing[0], Datum::Text("late".into()));
+        // Stepped over, yet still a column, as pgoutput sends it.
+        assert_eq!(table.attributes[1].kind, Kind::Other);
+        assert_eq!(table.missing[1], Datum::Null);
+        assert_eq!(table.relation.columns.len(), 2);
+    }
+
+    #[test]
+    fn a_column_of_the_same_name_in_another_table_is_skipped() {
+        let mut other = text_column("kept");
+        other.table = "u";
+        assert_eq!(spec_use(&[checked()], &other), SpecUse::Skips);
+        let mut int = text_column("kept");
+        int.type_oid = INT4;
+        assert_eq!(spec_use(&[checked()], &int), SpecUse::Reads);
+    }
 }

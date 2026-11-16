@@ -431,14 +431,41 @@ fn write_datums(db: &mut Db) {
     db.run("UPDATE $S.v SET t = t || 'z', late = 8 WHERE id % 4 = 1");
 }
 
-/// The layout of `datums.v` and its enum's labels.
+/// The layout of `datums.v` and its enum's labels, every live column
+/// read: one the spec skips is only stepped over.
 fn datums_layouts(dsn: &Dsn) -> Layouts {
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql).unwrap();
+    let mut columns = Vec::new();
+    for name in [
+        "id",
+        "a",
+        "b",
+        "flag",
+        "n",
+        "whole",
+        "free",
+        "t",
+        "v",
+        "c",
+        "ts",
+        "tz",
+        "mood",
+        "p",
+        "label",
+        "l",
+        "z",
+        "late",
+        "late_null",
+        "late_text",
+        "late_at",
+    ] {
+        columns.push(id(name));
+    }
     let checked = Checked {
         name: id("v"),
         schema: id("datums"),
         table_name: id("v"),
-        columns: Vec::new(),
+        columns,
         types: Vec::new(),
         enums: Vec::new(),
     };
