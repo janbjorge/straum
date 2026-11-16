@@ -4,8 +4,8 @@
 //! and the text that error shows.
 
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Identifier, JoinError,
-    Key, Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, JoinError, Key,
+    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -104,7 +104,7 @@ fn names_resolve_to_by_keys_and_attributes() {
     for missing in ["r", "id", "nope", "b", "n"] {
         assert_eq!(view.resolve(&id(missing)), None, "{missing}");
     }
-    let keys: Vec<&Identifier> = view.keys().collect();
+    let keys = view.keys();
     assert_eq!(keys, [&id("a"), &id("z_id"), &id("name")]);
 }
 
@@ -128,7 +128,7 @@ fn columns_and_rollup_key() {
         ));
     }
     assert_eq!(attributes, ["r.name AS name"]);
-    assert_eq!(view.rollup_key().count(), 3);
+    assert_eq!(view.rollup_key().len(), 3);
 }
 
 /// A via column adds a part to the rollup key unless a `by` key reads the

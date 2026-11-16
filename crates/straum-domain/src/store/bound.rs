@@ -134,8 +134,8 @@ impl Bound {
         Some(Bound {
             rollup: Rollup::bound(fact),
             refs,
-            width: columns.len() + fact.attributes().count(),
-            by_parts: fact.by_parts().count(),
+            width: columns.len() + fact.attributes().len(),
+            by_parts: fact.by_parts().len(),
         })
     }
 

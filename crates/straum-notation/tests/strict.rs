@@ -42,7 +42,7 @@ fn check(cases: &[(&str, &str, &str)]) {
 fn the_canon_parses() {
     let spec = parse(CANON).unwrap();
     let orders = spec.fact("orders").unwrap();
-    let keys: Vec<String> = orders.keys().map(ToString::to_string).collect();
+    let keys: Vec<String> = orders.keys().into_iter().map(ToString::to_string).collect();
     assert_eq!(keys, ["status", "customer_id", "shipped", "country"]);
     assert_eq!(orders.refs[0].alias.as_str(), "customers");
     assert_eq!(spec.dim("customers").unwrap().table.schema.as_str(), "shop");

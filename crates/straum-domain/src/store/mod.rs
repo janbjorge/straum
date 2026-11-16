@@ -218,7 +218,7 @@ fn dim_index(spec: &Spec, name: &str) -> Option<DimIndex> {
 /// The part of a fact's keyed rollup key that `part` is.
 fn key_part_of(fact: &Fact, part: KeyPart<'_>) -> PartIndex {
     let mut found = None;
-    for (position, key) in fact.rollup_key().enumerate() {
+    for (position, key) in fact.rollup_key().into_iter().enumerate() {
         if key == part {
             found = Some(PartIndex(position));
             break;
@@ -234,7 +234,7 @@ fn bound_part_of(fact: &Fact, name: &Identifier) -> PartIndex {
     match fact.resolve(name).expect(CHECKED) {
         Key::ByKey(by) => {
             let mut found = None;
-            for (position, part) in fact.by_parts().enumerate() {
+            for (position, part) in fact.by_parts().into_iter().enumerate() {
                 if part == by.key_part() {
                     found = Some(PartIndex(position));
                     break;
@@ -243,9 +243,9 @@ fn bound_part_of(fact: &Fact, name: &Identifier) -> PartIndex {
             found.expect(CHECKED)
         }
         Key::Attribute(reference, attribute) => {
-            let by_parts = fact.by_parts().count();
+            let by_parts = fact.by_parts().len();
             let mut found = None;
-            for (position, (other, read)) in fact.attributes().enumerate() {
+            for (position, (other, read)) in fact.attributes().into_iter().enumerate() {
                 if other.alias == reference.alias && read.name == attribute.name {
                     found = Some(PartIndex(by_parts + position));
                     break;

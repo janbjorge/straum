@@ -187,7 +187,7 @@ impl Rollup {
     /// projections.
     pub(crate) fn new(fact: &Fact) -> Rollup {
         let columns = fact.columns();
-        let parts: Vec<KeyPart<'_>> = fact.rollup_key().collect();
+        let parts = fact.rollup_key();
         let key_columns = coded(&columns, &parts);
         Rollup::build(fact, columns, key_columns)
     }
@@ -198,7 +198,7 @@ impl Rollup {
     /// column of that name comes first, so the measure inputs find theirs.
     pub(crate) fn bound(fact: &Fact) -> Rollup {
         let mut columns = fact.columns();
-        let parts: Vec<KeyPart<'_>> = fact.by_parts().collect();
+        let parts = fact.by_parts();
         let mut key_columns = coded(&columns, &parts);
         for (_, attribute) in fact.attributes() {
             key_columns.push(Coded::Value(ColumnIndex(columns.len())));

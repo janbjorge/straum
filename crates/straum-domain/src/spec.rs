@@ -283,10 +283,8 @@ pub enum KeyPart<'a> {
 impl Fact {
     /// The `by` keys, then every ref's fact-side via columns in ref
     /// order, each part once, then the time bucket.
-    // An iterator, as callers count, number or walk the parts; the parts
-    // borrow the fact's names.
-    pub fn rollup_key(&self) -> impl Iterator<Item = KeyPart<'_>> {
-        let mut parts: Vec<KeyPart<'_>> = self.by_parts().collect();
+    pub fn rollup_key(&self) -> Vec<KeyPart<'_>> {
+        let mut parts = self.by_parts();
         for column in self.fact_vias() {
             let part = KeyPart::Column(column);
             if !parts.contains(&part) {
@@ -294,12 +292,11 @@ impl Fact {
             }
         }
         parts.push(KeyPart::Bucket);
-        parts.into_iter()
+        parts
     }
 
     /// The `by` keys' parts, each once.
-    // An iterator for the same reason as `rollup_key`.
-    pub(crate) fn by_parts(&self) -> impl Iterator<Item = KeyPart<'_>> {
+    pub(crate) fn by_parts(&self) -> Vec<KeyPart<'_>> {
         let mut parts: Vec<KeyPart<'_>> = Vec::new();
         for by in &self.by_keys {
             let part = by.key_part();
@@ -307,7 +304,7 @@ impl Fact {
                 parts.push(part);
             }
         }
-        parts.into_iter()
+        parts
     }
 
     /// Whether every ref joins on fact columns, none through another dim.
@@ -326,13 +323,12 @@ impl Fact {
     /// `by` key is. Only then are the cells finer than the `by` keys, and
     /// cells keyed by the dim columns fewer (ADR-0042).
     pub fn vias_add_parts(&self) -> bool {
-        self.rollup_key().count() > self.by_parts().count() + 1
+        self.rollup_key().len() > self.by_parts().len() + 1
     }
 
     /// The fact columns the refs join on, in ref order, a column as often
     /// as it is joined on.
-    // Borrows the names, as `Dim::columns` does.
-    pub fn fact_vias(&self) -> impl Iterator<Item = &Identifier> {
+    pub fn fact_vias(&self) -> Vec<&Identifier> {
         let mut columns = Vec::new();
         for join in &self.refs {
             for via in &join.via {
@@ -341,19 +337,18 @@ impl Fact {
                 }
             }
         }
-        columns.into_iter()
+        columns
     }
 
     /// Every ref's attributes, each with its ref, in ref order.
-    // Borrows the refs, as `Dim::columns` does.
-    pub fn attributes(&self) -> impl Iterator<Item = (&Ref, &Attribute)> {
+    pub fn attributes(&self) -> Vec<(&Ref, &Attribute)> {
         let mut attributes = Vec::new();
         for join in &self.refs {
             for attribute in &join.reads {
                 attributes.push((join, attribute));
             }
         }
-        attributes.into_iter()
+        attributes
     }
 
     /// The columns a row of this fact is read from, in order: the time
@@ -408,8 +403,7 @@ impl Fact {
     }
 
     /// Every name an ask may group or filter by, keys then attributes.
-    // Borrows the names, as `Dim::columns` does.
-    pub fn keys(&self) -> impl Iterator<Item = &Identifier> {
+    pub fn keys(&self) -> Vec<&Identifier> {
         let mut names = Vec::new();
         for by in &self.by_keys {
             names.push(by.name());
@@ -419,7 +413,7 @@ impl Fact {
                 names.push(&attribute.name);
             }
         }
-        names.into_iter()
+        names
     }
 }
 
