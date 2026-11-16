@@ -1,9 +1,8 @@
 # Design
 
-[How Straum works](how-it-works.md) is the model in the guide's
-words. This page is the same model for contributors: who takes part,
-what each use case does, how the crates depend on each other, what
-the code holds true, and which decision shaped what. A name in code
+This page names the code behind [How Straum works](how-it-works.md):
+who takes part, what each use case does, how the crates depend on each
+other and what the code holds true. A name in code
 font, such as `Writer::start`, is the type or function that holds a
 rule, under `crates/`; the [glossary](glossary.md) gives each name
 its type in the code.
@@ -95,36 +94,28 @@ Any error is a **Failure**, and the next step is a start over. The
 load fills a new store outside the lock, so asks never wait on
 PostgreSQL; they answer 503 until step 5.
 
-With `--wal physical`, step 2 differs (ADR-0008):
+With `--wal physical`, step 2 differs (ADR-0008);
+[The physical stream](how-it-works.md#the-physical-stream) says why:
 
 1. Read the catalog on a plain connection and check it.
-2. Create a temporary physical slot; it reserves WAL from the last
-   checkpoint's redo point. A checkpoint in progress may set that past
-   the WAL flushed, so wait for `pg_current_wal_flush_lsn()` to reach
-   it: the server streams only flushed WAL. Read each spec table's **Layout**
-   (`physical::read_layouts`): its file, its attributes, dropped ones too,
-   and its enums' labels by OID. After the slot, so a rewrite between
-   the two is in the WAL read. Start the stream thread at once, with
-   a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes into
+2. Create a temporary physical slot and wait for
+   `pg_current_wal_flush_lsn()` to reach its redo point. Read each spec
+   table's **Layout** (`physical::read_layouts`) after the slot, so a
+   rewrite between the two is in the WAL read. Start the stream thread
+   with a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes into
    records, `Heap` keeps the pages, `Transactions` holds changes by
    xid, `Publisher` turns commits into pgoutput messages for the same
    `Decoder`.
-3. Try `pg_log_standby_snapshot()`, then wait until the stream is at its
-   **Consistent point**: past the first `RUNNING_XACTS` and every
-   transaction it names.
-4. Begin the repeatable-read transaction, read `pg_current_snapshot()`
-   and the WAL position, check the catalog again, and hand the snapshot
-   to the stream thread (`Stream::see`). Commits it saw are dropped.
-   L is the LSN before the first commit it didn't see. PostgreSQL logs
-   a commit before snapshots see it, and waits for synchronous standbys
-   in between, so a snapshot may miss a commit the stream dropped as
-   before its start. The thread then answers `Sight::Blind`, and Straum
-   rolls back and takes another.
+3. Try `pg_log_standby_snapshot()`, then wait for the **Consistent
+   point**: past the first `RUNNING_XACTS` and every transaction it
+   names.
+4. Begin the repeatable-read transaction, read `pg_current_snapshot()`,
+   check the catalog again and hand the snapshot to the stream thread
+   (`Stream::see`). A snapshot that misses a commit the stream dropped
+   gets `Sight::Blind`, and Straum takes another.
 
-The thread reads on through the load, so the walsender never waits on
-a reply. The pure parts, `wal/` and the pipeline, read no socket: a
-table's layout read again after DDL, with its enums' labels, comes in
-through a closure.
+The pure parts, `wal/` and the pipeline, read no socket: a layout read
+again after DDL comes in through a closure.
 
 ## The store
 
@@ -200,12 +191,8 @@ Steps 2 to 4 repeat for every level.
    **Following** to the commit's LSN and time.
 5. Forget the sealed buckets of a truncated fact in the spill.
 
-A change to a dim a view reads moves its bound cells: each keyed cell
-whose join columns name the changed key leaves the bound cells it was
-in and goes into the ones the dim gives it now.
-
-The stream thread reads ahead of the writer, up to 64 commits, and
-answers keepalives while the writer is busy (`StreamThread`).
+The stream thread (`StreamThread`) reads ahead of the writer, as
+[Following](how-it-works.md#following) says.
 
 ## Answering an ask
 
@@ -222,17 +209,12 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
 4. Without a **Following**, 503 not ready.
 5. Get each sealed bucket from the spill and thaw it against the
    store; a bucket that can't be read is 500.
-6. `Store::ask_with`: read the cells of the buckets in the range, the
-   widest the view keeps that fit and narrower ones at the ends
-   (`Rollup::cover`). A key the ask names is in the cell key or is a
-   dim's column: while the view's bound cells hold, a dim column is a
-   part of their key, else it is read from the dim's projection
-   through the join id in the cell key, as the dim is now, and a cell
-   whose join keeps no row is passed over. Add each cell to its group,
-   and to each measure whose filter holds; filters name only parts of
-   the cell key, so a cell counts whole or not at all. Keep the groups
-   whose measures meet every `HAVING` comparison, exactly, a null
-   meeting none. Sort rows by key.
+6. `Store::ask_with`: read the cells of the buckets in the range
+   (`Rollup::cover`). A dim column is part of the bound cells' key
+   while they hold, else read from the dim's projection through the
+   join id in the cell key; a cell whose join keeps no row is passed
+   over. Then add, filter and sort as
+   [Answering an ask](how-it-works.md#answering-an-ask) says.
 7. Answer with `as_of` from the **Lag** and the applied LSN in the
    `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
    plain text for an ask sent with `Accept: text/plain`.
@@ -419,27 +401,8 @@ cells.*
 ## Which decision shaped what
 
 The reasoning and the tradeoffs are in the
-[ADRs](https://github.com/janbjorge/straum/tree/main/docs/adr); this
-maps each part of the model to the records that settled it.
-
-| Part of the model                              | ADRs                   |
-| ---------------------------------------------- | ---------------------- |
-| Cells only, no rows, projections beside them   | 0002, 0030             |
-| Crates inward, `Source` and `Spill` as ports   | 0003, 0033             |
-| Spec as a `CREATE VIEW` subset, one spelling   | 0004, 0005, 0028, 0029 |
-| Ask as parameterised Straum SQL                | 0006                   |
-| `Answered`: `as_of` in the body, LSN in a header | 0007, 0020           |
-| One `Store` behind one `RwLock`, `App` clones  | 0009                   |
-| Own replication client, temporary slot, one port for load and stream | 0010, 0012, 0022 |
-| Old row on every update and delete, dims too   | 0014, 0031             |
-| `Failure` and the start-over loop              | 0015                   |
-| Rollup key, cell states, levels per width, `None` bucket | 0016, 0017, 0019, 0028, 0041 |
-| Refs bound at ask time, bound cells beside     | 0030, 0038, 0042, 0056 |
-| Sealed buckets, `date_bin` width only          | 0033, 0034, 0035       |
-| `timestamp` as wall clock, enums as labels     | 0018, 0037             |
-| tokio only in `straum-http`                    | 0008                   |
-| `/status`, `/views` and text answers for people | 0023, 0039            |
-| `straum shell`, a view's rows, views as JSON   | 0040                   |
+[ADRs](https://github.com/janbjorge/straum/tree/main/docs/adr), one per
+subject; their index says which record covers which part of the model.
 
 The PostgreSQL mechanics behind the load, the apply and the slot, with
 their citations, are in
