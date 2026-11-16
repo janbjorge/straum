@@ -732,6 +732,33 @@ mod tests {
         }
     }
 
+    /// `bytes` in whole gibibytes, as the help writes a default.
+    fn gibibytes(bytes: u64) -> String {
+        format!("{}Gi", bytes >> 30)
+    }
+
+    /// Each default the help shows is the one the code fills in.
+    #[test]
+    fn help_names_each_default() {
+        let run = Name::Run.help();
+        for default in [
+            format!("({LISTEN})"),
+            format!("({PUBLICATION})"),
+            format!("({})", LIMITS.max_lag.as_secs()),
+            format!("({};", gibibytes(LIMITS.max_retained_wal)),
+            format!("({MAX_TRANSACTION_ROWS})"),
+            format!("({})", gibibytes(MAX_PAGE_MEMORY as u64)),
+        ] {
+            assert!(run.contains(&default), "run {default}");
+        }
+        let plan = Name::Plan.help();
+        assert!(plan.contains(&format!("({PUBLICATION})")));
+        assert!(plan.contains(&format!("else {ROLE})")));
+        for name in [Name::Status, Name::Views, Name::Ask, Name::Shell] {
+            assert!(name.help().contains(&format!("({URL})")), "{name:?}");
+        }
+    }
+
     fn usage(line: &str) -> String {
         match command(&args(line)) {
             Err(Usage::Wrong { error, .. }) => error.to_string(),
