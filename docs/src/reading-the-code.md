@@ -72,8 +72,6 @@ it, `bound` is the value itself.
 **`if let` and `match`.** `if let Some(dim) = self.dim_index(table)`
 runs its block only when there is a value. `match` picks one arm per
 case of an enum, and the compiler refuses a `match` that forgets one.
-Several tests can share one `if`: `if let Ok(key) = key && let
-Ok(value) = value` runs its block only when both hold.
 `matches!(value, Pattern)` is `true` when the value has that shape.
 
 **Errors kept in a list: `Reported`.** The Straum SQL walker in
@@ -117,15 +115,6 @@ test counts allocations on, such as `Rollup::cover`; elsewhere it
 returns a `Vec`. `Entries` in `value_counts/` is an iterator written
 out as a struct, `impl Iterator for Entries` its `next`.
 
-**Closures.** `|cell, group, count| partials[..] += count` is a
-function without a name, written where it is passed. The code binds
-none to a `let`. A few stay where a named function won't do:
-`Counts::each` hands each count to one because a loop calling
-`Counts::get` per cell measured half again slower, and
-`thread::scope(|scope| ..)` runs the wider widths of a load on
-threads of their own. `move` before a closure makes it keep copies
-of what it uses rather than borrow them.
-
 **`Cow`: borrowed or owned.** `Cow<'_, Datum>` holds either a
 borrowed value or one of its own. A rollup key part reads a column's
 value in place, and only a null-ness key makes a new `Datum`, so no
@@ -153,8 +142,7 @@ only where callers really pass different types.
 
 **Generics: `<T>`.** `Writer<S>` is a writer over any source `S`. The
 binary uses `Writer<Postgres>`; tests use a fake source. A generic is
-kept only where two types really fill it. A parameter `error: impl
-fmt::Display` is the short form: any type that can be printed.
+kept only where two types really fill it.
 
 **Lifetimes: `'a`.** A name for how long borrowed data lives.
 `Visitor<'de>` in `straum-http`'s `json.rs` reads a request body that
@@ -166,17 +154,15 @@ nothing is copied out of it.
 
 **Closures: `|value| ...`.** A function without a name, written where
 it is used, which may use the names around it. Straum writes one only
-where code is handed over to run later. `thread::spawn(move ||
-run_writer(writer))` runs `run_writer` on a new thread, and `move`
-hands the closure the values it uses. `load::copy` takes one as
-`each: impl FnMut(&[Datum])`, "any function of a batch", and calls it
-on every batch as it comes, so a table never sits in memory whole.
-Everywhere else a `for` loop or a named function does the work.
-
-**`type` and one-field structs.** `type Oid = u32;` gives a number its
-PostgreSQL meaning; it is still a `u32`. `struct TableIndex(usize);` is
-a new type: a `usize` that only fits where a `TableIndex` is asked for,
-read back as `.0`.
+where code is handed over to run later, or where a benchmark measured
+a loop slower. `thread::spawn(move || run_writer(writer))` runs
+`run_writer` on a new thread, and `move` hands the closure the values
+it uses. `load::copy` takes one as `each: impl FnMut(&[Datum])`, "any
+function of a batch", and calls it on every batch as it comes, so a
+table never sits in memory whole. `Counts::each` hands each count to
+one because a loop calling `Counts::get` per cell measured half again
+slower. Everywhere else a `for` loop or a named function does the
+work.
 
 **Threads: `Arc` and `RwLock`.** `App` keeps its state in
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
