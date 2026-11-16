@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use straum_domain::{
     Aggregate, Answer, Ask, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal,
-    Sealed, SealedId, Store, Table, Value,
+    Measure, Sealed, SealedId, Store, Table, Value,
 };
 
 /// `percentile_disc(units / 10^places)` over `column`.
@@ -37,6 +37,31 @@ pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
     let rank = (fraction * values.len() as f64).ceil() as usize;
     match values.get(rank.max(1) - 1) {
         Some(&value) => Value::Int(value),
+        None => Value::Null,
+    }
+}
+
+/// A measure named `name` with no `FILTER`.
+pub fn measure(name: &str, aggregate: Aggregate) -> Measure {
+    Measure {
+        name: id(name),
+        aggregate,
+        filter: vec![],
+    }
+}
+
+/// `value` as an integer cell, `NULL` when there is none.
+pub fn int_or_null(value: Option<i128>) -> Value {
+    match value {
+        Some(value) => Value::Int(value),
+        None => Value::Null,
+    }
+}
+
+/// `value` as a boolean cell, `NULL` when there is none.
+pub fn bool_or_null(value: Option<bool>) -> Value {
+    match value {
+        Some(value) => Value::Bool(value),
         None => Value::Null,
     }
 }

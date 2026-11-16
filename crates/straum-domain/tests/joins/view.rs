@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::common::{condition, dim_row, id, lit, percentile, table};
+use crate::common::{condition, dim_row, id, lit, measure, percentile, table};
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Measure,
     Origin, Ref, RefKind, Spec, Store, Via, Width,
@@ -203,14 +203,6 @@ fn join(kind: RefKind, name: &str, via: Via, attributes: Vec<Attribute>) -> Ref 
             RefKind::Left | RefKind::Inner => attributes,
             RefKind::Semi | RefKind::Anti => vec![],
         },
-    }
-}
-
-fn measure(name: &str, aggregate: Aggregate) -> Measure {
-    Measure {
-        name: id(name),
-        aggregate,
-        filter: vec![],
     }
 }
 

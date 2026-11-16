@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{holds, percentile_disc};
+use crate::common::{bool_or_null, holds, int_or_null, percentile_disc};
 use crate::view::{
     AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
     QUANTITY, TAGS, TIERS,
@@ -246,20 +246,6 @@ fn evens(rows: &[&[Datum]]) -> Vec<bool> {
         }
     }
     evens
-}
-
-fn int_or_null(value: Option<i128>) -> Value {
-    match value {
-        Some(value) => Value::Int(value),
-        None => Value::Null,
-    }
-}
-
-fn bool_or_null(value: Option<bool>) -> Value {
-    match value {
-        Some(value) => Value::Bool(value),
-        None => Value::Null,
-    }
 }
 
 /// The store's answer to `ask` is the reference's over `rows`.

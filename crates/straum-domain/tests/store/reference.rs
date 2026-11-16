@@ -5,7 +5,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{holds, percentile_disc};
+use crate::common::{bool_or_null, holds, int_or_null, percentile_disc};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
@@ -337,18 +337,4 @@ fn bools_in(rows: &[&[Datum]], input: &Identifier) -> Vec<bool> {
         }
     }
     bools
-}
-
-fn int_or_null(found: Option<i128>) -> Value {
-    match found {
-        Some(int) => Value::Int(int),
-        None => Value::Null,
-    }
-}
-
-fn bool_or_null(found: Option<bool>) -> Value {
-    match found {
-        Some(flag) => Value::Bool(flag),
-        None => Value::Null,
-    }
 }

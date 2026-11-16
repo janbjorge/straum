@@ -22,7 +22,7 @@ use straum_domain::{
 
 mod common;
 
-use common::{id, percentile, table};
+use common::{id, measure, percentile, table};
 
 thread_local! {
     /// Allocations this thread has made.
@@ -107,14 +107,6 @@ fn spec(buckets: &[u32]) -> Spec {
 enum Zones {
     Joined,
     Apart,
-}
-
-fn measure(name: &str, aggregate: Aggregate) -> Measure {
-    Measure {
-        name: id(name),
-        aggregate,
-        filter: vec![],
-    }
 }
 
 /// As [`spec`]; with the zones apart, without them.
