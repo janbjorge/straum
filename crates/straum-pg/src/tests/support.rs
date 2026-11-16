@@ -96,9 +96,9 @@ exec docker-entrypoint.sh postgres -c ssl=on \
 "#;
 
 /// PostgreSQL, removed when dropped, with its CA file if it has TLS.
-pub(super) struct PostgresContainer {
-    pub(super) container: Container<GenericImage>,
-    pub(super) dsn: Dsn,
+pub(crate) struct PostgresContainer {
+    pub(crate) container: Container<GenericImage>,
+    pub(crate) dsn: Dsn,
     pub(super) _ca: Option<TempFile>,
 }
 
@@ -137,7 +137,7 @@ impl Drop for TempFile {
 
 /// The PostgreSQL major to test. CI sets `STRAUM_TEST_POSTGRES` to each
 /// major Straum supports.
-pub(super) fn tag() -> String {
+pub(crate) fn tag() -> String {
     let Ok(tag) = std::env::var("STRAUM_TEST_POSTGRES") else {
         return "18".to_owned();
     };
@@ -156,7 +156,7 @@ pub(super) fn postgres_at_replica(tag: &str) -> PostgresContainer {
 }
 
 /// PostgreSQL as `request` starts it, without TLS.
-pub(super) fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
+pub(crate) fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
     let Running { container, port } = start(request);
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     PostgresContainer {
@@ -196,7 +196,7 @@ pub(super) fn postgres_tls() -> PostgresContainer {
 }
 
 /// The postgres image at `tag`, ready once PostgreSQL takes connections.
-pub(super) fn image(tag: &str) -> GenericImage {
+pub(crate) fn image(tag: &str) -> GenericImage {
     GenericImage::new("postgres", tag)
         .with_exposed_port(5432.tcp())
         // The init server says it on stdout, the real one on stderr.

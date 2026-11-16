@@ -12,7 +12,7 @@ mod protocol;
 mod records;
 mod references;
 mod setup;
-mod support;
+pub(crate) mod support;
 mod taxi_month;
 mod tls;
 mod transactions;

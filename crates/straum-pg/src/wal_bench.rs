@@ -9,29 +9,24 @@
 use std::io::Write;
 use std::path::Path;
 use std::process;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use postgres_protocol::message::backend::Message as Backend;
 use straum_app::{Change, Commit, Lsn};
-use testcontainers::core::{IntoContainerPort, WaitFor};
-use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
 
 use crate::catalog::{self, Checked};
-use crate::dsn::Dsn;
 use crate::pgoutput::{self, CopyMessage};
 use crate::physical::read_layouts;
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::{POLL, status_update};
+use crate::tests::support::{PostgresContainer, image, plain, tag};
 use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wal::{Record, Records};
 use crate::wire::{Connection, ConnectionKind, server_error};
 
-const PASSWORD: &str = "straum";
-const READY: &str = "database system is ready to accept connections";
 /// Rows each phase changes.
 const ROWS: usize = 1_000_000;
 /// Rows per transaction, as an application writes them.
@@ -44,8 +39,6 @@ const COLUMNS: &str = "vendor_id, pickup_at, pu_location_id, do_location_id, \
 const MEBIBYTE: f64 = 1_048_576.0;
 /// The reads of each kind, unless `STRAUM_BENCH_RUNS` says.
 const DEFAULT_RUNS: usize = 3;
-/// The PostgreSQL major, unless `STRAUM_TEST_POSTGRES` says.
-const DEFAULT_POSTGRES: &str = "18";
 
 /// A run of the workload: the WAL from `from` to `to`, and how long
 /// PostgreSQL took to write it.
@@ -138,7 +131,7 @@ fn physical_wal_bench() {
         Ok(runs) => runs.parse().expect("STRAUM_BENCH_RUNS is a count"),
         Err(_) => DEFAULT_RUNS,
     };
-    let (container, dsn) = start_postgres();
+    let PostgresContainer { container, dsn, .. } = start_postgres();
     load_month(&root, &container);
     let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
     let mut stream = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
@@ -168,43 +161,20 @@ fn physical_wal_bench() {
 }
 
 /// PostgreSQL in Docker, and how to reach it.
-fn start_postgres() -> (Container<GenericImage>, Dsn) {
-    let major = match std::env::var("STRAUM_TEST_POSTGRES") {
-        Ok(major) => major,
-        Err(_) => DEFAULT_POSTGRES.to_owned(),
-    };
+fn start_postgres() -> PostgresContainer {
     // One redo point, the one taken before the slot, and no autovacuum:
     // every run writes the same kinds of records.
-    let container = GenericImage::new("postgres", &major)
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stdout(READY))
-        .with_wait_for(WaitFor::message_on_stderr(READY))
-        .with_shm_size(1 << 30)
-        .with_cmd([
-            "-c",
-            "wal_level=replica",
-            "-c",
-            "max_wal_size=16GB",
-            "-c",
-            "checkpoint_timeout=1h",
-            "-c",
-            "autovacuum=off",
-        ])
-        .with_env_var("POSTGRES_PASSWORD", PASSWORD)
-        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
-        .start()
-        .expect("Docker runs postgres");
-    let mut port = None;
-    for _ in 0..50 {
-        port = container.get_host_port_ipv4(5432).ok();
-        if port.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let port = port.expect("Docker publishes port 5432");
-    let url = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
-    (container, Dsn::parse(&url).unwrap())
+    let request = image(&tag()).with_shm_size(1 << 30).with_cmd([
+        "-c",
+        "wal_level=replica",
+        "-c",
+        "max_wal_size=16GB",
+        "-c",
+        "checkpoint_timeout=1h",
+        "-c",
+        "autovacuum=off",
+    ]);
+    plain(request)
 }
 
 /// Reads the spec's tables, makes the copy phase's scripts, then takes a
