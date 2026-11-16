@@ -32,8 +32,8 @@ No metrics and no OTLP. Straum writes what people read, as plain text:
 `as_of`, starts and failures); `GET /views` (each view's widths,
 cells, bucket range, typed keys and measures, each dim's rows);
 `GET /views/NAME` (the first 1000 rows of `App::rows_ask`); and `POST
-/ask` with `Accept: text/plain`. `/views` with `Accept:
-application/json` serves programs. The binary prints those bodies:
+/ask` with `Accept: text/plain`. `/status` and `/views` with `Accept:
+application/json` serve programs. The binary prints those bodies:
 `straum status`, `straum views`, `straum ask QUERY [PARAMETER...]`.
 They find Straum at `--url`, else `STRAUM_URL`, else
 `http://127.0.0.1:8080`, as `STRAUM_DSN` stands in for `--dsn-file`.

@@ -14,7 +14,7 @@
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its
 //!   lag bound, else 503 and why. Asks still answer while Straum lags.
 //! - `GET /status`: what Straum has done, in plain text for people; `straum
-//!   status` prints it.
+//!   status` prints it. As JSON to those who accept it.
 //! - `GET /views`: every view and how much of it Straum holds, in plain text
 //!   for people; `straum views` prints it. 503 until every table is loaded.
 //!   With `Accept: application/json` each view's names and range as JSON,

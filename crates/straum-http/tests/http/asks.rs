@@ -164,6 +164,9 @@ fn accept_picks_the_format_and_each_route_its_default() {
         assert_eq!(got, ask, "/ask {accept:?}");
         let got = content_type(server.address, "GET", "/views", accept);
         assert_eq!(got, views, "/views {accept:?}");
+        // /status is for people first, as /views is.
+        let got = content_type(server.address, "GET", "/status", accept);
+        assert_eq!(got, views, "/status {accept:?}");
     }
     server.stop();
 }

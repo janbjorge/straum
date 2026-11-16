@@ -197,6 +197,6 @@ timeout or fall back to `as_of`.
 | `POST /ask` | An ask, as JSON; as a table with `Accept: text/plain`. |
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
-| `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. |
+| `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes`, `max_retained_wal_bytes`, `starts`, `failures` and `last_failure` with its `at` and `error`. What is unknown until every table is loaded is null. |
 | `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names and range of buckets as JSON, which `straum shell` completes from. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, the first 1000, as a table in plain text; 404 for a name no view has. |

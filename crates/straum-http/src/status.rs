@@ -1,13 +1,27 @@
 //! `GET /status` and `GET /readyz`: what Straum has done, in plain text for
 //! people. `routes.rs` takes a `Status` from the app and hands it here;
-//! `write` turns it into the lines `straum status` prints, and `why_not`
-//! into the one reason `/readyz` gives when Straum is not ready.
+//! `write` turns it into the lines `straum status` prints, `json` into the
+//! same facts for a program that sends `Accept: application/json`, and
+//! `why_not` into the one reason `/readyz` gives when Straum is not ready:
+//!
+//! ```json
+//! {"ready": true, "why_not": null, "applied": "16/B374D848",
+//!  "committed": "2024-01-02T00:00:00.123456Z",
+//!  "as_of": "2024-01-02T00:01:00Z", "lag_ms": 1300, "max_lag_ms": 30000,
+//!  "wal_written": "16/C0000000", "wal_retained_bytes": 268435456,
+//!  "max_retained_wal_bytes": 4294967296, "starts": 2, "failures": 1,
+//!  "last_failure": {"at": "2024-01-01T00:00:00Z", "error": "..."}}
+//! ```
+//!
+//! What is unknown until every table is loaded is null, as is a time past
+//! the year 9999, which only a broken clock gives.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use straum_app::{Failure, Status, format_mebibytes};
 
+use crate::json::quoted;
 use crate::time::rfc3339_of;
 
 /// Labels and values line up after this many characters.
@@ -41,6 +55,63 @@ pub(crate) fn write(status: &Status) -> String {
     write_line(&mut out, "failures", &status.failures.to_string());
     write_line(&mut out, "last failure", &last_failure(status));
     out
+}
+
+/// The status as one JSON object.
+pub(crate) fn json(status: &Status) -> Vec<u8> {
+    let mut fields = Vec::new();
+    fields.push(format!("\"ready\":{}", status.ready));
+    fields.push(format!("\"why_not\":{}", text_or_null(why_not(status))));
+    let applied = match status.applied {
+        Some(lsn) => quoted(&lsn.to_string()),
+        None => "null".to_owned(),
+    };
+    fields.push(format!("\"applied\":{applied}"));
+    fields.push(format!("\"committed\":{}", time_or_null(status.committed)));
+    fields.push(format!("\"as_of\":{}", time_or_null(status.as_of)));
+    let lag_ms = match status.lag {
+        Some(lag) => lag.as_millis().to_string(),
+        None => "null".to_owned(),
+    };
+    fields.push(format!("\"lag_ms\":{lag_ms}"));
+    let max_lag_ms = status.limits.max_lag.as_millis();
+    fields.push(format!("\"max_lag_ms\":{max_lag_ms}"));
+    let (written, retained) = match status.wal {
+        Some(wal) => (quoted(&wal.written.to_string()), wal.retained().to_string()),
+        None => ("null".to_owned(), "null".to_owned()),
+    };
+    fields.push(format!("\"wal_written\":{written}"));
+    fields.push(format!("\"wal_retained_bytes\":{retained}"));
+    let max_retained = status.limits.max_retained_wal;
+    fields.push(format!("\"max_retained_wal_bytes\":{max_retained}"));
+    fields.push(format!("\"starts\":{}", status.starts));
+    fields.push(format!("\"failures\":{}", status.failures));
+    let failure = match &status.last_failure {
+        None => "null".to_owned(),
+        Some(Failure { at, error }) => {
+            format!(
+                "{{\"at\":{},\"error\":{}}}",
+                time_or_null(Some(*at)),
+                quoted(error)
+            )
+        }
+    };
+    fields.push(format!("\"last_failure\":{failure}"));
+    format!("{{{}}}\n", fields.join(",")).into_bytes()
+}
+
+fn text_or_null(text: Option<String>) -> String {
+    match text {
+        Some(text) => quoted(&text),
+        None => "null".to_owned(),
+    }
+}
+
+fn time_or_null(time: Option<SystemTime>) -> String {
+    let Some(time) = time else {
+        return "null".to_owned();
+    };
+    text_or_null(rfc3339_of(time))
 }
 
 fn write_line(out: &mut String, label: &str, value: &str) {
@@ -163,6 +234,47 @@ failures:     1
 last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
 "
         );
+    }
+
+    fn json_of(status: &Status) -> serde_json::Value {
+        serde_json::from_slice(&json(status)).unwrap()
+    }
+
+    #[test]
+    fn writes_a_streaming_straum_as_json() {
+        let expected = concat!(
+            r#"{"ready":true,"why_not":null,"applied":"16/B374D848","#,
+            r#""committed":"2024-01-02T00:00:00.123456Z","as_of":"2024-01-02T00:01:00Z","#,
+            r#""lag_ms":1300,"max_lag_ms":30000,"wal_written":"16/C0000000","#,
+            r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296,"#,
+            r#""starts":2,"failures":1,"last_failure":{"at":"2024-01-01T00:00:00Z","#,
+            r#""error":"a change no longer fits trips"}}"#,
+            "\n",
+        );
+        assert_eq!(String::from_utf8(json(&status())).unwrap(), expected);
+    }
+
+    #[test]
+    fn json_says_null_for_what_is_unknown() {
+        let failed = json_of(&failed());
+        assert_eq!(failed["ready"], false);
+        assert_eq!(failed["why_not"], "trips: one\ntrips: two");
+        for unknown in ["applied", "committed", "as_of", "lag_ms"] {
+            assert!(failed[unknown].is_null(), "{unknown}");
+        }
+        assert!(failed["wal_written"].is_null());
+        assert!(failed["wal_retained_bytes"].is_null());
+        assert_eq!(failed["last_failure"]["error"], "trips: one\ntrips: two");
+        let clean = Status {
+            last_failure: None,
+            ..status()
+        };
+        assert!(json_of(&clean)["last_failure"].is_null());
+        let broken_clock = Status {
+            as_of: Some(UNIX_EPOCH + Duration::from_secs(400_000_000_000)),
+            ..status()
+        };
+        assert!(json_of(&broken_clock)["as_of"].is_null());
     }
 
     #[test]

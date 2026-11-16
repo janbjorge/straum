@@ -105,7 +105,7 @@ pub(crate) async fn handle(
         }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => get_readyz(&app),
-        (&Method::GET, "/status") => text(StatusCode::OK, status::write(&app.status())),
+        (&Method::GET, "/status") => get_status(&app, Format::of(accept, Format::Text)),
         (&Method::GET, "/views") => get_views(&app, Format::of(accept, Format::Text)),
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
@@ -275,6 +275,14 @@ fn timing_entry(phase: &Phase) -> String {
     const MILLISECONDS_PER_SECOND: f64 = 1e3;
     let took_ms = phase.took.as_secs_f64() * MILLISECONDS_PER_SECOND;
     format!("{};dur={took_ms:.3}", phase.name)
+}
+
+fn get_status(app: &App, format: Format) -> Reply {
+    let status = app.status();
+    match format {
+        Format::Text => text(StatusCode::OK, status::write(&status)),
+        Format::Json => respond(StatusCode::OK, JSON, status::json(&status)),
+    }
 }
 
 fn get_readyz(app: &App) -> Reply {
