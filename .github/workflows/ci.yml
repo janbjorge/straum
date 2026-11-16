@@ -51,14 +51,19 @@ jobs:
           toolchain: ${{ env.RUST }}
       - run: python3 scripts/check-layers.py
 
+  # The workspace tests on each major. 18, the tests' default, runs them
+  # under coverage instead, so no major runs them twice.
   test:
+    name: test (${{ matrix.postgres }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 19rc1 until PostgreSQL 19 ships. 18, the tests' default, runs in
-        # coverage.
-        postgres: ["17", "19rc1"]
+        # 19rc1 until PostgreSQL 19 ships.
+        postgres: ["17", "18", "19rc1"]
+        include:
+          - postgres: "18"
+            coverage: true
     env:
       STRAUM_TEST_POSTGRES: ${{ matrix.postgres }}
     steps:
@@ -66,7 +71,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST }}
-      - run: cargo test --workspace
+          components: ${{ matrix.coverage && 'llvm-tools-preview' || '' }}
+      - if: ${{ !matrix.coverage }}
+        run: cargo test --workspace
+      - if: ${{ matrix.coverage }}
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - if: ${{ matrix.coverage }}
+        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
   # The physical stream against PostgreSQL on every supported major: random
   # workloads, compared byte for byte with a logical slot and, under
@@ -91,17 +102,6 @@ jobs:
           cargo test -p straum-pg --
           tests::commits_what_logical_decoding_commits_at_random
           tests::follows_random_workloads_from_a_random_start
-
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: ${{ env.RUST }}
-          components: llvm-tools-preview
-      - run: cargo install cargo-llvm-cov --version 0.9.1 --locked
-      - run: cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
   chart:
     runs-on: ubuntu-latest
@@ -190,7 +190,7 @@ jobs:
   # index annotations come from the repository's description and license;
   # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
-    needs: [gate, format, lint, architecture, test, correctness, coverage, chart, image]
+    needs: [gate, format, lint, architecture, test, correctness, chart, image]
     if: needs.gate.outputs.publish == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
