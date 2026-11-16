@@ -4,7 +4,7 @@ Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
 and the 265 taxi zones. You need Docker, [uv](https://docs.astral.sh/uv/)
 and `curl`, and the download is 50 MB. Four steps end in an answer.
-Every other page uses these tables and this spec.
+The command line and performance pages use these tables too.
 
 ## 1. Start PostgreSQL with the trips
 
