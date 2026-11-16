@@ -263,10 +263,11 @@ pub(crate) fn slot_name() -> String {
 /// The plain connection, made on first use and after a failure.
 // 'c: the connection returned is the one held in `plain`.
 fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
-    if plain.is_none() {
-        *plain = Some(Connection::connect(dsn, ConnectionKind::Sql)?);
-    }
-    Ok(plain.as_mut().expect("connected just now"))
+    let connection = match plain.take() {
+        Some(connection) => connection,
+        None => Connection::connect(dsn, ConnectionKind::Sql)?,
+    };
+    Ok(plain.insert(connection))
 }
 
 impl Source for Postgres {
