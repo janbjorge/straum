@@ -5,6 +5,11 @@
 prints a command's flags with their defaults. The examples run against
 the [quick start](quick-start.md)'s trips.
 
+`status`, `views`, `ask` and `shell` talk to a running Straum. They find
+it at `--url`, else at the URL in `STRAUM_URL`, else at
+`http://127.0.0.1:8080`. When nothing answers there, the error says so
+and ends with `try: --url URL, or set STRAUM_URL`.
+
 ## straum run
 
 ```text

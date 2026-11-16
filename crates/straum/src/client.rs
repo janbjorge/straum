@@ -45,7 +45,9 @@ impl Display for ClientError {
                 write!(formatter, "--url takes http://HOST:PORT, not {url:?}")
             }
             ClientError::Unreachable { url, wanted, error } => {
-                write!(formatter, "asking {url} for {}: {error}", wanted.as_str())
+                let wanted = wanted.as_str();
+                write!(formatter, "asking {url} for {wanted}: {error}")?;
+                formatter.write_str("\ntry: --url URL, or set STRAUM_URL")
             }
             ClientError::Refused {
                 url,
@@ -360,7 +362,15 @@ mod tests {
         // Nothing listens on port 1.
         let error = rows("http://127.0.0.1:1", "trips").unwrap_err();
         let asking = "asking http://127.0.0.1:1 for its rows: ";
-        assert!(error.to_string().starts_with(asking), "{error}");
+        let said = error.to_string();
+        assert!(said.starts_with(asking), "{said}");
+        assert!(
+            said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
+            "{said}"
+        );
+        // A server that answers, even with a refusal, needs no such hint.
+        let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
+        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
     }
 
     #[test]
@@ -399,7 +409,15 @@ mod tests {
         // Nothing listens on port 1.
         let error = ask("http://127.0.0.1:1", "SELECT", &args("")).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for an answer: ";
-        assert!(error.to_string().starts_with(asking), "{error}");
+        let said = error.to_string();
+        assert!(said.starts_with(asking), "{said}");
+        assert!(
+            said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
+            "{said}"
+        );
+        // A server that answers, even with a refusal, needs no such hint.
+        let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
+        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
     }
 
     #[test]
@@ -468,6 +486,14 @@ mod tests {
         // Nothing listens on port 1.
         let error = status("http://127.0.0.1:1").unwrap_err();
         let asking = "asking http://127.0.0.1:1 for its status: ";
-        assert!(error.to_string().starts_with(asking), "{error}");
+        let said = error.to_string();
+        assert!(said.starts_with(asking), "{said}");
+        assert!(
+            said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
+            "{said}"
+        );
+        // A server that answers, even with a refusal, needs no such hint.
+        let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
+        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
     }
 }

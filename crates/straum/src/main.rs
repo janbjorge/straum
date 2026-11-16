@@ -33,7 +33,7 @@ use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, Postgres};
 
 use crate::client::ClientError;
-use crate::command_line::{Command, Plan, ROLE, Run, command};
+use crate::command_line::{Command, Environment, Plan, ROLE, Run, URL_VARIABLE, command};
 use crate::help::HELP;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
@@ -111,7 +111,10 @@ impl From<DsnError> for Failure {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let command = match command(&args) {
+    let environment = Environment {
+        url: env::var(URL_VARIABLE).ok(),
+    };
+    let command = match command(&args, &environment) {
         Ok(command) => command,
         Err(usage) => {
             eprintln!("{usage}");

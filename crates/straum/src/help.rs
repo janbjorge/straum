@@ -71,7 +71,7 @@ Prints what the Straum at URL has done: ready or why not, how far behind
 PostgreSQL, the WAL retained for it, its starts and its failures. In a pod:
 kubectl exec deployment/straum -- /straum status
 
-  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+  --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-status
 ";
@@ -84,7 +84,7 @@ Prints every view of the Straum at URL: its bucket widths, the cells and
 the range of buckets it holds, its keys with their types and its measures.
 Then each dim and its rows.
 
-  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+  --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-views
 ";
@@ -112,7 +112,7 @@ examples:
       GROUP BY region' \\
       purchase 2026-11-13T00:00:00Z 2026-11-14T00:00:00Z
 
-  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+  --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
 ";
@@ -134,7 +134,7 @@ and the bounds of the buckets held.
   \\?                    these commands
   \\q                    leave
 
-  --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
+  --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-shell
 ";
@@ -146,7 +146,7 @@ mod tests {
 
     use super::*;
     use crate::client::parameter;
-    use crate::command_line::{Command, command};
+    use crate::command_line::{Command, Environment, command};
 
     const README: &str = include_str!("../../../README.md");
 
@@ -209,7 +209,7 @@ mod tests {
         }
         let Ok(Command::Ask {
             query, parameters, ..
-        }) = command(rest)
+        }) = command(rest, &Environment::default())
         else {
             return Err(format!("not an ask: {words:?}"));
         };

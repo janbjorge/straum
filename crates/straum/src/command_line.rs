@@ -21,6 +21,8 @@ const PUBLICATION: &str = "straum";
 pub(crate) const ROLE: &str = "straum";
 /// Where the commands that talk to a running Straum find it unless told.
 const URL: &str = "http://127.0.0.1:8080";
+/// The environment variable that names the URL when `--url` doesn't.
+pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
 const FOUR_GIBIBYTES: u64 = 4 << 30;
 const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
@@ -231,15 +233,32 @@ impl Display for UsageError {
     }
 }
 
+/// What the environment sets that a command line may leave out.
+#[derive(Debug, Default)]
+pub(crate) struct Environment {
+    /// `STRAUM_URL`, if set.
+    pub(crate) url: Option<String>,
+}
+
+impl Environment {
+    /// The URL a command uses without `--url`: the variable, unless empty.
+    fn url(&self) -> &str {
+        match self.url.as_deref() {
+            Some(url) if !url.is_empty() => url,
+            _ => URL,
+        }
+    }
+}
+
 /// The command the words after `straum` name, or why Straum can't run
 /// them.
-pub(crate) fn command(args: &[String]) -> Result<Command, Usage> {
+pub(crate) fn command(args: &[String], environment: &Environment) -> Result<Command, Usage> {
     let Some((first, rest)) = args.split_first() else {
         return Err(Usage::NoCommand);
     };
     let name = Name::parse(first);
     let parsed = match name {
-        Some(name) => flags(name, rest),
+        Some(name) => flags(name, rest, environment.url()),
         None => help_or_version(first, rest),
     };
     match parsed {
@@ -297,7 +316,7 @@ fn query_at(rest: &[String]) -> usize {
     at.min(rest.len())
 }
 
-fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
+fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> {
     // The query and its parameters are read as written, so a parameter
     // may be `-h` or a negative number. Everywhere else, -h anywhere
     // asks for help.
@@ -306,32 +325,32 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
     }
     match name {
         Name::Status => Ok(Command::Status {
-            url: Flags::read(name, rest)?.url(),
+            url: Flags::read(name, rest)?.url(url),
         }),
         Name::Views => Ok(Command::Views {
-            url: Flags::read(name, rest)?.url(),
+            url: Flags::read(name, rest)?.url(url),
         }),
         Name::Shell => Ok(Command::Shell {
-            url: Flags::read(name, rest)?.url(),
+            url: Flags::read(name, rest)?.url(url),
         }),
         Name::Ask => {
             let (rest, query) = rest.split_at(query_at(rest));
             if asks_for_help(rest) {
                 return Ok(Command::Help(Some(name)));
             }
-            ask_command(&Flags::read(name, rest)?, query)
+            ask_command(&Flags::read(name, rest)?, query, url)
         }
         Name::Plan => plan_command(&Flags::read(name, rest)?),
         Name::Run => run_command(&Flags::read(name, rest)?),
     }
 }
 
-fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
+fn ask_command(flags: &Flags, query: &[String], url: &str) -> Result<Command, UsageError> {
     let Some((query, parameters)) = query.split_first() else {
         return Err(UsageError::AskNeedsQuery);
     };
     Ok(Command::Ask {
-        url: flags.url(),
+        url: flags.url(url),
         query: query.clone(),
         parameters: parameters.to_vec(),
     })
@@ -485,8 +504,9 @@ impl Flags {
         self.text_or("--publication", PUBLICATION)
     }
 
-    fn url(&self) -> String {
-        self.text_or("--url", URL)
+    /// `--url`, else `default`, which the environment may have set.
+    fn url(&self, default: &str) -> String {
+        self.text_or("--url", default)
     }
 
     fn replication(&self) -> Result<Replication, UsageError> {
@@ -570,12 +590,45 @@ fn bytes(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command line read with no `STRAUM_URL` set.
+    fn command_of(args: &[String]) -> Result<Command, Usage> {
+        command(args, &Environment::default())
+    }
+
+    fn with_url(url: &str) -> Environment {
+        Environment {
+            url: Some(url.to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_url_is_the_flag_else_straum_url_else_the_default() {
+        let line = args("status --url http://flag:1");
+        let set = with_url("http://variable:2");
+        let flag = command(&line, &set);
+        assert_eq!(
+            flag,
+            Ok(Command::Status {
+                url: "http://flag:1".into()
+            })
+        );
+        let variable = command(&args("ask SELECT"), &set);
+        let Ok(Command::Ask { url, .. }) = variable else {
+            panic!("{variable:?}");
+        };
+        assert_eq!(url, "http://variable:2");
+        let empty = command(&args("views"), &with_url(""));
+        assert_eq!(empty, Ok(Command::Views { url: URL.into() }));
+        let unset = command(&args("shell"), &Environment::default());
+        assert_eq!(unset, Ok(Command::Shell { url: URL.into() }));
+    }
     use crate::testing::args;
 
     #[test]
     fn reads_run_and_plan() {
         assert_eq!(
-            command(&args("run s.sql")),
+            command_of(&args("run s.sql")),
             Ok(Command::Run(Run {
                 spec: "s.sql".into(),
                 listen: LISTEN.into(),
@@ -587,7 +640,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            command(&args(
+            command_of(&args(
                 "run --dsn-file d --listen 127.0.0.1:9 s --publication p \
                  --max-lag 5 --max-retained-wal 512Mi --max-transaction-rows 2500 --wal physical \
                  --max-page-memory 256Mi"
@@ -612,7 +665,7 @@ mod tests {
     #[test]
     fn reads_plan() {
         assert_eq!(
-            command(&args("plan s")),
+            command_of(&args("plan s")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 replication: Replication::Logical,
@@ -622,7 +675,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            command(&args("plan --role r s --dsn-file d --wal physical")),
+            command_of(&args("plan --role r s --dsn-file d --wal physical")),
             Ok(Command::Plan(Plan {
                 spec: "s".into(),
                 replication: Replication::Physical {
@@ -638,27 +691,27 @@ mod tests {
     #[test]
     fn reads_the_commands_that_talk_to_a_running_straum() {
         assert_eq!(
-            command(&args("status")),
+            command_of(&args("status")),
             Ok(Command::Status { url: URL.into() })
         );
         assert_eq!(
-            command(&args("status --url http://straum:9")),
+            command_of(&args("status --url http://straum:9")),
             Ok(Command::Status {
                 url: "http://straum:9".into()
             })
         );
         assert_eq!(
-            command(&args("views --url http://straum:9")),
+            command_of(&args("views --url http://straum:9")),
             Ok(Command::Views {
                 url: "http://straum:9".into()
             })
         );
         assert_eq!(
-            command(&args("shell")),
+            command_of(&args("shell")),
             Ok(Command::Shell { url: URL.into() })
         );
         assert_eq!(
-            command(&args("ask SELECT")),
+            command_of(&args("ask SELECT")),
             Ok(Command::Ask {
                 url: URL.into(),
                 query: "SELECT".into(),
@@ -667,7 +720,7 @@ mod tests {
         );
         // What follows the query is a parameter, whatever it looks like.
         assert_eq!(
-            command(&args("ask --url http://straum:9 SELECT -h --url -7")),
+            command_of(&args("ask --url http://straum:9 SELECT -h --url -7")),
             Ok(Command::Ask {
                 url: "http://straum:9".into(),
                 query: "SELECT".into(),
@@ -679,10 +732,10 @@ mod tests {
     #[test]
     fn reads_calls_for_help_and_the_version() {
         for help in ["help", "--help", "-h"] {
-            assert_eq!(command(&args(help)), Ok(Command::Help(None)));
+            assert_eq!(command_of(&args(help)), Ok(Command::Help(None)));
         }
         for version in ["version", "--version", "-V"] {
-            assert_eq!(command(&args(version)), Ok(Command::Version));
+            assert_eq!(command_of(&args(version)), Ok(Command::Version));
         }
         for (line, name) in [
             ("help run", Name::Run),
@@ -695,7 +748,7 @@ mod tests {
             ("ask --url u -h SELECT", Name::Ask),
         ] {
             assert_eq!(
-                command(&args(line)),
+                command_of(&args(line)),
                 Ok(Command::Help(Some(name))),
                 "{line}"
             );
@@ -755,12 +808,13 @@ mod tests {
         assert!(plan.contains(&format!("({PUBLICATION})")));
         assert!(plan.contains(&format!("else {ROLE})")));
         for name in [Name::Status, Name::Views, Name::Ask, Name::Shell] {
-            assert!(name.help().contains(&format!("({URL})")), "{name:?}");
+            let default = format!("({URL_VARIABLE}, else {URL})");
+            assert!(name.help().contains(&default), "{name:?}");
         }
     }
 
     fn usage(line: &str) -> String {
-        match command(&args(line)) {
+        match command_of(&args(line)) {
             Err(Usage::Wrong { error, .. }) => error.to_string(),
             other => panic!("{line}: {other:?}"),
         }
@@ -768,7 +822,7 @@ mod tests {
 
     #[test]
     fn failures_say_what_to_try() {
-        assert_eq!(command(&[]), Err(Usage::NoCommand));
+        assert_eq!(command_of(&[]), Err(Usage::NoCommand));
         assert_eq!(Usage::NoCommand.to_string(), HELP.trim_end());
         let cases = [
             (
@@ -789,7 +843,7 @@ mod tests {
             ),
         ];
         for (line, printed) in cases {
-            let usage = command(&args(line)).unwrap_err();
+            let usage = command_of(&args(line)).unwrap_err();
             assert_eq!(usage.to_string(), printed, "{line}");
         }
     }

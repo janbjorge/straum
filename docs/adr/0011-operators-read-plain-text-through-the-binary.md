@@ -35,6 +35,8 @@ cells, bucket range, typed keys and measures, each dim's rows);
 /ask` with `Accept: text/plain`. `/views` with `Accept:
 application/json` serves programs. The binary prints those bodies:
 `straum status`, `straum views`, `straum ask QUERY [PARAMETER...]`.
+They find Straum at `--url`, else `STRAUM_URL`, else
+`http://127.0.0.1:8080`, as `STRAUM_DSN` stands in for `--dsn-file`.
 
 `straum ask` reads a parameter's type from its text: an integer,
 `true` or `false`, a number, else a string; single quotes make a
