@@ -387,14 +387,14 @@ fn plan_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageErr
 }
 
 fn run_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageError> {
-    let is_physical = matches!(flags.replication()?, Replication::Physical { .. });
+    let replication = flags.replication()?;
+    let is_physical = matches!(replication, Replication::Physical { .. });
     if flags.value("--max-page-memory").is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
     let Some(spec) = spec else {
         return Err(UsageError::NeedsSpec(Name::Run));
     };
-    let replication = flags.replication()?;
     let max_lag = flags.parsed(
         "--max-lag",
         LIMITS.max_lag,
