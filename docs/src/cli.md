@@ -23,7 +23,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#following) instead of applying it. |
-| `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it starts over. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 
 It logs to stderr, one line per event. SIGTERM or SIGINT stops it: it
 stops accepting, finishes the asks in flight and exits, and PostgreSQL

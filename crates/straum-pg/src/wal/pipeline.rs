@@ -83,6 +83,9 @@ impl Pipeline {
     }
 
     /// The bytes of rows held.
+    // Leaves out the reader's buffer, `Vec` slack and the maps in `Heap`
+    // and `Transactions`, which never shrink; `--max-page-memory`'s docs
+    // say so.
     pub(crate) fn bytes(&self) -> usize {
         self.heap.bytes() + self.transactions.bytes() + self.held_bytes
     }
