@@ -97,8 +97,8 @@ fn read_view(view: &Value) -> Option<View> {
         name: read_text(view.get("name")?)?,
         keys,
         measures,
-        from: read_optional_text(view, "from"),
-        to: read_optional_text(view, "to"),
+        from: view.get("from").and_then(read_text),
+        to: view.get("to").and_then(read_text),
     })
 }
 
@@ -116,11 +116,6 @@ fn read_key(key: &Value) -> Option<Key> {
 fn read_text(value: &Value) -> Option<String> {
     let text = value.as_str()?;
     Some(text.to_owned())
-}
-
-/// The text under `field`, or `None` when it is missing or null.
-fn read_optional_text(object: &Value, field: &str) -> Option<String> {
-    read_text(object.get(field)?)
 }
 
 /// What Tab offers: each candidate replaces the line from `start`, a byte
