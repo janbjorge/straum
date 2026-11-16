@@ -22,6 +22,10 @@ use crate::tls::{self, TlsStream};
 use crate::unexpected::Unexpected;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the server may go silent while a connection starts: TLS,
+/// startup and sign-in. A server that takes the socket and then says
+/// nothing would otherwise hang a start, the watchdog's own among them.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
 /// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
@@ -87,6 +91,30 @@ impl Connection {
     pub(crate) fn connect(dsn: &Dsn, kind: ConnectionKind) -> Result<Connection, Error> {
         let tcp = connect_tcp(dsn)?;
         tcp.set_nodelay(true)?;
+        tcp.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        tcp.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        let connection = match Connection::start(tcp, dsn, kind) {
+            Ok(connection) => connection,
+            Err(Error::Io(error)) if timed_out(&error) => {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "PostgreSQL sent nothing for {} s while the connection started",
+                        HANDSHAKE_TIMEOUT.as_secs()
+                    ),
+                )));
+            }
+            Err(other) => return Err(other),
+        };
+        // A replication connection waits on the server for as long as
+        // the database is quiet.
+        connection.socket.tcp().set_read_timeout(None)?;
+        connection.socket.tcp().set_write_timeout(None)?;
+        Ok(connection)
+    }
+
+    /// TLS if the DSN asks for it, then startup and sign-in on `tcp`.
+    fn start(tcp: TcpStream, dsn: &Dsn, kind: ConnectionKind) -> Result<Connection, Error> {
         let socket = match &dsn.tls {
             Tls::Off => Socket::Plain(tcp),
             Tls::Verify { name, root_cert } => {
@@ -256,12 +284,7 @@ impl Connection {
     pub(crate) fn try_read(&mut self) -> Result<Option<Message>, Error> {
         if !self.whole()? {
             match self.fill() {
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
+                Err(error) if timed_out(&error) => {
                     return Ok(None);
                 }
                 other => other?,
@@ -365,6 +388,15 @@ impl Closer {
 /// The tag byte plus the length, which counts itself.
 fn frame_length(header: Header) -> usize {
     1 + usize::try_from(header.len()).expect("Header::parse rejects lengths below 4")
+}
+
+/// Whether a read or write gave up at its timeout; platforms say so in
+/// either of two ways.
+fn timed_out(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// The first of the host's addresses that answers, or the last failure.

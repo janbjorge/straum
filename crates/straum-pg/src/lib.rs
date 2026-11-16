@@ -3,7 +3,8 @@
 //! setup (`catalog.rs`), loads each table with one `COPY` (`load.rs`), then
 //! hands a thread the stream (`stream.rs`), which turns pgoutput
 //! (`pgoutput.rs`, `decode.rs`) or WAL records (`physical.rs`, `wal/`) into
-//! commits. `wire.rs` is the connection under all of it.
+//! commits, while `watchdog.rs` keeps the slot from holding too much WAL.
+//! `wire.rs` is the connection under all of it.
 
 #![forbid(unsafe_code)]
 
@@ -24,6 +25,7 @@ mod tls;
 mod unexpected;
 mod value;
 mod wal;
+mod watchdog;
 // An ignored benchmark, never run by the tests that measure coverage;
 // cargo-llvm-cov sets `coverage`.
 #[cfg(all(test, not(coverage)))]

@@ -97,7 +97,13 @@ fn stops_past_the_page_memory() {
     let small = Replication::Physical {
         max_page_memory: SMALL_PAGE_MEMORY_BYTES,
     };
-    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, small);
+    let mut source = Postgres::new(
+        db.dsn.clone(),
+        &db.name,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        small,
+    );
     source.open(&spec).unwrap();
     db.run(
         "INSERT INTO $S.trips SELECT i, now(), 'cab', 1, 1.5, md5(i::text), 1
@@ -282,7 +288,13 @@ fn a_prepared_transaction_holds_the_start_back() {
     let xid = db.rows("SELECT transaction FROM pg_prepared_xacts WHERE gid = 'held'")[0][0]
         .clone()
         .unwrap();
-    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
+    let mut source = Postgres::new(
+        db.dsn.clone(),
+        &db.name,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        PHYSICAL,
+    );
     source.consistent_wait = Duration::from_secs(2);
     let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS), source);
     let error = writer.step().unwrap_err().to_string();
@@ -334,7 +346,13 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
         assert!(Instant::now() < deadline, "the commit never waited");
         thread::sleep(Duration::from_millis(20));
     }
-    let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
+    let mut source = Postgres::new(
+        db.dsn.clone(),
+        &db.name,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        PHYSICAL,
+    );
     source.consistent_wait = Duration::from_secs(2);
     let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS), source);
     let error = writer.step().unwrap_err().to_string();
@@ -640,7 +658,13 @@ fn says_what_a_physical_start_waits_for() {
     // which logs no RUNNING_XACTS, and the background writer logs the
     // first 15 seconds in. An online checkpoint would log one.
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
-    let mut source = Postgres::new(Dsn::parse(&dsn).unwrap(), "waits", ROW_LIMIT, PHYSICAL);
+    let mut source = Postgres::new(
+        Dsn::parse(&dsn).unwrap(),
+        "waits",
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        PHYSICAL,
+    );
     source.consistent_wait = Duration::from_secs(2);
     let error = source.open(&spec).unwrap_err().to_string();
     assert!(

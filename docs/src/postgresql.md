@@ -122,6 +122,11 @@ view usage: join a joins account_id (an integer) to id (text); they must read al
 - WAL, until Straum confirms it, which it does every second. If the server
   holds more than `--max-retained-wal` for the slot (4 GiB by default),
   Straum starts over, so a Straum that can't keep up can't fill the disk.
+  A watchdog on a connection of its own checks this every second, during
+  loads too, and has PostgreSQL end the slot's session, which drops the
+  slot, even if the rest of Straum is stuck. A watchdog that can't read
+  the slot for 10 seconds, for whatever reason, ends the stream too. Many managed services
+  fix `max_slot_wal_keep_size` at -1, so this is the only limit there.
 - Nothing after Straum is gone: the slot is temporary, so PostgreSQL drops
   it when the connection closes, crashes and deleted pods included.
   Temporary slots don't move to a standby either, so after a failover
@@ -129,8 +134,10 @@ view usage: join a joins account_id (an integer) to id (text); they must read al
 - A snapshot during each load, which holds back vacuum for the whole
   database and makes `ALTER TABLE` on its tables wait; Straum ends it
   right after the last table loads.
-- One plain connection beside the replication connection, for the WAL
-  position every second. Nothing else is read after the load.
+- Plain connections beside the replication connection: one for the WAL
+  position every second and one for the watchdog, and with `--wal
+  physical` one for the load and one for table layouts. Nothing else is
+  read after the load. A role `CONNECTION LIMIT` needs room for them all.
 - WAL decoding per replication connection. Run one Straum per database; a
   second needs another slot and load.
 

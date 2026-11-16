@@ -6,7 +6,7 @@
 use std::fmt;
 use std::io;
 
-use straum_app::Lsn;
+use straum_app::{Lsn, format_mebibytes};
 use straum_domain::RowError;
 
 use crate::pgoutput::DecodeError;
@@ -15,6 +15,7 @@ use crate::tls::TlsProblem;
 use crate::unexpected::Unexpected;
 use crate::value::ValueError;
 use crate::wal::WalError;
+use crate::watchdog::Verdict;
 
 /// Whatever stops straum-pg. Straum starts over from a new stream after one.
 #[derive(Debug)]
@@ -54,6 +55,9 @@ pub(crate) enum Error {
         held: usize,
         limit: usize,
     },
+    /// The watchdog ended the stream: the slot held more WAL than
+    /// `--max-retained-wal` allows, or the watchdog couldn't read it.
+    Watchdog(Verdict),
     /// The thread reading the stream has stopped.
     Stopped,
 }
@@ -111,6 +115,19 @@ impl fmt::Display for Error {
                 formatter,
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
                  limit of {limit}; Straum starts over"
+            ),
+            Error::Watchdog(Verdict::Retained { retained, limit }) => write!(
+                formatter,
+                "PostgreSQL held {} of WAL for Straum's slot, past the --max-retained-wal \
+                 limit of {}; the watchdog ended the slot's session, and Straum starts over",
+                format_mebibytes(*retained),
+                format_mebibytes(*limit)
+            ),
+            Error::Watchdog(Verdict::Unwatched { unwatched }) => write!(
+                formatter,
+                "the watchdog couldn't read Straum's slot for {} s, so it ended the stream \
+                 rather than leave the slot's WAL unwatched; Straum starts over",
+                unwatched.as_secs()
             ),
             Error::Stopped => formatter.write_str("the replication stream stopped"),
         }

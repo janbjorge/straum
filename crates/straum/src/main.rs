@@ -288,7 +288,13 @@ fn run(
     let app = App::new(spec, limits);
     let writer = Writer::new(
         app.clone(),
-        Postgres::new(dsn, &publication, max_transaction_rows, replication),
+        Postgres::new(
+            dsn,
+            &publication,
+            max_transaction_rows,
+            limits.max_retained_wal,
+            replication,
+        ),
     );
     thread::Builder::new()
         .name("straum-writer".into())

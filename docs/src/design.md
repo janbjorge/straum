@@ -185,7 +185,14 @@ Steps 2 to 4 repeat for every level.
    **Following** to the commit's LSN and time.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
-[Following](how-it-works.md#following) says.
+[Following](how-it-works.md#following) says. The watchdog
+(`watchdog.rs`) is two threads, from the slot's making to its end. Its
+reader reads what the slot holds every second on a connection of its
+own; past `--max-retained-wal` it has PostgreSQL end the slot's session
+and shuts the stream's sockets, the load's too, so a writer stuck under
+its lock can't keep the slot. Its clock touches no network: after 10
+seconds without a reading, whatever the reader is stuck on, it shuts
+the same sockets.
 
 ## Answering an ask
 

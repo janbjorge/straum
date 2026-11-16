@@ -15,7 +15,7 @@ use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::source::{Postgres, Replication, read_wal};
 use crate::stream::{Reader, Stream};
-use crate::wire::{Connection, ConnectionKind};
+use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
 #[test]
 fn connection_errors() {
@@ -36,6 +36,7 @@ fn sign_in_needs_the_right_password(pg: &PostgresContainer, spec: &Spec) {
         Dsn::parse(&wrong).unwrap(),
         "p",
         ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let error = source.open(spec).unwrap_err().to_string();
@@ -45,10 +46,16 @@ fn sign_in_needs_the_right_password(pg: &PostgresContainer, spec: &Spec) {
     );
 
     let bare = Dsn::parse(&pg.dsn.to_string()).unwrap();
-    let error = Postgres::new(bare, "p", ROW_LIMIT, Replication::Logical)
-        .open(spec)
-        .unwrap_err()
-        .to_string();
+    let error = Postgres::new(
+        bare,
+        "p",
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        Replication::Logical,
+    )
+    .open(spec)
+    .unwrap_err()
+    .to_string();
     assert_eq!(
         error,
         "PostgreSQL sent a password request; the DSN has none"
@@ -70,10 +77,16 @@ fn a_failed_query_keeps_the_connection(db: &mut Db) {
 
 fn nothing_listens_on_port_1(spec: &Spec) {
     let closed = Dsn::parse("postgres://straum@127.0.0.1:1/straum").unwrap();
-    let error = Postgres::new(closed, "p", ROW_LIMIT, Replication::Logical)
-        .open(spec)
-        .unwrap_err()
-        .to_string();
+    let error = Postgres::new(
+        closed,
+        "p",
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        Replication::Logical,
+    )
+    .open(spec)
+    .unwrap_err()
+    .to_string();
     assert!(error.starts_with("connection to PostgreSQL: "), "{error}");
 }
 
@@ -138,6 +151,37 @@ fn sign_in_errors() {
     chatty.extend(message(b'S', b"TimeZone\0UTC\0"));
     chatty.extend(signed_in());
     assert!(connect(vec![now(chatty)], ConnectionKind::Replication).is_ok());
+}
+
+/// A server that takes the socket and then says nothing fails the start
+/// at the handshake timeout, not never.
+#[test]
+fn a_silent_server_fails_the_start() {
+    let silence = HANDSHAKE_TIMEOUT * 6;
+    let clock = Instant::now();
+    let error = connect(vec![later(silence, signed_in())], ConnectionKind::Sql)
+        .err()
+        .unwrap();
+    assert!(clock.elapsed() < silence, "the start waited out the server");
+    assert_eq!(
+        error.to_string(),
+        "connection to PostgreSQL: PostgreSQL sent nothing for 10 s while the connection started"
+    );
+}
+
+/// Once started, a connection waits on a quiet server past the handshake
+/// timeout, as a replication connection on a quiet database must.
+#[test]
+fn a_started_connection_waits_past_the_handshake_timeout() {
+    let mut done = message(b'C', b"SELECT 1\0");
+    done.extend(message(b'Z', b"I"));
+    let quiet = HANDSHAKE_TIMEOUT + Duration::from_secs(1);
+    let mut connection = connect(
+        vec![now(signed_in()), later(quiet, done)],
+        ConnectionKind::Sql,
+    )
+    .unwrap();
+    connection.execute("SELECT 1").unwrap();
 }
 
 #[test]

@@ -6,6 +6,7 @@
 //! `pg_attribute`, with the enum labels `catalog.rs` reads.
 
 use std::collections::HashMap;
+use std::io;
 use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,7 +27,7 @@ use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::tuple::{Attribute, Kind};
 use crate::wal::{Records, RelationFile};
-use crate::wire::{Connection, ConnectionKind, first_row_value};
+use crate::wire::{Closer, Connection, ConnectionKind, first_row_value};
 
 /// How long a start waits for PostgreSQL to flush the WAL up to the redo
 /// point, which a checkpoint in progress sets where WAL is still being
@@ -87,6 +88,11 @@ impl Physical {
             };
             self.records.feed(chunk.start, &chunk.bytes)?;
         }
+    }
+
+    /// Shuts the replication connection, which owns the slot.
+    pub(crate) fn closer(&self) -> io::Result<Closer> {
+        self.connection.closer()
     }
 
     /// The slot's name.

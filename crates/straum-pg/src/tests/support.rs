@@ -34,7 +34,7 @@ pub(super) const PASSWORD: &str = "straum";
 pub(super) const LONG: Duration = Duration::from_secs(10);
 /// The `--max-retained-wal` the tests run under: 4 GiB, more than any test
 /// writes.
-const MAX_RETAINED_WAL_BYTES: u64 = 4 << 30;
+pub(super) const MAX_RETAINED_WAL_BYTES: u64 = 4 << 30;
 /// The limits every test's app runs under.
 pub(super) const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
@@ -315,6 +315,7 @@ impl Db {
             self.dsn.clone(),
             &self.name,
             ROW_LIMIT,
+            MAX_RETAINED_WAL_BYTES,
             Replication::Logical,
         )
     }
@@ -326,7 +327,13 @@ impl Db {
 
     /// A writer that reads the physical WAL (ADR-0008).
     pub(super) fn physical_writer(&self, spec: &str) -> Writer<Postgres> {
-        let source = Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT, PHYSICAL);
+        let source = Postgres::new(
+            self.dsn.clone(),
+            &self.name,
+            ROW_LIMIT,
+            MAX_RETAINED_WAL_BYTES,
+            PHYSICAL,
+        );
         Writer::new(App::new(self.spec(spec), LIMITS), source)
     }
 }

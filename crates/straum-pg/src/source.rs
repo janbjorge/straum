@@ -27,6 +27,7 @@ use crate::stream::{Reader, Stream};
 use crate::unexpected::Unexpected;
 use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
+use crate::watchdog::{SlotGuard, UNWATCHED, Watching};
 use crate::wire::{Connection, ConnectionKind, first_row_value};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
@@ -62,6 +63,9 @@ pub struct Postgres {
     replication: Replication,
     /// How long a physical start waits for a consistent point.
     pub(crate) consistent_wait: Duration,
+    /// Keeps the slot from holding more WAL than `--max-retained-wal`,
+    /// whatever the stream and the writer are doing.
+    pub(crate) guard: SlotGuard,
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
@@ -100,6 +104,7 @@ impl Postgres {
         dsn: Dsn,
         publication: &str,
         max_transaction_rows: usize,
+        max_retained_wal: u64,
         replication: Replication,
     ) -> Postgres {
         Postgres {
@@ -108,6 +113,10 @@ impl Postgres {
             max_transaction_rows,
             replication,
             consistent_wait: CONSISTENT_WAIT,
+            guard: SlotGuard::new(Watching {
+                max_retained_wal,
+                unwatched: UNWATCHED,
+            }),
             state: State::Closed,
             slot: String::new(),
             plain: None,
@@ -117,7 +126,12 @@ impl Postgres {
 
 /// A new temporary slot, and a transaction on its connection that sees
 /// the database as of the slot's consistent point.
-fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error> {
+fn snapshot(
+    dsn: &Dsn,
+    spec: &Spec,
+    publication: &str,
+    guard: &mut SlotGuard,
+) -> Result<Snapshot, Error> {
     let mut connection = Connection::connect(dsn, ConnectionKind::Replication)?;
     connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = slot_name();
@@ -133,6 +147,9 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
             return Err(error);
         }
     };
+    // The loads run on this connection, so nothing reads the slot until
+    // they end; the watchdog bounds the WAL it holds meanwhile.
+    guard.watch(dsn, &slot, vec![connection.closer()?])?;
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
@@ -157,6 +174,7 @@ fn physical_snapshot(
     limit: usize,
     max_page_memory: usize,
     wait: Duration,
+    guard: &mut SlotGuard,
 ) -> Result<Snapshot, Error> {
     let physical = Replication::Physical { max_page_memory };
     let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
@@ -165,6 +183,11 @@ fn physical_snapshot(
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
     let (stream, start) = Physical::start(dsn)?;
+    guard.watch(
+        dsn,
+        stream.slot(),
+        vec![stream.closer()?, connection.closer()?],
+    )?;
     let layouts = physical::read_layouts(&mut connection, &checked)?;
     let slot = stream.slot().to_owned();
     let pipeline = Pipeline::new(
@@ -273,10 +296,11 @@ fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Con
 impl Source for Postgres {
     fn open(&mut self, spec: &Spec) -> Result<Lsn, SourceError> {
         // The old stream goes first, and its slot with it.
+        self.guard.stop();
         self.state = State::Closed;
         self.plain = None;
-        let snapshot = match self.replication {
-            Replication::Logical => snapshot(&self.dsn, spec, &self.publication)?,
+        let opened = match self.replication {
+            Replication::Logical => snapshot(&self.dsn, spec, &self.publication, &mut self.guard),
             Replication::Physical { max_page_memory } => physical_snapshot(
                 &self.dsn,
                 spec,
@@ -284,7 +308,16 @@ impl Source for Postgres {
                 self.max_transaction_rows,
                 max_page_memory,
                 self.consistent_wait,
-            )?,
+                &mut self.guard,
+            ),
+        };
+        let snapshot = match opened {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let error = self.guard.blame(error);
+                self.guard.stop();
+                return Err(error.into());
+            }
         };
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
@@ -296,23 +329,17 @@ impl Source for Postgres {
         let State::Loading(snapshot) = &mut self.state else {
             return Err(Error::Stopped.into());
         };
-        load::table(&mut snapshot.connection, snapshot.tables.get(table), store)?;
-        loaded(snapshot, table)
+        match load_table(snapshot, table, store) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.guard.blame(error).into()),
+        }
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
-        self.state = match mem::replace(&mut self.state, State::Closed) {
-            State::Loading(snapshot) => State::Streaming(stream(
-                snapshot,
-                &self.publication,
-                self.max_transaction_rows,
-            )?),
-            other => other,
-        };
-        let State::Streaming(stream) = &mut self.state else {
-            return Err(Error::Stopped.into());
-        };
-        Ok(stream.next(wait)?)
+        match self.next(wait) {
+            Ok(commit) => Ok(commit),
+            Err(error) => Err(self.guard.blame(error).into()),
+        }
     }
 
     fn wal(&mut self) -> Result<Wal, SourceError> {
@@ -330,8 +357,32 @@ impl Source for Postgres {
     }
 }
 
+impl Postgres {
+    /// The next commit, streaming once the last table is loaded.
+    fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
+        self.state = match mem::replace(&mut self.state, State::Closed) {
+            State::Loading(snapshot) => State::Streaming(stream(
+                snapshot,
+                &self.publication,
+                self.max_transaction_rows,
+            )?),
+            other => other,
+        };
+        let State::Streaming(stream) = &mut self.state else {
+            return Err(Error::Stopped);
+        };
+        stream.next(wait)
+    }
+}
+
+/// Loads `table` in the snapshot.
+fn load_table(snapshot: &mut Snapshot, table: &Identifier, store: &mut Store) -> Result<(), Error> {
+    load::table(&mut snapshot.connection, snapshot.tables.get(table), store)?;
+    loaded(snapshot, table)
+}
+
 /// The table is loaded; the snapshot's transaction ends with the last one.
-fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), SourceError> {
+fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), Error> {
     snapshot.unloaded.retain(|unloaded| unloaded != table);
     if snapshot.unloaded.is_empty() {
         snapshot.connection.execute("COMMIT")?;

@@ -62,6 +62,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
         Dsn::parse(&dsn).unwrap(),
         "plan",
         ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let mut writer = Writer::new(App::new(spec, LIMITS), pg);
@@ -565,6 +566,7 @@ fn dim_role_problems(pg: &PostgresContainer) {
         Dsn::parse(&dsn).unwrap(),
         name,
         ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     assert_eq!(
@@ -776,6 +778,7 @@ fn the_role_must_read_every_table(db: &mut Db, pg: &PostgresContainer, spec: &st
         Dsn::parse(&dsn).unwrap(),
         "access",
         ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
     let error = reader.open(spec).unwrap_err().to_string();

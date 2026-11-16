@@ -21,7 +21,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--publication NAME` | The publication `straum plan` made. |
 | `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
-| `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. A watchdog checks it every second, during loads too, and ends the slot's session past it. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#following) instead of applying it. |
 | `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it starts over. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 

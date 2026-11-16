@@ -199,6 +199,9 @@ the end are open.
   reads the WAL position each second.
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
   slot ([straum status](cli.md#straum-status)).
+- **Watchdog** (`SlotGuard`, `watchdog.rs`): the thread that ends the
+  stream when the slot holds more than `--max-retained-wal` or it can't
+  read the slot ([What Straum costs the server](postgresql.md#what-straum-costs-the-server)).
 - **Status** (`Status`): what `GET /status` and `straum status` show;
   not the stream's status report (`StreamThread::report`).
 - **Held** (`App::held`): what `GET /views` and `straum views` show
