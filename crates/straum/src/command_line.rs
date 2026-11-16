@@ -321,45 +321,9 @@ fn flags(name: Name, rest: &[String]) -> Result<Command, UsageError> {
             }
             ask_command(&Flags::read(name, rest)?, query)
         }
-        Name::Plan => spec_command(name, rest, plan_command),
-        Name::Run => spec_command(name, rest, run_command),
+        Name::Plan => plan_command(&Flags::read(name, rest)?),
+        Name::Run => run_command(&Flags::read(name, rest)?),
     }
-}
-
-fn spec_command(
-    name: Name,
-    rest: &[String],
-    command: fn(&Flags, Option<String>) -> Result<Command, UsageError>,
-) -> Result<Command, UsageError> {
-    let (words, spec) = split_spec(name, rest)?;
-    command(&Flags::read(name, &words)?, spec)
-}
-
-/// A flag takes the next word, so the spec is whichever word is left.
-fn split_spec(name: Name, rest: &[String]) -> Result<(Vec<String>, Option<String>), UsageError> {
-    let mut words = Vec::new();
-    let mut spec = None;
-    let mut rest = rest.iter();
-    while let Some(word) = rest.next() {
-        if word.starts_with('-') {
-            if !name.flags().contains(&word.as_str()) {
-                return Err(UsageError::FlagNotTaken {
-                    command: name,
-                    flag: word.clone(),
-                });
-            }
-            let Some(value) = rest.next() else {
-                return Err(UsageError::NeedsValue(word.clone()));
-            };
-            words.push(word.clone());
-            words.push(value.clone());
-        } else if spec.is_some() {
-            return Err(UsageError::OneSpec(name));
-        } else {
-            spec = Some(word.clone());
-        }
-    }
-    Ok((words, spec))
 }
 
 fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
@@ -373,8 +337,8 @@ fn ask_command(flags: &Flags, query: &[String]) -> Result<Command, UsageError> {
     })
 }
 
-fn plan_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageError> {
-    let Some(spec) = spec else {
+fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
+    let Some(spec) = flags.spec.clone() else {
         return Err(UsageError::NeedsSpec(Name::Plan));
     };
     Ok(Command::Plan(Plan {
@@ -386,13 +350,13 @@ fn plan_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageErr
     }))
 }
 
-fn run_command(flags: &Flags, spec: Option<String>) -> Result<Command, UsageError> {
+fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     let replication = flags.replication()?;
     let is_physical = matches!(replication, Replication::Physical { .. });
     if flags.value("--max-page-memory").is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
-    let Some(spec) = spec else {
+    let Some(spec) = flags.spec.clone() else {
         return Err(UsageError::NeedsSpec(Name::Run));
     };
     let max_lag = flags.parsed(
@@ -433,16 +397,31 @@ struct Given {
     value: String,
 }
 
-/// The flags on one command's line, each with its value.
+/// The flags on one command's line, each with its value, and the spec
+/// for the commands that take one.
 struct Flags {
     given: Vec<Given>,
+    spec: Option<String>,
 }
 
 impl Flags {
+    /// A flag takes the next word, so for `run` and `plan` the spec is
+    /// whichever word is left.
     fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
-        let mut flags = Flags { given: Vec::new() };
+        let takes_spec = matches!(name, Name::Run | Name::Plan);
+        let mut flags = Flags {
+            given: Vec::new(),
+            spec: None,
+        };
         let mut rest = rest.iter();
         while let Some(flag) = rest.next() {
+            if takes_spec && !flag.starts_with('-') {
+                if flags.spec.is_some() {
+                    return Err(UsageError::OneSpec(name));
+                }
+                flags.spec = Some(flag.clone());
+                continue;
+            }
             if !name.flags().contains(&flag.as_str()) {
                 return Err(UsageError::FlagNotTaken {
                     command: name,
