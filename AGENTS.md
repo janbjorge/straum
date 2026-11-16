@@ -24,9 +24,9 @@ PostgreSQL tests need Docker. `STRAUM_TEST_POSTGRES` picks the major
 `correctness` job runs 50 new ones per major each run. `bench/taxi.py shell` runs Straum against
 a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
 Demo and try-out data is always the taxi trips, never a hand-written
-dataset. In docs the taxi trips stay in the quick start, running and
-benchmark pages; other pages show the smallest view for their point,
-over `public.events AS e` and `public.accounts AS a`.
+dataset. In docs, ADR-0014 says which pages use the taxi trips and
+which the `usage` view over `public.events AS e` and
+`public.accounts AS a`.
 
 - Change under `deploy/`: run `scripts/check-chart.py`. Needs uv,
   helm, the helm-unittest plugin and kubeconform.
@@ -59,7 +59,8 @@ old name, flag, message, default, number. Then check:
 
 - `docs/src/` guide (pages in `SUMMARY.md`): what a user sees or does.
   Spec and ask syntax, error text, flags, endpoints, PostgreSQL setup,
-  limits.
+  limits. ADR-0014 names each fact's home page; write it there and
+  link to it from elsewhere.
 - Design pages, `docs/src/diagrams/`: crates, machines, store, how a
   change moves through them.
 - `docs/src/glossary.md`: term added, renamed or dropped.

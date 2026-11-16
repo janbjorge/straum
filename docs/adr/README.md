@@ -17,6 +17,7 @@ One record per subject; each says what holds today (ADR-0001).
 | [0011](0011-operators-read-plain-text-through-the-binary.md) | DSN, help, status, views, shell |
 | [0012](0012-straum-ships-as-one-image-from-a-release.md) | TLS, image, chart, name, releases |
 | [0013](0013-code-reads-plainly-and-clippy-holds-it-there.md) | Code style, lints, the one `unsafe` |
+| [0014](0014-the-guide-is-one-path-of-fixed-pages.md) | The guide's pages, order and what each owns |
 
 ## Numbers before 2026-11-16
 
