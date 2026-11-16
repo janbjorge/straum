@@ -487,3 +487,105 @@ fn reads_sizes() {
         assert_eq!(bytes(text), Some(expected), "{text}");
     }
 }
+
+/// Pieces a command line is built from: every command and flag, the
+/// shapes values take, and the characters a parser trips on.
+const PIECES: [&str; 30] = [
+    "run",
+    "plan",
+    "status",
+    "views",
+    "ask",
+    "shell",
+    "help",
+    "version",
+    "--url",
+    "--json",
+    "--wal",
+    "--listen",
+    "--max-lag",
+    "--max-retained-wal",
+    "--max-page-memory",
+    "-h",
+    "-V",
+    "--",
+    "-",
+    "=",
+    "",
+    "physical",
+    "4Gi",
+    "0",
+    "-7",
+    "http://x:1",
+    "SELECT",
+    "$1",
+    "é",
+    " ",
+];
+
+/// A small seeded generator, so a failing line comes back on every run.
+struct Words {
+    state: u64,
+}
+
+impl Words {
+    fn next(&mut self) -> u64 {
+        // xorshift64: enough spread for picking pieces, and no dependency.
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        let bound = u64::try_from(bound).expect("a bound fits a u64");
+        usize::try_from(self.next() % bound).expect("below a usize bound")
+    }
+
+    /// One word: a piece, or two joined, as `--url=x` or `-hx`.
+    fn word(&mut self) -> String {
+        let first = PIECES[self.below(PIECES.len())];
+        if self.below(3) > 0 {
+            return first.to_owned();
+        }
+        let second = PIECES[self.below(PIECES.len())];
+        format!("{first}{second}")
+    }
+
+    fn line(&mut self) -> Vec<String> {
+        let length = self.below(7);
+        let mut words = Vec::with_capacity(length);
+        for _ in 0..length {
+            words.push(self.word());
+        }
+        words
+    }
+}
+
+/// Everything a command line reaches: the parse, the error's words, and
+/// the help it may ask for.
+fn read_all_of(words: &[String], environment: &Environment) {
+    match command(words, environment) {
+        Ok(Command::Help(Some(name))) => assert_ne!(name.help(), ""),
+        Ok(_) => {}
+        Err(usage) => assert_ne!(usage.to_string(), ""),
+    }
+}
+
+#[test]
+fn no_command_line_panics() {
+    let mut words = Words {
+        state: 0x9E37_79B9_7F4A_7C15,
+    };
+    for _ in 0..20_000 {
+        let line = words.line();
+        let url = if words.below(2) == 0 {
+            None
+        } else {
+            Some(words.word())
+        };
+        let environment = Environment { url };
+        let read = std::panic::catch_unwind(|| read_all_of(&line, &environment));
+        assert!(read.is_ok(), "panicked on {line:?} with {environment:?}");
+    }
+}
