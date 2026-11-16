@@ -2,7 +2,8 @@
 //! sets up PostgreSQL in Docker, `straum run` loads and follows it as the
 //! role the plan made, and asks over HTTP, `straum ask` and `straum shell`
 //! answer what the view body answers in PostgreSQL. The tests without a
-//! database check help, usage and the errors a person reads.
+//! database check help, usage and the errors a person reads. A script's
+//! view is checked too: `--json`, `STRAUM_URL` and exit 3 while not ready.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -367,6 +368,7 @@ fn serves_asks_from_postgres() {
     status_says_ready(&url);
     let views = views_lists_the_view_and_the_dim(&url);
     ask_prints_a_table_or_says_why_not(&url);
+    scripts_read_json_from_straum_url(&url);
     shell_answers_a_line_at_a_time(&url, &views);
     http_answers_in_json(&pg, &straum);
     follows_changes(&pg, &mut straum);
@@ -434,6 +436,47 @@ van  | null    |     1 | null
              kind is text, so it can't be the integer 7\n"
         )
     );
+}
+
+/// `straum <args>` finding Straum through `STRAUM_URL` alone.
+fn with_url_variable(url: &str, args: &[&str]) -> (Option<i32>, String, String) {
+    output(Command::new(STRAUM).args(args).env("STRAUM_URL", url))
+}
+
+fn json(text: &str) -> serde_json::Value {
+    match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(error) => panic!("{error}: {text}"),
+    }
+}
+
+// What a script reads: `--json`, with Straum found through STRAUM_URL.
+fn scripts_read_json_from_straum_url(url: &str) {
+    let (code, status, _) = with_url_variable(url, &["status", "--json"]);
+    assert_eq!(code, Some(0), "{status}");
+    let status = json(&status);
+    assert_eq!(status["ready"], true, "{status}");
+    assert_eq!(status["starts"], 1, "{status}");
+    assert!(status["lag_ms"].is_u64(), "{status}");
+
+    let (code, views, _) = with_url_variable(url, &["views", "--json"]);
+    assert_eq!(code, Some(0), "{views}");
+    assert_eq!(json(&views)["views"][0]["name"], "trips", "{views}");
+
+    let query = "SELECT kind, borough, trips FROM trips \
+                 WHERE bucket >= $1 AND bucket < $2 GROUP BY kind, borough";
+    let range = ["2024-01-01T00:00:00Z", "2024-01-01T04:00:00Z"];
+    let (code, answer, _) = with_url_variable(url, &["ask", "--json", query, range[0], range[1]]);
+    assert_eq!(code, Some(0), "{answer}");
+    let answer = json(&answer);
+    assert!(answer["as_of"].is_string(), "{answer}");
+    assert_eq!(answer["rows"].as_array().unwrap().len(), 4, "{answer}");
+
+    // Refused: nothing on stdout, the errors as JSON on stderr, exit 1.
+    let (code, stdout, stderr) =
+        with_url_variable(url, &["ask", "--json", "SELECT nope FROM trips"]);
+    assert_eq!((code, stdout.as_str()), (Some(1), ""), "{stderr}");
+    assert!(stderr.contains(r#"{"errors":["#), "{stderr}");
 }
 
 // The same from `straum shell`, a line each, on a pipe.
@@ -528,6 +571,20 @@ fn stops_on_sigterm(pg: &PostgresContainer, straum: Running) {
     }
 }
 
+/// Not ready is exit 3 for every command that asks Straum, so a script
+/// can wait on it; `straum status` still prints why.
+fn not_ready_exits_with_3(url: &str) {
+    let (code, status, stderr) = output(&mut straum(&["status", "--url", url]));
+    assert_eq!(code, Some(3), "{status}{stderr}");
+    assert!(status.starts_with("ready:        no, "), "{status}");
+    assert_eq!(stderr, "straum: not ready\n");
+    let (code, _, stderr) = output(&mut straum(&["views", "--url", url]));
+    assert_eq!(code, Some(3), "{stderr}");
+    let query = "SELECT trips FROM trips WHERE bucket >= $1 AND bucket < $2";
+    let (code, _, stderr) = output(&mut straum(&["ask", "--url", url, query, "0", "3600"]));
+    assert_eq!(code, Some(3), "{stderr}");
+}
+
 #[test]
 fn waits_for_the_setup() {
     let pg = postgres();
@@ -551,6 +608,7 @@ fn waits_for_the_setup() {
         (status, body.as_str()),
         (503, r#"{"errors":["not ready"]}"#)
     );
+    not_ready_exits_with_3(&format!("http://{}", straum.address));
 
     // Once the setup is there, the next try starts.
     pg.psql(&publication[0]);
