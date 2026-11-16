@@ -352,7 +352,7 @@ impl PipelineRead {
         // The workload changes no table: a commit that invalidates one is
         // a statistic or a hint, and the layout stays.
         let layouts = &self.layouts;
-        let mut commits = (self.pipeline.record(record, || Ok(layouts.clone()))).unwrap();
+        let mut commits = (self.pipeline.record(record, |_| Ok(layouts.clone()))).unwrap();
         if self.pipeline.consistency() == Consistency::Consistent
             && let Some(snapshot) = self.snapshot.take()
         {

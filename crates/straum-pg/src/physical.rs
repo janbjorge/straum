@@ -3,7 +3,8 @@
 //! as records (`wal.rs`) and turned into commits (`wal/pipeline.rs`). The
 //! stream carries the whole server's WAL, every database. Also the layouts
 //! query: how each spec table's rows lie on its pages, from `pg_class` and
-//! `pg_attribute`, with the enum labels `catalog.rs` reads.
+//! `pg_attribute`, with the enum labels `catalog.rs` reads. After DDL the
+//! query waits for a snapshot that sees the DDL's commit.
 
 use std::collections::HashMap;
 use std::io;
@@ -19,14 +20,16 @@ use crate::catalog::{self, Checked, VERSION_NUM_PER_MAJOR};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::pgoutput::{Relation, RelationColumn};
-use crate::source::{parse_lsn, slot_name};
+use crate::problem::WaitProblem;
+use crate::source::{parse_lsn, slot_name, waited_for};
 use crate::stream::POLL;
 use crate::unexpected::Unexpected;
 use crate::value::{Oid, read, type_of};
 use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
+use crate::wal::transactions::TransactionSnapshot;
 use crate::wal::tuple::{Attribute, Kind};
-use crate::wal::{Records, RelationFile};
+use crate::wal::{Records, RelationFile, TransactionId};
 use crate::wire::{Closer, Connection, ConnectionKind, first_row_value};
 
 /// How long a start waits for PostgreSQL to flush the WAL up to the redo
@@ -36,6 +39,13 @@ const FLUSH_WAIT: Duration = Duration::from_secs(10);
 
 /// How often a start asks how far PostgreSQL has flushed the WAL.
 const FLUSH_POLL: Duration = Duration::from_millis(10);
+
+/// How long the layouts read after DDL wait for a snapshot that sees it.
+/// Past it the stream ends and Straum starts over, which waits again.
+const DDL_WAIT: Duration = Duration::from_secs(10);
+
+/// How often they take a snapshot again meanwhile.
+const DDL_POLL: Duration = Duration::from_millis(10);
 
 /// A temporary physical slot streaming from its redo point, before the
 /// stream's thread takes it over.
@@ -192,10 +202,9 @@ impl Replay {
         self.records.feed(start, bytes)?;
         let mut commits = Vec::new();
         while let Some(record) = self.records.next_record()? {
-            commits.extend(
-                self.pipeline
-                    .record(record, || read_layouts(&mut self.catalog, &self.checked))?,
-            );
+            commits.extend(self.pipeline.record(record, |xid| {
+                read_layouts_seeing(&mut self.catalog, &self.checked, xid, DDL_WAIT)
+            })?);
             self.read = record.next();
         }
         Ok(commits)
@@ -241,6 +250,38 @@ pub(crate) fn next_chunk(connection: &mut Connection, start: u64) -> Result<Opti
             }
             CopyMessage::Keepalive { reply: false, .. } => {}
         }
+    }
+}
+
+/// The layouts of `checked`'s tables as of a snapshot that sees `xid`, a
+/// transaction that changed them, waiting at most `wait` for one.
+/// PostgreSQL logs a commit before snapshots see it, and waits for
+/// synchronous standbys in between, so the stream may read DDL's commit
+/// while the catalog shows the columns from before it, and the rows
+/// after it have more.
+pub(crate) fn read_layouts_seeing(
+    connection: &mut Connection,
+    checked: &[Checked],
+    xid: TransactionId,
+    wait: Duration,
+) -> Result<Layouts, Error> {
+    let deadline = Instant::now() + wait;
+    loop {
+        connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
+        let taken = connection.rows("SELECT pg_current_snapshot()")?;
+        let snapshot = (first_row_value(&taken, 0).and_then(TransactionSnapshot::parse))
+            .ok_or(Error::Protocol(Unexpected::SnapshotShape))?;
+        if snapshot.sees(xid) {
+            let layouts = read_layouts(connection, checked)?;
+            connection.execute("COMMIT")?;
+            return Ok(layouts);
+        }
+        connection.execute("ROLLBACK")?;
+        if Instant::now() >= deadline {
+            let problem = WaitProblem::InvisibleCommits(vec![xid]);
+            return Err(waited_for(wait.as_secs(), problem));
+        }
+        thread::sleep(DDL_POLL);
     }
 }
 

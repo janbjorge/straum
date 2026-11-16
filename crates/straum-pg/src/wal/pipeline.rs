@@ -3,7 +3,8 @@
 //! changes, `transactions.rs` holds them by transaction, `xact.rs` says
 //! when one ends, and `messages.rs` turns a commit into the messages the
 //! decoder both streams share. Reads no socket and no catalog: a table's
-//! layout, read again after DDL, comes from the caller. Commits wait until
+//! layout, read again after DDL, comes from the caller, as of a snapshot
+//! that sees the DDL's transaction. Commits wait until
 //! the load's snapshot is known, and only those it doesn't see go on: the
 //! load has the rest.
 
@@ -93,11 +94,12 @@ impl Pipeline {
     /// Reads one record. `layouts` reads the tables' layouts again, after
     /// a commit that may have changed them.
     // `impl FnMut`: the caller passes a closure over its own catalog
-    // connection, which this file must not know.
+    // connection, which this file must not know. It gets the xid of the
+    // DDL whose commit the layouts must show.
     pub(crate) fn record(
         &mut self,
         record: &Record,
-        layouts: impl FnMut() -> Result<Layouts, Error>,
+        layouts: impl FnMut(TransactionId) -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
         let commits = self.read(record, layouts)?;
         let held = self.bytes();
@@ -114,7 +116,7 @@ impl Pipeline {
     fn read(
         &mut self,
         record: &Record,
-        mut layouts: impl FnMut() -> Result<Layouts, Error>,
+        mut layouts: impl FnMut(TransactionId) -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
         let changes = self.heap.apply(record)?;
         self.transactions.hold(record.xid, record.lsn, changes);
@@ -127,7 +129,7 @@ impl Pipeline {
         if let xact::Event::Commit(ending) = &event {
             let stale = self.publisher.stale(&ending.invalidated);
             if !stale.is_empty() {
-                let fresh = layouts()?;
+                let fresh = layouts(ending.xid)?;
                 self.publisher.relayout(&stale, fresh);
             }
         }
@@ -216,7 +218,7 @@ impl Pipeline {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     use straum_app::Change;
@@ -355,23 +357,23 @@ mod tests {
         }
     }
 
-    fn no_layouts() -> Result<Layouts, Error> {
+    fn no_layouts(_: TransactionId) -> Result<Layouts, Error> {
         unreachable!("no commit here invalidates a table")
     }
 
-    fn failing_layouts() -> Result<Layouts, Error> {
+    fn failing_layouts(_: TransactionId) -> Result<Layouts, Error> {
         Err(Error::Stopped)
     }
 
-    /// No tables any more, counting the call in `calls`.
-    fn count_no_tables(calls: &Cell<u32>) -> Layouts {
-        calls.set(calls.get() + 1);
+    /// No tables any more, noting in `asked` the xid they must show.
+    fn no_tables_for(asked: &RefCell<Vec<TransactionId>>, xid: TransactionId) -> Layouts {
+        asked.borrow_mut().push(xid);
         Layouts::default()
     }
 
-    /// The table as it was, counting the call in `calls`.
-    fn count_the_table(calls: &Cell<u32>) -> Layouts {
-        calls.set(calls.get() + 1);
+    /// The table as it was, noting in `asked` the xid it must show.
+    fn the_table_for(asked: &RefCell<Vec<TransactionId>>, xid: TransactionId) -> Layouts {
+        asked.borrow_mut().push(xid);
         Layouts {
             tables: vec![table()],
             labels: HashMap::new(),
@@ -520,10 +522,11 @@ mod tests {
         see_all(&mut pipeline, "1:1:").unwrap();
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         let ddl = ddl(&mut wal, 100);
-        let calls = Cell::new(0);
-        // The table is gone now: its tables are unfit.
-        let commits = (pipeline.record(&ddl, || Ok(count_no_tables(&calls)))).unwrap();
-        assert_eq!(calls.get(), 1);
+        let asked = RefCell::new(Vec::new());
+        // The table is gone now: its tables are unfit. The layouts must
+        // show the DDL's own transaction.
+        let commits = (pipeline.record(&ddl, |xid| Ok(no_tables_for(&asked, xid)))).unwrap();
+        assert_eq!(*asked.borrow(), [100]);
         let unfit = Change::Unfit {
             table: Identifier::new("t").unwrap(),
         };
@@ -554,19 +557,19 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        let calls = Cell::new(0);
+        let asked = RefCell::new(Vec::new());
         // Before any RUNNING_XACTS: not whole, yet laid out again.
         let early = ddl(&mut wal, 50);
-        let commits = pipeline.record(&early, || Ok(count_the_table(&calls)));
+        let commits = pipeline.record(&early, |xid| Ok(the_table_for(&asked, xid)));
         assert_eq!(commits.unwrap(), []);
-        assert_eq!(calls.get(), 1);
+        assert_eq!(*asked.borrow(), [50]);
         pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
         see_all(&mut pipeline, "100:102:").unwrap();
         // Seen by the load: dropped, yet laid out again.
         let seen = ddl(&mut wal, 101);
-        let commits = pipeline.record(&seen, || Ok(count_the_table(&calls)));
+        let commits = pipeline.record(&seen, |xid| Ok(the_table_for(&asked, xid)));
         assert_eq!(commits.unwrap(), []);
-        assert_eq!(calls.get(), 2);
+        assert_eq!(*asked.borrow(), [50, 101]);
     }
 
     /// A transaction past the limit stops the stream only if the load

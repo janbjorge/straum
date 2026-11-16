@@ -112,7 +112,9 @@ With `--wal physical`, step 2 differs (ADR-0008);
    gets `Sight::Blind`, and Straum takes another.
 
 The pure parts, `wal/` and the pipeline, read no socket: a layout read
-again after DDL comes in through a closure.
+again after DDL comes in through a closure, given the DDL's xid.
+`physical::read_layouts_seeing` reads it in a snapshot that sees that
+xid.
 
 ## The store
 

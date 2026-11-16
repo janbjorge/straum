@@ -160,7 +160,10 @@ messages the logical slot sends, so one decoder serves both:
   tables, and starts over past `--max-page-memory`.
 - DDL. A commit that changes a table's catalog entry makes Straum read
   the table's columns again, and the decoder sees what changed, as with
-  pgoutput. A table rewritten or truncated starts Straum over.
+  pgoutput. The stream reads that commit before snapshots see it, as
+  with the load, so Straum reads the columns in a snapshot that sees
+  it, waiting up to 10 s, then starting over. A table rewritten or
+  truncated starts Straum over.
 
 ## Answering an ask
 

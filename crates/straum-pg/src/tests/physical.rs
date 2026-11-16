@@ -15,9 +15,9 @@ use testcontainers::ImageExt;
 use super::decoding::Pipeline;
 use super::references::*;
 use super::support::*;
-use crate::catalog::{self};
+use crate::catalog::{self, Checked};
 use crate::dsn::Dsn;
-use crate::physical::Physical;
+use crate::physical::{Physical, read_layouts_seeing};
 use crate::source::{Postgres, Replication};
 use crate::wire::{Connection, ConnectionKind};
 
@@ -440,6 +440,100 @@ fn streams_a_commit_logged_before_the_snapshot_saw_it() {
     helper.join().unwrap();
     let mut next = 1_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
+}
+
+/// PostgreSQL logs a commit before snapshots see it, so the stream may
+/// read an `ALTER TABLE`'s commit while the catalog still shows the old
+/// columns. Here a synchronous standby that doesn't answer holds the DDL
+/// there: Straum takes snapshots until one sees it, and the rows written
+/// after it, with the added column, read.
+#[test]
+fn reads_the_columns_of_ddl_snapshots_dont_see_yet() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "unseen_ddl", TABLES);
+    let mut rng = Rng::new(7);
+    db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5)");
+    db.run(&rng.trip(1));
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    let mut next = 1;
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    let mut altering = db.another_connection();
+    db.run("SET synchronous_commit = local");
+    db.run("ALTER SYSTEM SET synchronous_standby_names = 'nobody'");
+    db.run("SELECT pg_reload_conf()");
+    let deadline = Instant::now() + LONG;
+    while altering.rows("SHOW synchronous_standby_names")[0][0].as_deref() != Some("nobody") {
+        assert!(Instant::now() < deadline, "the setting never came");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let alter = thread::spawn(move || {
+        altering.run("ALTER TABLE $S.trips ADD late text DEFAULT 'late'");
+    });
+    wait_for(
+        &mut db.connection,
+        "SELECT 1 FROM pg_stat_activity WHERE wait_event = 'SyncRep'",
+    );
+    let dsn = db.dsn.clone();
+    let (applied_later, later_applied) = std::sync::mpsc::channel();
+    let release = thread::spawn(move || {
+        let mut watch = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
+        // Straum read the DDL's commit and waits for a snapshot to see it,
+        // or it went on past it without one.
+        let waiting = "SELECT 1 FROM pg_stat_activity WHERE query = 'SELECT pg_current_snapshot()'";
+        while watch.rows(waiting).unwrap().is_empty() && later_applied.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "Straum neither waited nor went on"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        watch
+            .execute("ALTER SYSTEM RESET synchronous_standby_names")
+            .unwrap();
+        watch.execute("SELECT pg_reload_conf()").unwrap();
+    });
+    // A commit after the DDL's, which comes out once Straum has the
+    // layouts the DDL left.
+    db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
+    let written = db.insert_lsn();
+    while !applied_through(&writer, written) {
+        assert!(Instant::now() < deadline, "never applied {written}");
+        applied(&mut writer);
+    }
+    // Gone if it released the standby when Straum waited.
+    let _ = applied_later.send(());
+    release.join().unwrap();
+    alter.join().unwrap();
+    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    reads_layouts_once_a_snapshot_sees(&mut db);
+}
+
+/// The layouts wait for a snapshot that sees the transaction asked
+/// about: one still open times out, named; once it commits they read,
+/// the column it added among them.
+fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
+    let mut open = db.another_connection();
+    open.run("BEGIN; ALTER TABLE $S.trips ADD later text");
+    let xid = open.rows("SELECT pg_current_xact_id()::xid")[0][0].clone();
+    let xid: u32 = xid.unwrap().parse().unwrap();
+    let checked = [Checked {
+        name: id("trips"),
+        schema: id(&db.name),
+        table_name: id("trips"),
+        columns: Vec::new(),
+        types: Vec::new(),
+        enums: Vec::new(),
+    }];
+    let mut connection = Connection::connect(&db.dsn, ConnectionKind::Sql).unwrap();
+    let wait = Duration::from_secs(1);
+    let error = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap_err();
+    let expected = format!("waited 1 s for transactions it read the commits of to end: xid {xid}");
+    assert!(error.to_string().contains(&expected), "{error}");
+    open.run("COMMIT");
+    let layouts = read_layouts_seeing(&mut connection, &checked, xid, wait).unwrap();
+    let columns = &layouts.tables[0].relation.columns;
+    assert_eq!(columns.last().unwrap().name, "later");
 }
 
 /// Waits until `query` returns a row.

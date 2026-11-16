@@ -169,8 +169,8 @@ pub(crate) enum WaitProblem {
     NotLogged,
     /// These transactions, open before the start, to end.
     OpenTransactions(Vec<Xid>),
-    /// These transactions, whose commits the stream read, to show in the
-    /// load's snapshot.
+    /// These transactions, whose commits the stream read, to show in a
+    /// snapshot: the load's, or that of the layouts read after DDL.
     InvisibleCommits(Vec<Xid>),
 }
 

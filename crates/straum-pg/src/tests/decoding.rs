@@ -613,7 +613,7 @@ impl Pipeline {
     pub(super) fn record(&mut self, record: &crate::wal::Record) -> Vec<Commit> {
         let (connection, checked) = (&mut self.connection, &self.checked);
         (self.inner)
-            .record(record, || physical::read_layouts(connection, checked))
+            .record(record, |_| physical::read_layouts(connection, checked))
             .unwrap()
     }
 

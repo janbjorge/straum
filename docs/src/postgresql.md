@@ -185,6 +185,10 @@ it waits for and tries again:
 --wal physical waited 60 s for transactions it read the commits of to end: xid 7512; a synchronous standby that doesn't answer holds them
 ```
 
+The last wait comes after DDL too, while Straum streams: it reads a
+changed table's columns once a snapshot sees the DDL. That one gives up
+after 10 s, says so as above, and Straum starts over.
+
 [The physical stream](how-it-works.md#the-physical-stream) says why
 the start waits.
 
