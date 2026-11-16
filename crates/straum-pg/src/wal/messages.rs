@@ -18,7 +18,7 @@ use super::xact::Invalidated;
 use super::{Oid, Problem, RelationFile, WalError};
 use crate::decode::Decoder;
 use crate::error::Error;
-use crate::pgoutput::{Field, Message, Old, Relation};
+use crate::pgoutput::{Field, Message, Old, Relation, Tuple};
 use crate::value::system_time;
 
 /// A table the physical stream reads: its file, as pgoutput announces
@@ -55,6 +55,16 @@ pub(crate) struct Publisher {
     announced: FastSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
     unfit: Vec<Oid>,
+    scratch: Scratch,
+}
+
+/// Lists a message borrows and gives back, so a row costs no allocation
+/// of its own: allocating them was a tenth of reading a WAL row
+/// (`physical_wal_bench`).
+#[derive(Default)]
+struct Scratch {
+    values: Vec<Value>,
+    tuples: Vec<Tuple<'static>>,
 }
 
 impl Publisher {
@@ -69,6 +79,7 @@ impl Publisher {
             labels: layouts.labels,
             announced: FastSet::default(),
             unfit: Vec::new(),
+            scratch: Scratch::default(),
         }
     }
 
@@ -162,23 +173,30 @@ impl Publisher {
             if self.announced.insert(*file) {
                 decoder.feed(&Message::Relation(table.relation.clone()))?;
             }
-            let (labels, lsn) = (&self.labels, committed.lsn);
+            let read = Read {
+                table,
+                labels: &self.labels,
+                lsn: committed.lsn,
+            };
+            let scratch = &mut self.scratch;
             let relation = table.relation.id;
-            decoder.feed(&match change {
+            let message = match change {
                 HeapChange::Insert { new, .. } => Message::Insert {
                     relation,
-                    new: fields(table, new, labels, lsn)?,
+                    new: fields(&read, new, scratch)?,
                 },
                 HeapChange::Update { old, new, .. } => Message::Update {
                     relation,
-                    old: Some(Old::Row(fields(table, old, labels, lsn)?)),
-                    new: fields(table, new, labels, lsn)?,
+                    old: Some(Old::Row(fields(&read, old, scratch)?)),
+                    new: fields(&read, new, scratch)?,
                 },
                 HeapChange::Delete { old, .. } => Message::Delete {
                     relation,
-                    old: Old::Row(fields(table, old, labels, lsn)?),
+                    old: Old::Row(fields(&read, old, scratch)?),
                 },
-            })?;
+            };
+            decoder.feed(&message)?;
+            scratch.give_back(message);
         }
         decoder.feed(&Message::Commit {
             end_lsn: committed.end,
@@ -204,20 +222,48 @@ fn invalidates(message: Invalidated, table: &Layout) -> bool {
         && (message.relation == table.relation.id || message.relation == 0)
 }
 
+/// What reading a row of one table in one commit needs.
+struct Read<'a> {
+    table: &'a Layout,
+    labels: &'a HashMap<Oid, String>,
+    lsn: u64,
+}
+
+impl Scratch {
+    /// Takes back the lists of a message the decoder has read.
+    fn give_back(&mut self, message: Message<'static>) {
+        match message {
+            Message::Insert { new, .. } => self.keep(new),
+            Message::Update { old, new, .. } => {
+                if let Some(Old::Row(old) | Old::Key(old)) = old {
+                    self.keep(old);
+                }
+                self.keep(new);
+            }
+            Message::Delete {
+                old: Old::Row(old) | Old::Key(old),
+                ..
+            } => self.keep(old),
+            _ => {}
+        }
+    }
+
+    fn keep(&mut self, mut tuple: Tuple<'static>) {
+        tuple.clear();
+        self.tuples.push(tuple);
+    }
+}
+
 /// The relation's columns of `tuple`, as a message holds them.
 // `Field<'static>`: each value is owned, not borrowed from the row, so
 // the message outlives the change it came from.
-fn fields(
-    table: &Layout,
-    tuple: &HeapTuple,
-    labels: &HashMap<Oid, String>,
-    lsn: u64,
-) -> Result<Vec<Field<'static>>, Error> {
-    let mut values = match tuple::values(tuple, &table.attributes, labels) {
-        Ok(values) => values,
-        Err(row_problem) => return Err(problem(lsn, row_problem)),
-    };
-    let mut fields = Vec::with_capacity(table.columns.len());
+fn fields(read: &Read, tuple: &HeapTuple, scratch: &mut Scratch) -> Result<Tuple<'static>, Error> {
+    let table = read.table;
+    let values = &mut scratch.values;
+    if let Err(row_problem) = tuple::values_into(tuple, &table.attributes, read.labels, values) {
+        return Err(problem(read.lsn, row_problem));
+    }
+    let mut fields = scratch.tuples.pop().unwrap_or_default();
     for &attribute in &table.columns {
         fields.push(
             match std::mem::replace(&mut values[attribute], Value::Missing) {

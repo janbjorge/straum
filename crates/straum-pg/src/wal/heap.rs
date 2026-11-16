@@ -133,6 +133,10 @@ pub(crate) struct Heap {
     /// The pages' footprints, summed.
     bytes: usize,
     prune_layout: PruneLayout,
+    /// The last record's list of changes, emptied, for the next: a list
+    /// per record was a twentieth of reading a WAL row
+    /// (`physical_wal_bench`).
+    spare: Vec<HeapChange>,
 }
 
 impl Heap {
@@ -144,6 +148,7 @@ impl Heap {
             pages: FastMap::default(),
             bytes: 0,
             prune_layout: PruneLayout::of_major(major),
+            spare: Vec::new(),
         }
     }
 
@@ -184,7 +189,7 @@ impl Heap {
     pub(crate) fn apply(&mut self, record: &Record) -> Result<Vec<HeapChange>, WalError> {
         let mut edit = Edit {
             restored: Vec::new(),
-            changes: Vec::new(),
+            changes: std::mem::take(&mut self.spare),
         };
         self.take_images(record, &mut edit)?;
         self.redo(record, &mut edit)?;
@@ -197,6 +202,12 @@ impl Heap {
             self.evict(u64::from_le_bytes(*redo));
         }
         Ok(edit.changes)
+    }
+
+    /// Takes back a list `apply` gave, emptied, for the next record.
+    pub(crate) fn reuse(&mut self, changes: Vec<HeapChange>) {
+        debug_assert!(changes.is_empty(), "a list still holding changes");
+        self.spare = changes;
     }
 
     /// Stores each tracked page the record brings whole: a full-page image

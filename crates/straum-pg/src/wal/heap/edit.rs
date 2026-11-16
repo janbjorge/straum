@@ -7,6 +7,7 @@
 //! record does to a row Straum reads becomes a [`HeapChange`].
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::super::{
     Block, Problem, Record, RelationFile, SlotNumber, WalError, read_u16, read_u32,
@@ -474,21 +475,26 @@ fn updated(data: &[u8], flags: u8, old: &HeapTuple) -> Option<HeapTuple> {
     let header = data.get(at..at + HEAP_HEADER)?;
     let hoff = header[HEADER_HOFF];
     let logged = &data[at + HEAP_HEADER..];
-    let mut body = Vec::with_capacity(logged.len() + prefix + suffix);
-    if prefix > 0 {
+    // The shared prefix goes after the null bitmap, the suffix last.
+    let (bitmap, shared_prefix) = if prefix > 0 {
         let bitmap = usize::from(hoff).checked_sub(TUPLE_HEADER)?;
-        body.extend_from_slice(logged.get(..bitmap)?);
-        body.extend_from_slice(old.columns()?.get(..prefix)?);
-        body.extend_from_slice(&logged[bitmap..]);
+        (bitmap, old.columns()?.get(..prefix)?)
     } else {
-        body.extend_from_slice(logged);
-    }
-    if suffix > 0 {
-        let from = old.body.len().checked_sub(suffix)?;
-        body.extend_from_slice(&old.body[from..]);
-    }
+        (0, &[][..])
+    };
+    let (logged_bitmap, logged_rest) = (logged.get(..bitmap)?, &logged[bitmap..]);
+    let shared_suffix = &old.body[old.body.len().checked_sub(suffix)?..];
+    // Collected straight into the `Arc`, one copy: through a `Vec` it was
+    // two (`physical_wal_bench`).
+    let body: Arc<[u8]> = logged_bitmap
+        .iter()
+        .chain(shared_prefix)
+        .chain(logged_rest)
+        .chain(shared_suffix)
+        .copied()
+        .collect();
     Some(HeapTuple {
-        body: body.into(),
+        body,
         ..tuple_from_header(header, &[])
     })
 }

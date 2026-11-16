@@ -501,8 +501,8 @@ impl WalReader {
                 record: None,
             };
         };
-        let changes = self.heap.apply(&record).unwrap();
-        self.transactions.hold(record.xid, record.lsn, changes);
+        let mut changes = self.heap.apply(&record).unwrap();
+        self.transactions.hold(record.xid, record.lsn, &mut changes);
         let committed = match xact::event(&record, self.stream.major()).unwrap() {
             Some(event) => self
                 .transactions

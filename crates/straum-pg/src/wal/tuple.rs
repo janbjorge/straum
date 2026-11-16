@@ -106,11 +106,26 @@ pub(crate) enum Value {
 
 /// The values of `tuple`, one per attribute. `labels` holds the label of
 /// each enum value by its `pg_enum` OID, which is what a row stores.
+#[cfg(test)]
 pub(crate) fn values(
     tuple: &HeapTuple,
     attributes: &[Attribute],
     labels: &HashMap<Oid, String>,
 ) -> Result<Vec<Value>, Problem> {
+    let mut values = Vec::new();
+    values_into(tuple, attributes, labels, &mut values)?;
+    Ok(values)
+}
+
+/// The values of `tuple` into `values`, emptied first, as [`values`]
+/// reads them. The caller keeps the list from row to row.
+pub(crate) fn values_into(
+    tuple: &HeapTuple,
+    attributes: &[Attribute],
+    labels: &HashMap<Oid, String>,
+    values: &mut Vec<Value>,
+) -> Result<(), Problem> {
+    values.clear();
     let short = Problem::ShortRow;
     let column_count = usize::from(tuple.infomask2 & COLUMN_COUNT_MASK);
     if column_count > attributes.len() {
@@ -128,7 +143,6 @@ pub(crate) fn values(
     };
     let data = tuple.columns().ok_or(short)?;
     let mut at = 0;
-    let mut values = Vec::with_capacity(attributes.len());
     for (index, attribute) in attributes.iter().enumerate() {
         if index >= column_count {
             values.push(Value::Missing);
@@ -145,7 +159,7 @@ pub(crate) fn values(
         let unaligned =
             attribute.length == VARLENA_LENGTH && matches!(data.get(at), Some(byte) if *byte != 0);
         if !unaligned {
-            at = at.next_multiple_of(attribute.align.max(1));
+            at = align_up(at, attribute.align);
         }
         let rest = data.get(at..).ok_or(short)?;
         let size = match attribute.length {
@@ -160,7 +174,14 @@ pub(crate) fn values(
         at += size;
         values.push(value(attribute, bytes, labels)?);
     }
-    Ok(values)
+    Ok(())
+}
+
+/// `at` rounded up to `align`, 1, 2, 4 or 8, by mask: rounding by
+/// division was a tenth of walking a row (`physical_wal_bench`).
+fn align_up(at: usize, align: usize) -> usize {
+    let mask = align.max(1) - 1;
+    (at + mask) & !mask
 }
 
 /// A C string's size with its closing zero byte.

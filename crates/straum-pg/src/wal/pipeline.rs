@@ -118,8 +118,9 @@ impl Pipeline {
         record: &Record,
         mut layouts: impl FnMut(TransactionId) -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
-        let changes = self.heap.apply(record)?;
-        self.transactions.hold(record.xid, record.lsn, changes);
+        let mut changes = self.heap.apply(record)?;
+        self.transactions.hold(record.xid, record.lsn, &mut changes);
+        self.heap.reuse(changes);
         let Some(event) = xact::event(record, self.major)? else {
             return Ok(Vec::new());
         };

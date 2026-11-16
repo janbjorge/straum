@@ -113,13 +113,14 @@ impl Transactions {
         }
     }
 
-    /// Holds `changes`, made by `xid` in the record at `lsn`, until it ends.
-    pub(crate) fn hold(&mut self, xid: TransactionId, lsn: u64, changes: Vec<HeapChange>) {
+    /// Holds `changes`, made by `xid` in the record at `lsn`, until it
+    /// ends, leaving the list empty for the next record.
+    pub(crate) fn hold(&mut self, xid: TransactionId, lsn: u64, changes: &mut Vec<HeapChange>) {
         if changes.is_empty() {
             return;
         }
         let held = self.held.entry(xid).or_default();
-        for change in changes {
+        for change in changes.drain(..) {
             if held.changes.len() >= self.limit {
                 held.over = true;
                 held.changes = Vec::new();
@@ -329,7 +330,16 @@ impl Transactions {
 
 /// Each xid's changes, in WAL order, merged by LSN as the reorder buffer
 /// replays them.
-fn merge_by_lsn(held: Vec<Held>) -> Vec<HeapChange> {
+fn merge_by_lsn(mut held: Vec<Held>) -> Vec<HeapChange> {
+    // One xid, no subtransactions: its changes came in WAL order, and the
+    // sort's copies were the cost of most commits.
+    if let [part] = held.as_mut_slice() {
+        let mut changes = Vec::with_capacity(part.changes.len());
+        for (_, change) in std::mem::take(&mut part.changes) {
+            changes.push(change);
+        }
+        return changes;
+    }
     let mut changes = Vec::new();
     for part in held {
         changes.extend(part.changes);
@@ -570,7 +580,7 @@ mod tests {
             let script = &mut self.scripts[index];
             let xid = script.open_sub.unwrap_or(script.top);
             self.transactions
-                .hold(xid, self.lsn, vec![change(self.counter)]);
+                .hold(xid, self.lsn, &mut vec![change(self.counter)]);
             if script.open_sub.is_some() {
                 script.pending.push(self.counter);
             } else {
@@ -701,16 +711,16 @@ mod tests {
         let mut transactions = Transactions::new(2);
         assert_eq!(transactions.event(running(10, 10, vec![]), 8, 12), Ok(None));
         assert_eq!(transactions.consistency(), Consistency::Consistent);
-        transactions.hold(10, 16, vec![change(1), change(2)]);
-        transactions.hold(11, 24, vec![change(3), change(4)]);
+        transactions.hold(10, 16, &mut vec![change(1), change(2)]);
+        transactions.hold(11, 24, &mut vec![change(3), change(4)]);
         let got = transactions
             .event(commit(10, vec![11]), 32, 40)
             .unwrap()
             .unwrap();
         assert_eq!(got.changes, [change(1), change(2), change(3), change(4)]);
         assert_eq!(got.time, 10);
-        transactions.hold(12, 48, vec![change(5), change(6), change(7)]);
-        transactions.hold(12, 56, vec![change(8)]);
+        transactions.hold(12, 48, &mut vec![change(5), change(6), change(7)]);
+        transactions.hold(12, 56, &mut vec![change(8)]);
         assert_eq!(transactions.held_changes(), 0);
         assert_eq!(
             transactions.event(commit(12, vec![]), 64, 72),
@@ -718,28 +728,28 @@ mod tests {
         );
         assert!(!transactions.holds(12));
         // Past the limit but aborted, or not whole: nothing to say.
-        transactions.hold(13, 80, vec![change(9), change(10), change(11)]);
+        transactions.hold(13, 80, &mut vec![change(9), change(10), change(11)]);
         let abort = Event::Abort(ending(13, vec![]));
         assert_eq!(transactions.event(abort, 88, 96), Ok(None));
-        transactions.hold(9, 104, vec![change(12), change(13), change(14)]);
+        transactions.hold(9, 104, &mut vec![change(12), change(13), change(14)]);
         assert_eq!(transactions.event(commit(9, vec![]), 112, 120), Ok(None));
     }
 
     #[test]
     fn waits_for_the_transactions_running_at_the_start() {
         let mut transactions = Transactions::new(10);
-        transactions.hold(5, 8, vec![change(1)]);
+        transactions.hold(5, 8, &mut vec![change(1)]);
         // Before any RUNNING_XACTS nothing is known whole.
         assert_eq!(transactions.event(commit(5, vec![]), 16, 20), Ok(None));
         assert_ne!(transactions.consistency(), Consistency::Consistent);
-        transactions.hold(6, 24, vec![change(2)]);
+        transactions.hold(6, 24, &mut vec![change(2)]);
         assert_eq!(transactions.consistency(), Consistency::Unknown);
         assert_eq!(
             transactions.event(running(8, 6, vec![7, 6]), 32, 36),
             Ok(None)
         );
         assert_eq!(transactions.consistency(), Consistency::Waiting(vec![6, 7]));
-        transactions.hold(8, 40, vec![change(3)]);
+        transactions.hold(8, 40, &mut vec![change(3)]);
         assert_eq!(transactions.event(commit(6, vec![]), 48, 52), Ok(None));
         assert_ne!(transactions.consistency(), Consistency::Consistent);
         // 7 dies in a crash: a later RUNNING_XACTS has it gone.
@@ -758,7 +768,7 @@ mod tests {
     #[test]
     fn knows_what_ended_before_the_record_that_names_it() {
         let mut transactions = Transactions::new(10);
-        transactions.hold(7, 8, vec![change(1)]);
+        transactions.hold(7, 8, &mut vec![change(1)]);
         let commit = Event::Commit(ending(7, vec![]));
         assert_eq!(transactions.event(commit, 16, 20), Ok(None));
         assert_eq!(
@@ -787,7 +797,7 @@ mod tests {
         // An abort, and a whole commit, aren't the load's to see.
         let abort = Event::Abort(ending(7, vec![]));
         assert_eq!(transactions.event(abort, 32, 36), Ok(None));
-        transactions.hold(8, 40, vec![change(1)]);
+        transactions.hold(8, 40, &mut vec![change(1)]);
         assert!(
             transactions
                 .event(commit(8, vec![]), 48, 52)
