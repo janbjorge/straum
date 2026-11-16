@@ -1,0 +1,60 @@
+# Straum
+
+> In-memory PostgreSQL aggregates, kept current as PostgreSQL commits.
+
+Straum is not stable yet. The spec, the asks and the flags may change.
+
+Pages other than the quick start, the command line and performance
+use the `usage` view over `public.events AS e` and
+`public.accounts AS a`. Those three use the January 2024 taxi trips.
+
+## Summary
+
+- [Straum](https://janbjorge.github.io/straum/index.html): Why Straum:
+  the problem, the usage view, one ask, and what Straum is not.
+  Examples use the usage view.
+- [Quick start](https://janbjorge.github.io/straum/quick-start.html):
+  Does it work: the one tutorial, on the taxi trips. Examples use the
+  taxi trips.
+
+## Concepts
+
+- [How Straum works](https://janbjorge.github.io/straum/how-it-works.html):
+  How it works: load, follow, cells, dims, the physical stream,
+  `as_of` and its consistency. Examples use the usage view.
+- [Aggregates 101](https://janbjorge.github.io/straum/aggregates.html):
+  What a measure costs: merging, deletes, and what a cell keeps.
+  Examples use the usage view.
+
+## Running Straum
+
+- [Setting up PostgreSQL](https://janbjorge.github.io/straum/postgresql.html):
+  Connecting a database: logical and physical setup, the start checks,
+  and what Straum costs the server. Examples use the usage view.
+- [Deploying Straum](https://janbjorge.github.io/straum/deploy.html):
+  Running it for real: the binary, the image and the chart. Examples
+  use the usage view.
+- [Performance](https://janbjorge.github.io/straum/performance.html):
+  What to expect: the benchmark and memory sizing. Examples use the
+  taxi trips.
+
+## Reference
+
+- [Spec](https://janbjorge.github.io/straum/spec.html): Every spec rule,
+  and the errors `straum plan` prints. Examples use the usage view.
+- [Asks and endpoints](https://janbjorge.github.io/straum/asks.html):
+  The ask language, answers, errors, `Straum-LSN` and every endpoint.
+  Examples use the usage view.
+- [Command line](https://janbjorge.github.io/straum/cli.html): Every
+  command and flag. Examples use the taxi trips.
+- [Glossary](https://janbjorge.github.io/straum/glossary.html): One line
+  per term, and a link to its home. Examples use the usage view.
+
+## Contributing
+
+- [Design](https://janbjorge.github.io/straum/design.html): Crates, the
+  store, invariants and state machines, and which record shaped what.
+  Examples use the usage view.
+- [Reading the code](https://janbjorge.github.io/straum/reading-the-code.html):
+  The order to read the crates in, and the Rust they use. Examples use
+  the usage view.

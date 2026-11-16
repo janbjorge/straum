@@ -81,6 +81,8 @@ need Docker.
 ## Documentation
 
 - [User guide](https://janbjorge.github.io/straum/), built from `docs/`
+- [llms.txt](https://janbjorge.github.io/straum/llms.txt),
+  an index of the guide for agents
 - [Decisions](docs/adr/)
 - [Straum and PostgreSQL](research/POSTGRESQL.md)
 - [Joins: history and sources](research/JOINS.md)

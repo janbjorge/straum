@@ -15,7 +15,7 @@ the end are open.
   in, one spelling per meaning ([Spec](spec.md)). Also "the subset",
   "the notation", "the canon" (ADR-0004).
 - **Guide**: the mdBook under `docs/src`, its pages fixed by ADR-0014.
-  Also "user guide", "the docs".
+  Also "user guide", "the docs". `llms.txt` lists the pages.
 - **ADR**: the settled decisions on one subject in `docs/adr/`
   (ADR-0001).
 - **Port** and **adapter**: a trait at the edge of `straum-app`,

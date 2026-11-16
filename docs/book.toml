@@ -1,6 +1,7 @@
 # The user guide, built with mdBook (https://rust-lang.github.io/mdBook/)
 # and published to GitHub Pages by the docs job in .github/workflows/ci.yml.
-# Preview with `mdbook serve docs`.
+# Preview with `mdbook serve docs`. The introduction links llms.txt,
+# which mdBook copies to the site.
 [book]
 title = "Straum"
 description = "In-memory PostgreSQL aggregates, kept current as PostgreSQL commits."

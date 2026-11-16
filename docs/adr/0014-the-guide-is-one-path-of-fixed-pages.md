@@ -59,6 +59,13 @@ Rules for every page:
 - A how-to page gives steps and at most a sentence of why, linking the
   rest. A reference page is tables and short examples.
 
+`docs/src/llms.txt` lists these pages for an agent. The introduction
+links it, so mdBook copies it onto the site. It is not a guide page.
+mdBook has no setting that writes each page's markdown beside its
+HTML. Its markdown renderer is a debug dump, and a second renderer
+would put the HTML in `book/html/`, off the site root. A new page is
+added to `llms.txt` in the same commit.
+
 A new page, a moved fact or a changed order edits this record first.
 
 ## Consequences
@@ -68,3 +75,4 @@ A new page, a moved fact or a changed order edits this record first.
 - Some repetition remains on purpose: a link's sentence of context.
 - Thirteen pages to keep true, one more than before: running splits
   into deploy and the CLI reference.
+- `llms.txt` is the agent index. It points at the HTML pages.
