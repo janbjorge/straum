@@ -242,7 +242,8 @@ the end are open.
 - **Pipeline** (`wal::pipeline::Pipeline`): records to commits: page
   state, transactions, publisher, decoder ([Start](design.md#start)).
 - **WAL record** (`wal::Record`): one WAL entry, written by one
-  **resource manager** (`xl_rmid`).
+  **resource manager** (`xl_rmid`). One **passed by** (`Interest::PassBy`)
+  names only other relation files' pages: the reader skips it unchecked.
 - **Block reference** (`Block`): a page a record changes, by **relation
   file** (`RelationFile`) and **block number** (`BlockNumber`).
 - **Slot on a page** (`SlotNumber`): a row's place on a heap page; not a

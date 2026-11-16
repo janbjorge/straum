@@ -100,7 +100,8 @@ With `--wal physical`, step 2 differs (ADR-0008);
    table's **Layout** (`physical::read_layouts`) after the slot, so a
    rewrite between the two is in the WAL read. Start the stream thread
    with a **Pipeline** (`wal/pipeline.rs`): `Records` cut the bytes into
-   records, `Heap` keeps the pages, `Transactions` holds changes by
+   records and pass by those of other tables' pages, `Heap` keeps the
+   pages, `Transactions` holds changes by
    xid, `Publisher` turns commits into pgoutput messages for the same
    `Decoder`.
 3. Try `pg_log_standby_snapshot()`, then wait for the **Consistent

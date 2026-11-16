@@ -134,6 +134,9 @@ With `--wal physical` there is no logical decoding to send rows
 last checkpoint's redo point, and Straum turns it into the same
 messages the logical slot sends, so one decoder serves both:
 
+- Records. Most name only other tables' pages. Straum reads each
+  record's block headers where they lie and passes such a record by,
+  not copied, checksummed or decoded; every record it reads it checks.
 - Pages. The first change to a page after a checkpoint carries a full
   image of it; Straum keeps the rows of each page of the spec's tables
   from there and applies the inserts, updates, deletes, pruning and

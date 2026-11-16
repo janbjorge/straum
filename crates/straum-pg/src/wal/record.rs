@@ -10,9 +10,13 @@
 
 use std::ops::Range;
 
+use straum_domain::FastSet;
+
+use super::heap::MAIN_FORK;
 use super::{
-    BLOCK_SIZE, BlockNumber, Oid, Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_XLOG,
-    TransactionId, WalError, at, read_u16, read_u32,
+    BLOCK_SIZE, BlockNumber, Oid, Problem, RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STANDBY,
+    RESOURCE_MANAGER_STORAGE, RESOURCE_MANAGER_TRANSACTION, RESOURCE_MANAGER_XLOG, TransactionId,
+    WalError, at, read_u16, read_u32,
 };
 
 /// An image header holds lengths within a page as `uint16`.
@@ -251,6 +255,77 @@ pub(super) fn decode_into(lsn: u64, end: u64, record: &mut Record) -> Result<(),
     record.toplevel_xid = toplevel_xid;
     record.main = main_start..main_start + main_length;
     Ok(())
+}
+
+/// Resource managers whose records the stream reads whatever pages they
+/// name: checkpoints and switches, transaction endings, the standby
+/// snapshot's running transactions, and relation files cut short.
+const ALWAYS_READ: [u8; 4] = [
+    RESOURCE_MANAGER_XLOG,
+    RESOURCE_MANAGER_TRANSACTION,
+    RESOURCE_MANAGER_STORAGE,
+    RESOURCE_MANAGER_STANDBY,
+];
+
+/// What a reader of some tables' pages makes of a record from its first
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Interest {
+    /// The record may matter: read it whole and check it.
+    Read,
+    /// It names only pages of other relation files, and its resource
+    /// manager says nothing else Straum reads.
+    PassBy,
+    /// Its block headers run past `head`: read it whole to know.
+    Unsure,
+}
+
+/// Whether a reader of `files`' rows needs the record of `total_length`
+/// bytes whose first bytes are `head`, read from its block headers
+/// before any byte is copied or checksummed.
+pub(super) fn interest(
+    head: &[u8],
+    total_length: usize,
+    files: &FastSet<RelationFile>,
+) -> Interest {
+    let Some(resource_manager) = head.get(RECORD_RESOURCE_MANAGER) else {
+        return Interest::Unsure;
+    };
+    if ALWAYS_READ.contains(resource_manager) {
+        return Interest::Read;
+    }
+    let mut cursor = Cursor {
+        bytes: head,
+        at: RECORD_HEADER,
+    };
+    let mut previous_file = None;
+    // As `decode_into` walks: headers until the payloads they announce.
+    let mut payload = 0usize;
+    while total_length.saturating_sub(cursor.at) > payload {
+        let Some(id) = cursor.u8() else {
+            return Interest::Unsure;
+        };
+        match id {
+            DATA_SHORT | DATA_LONG => return Interest::PassBy,
+            ORIGIN if cursor.take(ORIGIN_SIZE).is_some() => {}
+            TOPLEVEL_XID if cursor.u32().is_some() => {}
+            id if id <= MAX_BLOCK_ID => {
+                let Some(block) = read_block_header(&mut cursor, id, previous_file) else {
+                    return Interest::Unsure;
+                };
+                if block.fork == MAIN_FORK && files.contains(&block.file) {
+                    return Interest::Read;
+                }
+                payload += block.data.len();
+                if let Some(image) = &block.image {
+                    payload += image.bytes.len();
+                }
+                previous_file = Some(block.file);
+            }
+            _ => return Interest::Unsure,
+        }
+    }
+    Interest::PassBy
 }
 
 /// One `XLogRecordBlockHeader`, with its image header and relation file

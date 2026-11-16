@@ -6,11 +6,18 @@
 //! come, checks each page header and each record's checksum, as
 //! `XLogReaderValidatePageHeader` and `ValidXLogRecord` in
 //! `src/backend/access/transam/xlogreader.c` do, and gives back whole records.
+//! Told which relation files the stream reads, it passes by a record that
+//! names only other files' pages, read from its block headers in place:
+//! not copied, checksummed or decoded. Most of a busy server's WAL is such
+//! records (ADR-0008).
 
 use std::ops::Range;
 
+use straum_domain::FastSet;
+
 use super::record::{
-    RECORD_CHECKSUM, RECORD_HEADER, RECORD_LENGTH, Record, align, checksum, decode_into,
+    Interest, RECORD_CHECKSUM, RECORD_HEADER, RECORD_LENGTH, Record, RelationFile, align, checksum,
+    decode_into, interest,
 };
 use super::{PAGE_SIZE, Problem, WalError, at, read_u16, read_u32, read_u64};
 
@@ -70,6 +77,11 @@ pub(crate) struct Records {
     /// `next_record` lends it out, and a caller that keeps a record
     /// clones it.
     record: Record,
+    /// The relation files whose pages the stream reads; `None` reads
+    /// every record.
+    files: Option<FastSet<RelationFile>>,
+    /// Where the record after the last one read or passed by may start.
+    passed: u64,
 }
 
 /// Where a record lies in the WAL: its first byte, and the byte after
@@ -77,6 +89,12 @@ pub(crate) struct Records {
 struct RecordSpan {
     start: u64,
     end: u64,
+}
+
+/// The next record, read whole or passed by.
+enum Found {
+    Whole(RecordSpan),
+    PassedBy(RecordSpan),
 }
 
 /// What a page header says that the reader acts on.
@@ -104,7 +122,22 @@ impl Records {
             magic: None,
             unchecked,
             record: Record::empty(),
+            files: None,
+            passed: start,
         }
+    }
+
+    /// Passes by, from here on, each record naming only pages of files
+    /// other than `files` whose resource manager says nothing else the
+    /// stream reads.
+    pub(crate) fn pass_by_other_files(&mut self, files: FastSet<RelationFile>) {
+        self.files = Some(files);
+    }
+
+    /// Where the record after the last one read or passed by may start:
+    /// every record before it is done with.
+    pub(crate) fn passed(&self) -> u64 {
+        self.passed
     }
 
     /// The LSN the next fed bytes must start at.
@@ -133,25 +166,34 @@ impl Records {
 
     /// The next whole record, or `None` until more bytes come.
     pub(crate) fn next_record(&mut self) -> Result<Option<&Record>, WalError> {
-        // The record's buffer is taken out while `read` borrows the reader,
-        // and put back whatever `read` gives.
-        let mut bytes = std::mem::take(&mut self.record.bytes);
-        let read = self.read(&mut bytes);
-        self.record.bytes = bytes;
-        let Some(span) = read? else {
-            return Ok(None);
-        };
-        decode_into(span.start, span.end, &mut self.record)?;
-        if self.record.is_switch() {
-            self.next = span.end.div_ceil(self.segment_size) * self.segment_size;
-        } else {
-            self.next = align(span.end);
+        loop {
+            // The record's buffer is taken out while `read` borrows the
+            // reader, and put back whatever `read` gives.
+            let mut bytes = std::mem::take(&mut self.record.bytes);
+            let read = self.read(&mut bytes);
+            self.record.bytes = bytes;
+            let span = match read? {
+                None => return Ok(None),
+                Some(Found::PassedBy(span)) => {
+                    self.next = align(span.end);
+                    self.passed = self.next;
+                    continue;
+                }
+                Some(Found::Whole(span)) => span,
+            };
+            decode_into(span.start, span.end, &mut self.record)?;
+            if self.record.is_switch() {
+                self.next = span.end.div_ceil(self.segment_size) * self.segment_size;
+            } else {
+                self.next = align(span.end);
+            }
+            self.passed = align(span.end);
+            return Ok(Some(&self.record));
         }
-        Ok(Some(&self.record))
     }
 
-    /// The next whole record's bytes into `bytes`, checked.
-    fn read(&mut self, bytes: &mut Vec<u8>) -> Result<Option<RecordSpan>, WalError> {
+    /// The next record: its bytes into `bytes`, checked, or passed by.
+    fn read(&mut self, bytes: &mut Vec<u8>) -> Result<Option<Found>, WalError> {
         if let Some(page) = self.unchecked {
             let Some(header) = self.page_header(page)? else {
                 return Ok(None);
@@ -177,14 +219,33 @@ impl Records {
         let Some(total_length) = self.total_length(start, bytes)? else {
             return Ok(None);
         };
-        let Some(end) = self.gather(start, total_length, bytes)? else {
+        if self.passes_by(start, total_length) {
+            let Some(end) = self.gather(start, total_length, None)? else {
+                return Ok(None);
+            };
+            return Ok(Some(Found::PassedBy(RecordSpan { start, end })));
+        }
+        let Some(end) = self.gather(start, total_length, Some(bytes))? else {
             return Ok(None);
         };
         let stored = read_u32(&bytes[RECORD_CHECKSUM]);
         if stored != checksum(bytes) {
             return Err(at(start, Problem::Checksum));
         }
-        Ok(Some(RecordSpan { start, end }))
+        Ok(Some(Found::Whole(RecordSpan { start, end })))
+    }
+
+    /// Whether the record at `start` names only pages of files the stream
+    /// doesn't read, judged from the bytes on its first page.
+    fn passes_by(&self, start: u64, total_length: usize) -> bool {
+        let Some(files) = &self.files else {
+            return false;
+        };
+        let on_first_page = (PAGE_SIZE - start % PAGE_SIZE).min(total_length as u64);
+        let Some(head) = self.bytes_at(start, on_first_page) else {
+            return false;
+        };
+        interest(head, total_length, files) == Interest::PassBy
     }
 
     /// `xl_tot_len` of the record at `start`, checked: read in place when
@@ -194,7 +255,7 @@ impl Records {
         let total_length = match self.bytes_at(start, RECORD_HEADER as u64) {
             Some(header) if header_on_one_page => read_u32(&header[RECORD_LENGTH]),
             _ => {
-                if self.gather(start, RECORD_HEADER, bytes)?.is_none() {
+                if self.gather(start, RECORD_HEADER, Some(bytes))?.is_none() {
                     return Ok(None);
                 }
                 read_u32(&bytes[RECORD_LENGTH])
@@ -262,35 +323,42 @@ impl Records {
     }
 
     /// `length` bytes of the record at `start` into `out`, without the page
-    /// headers it runs across: where they end.
+    /// headers it runs across: where they end. With no `out`, only the
+    /// page headers are checked and nothing is copied.
     fn gather(
         &mut self,
         start: u64,
         length: usize,
-        out: &mut Vec<u8>,
+        mut out: Option<&mut Vec<u8>>,
     ) -> Result<Option<u64>, WalError> {
-        out.clear();
+        if let Some(out) = out.as_deref_mut() {
+            out.clear();
+        }
+        let mut gathered = 0;
         let mut position = start;
-        while out.len() < length {
+        while gathered < length {
             if position.is_multiple_of(PAGE_SIZE) {
                 let Some(header) = self.page_header(position)? else {
                     return Ok(None);
                 };
-                let left = (length - out.len()) as u64;
+                let left = (length - gathered) as u64;
                 let continues = header.flags & FIRST_IS_CONTINUATION != 0;
                 // Past the record header, the page knows the whole length.
-                let length_known = out.len() >= RECORD_HEADER;
+                let length_known = gathered >= RECORD_HEADER;
                 if !continues || (length_known && u64::from(header.remaining) != left) {
                     return Err(at(position, Problem::Continuation));
                 }
                 position += header.length;
             }
             let room = PAGE_SIZE - position % PAGE_SIZE;
-            let take = room.min((length - out.len()) as u64);
+            let take = room.min((length - gathered) as u64);
             let Some(bytes) = self.bytes_at(position, take) else {
                 return Ok(None);
             };
-            out.extend_from_slice(bytes);
+            gathered += bytes.len();
+            if let Some(out) = out.as_deref_mut() {
+                out.extend_from_slice(bytes);
+            }
             position += take;
         }
         Ok(Some(position))
@@ -305,7 +373,12 @@ pub(super) fn page_start(lsn: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wal::heap::MAIN_FORK;
     use crate::wal::test_support::*;
+    use crate::wal::{
+        Oid, RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_STANDBY, RESOURCE_MANAGER_STORAGE,
+        RESOURCE_MANAGER_TRANSACTION, RESOURCE_MANAGER_XLOG,
+    };
 
     #[test]
     fn reads_back_every_record_however_the_bytes_come() {
@@ -368,6 +441,146 @@ mod tests {
             .unwrap();
         check(records.next_record().unwrap().unwrap(), &spec, lsns[0]);
         assert_eq!(records.next_record(), Ok(None));
+    }
+
+    /// Whether a stream reading `files` must read `record`: its resource
+    /// manager says something it reads, or it names one of their pages.
+    fn concerns(record: &Record, files: &FastSet<RelationFile>) -> bool {
+        let always = [
+            RESOURCE_MANAGER_XLOG,
+            RESOURCE_MANAGER_TRANSACTION,
+            RESOURCE_MANAGER_STORAGE,
+            RESOURCE_MANAGER_STANDBY,
+        ];
+        if always.contains(&record.resource_manager) {
+            return true;
+        }
+        for block in &record.blocks {
+            if block.fork == MAIN_FORK && files.contains(&block.file) {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn passes_by_exactly_the_records_of_other_files() {
+        let mut passed_by = 0;
+        for seed in 0..300 {
+            let mut rng = Rng(seed);
+            let mut chosen = Vec::new();
+            for relation in 0..3 {
+                if rng.below(2) == 0 {
+                    chosen.push(RelationFile {
+                        relation: FIRST_USER_OID + relation,
+                        ..FILE
+                    });
+                }
+            }
+            let files: FastSet<RelationFile> = chosen.iter().copied().collect();
+            let mut specs = Vec::new();
+            for _ in 0..=rng.below(40) {
+                specs.push(random_spec(&mut rng));
+            }
+            let assembled: Vec<Vec<u8>> = specs.iter().map(assemble).collect();
+            let laid_out = lay_out(SEGMENT, &assembled);
+            let every = read(&mut rng, &laid_out.wal, SEGMENT, laid_out.lsns[0]).unwrap();
+            let wanted = Some(chosen.into_iter().collect());
+            let read = read_passing_by(&mut rng, &laid_out.wal, SEGMENT, laid_out.lsns[0], wanted);
+            let mut read = read.unwrap().into_iter().peekable();
+            for record in every {
+                let was_read = read.next_if_eq(&record).is_some();
+                if concerns(&record, &files) {
+                    assert!(was_read, "seed {seed}: passed by {}", record.lsn);
+                } else if headers_on_first_page(&record) {
+                    assert!(!was_read, "seed {seed}: read {}", record.lsn);
+                    passed_by += 1;
+                }
+            }
+            assert_eq!(read.next(), None, "seed {seed}");
+        }
+        assert!(passed_by > 1000, "{passed_by}");
+    }
+
+    /// Whether `record`'s header and block headers end on the page it
+    /// starts on, where the reader judges it in place. One whose headers
+    /// run on is read whole.
+    fn headers_on_first_page(record: &Record) -> bool {
+        let mut payload = record.main_data().len();
+        for block in &record.blocks {
+            payload += record.block_data(block).len();
+            if let Some(image) = &block.image {
+                payload += record.image_bytes(image).len();
+            }
+        }
+        let headers = (record.total_length() - payload) as u64;
+        record.lsn % PAGE_SIZE + headers <= PAGE_SIZE
+    }
+
+    /// A record of 100 bytes of main data naming one page of `relation`,
+    /// written by the heap, alone in its segment.
+    fn heap_record(relation: Oid) -> LaidOut {
+        let mut spec = plain_block(None, vec![7; 20]);
+        spec.resource_manager = RESOURCE_MANAGER_HEAP;
+        spec.blocks[0].file.relation = relation;
+        spec.main = vec![1; 100];
+        lay_out(SEGMENT, &[assemble(&spec)])
+    }
+
+    /// The first record past `wal` to a reader of `files`.
+    fn first_read(
+        wal: &[u8],
+        start: u64,
+        files: &[RelationFile],
+    ) -> Result<Option<Record>, WalError> {
+        let mut records = Records::new(start, SEGMENT);
+        records.pass_by_other_files(files.iter().copied().collect());
+        records.feed(SEGMENT, wal).unwrap();
+        Ok(records.next_record()?.cloned())
+    }
+
+    #[test]
+    fn checks_only_the_records_it_reads() {
+        let LaidOut { mut wal, lsns } = heap_record(FIRST_USER_OID);
+        // A byte of the block's data, past its headers, which the checksum
+        // covers.
+        wal[offset(lsns[0]) + RECORD_HEADER + 40] ^= 1;
+        let theirs = RelationFile {
+            relation: FIRST_USER_OID + 1,
+            ..FILE
+        };
+        let ours = RelationFile {
+            relation: FIRST_USER_OID,
+            ..FILE
+        };
+        let mut records = Records::new(lsns[0], SEGMENT);
+        records.pass_by_other_files([theirs].into_iter().collect());
+        records.feed(SEGMENT, &wal).unwrap();
+        assert_eq!(records.next_record(), Ok(None));
+        assert!(records.passed() > lsns[0]);
+        assert_eq!(
+            first_read(&wal, lsns[0], &[ours]),
+            Err(at(lsns[0], Problem::Checksum))
+        );
+    }
+
+    #[test]
+    fn checks_the_pages_a_record_passed_by_runs_across() {
+        let mut spec = plain_block(None, vec![7; 20]);
+        spec.resource_manager = RESOURCE_MANAGER_HEAP;
+        spec.main = vec![1; 10_000];
+        let LaidOut { mut wal, lsns } = lay_out(SEGMENT, &[assemble(&spec)]);
+        let page = second_page();
+        wal[page + PAGE_REMAINING.start] ^= 1;
+        let theirs = RelationFile {
+            relation: FIRST_USER_OID + 1,
+            ..FILE
+        };
+        let page_lsn = SEGMENT + PAGE_SIZE;
+        assert_eq!(
+            first_read(&wal, lsns[0], &[theirs]),
+            Err(at(page_lsn, Problem::Continuation))
+        );
     }
 
     /// One record of 100 bytes of main data, alone in its segment.

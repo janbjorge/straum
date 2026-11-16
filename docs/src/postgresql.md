@@ -195,7 +195,8 @@ the start waits.
 What it costs beyond the logical stream:
 
 - The stream carries the whole server's WAL, every database, though
-  Straum reads only its tables' pages.
+  Straum reads only its tables' pages: it passes the other records by
+  from their headers, without copying or checksumming them.
 - Memory: the rows of the spec's pages changed since the last
   checkpoint, and the changes of open transactions. A shorter
   `checkpoint_timeout` lowers it and raises the WAL. Past

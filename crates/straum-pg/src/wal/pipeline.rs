@@ -11,12 +11,13 @@
 use std::mem;
 
 use straum_app::{Commit, Lsn};
+use straum_domain::FastSet;
 
 use super::heap::Heap;
 use super::messages::{Layouts, Publisher};
 use super::transactions::{Committed, Consistency, TooBig, TransactionSnapshot, Transactions};
 use super::xact;
-use super::{Record, TransactionId};
+use super::{Record, RelationFile, TransactionId};
 use crate::catalog::Checked;
 use crate::decode::Decoder;
 use crate::error::Error;
@@ -75,6 +76,11 @@ impl Pipeline {
             too_big: Vec::new(),
             snapshot: None,
         }
+    }
+
+    /// The relation files of the tables it reads.
+    pub(crate) fn files(&self) -> FastSet<RelationFile> {
+        self.publisher.files().into_iter().collect()
     }
 
     /// Every transaction that commits from here on is whole in the WAL

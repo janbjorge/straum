@@ -53,7 +53,6 @@ pub(crate) struct Physical {
     connection: Connection,
     slot: String,
     records: Records,
-    start: u64,
     major: u32,
 }
 
@@ -79,7 +78,6 @@ impl Physical {
             connection,
             slot,
             records,
-            start: reserved.start.0,
             major: reserved.major,
         };
         Ok((physical, reserved.start))
@@ -93,7 +91,7 @@ impl Physical {
             if let Some(record) = self.records.next_record()? {
                 return Ok(Some(record.clone()));
             }
-            let Some(chunk) = next_chunk(&mut self.connection, self.start)? else {
+            let Some(chunk) = next_chunk(&mut self.connection, self.records.passed())? else {
                 return Ok(None);
             };
             self.records.feed(chunk.start, &chunk.bytes)?;
@@ -123,12 +121,13 @@ impl Physical {
         catalog: Connection,
         checked: Vec<Checked>,
     ) -> (Connection, Replay) {
+        let mut records = self.records;
+        records.pass_by_other_files(pipeline.files());
         let replay = Replay {
-            records: self.records,
+            records,
             pipeline,
             catalog,
             checked,
-            read: self.start,
         };
         (self.connection, replay)
     }
@@ -141,8 +140,6 @@ pub(crate) struct Replay {
     pub(crate) pipeline: Pipeline,
     catalog: Connection,
     checked: Vec<Checked>,
-    /// Every record before here is read.
-    read: u64,
 }
 
 /// What a new physical slot reserved, on which server.
@@ -205,14 +202,13 @@ impl Replay {
             commits.extend(self.pipeline.record(record, |xid| {
                 read_layouts_seeing(&mut self.catalog, &self.checked, xid, DDL_WAIT)
             })?);
-            self.read = record.next();
         }
         Ok(commits)
     }
 
-    /// The LSN before which every record is read.
+    /// The LSN before which every record is read or passed by.
     pub(crate) fn read(&self) -> u64 {
-        self.read
+        self.records.passed()
     }
 }
 

@@ -499,6 +499,10 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<Chunk> {
 fn replay(wal: &Wal, ends: &[u64], reader: &mut Reader) -> Vec<Read> {
     let mut reads = vec![Read::default(); ends.len()];
     let mut records = Records::new(wal.start, wal.segment_size);
+    // As the stream reads: past records of tables the pipeline doesn't.
+    if let Reader::Pipeline(read) = reader {
+        records.pass_by_other_files(read.pipeline.files());
+    }
     let mut phase = 0;
     let mut clock = Instant::now();
     for chunk in &wal.chunks {

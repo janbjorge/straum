@@ -28,6 +28,17 @@ values were most of the decoding. The load is plain SQL in a
 skipped. A table rewrite, DDL or a TOASTed value Straum can't rebuild
 is `Unfit` and starts Straum over. `--wal logical` stays the default.
 
+The reader knows the spec tables' relation files and passes by each
+record that names only other files' pages and whose resource manager
+is not XLOG, transaction, storage or standby: it reads the block
+headers in place and checks the page headers the record runs across,
+but neither copies, checksums nor decodes it. On a busy server nearly
+all WAL is such records, and the checksum and copy were most of
+reading it. A corrupt record of another table can't change a row
+Straum reads, and a corrupt length trips the next page header check;
+every record Straum reads is still checksummed. A record whose block
+headers run onto the next page is read whole.
+
 Page state keeps each changed page of the spec's tables, its rows
 whole as PostgreSQL has them. A row goes when a prune or vacuum frees
 its slot; a page goes once a checkpoint's redo point passes its last
@@ -41,7 +52,9 @@ length needs a partial column walk per major.
 - No `wal_level` change, publication or `REPLICA IDENTITY FULL`. The
   role still needs `REPLICATION`; the server needs `full_page_writes =
   on`.
-- The stream carries the whole server's WAL, every database.
+- The stream carries the whole server's WAL, every database; the
+  bench passes other tables' WAL at about 6 GB/s, above 2 GB/s for
+  splitting every record.
 - Memory is about 1.2 times the bytes of the spec tables' pages changed
   in one checkpoint cycle, plus open transactions' changes; wide tables
   cost more. A shorter `checkpoint_timeout` or a larger
@@ -53,4 +66,6 @@ length needs a partial column walk per major.
   included; the logical stream still errors on those.
 - Proof: on a `wal_level = logical` server both modes yield equal
   commits for a seeded workload; the view oracles pass in physical mode
-  under `replica`; page oracles against `pageinspect` compare rows.
+  under `replica`; page oracles against `pageinspect` compare rows; a
+  property test holds the records read with passing by to those an
+  unfiltered read keeps.

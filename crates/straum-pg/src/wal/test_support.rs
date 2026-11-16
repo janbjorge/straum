@@ -8,6 +8,8 @@
 
 use std::ops::Range;
 
+use straum_domain::FastSet;
+
 use super::reader::{
     BACKUP_REMOVABLE, FIRST_IS_CONTINUATION, LONG_HEADER, LONG_PAGE_HEADER, PAGE_ADDRESS_FIELD,
     PAGE_BLOCK_SIZE, PAGE_FLAGS_FIELD, PAGE_MAGIC, PAGE_REMAINING, PAGE_SEGMENT_SIZE, SHORT_HEADER,
@@ -519,7 +521,22 @@ pub(crate) fn read(
     wal_start: u64,
     start: u64,
 ) -> Result<Vec<Record>, WalError> {
+    read_passing_by(rng, wal, wal_start, start, None)
+}
+
+/// As [`read`], passing by the records that name only pages of files
+/// other than `files`, when it has some.
+pub(crate) fn read_passing_by(
+    rng: &mut Rng,
+    wal: &[u8],
+    wal_start: u64,
+    start: u64,
+    files: Option<FastSet<RelationFile>>,
+) -> Result<Vec<Record>, WalError> {
     let mut records = Records::new(start, SEGMENT);
+    if let Some(files) = files {
+        records.pass_by_other_files(files);
+    }
     let mut at = usize::try_from(page_start(start) - wal_start).unwrap();
     let mut read = Vec::new();
     while at < wal.len() {
