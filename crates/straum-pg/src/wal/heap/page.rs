@@ -11,7 +11,8 @@ use std::ops::Range;
 use super::super::{
     BLOCK_SIZE, Compression, Image, Problem, Record, SlotNumber, WalError, compress, read_u16,
 };
-use super::{HeapTuple, problem};
+use super::HeapTuple;
+use crate::wal::at;
 
 /// `xl_heap_header`, the part of a row's header the WAL logs:
 /// `t_infomask2`, `t_infomask`, `t_hoff`.
@@ -145,15 +146,15 @@ pub(super) fn restore(record: &Record, image: &Image) -> Result<Vec<u8>, WalErro
         Some(Compression::Pglz) => compress::pglz(stored, size),
         Some(Compression::Lz4) => compress::lz4(stored, size),
         Some(Compression::Zstd) => {
-            return Err(problem(lsn, Problem::ImageInZstd));
+            return Err(at(lsn, Problem::ImageInZstd));
         }
     };
     let hole = usize::from(image.hole_offset);
     let Some(raw) = decompressed else {
-        return Err(problem(lsn, Problem::ImageNotDecompressing));
+        return Err(at(lsn, Problem::ImageNotDecompressing));
     };
     if raw.len() != size || hole > size {
-        return Err(problem(lsn, Problem::ImageNotDecompressing));
+        return Err(at(lsn, Problem::ImageNotDecompressing));
     }
     let mut page = Vec::with_capacity(BLOCK_SIZE);
     page.extend_from_slice(&raw[..hole]);

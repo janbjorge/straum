@@ -815,7 +815,7 @@ fn refuses_page_images_it_can_not_read() {
 
 #[test]
 fn says_what_went_wrong() {
-    let error = problem(0x1_0000_0028, Problem::RowInSlotZero);
+    let error = at(0x1_0000_0028, Problem::RowInSlotZero);
     assert_eq!(error.to_string(), "WAL at 1/28 has a row in slot 0");
 }
 

@@ -20,7 +20,7 @@ use straum_domain::{FastMap, FastSet};
 use super::{
     Block, BlockNumber, Problem, RESOURCE_MANAGER_HEAP, RESOURCE_MANAGER_HEAP2,
     RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_STORAGE, RESOURCE_MANAGER_XLOG, Record, RelationFile,
-    WalError,
+    WalError, at,
 };
 use edit::{Edit, PruneLayout};
 pub(crate) use page::Page;
@@ -192,7 +192,7 @@ impl Heap {
         if is_checkpoint(record) {
             // `CheckPoint` opens with `redo`.
             let Some(redo) = record.main_data().first_chunk() else {
-                return Err(problem(record.lsn, Problem::CheckpointWithoutRedo));
+                return Err(at(record.lsn, Problem::CheckpointWithoutRedo));
             };
             self.evict(u64::from_le_bytes(*redo));
         }
@@ -210,7 +210,7 @@ impl Heap {
             match &block.image {
                 Some(image) if image.apply => {
                     let Some(page) = page_from_image(&restore(record, image)?) else {
-                        return Err(problem(record.lsn, Problem::UnreadableImage));
+                        return Err(at(record.lsn, Problem::UnreadableImage));
                     };
                     self.store(id, page);
                     edit.restored.push(block.id);
@@ -310,8 +310,4 @@ fn page_id(block: &Block) -> PageId {
         file: block.file,
         block: block.number,
     }
-}
-
-fn problem(lsn: u64, problem: Problem) -> WalError {
-    WalError::At { lsn, problem }
 }

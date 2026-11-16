@@ -12,7 +12,8 @@ use super::super::{
     Block, Problem, Record, RelationFile, SlotNumber, WalError, read_u16, read_u32,
 };
 use super::page::{HEADER_HOFF, HEAP_HEADER, TUPLE_HEADER, tuple_from_header};
-use super::{Heap, HeapChange, HeapTuple, INIT_PAGE, Page, PageId, page_id, problem};
+use super::{Heap, HeapChange, HeapTuple, INIT_PAGE, Page, PageId, page_id};
+use crate::wal::at;
 
 /// `SMGR_TRUNCATE_HEAP` in `xl_smgr_truncate.flags`: the table's own
 /// pages were cut, not only its maps.
@@ -160,7 +161,7 @@ impl PruneLayout {
 fn main_data(record: &Record, length: usize) -> Result<&[u8], WalError> {
     let main = record.main_data();
     if main.len() < length {
-        return Err(problem(record.lsn, Problem::ShortHeapRecord));
+        return Err(at(record.lsn, Problem::ShortHeapRecord));
     }
     Ok(main)
 }
@@ -178,7 +179,7 @@ fn block_with_id(record: &Record, id: u8) -> Option<&Block> {
 /// The record's main block, which every heap record has.
 fn main_block(record: &Record) -> Result<&Block, WalError> {
     let Some(block) = block_with_id(record, MAIN_BLOCK) else {
-        return Err(problem(record.lsn, Problem::HeapRecordWithoutPage));
+        return Err(at(record.lsn, Problem::HeapRecordWithoutPage));
     };
     Ok(block)
 }
@@ -186,7 +187,7 @@ fn main_block(record: &Record) -> Result<&Block, WalError> {
 impl Heap {
     fn page_mut(&mut self, lsn: u64, block: &Block) -> Result<&mut Page, WalError> {
         let Some(page) = self.pages.get_mut(&page_id(block)) else {
-            return Err(problem(lsn, Problem::PageWithoutImage));
+            return Err(at(lsn, Problem::PageWithoutImage));
         };
         Ok(page)
     }
@@ -194,7 +195,7 @@ impl Heap {
     /// A copy of the row in `slot`; the copy shares the row's bytes.
     fn row(&mut self, lsn: u64, block: &Block, slot: SlotNumber) -> Result<HeapTuple, WalError> {
         let Some(tuple) = self.page_mut(lsn, block)?.get(slot) else {
-            return Err(problem(lsn, Problem::MissingRow));
+            return Err(at(lsn, Problem::MissingRow));
         };
         Ok(tuple.clone())
     }
@@ -207,8 +208,7 @@ impl Heap {
         tuple: HeapTuple,
     ) -> Result<(), WalError> {
         let page = self.page_mut(lsn, block)?;
-        page.set(slot, tuple)
-            .ok_or(problem(lsn, Problem::RowInSlotZero))
+        page.set(slot, tuple).ok_or(at(lsn, Problem::RowInSlotZero))
     }
 
     pub(super) fn insert(&mut self, record: &Record, edit: &mut Edit) -> Result<(), WalError> {
@@ -221,7 +221,7 @@ impl Heap {
         }
         if edit.redoes(block) {
             let Some(tuple) = header_and_body(record.block_data(block)) else {
-                return Err(problem(record.lsn, Problem::ShortHeapRecord));
+                return Err(at(record.lsn, Problem::ShortHeapRecord));
             };
             self.put(record.lsn, block, slot, tuple)?;
         }
@@ -290,7 +290,7 @@ impl Heap {
         let old = self.row(record.lsn, old_block, old_slot)?;
         if edit.redoes(new_block) {
             let Some(new) = updated(record.block_data(new_block), flags, &old) else {
-                return Err(problem(record.lsn, Problem::UpdateMisfit));
+                return Err(at(record.lsn, Problem::UpdateMisfit));
             };
             self.put(record.lsn, new_block, new_slot, new)?;
         }
@@ -311,7 +311,7 @@ impl Heap {
     ) -> Result<(), WalError> {
         let main = main_data(record, MULTI_INSERT_SIZE)?;
         let Some(slots) = multi_insert_slots(record, main) else {
-            return Err(problem(record.lsn, Problem::ShortHeapRecord));
+            return Err(at(record.lsn, Problem::ShortHeapRecord));
         };
         let block = main_block(record)?;
         if !self.is_tracked(block) {
@@ -319,7 +319,7 @@ impl Heap {
         }
         if edit.redoes(block) {
             let Some(tuples) = multi_insert_tuples(record.block_data(block), slots.len()) else {
-                return Err(problem(record.lsn, Problem::ShortHeapRecord));
+                return Err(at(record.lsn, Problem::ShortHeapRecord));
             };
             for (slot, tuple) in slots.iter().zip(tuples) {
                 self.put(record.lsn, block, *slot, tuple)?;
@@ -344,7 +344,7 @@ impl Heap {
         }
         let flags = main[self.prune_layout.flags_at()];
         let Some(gone) = prune_slots(record.block_data(block), flags) else {
-            return Err(problem(record.lsn, Problem::ShortHeapRecord));
+            return Err(at(record.lsn, Problem::ShortHeapRecord));
         };
         let page = self.page_mut(record.lsn, block)?;
         for slot in gone {
