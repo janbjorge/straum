@@ -19,7 +19,7 @@
 
 use std::fmt::Write as _;
 
-use straum_app::{Held, HeldDim, HeldView};
+use straum_app::{Held, HeldDim, HeldView, ViewKey};
 use straum_domain::{ColumnType, Identifier};
 
 use crate::json::quoted;
@@ -113,10 +113,25 @@ fn view_text(view: &HeldView) -> String {
     )
 }
 
+/// A dim, and the view keys an ask reads it through: an ask names a view,
+/// never a dim.
 fn dim_text(dim: &HeldDim) -> String {
-    let HeldDim { table, rows } = dim;
+    let HeldDim {
+        table,
+        rows,
+        asked_as,
+    } = dim;
     let rows = counted(*rows, "row");
-    format!("dim {}.{}\n  holds:    {rows}\n", table.schema, table.name)
+    let mut text = format!("dim {}.{}\n  holds:    {rows}\n", table.schema, table.name);
+    if asked_as.is_empty() {
+        return text;
+    }
+    let mut keys = Vec::with_capacity(asked_as.len());
+    for ViewKey { view, key } in asked_as {
+        keys.push(format!("{view}.{key}"));
+    }
+    let _ = writeln!(text, "  asked as: {}", keys.join(", "));
+    text
 }
 
 fn counted(count: usize, thing: &str) -> String {
@@ -195,6 +210,10 @@ mod tests {
                 name: identifier("zones"),
             },
             rows,
+            asked_as: vec![ViewKey {
+                view: identifier("trips"),
+                key: identifier("borough"),
+            }],
         }
     }
 
@@ -233,8 +252,18 @@ view logins
 
 dim public.zones
   holds:    1 row
+  asked as: trips.borough
 "
         );
+    }
+
+    #[test]
+    fn a_dim_no_view_reads_from_says_only_its_rows() {
+        let unread = HeldDim {
+            asked_as: Vec::new(),
+            ..zones(2)
+        };
+        assert_eq!(dim_text(&unread), "dim public.zones\n  holds:    2 rows\n");
     }
 
     #[test]

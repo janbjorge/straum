@@ -113,6 +113,7 @@ view trips
 
 dim public.taxi_zones
   holds:    265 rows
+  asked as: trips.borough
 ```
 
 - `holds`: the [cells](how-it-works.md#cells) at the narrowest width,
@@ -122,6 +123,8 @@ dim public.taxi_zones
 - `keys`: every name an ask may group or filter by, each with the type
   a parameter for it must have.
 - `measures`: the names an ask may select after the keys.
+- `asked as`: the keys of the views that read a dim's columns. An ask
+  names a view, never a dim, so it reads the dim through these.
 
 Until every table is loaded it prints `not ready: ` and why, and exits
 with 3.

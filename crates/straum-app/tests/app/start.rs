@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
-use straum_app::{AnswerError, App, Held, HeldDim, HeldKey, HeldView, Lsn, Step};
+use straum_app::{AnswerError, App, Held, HeldDim, HeldKey, HeldView, Lsn, Step, ViewKey};
 use straum_domain::{
     AnswerRow, Ask, AskError, ColumnType, Condition, Instead, Literal, Table, Value, Width,
 };
@@ -145,6 +145,17 @@ fn held_says_what_the_store_holds_once_loaded() {
                 name: id("zones"),
             },
             rows: 1,
+            // Both views read the zone's borough; neither reads its id.
+            asked_as: vec![
+                ViewKey {
+                    view: id("trips"),
+                    key: id("borough"),
+                },
+                ViewKey {
+                    view: id("logins"),
+                    key: id("borough"),
+                },
+            ],
         }],
     };
     assert_eq!(writer.app().held(), Some(held));

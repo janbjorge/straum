@@ -399,6 +399,7 @@ view trips
 
 dim shop.zones
   holds:    2 rows
+  asked as: trips.borough
 "
     );
 

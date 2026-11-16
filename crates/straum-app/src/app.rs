@@ -174,11 +174,21 @@ pub struct HeldKey {
     pub column_type: ColumnType,
 }
 
-/// A dim's table, and how many rows of it the store holds.
+/// A dim's table, how many rows of it the store holds, and the view keys
+/// that read its columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldDim {
     pub table: Table,
     pub rows: usize,
+    /// An ask never reads a dim; it reads these keys of the views instead.
+    pub asked_as: Vec<ViewKey>,
+}
+
+/// A key of a view, as `view.key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewKey {
+    pub view: Identifier,
+    pub key: Identifier,
 }
 
 impl App {
@@ -253,6 +263,7 @@ impl App {
             dims.push(HeldDim {
                 table: dim.table.clone(),
                 rows: store.dim_rows(dim.name.as_str()).expect(IN_SPEC),
+                asked_as: asked_as(store.spec(), &dim.name),
             });
         }
         Some(Held { views, dims })
@@ -288,6 +299,25 @@ impl App {
     fn write(&self) -> RwLockWriteGuard<'_, State> {
         self.state.write().expect(POISONED)
     }
+}
+
+/// Each key a view reads from `dim` through a ref.
+fn asked_as(spec: &Spec, dim: &Identifier) -> Vec<ViewKey> {
+    let mut keys = Vec::new();
+    for fact in spec.facts() {
+        for join in &fact.refs {
+            if join.dim != *dim {
+                continue;
+            }
+            for attribute in &join.reads {
+                keys.push(ViewKey {
+                    view: fact.name.clone(),
+                    key: attribute.name.clone(),
+                });
+            }
+        }
+    }
+    keys
 }
 
 fn held_view(store: &Store, fact: &Fact) -> HeldView {

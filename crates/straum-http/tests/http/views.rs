@@ -52,6 +52,7 @@ view trips
 
 dim public.zones
   holds:    2 rows
+  asked as: trips.borough
 "
     );
     server.stop();

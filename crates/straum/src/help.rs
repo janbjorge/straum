@@ -87,7 +87,7 @@ usage: straum views [flags]
 
 Prints every view of the Straum at URL: its bucket widths, the cells and
 the range of buckets it holds, its keys with their types and its measures.
-Then each dim and its rows.
+Then each dim, its rows and the view keys that read it.
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
   --json     print each view's keys with their types, its measures and the

@@ -12,6 +12,6 @@ mod source;
 
 pub use app::{
     AnswerError, Answered, App, Error, Failure, Held, HeldDim, HeldKey, HeldView, Limits, Status,
-    Step, Writer, format_mebibytes,
+    Step, ViewKey, Writer, format_mebibytes,
 };
 pub use source::{Change, Commit, Lsn, Source, SourceError, Wal};

@@ -34,7 +34,8 @@ script waits on 3 and gives up on 1. Prose lives in the guide.
 No metrics and no OTLP. Straum writes what people read, as plain text:
 `GET /status` (ready or why not, lag, WAL held against the cap, LSN,
 `as_of`, starts and failures); `GET /views` (each view's widths,
-cells, bucket range, typed keys and measures, each dim's rows);
+cells, bucket range, typed keys and measures, each dim's rows and
+the view keys that read it);
 `GET /views/NAME` (the first 1000 rows of `App::rows_ask`); and `POST
 /ask` with `Accept: text/plain`. `/status` and `/views` with `Accept:
 application/json` serve programs. The binary prints those bodies:
