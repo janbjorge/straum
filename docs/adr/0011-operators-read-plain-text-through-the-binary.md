@@ -21,10 +21,11 @@ prints a setup for the default role `straum`.
 
 Help follows clig.dev: `straum help` lists the commands a line each;
 `straum <command> --help`, `-h` anywhere or `straum help <command>`
-prints its usage, flags with defaults and a guide link. An argument
-error prints the error and `try: straum <command> --help`. A bare
-`straum` prints the list on stderr with exit 2. Prose lives in the
-guide.
+prints its usage, flags with defaults and a guide link; `straum ask
+--help` adds the rules of an ask and examples a test runs against the
+README's spec. An argument error prints the error and `try: straum
+<command> --help`. A bare `straum` prints the list on stderr with exit
+2. Prose lives in the guide.
 
 No metrics and no OTLP. Straum writes what people read, as plain text:
 `GET /status` (ready or why not, lag, WAL held against the cap, LSN,

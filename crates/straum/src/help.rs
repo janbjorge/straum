@@ -98,6 +98,20 @@ PARAMETER is the value of $1, $2 and on: 7 is an integer, 20.5 a number
 exactly as written, true and false are booleans, anything else is a
 string, and '7' in quotes is the string 7.
 
+QUERY reads one view by the names straum views prints. Every value is a
+parameter. bucket >= $n AND bucket < $n bound the buckets read; both are
+needed. A selected key is also in GROUP BY. A measure is its name, never
+sum(...) or count(...).
+
+examples:
+  straum ask 'SELECT events FROM usage
+      WHERE bucket >= $1 AND bucket < $2' \\
+      2026-11-13T00:00:00Z 2026-11-14T00:00:00Z
+  straum ask 'SELECT region, events, amount FROM usage
+      WHERE kind = $1 AND bucket >= $2 AND bucket < $3
+      GROUP BY region' \\
+      purchase 2026-11-13T00:00:00Z 2026-11-14T00:00:00Z
+
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
@@ -124,3 +138,117 @@ and the bounds of the buckets held.
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-shell
 ";
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+    use straum_domain::{Literal, Spec};
+
+    use super::*;
+    use crate::client::parameter;
+    use crate::command_line::{Command, command};
+
+    const README: &str = include_str!("../../../README.md");
+
+    /// The spec the README shows, which the examples ask about.
+    fn readme_spec() -> Spec {
+        let start = README.find("CREATE VIEW usage").unwrap();
+        let length = README[start..].find("```").unwrap();
+        straum_notation::parse(&README[start..start + length]).unwrap()
+    }
+
+    /// The command lines under `examples:`, split into words as a shell
+    /// would: single quotes hold spaces and newlines, a backslash ends a
+    /// line without ending the command.
+    fn examples(help: &str) -> Vec<Vec<String>> {
+        let start = help.find("examples:\n").unwrap() + "examples:\n".len();
+        let length = help[start..].find("\n\n").unwrap();
+        let mut commands = Vec::new();
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut quoted = false;
+        let mut characters = help[start..start + length].chars().peekable();
+        while let Some(character) = characters.next() {
+            match character {
+                '\'' => quoted = !quoted,
+                '\\' if !quoted && characters.peek() == Some(&'\n') => {
+                    characters.next();
+                }
+                ' ' | '\n' if !quoted => {
+                    if !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                    }
+                    if character == '\n' {
+                        commands.push(std::mem::take(&mut words));
+                    }
+                }
+                _ => word.push(character),
+            }
+        }
+        words.push(word);
+        commands.push(words);
+        commands
+    }
+
+    /// A parameter as `straum ask` sends it, read back as the server does.
+    /// The examples pass only text: bounds and keys' values.
+    fn literal(text: &str) -> Literal {
+        let Value::String(text) = serde_json::from_str(&parameter(text)).unwrap() else {
+            panic!("an example passes {text}, which is no text");
+        };
+        Literal::Text(text)
+    }
+
+    /// Why `words` is no ask the README's spec answers, if it isn't.
+    fn check_example(spec: &Spec, words: &[String]) -> Result<(), String> {
+        let Some((first, rest)) = words.split_first() else {
+            return Err("no command".to_owned());
+        };
+        if first != "straum" {
+            return Err(format!("not a straum command: {words:?}"));
+        }
+        let Ok(Command::Ask {
+            query, parameters, ..
+        }) = command(rest)
+        else {
+            return Err(format!("not an ask: {words:?}"));
+        };
+        let mut literals = Vec::new();
+        for text in &parameters {
+            literals.push(literal(text));
+        }
+        let ask = match straum_notation::parse_ask(&query, &literals) {
+            Ok(ask) => ask,
+            Err(errors) => return Err(format!("{query}: {errors:?}")),
+        };
+        match spec.check_ask(&ask) {
+            Ok(_) => Ok(()),
+            Err(errors) => Err(format!("{query}: {errors:?}")),
+        }
+    }
+
+    #[test]
+    fn every_ask_example_is_an_ask_the_readme_spec_answers() {
+        let spec = readme_spec();
+        let commands = examples(ASK_HELP);
+        assert_eq!(commands.len(), 2);
+        for words in commands {
+            assert_eq!(check_example(&spec, &words), Ok(()));
+        }
+    }
+
+    #[test]
+    fn an_example_that_drifts_fails() {
+        let spec = readme_spec();
+        let drifted = "examples:\n  straum ask 'SELECT region, events FROM usage\n      \
+            WHERE bucket >= $1 AND bucket < $2' \\\n      1970-01-01T00:00:00Z 1970-01-02T00:00:00Z\n\n";
+        for words in examples(drifted) {
+            let error = check_example(&spec, &words).unwrap_err();
+            assert!(error.contains("KeyNotGrouped"), "{error}");
+        }
+        let not_straum = ["ls".to_owned()];
+        assert!(check_example(&spec, &not_straum).is_err());
+        let not_ask = ["straum".to_owned(), "status".to_owned()];
+        assert!(check_example(&spec, &not_ask).is_err());
+    }
+}

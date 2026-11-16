@@ -190,7 +190,7 @@ pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<Strin
 /// which type it is: an integer, a decimal such as `20.5`, `true` or
 /// `false`, else a string. Quotes make a string of what would read as one
 /// of the others.
-fn parameter(text: &str) -> String {
+pub(crate) fn parameter(text: &str) -> String {
     if let Ok(integer) = text.parse::<i64>() {
         return integer.to_string();
     }
