@@ -94,8 +94,9 @@ pub(crate) const ASK_HELP: &str = "\
 usage: straum ask [flags] QUERY [PARAMETER...]
 
 Sends QUERY to the Straum at URL and prints the answer as a table. Each
-PARAMETER is the value of $1, $2 and on: 7 is an integer, true and false
-are booleans, anything else is a string, and '7' in quotes is the string 7.
+PARAMETER is the value of $1, $2 and on: 7 is an integer, 20.5 a number
+exactly as written, true and false are booleans, anything else is a
+string, and '7' in quotes is the string 7.
 
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
