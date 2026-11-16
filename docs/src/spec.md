@@ -1,4 +1,4 @@
-# Writing a spec
+# Spec
 
 A spec is a file of `CREATE VIEW` statements, one per table you
 aggregate, in a small subset of PostgreSQL's syntax. PostgreSQL would

@@ -1,11 +1,12 @@
 # Setting up PostgreSQL
 
-Straum supports PostgreSQL 17 and newer, self-hosted or managed; its
-tests run on 17, 18 and the 19 release candidate. It uses logical
-replication with `pgoutput`, a temporary slot and an exported snapshot,
-with no extension and no superuser. Setup is three steps, done once.
-Where `wal_level = logical` can't be had, Straum can read the physical
-WAL instead: see [Without logical decoding](#without-logical-decoding).
+How do you connect your own database? Straum supports PostgreSQL 17 and
+newer, self-hosted or managed; its tests run on 17, 18 and the 19
+release candidate. It uses logical replication with `pgoutput`, a
+temporary slot and an exported snapshot, with no extension and no
+superuser. Setup is three steps, done once. Where `wal_level = logical`
+can't be had, Straum can read the physical WAL instead: see [Without
+logical decoding](#without-logical-decoding).
 
 ## 1. Turn on logical decoding
 
@@ -31,7 +32,7 @@ tables. With `STRAUM_DSN` or `--dsn-file` set, the role is the DSN's
 user, and its password goes in as a SCRAM-SHA-256 verifier, so the
 password itself appears in neither the SQL nor the server's log. Without
 a DSN the role is `straum` and the SQL says how to give it a password.
-For the `usage` view of [Writing a spec](spec.md#synopsis):
+For the `usage` view of [Spec](spec.md#synopsis):
 
 ```sql
 -- Straum setup: run once, as an owner of the tables.
@@ -199,3 +200,5 @@ logical stream over:
   rewrites one of the spec's tables: its rows move to a new file.
   `ADD COLUMN`, `DROP COLUMN` and other DDL that keeps the file are
   followed.
+
+Next: [Deploying Straum](deploy.md), to run it next to your apps.

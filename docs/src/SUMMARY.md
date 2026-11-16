@@ -4,22 +4,25 @@
 
 - [Quick start](quick-start.md)
 
-# Using Straum
-
-- [Writing a spec](spec.md)
-- [Asking](asks.md)
-- [Setting up PostgreSQL](postgresql.md)
-- [Deploying Straum](deploy.md)
-- [Command line](cli.md)
-
-# Understanding Straum
+# Concepts
 
 - [How Straum works](how-it-works.md)
 - [Aggregates 101](aggregates.md)
+
+# Running Straum
+
+- [Setting up PostgreSQL](postgresql.md)
+- [Deploying Straum](deploy.md)
 - [Performance](performance.md)
+
+# Reference
+
+- [Spec](spec.md)
+- [Asks and endpoints](asks.md)
+- [Command line](cli.md)
+- [Glossary](glossary.md)
 
 # Contributing
 
 - [Design](design.md)
 - [Reading the code](reading-the-code.md)
-- [Glossary](glossary.md)

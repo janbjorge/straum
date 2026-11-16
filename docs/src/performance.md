@@ -2,8 +2,8 @@
 
 What should you expect from Straum? Its benchmark sends Straum and
 PostgreSQL the same asks about six months of New York taxi trips,
-checks that the answers are equal, and times both. [Memory](#memory) at the end is what two real tables
-measured.
+checks that the answers are equal, and times both. [Memory](#memory)
+at the end is what two real tables measured.
 
 The data is the TLC yellow trips of January to June 2024, 20,332,093
 trips, and the 265 rows of `taxi_zone_lookup.csv`.
@@ -375,3 +375,7 @@ PostgreSQL has an index on `completed` here, and these are the plain
 queries the asks mirror, not a dashboard's own. Straum reads the cells
 of one width in the range, about a cell a task, and maps each through
 the projections, so an ask over a week costs more than one over a day.
+
+That ends the path. The reference has the rest: every rule of a
+[spec](spec.md), every [ask and endpoint](asks.md) and every
+[command and flag](cli.md).

@@ -49,7 +49,7 @@ PostgreSQL would give the same rows for this view. Straum never creates
 it; it keeps one cell per hour, payment type, pickup zone and borough
 in memory. `WITH (buckets = ...)` lists every bucket width it keeps:
 the hour of the `date_bin`, then days and weeks for long ranges.
-[Writing a spec](spec.md) explains each line.
+[Spec](spec.md) explains each line.
 
 ## 3. Set up PostgreSQL and run Straum
 
@@ -108,7 +108,7 @@ curl --json '{
 ```
 
 Every commit made before `as_of` is in the answer, and every value in
-an ask is a parameter. [Asking](asks.md) explains the query, the
+an ask is a parameter. [Asks](asks.md) explains the query, the
 parameters and the answer.
 
 ## Change the data
@@ -172,7 +172,7 @@ The same steps work on a database you have:
 
 1. Take the `GROUP BY` your app runs most and write it as a view: the
    time column in `date_bin`, the columns it filters and groups by as
-   keys, its aggregates as measures ([Writing a spec](spec.md)).
+   keys, its aggregates as measures ([Spec](spec.md)).
 2. `straum plan FILE` prints the setup SQL, or what is wrong with the
    spec. A table owner runs the SQL once. PostgreSQL 17 and 18 also
    need `wal_level = logical`, which takes a restart, or
@@ -181,3 +181,6 @@ The same steps work on a database you have:
 
 Start with few keys. Memory follows cells, one per distinct
 combination of keys and bucket ([Cells](how-it-works.md#cells)).
+
+Next: [How Straum works](how-it-works.md), what Straum keeps and how it
+stays current.

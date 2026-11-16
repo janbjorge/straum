@@ -1,10 +1,10 @@
 # How Straum works
 
-Straum keeps cells, not rows. This page is the model behind every
-other page: how the tables get in, what a cell is, how a
-dim reaches it, how a commit changes cells, and what an ask reads.
-[Design](design.md) is the same model with the code's names, for
-contributors.
+How does Straum answer without reading rows? It keeps cells, not
+rows. This page is the model behind every other page: how the tables
+get in, what a cell is, how a dim reaches it, how a commit changes
+cells, and what an ask reads. [Design](design.md) names the code
+behind it, for contributors.
 
 ## Load once, follow every commit
 
@@ -207,5 +207,8 @@ cells an ask reads does.
 
 Every answer carries `as_of`, and every commit made before it is in
 the answer. Following is asynchronous, so an answer can predate a
-client's own commit; [Asking](asks.md#seeing-your-own-write) says how
-to wait for it.
+client's own commit; [Seeing your own
+write](asks.md#seeing-your-own-write) says how to wait for it.
+
+Next: [Aggregates 101](aggregates.md), what each measure keeps in a
+cell.

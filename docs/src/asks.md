@@ -1,7 +1,7 @@
 # Asks and endpoints
 
 An ask is a JSON object sent to `POST /ask`: a query and its parameters.
-The examples ask the `usage` view of [Writing a spec](spec.md#synopsis).
+The examples ask the `usage` view of [Spec](spec.md#synopsis).
 This one asks for purchases in two regions per hour, from 9:00 to
 12:00 UTC:
 

@@ -1,7 +1,8 @@
 # Aggregates 101
 
-Straum never holds a row. It holds [cells](how-it-works.md#cells), and
-that asks two things of every aggregate:
+What does a measure cost? Straum never holds a row. It holds
+[cells](how-it-works.md#cells), and that asks two things of every
+aggregate:
 
 1. **Can cells merge?** An ask reads many cells and merges them into
    one answer per group.
@@ -157,3 +158,6 @@ Straum's answers are exact and follow deletes, so it has no sketch
 The sources behind this page, and how PostgreSQL and other systems
 handle the same two questions, are in
 [AGGREGATES.md](https://github.com/janbjorge/straum/blob/main/research/AGGREGATES.md).
+
+Next: [Setting up PostgreSQL](postgresql.md), to connect a database of
+your own.
