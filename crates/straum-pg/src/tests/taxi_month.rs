@@ -3,7 +3,6 @@
 //! Slow, so ignored by default.
 
 use std::path::Path;
-use std::process;
 use std::time::Instant;
 
 use straum_app::{App, Step, Writer};
@@ -11,7 +10,6 @@ use testcontainers::ImageExt;
 
 use super::references::*;
 use super::support::*;
-use crate::dsn::Dsn;
 use crate::source::{Postgres, Replication};
 use crate::wire::{Connection, ConnectionKind};
 
@@ -80,36 +78,17 @@ const SHARED_MEMORY_BYTES: u64 = 1 << 30;
 /// PostgreSQL 18 with the taxi month, which `bench/load_taxi_trips.py`
 /// puts there.
 fn taxi_month_postgres(root: &Path) -> PostgresContainer {
-    let Running { container, port } = start(
+    let pg = plain(
         image("18")
             .with_shm_size(SHARED_MEMORY_BYTES)
             .with_cmd(["-c", "wal_level=logical"]),
     );
-    let url = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
-    let dsn = Dsn::parse(&url).unwrap();
     let clock = Instant::now();
-    let mut loader = process::Command::new(root.join("bench/load_taxi_trips.py"))
-        .arg("--data")
-        .arg(root.join("bench/data"))
-        .stdout(process::Stdio::piped())
-        .spawn()
-        .expect("bench/load_taxi_trips.py runs with uv");
-    let psql = process::Command::new("docker")
-        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
-        .stdin(loader.stdout.take().unwrap())
-        .status()
-        .unwrap();
-    assert!(psql.success(), "psql: {psql}");
-    let exit = loader.wait().unwrap();
-    assert!(exit.success(), "bench/load_taxi_trips.py: {exit}");
-    let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
+    load_taxi_month(root, &pg.container);
+    let mut sql = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     let trips = sql.rows("SELECT count(*) FROM yellow_trips").unwrap();
     eprintln!("copied {:?} trips in {:.1?}", trips[0][0], clock.elapsed());
-    PostgresContainer {
-        container,
-        dsn,
-        _ca: None,
-    }
+    pg
 }
 
 /// The whole `taxi.sql` view, and a coarse ask, the use case: it reads

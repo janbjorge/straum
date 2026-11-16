@@ -20,7 +20,7 @@ use crate::pgoutput::{self, CopyMessage};
 use crate::physical::read_layouts;
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::{POLL, status_update};
-use crate::tests::support::{PostgresContainer, image, plain, tag};
+use crate::tests::support::{PostgresContainer, image, load_taxi_month, plain, tag};
 use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
@@ -132,7 +132,9 @@ fn physical_wal_bench() {
         Err(_) => DEFAULT_RUNS,
     };
     let PostgresContainer { container, dsn, .. } = start_postgres();
-    load_month(&root, &container);
+    let clock = Instant::now();
+    load_taxi_month(&root, &container);
+    eprintln!("loaded the taxi month in {:.1?}", clock.elapsed());
     let mut sql = Connection::connect(&dsn, ConnectionKind::Sql).unwrap();
     let mut stream = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
     let setup = set_up(&root, &mut sql, &mut stream);
@@ -402,29 +404,6 @@ fn count_images(record: &Record) -> usize {
         }
     }
     images
-}
-
-/// The taxi month in PostgreSQL, as `taxi_month` loads it.
-fn load_month(root: &Path, container: &Container<GenericImage>) {
-    let clock = Instant::now();
-    let mut loader = process::Command::new(root.join("bench/load_taxi_trips.py"))
-        .arg("--data")
-        .arg(root.join("bench/data"))
-        .stdout(process::Stdio::piped())
-        .spawn()
-        .expect("bench/load_taxi_trips.py runs with uv");
-    let psql_status = process::Command::new("docker")
-        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
-        .stdin(loader.stdout.take().unwrap())
-        .status()
-        .unwrap();
-    assert!(psql_status.success(), "psql: {psql_status}");
-    let loader_status = loader.wait().unwrap();
-    assert!(
-        loader_status.success(),
-        "bench/load_taxi_trips.py: {loader_status}"
-    );
-    eprintln!("loaded the taxi month in {:.1?}", clock.elapsed());
 }
 
 /// The scripts of the copy phase, each one `COPY` of trips already there,

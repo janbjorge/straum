@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
 use std::time::Duration;
@@ -202,6 +202,26 @@ pub(crate) fn image(tag: &str) -> GenericImage {
         // The init server says it on stdout, the real one on stderr.
         .with_wait_for(WaitFor::message_on_stdout(READY))
         .with_wait_for(WaitFor::message_on_stderr(READY))
+}
+
+/// Loads January's taxi trips into the PostgreSQL in `container`:
+/// `bench/load_taxi_trips.py` writes the SQL and `psql` in the container
+/// runs it.
+pub(crate) fn load_taxi_month(root: &Path, container: &Container<GenericImage>) {
+    let mut loader = process::Command::new(root.join("bench/load_taxi_trips.py"))
+        .arg("--data")
+        .arg(root.join("bench/data"))
+        .stdout(process::Stdio::piped())
+        .spawn()
+        .expect("bench/load_taxi_trips.py runs with uv");
+    let psql = process::Command::new("docker")
+        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
+        .stdin(loader.stdout.take().unwrap())
+        .status()
+        .unwrap();
+    assert!(psql.success(), "psql: {psql}");
+    let exit = loader.wait().unwrap();
+    assert!(exit.success(), "bench/load_taxi_trips.py: {exit}");
 }
 
 /// A container PostgreSQL runs in, and its port on the host.
