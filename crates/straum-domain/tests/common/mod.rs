@@ -1,18 +1,15 @@
 //! Helpers the test binaries share: builders for spec pieces, the SQL
-//! rules a reference needs (`=` and `percentile_disc`), a seeded random
-//! number source, and `Spilled`, which seals and thaws buckets beside a
-//! store the way the writer and a spill do.
+//! rules a reference needs (`=` and `percentile_disc`), and a seeded
+//! random number source.
 
 // Every test binary compiles this module and uses only some of it.
 // `#[expect(dead_code)]` would fail in a binary that uses all of it,
 // so this is the one `allow` AGENTS.md permits.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
-
 use straum_domain::{
-    Aggregate, Answer, Ask, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal,
-    Measure, Sealed, SealedId, Store, Table, Value,
+    Aggregate, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal, Measure, Table,
+    Value,
 };
 
 /// `percentile_disc(units / 10^places)` over `column`.
@@ -137,9 +134,6 @@ fn equals(value: &Datum, literal: &Literal) -> bool {
     }
 }
 
-/// Of the buckets [`Spilled::seal`] may seal, the share it does seal.
-const SEALED_PERCENT: usize = 70;
-
 /// A splitmix64 sequence from its seed, the one field; the tests need no
 /// crate for randomness. The unit tests in `src/` have their own copy,
 /// which these tests can't reach.
@@ -185,63 +179,5 @@ impl Rng {
     // names, rows and kinds alike, and use the pick in place.
     pub fn pick<'a, Item>(&mut self, items: &'a [Item]) -> &'a Item {
         &items[self.below(items.len())]
-    }
-}
-
-/// The sealed buckets of one fact kept aside, as a spill keeps them.
-pub struct Spilled {
-    fact: &'static str,
-    buckets: HashMap<SealedId, Sealed>,
-    /// Sealed buckets asks read.
-    pub read: usize,
-}
-
-impl Spilled {
-    pub fn new(fact: &'static str) -> Spilled {
-        Spilled {
-            fact,
-            buckets: HashMap::new(),
-            read: 0,
-        }
-    }
-
-    /// Seals every bucket that ends by `before`, or some of them.
-    pub fn seal(&mut self, rng: &mut Rng, store: &mut Store, before: i64) {
-        for id in store.sealable(before) {
-            if rng.chance(SEALED_PERCENT) {
-                let sealed = store.sealed_copy(&id).unwrap();
-                store.seal(&id).unwrap();
-                self.buckets.insert(id, sealed);
-            }
-        }
-    }
-
-    /// Unseals the buckets a row falls in, as the writer does before it
-    /// applies a change.
-    pub fn unseal(&mut self, store: &mut Store, row: &[Datum]) {
-        for id in store.sealed_touched(self.fact, row) {
-            let thawed = store.thaw(self.buckets.remove(&id).unwrap()).unwrap();
-            store.unseal(thawed).unwrap();
-        }
-    }
-
-    /// Forgets every bucket, as the writer does when the fact is
-    /// truncated.
-    pub fn forget(&mut self) {
-        self.buckets.clear();
-    }
-
-    /// The answer, and that the buckets kept are the ones the store has
-    /// sealed and no more.
-    pub fn ask(&mut self, store: &Store, ask: &Ask) -> Answer {
-        let mut kept: Vec<&SealedId> = self.buckets.keys().collect();
-        kept.sort();
-        assert_eq!(kept, store.sealed(self.fact).iter().collect::<Vec<_>>());
-        let mut thawed = Vec::new();
-        for id in store.sealed_read(ask).unwrap() {
-            thawed.push(store.thaw(self.buckets[&id].clone()).unwrap());
-        }
-        self.read += thawed.len();
-        store.ask_with(ask, &thawed).unwrap()
     }
 }

@@ -19,11 +19,9 @@ use crate::value::{ColumnType, Datum};
 mod cells;
 mod level;
 mod row_error;
-mod sealing;
 mod state;
 
 pub(crate) use cells::Cells;
-pub(crate) use level::Bucket;
 use level::{CodedRows, Level, MoveCell, Shift};
 pub use row_error::RowError;
 pub(crate) use row_error::{arity, split_rows};
@@ -65,12 +63,12 @@ pub(crate) struct BucketId {
     pub(crate) start: i64,
 }
 
-/// A bucket an ask reads, hot or sealed.
+/// A bucket an ask reads.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoveredBucket<'r> {
     pub(crate) id: BucketId,
     // Borrowed: a bucket's cells are the bulk of the store.
-    pub(crate) bucket: &'r Bucket,
+    pub(crate) cells: &'r Cells,
 }
 
 /// Which buckets [`Rollup::cover`] picks for a range.
@@ -106,10 +104,8 @@ pub(crate) struct Rollup {
     codes: Vec<Codes>,
     /// The `date_bin` width first, then the wider ones.
     levels: Vec<Level>,
-    /// Cells at the `date_bin` width, sealed ones included.
+    /// Cells at the `date_bin` width.
     cells: usize,
-    /// Sealed buckets, every width.
-    sealed: usize,
     /// The codes of the row [`Rollup::add`] is adding, kept to spare it an
     /// allocation per row.
     key: Vec<u32>,
@@ -239,7 +235,6 @@ impl Rollup {
             key_columns,
             inputs,
             cells: 0,
-            sealed: 0,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
             columns,
@@ -257,13 +252,8 @@ impl Rollup {
         self.cells
     }
 
-    /// Sealed buckets, every width.
-    pub(crate) fn sealed_count(&self) -> usize {
-        self.sealed
-    }
-
     /// From the start of the first `date_bin` bucket to the end of the
-    /// last, sealed ones included. Rows without a time are in no bucket
+    /// last. Rows without a time are in no bucket
     /// an ask reads, so they count for nothing here.
     pub(crate) fn range(&self) -> Option<Range<i64>> {
         let level = &self.levels[DATE_BIN.0];
@@ -286,7 +276,6 @@ impl Rollup {
             *codes = Codes::default();
         }
         self.cells = 0;
-        self.sealed = 0;
     }
 
     /// Only the source knows the row's types, so a load sets them; they are
@@ -453,41 +442,11 @@ impl Rollup {
         None
     }
 
-    /// The `date_bin` width, in seconds.
-    pub(crate) fn date_bin_width(&self) -> i64 {
-        self.levels[DATE_BIN.0].width
-    }
-
-    /// Hot `date_bin` buckets, oldest first. `None` is the null-time
-    /// bucket: no ask reads it, and a dim change still has to move it.
-    pub(crate) fn hot_date_bin_starts(&self) -> Vec<Option<i64>> {
-        let level = &self.levels[DATE_BIN.0];
-        let mut starts = Vec::new();
-        for (start, bucket) in &level.buckets {
-            if let Bucket::Hot(_) = bucket {
-                starts.push(*start);
-            }
-        }
-        starts
-    }
-
-    /// The cells of a hot `date_bin` bucket; none if it is sealed or has
-    /// no cells.
-    pub(crate) fn hot_date_bin(&self, start: Option<i64>) -> Option<&Cells> {
-        let bucket = self.levels[DATE_BIN.0].buckets.get(&start)?;
-        bucket.cells()
-    }
-
-    /// A sealed `date_bin` bucket overlaps `[from, to)`. Asks are aligned
-    /// to that width, so a bucket in the range starts inside it.
-    pub(crate) fn overlaps_sealed(&self, from: i64, to: i64) -> bool {
-        let level = &self.levels[DATE_BIN.0];
-        for (_, bucket) in level.buckets.range(Some(from)..Some(to)) {
-            if let Bucket::Sealed { .. } = bucket {
-                return true;
-            }
-        }
-        false
+    /// The `date_bin` buckets by start, oldest first. `None` is the
+    /// null-time bucket: no ask reads it, and a dim change still has to
+    /// move it.
+    pub(crate) fn date_bin_buckets(&self) -> &BTreeMap<Option<i64>, Cells> {
+        &self.levels[DATE_BIN.0].buckets
     }
 
     /// Where among the cells' states an aggregate finds its own; none for
@@ -551,9 +510,6 @@ impl Rollup {
                     column: self.columns[column].clone(),
                 });
             }
-        }
-        if self.touches_sealed(&row[TIME]) {
-            return Err(RowError::Sealed);
         }
         Ok(())
     }

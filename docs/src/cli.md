@@ -59,7 +59,6 @@ WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
 starts:       1
 failures:     0
 last failure: none
-sealed:       no spill
 ```
 
 - `ready`: `yes`, or `no` and why, as `/readyz` says.
@@ -70,7 +69,6 @@ sealed:       no spill
   `--max-retained-wal`.
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
-- `sealed`: `no spill`. The shipped binary has no spill configuration.
 
 ## straum views
 

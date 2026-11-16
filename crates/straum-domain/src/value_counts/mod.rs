@@ -12,7 +12,6 @@ mod tests;
 use std::collections::{BTreeMap, btree_map};
 use std::mem;
 
-use crate::sealed::ValueCount;
 use records::{
     Placement, Records, Search, Taken, Widths, byte, count_width, key_of, put, record, runs_into,
     settled, signed_width, take, write,
@@ -32,6 +31,13 @@ const RUN_HEADER: usize = 12;
 /// Most bytes in one run. Adding a value moves half the run on average,
 /// which at this many costs about what finding the run among others does.
 const RUN_MAX_BYTES: usize = 4 << 10;
+
+/// One value a min or max column holds, and how many rows hold it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ValueCount {
+    pub(crate) value: i64,
+    pub(crate) count: u64,
+}
 
 /// One cell's count per value, ascending by value. A record is a value
 /// less its run's base, in as many bytes as the widest of the run takes,

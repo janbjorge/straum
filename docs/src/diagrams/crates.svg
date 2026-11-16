@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="476" viewBox="0 0 720 476" role="img" aria-labelledby="t d">
   <title id="t">Crates depend inward only</title>
-  <desc id="d">Six crates. The straum binary depends on the three adapters: straum-notation, straum-pg and straum-http, and on straum-app. straum-pg and straum-http depend on straum-app, which holds the use cases and the ports Source and Spill. Every crate depends on straum-domain, which has no I/O and no dependencies.</desc>
+  <desc id="d">Six crates. The straum binary depends on the three adapters: straum-notation, straum-pg and straum-http, and on straum-app. straum-pg and straum-http depend on straum-app, which holds the use cases and the port Source. Every crate depends on straum-domain, which has no I/O and no dependencies.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -107,7 +107,7 @@
   <rect class="accbox" x="258" y="312" width="204" height="80" rx="8"/>
   <text x="272" y="337" class="h mono acc">straum-app</text>
   <text x="272" y="358" class="s ink2">use cases, Writer</text>
-  <text x="272" y="377" class="s ink2">ports: Source, Spill</text>
+  <text x="272" y="377" class="s ink2">port: Source</text>
   <rect class="box2" x="24" y="412" width="672" height="44" rx="8"/>
   <text x="38" y="440" class="h mono" text-anchor="start">straum-domain</text>
   <text x="184" y="440" class="s ink2" text-anchor="start">every crate uses it; no I/O, no dependencies</text>

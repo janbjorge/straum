@@ -166,12 +166,6 @@ impl Counts {
         }
     }
 
-    /// A column of `counts`, in the narrowest type that holds them.
-    pub(crate) fn of(counts: &[u64]) -> Counts {
-        let most = counts.iter().copied().max().unwrap_or(0);
-        Counts::holding(most, counts.len(), counts.iter().copied())
-    }
-
     /// Cells counted.
     pub(crate) fn len(&self) -> usize {
         match self {
@@ -354,13 +348,6 @@ impl Sums {
         }
     }
 
-    /// A column of `sums`, in the narrowest type that holds them.
-    pub(crate) fn of(sums: &[i128]) -> Sums {
-        let least = sums.iter().copied().min().unwrap_or(0);
-        let greatest = sums.iter().copied().max().unwrap_or(0);
-        Sums::holding(least, greatest, sums.len(), sums.iter().copied())
-    }
-
     /// Cells summed.
     pub(crate) fn len(&self) -> usize {
         match self {
@@ -474,6 +461,19 @@ impl Iterator for SumsIter<'_> {
 mod tests {
     use super::*;
 
+    /// A column of `counts`, in the narrowest type that holds them.
+    fn counts_of(counts: &[u64]) -> Counts {
+        let most = counts.iter().copied().max().unwrap_or(0);
+        Counts::holding(most, counts.len(), counts.iter().copied())
+    }
+
+    /// A column of `sums`, in the narrowest type that holds them.
+    fn sums_of(sums: &[i128]) -> Sums {
+        let least = sums.iter().copied().min().unwrap_or(0);
+        let greatest = sums.iter().copied().max().unwrap_or(0);
+        Sums::holding(least, greatest, sums.len(), sums.iter().copied())
+    }
+
     use crate::test_rng::Rng;
 
     fn width(counts: &Counts) -> usize {
@@ -567,7 +567,7 @@ mod tests {
                 }
                 widest = widest.max(list.iter().copied().max().unwrap_or(0));
                 assert_eq!(counts.len(), list.len(), "{at}");
-                assert_eq!(width(&counts), width(&Counts::of(&[widest])), "{at}");
+                assert_eq!(width(&counts), width(&counts_of(&[widest])), "{at}");
                 if step % 97 == 0 {
                     assert!(counts.iter().eq(list.iter().copied()), "{at}");
                     assert_eq!(counts.total(), list.iter().sum::<u64>(), "{at}");
@@ -579,7 +579,7 @@ mod tests {
                         every_cell(&list, 0)
                     };
                     assert_eq!(read(&counts, &beside), expected, "{at}");
-                    let anew = Counts::of(&list);
+                    let anew = counts_of(&list);
                     assert!(anew.iter().eq(list.iter().copied()), "{at}");
                     assert!(width(&anew) <= width(&counts), "{at}");
                 }
@@ -601,8 +601,8 @@ mod tests {
             (0x1_0000_0000, 8),
             (u64::MAX, 8),
         ] {
-            assert_eq!(width(&Counts::of(&[0, count, 0])), bytes, "{count}");
-            let mut counts = Counts::of(&[0, 0, 0]);
+            assert_eq!(width(&counts_of(&[0, count, 0])), bytes, "{count}");
+            let mut counts = counts_of(&[0, 0, 0]);
             counts.set(1, count);
             assert_eq!(width(&counts), bytes, "{count} set");
             assert!(counts.iter().eq([0, count, 0]), "{count} set");
@@ -641,7 +641,7 @@ mod tests {
                 assert_eq!(sums.len(), list.len(), "{at}");
                 assert_eq!(
                     sum_width(&sums),
-                    sum_width(&Sums::of(&[least, greatest])),
+                    sum_width(&sums_of(&[least, greatest])),
                     "{at}"
                 );
                 if step % 97 == 0 {
@@ -649,7 +649,7 @@ mod tests {
                     assert_eq!(sums.total(), list.iter().sum::<i128>(), "{at}");
                     let beside: Vec<usize> = (0..list.len()).collect();
                     for counts in [0, 9, 300, 70_000, 5_000_000_000] {
-                        let rows = Counts::of(&vec![counts; list.len()]);
+                        let rows = counts_of(&vec![counts; list.len()]);
                         let mut seen = Vec::new();
                         sums.each(&rows, &beside, |cell, beside, sum, count| {
                             seen.push(Visit {
@@ -661,7 +661,7 @@ mod tests {
                         });
                         assert_eq!(seen, every_cell(&list, counts), "{at}, beside {counts}");
                     }
-                    assert!(Sums::of(&list).iter().eq(list.iter().copied()), "{at}");
+                    assert!(sums_of(&list).iter().eq(list.iter().copied()), "{at}");
                 }
             }
         }
@@ -681,8 +681,8 @@ mod tests {
             (i128::from(i64::MAX) + 1, 16),
             (i128::from(i64::MIN) - 1, 16),
         ] {
-            assert_eq!(sum_width(&Sums::of(&[1, sum, -1])), bytes, "{sum}");
-            let mut sums = Sums::of(&[1, 0, -1]);
+            assert_eq!(sum_width(&sums_of(&[1, sum, -1])), bytes, "{sum}");
+            let mut sums = sums_of(&[1, 0, -1]);
             sums.add(1, sum);
             assert_eq!(sum_width(&sums), bytes, "{sum} added");
             assert!(sums.iter().eq([1, sum, -1]), "{sum} added");

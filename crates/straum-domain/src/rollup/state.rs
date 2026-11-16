@@ -2,13 +2,11 @@
 //! can answer, such as a count of nulls, a sum, or a count per value for
 //! a min or max. Each state is a column with one entry per cell of a
 //! bucket. A row's value goes into one entry; a whole cell's entries move
-//! between keyed and bound cells; a sealed bucket's states go out to a
-//! spill and come back checked.
+//! between keyed and bound cells.
 
 use crate::aggregate::Reads;
 use crate::column::{Counts, Sums, put};
 use crate::hash::FastMap;
-use crate::sealed::{DatumCount, SealedColumn, ValueCount};
 use crate::value::Datum;
 use crate::value_counts::ValueCounts;
 
@@ -133,75 +131,6 @@ impl State {
                 trues.swap_remove(cell);
                 falses.swap_remove(cell);
             }
-        }
-    }
-
-    /// The column as a spill keeps it; `rows` are the cells' rows.
-    pub(super) fn sealed(&self, rows: &Counts) -> SealedColumn {
-        match self {
-            State::Count { nulls } => SealedColumn::Count {
-                counts: present(rows, nulls),
-            },
-            State::Sum { sums, nulls } => SealedColumn::Sum {
-                sums: sums.iter().collect(),
-                counts: present(rows, nulls),
-            },
-            State::Extent { counts, .. } => {
-                let mut values = Vec::with_capacity(counts.len());
-                for value_counts in counts {
-                    values.push(value_counts.iter().collect());
-                }
-                SealedColumn::Extent { values }
-            }
-            State::Distinct(counts) => {
-                let mut values = Vec::with_capacity(counts.len());
-                for value_counts in counts {
-                    values.push(sorted_counts(value_counts));
-                }
-                SealedColumn::Distinct { values }
-            }
-            State::Bools { trues, falses } => SealedColumn::Bools {
-                trues: trues.iter().collect(),
-                falses: falses.iter().collect(),
-            },
-        }
-    }
-
-    /// `None` unless the column is of `kind`, holds an entry for each of
-    /// the cells `rows` counts and no more values than a cell has rows,
-    /// and counts each value it holds at least once, an extent's values
-    /// ascending.
-    pub(super) fn thaw(column: SealedColumn, kind: StateKind, rows: &[u64]) -> Option<State> {
-        let cells = rows.len();
-        match (column, kind) {
-            (SealedColumn::Count { counts }, StateKind::Count) => Some(State::Count {
-                nulls: nulls_beside(rows, &counts)?,
-            }),
-            (SealedColumn::Sum { sums, counts }, StateKind::Sum) if sums.len() == cells => {
-                Some(State::Sum {
-                    sums: Sums::of(&sums),
-                    nulls: nulls_beside(rows, &counts)?,
-                })
-            }
-            (SealedColumn::Extent { values }, StateKind::Extent)
-                if values.len() == cells && extent_fits(&values) =>
-            {
-                Some(thawed_extent(&values))
-            }
-            (SealedColumn::Distinct { values }, StateKind::Distinct)
-                if values.len() == cells && distinct_fits(&values) =>
-            {
-                Some(thawed_distinct(values))
-            }
-            (SealedColumn::Bools { trues, falses }, StateKind::Bools)
-                if trues.len() == cells && falses.len() == cells =>
-            {
-                Some(State::Bools {
-                    trues: Counts::of(&trues),
-                    falses: Counts::of(&falses),
-                })
-            }
-            _ => None,
         }
     }
 
@@ -442,100 +371,6 @@ fn held(present: bool) -> Result<(), RowError> {
     } else {
         Err(RowError::Missing)
     }
-}
-
-/// Each cell's values that are not null.
-fn present(rows: &Counts, nulls: &Counts) -> Vec<u64> {
-    let mut present = Vec::with_capacity(rows.len());
-    for (rows, nulls) in rows.iter().zip(nulls.iter()) {
-        present.push(rows - nulls);
-    }
-    present
-}
-
-/// A sealed column lists its values ascending, as a spill keeps them.
-fn sorted_counts(counts: &FastMap<Datum, u64>) -> Vec<DatumCount> {
-    let mut sorted = Vec::with_capacity(counts.len());
-    for (value, count) in counts {
-        sorted.push(DatumCount {
-            value: value.clone(),
-            count: *count,
-        });
-    }
-    sorted.sort();
-    sorted
-}
-
-/// The nulls among each cell's rows, from its values that are not.
-fn nulls_beside(rows: &[u64], counts: &[u64]) -> Option<Counts> {
-    if counts.len() != rows.len() {
-        return None;
-    }
-    let mut nulls = Vec::with_capacity(rows.len());
-    for (rows, count) in rows.iter().zip(counts) {
-        if count > rows {
-            return None;
-        }
-        nulls.push(rows - count);
-    }
-    Some(Counts::of(&nulls))
-}
-
-fn counted(count: u64) -> bool {
-    count > 0
-}
-
-/// Each cell's values ascend, each counted once at least.
-fn extent_fits(values: &[Vec<ValueCount>]) -> bool {
-    for entries in values {
-        for (position, entry) in entries.iter().enumerate() {
-            if !counted(entry.count) {
-                return false;
-            }
-            if position > 0 && entries[position - 1].value >= entry.value {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Each value of each cell counted once at least.
-fn distinct_fits(values: &[Vec<DatumCount>]) -> bool {
-    for entries in values {
-        for entry in entries {
-            if !counted(entry.count) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn thawed_extent(values: &[Vec<ValueCount>]) -> State {
-    let mut mins = Vec::with_capacity(values.len());
-    let mut maxs = Vec::with_capacity(values.len());
-    let mut counts = Vec::with_capacity(values.len());
-    for entries in values {
-        let value_counts = ValueCounts::from_ascending(entries);
-        let ends = value_counts.ends();
-        mins.push(ends.least);
-        maxs.push(ends.greatest);
-        counts.push(value_counts);
-    }
-    State::Extent { mins, maxs, counts }
-}
-
-fn thawed_distinct(values: Vec<Vec<DatumCount>>) -> State {
-    let mut counts = Vec::with_capacity(values.len());
-    for entries in values {
-        let mut value_counts = FastMap::default();
-        for entry in entries {
-            value_counts.insert(entry.value, entry.count);
-        }
-        counts.push(value_counts);
-    }
-    State::Distinct(counts)
 }
 
 /// Whether `held` counts each value of `given` as often at least.

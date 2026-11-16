@@ -17,7 +17,7 @@ fn ready_only_within_the_lag_bound() {
         max_lag: Duration::ZERO,
         ..LIMITS
     };
-    let app = App::new(spec(), limits, None);
+    let app = App::new(spec(), limits);
     // Loading takes time, so WAL written meanwhile has an age.
     let Harness {
         database,
@@ -82,8 +82,6 @@ fn status_before_the_first_step(app: &App) {
             last_failure: None,
             starts: 0,
             failures: 0,
-            sealed: None,
-            unseals: 0,
         }
     );
 }

@@ -36,7 +36,7 @@ fn taxi_month() {
     let references = taxi_month_references(&spec_text);
     let spec = straum_notation::parse(&spec_text).unwrap();
     let mut writer = Writer::new(
-        App::new(spec, LIMITS, None),
+        App::new(spec, LIMITS),
         Postgres::new(pg.dsn.clone(), "straum", ROW_LIMIT, Replication::Logical),
     );
     let clock = Instant::now();

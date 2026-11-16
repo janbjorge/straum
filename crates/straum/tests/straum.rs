@@ -381,7 +381,7 @@ fn status_says_ready(url: &str) {
         status.starts_with("ready:        yes\napplied:      "),
         "{status}"
     );
-    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\nsealed:       no spill\n";
+    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\n";
     assert!(status.ends_with(counts), "{status}");
 }
 

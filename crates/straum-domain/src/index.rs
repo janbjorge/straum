@@ -135,18 +135,6 @@ impl Index {
         let slot = self.slot_of(from, keys);
         self.slots[slot] = u32::try_from(to).expect("less than `from`");
     }
-
-    /// Takes in `cells` cells at once. False if two of them hold one key.
-    pub(crate) fn fill(&mut self, cells: usize, keys: Keys<'_>) -> bool {
-        self.slots = vec![EMPTY; (cells * 4).div_ceil(3).next_power_of_two().max(4)];
-        for cell in 0..cells {
-            if self.get(keys.of(cell), keys).is_some() {
-                return false;
-            }
-            self.place(cell, keys);
-        }
-        true
-    }
 }
 
 #[cfg(test)]
@@ -253,46 +241,6 @@ mod tests {
             }
             // At most three quarters of the slots are taken.
             assert!(followed.held.len() * 4 <= followed.index.slots.len() * 3);
-        }
-    }
-
-    /// A thawed bucket's cells are taken in at once, and a key that two of
-    /// them hold is found out.
-    #[test]
-    fn cells_taken_in_at_once_hold_a_key_each() {
-        let mut rng = Rng::new(9);
-        for cells in [0, 1, 2, 3, 4, 100, 5_000] {
-            let cell_count = u32::try_from(cells).expect("a bucket's cells fit u32");
-            let mut codes: Vec<u32> = Vec::with_capacity(2 * cells);
-            for cell in 0..cell_count {
-                codes.extend([cell / 7, cell % 7]);
-            }
-            for at in (1..cells).rev() {
-                let with = rng.position_below(at + 1);
-                codes.swap(2 * at, 2 * with);
-                codes.swap(2 * at + 1, 2 * with + 1);
-            }
-            let mut index = Index::default();
-            let keys = Keys {
-                codes: &codes,
-                codes_per_key: 2,
-            };
-            assert!(index.fill(cells, keys), "{cells} cells");
-            for cell in 0..cells {
-                assert_eq!(index.get(keys.of(cell), keys), Some(cell), "{cells} cells");
-            }
-            assert_eq!(index.get(&[u32::MAX, 0], keys), None, "{cells} cells");
-            if cells > 1 {
-                let mut twice = codes.clone();
-                let (from, to) = (rng.position_below(cells), rng.position_below(cells - 1));
-                let to = to + usize::from(to >= from);
-                twice.copy_within(2 * from..2 * from + 2, 2 * to);
-                let keys = Keys {
-                    codes: &twice,
-                    codes_per_key: 2,
-                };
-                assert!(!Index::default().fill(cells, keys), "{cells} cells");
-            }
         }
     }
 }

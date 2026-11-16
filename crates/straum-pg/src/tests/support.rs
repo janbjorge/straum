@@ -321,13 +321,13 @@ impl Db {
 
     /// A writer for `spec` over [`Db::pg`].
     pub(super) fn writer(&self, spec: &str) -> Writer<Postgres> {
-        Writer::new(App::new(self.spec(spec), LIMITS, None), self.pg())
+        Writer::new(App::new(self.spec(spec), LIMITS), self.pg())
     }
 
     /// A writer that reads the physical WAL (ADR-0008).
     pub(super) fn physical_writer(&self, spec: &str) -> Writer<Postgres> {
         let source = Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT, PHYSICAL);
-        Writer::new(App::new(self.spec(spec), LIMITS, None), source)
+        Writer::new(App::new(self.spec(spec), LIMITS), source)
     }
 }
 

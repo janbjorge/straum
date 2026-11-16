@@ -8,8 +8,7 @@ use crate::ask::{Ask, AskError, AskKey, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::projection::AttributeIndex;
-use crate::rollup::{BucketId, Cells, Cover, CoveredBucket, Rollup};
-use crate::sealed::Thawed;
+use crate::rollup::{Cover, CoveredBucket, Rollup};
 use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefKind, Via};
 
 use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, ViaFrom};
@@ -20,10 +19,6 @@ use super::lookup::{
 use crate::value::{Threshold, Value};
 
 use super::{Answer, AnswerColumn, CHECKED, Store, bound_part_of, key_part_of, position_of};
-
-/// Thawed cells an ask reads, by bucket.
-// Borrowed from the thawed buckets the caller holds, which may be large.
-pub(super) type ThawedCells<'t> = FastMap<BucketId, &'t Cells>;
 
 /// The cells an ask reads: a fact's bound cells, where every key the
 /// view names is a part of the cell key, or its keyed cells, where a dim
@@ -60,16 +55,9 @@ impl Store {
     /// rows, or a join through another dim, walks each cell once per row
     /// its joins find, as PostgreSQL repeats the fact row.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
-        self.ask_with(ask, &[])
-    }
-
-    /// As [`Store::ask`], reading sealed buckets from `thawed`, which holds
-    /// every one [`Store::sealed_read`] names.
-    pub fn ask_with(&self, ask: &Ask, thawed: &[Thawed]) -> Result<Answer, Vec<AskError>> {
         let Reading { fact, read } = self.reading(ask)?;
         self.check_types(fact, read, ask)?;
         let rollup = read.rollup();
-        let loaded = thawed_cells(fact, thawed);
         let mut asked = Vec::with_capacity(ask.measures.len());
         for name in &ask.measures {
             asked.push(fact.measure(name.as_str()).expect(CHECKED));
@@ -87,36 +75,33 @@ impl Store {
                     Read::Bound(_) => Vec::new(),
                     Read::Keyed(_) => self.join_checks(fact, rollup),
                 };
-                cell_loop.ask_once(&mut joins, ask, &loaded);
+                cell_loop.ask_once(&mut joins, ask);
             }
-            Some(mut expander) => cell_loop.ask_expanded(ask, &loaded, &mut expander),
+            Some(mut expander) => cell_loop.ask_expanded(ask, &mut expander),
         }
         let checks = having_checks(ask, &columns);
         let rows = cell_loop.answer_rows(&checks);
         Ok(Answer { columns, rows })
     }
 
-    /// Cells the ask reads, sealed ones counted.
+    /// Cells the ask reads.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let reading = self.reading(ask)?;
         let mut cells = 0;
         for covered in buckets(reading.read.rollup(), ask) {
-            cells += covered.bucket.len();
+            cells += covered.cells.len();
         }
         Ok(cells)
     }
 
-    /// The ask's fact and the cells that answer it: the bound cells,
-    /// unless a sealed `date_bin` bucket overlaps the range. The bound
-    /// cells hold nothing of a sealed bucket at any width, so that ask
-    /// reads the keyed cells for the whole range.
+    /// The ask's fact and the cells that answer it: the bound cells when
+    /// the fact keeps them, else the keyed cells.
     pub(super) fn reading(&self, ask: &Ask) -> Result<Reading<'_>, Vec<AskError>> {
         let fact = self.spec.check_ask(ask)?;
         let index = self.fact_index(fact.name.as_str()).expect(CHECKED);
-        let keyed = self.keyed(index);
         let read = match &self.bound[index.0] {
-            Some(bound) if !keyed.overlaps_sealed(ask.from, ask.to) => Read::Bound(&bound.rollup),
-            _ => Read::Keyed(keyed),
+            Some(bound) => Read::Bound(&bound.rollup),
+            None => Read::Keyed(self.keyed(index)),
         };
         Ok(Reading { fact, read })
     }
@@ -309,22 +294,6 @@ fn ref_position(fact: &Fact, reference: &Ref) -> usize {
     panic!("{CHECKED}")
 }
 
-/// The thawed buckets of `fact`, by bucket.
-// Borrows the thawed cells in place, as `ThawedCells` says.
-fn thawed_cells<'t>(fact: &Fact, thawed: &'t [Thawed]) -> ThawedCells<'t> {
-    let mut loaded = FastMap::default();
-    for bucket in thawed {
-        if bucket.id.fact == fact.name {
-            let id = BucketId {
-                width: bucket.id.width,
-                start: bucket.id.bucket_start,
-            };
-            loaded.insert(id, &bucket.cells);
-        }
-    }
-    loaded
-}
-
 /// The buckets an ask reads: `date_bin` buckets when it groups by the
 /// bucket, else the widest that fit.
 // An iterator, not a `Vec`: an ask allocates per group, never per bucket
@@ -340,17 +309,6 @@ pub(super) fn buckets<'r>(
         }
     }
     rollup.cover(ask.from, ask.to, cover)
-}
-
-/// The cells of a covered bucket, a sealed one's from `loaded`.
-// The cells borrow the rollup or the thawed buckets, so both share `'r`.
-pub(super) fn cells_of<'r>(covered: CoveredBucket<'r>, loaded: &ThawedCells<'r>) -> &'r Cells {
-    match covered.bucket.cells() {
-        Some(cells) => cells,
-        None => loaded
-            .get(&covered.id)
-            .expect("ask_with is given every bucket sealed_read names"),
-    }
 }
 
 /// The `by` keys, then the measures, as the ask names them.

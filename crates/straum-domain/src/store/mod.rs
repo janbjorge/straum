@@ -1,9 +1,9 @@
 //! The store: where rows land and asks read. It holds each fact's rollup
 //! (its cells, per bucket and width) and each dim's projection (its rows
 //! by dim key), and nothing else. Rows come in through `change.rs`, asks
-//! are answered in `ask.rs`, and `seal.rs` moves a bucket's cells out to
-//! a spill and back. A fact whose joins read only fact columns also keeps
-//! bound cells, keyed by the dim columns themselves (`bound.rs`).
+//! are answered in `ask.rs`. A fact whose joins read only fact columns
+//! also keeps bound cells, keyed by the dim columns themselves
+//! (`bound.rs`).
 
 mod ask;
 mod bound;
@@ -11,7 +11,6 @@ mod cell_loop;
 mod change;
 mod groups;
 mod lookup;
-mod seal;
 
 use std::ops::Range;
 
@@ -25,7 +24,6 @@ use bound::Bound;
 
 const CHECKED: &str = "checked by Spec::new or Spec::check";
 const IN_SPEC: &str = "the table is in the spec";
-const HOT: &str = "the bucket is hot";
 const POURED: &str = "a bound cell takes any cell of its fact";
 
 /// A position among the spec's facts, and so among the store's rollups.
@@ -127,15 +125,6 @@ impl Store {
         Some(bound.rollup.cells())
     }
 
-    /// Sealed buckets, every fact and width.
-    pub fn sealed_count(&self) -> usize {
-        let mut sealed = 0;
-        for rollup in &self.rollups {
-            sealed += rollup.sealed_count();
-        }
-        sealed
-    }
-
     /// Rows a dim holds, or none for a table that is no dim.
     pub fn dim_rows(&self, dim: &str) -> Option<usize> {
         let dim = self.dim_index(dim)?;
@@ -143,8 +132,7 @@ impl Store {
     }
 
     /// From the start of the fact's first `date_bin` bucket to the end of
-    /// its last, hot or sealed, in Unix seconds; none while it has no
-    /// bucket.
+    /// its last, in Unix seconds; none while it has no bucket.
     pub fn range(&self, fact: &str) -> Option<Range<i64>> {
         let fact = self.fact_index(fact)?;
         self.keyed(fact).range()

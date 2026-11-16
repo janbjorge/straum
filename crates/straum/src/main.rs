@@ -297,7 +297,7 @@ fn run(
         process::abort();
     }));
 
-    let app = App::new(spec, limits, None);
+    let app = App::new(spec, limits);
     let writer = Writer::new(
         app.clone(),
         Postgres::new(dsn, &publication, max_transaction_rows, replication),

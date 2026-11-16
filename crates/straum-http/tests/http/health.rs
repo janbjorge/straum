@@ -73,7 +73,6 @@ WAL retained: unknown until every table is loaded
 starts:       0
 failures:     0
 last failure: none
-sealed:       no spill
 "
     );
     server.stop();

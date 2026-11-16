@@ -64,4 +64,3 @@ PostgreSQL name differs from PostgreSQL. `percentile_cont`, `median`,
 - A percentile adds no bytes beyond a min or max, but costs by values
   in range: milliseconds where a sum takes microseconds (ADR-0005).
 - `count(DISTINCT c)` keeps a hash map per cell; its memory is open.
-- A sealed bucket counting more values than rows is refused.

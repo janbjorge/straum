@@ -245,7 +245,7 @@ fn a_transaction_past_the_limit_starts_over() {
         db.run(&rng.trip(id));
     }
     let mut writer = Writer::new(
-        App::new(db.spec(SPEC), LIMITS, None),
+        App::new(db.spec(SPEC), LIMITS),
         Postgres::new(db.dsn.clone(), &db.name, CAP, Replication::Logical),
     );
     assert!(matches!(writer.step(), Ok(Step::Started(_))));

@@ -238,7 +238,7 @@ fn a_prepared_transaction_holds_the_start_back() {
         .unwrap();
     let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
     source.consistent_wait = Duration::from_secs(2);
-    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS, None), source);
+    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS), source);
     let error = writer.step().unwrap_err().to_string();
     assert!(
         error.contains(&format!(
@@ -290,7 +290,7 @@ fn takes_the_snapshot_again_until_it_sees_what_ended() {
     }
     let mut source = Postgres::new(db.dsn.clone(), &db.name, ROW_LIMIT, PHYSICAL);
     source.consistent_wait = Duration::from_secs(2);
-    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS, None), source);
+    let mut writer = Writer::new(App::new(db.spec(SPEC), LIMITS), source);
     let error = writer.step().unwrap_err().to_string();
     assert!(
         error.contains(&format!(

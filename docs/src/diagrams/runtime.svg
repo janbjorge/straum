@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="470" viewBox="0 0 720 470" role="img" aria-labelledby="t d">
   <title id="t">The running system</title>
-  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Limits, an optional Spilling with the Spill port, and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded, with the applied LSN, Lag and last WAL reading, and the last Failure.</desc>
+  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Limits and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded, with the applied LSN, Lag and last WAL reading, and the last Failure.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -108,10 +108,6 @@
   <text x="264" y="219" class="h">Limits</text>
   <text x="264" y="240" class="mono ink2">--max-lag</text>
   <text x="264" y="259" class="mono ink2">--max-retained-wal</text>
-  <rect class="box" x="250" y="304" width="186" height="80" rx="8"/>
-  <text x="264" y="329" class="h">Spilling</text>
-  <text x="264" y="350" class="s ink2">0 or 1, with</text>
-  <text x="264" y="369" class="s ink2">the Spill port</text>
   <rect class="box" x="470" y="84" width="226" height="80" rx="8"/>
   <text x="484" y="109" class="h">State</text>
   <text x="484" y="130" class="s ink2">one, behind the</text>
@@ -132,9 +128,8 @@
   <path class="a" d="M104 164 V190" marker-end="url(#m)"/>
   <path class="a-plan" d="M104 274 V300" marker-end="url(#m-plan)"/>
   <text x="112" y="292" class="s muted halo" text-anchor="start">hands over</text>
-  <path class="a" d="M234 164 V344"/>
+  <path class="a" d="M234 164 V234"/>
   <path class="a" d="M234 234 H246" marker-end="url(#m)"/>
-  <path class="a" d="M234 344 H246" marker-end="url(#m)"/>
   <path class="a" d="M484 164 V404"/>
   <path class="a" d="M484 214 H496" marker-end="url(#m)"/>
   <path class="a" d="M484 304 H496" marker-end="url(#m)"/>

@@ -3,14 +3,12 @@
 //! than Straum SQL. Each test starts a server over the fake in `fake.rs`.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
 
-use straum_app::{App, Spilling, Step, Writer};
+use straum_app::Step;
 use straum_domain::{Ask, Identifier, Literal};
 use straum_http::QueryError;
 
-use crate::fake::{COMMIT, HOUR, JAN_1, LIMITS, Lost, SPEC, fake, loaded, writer};
+use crate::fake::{COMMIT, HOUR, JAN_1, loaded, writer};
 use crate::{
     ask, call, call_as_text, first_hour, header, request, rows_of, send, serve, serve_with, started,
 };
@@ -199,21 +197,6 @@ fn errors_are_lines_to_those_who_accept_text() {
             reply.head
         );
     }
-    server.stop();
-}
-
-#[test]
-fn a_sealed_bucket_that_cannot_be_read_is_a_server_error() {
-    let spec = straum_notation::parse(SPEC).unwrap();
-    let spilling = Spilling {
-        spill: Arc::new(Lost),
-        seal_after: Duration::ZERO,
-    };
-    let (_writer, server) = started(Writer::new(App::new(spec, LIMITS, Some(spilling)), fake()));
-    let range = r#"["2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"]"#;
-    let reply = call(server.address, "POST", "/ask", &ask(BY_BUCKET, range));
-    let error = r#"{"errors":["reading a sealed bucket failed: lost trips bucket of 3600s at 1704067200"]}"#;
-    assert_eq!((reply.status, reply.body.as_str()), (500, error));
     server.stop();
 }
 

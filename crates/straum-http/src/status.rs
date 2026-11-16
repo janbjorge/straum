@@ -40,7 +40,6 @@ pub(crate) fn write(status: &Status) -> String {
     write_line(&mut out, "starts", &status.starts.to_string());
     write_line(&mut out, "failures", &status.failures.to_string());
     write_line(&mut out, "last failure", &last_failure(status));
-    write_line(&mut out, "sealed", &sealed(status));
     out
 }
 
@@ -103,16 +102,6 @@ fn last_failure(status: &Status) -> String {
     }
 }
 
-fn sealed(status: &Status) -> String {
-    match status.sealed {
-        None => "no spill".to_owned(),
-        Some(sealed) => format!(
-            "{sealed} buckets in the spill, {} unsealed by a change",
-            status.unseals
-        ),
-    }
-}
-
 fn timestamp(time: SystemTime) -> String {
     match rfc3339_of(time) {
         Some(text) => text,
@@ -156,8 +145,6 @@ mod tests {
             }),
             starts: 2,
             failures: 1,
-            sealed: Some(12),
-            unseals: 3,
         }
     }
 
@@ -174,7 +161,6 @@ WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
 starts:       2
 failures:     1
 last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
-sealed:       12 buckets in the spill, 3 unsealed by a change
 "
         );
     }
@@ -225,7 +211,6 @@ starts:       2
 failures:     1
 last failure: 1970-01-01T00:00:00Z: trips: one
               trips: two
-sealed:       12 buckets in the spill, 3 unsealed by a change
 "
         );
     }

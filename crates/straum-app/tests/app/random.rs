@@ -1,22 +1,19 @@
-//! Random writes, dropped connections and restarts, the zones moving too,
-//! each seed run with and without a spill. After every step the writer's
+//! Random writes, dropped connections and restarts, the zones moving too.
+//! After every step the writer's
 //! answers must equal a fresh load of the database at the same LSN, dims
 //! and facts.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
 
-use straum_app::{AnswerError, App, Error, Lsn, Spill, Spilling, Step, Writer};
+use straum_app::{AnswerError, App, Error, Lsn, Step, Writer};
 use straum_domain::{Ask, Condition, Datum, Literal};
 
 use crate::common::{
     BOROUGHS, DAY, Harness, LIMITS, RANGE, RIDERS, aside, ask, int, spec, text, watched, zone,
 };
 use crate::fake::{Database, Fake, Row, Write, id};
-use crate::spill::MemorySpill;
 
 /// splitmix64. `src/lag.rs` has its own: a unit test can't reach an
 /// integration test's helpers, and the crate exports no test code.
@@ -347,17 +344,10 @@ struct Followed {
     aside: Rc<RefCell<usize>>,
 }
 
-fn followed(spill: Option<&Arc<MemorySpill>>) -> Followed {
-    let mut spilling = None;
-    if let Some(spill) = spill {
-        spilling = Some(Spilling {
-            spill: Arc::clone(spill) as Arc<dyn Spill>,
-            seal_after: Duration::ZERO,
-        });
-    }
+fn followed() -> Followed {
     let aside = Rc::new(RefCell::new(0));
     let count = Rc::clone(&aside);
-    let app = App::new(spec(), LIMITS, spilling);
+    let app = App::new(spec(), LIMITS);
     let harness = watched(app, move |app, _| {
         *count.borrow_mut() += check_aside(app);
     });
@@ -370,11 +360,10 @@ fn followed(spill: Option<&Arc<MemorySpill>>) -> Followed {
     Followed { harness, aside }
 }
 
-/// Follows random writes, checking asks at every LSN. With a spill, every
-/// bucket is sealed on each start, so changes unseal them as they come.
-fn follow(seed: u64, tally: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
+/// Follows random writes, checking asks at every LSN.
+fn follow(seed: u64, tally: &mut Seen) {
     let mut random = Rng(seed);
-    let Followed { harness, aside } = followed(spill);
+    let Followed { harness, aside } = followed();
     let Harness {
         database,
         mut writer,
@@ -399,13 +388,6 @@ fn follow(seed: u64, tally: &mut Seen, spill: Option<&Arc<MemorySpill>>) {
                 continue;
             };
             check(writer.app(), &database.borrow(), lsn, &mut random, tally);
-            // The spill holds what the store has sealed and no more. After
-            // a failed step it may hold more, until the next start empties
-            // it.
-            if let Some(spill) = spill {
-                let sealed = writer.app().status().sealed;
-                assert_eq!(sealed, Some(spill.ids().len()), "seed {seed}");
-            }
         }
         assert!(writer.app().status().ready, "seed {seed}");
     }
@@ -429,24 +411,12 @@ fn step(writer: &mut Writer<Fake>, tally: &mut Seen) -> Option<Lsn> {
 #[test]
 fn follows_the_database() {
     let mut seen = Seen::default();
-    let spill = Arc::new(MemorySpill::default());
     for seed in 0..16 {
-        let mut plain = Seen::default();
-        let mut spilled = Seen::default();
-        follow(seed, &mut plain, None);
-        // Spilling changes no answer and adds no failure: each seed runs as
-        // it does with every bucket in memory.
-        follow(seed, &mut spilled, Some(&spill));
-        assert_eq!(spilled, plain, "seed {seed}");
-        seen.answered += plain.answered;
-        seen.failed += plain.failed;
-        seen.unfit += plain.unfit;
-        seen.aside += plain.aside;
+        follow(seed, &mut seen);
     }
     // The run went through every path it claims to test.
     assert!(seen.answered > 1_000, "{seen:?}");
     assert!(seen.failed > seen.unfit, "{seen:?}");
     assert!(seen.unfit > 0, "{seen:?}");
     assert!(seen.aside > 0, "{seen:?}");
-    assert!(spill.gets() > 1_000, "{}", spill.gets());
 }

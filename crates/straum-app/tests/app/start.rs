@@ -214,7 +214,7 @@ fn a_failed_start_is_tried_again() {
 fn asks_wait_while_the_tables_load() {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let log = Rc::clone(&seen);
-    let app = App::new(spec(), LIMITS, None);
+    let app = App::new(spec(), LIMITS);
     let Harness {
         database,
         mut writer,

@@ -13,7 +13,7 @@ One record per subject; each says what holds today (ADR-0001).
 | [0007](0007-postgresql-is-the-only-source.md) | The source: replication, load, versions |
 | [0008](0008-straum-reads-physical-wal-where-logical-decoding-is-off.md) | The physical stream |
 | [0009](0009-a-change-that-cannot-apply-starts-straum-over.md) | Starting over, lag |
-| [0010](0010-cold-buckets-are-sealed-and-spilled.md) | Sealing and spill |
+| [0010](0010-every-bucket-stays-in-memory.md) | Every bucket in memory, no spill |
 | [0011](0011-operators-read-plain-text-through-the-binary.md) | DSN, help, status, views, shell |
 | [0012](0012-straum-ships-as-one-image-from-a-release.md) | TLS, image, chart, name, releases |
 | [0013](0013-code-reads-plainly-and-clippy-holds-it-there.md) | Code style, lints, the one `unsafe` |

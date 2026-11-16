@@ -27,9 +27,6 @@ pub enum RowError {
     },
     /// A removed row was never added.
     Missing,
-    /// The row falls in a sealed bucket, which takes no change until it is
-    /// unsealed.
-    Sealed,
 }
 
 impl fmt::Display for RowError {
@@ -45,7 +42,6 @@ impl fmt::Display for RowError {
                 write!(formatter, "column {column} is not a boolean")
             }
             RowError::Missing => formatter.write_str("removed row was never added"),
-            RowError::Sealed => formatter.write_str("row falls in a sealed bucket"),
         }
     }
 }

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="424" viewBox="0 0 720 424" role="img" aria-labelledby="t d">
   <title id="t">How a row finds its cell</title>
-  <desc id="d">Inside the usage rollup. 1: each key value of the row is coded per key column: kind purchase is 0, account_id 7 is 0. 2: the time 09:41:07 is floored to 09:00 at the 1 hour level, whose buckets are a BTreeMap by start. 3: in the hot bucket's cells the index hashes the key codes 0, 0 to a slot holding cell 0. 4: cell 0 adds the row: rows 1 to 2, the Sum of amount 100.00 to 220.00. The cells are columns side by side: keys, rows and one state per input.</desc>
+  <desc id="d">Inside the usage rollup. 1: each key value of the row is coded per key column: kind purchase is 0, account_id 7 is 0. 2: the time 09:41:07 is floored to 09:00 at the 1 hour level, whose buckets are a BTreeMap by start. 3: in the bucket's cells the index hashes the key codes 0, 0 to a slot holding cell 0. 4: cell 0 adds the row: rows 1 to 2, the Sum of amount 100.00 to 220.00. The cells are columns side by side: keys, rows and one state per input.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -122,7 +122,6 @@
   <text x="258" y="203" class="mono ink2" text-anchor="start">08:00</text>
   <rect class="accbox" x="244" y="222" width="168" height="32" rx="6"/>
   <text x="258" y="243" class="mono acc b" text-anchor="start">09:00</text>
-  <text x="398" y="243" class="s acc" text-anchor="end">Hot</text>
   <rect class="box" x="244" y="262" width="168" height="32" rx="6"/>
   <text x="258" y="283" class="mono ink2" text-anchor="start">10:00</text>
   <rect class="box" x="244" y="302" width="168" height="32" rx="6"/>

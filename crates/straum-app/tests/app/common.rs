@@ -97,9 +97,9 @@ pub fn text(value: &str) -> Datum {
     Datum::Text(value.into())
 }
 
-/// A writer with no spill over the empty tables.
+/// A writer over the empty tables.
 pub fn setup() -> Harness {
-    harness(App::new(spec(), LIMITS, None))
+    harness(App::new(spec(), LIMITS))
 }
 
 /// A writer for the app over the empty tables.

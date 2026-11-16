@@ -1,7 +1,7 @@
 //! `Store` against what it must answer: a reference that aggregates the
 //! live trips directly and joins them to the dims as they are, over random
 //! inserts, updates and deletes of trips and dim rows, and hand-made cases
-//! for joins, sealing, ranges and errors. Rows hold the fact's columns only;
+//! for joins, ranges and errors. Rows hold the fact's columns only;
 //! a dim's values come through its projection when asked. This file holds
 //! the row layout and the modules, one per subject.
 
@@ -17,7 +17,6 @@ mod random;
 mod ranges;
 mod reference;
 mod rows;
-mod sealing;
 mod views;
 mod workload;
 

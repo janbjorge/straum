@@ -34,9 +34,8 @@ Six crates, dependencies inward only, enforced by
 
 - `straum-domain` has no dependencies and no I/O. Everything an ask
   or a change needs is a plain struct, enum or function.
-- `straum-app` holds the use cases and the two ports. `Source` is the
-  one trait PostgreSQL sits behind; `Spill` is where sealed buckets
-  go. No adapter for `Spill` ships; the binary passes `None`.
+- `straum-app` holds the use cases and the one port, `Source`, the
+  trait PostgreSQL sits behind.
 - The adapters never meet: `straum-http` is handed a query reader by
   the binary (`ReadAsk` in `straum-http`), so HTTP never knows Straum
   SQL.
@@ -71,8 +70,7 @@ first, and PostgreSQL drops its slot as the connection closes.
 
 `Writer::start`:
 
-1. Drop the old store and empty the spill, so two stores never take
-   memory at once.
+1. Drop the old store, so two stores never take memory at once.
 2. `Source::open`: connect, begin a read-only repeatable-read
    transaction, create a temporary logical slot with `pgoutput` and
    `SNAPSHOT 'use'`, read L. Read the catalog and [check
@@ -84,11 +82,10 @@ first, and PostgreSQL drops its slot as the connection closes.
 4. Read the server's WAL once; start the **Lag** from when the slot
    was opened.
 5. Take the write lock, swap the store in, set **Following** at L,
-   count the start. Straum is ready.
-6. Run a seal pass. The stream thread starts at the first
-   `next_commit`: it reads the stream, answers the server's keepalives
-   and confirms what the writer has applied, so the server can
-   recycle WAL.
+   count the start. Straum is ready. The stream thread starts at the
+   first `next_commit`: it reads the stream, answers the server's
+   keepalives and confirms what the writer has applied, so the server
+   can recycle WAL.
 
 Any error is a **Failure**, and the next step is a start over. The
 load fills a new store outside the lock, so asks never wait on
@@ -125,15 +122,14 @@ What the store holds, mutable, one per process, owned by **App**.
 
 *One keyed rollup per fact, a bound rollup for a fact whose joins all
 read fact columns, one projection per dim. A rollup is one level per
-width; a hot bucket is columnar cells with one state per input.*
+width; a bucket is columnar cells with one state per input.*
 
 - A **Rollup** is every cell of one fact: one **Level** per width,
   the `date_bin` width first, and one **Codes** per rollup-key
   column. The bucket is not coded; it keys the level's map. Rows
   without a time go under `None` (`Level::bucket`).
-- A **Bucket** is **Hot**, holding **Cells**, or **Sealed**, holding
-  only its cell count. Only `date_bin` buckets are sealed
-  (`Rollup::sealable`).
+- A **Bucket** holds its **Cells**, every bucket in memory
+  (ADR-0010).
 - **Cells** are columnar: keys, row counts and one **State** per
   input column, side by side (`Cells`). A column of counts or sums is
   as wide as its widest entry needs, and none at all while every
@@ -154,8 +150,8 @@ width; a hot bucket is columnar cells with one state per input.*
   (`Bound::rows`). A change to a dim the fact reads moves the ones
   whose join columns name the changed key (`Store::retarget`); a dim
   truncate or load makes them again from the keyed cells
-  (`Store::rebuild_dim`). They hold the hot buckets only: a seal
-  takes its bucket out of them and an unseal binds it back.
+  (`Store::rebuild_dim`). A dim update that reads the same changes
+  nothing (`Store::update_row`).
 
 `Rollup::add` puts a row in its cells, here the row of
 [Cells](how-it-works.md#cells):
@@ -168,7 +164,7 @@ the bucket's index finds the cell, which adds the row.*
 1. Each key value gets the code of its column's first add of it
    (`Codes::code`), so a cell key is a few integers.
 2. Each level floors the time to its width (`Level::bucket`) and finds
-   the bucket in its `BTreeMap`, making a hot one if there is none.
+   the bucket in its `BTreeMap`, making one if there is none.
 3. The bucket's **Index** hashes the codes to a home slot and walks on
    until the cell with those keys, or appends a new cell
    (`Cells::entry`).
@@ -181,15 +177,12 @@ Steps 2 to 4 repeat for every level.
 `Writer::apply_next`, one step:
 
 1. If the WAL was read a second or more ago: read it on the plain
-   connection, fail past `--max-retained-wal`, feed the **Lag**, run a
-   seal pass.
+   connection, fail past `--max-retained-wal`, feed the **Lag**.
 2. `Source::next_commit`, waiting at most until the next WAL reading
    is due.
-3. Unseal every sealed bucket a fact row of the commit falls in.
-4. Under the write lock, apply the commit: each change to its rollup
+3. Under the write lock, apply the commit: each change to its rollup
    or projection, tables the spec doesn't name skipped, then move
    **Following** to the commit's LSN and time.
-5. Forget the sealed buckets of a truncated fact in the spill.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says.
@@ -202,20 +195,17 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
    bound to `$n`; refuse a range jiff can't print.
 2. On a blocking thread, take the read lock.
 3. Check the ask against the spec and refuse any ask it can't answer
-   exactly; name the sealed buckets it reads (`Store::sealed_read`).
-   An invalid ask is 400 even while loading. Once a load has read the
-   column types, a filter value of another type than its column is
-   refused too.
+   exactly. An invalid ask is 400 even while loading. Once a load has
+   read the column types, a filter value of another type than its
+   column is refused too.
 4. Without a **Following**, 503 not ready.
-5. Get each sealed bucket from the spill and thaw it against the
-   store; a bucket that can't be read is 500.
-6. `Store::ask_with`: read the cells of the buckets in the range
+5. `Store::ask`: read the cells of the buckets in the range
    (`Rollup::cover`). A dim column is part of the bound cells' key
    while they hold, else read from the dim's projection through the
    join id in the cell key; a cell whose join keeps no row is passed
    over. Then add, filter and sort as
    [Answering an ask](how-it-works.md#answering-an-ask) says.
-7. Answer with `as_of` from the **Lag** and the applied LSN in the
+6. Answer with `as_of` from the **Lag** and the applied LSN in the
    `Straum-LSN` header, `Cache-Control: no-store`: JSON, or a table in
    plain text for an ask sent with `Accept: text/plain`.
 
@@ -298,15 +288,14 @@ conditions; its range is two bucket edges with `from < to`. An
 
 ![The running system](diagrams/runtime.svg)
 
-*A writer owns the source port and an app. The app holds the limits,
-a spilling with the spill port when one is configured, and a state
-behind a read-write lock: the store, a following while every table
-is loaded, and the last failure.*
+*A writer owns the source port and an app. The app holds the limits
+and a state behind a read-write lock: the store, a following while
+every table is loaded, and the last failure.*
 
-- **App** is an `Arc<RwLock<State>>` beside the limits and the
-  spilling, which never change; clones share it. Asks take the
-  read lock, the writer the write lock only to apply a commit it has
-  read or to swap a store in (`State::apply`, `Writer::start`).
+- **App** is an `Arc<RwLock<State>>` beside the limits, which never
+  change; clones share it. Asks take the read lock, the writer the
+  write lock only to apply a commit it has read or to swap a store in
+  (`State::apply`, `Writer::start`).
 - **Following** exists only while every table is loaded; a failure
   removes it (`Writer::step`). Its absence is "not ready".
 - **Lag** keeps the WAL readings the slot hasn't confirmed, at most
@@ -329,9 +318,8 @@ makes a property test fail.
    (`Postgres::open` and the first `next_commit`);
    `the_snapshot_and_the_stream_split_exactly`
    races 2,000 commits against it.
-3. **Only the writer writes.** Every `Spill` method takes `&self`; the
-   store is reached through `App::read` by asks and `App::write` by
-   the writer alone.
+3. **Only the writer writes.** The store is reached through
+   `App::read` by asks and `App::write` by the writer alone.
 4. **A row removed was added.** `RowError::Missing` from a cell, a
    value count or a projection entry ends the step
    (`Rollup::remove`, `Projection::remove`), and Straum starts over.
@@ -349,27 +337,19 @@ makes a property test fail.
 9. **Levels agree.** Every row goes into one cell per width in the
    same add (`Rollup::add`); `Rollup::cover` reads each instant of a
    range from exactly one level.
-10. **A sealed bucket takes no change.** A keyed rollup refuses a row
-    into one (`RowError::Sealed`); the writer unseals before it applies
-    (`Writer::unseal`). The bound cells hold nothing of a sealed bucket:
-    a seal takes it out of them at every width and an unseal binds it
-    again, as the dims are then (`Store::seal`, `Store::unseal`).
-11. **The spill holds what the store has sealed and no more.** Put
-    before seal (`Writer::seal`), removed on unseal and truncate
-    (`Writer::forget`), cleared at every start (`Writer::start`).
-12. **Bound cells are the hot keyed cells, bound as the dims are
-    now.** They exist only for a fact whose joins all read fact
-    columns, one of them no key: any other fact's would be as many as
-    its keyed cells (`Bound::new`). A dim change moves the ones that
+10. **Bound cells are the keyed cells, bound as the dims are now.**
+    They exist only for a fact whose joins all read fact columns, one
+    of them no key: any other fact's would be as many as its keyed
+    cells (`Bound::new`). A dim change moves the ones that
     name its key (`Store::retarget`) and a dim truncate or load makes
-    them again (`Store::rebuild_dim`). An ask whose range holds a
-    sealed `date_bin` bucket reads the keyed cells (`Store::reading`).
-13. **Lag never understates.** Readings merge only toward older
+    them again (`Store::rebuild_dim`). An ask reads them whenever the
+    fact keeps them (`Store::reading`).
+11. **Lag never understates.** Readings merge only toward older
     (`Lag::read`); `matches_every_reading_kept` checks it against a
     reference that keeps every reading.
-14. **Two stores never take memory at once.** The old store goes
+12. **Two stores never take memory at once.** The old store goes
     before the new load (`Writer::start`).
-15. **One name, one thing, per view.** Keys, attributes and measures
+13. **One name, one thing, per view.** Keys, attributes and measures
     share a namespace, `bucket` is reserved, and an answer's columns
     are its names (`Spec::new`, `Spec::check_ask`).
 
@@ -379,24 +359,17 @@ The running states, Loading, Ready, Lagging, Waiting and Stopping, are
 drawn under [States](deploy.md#states). There is no enum: **Following**
 is `None` while loading or waiting, `Failure` says which, and lag
 against `--max-lag` tells Ready from Lagging (`App::status`,
-`why_not` in `straum-http`). Three smaller machines:
+`why_not` in `straum-http`). One smaller machine, the source
+connection:
 
-![Three small state machines](diagrams/machines.svg)
+![The source's state machine](diagrams/machines.svg)
 
-*The source connection, a `date_bin` bucket, and a bucket's bound
-cells.*
+*Closed, Loading, Streaming, and back to Closed on the next open.*
 
-- The source: `Postgres` moves `Closed` to `Loading` on `open`,
-  `Loading` to `Streaming` on the first `next_commit`, and back to
-  `Closed` on the next `open` (`Postgres` in `straum-pg`). A `load`
-  outside `Loading` and a `wal` while `Closed` are `Error::Stopped`.
-- A bucket: only `date_bin` buckets seal. A truncate drops every
-  bucket of the fact, sealed ones from the spill too.
-- The bound cells of a bucket: a dim change moves them and never
-  drops them
-  (`a_dim_change_under_a_sealed_bucket_reaches_it_once_unsealed`); a
-  dim update that reads the same changes nothing
-  (`Store::update_row`).
+`Postgres` moves `Closed` to `Loading` on `open`, `Loading` to
+`Streaming` on the first `next_commit`, and back to `Closed` on the
+next `open` (`Postgres` in `straum-pg`). A `load` outside `Loading` and
+a `wal` while `Closed` are `Error::Stopped`.
 
 ## Which decision shaped what
 
@@ -412,5 +385,5 @@ what joins replaced and the sources behind them in
 
 ## Where the code and the records differ
 
-ADR-0010's adapter is not built: `main.rs` passes `None`. The open
-names are in the glossary's [Clashes](glossary.md#clashes) table.
+The open names are in the glossary's [Clashes](glossary.md#clashes)
+table.

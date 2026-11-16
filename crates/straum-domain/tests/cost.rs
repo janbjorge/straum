@@ -2,7 +2,7 @@
 //! the cells of the buckets in its range, and stays within a time per cell.
 //! What a store holds: one set of cells for a join on a key, the bytes a
 //! cell's numbers need and no more, and a few bytes a value for a min or
-//! max. And what sealing saves: the heap a sealed bucket's cells held.
+//! max.
 //! A percentile holds nothing beyond its column's min or max, and its ask
 //! holds the values of its range, however many cells lie outside it.
 //!
@@ -403,28 +403,6 @@ fn a_min_or_max_costs_a_cell_a_run_of_its_values() {
             "{tips} tips a cell: {a_value} hundredths of a byte a value"
         );
     }
-}
-
-/// Sealing 90% of the hours, with their copies gone to a spill, frees
-/// about 80% of what the store held: the day buckets stay in memory.
-#[test]
-fn sealing_frees_the_cells_it_seals() {
-    let empty = live();
-    let mut store = store_with(200_000, &[24]);
-    let held = live() - empty;
-    let hours = 200_000 / (2 * ZONES);
-    let before = hours * 9 / 10 * i64::from(HOUR);
-    for id in store.sealable(before) {
-        let spilled = store.sealed_copy(&id).unwrap();
-        store.seal(&id).unwrap();
-        drop(spilled);
-    }
-    let sealed = live() - empty;
-    drop(store);
-    let dropped = live() - empty;
-    eprintln!("store held {held} bytes, {sealed} after sealing, {dropped} after drop");
-    assert!(sealed * 100 < held * 20, "{sealed} of {held} bytes");
-    assert_eq!(dropped, 0);
 }
 
 fn tip_max() -> Measure {

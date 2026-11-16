@@ -1,16 +1,13 @@
 //! What the HTTP tests serve: `Fake`, a scripted source that loads fixed
-//! zones and trips and then streams one commit, and `Lost`, a spill that
-//! loses every bucket. A test builds a `Writer` over a `Fake` with
+//! zones and trips and then streams one commit. A test builds a `Writer` over a `Fake` with
 //! `writer` and steps it to load the app the server answers from.
 
 use std::collections::VecDeque;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
-use straum_app::{
-    App, Change, Commit, Limits, Lsn, Source, SourceError, Spill, SpillError, Wal, Writer,
-};
-use straum_domain::{ColumnType, Datum, Identifier, Sealed, SealedId, Spec, Store};
+use straum_app::{App, Change, Commit, Limits, Lsn, Source, SourceError, Wal, Writer};
+use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
 
 /// One view over the trips and their zones, with every kind of measure.
 pub(crate) const SPEC: &str = "
@@ -139,7 +136,7 @@ pub(crate) fn fake() -> Fake {
 /// A writer over `fake` for an app with `limits`.
 pub(crate) fn writer_with(limits: Limits, fake: Fake) -> Writer<Fake> {
     let spec = straum_notation::parse(SPEC).unwrap();
-    Writer::new(App::new(spec, limits, None), fake)
+    Writer::new(App::new(spec, limits), fake)
 }
 
 /// A writer over the usual fake, nothing loaded yet.
@@ -152,25 +149,4 @@ pub(crate) fn loaded() -> Writer<Fake> {
     let mut writer = writer();
     writer.step().unwrap();
     writer
-}
-
-/// Takes every bucket and gives none back.
-pub(crate) struct Lost;
-
-impl Spill for Lost {
-    fn put(&self, _: &Sealed) -> Result<(), SpillError> {
-        Ok(())
-    }
-
-    fn get(&self, id: &SealedId) -> Result<Sealed, SpillError> {
-        Err(format!("lost {id}").into())
-    }
-
-    fn remove(&self, _: &SealedId) -> Result<(), SpillError> {
-        Ok(())
-    }
-
-    fn clear(&self) -> Result<(), SpillError> {
-        Ok(())
-    }
 }

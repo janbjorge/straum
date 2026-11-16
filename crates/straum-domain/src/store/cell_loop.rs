@@ -13,15 +13,14 @@ use crate::spec::RefKind;
 use crate::value::{Datum, Value};
 
 use super::AnswerRow;
-use super::ask::{HavingCheck, ThawedCells, buckets, cells_of, meets};
+use super::ask::{HavingCheck, buckets, meets};
 use super::bound::{JoinRow, keep};
 use super::groups::{Grouping, Groups};
 use super::lookup::{ConditionCheck, JoinCheck, all_hold};
 
 /// What the cell loop fills in: per by key its grouping, the groups met,
 /// the ask's and the view's filter, and per measure its partial answers.
-// The `'s` in this file borrows the store, and the thawed buckets an ask
-// was handed, for the length of the ask.
+// The `'s` in this file borrows the store for the length of the ask.
 pub(super) struct CellLoop<'s> {
     pub(super) rollup: &'s Rollup,
     pub(super) by: Vec<Grouping<'s>>,
@@ -50,19 +49,14 @@ impl<'s> CellLoop<'s> {
     /// The loop for a view that counts each cell once or not at all:
     /// one row a key at most, none joined through another dim. `joins` drop
     /// the cells an inner, semi or anti join does.
-    pub(super) fn ask_once(
-        &mut self,
-        joins: &mut [JoinCheck<'s>],
-        ask: &Ask,
-        loaded: &ThawedCells<'s>,
-    ) {
+    pub(super) fn ask_once(&mut self, joins: &mut [JoinCheck<'s>], ask: &Ask) {
         let rollup = self.rollup;
         // Per cell of a bucket: 1 while it may pass, then its group; 0 for
         // cells passed over. Again per measure with a filter of its own.
         let mut cell_groups = Vec::new();
         let mut measure_groups = Vec::new();
         for covered in buckets(rollup, ask) {
-            let cells = cells_of(covered, loaded);
+            let cells = covered.cells;
             self.groups.enter(&mut self.by, covered.id.start);
             cell_groups.clear();
             cell_groups.resize(cells.len(), 1);
@@ -92,15 +86,10 @@ impl<'s> CellLoop<'s> {
 
     /// The loop for a view whose joins repeat a cell: each cell once per
     /// join row its joins resolve it to.
-    pub(super) fn ask_expanded(
-        &mut self,
-        ask: &Ask,
-        loaded: &ThawedCells<'s>,
-        expander: &mut Expander<'s>,
-    ) {
+    pub(super) fn ask_expanded(&mut self, ask: &Ask, expander: &mut Expander<'s>) {
         let rollup = self.rollup;
         for covered in buckets(rollup, ask) {
-            let cells = cells_of(covered, loaded);
+            let cells = covered.cells;
             self.groups.enter(&mut self.by, covered.id.start);
             for cell in 0..cells.len() {
                 for row in expander.expand(rollup, cells.key(cell)) {

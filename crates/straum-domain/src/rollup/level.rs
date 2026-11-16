@@ -4,7 +4,6 @@
 //! buckets that fit inside it, narrower ones at its ends.
 
 use std::collections::BTreeMap;
-use std::collections::btree_map;
 
 use crate::value::Datum;
 
@@ -19,35 +18,7 @@ pub(super) struct Level {
     /// Bucket width in seconds.
     pub(super) width: i64,
     /// Oldest first. `None` holds the rows without a time, which no ask reads.
-    pub(super) buckets: BTreeMap<Option<i64>, Bucket>,
-}
-
-/// One bucket of a level: its cells, or how many it had when sealed.
-#[derive(Debug)]
-pub(crate) enum Bucket {
-    Hot(Cells),
-    /// Spilled, holding this many cells.
-    Sealed {
-        cells: usize,
-    },
-}
-
-impl Bucket {
-    /// How many cells the bucket holds, sealed or not.
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Bucket::Hot(cells) => cells.len(),
-            Bucket::Sealed { cells } => *cells,
-        }
-    }
-
-    /// The cells, unless they are sealed.
-    pub(crate) fn cells(&self) -> Option<&Cells> {
-        match self {
-            Bucket::Hot(cells) => Some(cells),
-            Bucket::Sealed { .. } => None,
-        }
-    }
+    pub(super) buckets: BTreeMap<Option<i64>, Cells>,
 }
 
 /// Rows a load adds at once, each with its key codes beside it.
@@ -96,12 +67,8 @@ impl Level {
     }
 
     /// Adds a checked row under its key codes; whether its cell is new.
-    /// [`Rollup::check`] turns away the rows of a sealed bucket, so none
-    /// reaches one.
     pub(super) fn add(&mut self, row: &[Datum], key: &[u32], inputs: &[Input]) -> bool {
-        let Some(cells) = self.hot_cells(&row[TIME], key.len(), inputs) else {
-            return false;
-        };
+        let cells = self.cells_of(&row[TIME], key.len(), inputs);
         let entry = cells.entry(key);
         let cell = entry.position;
         cells.rows.add(cell, 1);
@@ -111,24 +78,10 @@ impl Level {
         entry.new
     }
 
-    /// The cells of the bucket `time` falls in, made if it has none; none
-    /// if the bucket is sealed.
-    fn hot_cells(
-        &mut self,
-        time: &Datum,
-        key_parts: usize,
-        inputs: &[Input],
-    ) -> Option<&mut Cells> {
-        let bucket = match self.buckets.entry(self.bucket(time)) {
-            btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
-            btree_map::Entry::Vacant(vacant) => {
-                vacant.insert(Bucket::Hot(Cells::new(key_parts, new_states(inputs))))
-            }
-        };
-        match bucket {
-            Bucket::Hot(cells) => Some(cells),
-            Bucket::Sealed { .. } => None,
-        }
+    /// The cells of the bucket `time` falls in, made if it has none.
+    fn cells_of(&mut self, time: &Datum, key_parts: usize, inputs: &[Input]) -> &mut Cells {
+        let start = self.bucket(time);
+        (self.buckets.entry(start)).or_insert_with(|| Cells::new(key_parts, new_states(inputs)))
     }
 
     /// Adds every row of a load; how many cells are new.
@@ -151,7 +104,7 @@ impl Level {
         inputs: &[Input],
     ) -> Result<bool, RowError> {
         let bucket = self.bucket(&row[TIME]);
-        let Some(Bucket::Hot(cells)) = self.buckets.get_mut(&bucket) else {
+        let Some(cells) = self.buckets.get_mut(&bucket) else {
             return Err(RowError::Missing);
         };
         let cell = cells.find(key).ok_or(RowError::Missing)?;
@@ -186,9 +139,7 @@ impl Level {
             direction,
         } = move_cell;
         if direction == Direction::Add {
-            let Some(cells) = self.hot_cells(time, key.len(), inputs) else {
-                return Err(RowError::Sealed);
-            };
+            let cells = self.cells_of(time, key.len(), inputs);
             let entry = cells.entry(key);
             if !cells.absorb(entry.position, count, source, source_cell) {
                 return Err(RowError::Missing);
@@ -196,11 +147,8 @@ impl Level {
             return Ok(if entry.new { Shift::New } else { Shift::Same });
         }
         let start = self.bucket(time);
-        let Some(bucket) = self.buckets.get_mut(&start) else {
+        let Some(cells) = self.buckets.get_mut(&start) else {
             return Err(RowError::Missing);
-        };
-        let Bucket::Hot(cells) = bucket else {
-            return Err(RowError::Sealed);
         };
         let Some(cell) = cells.find(key) else {
             return Err(RowError::Missing);
@@ -223,36 +171,7 @@ impl Level {
     fn buckets_in(&self, from: i64, to: i64) -> impl Iterator<Item = CoveredBucket<'_>> {
         let width = self.width;
         let buckets = self.buckets.range(Some(from)..Some(to));
-        buckets.map(move |(start, bucket)| covered(width, *start, bucket))
-    }
-
-    /// The bucket starting at `start`, if it is hot and ends by `before`.
-    pub(super) fn hot_ended_by(
-        &self,
-        start: i64,
-        bucket: &Bucket,
-        before: i64,
-    ) -> Option<BucketId> {
-        let end = start.checked_add(self.width)?;
-        if end <= before && bucket.cells().is_some() {
-            return Some(BucketId {
-                width: self.width,
-                start,
-            });
-        }
-        None
-    }
-
-    /// The bucket `time` falls in, if it is sealed.
-    pub(super) fn sealed_bucket_of(&self, time: &Datum) -> Option<BucketId> {
-        let start = self.bucket(time)?;
-        match self.buckets.get(&Some(start)) {
-            Some(Bucket::Sealed { .. }) => Some(BucketId {
-                width: self.width,
-                start,
-            }),
-            _ => None,
-        }
+        buckets.map(move |(start, cells)| covered(width, *start, cells))
     }
 }
 
@@ -264,13 +183,13 @@ fn new_states(inputs: &[Input]) -> Vec<State> {
     states
 }
 
-fn covered(width: i64, start: Option<i64>, bucket: &Bucket) -> CoveredBucket<'_> {
+fn covered(width: i64, start: Option<i64>, cells: &Cells) -> CoveredBucket<'_> {
     CoveredBucket {
         id: BucketId {
             width,
             start: start.expect("a range of starts holds no null-time bucket"),
         },
-        bucket,
+        cells,
     }
 }
 

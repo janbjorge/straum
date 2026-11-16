@@ -8,8 +8,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::hint;
 
-use super::{CELL_HEADER, INLINE, RUN_HEADER, RUN_MAX_BYTES, ValueCounts};
-use crate::sealed::ValueCount;
+use super::{CELL_HEADER, INLINE, RUN_HEADER, RUN_MAX_BYTES, ValueCount, ValueCounts};
 
 /// Bytes of a record's value and of its count.
 #[derive(Clone, Copy)]

@@ -53,7 +53,7 @@ An enum is read as `alias.column::text AS name`, the only cast, on a
 key or `FILTER` column. The catalog check refuses the cast on a
 non-enum, an enum without it (naming it), and a `FILTER` literal that
 is no label in `pg_enum`. Values are labels as text; the type's name
-is metadata in `plan`, `/status` and spilled schemas, never the
+is metadata in `plan` and `/status`, never the
 domain's. Mapping enums to strings by catalog class, as Debezium and
 PeerDB do, was rejected as inference.
 

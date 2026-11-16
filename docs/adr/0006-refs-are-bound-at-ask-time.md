@@ -33,8 +33,7 @@ A fact keeps bound cells, a second rollup, only when a ref's via
 column is a rollup-key part no `by` key is. They are keyed by the `by`
 keys, every column its refs read and the bucket, with the same widths
 and measures. A fact row goes into both rollups, into the bound cells
-under the dim rows it matches now. Asks read bound cells; a sealed
-bucket is read through its keyed cells. Every other fact with refs,
+under the dim rows it matches now. Asks read bound cells. Every other fact with refs,
 and any ref joined through another dim, binds keyed cells at ask time.
 
 A dim row is applied as it comes. When the rows under a key change,

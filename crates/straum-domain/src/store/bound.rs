@@ -2,8 +2,8 @@
 //! columns, keyed by the dim columns' values instead of the join
 //! columns, so an ask reads no projection (ADR-0006). A fact
 //! row reaches them through its join rows: per join, the dim row its key
-//! finds now. A hot keyed bucket is poured in or out whole when a dim is
-//! replaced or the bucket is sealed or unsealed.
+//! finds now. A keyed bucket is poured in or out whole when a dim is
+//! replaced.
 
 use crate::identifier::Identifier;
 use crate::projection::{AttributeIndex, Projection};
@@ -56,7 +56,7 @@ pub(super) struct Overlay<'a> {
     pub(super) rows: &'a [Box<[u32]>],
 }
 
-/// A cell of a hot keyed bucket: where it lies among the bucket's cells.
+/// A cell of a keyed bucket: where it lies among the bucket's cells.
 #[derive(Clone, Copy)]
 pub(super) struct KeyedCell<'c> {
     // Borrows the bucket's cells, which are the bulk of the store.
@@ -214,7 +214,7 @@ impl Bound {
         false
     }
 
-    /// Moves every cell of a hot keyed bucket into the bound cells its
+    /// Moves every cell of a keyed bucket into the bound cells its
     /// joins resolve to now, or back out of them.
     pub(super) fn pour(
         &mut self,

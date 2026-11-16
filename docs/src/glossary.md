@@ -22,7 +22,7 @@ are open.
   numbered and never reused, edited as they change (ADR-0001). ADRs
   win over the guide and this glossary.
 - **Port** and **adapter**: a port is a trait at the edge of
-  `straum-app`: `Source` for PostgreSQL, `Spill` for sealed buckets.
+  `straum-app`: `Source`, for PostgreSQL.
   An adapter is the crate that implements one: `straum-pg`,
   `straum-http` (ADR-0002).
 
@@ -104,8 +104,8 @@ are open.
 - **Time column** (`Time::column`): the `timestamptz` or `timestamp`
   column inside `date_bin`.
 - **Bucket**: one span of the time column, floored to a width from
-  the epoch, and `bucket`, the name of the time key. In `rollup/`,
-  `Bucket` is also the cells of one such span, hot or sealed.
+  the epoch, and `bucket`, the name of the time key. In `rollup/`, a
+  level keys the cells of one such span by its start.
 - **Bucket width** (`Width`): `<n> seconds`, `minutes`, `hours` or
   `days`, at most a day and dividing it; each wider one a whole
   multiple of the one before. ADR-0004 says "grain".
@@ -169,10 +169,9 @@ are open.
   dim columns' values: fewer than its cells, and an ask reads no
   projection (ADR-0006). The fact's own cells, keyed by its
   join columns, are its **keyed cells** (`Read::Keyed`).
-- **Pour** (`pour`, `Store::pour_bucket`): move every cell of a hot
-  keyed bucket into the bound cells its join rows resolve to now, or
-  back out of them, as a dim is replaced or a bucket sealed or
-  unsealed.
+- **Pour** (`Bound::pour`): move every cell of a keyed bucket into
+  the bound cells its join rows resolve to now, as a dim is truncated
+  or loaded and its bound cells are made again.
 - **Overlay** (`Overlay`): the rows one dim key held before a change,
   read in place of the projection so the bound cells can drop what
   those rows joined.
@@ -400,21 +399,6 @@ are open.
   as a `NaN`. It stops the load or the stream, naming table and
   column.
 
-## Sealing
-
-Old `date_bin` buckets can leave memory through a port (ADR-0010).
-
-- **Seal** (`Store::seal`): hand a `date_bin` bucket that ended
-  `seal_after` ago to the spill and drop its cells, keeping its place
-  in the level. A **sealed bucket** is `Bucket::Sealed`; one in
-  memory is **hot** (`Bucket::Hot`). ADR-0010's title says "cold".
-- **Spill** (`Spill`, `Spilling`): the port sealed buckets go to.
-  Every start empties it. The flags `--spill-dir` and `--seal-after`
-  and the crate `straum-arrow` that ADR-0010 names do not
-  exist yet; `main.rs` passes `None`.
-- **Sealed** (`Sealed`, `SealedId`): a bucket's cells as plain data.
-  `SealedId` is the fact, the width and `bucket_start`.
-
 ## Testing
 
 - **Reference**: what a test compares Straum's answer with: a plain
@@ -423,8 +407,7 @@ Old `date_bin` buckets can leave memory through a port (ADR-0010).
   the `straum-pg` tests (`Reference`). Planting a bug must make the
   comparison fail.
 - **Fake** (`Fake`): a scripted PostgreSQL in the app and HTTP tests.
-  `PostgresContainer` is a real one in Docker. `MemorySpill` and
-  `Lost` are spills.
+  `PostgresContainer` is a real one in Docker.
 - **Taxi trips**: the TLC yellow trips of January to June 2024 in
   `bench/data`, which the benchmark loads. The **taxi month** is their
   January, which the quick start, `taxi.sql` and the ignored
@@ -440,6 +423,4 @@ Old `date_bin` buckets can leave memory through a port (ADR-0010).
 | level / width | design.md, ADR-0004 / spec.md | level is the cells, width the duration |
 | state | `app::State`; `source::State`; cell state (`State`); running states | qualify in prose |
 | the crate for Straum SQL | `straum-notation` | `straum-sql` needs an `ALLOWED` change in `scripts/check-layers.py`; not done |
-| cold | ADR-0010 title | sealed, hot |
 | slot | replication slot; a row's slot on a heap page (`SlotNumber`) | qualify: "replication slot", "slot on a page" |
-| spill flags | `--spill-dir`, `--seal-after`, `straum-arrow` in ADR-0010 | not shipped; `main.rs` passes `None` |

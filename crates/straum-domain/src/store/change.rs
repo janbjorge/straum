@@ -8,7 +8,7 @@ use crate::rollup::{Direction, Rollup, RowError};
 use crate::value::{ColumnType, Datum};
 
 use super::bound::{Bound, KeyedCell, Overlay};
-use super::{DimIndex, FactIndex, HOT, IN_SPEC, POURED, Store};
+use super::{DimIndex, FactIndex, IN_SPEC, POURED, Store};
 
 /// How a dim row changes its projection: [`Projection::add`] or
 /// [`Projection::remove`].
@@ -193,10 +193,8 @@ impl Store {
             key,
             rows: old,
         };
-        for start in keyed.hot_date_bin_starts() {
-            let Some(cells) = keyed.hot_date_bin(start) else {
-                continue;
-            };
+        for (start, cells) in keyed.date_bin_buckets() {
+            let start = *start;
             for cell in 0..cells.len() {
                 let cell = KeyedCell { cells, cell };
                 if bound.cell_hits(keyed, cell, dim, key) {
@@ -207,7 +205,7 @@ impl Store {
         Ok(())
     }
 
-    /// The dim was replaced wholesale: pour the hot keyed cells into a
+    /// The dim was replaced wholesale: pour the keyed cells into a
     /// fresh bound rollup.
     fn rebuild_dim(&mut self, dim: DimIndex) {
         for fact in self.facts_reading(dim) {
@@ -224,8 +222,8 @@ impl Store {
         };
         bound.rollup.clear();
         let keyed = &self.rollups[fact.0];
-        for start in keyed.hot_date_bin_starts() {
-            let cells = keyed.hot_date_bin(start).expect(HOT);
+        for (start, cells) in keyed.date_bin_buckets() {
+            let start = *start;
             (bound.pour(keyed, &self.projections, start, cells, Direction::Add)).expect(POURED);
         }
     }

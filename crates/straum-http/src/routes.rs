@@ -261,7 +261,6 @@ fn answer_error(error: &AnswerError, format: Format) -> Reply {
     match error {
         AnswerError::Invalid(invalid) => format.errors(StatusCode::BAD_REQUEST, invalid),
         AnswerError::NotReady => format.errors(StatusCode::SERVICE_UNAVAILABLE, &[error]),
-        AnswerError::Spill(_) => format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error]),
     }
 }
 

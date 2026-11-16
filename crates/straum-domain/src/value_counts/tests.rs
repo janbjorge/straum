@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use super::{Ends, RUN_HEADER, RUN_MAX_BYTES, ValueCounts};
-use crate::sealed::ValueCount;
+use super::{Ends, RUN_HEADER, RUN_MAX_BYTES, ValueCount, ValueCounts};
+
 use crate::test_rng::Rng;
 
 fn entry(value: i64, count: u64) -> ValueCount {

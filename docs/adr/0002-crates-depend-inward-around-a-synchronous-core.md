@@ -18,8 +18,8 @@ Straum is clean architecture as Cargo crates: `straum-domain`, with no
 dependencies and no I/O; `straum-app`, with the use cases and the
 ports; the adapters `straum-notation`, `straum-pg` and `straum-http`;
 and the `straum` binary as composition root. Crates depend inward only,
-enforced by `scripts/check-layers.py`. Traits exist only at the ports
-(`Source`, `Spill`); the per-row path is concrete structs, enums and
+enforced by `scripts/check-layers.py`. Traits exist only at the port
+(`Source`); the per-row path is concrete structs, enums and
 functions.
 
 Straum is synchronous. `App` is a core that never waits, driven by a

@@ -197,7 +197,6 @@ impl Cells {
 
 #[cfg(test)]
 mod tests {
-    use crate::sealed::SealedColumn;
     use crate::value::Datum;
 
     use super::super::state::StateKind;
@@ -218,17 +217,20 @@ mod tests {
         cells
     }
 
-    /// The cell's rows and its count column, as a spill keeps them.
+    /// The cell's rows, and the nulls among them its count column holds.
     #[derive(Debug, PartialEq)]
     struct Held {
         rows: u64,
-        count: SealedColumn,
+        nulls: u64,
     }
 
     fn held(cells: &Cells) -> Held {
+        let State::Count { nulls } = &cells.states[0] else {
+            panic!("the first state counts");
+        };
         Held {
             rows: cells.rows.get(0),
-            count: cells.states[0].sealed(&cells.rows),
+            nulls: nulls.get(0),
         }
     }
 

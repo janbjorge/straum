@@ -64,7 +64,7 @@ ALTER TABLE \"plan\".\"zones\" REPLICA IDENTITY FULL;
         ROW_LIMIT,
         Replication::Logical,
     );
-    let mut writer = Writer::new(App::new(spec, LIMITS, None), pg);
+    let mut writer = Writer::new(App::new(spec, LIMITS), pg);
     writer.step().unwrap();
     db.run(&Rng::new(1).trip(1));
     applied(&mut writer);

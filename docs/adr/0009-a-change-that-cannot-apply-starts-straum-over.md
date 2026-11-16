@@ -6,7 +6,7 @@ Status: Accepted 2026-11-10; revised 2026-11-16
 
 Some changes can't be applied to cells: a row that doesn't fit, an
 altered table, a transaction too big to buffer, a slot holding too
-much WAL, a failed spill. The first design read one table again at the
+much WAL. The first design read one table again at the
 failing LSN while the others kept answering. Readiness needs a
 measure of how far behind Straum is; the applied LSN means nothing
 without the server's, and a commit time stops on a quiet database.

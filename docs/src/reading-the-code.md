@@ -125,8 +125,8 @@ of a `Store`. A first parameter `&self` reads the store, `&mut self`
 changes it, `self` uses it up.
 
 **Traits.** A trait is a set of functions a type promises to have.
-Straum has two of its own, at its edges: `Source` (PostgreSQL, in
-`straum-app/src/source.rs`) and `Spill`. `impl Display for X` and
+Straum has one of its own, at its edge: `Source` (PostgreSQL, in
+`straum-app/src/source.rs`). `impl Display for X` and
 `impl From<A> for B` are the standard ones: how to print an `X`, and
 how to turn an `A` into a `B`, which is what lets `?` convert one
 error into another.

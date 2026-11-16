@@ -10,8 +10,8 @@ use std::mem;
 use crate::column::Counts;
 use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
-use crate::sealed::ValueCount;
 use crate::value::{Datum, Value};
+use crate::value_counts::ValueCount;
 
 /// What a measure reads of its input column, which decides the types the
 /// column may have.

@@ -179,7 +179,6 @@ fn row_error_display() {
             "column tolled is not a boolean",
         ),
         (RowError::Missing, "removed row was never added"),
-        (RowError::Sealed, "row falls in a sealed bucket"),
     ];
     for (error, message) in cases {
         assert_eq!(error.to_string(), message);
