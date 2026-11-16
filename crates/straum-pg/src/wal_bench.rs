@@ -2,9 +2,11 @@
 //! the WAL of four phases of taxi trip changes, the physical slot streams
 //! it, and Straum reads the captured bytes again and again, with no
 //! socket in the way. Once as records only, through `wal::Records`, which
-//! cuts pages into records, and once through the whole `wal::Pipeline`,
-//! from records to commits. Each phase's fastest read counts; the report
-//! sets it beside how long PostgreSQL took to write the same WAL.
+//! cuts pages into records, once through the whole `wal::Pipeline`, from
+//! records to commits, and once through a pipeline that reads no table,
+//! as most of a busy server's WAL passes through it. Each phase's fastest
+//! read counts; the report sets it beside how long PostgreSQL took to
+//! write the same WAL.
 
 use std::io::Write;
 use std::path::Path;
@@ -84,12 +86,24 @@ struct Setup {
     major: u32,
 }
 
-/// The fastest reads of each phase: as records, and through the pipeline,
-/// with the most bytes the pipeline held.
+/// The fastest reads of each phase: as records, through the pipeline,
+/// and through a pipeline that reads no table, with the most bytes the
+/// pipeline held.
 struct Fastest {
     parsed: Vec<Read>,
     piped: Vec<Read>,
+    skipped: Vec<Read>,
     peak: usize,
+}
+
+/// Which tables a pipeline reads.
+#[derive(Clone, Copy)]
+enum Tables {
+    /// The spec's: every change to `yellow_trips` becomes a row.
+    Spec,
+    /// None: every record passes through, as the WAL of tables outside
+    /// the spec does.
+    Nothing,
 }
 
 /// The ids of one transaction's rows: above `low`, up to `high`.
@@ -331,15 +345,13 @@ impl Reader {
 }
 
 impl PipelineRead {
-    fn new(setup: &Setup) -> PipelineRead {
+    fn new(setup: &Setup, tables: Tables) -> PipelineRead {
+        let (checked, layouts) = match tables {
+            Tables::Spec => (setup.checked.clone(), setup.layouts.clone()),
+            Tables::Nothing => (Vec::new(), Layouts::default()),
+        };
         PipelineRead {
-            pipeline: Pipeline::new(
-                setup.checked.clone(),
-                setup.layouts.clone(),
-                setup.major,
-                COPY_BATCH,
-                MAX_BYTES,
-            ),
+            pipeline: Pipeline::new(checked, layouts, setup.major, COPY_BATCH, MAX_BYTES),
             layouts: setup.layouts.clone(),
             snapshot: Some(setup.snapshot.clone()),
             peak: 0,
@@ -372,17 +384,21 @@ fn read_fastest(wal: &Wal, phases: &[Phase], setup: &Setup, runs: usize) -> Fast
     let mut fastest = Fastest {
         parsed: vec![Read::default(); phases.len()],
         piped: vec![Read::default(); phases.len()],
+        skipped: vec![Read::default(); phases.len()],
         peak: 0,
     };
     for _ in 0..runs {
         let read = replay(wal, &ends, &mut Reader::Records);
         keep_fastest(&mut fastest.parsed, &read);
-        let mut reader = Reader::Pipeline(PipelineRead::new(setup));
+        let mut reader = Reader::Pipeline(PipelineRead::new(setup, Tables::Spec));
         let read = replay(wal, &ends, &mut reader);
         if let Reader::Pipeline(piped) = reader {
             fastest.peak = piped.peak;
         }
         keep_fastest(&mut fastest.piped, &read);
+        let mut reader = Reader::Pipeline(PipelineRead::new(setup, Tables::Nothing));
+        let read = replay(wal, &ends, &mut reader);
+        keep_fastest(&mut fastest.skipped, &read);
     }
     fastest
 }
@@ -560,6 +576,7 @@ struct Totals {
     wrote: Duration,
     parsed: Duration,
     piped: Duration,
+    skipped: Duration,
     rows: usize,
 }
 
@@ -568,22 +585,24 @@ struct Totals {
 fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
     eprintln!("\nPostgreSQL {major}, wal_level = replica; the fastest read of each kind:\n");
     eprintln!(
-        "| Phase | WAL | Records | Images | Rows | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |"
+        "| Phase | WAL | Records | Images | Rows | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL | Pass-through read |"
     );
-    eprintln!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    eprintln!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     let mut total = Totals::default();
     for (index, phase) in phases.iter().enumerate() {
         let parsed = &fastest.parsed[index];
         let piped = &fastest.piped[index];
+        let skipped = &fastest.skipped[index];
         let bytes = phase.to - phase.from;
         total.bytes += bytes;
         total.wrote += phase.took;
         total.parsed += parsed.took;
         total.piped += piped.took;
+        total.skipped += skipped.took;
         total.rows += piped.rows;
         let faster = phase.took.as_secs_f64() / piped.took.as_secs_f64();
         eprintln!(
-            "| {} | {:.1} MiB | {} | {} | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {faster:.1}x |",
+            "| {} | {:.1} MiB | {} | {} | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {faster:.1}x | {:.0} MiB/s |",
             phase.name,
             mebibytes(bytes),
             parsed.records,
@@ -593,10 +612,11 @@ fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
             mebibytes_per_second(bytes, parsed.took),
             mebibytes_per_second(bytes, piped.took),
             per_second(piped.rows, piped.took),
+            mebibytes_per_second(bytes, skipped.took),
         );
     }
     eprintln!(
-        "| all | {:.1} MiB | | | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {:.1}x |",
+        "| all | {:.1} MiB | | | {} | {:.1?} | {:.0} MiB/s | {:.0} MiB/s | {:.0} | {:.1}x | {:.0} MiB/s |",
         mebibytes(total.bytes),
         total.rows,
         total.wrote,
@@ -604,6 +624,7 @@ fn report(phases: &[Phase], fastest: &Fastest, major: u32) {
         mebibytes_per_second(total.bytes, total.piped),
         per_second(total.rows, total.piped),
         total.wrote.as_secs_f64() / total.piped.as_secs_f64(),
+        mebibytes_per_second(total.bytes, total.skipped),
     );
     eprintln!(
         "\nThe pipeline held at most {:.1} MiB of rows.",

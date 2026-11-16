@@ -234,24 +234,26 @@ again three times each way (`STRAUM_BENCH_RUNS`), with no socket in the
 way, and the fastest read counts. "Records read" splits pages into
 records only. "Pipeline read" goes all the way to the commits for
 `crates/straum-notation/tests/taxi.sql`. Every row changed must come
-out, and nothing may be unfit. Autovacuum is off and the checkpoint
+out, and nothing may be unfit. "Pass-through read" goes through a
+pipeline that reads no table, as the WAL of every other table and
+database does on a busy server. Autovacuum is off and the checkpoint
 interval is an hour, so each run writes the same records.
 `STRAUM_TEST_POSTGRES` picks the major.
 
-One run on 2026-11-15, the machine of the [Results](#results), one
+One run on 2026-11-16, the machine of the [Results](#results), one
 thread, PostgreSQL 18:
 
-| Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| copy | 128.1 MiB | 1,044,746 | 12 | 2.1 s | 2,362 MiB/s | 250 MiB/s | 1,952,228 | 4.1x |
-| insert | 173.3 MiB | 2,033,148 | 3 | 1.5 s | 1,698 MiB/s | 286 MiB/s | 1,652,042 | 2.5x |
-| update | 356.9 MiB | 3,008,774 | 13,447 | 3.0 s | 1,905 MiB/s | 327 MiB/s | 916,290 | 2.8x |
-| delete | 137.7 MiB | 1,010,911 | 10,712 | 555.5 ms | 2,315 MiB/s | 262 MiB/s | 1,906,220 | 1.1x |
-| all | 795.9 MiB | | | 7.2 s | 1,974 MiB/s | 291 MiB/s | 1,463,324 | 2.6x |
+| Phase | WAL | Records | Images | PostgreSQL wrote | Records read | Pipeline read | Rows/s | Against PostgreSQL | Pass-through read |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| copy | 128.1 MiB | 1,044,744 | 10 | 2.0 s | 2,991 MiB/s | 336 MiB/s | 2,626,350 | 5.3x | 2,216 MiB/s |
+| insert | 173.3 MiB | 2,033,148 | 3 | 1.7 s | 2,242 MiB/s | 408 MiB/s | 2,353,395 | 3.9x | 1,646 MiB/s |
+| update | 356.9 MiB | 3,008,774 | 13,447 | 3.0 s | 2,720 MiB/s | 460 MiB/s | 1,290,261 | 3.9x | 2,072 MiB/s |
+| delete | 137.7 MiB | 1,010,911 | 10,712 | 1.2 s | 3,121 MiB/s | 369 MiB/s | 2,682,930 | 3.1x | 2,347 MiB/s |
+| all | 795.9 MiB | | | 7.8 s | 2,694 MiB/s | 407 MiB/s | 2,047,672 | 4.0x | 2,020 MiB/s |
 
 "Against PostgreSQL" divides the time PostgreSQL took to write a
-phase's WAL by the time the pipeline took to read it. Below 1x, as for
-the deletes, a writer that keeps that pace for long leaves Straum
+phase's WAL by the time the pipeline took to read it. Below 1x, a
+writer that keeps that pace for long leaves Straum
 behind, and once the lag passes `--max-lag`, `/readyz` turns off.
 Images are the full-page images: the first change to a page after the
 checkpoint brings one. The pipeline held at most 429.5 MiB of rows,
