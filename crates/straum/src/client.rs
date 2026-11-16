@@ -37,6 +37,17 @@ pub(crate) enum ClientError {
     },
 }
 
+impl ClientError {
+    /// Straum answered 503: it is loading or too far behind, and may
+    /// answer if asked again later.
+    pub(crate) fn is_not_ready(&self) -> bool {
+        match self {
+            ClientError::Refused { status_line, .. } => status_line.starts_with("HTTP/1.1 503 "),
+            _ => false,
+        }
+    }
+}
+
 impl Display for ClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -67,6 +78,7 @@ impl Display for ClientError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wanted {
     Status,
+    Readiness,
     Views,
     Rows,
     Answer,
@@ -76,6 +88,7 @@ impl Wanted {
     fn as_str(self) -> &'static str {
         match self {
             Wanted::Status => "its status",
+            Wanted::Readiness => "whether it is ready",
             Wanted::Views => "its views",
             Wanted::Rows => "its rows",
             Wanted::Answer => "an answer",
@@ -142,6 +155,16 @@ impl Request {
 pub(crate) fn status(url: &str, output: Output) -> Result<String, ClientError> {
     let request = Request::get(Wanted::Status, "/status".to_owned(), output);
     fetch(url, &request)
+}
+
+/// Whether a running Straum is ready, as `GET /readyz` says.
+pub(crate) fn is_ready(url: &str) -> Result<bool, ClientError> {
+    let request = Request::get(Wanted::Readiness, "/readyz".to_owned(), Output::Text);
+    match fetch(url, &request) {
+        Ok(_) => Ok(true),
+        Err(error) if error.is_not_ready() => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// The views a running Straum holds, as `GET /views` says them.
@@ -320,7 +343,7 @@ fn exchange(address: &str, request: &str) -> io::Result<String> {
 mod tests {
     use super::*;
     use crate::testing::{
-        GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args,
+        GET_READYZ, GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args,
     };
 
     /// What the user reads: a reply's body, or an error's words.
@@ -395,6 +418,27 @@ mod tests {
         );
         assert_eq!(load_views(&url), Some(Vec::new()));
         assert_eq!(load_views("http://127.0.0.1:1"), None);
+    }
+
+    #[test]
+    fn says_whether_straum_is_ready() {
+        let url = answering(GET_READYZ, "HTTP/1.1 200 OK\r\n\r\nready\n");
+        assert!(is_ready(&url).unwrap());
+        let loading = "HTTP/1.1 503 Service Unavailable\r\n\r\nnot ready: loading\n";
+        let url = answering(GET_READYZ, loading);
+        assert!(!is_ready(&url).unwrap());
+        let url = answering(GET_READYZ, "HTTP/1.1 404 Not Found\r\n\r\n");
+        let error = is_ready(&url).unwrap_err();
+        assert!(!error.is_not_ready(), "{error}");
+        let error = is_ready("http://127.0.0.1:1").unwrap_err();
+        assert!(
+            error.to_string().contains("for whether it is ready: "),
+            "{error}"
+        );
+        // Only a 503 says not ready; an ask refused for itself is a 400.
+        let url = answering(GET_VIEWS, loading);
+        assert!(views(&url, Output::Text).unwrap_err().is_not_ready());
+        assert!(!ClientError::NotAViewName("x".into()).is_not_ready());
     }
 
     #[test]

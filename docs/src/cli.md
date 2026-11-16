@@ -10,6 +10,11 @@ it at `--url`, else at the URL in `STRAUM_URL`, else at
 `http://127.0.0.1:8080`. When nothing answers there, the error says so
 and ends with `try: --url URL, or set STRAUM_URL`.
 
+Every command exits with 0 when done, 1 when it failed, 2 when its
+command line is wrong, and 3 when Straum is not ready yet: loading, or
+further behind PostgreSQL than `--max-lag`. A script waits on 3 and
+asks again; the other failures need a change first.
+
 ## straum run
 
 ```text
@@ -75,6 +80,13 @@ last failure: none
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
 
+It exits with 3 while `ready` is no, as `/readyz` answers 503, so a
+script can wait for Straum:
+
+```sh
+until straum status > /dev/null; do sleep 1; done
+```
+
 `--json` prints the same facts as one JSON object, the body `GET
 /status` sends with `Accept: application/json`
 ([endpoints](asks.md#endpoints)). A script reads it rather than the
@@ -110,7 +122,7 @@ dim public.taxi_zones
 - `measures`: the names an ask may select after the keys.
 
 Until every table is loaded it prints `not ready: ` and why, and exits
-with 1.
+with 3.
 
 `--json` prints each view's keys with their types, its measures and the
 range of buckets it holds, as JSON, the body `GET /views` sends with

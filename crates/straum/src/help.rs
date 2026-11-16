@@ -17,6 +17,9 @@ usage: straum <command> [flags]
   version print Straum's version
   help    print this; straum help <command> prints its flags
 
+exit status: 0 done, 1 failed, 2 a command line misused, 3 Straum not
+ready yet, so ask again later
+
 Guide: https://janbjorge.github.io/straum/
 ";
 
@@ -68,7 +71,8 @@ pub(crate) const STATUS_HELP: &str = "\
 usage: straum status [flags]
 
 Prints what the Straum at URL has done: ready or why not, how far behind
-PostgreSQL, the WAL retained for it, its starts and its failures. In a pod:
+PostgreSQL, the WAL retained for it, its starts and its failures. Exits
+with 3 while Straum is not ready. In a pod:
 kubectl exec deployment/straum -- /straum status
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)

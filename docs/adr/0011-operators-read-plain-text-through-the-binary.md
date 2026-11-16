@@ -25,7 +25,10 @@ prints its usage, flags with defaults and a guide link; `straum ask
 --help` adds the rules of an ask and examples a test runs against the
 README's spec. An argument error prints the error and `try: straum
 <command> --help`. A bare `straum` prints the list on stderr with exit
-2. Prose lives in the guide.
+2. A command exits with 0 when done, 1 when it failed, 2 when misused
+and 3 when Straum is not ready, as `systemctl is-active` says 3 for a
+unit not running; `straum status` too, after printing the status. A
+script waits on 3 and gives up on 1. Prose lives in the guide.
 
 No metrics and no OTLP. Straum writes what people read, as plain text:
 `GET /status` (ready or why not, lag, WAL held against the cap, LSN,

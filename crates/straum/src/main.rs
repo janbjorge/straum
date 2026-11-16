@@ -38,6 +38,9 @@ use crate::help::HELP;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
 const USAGE_FAILURE: u8 = 2;
+// 3, as systemctl is-active says a unit is not running: Straum is loading
+// or too far behind, and a script may ask again later.
+const NOT_READY: u8 = 3;
 
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -46,6 +49,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 #[derive(Debug)]
 enum Failure {
     Client(ClientError),
+    /// `straum status` printed the status of a Straum that is not ready.
+    NotReady,
     Terminal(ReadlineError),
     LinesFailed(usize),
     ReadingCommands(io::Error),
@@ -72,6 +77,7 @@ impl Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Failure::Client(error) => error.fmt(formatter),
+            Failure::NotReady => formatter.write_str("not ready"),
             Failure::Terminal(error) => write!(formatter, "reading the terminal: {error}"),
             Failure::LinesFailed(count) => write!(formatter, "lines that failed: {count}"),
             Failure::ReadingCommands(error) => write!(formatter, "reading commands: {error}"),
@@ -93,6 +99,18 @@ impl Display for Failure {
             }
             Failure::StartingWriter(error) => write!(formatter, "starting the writer: {error}"),
             Failure::Serving(error) => write!(formatter, "serving HTTP: {error}"),
+        }
+    }
+}
+
+impl Failure {
+    /// What the process exits with: not ready apart from every other
+    /// failure.
+    fn exit_code(&self) -> ExitCode {
+        match self {
+            Failure::NotReady => ExitCode::from(NOT_READY),
+            Failure::Client(error) if error.is_not_ready() => ExitCode::from(NOT_READY),
+            _ => ExitCode::FAILURE,
         }
     }
 }
@@ -125,7 +143,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
             log(&failure.to_string());
-            ExitCode::FAILURE
+            failure.exit_code()
         }
     }
 }
@@ -151,7 +169,13 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::Plan(args) => plan(args),
         Command::Run(args) => run(args),
-        Command::Status { url, output } => print(&client::status(&url, output)?),
+        Command::Status { url, output } => {
+            print(&client::status(&url, output)?)?;
+            if !client::is_ready(&url)? {
+                return Err(Failure::NotReady);
+            }
+            Ok(())
+        }
         Command::Views { url, output } => print(&client::views(&url, output)?),
         Command::Ask {
             url,
@@ -384,6 +408,7 @@ mod tests {
                 "reading s: gone",
             ),
             (Failure::NoDsn, "set STRAUM_DSN or pass --dsn-file"),
+            (Failure::NotReady, "not ready"),
             (Failure::LinesFailed(2), "lines that failed: 2"),
             (Failure::ReadingCommands(gone()), "reading commands: gone"),
             (Failure::WritingAnswer(gone()), "writing the answer: gone"),
@@ -406,5 +431,25 @@ mod tests {
         for line in failure.to_string().lines() {
             assert!(line.starts_with("s: "), "{line}");
         }
+    }
+
+    fn refused(status_line: &str) -> Failure {
+        Failure::Client(ClientError::Refused {
+            url: "u".into(),
+            status_line: status_line.into(),
+            body: String::new(),
+        })
+    }
+
+    #[test]
+    fn not_ready_exits_with_its_own_code() {
+        let loading = refused("HTTP/1.1 503 Service Unavailable");
+        assert_eq!(loading.exit_code(), ExitCode::from(NOT_READY));
+        assert_eq!(Failure::NotReady.exit_code(), ExitCode::from(NOT_READY));
+        assert!(HELP.contains(&format!("{USAGE_FAILURE} a command line misused")));
+        assert!(HELP.contains(&format!("{NOT_READY} Straum not\nready")));
+        let wrong = refused("HTTP/1.1 400 Bad Request");
+        assert_eq!(wrong.exit_code(), ExitCode::FAILURE);
+        assert_eq!(Failure::NoDsn.exit_code(), ExitCode::FAILURE);
     }
 }
