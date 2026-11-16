@@ -75,6 +75,15 @@ last failure: none
 - `starts` and `failures`: loads that finished, and failures, since the
   process started.
 
+`--json` prints the same facts as one JSON object, the body `GET
+/status` sends with `Accept: application/json`
+([endpoints](asks.md#endpoints)). A script reads it rather than the
+lines, whose layout may change:
+
+```sh
+straum status --json | jq -e .ready
+```
+
 ## straum views
 
 Prints every view of the Straum at `--url` and how much of it Straum
@@ -103,6 +112,10 @@ dim public.taxi_zones
 Until every table is loaded it prints `not ready: ` and why, and exits
 with 1.
 
+`--json` prints each view's keys with their types, its measures and the
+range of buckets it holds, as JSON, the body `GET /views` sends with
+`Accept: application/json`. It leaves out the cells and the dims.
+
 ## straum ask
 
 Sends a query to the Straum at `--url` and prints the answer as a
@@ -128,6 +141,8 @@ Unknown       |   527 |    9738.86 |  18.47981
 Quote the query with single quotes, so `$1` reaches Straum as written.
 The table holds what the [JSON answer](asks.md#the-answer) holds:
 values print the same, text without its quotes, a null as `null`.
+`--json`, before the query, prints that JSON answer itself, for a
+script; errors then come as `{"errors": [...]}`.
 
 A command line holds only text, so a parameter's type is read from it:
 

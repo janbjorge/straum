@@ -22,7 +22,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
-use crate::client::{ClientError, ask, load_views, rows, views};
+use crate::client::{ClientError, Output, ask, load_views, rows, views};
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
 
@@ -69,7 +69,7 @@ fn answer(url: &str, line: &str) -> Outcome {
         [] => Ok(String::new()),
         ["\\q"] => return Outcome::Leave,
         ["\\?"] => Ok(shell_commands()),
-        ["\\d"] => views(url),
+        ["\\d"] => views(url, Output::Text),
         ["\\rows", view] => rows(url, view),
         [command, ..] if command.starts_with('\\') => {
             return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
@@ -78,7 +78,7 @@ fn answer(url: &str, line: &str) -> Outcome {
             let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
             let parameters: Vec<String> =
                 parameters.split_whitespace().map(str::to_owned).collect();
-            ask(url, query.trim_end(), &parameters)
+            ask(url, query.trim_end(), &parameters, Output::Text)
         }
     };
     match answered {

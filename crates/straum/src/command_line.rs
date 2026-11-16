@@ -12,6 +12,7 @@ use std::time::Duration;
 use straum_app::Limits;
 use straum_pg::Replication;
 
+use crate::client::Output;
 use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
 
 /// Where `straum run` listens unless told.
@@ -21,6 +22,8 @@ const PUBLICATION: &str = "straum";
 pub(crate) const ROLE: &str = "straum";
 /// Where the commands that talk to a running Straum find it unless told.
 const URL: &str = "http://127.0.0.1:8080";
+/// The switch that asks for JSON instead of a table.
+const JSON: &str = "--json";
 /// The environment variable that names the URL when `--url` doesn't.
 pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
 const FOUR_GIBIBYTES: u64 = 4 << 30;
@@ -105,6 +108,14 @@ impl Name {
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
         }
     }
+
+    /// The flags that take no value.
+    fn switches(self) -> &'static [&'static str] {
+        match self {
+            Name::Status | Name::Views | Name::Ask => &[JSON],
+            Name::Run | Name::Plan | Name::Shell => &[],
+        }
+    }
 }
 
 /// A command line Straum can run.
@@ -114,15 +125,18 @@ pub(crate) enum Command {
     Plan(Plan),
     Status {
         url: String,
+        output: Output,
     },
     Views {
         url: String,
+        output: Output,
     },
     Ask {
         url: String,
         query: String,
         /// As written on the command line.
         parameters: Vec<String>,
+        output: Output,
     },
     Shell {
         url: String,
@@ -304,14 +318,18 @@ fn asks_for_help(args: &[String]) -> bool {
 }
 
 /// Where an ask's flags end and its query begins: each flag takes one
-/// value, a call for help none.
+/// value, a call for help or a switch none.
 fn query_at(rest: &[String]) -> usize {
     let mut at = 0;
     while let Some(arg) = rest.get(at) {
         if !arg.starts_with('-') {
             break;
         }
-        at += if is_help(arg) { 1 } else { 2 };
+        at += if is_help(arg) || Name::Ask.switches().contains(&arg.as_str()) {
+            1
+        } else {
+            2
+        };
     }
     at.min(rest.len())
 }
@@ -324,12 +342,20 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
         return Ok(Command::Help(Some(name)));
     }
     match name {
-        Name::Status => Ok(Command::Status {
-            url: Flags::read(name, rest)?.url(url),
-        }),
-        Name::Views => Ok(Command::Views {
-            url: Flags::read(name, rest)?.url(url),
-        }),
+        Name::Status => {
+            let flags = Flags::read(name, rest)?;
+            Ok(Command::Status {
+                url: flags.url(url),
+                output: flags.output(),
+            })
+        }
+        Name::Views => {
+            let flags = Flags::read(name, rest)?;
+            Ok(Command::Views {
+                url: flags.url(url),
+                output: flags.output(),
+            })
+        }
         Name::Shell => Ok(Command::Shell {
             url: Flags::read(name, rest)?.url(url),
         }),
@@ -353,6 +379,7 @@ fn ask_command(flags: &Flags, query: &[String], url: &str) -> Result<Command, Us
         url: flags.url(url),
         query: query.clone(),
         parameters: parameters.to_vec(),
+        output: flags.output(),
     })
 }
 
@@ -416,10 +443,11 @@ struct Given {
     value: String,
 }
 
-/// The flags on one command's line, each with its value, and the spec
-/// for the commands that take one.
+/// The flags on one command's line, each with its value, the switches,
+/// and the spec for the commands that take one.
 struct Flags {
     given: Vec<Given>,
+    switches: Vec<String>,
     spec: Option<String>,
 }
 
@@ -430,6 +458,7 @@ impl Flags {
         let takes_spec = matches!(name, Name::Run | Name::Plan);
         let mut flags = Flags {
             given: Vec::new(),
+            switches: Vec::new(),
             spec: None,
         };
         let mut rest = rest.iter();
@@ -439,6 +468,13 @@ impl Flags {
                     return Err(UsageError::OneSpec(name));
                 }
                 flags.spec = Some(flag.clone());
+                continue;
+            }
+            if name.switches().contains(&flag.as_str()) {
+                if flags.switches.contains(flag) {
+                    return Err(UsageError::GivenTwice(flag.clone()));
+                }
+                flags.switches.push(flag.clone());
                 continue;
             }
             if !name.flags().contains(&flag.as_str()) {
@@ -502,6 +538,16 @@ impl Flags {
 
     fn publication(&self) -> String {
         self.text_or("--publication", PUBLICATION)
+    }
+
+    /// JSON with `--json`, else a table.
+    fn output(&self) -> Output {
+        for switch in &self.switches {
+            if switch == JSON {
+                return Output::Json;
+            }
+        }
+        Output::Text
     }
 
     /// `--url`, else `default`, which the environment may have set.
@@ -610,7 +656,8 @@ mod tests {
         assert_eq!(
             flag,
             Ok(Command::Status {
-                url: "http://flag:1".into()
+                url: "http://flag:1".into(),
+                output: Output::Text,
             })
         );
         let variable = command(&args("ask SELECT"), &set);
@@ -619,7 +666,11 @@ mod tests {
         };
         assert_eq!(url, "http://variable:2");
         let empty = command(&args("views"), &with_url(""));
-        assert_eq!(empty, Ok(Command::Views { url: URL.into() }));
+        let views = Command::Views {
+            url: URL.into(),
+            output: Output::Text,
+        };
+        assert_eq!(empty, Ok(views));
         let unset = command(&args("shell"), &Environment::default());
         assert_eq!(unset, Ok(Command::Shell { url: URL.into() }));
     }
@@ -692,18 +743,23 @@ mod tests {
     fn reads_the_commands_that_talk_to_a_running_straum() {
         assert_eq!(
             command_of(&args("status")),
-            Ok(Command::Status { url: URL.into() })
+            Ok(Command::Status {
+                url: URL.into(),
+                output: Output::Text,
+            })
         );
         assert_eq!(
             command_of(&args("status --url http://straum:9")),
             Ok(Command::Status {
-                url: "http://straum:9".into()
+                url: "http://straum:9".into(),
+                output: Output::Text,
             })
         );
         assert_eq!(
             command_of(&args("views --url http://straum:9")),
             Ok(Command::Views {
-                url: "http://straum:9".into()
+                url: "http://straum:9".into(),
+                output: Output::Text,
             })
         );
         assert_eq!(
@@ -716,6 +772,7 @@ mod tests {
                 url: URL.into(),
                 query: "SELECT".into(),
                 parameters: Vec::new(),
+                output: Output::Text,
             })
         );
         // What follows the query is a parameter, whatever it looks like.
@@ -725,8 +782,42 @@ mod tests {
                 url: "http://straum:9".into(),
                 query: "SELECT".into(),
                 parameters: args("-h --url -7"),
+                output: Output::Text,
             })
         );
+    }
+
+    #[test]
+    fn json_is_a_switch_of_the_commands_that_print_what_straum_says() {
+        let status = command_of(&args("status --json --url http://straum:9"));
+        let json_status = Command::Status {
+            url: "http://straum:9".into(),
+            output: Output::Json,
+        };
+        assert_eq!(status, Ok(json_status));
+        let views = command_of(&args("views --json"));
+        let json_views = Command::Views {
+            url: URL.into(),
+            output: Output::Json,
+        };
+        assert_eq!(views, Ok(json_views));
+        // Before the query a switch takes no value; after it, --json is
+        // a parameter like any other word.
+        let ask = command_of(&args("ask --json SELECT --json"));
+        let json_ask = Command::Ask {
+            url: URL.into(),
+            query: "SELECT".into(),
+            parameters: args("--json"),
+            output: Output::Json,
+        };
+        assert_eq!(ask, Ok(json_ask));
+        for (line, error) in [
+            ("status --json --json", "--json given twice"),
+            ("shell --json", "straum shell takes no \"--json\""),
+            ("plan s --json", "straum plan takes no \"--json\""),
+        ] {
+            assert_eq!(usage(line), error, "{line}");
+        }
     }
 
     #[test]
@@ -758,9 +849,11 @@ mod tests {
     /// The flags other commands take and `name` doesn't.
     fn flags_of_others(name: Name) -> Vec<&'static str> {
         let mut flags = Vec::new();
+        let mut taken = name.flags().to_vec();
+        taken.extend(name.switches());
         for other in Name::ALL {
-            for flag in other.flags() {
-                if !name.flags().contains(flag) && !flags.contains(flag) {
+            for flag in other.flags().iter().chain(other.switches()) {
+                if !taken.contains(flag) && !flags.contains(flag) {
                     flags.push(*flag);
                 }
             }
@@ -776,7 +869,7 @@ mod tests {
             let word = name.as_str();
             assert!(text.starts_with(&format!("usage: straum {word}")), "{word}");
             assert!(HELP.contains(&format!("\n  {word} ")), "{word}");
-            for flag in name.flags() {
+            for flag in name.flags().iter().chain(name.switches()) {
                 assert!(text.contains(&format!("  {flag} ")), "{word} {flag}");
             }
             for flag in flags_of_others(name) {

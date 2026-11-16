@@ -98,18 +98,19 @@ impl Method {
     }
 }
 
-/// The form of reply a request accepts.
-#[derive(Debug, Clone, Copy)]
-enum Accept {
+/// What a command prints: a table for people, or the JSON Straum
+/// answers programs with. It is the form of reply the request accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Output {
     Text,
     Json,
 }
 
-impl Accept {
+impl Output {
     fn as_str(self) -> &'static str {
         match self {
-            Accept::Text => "text/plain",
-            Accept::Json => "application/json",
+            Output::Text => "text/plain",
+            Output::Json => "application/json",
         }
     }
 }
@@ -119,14 +120,14 @@ struct Request {
     wanted: Wanted,
     method: Method,
     path: String,
-    accept: Accept,
+    accept: Output,
     /// A JSON body, sent with its length.
     body: Option<String>,
 }
 
 impl Request {
     /// A `GET` with no body.
-    fn get(wanted: Wanted, path: String, accept: Accept) -> Request {
+    fn get(wanted: Wanted, path: String, accept: Output) -> Request {
         Request {
             wanted,
             method: Method::Get,
@@ -138,14 +139,14 @@ impl Request {
 }
 
 /// What a running Straum has done, as `GET /status` says it.
-pub(crate) fn status(url: &str) -> Result<String, ClientError> {
-    let request = Request::get(Wanted::Status, "/status".to_owned(), Accept::Text);
+pub(crate) fn status(url: &str, output: Output) -> Result<String, ClientError> {
+    let request = Request::get(Wanted::Status, "/status".to_owned(), output);
     fetch(url, &request)
 }
 
 /// The views a running Straum holds, as `GET /views` says them.
-pub(crate) fn views(url: &str) -> Result<String, ClientError> {
-    let request = Request::get(Wanted::Views, "/views".to_owned(), Accept::Text);
+pub(crate) fn views(url: &str, output: Output) -> Result<String, ClientError> {
+    let request = Request::get(Wanted::Views, "/views".to_owned(), output);
     fetch(url, &request)
 }
 
@@ -155,20 +156,25 @@ pub(crate) fn rows(url: &str, view: &str) -> Result<String, ClientError> {
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
     }
-    let request = Request::get(Wanted::Rows, format!("/views/{view}"), Accept::Text);
+    let request = Request::get(Wanted::Rows, format!("/views/{view}"), Output::Text);
     fetch(url, &request)
 }
 
 /// The views as JSON, for the shell to complete from; `None` when they
 /// can't be had.
 pub(crate) fn load_views(url: &str) -> Option<Vec<View>> {
-    let request = Request::get(Wanted::Views, "/views".to_owned(), Accept::Json);
+    let request = Request::get(Wanted::Views, "/views".to_owned(), Output::Json);
     let json = fetch(url, &request).ok()?;
     read_views(&json)
 }
 
-/// Sends an ask and returns its answer as a table.
-pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<String, ClientError> {
+/// Sends an ask and returns its answer, as a table or as JSON.
+pub(crate) fn ask(
+    url: &str,
+    query: &str,
+    parameters: &[String],
+    output: Output,
+) -> Result<String, ClientError> {
     let mut values = Vec::with_capacity(parameters.len());
     for text in parameters {
         values.push(parameter(text));
@@ -182,7 +188,7 @@ pub(crate) fn ask(url: &str, query: &str, parameters: &[String]) -> Result<Strin
         wanted: Wanted::Answer,
         method: Method::Post,
         path: "/ask".to_owned(),
-        accept: Accept::Text,
+        accept: output,
         body: Some(body),
     };
     fetch(url, &request)
@@ -313,7 +319,9 @@ fn exchange(address: &str, request: &str) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, answering, args};
+    use crate::testing::{
+        GET_ROWS, GET_STATUS, GET_VIEWS, POST_ASK, POST_ASK_JSON, answering, args,
+    };
 
     /// What the user reads: a reply's body, or an error's words.
     #[derive(Debug, PartialEq)]
@@ -333,22 +341,31 @@ mod tests {
     fn asks_for_the_status() {
         let reply = "HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nready: yes\n";
         let url = answering(GET_STATUS, reply);
-        assert_eq!(said(status(&url)), Said::Body("ready: yes\n".to_owned()));
+        assert_eq!(
+            said(status(&url, Output::Text)),
+            Said::Body("ready: yes\n".to_owned())
+        );
         let url = answering(GET_STATUS, "HTTP/1.1 200 OK\r\n\r\n");
-        assert_eq!(said(status(&format!("{url}/"))), Said::Body(String::new()));
+        assert_eq!(
+            said(status(&format!("{url}/"), Output::Text)),
+            Said::Body(String::new())
+        );
     }
 
     #[test]
     fn asks_for_the_views() {
         let url = answering(GET_VIEWS, "HTTP/1.1 200 OK\r\n\r\nview trips\n");
-        assert_eq!(said(views(&url)), Said::Body("view trips\n".to_owned()));
+        assert_eq!(
+            said(views(&url, Output::Text)),
+            Said::Body("view trips\n".to_owned())
+        );
         let url = answering(
             GET_STATUS,
             "HTTP/1.1 503 Service Unavailable\r\n\r\nnot ready: loading\n",
         );
         let answered =
             format!("{url} answered \"HTTP/1.1 503 Service Unavailable\"\nnot ready: loading");
-        assert_eq!(said(status(&url)), Said::Error(answered));
+        assert_eq!(said(status(&url, Output::Text)), Said::Error(answered));
     }
 
     #[test]
@@ -368,9 +385,6 @@ mod tests {
             said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
             "{said}"
         );
-        // A server that answers, even with a refusal, needs no such hint.
-        let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
-        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
     }
 
     #[test]
@@ -384,11 +398,30 @@ mod tests {
     }
 
     #[test]
+    fn json_asks_straum_for_json_and_passes_it_through() {
+        let json_status = "GET /status HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n";
+        let url = answering(json_status, "HTTP/1.1 200 OK\r\n\r\n{\"ready\":true}\n");
+        let body = Said::Body("{\"ready\":true}\n".to_owned());
+        assert_eq!(said(status(&url, Output::Json)), body);
+        let json_views = "GET /views HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\naccept: application/json\r\n\r\n";
+        let url = answering(json_views, "HTTP/1.1 200 OK\r\n\r\n{\"views\":[]}");
+        let body = Said::Body("{\"views\":[]}".to_owned());
+        assert_eq!(said(views(&url, Output::Json)), body);
+        let url = answering(POST_ASK_JSON, "HTTP/1.1 200 OK\r\n\r\n{\"rows\":[]}");
+        let parameters = args("7 paid true");
+        let body = Said::Body("{\"rows\":[]}".to_owned());
+        assert_eq!(
+            said(ask(&url, "SELECT \"x\"", &parameters, Output::Json)),
+            body
+        );
+    }
+
+    #[test]
     fn sends_an_ask_and_prints_its_table() {
         let url = answering(POST_ASK, "HTTP/1.1 200 OK\r\n\r\ntrips\n-----\n    1\n");
         let parameters = args("7 paid true");
         assert_eq!(
-            said(ask(&url, "SELECT \"x\"", &parameters)),
+            said(ask(&url, "SELECT \"x\"", &parameters, Output::Text)),
             Said::Body("trips\n-----\n    1\n".to_owned())
         );
     }
@@ -403,11 +436,16 @@ mod tests {
             "{url} answered \"HTTP/1.1 400 Bad Request\"\nkind asked twice\ntrips asked twice"
         );
         assert_eq!(
-            said(ask(&url, "SELECT \"x\"", &args("7 paid true"))),
+            said(ask(
+                &url,
+                "SELECT \"x\"",
+                &args("7 paid true"),
+                Output::Text
+            )),
             Said::Error(refused)
         );
         // Nothing listens on port 1.
-        let error = ask("http://127.0.0.1:1", "SELECT", &args("")).unwrap_err();
+        let error = ask("http://127.0.0.1:1", "SELECT", &args(""), Output::Text).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for an answer: ";
         let said = error.to_string();
         assert!(said.starts_with(asking), "{said}");
@@ -415,9 +453,6 @@ mod tests {
             said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
             "{said}"
         );
-        // A server that answers, even with a refusal, needs no such hint.
-        let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
-        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
     }
 
     #[test]
@@ -464,13 +499,13 @@ mod tests {
             "HTTP/1.1 404 Not Found\r\n\r\nno /status here\n",
         );
         let answered = format!("{url} answered \"HTTP/1.1 404 Not Found\"\nno /status here");
-        assert_eq!(said(status(&url)), Said::Error(answered));
+        assert_eq!(said(status(&url, Output::Text)), Said::Error(answered));
         let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
         let answered = format!("{url} answered \"HTTP/1.1 404 Not Found\"");
-        assert_eq!(said(status(&url)), Said::Error(answered));
+        assert_eq!(said(status(&url, Output::Text)), Said::Error(answered));
         let url = answering(GET_STATUS, "garbage");
         assert_eq!(
-            said(status(&url)),
+            said(status(&url, Output::Text)),
             Said::Error(format!("{url} sent no HTTP reply"))
         );
         for bad in [
@@ -481,10 +516,10 @@ mod tests {
             "http://x:1/status",
         ] {
             let error = format!("--url takes http://HOST:PORT, not {bad:?}");
-            assert_eq!(said(status(bad)), Said::Error(error), "{bad}");
+            assert_eq!(said(status(bad, Output::Text)), Said::Error(error), "{bad}");
         }
         // Nothing listens on port 1.
-        let error = status("http://127.0.0.1:1").unwrap_err();
+        let error = status("http://127.0.0.1:1", Output::Text).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for its status: ";
         let said = error.to_string();
         assert!(said.starts_with(asking), "{said}");
@@ -494,6 +529,11 @@ mod tests {
         );
         // A server that answers, even with a refusal, needs no such hint.
         let url = answering(GET_STATUS, "HTTP/1.1 404 Not Found\r\n\r\n");
-        assert!(!status(&url).unwrap_err().to_string().contains("STRAUM_URL"));
+        assert!(
+            !status(&url, Output::Text)
+                .unwrap_err()
+                .to_string()
+                .contains("STRAUM_URL")
+        );
     }
 }

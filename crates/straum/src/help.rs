@@ -72,6 +72,7 @@ PostgreSQL, the WAL retained for it, its starts and its failures. In a pod:
 kubectl exec deployment/straum -- /straum status
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
+  --json     print the same facts as one JSON object, null where unknown
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-status
 ";
@@ -85,6 +86,8 @@ the range of buckets it holds, its keys with their types and its measures.
 Then each dim and its rows.
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
+  --json     print each view's keys with their types, its measures and the
+             range of buckets it holds, as JSON
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-views
 ";
@@ -93,7 +96,8 @@ Guide: https://janbjorge.github.io/straum/cli.html#straum-views
 pub(crate) const ASK_HELP: &str = "\
 usage: straum ask [flags] QUERY [PARAMETER...]
 
-Sends QUERY to the Straum at URL and prints the answer as a table. Each
+Sends QUERY to the Straum at URL and prints the answer as a table, or with
+--json as JSON. Each
 PARAMETER is the value of $1, $2 and on: 7 is an integer, 20.5 a number
 exactly as written, true and false are booleans, anything else is a
 string, and '7' in quotes is the string 7.
@@ -113,6 +117,7 @@ examples:
       purchase 2026-11-13T00:00:00Z 2026-11-14T00:00:00Z
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
+  --json     print the answer as JSON: as_of and a row object per group
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
 ";

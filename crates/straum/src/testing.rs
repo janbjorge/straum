@@ -45,3 +45,8 @@ pub(crate) const GET_ROWS: &str =
 pub(crate) const POST_ASK: &str = "POST /ask HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\n\
     accept: text/plain\r\ncontent-type: application/json\r\ncontent-length: 53\r\n\r\n\
     {\"query\":\"SELECT \\\"x\\\"\",\"parameters\":[7,\"paid\",true]}";
+
+/// The same ask, as `straum ask --json` sends it.
+pub(crate) const POST_ASK_JSON: &str = "POST /ask HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\n\
+    accept: application/json\r\ncontent-type: application/json\r\ncontent-length: 53\r\n\r\n\
+    {\"query\":\"SELECT \\\"x\\\"\",\"parameters\":[7,\"paid\",true]}";

@@ -151,13 +151,14 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::Plan(args) => plan(args),
         Command::Run(args) => run(args),
-        Command::Status { url } => print(&client::status(&url)?),
-        Command::Views { url } => print(&client::views(&url)?),
+        Command::Status { url, output } => print(&client::status(&url, output)?),
+        Command::Views { url, output } => print(&client::views(&url, output)?),
         Command::Ask {
             url,
             query,
             parameters,
-        } => print(&client::ask(&url, &query, &parameters)?),
+            output,
+        } => print(&client::ask(&url, &query, &parameters, output)?),
         Command::Shell { url } => {
             let (input, output) = (io::stdin(), io::stdout());
             // A prompt is for a person at both ends: not for a script
