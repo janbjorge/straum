@@ -1,10 +1,9 @@
 # How Straum works
 
 How does Straum answer without reading rows? It keeps cells, not
-rows. This page is the model behind every other page: how the tables
-get in, what a cell is, how a dim reaches it, how a commit changes
-cells, and what an ask reads. [Design](design.md) names the code
-behind it, for contributors.
+rows, and keeps them current from PostgreSQL's replication stream.
+[Design](design.md) names the code behind each step, for
+contributors.
 
 ## Load once, follow every commit
 

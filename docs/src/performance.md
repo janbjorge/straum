@@ -376,6 +376,5 @@ queries the asks mirror, not a dashboard's own. Straum reads the cells
 of one width in the range, about a cell a task, and maps each through
 the projections, so an ask over a week costs more than one over a day.
 
-That ends the path. The reference has the rest: every rule of a
-[spec](spec.md), every [ask and endpoint](asks.md) and every
-[command and flag](cli.md).
+Every rule of a [spec](spec.md), every [ask and endpoint](asks.md)
+and every [command and flag](cli.md) are in the reference.

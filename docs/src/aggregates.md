@@ -95,7 +95,7 @@ can't be subtracted from exactly, so Straum refuses float columns.
 
 Two things follow that a spec's author can see:
 
-- **Memory.** The first three rows cost a few numbers a cell. `min`,
+- Memory: the first three rows cost a few numbers a cell. `min`,
   `max`, `percentile_disc` and `count(DISTINCT c)` cost by the
   distinct values in each cell; a percentile beside a `min` or `max`
   on its column costs nothing more. A `min` or `max` keeps a value in as few bytes as its cell's
@@ -103,7 +103,7 @@ Two things follow that a spec's author can see:
   14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
   `count(DISTINCT c)` over a column with many values holds every one
   of them.
-- **Rows counted twice.** A dim that holds a key twice adds the fact
+- Rows counted twice: a dim that holds a key twice adds the fact
   row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
   doubles; a count per value merged twice keeps the same `min`, `max`
   and distinct values.
