@@ -9,7 +9,8 @@
 - [Writing a spec](spec.md)
 - [Asking](asks.md)
 - [Setting up PostgreSQL](postgresql.md)
-- [Running Straum](running.md)
+- [Deploying Straum](deploy.md)
+- [Command line](cli.md)
 
 # Understanding Straum
 

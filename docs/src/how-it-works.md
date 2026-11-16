@@ -125,7 +125,7 @@ and the new slot's snapshot is after the big commit, so its rows come
 in through the bulk `COPY` instead; the
 [benchmark](benchmark.md#transactions) sets the default. A lost
 connection or WAL past `--max-retained-wal` starts Straum over too
-([States](running.md#states)).
+([States](deploy.md#states)).
 
 ## The physical stream
 

@@ -239,7 +239,7 @@ are open.
   PostgreSQL's or a pod's; ADR-0010 says restart for the process.
 - **Backoff**: the wait before a new start, 1 s doubling to 60 s,
   reset by a load that finishes.
-- **States**: Loading, Ready, Lagging, Waiting, Stopping (running.md).
+- **States**: Loading, Ready, Lagging, Waiting, Stopping (deploy.md).
   No enum; `following` is `None` while loading or waiting, and
   `why_not` says which.
 - **Ready** (`Status::ready`, `/readyz`): every table loaded and lag

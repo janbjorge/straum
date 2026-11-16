@@ -51,12 +51,12 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Use case          | Actor       | Input                     | Output                 | Detail |
 | ----------------- | ----------- | ------------------------- | ---------------------- | ------ |
 | Set up PostgreSQL | Table owner | Spec, publication, role   | Setup SQL, run once    | [Setting up PostgreSQL](postgresql.md) |
-| Run Straum        | Operator    | Spec file, DSN, flags     | A serving Straum       | [Running Straum](running.md) |
+| Run Straum        | Operator    | Spec file, DSN, flags     | A serving Straum       | [Deploying Straum](deploy.md) |
 | Start             | Writer      | Spec, Source              | A store at L           | [Start](#start) |
 | Follow            | Writer      | The stream                | One commit applied     | [Applying a commit](#applying-a-commit) |
 | Answer an ask     | Client      | Query and parameters      | Answer with `as_of`    | [Answering an ask](#answering-an-ask) |
-| Start over        | Writer      | A failure                 | A new start            | [States](running.md#states) |
-| Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](running.md#straum-run) |
+| Start over        | Writer      | A failure                 | A new start            | [States](deploy.md#states) |
+| Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
 Run Straum is `run` in the binary: read the spec and the DSN, bind the
 listener, make an **App** with an empty **Store** and the **Limits**,
@@ -394,7 +394,7 @@ makes a property test fail.
 ## State machines
 
 The running states, Loading, Ready, Lagging, Waiting and Stopping, are
-drawn under [States](running.md#states). There is no enum: **Following**
+drawn under [States](deploy.md#states). There is no enum: **Following**
 is `None` while loading or waiting, `Failure` says which, and lag
 against `--max-lag` tells Ready from Lagging (`App::status`,
 `why_not` in `straum-http`). Three smaller machines:

@@ -64,7 +64,7 @@ bench/taxi.py
 ```
 
 `bench/taxi.py shell` sets up the same, then leaves you in
-[`straum shell`](running.md#straum-shell) at the trips in place of
+[`straum shell`](cli.md#straum-shell) at the trips in place of
 running the asks. Leaving the shell removes PostgreSQL.
 
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),

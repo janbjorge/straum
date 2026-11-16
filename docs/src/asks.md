@@ -1,4 +1,4 @@
-# Asking
+# Asks and endpoints
 
 An ask is a JSON object sent to `POST /ask`: a query and its parameters.
 The examples ask the `usage` view of [Writing a spec](spec.md#synopsis).
@@ -138,7 +138,7 @@ measures beyond `total` is the network and the client itself.
 
 An ask sent with `Accept: text/plain` is answered in plain text, for
 people: the same rows as a table, then the row count and `as_of`, as
-[`straum ask`](running.md#straum-ask) prints it. Its errors are plain
+[`straum ask`](cli.md#straum-ask) prints it. Its errors are plain
 text too, a line each, under the same statuses. The layout is for
 reading and may change; a program reads the JSON.
 
@@ -178,7 +178,7 @@ timeout or fall back to `as_of`.
 | 405 | Not a `POST`. |
 | 413 | The ask is over 1 MiB. |
 | 500 | Straum failed while answering; its log says why. |
-| 503 | `{"errors": ["not ready"]}`: Straum is [loading](running.md#states). Retry after `/readyz` returns 200. |
+| 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 
 ```json
 {"errors": ["unknown measure x", "zip is not a key of the view"]}
@@ -188,3 +188,14 @@ timeout or fall back to `as_of`.
 {"errors": ["bound 1794558600 is not on a 3600s bucket edge"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
 ```
+
+## Endpoints
+
+| Endpoint | Answers |
+| --- | --- |
+| `POST /ask` | An ask, as JSON; as a table with `Accept: text/plain`. |
+| `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
+| `GET /livez` | 200 while the process serves. Lag never fails it. |
+| `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. |
+| `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names and range of buckets as JSON, which `straum shell` completes from. |
+| `GET /views/NAME` | The rows PostgreSQL would give for the view, the first 1000, as a table in plain text; 404 for a name no view has. |

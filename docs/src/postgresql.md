@@ -96,7 +96,7 @@ postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum/ca.pem
 
 Before it loads, Straum compares the server with the spec and reports
 every problem at once, each with its fix, in its log, `/readyz` and
-`straum status`. It stays not ready and [tries again](running.md#states)
+`straum status`. It stays not ready and [tries again](deploy.md#states)
 after a wait. Some of the checks:
 
 ```text

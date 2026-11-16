@@ -155,8 +155,8 @@ so if the answer's `as_of` predates the write, ask once more.
 
 `docker exec -it straum /straum shell` is a prompt at the running
 Straum, with Tab completion: `\d` lists the views with the names and
-types an ask may use, and `\rows trips` prints a view's rows. [Running
-Straum](running.md#straum-shell) has the shell and the `straum status`,
+types an ask may use, and `\rows trips` prints a view's rows. [Command
+line](cli.md#straum-shell) has the shell and the `straum status`,
 `straum views` and `straum ask` commands beside it.
 
 Stop straum with Ctrl-C and remove PostgreSQL and the network:

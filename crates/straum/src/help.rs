@@ -41,7 +41,7 @@ HTTP. SIGTERM or SIGINT stops it. FILE is the spec.
   --max-page-memory BYTES      with --wal physical: rows held from the WAL
                                before Straum starts over (1Gi)
 
-Guide: https://janbjorge.github.io/straum/running.html#straum-run
+Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 ";
 
 /// What `straum plan --help` prints.
@@ -73,7 +73,7 @@ kubectl exec deployment/straum -- /straum status
 
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
-Guide: https://janbjorge.github.io/straum/running.html#straum-status
+Guide: https://janbjorge.github.io/straum/cli.html#straum-status
 ";
 
 /// What `straum views --help` prints.
@@ -86,7 +86,7 @@ Then each dim and its rows.
 
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
-Guide: https://janbjorge.github.io/straum/running.html#straum-views
+Guide: https://janbjorge.github.io/straum/cli.html#straum-views
 ";
 
 /// What `straum ask --help` prints.
@@ -99,7 +99,7 @@ are booleans, anything else is a string, and '7' in quotes is the string 7.
 
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
-Guide: https://janbjorge.github.io/straum/running.html#straum-ask
+Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
 ";
 
 /// What `straum shell --help` prints; its indented lines are the shell's
@@ -121,5 +121,5 @@ and the bounds of the buckets held.
 
   --url URL  where Straum serves HTTP (http://127.0.0.1:8080)
 
-Guide: https://janbjorge.github.io/straum/running.html#straum-shell
+Guide: https://janbjorge.github.io/straum/cli.html#straum-shell
 ";
