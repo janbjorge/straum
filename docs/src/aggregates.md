@@ -117,7 +117,7 @@ An exact median needs each cell's values or a count per value, and a
 ```sql
 CREATE VIEW usage WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
-       e.region AS region,
+       e.kind AS kind,
        max(e.amount) AS top_amount,
        percentile_disc(0.5) WITHIN GROUP (ORDER BY e.amount) AS median_amount,
        percentile_disc(0.99) WITHIN GROUP (ORDER BY e.amount) AS p99_amount
