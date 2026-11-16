@@ -364,12 +364,12 @@ connection:
 
 ![The source's state machine](diagrams/machines.svg)
 
-*Closed, Loading, Streaming, and back to Closed on the next open.*
+*`Postgres` in `straum-pg` moves Closed to Loading on `open`, Loading
+to Streaming on the first `next_commit`, and back to Closed on the next
+`open`.*
 
-`Postgres` moves `Closed` to `Loading` on `open`, `Loading` to
-`Streaming` on the first `next_commit`, and back to `Closed` on the
-next `open` (`Postgres` in `straum-pg`). A `load` outside `Loading` and
-a `wal` while `Closed` are `Error::Stopped`.
+A `load` outside `Loading` and a `wal` while `Closed` are
+`Error::Stopped`.
 
 ## Which decision shaped what
 

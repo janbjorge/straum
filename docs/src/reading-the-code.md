@@ -138,11 +138,11 @@ compare.
 **`impl Trait` in a parameter.** `input: impl BufRead` takes any type
 that can read lines, without naming it. `straum shell` passes the
 terminal, its tests pass bytes in memory. Like a generic, it is kept
-only where callers really pass different types.
+only where callers pass different types.
 
 **Generics: `<T>`.** `Writer<S>` is a writer over any source `S`. The
 binary uses `Writer<Postgres>`; tests use a fake source. A generic is
-kept only where two types really fill it.
+kept only where two types fill it.
 
 **Lifetimes: `'a`.** A name for how long borrowed data lives.
 `Visitor<'de>` in `straum-http`'s `json.rs` reads a request body that
