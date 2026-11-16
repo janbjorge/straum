@@ -20,7 +20,7 @@ twice.
 through the slot. None comes in both ways, and none in neither.*
 
 A load is one binary `COPY` of the columns the spec names, grouped
-into cells as the rows come, so Straum never holds a fact table.
+into cells as the rows come, so Straum never holds a table's rows.
 Nothing of Straum runs in PostgreSQL. The slot is temporary, so
 PostgreSQL drops it when the connection closes, and nothing is on
 disk: every start loads every table again.
@@ -38,12 +38,13 @@ in two cells.
 *A row's time is floored to each width the view keeps, all aligned to
 1970-01-01, so it lands in one bucket per width in the same commit.*
 
-A cell holds its row count and what each measure needs, always
-counts and sums, so cells merge and a row can leave one as exactly as
-it came. [Aggregates 101](aggregates.md) says why each measure keeps
-what it does, and how a median reads the counts `min` and `max` keep. A `FILTER` keeps nothing
-of its own: it names parts of the cell key, so a cell counts whole or
-not at all.
+A measure is an aggregate the view names, such as `sum(e.amount) AS
+amount`. A cell holds its row count and what each measure needs, always
+counts and sums, so cells merge and a row can leave one as exactly as it
+came. [Aggregates 101](aggregates.md) says why each measure keeps what
+it does, and how a median reads the counts `min` and `max` keep. A
+`FILTER` keeps nothing of its own: it names parts of the cell key, so a
+cell counts whole or not at all.
 
 ![A row adds to its cell](diagrams/cell.svg)
 
@@ -67,12 +68,12 @@ measured.
 
 ## Dims
 
-A view that joins a dim keys its cells by the join column,
-`e.account_id`, not by the dim column, `a.region`.
-Beside the cells Straum holds a projection of the dim: its key and
-the columns the views read, nothing else, kept current from the
-stream. An ask reads `region` through each cell's `account_id`, as
-the account rows are now.
+The table in a view's `FROM` is its fact table, and a table it joins is
+a dim, here `accounts`. A view that joins a dim keys its cells by the
+join column, `e.account_id`, not by the dim column, `a.region`. Beside
+the cells Straum holds a projection of the dim: its key and the columns
+the views read, nothing else, kept current from the stream. An ask reads
+`region` through each cell's `account_id`, as the account rows are now.
 
 So a dim change moves no cell. An account moved from `eu` to `us`
 moves all its events to `us` in the next answer, as
