@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use straum_app::{AnswerError, App, Error, Limits, Lsn, Status, Step, Wal, Writer};
-use straum_domain::{AskError, Value};
+use straum_domain::{AskError, Instead, Value};
 
 use crate::common::{BYTES_PER_GIB, Harness, LIMITS, ask, count, setup, spec, trip, wal, watched};
 use crate::fake::{Database, Fake, id, time};
@@ -204,7 +204,10 @@ fn lsn_display() {
 fn answer_error_display() {
     assert_eq!(AnswerError::NotReady.to_string(), "not ready");
     let invalid = AnswerError::Invalid(vec![
-        AskError::UnknownMeasure(id("nope")),
+        AskError::UnknownMeasure {
+            name: id("nope"),
+            instead: Instead::Every(vec![]),
+        },
         AskError::NoMeasures,
     ]);
     assert_eq!(

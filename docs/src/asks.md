@@ -181,7 +181,8 @@ timeout or fall back to `as_of`.
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 
 ```json
-{"errors": ["unknown measure x", "zip is not a key of the view"]}
+{"errors": ["unknown measure amout; did you mean amount?"]}
+{"errors": ["zip is not a key of the view; the view's keys are bucket, kind, account_id, region"]}
 {"errors": ["region is a key; add it to GROUP BY"]}
 {"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
 {"errors": ["unknown field \"tz\""]}

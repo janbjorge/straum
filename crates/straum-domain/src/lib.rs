@@ -13,6 +13,7 @@
 
 mod aggregate;
 mod ask;
+mod closest;
 mod codes;
 mod column;
 mod hash;
@@ -29,7 +30,8 @@ mod value;
 mod value_counts;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
-pub use ask::{Ask, AskError, AskKey, Comparison, MeasureCondition};
+pub use ask::{Ask, AskError, AskKey, Comparison, Instead, MeasureCondition};
+pub use closest::closest;
 pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;

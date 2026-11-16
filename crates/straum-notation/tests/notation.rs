@@ -128,9 +128,9 @@ fn keys_go_by_their_select_name() {
     assert_eq!(
         shown,
         [
-            "a is not a key of the view",
-            "name is not a key of the view",
-            "z is not a key of the view"
+            "a is not a key of the view; the view's keys are bucket, kind, zone, label",
+            "name is not a key of the view; the view's keys are bucket, kind, zone, label",
+            "z is not a key of the view; the view's keys are bucket, kind, zone, label"
         ]
     );
 }

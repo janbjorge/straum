@@ -213,8 +213,10 @@ fn unanswerable() -> [(String, &'static str); 6] {
                 "[0, 1]",
             ),
             concat!(
-                r#"{"errors":["unknown measure nope","#,
-                r#""zone_nope is not a key of the view","#,
+                r#"{"errors":["unknown measure nope; the view's measures are "#,
+                r#"trips, fare, fare_avg, fare_max","#,
+                r#""zone_nope is not a key of the view; the view's keys are "#,
+                r#"bucket, kind, zone_id, borough","#,
                 r#""bound 1 is not on a 3600s bucket edge"]}"#
             ),
         ),

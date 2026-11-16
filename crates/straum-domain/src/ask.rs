@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::aggregate::Answers;
+use crate::closest::closest;
 use crate::identifier::Identifier;
 use crate::spec::{Condition, Fact, Literal, Spec, Width};
 use crate::value::{ColumnType, MAX_SCALE, decimal};
@@ -89,7 +90,15 @@ impl Spec {
     /// The view `ask` reads, once every check passes.
     pub fn check_ask(&self, ask: &Ask) -> Result<&Fact, Vec<AskError>> {
         let Some(fact) = self.fact(ask.view.as_str()) else {
-            return Err(vec![AskError::UnknownView(ask.view.clone())]);
+            let mut views = Vec::new();
+            for fact in self.facts() {
+                views.push(&fact.name);
+            }
+            let instead = Instead::of(&ask.view, views);
+            return Err(vec![AskError::UnknownView {
+                name: ask.view.clone(),
+                instead,
+            }]);
         };
         let mut errors = Vec::new();
         check_measures(fact, ask, &mut errors);
@@ -103,7 +112,7 @@ impl Spec {
             if fact.measure(name.as_str()).is_some() {
                 errors.push(AskError::MeasureInWhere(name.clone()));
             } else {
-                errors.push(AskError::UnknownKey(name.clone()));
+                errors.push(unknown_key(fact, name));
             }
         }
         for condition in &ask.having {
@@ -130,7 +139,7 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
         if fact.resolve(measure).is_some() {
             errors.push(AskError::KeyNotGrouped(measure.clone()));
         } else {
-            errors.push(AskError::UnknownMeasure(measure.clone()));
+            errors.push(unknown_measure(fact, measure));
         }
     }
 }
@@ -141,7 +150,7 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
         match key {
             AskKey::Key(name) => {
                 if fact.resolve(name).is_none() {
-                    errors.push(AskError::UnknownKey(name.clone()));
+                    errors.push(unknown_key(fact, name));
                 }
             }
             AskKey::Bucket => {
@@ -154,6 +163,28 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     }
 }
 
+fn unknown_measure(fact: &Fact, name: &Identifier) -> AskError {
+    let mut measures = Vec::new();
+    for measure in &fact.measures {
+        measures.push(&measure.name);
+    }
+    AskError::UnknownMeasure {
+        name: name.clone(),
+        instead: Instead::of(name, measures),
+    }
+}
+
+/// The time bucket is a key an ask may name too.
+fn unknown_key(fact: &Fact, name: &Identifier) -> AskError {
+    let bucket = Identifier::new("bucket").expect("bucket is an identifier");
+    let mut keys = vec![&bucket];
+    keys.extend(fact.keys());
+    AskError::UnknownKey {
+        name: name.clone(),
+        instead: Instead::of(name, keys),
+    }
+}
+
 /// A HAVING condition compares a measure the ask selects, so the answer
 /// shows each value a group was kept for, with a value of its kind.
 fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &mut Vec<AskError>) {
@@ -162,7 +193,7 @@ fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &m
         if fact.resolve(name).is_some() {
             errors.push(AskError::KeyInHaving(name.clone()));
         } else {
-            errors.push(AskError::UnknownMeasure(name.clone()));
+            errors.push(unknown_measure(fact, name));
         }
         return;
     };
@@ -228,14 +259,68 @@ fn check_range(width: Width, ask: &Ask, errors: &mut Vec<AskError>) {
     }
 }
 
+/// What an error about a name nothing has offers in its place: the name
+/// most likely meant, else every name there is, so the next try needn't
+/// guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Instead {
+    Closest(Identifier),
+    Every(Vec<Identifier>),
+}
+
+impl Instead {
+    fn of(written: &Identifier, names: Vec<&Identifier>) -> Instead {
+        let mut texts = Vec::with_capacity(names.len());
+        for name in &names {
+            texts.push(name.as_str());
+        }
+        if let Some(near) = closest(written.as_str(), &texts) {
+            for name in &names {
+                if name.as_str() == near {
+                    return Instead::Closest((*name).clone());
+                }
+            }
+        }
+        let mut every = Vec::with_capacity(names.len());
+        for name in names {
+            every.push(name.clone());
+        }
+        Instead::Every(every)
+    }
+
+    /// `; did you mean x?`, or `; the {kind} are a, b`, after an error.
+    fn write(&self, formatter: &mut fmt::Formatter<'_>, kind: &str) -> fmt::Result {
+        match self {
+            Instead::Closest(name) => write!(formatter, "; did you mean {name}?"),
+            Instead::Every(names) if names.is_empty() => Ok(()),
+            Instead::Every(names) => {
+                let mut texts = Vec::with_capacity(names.len());
+                for name in names {
+                    texts.push(name.as_str());
+                }
+                write!(formatter, "; the {kind} are {}", texts.join(", "))
+            }
+        }
+    }
+}
+
 /// One thing wrong with an ask.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskError {
-    UnknownView(Identifier),
-    UnknownMeasure(Identifier),
+    UnknownView {
+        name: Identifier,
+        instead: Instead,
+    },
+    UnknownMeasure {
+        name: Identifier,
+        instead: Instead,
+    },
     /// A name that is no key of the view: not a `by` key, not an
     /// attribute a ref reads.
-    UnknownKey(Identifier),
+    UnknownKey {
+        name: Identifier,
+        instead: Instead,
+    },
     /// A key the ask selects without grouping by it.
     KeyNotGrouped(Identifier),
     NoMeasures,
@@ -290,9 +375,18 @@ pub enum AskError {
 impl fmt::Display for AskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AskError::UnknownView(name) => write!(f, "unknown view {name}"),
-            AskError::UnknownMeasure(name) => write!(f, "unknown measure {name}"),
-            AskError::UnknownKey(name) => write!(f, "{name} is not a key of the view"),
+            AskError::UnknownView { name, instead } => {
+                write!(f, "unknown view {name}")?;
+                instead.write(f, "views")
+            }
+            AskError::UnknownMeasure { name, instead } => {
+                write!(f, "unknown measure {name}")?;
+                instead.write(f, "view's measures")
+            }
+            AskError::UnknownKey { name, instead } => {
+                write!(f, "{name} is not a key of the view")?;
+                instead.write(f, "view's keys")
+            }
             AskError::KeyNotGrouped(name) => write!(f, "{name} is a key; add it to GROUP BY"),
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),

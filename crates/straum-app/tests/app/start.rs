@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use straum_app::{AnswerError, App, Held, HeldDim, HeldKey, HeldView, Lsn, Step};
 use straum_domain::{
-    AnswerRow, Ask, AskError, ColumnType, Condition, Literal, Table, Value, Width,
+    AnswerRow, Ask, AskError, ColumnType, Condition, Instead, Literal, Table, Value, Width,
 };
 
 use crate::common::{
@@ -86,9 +86,10 @@ fn not_ready_before_the_first_step() {
     // A wrong ask is refused for what it is, ready or not.
     assert_eq!(
         writer.app().ask(&ask("trips", &["nope"], &[])),
-        Err(AnswerError::Invalid(vec![AskError::UnknownMeasure(id(
-            "nope"
-        ))]))
+        Err(AnswerError::Invalid(vec![AskError::UnknownMeasure {
+            name: id("nope"),
+            instead: Instead::Every(vec![id("trips"), id("fare"), id("fare_max"), id("riders")])
+        }]))
     );
 }
 

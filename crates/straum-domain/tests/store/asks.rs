@@ -6,7 +6,8 @@ use crate::common::{condition, id, lit};
 use crate::views::{spec, trip_types, typed};
 use crate::{END, FARE, PAY, ROW_COLUMNS, START, TIP};
 use straum_domain::{
-    AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Identifier, Literal, Store, Value,
+    AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Identifier, Instead, Literal, Store,
+    Value,
 };
 
 /// The trips over every bucket the tests fill, filtered.
@@ -194,6 +195,9 @@ fn unknown_names() {
     };
     assert_eq!(
         store.ask(&ask),
-        Err(vec![AskError::UnknownView(id("zones"))])
+        Err(vec![AskError::UnknownView {
+            name: id("zones"),
+            instead: Instead::Every(vec![id("trips")])
+        }])
     );
 }

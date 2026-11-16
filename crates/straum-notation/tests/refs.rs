@@ -9,7 +9,7 @@ use common::{
     BASE, FEB, JAN, any_message, ask_view_t, attribute, base, by_key, condition, id, key_text,
     rejects, spec_errors, sql_errors, strings,
 };
-use straum_domain::{Ask, AskError, AskKey, ByKey, Literal, Spec, SpecError, Via};
+use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
 
 /// One dim keyed by two columns, joined by two views in either order.
@@ -63,7 +63,10 @@ fn a_ref_on_two_columns() {
     );
     assert_eq!(
         spec.check_ask(&ask_view_t(&["g"])).unwrap_err(),
-        [AskError::UnknownKey(id("g"))]
+        [AskError::UnknownKey {
+            name: id("g"),
+            instead: Instead::Every(vec![id("bucket"), id("org"), id("grp"), id("label")])
+        }]
     );
 }
 
@@ -150,7 +153,10 @@ fn a_ref_reads_what_the_view_selects() {
     for missing in ["z", "id", "z_id"] {
         assert_eq!(
             spec.check_ask(&ask_view_t(&[missing])).unwrap_err(),
-            [AskError::UnknownKey(id(missing))],
+            [AskError::UnknownKey {
+                name: id(missing),
+                instead: Instead::Every(vec![id("bucket"), id("a"), id("name")])
+            }],
             "{missing}"
         );
     }

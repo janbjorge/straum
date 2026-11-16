@@ -4,8 +4,8 @@
 //! and the text that error shows.
 
 use straum_domain::{
-    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, JoinError, Key,
-    Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Instead, JoinError,
+    Key, Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -499,9 +499,18 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
     assert_eq!(
         spec.check_ask(&unheld).unwrap_err(),
         [
-            AskError::UnknownMeasure(id("tips")),
-            AskError::UnknownKey(id("fare")),
-            AskError::UnknownKey(id("colour")),
+            AskError::UnknownMeasure {
+                name: id("tips"),
+                instead: Instead::Every(vec![id("n")])
+            },
+            AskError::UnknownKey {
+                name: id("fare"),
+                instead: Instead::Every(vec![id("bucket"), id("a"), id("z_id"), id("name")])
+            },
+            AskError::UnknownKey {
+                name: id("colour"),
+                instead: Instead::Every(vec![id("bucket"), id("a"), id("z_id"), id("name")])
+            },
             AskError::TimeKeyTwice,
             AskError::AskedTwice("name".into()),
             AskError::AskedTwice("n".into()),
@@ -525,8 +534,41 @@ fn a_key_selected_without_group_by_says_to_group_by_it() {
         spec.check_ask(&ungrouped).unwrap_err(),
         [
             AskError::KeyNotGrouped(id("name")),
-            AskError::UnknownMeasure(id("tips")),
+            AskError::UnknownMeasure {
+                name: id("tips"),
+                instead: Instead::Every(vec![id("n")])
+            },
         ]
+    );
+}
+
+#[test]
+fn an_unknown_name_offers_the_one_near_it_else_every_name() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let slipped = Ask {
+        view: id("tt"),
+        ..ask()
+    };
+    // One letter off a name of one is no clear slip: list them instead.
+    let every = Instead::Every(vec![id("t")]);
+    let error = spec.check_ask(&slipped).unwrap_err();
+    let unknown = AskError::UnknownView {
+        name: id("tt"),
+        instead: every,
+    };
+    assert_eq!(error, [unknown]);
+    let slipped = Ask {
+        keys: vec![AskKey::Key(id("nmae"))],
+        ..ask()
+    };
+    let near = Instead::Closest(id("name"));
+    let error = spec.check_ask(&slipped).unwrap_err();
+    assert_eq!(
+        error,
+        [AskError::UnknownKey {
+            name: id("nmae"),
+            instead: near
+        }]
     );
 }
 
@@ -539,7 +581,10 @@ fn an_ask_of_a_bad_shape_is_rejected() {
     };
     assert_eq!(
         spec.check_ask(&unknown).unwrap_err(),
-        [AskError::UnknownView(id("nope"))]
+        [AskError::UnknownView {
+            name: id("nope"),
+            instead: Instead::Every(vec![id("t")])
+        }]
     );
 
     let empty = Ask {
@@ -556,7 +601,10 @@ fn an_ask_of_a_bad_shape_is_rejected() {
         spec.check_ask(&empty).unwrap_err(),
         [
             AskError::NoMeasures,
-            AskError::UnknownKey(id("fare")),
+            AskError::UnknownKey {
+                name: id("fare"),
+                instead: Instead::Every(vec![id("bucket"), id("a"), id("z_id"), id("name")])
+            },
             AskError::RangeEmpty {
                 from: 86_400,
                 to: 60,
@@ -591,11 +639,33 @@ fn an_ask_of_a_bad_shape_is_rejected() {
 #[test]
 fn ask_errors_display() {
     let cases = [
-        (AskError::UnknownView(id("nope")), "unknown view nope"),
-        (AskError::UnknownMeasure(id("tips")), "unknown measure tips"),
         (
-            AskError::UnknownKey(id("fare")),
-            "fare is not a key of the view",
+            AskError::UnknownView {
+                name: id("nope"),
+                instead: Instead::Every(vec![]),
+            },
+            "unknown view nope",
+        ),
+        (
+            AskError::UnknownView {
+                name: id("tirps"),
+                instead: Instead::Closest(id("trips")),
+            },
+            "unknown view tirps; did you mean trips?",
+        ),
+        (
+            AskError::UnknownMeasure {
+                name: id("tips"),
+                instead: Instead::Every(vec![id("n"), id("fare")]),
+            },
+            "unknown measure tips; the view's measures are n, fare",
+        ),
+        (
+            AskError::UnknownKey {
+                name: id("fare"),
+                instead: Instead::Every(vec![id("bucket"), id("a")]),
+            },
+            "fare is not a key of the view; the view's keys are bucket, a",
         ),
         (
             AskError::KeyNotGrouped(id("name")),

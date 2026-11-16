@@ -10,6 +10,7 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use straum_app::Limits;
+use straum_domain::closest;
 use straum_pg::Replication;
 
 use crate::client::Output;
@@ -219,7 +220,14 @@ pub(crate) enum UsageError {
 impl Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            UsageError::UnknownCommand(text) => write!(formatter, "unknown command {text:?}"),
+            UsageError::UnknownCommand(text) => {
+                write!(formatter, "unknown command {text:?}")?;
+                let mut names = vec!["help", "version"];
+                for name in Name::ALL {
+                    names.push(name.as_str());
+                }
+                did_you_mean(formatter, text, &names)
+            }
             UsageError::HelpTakesOneCommand => formatter.write_str("straum help takes one command"),
             UsageError::VersionTakesNothing => formatter.write_str("straum version takes nothing"),
             UsageError::AskNeedsQuery => formatter.write_str("straum ask needs a query"),
@@ -227,7 +235,10 @@ impl Display for UsageError {
                 formatter.write_str("--max-page-memory takes --wal physical")
             }
             UsageError::FlagNotTaken { command, flag } => {
-                write!(formatter, "straum {} takes no {flag:?}", command.as_str())
+                write!(formatter, "straum {} takes no {flag:?}", command.as_str())?;
+                let mut flags = command.flags().to_vec();
+                flags.extend(command.switches());
+                did_you_mean(formatter, flag, &flags)
             }
             UsageError::GivenTwice(flag) => write!(formatter, "{flag} given twice"),
             UsageError::NeedsValue(flag) => write!(formatter, "{flag} needs a value"),
@@ -261,6 +272,14 @@ impl Environment {
             Some(url) if !url.is_empty() => url,
             _ => URL,
         }
+    }
+}
+
+/// `; did you mean x?` when one of `names` is a likely slip for `written`.
+fn did_you_mean(formatter: &mut fmt::Formatter, written: &str, names: &[&str]) -> fmt::Result {
+    match closest(written, names) {
+        Some(name) => write!(formatter, "; did you mean {name}?"),
+        None => Ok(()),
     }
 }
 
@@ -945,6 +964,24 @@ mod tests {
     fn command_errors() {
         let cases = [
             ("serve", "unknown command \"serve\""),
+            ("stauts", "unknown command \"stauts\"; did you mean status?"),
+            ("help vews", "unknown command \"vews\"; did you mean views?"),
+            (
+                "verison",
+                "unknown command \"verison\"; did you mean version?",
+            ),
+            (
+                "ask --ulr x SELECT",
+                "straum ask takes no \"--ulr\"; did you mean --url?",
+            ),
+            (
+                "status --jsno",
+                "straum status takes no \"--jsno\"; did you mean --json?",
+            ),
+            (
+                "run s --max-lags 1",
+                "straum run takes no \"--max-lags\"; did you mean --max-lag?",
+            ),
             ("help --spec s", "straum help takes one command"),
             ("help --spec", "unknown command \"--spec\""),
             ("help serve", "unknown command \"serve\""),
