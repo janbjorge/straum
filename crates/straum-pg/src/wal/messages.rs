@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use straum_app::Commit;
-use straum_domain::{Datum, FastMap};
+use straum_domain::{Datum, FastMap, FastSet};
 
 use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
@@ -52,7 +52,7 @@ pub(crate) struct Publisher {
     /// Enum labels by `pg_enum` OID.
     labels: HashMap<Oid, String>,
     /// Tables whose `Relation` the decoder has.
-    announced: HashSet<RelationFile>,
+    announced: FastSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
     unfit: Vec<Oid>,
 }
@@ -67,7 +67,7 @@ impl Publisher {
         Publisher {
             tables,
             labels: layouts.labels,
-            announced: HashSet::new(),
+            announced: FastSet::default(),
             unfit: Vec::new(),
         }
     }

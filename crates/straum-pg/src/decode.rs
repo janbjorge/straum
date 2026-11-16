@@ -5,11 +5,10 @@
 //! where each spec table's columns sit and hands `stream.rs` whole
 //! `Commit`s. The physical stream feeds it the same messages.
 
-use std::collections::HashMap;
 use std::{mem, slice};
 
 use straum_app::{Change, Commit, Lsn};
-use straum_domain::{ColumnType, Datum, Identifier};
+use straum_domain::{ColumnType, Datum, FastMap, Identifier};
 
 use crate::catalog::Checked;
 use crate::error::Error;
@@ -26,7 +25,7 @@ pub(crate) struct Decoder {
     tables: Vec<Checked>,
     /// By relation id. A table read by two members of the spec maps to
     /// both.
-    relations: HashMap<Oid, Vec<Mapping>>,
+    relations: FastMap<Oid, Vec<Mapping>>,
     transaction: Transaction,
 }
 
@@ -59,7 +58,7 @@ impl Decoder {
     pub(crate) fn new(tables: Vec<Checked>, limit: usize) -> Decoder {
         Decoder {
             tables,
-            relations: HashMap::new(),
+            relations: FastMap::default(),
             transaction: Transaction {
                 changes: Vec::new(),
                 limit,
