@@ -62,6 +62,8 @@ const NUMERIC_SIGN_AT: usize = 4;
 const NUMERIC_HEADER: usize = 8;
 /// `DEC_DIGITS`: the decimal digits in one base-10000 digit.
 const DECIMAL_DIGITS: i32 = 4;
+/// `NBASE`: a numeric digit holds four decimal ones.
+const NUMERIC_BASE: u128 = 10_000;
 
 /// How Straum reads a column of this type: `int2`, `int4` and `int8` as
 /// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
@@ -220,21 +222,39 @@ pub(crate) fn scaled(
     scale: u32,
 ) -> Option<i64> {
     let scale = i32::try_from(scale).ok()?;
-    let mut value: i128 = 0;
-    for (position, digit) in digits.enumerate() {
-        let exponent = DECIMAL_DIGITS * (weight - i32::try_from(position).ok()?) + scale;
-        let scaled = match u32::try_from(exponent) {
-            Ok(exponent) => i128::from(digit).checked_mul(10_i128.checked_pow(exponent)?)?,
-            // Below the scale a digit must be zero; a digit is below 10^4.
-            Err(_) => match 10_u16.checked_pow(exponent.unsigned_abs()) {
-                Some(unit) if digit % unit == 0 => (digit / unit).into(),
-                _ if digit == 0 => 0,
-                _ => return None,
-            },
-        };
-        value = value.checked_add(scaled)?;
+    // Horner's rule, then one power of ten for the last digit's place: a
+    // power per digit was a twentieth of reading a WAL row
+    // (`physical_wal_bench`). A value that fits an `i64` has few digits,
+    // since PostgreSQL drops the zero digits at either end.
+    let mut value: u128 = 0;
+    let mut count: i32 = 0;
+    for digit in digits {
+        value = value.checked_mul(NUMERIC_BASE)?.checked_add(digit.into())?;
+        count = count.checked_add(1)?;
     }
-    i64::try_from(if negative { -value } else { value }).ok()
+    let last_place = weight.checked_sub(count)?.checked_add(1)?;
+    let exponent = DECIMAL_DIGITS.checked_mul(last_place)?.checked_add(scale)?;
+    let magnitude = match u32::try_from(exponent) {
+        Ok(exponent) => value.checked_mul(10_u128.checked_pow(exponent)?)?,
+        // Below the scale the digits must be zero.
+        Err(_) => match 10_u128.checked_pow(exponent.unsigned_abs()) {
+            Some(unit) => divide_exactly(value, unit)?,
+            None if value == 0 => 0,
+            None => return None,
+        },
+    };
+    let magnitude = i128::try_from(magnitude).ok()?;
+    i64::try_from(if negative { -magnitude } else { magnitude }).ok()
+}
+
+/// `value / unit` when `unit` divides it, in 64 bits when both fit: a
+/// 128-bit division took most of the time of reading a numeric
+/// (`physical_wal_bench`).
+fn divide_exactly(value: u128, unit: u128) -> Option<u128> {
+    if let (Ok(value), Ok(unit)) = (u64::try_from(value), u64::try_from(unit)) {
+        return value.is_multiple_of(unit).then_some((value / unit).into());
+    }
+    value.is_multiple_of(unit).then_some(value / unit)
 }
 
 /// `-123.45` at scale 2 is -12345. More fraction digits than the scale, or
@@ -400,6 +420,59 @@ impl std::error::Error for ValueError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wal::test_support::Rng;
+
+    /// `scaled` as written first, a power of ten per digit: the reference
+    /// the one-pass rule must match.
+    fn scaled_digit_by_digit(
+        digits: &[u16],
+        weight: i32,
+        negative: bool,
+        scale: u32,
+    ) -> Option<i64> {
+        let scale = i32::try_from(scale).ok()?;
+        let mut value: i128 = 0;
+        for (position, &digit) in digits.iter().enumerate() {
+            let exponent = DECIMAL_DIGITS * (weight - i32::try_from(position).ok()?) + scale;
+            let scaled = match u32::try_from(exponent) {
+                Ok(exponent) => i128::from(digit).checked_mul(10_i128.checked_pow(exponent)?)?,
+                Err(_) => match 10_u16.checked_pow(exponent.unsigned_abs()) {
+                    Some(unit) if digit % unit == 0 => (digit / unit).into(),
+                    _ if digit == 0 => 0,
+                    _ => return None,
+                },
+            };
+            value = value.checked_add(scaled)?;
+        }
+        i64::try_from(if negative { -value } else { value }).ok()
+    }
+
+    #[test]
+    fn scales_numerics_as_the_reference_does() {
+        let mut rng = Rng(7);
+        let mut read = 0;
+        for _ in 0..200_000 {
+            let mut digits = Vec::new();
+            for _ in 0..rng.below(8) {
+                // Mostly whole digits, often ones with zeros at the end.
+                let digit = match rng.below(3) {
+                    0 => rng.below(10) * 1000,
+                    1 => rng.below(100) * 100,
+                    _ => rng.below(10_000),
+                };
+                digits.push(u16::try_from(digit).unwrap());
+            }
+            let weight = i32::try_from(rng.below(12)).unwrap() - 6;
+            let negative = rng.below(2) == 0;
+            let scale = u32::try_from(rng.below(10)).unwrap();
+            let ours = scaled(digits.iter().copied(), weight, negative, scale);
+            let reference = scaled_digit_by_digit(&digits, weight, negative, scale);
+            assert_eq!(ours, reference, "{digits:?} weight {weight} scale {scale}");
+            read += usize::from(ours.is_some());
+        }
+        // Both answers, so neither side is vacuous.
+        assert!(read > 20_000, "{read}");
+    }
 
     fn numeric(precision: i32, scale: i32) -> i32 {
         ((precision << TYPMOD_PRECISION_SHIFT) | (scale & TYPMOD_SCALE_MASK)) + TYPMOD_HEADER
