@@ -44,7 +44,9 @@ environment variable; `just --evaluate` shows them. A new script, check,
 benchmark or setting gets a recipe or variable in the same commit, with
 the same default as the code. Keep it tidy: one recipe per tool, in a
 `[group]`, with a one-line comment; recipes are thin wrappers, logic
-stays in the script or test; drop a recipe when its tool goes. Nothing
+stays in the script or test. The script is Python, run with uv, as
+`scripts/` and `bench/` are. No shell script: no `.sh` file, and no
+bash body in a recipe. Drop a recipe when its tool goes. Nothing
 depends on it; the commands here and in `docs/src/performance.md` stay the
 reference. Keep them in step.
 
@@ -76,6 +78,8 @@ change.
 
 ## Rules
 
+- No shell scripts. A tool is a Python file run with uv, and its just
+  recipe is a thin wrapper. No `.sh` file, and no bash body in a recipe.
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
 - No `unsafe`, no macros of our own, traits only at ports. One
