@@ -11,21 +11,19 @@ use std::path::Path;
 use std::process;
 use std::time::{Duration, Instant};
 
-use postgres_protocol::message::backend::Message as Backend;
 use straum_app::{Change, Commit, Lsn};
 use testcontainers::{Container, GenericImage, ImageExt};
 
 use crate::catalog::{self, Checked};
-use crate::pgoutput::{self, CopyMessage};
-use crate::physical::read_layouts;
+use crate::physical::{Chunk, next_chunk, read_layouts};
 use crate::source::{Replication, parse_lsn, slot_name};
-use crate::stream::{POLL, status_update};
+use crate::stream::POLL;
 use crate::tests::support::{PostgresContainer, image, load_taxi_month, plain, tag};
 use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wal::{Record, Records};
-use crate::wire::{Connection, ConnectionKind, server_error};
+use crate::wire::{Connection, ConnectionKind};
 
 /// Rows each phase changes.
 const ROWS: usize = 1_000_000;
@@ -71,12 +69,6 @@ struct Wal {
     start: u64,
     segment_size: u64,
     chunks: Vec<Chunk>,
-}
-
-/// One piece of streamed WAL: the bytes from `start`.
-struct Chunk {
-    start: u64,
-    bytes: Vec<u8>,
 }
 
 /// The tables the bench reads, the copy phase's scripts, and where the
@@ -478,25 +470,9 @@ fn capture(stream: &mut Connection, start: u64, until: u64) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let mut end = 0;
     while end < until {
-        match stream.try_read().unwrap() {
-            None => {}
-            Some(Backend::CopyData(body)) => match pgoutput::copy_message(body.data()).unwrap() {
-                CopyMessage::XLogData { start, bytes } => {
-                    end = start + bytes.len() as u64;
-                    chunks.push(Chunk {
-                        start,
-                        bytes: bytes.to_vec(),
-                    });
-                }
-                CopyMessage::Keepalive { reply, .. } => {
-                    if reply {
-                        let status = status_update(start);
-                        stream.send_copy_data(&status).unwrap();
-                    }
-                }
-            },
-            Some(Backend::ErrorResponse(body)) => panic!("{}", server_error(&body)),
-            Some(_) => panic!("a message that ended the stream"),
+        if let Some(chunk) = next_chunk(stream, start).unwrap() {
+            end = chunk.start + chunk.bytes.len() as u64;
+            chunks.push(chunk);
         }
     }
     chunks

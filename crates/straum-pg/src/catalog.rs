@@ -155,6 +155,8 @@ pub(crate) struct Catalog {
 /// One value of an enum type, as `pg_enum` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnumLabel {
+    /// The label's own OID, which is what a row on disk stores.
+    pub(crate) oid: Oid,
     pub(crate) type_oid: Oid,
     pub(crate) label: String,
 }
@@ -357,10 +359,11 @@ fn class_mut<'a>(classes: &'a mut [Class], schema: &str, table: &str) -> Option<
     None
 }
 
-/// Every label of every enum type a column of the tables has.
-fn labels(connection: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, Error> {
+/// Every label of every enum type a column of `tables`, an SQL list of
+/// `(schema, table)` pairs, has.
+pub(crate) fn labels(connection: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, Error> {
     let rows = connection.rows(&format!(
-        "SELECT e.enumtypid, e.enumlabel
+        "SELECT e.oid, e.enumtypid, e.enumlabel
            FROM pg_enum e
           WHERE e.enumtypid IN (SELECT a.atttypid
                                   FROM pg_attribute a
@@ -371,10 +374,11 @@ fn labels(connection: &mut Connection, tables: &str) -> Result<Vec<EnumLabel>, E
     ))?;
     let mut labels = Vec::new();
     for row in rows {
-        let [type_oid, label] = <[Option<String>; 2]>::try_from(row)
+        let [oid, type_oid, label] = <[Option<String>; 3]>::try_from(row)
             .map_err(|_| shape("labels"))?
             .map(Option::unwrap_or_default);
         labels.push(EnumLabel {
+            oid: oid.parse().map_err(|_| shape("labels"))?,
             type_oid: type_oid.parse().map_err(|_| shape("labels"))?,
             label,
         });

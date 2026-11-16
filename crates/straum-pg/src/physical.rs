@@ -2,8 +2,8 @@
 //! WAL from the last checkpoint's redo point, and the WAL it streams, read
 //! as records (`wal.rs`) and turned into commits (`wal/pipeline.rs`). The
 //! stream carries the whole server's WAL, every database. Also the layouts
-//! query: how each spec table's rows lie on its pages, from `pg_class`,
-//! `pg_attribute` and `pg_enum`.
+//! query: how each spec table's rows lie on its pages, from `pg_class` and
+//! `pg_attribute`, with the enum labels `catalog.rs` reads.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -14,7 +14,7 @@ use postgres_protocol::escape::escape_literal;
 use straum_app::{Commit, Lsn};
 use straum_domain::Datum;
 
-use crate::catalog::{Checked, VERSION_NUM_PER_MAJOR};
+use crate::catalog::{self, Checked, VERSION_NUM_PER_MAJOR};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::pgoutput::{Relation, RelationColumn};
@@ -78,28 +78,14 @@ impl Physical {
     /// for tests that read the WAL without a stream's thread.
     #[cfg(test)]
     pub(crate) fn next_record(&mut self) -> Result<Option<crate::wal::Record>, Error> {
-        use postgres_protocol::message::backend::Message as Backend;
-
-        use crate::pgoutput::{self, CopyMessage};
-        use crate::stream::status_update;
-        use crate::wire::server_error;
         loop {
             if let Some(record) = self.records.next_record()? {
                 return Ok(Some(record.clone()));
             }
-            match self.connection.try_read()? {
-                None => return Ok(None),
-                Some(Backend::CopyData(body)) => match pgoutput::copy_message(body.data())? {
-                    CopyMessage::XLogData { start, bytes } => self.records.feed(start, bytes)?,
-                    CopyMessage::Keepalive { reply, .. } => {
-                        if reply {
-                            self.connection.send_copy_data(&status_update(self.start))?;
-                        }
-                    }
-                },
-                Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
-                Some(_) => return Err(Error::Protocol(Unexpected::StreamEnded)),
-            }
+            let Some(chunk) = next_chunk(&mut self.connection, self.start)? else {
+                return Ok(None);
+            };
+            self.records.feed(chunk.start, &chunk.bytes)?;
         }
     }
 
@@ -215,6 +201,43 @@ impl Replay {
     }
 }
 
+/// One piece of streamed WAL: the bytes from `start`.
+#[cfg(test)]
+pub(crate) struct Chunk {
+    pub(crate) start: u64,
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// The next piece of WAL a physical stream sends, or `None` if none came
+/// within the read timeout. A keepalive that asks for a reply gets one
+/// saying `start` is applied.
+#[cfg(test)]
+pub(crate) fn next_chunk(connection: &mut Connection, start: u64) -> Result<Option<Chunk>, Error> {
+    use postgres_protocol::message::backend::Message as Backend;
+
+    use crate::pgoutput::{self, CopyMessage};
+    use crate::stream::status_update;
+    use crate::wire::server_error;
+    loop {
+        let message = match connection.try_read()? {
+            None => return Ok(None),
+            Some(Backend::CopyData(body)) => body,
+            Some(Backend::ErrorResponse(body)) => return Err(server_error(&body)),
+            Some(_) => return Err(Error::Protocol(Unexpected::StreamEnded)),
+        };
+        match pgoutput::copy_message(message.data())? {
+            CopyMessage::XLogData { start, bytes } => {
+                let bytes = bytes.to_vec();
+                return Ok(Some(Chunk { start, bytes }));
+            }
+            CopyMessage::Keepalive { reply: true, .. } => {
+                connection.send_copy_data(&status_update(start))?;
+            }
+            CopyMessage::Keepalive { reply: false, .. } => {}
+        }
+    }
+}
+
 /// The layout of each of `checked`'s tables, and their enums' labels.
 pub(crate) fn read_layouts(
     connection: &mut Connection,
@@ -252,7 +275,10 @@ pub(crate) fn read_layouts(
         let table = tables.last_mut().ok_or_else(unknown_shape)?;
         push_attribute(table, &attribute)?;
     }
-    let labels = labels(connection, &names)?;
+    let mut labels = HashMap::new();
+    for label in catalog::labels(connection, &names)? {
+        labels.insert(label.oid, label.label);
+    }
     Ok(Layouts { tables, labels })
 }
 
@@ -355,30 +381,6 @@ fn push_attribute(table: &mut Layout, attribute: &AttributeRow) -> Result<(), Er
         _ => Datum::Null,
     });
     Ok(())
-}
-
-/// Each enum label's text by its `pg_enum` OID.
-type LabelsByOid = HashMap<Oid, String>;
-
-/// The labels of the enums the named tables' columns have, by `pg_enum`
-/// OID, which is what a row stores.
-fn labels(connection: &mut Connection, names: &str) -> Result<LabelsByOid, Error> {
-    let rows = connection.rows(&format!(
-        "SELECT DISTINCT e.oid, e.enumlabel
-         FROM pg_enum e
-         JOIN pg_attribute a ON a.atttypid = e.enumtypid
-         JOIN pg_class c ON c.oid = a.attrelid
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE (n.nspname, c.relname) IN ({names})"
-    ))?;
-    let mut labels = HashMap::new();
-    for row in rows {
-        let [Some(oid), Some(label)] = row.as_slice() else {
-            return Err(unknown_shape());
-        };
-        labels.insert(parsed_text(oid)?, label.clone());
-    }
-    Ok(labels)
 }
 
 fn unknown_shape() -> Error {
