@@ -138,7 +138,7 @@ view usage: join a joins account_id (an integer) to id (text); they must read al
 PostgreSQL 17 and 18 refuse a logical slot under `wal_level = replica`,
 the default, and changing it takes a restart. `straum run --wal physical`
 needs neither: it streams the physical WAL through a temporary physical
-slot and rebuilds each change from the pages it holds (ADR-0049). The
+slot and rebuilds each change from the pages it holds (ADR-0008). The
 commits it yields equal the logical stream's; the tests check that on a
 server with both.
 

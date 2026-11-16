@@ -57,7 +57,7 @@ impl TableNames {
 /// What is wrong with the server's version, settings or publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerProblem {
-    /// Older than 17 (ADR-0051).
+    /// Older than 17 (ADR-0007).
     TooOld {
         major: u32,
     },

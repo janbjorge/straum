@@ -66,8 +66,8 @@ old name, flag, message, default, number. Then check:
 - `README.md`: what Straum does, how to start it.
 - `deploy/helm/straum/README.md`, `values.schema.json`: chart value
   added, renamed or given a new default.
-- `docs/adr/`: a change against an accepted record needs a new record
-  superseding it (ADR-0001).
+- `docs/adr/`: a change against a record edits that record and moves
+  its revised date (ADR-0001).
 - This file: command, tool or rule changed.
 
 End the report with the documents changed, or say none describes the
@@ -79,10 +79,10 @@ change.
   before changing its `ALLOWED` table.
 - No `unsafe`, no macros of our own, traits only at ports. One
   exception: the counting allocator in `straum-domain/tests/cost.rs`
-  (ADR-0027).
+  (ADR-0013).
 - Plain structs, enums, functions. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
-- Write for a reader who doesn't know Rust (ADR-0053, ADR-0054):
+- Write for a reader who doesn't know Rust (ADR-0013):
   - Whole words, units last (`timeout_ms`), verbs for functions.
   - Early returns with `let ... else`, so the main path stays flat.
   - A `for` loop, not a chain with a closure. Name a closure as a
@@ -102,7 +102,7 @@ change.
 - Errors: hand-written enums with `Display` and `From` impls. No
   `thiserror`, no `anyhow`. Input never panics.
 - The Straum SQL walker rejects anything it doesn't list, naming the
-  construct. One spelling per meaning, nothing inferred (ADR-0029).
+  construct. One spelling per meaning, nothing inferred (ADR-0004).
 - Only `straum-http` runs tokio.
 - Dependencies: check `std` first. Add a crate only for a capability
   `std` lacks or a measured material gain. State why beside it in
@@ -123,7 +123,7 @@ change.
 - A settled decision gets a record in `docs/adr/`; ADR-0001 says how.
 - Commit straight to `main`. One change per commit, short imperative
   subject. No branches, no PRs. The maintainer makes releases and tags
-  on the release page (ADR-0036). Code goes in with the commit that
+  on the release page (ADR-0012). Code goes in with the commit that
   first uses it.
 - Use `git --no-pager`. Don't read `bench/data/` or `target/`.
 - Wrap markdown at about 78 columns. No em dashes.

@@ -13,7 +13,7 @@ of [upstream PostgreSQL](https://github.com/postgres/postgres/tree/0f3b42ce806),
 Everything the logical stream needs ships in stock PostgreSQL 17 and
 newer and works on Azure: pgoutput, temporary logical slots, exported
 snapshots, SQL on a replication connection. `--wal physical` needs
-none of those. It reads the WAL `replica` writes (ADR-0049).
+none of those. It reads the WAL `replica` writes (ADR-0008).
 
 ## 1. Start and initial load
 
@@ -58,7 +58,7 @@ table:
 
 ## 2. Apply
 
-![What each pgoutput message does to facts with REPLICA IDENTITY FULL, facts with the default identity and dims, and how Straum starts over. Drawn before ADR-0031: a dim is published with FULL like a fact, and its changes go to its projection.](diagrams/apply.svg)
+![What each pgoutput message does to facts with REPLICA IDENTITY FULL, facts with the default identity and dims, and how Straum starts over. Drawn before ADR-0007: a dim is published with FULL like a fact, and its changes go to its projection.](diagrams/apply.svg)
 
 Old values (`access/heap/heapam.c:9357-9443`, R): under the default
 identity an UPDATE carries old values only when a key column changed,
@@ -73,7 +73,7 @@ R). So:
   that only gets inserts pays nothing for it. An UPDATE or DELETE that
   still comes without the old row, as after the identity is changed
   back, starts Straum over, and that start reports the missing FULL.
-- Dims are in the stream like facts, with FULL (ADR-0031). A dim row's
+- Dims are in the stream like facts, with FULL (ADR-0007). A dim row's
   change applies to its projection in the same commit as the fact rows
   beside it; a dim row not held starts Straum over, as a fact row that
   doesn't fit does.
@@ -94,7 +94,7 @@ single-row commits racing the slot's creation, three times, and no
 commit lost or applied twice
 (`the_snapshot_and_the_stream_split_exactly`).
 
-Starting over (ADR-0015): Straum closes the stream, so PostgreSQL drops
+Starting over (ADR-0009): Straum closes the stream, so PostgreSQL drops
 its temporary slot, waits, and loads every table from a new slot and
 its snapshot. A new slot reserves WAL from the current insert position
 (`replication/slot.c:1759-1788`, R). Asks answer not ready until the
@@ -131,7 +131,7 @@ the database pins WAL however current the acks are (I).
 
 ## 3. Freshness
 
-Straum reports `as_of` and the applied LSN (ADR-0007). Commit order is
+Straum reports `as_of` and the applied LSN (ADR-0005). Commit order is
 not visibility order: the commit record is inserted before the
 transaction leaves the procarray, with no lock spanning both
 (`access/transam/xact.c:1488`, `:2446`; `storage/ipc/procarray.c:680-686`;
@@ -235,7 +235,7 @@ PostgreSQL 17 is the floor (jb, 2026-11-15). CI tests 17, 18 and 19rc1.
   images (`heapam.c:2147`, R). How much at the real write rate is open.
 
 One code path covers those `wal_level` cases. `--wal physical`
-(ADR-0049) is the other path: it reads the WAL `replica` writes, so
+(ADR-0008) is the other path: it reads the WAL `replica` writes, so
 no restart is required. Azure Flexible Server 18 defaults to
 `replica` (U).
 
@@ -349,6 +349,6 @@ views.
 5. Low collapse: warn in `straum plan`, or leave it to the spec author
    (`docs/src/benchmark.md`).
 6. What clients do while Straum is not ready: retry, or ask PostgreSQL.
-7. Long asks delay the writer while they hold the read lock (ADR-0009).
+7. Long asks delay the writer while they hold the read lock (ADR-0002).
 8. `helm template` output committed to the deploy repo, or a
    `HelmDeploy` step?

@@ -1,5 +1,5 @@
 //! The port to the spill: where sealed buckets go while they are out of
-//! memory (ADR-0033). The writer puts a bucket in when it seals it and
+//! memory (ADR-0010). The writer puts a bucket in when it seals it and
 //! takes it out when a change reaches it; asks read it back to answer.
 //! Asks get buckets from many threads at once, so every method takes
 //! `&self`.

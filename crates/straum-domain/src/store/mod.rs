@@ -42,7 +42,7 @@ struct DimIndex(usize);
 /// join columns, and an ask reads a dim's rows through them, as the dim
 /// is now. A fact that joins on a column no `by` key reads keeps bound
 /// cells beside them, keyed by the dim columns themselves, which are
-/// fewer and answer its asks (ADR-0038, ADR-0042). A dim change moves
+/// fewer and answer its asks (ADR-0006). A dim change moves
 /// the bound cells whose join columns name the changed key.
 #[derive(Debug)]
 pub struct Store {

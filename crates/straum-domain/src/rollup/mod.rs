@@ -192,7 +192,7 @@ impl Rollup {
 
     /// Keyed by the `by` keys and every column the refs read, which a row
     /// carries after the fact's columns, so an ask reads no projection
-    /// (ADR-0038). A column read is named as the view names it; a fact
+    /// (ADR-0006). A column read is named as the view names it; a fact
     /// column of that name comes first, so the measure inputs find theirs.
     pub(crate) fn bound(fact: &Fact) -> Rollup {
         let mut columns = fact.columns();

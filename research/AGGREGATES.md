@@ -102,14 +102,14 @@ a fetch tool that quotes them. A search snippet is U.
      neither.
    - `bool_and` and `bool_or` have an inverse, through a separate
      16-byte moving state (`bool_accum`, `bool_accum_inv`, lines 523 to
-     527). ADR-0041 is the same move.
+     527). ADR-0003 is the same move.
 7. **Floats are not invertible.** PostgreSQL's own example: a float
    sum with subtraction as inverse "returns `0` as its second result,
    rather than the expected answer of `1`", since adding 1 to 1e20
    gives 1e20 (xaggr.html §36.12.1, R). Feldera: the linear aggregates
    "are actually non-linear when applied to DOUBLE or FLOAT values"
    ([Aggregate Operations](https://docs.feldera.com/sql/aggregates/),
-   R). ADR-0016 refuses float columns for this reason.
+   R). ADR-0003 refuses float columns for this reason.
 8. **Exact median in one pass needs the data.** Munro and Paterson,
    "Selection and sorting with limited storage", Theoretical Computer
    Science 12, 1980: a deterministic one-pass exact median needs
@@ -165,8 +165,8 @@ percentiles](https://www.tigerdata.com/docs/use-timescale/latest/hyperfunctions/
 Three answers to min under delete, then: recompute from the source
 (PostgreSQL, pg_ivm), keep the group's values (Feldera, Flink,
 Materialize), or forbid deletes (append-only modes, Druid). Straum
-holds no rows to recompute from (ADR-0002), reading PostgreSQL again
-is a start over (ADR-0015), and it must take deletes, so only the
+holds no rows to recompute from (ADR-0003), reading PostgreSQL again
+is a start over (ADR-0009), and it must take deletes, so only the
 second is open to it.
 
 ## 3. Where Straum sits
@@ -182,10 +182,10 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
 - **min, max and count distinct are bought with size.** Their state is
   a count per value, so it is not fixed size: in Gray's terms Straum
   stores them as holistic to make them delete-safe. Memory follows
-  distinct values per cell (ADR-0016's open question for count
+  distinct values per cell (ADR-0003's open question for count
   distinct). `ValueCounts` keeps each value in as many bytes as its
   cell's values need: a few values in the cell itself, more in one
-  sorted run, and only many in several (ADR-0043).
+  sorted run, and only many in several (ADR-0003).
 - **An ask merges cheaper than it stores.** min and max read the two
   ends mirrored beside the counts, so a merge is one comparison a cell.
   Count distinct has no such mirror: a merge unions the value sets, so
@@ -209,11 +209,11 @@ All I, read against `crates/straum-domain/src/rollup.rs` (`State`,
 ## Open points
 
 - Exact median over the min and max state, built as `percentile_disc`
-  (ADR-0048): over six months of taxi trips the median fare takes
+  (ADR-0003): over six months of taxi trips the median fare takes
   32.3 ms against PostgreSQL's 6,584.6 ms, where a sum takes under half
   a millisecond (benchmark.md, 2026-11-15). A running count per run
   would make it a binary search on value; unbuilt.
-- Count distinct's memory (ADR-0016) is the same question as a
+- Count distinct's memory (ADR-0003) is the same question as a
   percentile's.
 - Variance and standard deviation are algebraic and invertible over
   integers: a sum of squares beside the sum. `i128` overflow of the

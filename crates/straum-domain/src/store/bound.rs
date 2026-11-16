@@ -1,6 +1,6 @@
 //! Bound cells: a second rollup of a fact whose joins all read fact
 //! columns, keyed by the dim columns' values instead of the join
-//! columns, so an ask reads no projection (ADR-0038, ADR-0042). A fact
+//! columns, so an ask reads no projection (ADR-0006). A fact
 //! row reaches them through its join rows: per join, the dim row its key
 //! finds now. A hot keyed bucket is poured in or out whole when a dim is
 //! replaced or the bucket is sealed or unsealed.

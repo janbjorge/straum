@@ -9,7 +9,7 @@
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
 //!   the time went in `Server-Timing`. 400 for an ask Straum can't answer,
 //!   503 while a table it reads isn't ready. With `Accept: text/plain` the
-//!   answer is a table and the errors are lines, for people (ADR-0039).
+//!   answer is a table and the errors are lines, for people (ADR-0011).
 //! - `GET /livez`: 200 while the process serves.
 //! - `GET /readyz`: 200 when every table is loaded and Straum is within its
 //!   lag bound, else 503 and why. Asks still answer while Straum lags.
@@ -113,7 +113,7 @@ pub async fn serve(
 
 /// Serves `app` on `listener` on a tokio runtime of its own until SIGTERM
 /// or SIGINT, then finishes the requests in flight and returns. The
-/// caller stays synchronous, since only this crate runs tokio (ADR-0008).
+/// caller stays synchronous, since only this crate runs tokio (ADR-0002).
 /// `stopping` runs when the signal arrives.
 pub fn serve_until_signal(
     listener: net::TcpListener,

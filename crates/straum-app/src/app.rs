@@ -3,7 +3,7 @@
 //! from the `Source`, then applies one commit at a time; it takes the lock
 //! only to apply what it has read, never while it waits on PostgreSQL, so
 //! asks never wait on the database. With a spill, the writer moves old
-//! `date_bin` buckets out to it and back again (ADR-0033, ADR-0035).
+//! `date_bin` buckets out to it and back again (ADR-0010).
 
 use std::fmt;
 use std::ops::Range;

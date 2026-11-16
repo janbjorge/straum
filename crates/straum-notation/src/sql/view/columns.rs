@@ -196,7 +196,7 @@ impl Walker {
     }
 
     /// `alias.column`, or `alias.column::text` to read an enum column as
-    /// the label PostgreSQL prints (ADR-0037).
+    /// the label PostgreSQL prints (ADR-0004).
     fn reference(&mut self, expression: &sql::Expr) -> Result<Reference, Reported> {
         let sql::Expr::Cast {
             kind,

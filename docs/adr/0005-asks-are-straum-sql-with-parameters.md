@@ -1,0 +1,61 @@
+# ADR-0005: Asks are Straum SQL with parameters
+
+Status: Accepted 2026-11-10; revised 2026-11-16
+
+## Context
+
+Asks were JSON fields (`fact`, `measures`, `by`, `filter`, ...) until
+2026-11-10: a second language for what the spec says in SQL. Speaking
+pgwire would make Straum look like a database it isn't. The first
+answers carried an LSN, which a client can't act on without a WAL
+barrier, and a commit time, which stops on a quiet database. Without a
+stated target, an aggregate could land at any speed.
+
+## Decision
+
+`POST /ask` takes `{"query", "parameters"}`. The query is one `SELECT`
+over a view the client names: keys then measures by name; `WHERE`
+holds `=` and `IN` on keys joined by `AND`, and both `bucket >= $n` and
+`bucket < $m`; `GROUP BY` names exactly the selected keys; `HAVING
+measure op $n [AND ...]`, `op` one of `= <> < <= > >=`, compares
+selected measures. A key in `HAVING` or a measure in `WHERE` is
+refused, naming the other place. Every value is a `$n`; a literal is
+an error, so values never become query text.
+
+Parameters are typed exactly. A key takes the integer, string or
+boolean of its column, else `AskError::WrongType`. A JSON number with
+a fraction or exponent is read from its digits (`serde_json`'s
+`arbitrary_precision`), up to 38 after the point, and compares with
+measures only. `HAVING` runs on finished groups after the cell loop,
+without floats: a sum at either scale, an avg as sum over count. A null
+meets no comparison; a boolean takes `=` and `<>`.
+
+An answer is `{"as_of", "rows"}`, each row keyed by its `SELECT`
+names. `as_of` is when the slot last confirmed all WAL the server had
+written (ADR-0009): every commit before it is in the answer. The LSN
+goes in a `Straum-LSN` header. avg rounds half to even four places past
+its column's scale, trailing zeros dropped, in `straum-http`.
+
+Every ask in `bench/taxi.py` answers in under 1 ms, HTTP round trip
+included, on the machine `docs/src/benchmark.md` names. An aggregate
+whose asks miss it is not done, and a new one gets an ask there before
+it lands.
+
+## Consequences
+
+- An ask is not valid PostgreSQL: measures go by bare name and refs
+  are in scope without a join. `bucket` is reserved.
+- `straum-notation` walks an ask like a spec; `straum-http` reads only
+  the JSON around it.
+- A key or measure asked twice is refused, so `Answer` names its own
+  columns and the writer needs no ask.
+- `as_of` lags the truth by up to a second, never leads it, and moves
+  on a quiet database. A WAL barrier can use the header later.
+- `HAVING` costs one pass over the groups. An unselected measure can't
+  be compared; allowing it later breaks no ask. `!=`, `OR`, parentheses
+  and expressions are refused.
+- Percentile asks miss the target. The roadmap, each step measured:
+  count the work; pick the rank without a sort; a running count per run
+  (revises ADR-0003); counts per wider bucket across keys.
+- Views with a cell per row, as the warehouse runs, are outside the
+  target. `tests/cost.rs` guards counts and bytes on any machine.

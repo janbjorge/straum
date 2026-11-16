@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 # Full and Limited bodies; hyper 1 left them out of its core.
 http-body-util = "0.1.5"
-# HTTP/1 server (ADR-0008).
+# HTTP/1 server (ADR-0002).
 hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
 # Tokio glue and graceful shutdown for hyper.
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "http1", "server-graceful"] }
@@ -19,7 +19,7 @@ serde = { version = "1.0.229", default-features = false, features = ["std"] }
 # The JSON parser behind that Visitor; arbitrary_precision hands a number
 # over as written, so a HAVING value like 20.5 stays exact.
 serde_json = { version = "1.0.154", default-features = false, features = ["std", "arbitrary_precision"] }
-# The one async runtime (ADR-0008).
+# The one async runtime (ADR-0002).
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "net", "time", "signal"] }
 straum-app = { path = "../straum-app" }
 straum-domain = { path = "../straum-domain" }

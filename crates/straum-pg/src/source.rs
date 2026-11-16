@@ -30,7 +30,7 @@ use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::wire::{Connection, ConnectionKind, first_row_value};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
-/// or the physical WAL, which `wal_level = replica` writes (ADR-0049).
+/// or the physical WAL, which `wal_level = replica` writes (ADR-0008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Replication {
     /// Logical decoding's changes, through the publication.
@@ -51,7 +51,7 @@ const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
 static SLOTS: AtomicU64 = AtomicU64::new(0);
 
 /// Straum's [`Source`] over PostgreSQL 17 and newer with
-/// `wal_level = logical`, or `replica` from 19 (ADR-0046).
+/// `wal_level = logical`, or `replica` from 19 (ADR-0007).
 pub struct Postgres {
     dsn: Dsn,
     publication: String,
@@ -149,7 +149,7 @@ fn snapshot(dsn: &Dsn, spec: &Spec, publication: &str) -> Result<Snapshot, Error
 
 /// A physical stream reading from the last redo point, and a transaction
 /// on a plain connection whose snapshot is taken once every transaction
-/// committing after it is whole in the WAL the stream read (ADR-0049).
+/// committing after it is whole in the WAL the stream read (ADR-0008).
 fn physical_snapshot(
     dsn: &Dsn,
     spec: &Spec,

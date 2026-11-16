@@ -1,4 +1,4 @@
-//! Sealed buckets as plain data (ADR-0033). Sealing copies a bucket's
+//! Sealed buckets as plain data (ADR-0010). Sealing copies a bucket's
 //! cells out of the store into these types for a spill to keep; an ask or
 //! a change that needs the bucket again hands them back, and the store
 //! checks them (a thaw) before it reads them. Codes in them mean something

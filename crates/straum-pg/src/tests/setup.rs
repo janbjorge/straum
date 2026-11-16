@@ -418,7 +418,7 @@ fn filter_problems(pg: &PostgresContainer) {
     expect_problems(pg, cases);
 }
 
-/// An enum column is read as its label when written `::text` (ADR-0037).
+/// An enum column is read as its label when written `::text` (ADR-0004).
 fn enum_problems(pg: &PostgresContainer) {
     let cases = vec![
         case(

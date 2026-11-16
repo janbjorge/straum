@@ -130,7 +130,7 @@ connection or WAL past `--max-retained-wal` starts Straum over too
 ## The physical stream
 
 With `--wal physical` there is no logical decoding to send rows
-(ADR-0049). A temporary physical slot streams the server's WAL from the
+(ADR-0008). A temporary physical slot streams the server's WAL from the
 last checkpoint's redo point, and Straum turns it into the same
 messages the logical slot sends, so one decoder serves both:
 

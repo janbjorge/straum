@@ -95,7 +95,7 @@ Any error is a **Failure**, and the next step is a start over. The
 load fills a new store outside the lock, so asks never wait on
 PostgreSQL; they answer 503 until step 5.
 
-With `--wal physical`, step 2 differs (ADR-0049):
+With `--wal physical`, step 2 differs (ADR-0008):
 
 1. Read the catalog on a plain connection and check it.
 2. Create a temporary physical slot; it reserves WAL from the last
@@ -146,7 +146,7 @@ width; a hot bucket is columnar cells with one state per input.*
 - **Cells** are columnar: keys, row counts and one **State** per
   input column, side by side (`Cells`). A column of counts or sums is
   as wide as its widest entry needs, and none at all while every
-  entry is zero (`Counts`, `Sums`, ADR-0044). An **Index** finds a
+  entry is zero (`Counts`, `Sums`, ADR-0003). An **Index** finds a
   cell by its key codes: a table of positions, the keys themselves
   staying in their column. A cell goes with its last row
   (`Rollup::remove`).
@@ -449,5 +449,5 @@ what joins replaced and the sources behind them in
 
 ## Where the code and the records differ
 
-ADR-0034's adapter is not built: `main.rs` passes `None`. The open
+ADR-0010's adapter is not built: `main.rs` passes `None`. The open
 names are in the glossary's [Clashes](glossary.md#clashes) table.

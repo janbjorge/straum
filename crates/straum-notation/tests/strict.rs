@@ -1,4 +1,4 @@
-//! One spelling per meaning, nothing inferred (ADR-0029). Each case here
+//! One spelling per meaning, nothing inferred (ADR-0004). Each case here
 //! is one other spelling PostgreSQL would take, and the error must name
 //! the construct and say what to write instead.
 
@@ -500,7 +500,7 @@ fn cast_canon() -> String {
 }
 
 /// An enum column is read as its label by writing `alias.column::text`
-/// (ADR-0037): on a key, its null-ness, or a FILTER column, spelled alike
+/// (ADR-0004): on a key, its null-ness, or a FILTER column, spelled alike
 /// everywhere the view reads the column, and nowhere else.
 #[test]
 fn enum_columns_are_cast_to_text() {

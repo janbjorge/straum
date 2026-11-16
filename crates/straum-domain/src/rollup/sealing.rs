@@ -16,7 +16,7 @@ use super::{BucketId, DATE_BIN, Rollup};
 impl Rollup {
     /// Each `date_bin` bucket not sealed that ends by `before`. Wider
     /// buckets stay in memory: an ask over a long range reads them, and
-    /// the narrow ones only at its ends (ADR-0035).
+    /// the narrow ones only at its ends (ADR-0010).
     pub(crate) fn sealable(&self, before: i64) -> Vec<BucketId> {
         let level = &self.levels[DATE_BIN.0];
         let mut sealable = Vec::new();

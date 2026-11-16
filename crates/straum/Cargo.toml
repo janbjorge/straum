@@ -20,7 +20,7 @@ straum-notation = { path = "../straum-notation" }
 straum-pg = { path = "../straum-pg" }
 
 [dev-dependencies]
-# PostgreSQL in Docker for tests (ADR-0024).
+# PostgreSQL in Docker for tests (ADR-0007).
 testcontainers = { version = "0.28", default-features = false, features = ["blocking"] }
 
 [lints]

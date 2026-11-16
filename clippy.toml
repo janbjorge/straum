@@ -1,2 +1,2 @@
-# ADR-0053: functions stay under 70 lines.
+# ADR-0013: functions stay under 70 lines.
 too-many-lines-threshold = 70

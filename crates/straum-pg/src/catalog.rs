@@ -21,7 +21,7 @@ use crate::wire::Connection;
 
 /// `server_version_num` is the major times 10 000, plus the minor.
 pub(crate) const VERSION_NUM_PER_MAJOR: u32 = 10_000;
-/// The oldest server Straum reads: 17 (ADR-0051).
+/// The oldest server Straum reads: 17 (ADR-0007).
 const OLDEST_VERSION_NUM: u32 = 170_000;
 /// From 19, a logical slot turns logical decoding on under `replica`.
 const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = 190_000;
@@ -497,14 +497,14 @@ fn check_server(
     replication: Replication,
     problems: &mut Vec<Problem>,
 ) {
-    // ADR-0051.
+    // ADR-0007.
     if catalog.server_version < OLDEST_VERSION_NUM {
         problems.push(Problem::Server(ServerProblem::TooOld {
             major: catalog.server_version / VERSION_NUM_PER_MAJOR,
         }));
     }
     // From 19, a logical slot turns logical decoding on under replica.
-    // The physical WAL holds every change from replica on (ADR-0049).
+    // The physical WAL holds every change from replica on (ADR-0008).
     let enough: &'static [&'static str] = match replication {
         Replication::Logical if catalog.server_version < LOGICAL_UNDER_REPLICA_VERSION_NUM => {
             &["logical"]
@@ -617,7 +617,7 @@ struct Member {
     /// Every column read, with what it is for; a column may come twice.
     uses: Vec<ColumnUse>,
     /// The columns written `::text`: enums, read as their labels
-    /// (ADR-0037).
+    /// (ADR-0004).
     as_text: Vec<Identifier>,
 }
 

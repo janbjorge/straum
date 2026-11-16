@@ -84,7 +84,7 @@ enum KeyForm {
 }
 
 /// Whether a column is written `alias.column::text`, to read an enum as
-/// its label (ADR-0037), or plain.
+/// its label (ADR-0004), or plain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cast {
     Plain,

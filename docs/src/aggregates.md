@@ -166,7 +166,7 @@ gives an approximate answer, t-digest, KLL and DDSketch for
 percentiles, HyperLogLog for distinct counts. The common sketches
 merge but can't take a delete, and their answers are estimates.
 Straum's answers are exact and follow deletes, so it has no sketch
-([ADR-0048](https://github.com/janbjorge/straum/blob/main/docs/adr/0048-a-percentile-reads-the-counts-min-and-max-keep.md)).
+([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 
 The sources behind this page, and how PostgreSQL and other systems
 handle the same two questions, are in

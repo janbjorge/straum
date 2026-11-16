@@ -321,7 +321,7 @@ impl Fact {
 
     /// Whether a ref's via column is a part of the rollup key that no
     /// `by` key is. Only then are the cells finer than the `by` keys, and
-    /// cells keyed by the dim columns fewer (ADR-0042).
+    /// cells keyed by the dim columns fewer (ADR-0006).
     pub fn vias_add_parts(&self) -> bool {
         self.rollup_key().len() > self.by_parts().len() + 1
     }

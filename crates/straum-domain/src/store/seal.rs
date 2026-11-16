@@ -1,5 +1,5 @@
 //! Sealing: a hot `date_bin` bucket's cells go to a spill and leave
-//! memory, keeping the bucket's place (ADR-0033). The store names the
+//! memory, keeping the bucket's place (ADR-0010). The store names the
 //! buckets ready to seal, copies one out, drops it, checks a copy that
 //! comes back (thawing) and puts it back (unsealing). A sealed bucket
 //! leaves the bound cells while it is out.

@@ -32,7 +32,7 @@ answer's.
 | Tips by dropoff borough | 8 | 2,376.2 ms | 250 µs | 9,492x |
 
 The target is under 1 ms for every ask
-([ADR-0050](https://github.com/janbjorge/straum/blob/main/docs/adr/0050-every-benchmark-ask-answers-in-under-1-ms.md));
+([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
 the two percentile asks over every trip miss it.
 
 Straum was ready 16.8 s after it started and held 113 MiB, the 265 zone
@@ -110,7 +110,7 @@ GROUP BY 1, 2, 3;
 
 Over the 20,332,093 trips, `trips` keeps 1,157,581 cells at its hour
 width and `dropoffs` 713,457. Neither keeps
-[bound cells](https://github.com/janbjorge/straum/blob/main/docs/adr/0042-bound-cells-are-kept-only-where-a-join-adds-a-key.md):
+[bound cells](https://github.com/janbjorge/straum/blob/main/docs/adr/0006-refs-are-bound-at-ask-time.md):
 each joins on one of its own keys, so they would be as many again.
 
 ## The asks
@@ -223,7 +223,7 @@ cargo test -p straum-pg --release physical_wal_bench -- --ignored --nocapture
 ```
 
 It measures how fast Straum reads
-[physical WAL](https://github.com/janbjorge/straum/blob/main/docs/adr/0049-straum-reads-physical-wal-where-logical-decoding-is-off.md).
+[physical WAL](https://github.com/janbjorge/straum/blob/main/docs/adr/0008-straum-reads-physical-wal-where-logical-decoding-is-off.md).
 It loads the taxi month with `bench/load_taxi_trips.py` into a
 PostgreSQL under `wal_level = replica`, so it needs uv. Then it takes a
 checkpoint and opens a physical slot. Four phases each change 1,000,000
@@ -266,7 +266,7 @@ there are. Two runs on 2026-11-11 measure it: the taxi month under a
 wide key, and a warehouse's tables under a narrow one whose dims carry
 the ids. The resident set came to 177 and 104 bytes a cell, measures
 and projections included, before bound cells. A cell has taken fewer
-bytes since ([ADR-0044](https://github.com/janbjorge/straum/blob/main/docs/adr/0044-a-cell-takes-the-bytes-its-numbers-need.md)):
+bytes since ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)):
 the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
 bytes a cell, before `trips` kept its fares for the percentiles; with
 them they hold 113 MiB.

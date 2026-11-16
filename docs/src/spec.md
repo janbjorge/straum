@@ -7,7 +7,7 @@ in the spec runs in PostgreSQL: to load a view, Straum copies only the
 columns it reads.
 
 Straum SQL has one spelling per meaning and infers nothing
-([ADR-0029](https://github.com/janbjorge/straum/blob/main/docs/adr/0029-straum-sql-has-one-spelling-per-meaning.md)).
+([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
 The synopsis is the whole language: anything it does not show is an
 error that names the construct and says what to write.
 
@@ -259,7 +259,7 @@ written without it, and the cast on a column of any other type, so a
 spec says what it reads. A `FILTER` literal must be one of the type's
 labels, which Straum reads at start. The label is a text key: asks
 filter it with a string, and answers sort labels as text, not in the
-type's order ([ADR-0037](https://github.com/janbjorge/straum/blob/main/docs/adr/0037-an-enum-column-is-read-as-its-label-when-cast-to-text.md)).
+type's order ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
 Which types take the cast is listed here; today it is enums alone.
 
 ## Measures
@@ -279,7 +279,7 @@ numeric values scaled by their column's scale. `count(*)` counts rows
 and `count(c)` the rows where `c` is not null. `bool_and(c)` is true
 when every `c` that is not null is true, and `bool_or(c)` when any is;
 both are null when no `c` is
-([ADR-0041](https://github.com/janbjorge/straum/blob/main/docs/adr/0041-bool-and-and-bool-or-keep-counts-of-true-and-false.md)).
+([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 `percentile_disc(f)` is the value at rank `ceil(f * n)` of the `n`
 values that are not null, at least the first, and null when there are
 none; ascending is its one order, so `ASC` and `DESC` are not written

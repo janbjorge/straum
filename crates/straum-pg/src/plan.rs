@@ -19,7 +19,7 @@ use crate::source::Replication;
 ///
 /// With [`Replication::Physical`] none of that is needed: the physical
 /// WAL `wal_level = replica` writes holds every change and the pages hold
-/// the old rows (ADR-0049). The role may log which transactions run, so
+/// the old rows (ADR-0008). The role may log which transactions run, so
 /// a start needn't wait for the next checkpoint.
 ///
 /// With a `password`, the role gets it as a SCRAM-SHA-256 verifier, so

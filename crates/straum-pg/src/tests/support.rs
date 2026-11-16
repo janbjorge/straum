@@ -324,7 +324,7 @@ impl Db {
         Writer::new(App::new(self.spec(spec), LIMITS, None), self.pg())
     }
 
-    /// A writer that reads the physical WAL (ADR-0049).
+    /// A writer that reads the physical WAL (ADR-0008).
     pub(super) fn physical_writer(&self, spec: &str) -> Writer<Postgres> {
         let source = Postgres::new(self.dsn.clone(), &self.name, ROW_LIMIT, PHYSICAL);
         Writer::new(App::new(self.spec(spec), LIMITS, None), source)

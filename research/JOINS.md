@@ -3,7 +3,7 @@
 Straum aggregates one fact table joined to dim tables; how a join
 works is in `docs/src/spec.md` and `docs/src/how-it-works.md`. This
 note holds what was built before it (M9 to M12), the sources behind
-the choice (ADR-0030, 2026-11-11), and the numbers. Tags as in
+the choice (ADR-0006, 2026-11-11), and the numbers. Tags as in
 README.md (R, U, I).
 
 ## 1. What it replaces, and what was not chosen
@@ -17,11 +17,11 @@ README.md (R, U, I).
   fact row came in, so cells collapsed to the attributes' few values.
   Two bindings doubled the spec, the walker, the store and the ask
   errors, and a dim change rewrote nothing.
-- **M12, resolved in PostgreSQL (ADR-0013).** No dim rows held; the load
+- **M12, resolved in PostgreSQL (ADR-0006).** No dim rows held; the load
   joined in PostgreSQL and each commit looked its attributes up. 84 MiB
   instead of 897 on the warehouse copy, and a dim change invisible
   until a fact row of it changed and Straum started over.
-- **This (ADR-0030).** Late binding always, the projection held beside
+- **This (ADR-0006).** Late binding always, the projection held beside
   the cells, every join kind, any cardinality, chains and `WHERE`. The
   cost is cells keyed by join ids, which the warehouse copy makes about
   a cell a task (§3). That is the question's cost, not a shortcut's.
@@ -131,7 +131,7 @@ the source says and what Straum took from it.
 
 ## 3. Numbers
 
-Re-measured on 2026-11-11 after ADR-0030, on the warehouse copy of
+Re-measured on 2026-11-11 after ADR-0006, on the warehouse copy of
 `docs/src/benchmark.md`: 13,116,878 tasks, 5,690,651 task groups, 851,964
 storage locations; the view keyed by organization, live-ness, the
 group's category and the location's type.

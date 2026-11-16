@@ -1,5 +1,5 @@
 //! Straum SQL: the spec format Straum reads at start, and the asks it
-//! answers. `docs/src/spec.md` is its grammar (ADR-0029). `sqlparser`
+//! answers. `docs/src/spec.md` is its grammar (ADR-0004). `sqlparser`
 //! parses the text into a tree; the walker in `sql/` reads the tree into
 //! the domain's dims, facts and asks; `Spec::new` then checks the views
 //! against each other.
