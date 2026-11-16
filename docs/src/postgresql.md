@@ -54,9 +54,9 @@ superuser. The setup lives in the catalog and survives restarts.
 - Some managed services grant replication through a role of their own,
   such as
   [`rds_replication`](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.FeatureSupport.LogicalReplication.html)
-  on Amazon RDS. `--role NAME` names the role.
-- `--publication NAME` names the publication; give `straum run` the same
-  name.
+  on Amazon RDS: grant it to Straum's role.
+- `--role NAME` and `--publication NAME` pick other names
+  ([flags](cli.md#straum-plan)); give `straum run` the same publication.
 - Dims are published and get `REPLICA IDENTITY FULL` like facts, since
   Straum holds and follows them.
 
@@ -177,20 +177,17 @@ it waits for and tries again:
 --wal physical waited 60 s for transactions it read the commits of to end: xid 7512; a synchronous standby that doesn't answer holds them
 ```
 
-The last one: PostgreSQL logs a commit, waits for its synchronous
-standbys, then lets snapshots see it. Straum's load must see every
-commit it read before its start, so it takes the snapshot again until
-then.
+[The physical stream](how-it-works.md#the-physical-stream) says why
+the start waits.
 
 What it costs beyond the logical stream:
 
 - The stream carries the whole server's WAL, every database, though
   Straum reads only its tables' pages.
-- Memory: the rows of every page of the spec's tables changed since the
-  last checkpoint, and the changes of transactions not yet ended. A
-  page goes at the next checkpoint, since its next change brings it
-  whole. A shorter `checkpoint_timeout` lowers it and raises the WAL.
-  Past `--max-page-memory` (1 GiB by default) Straum starts over.
+- Memory: the rows of the spec's pages changed since the last
+  checkpoint, and the changes of open transactions. A shorter
+  `checkpoint_timeout` lowers it and raises the WAL. Past
+  `--max-page-memory` (1 GiB by default) Straum starts over.
 
 What starts Straum over in physical mode, besides what starts the
 logical stream over:
