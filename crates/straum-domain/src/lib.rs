@@ -41,4 +41,4 @@ pub use spec::{
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};
-pub use value::{ColumnType, Datum, MAX_SCALE, Value, decimal, push_decimal};
+pub use value::{ColumnType, Datum, Value, decimal, push_decimal};

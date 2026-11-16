@@ -105,7 +105,7 @@ pub enum Value {
 /// The most digits after the point a HAVING value may have: `10^38` is
 /// the largest power of ten an `i128` holds, which an exact comparison
 /// divides by.
-pub const MAX_SCALE: u32 = 38;
+pub(crate) const MAX_SCALE: u32 = 38;
 
 /// A HAVING value made ready, once per ask, for the values of a measure
 /// answered at one scale: scaled there already, so comparing a group's
