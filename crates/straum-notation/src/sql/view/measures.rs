@@ -23,38 +23,12 @@ struct Aggregated {
     filter: Vec<Condition>,
 }
 
-/// An aggregate over one column, before the column is read.
-#[derive(Clone, Copy)]
-enum ColumnAggregate {
-    CountNotNull,
-    CountDistinct,
-    Sum,
-    Min,
-    Max,
-    Avg,
-    BoolAnd,
-    BoolOr,
-}
-
-impl ColumnAggregate {
-    fn over(self, column: Identifier) -> Aggregate {
-        match self {
-            ColumnAggregate::CountNotNull => Aggregate::CountNotNull(column),
-            ColumnAggregate::CountDistinct => Aggregate::CountDistinct(column),
-            ColumnAggregate::Sum => Aggregate::Sum(column),
-            ColumnAggregate::Min => Aggregate::Min(column),
-            ColumnAggregate::Max => Aggregate::Max(column),
-            ColumnAggregate::Avg => Aggregate::Avg(column),
-            ColumnAggregate::BoolAnd => Aggregate::BoolAnd(column),
-            ColumnAggregate::BoolOr => Aggregate::BoolOr(column),
-        }
-    }
-}
-
 /// What a plain aggregate counts: rows, as `count(*)` does, or a column.
 enum Over {
     Rows,
-    Column(ColumnAggregate),
+    /// The aggregate's variant, as a function from the column it reads,
+    /// which comes later.
+    Column(fn(Identifier) -> Aggregate),
 }
 
 /// A fraction's digits before and after its point.
@@ -181,7 +155,7 @@ impl Walker {
                     return Err(Reported);
                 };
                 let column = self.uncast_fact_column(scope, argument, "an aggregated column")?;
-                aggregate.over(column)
+                aggregate(column)
             }
         };
         let filter = self.read_filter(scope, filter_condition.as_slice())?;
@@ -209,23 +183,23 @@ impl Walker {
                     self.refuse(at, "count of a constant, use count(*),", function);
                     return Err(Reported);
                 }
-                _ => return Ok(Over::Column(ColumnAggregate::CountNotNull)),
+                _ => return Ok(Over::Column(Aggregate::CountNotNull)),
             }
         }
         if name == "count" {
-            return Ok(Over::Column(ColumnAggregate::CountDistinct));
+            return Ok(Over::Column(Aggregate::CountDistinct));
         }
         if name == "every" {
             self.refuse(at, "every, write bool_and,", function);
             return Err(Reported);
         }
         let aggregate = match name {
-            "sum" => ColumnAggregate::Sum,
-            "min" => ColumnAggregate::Min,
-            "max" => ColumnAggregate::Max,
-            "avg" => ColumnAggregate::Avg,
-            "bool_and" => ColumnAggregate::BoolAnd,
-            "bool_or" => ColumnAggregate::BoolOr,
+            "sum" => Aggregate::Sum,
+            "min" => Aggregate::Min,
+            "max" => Aggregate::Max,
+            "avg" => Aggregate::Avg,
+            "bool_and" => Aggregate::BoolAnd,
+            "bool_or" => Aggregate::BoolOr,
             _ => {
                 self.refuse(at, "aggregate", function);
                 return Err(Reported);

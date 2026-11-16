@@ -98,6 +98,12 @@ an earlier `let` took out.
 `Direction::Add` carries none, `Step::Started(lsn)` carries a
 position in the WAL. `match` takes them out again.
 
+**A function as a value.** `fn(Identifier) -> Aggregate` is the type
+of a function from a column name to an aggregate. A case that carries
+one value is such a function: `Aggregate::Sum` turns `column` into
+`Aggregate::Sum(column)`. The walker picks the case by the call's name
+and applies it once it has read the column.
+
 **Named index types.** `struct FactIndex(usize);` is a struct with
 one unnamed field, read as `fact.0`. It costs nothing at run time and
 makes a signature say what a number points at: `fn bind(&mut self,
