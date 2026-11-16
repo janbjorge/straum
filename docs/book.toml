@@ -3,7 +3,7 @@
 # Preview with `mdbook serve docs`.
 [book]
 title = "Straum"
-description = "In-memory PostgreSQL aggregates, kept current through logical replication."
+description = "In-memory PostgreSQL aggregates, kept current as PostgreSQL commits."
 language = "en"
 src = "src"
 
