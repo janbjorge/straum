@@ -237,22 +237,10 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<QueryError>>
         Err(sql_errors) => sql_errors,
     };
     let mut errors = Vec::with_capacity(sql_errors.len());
-    for sql_error in sql_errors {
-        errors.push(query_error(sql_error));
+    for SqlError { line, message } in sql_errors {
+        errors.push(QueryError { line, message });
     }
     Err(errors)
-}
-
-fn query_error(error: SqlError) -> QueryError {
-    // Straum SQL says 0 when the line is already in the message.
-    let line = match error.line {
-        0 => None,
-        line => Some(line),
-    };
-    QueryError {
-        line,
-        message: error.message,
-    }
 }
 
 /// From the file, else from `STRAUM_DSN`. Never from the command line, where
@@ -361,21 +349,6 @@ fn log(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_query_error_keeps_its_line_unless_it_is_in_the_message() {
-        let error = query_error(SqlError {
-            line: 3,
-            message: "nope".to_owned(),
-        });
-        assert_eq!(error.to_string(), "line 3: nope");
-        let error = query_error(SqlError {
-            line: 0,
-            message: "nope at line 1 column 2".to_owned(),
-        });
-        assert_eq!(error.line, None);
-        assert_eq!(error.to_string(), "nope at line 1 column 2");
-    }
 
     #[test]
     fn reads_asks_as_straum_sql() {

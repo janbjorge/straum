@@ -32,8 +32,8 @@ const QUOTE_CHARACTERS: usize = 60;
 /// One thing wrong with a spec or an ask, and the line it is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlError {
-    /// 1-based; 0 when `sqlparser` puts the position in `message`.
-    pub line: u64,
+    /// 1-based; none when `sqlparser` puts the position in `message`.
+    pub line: Option<u64>,
     pub message: String,
 }
 
@@ -46,7 +46,7 @@ fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
     match Parser::parse_sql(&PostgreSqlDialect {}, text) {
         Ok(statements) => Ok(statements),
         Err(error) => Err(vec![SqlError {
-            line: 0,
+            line: None,
             message: error.to_string(),
         }]),
     }
@@ -88,6 +88,8 @@ enum NullTest {
 
 impl Walker {
     fn error(&mut self, line: u64, message: String) {
+        // `sqlparser` gives an empty span line 0.
+        let line = if line == 0 { None } else { Some(line) };
         self.errors.push(SqlError { line, message });
     }
 

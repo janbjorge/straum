@@ -33,10 +33,9 @@ pub fn parse(text: &str) -> Result<Spec, Error> {
 
 impl fmt::Display for SqlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.line == 0 {
-            write!(formatter, "{}", self.message)
-        } else {
-            write!(formatter, "line {}: {}", self.line, self.message)
+        match self.line {
+            Some(line) => write!(formatter, "line {line}: {}", self.message),
+            None => write!(formatter, "{}", self.message),
         }
     }
 }

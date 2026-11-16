@@ -115,7 +115,7 @@ pub fn any_contains(errors: &[String], fragment: &str) -> bool {
 pub fn any_message(errors: &[SqlError], line: Option<u64>, fragment: &str) -> bool {
     for error in errors {
         let on_line = match line {
-            Some(line) => error.line == line,
+            Some(line) => error.line == Some(line),
             None => true,
         };
         if on_line && error.message.contains(fragment) {

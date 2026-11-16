@@ -45,7 +45,6 @@ fn read_with_notation(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<Qu
     };
     let mut errors = Vec::new();
     for SqlError { line, message } in sql_errors {
-        let line = if line == 0 { None } else { Some(line) };
         errors.push(QueryError { line, message });
     }
     Err(errors)

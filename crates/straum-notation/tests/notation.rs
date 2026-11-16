@@ -411,13 +411,13 @@ fn other_statements_are_rejected() {
         sql_errors("SELECT 1;\nCREATE TABLE t (a int)"),
         [
             SqlError {
-                line: 1,
+                line: Some(1),
                 message:
                     "statement `SELECT 1` is not in Straum SQL, the PostgreSQL subset made only for Straum"
                         .into()
             },
             SqlError {
-                line: 2,
+                line: Some(2),
                 message: "statement `CREATE TABLE t (a INT)` is not in Straum SQL, \
                       the PostgreSQL subset made only for Straum"
                     .into()
@@ -444,7 +444,7 @@ fn long_sql_is_cut_in_errors() {
 fn parser_errors_and_deep_nesting_are_errors() {
     let errors = sql_errors("CREATE VIEW t AS SELEC 1");
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].line, 0);
+    assert_eq!(errors[0].line, None);
     assert!(errors[0].message.contains("Line: 1"), "{errors:?}");
     assert_eq!(
         parse("CREATE VIEW t AS SELEC 1").unwrap_err().to_string(),

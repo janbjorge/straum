@@ -110,7 +110,7 @@ fn a_ref_on_two_columns_rejected() {
         assert_eq!(
             errors,
             [SqlError {
-                line: 7,
+                line: Some(7),
                 message: format!(
                     "public.g is joined on {found} here and on org_id, grp_id elsewhere"
                 )
@@ -167,7 +167,7 @@ fn a_ref_reads_what_the_view_selects() {
     assert_eq!(
         errors,
         [SqlError {
-            line: 2,
+            line: Some(2),
             message: "GROUP BY 1, 2 must list the keys' positions in SELECT: GROUP BY 1, 2, 3"
                 .into()
         }]
@@ -339,7 +339,7 @@ fn views_share_a_dim() {
     assert_eq!(
         sql_errors(&clash),
         [SqlError {
-            line: 7,
+            line: Some(7),
             message: "public.z is joined on code here and on id elsewhere".into()
         }]
     );
