@@ -11,6 +11,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use serde_json::Value;
+use straum_domain::Identifier;
 
 use crate::complete::{View, read_views};
 
@@ -149,15 +150,11 @@ pub(crate) fn views(url: &str) -> Result<String, ClientError> {
 /// A view's rows, as `GET /views/NAME` writes them.
 pub(crate) fn rows(url: &str, view: &str) -> Result<String, ClientError> {
     // The name goes into the request line as it is.
-    if !view.chars().all(is_name_character) {
+    if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
     }
     let request = Request::get(Wanted::Rows, format!("/views/{view}"), Accept::Text);
     fetch(url, &request)
-}
-
-fn is_name_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || character == '_'
 }
 
 /// The views as JSON, for the shell to complete from; `None` when they
@@ -356,7 +353,7 @@ mod tests {
     fn asks_for_a_views_rows() {
         let url = answering(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\ntrips\n");
         assert_eq!(said(rows(&url, "trips")), Said::Body("trips\n".to_owned()));
-        for name in ["trips HTTP/1.1", "a/b", "tri\rps", "trips;"] {
+        for name in ["trips HTTP/1.1", "a/b", "tri\rps", "trips;", "", "Trips"] {
             let error = format!("{name:?} is not a view's name");
             assert_eq!(said(rows("http://127.0.0.1:1", name)), Said::Error(error));
         }
