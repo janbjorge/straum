@@ -123,7 +123,13 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
         errors.push(AskError::NoMeasures);
     }
     for measure in &ask.measures {
-        if fact.measure(measure.as_str()).is_none() {
+        if fact.measure(measure.as_str()).is_some() {
+            continue;
+        }
+        // A name SELECT lists but GROUP BY doesn't reads as a measure.
+        if fact.resolve(measure).is_some() {
+            errors.push(AskError::KeyNotGrouped(measure.clone()));
+        } else {
             errors.push(AskError::UnknownMeasure(measure.clone()));
         }
     }
@@ -230,6 +236,8 @@ pub enum AskError {
     /// A name that is no key of the view: not a `by` key, not an
     /// attribute a ref reads.
     UnknownKey(Identifier),
+    /// A key the ask selects without grouping by it.
+    KeyNotGrouped(Identifier),
     NoMeasures,
     TimeKeyTwice,
     /// A key or measure named twice, or a key and a measure of one name.
@@ -285,6 +293,7 @@ impl fmt::Display for AskError {
             AskError::UnknownView(name) => write!(f, "unknown view {name}"),
             AskError::UnknownMeasure(name) => write!(f, "unknown measure {name}"),
             AskError::UnknownKey(name) => write!(f, "{name} is not a key of the view"),
+            AskError::KeyNotGrouped(name) => write!(f, "{name} is a key; add it to GROUP BY"),
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),

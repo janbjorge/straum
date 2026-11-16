@@ -182,6 +182,7 @@ timeout or fall back to `as_of`.
 
 ```json
 {"errors": ["unknown measure x", "zip is not a key of the view"]}
+{"errors": ["region is a key; add it to GROUP BY"]}
 {"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}

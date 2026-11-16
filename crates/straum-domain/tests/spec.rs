@@ -514,6 +514,23 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
 }
 
 #[test]
+fn a_key_selected_without_group_by_says_to_group_by_it() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    let ungrouped = Ask {
+        measures: vec![id("n"), id("name"), id("tips")],
+        keys: vec![AskKey::Key(id("a"))],
+        ..ask()
+    };
+    assert_eq!(
+        spec.check_ask(&ungrouped).unwrap_err(),
+        [
+            AskError::KeyNotGrouped(id("name")),
+            AskError::UnknownMeasure(id("tips")),
+        ]
+    );
+}
+
+#[test]
 fn an_ask_of_a_bad_shape_is_rejected() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     let unknown = Ask {
@@ -579,6 +596,10 @@ fn ask_errors_display() {
         (
             AskError::UnknownKey(id("fare")),
             "fare is not a key of the view",
+        ),
+        (
+            AskError::KeyNotGrouped(id("name")),
+            "name is a key; add it to GROUP BY",
         ),
         (AskError::NoMeasures, "no measures asked"),
         (AskError::TimeKeyTwice, "more than one time key"),
