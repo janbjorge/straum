@@ -122,11 +122,45 @@ fn stops_past_the_page_memory() {
 
 /// `straum run --wal physical` at `wal_level = replica`: it loads while
 /// writers insert, update and delete, starts from a snapshot every later
-/// commit streams after, follows, and every view equals SQL's.
+/// commit streams after, follows under each `wal_compression` it reads,
+/// and every view equals SQL's.
 #[test]
 fn follows_the_physical_wal() {
-    let pg = postgres_at_replica(&tag());
-    let mut db = Db::new(&pg, "physical_run", TABLES);
+    let checksums = checksums_by_default();
+    follow(&postgres_at_replica(&tag()), checksums);
+}
+
+/// As above, with data checksums the other way from the major's default.
+/// With checksums a page's first hint bits after a checkpoint log a
+/// full-page image.
+#[test]
+fn follows_the_physical_wal_with_checksums_flipped() {
+    let checksums = !checksums_by_default();
+    let initdb = if checksums {
+        "--data-checksums"
+    } else {
+        "--no-data-checksums"
+    };
+    let request = image(&tag())
+        .with_env_var("POSTGRES_INITDB_ARGS", initdb)
+        .with_cmd(["-c", "wal_level=replica"]);
+    follow(&plain(request), checksums);
+}
+
+/// Whether the major under test turns data checksums on by default, as
+/// 18 first does.
+fn checksums_by_default() -> bool {
+    let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
+    major.parse::<u32>().unwrap() >= 18
+}
+
+fn follow(pg: &PostgresContainer, checksums: bool) {
+    let mut db = Db::new(pg, "physical_run", TABLES);
+    let expected = if checksums { "on" } else { "off" };
+    assert_eq!(
+        db.rows("SHOW data_checksums")[0][0].as_deref(),
+        Some(expected)
+    );
     let mut rng = Rng::new(17);
     db.run(
         "INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL), (3, 'Manhattan', 9.5)",
@@ -148,10 +182,22 @@ fn follows_the_physical_wal() {
     }
     let mut next = 5_000_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
-    db.run("UPDATE $S.trips SET kind = 'van', tip = tip + 1 WHERE id % 3 = 0");
-    db.run("DELETE FROM $S.trips WHERE id % 4 = 0");
-    db.run("UPDATE $S.zones SET borough = 'Brooklyn' WHERE id = 2");
-    catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    // After a checkpoint, a page's first change logs the whole page,
+    // compressed as `wal_compression` says.
+    for (round, compression) in ["off", "pglz", "lz4"].into_iter().enumerate() {
+        db.run(&format!("ALTER SYSTEM SET wal_compression = {compression}"));
+        db.run("SELECT pg_reload_conf()");
+        db.run("CHECKPOINT");
+        db.run(&format!(
+            "UPDATE $S.trips SET kind = 'van', tip = tip + 1 WHERE id % 3 = {round}"
+        ));
+        db.run(&format!("DELETE FROM $S.trips WHERE id % 4 = {round}"));
+        db.run(&format!(
+            "UPDATE $S.zones SET borough = 'Brooklyn' WHERE id = {}",
+            round + 1
+        ));
+        catch_up(&mut db, &mut writer, &mut rng, &mut next);
+    }
 }
 
 /// A writer thread that until `stop` inserts a trip, updates and deletes
