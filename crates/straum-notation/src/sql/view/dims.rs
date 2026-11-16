@@ -5,7 +5,8 @@
 
 use straum_domain::{Dim, Identifier, Ref, Via};
 
-use super::{Cast, JoinedRef, comma_list};
+use super::joins::key_position;
+use super::{Cast, JoinedRef, comma_list, push_once};
 use crate::sql::Walker;
 
 impl Walker {
@@ -132,9 +133,7 @@ fn new_dim(joined: &JoinedRef) -> Dim {
 
 fn add_attributes(dim: &mut Dim, columns: &[Identifier]) {
     for column in columns {
-        if !dim.attributes.contains(column) {
-            dim.attributes.push(column.clone());
-        }
+        push_once(&mut dim.attributes, column);
     }
 }
 
@@ -155,11 +154,8 @@ fn same_columns(first: &[Identifier], second: &[Identifier]) -> bool {
 fn via_in_key_order(key: &[Identifier], joined: &JoinedRef) -> Vec<Via> {
     let mut via = Vec::new();
     for column in key {
-        for (position, joined_column) in joined.key.iter().enumerate() {
-            if joined_column == column {
-                via.push(joined.reference.via[position].clone());
-                break;
-            }
+        if let Some(position) = key_position(joined, column) {
+            via.push(joined.reference.via[position].clone());
         }
     }
     via

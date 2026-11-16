@@ -341,15 +341,7 @@ fn groups_by_nothing(group_by: &sql::GroupByExpr) -> bool {
 }
 
 fn alias_taken(scope: &Scope, alias: &Identifier) -> bool {
-    if *alias == scope.alias {
-        return true;
-    }
-    for joined in &scope.refs {
-        if joined.reference.alias == *alias {
-            return true;
-        }
-    }
-    false
+    *alias == scope.alias || ref_position(scope, alias).is_some()
 }
 
 /// The place in `scope.refs` of the join under `alias`.

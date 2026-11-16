@@ -555,7 +555,7 @@ fn cast_columns(scope: &mut Scope) -> Vec<Identifier> {
     as_text
 }
 
-fn push_once(columns: &mut Vec<Identifier>, column: &Identifier) {
+pub(super) fn push_once(columns: &mut Vec<Identifier>, column: &Identifier) {
     if !columns.contains(column) {
         columns.push(column.clone());
     }
