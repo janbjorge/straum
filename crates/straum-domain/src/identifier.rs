@@ -3,13 +3,16 @@
 //! lowercase PostgreSQL name can become, so a name never needs quoting.
 
 use std::fmt;
+use std::sync::Arc;
 
 /// Longest identifier PostgreSQL keeps (`NAMEDATALEN - 1`).
 const MAX_BYTES: usize = 63;
 
 /// An unquoted PostgreSQL identifier: `[a-z_][a-z0-9_]*`, at most 63 bytes.
+// `Arc<str>`: every row change names its table, so a copy must not
+// allocate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Identifier(String);
+pub struct Identifier(Arc<str>);
 
 impl Identifier {
     /// The identifier `text` spells, if it is one.
@@ -27,7 +30,7 @@ impl Identifier {
                 return None;
             }
         }
-        Some(Identifier(text.to_owned()))
+        Some(Identifier(text.into()))
     }
 
     /// The identifier as text.
