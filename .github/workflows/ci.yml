@@ -40,6 +40,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST }}
           components: clippy
+      # Dependencies only: rust-cache drops the workspace crates before it
+      # saves, and keys on Cargo.lock and rustc. Only main saves, so a pull
+      # request can't write what main reads. The image job builds cold.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   architecture:
@@ -72,10 +78,19 @@ jobs:
         with:
           toolchain: ${{ env.RUST }}
           components: ${{ matrix.coverage && 'llvm-tools-preview' || '' }}
+      # Coverage builds with other flags, so it keeps a cache of its own.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.coverage && 'coverage' || 'plain' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: ${{ !matrix.coverage }}
         run: cargo test --workspace
+      # The release binary, checked against the sum in the action's manifest,
+      # instead of a build from source.
       - if: ${{ matrix.coverage }}
-        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-llvm-cov@0.9.1
       - if: ${{ matrix.coverage }}
         run: cargo llvm-cov --workspace --all-targets --fail-under-lines 98
 
@@ -97,6 +112,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: echo "STRAUM_TEST_SEED_FROM=$((GITHUB_RUN_NUMBER * 1000))" >> "$GITHUB_ENV"
       - run: >-
           cargo test -p straum-pg --
