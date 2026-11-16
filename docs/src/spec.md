@@ -285,6 +285,11 @@ values that are not null, at least the first, and null when there are
 none; ascending is its one order, so `ASC` and `DESC` are not written
 ([Median and percentiles](aggregates.md#median-and-percentiles)).
 
+`percentile_disc` takes one fraction, as the synopsis writes it, and
+`ORDER BY alias.column` alone: no array, `DESC`, `USING`, `NULLS` or
+expression. `percentile_cont`, `mode` and the hypothetical-set
+aggregates are refused.
+
 `FILTER` makes a measure count only some rows:
 
 ```sql

@@ -102,14 +102,10 @@ Two things follow that a spec's author can see:
   14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
   `count(DISTINCT c)` over a column with many values holds every one
   of them.
-- **Rows counted twice.** A join whose dim holds a key twice counts the
-  fact row twice ([Joining a dim](spec.md#joining-a-dim)). `count` and
-  `sum` double,
-  because adding a row twice adds it twice, and `percentile_disc`
-  counts the row's value twice, as PostgreSQL does over the joined
-  rows. `min`, `max`,
-  `count(DISTINCT c)`, `bool_and` and `bool_or` stay, because the same
-  value merged twice changes nothing.
+- **Rows counted twice.** A dim that holds a key twice adds the fact
+  row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
+  doubles; a count per value merged twice keeps the same `min`, `max`
+  and distinct values.
 
 ## Median and percentiles
 
@@ -141,18 +137,8 @@ PostgreSQL's to the row: 0.07 of 100 values is the 8th there, not the
 7th. Nulls are skipped, no values give null, and the answer keeps the
 column's type.
 
-Where PostgreSQL takes more, Straum refuses the spec:
-
-- **Column**: an integer type or `numeric(p, s)`, `p` at most 18; not
-  text, times or floats.
-- **Fraction**: digits from 0 to 1, such as `0.5`; not `.5`, `5e-1`, a
-  parameter or an expression.
-- **One fraction**: no array; write one measure per fraction.
-- **Order**: `ORDER BY alias.column` only; no `DESC`, `USING`, `NULLS`
-  or expression.
-- **Others**: no `percentile_cont`, `mode` or hypothetical-set
-  aggregates.
-- **`FILTER`**: the conditions every measure takes.
+What Straum refuses where PostgreSQL takes more is under
+[Measures](spec.md#measures).
 
 The cost is in the ask. A `sum` merges a number a cell; a percentile
 gathers every value of every cell in its range and finds the one at its
