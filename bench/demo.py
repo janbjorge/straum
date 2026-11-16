@@ -247,7 +247,8 @@ async def time_boroughs(pg: asyncpg.Connection, http: aiohttp.ClientSession) -> 
     straum_time = await median(from_straum)
     print(
         "trips by pickup borough, January: "
-        f"PostgreSQL {duration(pg_time)}, Straum {duration(straum_time)}"
+        f"PostgreSQL {duration(pg_time)}, Straum {duration(straum_time)}, "
+        f"{pg_time / straum_time:,.0f}x"
     )
 
 
