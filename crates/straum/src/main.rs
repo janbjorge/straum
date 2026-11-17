@@ -385,8 +385,12 @@ fn run_writer(mut writer: Writer<Postgres>) {
     }
 }
 
+/// Each line of `message` to stderr, prefixed `straum: `, so a reader
+/// can grep for every line Straum logs.
 fn log(message: &str) {
-    eprintln!("straum: {message}");
+    for line in message.lines() {
+        eprintln!("straum: {line}");
+    }
 }
 
 #[cfg(test)]

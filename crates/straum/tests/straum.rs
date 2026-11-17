@@ -795,6 +795,12 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
         let (code, log) = straum.stop("-0");
         let waited = clock.elapsed();
         assert_eq!(code, Some(0), "{log}");
+        // The start failed on the closed port: each line of it, and of
+        // the wait after, says it is Straum's.
+        assert!(log.contains("\nstraum: starting over in 1 s\n"), "{log}");
+        for line in log.lines() {
+            assert!(line.starts_with("straum: "), "{line}");
+        }
         let within = if twice { 1..3 } else { 9..15 };
         assert!(within.contains(&waited.as_secs()), "{twice}: {waited:?}");
         drop(held);
