@@ -16,7 +16,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
-use crate::catalog::{self, Checked, Followed, Tables};
+use crate::catalog::{self, Checked, EnumLabel, Followed, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -76,6 +76,8 @@ pub struct Postgres {
     /// The spec's tables as the last [`Source::open`] checked them, which
     /// each reading of the WAL checks are still those tables.
     followed: Vec<Checked>,
+    /// The labels of their enums, as loaded.
+    labels: Vec<EnumLabel>,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
     plain: Option<Connection>,
@@ -85,8 +87,8 @@ pub struct Postgres {
 enum State {
     Closed,
     /// Every dim and fact loads in the snapshot of the slot the stream
-    /// starts from.
-    Loading(Snapshot),
+    /// starts from. Boxed: it outweighs the other states many times.
+    Loading(Box<Snapshot>),
     Streaming(Stream),
 }
 
@@ -127,6 +129,7 @@ impl Postgres {
             state: State::Closed,
             slot: String::new(),
             followed: Vec::new(),
+            labels: Vec::new(),
             plain: None,
         }
     }
@@ -384,7 +387,8 @@ impl Source for Postgres {
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
         self.followed = followed(&snapshot.tables);
-        self.state = State::Loading(snapshot);
+        self.labels.clone_from(&snapshot.tables.labels);
+        self.state = State::Loading(Box::new(snapshot));
         Ok(at)
     }
 
@@ -436,6 +440,7 @@ impl Postgres {
     fn read_wal_once(&mut self) -> Result<Wal, Error> {
         let followed = Followed {
             tables: &self.followed,
+            labels: &self.labels,
             publication: &self.publication,
             replication: self.replication,
         };
@@ -455,7 +460,7 @@ impl Postgres {
     fn next(&mut self, wait: Duration) -> Result<Option<Commit>, Error> {
         self.state = match mem::replace(&mut self.state, State::Closed) {
             State::Loading(snapshot) => State::Streaming(stream(
-                snapshot,
+                *snapshot,
                 &self.publication,
                 self.max_transaction_rows,
             )?),

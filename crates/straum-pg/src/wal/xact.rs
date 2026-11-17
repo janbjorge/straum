@@ -46,6 +46,9 @@ const RELATION_FILE: usize = 12;
 /// a relcache one names its database and table (`sinval.h`).
 const INVALIDATION: usize = 16;
 const INVALIDATE_RELCACHE: u8 = 0xFE;
+/// `SHAREDINVALCATALOG_ID`, all of one catalog; a catcache message's
+/// kind is its cache's id, 0 or more.
+const INVALIDATE_CATALOG: i8 = -1;
 /// `SharedInvalRelcacheMsg`: `dbId`, then `relId`, after the kind.
 const RELCACHE_DATABASE: usize = 4;
 const RELCACHE_RELATION: usize = 8;
@@ -84,6 +87,9 @@ pub(crate) struct Ending {
     /// Tables whose relcache entry the commit invalidates: what DDL, and
     /// some maintenance, on a table leaves.
     pub(crate) invalidated: Vec<Invalidated>,
+    /// The commit changed catalog rows, such as an enum's labels, which
+    /// invalidate no table.
+    pub(crate) catalog_changed: bool,
 }
 
 /// A relcache invalidation: one table, or with `relation` 0 every table
@@ -167,11 +173,16 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
         at += dropped_stat_size(major) * read_count(data, &mut at)?;
     }
     let mut invalidated = Vec::new();
+    let mut catalog_changed = false;
     if outcome == Outcome::Commit && parts & HAS_INVALIDATIONS != 0 {
         let count = read_count(data, &mut at)?;
         for index in 0..count {
             let message = at + INVALIDATION * index;
-            if *data.get(message)? == INVALIDATE_RELCACHE {
+            let kind = *data.get(message)?;
+            if i8::from_le_bytes([kind]) >= INVALIDATE_CATALOG {
+                catalog_changed = true;
+            }
+            if kind == INVALIDATE_RELCACHE {
                 invalidated.push(Invalidated {
                     database: u32_at(data, message + RELCACHE_DATABASE)?,
                     relation: u32_at(data, message + RELCACHE_RELATION)?,
@@ -190,6 +201,7 @@ fn ending(record: &Record, outcome: Outcome, major: u32) -> Option<Ending> {
         subxacts,
         time,
         invalidated,
+        catalog_changed,
     })
 }
 
@@ -362,6 +374,7 @@ pub(crate) mod tests {
             subxacts: vec![801, 802],
             time: 12_345,
             invalidated,
+            catalog_changed: outcome == Outcome::Commit,
         };
         match outcome {
             Outcome::Commit => Event::Commit(ending),
@@ -396,8 +409,36 @@ pub(crate) mod tests {
             subxacts: Vec::new(),
             time: -5,
             invalidated: Vec::new(),
+            catalog_changed: false,
         };
         assert_eq!(got, Ok(Some(Event::Commit(ending))));
+    }
+
+    /// A catcache or catalog message says a catalog row changed; a
+    /// relcache one alone, which DDL on a table also leaves, does not.
+    #[test]
+    fn tells_a_catalog_change_from_a_table_invalidated() {
+        let relcache_only = invalidating_commit(-5, 5, 77);
+        assert!(!changes_catalog(relcache_only.clone()));
+        for kind in [0, 9, INVALIDATE_CATALOG.to_le_bytes()[0]] {
+            let mut catalog = relcache_only.clone();
+            // After the time and the xinfo, the count of messages.
+            let count_at = size_of::<i64>() + XINFO_SIZE;
+            catalog[count_at..count_at + COUNT_SIZE].copy_from_slice(&2u32.to_le_bytes());
+            let mut message = [0; INVALIDATION];
+            message[0] = kind;
+            catalog.extend(message);
+            assert!(changes_catalog(catalog), "kind {kind}");
+        }
+    }
+
+    /// Whether the commit with `main` says a catalog row changed.
+    fn changes_catalog(main: Vec<u8>) -> bool {
+        let info = XACT_COMMIT | XACT_HAS_INFO;
+        match event(&record(RESOURCE_MANAGER_TRANSACTION, info, 77, main), 18) {
+            Ok(Some(Event::Commit(ending))) => ending.catalog_changed,
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

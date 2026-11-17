@@ -119,6 +119,8 @@ pub(crate) fn escaped(schema: &Identifier, table: &Identifier) -> String {
 pub(crate) struct Tables {
     pub(crate) facts: Vec<Checked>,
     pub(crate) dims: Vec<Checked>,
+    /// The labels of the enums the tables' read columns have, as loaded.
+    pub(crate) labels: Vec<EnumLabel>,
 }
 
 impl Tables {
@@ -325,6 +327,7 @@ pub(crate) fn check(
     let mut tables = Tables {
         facts: Vec::new(),
         dims: Vec::new(),
+        labels: Vec::new(),
     };
     // Both kinds are loaded whole and followed through the publication.
     for dim in spec.dims() {
@@ -352,11 +355,26 @@ pub(crate) fn check(
     if problems.is_empty() {
         check_refs(spec, &tables, catalog, &mut problems);
     }
+    for label in &catalog.labels {
+        if reads_enum(&tables, label.type_oid) {
+            tables.labels.push(label.clone());
+        }
+    }
     if problems.is_empty() {
         Ok(tables)
     } else {
         Err(problems)
     }
+}
+
+/// Whether a column of `tables` read is of the enum `type_oid`.
+fn reads_enum(tables: &Tables, type_oid: Oid) -> bool {
+    for table in tables.facts.iter().chain(&tables.dims) {
+        if table.enums.contains(&type_oid) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The server's version and settings, and the publication.

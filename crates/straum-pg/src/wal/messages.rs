@@ -13,7 +13,7 @@ use straum_domain::{Datum, FastMap, FastSet};
 
 use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
-use super::tuple::{self, Attribute, Value};
+use super::tuple::{self, Attribute, Kind, Value};
 use super::xact::Invalidated;
 use super::{Oid, Problem, RelationFile, WalError};
 use crate::decode::Decoder;
@@ -110,7 +110,8 @@ impl Publisher {
     /// its pages went with the old file. Any other is announced again
     /// before its next change, as pgoutput does after an invalidation,
     /// and the decoder sees what changed. A column added may be of an
-    /// enum no table had before, so the labels come along.
+    /// enum no table had before, and an enum may have gained a label, so
+    /// the labels come along, `stale` empty or not.
     pub(crate) fn relayout(&mut self, stale: &[Oid], fresh: Layouts) {
         for &oid in stale {
             let Some(file) = self.file_with_oid(oid) else {
@@ -125,6 +126,19 @@ impl Publisher {
             }
         }
         self.labels.extend(fresh.labels);
+    }
+
+    /// Whether a column read is of an enum, whose labels a commit may add
+    /// to.
+    pub(crate) fn reads_enums(&self) -> bool {
+        for table in self.tables.values() {
+            for attribute in &table.attributes {
+                if attribute.kind == Kind::Enum {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Whether a table no longer reads as loaded, and no commit has said

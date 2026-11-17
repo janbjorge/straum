@@ -266,7 +266,10 @@ the column. `::text` is the one cast, and it goes nowhere else: not in
 `ON`, `EXISTS`, `date_bin` or a measure. Straum refuses an enum column
 written without it, and the cast on a column of any other type, so a
 spec says what it reads. A `FILTER` literal must be one of the type's
-labels, which Straum reads at start. The label is a text key: asks
+labels, which Straum reads at start. A label added later is read as
+it comes. A label renamed starts Straum over, since the rows it loaded
+hold the old text: each reading of the server's WAL, once a second,
+compares the labels. The label is a text key: asks
 filter it with a string, and answers sort labels as text, not in the
 type's order ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
 Which types take the cast is listed here; today it is enums alone.

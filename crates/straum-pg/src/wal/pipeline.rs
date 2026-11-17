@@ -140,7 +140,11 @@ impl Pipeline {
         let mut carrier = None;
         if let xact::Event::Commit(ending) = &event {
             let stale = self.publisher.stale(&ending.invalidated);
-            if !stale.is_empty() {
+            // An enum's new label invalidates no table; rows to come may
+            // hold it. A label renamed is caught by the reading of the
+            // WAL, which starts Straum over.
+            let relabel = ending.catalog_changed && self.publisher.reads_enums();
+            if !stale.is_empty() || relabel {
                 let fresh = layouts(ending.xid)?;
                 self.publisher.relayout(&stale, fresh);
             }

@@ -116,6 +116,9 @@ pub(crate) enum TableProblem {
     /// Under its name is now another table than the one loaded: renamed
     /// away and another made, or dropped and made again.
     Replaced,
+    /// A label of an enum it reads was renamed or dropped: its rows
+    /// loaded hold the old one.
+    Relabelled,
     /// No `REPLICA IDENTITY FULL`; `kind` is "fact" or "dim".
     ReplicaIdentity {
         kind: &'static str,
@@ -307,6 +310,10 @@ fn write_table(
             formatter,
             "{name}: {qualified} is another table than the one Straum loaded; \
              Straum loads it again"
+        ),
+        TableProblem::Relabelled => write!(
+            formatter,
+            "{name}: a label of an enum {qualified} reads was renamed; Straum loads it again"
         ),
         TableProblem::ReplicaIdentity { kind } => write!(
             formatter,
