@@ -133,7 +133,11 @@ in through the bulk `COPY` instead; the
 connection or WAL past `--max-retained-wal` starts Straum over too
 ([States](deploy.md#states)), and so does a spec table that the
 publication leaves out, that is gone from under its name, or that is
-another table now: each reading of the WAL, once a second, checks.
+another table now, and a column Straum reads that `ALTER COLUMN ..
+TYPE` rewrote, even to its own type `USING` an expression, which
+logical decoding sends no row of: each reading of the WAL, once a
+second, checks. `VACUUM FULL` and `CLUSTER` keep the values and start
+nothing over.
 
 ## The physical stream
 

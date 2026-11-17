@@ -121,6 +121,10 @@ pub(crate) enum TableProblem {
     Relabelled,
     /// Rewritten after the load's snapshot was taken, which sees it empty.
     Rewritten,
+    /// A column Straum reads was altered while streaming: `ALTER COLUMN ..
+    /// TYPE` rewrites the rows, even to the same type, and the logical
+    /// stream sends none of it.
+    Altered,
     /// No `REPLICA IDENTITY FULL`; `kind` is "fact" or "dim".
     ReplicaIdentity {
         kind: &'static str,
@@ -320,6 +324,10 @@ fn write_table(
         TableProblem::Rewritten => write!(
             formatter,
             "{name}: {qualified} was rewritten as Straum started; Straum starts again"
+        ),
+        TableProblem::Altered => write!(
+            formatter,
+            "{name}: a column Straum reads of {qualified} was altered; Straum loads it again"
         ),
         TableProblem::ReplicaIdentity { kind } => write!(
             formatter,

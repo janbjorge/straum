@@ -1,7 +1,8 @@
 //! What a running stream checks of its tables with each reading of the
 //! WAL: changes no message the stream reads says. A table is gone from
-//! under its name, another is there, the publication left it out, or a
-//! label of an enum it reads was renamed.
+//! under its name, another is there, the publication left it out, a
+//! label of an enum it reads was renamed, or a column it reads was
+//! altered.
 
 use std::collections::HashMap;
 
@@ -19,6 +20,9 @@ pub(crate) struct Followed<'a> {
     pub(crate) tables: &'a [Checked],
     /// The labels of their enums, as loaded.
     pub(crate) labels: &'a [EnumLabel],
+    /// The versions of the columns read, as loaded; none on the physical
+    /// stream, which reads a rewrite in the WAL.
+    pub(crate) versions: &'a [ColumnVersions],
     pub(crate) publication: &'a str,
     pub(crate) replication: Replication,
 }
@@ -84,6 +88,7 @@ pub(crate) fn still_followed(
         problems.push(names.table_problem(problem));
     }
     relabelled(connection, followed, &mut problems)?;
+    altered(connection, followed, &mut problems)?;
     if problems.is_empty() {
         return Ok(());
     }
@@ -132,6 +137,93 @@ fn relabelled(
                 problems.push(names.table_problem(TableProblem::Relabelled));
                 break;
             }
+        }
+    }
+    Ok(())
+}
+
+/// The version of a table's columns Straum reads: each one's catalog row
+/// and the transaction that last wrote it. `ALTER COLUMN .. TYPE` writes
+/// the row anew and rewrites the table's rows, to the same type too,
+/// which the logical stream sends nothing of. `VACUUM FULL` and `CLUSTER`
+/// rewrite the rows alone, with the same values, and leave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ColumnVersions {
+    pub(crate) oid: Oid,
+    /// `name@xmin` of each column read, in column order.
+    pub(crate) versions: String,
+}
+
+/// The versions of `tables`' columns read, as `connection` sees them.
+pub(crate) fn column_versions(
+    connection: &mut Connection,
+    tables: &[Checked],
+) -> Result<Vec<ColumnVersions>, Error> {
+    let mut wanted = Vec::new();
+    for table in tables {
+        for column in &table.columns {
+            wanted.push(format!(
+                "({}::oid, {}::name)",
+                table.oid,
+                escape_literal(column.as_str())
+            ));
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = connection.rows(&format!(
+        "SELECT a.attrelid, string_agg(a.attname || '@' || a.xmin::text, ',' ORDER BY a.attnum)
+           FROM pg_attribute a
+           JOIN (VALUES {}) AS t(rel, col) ON a.attrelid = t.rel AND a.attname = t.col
+          GROUP BY a.attrelid",
+        wanted.join(", ")
+    ))?;
+    let mut found = Vec::new();
+    for row in rows {
+        let [oid, versions] = <[Option<String>; 2]>::try_from(row)
+            .map_err(|_| shape("column versions"))?
+            .map(Option::unwrap_or_default);
+        found.push(ColumnVersions {
+            oid: oid.parse().map_err(|_| shape("column versions"))?,
+            versions,
+        });
+    }
+    Ok(found)
+}
+
+/// A problem for each table whose columns read have another version now.
+/// A table gone or replaced has its own problem already.
+fn altered(
+    connection: &mut Connection,
+    followed: &Followed<'_>,
+    problems: &mut Vec<Problem>,
+) -> Result<(), Error> {
+    if followed.versions.is_empty() {
+        return Ok(());
+    }
+    let now = column_versions(connection, followed.tables)?;
+    for table in followed.tables {
+        let mut loaded = None;
+        for versions in followed.versions {
+            if versions.oid == table.oid {
+                loaded = Some(&versions.versions);
+            }
+        }
+        let mut current = None;
+        for versions in &now {
+            if versions.oid == table.oid {
+                current = Some(&versions.versions);
+            }
+        }
+        if let (Some(loaded), Some(current)) = (loaded, current)
+            && loaded != current
+        {
+            let names = TableNames {
+                name: table.name.clone(),
+                qualified: table.qualified(),
+            };
+            problems.push(names.table_problem(TableProblem::Altered));
         }
     }
     Ok(())

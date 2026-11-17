@@ -16,7 +16,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
-use crate::catalog::{self, Checked, EnumLabel, Followed, Tables};
+use crate::catalog::{self, Checked, ColumnVersions, EnumLabel, Followed, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -81,6 +81,8 @@ pub struct Postgres {
     followed: Vec<Checked>,
     /// The labels of their enums, as loaded.
     labels: Vec<EnumLabel>,
+    /// The versions of the columns read, as loaded, on the logical stream.
+    versions: Vec<ColumnVersions>,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
     plain: Option<Connection>,
@@ -103,6 +105,8 @@ struct Snapshot {
     slot: String,
     at: Lsn,
     tables: Tables,
+    /// The versions of the columns read, as the snapshot sees them.
+    versions: Vec<ColumnVersions>,
     /// Tables not loaded yet. The transaction ends with the last load, so
     /// it pins xmin and blocks DDL on the tables no longer than it must.
     unloaded: Vec<Identifier>,
@@ -133,6 +137,7 @@ impl Postgres {
             slot: String::new(),
             followed: Vec::new(),
             labels: Vec::new(),
+            versions: Vec::new(),
             plain: None,
         }
     }
@@ -180,12 +185,14 @@ fn snapshot(
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
     hold_tables(&mut connection, &tables)?;
+    let versions = catalog::column_versions(&mut connection, &followed(&tables))?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
         slot,
         at,
         tables,
+        versions,
         unloaded,
         stream: None,
     })
@@ -267,11 +274,13 @@ fn physical_snapshot(
     let tables = catalog::read(&mut connection, spec, publication, physical)?;
     hold_tables(&mut connection, &tables)?;
     let unloaded = unloaded(&tables);
+    // The physical stream reads a rewrite in the WAL and starts over.
     Ok(Snapshot {
         connection,
         slot,
         at,
         tables,
+        versions: Vec::new(),
         unloaded,
         stream: Some(stream),
     })
@@ -439,6 +448,7 @@ impl Source for Postgres {
         self.slot.clone_from(&snapshot.slot);
         self.followed = followed(&snapshot.tables);
         self.labels.clone_from(&snapshot.tables.labels);
+        self.versions.clone_from(&snapshot.versions);
         self.state = State::Loading(Box::new(snapshot));
         Ok(at)
     }
@@ -492,6 +502,7 @@ impl Postgres {
         let followed = Followed {
             tables: &self.followed,
             labels: &self.labels,
+            versions: &self.versions,
             publication: &self.publication,
             replication: self.replication,
         };

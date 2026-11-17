@@ -1,7 +1,7 @@
 //! A spec table that stops being the one Straum loaded, with no change
 //! the stream reads to say so: left out of the publication, renamed away
 //! with another table made under its name, a label of an enum it reads
-//! renamed. Each reading of the WAL
+//! renamed, a column it reads rewritten to its own type. Each reading of the WAL
 //! checks the tables, so Straum starts over, and the setup check of the
 //! next start names the problem. The physical stream reads the catalog's
 //! own changes and starts over on the DDL itself.
@@ -201,4 +201,32 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
             db.sql("trips: $S.trips was rewritten as Straum started; Straum starts again")
         );
     }
+}
+
+/// `ALTER COLUMN .. TYPE` to the same type, `USING` an expression,
+/// rewrites every row and sends nothing the logical stream reads: the
+/// reading of the WAL finds the column's catalog row written anew. A
+/// `VACUUM FULL` rewrites the rows with the same values and a column
+/// added is no column Straum reads: neither starts Straum over.
+#[test]
+fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "usingsame", TABLES);
+    let mut rng = Rng::new(3);
+    for id in 1..=5 {
+        db.run(&rng.trip(id));
+    }
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec);
+    db.run("VACUUM FULL $S.trips");
+    db.run("ALTER TABLE $S.trips ADD COLUMN note text");
+    assert!(source.wal().is_ok());
+    db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(10, 2) USING fare + 1");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("trips: a column Straum reads of $S.trips was altered; Straum loads it again")
+    );
 }
