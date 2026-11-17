@@ -51,6 +51,8 @@ pub(crate) struct Pipeline {
     /// doesn't see stop the stream.
     too_big: Vec<TooBig>,
     snapshot: Option<TransactionSnapshot>,
+    /// Where the next record starts: every commit before it is read.
+    read_to: u64,
 }
 
 impl Pipeline {
@@ -75,6 +77,7 @@ impl Pipeline {
             held: Vec::new(),
             too_big: Vec::new(),
             snapshot: None,
+            read_to: 0,
         }
     }
 
@@ -124,6 +127,7 @@ impl Pipeline {
         record: &Record,
         mut layouts: impl FnMut(TransactionId) -> Result<Layouts, Error>,
     ) -> Result<Vec<Commit>, Error> {
+        self.read_to = record.next();
         let mut changes = self.heap.apply(record)?;
         self.transactions.hold(record.xid, record.lsn, &mut changes);
         self.heap.reuse(changes);
@@ -202,8 +206,10 @@ impl Pipeline {
             }
         }
         // Every commit before the first held one it doesn't see is in
-        // the load.
-        let mut seen = at;
+        // the load. A commit not read yet may be before `at` and unseen
+        // too, and it streams: the load is only known through what was
+        // read.
+        let mut seen = at.min(Lsn(self.read_to));
         for committed in &self.held {
             if !snapshot.sees(committed.xid) {
                 seen = seen.min(Lsn(committed.end.saturating_sub(1)));
@@ -710,5 +716,32 @@ mod tests {
             pipeline.see(fine, Lsn(7)).unwrap(),
             (Sight::Through(Lsn(7)), Vec::new())
         );
+    }
+
+    /// A snapshot taken with the server's WAL past what the stream read
+    /// is in the load only up to what was read: a commit after that the
+    /// snapshot doesn't see streams later, and the start is before it.
+    #[test]
+    fn the_load_is_known_only_through_what_was_read() {
+        let mut pipeline = pipeline(1 << 20);
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        for record in [wal.running(100, &[]), wal.insert(100, 1)] {
+            assert_eq!(read_one(&mut pipeline, &record), []);
+        }
+        let read_to = wal.lsn;
+        // The server had written 100's commit, which the snapshot doesn't
+        // see yet and the stream hasn't read.
+        let snapshot = TransactionSnapshot::parse("100:101:100").unwrap();
+        let (sight, released) = pipeline.see(snapshot, Lsn(0x200_0000)).unwrap();
+        assert_eq!(
+            (sight, released),
+            (Sight::Through(Lsn(read_to)), Vec::new())
+        );
+        let streamed = read_one(&mut pipeline, &wal.commit(100));
+        assert_eq!(ids(&streamed), [1]);
+        assert!(streamed[0].lsn > Lsn(read_to));
     }
 }
