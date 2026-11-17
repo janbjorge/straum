@@ -212,7 +212,7 @@ def main() -> int:
         [straum, "plan", SPEC, "--wal", args.wal], text=True, env=environment
     )
     password = secrets.token_hex(16)
-    with Stack("straum-taxi", {POSTGRES: postgres(password)}) as stack:
+    with Stack("straum-taxi", {POSTGRES: postgres(password, args.wal)}) as stack:
         log(f"starting PostgreSQL in stack {stack.name}")
         stack.up(POSTGRES)
         return asyncio.run(run(stack, straum, plan, password, args.mode, args.wal))
@@ -380,13 +380,14 @@ def load(stack: Stack) -> None:
         raise SystemExit("load_taxi_trips.py failed")
 
 
-def postgres(password: str) -> dict:
+def postgres(password: str, wal: str) -> dict:
     # Reads see the defaults but for shared_buffers, sized as a server
     # would be. The rest only speed the load: no checkpoint midway, no flush
     # per commit, which a throwaway server never needs, and memory for the
-    # index builds. run() turns page images off for the load.
+    # index builds. run() turns page images off for the load. --wal
+    # physical is for a server at replica, the default, so it runs on one.
     settings = {
-        "wal_level": "logical",
+        "wal_level": "replica" if wal == "physical" else "logical",
         "shared_buffers": "2GB",
         "max_wal_size": "16GB",
         "checkpoint_timeout": "1h",
