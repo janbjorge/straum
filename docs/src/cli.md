@@ -164,7 +164,9 @@ Quote the query with single quotes, so `$1` reaches Straum as written.
 The table holds what the [JSON answer](asks.md#the-answer) holds:
 values print the same, text without its quotes, a null as `null`.
 `--json`, before the query, prints that JSON answer itself, for a
-script; errors then come as `{"errors": [...]}`.
+script. Errors go to stderr, as without it: a line naming the URL and
+the reply's status, then the reply, `{"errors": [...]}`, as Straum sent
+it; stdout stays empty.
 
 A command line holds only text, so a parameter's type is read from it:
 
