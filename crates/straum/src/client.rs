@@ -46,6 +46,12 @@ pub(crate) enum ClientError {
     NoReply {
         url: String,
     },
+    /// A reply whose body ended before its `content-length`.
+    CutShort {
+        url: String,
+        expected: usize,
+        got: usize,
+    },
 }
 
 impl ClientError {
@@ -84,6 +90,10 @@ impl Display for ClientError {
                 formatter.write_str(answered.trim_end())
             }
             ClientError::NoReply { url } => write!(formatter, "{url} sent no HTTP reply"),
+            ClientError::CutShort { url, expected, got } => write!(
+                formatter,
+                "{url} sent {got} of the {expected} bytes its reply said it would"
+            ),
         }
     }
 }
@@ -452,6 +462,17 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
             url: url.to_owned(),
         });
     };
+    // A connection that closed early ends the read as a whole reply
+    // would: only the length the head gave tells.
+    if let Some(expected) = content_length(head)
+        && body.len() < expected
+    {
+        return Err(ClientError::CutShort {
+            url: url.to_owned(),
+            expected,
+            got: body.len(),
+        });
+    }
     if head.starts_with("HTTP/1.1 200 ") {
         let timing = Timing {
             round_trip,
@@ -467,6 +488,19 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
         status_line: head.lines().next().unwrap_or_default().to_owned(),
         body: body.to_owned(),
     })
+}
+
+/// The `content-length` a reply's head gives, if any.
+fn content_length(head: &str) -> Option<usize> {
+    for line in head.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse().ok();
+        }
+    }
+    None
 }
 
 /// The phases `Server-Timing` names in a reply's head, in the order
@@ -580,6 +614,15 @@ mod tests {
         assert_eq!(
             said(status(&format!("{url}/"), Output::Text)),
             Said::Body(String::new())
+        );
+        // A reply cut short is no answer, whatever its status said.
+        let short = "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nready: yes\n";
+        let url = answering(GET_STATUS, short);
+        assert_eq!(
+            said(status(&url, Output::Text)),
+            Said::Error(format!(
+                "{url} sent 11 of the 20 bytes its reply said it would"
+            ))
         );
     }
 
