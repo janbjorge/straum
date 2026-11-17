@@ -38,6 +38,7 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
     let mut parameters = Parameters {
         values: parameters.to_vec(),
         used: vec![false; parameters.len()],
+        text_bytes: 0,
     };
     let ask = match statements.as_slice() {
         [sql::Statement::Query(parsed)] => walker.ask(parsed, query, &mut parameters),
@@ -58,10 +59,17 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
     walker.finish(ask)
 }
 
-/// The values an ask's `$n` stand for, and which of them it used.
+/// The most bytes of text an ask's parameters may come to as it uses
+/// them: the most an ask's body holds. Each use is a copy, so a long text
+/// named many times would grow far past the body.
+const MAX_TEXT_BYTES: usize = 1 << 20;
+
+/// The values an ask's `$n` stand for, which of them it used, and the
+/// bytes of text its uses came to.
 pub(super) struct Parameters {
     values: Vec<Literal>,
     used: Vec<bool>,
+    text_bytes: usize,
 }
 
 /// Which end of the bucket range a bound is.
@@ -372,7 +380,25 @@ impl Walker {
             return Err(Reported);
         };
         parameters.used[index] = true;
-        Ok(parameters.values[index].clone())
+        let value = &parameters.values[index];
+        if let Literal::Text(text) = value {
+            let before = parameters.text_bytes;
+            parameters.text_bytes = before.saturating_add(text.len());
+            if parameters.text_bytes > MAX_TEXT_BYTES {
+                // Said once, at the use that went over.
+                if before <= MAX_TEXT_BYTES {
+                    self.error(
+                        line(expression),
+                        format!(
+                            "the text parameters, as the ask uses them, come to more than \
+                             {MAX_TEXT_BYTES} bytes; use each once"
+                        ),
+                    );
+                }
+                return Err(Reported);
+            }
+        }
+        Ok(value.clone())
     }
 
     /// Unix seconds, from an integer parameter or an RFC 3339 one.

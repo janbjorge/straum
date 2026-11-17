@@ -557,3 +557,28 @@ fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
         assert_eq!(found, [format!("line 1: {refused}")], "{}", &deep[..60]);
     }
 }
+
+/// An ask that names `$1` `times` in one IN list.
+fn named(times: usize) -> String {
+    let list = vec!["$1"; times].join(", ");
+    format!("SELECT trips FROM t WHERE kind IN ({list})")
+}
+
+/// Each use of a parameter is a copy of it, so the text they come to is
+/// bounded by what one ask's body holds: a long text named many times is
+/// refused once, a short one named many times is read.
+#[test]
+fn the_text_parameters_come_to_at_most_a_mebibyte() {
+    let long = text(&"x".repeat(50_000));
+    let ask = parse_ask(&named(20), std::slice::from_ref(&long)).unwrap();
+    assert_eq!(ask.filter[0].values.len(), 20);
+    assert_eq!(
+        errors(&named(300), &[long]),
+        [
+            "line 1: the text parameters, as the ask uses them, come to more than 1048576 bytes; \
+          use each once"
+        ]
+    );
+    let ask = parse_ask(&named(300), &[text("cab")]).unwrap();
+    assert_eq!(ask.filter[0].values.len(), 300);
+}
