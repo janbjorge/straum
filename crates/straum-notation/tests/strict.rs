@@ -311,6 +311,12 @@ fn a_group_by_position_has_no_leading_zero() {
         let zeros = canon("GROUP BY 1, 2, 3, 4, 5", group_by);
         assert_eq!(error_lines(&zeros), [error], "{group_by}");
     }
+    // Zeros only are no position at all.
+    let zero = canon("GROUP BY 1, 2, 3, 4, 5", "GROUP BY 00, 2, 3, 4, 5");
+    assert!(any_contains(
+        &error_lines(&zero),
+        "GROUP BY item, write the key's position in SELECT, `00`"
+    ));
     assert!(parse(&canon("GROUP BY 1, 2, 3, 4, 5", "GROUP BY 1, 2, 3, 4, 5")).is_ok());
 }
 

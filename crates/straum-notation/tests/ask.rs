@@ -273,6 +273,11 @@ fn a_bound_has_no_fraction_and_writes_z_for_a_zero_offset() {
         ("2026-11-13T09:00:00.5Z", form),
         ("2026-11-13T09:00:00+00:00", "write Z for a zero offset"),
         ("2026-11-13T09:00:00-00:00", "write Z for a zero offset"),
+        (
+            "2026-02-30T09:00:00Z",
+            "parsed date is not valid: parameter 'day' for `2026-02` is invalid, \
+             must be in range `1..=28`",
+        ),
     ] {
         assert_eq!(
             errors(ask, &[text(bound)]),
