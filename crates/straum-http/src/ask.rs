@@ -179,7 +179,7 @@ fn exact(number: &str) -> Option<Literal> {
         if scale > MAX_SCALE {
             return None;
         }
-        return Some(Literal::Decimal { units, scale });
+        return Some(whole_or_decimal(units, scale));
     }
     let places = u32::try_from(scale.unsigned_abs()).ok()?;
     let units = if units == 0 {
@@ -187,7 +187,18 @@ fn exact(number: &str) -> Option<Literal> {
     } else {
         units.checked_mul(10_i128.checked_pow(places)?)?
     };
-    Some(Literal::Decimal { units, scale: 0 })
+    Some(whole_or_decimal(units, 0))
+}
+
+/// A whole number an `i64` holds as an integer, however it was written:
+/// `1.0` and `1e3` are integers, as `1` and `1000` are.
+fn whole_or_decimal(units: i128, scale: u32) -> Literal {
+    if scale == 0
+        && let Ok(integer) = i64::try_from(units)
+    {
+        return Literal::Int(integer);
+    }
+    Literal::Decimal { units, scale }
 }
 
 #[cfg(test)]
@@ -236,9 +247,7 @@ mod tests {
             ("20.5", 205, 1),
             ("-0.05", -5, 2),
             ("20.50", 205, 1),
-            ("2.5e3", 2500, 0),
             ("25E-1", 25, 1),
-            ("0e5", 0, 0),
             ("9223372036854775808", 9_223_372_036_854_775_808, 0),
             ("1e38", 10_i128.pow(38), 0),
             ("1e-38", 1, 38),
@@ -249,6 +258,27 @@ mod tests {
             assert_eq!(
                 read_str(&body).parameters,
                 [Literal::Decimal { units, scale }],
+                "{number}"
+            );
+        }
+    }
+
+    /// A whole number an `i64` holds is an integer, as `1` is, however
+    /// it is written.
+    #[test]
+    fn whole_numbers_are_integers() {
+        for (number, integer) in [
+            ("1.0", 1),
+            ("2.5e3", 2500),
+            ("1704067200.000", 1_704_067_200),
+            ("0e5", 0),
+            ("-3.00", -3),
+            ("9.223372036854775807e18", i64::MAX),
+        ] {
+            let body = format!(r#"{{"query": "SELECT", "parameters": [{number}]}}"#);
+            assert_eq!(
+                read_str(&body).parameters,
+                [Literal::Int(integer)],
                 "{number}"
             );
         }

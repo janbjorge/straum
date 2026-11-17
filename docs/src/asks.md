@@ -91,7 +91,8 @@ Every value is a parameter: a value written into the query, such as
 query says. Parameters are numbers, strings or booleans, `$1` first.
 Each must be used, and one can be used more than once. A number with a
 fraction or exponent is read exactly as written, never as a float:
-`44.27` is 4427 hundredths.
+`44.27` is 4427 hundredths, and a whole one, `1.0` or `1e3`, is an
+integer.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
