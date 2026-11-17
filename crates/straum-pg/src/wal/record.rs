@@ -188,6 +188,12 @@ impl Record {
         self.bytes.len()
     }
 
+    /// The whole record as logged, for a test to keep.
+    #[cfg(test)]
+    pub(crate) fn logged(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Where the next record may start: the end, aligned. Logical
     /// decoding reports it as a transaction's end (`EndRecPtr`).
     pub(crate) fn next(&self) -> u64 {

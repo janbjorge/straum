@@ -8,6 +8,8 @@
 //! the page (`Arc<[u8]>`): a row is stored once.
 
 mod edit;
+#[cfg(test)]
+pub(crate) mod fixture;
 mod page;
 #[cfg(test)]
 mod tests;

@@ -6,6 +6,7 @@
 pub(crate) mod compose;
 mod decoding;
 mod followed;
+mod heap_fixtures;
 mod joins;
 mod load;
 mod logical;

@@ -21,7 +21,12 @@ Coverage: touched crates plus crates whose tests exercise them
 PostgreSQL tests need Docker with Compose. `STRAUM_TEST_POSTGRES` picks the major
 (18 by default). The random workloads of the physical stream run
 `STRAUM_TEST_SEEDS` seeds (6) from `STRAUM_TEST_SEED_FROM` (0); CI's
-`correctness` job runs 50 new ones per major each run. `bench/taxi.py shell` runs Straum against
+`correctness` job runs 50 new ones per major each run. The heap unit
+tests replay records captured per major in
+`crates/straum-pg/src/wal/heap/fixtures/`; after a WAL layout change,
+capture them again for each major with `STRAUM_TEST_POSTGRES=<major>
+cargo test -p straum-pg --lib capture_heap_fixture -- --ignored`.
+`bench/taxi.py shell` runs Straum against
 a throwaway PostgreSQL with the taxi trips and ends in `straum shell`.
 Demo and try-out data is always the taxi trips, never a hand-written
 dataset. In docs, ADR-0014 says which pages use the taxi trips and
