@@ -1,9 +1,12 @@
 //! The watchdog: two threads that keep a stream's slot from holding more
 //! WAL than `--max-retained-wal`. The reader, on a plain connection of its
 //! own, reads what the slot holds from `pg_replication_slots` each round.
-//! Past the limit it has PostgreSQL end the session that owns the slot,
-//! which drops the temporary slot, and shuts the sockets of the stream's
-//! sessions, the load's among them. The clock touches no network: when
+//! Past the limit it shuts the sockets of the stream's sessions, the
+//! load's among them; a walsender sees its socket close and ends, which
+//! drops the temporary slot. Each round the slot is still there after
+//! that, the reader has PostgreSQL end the session that owns it. Not
+//! before: a walsender told to end while its client reads nothing blocks
+//! sending the client why, and stays. The clock touches no network: when
 //! the reader has gone too long without a reading, whatever it is stuck
 //! on, the clock shuts the same sockets, since nothing else bounds the
 //! WAL the slot holds. Neither needs anything from the stream's own
@@ -203,31 +206,33 @@ pub(crate) fn past_limit(retained: u64, max_retained_wal: u64) -> Option<Verdict
     })
 }
 
-/// The reader: reads the slot each round until told to stop or until it
-/// ends the stream.
+/// The reader: reads the slot each round until told to stop, or, once
+/// the stream has a verdict, until the slot is gone.
 fn read_rounds(watch: &Watch, shared: &Shared) {
     let mut connection = None;
     while !stopped(shared) {
-        match read_slot(&mut connection, watch) {
-            Ok(Some(reading)) => {
-                if let Some(verdict) = past_limit(reading.retained, watch.watching.max_retained_wal)
-                {
+        let Ok(reading) = read_slot(&mut connection, watch) else {
+            connection = None;
+            nap(shared, RETRY);
+            continue;
+        };
+        let ended = verdict(shared).is_some();
+        match reading {
+            None if ended => return,
+            None => mark_read(shared),
+            // The slot outlived the sockets' shutting: its session is
+            // stuck, so PostgreSQL has to end it.
+            Some(reading) if ended => end_owner(&mut connection, reading.owner),
+            Some(reading) => match past_limit(reading.retained, watch.watching.max_retained_wal) {
+                Some(verdict) => {
                     // Recorded first, so the error the stream's end causes
                     // finds it.
                     if record(shared, verdict) {
-                        end_owner(&mut connection, reading.owner);
                         close_all(watch);
                     }
-                    return;
                 }
-                mark_read(shared);
-            }
-            Ok(None) => mark_read(shared),
-            Err(_) => {
-                connection = None;
-                nap(shared, RETRY);
-                continue;
-            }
+                None => mark_read(shared),
+            },
         }
         nap(shared, ROUND);
     }
@@ -244,7 +249,8 @@ fn keep_time(watch: &Watch, shared: &Shared) {
         if unread_for(shared) >= unwatched {
             // The server sees the socket close and ends the session; on a
             // broken network, wal_sender_timeout does once streaming,
-            // since no replies get through either.
+            // since no replies get through either. A reader that reads
+            // the slot again from here ends its session too.
             if record(shared, Verdict::Unwatched { unwatched }) {
                 close_all(watch);
             }
@@ -292,8 +298,11 @@ fn open(dsn: &Dsn) -> Result<Connection, Error> {
 }
 
 /// Has PostgreSQL end the session that owns the slot, which drops the
-/// temporary slot whatever that session's client does. A role may end its
-/// own sessions. Failing that, shutting the socket still ends it.
+/// temporary slot. A role may end its own sessions. The reader asks again
+/// each round the slot is still there: a walsender whose client reads
+/// nothing takes the first ask, then blocks for good sending the client
+/// its FATAL; only a second ask, coming while it is blocked, ends it
+/// without sending.
 fn end_owner(connection: &mut Option<Connection>, owner: Option<i32>) {
     let (Some(connection), Some(owner)) = (connection.as_mut(), owner) else {
         return;

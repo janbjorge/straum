@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply starts Straum over
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -28,9 +28,15 @@ has its stream thread answering keepalives, which keeps
 `wal_sender_timeout` from ever ending the session. So a watchdog thread
 on its own connection reads `pg_current_wal_lsn() - restart_lsn` for
 the slot every second, from the slot's making on, loads included. Past
-the limit it runs `pg_terminate_backend` on the slot's session, which
-drops the temporary slot, and shuts the stream's sockets, the load's
-too. A role may end its own sessions, so it needs no grant. Ten seconds
+the limit it shuts the stream's sockets, the load's too; a walsender
+sees its socket close and ends, which drops the temporary slot. Each
+second the slot is still there, it runs `pg_terminate_backend` on the
+slot's session. A role may end its own sessions, so it needs no grant.
+One `pg_terminate_backend` first was rejected: a walsender whose client
+reads nothing takes it, then blocks for good sending the client its
+FATAL, and keeps the slot (PostgreSQL 17, 18 and 19rc2; still there
+after 100 seconds). A second one, coming while it is blocked, ends it
+without sending. Ten seconds
 without a reading end the stream the same way: an unwatched slot has no
 bound. A second watchdog thread, which touches no network, keeps that
 time, so a reader stuck in DNS, a connect or a silent server can't

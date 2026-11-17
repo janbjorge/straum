@@ -6,12 +6,15 @@
 //! superuser. The clock's test runs against fake servers that never
 //! answer.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::Source;
 use straum_domain::{Spec, Store};
+use testcontainers::ImageExt;
+use testcontainers::bollard::models::HostConfig;
 
 use super::references::*;
 use super::support::*;
@@ -26,6 +29,17 @@ const SMALL_LIMIT_BYTES: u64 = 8 << 20;
 /// About 20 MiB of WAL, written by the superuser beside Straum.
 const FILLER: &str = "CREATE TABLE $S.filler AS
     SELECT repeat('x', 1000) AS pad FROM generate_series(1, 20000)";
+/// About 20 MiB more WAL into the filler's table.
+const FILLER_MORE: &str = "INSERT INTO $S.filler
+    SELECT repeat('x', 1000) FROM generate_series(1, 20000)";
+/// How often [`stream_reading_nothing`] looks at the walsender.
+const STUCK_SAMPLE: Duration = Duration::from_millis(500);
+/// Samples in a row a walsender must sit still to count as blocked.
+const STUCK_SAMPLES: u32 = 3;
+/// `net.ipv4.tcp_wmem` in the server's container: send buffers of at
+/// most 16 KiB, far below one message of WAL, so a walsender whose client
+/// reads nothing has no room for its FATAL either.
+const SMALL_SEND_BUFFERS: &str = "4096 16384 16384";
 /// Commits more than the stream's queue holds, so its thread waits on a
 /// writer that applies nothing.
 const QUEUE_FILLING_COMMITS: u64 = 100;
@@ -149,6 +163,44 @@ fn leaves_the_session_that_owns_a_slot_within_the_limit() {
     assert_eq!(watchdog.verdict(), None);
     assert_eq!(straum_slots(&mut db), 1, "the slot ended within the limit");
     owner.execute("SELECT 1").unwrap();
+}
+
+/// The PostgreSQL quirk the watchdog's repeated asks answer: a walsender
+/// whose client reads nothing takes one `pg_terminate_backend`, then
+/// blocks for good sending the client its FATAL, and keeps the slot.
+#[test]
+fn one_end_leaves_a_walsender_whose_client_reads_nothing() {
+    let pg = postgres_with_small_send_buffers();
+    let mut db = Db::new(&pg, "endedonce", TABLES);
+    let dsn = reader(&mut db, &pg);
+    let (_stream, walsender) = stream_reading_nothing(&mut db, &dsn, "straum_endedonce");
+    db.run(&format!("SELECT pg_terminate_backend({walsender})"));
+    thread::sleep(ROUNDS);
+    let waits = db.rows(&format!(
+        "SELECT wait_event FROM pg_stat_activity WHERE pid = {walsender}"
+    ));
+    assert_eq!(
+        waits,
+        vec![vec![Some("ClientWrite".to_owned())]],
+        "the walsender ended at the first ask"
+    );
+}
+
+/// The watchdog asks each round until the slot is gone, so even that
+/// walsender ends, with no socket of its stream to shut.
+#[test]
+fn ends_a_walsender_whose_client_reads_nothing() {
+    let pg = postgres_with_small_send_buffers();
+    let mut db = Db::new(&pg, "endedagain", TABLES);
+    let dsn = reader(&mut db, &pg);
+    let (_stream, _) = stream_reading_nothing(&mut db, &dsn, "straum_endedagain");
+    let watching = Watching {
+        max_retained_wal: SMALL_LIMIT_BYTES,
+        unwatched: UNWATCHED,
+    };
+    let watchdog = Watchdog::start(&dsn, "straum_endedagain", watching, Vec::new()).unwrap();
+    assert_slot_goes(&mut db, "the walsender outlived the watchdog");
+    assert!(matches!(watchdog.verdict(), Some(Verdict::Retained { .. })));
 }
 
 /// A load that keeps the logical slot's connection busy, so nothing reads
@@ -336,6 +388,83 @@ fn reader(db: &mut Db, pg: &PostgresContainer) -> Dsn {
          CHECKPOINT",
     );
     Dsn::parse(&pg.dsn.to_string().replace("postgres@", "reader:r@")).unwrap()
+}
+
+/// PostgreSQL at `wal_level = replica` with [`SMALL_SEND_BUFFERS`].
+fn postgres_with_small_send_buffers() -> PostgresContainer {
+    plain(
+        image(&tag())
+            .with_cmd(["-c", "wal_level=replica"])
+            .with_host_config_modifier(small_send_buffers),
+    )
+}
+
+/// Sets [`SMALL_SEND_BUFFERS`]; the sysctl belongs to the container's
+/// own network namespace.
+fn small_send_buffers(config: &mut HostConfig) {
+    config.sysctls = Some(HashMap::from([(
+        "net.ipv4.tcp_wmem".to_owned(),
+        SMALL_SEND_BUFFERS.to_owned(),
+    )]));
+}
+
+/// A physical stream on `slot` that reads nothing once started, and its
+/// walsender's pid, returned once the walsender's sends have stopped on
+/// the full socket. Filler goes on until they do, since how much the
+/// sockets between hold differs from host to host.
+fn stream_reading_nothing(db: &mut Db, dsn: &Dsn, slot: &str) -> (Connection, String) {
+    let mut stream = Connection::connect(dsn, ConnectionKind::Replication).unwrap();
+    stream
+        .rows(&format!(
+            "CREATE_REPLICATION_SLOT {slot} TEMPORARY PHYSICAL RESERVE_WAL"
+        ))
+        .unwrap();
+    let from = db.rows("SELECT pg_current_wal_lsn()")[0][0]
+        .clone()
+        .unwrap();
+    stream
+        .copy_both(&format!("START_REPLICATION SLOT {slot} PHYSICAL {from}"))
+        .unwrap();
+    let walsender = db.rows(&format!(
+        "SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{slot}'"
+    ))[0][0]
+        .clone()
+        .unwrap();
+    db.run(FILLER);
+    // Behind, idle and not sending for a while: a walsender merely slow
+    // on a busy host moves within one sample, or reads WAL meanwhile.
+    let sent = format!(
+        "SELECT r.sent_lsn::text,
+            pg_wal_lsn_diff(pg_current_wal_flush_lsn(), r.sent_lsn) > 0,
+            a.wait_event = 'WalSenderMain'
+         FROM pg_stat_replication r JOIN pg_stat_activity a USING (pid)
+         WHERE r.pid = {walsender}"
+    );
+    let deadline = Instant::now() + LONG;
+    let mut before = db.rows(&sent);
+    let mut steady = 0;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the walsender's sends never stopped"
+        );
+        thread::sleep(STUCK_SAMPLE);
+        let now = db.rows(&sent);
+        let behind = now[0][1].as_deref() == Some("t");
+        let idle = now[0][2].as_deref() == Some("t");
+        steady = if behind && idle && now == before {
+            steady + 1
+        } else {
+            0
+        };
+        if steady == STUCK_SAMPLES {
+            return (stream, walsender);
+        }
+        if !behind {
+            db.run(FILLER_MORE);
+        }
+        before = now;
+    }
 }
 
 /// Every dim, then every fact, as the writer loads them.
