@@ -2,7 +2,7 @@
 //! the cells of the buckets in its range, and stays within a time per cell.
 //! What a store holds: one set of cells for a join on a key, the bytes a
 //! cell's numbers need and no more, and a few bytes a value for a min or
-//! max.
+//! max, and no bucket a dim change emptied.
 //! A percentile holds nothing beyond its column's min or max, and its ask
 //! holds the values of its range, however many cells lie outside it.
 //!
@@ -805,4 +805,70 @@ fn an_ask_of_a_dim_value_holds_what_its_cells_name() {
     let (few, many) = (peak_by_borough(&few, 10), peak_by_borough(&many, 10));
     eprintln!("10 hours by borough: {few} bytes, {many} with 100 times the ids");
     assert_eq!(few, many, "the memo grows with the ids");
+}
+
+/// When [`emptied`] takes the zones away: before the trips come, or
+/// after, which drops the trips' bound cells.
+#[derive(Clone, Copy)]
+enum ZonesGo {
+    Before,
+    After,
+}
+
+/// The heap a store with bound cells over an inner join holds once
+/// `trips` trips, an hour each, came and every zone went, as `zones_go`
+/// says. With no zone, the join keeps no trip, so no bound cell is left.
+fn emptied(trips: i64, zones_go: ZonesGo) -> isize {
+    held(|| {
+        let mut store = Store::new(inner(&spec_of(&[], Zones::Bound)));
+        load_zones(&mut store);
+        if let ZonesGo::Before = zones_go {
+            remove_zones(&mut store);
+        }
+        for trip in 0..trips {
+            let row = [
+                Datum::Int(trip * i64::from(HOUR)),
+                Datum::Int(0),
+                Datum::Int(trip % ZONES),
+                Datum::Int(1),
+                Datum::Int(1),
+            ];
+            store.add_row("trips", &row).unwrap();
+        }
+        if let ZonesGo::After = zones_go {
+            remove_zones(&mut store);
+        }
+        assert_eq!(store.bound_cells("trips"), Some(0));
+        store
+    })
+}
+
+/// `spec` with its one ref an inner join.
+fn inner(spec: &Spec) -> Spec {
+    let mut facts = spec.facts().to_vec();
+    facts[0].refs[0].kind = RefKind::Inner;
+    Spec::new(spec.dims().to_vec(), facts).unwrap()
+}
+
+/// Removes every zone [`load_zones`] added, one row at a time.
+fn remove_zones(store: &mut Store) {
+    for zone in 0..ZONES {
+        let borough = BOROUGHS[usize::try_from(zone).unwrap() % BOROUGHS.len()];
+        store
+            .remove_row("zones", &[Datum::Int(zone), Datum::Text(borough.into())])
+            .unwrap();
+    }
+}
+
+/// A bound bucket whose last cell a dim change drops goes with it: a
+/// thousand hours of trips whose zones all went leave what they leave
+/// when the zones went first. A thousand empty buckets kept would be
+/// hundreds of KiB.
+#[test]
+fn a_bound_bucket_a_dim_change_empties_goes() {
+    const TRIPS: i64 = 1_000;
+    let before = emptied(TRIPS, ZonesGo::Before);
+    let after = emptied(TRIPS, ZonesGo::After);
+    eprintln!("{before} bytes with the zones gone first, {after} after the trips");
+    assert!(after - before < 4 << 10, "{after} bytes against {before}");
 }
