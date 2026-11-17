@@ -45,6 +45,9 @@ pub enum Replication {
 /// transactions run, which the background writer does every 15 seconds
 /// while the WAL moves, and `pg_log_standby_snapshot()` at once.
 const CONSISTENT_WAIT: Duration = Duration::from_secs(60);
+/// How long a reading of the WAL position waits for its answer: as long
+/// as the watchdog gives the slot's.
+const WAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a physical start waits before it takes the load's snapshot
 /// again.
 const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
@@ -329,10 +332,13 @@ pub(crate) fn slot_name() -> String {
 /// The plain connection, made on first use and after a failure.
 // 'c: the connection returned is the one held in `plain`.
 fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
-    let connection = match plain.take() {
-        Some(connection) => connection,
-        None => Connection::connect(dsn, ConnectionKind::Sql)?,
-    };
+    if let Some(connection) = plain.take() {
+        return Ok(plain.insert(connection));
+    }
+    let connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    // A server that stops answering must fail the reading, so the lag it
+    // no longer moves can grow.
+    connection.set_read_timeout(WAL_READ_TIMEOUT)?;
     Ok(plain.insert(connection))
 }
 

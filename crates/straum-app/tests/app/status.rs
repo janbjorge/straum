@@ -13,8 +13,11 @@ use crate::fake::{Database, Fake, id, time};
 
 #[test]
 fn ready_only_within_the_lag_bound() {
+    // Lag counts from the last reading caught up, so a bound of 0 would
+    // never be met: the load takes longer than this one, a moment after
+    // it doesn't.
     let limits = Limits {
-        max_lag: Duration::ZERO,
+        max_lag: Duration::from_millis(100),
         ..LIMITS
     };
     let app = App::new(spec(), limits);
@@ -22,7 +25,7 @@ fn ready_only_within_the_lag_bound() {
     let Harness {
         database,
         mut writer,
-    } = watched(app, |_, _| thread::sleep(Duration::from_millis(1)));
+    } = watched(app, |_, _| thread::sleep(Duration::from_millis(60)));
     assert_eq!(writer.app().status().lag, None);
 
     // WAL written during the load that the slot hasn't confirmed.
@@ -43,7 +46,8 @@ fn ready_only_within_the_lag_bound() {
     database.borrow_mut().waits = 1;
     let lsn = database.borrow_mut().commit(vec![trip(1, 1, 1, 10)]);
     assert_eq!(writer.step().unwrap(), Step::Applied(lsn));
-    assert_eq!(writer.app().status().lag, Some(Duration::ZERO));
+    // Caught up at the last reading, a moment ago.
+    assert!(writer.app().status().lag.unwrap() < Duration::from_secs(1));
     assert!(writer.app().status().ready);
     let caught_up = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(caught_up.as_of >= behind.as_of + Duration::from_secs(1));
@@ -99,7 +103,7 @@ fn status_after_a_start(database: &RefCell<Database>, writer: &mut Writer<Fake>)
         Err(earlier) => earlier.duration(),
     };
     assert!(apart < Duration::from_millis(1), "{apart:?}");
-    assert_eq!(status.lag, Some(Duration::ZERO));
+    assert!(status.lag.unwrap() < Duration::from_secs(1));
     let caught_up = Wal {
         written: start,
         confirmed: start,

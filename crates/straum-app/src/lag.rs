@@ -66,13 +66,10 @@ impl Lag {
     }
 
     /// The time since the slot was last known to have confirmed all the
-    /// WAL there was: zero when it had at the last reading. Readings a
-    /// second apart make it up to a second longer than it is, never
-    /// shorter.
+    /// WAL there was, at the reading that said so. Readings a second apart
+    /// make it up to a second longer than it is, never shorter; when they
+    /// stop, as on a silent server, it grows, since nothing is known since.
     pub(crate) fn behind(&self, now: Instant) -> Duration {
-        if self.unconfirmed.is_empty() {
-            return Duration::ZERO;
-        }
         now.saturating_duration_since(self.caught_up)
     }
 }
@@ -97,10 +94,11 @@ mod tests {
     fn behind_since_last_caught_up() {
         let start = Instant::now();
         let mut lag = Lag::new(start);
-        assert_eq!(lag.behind(start + secs(5)), secs(0), "nothing read yet");
+        assert_eq!(lag.behind(start + secs(5)), secs(5), "nothing read yet");
 
+        // Caught up at the reading, a second in: nothing is known since.
         lag.read(&wal(10, 10), start + secs(1));
-        assert_eq!(lag.behind(start + secs(9)), secs(0));
+        assert_eq!(lag.behind(start + secs(9)), secs(8));
         lag.read(&wal(20, 10), start + secs(2));
         assert_eq!(lag.behind(start + secs(9)), secs(8));
         // Confirming part of the WAL moves the bound to the reading it
@@ -110,7 +108,8 @@ mod tests {
         lag.read(&wal(30, 25), start + secs(4));
         assert_eq!(lag.behind(start + secs(9)), secs(7));
         lag.read(&wal(30, 30), start + secs(5));
-        assert_eq!(lag.behind(start + secs(9)), secs(0));
+        assert_eq!(lag.behind(start + secs(9)), secs(4));
+        assert_eq!(lag.behind(start + secs(5)), secs(0));
         // A clock read before the bound reads as no time.
         lag.read(&wal(40, 30), start + secs(6));
         assert_eq!(lag.behind(start), secs(0));
@@ -144,12 +143,9 @@ mod tests {
 
         fn behind(&self, now: Instant) -> Duration {
             let Some(last) = self.readings.last() else {
-                return Duration::ZERO;
+                return now.saturating_duration_since(self.start);
             };
             let confirmed = last.wal.confirmed;
-            if last.wal.written <= confirmed {
-                return Duration::ZERO;
-            }
             let mut since = self.start;
             for reading in self.readings.iter().rev() {
                 if reading.wal.written <= confirmed {
