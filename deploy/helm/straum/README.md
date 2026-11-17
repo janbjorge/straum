@@ -51,6 +51,9 @@ kubectl exec deployment/straum -- /straum status
 `values.yaml` documents every value, and `values.schema.json` refuses the
 values straum can't take.
 
+On an IPv6-only cluster set `listenAddress: "[::]"`, so the probes
+reach straum; it listens on `0.0.0.0` otherwise.
+
 With `wal: physical`, set `maxPageMemory` well under
 `resources.limits.memory`: the rows it bounds come on top of the cells,
 and at the defaults, both `1Gi`, Kubernetes kills the pod for its memory

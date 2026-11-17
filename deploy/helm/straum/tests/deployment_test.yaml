@@ -84,6 +84,15 @@ tests:
           path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
           value: url
 
+  - it: listens on IPv6 when asked
+    template: deployment.yaml
+    set:
+      listenAddress: "[::]"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "[::]:8080"
+
   - it: passes a million rows and a day of lag as whole numbers
     template: deployment.yaml
     set:

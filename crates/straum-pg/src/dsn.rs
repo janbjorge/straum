@@ -79,10 +79,7 @@ impl Dsn {
         if user.is_empty() {
             return Err(DsnError::User);
         }
-        let (host, port) = match hostport.rsplit_once(':') {
-            Some((host, port)) => (host, port.parse().map_err(|_| DsnError::Port)?),
-            None => (hostport, DEFAULT_PORT),
-        };
+        let (host, port) = host_and_port(hostport)?;
         if host.is_empty() {
             return Err(DsnError::Host);
         }
@@ -98,6 +95,8 @@ impl Dsn {
                 Some(("sslmode", mode @ ("allow" | "prefer"))) => {
                     return Err(DsnError::Fallback(mode.to_owned()));
                 }
+                // libpq's word for the system's roots: Straum's are built in.
+                Some(("sslrootcert", "system")) => root_cert = None,
                 Some(("sslrootcert", file)) if !file.is_empty() => root_cert = Some(decode(file)?),
                 _ => return Err(DsnError::Parameter(parameter_name(pair))),
             }
@@ -146,10 +145,16 @@ fn decode(text: &str) -> Result<String, DsnError> {
 /// Says what Straum does: `require` and `verify-ca` show as `verify-full`.
 impl fmt::Display for Dsn {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // An IPv6 address goes in brackets, so its colons stay its own.
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
         write!(
             formatter,
-            "postgres://{}@{}:{}/{}",
-            self.user, self.host, self.port, self.database
+            "postgres://{}@{host}:{}/{}",
+            self.user, self.port, self.database
         )?;
         match &self.tls {
             Tls::Off => formatter.write_str("?sslmode=disable"),
@@ -191,6 +196,31 @@ pub enum DsnError {
     /// An `@` past the host, as an unescaped `?` or `/` in the password
     /// puts it.
     StrayAt,
+}
+
+/// The host and port of `hostport`: `host`, `host:port`, or an IPv6
+/// address in brackets, `[::1]` or `[::1]:5432`, whose colons are its
+/// own.
+fn host_and_port(hostport: &str) -> Result<(&str, u16), DsnError> {
+    let (host, port) = match hostport.strip_prefix('[') {
+        Some(bracketed) => {
+            let (host, after) = bracketed.split_once(']').ok_or(DsnError::Host)?;
+            match after.strip_prefix(':') {
+                Some(port) => (host, Some(port)),
+                None if after.is_empty() => (host, None),
+                None => return Err(DsnError::Port),
+            }
+        }
+        None => match hostport.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (hostport, None),
+        },
+    };
+    let port = match port {
+        Some(port) => port.parse().map_err(|_| DsnError::Port)?,
+        None => DEFAULT_PORT,
+    };
+    Ok((host, port))
 }
 
 /// libpq's parameters a DSN may name, which an error may repeat.
@@ -305,6 +335,35 @@ mod tests {
             (dsn.port, dsn.password, dsn.database),
             (5432, None, "ann".to_owned())
         );
+    }
+
+    /// An IPv6 address goes in brackets, with or without a port, and
+    /// `sslrootcert=system` trusts the roots built in, as libpq's word
+    /// for the system's.
+    #[test]
+    fn reads_ipv6_hosts_and_system_roots() {
+        for (url, port) in [
+            ("postgres://ann@[::1]:6543/taxi?sslmode=disable", 6543),
+            ("postgres://ann@[::1]/taxi?sslmode=disable", 5432),
+        ] {
+            let dsn = Dsn::parse(url).unwrap();
+            assert_eq!((dsn.host.as_str(), dsn.port), ("::1", port), "{url}");
+            assert!(
+                dsn.to_string().starts_with("postgres://ann@[::1]:"),
+                "{dsn}"
+            );
+        }
+        let verified = Dsn::parse("postgres://ann@[2001:db8::1]/taxi").unwrap();
+        assert!(matches!(verified.tls, Tls::Verify { .. }));
+        let system = Dsn::parse("postgres://ann@h/taxi?sslrootcert=system").unwrap();
+        assert_eq!(system.tls, verify(None));
+        for (url, error) in [
+            ("postgres://ann@[::1/taxi", DsnError::Host),
+            ("postgres://ann@[::1]x/taxi", DsnError::Port),
+            ("postgres://ann@[::1]:x/taxi", DsnError::Port),
+        ] {
+            assert_eq!(Dsn::parse(url), Err(error), "{url}");
+        }
     }
 
     /// TLS to host `h`, trusting the roots in `root_cert` if given.

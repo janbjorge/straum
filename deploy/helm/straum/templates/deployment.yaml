@@ -50,7 +50,7 @@ spec:
             - run
             - /etc/straum/spec.sql
             - --listen
-            - 0.0.0.0:8080
+            - {{ printf "%s:8080" .Values.listenAddress | quote }}
             - --publication
             - {{ .Values.publication | quote }}
             - --max-lag

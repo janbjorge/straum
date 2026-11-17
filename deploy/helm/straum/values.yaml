@@ -41,6 +41,11 @@ wal: "logical"
 # for its memory before straum's own limit can start it over.
 maxPageMemory: "1Gi"
 
+# listenAddress is the address straum serves HTTP on, port 8080 within
+# the pod: "0.0.0.0", every IPv4 address, or "[::]" on an IPv6-only
+# cluster, whose probes reach no IPv4 address.
+listenAddress: "0.0.0.0"
+
 # publication is the publication straum reads, as `straum plan` made it.
 publication: "straum"
 

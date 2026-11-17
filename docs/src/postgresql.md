@@ -75,7 +75,8 @@ it:
 postgres://straum:PASSWORD@db.example.com:5432/app
 ```
 
-The port defaults to 5432 and the database to the user's name.
+The port defaults to 5432 and the database to the user's name. An IPv6
+address goes in brackets, `postgres://straum:PASSWORD@[2001:db8::1]/app`.
 Percent-encode reserved characters in the password, such as `@`, `?`
 or `/` as `%40`, `%3F` and `%2F`: a raw one is refused, and an error
 about a parameter never repeats its text, which could be a password's.
@@ -98,6 +99,9 @@ own, download its bundle and name it with `sslrootcert`:
 ```text
 postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum/ca.pem
 ```
+
+`sslrootcert=system`, libpq's word for the system's roots, means the
+built-in ones.
 
 ## What Straum checks at start
 

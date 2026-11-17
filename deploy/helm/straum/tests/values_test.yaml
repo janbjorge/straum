@@ -7,6 +7,14 @@ set:
   dsn.existingSecret: straum-dsn
   spec: "CREATE VIEW trips WITH (buckets = '1 hour') AS SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
 tests:
+  - it: refuses a listen address other than every IPv4 or every IPv6 one
+    template: deployment.yaml
+    set:
+      listenAddress: "127.0.0.1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "listenAddress"
+
   - it: takes the values straum takes
     template: deployment.yaml
     set:
