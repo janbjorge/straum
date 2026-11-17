@@ -174,6 +174,26 @@ impl Cells {
     }
 
     /// Drops `cell`, the last cell taking its place.
+    /// Gives each key part with a map the codes it maps to, then indexes
+    /// the cells again, since their keys hash anew.
+    pub(super) fn recode(&mut self, maps: &[Option<Vec<u32>>]) {
+        for key in self.keys.chunks_exact_mut(self.key_parts) {
+            for (code, map) in key.iter_mut().zip(maps) {
+                if let Some(map) = map {
+                    *code = map[*code as usize];
+                }
+            }
+        }
+        self.index = Index::default();
+        for cell in 0..self.len() {
+            let keys = Keys {
+                codes: &self.keys,
+                codes_per_key: self.key_parts,
+            };
+            self.index.insert(cell, keys);
+        }
+    }
+
     pub(super) fn swap_remove(&mut self, cell: usize) {
         let last = self.len() - 1;
         let key_parts = self.key_parts;

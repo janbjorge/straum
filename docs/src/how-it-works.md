@@ -66,6 +66,13 @@ keys, keys with fewer values and wider buckets collapse more rows into
 each cell. The [benchmark](performance.md#memory) has what real tables
 measured.
 
+A cell holds its key's values as small codes, each value stored once.
+A value whose last cell or dim row went keeps its code until a
+column's dead codes may outnumber its live ones and pass 4,096; then
+Straum drops them in one pass under the write lock. So memory follows
+the cells and dim rows held, plus at most a few thousand old values a
+column, not every value seen since the start.
+
 ## Dims
 
 The table in a view's `FROM` is its fact table, and a table it joins is

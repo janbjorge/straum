@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::{mem, panic, thread};
 
 use crate::aggregate::{Aggregate, Reads};
-use crate::codes::Codes;
+use crate::codes::{Codes, worth_recoding};
 use crate::identifier::Identifier;
 use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
@@ -422,6 +422,44 @@ impl Rollup {
             }
         }
         Ok(())
+    }
+
+    /// Drops the codes no cell holds any more from each part where they
+    /// may be most of its codes, and gives the cells the new ones. A cell
+    /// at a wider width holds a key some `date_bin` cell holds, so a part
+    /// holds at most as many live codes as there are `date_bin` cells.
+    pub(crate) fn reclaim_codes(&mut self) {
+        let mut maps = Vec::with_capacity(self.codes.len());
+        let mut any = false;
+        for part in 0..self.codes.len() {
+            if !worth_recoding(self.codes[part].len(), self.cells) {
+                maps.push(None);
+                continue;
+            }
+            let live = self.live_codes(PartIndex(part));
+            maps.push(Some(self.codes[part].keep(&live)));
+            any = true;
+        }
+        if !any {
+            return;
+        }
+        for level in &mut self.levels {
+            for cells in level.buckets.values_mut() {
+                cells.recode(&maps);
+            }
+        }
+    }
+
+    /// Which of a part's codes some cell holds: the `date_bin` cells hold
+    /// every key a wider cell does.
+    fn live_codes(&self, part: PartIndex) -> Vec<bool> {
+        let mut live = vec![false; self.codes[part.0].len()];
+        for cells in self.levels[DATE_BIN.0].buckets.values() {
+            for cell in 0..cells.len() {
+                live[cells.code(cell, part) as usize] = true;
+            }
+        }
+        live
     }
 
     /// The code of `datum` among a rollup-key part's values, given now if

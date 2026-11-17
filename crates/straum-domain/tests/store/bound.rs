@@ -169,3 +169,64 @@ fn a_dim_column_read_under_two_names_answers_both() {
     assert_eq!(answer.rows.len(), 1);
     assert_eq!(answer.rows[0].keys, [text("m"), text("m")]);
 }
+
+/// Codes that go once most are dead leave every answer as it was: trips
+/// from thousands of zones come and go, past the point where the zone ids'
+/// codes are given again, and the zones' boroughs are renamed thousands
+/// of times; the answers then are the ones the few trips and zones left
+/// give, and a dim change still moves the trips that name it.
+#[test]
+fn answers_hold_across_a_recode() {
+    let mut store = zoned_store();
+    let mut many = Vec::new();
+    for zone in 7..10_007 {
+        many.push([Datum::Int(START), Datum::Int(1), Datum::Int(zone)]);
+    }
+    for row in &many {
+        store.add_row("trips", row).unwrap();
+    }
+    for row in &many {
+        store.remove_row("trips", row).unwrap();
+    }
+    let mut name = text("q");
+    for rename in 0..10_000 {
+        let next = text(&format!("q{rename}"));
+        store
+            .update_row(
+                "zones",
+                &[Datum::Int(4), name],
+                &[Datum::Int(4), next.clone()],
+            )
+            .unwrap();
+        name = next;
+    }
+    store
+        .update_row("zones", &[Datum::Int(4), name], &[Datum::Int(4), text("q")])
+        .unwrap();
+    let answer = store.ask(&by_borough()).unwrap();
+    assert_eq!(answer.rows.len(), 2);
+    assert_eq!(
+        (answer.rows[0].keys.clone(), answer.rows[0].values.clone()),
+        (vec![text("m")], vec![Value::Int(3)])
+    );
+    assert_eq!(
+        (answer.rows[1].keys.clone(), answer.rows[1].values.clone()),
+        (vec![text("q")], vec![Value::Int(3)])
+    );
+
+    // A zone id seen before the recode joins again; a zone removed moves
+    // its trip out of its borough.
+    store
+        .add_row(
+            "trips",
+            &[Datum::Int(START), Datum::Int(1), Datum::Int(9_000)],
+        )
+        .unwrap();
+    store
+        .remove_row("zones", &[Datum::Int(1), text("m")])
+        .unwrap();
+    let answer = store.ask(&by_borough()).unwrap();
+    assert_eq!(answer.rows[0].keys, [Datum::Null]);
+    assert_eq!(answer.rows[0].values, [Value::Int(2)]);
+    assert_eq!(answer.rows[1].values, [Value::Int(2)]);
+}

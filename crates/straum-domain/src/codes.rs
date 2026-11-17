@@ -8,7 +8,7 @@ use crate::value::Datum;
 
 /// A column's values, each under the code of its first add, so a cell key
 /// or a projection entry is a few integers. Codes outlive their rows until
-/// `clear`.
+/// [`Codes::keep`] drops the dead ones or `clear` drops them all.
 #[derive(Debug, Default)]
 pub(crate) struct Codes {
     codes: FastMap<Datum, u32>,
@@ -41,4 +41,41 @@ impl Codes {
     pub(crate) fn len(&self) -> usize {
         self.values.len()
     }
+
+    /// Keeps the values whose code is `live`, numbered again from 0 in
+    /// their old order, and returns each old code's new one; a dead code
+    /// maps to [`DEAD`]. Code 0, if live, stays 0.
+    pub(crate) fn keep(&mut self, live: &[bool]) -> Vec<u32> {
+        let mut new_codes = Vec::with_capacity(self.values.len());
+        let mut values = Vec::new();
+        let mut codes = FastMap::default();
+        for (value, &kept) in self.values.drain(..).zip(live) {
+            if !kept {
+                new_codes.push(DEAD);
+                continue;
+            }
+            let code = u32::try_from(values.len()).expect("fewer codes than before");
+            codes.insert(value.clone(), code);
+            values.push(value);
+            new_codes.push(code);
+        }
+        self.values = values;
+        self.codes = codes;
+        new_codes
+    }
+}
+
+/// What [`Codes::keep`] maps a dead code to: no code a value has.
+pub(crate) const DEAD: u32 = u32::MAX;
+
+/// Codes a column may hold before it is worth looking for dead ones: a
+/// recode reads every cell, so it waits until it can free many.
+pub(crate) const RECODE_FLOOR: usize = 4_096;
+
+/// Whether a column with `codes` codes, at most `live` of them still used,
+/// should drop its dead ones: when they may be most of it. Waiting for
+/// twice the live ones makes each recode pay for the codes given since
+/// the last.
+pub(crate) fn worth_recoding(codes: usize, live: usize) -> bool {
+    codes > RECODE_FLOOR && codes > live.saturating_mul(2)
 }

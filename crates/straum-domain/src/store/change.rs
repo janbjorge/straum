@@ -56,6 +56,12 @@ impl Store {
     /// Adds rows laid end to end, as a load reads them, each a row of
     /// `table` wide.
     pub fn add_rows(&mut self, table: &str, rows: &[Datum]) -> Result<(), RowError> {
+        let added = self.add_rows_coded(table, rows);
+        self.reclaim_codes();
+        added
+    }
+
+    fn add_rows_coded(&mut self, table: &str, rows: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
             self.rollups[fact.0].add_rows(rows)?;
             let Some(bound) = &mut self.bound[fact.0] else {
@@ -76,6 +82,12 @@ impl Store {
 
     /// Adds one row, as the stream brings it.
     pub fn add_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
+        let added = self.add_row_coded(table, row);
+        self.reclaim_codes();
+        added
+    }
+
+    fn add_row_coded(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
             self.rollups[fact.0].add(row)?;
             return self.bind(fact, row, Direction::Add);
@@ -91,6 +103,12 @@ impl Store {
     /// Removes one row equal to the one given. A row never added is not
     /// found, so the caller starts over.
     pub fn remove_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
+        let removed = self.remove_row_coded(table, row);
+        self.reclaim_codes();
+        removed
+    }
+
+    fn remove_row_coded(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         if let Some(fact) = self.fact_index(table) {
             self.rollups[fact.0].remove(row)?;
             return self.bind(fact, row, Direction::Remove);
@@ -128,11 +146,28 @@ impl Store {
                         change: Projection::add,
                     },
                 ];
-                return self.change_dim(dim, &changes);
+                let result = self.change_dim(dim, &changes);
+                self.reclaim_codes();
+                return result;
             }
         }
         self.remove_row(table, old)?;
         self.add_row(table, new)
+    }
+
+    /// Drops the codes no cell or dim row holds any more, wherever they
+    /// may be most of a column's codes. Run once a change is whole, so no
+    /// code is held across it.
+    fn reclaim_codes(&mut self) {
+        for rollup in &mut self.rollups {
+            rollup.reclaim_codes();
+        }
+        for bound in self.bound.iter_mut().flatten() {
+            bound.rollup.reclaim_codes();
+        }
+        for projection in &mut self.projections {
+            projection.reclaim_codes();
+        }
     }
 
     /// Drops every row of a table after a truncate.

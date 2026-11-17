@@ -3,7 +3,7 @@
 //! comes in or goes out through here; an ask or a pour looks a cell's
 //! join columns up here to find the dim's rows as they are now.
 
-use crate::codes::Codes;
+use crate::codes::{Codes, worth_recoding};
 use crate::hash::FastMap;
 use crate::rollup::{RowError, arity, split_rows};
 use crate::spec::Dim;
@@ -103,6 +103,31 @@ impl Projection {
             *codes = Codes::default();
         }
         self.code_null();
+    }
+
+    /// Drops the codes no row holds any more from each attribute where
+    /// they may be most of its codes, and gives the rows the new ones.
+    /// `Null` keeps code 0.
+    pub(crate) fn reclaim_codes(&mut self) {
+        for attribute in 0..self.codes.len() {
+            // Each row holds one code of the attribute, and `Null` one more.
+            if !worth_recoding(self.codes[attribute].len(), self.held + 1) {
+                continue;
+            }
+            let mut live = vec![false; self.codes[attribute].len()];
+            live[NULL as usize] = true;
+            for rows in self.rows.values() {
+                for row in rows {
+                    live[row[attribute] as usize] = true;
+                }
+            }
+            let map = self.codes[attribute].keep(&live);
+            for rows in self.rows.values_mut() {
+                for row in rows {
+                    row[attribute] = map[row[attribute] as usize];
+                }
+            }
+        }
     }
 
     /// Adds one row, [`Dim::columns`] wide. A row equal to one held counts

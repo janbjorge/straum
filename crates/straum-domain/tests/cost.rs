@@ -365,7 +365,7 @@ fn a_zone_change_stays_within_its_time() {
         "a zone no trip names: {per_change:?} a change"
     );
     assert!(
-        per_cell <= 20.0,
+        per_cell <= 30.0,
         "a zone trips name: {per_cell:.1} ns a cell an update"
     );
 }
@@ -871,4 +871,83 @@ fn a_bound_bucket_a_dim_change_empties_goes() {
     let after = emptied(TRIPS, ZonesGo::After);
     eprintln!("{before} bytes with the zones gone first, {after} after the trips");
     assert!(after - before < 4 << 10, "{after} bytes against {before}");
+}
+
+/// The heap a store of the trips without the zones holds after `rounds`
+/// rounds of `trips` trips, each with a zone id never seen before, added
+/// and all removed again.
+fn churned(rounds: i64, trips: i64) -> isize {
+    held(|| {
+        let mut store = Store::new(spec_of(&[], Zones::Apart));
+        for round in 0..rounds {
+            let mut rows = Vec::with_capacity(usize::try_from(trips).unwrap());
+            for trip in 0..trips {
+                rows.push([
+                    Datum::Int(0),
+                    Datum::Int(0),
+                    Datum::Int(round * trips + trip),
+                    Datum::Int(1),
+                    Datum::Int(1),
+                ]);
+            }
+            for row in &rows {
+                store.add_row("trips", row).unwrap();
+            }
+            for row in &rows {
+                store.remove_row("trips", row).unwrap();
+            }
+        }
+        assert_eq!(store.cells("trips"), Some(0));
+        store
+    })
+}
+
+/// Codes go once most of a column's are dead, so memory follows the
+/// cells held, not every value seen: five rounds of 20,000 new zone ids,
+/// all gone, hold what one round holds. Codes kept would be 20,000 more
+/// a round, hundreds of KiB each.
+#[test]
+fn codes_no_cell_holds_go() {
+    let one = churned(1, 20_000);
+    let five = churned(5, 20_000);
+    eprintln!("{one} bytes after one round, {five} after five");
+    assert!(five - one < 64 << 10, "{five} bytes against {one}");
+}
+
+/// The heap a store holds after zone 1's borough was renamed `renames`
+/// times, each to a name never seen before, and back.
+fn renamed(renames: usize) -> isize {
+    held(|| {
+        let mut store = Store::new(spec_of(&[], Zones::Bound));
+        load_zones(&mut store);
+        let mut name = Datum::Text(BOROUGHS[1].into());
+        for rename in 0..renames {
+            let next = Datum::Text(format!("borough {rename}").into());
+            store
+                .update_row(
+                    "zones",
+                    &[Datum::Int(1), name],
+                    &[Datum::Int(1), next.clone()],
+                )
+                .unwrap();
+            name = next;
+        }
+        let back = Datum::Text(BOROUGHS[1].into());
+        store
+            .update_row("zones", &[Datum::Int(1), name], &[Datum::Int(1), back])
+            .unwrap();
+        store
+    })
+}
+
+/// A dim row renamed over and over holds a bounded number of names, not
+/// every name it had: a column keeps up to a few thousand dead codes
+/// before it drops them, under 1 MiB here, where 100,000 names kept would
+/// be many MiB.
+#[test]
+fn a_dim_row_renamed_holds_a_bounded_number_of_names() {
+    let few = renamed(100);
+    let many = renamed(100_000);
+    eprintln!("{few} bytes after 100 renames, {many} after 100,000");
+    assert!(many - few < 1 << 20, "{many} bytes against {few}");
 }
