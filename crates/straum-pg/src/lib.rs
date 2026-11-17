@@ -1,6 +1,6 @@
 //! Straum's PostgreSQL adapter: the [`straum_app::Source`] over logical
 //! replication or the physical WAL. Start at `source.rs`: it checks the
-//! setup (`catalog.rs`), loads each table with one `COPY` (`load.rs`), then
+//! setup (`catalog/`), loads each table with one `COPY` (`load.rs`), then
 //! hands a thread the stream (`stream.rs`), which turns pgoutput
 //! (`pgoutput.rs`, `decode.rs`) or WAL records (`physical.rs`, `wal/`) into
 //! commits, while `watchdog.rs` keeps the slot from holding too much WAL.

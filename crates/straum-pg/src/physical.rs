@@ -3,7 +3,7 @@
 //! as records (`wal.rs`) and turned into commits (`wal/pipeline.rs`). The
 //! stream carries the whole server's WAL, every database. Also the layouts
 //! query: how each spec table's rows lie on its pages, from `pg_class` and
-//! `pg_attribute`, with the enum labels `catalog.rs` reads. After DDL the
+//! `pg_attribute`, with the enum labels `catalog/query.rs` reads. After DDL the
 //! query waits for a snapshot that sees the DDL's commit.
 
 use std::collections::HashMap;

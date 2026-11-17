@@ -1,5 +1,5 @@
 //! The setup check's problems: each thing wrong with PostgreSQL's setup
-//! for the spec, and what to change. `catalog.rs` finds most of them in
+//! for the spec, and what to change. `catalog/` finds most of them in
 //! PostgreSQL's catalog (its system tables), the decoder one more as the
 //! stream runs, and a physical start the ones about waiting. Each prints as
 //! one line of `Error::Setup`.
