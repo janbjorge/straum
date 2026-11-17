@@ -142,8 +142,11 @@ the year 9999, which RFC 3339 can't write; an open end reads them, and
 such a bucket prints as `Unix second` and its number. Measures print as the
 [measures table](spec.md#measures) says: `1875.70` for a
 `numeric(12, 2)` sum, and `44.273058` for an `avg_amount` of 18240.50
-over 412 events, at four places past the scale. A
-row whose dim row does not exist has null dim columns, as a `LEFT OUTER
+over 412 events, at four places past the scale. Each is a bare JSON
+number, as exact as Straum keeps it. A client that reads numbers as
+doubles, as JavaScript's `JSON.parse` does, rounds those past 2^53
+(9,007,199,254,740,992); read such sums with a decimal-aware parser.
+A row whose dim row does not exist has null dim columns, as a `LEFT OUTER
 JOIN` gives, until the dim row arrives.
 
 Two headers help debugging. `Straum-LSN` names the last commit the
