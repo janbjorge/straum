@@ -297,6 +297,23 @@ impl Walker {
         Ok(read)
     }
 
+    /// A key's or measure's name, `AS name`, which asks must be able to
+    /// say.
+    fn read_output_name(&mut self, alias: &sql::Ident) -> Result<Identifier, Reported> {
+        let name = self.read_identifier(alias)?;
+        // An ask reads `bucket` as the time; the spec's own check says so.
+        if name.as_str() != "bucket" && !ask::askable(&name) {
+            self.error(
+                alias.span.start.line,
+                format!(
+                    "{name} is a word SQL reserves, so no ask could name it; name it otherwise"
+                ),
+            );
+            return Err(Reported);
+        }
+        Ok(name)
+    }
+
     fn bare_name(&mut self, name: &sql::ObjectName, what: &str) -> Result<Identifier, Reported> {
         let sql::ObjectName(parts) = name;
         let [part] = parts.as_slice() else {

@@ -530,6 +530,22 @@ fn spelled_with_bang(between: &str) -> bool {
     false
 }
 
+/// Whether an ask can say `name` in each place it names a key or a
+/// measure: `SELECT`, `WHERE`, `GROUP BY` and `HAVING`. A word SQL
+/// reserves, such as `user` or `all`, reads as SQL's own there.
+pub(super) fn askable(name: &Identifier) -> bool {
+    let ask = format!("SELECT {name} FROM v WHERE {name} = $1 GROUP BY {name} HAVING {name} > $1");
+    let Ok(parsed) = parse_ask(&ask, &[Literal::Int(1)]) else {
+        return false;
+    };
+    let name = name.clone();
+    parsed.keys == [AskKey::Key(name.clone())]
+        && parsed.filter.len() == 1
+        && parsed.filter[0].key == name
+        && parsed.having.len() == 1
+        && parsed.having[0].measure == name
+}
+
 /// `bucket >= value` or `bucket < value`; `None` for any other condition.
 fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
     let sql::Expr::BinaryOp { left, op, right } = expression else {

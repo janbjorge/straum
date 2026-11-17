@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{BASE, any_contains, edit, error_lines, rejects};
+use common::{BASE, any_contains, any_message, base, edit, error_lines, rejects, sql_errors};
 use straum_notation::parse;
 
 /// Statements and view shape.
@@ -923,4 +923,45 @@ fn rare_clauses_are_rejected_by_name() {
             "WITHIN GROUP is not in Straum SQL",
         ),
     ]);
+}
+
+/// A key or measure an ask could not name is refused where the view
+/// names it: these words read as SQL's own in an ask. Names that only
+/// look like SQL's stay.
+#[test]
+fn a_name_no_ask_can_say_is_refused() {
+    let reserved = [
+        "top",
+        "all",
+        "distinct",
+        "user",
+        "not",
+        "null",
+        "true",
+        "false",
+        "interval",
+        "current_date",
+        "current_time",
+        "from",
+        "exists",
+        "trim",
+    ];
+    for word in reserved {
+        for (from, to) in [
+            ("f.a AS a,", format!("f.a AS {word},")),
+            ("count(*) AS n", format!("count(*) AS {word}")),
+        ] {
+            let view = base(from, &to);
+            let errors = sql_errors(&view);
+            let message = format!("{word} is a word SQL reserves, so no ask could name it");
+            assert!(any_message(&errors, None, &message), "{view}: {errors:?}");
+        }
+    }
+    // `name` is BASE's own.
+    for word in [
+        "count", "sum", "type", "kind", "key", "value", "user_id", "date",
+    ] {
+        let view = base("f.a AS a,", &format!("f.a AS {word},"));
+        assert!(parse(&view).is_ok(), "{view}: {:?}", parse(&view));
+    }
 }

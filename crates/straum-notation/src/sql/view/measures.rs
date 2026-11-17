@@ -46,7 +46,7 @@ impl Walker {
         function: &sql::Function,
         alias: &sql::Ident,
     ) -> Result<Measure, Reported> {
-        let name = self.read_identifier(alias);
+        let name = self.read_output_name(alias);
         let Aggregated { aggregate, filter } = self.aggregate(scope, function)?;
         Ok(Measure {
             name: name?,

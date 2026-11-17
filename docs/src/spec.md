@@ -53,7 +53,13 @@ repeats what is before it. Keys and measures come in any order.
 parenthesis is written where the synopsis has one and nowhere else:
 around a null-ness key, never around a condition or a column. A spec is
 one or more views, with `;` between them. Identifiers are unquoted:
-lowercase letters, digits and `_`, at most 63 bytes.
+lowercase letters, digits and `_`, at most 63 bytes. A key or measure
+name is one an ask can say, so not a word SQL reserves, such as `user`,
+`all` or `from`:
+
+```text
+line 3: user is a word SQL reserves, so no ask could name it; name it otherwise
+```
 
 A view over an `events` table and the `accounts` it belongs to, with
 a null-ness key and two filtered measures:

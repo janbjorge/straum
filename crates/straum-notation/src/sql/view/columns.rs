@@ -68,7 +68,7 @@ impl Walker {
         alias: &sql::Ident,
         selected: &mut SelectedKeys,
     ) {
-        let name = self.read_identifier(alias);
+        let name = self.read_output_name(alias);
         if let sql::Expr::IsNull(_) | sql::Expr::IsNotNull(_) = expression {
             self.refuse(
                 line(expression),
