@@ -35,6 +35,9 @@ pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const QUEUE: usize = 64;
 /// How long the thread waits for room in a full queue before trying again.
 const WAIT: Duration = Duration::from_millis(10);
+/// How long a failed stream may take to hand over its error once the
+/// queue has room: one wait for room, with time to spare.
+const FAILURE_WAIT: Duration = Duration::from_secs(5);
 
 /// What turns the stream's bytes into commits.
 pub(crate) enum Reader {
@@ -72,6 +75,9 @@ pub(crate) struct Stream {
 struct Shared {
     applied: AtomicU64,
     stop: AtomicBool,
+    /// Set by the thread before it queues its error, which a full queue
+    /// holds back.
+    failed: AtomicBool,
     /// A physical stream's state before its load: how far it is from
     /// where every later commit is whole, the load's snapshot with the WAL
     /// position it was taken at, for the thread to take, and what the
@@ -95,6 +101,7 @@ impl Stream {
         let shared = Arc::new(Shared {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
             consistency: Mutex::new(Consistency::Unknown),
             snapshot: Mutex::new(None),
             sight: Mutex::new(None),
@@ -125,6 +132,22 @@ impl Stream {
     /// reads besides the stream's own.
     pub(crate) fn close_too(&mut self, other: Closer) {
         self.others.push(other);
+    }
+
+    /// The stream's error once its thread has failed, the commits queued
+    /// before it dropped: a load checks between batches, so a stream that
+    /// fails while the tables load stops the load then, not at its end.
+    pub(crate) fn check(&mut self) -> Result<(), Error> {
+        if !self.shared.failed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        loop {
+            match self.commits.recv_timeout(FAILURE_WAIT) {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(Error::Stopped),
+            }
+        }
     }
 
     /// The next commit, waiting at most `wait` for one.
@@ -222,6 +245,7 @@ struct StreamThread {
 impl StreamThread {
     fn run(mut self) {
         if let Err(error) = self.serve() {
+            self.shared.failed.store(true, Ordering::Release);
             // The writer may be gone, or the connection with it.
             let _ = self.deliver(Err(error));
         }

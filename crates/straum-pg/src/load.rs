@@ -1,8 +1,9 @@
 //! Loads: a binary `COPY` of the columns the spec reads of each table, dim
 //! or fact, so Straum groups or projects a row as it comes. One thread
 //! reads PostgreSQL's copy messages and decodes them (`value.rs`) into
-//! batches of rows; the caller's thread adds each batch to the store. A
-//! load must not cost Straum the table's rows in memory.
+//! batches of rows; the caller's thread adds each batch to the store, then
+//! checks a physical stream reading beside it has not failed. A load must
+//! not cost Straum the table's rows in memory.
 
 use std::sync::mpsc;
 use std::{mem, panic, thread};
@@ -12,6 +13,7 @@ use straum_domain::{Datum, Store};
 
 use crate::catalog::{Checked, escaped};
 use crate::error::Error;
+use crate::stream::Stream;
 use crate::unexpected::Unexpected;
 use crate::value::read_binary;
 use crate::wire::Connection;
@@ -33,15 +35,21 @@ pub(crate) fn copy_sql(table: &Checked) -> String {
 }
 
 /// Loads the whole table into the store, in the connection's snapshot.
+/// A physical stream that reads on meanwhile is checked after each batch.
 pub(crate) fn table(
     connection: &mut Connection,
     table: &Checked,
     store: &mut Store,
+    mut stream: Option<&mut Stream>,
 ) -> Result<(), Error> {
     let name = table.name.as_str();
     store.set_types(name, &table.types).map_err(Error::Row)?;
     copy(connection, table, |rows| {
-        store.add_rows(name, rows).map_err(Error::Row)
+        store.add_rows(name, rows).map_err(Error::Row)?;
+        match stream.as_deref_mut() {
+            Some(stream) => stream.check(),
+            None => Ok(()),
+        }
     })
 }
 

@@ -158,7 +158,9 @@ messages the logical slot sends, so one decoder serves both:
   see it, longer while a synchronous standby answers, so Straum takes
   the snapshot again until it does. A transaction past the row limit
   that the load saw doesn't stop the stream. The stream reads on
-  during the load.
+  during the load until 64 commits wait for the writer, then holds its
+  place, answering the server. A stream that fails meanwhile stops the
+  load at its next batch of rows.
 - Memory. A page goes at the next checkpoint record whose redo point is
   past its last change: PostgreSQL logs it whole the next time. So
   Straum holds the pages changed in about one checkpoint cycle, not the

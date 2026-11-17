@@ -316,6 +316,28 @@ fn stream_errors() {
     }
 }
 
+/// A load checks the stream between batches: a stream that failed gives
+/// its error, one that is only quiet gives nothing.
+#[test]
+fn a_check_of_the_stream_gives_its_failure() {
+    let mut quiet = scripted_stream(vec![later(LONG, Vec::new())]);
+    assert!(quiet.stream.check().is_ok());
+    let fatal = error_response("57P01", "terminating connection");
+    let mut failed = scripted_stream(vec![now(fatal)]);
+    let clock = Instant::now();
+    let error = loop {
+        if let Err(error) = failed.stream.check() {
+            break error;
+        }
+        assert!(clock.elapsed() < LONG, "the stream never failed");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        error.to_string(),
+        "PostgreSQL: terminating connection (57P01)"
+    );
+}
+
 /// A walsender's notice or a setting it reports, which any backend may
 /// send at any time, passes by: the stream goes on.
 #[test]

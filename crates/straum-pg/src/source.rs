@@ -458,7 +458,13 @@ impl Postgres {
 
 /// Loads `table` in the snapshot.
 fn load_table(snapshot: &mut Snapshot, table: &Identifier, store: &mut Store) -> Result<(), Error> {
-    load::table(&mut snapshot.connection, snapshot.tables.get(table), store)?;
+    let checked = snapshot.tables.get(table);
+    load::table(
+        &mut snapshot.connection,
+        checked,
+        store,
+        snapshot.stream.as_mut(),
+    )?;
     loaded(snapshot, table)
 }
 
