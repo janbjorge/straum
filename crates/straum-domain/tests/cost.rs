@@ -102,10 +102,13 @@ fn spec(buckets: &[u32]) -> Spec {
     spec_of(buckets, Zones::Joined)
 }
 
-/// Whether the fact joins the zones.
+/// Whether the fact joins the zones, and through what.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Zones {
+    /// On a `by` key, so asks read the zones as they are.
     Joined,
+    /// On a column no `by` key names, so the view keeps bound cells.
+    Bound,
     Apart,
 }
 
@@ -129,7 +132,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
     }
     let mut dims = Vec::new();
     let mut refs = Vec::new();
-    if zones == Zones::Joined {
+    if zones != Zones::Apart {
         dims.push(Dim {
             as_text: Vec::new(),
             name: id("zones"),
@@ -148,6 +151,16 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
             }],
         });
     }
+    let mut by_keys = vec![ByKey::Column {
+        column: id("pay"),
+        name: id("pay"),
+    }];
+    if zones != Zones::Bound {
+        by_keys.push(ByKey::Column {
+            column: id("pu"),
+            name: id("pu"),
+        });
+    }
     let trips = Fact {
         as_text: Vec::new(),
         name: id("trips"),
@@ -159,16 +172,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
             origin: Origin::Timestamptz,
         },
         refs,
-        by_keys: vec![
-            ByKey::Column {
-                column: id("pay"),
-                name: id("pay"),
-            },
-            ByKey::Column {
-                column: id("pu"),
-                name: id("pu"),
-            },
-        ],
+        by_keys,
         filter: vec![],
         measures,
     };
@@ -322,6 +326,48 @@ fn an_ask_stays_within_its_time_per_cell() {
             "by {by:?}: {per_cell:.1} ns a cell, over the {budget} ns budget"
         );
     }
+}
+
+/// A zone row change against a time budget, on a rollup the size of the
+/// taxi month at one hour whose bound cells read the zones: a zone no trip
+/// names moves no cell, so its time is per change, not per cell; a zone
+/// trips name walks the cells once an update. Runs on request, as
+/// [`an_ask_stays_within_its_time_per_cell`] does.
+#[test]
+#[ignore = "timing depends on the machine and the build"]
+fn a_zone_change_stays_within_its_time() {
+    const CELLS: i64 = 173_600;
+    const REPS: u32 = 20;
+    let mut store = store_of(spec_of(&[], Zones::Bound), CELLS, 1);
+    let unnamed = [Datum::Int(ZONES + 1), Datum::Text("Bronx".into())];
+    let clock = Instant::now();
+    for _ in 0..REPS {
+        store.add_row("zones", &unnamed).unwrap();
+        store.remove_row("zones", &unnamed).unwrap();
+    }
+    let per_change = clock.elapsed() / (2 * REPS);
+    eprintln!("a zone no trip names: {per_change:?} a change");
+    let named = [Datum::Int(1), Datum::Text(BOROUGHS[1].into())];
+    let moved = [Datum::Int(1), Datum::Text("Bronx".into())];
+    let clock = Instant::now();
+    for _ in 0..REPS {
+        store.update_row("zones", &named, &moved).unwrap();
+        store.update_row("zones", &moved, &named).unwrap();
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a time per cell needs no more digits than a float holds"
+    )]
+    let per_cell = clock.elapsed().as_nanos() as f64 / f64::from(2 * REPS) / CELLS as f64;
+    eprintln!("a zone trips name: {per_cell:.1} ns a cell an update");
+    assert!(
+        per_change.as_micros() <= 50,
+        "a zone no trip names: {per_change:?} a change"
+    );
+    assert!(
+        per_cell <= 20.0,
+        "a zone trips name: {per_cell:.1} ns a cell an update"
+    );
 }
 
 /// Hours 5 to 700 over 30 days with day and week buckets: 19 hours, 6 days,

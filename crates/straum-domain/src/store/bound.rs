@@ -56,6 +56,26 @@ pub(super) struct Overlay<'a> {
     pub(super) rows: &'a [Box<[u32]>],
 }
 
+/// One dim key as the codes a keyed cell holds it by, through one ref:
+/// comparing codes spares looking each cell's values up.
+pub(super) struct KeyCodes(Vec<PartCode>);
+
+/// The code a dim key's value goes by in one rollup-key part.
+struct PartCode {
+    part: PartIndex,
+    code: u32,
+}
+
+/// Whether `cell` joins the key through any ref of `codes`.
+pub(super) fn cell_holds(cell: KeyedCell<'_>, codes: &[KeyCodes]) -> bool {
+    for key in codes {
+        if key.held_by(cell) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A cell of a keyed bucket: where it lies among the bucket's cells.
 #[derive(Clone, Copy)]
 pub(super) struct KeyedCell<'c> {
@@ -110,13 +130,30 @@ impl BoundRef {
         projections[self.dim.0].matches(via)
     }
 
-    /// Whether `cell` joins `key` of this ref's dim.
-    fn hits(&self, keyed: &Rollup, cell: KeyedCell<'_>, key: &[Datum]) -> bool {
-        let mut hits = self.via.len() == key.len();
-        for (&part, datum) in self.via_parts.iter().zip(key) {
-            hits = hits && keyed.value(part, cell.cells.code(cell.cell, part)) == datum;
+    /// The codes `key` goes by in this ref's via parts, or `None` if a
+    /// part never met its value: then no cell joins `key` through it.
+    fn key_codes(&self, keyed: &Rollup, key: &[Datum]) -> Option<KeyCodes> {
+        if self.via.len() != key.len() {
+            return None;
         }
-        hits
+        let mut codes = Vec::with_capacity(key.len());
+        for (&part, datum) in self.via_parts.iter().zip(key) {
+            let code = keyed.code_of(part, datum)?;
+            codes.push(PartCode { part, code });
+        }
+        Some(KeyCodes(codes))
+    }
+}
+
+impl KeyCodes {
+    /// Whether `cell` holds these codes.
+    fn held_by(&self, cell: KeyedCell<'_>) -> bool {
+        for part_code in &self.0 {
+            if cell.cells.code(cell.cell, part_code.part) != part_code.code {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -198,20 +235,19 @@ impl Bound {
         reads
     }
 
-    /// Whether `cell` joins `key` of `dim` through any ref.
-    pub(super) fn cell_hits(
-        &self,
-        keyed: &Rollup,
-        cell: KeyedCell<'_>,
-        dim: DimIndex,
-        key: &[Datum],
-    ) -> bool {
+    /// The codes `key` of `dim` goes by in a cell, one per ref of `dim`
+    /// whose via parts met it. Empty when no cell can join `key`.
+    pub(super) fn key_codes(&self, keyed: &Rollup, dim: DimIndex, key: &[Datum]) -> Vec<KeyCodes> {
+        let mut found = Vec::new();
         for reference in &self.refs {
-            if reference.dim == dim && reference.hits(keyed, cell, key) {
-                return true;
+            if reference.dim != dim {
+                continue;
+            }
+            if let Some(codes) = reference.key_codes(keyed, key) {
+                found.push(codes);
             }
         }
-        false
+        found
     }
 
     /// Moves every cell of a keyed bucket into the bound cells its

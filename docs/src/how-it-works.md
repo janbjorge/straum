@@ -85,7 +85,9 @@ For a view whose joins all read fact columns, one of them a column
 that is not a key of the view, Straum also keeps bound cells: the
 same cells keyed by the dim columns' values, which are few next to
 the ids, so an ask reads no projection. A dim change moves the bound
-cells that name its key. A view that keeps its join columns as keys,
+cells that name its key: it walks the fact's keyed cells once, under
+the write lock, comparing codes, and skips the walk for a key no fact
+row ever named. A view that keeps its join columns as keys,
 as `usage` does, has none: they would be as many as its
 cells.
 

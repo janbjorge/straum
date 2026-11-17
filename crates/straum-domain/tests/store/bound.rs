@@ -105,3 +105,44 @@ fn a_dim_change_under_no_rows_keeps_the_bound_cells() {
     let answer = store.ask(&by_borough()).unwrap();
     assert_eq!(answer.rows[0].keys, [text("q")]);
 }
+
+/// An update that keeps the zone's key moves its trips in one step, as
+/// one that changes the key moves them out; a zone no trip names moves
+/// nothing, and binds the trip that names it later.
+#[test]
+fn a_zone_update_moves_only_the_trips_that_name_it() {
+    let mut store = zoned_store();
+    let by_borough = by_borough();
+    store
+        .update_row(
+            "zones",
+            &[Datum::Int(6), text("q")],
+            &[Datum::Int(6), text("m")],
+        )
+        .unwrap();
+    let moved = store.ask(&by_borough).unwrap();
+    assert_eq!(moved.rows[0].keys, [text("m")]);
+    assert_eq!(moved.rows[0].values, [Value::Int(4)]);
+    assert_eq!(moved.rows[1].values, [Value::Int(2)]);
+
+    store.add_row("zones", &[Datum::Int(7), text("x")]).unwrap();
+    assert_eq!(store.ask(&by_borough).unwrap(), moved);
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(7)])
+        .unwrap();
+    let named = store.ask(&by_borough).unwrap();
+    assert_eq!(named.rows[2].keys, [text("x")]);
+
+    // Zone 6 is now 8, which no trip names: its trip finds no zone.
+    store
+        .update_row(
+            "zones",
+            &[Datum::Int(6), text("m")],
+            &[Datum::Int(8), text("m")],
+        )
+        .unwrap();
+    let rekeyed = store.ask(&by_borough).unwrap();
+    assert_eq!(rekeyed.rows[0].keys, [Datum::Null]);
+    assert_eq!(rekeyed.rows[0].values, [Value::Int(1)]);
+    assert_eq!(rekeyed.rows[1].values, [Value::Int(3)]);
+}

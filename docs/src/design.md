@@ -375,7 +375,8 @@ makes a property test fail.
     They exist only for a fact whose joins all read fact columns, one
     of them no key: any other fact's would be as many as its keyed
     cells (`Bound::new`). A dim change moves the ones that
-    name its key (`Store::retarget`) and a dim truncate or load makes
+    name its key (`Store::retarget`), one walk for an update that keeps
+    the key, none for a key the via parts never coded, and a dim truncate or load makes
     them again (`Store::rebuild_dim`). An ask reads them whenever the
     fact keeps them (`Store::reading`).
 11. **Lag never understates.** Readings merge only toward older

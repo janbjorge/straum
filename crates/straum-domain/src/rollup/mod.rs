@@ -430,6 +430,12 @@ impl Rollup {
         self.codes[part.0].code(datum)
     }
 
+    /// The code of `datum` among a rollup-key part's values, if the part
+    /// ever met it.
+    pub(crate) fn code_of(&self, part: PartIndex, datum: &Datum) -> Option<u32> {
+        self.codes[part.0].get(datum)
+    }
+
     /// The rollup-key part that codes the fact column, when one does.
     pub(crate) fn part_of_column(&self, column: ColumnIndex) -> Option<PartIndex> {
         for (part, coded) in self.key_columns.iter().enumerate() {

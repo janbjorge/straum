@@ -7,12 +7,19 @@ use crate::projection::Projection;
 use crate::rollup::{Direction, Rollup, RowError};
 use crate::value::{ColumnType, Datum};
 
-use super::bound::{Bound, KeyedCell, Overlay};
+use super::bound::{Bound, KeyedCell, Overlay, cell_holds};
 use super::{DimIndex, FactIndex, IN_SPEC, POURED, Store};
 
 /// How a dim row changes its projection: [`Projection::add`] or
 /// [`Projection::remove`].
 type DimChange = fn(&mut Projection, &[Datum]) -> Result<(), RowError>;
+
+/// One dim row and how it changes the projection.
+struct DimRowChange<'r> {
+    // Borrows the row of the change at hand.
+    row: &'r [Datum],
+    change: DimChange,
+}
 
 impl Store {
     /// Sets the types of a row of `table`, a fact's [`Fact::columns`] or
@@ -73,7 +80,12 @@ impl Store {
             self.rollups[fact.0].add(row)?;
             return self.bind(fact, row, Direction::Add);
         }
-        self.change_dim(table, row, Projection::add)
+        let dim = self.dim_index(table).expect(IN_SPEC);
+        let change = DimRowChange {
+            row,
+            change: Projection::add,
+        };
+        self.change_dim(dim, &[change])
     }
 
     /// Removes one row equal to the one given. A row never added is not
@@ -83,22 +95,41 @@ impl Store {
             self.rollups[fact.0].remove(row)?;
             return self.bind(fact, row, Direction::Remove);
         }
-        self.change_dim(table, row, Projection::remove)
+        let dim = self.dim_index(table).expect(IN_SPEC);
+        let change = DimRowChange {
+            row,
+            change: Projection::remove,
+        };
+        self.change_dim(dim, &[change])
     }
 
     /// An update: the old row out and the new one in. A dim row that
     /// reads the same holds no column the views read, so it changes
-    /// nothing.
+    /// nothing; one that keeps its key moves the bound cells once.
     pub fn update_row(
         &mut self,
         table: &str,
         old: &[Datum],
         new: &[Datum],
     ) -> Result<(), RowError> {
-        if let Some(dim) = self.dim_index(table)
-            && old == new
-        {
-            return self.projections[dim.0].check(old);
+        if let Some(dim) = self.dim_index(table) {
+            if old == new {
+                return self.projections[dim.0].check(old);
+            }
+            let key_columns = self.projections[dim.0].key_column_count();
+            if old.get(..key_columns) == new.get(..key_columns) {
+                let changes = [
+                    DimRowChange {
+                        row: old,
+                        change: Projection::remove,
+                    },
+                    DimRowChange {
+                        row: new,
+                        change: Projection::add,
+                    },
+                ];
+                return self.change_dim(dim, &changes);
+            }
         }
         self.remove_row(table, old)?;
         self.add_row(table, new)
@@ -118,19 +149,20 @@ impl Store {
         self.rebuild_dim(dim);
     }
 
-    fn change_dim(
-        &mut self,
-        table: &str,
-        row: &[Datum],
-        change: DimChange,
-    ) -> Result<(), RowError> {
-        let dim = self.dim_index(table).expect(IN_SPEC);
+    /// Applies `changes`, rows that share one key, to `dim`'s projection,
+    /// then moves the bound cells that name the key once.
+    fn change_dim(&mut self, dim: DimIndex, changes: &[DimRowChange<'_>]) -> Result<(), RowError> {
+        let Some(first) = changes.first() else {
+            return Ok(());
+        };
         let key_columns = self.projections[dim.0].key_column_count();
-        let key = row.get(..key_columns).unwrap_or(&[]);
+        let key = first.row.get(..key_columns).unwrap_or(&[]);
         // Owned, so the bound cells can leave the rows the key held after
         // the projection has moved on.
         let old = self.projections[dim.0].matches(key).to_vec();
-        change(&mut self.projections[dim.0], row)?;
+        for change in changes {
+            (change.change)(&mut self.projections[dim.0], change.row)?;
+        }
         if old == self.projections[dim.0].matches(key) {
             return Ok(());
         }
@@ -188,6 +220,10 @@ impl Store {
             return Ok(());
         };
         let keyed = &self.rollups[fact.0];
+        let codes = bound.key_codes(keyed, dim, key);
+        if codes.is_empty() {
+            return Ok(());
+        }
         let overlay = Overlay {
             dim,
             key,
@@ -197,7 +233,7 @@ impl Store {
             let start = *start;
             for cell in 0..cells.len() {
                 let cell = KeyedCell { cells, cell };
-                if bound.cell_hits(keyed, cell, dim, key) {
+                if cell_holds(cell, &codes) {
                     move_cell(bound, keyed, &self.projections, start, cell, overlay)?;
                 }
             }
