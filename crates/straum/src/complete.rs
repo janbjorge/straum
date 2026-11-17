@@ -316,7 +316,9 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
         if named.is_empty() {
             return view_names(views);
         }
-        return vec!["WHERE ".to_owned()];
+        let mut next = vec!["WHERE ".to_owned()];
+        next.extend(query_ends(&selected));
+        return next;
     }
     if let Some(listed) = after(&before, "SELECT") {
         return select_candidates(views, view.as_ref(), &listed);
@@ -435,27 +437,30 @@ fn condition_candidates(
         has_to: has_bound(all, "<"),
     };
     match conditions.last() {
-        Some(last) if last.starts_with('$') => after_a_condition(bounds, selected),
+        Some(last) if last.starts_with('$') => after_a_condition(selected),
         Some(last) if !is(last, "AND") => Vec::new(),
         _ => next_conditions(view, all, conditions, bounds),
     }
 }
 
-/// What may follow a whole condition: `AND`, and once both bounds are
-/// written, the end of the query.
-fn after_a_condition(bounds: Bounds, selected: &[String]) -> Vec<String> {
+/// What may follow a whole condition: `AND`, or the end of the query.
+fn after_a_condition(selected: &[String]) -> Vec<String> {
     let mut next = vec!["AND ".to_owned()];
-    if bounds.has_from && bounds.has_to {
-        if selected.is_empty() {
-            next.push("; ".to_owned());
-            next.push("HAVING ".to_owned());
-        } else {
-            let keys = selected.join(", ");
-            next.push(format!("GROUP BY {keys}; "));
-            next.push(format!("GROUP BY {keys} HAVING "));
-        }
-    }
+    next.extend(query_ends(selected));
     next
+}
+
+/// What ends a query once its conditions are written, if it has any:
+/// `GROUP BY` the selected keys, then `;` or `HAVING`.
+fn query_ends(selected: &[String]) -> Vec<String> {
+    if selected.is_empty() {
+        return vec!["; ".to_owned(), "HAVING ".to_owned()];
+    }
+    let keys = selected.join(", ");
+    vec![
+        format!("GROUP BY {keys}; "),
+        format!("GROUP BY {keys} HAVING "),
+    ]
 }
 
 /// What may come next in `HAVING`: a selected measure, then a comparison
@@ -764,10 +769,18 @@ mod tests {
     }
 
     #[test]
-    fn from_offers_the_views_then_where() {
+    fn from_offers_the_views_then_where_or_the_end() {
         assert_eq!(offers("SELECT orders FROM "), ["orders ", "logins "]);
         assert_eq!(offers("SELECT orders FROM lo"), ["logins "]);
-        assert_eq!(offers("SELECT orders FROM orders "), ["WHERE "]);
+        // WHERE is not needed: without bounds an ask reads every bucket.
+        assert_eq!(
+            offers("SELECT orders FROM orders "),
+            ["WHERE ", "; ", "HAVING "]
+        );
+        assert_eq!(
+            offers("SELECT status, orders FROM orders "),
+            ["WHERE ", "GROUP BY status; ", "GROUP BY status HAVING "]
+        );
         assert_eq!(offers("SELECT orders FROM orders w"), ["WHERE "]);
         assert_eq!(
             offers("SELECT orders FROM orders WHERE x"),
@@ -842,9 +855,10 @@ mod tests {
     #[test]
     fn a_finished_condition_offers_what_follows() {
         let bounds = "WHERE bucket >= $1 AND bucket < $2 ";
+        // A bound is not needed to end the query.
         assert_eq!(
             offers("SELECT orders FROM orders WHERE status = $1 "),
-            ["AND "]
+            ["AND ", "; ", "HAVING "]
         );
         assert_eq!(
             offers(&format!("SELECT orders FROM orders {bounds}")),
