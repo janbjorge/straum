@@ -18,7 +18,7 @@ Coverage: touched crates plus crates whose tests exercise them
 (`straum-notation` tests much of `straum-domain`). No rustup? Set
 `LLVM_COV` and `LLVM_PROFDATA` to the tools in `$(brew --prefix llvm)/bin`.
 
-PostgreSQL tests need Docker. `STRAUM_TEST_POSTGRES` picks the major
+PostgreSQL tests need Docker with Compose. `STRAUM_TEST_POSTGRES` picks the major
 (18 by default). The random workloads of the physical stream run
 `STRAUM_TEST_SEEDS` seeds (6) from `STRAUM_TEST_SEED_FROM` (0); CI's
 `correctness` job runs 50 new ones per major each run. `bench/taxi.py shell` runs Straum against
@@ -80,6 +80,14 @@ change.
 
 - No shell scripts. A tool is a Python file run with uv, and its just
   recipe is a thin wrapper. No `.sh` file, and no bash body in a recipe.
+- Containers run only through Docker Compose: tests, scripts,
+  benchmarks and docs. One project per run or test, named so runs
+  side by side never share a network, container name or port. Code
+  builds the Compose file as JSON and pipes it to `docker compose -f -`;
+  docs ship a `compose.yaml`. No `docker run`, no `docker network`, no
+  testcontainers. `docker exec`, `port`, `inspect` and `logs` on a
+  Compose container are fine, as are image commands (`build`, `push`,
+  `pull`, `create` and `cp` to copy a binary out).
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
 - No `unsafe`, no macros of our own, traits only at ports. Two
