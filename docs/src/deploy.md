@@ -36,8 +36,10 @@ straum run usage.sql
 ```
 
 Straum loads every table, then follows the stream. `GET /readyz` says
-whether it answers asks, `GET /livez` whether the process serves
-([endpoints](asks.md#endpoints)).
+whether it is loaded and within `--max-lag` of PostgreSQL, `GET /livez`
+whether the process serves ([endpoints](asks.md#endpoints)). A Straum
+that lags still answers asks, each with its `as_of`, as the table below
+says.
 
 ## States
 
