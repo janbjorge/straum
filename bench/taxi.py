@@ -240,14 +240,21 @@ async def run(
     url = f"postgres://postgres:{password}@127.0.0.1:{port}/postgres"
     async with connected(url) as pg:
         # Set here, not on the command line, which ALTER SYSTEM can't
-        # override when --wal physical turns it back on.
+        # override when --wal physical turns page images back on and when
+        # the load is done and commits flush again.
         await pg.execute("ALTER SYSTEM SET full_page_writes = off")
+        await pg.execute("ALTER SYSTEM SET synchronous_commit = off")
         await pg.execute("SELECT pg_reload_conf()")
         log(f"loading {MONTHS} months")
         load(stack)
         # The asks over a week or a day read this index.
         await pg.execute("CREATE INDEX ON yellow_trips (pickup_at)")
         await pg.execute("VACUUM ANALYZE")
+        # A commit is acknowledged once flushed, as on a real server, so
+        # "Commit to applied" doesn't count the flush the client never
+        # waited for.
+        await pg.execute("ALTER SYSTEM RESET synchronous_commit")
+        await pg.execute("SELECT pg_reload_conf()")
         if wal == "physical":
             # The physical stream rebuilds rows from page images, which the
             # load skipped; after this checkpoint each page's next change
@@ -397,16 +404,15 @@ def load(stack: Stack) -> None:
 
 def postgres(password: str, wal: str) -> dict:
     # Reads see the defaults but for shared_buffers, sized as a server
-    # would be. The rest only speed the load: no checkpoint midway, no flush
-    # per commit, which a throwaway server never needs, and memory for the
-    # index builds. run() turns page images off for the load. --wal
+    # would be. The rest only speed the load: no checkpoint midway and
+    # memory for the index builds. run() turns page images and the flush
+    # per commit off for the load, and the flush back on after it. --wal
     # physical is for a server at replica, the default, so it runs on one.
     settings = {
         "wal_level": "replica" if wal == "physical" else "logical",
         "shared_buffers": "2GB",
         "max_wal_size": "16GB",
         "checkpoint_timeout": "1h",
-        "synchronous_commit": "off",
         "maintenance_work_mem": "1GB",
         "max_parallel_maintenance_workers": "4",
     }

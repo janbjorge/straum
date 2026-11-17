@@ -198,25 +198,26 @@ longest ask meanwhile, which is the lock hold as a client feels it, and
 how much Straum's resident set grew. After each, it checks the fares by
 payment type against PostgreSQL, and fails if Straum started over, which
 would time a reload as the apply.
-One run on 2026-11-14, the machine, build and PostgreSQL of the
-[Results](#results); Straum held 114 MiB after the load and an idle ask
-took 177 µs:
+One run on 2026-11-17, the machine and PostgreSQL of the
+[Results](#results), with `synchronous_commit` back on once the trips
+are loaded, so a commit counts from its flush as on a real server;
+Straum held 121 MiB after the load and an idle ask took 204 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |
-| 1,000 | 360.0 ms | 1.6 ms | 2 MiB |
-| 10,000 | 263.7 ms | 10.7 ms | 7 MiB |
-| 100,000 | 915.5 ms | 107.5 ms | 61 MiB |
-| 1,000,000 | 10.1 s | 1,222.1 ms | 600 MiB |
+| 1,000 | 11.7 ms | 1.8 ms | 1 MiB |
+| 10,000 | 93.3 ms | 12.4 ms | 3 MiB |
+| 100,000 | 827.5 ms | 118.1 ms | 56 MiB |
+| 1,000,000 | 8.5 s | 1,238.7 ms | 457 MiB |
 
 Most of the time goes to PostgreSQL decoding the transaction and Straum
-reading it, outside the lock; the lock itself is held for about 1.1 ms
+reading it, outside the lock; the lock itself is held for about 1.2 ms
 per 1,000 rows, half of it moving each changed fare between the
 percentiles' value counts. Memory is what grows: the rows of a
-transaction wait in Straum until its commit, about 630 bytes each, so a
-million-row transaction holds over five times what both views do. That
+transaction wait in Straum until its commit, about 480 bytes each, so a
+million-row transaction holds nearly four times what both views do. That
 sets the default of `--max-transaction-rows` at 100,000: a transaction
-at the limit holds the lock for 108 ms, and anything larger is cheaper to
+at the limit holds the lock for 118 ms, and anything larger is cheaper to
 [start over](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 
