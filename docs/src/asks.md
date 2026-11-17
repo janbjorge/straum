@@ -114,8 +114,11 @@ can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
 
 The `bucket` bounds are RFC 3339 times, such as `"2026-11-13T00:00:00-05:00"`,
 or Unix seconds. A time is written `YYYY-MM-DDTHH:MM:SS`, then `Z` or an
-offset `+HH:MM`, with no leap second: `2026-11-13T09Z` is refused. Each bound written must fall on an edge of the view's
-`date_bin` buckets: Straum never answers for part of a bucket.
+offset `+HH:MM`, with no fraction and no leap second:
+`2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are refused. A zero
+offset is `Z`, never `+00:00` or `-00:00`. Each bound written must fall
+on an edge of the view's `date_bin` buckets: Straum never answers for
+part of a bucket.
 
 ## The answer
 

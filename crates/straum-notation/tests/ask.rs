@@ -230,11 +230,6 @@ fn bucket_bounds_come_once_each() {
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &[text("2024-01-01T00:00:00.5Z"), Literal::Int(FEB)],
-            "2024-01-01T00:00:00.5Z is not a whole second",
-        ),
-        (
-            "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &[
                 Literal::Decimal {
                     units: 17_040_672_005,
@@ -245,6 +240,32 @@ fn bucket_bounds_come_once_each() {
             "bucket bound $1 must be RFC 3339 or Unix seconds: 1704067200.5 is not a whole second",
         ),
     ]);
+}
+
+/// A bound has one spelling: no fraction of a second, and `Z` for a zero
+/// offset.
+#[test]
+fn a_bound_has_no_fraction_and_writes_z_for_a_zero_offset() {
+    let ask = "SELECT trips FROM t WHERE bucket >= $1";
+    let form = "write YYYY-MM-DDTHH:MM:SS, then Z or an offset such as +01:00";
+    for (bound, error) in [
+        ("2026-11-13T09:00:00.000Z", form),
+        ("2026-11-13T09:00:00.5Z", form),
+        ("2026-11-13T09:00:00+00:00", "write Z for a zero offset"),
+        ("2026-11-13T09:00:00-00:00", "write Z for a zero offset"),
+    ] {
+        assert_eq!(
+            errors(ask, &[text(bound)]),
+            [format!(
+                "line 1: bucket bound $1 must be RFC 3339 or Unix seconds: {bound:?}: {error}"
+            )],
+        );
+    }
+    let nine = 1_794_560_400;
+    for bound in ["2026-11-13T09:00:00Z", "2026-11-13T10:00:00+01:00"] {
+        let at = parse_ask(ask, &[text(bound)]).unwrap();
+        assert_eq!(at.from, Some(nine), "{bound}");
+    }
 }
 
 #[test]

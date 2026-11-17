@@ -149,6 +149,10 @@ enum InstantError {
     NotItsForm {
         text: String,
     },
+    /// A zero offset written other than `Z`.
+    ZeroOffset {
+        text: String,
+    },
 }
 
 impl fmt::Display for InstantError {
@@ -163,6 +167,9 @@ impl fmt::Display for InstantError {
                 formatter,
                 "{text:?}: write YYYY-MM-DDTHH:MM:SS, then Z or an offset such as +01:00"
             ),
+            InstantError::ZeroOffset { text } => {
+                write!(formatter, "{text:?}: write Z for a zero offset")
+            }
         }
     }
 }
@@ -494,10 +501,14 @@ fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
             text: text.to_owned(),
         });
     }
-    match text.parse::<Timestamp>() {
-        Ok(at) if at.subsec_nanosecond() != 0 => Err(InstantError::NotWholeSecond {
+    // RFC 3339 reads `-00:00` as an unknown local offset, and `+00:00` is
+    // `Z` written a second way.
+    if text.ends_with("+00:00") || text.ends_with("-00:00") {
+        return Err(InstantError::ZeroOffset {
             text: text.to_owned(),
-        }),
+        });
+    }
+    match text.parse::<Timestamp>() {
         Ok(at) => Ok(at.as_second()),
         Err(error) => Err(InstantError::NotRfc3339 {
             text: text.to_owned(),
@@ -506,14 +517,14 @@ fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
     }
 }
 
-/// Whether `text` is written `YYYY-MM-DDTHH:MM:SS`, a fraction or none,
-/// then `Z` or `+HH:MM`/`-HH:MM`, with a second below 60: the one form
-/// of RFC 3339 an ask takes. jiff reads more, such as `T09Z` or a leap
-/// second, which it moves to the next minute.
+/// Whether `text` is written `YYYY-MM-DDTHH:MM:SS`, then `Z` or
+/// `+HH:MM`/`-HH:MM`, with a second below 60: the one form of RFC 3339
+/// an ask takes. jiff reads more, such as `T09Z`, a fraction of a second
+/// or a leap second, which it moves to the next minute.
 fn rfc3339_form(text: &str) -> bool {
     const SHAPE: &[u8] = b"dddd-dd-ddTdd:dd:dd";
     let bytes = text.as_bytes();
-    let Some((head, mut rest)) = bytes.split_at_checked(SHAPE.len()) else {
+    let Some((head, rest)) = bytes.split_at_checked(SHAPE.len()) else {
         return false;
     };
     for (&byte, &shape) in head.iter().zip(SHAPE) {
@@ -527,19 +538,6 @@ fn rfc3339_form(text: &str) -> bool {
     }
     if head[17] >= b'6' {
         return false;
-    }
-    if let [b'.', fraction @ ..] = rest {
-        let mut digits = 0;
-        for &byte in fraction {
-            if !byte.is_ascii_digit() {
-                break;
-            }
-            digits += 1;
-        }
-        if digits == 0 {
-            return false;
-        }
-        rest = &fraction[digits..];
     }
     match rest {
         [b'Z'] => true,

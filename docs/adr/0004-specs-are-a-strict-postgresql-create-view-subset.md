@@ -25,7 +25,8 @@ itself infer, the spelling is the one it resolves without a lookup:
 `GROUP BY` lists positions, a `FILTER` names columns. Names are
 lowercase; a width is in the largest unit that divides it; a position
 or parameter has no leading zero; an ask holds no comment or trailing
-`;`; a bound is `YYYY-MM-DDTHH:MM:SS` with `Z` or an offset; a spec is
+`;`; a bound is `YYYY-MM-DDTHH:MM:SS` with `Z` or a nonzero offset,
+no fraction; a spec is
 never empty and never `OR REPLACE`. The canon is the
 grammar in `docs/src/spec.md` and `docs/src/asks.md`, whose examples
 the tests parse. A second spelling or a default revises this record.
