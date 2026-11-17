@@ -16,6 +16,7 @@ use straum_domain::{Spec, Store};
 use super::references::*;
 use super::support::*;
 use crate::dsn::Dsn;
+use crate::error::Error;
 use crate::source::{Postgres, Replication};
 use crate::watchdog::{UNWATCHED, Verdict, Watchdog, Watching, past_limit};
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
@@ -249,7 +250,11 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
         ));
     }
     db.run(FILLER);
-    assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));
+    if let Err(timeline) = slot_timeline(&mut db) {
+        // The verdict the watchdog recorded, if any, or the stream's error.
+        let watchdog = source.guard.blame(Error::Stopped);
+        panic!("{name}: the slot outlived the limit; watchdog: {watchdog}\n{timeline}");
+    }
     // The writer wakes, takes what was queued, then the reason.
     let deadline = Instant::now() + LONG;
     let error = loop {
@@ -365,27 +370,59 @@ const SLOT_ROUND: &str = "SELECT s.slot_name, s.active_pid, s.restart_lsn,
     FROM pg_replication_slots s LEFT JOIN pg_stat_activity a ON a.pid = s.active_pid
     WHERE s.slot_name LIKE 'straum%'";
 
+/// Every [`SESSION_EVERY`] rounds: the sessions of Straum's role, the
+/// watchdog's among them, and how long ago each began its last query.
+const SESSIONS: &str = "SELECT pid, backend_type, state, wait_event,
+        (extract(epoch FROM clock_timestamp() - query_start) * 1000)::bigint,
+        left(query, 60)
+    FROM pg_stat_activity WHERE usename = 'reader' ORDER BY pid";
+
+/// Rounds between two lists of Straum's sessions: about a second.
+const SESSION_EVERY: u32 = 10;
+
 /// Waits for Straum's slot to go. Still there after [`LONG`], it fails
 /// with `message` and what each round saw, so a failure on a slow runner
 /// says where the slot stuck.
 fn assert_slot_goes(db: &mut Db, message: &str) {
+    if let Err(timeline) = slot_timeline(db) {
+        panic!("{message}\n{timeline}");
+    }
+}
+
+/// Waits for Straum's slot to go: what each round saw if it is still
+/// there after [`LONG`].
+fn slot_timeline(db: &mut Db) -> Result<(), String> {
     let start = Instant::now();
-    let mut timeline = String::new();
+    let mut timeline = "ms since the wait began  slot  pid  restart_lsn  held  state  wait\n\
+        then, each second, Straum's sessions: pid  type  state  wait  ms since its query  query\n"
+        .to_owned();
+    let mut round = 0;
     while start.elapsed() < LONG {
         let rows = db.rows(SLOT_ROUND);
         if rows.is_empty() {
-            return;
+            return Ok(());
         }
-        for row in &rows {
-            let _ = write!(timeline, "{:>6} ms", start.elapsed().as_millis());
-            for field in row {
-                let _ = write!(timeline, "  {}", field.as_deref().unwrap_or("-"));
-            }
-            timeline.push('\n');
+        write_rows(
+            &mut timeline,
+            &format!("{:>6} ms", start.elapsed().as_millis()),
+            &rows,
+        );
+        if round % SESSION_EVERY == 0 {
+            write_rows(&mut timeline, "        ", &db.rows(SESSIONS));
         }
+        round += 1;
         thread::sleep(Duration::from_millis(100));
     }
-    panic!(
-        "{message}\nms since the wait began  slot  pid  restart_lsn  held  state  wait\n{timeline}"
-    );
+    Err(timeline)
+}
+
+/// Writes each of `rows` as a line after `prefix`.
+fn write_rows(timeline: &mut String, prefix: &str, rows: &[Vec<Option<String>>]) {
+    for row in rows {
+        timeline.push_str(prefix);
+        for field in row {
+            let _ = write!(timeline, "  {}", field.as_deref().unwrap_or("-"));
+        }
+        timeline.push('\n');
+    }
 }
