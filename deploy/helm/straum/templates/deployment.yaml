@@ -54,11 +54,11 @@ spec:
             - --publication
             - {{ .Values.publication | quote }}
             - --max-lag
-            - {{ .Values.maxLag | quote }}
+            - {{ .Values.maxLag | int64 | quote }}
             - --max-retained-wal
             - {{ .Values.maxRetainedWal | quote }}
             - --max-transaction-rows
-            - {{ .Values.maxTransactionRows | quote }}
+            - {{ .Values.maxTransactionRows | int64 | quote }}
             {{- if eq .Values.wal "physical" }}
             - --wal
             - physical

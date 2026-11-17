@@ -84,6 +84,22 @@ tests:
           path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
           value: url
 
+  - it: passes a million rows and a day of lag as whole numbers
+    template: deployment.yaml
+    set:
+      maxLag: 86400
+      maxTransactionRows: 1000000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "1000000"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "86400"
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: "1e+06"
+
   - it: reads the physical WAL with its memory limit
     template: deployment.yaml
     set:
