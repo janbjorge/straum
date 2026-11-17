@@ -377,7 +377,7 @@ impl Partials {
                 add_counts(trues, groups, cell_trues);
                 add_counts(falses, groups, cell_falses);
             }
-            _ => unreachable!("Aggregate::state names the column the measure reads"),
+            _ => unreachable!("Aggregate::state_kind names the state the measure reads"),
         }
     }
 
@@ -435,7 +435,7 @@ impl Partials {
                 trues[at] += cell_trues.get(cell);
                 falses[at] += cell_falses.get(cell);
             }
-            _ => unreachable!("Aggregate::state names the column the measure reads"),
+            _ => unreachable!("Aggregate::state_kind names the state the measure reads"),
         }
     }
 
@@ -496,7 +496,7 @@ impl Partials {
                 trues[at] += cell_trues.total();
                 falses[at] += cell_falses.total();
             }
-            _ => unreachable!("Aggregate::state names the column the measure reads"),
+            _ => unreachable!("Aggregate::state_kind names the state the measure reads"),
         }
     }
 

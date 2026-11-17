@@ -346,7 +346,6 @@ fn read_range(rollup: &Rollup, ask: &Ask) -> Range<i64> {
     start..end
 }
 
-/// The `by` keys, then the measures, as the ask names them.
 /// A HAVING condition made ready for the groups: where its measure sits
 /// among a row's values, and the value scaled to the measure's scale.
 pub(super) struct HavingCheck {
@@ -385,6 +384,7 @@ pub(super) fn meets(values: &[Value], checks: &[HavingCheck]) -> bool {
     true
 }
 
+/// The `by` keys, then the measures, as the ask names them.
 fn answer_columns(
     ask: &Ask,
     rollup: &Rollup,

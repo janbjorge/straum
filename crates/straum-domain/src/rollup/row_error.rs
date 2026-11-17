@@ -9,7 +9,8 @@ use std::slice::ChunksExact;
 use crate::identifier::Identifier;
 use crate::value::Datum;
 
-/// Why a row was turned away. The store is left as it was.
+/// Why a row was turned away. The store is left as it was, except after
+/// `Missing`: the rows held then no longer match the table's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowError {
     Arity {

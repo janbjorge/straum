@@ -12,8 +12,8 @@ use crate::value_counts::ValueCounts;
 
 use super::row_error::RowError;
 
-/// A form of [`State`], which [`crate::Aggregate`]'s `state` picks per
-/// measure.
+/// A form of [`State`], which [`crate::Aggregate`]'s `state_kind` picks
+/// per measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StateKind {
     Count,
