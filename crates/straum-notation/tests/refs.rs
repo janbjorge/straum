@@ -627,6 +627,43 @@ fn a_chained_key_column_reads_the_column_it_is_joined_to() {
     );
 }
 
+/// A join through a chained dim's key column goes through the column that
+/// dim was joined to: under INNER JOIN that column carries it, under LEFT
+/// OUTER JOIN it is refused for it.
+#[test]
+fn a_join_through_a_chained_key_column_reads_the_column_it_is_joined_to() {
+    let through = CHAIN
+        .replace("r.code AS code", "r.code AS code, w.label AS label")
+        .replace(
+            "LEFT OUTER JOIN public.regions AS r ON r.name = a.region",
+            "INNER JOIN public.regions AS r ON r.name = a.region\n\
+             LEFT OUTER JOIN public.w AS w ON w.id = r.name",
+        )
+        .replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2, 3, 4");
+    let spec = parse(&through).unwrap();
+    assert_eq!(
+        spec.fact("usage").unwrap().refs[2].via,
+        [Via::Attribute {
+            through: 0,
+            column: id("region")
+        }]
+    );
+    let left = through.replace(
+        "INNER JOIN public.regions",
+        "LEFT OUTER JOIN public.regions",
+    );
+    let error = sql_errors(&left);
+    assert!(
+        any_message(
+            &error,
+            Some(7),
+            "r.name is null where no r row matches, and a.region is not; \
+             write a.region, or join r with INNER JOIN"
+        ),
+        "{error:?}"
+    );
+}
+
 /// One dim column selected under two names is two keys, as a fact
 /// column is: the dim holds the column once.
 #[test]

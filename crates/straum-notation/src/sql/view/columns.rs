@@ -298,23 +298,14 @@ impl Walker {
         // Under LEFT OUTER JOIN it is null where no dim row matches, and
         // that column is not, so it is refused.
         if let Some(position) = key_position(joined, &column) {
-            let resolved = match &joined.reference.via[position] {
-                Via::Fact(via) => ResolvedColumn::Fact(via.clone()),
-                Via::Attribute {
-                    through: before,
-                    column: via,
-                } => ResolvedColumn::Attribute {
-                    through: *before,
-                    column: via.clone(),
-                },
-            };
+            let via = &joined.reference.via[position];
             if joined.reference.kind == RefKind::Left {
-                let near = written(scope, &resolved);
-                self.error(line(expression), left_key_message(&alias, &column, &near));
+                let message = left_key_message(scope, &alias, &column, via);
+                self.error(line(expression), message);
                 return Err(Reported);
             }
             return Ok(ColumnRead {
-                column: resolved,
+                column: joined_column(via),
                 cast,
             });
         }
@@ -441,9 +432,28 @@ fn written(scope: &Scope, column: &ResolvedColumn) -> String {
     }
 }
 
+/// The column a join's key column was joined to: the fact's or, in a
+/// chain, a dim's joined before.
+fn joined_column(via: &Via) -> ResolvedColumn {
+    match via {
+        Via::Fact(column) => ResolvedColumn::Fact(column.clone()),
+        Via::Attribute { through, column } => ResolvedColumn::Attribute {
+            through: *through,
+            column: column.clone(),
+        },
+    }
+}
+
 /// Why a key column of a `LEFT OUTER JOIN` can't be read, and what to
-/// write instead: `near`, the column joined to it, as the view writes it.
-pub(super) fn left_key_message(alias: &Identifier, column: &Identifier, near: &str) -> String {
+/// write instead: the column joined to it through `via`, as the view
+/// writes it.
+pub(super) fn left_key_message(
+    scope: &Scope,
+    alias: &Identifier,
+    column: &Identifier,
+    via: &Via,
+) -> String {
+    let near = written(scope, &joined_column(via));
     format!(
         "{alias}.{column} is null where no {alias} row matches, and {near} is not; \
          write {near}, or join {alias} with INNER JOIN"

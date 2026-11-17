@@ -41,11 +41,11 @@ enum Near {
     Via(Via),
     /// No column a join can go through.
     Unknown,
-    /// A key column of a `LEFT OUTER JOIN`, joined on the fact's `via`.
+    /// A key column of a `LEFT OUTER JOIN`, joined on `via`.
     LeftKey {
         alias: Identifier,
         column: Identifier,
-        via: Identifier,
+        via: Via,
     },
 }
 
@@ -250,8 +250,7 @@ impl Walker {
                 column,
                 via,
             } => {
-                let message =
-                    left_key_message(&near_alias, &column, &format!("{}.{via}", scope.alias));
+                let message = left_key_message(scope, &near_alias, &column, &via);
                 self.error(line(right.as_ref()), message);
                 return Err(NotEquality::Reported);
             }
@@ -416,20 +415,15 @@ fn near(scope: &Scope, near_side: Qualified) -> Near {
         RefKind::Left | RefKind::Inner => {}
         RefKind::Semi | RefKind::Anti => return Near::Unknown,
     }
-    // A key column of an inner-joined dim is the column it was joined on.
-    // Of a left-joined dim it is null where no row matches, and that
-    // column is not.
-    if let Some(position) = key_position(joined, &column)
-        && let Via::Fact(via) = &joined.reference.via[position]
-    {
-        if joined.reference.kind == RefKind::Left {
-            return Near::LeftKey {
-                alias,
-                column,
-                via: via.clone(),
-            };
-        }
-        return Near::Via(Via::Fact(via.clone()));
+    // A key column of an inner-joined dim is the column it was joined on,
+    // the fact's or, in a chain, a dim's joined before. Of a left-joined
+    // dim it is null where no row matches, and that column is not.
+    let Some(position) = key_position(joined, &column) else {
+        return Near::Via(Via::Attribute { through, column });
+    };
+    let via = joined.reference.via[position].clone();
+    if joined.reference.kind == RefKind::Left {
+        return Near::LeftKey { alias, column, via };
     }
-    Near::Via(Via::Attribute { through, column })
+    Near::Via(via)
 }
