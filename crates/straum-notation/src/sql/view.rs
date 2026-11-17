@@ -14,7 +14,9 @@ use straum_domain::{
     Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Width,
 };
 
-use super::{Clause, Names, NullTest, Reported, SqlError, Walker, line, statements};
+use super::{
+    Clause, Names, NullTest, Reported, SqlError, Walker, line, statements, without_leading_zeros,
+};
 use measures::is_date_bin;
 
 mod columns;
@@ -470,6 +472,15 @@ impl Walker {
         };
         let mut grouped = Vec::new();
         for expression in expressions {
+            if let Some(digits) = written_number(expression)
+                && let Some(position) = without_leading_zeros(digits)
+            {
+                self.error(
+                    line(expression),
+                    format!("GROUP BY {digits}: write {position}"),
+                );
+                return;
+            }
             let Some(position) = select_position(expression) else {
                 self.refuse(
                     line(expression),
@@ -493,8 +504,8 @@ impl Walker {
     }
 }
 
-/// A GROUP BY item written as a SELECT position, `1` on.
-fn select_position(expression: &sql::Expr) -> Option<usize> {
+/// The digits of a number written with no sign, as written.
+fn written_number(expression: &sql::Expr) -> Option<&str> {
     let sql::Expr::Value(sql::ValueWithSpan {
         value: sql::Value::Number(digits, false),
         span: _,
@@ -502,6 +513,12 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
     else {
         return None;
     };
+    Some(digits)
+}
+
+/// A GROUP BY item written as a SELECT position, `1` on.
+fn select_position(expression: &sql::Expr) -> Option<usize> {
+    let digits = written_number(expression)?;
     // `01` is `1` written a second way.
     if digits.len() > 1 && digits.starts_with('0') {
         return None;

@@ -1001,12 +1001,6 @@ fn second_spellings_are_refused() {
             1,
             "bucket width '1 hours': write '1 hour'",
         ),
-        (
-            "GROUP BY 1, 2, 3, 4",
-            "GROUP BY 01, 2, 3, 4",
-            6,
-            "GROUP BY item, write the key's position in SELECT, `01`",
-        ),
     ]);
     let empty = parse("").unwrap_err().to_string();
     assert_eq!(

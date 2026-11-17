@@ -283,6 +283,20 @@ fn every_select_item_is_named() {
     ]);
 }
 
+/// A GROUP BY position has no leading zero: the error names the one to
+/// write, and the position without it parses.
+#[test]
+fn a_group_by_position_has_no_leading_zero() {
+    for (group_by, error) in [
+        ("GROUP BY 01, 2, 3, 4, 5", "line 13: GROUP BY 01: write 1"),
+        ("GROUP BY 1, 2, 3, 004, 5", "line 13: GROUP BY 004: write 4"),
+    ] {
+        let zeros = canon("GROUP BY 1, 2, 3, 4, 5", group_by);
+        assert_eq!(error_lines(&zeros), [error], "{group_by}");
+    }
+    assert!(parse(&canon("GROUP BY 1, 2, 3, 4, 5", "GROUP BY 1, 2, 3, 4, 5")).is_ok());
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {
