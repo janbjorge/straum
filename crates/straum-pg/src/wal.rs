@@ -222,6 +222,27 @@ impl fmt::Display for WalError {
 
 impl std::error::Error for WalError {}
 
+/// Where the last record before `insert` ends, which is where a stream
+/// that has read all WAL so far stands. `pg_current_wal_insert_lsn()` at
+/// the start of a page points past the page header, where no record
+/// ends: the long header at the start of a `segment_bytes` segment, the
+/// short one elsewhere. A record that ends on a page holds at least a
+/// byte of it, aligned to 8, so it ends past either.
+pub(crate) fn record_end(insert: Lsn, segment_bytes: u64) -> Lsn {
+    let Lsn(at) = insert;
+    let in_page = at % PAGE_SIZE;
+    let header = if segment_bytes > 0 && at % segment_bytes == in_page {
+        reader::LONG_HEADER
+    } else {
+        reader::SHORT_HEADER
+    };
+    if in_page == header {
+        Lsn(at - in_page)
+    } else {
+        insert
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +340,22 @@ mod tests {
     fn says_each_problem_in_words() {
         for (problem, text) in EVERY_PROBLEM {
             assert_eq!(problem.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn a_record_ends_before_the_next_page_header() {
+        let segment = 16 << 20;
+        for (insert, end) in [
+            (0x1_0000_0110, 0x1_0000_0110),
+            (0x1_0000_2018, 0x1_0000_2000),
+            (0x1_0100_0028, 0x1_0100_0000),
+            // Past a short header a record can end at 40, and at 24 is a
+            // long header's inside.
+            (0x1_0000_2028, 0x1_0000_2028),
+            (0x1_0100_0018, 0x1_0100_0018),
+        ] {
+            assert_eq!(record_end(Lsn(insert), segment), Lsn(end), "{insert:x}");
         }
     }
 

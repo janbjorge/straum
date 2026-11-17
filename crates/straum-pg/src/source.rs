@@ -26,6 +26,7 @@ use crate::problem::{Problem, WaitProblem};
 use crate::stream::{Reader, Stream};
 use crate::unexpected::Unexpected;
 use crate::wal::pipeline::{Pipeline, Sight};
+use crate::wal::record_end;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::watchdog::{SlotGuard, UNWATCHED, Watching};
 use crate::wire::{Connection, ConnectionKind, first_row_value};
@@ -393,27 +394,46 @@ fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), Error> {
 /// The server's WAL position, and how far the slot has confirmed and keeps
 /// WAL.
 pub(crate) fn read_wal(connection: &mut Connection, slot: &str) -> Result<Wal, Error> {
+    // The insert position, not the write position: a commit is
+    // acknowledged once inserted under synchronous_commit = off, and
+    // as_of must not lead it (ADR-0005).
     let rows = connection.rows(&format!(
-        "SELECT pg_current_wal_lsn(), coalesce(confirmed_flush_lsn, restart_lsn), restart_lsn \
+        "SELECT pg_current_wal_insert_lsn(), coalesce(confirmed_flush_lsn, restart_lsn), \
+                restart_lsn, (SELECT setting FROM pg_settings WHERE name = 'wal_segment_size') \
          FROM pg_replication_slots WHERE slot_name = {}",
         escape_literal(slot)
     ))?;
-    let mut lsns = Vec::new();
-    for value in rows.first().into_iter().flatten() {
-        if let Some(lsn) = value.as_deref().and_then(parse_lsn) {
-            lsns.push(lsn);
-        }
-    }
-    match lsns[..] {
-        [written, confirmed, restart] => Ok(Wal {
-            written,
-            confirmed,
-            restart,
-        }),
-        _ => Err(Error::Protocol(Unexpected::NoWalPositionForSlot(
-            slot.to_owned(),
-        ))),
-    }
+    let Some([inserted, confirmed, restart, segment_bytes]) = rows.first().map(Vec::as_slice)
+    else {
+        return Err(no_wal_position(slot));
+    };
+    let (Some(inserted), Some(confirmed), Some(restart), Some(segment_bytes)) = (
+        lsn_of(inserted.as_deref()),
+        lsn_of(confirmed.as_deref()),
+        lsn_of(restart.as_deref()),
+        whole_number(segment_bytes.as_deref()),
+    ) else {
+        return Err(no_wal_position(slot));
+    };
+    Ok(Wal {
+        written: record_end(inserted, segment_bytes),
+        confirmed,
+        restart,
+    })
+}
+
+fn no_wal_position(slot: &str) -> Error {
+    Error::Protocol(Unexpected::NoWalPositionForSlot(slot.to_owned()))
+}
+
+/// A column's LSN, if it holds one.
+fn lsn_of(value: Option<&str>) -> Option<Lsn> {
+    value.and_then(parse_lsn)
+}
+
+/// A column's whole number, if it holds one.
+fn whole_number(value: Option<&str>) -> Option<u64> {
+    value?.parse().ok()
 }
 
 /// Streams from the snapshot's consistent point. Tables not loaded yet

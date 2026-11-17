@@ -300,6 +300,44 @@ fn stream_errors() {
     }
 }
 
+/// Under `synchronous_commit = off` a commit is acknowledged before its
+/// WAL is written, so the reading counts WAL as inserted: Straum is behind
+/// until it has the commit, and catches up once the WAL writer writes it.
+#[test]
+fn an_asynchronous_commit_counts_before_it_is_written() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "async", TABLES);
+    db.run("ALTER SYSTEM SET wal_writer_delay = '10s'");
+    db.run("SELECT pg_reload_conf()");
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    db.run(&format!(
+        "SET synchronous_commit = off; {}",
+        Rng::new(1).trip(1)
+    ));
+    let acknowledged = db.insert_lsn();
+    let wal = source.wal().unwrap();
+    assert!(wal.written >= acknowledged, "{wal:?} {acknowledged:?}");
+    assert!(wal.confirmed < wal.written, "{wal:?}");
+
+    let commit = source.next_commit(3 * LONG).unwrap().unwrap();
+    assert!(commit.lsn <= acknowledged);
+    assert_eq!(
+        source.next_commit(Duration::from_millis(100)).unwrap(),
+        None
+    );
+    let deadline = Instant::now() + 3 * LONG;
+    loop {
+        let wal = source.wal().unwrap();
+        if wal.confirmed >= wal.written {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never caught up: {wal:?}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// A commit with no changes, as `XLogData` messages.
 #[test]
 fn reads_the_servers_wal() {

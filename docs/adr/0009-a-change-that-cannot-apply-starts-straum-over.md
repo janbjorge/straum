@@ -45,8 +45,13 @@ while it starts before giving up. Checking from the stream thread was
 rejected: it stops reading the socket while its queue is full, which
 every long load causes, so it never learns the server's position then.
 
-About once a second the writer reads `pg_current_wal_lsn()` and its
-slot's `confirmed_flush_lsn` and `restart_lsn`. Lag is the time since
+About once a second the writer reads `pg_current_wal_insert_lsn()` and
+its slot's `confirmed_flush_lsn` and `restart_lsn`. The insert position,
+not the write position: under `synchronous_commit = off` a commit is
+acknowledged before its WAL is written, and an `as_of` read from the
+write position led it. At a page's start the insert position points
+past the page header, where no record ends, so Straum reads it as the
+page's start. Lag is the time since
 the last reading whose WAL the slot had wholly confirmed; WAL written
 during a load counts from its start. `/readyz` is off past `--max-lag`
 (30 s), while asks still answer. The same reading gives `as_of`
