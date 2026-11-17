@@ -528,3 +528,44 @@ fn a_repeated_condition_costs_no_memo_of_its_own() {
         "once {once} B, a thousand times {often} B"
     );
 }
+
+/// The most bytes an ask of the trips filtered on `borough = value` held
+/// at once, answered or refused.
+fn borough_filter_peak(store: &Store, value: Literal) -> isize {
+    let mut ask = ask(&[], 0, 1000);
+    ask.filter = vec![Condition {
+        key: id("borough"),
+        values: vec![value],
+    }];
+    let before = live();
+    PEAK.set(before);
+    drop(store.ask(&ask));
+    PEAK.get() - before
+}
+
+/// Checking a condition's type reads the dim's column type, not a join
+/// with a memo per pickup zone ever seen: an ask of the wrong type is
+/// refused at the cost of its error. Of the right type, the ask keeps
+/// that memo to answer.
+#[test]
+fn checking_an_ask_s_types_keeps_no_memo_of_its_joins() {
+    const PICKUPS: i64 = 50_000;
+    let mut store = store(1_000);
+    let columns = store.spec().fact("trips").unwrap().columns().clone();
+    for pickup in 0..PICKUPS {
+        let mut row = Vec::with_capacity(columns.len());
+        for column in &columns {
+            let mut value = trip_value(column.as_str(), 0, 0);
+            if column.as_str() == "pu" {
+                value = Datum::Int(ZONES + pickup);
+            }
+            row.push(value);
+        }
+        store.add_row("trips", &row).unwrap();
+    }
+    let memo = isize::try_from(PICKUPS).unwrap() * 4;
+    let refused = borough_filter_peak(&store, Literal::Int(1));
+    assert!(refused < 4_096, "refused, {refused} B");
+    let answered = borough_filter_peak(&store, Literal::Text("m".into()));
+    assert!(answered >= memo, "answered, {answered} B");
+}

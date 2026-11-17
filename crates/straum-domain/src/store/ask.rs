@@ -20,7 +20,7 @@ use super::lookup::{
     AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, Known, Lookup, Memo, UNKNOWN,
     Wanted,
 };
-use crate::value::{Threshold, Value};
+use crate::value::{ColumnType, Threshold, Value};
 
 use super::{Answer, AnswerColumn, CHECKED, Store, bound_part_of, key_part_of, position_of};
 
@@ -158,8 +158,7 @@ impl Store {
     fn check_types(&self, fact: &Fact, read: Read<'_>, ask: &Ask) -> Result<(), Vec<AskError>> {
         let mut wrong = Vec::new();
         for condition in &ask.filter {
-            let lookup = self.lookup(fact, read, &condition.key);
-            let column = lookup.column_type(read.rollup());
+            let column = self.condition_type(fact, read, &condition.key);
             for value in &condition.values {
                 if !column.fits(value) {
                     wrong.push(AskError::WrongType {
@@ -171,6 +170,24 @@ impl Store {
             }
         }
         if wrong.is_empty() { Ok(()) } else { Err(wrong) }
+    }
+
+    /// The type of the key a condition names, read without the memo a
+    /// [`Lookup`] of a dim value keeps: one entry per code of the via
+    /// column, which may be millions.
+    fn condition_type(&self, fact: &Fact, read: Read<'_>, name: &Identifier) -> ColumnType {
+        let rollup = match read {
+            Read::Bound(rollup) => return rollup.key_type(bound_part_of(fact, name)),
+            Read::Keyed(rollup) => rollup,
+        };
+        match fact.resolve(name).expect(CHECKED) {
+            Key::ByKey(by) => rollup.key_type(key_part_of(fact, by.key_part())),
+            Key::Attribute(reference, attribute) => {
+                let dim = self.spec.dim(reference.dim.as_str()).expect(CHECKED);
+                let read = AttributeIndex(position_of(&dim.attributes, &attribute.column));
+                self.projection(reference.dim.as_str()).attribute_type(read)
+            }
+        }
     }
 
     /// How a cell's joins repeat it, when any can: a key with several rows
