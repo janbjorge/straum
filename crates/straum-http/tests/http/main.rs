@@ -21,7 +21,7 @@ use straum_http::{QueryError, ReadAsk};
 use straum_notation::SqlError;
 use tokio::sync::oneshot;
 
-use crate::fake::{Fake, START};
+use crate::fake::{Fake, SPEC, START};
 
 /// A server on its own thread, and how to stop it.
 struct Server {
@@ -62,9 +62,17 @@ fn serve_with(app: App, read_ask: ReadAsk) -> Server {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(straum_http::serve(listener, app, read_ask, async {
-            stopped.await.ok();
-        }))
+        let spec = straum_notation::parse(SPEC).unwrap();
+        let definitions = straum_notation::definitions(SPEC, &spec);
+        runtime.block_on(straum_http::serve(
+            listener,
+            app,
+            read_ask,
+            definitions,
+            async {
+                stopped.await.ok();
+            },
+        ))
     });
     Server {
         address,

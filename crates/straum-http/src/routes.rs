@@ -2,7 +2,8 @@
 //! `lib.rs`, picks the handler by method and path, and returns the reply.
 //! An ask goes body, then `ask.rs`, then the `ReadAsk`, then the app on a
 //! blocking thread, then `answer.rs`; the other routes read the app and
-//! hand what they read to `status.rs` or `views.rs`.
+//! hand what they read to `status.rs` or `views.rs`, or reply with a
+//! view's definition as the spec wrote it.
 
 use std::convert::Infallible;
 use std::fmt::Display;
@@ -14,7 +15,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
-use straum_domain::Ask;
+use straum_domain::{Ask, Definition};
 
 use crate::answer::{Start, Window};
 use crate::json::quoted;
@@ -33,6 +34,9 @@ const MAX_ASK_BYTES: usize = 1 << 20;
 const MAX_ROWS: usize = 1000;
 
 const ROWS_PREFIX: &str = "/views/";
+
+/// What follows a view's name in `GET /views/NAME/spec`.
+const SPEC_SUFFIX: &str = "/spec";
 
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -97,6 +101,7 @@ pub(crate) async fn handle(
     request: Request<Incoming>,
     app: Arc<App>,
     read_ask: ReadAsk,
+    definitions: Arc<[Definition]>,
 ) -> Result<Reply, Infallible> {
     let (parts, body) = request.into_parts();
     let accept = parts.headers.get(ACCEPT);
@@ -111,7 +116,11 @@ pub(crate) async fn handle(
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {
-            get_rows(&app, &path[ROWS_PREFIX.len()..], parts.uri.query()).await
+            let named = &path[ROWS_PREFIX.len()..];
+            match named.strip_suffix(SPEC_SUFFIX) {
+                Some(view) => get_spec(&definitions, view),
+                None => get_rows(&app, named, parts.uri.query()).await,
+            }
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
@@ -150,6 +159,20 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
 
 /// The rows of a view the query string picks, as an ask for every row
 /// is answered.
+/// The view's `CREATE VIEW` statement. The spec is fixed at start, so it
+/// answers while the tables still load.
+fn get_spec(definitions: &[Definition], view: &str) -> Reply {
+    for definition in definitions {
+        if definition.view.as_str() == view {
+            return text(StatusCode::OK, format!("{}\n", definition.text));
+        }
+    }
+    text(
+        StatusCode::NOT_FOUND,
+        format!("no view {view}; GET /views lists them\n"),
+    )
+}
+
 async fn get_rows(app: &App, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
     let Some(asked) = app.rows_ask(view) else {

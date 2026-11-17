@@ -138,6 +138,8 @@ and the bounds of the buckets held, and the right arrow takes the line
 entered before that is shown dimmed past the cursor.
 
   \\d                    every view, as straum views prints them
+  \\d VIEW               the CREATE VIEW statement of VIEW, as the
+                        spec wrote it
   \\rows VIEW [START [COUNT]]
                         the rows PostgreSQL would give for VIEW:
                         COUNT of them, at most and else 1000, from

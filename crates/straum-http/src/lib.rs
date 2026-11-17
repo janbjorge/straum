@@ -24,6 +24,9 @@
 //!   `start`, a negative one counted back from the end; the `\rows` of
 //!   `straum shell`. 400 for a query string it can't read, 404 for a name
 //!   no view has.
+//! - `GET /views/NAME/spec`: the view's `CREATE VIEW` statement, as the
+//!   spec wrote it; the `\d NAME` of `straum shell`. 404 for a name no
+//!   view has. It answers while the tables still load.
 
 #![forbid(unsafe_code)]
 
@@ -49,7 +52,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::App;
-use straum_domain::{Ask, Literal};
+use straum_domain::{Ask, Definition, Literal};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -80,7 +83,8 @@ impl fmt::Display for QueryError {
 /// written.
 pub type ReadAsk = fn(&str, &[Literal]) -> Result<Ask, Vec<QueryError>>;
 
-/// Serves `app` on `listener` until `shutdown` completes, then finishes the
+/// Serves `app` on `listener`, and each view's `definitions`, until
+/// `shutdown` completes, then finishes the
 /// requests in flight and returns. Runs on a tokio runtime with I/O and
 /// time enabled.
 // `impl Future`: each caller passes an `async` block, whose type has no name.
@@ -88,11 +92,13 @@ pub async fn serve(
     listener: net::TcpListener,
     app: App,
     read_ask: ReadAsk,
+    definitions: Vec<Definition>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
     let app = Arc::new(app);
+    let definitions: Arc<[Definition]> = Arc::from(definitions);
     let graceful = GracefulShutdown::new();
     let mut shutdown = pin!(shutdown);
     loop {
@@ -104,7 +110,9 @@ pub async fn serve(
         .await;
         match accepted {
             None => break,
-            Some(Ok((stream, _))) => spawn_connection(stream, &app, read_ask, &graceful),
+            Some(Ok((stream, _))) => {
+                spawn_connection(stream, &app, read_ask, &definitions, &graceful);
+            }
             Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
     }
@@ -121,6 +129,7 @@ pub fn serve_until_signal(
     listener: net::TcpListener,
     app: App,
     read_ask: ReadAsk,
+    definitions: Vec<Definition>,
     stopping: fn(),
 ) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -138,7 +147,7 @@ pub fn serve_until_signal(
         either_signal(&mut terminate, &mut interrupt).await;
         stopping();
     };
-    runtime.block_on(serve(listener, app, read_ask, shutdown))
+    runtime.block_on(serve(listener, app, read_ask, definitions, shutdown))
 }
 
 async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {
@@ -159,15 +168,24 @@ fn spawn_connection(
     stream: TcpStream,
     app: &Arc<App>,
     read_ask: ReadAsk,
+    definitions: &Arc<[Definition]>,
     graceful: &GracefulShutdown,
 ) {
     // Nagle would hold an answer's second write until the client acks
     // the first, which a client that delays acks makes 40 ms.
     stream.set_nodelay(true).ok();
     let app = Arc::clone(app);
+    let definitions = Arc::clone(definitions);
     // hyper takes the handler as a closure; each request gets its own
-    // handle on the app.
-    let service = service_fn(move |request| routes::handle(request, Arc::clone(&app), read_ask));
+    // handle on the app and the definitions.
+    let service = service_fn(move |request| {
+        routes::handle(
+            request,
+            Arc::clone(&app),
+            read_ask,
+            Arc::clone(&definitions),
+        )
+    });
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .serve_connection(TokioIo::new(stream), service);

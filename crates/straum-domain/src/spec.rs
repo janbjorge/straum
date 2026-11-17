@@ -417,6 +417,14 @@ impl Fact {
     }
 }
 
+/// A view's `CREATE VIEW` statement as the spec's text wrote it, the
+/// comments before it kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Definition {
+    pub view: Identifier,
+    pub text: String,
+}
+
 /// Every dim and view of a spec, checked to fit together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {

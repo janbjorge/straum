@@ -36,8 +36,8 @@ pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use spec::{
-    Attribute, ByKey, Condition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin, Ref, RefKind,
-    Spec, Table, Time, Via, Width,
+    Attribute, ByKey, Condition, Definition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin,
+    Ref, RefKind, Spec, Table, Time, Via, Width,
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Store};

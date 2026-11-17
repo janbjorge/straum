@@ -172,7 +172,8 @@ so if the answer's `as_of` predates the write, ask once more.
 
 `docker compose exec straum /straum shell` is a prompt at the running
 Straum, with Tab completion: `\d` lists the views with the names and
-types an ask may use, and `\rows trips` prints a view's rows. [Command
+types an ask may use, `\d trips` prints the view's `CREATE VIEW`, and
+`\rows trips` prints its rows. [Command
 line](cli.md#straum-shell) has the shell and the `straum status`,
 `straum views` and `straum ask` commands beside it.
 

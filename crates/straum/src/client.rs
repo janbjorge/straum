@@ -81,6 +81,7 @@ pub(crate) enum Wanted {
     Readiness,
     Views,
     Rows,
+    Spec,
     Answer,
 }
 
@@ -91,6 +92,7 @@ impl Wanted {
             Wanted::Readiness => "whether it is ready",
             Wanted::Views => "its views",
             Wanted::Rows => "its rows",
+            Wanted::Spec => "a view's spec",
             Wanted::Answer => "an answer",
         }
     }
@@ -198,6 +200,16 @@ pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<String, C
         let _ = write!(path, "{separator}count={count}");
     }
     let request = Request::get(Wanted::Rows, path, Output::Text);
+    fetch(url, &request)
+}
+
+/// A view's `CREATE VIEW` statement, as `GET /views/NAME/spec` writes it.
+pub(crate) fn spec(url: &str, view: &str) -> Result<String, ClientError> {
+    // The name goes into the request line as it is.
+    if Identifier::new(view).is_none() {
+        return Err(ClientError::NotAViewName(view.to_owned()));
+    }
+    let request = Request::get(Wanted::Spec, format!("/views/{view}/spec"), Output::Text);
     fetch(url, &request)
 }
 

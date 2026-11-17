@@ -1,9 +1,9 @@
 //! `straum shell`: a prompt at a running Straum. Each line goes to
 //! `answer`, which reads it as a command and asks Straum through
-//! `client.rs`: `\d` for the views, `\rows VIEW [START [COUNT]]` for a
-//! view's rows, a negative START counting back from the end, or an
-//! ask written as `QUERY; PARAMETER...`, where a value in single quotes
-//! may hold spaces. At a terminal, `interactive` edits the line with
+//! `client.rs`: `\d` for the views, `\d VIEW` for a view's spec,
+//! `\rows VIEW [START [COUNT]]` for a view's rows, a negative START
+//! counting back from the end, or an ask written as
+//! `QUERY; PARAMETER...`, where a value in single quotes may hold spaces. At a terminal, `interactive` edits the line with
 //! rustyline, Tab completes from the views the Straum serves (see
 //! `complete.rs`), the line entered last that starts as this one does is
 //! suggested past the cursor, and the lines entered are kept between
@@ -26,7 +26,7 @@ use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
 use crate::client::{
-    ClientError, Output, RowWindow, ask, load_views, parameter_words, rows, views,
+    ClientError, Output, RowWindow, ask, load_views, parameter_words, rows, spec, views,
 };
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
@@ -80,6 +80,7 @@ fn answer(url: &str, line: &str) -> Outcome {
         ["\\q"] => return Outcome::Leave,
         ["\\?"] => Ok(shell_commands()),
         ["\\d"] => views(url, Output::Text),
+        ["\\d", view] => spec(url, view),
         ["\\rows", view, ref bounds @ ..] if bounds.len() <= 2 => {
             let window = match row_window(bounds) {
                 Ok(window) => window,
@@ -490,6 +491,22 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_asks_for_a_views_spec() {
+        let request = GET_ROWS.replacen("trips", "trips/spec", 1);
+        let reply = "HTTP/1.1 200 OK\r\n\r\nCREATE VIEW trips AS SELECT 1;\n";
+        let written = shelled(&request, reply, "\\d trips\n");
+        let spec = "CREATE VIEW trips AS SELECT 1;\n".to_owned();
+        assert_eq!(written, (spec, String::new(), 0));
+        let (written, errors, failed) = shelled(&request, reply, "\\d trips zones\n\\d a-b\n");
+        assert_eq!((written.as_str(), failed), ("", 2));
+        assert_eq!(
+            errors,
+            "straum: no command \"\\\\d trips zones\"; \\? lists them\n\
+             straum: \"a-b\" is not a view's name\n"
+        );
+    }
+
+    #[test]
     fn a_value_in_single_quotes_keeps_its_spaces() {
         let ask = "SELECT \"x\"; 7 'Staten Island' true\n";
         let written = shelled(POST_ASK_SPACED, "HTTP/1.1 200 OK\r\n\r\n    1\n", ask);
@@ -538,6 +555,8 @@ mod tests {
         assert_eq!(
             commands,
             "  \\d                    every view, as straum views prints them\n\
+            \x20 \\d VIEW               the CREATE VIEW statement of VIEW, as the\n\
+            \x20                       spec wrote it\n\
             \x20 \\rows VIEW [START [COUNT]]\n\
             \x20                       the rows PostgreSQL would give for VIEW:\n\
             \x20                       COUNT of them, at most and else 1000, from\n\

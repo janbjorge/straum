@@ -189,6 +189,7 @@ A prompt at the Straum at `--url`. Each line is a command:
 | Line | Prints |
 | --- | --- |
 | `\d` | Every view, as `straum views` does. |
+| `\d VIEW` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it. |
 | `\rows VIEW [START [COUNT]]` | The rows PostgreSQL would give for the view: every measure by the bucket and every key, over the buckets held. COUNT of them, at most and else 1000, from row START, else 0. A negative START counts back from the end. |
 | `QUERY; PARAMETER...` | The answer to an ask, as `straum ask` does: the query, a semicolon, then the values of `$1`, `$2` and on. A value with spaces goes in single quotes: `'Staten Island'`. |
 | `\?` | These commands. |
@@ -218,7 +219,7 @@ has and, past the first, from which row they print.
 large view it takes as long as an ask over all its buckets.
 
 At a terminal, Tab completes by where the cursor is: keys and measures
-after `SELECT`, views after `FROM`, a whole condition with the next
+after `SELECT`, views after `FROM`, `\d` or `\rows`, a whole condition with the next
 free parameter after `WHERE` or `AND`, a selected measure and then a
 comparison after `HAVING`, and past the semicolon the start or end of
 the buckets held. It offers what is likely next; Straum still checks

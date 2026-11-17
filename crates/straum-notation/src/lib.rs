@@ -2,7 +2,8 @@
 //! answers. `docs/src/spec.md` is its grammar (ADR-0004). `sqlparser`
 //! parses the text into a tree; the walker in `sql/` reads the tree into
 //! the domain's dims, facts and asks; `Spec::new` then checks the views
-//! against each other.
+//! against each other. `definitions` cuts the text into each view's
+//! statement as written, for a reader to see.
 //!
 //! PostgreSQL rejects view options, but Straum never sends a view to
 //! PostgreSQL, so `WITH (buckets = ...)` needn't be one it takes.
@@ -13,7 +14,7 @@ mod sql;
 
 use std::fmt;
 
-use straum_domain::{Spec, SpecError};
+use straum_domain::{Definition, Spec, SpecError};
 
 pub use sql::{SqlError, parse_ask};
 
@@ -29,6 +30,21 @@ pub enum Error {
 pub fn parse(text: &str) -> Result<Spec, Error> {
     let sql::Views { dims, facts } = sql::parse(text).map_err(Error::Sql)?;
     Spec::new(dims, facts).map_err(Error::Spec)
+}
+
+/// Each view's `CREATE VIEW` statement in `text`, which `spec` was parsed
+/// from, as written.
+pub fn definitions(text: &str, spec: &Spec) -> Vec<Definition> {
+    let mut definitions = Vec::with_capacity(spec.facts().len());
+    // A spec that parsed holds only `CREATE VIEW` statements, each a view
+    // in the order written.
+    for (fact, text) in spec.facts().iter().zip(sql::statement_texts(text)) {
+        definitions.push(Definition {
+            view: fact.name.clone(),
+            text,
+        });
+    }
+    definitions
 }
 
 impl fmt::Display for SqlError {

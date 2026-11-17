@@ -1,7 +1,8 @@
 //! The walker: it reads the tree `sqlparser` builds from Straum SQL and
 //! turns it into Straum's own types. `view` walks a spec's `CREATE VIEW`
 //! statements into dims and facts, `ask` walks an ask's `SELECT` into an
-//! `Ask`. This file holds the `Walker`, which collects every error it
+//! `Ask`; `definition` cuts a spec's text into its statements as written.
+//! This file holds the `Walker`, which collects every error it
 //! meets, and the parts both walks share: names, tables, the one `SELECT`
 //! and its clauses, and filter conditions.
 //!
@@ -19,10 +20,12 @@ use sqlparser::parser::Parser;
 use straum_domain::{Condition, Identifier, Literal};
 
 mod ask;
+mod definition;
 mod view;
 
 use ask::Parameters;
 pub use ask::parse_ask;
+pub(crate) use definition::statement_texts;
 use view::Scope;
 pub(crate) use view::{Views, parse};
 

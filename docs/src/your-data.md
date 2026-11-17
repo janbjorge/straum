@@ -78,7 +78,8 @@ PostgreSQL: docker compose -p straum-try-usage exec postgres psql -U postgres
 Opening straum shell. Leaving it removes both containers.
 ```
 
-`\d` lists the views, `\rows usage` prints a view's rows.
+`\d` lists the views, `\d usage` prints a view's `CREATE VIEW`, and
+`\rows usage` prints its rows.
 
 Both containers run in one Docker Compose project, the stack, named
 `straum-try-` and the spec's file name, with its own network. Stacks of

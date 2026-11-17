@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use rustyline::error::ReadlineError;
 use straum_app::{App, Step, Writer};
-use straum_domain::{Ask, Literal, Spec};
+use straum_domain::{Ask, Definition, Literal, Spec};
 use straum_http::QueryError;
 use straum_notation::SqlError;
 use straum_pg::{Dsn, DsnError, Postgres};
@@ -220,10 +220,19 @@ fn read_file(path: &str) -> Result<String, Failure> {
     }
 }
 
-fn read_spec(path: &str) -> Result<Spec, Failure> {
+/// A spec file, read and checked, and each view's statement in it.
+struct SpecFile {
+    spec: Spec,
+    definitions: Vec<Definition>,
+}
+
+fn read_spec(path: &str) -> Result<SpecFile, Failure> {
     let text = read_file(path)?;
     match straum_notation::parse(&text) {
-        Ok(spec) => Ok(spec),
+        Ok(spec) => {
+            let definitions = straum_notation::definitions(&text, &spec);
+            Ok(SpecFile { spec, definitions })
+        }
         Err(error) => {
             let path = path.to_owned();
             Err(Failure::Spec { path, error })
@@ -242,7 +251,7 @@ fn plan(
         dsn_file,
     }: Plan,
 ) -> Result<(), Failure> {
-    let spec = read_spec(&spec)?;
+    let spec = read_spec(&spec)?.spec;
     let dsn = read_dsn(dsn_file.as_deref())?;
     let role = match (&role, &dsn) {
         (Some(role), _) => role.as_str(),
@@ -293,7 +302,7 @@ fn run(
         max_transaction_rows,
     }: Run,
 ) -> Result<(), Failure> {
-    let spec = read_spec(&spec)?;
+    let SpecFile { spec, definitions } = read_spec(&spec)?;
     let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
         return Err(Failure::NoDsn);
     };
@@ -330,7 +339,7 @@ fn run(
         .map_err(Failure::StartingWriter)?;
 
     log(&format!("listening on {address}"));
-    straum_http::serve_until_signal(listener, app, read_ask, say_stopping)
+    straum_http::serve_until_signal(listener, app, read_ask, definitions, say_stopping)
         .map_err(Failure::Serving)?;
     log("stopped");
     // Leaving closes the replication connections, and PostgreSQL drops

@@ -1,9 +1,10 @@
-//! `GET /views` and `GET /views/NAME` end to end: the views as text and
-//! as JSON, a view's rows, and both while the tables still load.
+//! `GET /views`, `GET /views/NAME` and `GET /views/NAME/spec` end to
+//! end: the views as text and as JSON, a view's rows, its spec, and each
+//! while the tables still load.
 
 use std::net::SocketAddr;
 
-use crate::fake::{Fake, LIMITS, fake, int, trip, writer, writer_with};
+use crate::fake::{Fake, LIMITS, SPEC, fake, int, trip, writer, writer_with};
 use crate::{Reply, call, request, serve, started};
 
 fn views_as_json(address: SocketAddr) -> Reply {
@@ -171,5 +172,22 @@ fn a_view_shows_the_rows_its_query_string_picks() {
         (reply.status, reply.body.as_str()),
         (404, "no view zones; GET /views lists them\n")
     );
+    server.stop();
+}
+
+#[test]
+fn a_view_shows_its_spec_while_the_tables_load() {
+    let writer = writer();
+    let server = serve(writer.app().clone());
+    let reply = call(server.address, "GET", "/views/trips/spec", "");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.body, format!("{}\n", SPEC.trim()));
+    let reply = call(server.address, "GET", "/views/zones/spec", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (404, "no view zones; GET /views lists them\n")
+    );
+    let reply = call(server.address, "POST", "/views/trips/spec", "");
+    assert_eq!((reply.status, reply.body.as_str()), (405, "use GET\n"));
     server.stop();
 }

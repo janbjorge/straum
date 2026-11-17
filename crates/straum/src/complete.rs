@@ -1,11 +1,12 @@
 //! What Tab offers in `straum shell`, and the hint shown past the cursor.
 //! `read_views` reads the views a Straum serves as JSON; `complete` and
 //! `hint` take those views and the line being edited and look at the words
-//! before the cursor: a view after `FROM`, its keys and measures after
-//! `SELECT`, a whole condition after `WHERE`, the selected keys after
-//! `GROUP BY`, a selected measure and a comparison after `HAVING`, the
-//! bounds of the buckets held where a parameter is a bound. Plain functions, with no terminal and no network: `shell.rs`
-//! calls them. A line is split into words, never parsed: Straum checks the
+//! before the cursor: a view after `FROM`, `\rows` or `\d`, its keys and
+//! measures after `SELECT`, a whole condition after `WHERE`, the selected
+//! keys after `GROUP BY`, a selected measure and a comparison after
+//! `HAVING`, the bounds of the buckets held where a parameter is a bound.
+//! Plain functions, with no terminal and no network: `shell.rs` calls
+//! them. A line is split into words, never parsed: Straum checks the
 //! ask.
 
 use std::fmt;
@@ -297,7 +298,8 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     let Some(first) = before.first() else {
         return line_starts();
     };
-    if is(first, "\\rows") && before.len() == 1 {
+    let takes_a_view = is(first, "\\rows") || is(first, "\\d");
+    if takes_a_view && before.len() == 1 {
         return view_names(views);
     }
     let view = view_after_from(views, &all);
@@ -738,7 +740,9 @@ mod tests {
         assert_eq!(offers("\\rows "), ["orders ", "logins "]);
         assert_eq!(offers("\\rows lo"), ["logins "]);
         assert_eq!(offers("\\rows logins "), Vec::<String>::new());
-        assert_eq!(offers("\\d "), Vec::<String>::new());
+        assert_eq!(offers("\\d "), ["orders ", "logins "]);
+        assert_eq!(offers("\\d lo"), ["logins "]);
+        assert_eq!(offers("\\d logins "), Vec::<String>::new());
     }
 
     #[test]
