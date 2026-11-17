@@ -155,7 +155,8 @@ impl Walker {
         );
     }
 
-    /// An unquoted name, folded to lower case as PostgreSQL does.
+    /// An unquoted name, folded to lower case as PostgreSQL does: ASCII
+    /// letters only, so the Kelvin sign is no `k`.
     fn read_identifier(&mut self, identifier: &sql::Ident) -> Result<Identifier, Reported> {
         let sql::Ident {
             value,
@@ -166,7 +167,7 @@ impl Walker {
             self.refuse(span.start.line, "quoted identifier", identifier);
             return Err(Reported);
         }
-        let Some(read) = Identifier::new(&value.to_lowercase()) else {
+        let Some(read) = Identifier::new(&value.to_ascii_lowercase()) else {
             self.error(span.start.line, format!("bad identifier {value}"));
             return Err(Reported);
         };

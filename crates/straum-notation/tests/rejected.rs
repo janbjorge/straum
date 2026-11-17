@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{any_contains, edit, error_lines, rejects};
+use common::{BASE, any_contains, edit, error_lines, rejects};
 use straum_notation::parse;
 
 /// Statements and view shape.
@@ -127,6 +127,21 @@ fn view_options_other_than_buckets_are_rejected() {
             "bad identifier kkkk",
         ),
     ]);
+}
+
+/// PostgreSQL folds the ASCII letters of an unquoted name, and no other:
+/// `KIND` is `kind`, the Kelvin sign before `ind` is no `k`.
+#[test]
+fn names_fold_ascii_letters_only() {
+    rejects(&[(
+        "count(*) AS n",
+        "count(*) AS \u{212A}ind",
+        3,
+        "bad identifier \u{212A}ind",
+    )]);
+    let folded = edit(BASE, "count(*) AS n", "count(*) AS KIND");
+    let spec = parse(&folded).unwrap();
+    assert!(spec.fact("t").unwrap().measure("kind").is_some());
 }
 
 /// Query.
