@@ -434,7 +434,11 @@ impl fmt::Display for AskError {
             }
             AskError::WrongType { key, column, value } => {
                 let value = described(value);
-                write!(f, "{key} is {column}, so it can't be {value}")
+                write!(f, "{key} is {column}, so it can't be {value}")?;
+                match column.spelling() {
+                    Some(spelling) => write!(f, "; {spelling}"),
+                    None => Ok(()),
+                }
             }
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
             AskError::RangeUnaligned { at, width } => {

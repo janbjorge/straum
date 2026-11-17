@@ -20,4 +20,5 @@ pub(crate) mod support;
 mod taxi_month;
 mod tls;
 mod transactions;
+mod types;
 mod watchdog;

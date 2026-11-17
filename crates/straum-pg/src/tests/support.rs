@@ -16,7 +16,7 @@ use std::time::Duration;
 use straum_app::{App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
     Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Store,
-    Value, decimal,
+    Value, decimal, format_date, format_uuid,
 };
 
 use crate::dsn::Dsn;
@@ -401,6 +401,8 @@ pub(super) fn datum(key: &Datum, scale: u32) -> Option<String> {
         Datum::Int(number) => Some(decimal(i128::from(*number), scale)),
         Datum::Text(text) => Some(text.to_string()),
         Datum::Bool(flag) => Some(boolean(*flag)),
+        Datum::Date(days) => Some(format_date(*days)),
+        Datum::Uuid(bytes) => Some(format_uuid(bytes)),
     }
 }
 

@@ -16,6 +16,7 @@ mod ask;
 mod closest;
 mod codes;
 mod column;
+mod date;
 mod hash;
 mod identifier;
 mod index;
@@ -26,12 +27,14 @@ mod spec_error;
 mod store;
 #[cfg(test)]
 mod test_rng;
+mod uuid;
 mod value;
 mod value_counts;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey, Comparison, Instead, MeasureCondition};
 pub use closest::closest;
+pub use date::{days_from_civil, format_date, parse_date};
 pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
@@ -41,4 +44,5 @@ pub use spec::{
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};
+pub use uuid::{format_uuid, parse_uuid};
 pub use value::{ColumnType, Datum, Value, decimal, push_decimal};

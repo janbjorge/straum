@@ -49,6 +49,20 @@ be in UTC (`ColumnType::Time { zoned }`). The `date_bin` origin matches
 the column's type, `timestamp 'epoch'` or `timestamptz 'epoch'`. No
 `AT TIME ZONE`. `infinity` reads as a null time, a bucket no ask reads.
 
+Types are listed, the rest refused naming the type: the integer types,
+`numeric(p, s)` with `p` at most 18, `boolean`, `text`, `varchar`,
+`timestamptz`, `timestamp`, `date`, `uuid`, and an enum as text. A
+`date` or `uuid` is a key, counted and counted distinct, never summed
+or taken the least or greatest of, as text is. Its literal or
+parameter is a string spelled as PostgreSQL prints it under
+`DateStyle = ISO`, and only so: `2024-01-15`, `0044-03-15 BC`,
+`infinity`, a uuid in lowercase 8-4-4-4-12 hex. `2024-1-15`, uppercase
+or braces are refused, saying how to write it. A date keeps `infinity`
+as a value, unlike a time, since PostgreSQL groups by it. `real` and
+`double precision` are refused wherever the view reads them: a float
+sum moves with the order it was added in and can't take a delete
+exactly, so it can't equal PostgreSQL's.
+
 Null-ness is a key: `(f.col IS NULL) AS name`, or `IS NOT NULL`, is a
 boolean key. A `FILTER`'s `IS NULL` counts through that key and is
 refused without it; never over the time column, nowhere else.

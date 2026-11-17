@@ -163,6 +163,8 @@ pub(crate) enum ColumnFix {
     /// `character(n)` as a key, which PostgreSQL compares without its
     /// trailing spaces.
     Padded,
+    /// `real` or `double precision`, whatever the use.
+    Float,
 }
 
 /// What is wrong with a view's joins or filters.
@@ -357,6 +359,9 @@ fn write_column(
                 ColumnFix::Padded => "; PostgreSQL compares it without its trailing spaces, \
                                       and Straum can't: make it text or varchar"
                     .to_owned(),
+                ColumnFix::Float => "; Straum reads no float type, as its sums can't equal \
+                                     PostgreSQL's exactly: make it numeric(p, s) with p at most 18"
+                    .to_owned(),
             };
             write!(
                 formatter,
@@ -393,10 +398,16 @@ impl fmt::Display for ViewProblem {
                 key,
                 column_type,
                 literal,
-            } => write!(
-                formatter,
-                "{filter} compares {key} ({column_type}) with {literal}"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "{filter} compares {key} ({column_type}) with {literal}"
+                )?;
+                match column_type.spelling() {
+                    Some(spelling) => write!(formatter, "; {spelling}"),
+                    None => Ok(()),
+                }
+            }
             ViewProblem::NotALabel {
                 filter,
                 key,

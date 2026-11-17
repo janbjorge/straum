@@ -38,7 +38,10 @@ use std::time::SystemTime;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{AnswerColumn, AnswerRow, Ask, Cut, Datum, Value, decimal, push_decimal};
+use straum_domain::{
+    AnswerColumn, AnswerRow, Ask, Cut, Datum, Value, decimal, format_date, format_uuid,
+    push_decimal,
+};
 
 use crate::json::quoted;
 use crate::time::{rfc3339, rfc3339_of};
@@ -276,6 +279,8 @@ fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
     let text = match key {
         &Datum::Int(seconds) if column.is_time => time_key(seconds),
         Datum::Text(text) => escaped(text),
+        Datum::Date(days) => format_date(*days),
+        Datum::Uuid(bytes) => format_uuid(bytes),
         key => datum_json(key, column.scale),
     };
     let align = match key {
@@ -382,6 +387,8 @@ fn datum_json(datum: &Datum, scale: u32) -> String {
         Datum::Bool(boolean) => boolean.to_string(),
         Datum::Int(integer) => decimal(i128::from(*integer), scale),
         Datum::Text(text) => quoted(text),
+        Datum::Date(days) => quoted(&format_date(*days)),
+        Datum::Uuid(bytes) => quoted(&format_uuid(bytes)),
     }
 }
 
@@ -450,6 +457,9 @@ mod tests {
             (Datum::Bool(false), 0),
             (Datum::Int(-15), 1),
             (Datum::Text("a\"b".into()), 0),
+            (Datum::Date(8_780), 0),
+            (Datum::Date(i32::MAX), 0),
+            (Datum::Uuid([0xab; 16]), 0),
         ] {
             out.push_str(&datum_json(&datum, scale));
             out.push(' ');
@@ -466,7 +476,8 @@ mod tests {
         }
         assert_eq!(
             out,
-            r#"null true false -1.5 "a\"b" null 0.07 0.375 true false "#
+            "null true false -1.5 \"a\\\"b\" \"2024-01-15\" \"infinity\" \
+             \"abababab-abab-abab-abab-abababababab\" null 0.07 0.375 true false "
         );
     }
 
@@ -595,6 +606,29 @@ bucket               | shared | fare
             keys.push(line.split(" | ").nth(1).unwrap().trim_end().to_owned());
         }
         assert_eq!(keys, ["null", r"\null", "nullable", r"\\null"], "{text}");
+    }
+
+    /// A date and a uuid print as PostgreSQL prints them, unquoted, on
+    /// the left.
+    #[test]
+    fn a_table_prints_dates_and_uuids_as_postgresql_does() {
+        let rows = vec![
+            row(Datum::Date(-746_117), Value::Int(1)),
+            row(Datum::Uuid([0x0f; 16]), Value::Int(2)),
+        ];
+        let text = table(&windowed(rows, first(2)));
+        let mut keys = Vec::new();
+        for line in text.lines().skip(2).take(2) {
+            keys.push(line.split(" | ").nth(1).unwrap().to_owned());
+        }
+        assert_eq!(
+            keys,
+            [
+                "0044-03-15 BC                       ",
+                "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+            ],
+            "{text}"
+        );
     }
 
     /// The answer of `rows` cut to `window`, as the store cuts it.

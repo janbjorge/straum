@@ -7,7 +7,9 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::date::parse_date;
 use crate::spec::Literal;
+use crate::uuid::parse_uuid;
 
 /// A column's type. Only the source knows it, so a load sets it per column;
 /// asks compare values with it, and answers print numbers in its scale.
@@ -26,6 +28,10 @@ pub enum ColumnType {
     Time {
         zoned: bool,
     },
+    /// Days since 2000-01-01, as PostgreSQL keeps a `date`.
+    Date,
+    /// A `uuid`'s sixteen bytes.
+    Uuid,
 }
 
 impl ColumnType {
@@ -38,17 +44,36 @@ impl ColumnType {
     }
 
     /// Whether `literal` is of the column's type. An integer fits a numeric
-    /// column only at scale 0: at scale 2, `1` would read as 0.01.
+    /// column only at scale 0: at scale 2, `1` would read as 0.01. A date
+    /// or a uuid is text spelled as PostgreSQL prints it.
     pub fn fits(self, literal: &Literal) -> bool {
         match literal {
             Literal::Int(_) => {
                 matches!(self, ColumnType::Int | ColumnType::Numeric { scale: 0 })
             }
-            Literal::Text(_) => self == ColumnType::Text,
+            Literal::Text(text) => match self {
+                ColumnType::Text => true,
+                ColumnType::Date => parse_date(text).is_some(),
+                ColumnType::Uuid => parse_uuid(text).is_some(),
+                _ => false,
+            },
             Literal::Bool(_) => self == ColumnType::Bool,
             // A key compares by `=`, which a key's scale would make depend
             // on digits the column may not keep.
             Literal::Decimal { .. } => false,
+        }
+    }
+
+    /// How to write a value of the type, for a type whose text has one
+    /// spelling of the several PostgreSQL reads.
+    pub fn spelling(self) -> Option<&'static str> {
+        match self {
+            ColumnType::Date => Some("write a date as YYYY-MM-DD, such as 2024-01-15"),
+            ColumnType::Uuid => Some(
+                "write a uuid as lowercase hex in groups of 8-4-4-4-12, \
+                 such as a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            ),
+            _ => None,
         }
     }
 }
@@ -62,6 +87,8 @@ impl fmt::Display for ColumnType {
             ColumnType::Text => f.write_str("text"),
             ColumnType::Time { zoned: true } => f.write_str("a timestamptz"),
             ColumnType::Time { zoned: false } => f.write_str("a timestamp"),
+            ColumnType::Date => f.write_str("a date"),
+            ColumnType::Uuid => f.write_str("a uuid"),
         }
     }
 }
@@ -74,6 +101,13 @@ pub enum Datum {
     Bool(bool),
     Int(i64),
     Text(Arc<str>),
+    /// Days since 2000-01-01; `i32::MAX` and `i32::MIN` are `infinity`
+    /// and `-infinity`, which order after and before every date, as in
+    /// PostgreSQL.
+    Date(i32),
+    /// Bytes, not a `u128`: its 16-byte alignment would make every datum
+    /// a third larger. Bytes order as PostgreSQL orders uuids.
+    Uuid([u8; 16]),
 }
 
 /// One measure's answer for one group.
@@ -340,11 +374,17 @@ mod tests {
             ColumnType::Text,
             ColumnType::Time { zoned: true },
             ColumnType::Time { zoned: false },
+            ColumnType::Date,
+            ColumnType::Uuid,
         ];
+        let uuid = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
         let values = [
             Literal::Int(1),
             Literal::Text("1".into()),
             Literal::Bool(true),
+            Literal::Text("2024-01-15".into()),
+            Literal::Text(uuid.into()),
+            Literal::Decimal { units: 1, scale: 0 },
         ];
         let mut fits = Vec::new();
         for column in types {
@@ -361,6 +401,10 @@ mod tests {
                 (ColumnType::Numeric { scale: 0 }, Literal::Int(1)),
                 (ColumnType::Bool, Literal::Bool(true)),
                 (ColumnType::Text, Literal::Text("1".into())),
+                (ColumnType::Text, Literal::Text("2024-01-15".into())),
+                (ColumnType::Text, Literal::Text(uuid.into())),
+                (ColumnType::Date, Literal::Text("2024-01-15".into())),
+                (ColumnType::Uuid, Literal::Text(uuid.into())),
             ]
         );
     }
@@ -456,6 +500,8 @@ mod tests {
             ColumnType::Text,
             ColumnType::Time { zoned: true },
             ColumnType::Time { zoned: false },
+            ColumnType::Date,
+            ColumnType::Uuid,
         ];
         let mut shown = Vec::new();
         for column_type in types {
@@ -469,8 +515,18 @@ mod tests {
                 "a boolean",
                 "text",
                 "a timestamptz",
-                "a timestamp"
+                "a timestamp",
+                "a date",
+                "a uuid"
             ]
+        );
+        let mut spelled = Vec::new();
+        for column_type in types {
+            spelled.push(column_type.spelling().is_some());
+        }
+        assert_eq!(
+            spelled,
+            [false, false, false, false, false, false, true, true]
         );
         let scales = [ColumnType::Numeric { scale: 3 }, ColumnType::Int].map(ColumnType::scale);
         assert_eq!(scales, [3, 0]);

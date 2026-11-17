@@ -4,10 +4,12 @@
 //! it. Each is worked out once per code or per tuple of join codes and
 //! remembered, so a cell costs a lookup in a table, not in a dim.
 
+use crate::date::parse_date;
 use crate::hash::{FastMap, FastSet};
 use crate::projection::{AttributeIndex, NULL, Projection};
 use crate::rollup::{Cells, PartIndex, Rollup};
 use crate::spec::{Literal, RefKind};
+use crate::uuid::parse_uuid;
 use crate::value::{ColumnType, Datum};
 
 use super::bound::JoinRow;
@@ -284,10 +286,14 @@ impl ConditionCheck<'_> {
 /// value against a list of 340,000 one by one took 45 s under the read
 /// lock. As SQL's `=`: a value matches a literal of its own kind, and a
 /// null matches nothing.
+/// A text literal is wanted as text, and as the date or uuid it spells,
+/// if any: the column's type, checked before, says which a value is.
 #[derive(Default)]
 pub(super) struct Wanted {
     ints: FastSet<i64>,
     texts: FastSet<String>,
+    dates: FastSet<i32>,
+    uuids: FastSet<[u8; 16]>,
     bools: [bool; 2],
 }
 
@@ -301,6 +307,12 @@ impl Wanted {
                     wanted.ints.insert(*number);
                 }
                 Literal::Text(text) => {
+                    if let Some(days) = parse_date(text) {
+                        wanted.dates.insert(days);
+                    }
+                    if let Some(uuid) = parse_uuid(text) {
+                        wanted.uuids.insert(uuid);
+                    }
                     wanted.texts.insert(text.clone());
                 }
                 Literal::Bool(flag) => wanted.bools[usize::from(*flag)] = true,
@@ -316,6 +328,8 @@ impl Wanted {
     pub(super) fn keep_shared(&mut self, other: &Wanted) {
         self.ints.retain(|number| other.ints.contains(number));
         self.texts.retain(|text| other.texts.contains(text));
+        self.dates.retain(|days| other.dates.contains(days));
+        self.uuids.retain(|uuid| other.uuids.contains(uuid));
         for (kept, also) in self.bools.iter_mut().zip(other.bools) {
             *kept &= also;
         }
@@ -328,6 +342,8 @@ impl Wanted {
             Datum::Bool(flag) => self.bools[usize::from(*flag)],
             Datum::Int(number) => self.ints.contains(number),
             Datum::Text(text) => self.texts.contains(&**text),
+            Datum::Date(days) => self.dates.contains(days),
+            Datum::Uuid(uuid) => self.uuids.contains(uuid),
         }
     }
 }
@@ -384,5 +400,34 @@ mod tests {
         }
         let none = Wanted::new(&[]);
         assert!(!none.holds(&Datum::Int(0)) && !none.holds(&Datum::Bool(false)));
+    }
+
+    /// A text literal finds the date or uuid it spells, and only that.
+    #[test]
+    fn a_date_or_uuid_is_wanted_by_its_text() {
+        let uuid = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
+        let mut wanted = Wanted::new(&[
+            Literal::Text("2000-01-02".into()),
+            Literal::Text(uuid.into()),
+            Literal::Text("infinity".into()),
+        ]);
+        let mut bytes = [0; 16];
+        bytes[0] = 0xa0;
+        let found = parse_uuid(uuid).unwrap();
+        for (value, holds) in [
+            (Datum::Date(1), true),
+            (Datum::Date(i32::MAX), true),
+            (Datum::Date(0), false),
+            (Datum::Date(i32::MIN), false),
+            (Datum::Uuid(found), true),
+            (Datum::Uuid(bytes), false),
+            (Datum::Text(Arc::from("2000-01-02")), true),
+        ] {
+            assert_eq!(wanted.holds(&value), holds, "{value:?}");
+        }
+        wanted.keep_shared(&Wanted::new(&[Literal::Text("2000-01-02".into())]));
+        assert!(wanted.holds(&Datum::Date(1)));
+        assert!(!wanted.holds(&Datum::Date(i32::MAX)));
+        assert!(!wanted.holds(&Datum::Uuid(found)));
     }
 }

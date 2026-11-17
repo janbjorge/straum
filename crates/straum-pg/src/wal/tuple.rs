@@ -288,6 +288,10 @@ fn value(
             };
             time(i64::from_le_bytes(micros))
         }
+        // A `DateADT`, an `int32` in the server's byte order.
+        ColumnType::Date => Datum::Date(i32::from_le_bytes(bytes.try_into().or(Err(wrong))?)),
+        // A `pg_uuid_t`: its bytes as printed, in any byte order.
+        ColumnType::Uuid => Datum::Uuid(bytes.try_into().or(Err(wrong))?),
         ColumnType::Numeric { .. } | ColumnType::Text => {
             if attribute.length != VARLENA_LENGTH {
                 return Err(wrong);
@@ -367,6 +371,8 @@ mod tests {
     const INT: Kind = Kind::Read(ColumnType::Int);
     const TEXT: Kind = Kind::Read(ColumnType::Text);
     const TIME: Kind = Kind::Read(ColumnType::Time { zoned: true });
+    const DATE: Kind = Kind::Read(ColumnType::Date);
+    const UUID: Kind = Kind::Read(ColumnType::Uuid);
     use crate::wal::heap::TUPLE_HEADER;
     /// `MAXALIGN`: where a row's columns start is a multiple of it.
     const MAXALIGN: usize = 8;
@@ -485,6 +491,47 @@ mod tests {
         more.push(attribute(4, 4, INT));
         let got = values(&row(&attributes, &columns), &more, &labels).unwrap();
         assert_eq!(got.last(), Some(&Value::Missing));
+    }
+
+    /// A date is four bytes aligned to four (`typalign` 'i'), a uuid
+    /// sixteen aligned to one ('c'), so a uuid after a boolean starts at
+    /// once and a date after it pads to four.
+    #[test]
+    fn walks_dates_and_uuids() {
+        let attributes = [
+            attribute(1, 1, Kind::Read(ColumnType::Bool)),
+            attribute(16, 1, UUID),
+            attribute(1, 1, Kind::Read(ColumnType::Bool)),
+            attribute(4, 4, DATE),
+            attribute(4, 4, DATE),
+        ];
+        let uuid: [u8; 16] = [
+            0xa0, 0xee, 0xbc, 0x99, 0x9c, 0x0b, 0x4e, 0xf8, 0, 1, 2, 3, 4, 5, 6, 7,
+        ];
+        let columns: [Option<&[u8]>; 5] = [
+            Some(&[0]),
+            Some(&uuid),
+            Some(&[1]),
+            Some(&(-746_117i32).to_le_bytes()),
+            Some(&i32::MAX.to_le_bytes()),
+        ];
+        let tuple = row(&attributes, &columns);
+        // The bool, the uuid at 1, the bool at 17, padding to 20, the dates.
+        assert_eq!(
+            tuple.body.len() - (usize::from(tuple.hoff) - TUPLE_HEADER),
+            28
+        );
+        let got = values(&tuple, &attributes, &HashMap::new()).unwrap();
+        assert_eq!(
+            got,
+            [
+                Value::Datum(Datum::Bool(false)),
+                Value::Datum(Datum::Uuid(uuid)),
+                Value::Datum(Datum::Bool(true)),
+                Value::Datum(Datum::Date(-746_117)),
+                Value::Datum(Datum::Date(i32::MAX)),
+            ]
+        );
     }
 
     #[test]
@@ -622,6 +669,9 @@ mod tests {
         );
         check(&fits, &[attribute(4, 4, TEXT)], Problem::WrongLength);
         check(&fits, &[attribute(4, 4, TIME)], Problem::WrongLength);
+        check(&fits, &[attribute(4, 1, UUID)], Problem::WrongLength);
+        let two = row(&[attribute(2, 2, INT)], &[Some(&[1, 2])]);
+        check(&two, &[attribute(2, 2, DATE)], Problem::WrongLength);
         check(&fits, &[attribute(2, 2, Kind::Enum)], Problem::WrongLength);
         check(
             &fits,

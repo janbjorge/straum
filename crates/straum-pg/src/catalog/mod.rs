@@ -18,7 +18,7 @@ use crate::problem::{
 };
 use crate::source::Replication;
 use crate::unexpected::Unexpected;
-use crate::value::{BPCHAR, Oid, type_of};
+use crate::value::{BPCHAR, FLOAT4, FLOAT8, Oid, type_of};
 use crate::wire::Connection;
 
 mod followed;
@@ -298,12 +298,13 @@ impl Purpose {
                 "Straum needs an integer type or numeric(p, s) with p at most 18 there".into()
             }
             Purpose::Key => {
-                "Straum needs an integer type, numeric(p, s), boolean or text there".into()
+                "Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there"
+                    .into()
             }
             Purpose::Boolean => "Straum needs boolean there".into(),
             Purpose::Nullness => {
                 "Straum needs a type it reads there: an integer type, numeric(p, s), \
-                               boolean, text, timestamptz or timestamp"
+                               boolean, text, timestamptz, timestamp, date or uuid"
                     .into()
             }
         }
@@ -691,6 +692,9 @@ impl ColumnReader<'_> {
             (false, true) => return Err(self.is(column_name, column, ColumnFix::WriteText)),
             (false, false) => type_of(column.type_oid, column.typmod),
         };
+        if column.type_oid == FLOAT4 || column.type_oid == FLOAT8 {
+            return Err(self.is(column_name, column, ColumnFix::Float));
+        }
         // PostgreSQL compares character(n) without its trailing spaces,
         // so 'ab' finds 'ab   '; Straum keeps and compares the text whole.
         if column.type_oid == BPCHAR && purpose == Purpose::Key {

@@ -120,7 +120,7 @@ usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
 usage: tables inherit from public.events; Straum reads a table without children
 usage: row-level security filters what straum reads of public.events; Straum needs every row: ALTER ROLE straum BYPASSRLS, as a superuser
-usage: column amount of public.events is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
+usage: column amount of public.events is double precision; Straum reads no float type, as its sums can't equal PostgreSQL's exactly: make it numeric(p, s) with p at most 18
 usage: column kind of public.events is event_kind, an enum; write kind::text
 usage: column region of public.accounts is text, not an enum; drop the ::text
 view usage: measure purchases compares kind with 'purchse', which is no label of event_kind

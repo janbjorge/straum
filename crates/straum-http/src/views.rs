@@ -148,6 +148,8 @@ fn type_name(column_type: ColumnType) -> &'static str {
         ColumnType::Text => "text",
         ColumnType::Time { zoned: true } => "timestamptz",
         ColumnType::Time { zoned: false } => "timestamp",
+        ColumnType::Date => "date",
+        ColumnType::Uuid => "uuid",
     }
 }
 
@@ -255,6 +257,21 @@ dim public.zones
   asked as: trips.borough
 "
         );
+    }
+
+    #[test]
+    fn date_and_uuid_keys_go_by_postgresql_names() {
+        let view = HeldView {
+            keys: vec![key("day", ColumnType::Date), key("rider", ColumnType::Uuid)],
+            ..trips()
+        };
+        let held = Held {
+            views: vec![view],
+            dims: Vec::new(),
+        };
+        assert!(write(&held).contains("keys:     bucket timestamptz, day date, rider uuid\n"));
+        let json = String::from_utf8(json(&held)).unwrap();
+        assert!(json.contains(r#"{"name":"day","type":"date"},{"name":"rider","type":"uuid"}"#));
     }
 
     #[test]

@@ -103,7 +103,11 @@ integer.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
-for a boolean or a null-ness key. `account_id = $1` with `"7"` is an
+for a boolean or a null-ness key. A `date` or `uuid` key takes a string
+spelled as PostgreSQL prints the value and as the answer shows it:
+`"2024-01-15"`, `"0044-03-15 BC"` or `"infinity"` for a date, lowercase
+hex in groups of 8-4-4-4-12 for a uuid. `"2024-1-15"` or an uppercase
+uuid is an error that says how to write it. `account_id = $1` with `"7"` is an
 error, not an answer with no rows. A `numeric` key with a scale above 0
 can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
 [HAVING](#having) comparison takes a number of any scale.
@@ -143,7 +147,10 @@ offset `+HH:MM`, with no leap second: `2026-11-13T09Z` is refused. Each bound wr
 `timestamptz` buckets are their start in UTC. `timestamp` buckets are
 wall clock readings formatted with `Z`. PostgreSQL keeps times past
 the year 9999, which RFC 3339 can't write; an open end reads them, and
-such a bucket prints as `Unix second` and its number. Measures print as the
+such a bucket prints as `Unix second` and its number. A `date` or
+`uuid` key is a string as PostgreSQL prints it: `"2024-01-15"`,
+`"0044-03-15 BC"`, `"infinity"`,
+`"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"`. Measures print as the
 [measures table](spec.md#measures) says: `1875.70` for a
 `numeric(12, 2)` sum, and `44.273058` for an `avg_amount` of 18240.50
 over 412 events, at four places past the scale. Each is a bare JSON

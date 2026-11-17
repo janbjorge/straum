@@ -127,12 +127,14 @@ unique within a view. `GROUP BY` lists the keys by their positions in
 `SELECT`, in order: a position is what PostgreSQL resolves without a
 lookup, where an output name it may read as an input column.
 
-A key column is an integer type, `numeric(p, s)`, `boolean`, `text` or
-`varchar`, or an [enum written `::text`](#enum-columns). A
-`character(n)` key is refused: PostgreSQL compares it without its
-trailing spaces, so `'ab'` finds `'ab   '`, and Straum compares text
-whole. Fewer keys, or keys with
-fewer values, mean fewer cells, and memory follows cells
+A key column is an integer type, `numeric(p, s)`, `boolean`, `text`,
+`varchar`, `date` or `uuid`, or an [enum written
+`::text`](#enum-columns). A `character(n)` key is refused: PostgreSQL
+compares it without its trailing spaces, so `'ab'` finds `'ab   '`,
+and Straum compares text whole. A `real` or `double precision` column
+is refused wherever the view reads it: a float's sums can't equal
+PostgreSQL's exactly ([Aggregates 101](aggregates.md)). Fewer keys,
+or keys with fewer values, mean fewer cells, and memory follows cells
 ([Cells](how-it-works.md#cells)).
 
 ## Time
@@ -293,8 +295,8 @@ Which types take the cast is listed here; today it is enums alone.
 | Measure | Input column | Answer |
 | --- | --- | --- |
 | `count(*)` | | an integer |
-| `count(c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `timestamptz` or `timestamp` | an integer |
-| `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean` or `text` | an integer |
+| `count(c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `timestamptz`, `timestamp`, `date` or `uuid` | an integer |
+| `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `date` or `uuid` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
 | `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
@@ -326,7 +328,12 @@ count(*) FILTER (WHERE e.device_id IS NOT NULL) AS from_devices
 `=` and `IN` take a column the view selects as a key, `IS NULL` and
 `IS NOT NULL` a column with a null-ness key. The second filter is why
 the view needs the `has_device` key: Straum keeps nothing else about
-`device_id`. A literal must fit its column.
+`device_id`. A literal must fit its column. A `date` or `uuid` literal
+is a string spelled as PostgreSQL prints the value, and only so:
+`'2024-01-15'`, `'0044-03-15 BC'` or `'infinity'` for a date,
+lowercase hex in groups of 8-4-4-4-12 for a uuid, such as
+`'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'`. A date or a uuid is a key,
+never a `sum`, `min` or `max`.
 
 ## Checking a spec
 

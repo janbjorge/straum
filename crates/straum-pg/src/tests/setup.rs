@@ -127,6 +127,7 @@ fn setup_problems_say_what_to_fix() {
     publication_problems(&pg);
     table_problems(&pg);
     column_type_problems(&pg);
+    date_uuid_and_float_problems(&pg);
     padded_problems(&pg);
     aggregate_problems(&pg);
     filter_problems(&pg);
@@ -324,8 +325,8 @@ fn column_type_problems(pg: &PostgresContainer) {
             published("x float8"),
             &spec,
             Some(
-                "f: column x of float.f is double precision; \
-             Straum needs an integer type or numeric(p, s) with p at most 18 there",
+                "f: column x of float.f is double precision; Straum reads no float type, \
+             as its sums can't equal PostgreSQL's exactly: make it numeric(p, s) with p at most 18",
             ),
         ),
         case(
@@ -363,7 +364,7 @@ fn column_type_problems(pg: &PostgresContainer) {
             &grouped("t.k AS k, count(*) AS n", "GROUP BY 1, 2"),
             Some(
                 "f: column k of timekey.f is timestamp with time zone; \
-             Straum needs an integer type, numeric(p, s), boolean or text there",
+             Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there",
             ),
         ),
         case(
@@ -372,7 +373,79 @@ fn column_type_problems(pg: &PostgresContainer) {
             &grouped("t.k AS k, count(*) AS n", "GROUP BY 1, 2"),
             Some(
                 "f: column k of naivekey.f is timestamp without time zone; \
-             Straum needs an integer type, numeric(p, s), boolean or text there",
+             Straum needs an integer type, numeric(p, s), boolean, text, date or uuid there",
+            ),
+        ),
+    ];
+    expect_problems(pg, cases);
+}
+
+/// Floats refused whatever their use, dates and uuids read as keys but
+/// never summed, and their filter literals spelled as PostgreSQL prints
+/// them.
+fn date_uuid_and_float_problems(pg: &PostgresContainer) {
+    let Fact { spec, .. } = summed_fact();
+    let cases = vec![
+        case(
+            "realkey",
+            published("x int, k real"),
+            &grouped("t.k AS k, count(*) AS n", "GROUP BY 1, 2"),
+            Some(
+                "f: column k of realkey.f is real; Straum reads no float type, \
+             as its sums can't equal PostgreSQL's exactly: make it numeric(p, s) with p at most 18",
+            ),
+        ),
+        case(
+            "datesum",
+            published("x date"),
+            &spec,
+            Some(
+                "f: column x of datesum.f is date; \
+             Straum needs an integer type or numeric(p, s) with p at most 18 there",
+            ),
+        ),
+        case(
+            "uuidmax",
+            published("x uuid"),
+            &fact("", "max(t.x) AS greatest_x").spec,
+            Some(
+                "f: column x of uuidmax.f is uuid; \
+             Straum needs an integer type or numeric(p, s) with p at most 18 there",
+            ),
+        ),
+        case(
+            "datekeys",
+            published("k date, u uuid"),
+            &grouped(
+                "t.k AS k, t.u AS u, count(DISTINCT t.u) AS us, count(t.k) AS ks, \
+                 count(*) FILTER (WHERE t.k = '2024-01-15') AS n, \
+                 count(*) FILTER (WHERE t.u = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11') AS m",
+                "GROUP BY 1, 2, 3",
+            ),
+            None,
+        ),
+        case(
+            "filterdatespelling",
+            published("k date"),
+            &grouped(
+                "t.k AS k, count(*) FILTER (WHERE t.k = '2024-1-15') AS n",
+                "GROUP BY 1, 2",
+            ),
+            Some(
+                "view f: measure n compares k (a date) with '2024-1-15'; \
+                 write a date as YYYY-MM-DD, such as 2024-01-15",
+            ),
+        ),
+        case(
+            "filteruuidspelling",
+            published("k uuid"),
+            &grouped(
+                "t.k AS k, count(*) FILTER (WHERE t.k = 'A0EE') AS n",
+                "GROUP BY 1, 2",
+            ),
+            Some(
+                "view f: measure n compares k (a uuid) with 'A0EE'; write a uuid as lowercase \
+                 hex in groups of 8-4-4-4-12, such as a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             ),
         ),
     ];
@@ -390,11 +463,11 @@ fn aggregate_problems(pg: &PostgresContainer) {
         ),
         case(
             "uncounted",
-            published("x int, k float8"),
+            published("x int, k interval"),
             &fact("", "count(t.k) AS n").spec,
             Some(
-                "f: column k of uncounted.f is double precision; Straum needs a type it reads \
-             there: an integer type, numeric(p, s), boolean, text, timestamptz or timestamp",
+                "f: column k of uncounted.f is interval; Straum needs a type it reads there: \
+             an integer type, numeric(p, s), boolean, text, timestamptz, timestamp, date or uuid",
             ),
         ),
         case(

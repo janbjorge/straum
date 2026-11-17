@@ -9,7 +9,7 @@ use std::fmt::{self, Write as _};
 use std::str;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use straum_domain::{ColumnType, Datum, Identifier};
+use straum_domain::{ColumnType, Datum, Identifier, days_from_civil, parse_date, parse_uuid};
 
 /// An object id: how PostgreSQL names a row of its catalog, such as a
 /// table (`pg_class`), a type (`pg_type`) or an enum label (`pg_enum`).
@@ -21,11 +21,15 @@ pub(crate) const INT8: Oid = 20;
 pub(crate) const INT2: Oid = 21;
 pub(crate) const INT4: Oid = 23;
 pub(crate) const TEXT: Oid = 25;
+pub(crate) const FLOAT4: Oid = 700;
+pub(crate) const FLOAT8: Oid = 701;
 pub(crate) const BPCHAR: Oid = 1042;
 pub(crate) const VARCHAR: Oid = 1043;
+pub(crate) const DATE: Oid = 1082;
 pub(crate) const TIMESTAMP: Oid = 1114;
 pub(crate) const TIMESTAMPTZ: Oid = 1184;
 pub(crate) const NUMERIC: Oid = 1700;
+pub(crate) const UUID: Oid = 2950;
 
 /// `VARHDRSZ`, which a numeric typmod adds to precision and scale.
 const TYPMOD_HEADER: i32 = 4;
@@ -43,9 +47,6 @@ const MAX_HOUR: i64 = 23;
 const MAX_MINUTE: i64 = 59;
 /// A leap second reads as `:60`.
 const MAX_SECOND: i64 = 60;
-/// Days from 0000-03-01 to 1970-01-01 in the proleptic Gregorian calendar.
-const UNIX_EPOCH_DAYS: i64 = 719_468;
-const DAYS_PER_ERA: i64 = 146_097;
 /// Seconds from 1970-01-01 to 2000-01-01, PostgreSQL's epoch.
 const PG_EPOCH: i64 = 946_684_800;
 const MICROS_PER_SECOND: i64 = 1_000_000;
@@ -69,7 +70,9 @@ const NUMERIC_BASE: u128 = 10_000;
 /// integers, `numeric(p, s)` with `p` at most 18 as an integer in units of
 /// `10^-s`, `text`, `varchar` and `bpchar` as text, `timestamptz` as Unix
 /// seconds, rounded down, and `timestamp` as the Unix seconds its wall
-/// clock reading would be in UTC. `None` for a type Straum doesn't read.
+/// clock reading would be in UTC, `date` as days since 2000-01-01 and
+/// `uuid` as its bytes. `None` for a type Straum doesn't read: among them
+/// `real` and `double precision`, whose sums can't equal PostgreSQL's.
 pub(crate) fn type_of(type_oid: Oid, typmod: i32) -> Option<ColumnType> {
     match type_oid {
         INT2 | INT4 | INT8 => Some(ColumnType::Int),
@@ -92,6 +95,8 @@ pub(crate) fn type_of(type_oid: Oid, typmod: i32) -> Option<ColumnType> {
         TEXT | VARCHAR | BPCHAR => Some(ColumnType::Text),
         TIMESTAMPTZ => Some(ColumnType::Time { zoned: true }),
         TIMESTAMP => Some(ColumnType::Time { zoned: false }),
+        DATE => Some(ColumnType::Date),
+        UUID => Some(ColumnType::Uuid),
         _ => None,
     }
 }
@@ -114,6 +119,10 @@ pub(crate) fn read(column_type: ColumnType, text: &str) -> Result<Datum, ValueEr
         // bucket an ask reads, and the load goes on.
         ColumnType::Time { .. } if text == "infinity" || text == "-infinity" => Some(Datum::Null),
         ColumnType::Time { zoned } => timestamp(text, zoned).map(Datum::Int),
+        // Unlike a time's, a date's infinities are kept: a date is a key,
+        // and PostgreSQL groups by them.
+        ColumnType::Date => parse_date(text).map(Datum::Date),
+        ColumnType::Uuid => parse_uuid(text).map(Datum::Uuid),
     };
     match datum {
         Some(datum) => Ok(datum),
@@ -139,6 +148,15 @@ pub(crate) fn read_binary(column_type: ColumnType, bytes: &[u8]) -> Result<Datum
         // read as if UTC.
         ColumnType::Time { .. } => match <[u8; 8]>::try_from(bytes) {
             Ok(array) => Some(time(i64::from_be_bytes(array))),
+            Err(_) => None,
+        },
+        // Days since 2000-01-01, as the text reader has them.
+        ColumnType::Date => match <[u8; 4]>::try_from(bytes) {
+            Ok(array) => Some(Datum::Date(i32::from_be_bytes(array))),
+            Err(_) => None,
+        },
+        ColumnType::Uuid => match <[u8; 16]>::try_from(bytes) {
+            Ok(array) => Some(Datum::Uuid(array)),
             Err(_) => None,
         },
     };
@@ -353,19 +371,6 @@ fn all_digits(text: &str) -> bool {
     true
 }
 
-/// Days since 1970-01-01, after Howard Hinnant's `days_from_civil`.
-fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * DAYS_PER_ERA + day_of_era - UNIX_EPOCH_DAYS)
-}
-
 /// A value PostgreSQL sent that doesn't read as its column's type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValueError {
@@ -530,10 +535,14 @@ mod tests {
             (BPCHAR, 7, Some(ColumnType::Text)),
             (TIMESTAMPTZ, -1, Some(ColumnType::Time { zoned: true })),
             (TIMESTAMP, -1, Some(ColumnType::Time { zoned: false })),
-            // float8, uuid, date
-            (701, -1, None),
-            (2950, -1, None),
-            (1082, -1, None),
+            (DATE, -1, Some(ColumnType::Date)),
+            (UUID, -1, Some(ColumnType::Uuid)),
+            (FLOAT4, -1, None),
+            (FLOAT8, -1, None),
+            // time, interval, jsonb
+            (1083, -1, None),
+            (1186, -1, None),
+            (3802, -1, None),
         ];
         for (oid, typmod, column_type) in cases {
             assert_eq!(type_of(oid, typmod), column_type, "{oid} {typmod}");
@@ -610,6 +619,28 @@ mod tests {
     }
 
     #[test]
+    fn reads_dates_and_uuids() {
+        let cases = [
+            // Days since 2000-01-01; a date keeps its infinities.
+            (ColumnType::Date, "2024-01-15", Datum::Date(8_780)),
+            (ColumnType::Date, "0044-03-15 BC", Datum::Date(-746_117)),
+            (ColumnType::Date, "infinity", Datum::Date(i32::MAX)),
+            (ColumnType::Date, "-infinity", Datum::Date(i32::MIN)),
+            (
+                ColumnType::Uuid,
+                "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                Datum::Uuid([
+                    0xa0, 0xee, 0xbc, 0x99, 0x9c, 0x0b, 0x4e, 0xf8, 0xbb, 0x6d, 0x6b, 0xb9, 0xbd,
+                    0x38, 0x0a, 0x11,
+                ]),
+            ),
+        ];
+        for (column_type, text, datum) in cases {
+            assert_eq!(read(column_type, text), Ok(datum), "{column_type} {text}");
+        }
+    }
+
+    #[test]
     fn rejects_values() {
         let zoned = ColumnType::Time { zoned: true };
         let naive = ColumnType::Time { zoned: false };
@@ -656,6 +687,13 @@ mod tests {
             (naive, "0044-03-15 12:00:00+00 BC"),
             (naive, "2024-01-01 00:00"),
             (naive, "2024-01-01"),
+            (naive, "2023-02-29 00:00:00"),
+            (naive, "9999999999-01-01 00:00:00"),
+            (ColumnType::Date, "2024-01-15 00:00:00"),
+            (ColumnType::Date, "2023-02-29"),
+            (ColumnType::Date, "01/15/2024"),
+            (ColumnType::Uuid, "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11"),
+            (ColumnType::Uuid, "a0eebc999c0b4ef8bb6d6bb9bd380a11"),
         ];
         for (column_type, text) in cases {
             assert_eq!(
@@ -772,6 +810,32 @@ mod tests {
     }
 
     #[test]
+    fn reads_binary_dates_and_uuids() {
+        assert_reads_binary(&[
+            (
+                ColumnType::Date,
+                8_780_i32.to_be_bytes().to_vec(),
+                Datum::Date(8_780),
+            ),
+            (
+                ColumnType::Date,
+                (-746_117_i32).to_be_bytes().to_vec(),
+                Datum::Date(-746_117),
+            ),
+            (
+                ColumnType::Date,
+                i32::MAX.to_be_bytes().to_vec(),
+                Datum::Date(i32::MAX),
+            ),
+            (
+                ColumnType::Uuid,
+                (0..16).collect(),
+                Datum::Uuid([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+            ),
+        ]);
+    }
+
+    #[test]
     fn binary_value_errors() {
         let cents = ColumnType::Numeric { scale: 2 };
         let whole = ColumnType::Numeric { scale: 0 };
@@ -798,6 +862,10 @@ mod tests {
             (ColumnType::Text, vec![0xff]),
             (ColumnType::Time { zoned: true }, vec![0; 4]),
             (ColumnType::Time { zoned: false }, vec![0; 9]),
+            (ColumnType::Date, vec![0; 8]),
+            (ColumnType::Date, vec![0; 3]),
+            (ColumnType::Uuid, vec![0; 15]),
+            (ColumnType::Uuid, vec![0; 17]),
         ];
         for (column_type, bytes) in cases {
             assert_eq!(
@@ -833,6 +901,8 @@ mod tests {
                 "x",
                 r#"can't read "x" as a timestamp"#,
             ),
+            (ColumnType::Date, "x", r#"can't read "x" as a date"#),
+            (ColumnType::Uuid, "x", r#"can't read "x" as a uuid"#),
         ];
         for (column_type, text, message) in cases {
             assert_eq!(ValueError::new(column_type, text).to_string(), message);

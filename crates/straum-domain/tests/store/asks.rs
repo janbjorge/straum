@@ -66,6 +66,59 @@ fn filter_values_are_of_their_column_type() {
     );
 }
 
+/// The trips whose `pay` is the value `text` spells.
+fn trips_paid(store: &Store, text: &str) -> Result<Value, Vec<AskError>> {
+    let ask = trips_filtered(vec![condition("pay", vec![lit(text)])]);
+    let answer = store.ask(&ask)?;
+    Ok(answer.rows[0].values[0].clone())
+}
+
+/// A date or a uuid key is filtered by its text as PostgreSQL prints
+/// it, and by no other spelling.
+#[test]
+fn dates_and_uuids_are_filtered_by_their_text() {
+    let mut store = typed(&spec());
+    let mut types = trip_types();
+    types[PAY] = ColumnType::Date;
+    store.set_types("trips", &types).unwrap();
+    let mut rng = Rng(5);
+    let mut rows = Vec::new();
+    for days in [8_780, 8_780, 8_781, i32::MAX] {
+        let mut row = trip(&mut rng);
+        row[AT] = Datum::Int(START);
+        row[PAY] = Datum::Date(days);
+        rows.extend(row);
+    }
+    store.add_rows("trips", &rows).unwrap();
+    assert_eq!(trips_paid(&store, "2024-01-15"), Ok(Value::Int(2)));
+    assert_eq!(trips_paid(&store, "2024-01-16"), Ok(Value::Int(1)));
+    assert_eq!(trips_paid(&store, "infinity"), Ok(Value::Int(1)));
+    assert_eq!(trips_paid(&store, "2024-01-17"), Ok(Value::Int(0)));
+    assert_eq!(
+        trips_paid(&store, "2024-1-15").unwrap_err()[0].to_string(),
+        r#"pay is a date, so it can't be the text "2024-1-15"; write a date as YYYY-MM-DD, such as 2024-01-15"#
+    );
+
+    let uuid = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
+    types[PAY] = ColumnType::Uuid;
+    store.set_types("trips", &types).unwrap();
+    store.clear("trips");
+    let mut row = trip(&mut rng);
+    row[AT] = Datum::Int(START);
+    row[PAY] = Datum::Uuid(straum_domain::parse_uuid(uuid).unwrap());
+    store.add_row("trips", &row).unwrap();
+    assert_eq!(trips_paid(&store, uuid), Ok(Value::Int(1)));
+    assert_eq!(
+        trips_paid(&store, "00000000-0000-0000-0000-000000000000"),
+        Ok(Value::Int(0))
+    );
+    assert_eq!(
+        trips_paid(&store, "2024-01-15").unwrap_err()[0].to_string(),
+        "pay is a uuid, so it can't be the text \"2024-01-15\"; write a uuid as lowercase hex \
+         in groups of 8-4-4-4-12, such as a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+    );
+}
+
 /// The scale of each column of the answer.
 fn answer_scales(store: &Store, ask: &Ask) -> Vec<u32> {
     let answer = store.ask(ask).unwrap();
