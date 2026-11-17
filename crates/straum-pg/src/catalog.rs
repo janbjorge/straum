@@ -147,6 +147,9 @@ pub(crate) struct Catalog {
     pub(crate) full_page_writes: String,
     pub(crate) wal_compression: String,
     pub(crate) server_encoding: String,
+    /// `pg_is_in_recovery()`: a standby, which has no current WAL
+    /// position to read.
+    pub(crate) in_recovery: bool,
     /// Whether the publication publishes inserts, updates, deletes and
     /// truncates; `None` when it doesn't exist.
     pub(crate) publication: Option<bool>,
@@ -262,7 +265,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
     let settings = connection.rows(&format!(
         "SELECT current_setting('server_version_num'), current_user, current_setting('wal_level'),
                 current_setting('full_page_writes'), current_setting('wal_compression'),
-                current_setting('server_encoding'),
+                current_setting('server_encoding'), pg_is_in_recovery(),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
     ))?;
@@ -276,6 +279,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         full_page_writes,
         wal_compression,
         server_encoding,
+        in_recovery,
         published,
     ] = row.try_into().map_err(|_| shape("settings"))?;
     let server_version =
@@ -287,6 +291,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         full_page_writes: full_page_writes.unwrap_or_default(),
         wal_compression: wal_compression.unwrap_or_default(),
         server_encoding: server_encoding.unwrap_or_default(),
+        in_recovery: in_recovery.as_deref().is_some_and(is_true),
         publication: published.as_deref().map(is_true),
         ..Catalog::default()
     })
@@ -555,6 +560,9 @@ fn check_server(
     replication: Replication,
     problems: &mut Vec<Problem>,
 ) {
+    if catalog.in_recovery {
+        problems.push(Problem::Server(ServerProblem::Standby));
+    }
     // ADR-0007.
     if catalog.server_version < OLDEST_VERSION_NUM {
         problems.push(Problem::Server(ServerProblem::TooOld {

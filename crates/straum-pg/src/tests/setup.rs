@@ -820,6 +820,7 @@ fn reports_wal_level_and_read_access() {
     let mut db = Db::new(&pg, "access", TABLES);
     let spec = db.spec(SPEC);
     let mut catalog = catalog::query(&mut db.connection, &spec, "access").unwrap();
+    assert!(!catalog.in_recovery);
     assert!(catalog::check(&spec, &catalog, "access", Replication::Logical).is_ok());
     let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
     assert_eq!(
@@ -866,6 +867,16 @@ fn reports_wal_level_and_read_access() {
     );
     // A server too old has its tables left unread, whose columns its
     // catalog may lack: the check names the version alone.
+    // A standby is no source, whatever else it is.
+    catalog.server_version = 180_000;
+    catalog.in_recovery = true;
+    let standby = catalog::check(&spec, &catalog, "access", Replication::Logical);
+    assert_eq!(
+        crate::problem::lines(&standby.unwrap_err()),
+        ["the server is a standby in recovery; give Straum the primary's DSN"]
+    );
+    catalog.in_recovery = false;
+    catalog.server_version = 160_009;
     let tables = std::mem::take(&mut catalog.classes);
     let too_old = catalog::check(&spec, &catalog, "access", Replication::Logical);
     assert_eq!(too_old.unwrap_err().len(), 1);

@@ -57,6 +57,8 @@ impl TableNames {
 /// What is wrong with the server's version, settings or publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServerProblem {
+    /// A standby in recovery, not the primary.
+    Standby,
     /// Older than 17 (ADR-0007).
     TooOld {
         major: u32,
@@ -215,6 +217,8 @@ impl fmt::Display for Problem {
 impl fmt::Display for ServerProblem {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ServerProblem::Standby => formatter
+                .write_str("the server is a standby in recovery; give Straum the primary's DSN"),
             ServerProblem::TooOld { major } => write!(
                 formatter,
                 "PostgreSQL {major} is too old; Straum needs 17 or newer"

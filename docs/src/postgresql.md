@@ -106,6 +106,7 @@ refused. Some of the checks:
 
 ```text
 wal_level is replica; Straum needs logical, which takes a restart
+the server is a standby in recovery; give Straum the primary's DSN
 publication straum does not exist; run the SQL straum plan prints
 usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD TABLE public.events
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
