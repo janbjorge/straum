@@ -1,21 +1,33 @@
 //! The random workload: trips and dim rows added, updated and removed, the
 //! trips truncated halfway; every so often the store answers random asks and each must equal the
-//! reference. Also rows loaded in batches against rows added one by one.
+//! reference. Also rows loaded in batches against rows added one by one,
+//! and two views of the trips in one store, sharing their dims.
 
 use crate::common::{Rng, dim_row, id};
 use crate::random::{
     change_dim, held, load_dims, meet_a_group, near, random_ask, random_dims, trip, trips,
 };
 use crate::reference::reference;
-use crate::views::{spec, spec_joining, typed};
+use crate::views::{spec, spec_joining, trip_types, typed};
 use crate::{ASKS_PER_CHECK, CHECK_EVERY, Dims, END, KEYS, ROW_COLUMNS, SEEDS, START, STEPS};
-use straum_domain::{Ask, AskKey, Datum, RefKind, Spec, Store};
+use straum_domain::{Ask, AskKey, Datum, Identifier, RefKind, Spec, Store};
+
+/// The second view of [`Views::Two`], a copy of the trips view.
+const TWIN: &str = "twins";
+
+/// The views the store holds: the trips, or the trips and a copy of
+/// them, each keeping bound cells on the same dims.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Views {
+    One,
+    Two,
+}
 
 /// Random changes to trips and dims, and asks against the reference.
 /// Asks read the bound cells, which move with the dims. Halfway the
 /// trips are truncated. `vend` is how the vendors join.
-fn run(seed: u64, vend: RefKind) {
-    let mut workload = Workload::new(seed, vend);
+fn run(seed: u64, vend: RefKind, views: Views) {
+    let mut workload = Workload::new(seed, vend, views);
     for step in 0..STEPS {
         if step == STEPS / 2 {
             workload.truncate_trips();
@@ -31,6 +43,8 @@ fn run(seed: u64, vend: RefKind) {
 /// The store under test, and the live rows and dims the reference reads.
 struct Workload {
     seed: u64,
+    /// The views each change and ask goes to.
+    views: Vec<Identifier>,
     spec: Spec,
     store: Store,
     rng: Rng,
@@ -39,14 +53,28 @@ struct Workload {
 }
 
 impl Workload {
-    fn new(seed: u64, vend: RefKind) -> Workload {
-        let spec = spec_joining(vend);
+    fn new(seed: u64, vend: RefKind, views: Views) -> Workload {
+        let mut spec = spec_joining(vend);
+        let mut names = vec![id("trips")];
+        if views == Views::Two {
+            let mut twin = spec.fact("trips").unwrap().clone();
+            twin.name = id(TWIN);
+            twin.table.name = id(TWIN);
+            let mut facts = spec.facts().to_vec();
+            facts.push(twin);
+            spec = Spec::new(spec.dims().to_vec(), facts).unwrap();
+            names.push(id(TWIN));
+        }
         let mut store = typed(&spec);
+        if views == Views::Two {
+            store.set_types(TWIN, &trip_types()).unwrap();
+        }
         let mut rng = Rng(seed);
         let dims = random_dims(&mut rng);
         load_dims(&mut store, &dims);
         Workload {
             seed,
+            views: names,
             spec,
             store,
             rng,
@@ -57,10 +85,13 @@ impl Workload {
 
     fn truncate_trips(&mut self) {
         let seed = self.seed;
-        self.store.clear("trips");
+        for view in &self.views {
+            let view = view.as_str();
+            self.store.clear(view);
+            assert_eq!(self.store.cells(view), Some(0), "seed {seed}");
+            assert_eq!(self.store.bound_cells(view), Some(0), "seed {seed}");
+        }
         self.rows.clear();
-        assert_eq!(self.store.cells("trips"), Some(0), "seed {seed}");
-        assert_eq!(self.store.bound_cells("trips"), Some(0), "seed {seed}");
     }
 
     /// One random change: to a dim, or a trip removed, updated or added.
@@ -75,7 +106,9 @@ impl Workload {
 
     fn remove_trip(&mut self) {
         let row = self.rows.swap_remove(self.rng.below(self.rows.len()));
-        self.store.remove_row("trips", &row).unwrap();
+        for view in &self.views {
+            self.store.remove_row(view.as_str(), &row).unwrap();
+        }
     }
 
     fn update_trip(&mut self) {
@@ -85,9 +118,10 @@ impl Workload {
         if self.rng.chance(50) {
             near(&mut self.rng, &mut new, &self.rows[index]);
         }
-        self.store
-            .update_row("trips", &self.rows[index], &new)
-            .unwrap();
+        for view in &self.views {
+            let old = &self.rows[index];
+            self.store.update_row(view.as_str(), old, &new).unwrap();
+        }
         self.rows[index] = new;
     }
 
@@ -98,7 +132,9 @@ impl Workload {
             let other = self.rng.below(self.rows.len());
             near(&mut self.rng, &mut row, &self.rows[other]);
         }
-        self.store.add_row("trips", &row).unwrap();
+        for view in &self.views {
+            self.store.add_row(view.as_str(), &row).unwrap();
+        }
         self.rows.push(row);
     }
 
@@ -119,42 +155,50 @@ impl Workload {
             every_group.having.clear();
             let groups = reference(&self.spec, &every_group, &self.rows, &self.dims);
             meet_a_group(&mut self.rng, &mut ask, &groups);
-            assert_eq!(
-                self.store.ask(&ask).unwrap(),
-                reference(&self.spec, &ask, &self.rows, &self.dims),
-                "seed {seed}, step {step}, {ask:?}"
-            );
+            let expected = reference(&self.spec, &ask, &self.rows, &self.dims);
+            for view in &self.views {
+                ask.view = view.clone();
+                assert_eq!(
+                    self.store.ask(&ask).unwrap(),
+                    expected,
+                    "seed {seed}, step {step}, {ask:?}"
+                );
+            }
         }
     }
 
-    /// Takes every trip out again, and with it every cell.
+    /// Takes every trip out of each view again, and with it every cell.
     fn finish(mut self) {
         let seed = self.seed;
-        assert!(self.store.cells("trips").unwrap() > 0);
-        // Home zones of one borough share bound cells, so these are fewer.
-        let keyed = self.store.cells("trips");
-        let bound = self.store.bound_cells("trips");
-        assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
-        for row in &self.rows {
-            self.store.remove_row("trips", row).unwrap();
+        for view in &self.views {
+            let view = view.as_str();
+            assert!(self.store.cells(view).unwrap() > 0);
+            // Home zones of one borough share bound cells, so these are
+            // fewer.
+            let keyed = self.store.cells(view);
+            let bound = self.store.bound_cells(view);
+            assert!(bound < keyed, "seed {seed}: {bound:?} bound of {keyed:?}");
+            for row in &self.rows {
+                self.store.remove_row(view, row).unwrap();
+            }
+            assert_eq!(
+                self.store.cells(view).unwrap(),
+                0,
+                "seed {seed}: a cell of {view} outlived its rows"
+            );
+            assert_eq!(
+                self.store.bound_cells(view),
+                Some(0),
+                "seed {seed}: a bound cell of {view} outlived its rows"
+            );
         }
-        assert_eq!(
-            self.store.cells("trips").unwrap(),
-            0,
-            "seed {seed}: a cell outlived its rows"
-        );
-        assert_eq!(
-            self.store.bound_cells("trips"),
-            Some(0),
-            "seed {seed}: a bound cell outlived its rows"
-        );
     }
 }
 
 #[test]
 fn store_matches_naive_reference() {
     for seed in 0..SEEDS {
-        run(seed, RefKind::Left);
+        run(seed, RefKind::Left, Views::One);
     }
 }
 
@@ -163,7 +207,17 @@ fn store_matches_naive_reference() {
 #[test]
 fn inner_store_matches_naive_reference() {
     for seed in 0..SEEDS {
-        run(seed, RefKind::Inner);
+        run(seed, RefKind::Inner, Views::One);
+    }
+}
+
+/// Two views keep bound cells on the same dims: a dim's change moves the
+/// bound cells of each.
+#[test]
+fn two_views_on_shared_dims_match_naive_reference() {
+    // Fewer seeds: each step changes and asks twice as much.
+    for seed in 0..SEEDS / 4 {
+        run(seed, RefKind::Left, Views::Two);
     }
 }
 
