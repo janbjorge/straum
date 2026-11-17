@@ -332,14 +332,14 @@ impl Source for Postgres {
         };
         match load_table(snapshot, table, store) {
             Ok(()) => Ok(()),
-            Err(error) => Err(self.guard.blame(error).into()),
+            Err(error) => Err(self.failed(error)),
         }
     }
 
     fn next_commit(&mut self, wait: Duration) -> Result<Option<Commit>, SourceError> {
         match self.next(wait) {
             Ok(commit) => Ok(commit),
-            Err(error) => Err(self.guard.blame(error).into()),
+            Err(error) => Err(self.failed(error)),
         }
     }
 
@@ -358,6 +358,16 @@ impl Source for Postgres {
 }
 
 impl Postgres {
+    /// Ends the snapshot or the stream after `error`, which starts Straum
+    /// over: kept through the backoff, a snapshot would hold its tables'
+    /// locks and the vacuum horizon, and the slot its WAL, up to a minute.
+    fn failed(&mut self, error: Error) -> SourceError {
+        let error = self.guard.blame(error);
+        self.guard.stop();
+        self.state = State::Closed;
+        error.into()
+    }
+
     /// One reading of the WAL; its connection goes after a failure.
     fn read_wal_once(&mut self) -> Result<Wal, Error> {
         let wal = match plain(&mut self.plain, &self.dsn) {

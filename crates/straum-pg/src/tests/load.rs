@@ -114,6 +114,33 @@ fn no_load_once_the_stream_runs() {
     );
 }
 
+/// A failed load ends the snapshot and the slot at once, rather than
+/// through the wait before the next start: nothing of the source is left
+/// to read from.
+#[test]
+fn a_failed_load_closes_the_source() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "failedload", TABLES);
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    db.run(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+          WHERE application_name = 'straum' AND pid <> pg_backend_pid()",
+    );
+    let mut store = Store::new(spec.clone());
+    assert!(source.load(&id("zones"), &mut store).is_err());
+    let stopped = "the replication stream stopped";
+    assert_eq!(source.wal().unwrap_err().to_string(), stopped);
+    assert_eq!(
+        source
+            .load(&id("trips"), &mut store)
+            .unwrap_err()
+            .to_string(),
+        stopped
+    );
+}
+
 /// Timeouts the database sets for every session cancel none of Straum's
 /// statements, which a load and its snapshot outlast: each connection
 /// switches them off.
