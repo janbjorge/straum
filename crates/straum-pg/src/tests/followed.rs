@@ -34,6 +34,7 @@ fn a_table_left_out_of_the_publication_stops_the_stream() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
+    load_all(&mut source, &spec);
     assert!(source.wal().is_ok());
     db.run("ALTER PUBLICATION $S DROP TABLE $S.trips");
     let error = source.wal().unwrap_err().to_string();
@@ -55,6 +56,7 @@ fn a_table_renamed_away_and_made_again_stops_the_stream() {
     let spec = db.spec(SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
+    load_all(&mut source, &spec);
     db.run(MADE_AGAIN);
     db.run(&Rng::new(1).trip(1).replace("$S.trips", "$S.trips_old"));
     let commit = source.next_commit(LONG).unwrap().unwrap();
@@ -87,6 +89,7 @@ fn a_label_renamed_stops_the_logical_stream() {
     let spec = db.spec(TASKS_SPEC);
     let mut source = db.pg();
     source.open(&spec).unwrap();
+    load_all(&mut source, &spec);
     assert!(source.wal().is_ok());
     // A label added is nothing: no row loaded holds it.
     db.run("ALTER TYPE $S.kind ADD VALUE 'bin'");
@@ -197,5 +200,17 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
             held.unwrap_err().to_string(),
             db.sql("trips: $S.trips was rewritten as Straum started; Straum starts again")
         );
+    }
+}
+
+/// Loads every table of `spec` from a source just opened: the load holds
+/// its tables until the last one, so DDL a test runs waits for it.
+fn load_all(source: &mut crate::source::Postgres, spec: &straum_domain::Spec) {
+    let mut store = Store::new(spec.clone());
+    for dim in spec.dims() {
+        source.load(&dim.name, &mut store).unwrap();
+    }
+    for fact in spec.facts() {
+        source.load(&fact.name, &mut store).unwrap();
     }
 }
