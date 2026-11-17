@@ -47,10 +47,14 @@ pub fn plan(
     let publication = escape_identifier(publication);
     let role = escape_identifier(role);
 
-    let mut sql = vec!["-- Straum setup: run once, as an owner of the tables.".to_owned()];
+    let mut sql = vec![
+        "-- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so."
+            .to_owned(),
+    ];
     match replication {
         Replication::Logical => sql.extend([
-            "-- wal_level takes a restart. On Azure, set the server parameter instead.".to_owned(),
+            "-- A superuser: wal_level takes a restart. On Azure, set the server parameter instead."
+                .to_owned(),
             "ALTER SYSTEM SET wal_level = logical;".to_owned(),
         ]),
         Replication::Physical { .. } => sql.push(
@@ -58,15 +62,7 @@ pub fn plan(
                 .to_owned(),
         ),
     }
-    if let Some(password) = password {
-        sql.push(format!(
-            "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",
-            escape_literal(&scram_sha_256(password.as_bytes()))
-        ));
-    } else {
-        sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
-        sql.push(format!("-- Then give {role} a password: \\password {role}"));
-    }
+    sql.extend(role_lines(&role, password));
     sql.extend(grants(&schemas, &list, &role));
     if matches!(replication, Replication::Physical { .. }) {
         sql.extend([
@@ -100,6 +96,22 @@ pub fn plan(
         ));
     }
     sql.join("\n") + "\n"
+}
+
+/// Makes `role`, quoted already, with the password's verifier, or says
+/// how to set one.
+fn role_lines(role: &str, password: Option<&str>) -> Vec<String> {
+    let mut sql = vec!["-- A superuser: only one may give a role REPLICATION.".to_owned()];
+    if let Some(password) = password {
+        sql.push(format!(
+            "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",
+            escape_literal(&scram_sha_256(password.as_bytes()))
+        ));
+    } else {
+        sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
+        sql.push(format!("-- Then give {role} a password: \\password {role}"));
+    }
+    sql
 }
 
 /// Lets `role` read `tables`, an SQL list, in `schemas`, and says what a

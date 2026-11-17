@@ -658,6 +658,18 @@ fn plan_prints_the_setup_sql() {
         stdout.contains("CREATE ROLE \"r\" LOGIN REPLICATION;\n"),
         "{stdout}"
     );
+    // A line break in the role would end a comment line and start a
+    // statement: refused, from the flag or the DSN's user.
+    let broken = "r\nDROP TABLE t; --";
+    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--role", broken]));
+    assert_eq!((code, stdout.as_str()), (Some(1), ""));
+    assert_eq!(
+        stderr,
+        "straum: the role \"r\\nDROP TABLE t; --\" holds a control character\n"
+    );
+    let mut from_dsn = straum(&["plan", &spec]);
+    from_dsn.env("STRAUM_DSN", "postgres://r%0ADROP@db/app");
+    assert_eq!(output(&mut from_dsn).0, Some(1));
     let mut bad = straum(&["plan", &spec]);
     bad.env("STRAUM_DSN", "mysql://reader@db/app");
     let (code, _, stderr) = output(&mut bad);

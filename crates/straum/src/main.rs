@@ -65,6 +65,9 @@ enum Failure {
     },
     Dsn(DsnError),
     NoDsn,
+    /// A role name with a control character, which would end a comment
+    /// line of the setup SQL and start a statement.
+    RoleControl(String),
     Listening {
         address: String,
         error: io::Error,
@@ -94,6 +97,9 @@ impl Display for Failure {
             }
             Failure::Dsn(error) => error.fmt(formatter),
             Failure::NoDsn => formatter.write_str("set STRAUM_DSN or pass --dsn-file"),
+            Failure::RoleControl(role) => {
+                write!(formatter, "the role {role:?} holds a control character")
+            }
             Failure::Listening { address, error } => {
                 write!(formatter, "listening on {address}: {error}")
             }
@@ -257,6 +263,9 @@ fn plan(
         (None, Some(dsn)) => dsn.user(),
         (None, None) => ROLE,
     };
+    if role.chars().any(char::is_control) {
+        return Err(Failure::RoleControl(role.to_owned()));
+    }
     let password = match &dsn {
         Some(dsn) => dsn.password(),
         None => None,
@@ -423,6 +432,10 @@ mod tests {
                 "reading s: gone",
             ),
             (Failure::NoDsn, "set STRAUM_DSN or pass --dsn-file"),
+            (
+                Failure::RoleControl("a\nb".into()),
+                "the role \"a\\nb\" holds a control character",
+            ),
             (Failure::NotReady, "not ready"),
             (Failure::LinesFailed(2), "lines that failed: 2"),
             (Failure::ReadingCommands(gone()), "reading commands: gone"),

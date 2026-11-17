@@ -35,9 +35,10 @@ a DSN the role is `straum` and the SQL says how to give it a password.
 For the `usage` view of [Spec](spec.md#synopsis):
 
 ```sql
--- Straum setup: run once, as an owner of the tables.
--- wal_level takes a restart. On Azure, set the server parameter instead.
+-- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
+-- A superuser: wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
+-- A superuser: only one may give a role REPLICATION.
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
@@ -51,8 +52,9 @@ ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
-publication. Straum never asks for `FOR ALL TABLES`, which needs a
-superuser. The setup lives in the catalog and survives restarts.
+publication. The lines said so need a superuser: `ALTER SYSTEM`, a role
+with `REPLICATION`, and `BYPASSRLS` where a table needs it. Straum never
+asks for `FOR ALL TABLES`, which needs a superuser too. The setup lives in the catalog and survives restarts.
 
 - Some managed services grant replication through a role of their own,
   such as
@@ -162,8 +164,9 @@ grants, with no `wal_level` change, publication or `REPLICA IDENTITY
 FULL`:
 
 ```sql
--- Straum setup: run once, as an owner of the tables.
+-- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
 -- --wal physical: wal_level replica and full_page_writes on, the defaults.
+-- A superuser: only one may give a role REPLICATION.
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
