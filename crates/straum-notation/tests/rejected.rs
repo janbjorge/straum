@@ -831,7 +831,7 @@ GROUP BY 1, 2, 3";
             "z.name AS name,",
             "z.name AS name, p.x AS x,",
             "GROUP BY 1, 2, 3, 4",
-            "join p is a semi join and reads columns, which it has none of",
+            "p.x is read outside its EXISTS; p is a semi join, which keeps no row to read",
         ),
         // Nor to join through.
         (

@@ -282,6 +282,17 @@ impl Walker {
             return Err(Reported);
         };
         let joined = &scope.refs[through];
+        let kind = joined.reference.kind;
+        if let RefKind::Semi | RefKind::Anti = kind {
+            self.error(
+                line(expression),
+                format!(
+                    "{alias}.{column} is read outside its EXISTS; {alias} is {kind}, \
+                     which keeps no row to read"
+                ),
+            );
+            return Err(Reported);
+        }
         // Under INNER JOIN a dim's key column reads the fact column it was
         // joined on. Under LEFT OUTER JOIN it is null where no dim row
         // matches, and the fact column is not, so it is refused.

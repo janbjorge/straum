@@ -7,7 +7,7 @@ mod common;
 
 use common::{
     BASE, FEB, JAN, any_contains, any_message, ask_view_t, attribute, base, by_key, condition,
-    error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
+    edit, error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
 };
 use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
@@ -511,6 +511,47 @@ fn exists_has_one_shape() {
             "alias z used twice",
         ),
     ]);
+}
+
+/// No column of an `EXISTS` table is read outside it, its key column
+/// neither: the semi or anti join keeps or drops the fact row and holds no
+/// row of its own.
+#[test]
+fn an_exists_table_has_no_column_outside_it() {
+    for exists in ["EXISTS", "NOT EXISTS"] {
+        let semi = base(
+            "\nGROUP BY",
+            &format!("\nWHERE {exists} (SELECT 1 FROM public.p AS p WHERE p.k = f.a)\nGROUP BY"),
+        );
+        assert!(parse(&semi).is_ok(), "{semi}");
+        let kind = if exists == "EXISTS" {
+            "a semi"
+        } else {
+            "an anti"
+        };
+        for (from, to, column) in [
+            ("f.a AS a", "p.k AS a", "p.k"),
+            ("f.a AS a", "(p.k IS NULL) AS a", "p.k"),
+            ("count(*) AS n", "count(*) AS n, sum(p.k) AS total", "p.k"),
+            (
+                "count(*) AS n",
+                "count(*) AS n, count(p.note) AS notes",
+                "p.note",
+            ),
+            (
+                "count(*) AS n",
+                "count(*) AS n, count(*) FILTER (WHERE p.k = 1) AS ones",
+                "p.k",
+            ),
+        ] {
+            let text = edit(&semi, from, to);
+            let errors = error_lines(&text);
+            let named = format!(
+                "{column} is read outside its EXISTS; p is {kind} join, which keeps no row to read"
+            );
+            assert!(any_contains(&errors, &named), "{text}\n{errors:?}");
+        }
+    }
 }
 
 /// An `EXISTS` is one table and one condition: no GROUP BY, no join.
