@@ -196,10 +196,19 @@ fn physical_snapshot(
     // After the slot: a rewrite between the two would be in neither the
     // layouts nor the WAL read.
     let (stream, start) = Physical::start(dsn)?;
+    // The stream thread reads layouts on this one after DDL: a server
+    // that falls silent there must not hold it, nor a stop that joins it.
+    let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    layouts_connection.set_read_timeout(physical::DDL_WAIT)?;
+    let layouts_closer = layouts_connection.closer()?;
     guard.watch(
         dsn,
         stream.slot(),
-        vec![stream.closer()?, connection.closer()?],
+        vec![
+            stream.closer()?,
+            connection.closer()?,
+            layouts_connection.closer()?,
+        ],
     )?;
     let layouts = physical::read_layouts(&mut connection, &checked)?;
     let slot = stream.slot().to_owned();
@@ -210,9 +219,9 @@ fn physical_snapshot(
         limit,
         max_page_memory,
     );
-    let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
     let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
     let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
+    stream.close_too(layouts_closer);
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
     let _ = connection.execute("SELECT pg_log_standby_snapshot()");

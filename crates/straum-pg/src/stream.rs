@@ -59,6 +59,9 @@ pub(crate) struct Stream {
     commits: Receiver<Result<Commit, Error>>,
     shared: Arc<Shared>,
     closer: Closer,
+    /// Other connections the thread reads, closed with the stream so a
+    /// read blocked on one can't hold the join.
+    others: Vec<Closer>,
     thread: Option<JoinHandle<()>>,
     /// The last commit handed out. Asking for the next one means it is
     /// applied.
@@ -112,9 +115,16 @@ impl Stream {
             commits: receiver,
             shared,
             closer,
+            others: Vec::new(),
             thread: Some(thread),
             applied: start,
         })
+    }
+
+    /// Closes `other` too when the stream stops: a connection its thread
+    /// reads besides the stream's own.
+    pub(crate) fn close_too(&mut self, other: Closer) {
+        self.others.push(other);
     }
 
     /// The next commit, waiting at most `wait` for one.
@@ -184,6 +194,9 @@ impl Drop for Stream {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
         self.closer.close();
+        for other in &self.others {
+            other.close();
+        }
         if let Some(thread) = self.thread.take() {
             // A panic in the thread already reached the writer as a closed
             // queue.

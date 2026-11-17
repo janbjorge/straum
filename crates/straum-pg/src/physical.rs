@@ -42,7 +42,7 @@ const FLUSH_POLL: Duration = Duration::from_millis(10);
 
 /// How long the layouts read after DDL wait for a snapshot that sees it.
 /// Past it the stream ends and Straum starts over, which waits again.
-const DDL_WAIT: Duration = Duration::from_secs(10);
+pub(crate) const DDL_WAIT: Duration = Duration::from_secs(10);
 
 /// How often they take a snapshot again meanwhile.
 const DDL_POLL: Duration = Duration::from_millis(10);
