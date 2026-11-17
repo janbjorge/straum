@@ -270,13 +270,11 @@ impl App {
     }
 
     /// The ask for every row PostgreSQL would give for the view: each
-    /// measure by the bucket and every key, over the buckets the store
-    /// holds. `None` for a name no view has.
+    /// measure by the bucket and every key, both ends of the range open.
+    /// `None` for a name no view has.
     pub fn rows_ask(&self, view: &str) -> Option<Ask> {
         let state = self.read();
         let fact = state.store.spec().fact(view)?;
-        // A view with no bucket is asked for one, and answers no rows.
-        let range = (state.store.range(view)).unwrap_or(0..i64::from(fact.time.width.seconds));
         let mut keys = vec![AskKey::Bucket];
         for key in fact.keys() {
             keys.push(AskKey::Key(key.clone()));
@@ -287,8 +285,8 @@ impl App {
             keys,
             filter: Vec::new(),
             having: Vec::new(),
-            from: Some(range.start),
-            to: Some(range.end),
+            from: None,
+            to: None,
         })
     }
 

@@ -11,7 +11,7 @@ use straum_domain::{
 };
 
 use crate::common::{
-    DAY, Harness, LIMITS, aside, ask, count, int, login, setup, spec, text, trip, watched, zone,
+    Harness, LIMITS, aside, ask, count, int, login, setup, spec, text, trip, watched, zone,
 };
 use crate::fake::id;
 
@@ -182,9 +182,9 @@ fn the_rows_ask_reads_the_whole_view() {
     let app = writer.app().clone();
     assert_eq!(app.rows_ask("zones"), None);
     assert_eq!(app.rows_ask("nope"), None);
-    // Before a load the view holds no bucket; the ask is still a whole one.
+    // Both ends are open, so the ask reads whatever buckets are held.
     let empty = app.rows_ask("logins").unwrap();
-    assert_eq!((empty.from, empty.to), (Some(0), Some(DAY)));
+    assert_eq!((empty.from, empty.to), (None, None));
     assert_eq!(app.ask(&empty), Err(AnswerError::NotReady));
 
     (database.borrow_mut()).commit(vec![zone(1, "Bronx"), trip(1, 1, 1, 10), trip(2, 2, 1, 5)]);
@@ -193,8 +193,8 @@ fn the_rows_ask_reads_the_whole_view() {
     assert_eq!(
         rows,
         Ask {
-            from: Some(0),
-            to: Some(3_600),
+            from: None,
+            to: None,
             ..ask(
                 "trips",
                 &["trips", "fare", "fare_max", "riders"],
