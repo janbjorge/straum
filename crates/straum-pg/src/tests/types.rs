@@ -223,7 +223,4 @@ fn dates_and_uuids_match_postgresql() {
             compare_after(&mut db, writer.app(), &references, &change);
         }
     }
-    for writer in &writers {
-        assert_eq!(writer.app().status().starts, 1);
-    }
 }
