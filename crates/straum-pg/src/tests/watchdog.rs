@@ -6,15 +6,12 @@
 //! superuser. The clock's test runs against fake servers that never
 //! answer.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use straum_app::Source;
 use straum_domain::{Spec, Store};
-use testcontainers::ImageExt;
-use testcontainers::bollard::models::HostConfig;
 
 use super::references::*;
 use super::support::*;
@@ -394,18 +391,10 @@ fn reader(db: &mut Db, pg: &PostgresContainer) -> Dsn {
 fn postgres_with_small_send_buffers() -> PostgresContainer {
     plain(
         image(&tag())
-            .with_cmd(["-c", "wal_level=replica"])
-            .with_host_config_modifier(small_send_buffers),
+            .with_cmd(&["-c", "wal_level=replica"])
+            // The sysctl belongs to the container's own network namespace.
+            .with_sysctl("net.ipv4.tcp_wmem", SMALL_SEND_BUFFERS),
     )
-}
-
-/// Sets [`SMALL_SEND_BUFFERS`]; the sysctl belongs to the container's
-/// own network namespace.
-fn small_send_buffers(config: &mut HostConfig) {
-    config.sysctls = Some(HashMap::from([(
-        "net.ipv4.tcp_wmem".to_owned(),
-        SMALL_SEND_BUFFERS.to_owned(),
-    )]));
 }
 
 /// A physical stream on `slot` that reads nothing once started, and its

@@ -16,12 +16,17 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
-use testcontainers::runners::SyncRunner;
-use testcontainers::{Container, GenericImage, ImageExt};
+// straum-pg's tests start PostgreSQL the same way; the file uses std alone.
+#[path = "../../straum-pg/src/tests/compose.rs"]
+#[expect(
+    dead_code,
+    reason = "these tests set no entrypoint, sysctl or shared memory"
+)]
+mod compose;
+
+use compose::{Service, Stack};
 
 const STRAUM: &str = env!("CARGO_BIN_EXE_straum");
-const READY: &str = "database system is ready to accept connections";
 
 const SPEC: &str = "
 CREATE VIEW trips WITH (buckets = '1 hour') AS
@@ -74,8 +79,7 @@ const ASK: &str = concat!(
 );
 
 struct PostgresContainer {
-    container: Container<GenericImage>,
-    port: u16,
+    container: Stack,
 }
 
 /// CI sets `STRAUM_TEST_POSTGRES` to each major Straum supports.
@@ -86,59 +90,40 @@ fn tag() -> String {
     }
 }
 
-/// Docker may publish a port a moment after the container starts, so
-/// this asks a few times.
-fn published_port(container: &Container<GenericImage>) -> u16 {
-    for _ in 0..50 {
-        if let Ok(port) = container.get_host_port_ipv4(5432) {
-            return port;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    panic!("Docker publishes port 5432");
-}
-
 fn postgres() -> PostgresContainer {
-    let container = GenericImage::new("postgres", tag().as_str())
-        .with_exposed_port(5432.tcp())
-        // The init server says it on stdout, the real one on stderr.
-        .with_wait_for(WaitFor::message_on_stdout(READY))
-        .with_wait_for(WaitFor::message_on_stderr(READY))
+    let service = Service::new(&tag())
         .with_env_var("POSTGRES_PASSWORD", "postgres")
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
-        .with_cmd(["-c", "wal_level=logical"])
-        .start()
-        .expect("Docker runs postgres");
-    let port = published_port(&container);
-    PostgresContainer { container, port }
+        .with_cmd(&["-c", "wal_level=logical"]);
+    PostgresContainer {
+        container: Stack::start(&service),
+    }
 }
 
 impl PostgresContainer {
     /// One statement at a time, as the superuser; the output unaligned.
     fn psql(&self, sql: &str) -> String {
-        let mut result = self
-            .container
-            .exec(ExecCommand::new([
-                "psql",
-                "postgres://postgres:postgres@127.0.0.1/postgres",
-                "-At",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-c",
-                sql,
-            ]))
-            .unwrap();
-        let stdout = String::from_utf8(result.stdout_to_vec().unwrap()).unwrap();
-        let mut stderr = String::new();
-        result.stderr().read_to_string(&mut stderr).unwrap();
-        assert_eq!(result.exit_code().unwrap(), Some(0), "{sql}: {stderr}");
-        stdout.trim_end().to_owned()
+        let result = self.container.exec(&[
+            "psql",
+            "postgres://postgres:postgres@127.0.0.1/postgres",
+            "-At",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ]);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{sql}: {stderr}");
+        String::from_utf8(result.stdout)
+            .unwrap()
+            .trim_end()
+            .to_owned()
     }
 
     fn dsn(&self, user: &str) -> String {
         format!(
             "postgres://{user}:{user}@127.0.0.1:{}/postgres?sslmode=disable",
-            self.port
+            self.container.port
         )
     }
 

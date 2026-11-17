@@ -1,4 +1,5 @@
-//! What every PostgreSQL test shares: the containers PostgreSQL runs in,
+//! What every PostgreSQL test shares: the servers PostgreSQL runs as,
+//! each a Compose project from `compose`,
 //! `Db`, a SQL connection to one test's schema, `Rng`, the seeded random
 //! numbers workloads draw from, and a fake server that plays back scripted
 //! bytes of the PostgreSQL wire protocol (the messages a client and
@@ -17,13 +18,11 @@ use straum_domain::{
     Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Value,
     decimal,
 };
-use testcontainers::core::{ExecCommand, IntoContainerPort, WaitFor};
-use testcontainers::runners::SyncRunner;
-use testcontainers::{Container, ContainerRequest, GenericImage, ImageExt};
 
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Postgres, Replication, parse_lsn};
+pub(crate) use crate::tests::compose::{Service, Stack};
 use crate::wal::RelationFile;
 use crate::wal::test_support::Rng as SplitMix;
 use crate::wire::{Connection, ConnectionKind};
@@ -49,8 +48,6 @@ pub(super) const PAGE_MEMORY: usize = 256 << 20;
 pub(super) const PHYSICAL: Replication = Replication::Physical {
     max_page_memory: PAGE_MEMORY,
 };
-/// What PostgreSQL logs once it takes connections.
-const READY: &str = "database system is ready to accept connections";
 /// 2100-01-01, on every bucket edge.
 pub(super) const END: i64 = 4_102_444_800;
 /// 2024-01-15, where test rows start.
@@ -97,7 +94,7 @@ exec docker-entrypoint.sh postgres -c ssl=on \
 
 /// PostgreSQL, removed when dropped, with its CA file if it has TLS.
 pub(crate) struct PostgresContainer {
-    pub(crate) container: Container<GenericImage>,
+    pub(crate) container: Stack,
     pub(crate) dsn: Dsn,
     pub(super) _ca: Option<TempFile>,
 }
@@ -106,14 +103,12 @@ impl PostgresContainer {
     /// What `pg_waldump` prints of the server's WAL directory, read in
     /// `directory`, with `arguments` after it.
     pub(super) fn waldump(&self, directory: &str, arguments: &[String]) -> String {
-        let mut command = vec![
-            "pg_waldump".to_owned(),
-            "-p".to_owned(),
-            format!("{directory}/pg_wal"),
-        ];
-        command.extend_from_slice(arguments);
-        let mut waldump = self.container.exec(ExecCommand::new(command)).unwrap();
-        String::from_utf8(waldump.stdout_to_vec().unwrap()).unwrap()
+        let wal = format!("{directory}/pg_wal");
+        let mut command = vec!["pg_waldump", "-p", wal.as_str()];
+        for argument in arguments {
+            command.push(argument);
+        }
+        String::from_utf8(self.container.exec(&command).stdout).unwrap()
     }
 }
 
@@ -146,18 +141,19 @@ pub(crate) fn tag() -> String {
 
 /// PostgreSQL with logical decoding.
 pub(super) fn postgres() -> PostgresContainer {
-    plain(image(&tag()).with_cmd(FLAGS))
+    plain(image(&tag()).with_cmd(&FLAGS))
 }
 
 /// PostgreSQL `tag` at `wal_level = replica`, which logs no logical
 /// decoding.
 pub(super) fn postgres_at_replica(tag: &str) -> PostgresContainer {
-    plain(image(tag).with_cmd(["-c", "wal_level=replica"]))
+    plain(image(tag).with_cmd(&["-c", "wal_level=replica"]))
 }
 
-/// PostgreSQL as `request` starts it, without TLS.
-pub(crate) fn plain(request: ContainerRequest<GenericImage>) -> PostgresContainer {
-    let Running { container, port } = start(request);
+/// PostgreSQL as `service` runs it, without TLS.
+pub(crate) fn plain(service: Service) -> PostgresContainer {
+    let container = start(service);
+    let port = container.port;
     let dsn = format!("postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslmode=disable");
     PostgresContainer {
         container,
@@ -168,22 +164,20 @@ pub(crate) fn plain(request: ContainerRequest<GenericImage>) -> PostgresContaine
 
 /// As [`postgres`], with ssl on. The DSN trusts the test's CA alone.
 pub(super) fn postgres_tls() -> PostgresContainer {
-    let [setting, wal_level, next_setting, timeout] = FLAGS.map(str::to_owned);
+    let [setting, wal_level, next_setting, timeout] = FLAGS;
     let arguments = [
-        "-c".into(),
-        WITH_TLS.into(),
-        "sh".into(),
+        "-c",
+        WITH_TLS,
+        "sh",
         setting,
         wal_level,
         next_setting,
         timeout,
     ];
-    let Running { container, port } =
-        start(image(&tag()).with_entrypoint("sh").with_cmd(arguments));
-    let mut printed = container
-        .exec(ExecCommand::new(["cat", "/tmp/ca.pem"]))
-        .unwrap();
-    let ca = TempFile::new(&format!("ca-{port}.pem"), &printed.stdout_to_vec().unwrap());
+    let container = start(image(&tag()).with_entrypoint("sh").with_cmd(&arguments));
+    let port = container.port;
+    let printed = container.exec(&["cat", "/tmp/ca.pem"]);
+    let ca = TempFile::new(&format!("ca-{port}.pem"), &printed.stdout);
     let dsn = format!(
         "postgres://postgres:{PASSWORD}@127.0.0.1:{port}/postgres?sslrootcert={}",
         ca.0.display()
@@ -195,27 +189,23 @@ pub(super) fn postgres_tls() -> PostgresContainer {
     }
 }
 
-/// The postgres image at `tag`, ready once PostgreSQL takes connections.
-pub(crate) fn image(tag: &str) -> GenericImage {
-    GenericImage::new("postgres", tag)
-        .with_exposed_port(5432.tcp())
-        // The init server says it on stdout, the real one on stderr.
-        .with_wait_for(WaitFor::message_on_stdout(READY))
-        .with_wait_for(WaitFor::message_on_stderr(READY))
+/// The postgres image at `tag`.
+pub(crate) fn image(tag: &str) -> Service {
+    Service::new(tag)
 }
 
 /// Loads January's taxi trips into the PostgreSQL in `container`:
 /// `bench/load_taxi_trips.py` writes the SQL and `psql` in the container
 /// runs it.
-pub(crate) fn load_taxi_month(root: &Path, container: &Container<GenericImage>) {
+pub(crate) fn load_taxi_month(root: &Path, container: &Stack) {
     let mut loader = process::Command::new(root.join("bench/load_taxi_trips.py"))
         .arg("--data")
         .arg(root.join("bench/data"))
         .stdout(process::Stdio::piped())
         .spawn()
         .expect("bench/load_taxi_trips.py runs with uv");
-    let psql = process::Command::new("docker")
-        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
+    let psql = container
+        .exec_command(&["psql", "-U", "postgres", "-q"])
         .stdin(loader.stdout.take().unwrap())
         .status()
         .unwrap();
@@ -224,27 +214,13 @@ pub(crate) fn load_taxi_month(root: &Path, container: &Container<GenericImage>) 
     assert!(exit.success(), "bench/load_taxi_trips.py: {exit}");
 }
 
-/// A container PostgreSQL runs in, and its port on the host.
-pub(super) struct Running {
-    pub(super) container: Container<GenericImage>,
-    pub(super) port: u16,
-}
-
-/// Runs `request` and waits until PostgreSQL takes connections.
-pub(super) fn start(request: ContainerRequest<GenericImage>) -> Running {
-    let container = request
+/// Runs `service` with the tests' password and waits until PostgreSQL
+/// takes connections.
+pub(super) fn start(service: Service) -> Stack {
+    let service = service
         .with_env_var("POSTGRES_PASSWORD", PASSWORD)
-        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
-        .start()
-        .expect("Docker runs postgres");
-    // Docker may publish the port a moment after the container starts.
-    for _ in 0..50 {
-        if let Ok(port) = container.get_host_port_ipv4(5432) {
-            return Running { container, port };
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    panic!("Docker publishes port 5432");
+        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256");
+    Stack::start(&service)
 }
 
 /// A plain SQL connection, plus the test's schema and publication, both

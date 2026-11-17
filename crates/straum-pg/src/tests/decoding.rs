@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use straum_app::{Commit, Lsn, Source, Step};
 use straum_domain::Spec;
-use testcontainers::ImageExt;
 
 use super::physical::catch_up;
 use super::references::*;
@@ -28,7 +27,7 @@ use crate::wire::{Connection, ConnectionKind};
 /// between, and changes to tables outside the spec.
 #[test]
 fn commits_what_logical_decoding_commits() {
-    let pg = plain(image(&tag()).with_cmd([
+    let pg = plain(image(&tag()).with_cmd(&[
         "-c",
         "wal_level=logical",
         "-c",
@@ -163,7 +162,7 @@ fn write_what_logical_decoding_reads(db: &mut Db, rng: &mut Rng) {
 /// logical slot yields, byte for byte. `STRAUM_TEST_SEEDS` sets how many.
 #[test]
 fn commits_what_logical_decoding_commits_at_random() {
-    let pg = plain(image(&tag()).with_cmd([
+    let pg = plain(image(&tag()).with_cmd(&[
         "-c",
         "wal_level=logical",
         "-c",
@@ -206,7 +205,7 @@ fn commits_what_logical_decoding_commits_at_random() {
 /// then equal SQL's.
 #[test]
 fn follows_random_workloads_from_a_random_start() {
-    let pg = plain(image(&tag()).with_cmd([
+    let pg = plain(image(&tag()).with_cmd(&[
         "-c",
         "wal_level=replica",
         "-c",

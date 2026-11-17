@@ -14,13 +14,12 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use straum_app::{Change, Commit, Lsn};
-use testcontainers::{Container, GenericImage, ImageExt};
 
 use crate::catalog::{self, Checked};
 use crate::physical::{Chunk, next_chunk, read_layouts};
 use crate::source::{Replication, parse_lsn, slot_name};
 use crate::stream::POLL;
-use crate::tests::support::{PostgresContainer, image, load_taxi_month, plain, tag};
+use crate::tests::support::{PostgresContainer, Stack, image, load_taxi_month, plain, tag};
 use crate::wal::messages::Layouts;
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
@@ -172,7 +171,7 @@ fn physical_wal_bench() {
 fn start_postgres() -> PostgresContainer {
     // One redo point, the one taken before the slot, and no autovacuum:
     // every run writes the same kinds of records.
-    let request = image(&tag()).with_shm_size(1 << 30).with_cmd([
+    let request = image(&tag()).with_shm_size(1 << 30).with_cmd(&[
         "-c",
         "wal_level=replica",
         "-c",
@@ -236,7 +235,7 @@ fn set_up(root: &Path, sql: &mut Connection, stream: &mut Connection) -> Setup {
 /// The four phases of changes, from `start`, each timed.
 fn write_phases(
     sql: &mut Connection,
-    container: &Container<GenericImage>,
+    container: &Stack,
     copies: &[Vec<u8>],
     start: u64,
 ) -> Vec<Phase> {
@@ -265,12 +264,7 @@ fn write_phases(
 }
 
 /// Writes one phase's changes.
-fn write_phase(
-    work: Work,
-    sql: &mut Connection,
-    container: &Container<GenericImage>,
-    copies: &[Vec<u8>],
-) {
+fn write_phase(work: Work, sql: &mut Connection, container: &Stack, copies: &[Vec<u8>]) {
     match work {
         Work::Copy => {
             for copy in copies {
@@ -446,9 +440,9 @@ fn copies(sql: &mut Connection) -> Vec<Vec<u8>> {
 }
 
 /// Runs `script` in `psql` inside the container.
-fn psql(container: &Container<GenericImage>, script: &[u8]) {
-    let mut psql = process::Command::new("docker")
-        .args(["exec", "-i", container.id(), "psql", "-U", "postgres", "-q"])
+fn psql(container: &Stack, script: &[u8]) {
+    let mut psql = container
+        .exec_command(&["psql", "-U", "postgres", "-q"])
         .stdin(process::Stdio::piped())
         .spawn()
         .unwrap();

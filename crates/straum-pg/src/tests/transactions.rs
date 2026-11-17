@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use straum_app::{Commit, Lsn};
 use straum_domain::{ColumnType, Datum};
-use testcontainers::ImageExt;
 
 use super::decoding::Pipeline;
 use super::references::*;
@@ -31,7 +30,7 @@ use crate::wire::{Connection, ConnectionKind};
 /// records carry relation files, dropped stats and invalidations.
 #[test]
 fn reads_the_endings_pg_waldump_reads() {
-    let pg = plain(image(&tag()).with_cmd([
+    let pg = plain(image(&tag()).with_cmd(&[
         "-c",
         "wal_level=replica",
         "-c",

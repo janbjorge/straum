@@ -40,7 +40,8 @@ throwaway PostgreSQL holding the taxi trips, through `bench/taxi.py`.
 Straum runs on PostgreSQL 17 and newer, for both streams. The start
 check refuses older servers, naming the floor. CI runs 17, 18 and
 19rc2 (19 once it ships), picked by `STRAUM_TEST_POSTGRES`; locally 18.
-Tests start PostgreSQL with `testcontainers`, one container per test.
+Tests start PostgreSQL with `docker compose`, one project per test,
+so each server has its own network and container name.
 16 was dropped: it logs prune and vacuum as separate records, a second
 parser for the physical stream (ADR-0008).
 
@@ -59,7 +60,8 @@ parser for the physical stream (ADR-0008).
 - From 19 a logical slot turns on decoding under `wal_level = replica`
   (PostgreSQL `67c20979ce7`); the start check reads
   `server_version_num` and accepts `replica` there.
-- Docker is the one thing tests need beside Rust. A newer release's
+- Docker with Compose is the one thing tests need beside Rust, and
+  no crate drives it. A newer release's
   quirk is found by CI, not a user. A server still on 16 can't run
   Straum.
 - A benchmark of Straum alone loads the trips into PostgreSQL first,

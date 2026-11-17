@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use straum_app::{App, Lsn, Source, Step, Writer};
 use straum_domain::Spec;
-use testcontainers::ImageExt;
 
 use super::decoding::Pipeline;
 use super::references::*;
@@ -149,7 +148,7 @@ fn follows_the_physical_wal_with_checksums_flipped() {
     };
     let request = image(&tag())
         .with_env_var("POSTGRES_INITDB_ARGS", initdb)
-        .with_cmd(["-c", "wal_level=replica"]);
+        .with_cmd(&["-c", "wal_level=replica"]);
     follow(&plain(request), checksums);
 }
 
@@ -268,7 +267,7 @@ fn an_enum_column_added_while_streaming_reads_as_its_labels() {
 /// may hold its changes. The error names it; once it ends Straum starts.
 #[test]
 fn a_prepared_transaction_holds_the_start_back() {
-    let pg = plain(image(&tag()).with_cmd([
+    let pg = plain(image(&tag()).with_cmd(&[
         "-c",
         "wal_level=replica",
         "-c",

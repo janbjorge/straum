@@ -6,7 +6,6 @@ use std::path::Path;
 use std::time::Instant;
 
 use straum_app::{App, Step, Writer};
-use testcontainers::ImageExt;
 
 use super::references::*;
 use super::support::*;
@@ -87,7 +86,7 @@ fn taxi_month_postgres(root: &Path) -> PostgresContainer {
     let pg = plain(
         image("18")
             .with_shm_size(SHARED_MEMORY_BYTES)
-            .with_cmd(["-c", "wal_level=logical"]),
+            .with_cmd(&["-c", "wal_level=logical"]),
     );
     let clock = Instant::now();
     load_taxi_month(root, &pg.container);
