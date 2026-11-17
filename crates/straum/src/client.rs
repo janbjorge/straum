@@ -10,7 +10,7 @@
 
 use std::fmt::{self, Display, Write as _};
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -45,6 +45,11 @@ pub(crate) enum ClientError {
     },
     NoReply {
         url: String,
+    },
+    /// Connected, but no reply came within [`TIMEOUT`].
+    Silent {
+        url: String,
+        wanted: Wanted,
     },
     /// A chunked reply, which Straum never sends: something stands
     /// between.
@@ -95,6 +100,12 @@ impl Display for ClientError {
                 formatter.write_str(answered.trim_end())
             }
             ClientError::NoReply { url } => write!(formatter, "{url} sent no HTTP reply"),
+            ClientError::Silent { url, wanted } => write!(
+                formatter,
+                "asking {url} for {}: no reply came within {} s",
+                wanted.as_str(),
+                TIMEOUT.as_secs()
+            ),
             ClientError::Chunked { url } => write!(
                 formatter,
                 "{url} sent a chunked reply, which Straum never sends; give the URL Straum \
@@ -458,12 +469,22 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
         return Err(ClientError::NotAnHttpUrl(url.to_owned()));
     };
     let sent = Instant::now();
+    let url_owned = url.to_owned();
+    let wanted = request.wanted;
     let reply = match exchange(address, &request_text(address, request)) {
         Ok(reply) => reply,
-        Err(error) => {
-            let url = url.to_owned();
-            let wanted = request.wanted;
-            return Err(ClientError::Unreachable { url, wanted, error });
+        Err(Exchange::Failed(error)) => {
+            return Err(ClientError::Unreachable {
+                url: url_owned,
+                wanted,
+                error,
+            });
+        }
+        Err(Exchange::Silent) => {
+            return Err(ClientError::Silent {
+                url: url_owned,
+                wanted,
+            });
         }
     };
     let round_trip = sent.elapsed();
@@ -595,13 +616,50 @@ fn request_text(address: &str, request: &Request) -> String {
 
 /// Sends `request` to `address` and reads the reply until Straum closes
 /// the connection.
-fn exchange(address: &str, request: &str) -> io::Result<String> {
-    let mut stream = TcpStream::connect(address)?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.write_all(request.as_bytes())?;
+fn exchange(address: &str, request: &str) -> Result<String, Exchange> {
+    let mut stream = connect(address).map_err(Exchange::Failed)?;
+    stream
+        .set_read_timeout(Some(TIMEOUT))
+        .map_err(Exchange::Failed)?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(Exchange::Failed)?;
     let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
-    Ok(reply)
+    match stream.read_to_string(&mut reply) {
+        Ok(_) => Ok(reply),
+        // The read timeout ends a read as either, by platform.
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Err(Exchange::Silent)
+        }
+        Err(error) => Err(Exchange::Failed(error)),
+    }
+}
+
+/// Why an exchange got no reply.
+enum Exchange {
+    /// No connection, or it broke.
+    Failed(io::Error),
+    /// Connected, but nothing came within [`TIMEOUT`].
+    Silent,
+}
+
+/// A connection to `address`, each of its addresses tried for at most
+/// [`TIMEOUT`]: a host that drops packets would hold `connect` for
+/// minutes.
+fn connect(address: &str) -> io::Result<TcpStream> {
+    let mut failure = io::Error::new(io::ErrorKind::NotFound, "no address");
+    for socket_address in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&socket_address, TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => failure = error,
+        }
+    }
+    Err(failure)
 }
 
 #[cfg(test)]
@@ -676,6 +734,28 @@ mod tests {
                 "{url} sent 11 of the 20 bytes its reply said it would"
             ))
         );
+    }
+
+    /// A server that takes the connection and never answers is given 10 s,
+    /// and the error says no reply came, with no hint about the URL, which
+    /// was right.
+    #[test]
+    fn a_silent_server_is_given_ten_seconds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let holder = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::sleep(TIMEOUT + Duration::from_secs(2));
+            drop(stream);
+        });
+        let clock = Instant::now();
+        let said = status(&url, Output::Text).unwrap_err().to_string();
+        assert!(clock.elapsed() >= TIMEOUT, "{:?}", clock.elapsed());
+        assert_eq!(
+            said,
+            format!("asking {url} for its status: no reply came within 10 s")
+        );
+        holder.join().unwrap();
     }
 
     #[test]
