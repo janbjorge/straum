@@ -174,28 +174,28 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::Plan(args) => plan(args),
         Command::Run(args) => run(args),
-        Command::Status { url, output } => {
-            print(&client::status(&url, output)?)?;
-            if !client::is_ready(&url)? {
+        Command::Status { server, output } => {
+            print(&client::status(&server, output)?)?;
+            if !client::is_ready(&server)? {
                 return Err(Failure::NotReady);
             }
             Ok(())
         }
-        Command::Views { url, output } => print(&client::views(&url, output)?),
+        Command::Views { server, output } => print(&client::views(&server, output)?),
         Command::Ask {
-            url,
+            server,
             query,
             parameters,
             output,
-        } => print(&client::ask(&url, &query, &parameters, output)?.text),
-        Command::Shell { url } => {
+        } => print(&client::ask(&server, &query, &parameters, output)?.text),
+        Command::Shell { server } => {
             let (input, output) = (io::stdin(), io::stdout());
             // A prompt is for a person at both ends: not for a script
             // that feeds lines, nor for output that goes to a file.
             if input.is_terminal() && output.is_terminal() {
-                return shell::interactive(&url).map_err(Failure::Terminal);
+                return shell::interactive(&server).map_err(Failure::Terminal);
             }
-            match shell::piped(&url, input.lock(), output.lock(), io::stderr().lock()) {
+            match shell::piped(&server, input.lock(), output.lock(), io::stderr().lock()) {
                 Ok(0) => Ok(()),
                 Ok(failed) => Err(Failure::LinesFailed(failed)),
                 Err(error) => Err(Failure::ReadingCommands(error)),

@@ -13,7 +13,7 @@ use straum_app::Limits;
 use straum_domain::closest;
 use straum_pg::Replication;
 
-use crate::client::Output;
+use crate::client::{Output, Server, TIMEOUT};
 use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
 
 /// Where `straum run` listens unless told.
@@ -106,7 +106,7 @@ impl Name {
                 "--max-page-memory",
             ],
             Name::Plan => &["--wal", "--publication", "--role", "--dsn-file"],
-            Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url"],
+            Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
     }
 
@@ -125,22 +125,22 @@ pub(crate) enum Command {
     Run(Run),
     Plan(Plan),
     Status {
-        url: String,
+        server: Server,
         output: Output,
     },
     Views {
-        url: String,
+        server: Server,
         output: Output,
     },
     Ask {
-        url: String,
+        server: Server,
         query: String,
         /// As written on the command line.
         parameters: Vec<String>,
         output: Output,
     },
     Shell {
-        url: String,
+        server: Server,
     },
     Help(Option<Name>),
     Version,
@@ -375,19 +375,19 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
         Name::Status => {
             let flags = Flags::read(name, rest)?;
             Ok(Command::Status {
-                url: flags.url(url),
+                server: flags.server(url)?,
                 output: flags.output(),
             })
         }
         Name::Views => {
             let flags = Flags::read(name, rest)?;
             Ok(Command::Views {
-                url: flags.url(url),
+                server: flags.server(url)?,
                 output: flags.output(),
             })
         }
         Name::Shell => Ok(Command::Shell {
-            url: Flags::read(name, rest)?.url(url),
+            server: Flags::read(name, rest)?.server(url)?,
         }),
         Name::Ask => {
             let (rest, query) = rest.split_at(query_at(rest));
@@ -411,7 +411,7 @@ fn ask_command(flags: &Flags, query: &[String], url: &str) -> Result<Command, Us
         return Err(UsageError::AskNeedsQuery);
     };
     Ok(Command::Ask {
-        url: flags.url(url),
+        server: flags.server(url)?,
         query: query.clone(),
         parameters: parameters.to_vec(),
         output: flags.output(),
@@ -626,9 +626,13 @@ impl Flags {
         Output::Text
     }
 
-    /// `--url`, else `default`, which the environment may have set.
-    fn url(&self, default: &str) -> String {
-        self.text_or("--url", default)
+    /// `--url`, else `default`, which the environment may have set, and
+    /// `--timeout`.
+    fn server(&self, default: &str) -> Result<Server, UsageError> {
+        Ok(Server {
+            url: self.text_or("--url", default),
+            timeout: self.parsed("--timeout", TIMEOUT, seconds, "whole seconds above 0")?,
+        })
     }
 
     fn replication(&self) -> Result<Replication, UsageError> {

@@ -23,25 +23,30 @@ fn the_url_is_the_flag_else_straum_url_else_the_default() {
     assert_eq!(
         flag,
         Ok(Command::Status {
-            url: "http://flag:1".into(),
+            server: server("http://flag:1"),
             output: Output::Text,
         })
     );
     let variable = command(&args("ask SELECT"), &set);
-    let Ok(Command::Ask { url, .. }) = variable else {
+    let Ok(Command::Ask { server: asked, .. }) = variable else {
         panic!("{variable:?}");
     };
-    assert_eq!(url, "http://variable:2");
+    assert_eq!(asked.url, "http://variable:2");
     let empty = command(&args("views"), &with_url(""));
     let views = Command::Views {
-        url: URL.into(),
+        server: server(URL),
         output: Output::Text,
     };
     assert_eq!(empty, Ok(views));
     let unset = command(&args("shell"), &Environment::default());
-    assert_eq!(unset, Ok(Command::Shell { url: URL.into() }));
+    assert_eq!(
+        unset,
+        Ok(Command::Shell {
+            server: server(URL)
+        })
+    );
 }
-use crate::testing::args;
+use crate::testing::{args, server};
 
 #[test]
 fn reads_run_and_plan() {
@@ -111,32 +116,34 @@ fn reads_the_commands_that_talk_to_a_running_straum() {
     assert_eq!(
         command_of(&args("status")),
         Ok(Command::Status {
-            url: URL.into(),
+            server: server(URL),
             output: Output::Text,
         })
     );
     assert_eq!(
         command_of(&args("status --url http://straum:9")),
         Ok(Command::Status {
-            url: "http://straum:9".into(),
+            server: server("http://straum:9"),
             output: Output::Text,
         })
     );
     assert_eq!(
         command_of(&args("views --url http://straum:9")),
         Ok(Command::Views {
-            url: "http://straum:9".into(),
+            server: server("http://straum:9"),
             output: Output::Text,
         })
     );
     assert_eq!(
         command_of(&args("shell")),
-        Ok(Command::Shell { url: URL.into() })
+        Ok(Command::Shell {
+            server: server(URL)
+        })
     );
     assert_eq!(
         command_of(&args("ask SELECT")),
         Ok(Command::Ask {
-            url: URL.into(),
+            server: server(URL),
             query: "SELECT".into(),
             parameters: Vec::new(),
             output: Output::Text,
@@ -146,7 +153,7 @@ fn reads_the_commands_that_talk_to_a_running_straum() {
     assert_eq!(
         command_of(&args("ask --url http://straum:9 SELECT -h --url -7")),
         Ok(Command::Ask {
-            url: "http://straum:9".into(),
+            server: server("http://straum:9"),
             query: "SELECT".into(),
             parameters: args("-h --url -7"),
             output: Output::Text,
@@ -161,7 +168,7 @@ fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
         "status --url http://straum:9",
     ] {
         let status = Command::Status {
-            url: "http://straum:9".into(),
+            server: server("http://straum:9"),
             output: Output::Text,
         };
         assert_eq!(command_of(&args(line)), Ok(status), "{line}");
@@ -175,7 +182,7 @@ fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
     // An ask's query starts after a flag with its value attached.
     let ask = command_of(&args("ask --url=http://straum:9 SELECT --url=x"));
     let Ok(Command::Ask {
-        url,
+        server: asked,
         query,
         parameters,
         ..
@@ -184,7 +191,7 @@ fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
         panic!("{ask:?}");
     };
     assert_eq!(
-        (url.as_str(), query.as_str()),
+        (asked.url.as_str(), query.as_str()),
         ("http://straum:9", "SELECT")
     );
     assert_eq!(parameters, args("--url=x"));
@@ -234,13 +241,13 @@ fn a_double_dash_ends_the_flags() {
 fn json_is_a_switch_of_the_commands_that_print_what_straum_says() {
     let status = command_of(&args("status --json --url http://straum:9"));
     let json_status = Command::Status {
-        url: "http://straum:9".into(),
+        server: server("http://straum:9"),
         output: Output::Json,
     };
     assert_eq!(status, Ok(json_status));
     let views = command_of(&args("views --json"));
     let json_views = Command::Views {
-        url: URL.into(),
+        server: server(URL),
         output: Output::Json,
     };
     assert_eq!(views, Ok(json_views));
@@ -248,7 +255,7 @@ fn json_is_a_switch_of_the_commands_that_print_what_straum_says() {
     // a parameter like any other word.
     let ask = command_of(&args("ask --json SELECT --json"));
     let json_ask = Command::Ask {
-        url: URL.into(),
+        server: server(URL),
         query: "SELECT".into(),
         parameters: args("--json"),
         output: Output::Json,
@@ -346,6 +353,8 @@ fn help_names_each_default() {
     for name in [Name::Status, Name::Views, Name::Ask, Name::Shell] {
         let default = format!("({URL_VARIABLE}, else {URL})");
         assert!(name.help().contains(&default), "{name:?}");
+        let timeout = format!("the reply ({})", TIMEOUT.as_secs());
+        assert!(name.help().contains(&timeout), "{name:?}");
     }
 }
 
@@ -477,6 +486,34 @@ fn wal_flags_say_what_they_take() {
     }
 }
 
+/// A command that talks to a running Straum waits `--timeout` seconds
+/// for it, else ten.
+#[test]
+fn the_timeout_is_the_flag_else_ten_seconds() {
+    for line in ["status", "views", "ask SELECT", "shell"] {
+        let given = format!("{line} --timeout 3");
+        let given = given.replacen(" SELECT --timeout 3", " --timeout 3 SELECT", 1);
+        let timeout = match command_of(&args(&given)) {
+            Ok(
+                Command::Status { server, .. }
+                | Command::Views { server, .. }
+                | Command::Ask { server, .. }
+                | Command::Shell { server },
+            ) => server.timeout,
+            other => panic!("{given}: {other:?}"),
+        };
+        assert_eq!(timeout, Duration::from_secs(3), "{given}");
+    }
+    let Ok(Command::Status { server, .. }) = command_of(&args("status")) else {
+        panic!("status");
+    };
+    assert_eq!(server.timeout, Duration::from_secs(10));
+    assert_eq!(
+        usage("run s --timeout 3"),
+        "straum run takes no \"--timeout\""
+    );
+}
+
 #[test]
 fn number_flags_say_what_they_take() {
     for lag in ["0", "-1", "1.5", "30s", ""] {
@@ -487,6 +524,11 @@ fn number_flags_say_what_they_take() {
             format!("--max-lag takes whole seconds above 0, not {lag:?}")
         };
         assert_eq!(usage(&line), error, "{lag}");
+    }
+    for timeout in ["0", "-1", "1.5", "10s"] {
+        let line = format!("status --timeout {timeout}");
+        let error = format!("--timeout takes whole seconds above 0, not {timeout:?}");
+        assert_eq!(usage(&line), error, "{timeout}");
     }
     for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
         let line = format!("run s --max-retained-wal {size}");
@@ -519,7 +561,7 @@ fn reads_sizes() {
 
 /// Pieces a command line is built from: every command and flag, the
 /// shapes values take, and the characters a parser trips on.
-const PIECES: [&str; 30] = [
+const PIECES: [&str; 31] = [
     "run",
     "plan",
     "status",
@@ -529,6 +571,7 @@ const PIECES: [&str; 30] = [
     "help",
     "version",
     "--url",
+    "--timeout",
     "--json",
     "--wal",
     "--listen",

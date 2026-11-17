@@ -28,7 +28,8 @@ use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
 use crate::client::{
-    ClientError, Output, RowWindow, Timed, ask, load_views, parameter_words, rows, spec, views,
+    ClientError, Output, RowWindow, Server, Timed, ask, load_views, parameter_words, rows, spec,
+    views,
 };
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
@@ -84,20 +85,20 @@ enum Timings {
 }
 
 /// What one line asks for.
-fn answer(url: &str, line: &str, timings: Timings) -> Outcome {
+fn answer(server: &Server, line: &str, timings: Timings) -> Outcome {
     let words: Vec<&str> = line.split_whitespace().collect();
     let answered = match words[..] {
         [] => Ok(String::new()),
         ["\\q"] => return Outcome::Leave,
         ["\\?"] => Ok(shell_commands()),
-        ["\\d"] => views(url, Output::Text),
-        ["\\d", view] => spec(url, view),
+        ["\\d"] => views(server, Output::Text),
+        ["\\d", view] => spec(server, view),
         ["\\rows", view, ref bounds @ ..] if bounds.len() <= 2 => {
             let window = match row_window(bounds) {
                 Ok(window) => window,
                 Err(error) => return Outcome::Failed(error),
             };
-            timed(rows(url, view, window), timings)
+            timed(rows(server, view, window), timings)
         }
         [command, ..] if command.starts_with('\\') => {
             return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
@@ -108,7 +109,7 @@ fn answer(url: &str, line: &str, timings: Timings) -> Outcome {
                 .into_iter()
                 .map(str::to_owned)
                 .collect();
-            let answered = ask(url, query.trim_end(), &parameters, Output::Text);
+            let answered = ask(server, query.trim_end(), &parameters, Output::Text);
             timed(answered, timings)
         }
     };
@@ -149,7 +150,11 @@ fn row_window(bounds: &[&str]) -> Result<RowWindow, LineError> {
 fn shell_commands() -> String {
     let mut text = String::new();
     for line in SHELL_HELP.lines() {
-        if line.starts_with("  ") && !line.starts_with("  --") {
+        // The flags come last.
+        if line.starts_with("  --") {
+            break;
+        }
+        if line.starts_with("  ") {
             text.push_str(line);
             text.push('\n');
         }
@@ -163,7 +168,7 @@ fn shell_commands() -> String {
 // `impl`: the binary passes the terminal's locked streams, tests pass
 // byte buffers and a writer that always fails.
 pub(crate) fn piped(
-    url: &str,
+    server: &Server,
     mut input: impl BufRead,
     mut output: impl Write,
     mut errors: impl Write,
@@ -171,7 +176,7 @@ pub(crate) fn piped(
     let mut failed = 0;
     let mut line = String::new();
     while input.read_line(&mut line)? > 0 {
-        match answer(url, line.trim(), Timings::Hidden) {
+        match answer(server, line.trim(), Timings::Hidden) {
             Outcome::Leave => break,
             Outcome::Print(text) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
@@ -221,7 +226,7 @@ fn editor_config() -> Config {
 }
 
 /// The prompt at a terminal, with line editing, history and completion.
-pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
+pub(crate) fn interactive(server: &Server) -> Result<(), ReadlineError> {
     let mut editor: Editor<Names, DefaultHistory> = Editor::with_config(editor_config())?;
     editor.set_helper(Some(Names { views: Vec::new() }));
     let history = history_file(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
@@ -229,8 +234,8 @@ pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
         // There is none before the first session.
         editor.load_history(file).ok();
     }
-    println!("Straum at {url}. Tab completes; \\? lists the commands, \\q leaves.");
-    let result = prompt_until_leaving(url, &mut editor);
+    println!("Straum at {server}. Tab completes; \\? lists the commands, \\q leaves.");
+    let result = prompt_until_leaving(server, &mut editor);
     if let Some(file) = &history {
         // A history that can't be kept, as on a read-only disk, is lost
         // and nothing else.
@@ -243,12 +248,12 @@ pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
 }
 
 fn prompt_until_leaving(
-    url: &str,
+    server: &Server,
     editor: &mut Editor<Names, DefaultHistory>,
 ) -> Result<(), ReadlineError> {
     loop {
         // Read again before each line: a view's buckets move on.
-        if let (Some(views), Some(names)) = (load_views(url), editor.helper_mut()) {
+        if let (Some(views), Some(names)) = (load_views(server), editor.helper_mut()) {
             names.views = views;
         }
         let line = match editor.readline(PROMPT) {
@@ -259,7 +264,7 @@ fn prompt_until_leaving(
             Err(error) => return Err(error),
         };
         editor.add_history_entry(line.trim())?;
-        match answer(url, line.trim(), Timings::Shown) {
+        match answer(server, line.trim(), Timings::Shown) {
             Outcome::Leave => return Ok(()),
             Outcome::Print(text) => print!("{text}"),
             Outcome::Failed(error) => eprintln!("straum: {error}"),
@@ -339,7 +344,7 @@ impl rustyline::Helper for Names {}
 mod tests {
     use super::*;
     use crate::complete::read_views;
-    use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, POST_ASK_SPACED, answering};
+    use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, POST_ASK_SPACED, answering, server};
     use rustyline::history::History;
 
     #[test]
@@ -416,7 +421,7 @@ mod tests {
     fn shelled(request: &str, reply: &'static str, input: &str) -> (String, String, usize) {
         let url = answering(request, reply);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let failed = piped(&url, input.as_bytes(), &mut output, &mut errors).unwrap();
+        let failed = piped(&server(&url), input.as_bytes(), &mut output, &mut errors).unwrap();
         (text(output, &url), text(errors, &url), failed)
     }
 
@@ -430,7 +435,7 @@ mod tests {
     /// from run to run, so it reads `N`.
     fn at_a_terminal(request: &str, reply: &'static str, line: &str) -> (String, String) {
         let url = answering(request, reply);
-        match answer(&url, line, Timings::Shown) {
+        match answer(&server(&url), line, Timings::Shown) {
             Outcome::Print(printed) => (steady(&printed), String::new()),
             Outcome::Failed(error) => (String::new(), error.to_string().replace(&url, "URL")),
             Outcome::Leave => (String::new(), String::new()),
@@ -495,14 +500,19 @@ mod tests {
     fn a_reader_that_left_ends_the_shell_quietly() {
         let mut errors = Vec::new();
         let failed = piped(
-            "http://127.0.0.1:1",
+            &server("http://127.0.0.1:1"),
             &b"\\?\n\\nope\n"[..],
             Left,
             &mut errors,
         );
         assert_eq!((failed.unwrap(), errors), (0, Vec::new()));
         // Errors that can't be said end it loudly.
-        let failed = piped("http://127.0.0.1:1", &b"\\nope\n"[..], Vec::new(), Left);
+        let failed = piped(
+            &server("http://127.0.0.1:1"),
+            &b"\\nope\n"[..],
+            Vec::new(),
+            Left,
+        );
         assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
 
@@ -622,7 +632,7 @@ mod tests {
         // Nothing listens here, so the ask fails and the shell goes on.
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(
-            "http://127.0.0.1:1",
+            &server("http://127.0.0.1:1"),
             &b"SELECT\n\\?\n"[..],
             &mut output,
             &mut errors,

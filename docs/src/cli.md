@@ -16,7 +16,10 @@ it at `--url`, else at the URL in `STRAUM_URL`, else at
 and ends with `try: --url URL, or set STRAUM_URL`. The URL is where
 Straum listens, reached directly: plain HTTP, no TLS, and no proxy
 that rewrites the reply into chunks, which the client refuses. Each
-request waits at most 10 s to connect and 10 s for its reply.
+request waits at most `--timeout` seconds to connect, and as long again
+for its reply: 10 unless told. The shell reads the views before each
+prompt, so each prompt may wait that long on a Straum that has stopped
+answering.
 
 Every command exits with 0 when done, 1 when it failed, 2 when its
 command line is wrong, and 3 when Straum is not ready yet: loading, or

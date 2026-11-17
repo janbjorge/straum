@@ -18,7 +18,9 @@ use straum_domain::Identifier;
 
 use crate::complete::{View, read_views};
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request waits to connect, and then for its reply, when
+/// `--timeout` doesn't say.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The header in which Straum says where an answer's time went.
 const SERVER_TIMING: &str = "server-timing";
@@ -27,6 +29,21 @@ const SERVER_TIMING: &str = "server-timing";
 const PHASE_TOOK: &str = ";dur=";
 
 const MILLISECONDS_PER_SECOND: f64 = 1e3;
+
+/// Where a running Straum serves HTTP, and how long a request to it
+/// waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Server {
+    pub(crate) url: String,
+    /// How long to wait to connect, and then for the reply.
+    pub(crate) timeout: Duration,
+}
+
+impl Display for Server {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str(&self.url)
+    }
+}
 
 /// A request to a running Straum that got no answer.
 #[derive(Debug)]
@@ -46,10 +63,11 @@ pub(crate) enum ClientError {
     NoReply {
         url: String,
     },
-    /// Connected, but no reply came within [`TIMEOUT`].
+    /// Connected, but no reply came within `timeout`.
     Silent {
         url: String,
         wanted: Wanted,
+        timeout: Duration,
     },
     /// A chunked reply, which Straum never sends: something stands
     /// between.
@@ -100,11 +118,15 @@ impl Display for ClientError {
                 formatter.write_str(answered.trim_end())
             }
             ClientError::NoReply { url } => write!(formatter, "{url} sent no HTTP reply"),
-            ClientError::Silent { url, wanted } => write!(
+            ClientError::Silent {
+                url,
+                wanted,
+                timeout,
+            } => write!(
                 formatter,
                 "asking {url} for {}: no reply came within {} s",
                 wanted.as_str(),
-                TIMEOUT.as_secs()
+                timeout.as_secs()
             ),
             ClientError::Chunked { url } => write!(
                 formatter,
@@ -199,15 +221,15 @@ impl Request {
 }
 
 /// What a running Straum has done, as `GET /status` says it.
-pub(crate) fn status(url: &str, output: Output) -> Result<String, ClientError> {
+pub(crate) fn status(server: &Server, output: Output) -> Result<String, ClientError> {
     let request = Request::get(Wanted::Status, "/status".to_owned(), output);
-    fetch(url, &request)
+    fetch(server, &request)
 }
 
 /// Whether a running Straum is ready, as `GET /readyz` says.
-pub(crate) fn is_ready(url: &str) -> Result<bool, ClientError> {
+pub(crate) fn is_ready(server: &Server) -> Result<bool, ClientError> {
     let request = Request::get(Wanted::Readiness, "/readyz".to_owned(), Output::Text);
-    match fetch(url, &request) {
+    match fetch(server, &request) {
         Ok(_) => Ok(true),
         Err(error) if error.is_not_ready() => Ok(false),
         Err(error) => Err(error),
@@ -263,9 +285,9 @@ fn milliseconds(took: Duration) -> String {
 }
 
 /// The views a running Straum holds, as `GET /views` says them.
-pub(crate) fn views(url: &str, output: Output) -> Result<String, ClientError> {
+pub(crate) fn views(server: &Server, output: Output) -> Result<String, ClientError> {
     let request = Request::get(Wanted::Views, "/views".to_owned(), output);
-    fetch(url, &request)
+    fetch(server, &request)
 }
 
 /// Which of a view's rows to ask for: from `start`, a negative one
@@ -278,7 +300,7 @@ pub(crate) struct RowWindow {
 }
 
 /// A view's rows, as `GET /views/NAME` writes them.
-pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<Timed, ClientError> {
+pub(crate) fn rows(server: &Server, view: &str, window: RowWindow) -> Result<Timed, ClientError> {
     // The name goes into the request line as it is.
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
@@ -293,30 +315,30 @@ pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<Timed, Cl
         let _ = write!(path, "{separator}count={count}");
     }
     let request = Request::get(Wanted::Rows, path, Output::Text);
-    fetch_timed(url, &request)
+    fetch_timed(server, &request)
 }
 
 /// A view's `CREATE VIEW` statement, as `GET /views/NAME/spec` writes it.
-pub(crate) fn spec(url: &str, view: &str) -> Result<String, ClientError> {
+pub(crate) fn spec(server: &Server, view: &str) -> Result<String, ClientError> {
     // The name goes into the request line as it is.
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
     }
     let request = Request::get(Wanted::Spec, format!("/views/{view}/spec"), Output::Text);
-    fetch(url, &request)
+    fetch(server, &request)
 }
 
 /// The views as JSON, for the shell to complete from; `None` when they
 /// can't be had.
-pub(crate) fn load_views(url: &str) -> Option<Vec<View>> {
+pub(crate) fn load_views(server: &Server) -> Option<Vec<View>> {
     let request = Request::get(Wanted::Views, "/views".to_owned(), Output::Json);
-    let json = fetch(url, &request).ok()?;
+    let json = fetch(server, &request).ok()?;
     read_views(&json)
 }
 
 /// Sends an ask and returns its answer, as a table or as JSON.
 pub(crate) fn ask(
-    url: &str,
+    server: &Server,
     query: &str,
     parameters: &[String],
     output: Output,
@@ -337,7 +359,7 @@ pub(crate) fn ask(
         accept: output,
         body: Some(body),
     };
-    fetch_timed(url, &request)
+    fetch_timed(server, &request)
 }
 
 /// A parameter as JSON. A command line holds only text, so the text says
@@ -459,19 +481,20 @@ fn address_of(url: &str) -> Option<&str> {
 }
 
 /// The body of the reply to one request.
-fn fetch(url: &str, request: &Request) -> Result<String, ClientError> {
-    Ok(fetch_timed(url, request)?.text)
+fn fetch(server: &Server, request: &Request) -> Result<String, ClientError> {
+    Ok(fetch_timed(server, request)?.text)
 }
 
 /// The body of the reply to one request, and how long it took.
-fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
+fn fetch_timed(server: &Server, request: &Request) -> Result<Timed, ClientError> {
+    let url = server.url.as_str();
     let Some(address) = address_of(url) else {
         return Err(ClientError::NotAnHttpUrl(url.to_owned()));
     };
     let sent = Instant::now();
     let url_owned = url.to_owned();
     let wanted = request.wanted;
-    let reply = match exchange(address, &request_text(address, request)) {
+    let reply = match exchange(address, &request_text(address, request), server.timeout) {
         Ok(reply) => reply,
         Err(Exchange::Failed(error)) => {
             return Err(ClientError::Unreachable {
@@ -484,6 +507,7 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
             return Err(ClientError::Silent {
                 url: url_owned,
                 wanted,
+                timeout: server.timeout,
             });
         }
     };
@@ -616,10 +640,10 @@ fn request_text(address: &str, request: &Request) -> String {
 
 /// Sends `request` to `address` and reads the reply until Straum closes
 /// the connection.
-fn exchange(address: &str, request: &str) -> Result<String, Exchange> {
-    let mut stream = connect(address).map_err(Exchange::Failed)?;
+fn exchange(address: &str, request: &str, timeout: Duration) -> Result<String, Exchange> {
+    let mut stream = connect(address, timeout).map_err(Exchange::Failed)?;
     stream
-        .set_read_timeout(Some(TIMEOUT))
+        .set_read_timeout(Some(timeout))
         .map_err(Exchange::Failed)?;
     stream
         .write_all(request.as_bytes())
@@ -644,17 +668,17 @@ fn exchange(address: &str, request: &str) -> Result<String, Exchange> {
 enum Exchange {
     /// No connection, or it broke.
     Failed(io::Error),
-    /// Connected, but nothing came within [`TIMEOUT`].
+    /// Connected, but nothing came within the timeout.
     Silent,
 }
 
 /// A connection to `address`, each of its addresses tried for at most
-/// [`TIMEOUT`]: a host that drops packets would hold `connect` for
+/// `timeout`: a host that drops packets would hold `connect` for
 /// minutes.
-fn connect(address: &str) -> io::Result<TcpStream> {
+fn connect(address: &str, timeout: Duration) -> io::Result<TcpStream> {
     let mut failure = io::Error::new(io::ErrorKind::NotFound, "no address");
     for socket_address in address.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&socket_address, TIMEOUT) {
+        match TcpStream::connect_timeout(&socket_address, timeout) {
             Ok(stream) => return Ok(stream),
             Err(error) => failure = error,
         }

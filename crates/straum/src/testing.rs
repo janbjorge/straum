@@ -8,6 +8,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+use crate::client::{Server, TIMEOUT};
+
 /// A command line split at its spaces, as the shell would.
 pub(crate) fn args(line: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_owned).collect()
@@ -59,3 +61,12 @@ pub(crate) const POST_ASK_SPACED: &str = "POST /ask HTTP/1.1\r\nhost: ADDRESS\r\
 pub(crate) const POST_ASK_JSON: &str = "POST /ask HTTP/1.1\r\nhost: ADDRESS\r\nconnection: close\r\n\
     accept: application/json\r\ncontent-type: application/json\r\ncontent-length: 53\r\n\r\n\
     {\"query\":\"SELECT \\\"x\\\"\",\"parameters\":[7,\"paid\",true]}";
+
+/// The running Straum at `url`, waited on as long as when `--timeout`
+/// doesn't say.
+pub(crate) fn server(url: &str) -> Server {
+    Server {
+        url: url.to_owned(),
+        timeout: TIMEOUT,
+    }
+}
