@@ -634,9 +634,19 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
             let column = via_name(column, &fact.refs);
             errors.push(join_error(fact, join, JoinError::ViaReused { column }));
         }
-        if let Via::Attribute { through, column } = column
-            && !carried_before(fact, position, dims, *through, column)
+        let Via::Attribute { through, column } = column else {
+            continue;
+        };
+        if let Some(parent) = fact.refs.get(*through)
+            && *through < position
+            && let RefKind::Semi | RefKind::Anti = parent.kind
         {
+            let error = JoinError::ThroughExists {
+                through: parent.alias.clone(),
+                kind: parent.kind,
+            };
+            errors.push(join_error(fact, join, error));
+        } else if !carried_before(fact, position, dims, *through, column) {
             let error = JoinError::ChainColumn {
                 through: *through,
                 column: column.clone(),
@@ -726,14 +736,8 @@ fn check_reads<'a>(
                 scope: Some(join.alias.clone()),
                 name: attribute.column.clone(),
             });
-        } else if let Some(dim) = dim
-            && !dim_has_column(dim, &attribute.column)
-        {
-            let error = JoinError::UnknownAttribute {
-                attribute: attribute.column.clone(),
-                dim: dim.name.clone(),
-            };
-            errors.push(join_error(fact, join, error));
+        } else if let Some(dim) = dim {
+            check_read(fact, join, dim, &attribute.column, errors);
         }
         if !keys.insert(&attribute.name) {
             errors.push(SpecError::Duplicate {
@@ -744,13 +748,27 @@ fn check_reads<'a>(
     }
 }
 
-fn dim_has_column(dim: &Dim, wanted: &Identifier) -> bool {
-    for column in dim.columns() {
-        if column == wanted {
-            return true;
-        }
+/// A ref reads an attribute of its dim. A key column is no attribute:
+/// the projection holds no value of it, and the via column has it.
+fn check_read(
+    fact: &Fact,
+    join: &Ref,
+    dim: &Dim,
+    column: &Identifier,
+    errors: &mut Vec<SpecError>,
+) {
+    if dim.key.contains(column) {
+        let error = JoinError::ReadsKey {
+            column: column.clone(),
+        };
+        errors.push(join_error(fact, join, error));
+    } else if !dim.attributes.contains(column) {
+        let error = JoinError::UnknownAttribute {
+            attribute: column.clone(),
+            dim: dim.name.clone(),
+        };
+        errors.push(join_error(fact, join, error));
     }
-    false
 }
 
 /// Measures share the key namespace too: an ask names both alike.

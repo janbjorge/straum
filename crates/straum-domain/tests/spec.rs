@@ -452,6 +452,41 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
     );
 }
 
+/// Two shapes no Straum SQL writes and the store can't answer: a ref that
+/// reads its dim's key column, of which the projection holds no value,
+/// and a chain through a semi join, which keeps no row to read through.
+#[test]
+fn a_key_read_and_a_chain_through_exists_are_refused() {
+    let mut key_read = fact();
+    key_read.refs[0].reads = vec![attribute("name", "name"), attribute("zid", "id")];
+    assert_eq!(
+        refused(key_read),
+        ["view t: join r reads key column id, which the column it joins on holds"]
+    );
+
+    let mut through_semi = chained();
+    through_semi.refs.push(Ref {
+        alias: id("far"),
+        dim: id("z"),
+        via: vec![Via::Attribute {
+            through: 1,
+            column: id("name"),
+        }],
+        kind: RefKind::Left,
+        reads: vec![attribute("far_name", "name")],
+    });
+    assert_eq!(
+        refused(through_semi.clone()),
+        ["view t: join far joins through join through, which is a semi join and keeps no row"]
+    );
+    // Through the left join before it, the same chain stands.
+    through_semi.refs[2].via = vec![Via::Attribute {
+        through: 0,
+        column: id("name"),
+    }];
+    assert!(Spec::new(vec![dim()], vec![through_semi]).is_ok());
+}
+
 /// One day of `t` by every key form: by keys, an attribute a ref reads
 /// and the bucket.
 fn ask() -> Ask {

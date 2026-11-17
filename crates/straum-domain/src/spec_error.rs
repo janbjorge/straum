@@ -84,6 +84,11 @@ pub enum JoinError {
         attribute: Identifier,
         dim: Identifier,
     },
+    /// The join reads a key column of its dim, which its dim holds no
+    /// value of: the column it joins on has it.
+    ReadsKey { column: Identifier },
+    /// The join goes through a semi or anti join, which keeps no row.
+    ThroughExists { through: Identifier, kind: RefKind },
 }
 
 impl fmt::Display for SpecError {
@@ -166,6 +171,14 @@ impl fmt::Display for JoinError {
             JoinError::UnknownAttribute { attribute, dim } => {
                 write!(f, "reads {attribute}, which dim {dim} has no column of")
             }
+            JoinError::ReadsKey { column } => write!(
+                f,
+                "reads key column {column}, which the column it joins on holds"
+            ),
+            JoinError::ThroughExists { through, kind } => write!(
+                f,
+                "joins through join {through}, which is {kind} and keeps no row"
+            ),
         }
     }
 }
