@@ -2,10 +2,13 @@
 //! as plain structs (`Spec`) and assembled into the bytes PostgreSQL's
 //! `XLogRecordAssemble` (`src/backend/access/transam/xloginsert.c`) would
 //! write, WAL pages laid out around them as `CopyXLogRecordToWAL` lays
-//! them, and small builders of rows and attributes. A test builds a
-//! `Spec`, turns it into bytes, and checks what the reader, the heap or the
-//! transactions make of them.
+//! them, small builders of rows and attributes, and an allocator that
+//! counts each thread's allocations. A test builds a `Spec`, turns it
+//! into bytes, and checks what the reader, the heap or the transactions
+//! make of them.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ops::Range;
 
 use straum_domain::FastSet;
@@ -27,6 +30,42 @@ use super::{
     RESOURCE_MANAGER_INFO, RESOURCE_MANAGER_XLOG, Record, Records, RelationFile, TransactionId,
     WalError,
 };
+
+thread_local! {
+    /// Allocations this thread has made.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Counts the allocations of the thread that makes them, so tests running
+/// beside each other don't add to each other's counts. `GlobalAlloc` is an
+/// unsafe trait, so no safe allocator can count (ADR-0013).
+struct Counting;
+
+// SAFETY: hands every call to `System` unchanged.
+#[expect(unsafe_code, reason = "GlobalAlloc is an unsafe trait (ADR-0013)")]
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.set(ALLOCATIONS.get() + 1);
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCATIONS.set(ALLOCATIONS.get() + 1);
+        unsafe { System.realloc(pointer, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// The allocations this thread has made so far.
+pub(crate) fn allocations() -> usize {
+    ALLOCATIONS.get()
+}
 
 /// The segment size the tests lay WAL out in: small, so tests cross
 /// segments often.

@@ -1,6 +1,6 @@
 # ADR-0013: Code reads plainly, and clippy holds it there
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -9,7 +9,8 @@ one-letter names, closures bound to `let`, long `Option` chains and
 100-line functions; a written rule alone didn't hold, and 721
 one-letter names came in after AGENTS.md asked for whole words. Every
 crate forbids `unsafe`, yet testing that an ask allocates per group
-and never per cell needs a counting allocator, and `GlobalAlloc` is an
+and never per cell, or that the physical stream allocates a fixed few
+times per row, needs a counting allocator, and `GlobalAlloc` is an
 unsafe trait.
 
 ## Decision
@@ -36,9 +37,12 @@ functions at 70 lines. `missing_errors_doc`, `missing_panics_doc` and
 `shadow_unrelated` stays off, as it flags test steps like `let (code,
 out) = run(..)`. A lint is silenced with `#[expect]` and a reason.
 
-`crates/straum-domain/tests/cost.rs` holds the one `unsafe` in the
-repository, a counting global allocator. Library and binary crates
-keep `#![forbid(unsafe_code)]`. Don't revisit.
+Two counting global allocators are the only `unsafe` in the
+repository: `crates/straum-domain/tests/cost.rs`, and
+`crates/straum-pg/src/wal/test_support.rs`, whose WAL internals only
+the crate's own test build reaches. Library and binary crates keep
+`#![forbid(unsafe_code)]`; `straum-pg`'s test build has `deny` instead,
+so that one allocator can carry an `#[expect]`. Don't revisit.
 
 ## Consequences
 
@@ -48,4 +52,5 @@ keep `#![forbid(unsafe_code)]`. Don't revisit.
   lines than a chain.
 - Headers say what, so they change in the same commit as the code.
 - A hot path keeps its dense form and says which measurement keeps it.
-- A per-cell allocation fails a test instead of hiding in timing noise.
+- A per-cell allocation, or one more per WAL row, fails a test instead
+  of hiding in timing noise.

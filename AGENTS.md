@@ -82,9 +82,9 @@ change.
   recipe is a thin wrapper. No `.sh` file, and no bash body in a recipe.
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
-- No `unsafe`, no macros of our own, traits only at ports. One
-  exception: the counting allocator in `straum-domain/tests/cost.rs`
-  (ADR-0013).
+- No `unsafe`, no macros of our own, traits only at ports. Two
+  exceptions: the counting allocators in `straum-domain/tests/cost.rs`
+  and `straum-pg/src/wal/test_support.rs` (ADR-0013).
 - Plain structs, enums, functions. Names and signatures follow the
   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
 - Write for a reader who doesn't know Rust (ADR-0013):

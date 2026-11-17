@@ -6,7 +6,10 @@
 //! commits, while `watchdog.rs` keeps the slot from holding too much WAL.
 //! `wire.rs` is the connection under all of it.
 
-#![forbid(unsafe_code)]
+// The test build counts allocations with the one `unsafe` it allows,
+// in `wal/test_support.rs` (ADR-0013); `forbid` would refuse even that.
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(test, deny(unsafe_code))]
 
 mod catalog;
 mod decode;

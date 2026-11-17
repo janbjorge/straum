@@ -235,8 +235,8 @@ mod tests {
     use crate::pgoutput::{Relation, RelationColumn};
     use crate::value::INT4;
     use crate::wal::messages::Layout;
-    use crate::wal::test_support::decode;
     use crate::wal::test_support::{BlockSpec, FILE, Spec, assemble};
+    use crate::wal::test_support::{allocations, decode};
     use crate::wal::tuple::{Attribute, Kind};
     use crate::wal::xact::tests::{invalidating_commit, running_main};
     use crate::wal::xact::{STANDBY_RUNNING_XACTS, XACT_COMMIT, XACT_HAS_INFO};
@@ -485,6 +485,80 @@ mod tests {
         ];
         let commits = read_all(&mut pipeline, &later).unwrap();
         assert_eq!(ids(&commits), [3]);
+    }
+
+    /// Rows in a transaction the allocation tests read.
+    const ROWS: usize = 1000;
+    /// What reading one row of a spec table allocates: the page's slot
+    /// list, the row's bytes and the decoded row. The lists the publisher,
+    /// heap and transactions keep from row to row allocate nothing once
+    /// grown (`physical_wal_bench`).
+    const ROW_ALLOCATIONS: usize = 3;
+    /// What a transaction allocates beyond its rows: its commit's lists,
+    /// and a share of the page map's growth.
+    const TRANSACTION_ALLOCATIONS: usize = 50;
+
+    /// `ROWS` inserts by `xid`, each on a page of its own, and its commit.
+    fn transaction(wal: &mut Wal, xid: u32) -> Vec<Record> {
+        let mut records = Vec::new();
+        for id in 0..ROWS {
+            records.push(wal.insert(xid, i32::try_from(id).unwrap()));
+        }
+        records.push(wal.commit(xid));
+        records
+    }
+
+    /// A pipeline of `layouts`, consistent and past its snapshot, that a
+    /// transaction of `ROWS` has run through, so its lists have grown.
+    fn warmed(wal: &mut Wal, checked: Vec<Checked>, layouts: Layouts) -> Pipeline {
+        let mut pipeline = Pipeline::new(checked, layouts, 18, 2 * ROWS, 1 << 30);
+        read_one(&mut pipeline, &wal.running(100, &[]));
+        see_all(&mut pipeline, "100:100:").unwrap();
+        read_all(&mut pipeline, &transaction(wal, 100)).unwrap();
+        pipeline
+    }
+
+    /// The allocations reading `records` makes, and the rows it commits.
+    fn counted(pipeline: &mut Pipeline, records: &[Record]) -> (usize, usize) {
+        let before = allocations();
+        let commits = read_all(pipeline, records).unwrap();
+        let made = allocations() - before;
+        (made, ids(&commits).len())
+    }
+
+    #[test]
+    fn reads_a_row_within_its_allocations() {
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        let checked = Checked::public("t", "t", &["id"], vec![ColumnType::Int]);
+        let layouts = Layouts {
+            tables: vec![table()],
+            labels: HashMap::new(),
+        };
+        let mut pipeline = warmed(&mut wal, vec![checked], layouts);
+        let records = transaction(&mut wal, 101);
+        let (made, rows) = counted(&mut pipeline, &records);
+        assert_eq!(rows, ROWS);
+        let most = ROWS * ROW_ALLOCATIONS + TRANSACTION_ALLOCATIONS;
+        assert!(
+            made <= most,
+            "{made} allocations for {ROWS} rows, at most {most}"
+        );
+    }
+
+    #[test]
+    fn passes_other_tables_rows_without_allocating() {
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        let mut pipeline = warmed(&mut wal, Vec::new(), Layouts::default());
+        let records = transaction(&mut wal, 101);
+        let (made, rows) = counted(&mut pipeline, &records);
+        assert_eq!(rows, 0);
+        assert_eq!(made, 0, "allocations for another table's rows");
     }
 
     /// A transaction past the limit, and rows past the bytes allowed, stop
