@@ -46,6 +46,11 @@ pub(crate) enum ClientError {
     NoReply {
         url: String,
     },
+    /// A chunked reply, which Straum never sends: something stands
+    /// between.
+    Chunked {
+        url: String,
+    },
     /// A reply whose body ended before its `content-length`.
     CutShort {
         url: String,
@@ -59,7 +64,7 @@ impl ClientError {
     /// answer if asked again later.
     pub(crate) fn is_not_ready(&self) -> bool {
         match self {
-            ClientError::Refused { status_line, .. } => status_line.starts_with("HTTP/1.1 503 "),
+            ClientError::Refused { status_line, .. } => status_code(status_line) == Some(503),
             _ => false,
         }
     }
@@ -90,6 +95,11 @@ impl Display for ClientError {
                 formatter.write_str(answered.trim_end())
             }
             ClientError::NoReply { url } => write!(formatter, "{url} sent no HTTP reply"),
+            ClientError::Chunked { url } => write!(
+                formatter,
+                "{url} sent a chunked reply, which Straum never sends; give the URL Straum \
+                 listens on, not a proxy's"
+            ),
             ClientError::CutShort { url, expected, got } => write!(
                 formatter,
                 "{url} sent {got} of the {expected} bytes its reply said it would"
@@ -462,6 +472,11 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
             url: url.to_owned(),
         });
     };
+    if header(head, "transfer-encoding").is_some_and(is_chunked) {
+        return Err(ClientError::Chunked {
+            url: url.to_owned(),
+        });
+    }
     // A connection that closed early ends the read as a whole reply
     // would: only the length the head gave tells.
     if let Some(expected) = content_length(head)
@@ -473,7 +488,8 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
             got: body.len(),
         });
     }
-    if head.starts_with("HTTP/1.1 200 ") {
+    let status_line = head.lines().next().unwrap_or_default();
+    if status_code(status_line) == Some(200) {
         let timing = Timing {
             round_trip,
             phases: phases(head),
@@ -492,15 +508,34 @@ fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
 
 /// The `content-length` a reply's head gives, if any.
 fn content_length(head: &str) -> Option<usize> {
-    for line in head.lines() {
-        let Some((name, value)) = line.split_once(':') else {
+    header(head, "content-length")?.parse().ok()
+}
+
+/// The value of the header `name`, in any case, in a reply's head.
+// 'a: the value lies inside `head`.
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    for line in head.lines().skip(1) {
+        let Some((written, value)) = line.split_once(':') else {
             continue;
         };
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().ok();
+        if written.eq_ignore_ascii_case(name) {
+            return Some(value.trim());
         }
     }
     None
+}
+
+/// Whether a `transfer-encoding` ends in chunks.
+fn is_chunked(encoding: &str) -> bool {
+    encoding.to_ascii_lowercase().contains("chunked")
+}
+
+/// The status code of `HTTP/1.x CODE REASON`, HTTP/1.0 or 1.1.
+fn status_code(status_line: &str) -> Option<u16> {
+    let rest = status_line.strip_prefix("HTTP/1.")?;
+    let (_minor, rest) = rest.split_once(' ')?;
+    let code = rest.split(' ').next()?;
+    code.parse().ok()
 }
 
 /// The phases `Server-Timing` names in a reply's head, in the order
@@ -615,6 +650,23 @@ mod tests {
             said(status(&format!("{url}/"), Output::Text)),
             Said::Body(String::new())
         );
+        // HTTP/1.0 is HTTP/1.1's elder, and its 200 an answer too.
+        let url = answering(GET_STATUS, "HTTP/1.0 200 OK\r\n\r\nready: yes\n");
+        assert_eq!(
+            said(status(&url, Output::Text)),
+            Said::Body("ready: yes\n".to_owned())
+        );
+        // Straum never sends chunks: a proxy stands between.
+        let chunked =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\nb\r\nready: yes\n\r\n0\r\n\r\n";
+        let url = answering(GET_STATUS, chunked);
+        assert_eq!(
+            said(status(&url, Output::Text)),
+            Said::Error(format!(
+                "{url} sent a chunked reply, which Straum never sends; give the URL Straum \
+                 listens on, not a proxy's"
+            ))
+        );
         // A reply cut short is no answer, whatever its status said.
         let short = "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nready: yes\n";
         let url = answering(GET_STATUS, short);
@@ -640,6 +692,19 @@ mod tests {
         let answered =
             format!("{url} answered \"HTTP/1.1 503 Service Unavailable\"\nnot ready: loading");
         assert_eq!(said(status(&url, Output::Text)), Said::Error(answered));
+        // Not ready in either HTTP/1, and nothing else is.
+        for (status_line, not_ready) in [
+            ("HTTP/1.0 503 Service Unavailable", true),
+            ("HTTP/1.1 503 Service Unavailable", true),
+            ("HTTP/1.1 500 Internal Server Error", false),
+        ] {
+            let refused = ClientError::Refused {
+                url: url.clone(),
+                status_line: status_line.to_owned(),
+                body: String::new(),
+            };
+            assert_eq!(refused.is_not_ready(), not_ready, "{status_line}");
+        }
     }
 
     #[test]

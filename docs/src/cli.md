@@ -13,7 +13,9 @@ or a query is taken as written, as in `straum run -- -spec.sql`.
 `status`, `views`, `ask` and `shell` talk to a running Straum. They find
 it at `--url`, else at the URL in `STRAUM_URL`, else at
 `http://127.0.0.1:8080`. When nothing answers there, the error says so
-and ends with `try: --url URL, or set STRAUM_URL`.
+and ends with `try: --url URL, or set STRAUM_URL`. The URL is where
+Straum listens, reached directly: plain HTTP, no TLS, and no proxy
+that rewrites the reply into chunks, which the client refuses.
 
 Every command exits with 0 when done, 1 when it failed, 2 when its
 command line is wrong, and 3 when Straum is not ready yet: loading, or
