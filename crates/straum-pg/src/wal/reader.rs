@@ -452,7 +452,9 @@ mod tests {
             RESOURCE_MANAGER_STORAGE,
             RESOURCE_MANAGER_STANDBY,
         ];
-        if always.contains(&record.resource_manager) {
+        let page_image = record.resource_manager == RESOURCE_MANAGER_XLOG
+            && matches!(record.info & crate::wal::RESOURCE_MANAGER_INFO, 0xA0 | 0xB0);
+        if always.contains(&record.resource_manager) && !page_image {
             return true;
         }
         for block in &record.blocks {

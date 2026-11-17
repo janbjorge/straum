@@ -43,6 +43,11 @@ pub(super) const ORIGIN_SIZE: usize = 2;
 
 /// `XLOG_SWITCH`: the record ends its WAL segment.
 pub(super) const XLOG_SWITCH: u8 = 0x40;
+/// `XLOG_FPI_FOR_HINT`: a page's image, logged when a hint bit changes.
+const XLOG_FPI_FOR_HINT: u8 = 0xA0;
+/// `XLOG_FPI`: a page's image with no other change, as `CREATE INDEX` or
+/// a hint bit without checksums logs one.
+const XLOG_FPI: u8 = 0xB0;
 
 /// `XLR_BLOCK_ID_DATA_SHORT`: main data, its length in one byte.
 pub(super) const DATA_SHORT: u8 = 255;
@@ -288,10 +293,16 @@ pub(super) fn interest(
     total_length: usize,
     files: &FastSet<RelationFile>,
 ) -> Interest {
-    let Some(resource_manager) = head.get(RECORD_RESOURCE_MANAGER) else {
+    let (Some(resource_manager), Some(info)) =
+        (head.get(RECORD_RESOURCE_MANAGER), head.get(RECORD_INFO))
+    else {
         return Interest::Unsure;
     };
-    if ALWAYS_READ.contains(resource_manager) {
+    // A page image of the XLOG manager matters only for the pages it
+    // holds, as a heap record's does; its other records always do.
+    let page_image = *resource_manager == RESOURCE_MANAGER_XLOG
+        && matches!(info & RESOURCE_MANAGER_INFO, XLOG_FPI | XLOG_FPI_FOR_HINT);
+    if ALWAYS_READ.contains(resource_manager) && !page_image {
         return Interest::Read;
     }
     let mut cursor = Cursor {
@@ -585,6 +596,41 @@ mod tests {
             let record = assemble(&plain_block(Some(holed), Vec::new()));
             let decoded = decode(SEGMENT + LONG_HEADER, record.len() as u64, record);
             assert_eq!(decoded.is_ok(), fits, "{hole_length}");
+        }
+    }
+
+    /// The XLOG manager's page images are judged by the pages they hold,
+    /// as a heap record is; its other records, a checkpoint or a switch,
+    /// are always read.
+    #[test]
+    fn an_xlog_page_image_of_another_table_is_passed_by() {
+        let ours: FastSet<RelationFile> = [FILE].into_iter().collect();
+        let theirs: FastSet<RelationFile> = [RelationFile {
+            relation: FILE.relation + 1,
+            ..FILE
+        }]
+        .into_iter()
+        .collect();
+        for (info, read_by_others) in [
+            (XLOG_FPI, false),
+            (XLOG_FPI_FOR_HINT, false),
+            (XLOG_SWITCH, true),
+            // XLOG_CHECKPOINT_ONLINE.
+            (0x10, true),
+        ] {
+            let spec = Spec {
+                resource_manager: RESOURCE_MANAGER_XLOG,
+                info,
+                ..plain_block(Some(compressed_image()), Vec::new())
+            };
+            let bytes = assemble(&spec);
+            assert_eq!(
+                interest(&bytes, bytes.len(), &ours),
+                Interest::Read,
+                "{info:#x}"
+            );
+            let others = interest(&bytes, bytes.len(), &theirs);
+            assert_eq!(others == Interest::Read, read_by_others, "{info:#x}");
         }
     }
 
