@@ -8,17 +8,36 @@ The command line and performance pages use these tables too.
 
 ## 1. Start PostgreSQL with the trips
 
-```sh
-docker network create straum
-docker run -d --name straum-pg --network straum \
-  -e POSTGRES_PASSWORD=postgres postgres:18 -c wal_level=logical
+Save as `compose.yaml`:
+
+```yaml
+name: straum
+services:
+  postgres:
+    image: postgres:18
+    command: postgres -c wal_level=logical
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: pg_isready -h 127.0.0.1 -U postgres
+      interval: 1s
+  straum:
+    image: ghcr.io/janbjorge/straum
+    command: run /spec/trips.sql
+    environment:
+      STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
+    volumes:
+      - ./trips.sql:/spec/trips.sql:ro
+    ports:
+      - 127.0.0.1:8080:8080
 ```
 
-A few seconds later, load the trips:
+Start PostgreSQL, wait until it answers, and load the trips:
 
 ```sh
+docker compose up --detach --wait postgres
 uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py |
-  docker exec -i straum-pg psql -U postgres -q
+  docker compose exec -T postgres psql -U postgres -q
 ```
 
 [`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
@@ -53,28 +72,26 @@ the hour of the `date_bin`, then days and weeks for long ranges.
 
 ## 3. Set up PostgreSQL and run Straum
 
-Straum connects as the user in `STRAUM_DSN`. `straum plan` reads it too,
-and prints the SQL that makes that role with that password, lets it read
-the tables and publishes them. Run the SQL as the tables' owner:
+Straum connects as the user in `STRAUM_DSN`, set in `compose.yaml`.
+`straum plan` reads it too, and prints the SQL that makes that role
+with that password, lets it read the tables and publishes them. Run
+the SQL as the tables' owner:
 
 ```sh
-export STRAUM_DSN='postgres://straum:straum@straum-pg:5432/postgres?sslmode=disable'
-docker run --rm -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
-  plan /spec/trips.sql | docker exec -i straum-pg psql -U postgres
+docker compose run --rm --no-deps -T straum plan /spec/trips.sql |
+  docker compose exec -T postgres psql -U postgres
 ```
 
-This container has no TLS, hence `sslmode=disable`. Otherwise Straum
+This PostgreSQL has no TLS, hence `sslmode=disable`. Otherwise Straum
 always connects with TLS. Then run it:
 
 ```sh
-docker run --rm --name straum --network straum -p 8080:8080 \
-  -e STRAUM_DSN -v "$PWD:/spec" ghcr.io/janbjorge/straum \
-  run /spec/trips.sql
+docker compose up straum
 ```
 
 ```text
-straum: listening on 0.0.0.0:8080
-straum: loaded every table; streaming from 0/1933EF18
+straum-1  | straum: listening on 0.0.0.0:8080
+straum-1  | straum: loaded every table; streaming from 0/1933EF18
 ```
 
 The load takes about a second.
@@ -118,7 +135,7 @@ LaGuardia, zones 132 and 138, out of Queens into a borough of their
 own, then ask for the day again:
 
 ```sh
-docker exec straum-pg psql -U postgres -c "
+docker compose exec postgres psql -U postgres -c "
   INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
                             payment_type, fare_amount, tip_amount, trip_distance)
   VALUES (2, '2024-01-17 12:00-05', 1, 132, 1, 120.00, 0, 17.50);
@@ -153,17 +170,17 @@ so if the answer's `as_of` predates the write, ask once more.
 
 ## Look around, then clean up
 
-`docker exec -it straum /straum shell` is a prompt at the running
+`docker compose exec straum /straum shell` is a prompt at the running
 Straum, with Tab completion: `\d` lists the views with the names and
 types an ask may use, and `\rows trips` prints a view's rows. [Command
 line](cli.md#straum-shell) has the shell and the `straum status`,
 `straum views` and `straum ask` commands beside it.
 
-Stop straum with Ctrl-C and remove PostgreSQL and the network:
+Stop straum with Ctrl-C and remove both containers, their data and
+the network:
 
 ```sh
-docker rm -f straum-pg
-docker network rm straum
+docker compose down --volumes
 ```
 
 Next: [Try it on your data](your-data.md), the same steps on a copy

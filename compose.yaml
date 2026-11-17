@@ -1,0 +1,7 @@
+# The Straum image, built from the Dockerfile. docker compose build, push
+# and run go through it; STRAUM_IMAGE names the image (straum by default).
+name: straum-image
+services:
+  straum:
+    image: ${STRAUM_IMAGE:-straum}
+    build: .

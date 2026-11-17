@@ -76,14 +76,15 @@ starting over in 1 s
 ## Kubernetes
 
 The Helm chart, `deploy/helm/straum`, runs Straum as one pod with the
-spec in a ConfigMap and the DSN in a Secret. Build the image from the
-repository's `Dockerfile` and push it, then put the DSN in a Secret,
+spec in a ConfigMap and the DSN in a Secret. Build the image with the
+repository's `compose.yaml` and push it, then put the DSN in a Secret,
 since the chart never holds it, or have your secret store sync one, such
 as the External Secrets Operator or the Secrets Store CSI driver:
 
 ```sh
-docker build -t registry.example.com/straum:0.0.0 .
-docker push registry.example.com/straum:0.0.0
+export STRAUM_IMAGE=registry.example.com/straum:0.0.0
+docker compose build straum
+docker compose push straum
 kubectl create secret generic straum-dsn \
   --from-literal=dsn='postgres://straum:PASSWORD@HOST:5432/DATABASE'
 helm upgrade --install straum deploy/helm/straum \

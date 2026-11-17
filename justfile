@@ -103,11 +103,11 @@ wal-bench:
 demo:
     bench/demo.py
 
-# Straum on a copy of your tables: a spec and a pg_dump, then straum shell
+# Straum on a copy of your tables: --spec and a pg_dump as --data, then straum shell
 [group('try')]
 [no-cd]
-try spec dump *flags:
-    {{ justfile_directory() }}/bench/try_your_data.py {{ spec }} {{ dump }} --postgres {{ postgres }} {{ flags }}
+try *flags:
+    {{ justfile_directory() }}/bench/try_your_data.py --postgres {{ postgres }} {{ flags }}
 
 [private]
 _named crates:

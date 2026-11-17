@@ -49,30 +49,42 @@ which Straum reads as text through `::text`
 
 ```sh
 uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/try_your_data.py \
-  usage.sql data.dump --schema schema.sql
+  --spec usage.sql --data data.dump --schema schema.sql --port 8080
 ```
 
-From a clone of the repository, `just try usage.sql data.dump --schema
-schema.sql` runs the same.
+From a clone of the repository, `just try --spec usage.sql --data
+data.dump --schema schema.sql --port 8080` runs the same.
 [`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
 starts PostgreSQL with `wal_level = logical`, restores the schema,
-then the data with foreign keys and triggers off, and runs `straum
-plan`'s SQL. Then it starts `straum run` from the image, waits until
-Straum has loaded, and opens [`straum shell`](cli.md#straum-shell):
+then the data of the tables the spec reads, with foreign keys and
+triggers off, and runs `straum plan`'s SQL. The dump's other tables
+stay out, so they take no disk. The indexes of the spec's tables,
+other than primary keys and unique constraints, go in after the data,
+`--jobs` at a time, since a table loads many times faster with no
+index to keep up. Then it starts `straum run` from the
+image, waits until Straum has loaded, and opens
+[`straum shell`](cli.md#straum-shell):
 
 ```text
+try: starting PostgreSQL 18 in stack straum-try-usage
+...
 try: straum ready in 0 s
 
 Ask:        curl --json '{"query": "SELECT <keys>, <measures> FROM <view>
               WHERE bucket >= $1 AND bucket < $2 GROUP BY <keys>",
               "parameters": ["<from>", "<to>"]}' http://127.0.0.1:8080/ask
-PostgreSQL: docker exec -it straum-try-pg psql -U postgres
+PostgreSQL: docker compose -p straum-try-usage exec postgres psql -U postgres
 
 Opening straum shell. Leaving it removes both containers.
 ```
 
-`\d` lists the views, `\rows usage` prints a view's rows. Both
-containers listen on `127.0.0.1` only.
+`\d` lists the views, `\rows usage` prints a view's rows.
+
+Both containers run in one Docker Compose project, the stack, named
+`straum-try-` and the spec's file name, with its own network. Stacks of
+different specs run side by side; `--stack` names another. A run
+removes what a killed run of its stack left. Straum alone is published,
+on `127.0.0.1` only, at a port Docker picks unless `--port` names one.
 
 A statement the restore can't run, such as an extension the image
 lacks, is printed and skipped. A table the spec reads but the restore
@@ -81,13 +93,16 @@ missed stops the run at `straum plan`, which names it
 
 | Flag | Default | |
 | --- | --- | --- |
+| `--spec FILE` | required | the spec |
+| `--data DUMP` | required | `pg_dump` output to restore |
 | `--schema FILE` | none | `pg_dump --schema-only` output, restored first |
 | `--postgres N` | `18` | PostgreSQL major; the dump's or newer |
 | `--image IMAGE` | `ghcr.io/janbjorge/straum` | Straum image; a local tag works |
-| `--port N` | `8080` | local port Straum answers on |
-| `--jobs N` | `4` | `pg_restore` jobs for a directory or custom dump |
+| `--stack NAME` | `straum-try-` and the spec's name | Compose project to run in |
+| `--port N` | a free one | local port Straum answers on |
+| `--jobs N` | `4` | `pg_restore` jobs and index builds at a time |
 
-The dump may be a directory, a custom or tar archive, or a plain `.sql`
+`--data` may be a directory, a custom or tar archive, or a plain `.sql`
 file. A dump of the whole database needs no `--schema`.
 
 ## 4. Ask and compare
@@ -106,7 +121,7 @@ Run the SQL anyone would write over the raw tables in the copy, and
 compare:
 
 ```sh
-docker exec straum-try-pg psql -U postgres -c "
+docker compose -p straum-try-usage exec postgres psql -U postgres -c "
   SELECT a.region, count(*) AS events, sum(e.amount) AS amount
     FROM events e LEFT JOIN accounts a ON a.id = e.account_id
    WHERE e.at >= '2026-11-01T00:00:00Z' AND e.at < '2026-12-01T00:00:00Z'

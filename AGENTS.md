@@ -37,9 +37,9 @@ The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
-`just wal-bench`, `just demo`, `just try SPEC DUMP`. With no crate
-named, crate recipes take the crates changed since HEAD. Every setting has a default,
-overridden on the command line (`just postgres=17 seeds=50 correctness`)
+`just wal-bench`, `just demo`, `just try --spec FILE --data DUMP`.
+With no crate named, crate recipes take the crates changed since HEAD.
+Every setting has a default, overridden on the command line (`just postgres=17 seeds=50 correctness`)
 or through its environment variable; `just --evaluate` shows them.
 A new script, check, benchmark or setting gets a recipe or variable
 in the same commit, with the same default as the code. Keep it tidy:
@@ -80,14 +80,15 @@ change.
 
 - No shell scripts. A tool is a Python file run with uv, and its just
   recipe is a thin wrapper. No `.sh` file, and no bash body in a recipe.
-- Containers run only through Docker Compose: tests, scripts,
-  benchmarks and docs. One project per run or test, named so runs
+- Every Docker command goes through `docker compose`: tests, scripts,
+  benchmarks, CI and docs. One project per run or test, named so runs
   side by side never share a network, container name or port. Code
   builds the Compose file as JSON and pipes it to `docker compose -f -`;
-  docs ship a `compose.yaml`. No `docker run`, no `docker network`, no
-  testcontainers. `docker exec`, `port`, `inspect` and `logs` on a
-  Compose container are fine, as are image commands (`build`, `push`,
-  `pull`, `create` and `cp` to copy a binary out).
+  docs ship a `compose.yaml`; the image builds and pushes through the
+  root `compose.yaml`. Reach a running project by name: `docker compose
+  -p NAME exec`, `port`, `ps`, `logs`, `cp`. No plain `docker run`,
+  `exec`, `build`, `network` or the like, and no testcontainers. The one
+  exception is `docker login`, which Compose lacks.
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
 - No `unsafe`, no macros of our own, traits only at ports. Two

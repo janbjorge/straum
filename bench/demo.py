@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = ["aiohttp", "asyncpg", "orjson", "testcontainers"]
+# dependencies = ["aiohttp", "asyncpg", "orjson"]
 #
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
@@ -19,7 +19,6 @@ go to bench/data, which git ignores.
 
 import argparse
 import asyncio
-import os
 import pathlib
 import secrets
 import statistics
@@ -28,14 +27,13 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import IO, Any
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiohttp
 import asyncpg
 import orjson
-from testcontainers.community.postgres import PostgresContainer
-from testcontainers.core.network import Network
+from stack import POSTGRES, POSTGRES_PORT, Stack, postgres_service
 
 type Rows = Sequence[Mapping[str, Any]]
 type Counts = dict[str | None, int]
@@ -44,9 +42,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "demo.sql"
 DATA = ROOT / "bench" / "data"
 IMAGE = "ghcr.io/janbjorge/straum:0.8.0"
-CONTAINER = "straum-demo"
-ALIAS = "straum-pg"
-SPEC_IN_IMAGE = f"{SPEC}:/spec/trips.sql:ro"
+STRAUM = "straum"
+STRAUM_PORT = 8080
+SPEC_IN_IMAGE = "/spec/trips.sql"
 # Hour edges of the view's date_bin, New York wall time. The January
 # file holds a few trips outside the month; both sides use this range.
 NEW_YORK_TZ = ZoneInfo("America/New_York")
@@ -91,62 +89,62 @@ def main() -> int:
         epilog="Needs Docker and uv. Downloads go to bench/data.",
     )
     parser.parse_args()
-    log(f"pulling {IMAGE}")
-    docker("pull", IMAGE, check=True)
-    stop_straum()
     password = secrets.token_hex(16)
-    log("starting PostgreSQL")
-    with Network() as network:
-        postgres = container(password, network)
-        with postgres:
-            return asyncio.run(run(postgres, password, network.name))
+    services = {POSTGRES: postgres(password), STRAUM: straum(password)}
+    with Stack("straum-demo", services) as stack:
+        log(f"pulling {IMAGE}")
+        stack.pull(STRAUM)
+        log(f"starting PostgreSQL in stack {stack.name}")
+        stack.up(POSTGRES)
+        return asyncio.run(run(stack, password))
 
 
-async def run(postgres: PostgresContainer, password: str, network: str) -> int:
+async def run(stack: Stack, password: str) -> int:
     started = time.perf_counter()
+    port = stack.port(POSTGRES, POSTGRES_PORT)
     pg = await asyncpg.connect(
-        postgres.get_connection_url(driver=None), server_settings=NEW_YORK
+        f"postgres://postgres:{password}@127.0.0.1:{port}/postgres",
+        server_settings=NEW_YORK,
     )
     try:
         log("loading January")
-        load(postgres)
+        load(stack)
         await pg.execute("ANALYZE")
-        await apply_plan(pg, password)
+        await apply_plan(pg, stack)
         trips = await pg.fetchval("SELECT count(*) FROM yellow_trips")
-        url = start_straum(password, network)
-        try:
-            async with aiohttp.ClientSession(url) as http:
-                await wait_ready(http)
-                print(f"ready: {trips:,} trips, {time.perf_counter() - started:.0f} s")
-                await time_boroughs(pg, http)
-                await insert_and_delete(pg, http)
-                await move_airports(pg, http)
-        finally:
-            stop_straum()
+        log("starting Straum")
+        stack.up(STRAUM)
+        url = f"http://127.0.0.1:{stack.port(STRAUM, STRAUM_PORT)}"
+        async with aiohttp.ClientSession(url) as http:
+            await wait_ready(stack, http)
+            print(f"ready: {trips:,} trips, {time.perf_counter() - started:.0f} s")
+            await time_boroughs(pg, http)
+            await insert_and_delete(pg, http)
+            await move_airports(pg, http)
+        stack.stop(STRAUM)
         await slot_gone(pg)
     finally:
         await pg.close()
     return 0
 
 
-def container(password: str, network: Network) -> PostgresContainer:
+def postgres(password: str) -> dict:
     # wal_level on the command line, so the plan's ALTER SYSTEM needs no
     # restart. The rest of the server stays at its defaults.
-    return (
-        PostgresContainer(
-            "postgres:18",
-            username="postgres",
-            password=password,
-            dbname="postgres",
-            driver=None,
-        )
-        .with_command("-c wal_level=logical")
-        .with_network(network)
-        .with_network_aliases(ALIAS)
-    )
+    return postgres_service("postgres:18", password, {"wal_level": "logical"})
 
 
-def load(postgres: PostgresContainer) -> None:
+def straum(password: str) -> dict:
+    return {
+        "image": IMAGE,
+        "command": ["run", SPEC_IN_IMAGE],
+        "environment": {"STRAUM_DSN": dsn(password)},
+        "volumes": [f"{SPEC}:{SPEC_IN_IMAGE}:ro"],
+        "ports": [{"target": STRAUM_PORT, "host_ip": "127.0.0.1"}],
+    }
+
+
+def load(stack: Stack) -> None:
     loader = subprocess.Popen(
         [ROOT / "bench" / "load_taxi_trips.py", "--months", "1", "--data", DATA],
         stdout=subprocess.PIPE,
@@ -154,57 +152,21 @@ def load(postgres: PostgresContainer) -> None:
     stdout = loader.stdout
     if stdout is None:
         raise SystemExit("demo: loader has no stdout")
-    container_id = postgres.get_wrapped_container().id
-    if not container_id:
-        raise SystemExit("demo: PostgreSQL container has no id")
     with stdout:
-        docker(
-            "exec",
-            "-i",
-            container_id,
-            "psql",
-            "-U",
-            "postgres",
-            "-q",
-            stdin=stdout,
-            check=True,
-        )
+        psql = stack.exec_args(POSTGRES, "psql", "-U", "postgres", "-q")
+        subprocess.run(psql, stdin=stdout, check=True)
     if loader.wait():
         raise SystemExit("demo: load_taxi_trips.py failed")
 
 
-async def apply_plan(pg: asyncpg.Connection, password: str) -> None:
-    sql = straum_run(password, ("--rm",), ("plan", "/spec/trips.sql"))
+async def apply_plan(pg: asyncpg.Connection, stack: Stack) -> None:
+    sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE)
     for line in sql.splitlines():
         if line and not line.startswith("--"):
             await pg.execute(line)
 
 
-def start_straum(password: str, network: str) -> str:
-    log("starting Straum")
-    straum_run(
-        password,
-        ("-d", "--name", CONTAINER, "--network", network, "-p", "127.0.0.1::8080"),
-        ("run", "/spec/trips.sql"),
-    )
-    return f"http://127.0.0.1:{published_port()}"
-
-
-def published_port() -> int:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        out = docker("port", CONTAINER, "8080", capture=True)
-        if out.returncode == 0 and out.stdout.strip():
-            return int(out.stdout.strip().rsplit(":", 1)[1])
-        time.sleep(0.2)
-    raise SystemExit(f"demo: Straum published no port\n{logs()}")
-
-
-def stop_straum() -> None:
-    docker("rm", "-f", CONTAINER, capture=True)
-
-
-async def wait_ready(http: aiohttp.ClientSession) -> None:
+async def wait_ready(stack: Stack, http: aiohttp.ClientSession) -> None:
     try:
         async with asyncio.timeout(READY_S):
             while True:
@@ -213,21 +175,13 @@ async def wait_ready(http: aiohttp.ClientSession) -> None:
                         if response.status == 200:
                             return
                 except aiohttp.ClientError:
-                    if not running():
-                        raise SystemExit(f"demo: Straum stopped\n{logs()}") from None
+                    if not stack.running(STRAUM):
+                        logs = stack.logs(STRAUM)
+                        raise SystemExit(f"demo: Straum stopped\n{logs}") from None
                 await asyncio.sleep(0.05)
     except TimeoutError:
-        raise SystemExit(f"demo: Straum did not get ready\n{logs()}") from None
-
-
-def running() -> bool:
-    out = docker("inspect", "-f", "{{.State.Running}}", CONTAINER, capture=True)
-    return out.stdout.strip() == "true"
-
-
-def logs() -> str:
-    out = docker("logs", CONTAINER, capture=True)
-    return out.stdout + out.stderr
+        logs = stack.logs(STRAUM)
+        raise SystemExit(f"demo: Straum did not get ready\n{logs}") from None
 
 
 async def time_boroughs(pg: asyncpg.Connection, http: aiohttp.ClientSession) -> None:
@@ -292,8 +246,7 @@ async def move_airports(pg: asyncpg.Connection, http: aiohttp.ClientSession) -> 
         raise SystemExit(f"demo: Queens has {queens!r} trips, zones hold {moved}")
     # JFK and LaGuardia, both in Queens. One update, every past trip moves.
     await pg.execute(
-        "UPDATE taxi_zones SET borough = 'Airports' "
-        "WHERE location_id IN ($1, $2)",
+        "UPDATE taxi_zones SET borough = 'Airports' WHERE location_id IN ($1, $2)",
         JFK,
         LAGUARDIA,
     )
@@ -393,44 +346,8 @@ def duration(seconds: float) -> str:
     return f"{seconds * 1e6:.0f} µs"
 
 
-def straum_run(
-    password: str, flags: Sequence[str], command: Sequence[str]
-) -> str:
-    completed = docker(
-        "run",
-        *flags,
-        "-e",
-        "STRAUM_DSN",
-        "-v",
-        SPEC_IN_IMAGE,
-        IMAGE,
-        *command,
-        env=os.environ | {"STRAUM_DSN": dsn(password)},
-        capture=True,
-        check=True,
-    )
-    return completed.stdout
-
-
 def dsn(password: str) -> str:
-    return f"postgres://straum:{password}@{ALIAS}:5432/postgres?sslmode=disable"
-
-
-def docker(
-    *args: str,
-    check: bool = False,
-    capture: bool = False,
-    env: Mapping[str, str] | None = None,
-    stdin: IO[bytes] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        check=check,
-        text=True,
-        capture_output=capture,
-        env=env,
-        stdin=stdin,
-    )
+    return f"postgres://straum:{password}@{POSTGRES}:{POSTGRES_PORT}/postgres?sslmode=disable"
 
 
 def log(message: str) -> None:

@@ -3,7 +3,6 @@
 # requires-python = "==3.14.*"
 # dependencies = [
 #     "aiohttp", "asyncpg", "orjson", "psutil", "pyarrow", "tabulate",
-#     "testcontainers",
 # ]
 #
 # [tool.uv]
@@ -54,7 +53,7 @@ import asyncpg
 import orjson
 import psutil
 import tabulate
-from testcontainers.community.postgres import PostgresContainer
+from stack import POSTGRES, POSTGRES_PORT, Stack, postgres_service
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
@@ -202,26 +201,24 @@ def main() -> int:
     )
     args = parser.parse_args()
     straum = build()
-    plan = subprocess.check_output(
-        [straum, "plan", SPEC, "--wal", args.wal], text=True
-    )
-    # Docker publishes the port on every interface while this runs.
+    plan = subprocess.check_output([straum, "plan", SPEC, "--wal", args.wal], text=True)
     password = secrets.token_hex(16)
-    postgres = container(password)
-    log("starting PostgreSQL")
-    with postgres:
-        return asyncio.run(run(postgres, straum, plan, password, args.mode, args.wal))
+    with Stack("straum-taxi", {POSTGRES: postgres(password)}) as stack:
+        log(f"starting PostgreSQL in stack {stack.name}")
+        stack.up(POSTGRES)
+        return asyncio.run(run(stack, straum, plan, password, args.mode, args.wal))
 
 
 async def run(
-    postgres: PostgresContainer,
+    stack: Stack,
     straum: str,
     plan: str,
     password: str,
     mode: str,
     wal: str,
 ) -> int:
-    url = postgres.get_connection_url()
+    port = stack.port(POSTGRES, POSTGRES_PORT)
+    url = f"postgres://postgres:{password}@127.0.0.1:{port}/postgres"
     pg = await asyncpg.connect(url, server_settings=NEW_YORK)
     try:
         # Set here, not on the command line, which ALTER SYSTEM can't
@@ -229,7 +226,7 @@ async def run(
         await pg.execute("ALTER SYSTEM SET full_page_writes = off")
         await pg.execute("SELECT pg_reload_conf()")
         log(f"loading {MONTHS} months")
-        load(postgres)
+        load(stack)
         # The asks over a week or a day read this index.
         await pg.execute("CREATE INDEX ON yellow_trips (pickup_at)")
         await pg.execute("VACUUM ANALYZE")
@@ -246,8 +243,7 @@ async def run(
             if line and not line.startswith("--"):
                 await pg.execute(line)
         await pg.execute(f"ALTER ROLE straum PASSWORD '{password}'")
-        host, port = postgres.get_container_host_ip(), postgres.get_exposed_port(5432)
-        dsn = f"postgres://straum:{password}@{host}:{port}/postgres?sslmode=disable"
+        dsn = f"postgres://straum:{password}@127.0.0.1:{port}/postgres?sslmode=disable"
         flags = ["--wal", wal]
         match mode:
             case "shell":
@@ -349,7 +345,7 @@ def print_table(rows: list, headers: list[str], align: str) -> None:
     )
 
 
-def load(postgres: PostgresContainer) -> None:
+def load(stack: Stack) -> None:
     loader = subprocess.Popen(
         [
             ROOT / "bench" / "load_taxi_trips.py",
@@ -360,17 +356,14 @@ def load(postgres: PostgresContainer) -> None:
         ],
         stdout=subprocess.PIPE,
     )
-    psql = ["psql", "-U", "postgres", "-q"]
-    container = postgres.get_wrapped_container().id
-    subprocess.run(
-        ["docker", "exec", "-i", container, *psql], stdin=loader.stdout, check=True
-    )
+    psql = stack.exec_args(POSTGRES, "psql", "-U", "postgres", "-q")
+    subprocess.run(psql, stdin=loader.stdout, check=True)
     loader.stdout.close()
     if loader.wait():
         raise SystemExit("load_taxi_trips.py failed")
 
 
-def container(password: str) -> PostgresContainer:
+def postgres(password: str) -> dict:
     # Reads see the defaults but for shared_buffers, sized as a server
     # would be. The rest only speed the load: no checkpoint midway, no flush
     # per commit, which a throwaway server never needs, and memory for the
@@ -384,19 +377,7 @@ def container(password: str) -> PostgresContainer:
         "maintenance_work_mem": "1GB",
         "max_parallel_maintenance_workers": "4",
     }
-    return (
-        PostgresContainer(
-            "postgres:18",
-            username="postgres",
-            password=password,
-            dbname="postgres",
-            driver=None,
-        )
-        .with_command(
-            " ".join(f"-c {name}={value}" for name, value in settings.items())
-        )
-        .with_kwargs(shm_size="1g")
-    )
+    return postgres_service("postgres:18", password, settings, shm_size="1g")
 
 
 def build() -> str:

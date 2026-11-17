@@ -151,8 +151,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - run: docker build -t straum:ci .
-      - run: docker run --rm straum:ci help
+      - run: docker compose build straum
+      - run: docker compose run --rm straum help
 
   # Only a release publishes. It fails unless its tag is vX.Y.Z on a
   # commit on main, marked pre-release exactly when it has a suffix, and
@@ -262,9 +262,11 @@ jobs:
         run: |
           mkdir dist
           for pair in amd64:x86_64 arm64:aarch64; do
-            container=$(docker create --platform "linux/${pair%%:*}" "ghcr.io/janbjorge/straum@$DIGEST")
-            docker cp "$container:/straum" "dist/straum-${pair#*:}-unknown-linux-musl"
-            docker rm "$container"
+            printf '{"services": {"straum": {"image": "ghcr.io/janbjorge/straum@%s", "platform": "linux/%s"}}}' \
+              "$DIGEST" "${pair%%:*}" |
+              docker compose -p straum-release -f - create --pull always straum
+            docker compose -p straum-release cp straum:/straum "dist/straum-${pair#*:}-unknown-linux-musl"
+            docker compose -p straum-release down
           done
           case $(file -b dist/straum-x86_64-unknown-linux-musl) in
             *x86-64*static*) ;;
@@ -293,9 +295,17 @@ jobs:
 
           ## Image
 
+          In a \`compose.yaml\`, by tag or by digest:
+
+          ${fence}yaml
+          services:
+            straum:
+              image: ghcr.io/janbjorge/straum:$VERSION
+              # image: ghcr.io/janbjorge/straum@$DIGEST
+          ${fence}
+
           ${fence}sh
-          docker pull ghcr.io/janbjorge/straum:$VERSION
-          docker pull ghcr.io/janbjorge/straum@$DIGEST
+          docker compose pull straum
           ${fence}
 
           ## Verify
