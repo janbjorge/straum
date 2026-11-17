@@ -126,6 +126,7 @@ fn setup_problems_say_what_to_fix() {
     publication_problems(&pg);
     table_problems(&pg);
     column_type_problems(&pg);
+    padded_problems(&pg);
     aggregate_problems(&pg);
     filter_problems(&pg);
     enum_problems(&pg);
@@ -279,6 +280,35 @@ fn table_problems(pg: &PostgresContainer) {
                 "fact f: Straum needs the whole old row of every update and delete: \
              ALTER TABLE identity.f REPLICA IDENTITY FULL",
             ),
+        ),
+    ];
+    expect_problems(pg, cases);
+}
+
+/// A `character(n)` key, which PostgreSQL compares without its padding;
+/// its null-ness and a `varchar` key are read.
+fn padded_problems(pg: &PostgresContainer) {
+    let cases = vec![
+        case(
+            "padded",
+            published("x int, k char(5)"),
+            &grouped("t.k AS k, count(*) AS n", "GROUP BY 1, 2"),
+            Some(
+                "f: column k of padded.f is character(5); PostgreSQL compares it without its \
+                 trailing spaces, and Straum can't: make it text or varchar",
+            ),
+        ),
+        case(
+            "paddednull",
+            published("x int, k char(5)"),
+            &grouped("(t.k IS NULL) AS no_k, count(*) AS n", "GROUP BY 1, 2"),
+            None,
+        ),
+        case(
+            "varying",
+            published("x int, k varchar(5)"),
+            &grouped("t.k AS k, count(*) AS n", "GROUP BY 1, 2"),
+            None,
         ),
     ];
     expect_problems(pg, cases);

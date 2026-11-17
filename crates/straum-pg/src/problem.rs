@@ -141,6 +141,9 @@ pub(crate) enum ColumnFix {
     WriteText,
     /// A type the column's purpose doesn't allow.
     Needs(Purpose),
+    /// `character(n)` as a key, which PostgreSQL compares without its
+    /// trailing spaces.
+    Padded,
 }
 
 /// What is wrong with a view's joins or filters.
@@ -306,6 +309,9 @@ fn write_column(
                 ColumnFix::DropText => ", not an enum; drop the ::text".to_owned(),
                 ColumnFix::WriteText => format!(", an enum; write {column}::text"),
                 ColumnFix::Needs(purpose) => format!("; {}", purpose.needs()),
+                ColumnFix::Padded => "; PostgreSQL compares it without its trailing spaces, \
+                                      and Straum can't: make it text or varchar"
+                    .to_owned(),
             };
             write!(
                 formatter,

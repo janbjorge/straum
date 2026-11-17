@@ -118,8 +118,11 @@ unique within a view. `GROUP BY` lists the keys by their positions in
 `SELECT`, in order: a position is what PostgreSQL resolves without a
 lookup, where an output name it may read as an input column.
 
-A key column is an integer type, `numeric(p, s)`, `boolean` or `text`,
-or an [enum written `::text`](#enum-columns). Fewer keys, or keys with
+A key column is an integer type, `numeric(p, s)`, `boolean`, `text` or
+`varchar`, or an [enum written `::text`](#enum-columns). A
+`character(n)` key is refused: PostgreSQL compares it without its
+trailing spaces, so `'ab'` finds `'ab   '`, and Straum compares text
+whole. Fewer keys, or keys with
 fewer values, mean fewer cells, and memory follows cells
 ([Cells](how-it-works.md#cells)).
 

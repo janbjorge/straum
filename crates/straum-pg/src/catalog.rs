@@ -16,7 +16,7 @@ use crate::problem::{
 };
 use crate::source::Replication;
 use crate::unexpected::Unexpected;
-use crate::value::{Oid, type_of};
+use crate::value::{BPCHAR, Oid, type_of};
 use crate::wire::Connection;
 
 /// `server_version_num` is the major times 10 000, plus the minor.
@@ -844,6 +844,11 @@ impl ColumnReader<'_> {
             (false, true) => return Err(self.is(column_name, column, ColumnFix::WriteText)),
             (false, false) => type_of(column.type_oid, column.typmod),
         };
+        // PostgreSQL compares character(n) without its trailing spaces,
+        // so 'ab' finds 'ab   '; Straum keeps and compares the text whole.
+        if column.type_oid == BPCHAR && purpose == Purpose::Key {
+            return Err(self.is(column_name, column, ColumnFix::Padded));
+        }
         match column_type {
             Some(column_type) if purpose.allows(column_type) => Ok(column_type),
             _ => Err(self.is(column_name, column, ColumnFix::Needs(purpose))),
