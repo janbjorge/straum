@@ -430,7 +430,7 @@ pub(super) fn applied(writer: &mut Writer<Postgres>) {
 pub(super) fn applied_or_started(writer: &mut Writer<Postgres>) {
     match writer.step() {
         Ok(Step::Applied(_)) => {}
-        Err(straum_app::Error::Unfit(_)) => {
+        Err(straum_app::Error::Unfit { .. }) => {
             assert!(matches!(writer.step(), Ok(Step::Started(_))));
         }
         other => panic!("expected a commit, got {other:?}"),

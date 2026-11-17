@@ -400,7 +400,7 @@ fn step(writer: &mut Writer<Fake>, tally: &mut Seen) -> Option<Lsn> {
         Ok(Step::Started(lsn) | Step::Applied(lsn)) => Some(lsn),
         Err(error) => {
             tally.failed += 1;
-            if let Error::Unfit(_) = error {
+            if let Error::Unfit { .. } = error {
                 tally.unfit += 1;
             }
             None

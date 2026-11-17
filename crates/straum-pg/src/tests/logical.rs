@@ -522,7 +522,14 @@ fn an_unfit_change_starts_over() {
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.logins SET zone_id = 2");
     let error = writer.step().unwrap_err().to_string();
-    assert_eq!(error, "a change no longer fits logins");
+    let carries = "the stream no longer carries what Straum reads of it";
+    assert_eq!(
+        error,
+        format!(
+            "a change no longer fits logins: {carries}: \
+         the table was altered or rewritten, or a change came without its old row"
+        )
+    );
     assert_eq!(
         writer.app().ask(&ask("trips", &["trips"], &[])),
         Err(AnswerError::NotReady)
@@ -545,7 +552,14 @@ fn an_unfit_change_starts_over() {
     db.run("ALTER TABLE $S.zones REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.zones SET borough = 'Staten Island' WHERE id = 1");
     let error = writer.step().unwrap_err().to_string();
-    assert_eq!(error, "a change no longer fits zones");
+    let carries = "the stream no longer carries what Straum reads of it";
+    assert_eq!(
+        error,
+        format!(
+            "a change no longer fits zones: {carries}: \
+         the table was altered or rewritten, or a change came without its old row"
+        )
+    );
     let error = writer.step().unwrap_err().to_string();
     assert!(
         error.contains("dim zones: Straum needs the whole old row of every update and delete"),
@@ -668,7 +682,14 @@ fn a_changed_column_type_starts_over() {
     db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 3)");
     db.run("INSERT INTO $S.trips VALUES (2, to_timestamp(1705276800), 'cab', 1, 2.125, 'bo', 3)");
     let error = writer.step().unwrap_err().to_string();
-    assert_eq!(error, "a change no longer fits trips");
+    let carries = "the stream no longer carries what Straum reads of it";
+    assert_eq!(
+        error,
+        format!(
+            "a change no longer fits trips: {carries}: \
+         the table was altered or rewritten, or a change came without its old row"
+        )
+    );
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
     applied(&mut writer);

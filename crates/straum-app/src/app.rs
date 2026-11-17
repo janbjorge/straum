@@ -10,7 +10,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, ColumnType, Fact, Identifier, Spec, Store, Table, Width,
+    Answer, Ask, AskError, AskKey, ColumnType, Fact, Identifier, RowError, Spec, Store, Table,
+    Width,
 };
 
 use crate::lag::Lag;
@@ -365,8 +366,8 @@ impl State {
     }
 
     /// Applies the commit to every fact and dim, or names the first table
-    /// it no longer fits.
-    fn apply(&mut self, commit: Commit) -> Result<(), Identifier> {
+    /// it no longer fits, and why.
+    fn apply(&mut self, commit: Commit) -> Result<(), Error> {
         let Commit {
             lsn,
             committed,
@@ -379,12 +380,15 @@ impl State {
             if spec.fact(table.as_str()).is_none() && spec.dim(table.as_str()).is_none() {
                 continue;
             }
-            if !apply_change(&mut self.store, &change) {
+            if let Err(why) = apply_change(&mut self.store, &change) {
                 // The earlier changes of this commit are in the store.
                 // Clear the stream before the write guard drops, so an ask
                 // waiting on it cannot read them.
                 self.following = None;
-                return Err(table.clone());
+                return Err(Error::Unfit {
+                    table: table.clone(),
+                    why,
+                });
             }
         }
         let following = self.following();
@@ -394,20 +398,21 @@ impl State {
     }
 }
 
-/// Applies one change; `false` when it no longer fits. Facts and dims need
+/// Applies one change, or says why it no longer fits. Facts and dims need
 /// the whole old row: a fact to take it out of its cell, a dim because a
 /// key change is the old row out and the new one in.
-fn apply_change(store: &mut Store, change: &Change) -> bool {
+fn apply_change(store: &mut Store, change: &Change) -> Result<(), Unfitting> {
     match change {
-        Change::Insert { table, row } => store.add_row(table.as_str(), row).is_ok(),
-        Change::Update { table, old, new } => store.update_row(table.as_str(), old, new).is_ok(),
-        Change::Delete { table, old } => store.remove_row(table.as_str(), old).is_ok(),
+        Change::Insert { table, row } => store.add_row(table.as_str(), row),
+        Change::Update { table, old, new } => store.update_row(table.as_str(), old, new),
+        Change::Delete { table, old } => store.remove_row(table.as_str(), old),
         Change::Truncate { table } => {
             store.clear(table.as_str());
-            true
+            return Ok(());
         }
-        Change::Unfit { .. } => false,
+        Change::Unfit { .. } => return Err(Unfitting::Altered),
     }
+    .map_err(Unfitting::Row)
 }
 
 impl<S: Source> Writer<S> {
@@ -492,7 +497,7 @@ impl<S: Source> Writer<S> {
             let wait = WAL_EVERY.saturating_sub(self.wal_read_at.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {
                 let lsn = commit.lsn;
-                self.app.write().apply(commit).map_err(Error::Unfit)?;
+                self.app.write().apply(commit)?;
                 return Ok(lsn);
             }
         }
@@ -520,13 +525,38 @@ pub enum Error {
     Source(SourceError),
     /// A change no longer fits the table: a row that doesn't fit, a change
     /// without the old row, a dim row Straum never held, an altered table.
-    Unfit(Identifier),
+    Unfit {
+        table: Identifier,
+        why: Unfitting,
+    },
     /// The server holds more WAL for Straum's slot than
     /// [`Limits::max_retained_wal`], in bytes.
     Retained {
         retained: u64,
         limit: u64,
     },
+}
+
+/// Why a change no longer fits its table.
+#[derive(Debug)]
+pub enum Unfitting {
+    /// The store turned the row away.
+    Row(RowError),
+    /// The stream no longer carries what Straum reads of the table: it was
+    /// altered or rewritten, or a change came without its old row.
+    Altered,
+}
+
+impl fmt::Display for Unfitting {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unfitting::Row(error) => error.fmt(formatter),
+            Unfitting::Altered => formatter.write_str(
+                "the stream no longer carries what Straum reads of it: the table was altered \
+                 or rewritten, or a change came without its old row",
+            ),
+        }
+    }
 }
 
 impl From<SourceError> for Error {
@@ -539,7 +569,9 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Source(error) => write!(formatter, "{error}"),
-            Error::Unfit(table) => write!(formatter, "a change no longer fits {table}"),
+            Error::Unfit { table, why } => {
+                write!(formatter, "a change no longer fits {table}: {why}")
+            }
             Error::Retained { retained, limit } => write!(
                 formatter,
                 "PostgreSQL holds {} of WAL for Straum's slot, past the limit of {}",

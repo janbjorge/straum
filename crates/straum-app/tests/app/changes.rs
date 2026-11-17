@@ -88,7 +88,8 @@ fn fact_change_without_the_old_row_starts_over() {
     }]);
     assert_eq!(
         writer.step().unwrap_err().to_string(),
-        "a change no longer fits logins"
+        "a change no longer fits logins: the stream no longer carries what Straum reads of it: \
+         the table was altered or rewritten, or a change came without its old row"
     );
     assert!(!writer.app().status().ready);
     let lsn = database.borrow().lsn();
@@ -272,7 +273,7 @@ fn altered_table_starts_over() {
         trip(2, 1, 1, 10),
         Write::Alter { table: "trips" },
     ]);
-    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
+    assert!(matches!(writer.step(), Err(Error::Unfit { table, .. }) if table == id("trips")));
     writer.step().unwrap();
     assert_eq!(database.borrow().loads.len(), 6);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
@@ -281,7 +282,7 @@ fn altered_table_starts_over() {
     database
         .borrow_mut()
         .commit(vec![Write::Alter { table: "zones" }]);
-    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("zones")));
+    assert!(matches!(writer.step(), Err(Error::Unfit { table, .. }) if table == id("zones")));
     writer.step().unwrap();
     assert_eq!(database.borrow().loads.len(), 9);
 }
@@ -300,7 +301,13 @@ fn a_commit_that_stops_fitting_is_not_answered() {
     database
         .borrow_mut()
         .commit(vec![trip(2, 1, 1, 20), Write::Alter { table: "trips" }]);
-    assert!(matches!(writer.step(), Err(Error::Unfit(table)) if table == id("trips")));
+    let error = writer.step().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with("a change no longer fits trips: the stream no longer carries"),
+        "{error}"
+    );
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
     assert_eq!(writer.app().status().applied, None);
     writer.step().unwrap();
@@ -337,7 +344,10 @@ fn a_row_that_does_not_fit_stops_straum() {
 
     // The insert fails, and so does loading trips again.
     let error = writer.step().unwrap_err();
-    assert_eq!(error.to_string(), "a change no longer fits trips");
+    assert_eq!(
+        error.to_string(),
+        "a change no longer fits trips: column fare is not an integer"
+    );
     let error = writer.step().unwrap_err();
     assert_eq!(error.to_string(), "column fare is not an integer");
     assert!(!writer.app().status().ready);
@@ -430,8 +440,15 @@ fn starts_over_after(name: &str, change: Change) {
 
     let error = writer.step().unwrap_err();
     assert!(
-        matches!(&error, Error::Unfit(unfit) if *unfit == table),
+        matches!(&error, Error::Unfit { table: unfit, .. } if *unfit == table),
         "{name}"
+    );
+    // The store's own words say why, after the table.
+    let said = error.to_string();
+    let named = format!("a change no longer fits {table}: ");
+    assert!(
+        said.len() > named.len() && said.starts_with(&named),
+        "{name}: {said}"
     );
     assert!(!writer.app().status().ready, "{name}");
     assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
