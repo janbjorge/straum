@@ -134,12 +134,14 @@ width; a bucket is columnar cells with one state per input.*
 - A **Bucket** holds its **Cells**, every bucket in memory
   (ADR-0010).
 - **Cells** are columnar: keys, row counts and one **State** per
-  input column, side by side (`Cells`). A column of counts or sums is
-  as wide as its widest entry needs, and none at all while every
-  entry is zero (`Counts`, `Sums`, ADR-0003). An **Index** finds a
-  cell by its key codes: a table of positions, the keys themselves
-  staying in their column. A cell goes with its last row
-  (`Rollup::remove`).
+  input column, side by side (`Cells`), so an ask reads a column of
+  cells in one pass
+  ([rows vs columns](https://spiraldb.com/blog/rows-vs-columns)).
+  A column of counts or sums is as wide as its widest entry needs,
+  and none at all while every entry is zero (`Counts`, `Sums`,
+  ADR-0003). An **Index** finds a cell by its key codes: a table of
+  positions, the keys themselves staying in their column. A cell goes
+  with its last row (`Rollup::remove`).
   `Aggregate::state_kind` picks which **State** a measure reads, so
   measures over one column share it.
 - A **Projection** maps key values to the attribute codes of every
