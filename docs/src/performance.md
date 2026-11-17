@@ -38,8 +38,10 @@ The target is under 1 ms for every ask
 ([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
 the two percentile asks over every trip miss it.
 
-Straum was ready 16.8 s after it started and held 113 MiB, the 265 zone
-rows' projection included. In PostgreSQL the table and its indexes
+Straum was ready 16.8 s after it started and held 113 MiB resident, the
+265 zone rows' projection included. The bench now reads what Straum
+holds from macOS's footprint, which counts the pages the system
+compressed; one resident set read 21 MiB on a busy machine. In PostgreSQL the table and its indexes
 take 2,475 MiB.
 
 - Reads run with PostgreSQL's defaults, two parallel workers per query,
@@ -203,7 +205,8 @@ would time a reload as the apply.
 One run on 2026-11-17, the machine and PostgreSQL of the
 [Results](#results), with `synchronous_commit` back on once the trips
 are loaded, so a commit counts from its flush as on a real server;
-Straum held 121 MiB after the load and an idle ask took 204 µs:
+Straum held 121 MiB resident after the load and an idle ask took
+204 µs:
 
 | Rows changed | Commit to applied | Longest ask meanwhile | Memory grown |
 | ---: | ---: | ---: | ---: |

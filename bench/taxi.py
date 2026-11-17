@@ -49,6 +49,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -303,12 +304,12 @@ async def asks(pg: asyncpg.Connection, straum: str, dsn: str, flags: list[str]) 
         "SELECT count(*), pg_total_relation_size('yellow_trips') FROM yellow_trips"
     )
     async with serve(straum, dsn, *flags) as (http, loaded, process, _):
-        rss = process.memory_info().rss
+        rss = held(process)
         log("asking")
         results = [await compare(pg, http, *each) for each in ASKS]
 
     print(f"PostgreSQL {version}: {trips:,} trips, {size / 2**20:,.0f} MiB.")
-    print(f"Straum: ready in {loaded:.1f} s, {rss / 2**20:,.0f} MiB resident.")
+    print(f"Straum: ready in {loaded:.1f} s, holding {rss / 2**20:,.0f} MiB.")
     print()
     table = [
         (
@@ -335,6 +336,7 @@ async def transactions(
         process,
         _,
     ):
+        footprint = held(process)
         rss = process.memory_info().rss
         log(f"straum ready in {loaded:.1f} s; asking while idle")
         idle = statistics.median(await ask_until(http, lambda: True, 1.0))
@@ -358,7 +360,7 @@ async def transactions(
             )
     print(
         f"An idle ask takes {duration(idle)}; "
-        f"Straum held {rss / 2**20:,.0f} MiB after the load."
+        f"Straum held {footprint / 2**20:,.0f} MiB after the load."
     )
     print()
     headers = [
@@ -623,6 +625,23 @@ async def status_field(http: aiohttp.ClientSession, name: str) -> str:
         if line.startswith(f"{name}:"):
             return line.split(":", 1)[1].strip()
     return ""
+
+
+def held(process: psutil.Process) -> int:
+    """The bytes `process` holds. On macOS the resident set leaves out
+    pages the system compressed, which a busy machine does at once, so
+    this reads the footprint, which counts them."""
+    if sys.platform != "darwin":
+        return process.memory_info().rss
+    with tempfile.TemporaryDirectory() as directory:
+        report = pathlib.Path(directory) / "footprint.json"
+        subprocess.run(
+            ["/usr/bin/footprint", "-p", str(process.pid), "-j", str(report)],
+            check=True,
+            capture_output=True,
+        )
+        summary = orjson.loads(report.read_bytes())
+    return summary["processes"][0]["footprint"]
 
 
 def lsn(text: str) -> int:
