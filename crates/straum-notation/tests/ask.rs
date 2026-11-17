@@ -242,6 +242,26 @@ fn bucket_bounds_come_once_each() {
     ]);
 }
 
+/// `bucket` is a name like any other: in upper case it is refused as one,
+/// in either bound, and in lowercase it bounds the range.
+#[test]
+fn bucket_is_written_in_lowercase() {
+    for operator in [">=", "<"] {
+        let ask = format!("SELECT trips FROM t WHERE BUCKET {operator} $1");
+        assert_eq!(
+            errors(&ask, &[Literal::Int(JAN)]),
+            ["line 1: BUCKET: write names in lowercase, bucket"],
+            "{ask}"
+        );
+    }
+    let ask = parse_ask(
+        "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
+        &range(),
+    )
+    .unwrap();
+    assert_eq!((ask.from, ask.to), (Some(JAN), Some(FEB)));
+}
+
 /// A bound has one spelling: no fraction of a second, and `Z` for a zero
 /// offset.
 #[test]

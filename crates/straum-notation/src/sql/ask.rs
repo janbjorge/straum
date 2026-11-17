@@ -129,8 +129,9 @@ impl Bound {
 }
 
 /// `bucket >= value` or `bucket < value`, as written.
-// Borrows the value from the tree, which outlives the walk.
+// Borrows the name and value from the tree, which outlives the walk.
 struct BucketBound<'tree> {
+    name: &'tree sql::Ident,
     end: End,
     value: &'tree sql::Expr,
 }
@@ -315,10 +316,13 @@ impl Walker {
         let mut from = Bound::Open;
         let mut to = Bound::Open;
         for part in parts {
-            let Some(BucketBound { end, value }) = bucket_bound(part) else {
+            let Some(BucketBound { name, end, value }) = bucket_bound(part) else {
                 self.read_conditions(part, &mut filter, &mut Names::Ask(parameters));
                 continue;
             };
+            if self.read_identifier(name).is_err() {
+                continue;
+            }
             let bound = match end {
                 End::From => &mut from,
                 End::To => &mut to,
@@ -667,7 +671,8 @@ fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
     let sql::Expr::Identifier(identifier) = left.as_ref() else {
         return None;
     };
-    if identifier.quote_style.is_some() || identifier.value != "bucket" {
+    // Any case matches, so `read_identifier` names the one to write.
+    if identifier.quote_style.is_some() || !identifier.value.eq_ignore_ascii_case("bucket") {
         return None;
     }
     let end = match op {
@@ -675,5 +680,9 @@ fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
         sql::BinaryOperator::Lt => End::To,
         _ => return None,
     };
-    Some(BucketBound { end, value: right })
+    Some(BucketBound {
+        name: identifier,
+        end,
+        value: right,
+    })
 }
