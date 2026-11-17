@@ -6,7 +6,7 @@
 //! view is checked too: `--json`, `STRAUM_URL` and exit 3 while not ready.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -805,4 +805,32 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
         assert!(within.contains(&waited.as_secs()), "{twice}: {waited:?}");
         drop(held);
     }
+}
+
+/// Output to a reader that has left, as `head` leaves, is no failure:
+/// each command that prints exits 0, and `straum run` keeps running with
+/// no one reading its log.
+#[test]
+fn a_reader_that_left_is_no_failure() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    for args in [&["help"][..], &["version"], &["plan", &spec]] {
+        let (reader, writer) = io::pipe().unwrap();
+        drop(reader);
+        let status = straum(args).stdout(writer).status().unwrap();
+        assert_eq!(status.code(), Some(0), "{args:?}");
+    }
+    let (reader, writer) = io::pipe().unwrap();
+    drop(reader);
+    let closed = "postgres://straum:straum@127.0.0.1:1/postgres?sslmode=disable";
+    let mut child = straum(&["run", &spec, "--listen", "127.0.0.1:0"])
+        .env("STRAUM_DSN", closed)
+        .stderr(writer)
+        .spawn()
+        .unwrap();
+    // It fails to start and logs so, then waits a second to try again.
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(child.try_wait().unwrap(), None, "straum run exited");
+    child.kill().unwrap();
+    child.wait().unwrap();
 }

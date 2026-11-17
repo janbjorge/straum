@@ -135,7 +135,8 @@ fn main() -> ExitCode {
     let command = match command(&args, &environment) {
         Ok(command) => command,
         Err(usage) => {
-            eprintln!("{usage}");
+            // Nothing more to do if stderr is gone too.
+            writeln!(io::stderr(), "{usage}").ok();
             return ExitCode::from(USAGE_FAILURE);
         }
     };
@@ -155,8 +156,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 Some(name) => name.help(),
                 None => HELP,
             };
-            print!("{help}");
-            Ok(())
+            print(help)
         }
         Command::Version => {
             // CI builds with the release's version; Cargo.toml never names it.
@@ -164,8 +164,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 Some(version) => version,
                 None => env!("CARGO_PKG_VERSION"),
             };
-            println!("straum {version}");
-            Ok(())
+            print(&format!("straum {version}\n"))
         }
         Command::Plan(args) => plan(args),
         Command::Run(args) => run(args),
@@ -263,8 +262,7 @@ fn plan(
         None => None,
     };
     let sql = straum_pg::plan(&spec, &publication, role, password, replication);
-    print!("{sql}");
-    Ok(())
+    print(&sql)
 }
 
 /// Reads an ask's query as Straum SQL, for `straum-http`.
@@ -386,10 +384,14 @@ fn run_writer(mut writer: Writer<Postgres>) {
 }
 
 /// Each line of `message` to stderr, prefixed `straum: `, so a reader
-/// can grep for every line Straum logs.
+/// can grep for every line Straum logs. A stderr nobody reads any more is
+/// no reason to stop: `eprintln!` would panic, and a panic aborts.
 fn log(message: &str) {
+    let mut stderr = io::stderr().lock();
     for line in message.lines() {
-        eprintln!("straum: {line}");
+        if writeln!(stderr, "straum: {line}").is_err() {
+            return;
+        }
     }
 }
 
