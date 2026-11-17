@@ -146,6 +146,7 @@ pub(crate) struct Catalog {
     pub(crate) wal_level: String,
     pub(crate) full_page_writes: String,
     pub(crate) wal_compression: String,
+    pub(crate) server_encoding: String,
     /// Whether the publication publishes inserts, updates, deletes and
     /// truncates; `None` when it doesn't exist.
     pub(crate) publication: Option<bool>,
@@ -256,6 +257,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
     let settings = connection.rows(&format!(
         "SELECT current_setting('server_version_num'), current_user, current_setting('wal_level'),
                 current_setting('full_page_writes'), current_setting('wal_compression'),
+                current_setting('server_encoding'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
     ))?;
@@ -268,6 +270,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_level,
         full_page_writes,
         wal_compression,
+        server_encoding,
         published,
     ] = row.try_into().map_err(|_| shape("settings"))?;
     let server_version =
@@ -278,6 +281,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         wal_level: wal_level.unwrap_or_default(),
         full_page_writes: full_page_writes.unwrap_or_default(),
         wal_compression: wal_compression.unwrap_or_default(),
+        server_encoding: server_encoding.unwrap_or_default(),
         publication: published.as_deref().map(is_true),
         ..Catalog::default()
     })
@@ -583,6 +587,13 @@ fn check_server(
             }
             if catalog.wal_compression == "zstd" {
                 problems.push(Problem::Server(ServerProblem::WalCompressionZstd));
+            }
+            // Pages hold text in the database's encoding, which the
+            // stream reads as UTF-8; a connection is sent text in it.
+            if catalog.server_encoding != "UTF8" {
+                problems.push(Problem::Server(ServerProblem::Encoding {
+                    encoding: catalog.server_encoding.clone(),
+                }));
             }
         }
     }

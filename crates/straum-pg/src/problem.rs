@@ -79,6 +79,10 @@ pub(crate) enum ServerProblem {
     },
     /// The physical stream can't read pages compressed with zstd.
     WalCompressionZstd,
+    /// The physical stream reads text from pages as UTF-8.
+    Encoding {
+        encoding: String,
+    },
 }
 
 /// What is wrong with a spec table as a whole.
@@ -231,6 +235,10 @@ impl fmt::Display for ServerProblem {
             ),
             ServerProblem::WalCompressionZstd => formatter
                 .write_str("wal_compression is zstd; --wal physical reads off, pglz and lz4"),
+            ServerProblem::Encoding { encoding } => write!(
+                formatter,
+                "the database's encoding is {encoding}; --wal physical reads UTF8 text"
+            ),
         }
     }
 }

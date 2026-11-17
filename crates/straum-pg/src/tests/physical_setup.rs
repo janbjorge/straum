@@ -78,3 +78,21 @@ fn a_virtual_generated_column_is_refused() {
         ]
     );
 }
+
+/// The stream reads text from the pages as UTF-8, so a database in
+/// another encoding is refused.
+#[test]
+fn a_database_not_in_utf8_is_refused() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "encoding", &tables("kind text"));
+    let spec = db.spec(SPEC);
+    let mut catalog = catalog::query(&mut db.connection, &spec, "unpublished").unwrap();
+    assert_eq!(catalog.server_encoding, "UTF8");
+    assert!(catalog::check(&spec, &catalog, "unpublished", PHYSICAL).is_ok());
+    catalog.server_encoding = "LATIN1".into();
+    let problems = catalog::check(&spec, &catalog, "unpublished", PHYSICAL).unwrap_err();
+    assert_eq!(
+        crate::problem::lines(&problems),
+        ["the database's encoding is LATIN1; --wal physical reads UTF8 text"]
+    );
+}
