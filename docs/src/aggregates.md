@@ -147,8 +147,9 @@ rank, splitting the values left at their middle one each step without
 sorting them all. An ask over a long range of many values takes
 milliseconds where the others take microseconds: the median fare over
 the six months of [benchmark](performance.md) trips takes about 30 ms.
-A `count(DISTINCT c)` unites the values of a group's cells by reference,
-without copying them, and counts a group of one cell from the cell.
+A group of one cell is read in place, its values in order, with
+nothing gathered, and a `count(DISTINCT c)` unites the values of
+several cells by reference, without copying them.
 
 Other systems answer with a sketch: a small summary that merges and
 gives an approximate answer, t-digest, KLL and DDSketch for

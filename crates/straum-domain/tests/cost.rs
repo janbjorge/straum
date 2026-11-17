@@ -608,12 +608,12 @@ fn tip_distinct() -> Measure {
     measure("tip_distinct", Aggregate::CountDistinct(id("tip")))
 }
 
-/// The heap an ask of the distinct tips by the bucket and `by` reaches at
-/// its most, the answer dropped.
-fn distinct_peak(store: &Store, by: &[&str]) -> isize {
+/// The heap an ask of `measure` by the bucket and `by` reaches at its
+/// most, the answer dropped.
+fn by_bucket_peak(store: &Store, by: &[&str], measure: &str) -> isize {
     let mut ask = ask(by, 0, 1000);
     ask.keys.insert(0, AskKey::Bucket);
-    ask.measures = vec![id("tip_distinct")];
+    ask.measures = vec![id(measure)];
     let before = live();
     PEAK.set(before);
     drop(store.ask(&ask).unwrap());
@@ -631,15 +631,34 @@ fn a_count_distinct_reads_a_group_of_one_cell_in_place() {
     let few = store_of(spec(), CELLS, 2);
     let many = store_of(spec(), CELLS, 16);
     let (few_cell, many_cell) = (
-        distinct_peak(&few, &["pay", "pu"]),
-        distinct_peak(&many, &["pay", "pu"]),
+        by_bucket_peak(&few, &["pay", "pu"], "tip_distinct"),
+        by_bucket_peak(&many, &["pay", "pu"], "tip_distinct"),
     );
     eprintln!("a cell a group: {few_cell} bytes, {many_cell} with 8x the values");
     assert!(many_cell - few_cell < 1_024, "{few_cell} then {many_cell}");
-    let (few_cells, many_cells) = (distinct_peak(&few, &[]), distinct_peak(&many, &[]));
+    let (few_cells, many_cells) = (
+        by_bucket_peak(&few, &[], "tip_distinct"),
+        by_bucket_peak(&many, &[], "tip_distinct"),
+    );
     eprintln!("80 cells a group: {few_cells} bytes, {many_cells} with 8x the values");
     assert!(
         many_cells - few_cells > 16 << 10,
         "{few_cells} then {many_cells}"
     );
+}
+
+/// A percentile reads a group of one cell in place, its counts in value
+/// order: by the bucket, pay and zone each group is one cell, and eight
+/// times its values cost the ask nothing.
+#[test]
+fn a_percentile_reads_a_group_of_one_cell_in_place() {
+    const CELLS: i64 = 4_000;
+    let few = store_of(median_spec(), CELLS, 2);
+    let many = store_of(median_spec(), CELLS, 16);
+    let (few_peak, many_peak) = (
+        by_bucket_peak(&few, &["pay", "pu"], "tip_median"),
+        by_bucket_peak(&many, &["pay", "pu"], "tip_median"),
+    );
+    eprintln!("a cell a group: {few_peak} bytes, {many_peak} with 8x the values");
+    assert!(many_peak - few_peak < 1_024, "{few_peak} then {many_peak}");
 }

@@ -11,7 +11,7 @@ use crate::column::Counts;
 use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::value::{Datum, Value};
-use crate::value_counts::ValueCount;
+use crate::value_counts::{ValueCount, ValueCounts};
 
 /// What a measure reads of its input column, which decides the types the
 /// column may have.
@@ -230,11 +230,10 @@ pub(crate) enum Partials<'s> {
         seen: Vec<bool>,
     },
     Distinct(Vec<Distinct<'s>>),
-    /// Each group's values with their counts, one entry per cell a value
-    /// is in, in no order.
+    /// Each group's values with their counts.
     Percentile {
         fraction: Fraction,
-        values: Vec<Vec<ValueCount>>,
+        values: Vec<Gathered<'s>>,
     },
     /// A `bool_and` and a `bool_or` merge alike and part only when finished.
     Bools {
@@ -275,6 +274,40 @@ impl<'s> Distinct<'s> {
             Distinct::None => 0,
             Distinct::OneCell(values) => values.len(),
             Distinct::Cells(seen) => seen.len(),
+        }
+    }
+}
+
+/// The values one group has gathered for a percentile, with their
+/// counts.
+pub(crate) enum Gathered<'s> {
+    None,
+    /// The counts of the one cell met, read in place and in order.
+    OneCell(&'s ValueCounts),
+    /// One entry per cell a value is in, in no order.
+    Cells(Vec<ValueCount>),
+}
+
+impl<'s> Gathered<'s> {
+    /// Gathers the counts of one more cell.
+    fn meet(&mut self, counts: &'s ValueCounts) {
+        match self {
+            Gathered::None => *self = Gathered::OneCell(counts),
+            Gathered::OneCell(first) => {
+                let mut values: Vec<ValueCount> = first.iter().collect();
+                values.extend(counts.iter());
+                *self = Gathered::Cells(values);
+            }
+            Gathered::Cells(values) => values.extend(counts.iter()),
+        }
+    }
+
+    /// The value at `fraction`'s rank, as `percentile_disc` gives it.
+    fn at(&mut self, fraction: Fraction) -> Value {
+        match self {
+            Gathered::None => Value::Null,
+            Gathered::OneCell(counts) => percentile_in_order(fraction, counts),
+            Gathered::Cells(values) => percentile(fraction, values),
         }
     }
 }
@@ -329,7 +362,7 @@ impl<'s> Partials<'s> {
             }
             // A set per lane would cost a merge of sets; one per group.
             Partials::Distinct(seen) => seen.resize_with(groups, distinct_none),
-            Partials::Percentile { values, .. } => values.resize_with(groups, Vec::new),
+            Partials::Percentile { values, .. } => values.resize_with(groups, gathered_none),
             Partials::Bools { trues, falses, .. } => {
                 trues.resize(lanes, 0);
                 falses.resize(lanes, 0);
@@ -400,7 +433,7 @@ impl<'s> Partials<'s> {
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. })) => {
                 for (&group, counts) in groups.iter().zip(counts) {
                     if group != 0 {
-                        values[group as usize].extend(counts.iter());
+                        values[group as usize].meet(counts);
                     }
                 }
             }
@@ -457,7 +490,7 @@ impl<'s> Partials<'s> {
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
             {
-                values[group as usize].extend(counts[cell].iter());
+                values[group as usize].meet(&counts[cell]);
             }
             // Group 0 is never finished, and a value set or list costs its merge.
             (Partials::Distinct(_), Some(State::Distinct(_)))
@@ -517,7 +550,7 @@ impl<'s> Partials<'s> {
                 if group != 0 =>
             {
                 for cell in counts {
-                    values[group].extend(cell.iter());
+                    values[group].meet(cell);
                 }
             }
             // Group 0 is never finished, and a value set or list costs its merge.
@@ -577,7 +610,7 @@ impl<'s> Partials<'s> {
                 Value::Int(most.into())
             }
             Partials::Distinct(seen) => Value::Int(seen[group].count() as i128),
-            Partials::Percentile { fraction, values } => percentile(*fraction, &mut values[group]),
+            Partials::Percentile { fraction, values } => values[group].at(*fraction),
             Partials::Bools { trues, falses, all } => {
                 let any_true = any_counted(&trues[lanes.clone()]);
                 let any_false = any_counted(&falses[lanes]);
@@ -594,6 +627,11 @@ impl<'s> Partials<'s> {
 /// A group that has met no value yet.
 fn distinct_none<'s>() -> Distinct<'s> {
     Distinct::None
+}
+
+/// A group that has gathered no value yet.
+fn gathered_none<'s>() -> Gathered<'s> {
+    Gathered::None
 }
 
 /// The value at `fraction`'s rank among `values`, as `percentile_disc`
@@ -625,6 +663,27 @@ fn percentile(fraction: Fraction, values: &mut [ValueCount]) -> Value {
     }
 }
 
+/// As [`percentile`], over one cell's counts, which come in value order:
+/// the value whose running count first reaches the rank.
+fn percentile_in_order(fraction: Fraction, counts: &ValueCounts) -> Value {
+    let mut total = 0;
+    for entry in counts.iter() {
+        total += entry.count;
+    }
+    if total == 0 {
+        return Value::Null;
+    }
+    let rank = fraction.rank(total);
+    let mut reached = 0;
+    for entry in counts.iter() {
+        reached += entry.count;
+        if reached >= rank {
+            return Value::Int(entry.value.into());
+        }
+    }
+    unreachable!("the rank is at most the count of the entries")
+}
+
 fn counted(entries: &[ValueCount]) -> u64 {
     let mut count = 0;
     for entry in entries {
@@ -635,4 +694,39 @@ fn counted(entries: &[ValueCount]) -> u64 {
 
 fn value_of(entry: &ValueCount) -> i64 {
     entry.value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_rng::Rng;
+
+    /// One cell's counts read in value order give the value a split of
+    /// the same entries in no order does, at every fraction.
+    #[test]
+    fn a_cell_read_in_order_gives_the_percentile_of_its_entries() {
+        let mut rng = Rng::new(7);
+        for _ in 0..500 {
+            let mut entries = Vec::new();
+            let mut value = i64::try_from(rng.below(100)).unwrap() - 50;
+            for _ in 0..rng.below(20) {
+                value += 1 + i64::try_from(rng.below(5)).unwrap();
+                entries.push(ValueCount {
+                    value,
+                    count: 1 + rng.below(4),
+                });
+            }
+            let counts = ValueCounts::from_ascending(&entries);
+            let mut shuffled = entries.clone();
+            shuffled.reverse();
+            for units in [0, 1, 25, 50, 75, 99, 100] {
+                let fraction = Fraction::new(units, 2).unwrap();
+                assert_eq!(
+                    percentile_in_order(fraction, &counts),
+                    percentile(fraction, &mut shuffled),
+                    "{entries:?} at {units}"
+                );
+            }
+        }
+    }
 }
