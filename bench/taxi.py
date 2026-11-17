@@ -8,7 +8,8 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Straum and PostgreSQL 18 on six months of New York taxi trips.
+"""Straum and PostgreSQL on six months of New York taxi trips, at the
+major STRAUM_TEST_POSTGRES names, 18 by default.
 
 Every mode loads the trips into a throwaway PostgreSQL and starts
 `straum run` on bench/trips.sql. Then:
@@ -61,8 +62,8 @@ MONTHS = 6
 DATA = ROOT / "bench" / "data"
 NEW_YORK = {"timezone": "America/New_York"}
 
-# A Straum ask always names its range; 2000 to 2030 holds every trip, so it
-# matches SQL without one.
+# The asks name a range from 2000 to 2030, which holds every trip, so each
+# matches SQL without one; an ask may leave either end open too.
 ALL_TIME = ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]
 ONE_DAY = ["2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"]
 
