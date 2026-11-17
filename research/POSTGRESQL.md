@@ -214,7 +214,7 @@ fill the server's disk. The costs:
 
 ## 6. `wal_level` and the cost on the primary
 
-PostgreSQL 17 is the floor (jb, 2026-11-15). CI tests 17, 18 and 19rc1.
+PostgreSQL 17 is the floor (jb, 2026-11-15). CI tests 17, 18 and 19rc2.
 
 - PostgreSQL 17 and 18 with `wal_level = logical`: pgoutput and a
   temporary slot. With `replica`, Straum refuses to start and says to

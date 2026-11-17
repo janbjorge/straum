@@ -1,6 +1,6 @@
 # ADR-0007: PostgreSQL is the only source
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -39,7 +39,7 @@ throwaway PostgreSQL holding the taxi trips, through `bench/taxi.py`.
 
 Straum runs on PostgreSQL 17 and newer, for both streams. The start
 check refuses older servers, naming the floor. CI runs 17, 18 and
-19rc1 (19 once it ships), picked by `STRAUM_TEST_POSTGRES`; locally 18.
+19rc2 (19 once it ships), picked by `STRAUM_TEST_POSTGRES`; locally 18.
 Tests start PostgreSQL with `testcontainers`, one container per test.
 16 was dropped: it logs prune and vacuum as separate records, a second
 parser for the physical stream (ADR-0008).
