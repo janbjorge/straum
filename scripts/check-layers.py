@@ -46,6 +46,8 @@ def main() -> int:
     for package in packages:
         name = package["name"]
         if name not in ALLOWED:
+            # A crate the table doesn't name could depend on anything.
+            errors.append(f"{name}: not in ALLOWED; add it with what it may use")
             continue
         actual = {
             dependency["name"]
