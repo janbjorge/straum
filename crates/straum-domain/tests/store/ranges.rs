@@ -60,6 +60,28 @@ fn a_range_cuts_at_both_ends() {
     assert_eq!(trips_counted(&empty, START, END), Value::Int(0));
 }
 
+/// A range at either end of `i64` reads what it holds, no more: the
+/// wider buckets inside it are found without overflow.
+#[test]
+fn a_range_at_the_ends_of_time_reads_what_it_holds() {
+    let mut store = Store::new(zones_spec(None, Widths::QuarterAndHour));
+    for at in [START, START + i64::from(WIDTH)] {
+        store
+            .add_row("trips", &paid_trip_at(Datum::Int(at)))
+            .unwrap();
+    }
+    let width = i64::from(WIDTH);
+    // The last and first bounds of the narrowest width: no hour bucket
+    // ends after the one, or starts before the other, within `i64`.
+    let last = i64::MAX - i64::MAX.rem_euclid(width);
+    let first = -last;
+    assert_eq!(trips_counted(&store, first, last), Value::Int(2));
+    assert_eq!(trips_counted(&store, last - width, last), Value::Int(0));
+    assert_eq!(trips_counted(&store, first, first + width), Value::Int(0));
+    assert_eq!(trips_counted(&store, START, last), Value::Int(2));
+    assert_eq!(trips_counted(&store, first, START + width), Value::Int(1));
+}
+
 /// An open end reads to the edge of the buckets held, on either side, and
 /// a bound still cuts the other side.
 #[test]

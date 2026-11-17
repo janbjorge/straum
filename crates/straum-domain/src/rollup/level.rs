@@ -228,8 +228,13 @@ impl Rollup {
         }
         let narrower = LevelIndex(level.0 - 1);
         let width = self.levels[level.0].width;
-        let first = -(-from).div_euclid(width) * width;
-        let last = to.div_euclid(width) * width;
+        // A bucket boundary past either end of `i64` has no whole bucket
+        // of this width inside the range on that side.
+        let (Some(first), Some(last)) = (ceiling_multiple(from, width), floor_multiple(to, width))
+        else {
+            self.runs(narrower, from, to, runs);
+            return;
+        };
         if first >= last {
             self.runs(narrower, from, to, runs);
             return;
@@ -242,4 +247,18 @@ impl Rollup {
         });
         self.runs(narrower, last, to, runs);
     }
+}
+
+/// The least multiple of `width` at or above `at`, if `i64` holds it.
+fn ceiling_multiple(at: i64, width: i64) -> Option<i64> {
+    let mut quotient = at.div_euclid(width);
+    if at.rem_euclid(width) != 0 {
+        quotient += 1;
+    }
+    quotient.checked_mul(width)
+}
+
+/// The greatest multiple of `width` at or below `at`, if `i64` holds it.
+fn floor_multiple(at: i64, width: i64) -> Option<i64> {
+    at.div_euclid(width).checked_mul(width)
 }
