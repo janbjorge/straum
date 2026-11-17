@@ -23,7 +23,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::panic;
 use std::process::{self, ExitCode};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustyline::error::ReadlineError;
 use straum_app::{App, Step, Writer};
@@ -372,23 +372,60 @@ fn say_stopping() {
 }
 
 fn run_writer(mut writer: Writer<Postgres>) {
-    let mut backoff = FIRST_BACKOFF;
+    let mut backoff = Backoff::new();
     loop {
         match writer.step() {
             Ok(Step::Started(lsn)) => {
-                backoff = FIRST_BACKOFF;
+                backoff.started(Instant::now());
                 log(&format!("loaded every table; streaming from {lsn}"));
             }
-            Ok(Step::Applied(_)) => {}
+            Ok(Step::Applied(_)) => backoff.applied(Instant::now()),
             Err(error) => {
-                log(&format!(
-                    "{error}\nstarting over in {} s",
-                    backoff.as_secs()
-                ));
-                thread::sleep(backoff);
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+                let wait = backoff.failed();
+                log(&format!("{error}\nstarting over in {} s", wait.as_secs()));
+                thread::sleep(wait);
             }
         }
+    }
+}
+
+/// How long to wait before starting over: doubling with each failure, and
+/// back to the first wait only once the stream has run clean for as long
+/// as the wait. Reset at each load, a failure that comes back after every
+/// load would reload every table each second, for ever.
+struct Backoff {
+    wait: Duration,
+    /// When the stream last started, until it has run clean long enough.
+    started: Option<Instant>,
+}
+
+impl Backoff {
+    fn new() -> Backoff {
+        Backoff {
+            wait: FIRST_BACKOFF,
+            started: None,
+        }
+    }
+
+    fn started(&mut self, at: Instant) {
+        self.started = Some(at);
+    }
+
+    fn applied(&mut self, at: Instant) {
+        if let Some(started) = self.started
+            && at.saturating_duration_since(started) >= self.wait
+        {
+            self.wait = FIRST_BACKOFF;
+            self.started = None;
+        }
+    }
+
+    /// The wait before this start over; the next one doubles it.
+    fn failed(&mut self) -> Duration {
+        let wait = self.wait;
+        self.wait = (wait * 2).min(MAX_BACKOFF);
+        self.started = None;
+        wait
     }
 }
 
@@ -407,6 +444,31 @@ fn log(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wait doubles with each failure, up to a minute, and goes back
+    /// to a second only after the stream ran clean for as long as the wait.
+    #[test]
+    fn backs_off_until_the_stream_runs_clean() {
+        let start = Instant::now();
+        let seconds = Duration::from_secs;
+        let mut backoff = Backoff::new();
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            waits.push(backoff.failed().as_secs());
+        }
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
+        // A load and a commit soon after: the next failure waits a minute.
+        backoff.started(start);
+        backoff.applied(start + seconds(59));
+        assert_eq!(backoff.failed(), seconds(60));
+        // Clean for the whole wait: back to a second.
+        backoff.started(start);
+        backoff.applied(start + seconds(60));
+        assert_eq!(backoff.failed(), seconds(1));
+        // A commit with no start before it changes nothing.
+        backoff.applied(start + seconds(600));
+        assert_eq!(backoff.failed(), seconds(2));
+    }
 
     #[test]
     fn reads_asks_as_straum_sql() {

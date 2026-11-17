@@ -64,12 +64,14 @@ Any failure leads to Waiting: a lost connection, a change Straum can't
 apply, a table altered under it, or too much WAL retained for its slot.
 Straum closes the connection, which drops the slot, and waits: 1 second
 after the first failure, twice as long after each failure in a row, up
-to 60 seconds. Then it loads every table again from a new slot. A load
-that finishes resets the wait.
+to 60 seconds. Then it loads every table again from a new slot. The
+wait goes back to 1 second once the stream has run clean after a load
+for as long as the last wait, so a failure that comes back after every
+load still waits a minute between loads.
 
 ```text
 straum: PostgreSQL holds 5120.0 MiB of WAL for straum's slot, past the limit of 4096.0 MiB
-starting over in 1 s
+straum: starting over in 1 s
 ```
 
 `straum status` says which state it is in and why
