@@ -407,11 +407,7 @@ fn reads_the_servers_wal() {
           WHERE backend_type = 'client backend' AND application_name = 'straum'
             AND pid <> pg_backend_pid()",
     );
-    let error = source.wal().unwrap_err().to_string();
-    assert!(
-        error.contains("57P01") || error.starts_with("connection to PostgreSQL"),
-        "{error}"
-    );
+    // The reading tries once more on a new connection, and gets through.
     assert!(source.wal().unwrap().confirmed >= commit.lsn);
 
     // A slot the server doesn't have.

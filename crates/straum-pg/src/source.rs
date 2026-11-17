@@ -347,6 +347,19 @@ impl Source for Postgres {
         if matches!(self.state, State::Closed) {
             return Err(Error::Stopped.into());
         }
+        // A reading's connection may die on its own, terminated or cut,
+        // while the stream is whole: one more try, on a new connection,
+        // before Straum starts over for it.
+        match self.read_wal_once() {
+            Ok(wal) => Ok(wal),
+            Err(_) => Ok(self.read_wal_once()?),
+        }
+    }
+}
+
+impl Postgres {
+    /// One reading of the WAL; its connection goes after a failure.
+    fn read_wal_once(&mut self) -> Result<Wal, Error> {
         let wal = match plain(&mut self.plain, &self.dsn) {
             Ok(connection) => read_wal(connection, &self.slot),
             Err(error) => Err(error),
@@ -354,7 +367,7 @@ impl Source for Postgres {
         if wal.is_err() {
             self.plain = None;
         }
-        Ok(wal?)
+        wal
     }
 }
 
