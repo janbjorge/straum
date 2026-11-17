@@ -25,7 +25,7 @@ Every command exits with 0 when done, 1 when it failed, 2 when its
 command line is wrong, and 3 when Straum is not ready yet: loading, or
 further behind PostgreSQL than `--max-lag`. A script waits on 3 and
 asks again; the other failures need a change first. `straum shell` on
-a pipe is the one exception: it goes on past a failed line, a not
+a pipe is the one exception: it goes on past a failed command, a not
 ready one too, and exits with 1 if any failed. `straum run` exits with
 1 on any failure to load or follow, for whatever runs it to start it
 again ([States](deploy.md#states)).
@@ -209,9 +209,9 @@ straum: payment_type is an integer, so it can't be the text "card"
 
 ## straum shell
 
-A prompt at the Straum at `--url`. Each line is a command:
+A prompt at the Straum at `--url`. It takes these commands:
 
-| Line | Prints |
+| Command | Prints |
 | --- | --- |
 | `\d` | Every view, as `straum views` does. |
 | `\d VIEW` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it. |
@@ -235,6 +235,24 @@ payment_type | trips
 Time: 1.728 ms (in Straum: parse 0.370, answer 0.208, text 0.133, total 0.763)
 ```
 
+A command that starts with `\` is one line and runs at Enter. An ask
+may take several lines, so a query pasted as it was written works. It
+ends at the line that holds its semicolon, so its parameters go on that
+line. Without a semicolon, Enter starts another line of the ask, and a
+blank line sends it with no parameters. The semicolon is the shell's:
+it never reaches Straum, which refuses one at the end of an ask. Ctrl-C
+drops the lines typed so far.
+
+```text
+straum> SELECT payment_type, trips
+FROM trips
+WHERE bucket >= $1 AND bucket < $2
+GROUP BY payment_type; 2003-01-01T03:00:00Z 2024-02-01T06:00:00Z
+```
+
+Tab and the dimmed hint read every line of the ask up to the cursor,
+so `FROM` on one line still offers views at the start of the next.
+
 `\rows` pages through a view as a Python slice does: rows count from 0,
 and a negative START counts back from the end. `\rows trips 1000 50`
 prints rows 1000 to 1049, `\rows trips -20` the last 20. A START past
@@ -251,7 +269,7 @@ parentheses is the reply's [`Server-Timing`](asks.md#the-answer)
 header, the time in Straum: reading the ask, answering it, writing the
 table, and `total` for all of it. `\rows` sends no ask to read, so its
 `parse` is 0. What `Time` holds beyond `total` is the network and the
-shell. A line that fails is not timed.
+shell. A command that fails is not timed.
 
 At a terminal, Tab completes by where the cursor is: keys and measures
 after `SELECT`, views after `FROM`, `\d` or `\rows`, a whole condition with the next
@@ -261,12 +279,12 @@ the buckets held. It offers what is likely next; Straum still checks
 the ask. A completed word ends in a space, so the next is typed straight
 on, and where the candidates differ the first Tab lists them.
 
-The lines entered are kept in `$XDG_STATE_HOME/straum/history`,
+The commands entered are kept in `$XDG_STATE_HOME/straum/history`,
 `~/.local/state/straum/history` unless that variable is set; without a
-home directory, as in the image, they are not kept. The last line
-entered that starts as the line being typed shows dimmed past the
+home directory, as in the image, they are not kept. The last command
+entered that starts as the one being typed shows dimmed past the
 cursor, and the right arrow takes it; with none, a dimmed hint says
-what the next parameter is. Ctrl-R searches the lines entered.
+what the next parameter is. Ctrl-R searches the commands entered.
 `NO_COLOR` turns off the dimming.
 
 With its input or its output anywhere but a terminal, the shell prints
@@ -277,6 +295,10 @@ it and reads the same output each run:
 printf '%s\n' '\d' '\rows trips' | straum shell
 ```
 
-Answers go to stdout. A line that fails says why on stderr and the
-next line is read, as in psql; if any failed the shell exits with 1
-after the last.
+An ask takes lines there as at a terminal, and the end of input ends
+one too, so a file of asks written over several lines, a blank line or
+a semicolon after each, reads as it would typed.
+
+Answers go to stdout. A command that fails says why on stderr and the
+next is read, as in psql; if any failed the shell exits with 1 after
+the last, saying how many commands failed.

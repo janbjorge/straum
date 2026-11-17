@@ -1,15 +1,19 @@
-//! `straum shell`: a prompt at a running Straum. Each line goes to
-//! `answer`, which reads it as a command and asks Straum through
-//! `client.rs`: `\d` for the views, `\d VIEW` for a view's spec,
-//! `\rows VIEW [START [COUNT]]` for a view's rows, a negative START
-//! counting back from the end, or an ask written as
-//! `QUERY; PARAMETER...`, where a value in single quotes may hold spaces. At a terminal, `interactive` edits the line with
-//! rustyline, Tab completes from the views the Straum serves (see
-//! `complete.rs`), the line entered last that starts as this one does is
-//! suggested past the cursor, the lines entered are kept between
-//! sessions, and an ask or a view's rows end in a line that says how long
-//! they took, as `client.rs` timed them. On a pipe, `piped` reads one
-//! line at a time and prints the answers alone.
+//! `straum shell`: a prompt at a running Straum. Each command goes to
+//! `answer`, which reads it and asks Straum through `client.rs`: `\d`
+//! for the views, `\d VIEW` for a view's spec, `\rows VIEW [START
+//! [COUNT]]` for a view's rows, a negative START counting back from the
+//! end, or an ask written as `QUERY; PARAMETER...`, where a value in
+//! single quotes may hold spaces. A command that starts with a backslash
+//! is one line; an ask may take several, and `entry` says when it is
+//! whole: at the line that holds its semicolon, or at a blank line. At a
+//! terminal, `interactive` edits the command with rustyline, which asks
+//! `entry` at each Enter, Tab completes from the views the Straum serves
+//! (see `complete.rs`), the command entered last that starts as this one
+//! does is suggested past the cursor, the commands entered are kept
+//! between sessions, and an ask or a view's rows end in a line that says
+//! how long they took, as `client.rs` timed them. On a pipe, `piped`
+//! reads lines until `entry` finds a command whole, or the input ends,
+//! and prints the answers alone.
 
 use std::borrow::Cow;
 use std::env;
@@ -24,7 +28,7 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hint, Hinter, HistoryHinter};
 use rustyline::history::DefaultHistory;
-use rustyline::validate::Validator;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{CompletionType, Config, Context, Editor};
 
 use crate::client::{
@@ -162,9 +166,36 @@ fn shell_commands() -> String {
     text
 }
 
-/// Answers each line of `input` on `output` and says each failure on
-/// `errors`, going on after one as psql does. How many lines failed, so
-/// a script can tell.
+/// Whether what has been entered so far is a whole command.
+#[derive(Debug, PartialEq, Eq)]
+enum Entry {
+    Whole,
+    Continued,
+}
+
+/// Whether `entered`, its lines joined by newlines, is a whole command.
+/// A command that starts with a backslash is one line. An ask is whole
+/// at the line that holds its semicolon, so its parameters go on that
+/// line, or at a blank line, which ends an ask with no parameters. The
+/// semicolon is the shell's and never reaches Straum, which refuses one
+/// that ends an ask (ADR-0004).
+fn entry(entered: &str) -> Entry {
+    let command = entered.trim();
+    if command.is_empty() || command.starts_with('\\') || command.contains(';') {
+        return Entry::Whole;
+    }
+    let last_line = entered.rsplit('\n').next().unwrap_or_default();
+    if last_line.trim().is_empty() {
+        Entry::Whole
+    } else {
+        Entry::Continued
+    }
+}
+
+/// Answers each command of `input` on `output` and says each failure on
+/// `errors`, going on after one as psql does. A command is the lines
+/// `entry` takes, or what is left when the input ends. How many commands
+/// failed, so a script can tell.
 // `impl`: the binary passes the terminal's locked streams, tests pass
 // byte buffers and a writer that always fails.
 pub(crate) fn piped(
@@ -174,13 +205,29 @@ pub(crate) fn piped(
     mut errors: impl Write,
 ) -> io::Result<usize> {
     let mut failed = 0;
+    let mut entered = String::new();
     let mut line = String::new();
-    while input.read_line(&mut line)? > 0 {
-        match answer(server, line.trim(), Timings::Hidden) {
-            Outcome::Leave => break,
+    loop {
+        line.clear();
+        let read_bytes = input.read_line(&mut line)?;
+        if read_bytes > 0 {
+            if !entered.is_empty() {
+                entered.push('\n');
+            }
+            entered.push_str(line.trim_end_matches(['\n', '\r']));
+            if entry(&entered) == Entry::Continued {
+                continue;
+            }
+        } else if entered.trim().is_empty() {
+            return Ok(failed);
+        }
+        // Here a command is whole, or the input ended an ask still
+        // taking lines.
+        match answer(server, entered.trim(), Timings::Hidden) {
+            Outcome::Leave => return Ok(failed),
             Outcome::Print(text) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
-                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(failed),
                 written => written?,
             },
             Outcome::Failed(error) => {
@@ -188,9 +235,11 @@ pub(crate) fn piped(
                 writeln!(errors, "straum: {error}")?;
             }
         }
-        line.clear();
+        if read_bytes == 0 {
+            return Ok(failed);
+        }
+        entered.clear();
     }
-    Ok(failed)
 }
 
 /// Where the lines entered are kept between sessions: under the XDG
@@ -336,7 +385,20 @@ impl Highlighter for Names {
     }
 }
 
-impl Validator for Names {}
+impl Validator for Names {
+    // Enter on an ask that is not whole yet starts a new line of it.
+    fn validate(&self, context: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        Ok(validation(context.input()))
+    }
+}
+
+/// What rustyline is told of the command being edited.
+fn validation(entered: &str) -> ValidationResult {
+    match entry(entered) {
+        Entry::Whole => ValidationResult::Valid(None),
+        Entry::Continued => ValidationResult::Incomplete,
+    }
+}
 
 impl rustyline::Helper for Names {}
 
@@ -561,6 +623,93 @@ mod tests {
     }
 
     #[test]
+    fn an_ask_takes_lines_until_its_semicolon_or_a_blank_line() {
+        let whole = [
+            "",
+            "  ",
+            "\\d",
+            "\\rows trips",
+            "SELECT \"x\"; 7",
+            "SELECT \"x\";",
+            "SELECT\n\"x\"; 7 paid",
+            "SELECT \"x\"\n",
+            "SELECT \"x\"\n  ",
+            "SELECT \"x\"\r\n\r",
+        ];
+        for entered in whole {
+            assert_eq!(entry(entered), Entry::Whole, "{entered:?}");
+            assert!(matches!(validation(entered), ValidationResult::Valid(None)));
+        }
+        let continued = ["SELECT \"x\"", "SELECT\n\"x\"", "\nSELECT", "SELECT\n\\d"];
+        for entered in continued {
+            assert_eq!(entry(entered), Entry::Continued, "{entered:?}");
+            assert!(matches!(validation(entered), ValidationResult::Incomplete));
+        }
+    }
+
+    #[test]
+    fn an_ask_split_across_lines_is_answered() {
+        let request = POST_ASK
+            .replacen("SELECT \\\"x\\\"", "SELECT\\n\\\"x\\\"", 1)
+            .replacen("content-length: 53", "content-length: 54", 1);
+        let reply = "HTTP/1.1 200 OK\r\n\r\n    1\n";
+        let ask = "SELECT\n\"x\" ; 7 paid true\n";
+        let written = shelled(&request, reply, ask);
+        assert_eq!(written, ("    1\n".to_owned(), String::new(), 0));
+        // As a terminal hands it on, with no newline after the last line.
+        let printed = at_a_terminal(&request, TIMED, "SELECT\n\"x\" ; 7 paid true");
+        assert!(printed.0.starts_with("    1\nTime: N ms"), "{printed:?}");
+    }
+
+    #[test]
+    fn an_unfinished_ask_fails_once_and_the_next_command_runs() {
+        // Nothing listens here, so every ask fails.
+        let (mut output, mut errors) = (Vec::new(), Vec::new());
+        let input = "SELECT trips\nFROM\n\n\\?\nSELECT trips\nFROM";
+        let failed = piped(
+            &server("http://127.0.0.1:1"),
+            input.as_bytes(),
+            &mut output,
+            &mut errors,
+        );
+        // The blank line ends the first ask, the end of input the second.
+        assert_eq!(failed.unwrap(), 2);
+        let errors = String::from_utf8(errors).unwrap();
+        assert_eq!(errors.matches("straum: asking").count(), 2, "{errors}");
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.starts_with("  \\d "), "{output}");
+    }
+
+    #[test]
+    fn a_command_runs_at_once_without_a_blank_line() {
+        let reply = "HTTP/1.1 200 OK\r\n\r\nview trips\n";
+        let written = shelled(GET_VIEWS, reply, "\\d\n\\q\nSELECT\n");
+        assert_eq!(written, ("view trips\n".to_owned(), String::new(), 0));
+    }
+
+    #[test]
+    fn completion_reads_the_lines_before_the_cursor() {
+        let logins = r#"{"views":[{"name":"logins","measures":["logins"],
+            "keys":[{"name":"bucket","type":"timestamp"}]}]}"#;
+        let names = Names {
+            views: read_views(logins).unwrap(),
+        };
+        let history = DefaultHistory::new();
+        let context = Context::new(&history);
+        let entered = "SELECT logins\nFROM lo";
+        let (start, candidates) = names.complete(entered, entered.len(), &context).unwrap();
+        assert_eq!((start, candidates), (19, vec!["logins ".to_owned()]));
+        // A measure goes after a SELECT on the line before.
+        let entered = "SELECT\nlo";
+        let (_, candidates) = names.complete(entered, entered.len(), &context).unwrap();
+        assert_eq!(candidates, vec!["logins ".to_owned()]);
+        // And a view at the start of the line after FROM.
+        let entered = "SELECT logins FROM\n";
+        let (start, candidates) = names.complete(entered, entered.len(), &context).unwrap();
+        assert_eq!((start, candidates), (19, vec!["logins ".to_owned()]));
+    }
+
+    #[test]
     fn the_shell_asks_for_the_rows_from_start_and_count() {
         let asked = [
             ("\\rows trips -20", "?start=-20"),
@@ -630,10 +779,11 @@ mod tests {
     #[test]
     fn a_query_without_a_semicolon_has_no_parameters() {
         // Nothing listens here, so the ask fails and the shell goes on.
+        // The blank line ends the ask.
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(
             &server("http://127.0.0.1:1"),
-            &b"SELECT\n\\?\n"[..],
+            &b"SELECT\n\n\\?\n"[..],
             &mut output,
             &mut errors,
         );

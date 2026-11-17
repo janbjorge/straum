@@ -139,8 +139,11 @@ Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
 pub(crate) const SHELL_HELP: &str = "\
 usage: straum shell [flags]
 
-Reads commands for the Straum at URL, a line each, until \\q or the end
-of input. At a terminal Tab completes views, keys, measures, conditions
+Reads commands for the Straum at URL until \\q or the end of input. A
+command that starts with \\ is one line. An ask may take several: it
+ends at the line that holds its semicolon, so its parameters go on that
+line, or at a blank line or the end of input, with no parameters.
+At a terminal Tab completes views, keys, measures, conditions
 and the bounds of the buckets held, and the right arrow takes the line
 entered before that is shown dimmed past the cursor. An ask and \\rows
 then end in how long they took: the request, then each part of it in

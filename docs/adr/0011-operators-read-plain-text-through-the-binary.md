@@ -51,15 +51,22 @@ With `--json` they print the JSON body instead, for scripts and agents.
 `true` or `false`, a number, else a string; single quotes make a
 string. `straum shell` is a prompt: `\d` lists views, `\d VIEW`
 prints its `CREATE VIEW`, `\rows VIEW [START [COUNT]]` prints rows,
-any other line is `QUERY; PARAMETER...`. It completes from `/views` by cursor position: views
-after `FROM`, names after `SELECT`, a condition with the next `$n`
-after `WHERE`, keys after `GROUP BY`, the bucket range held for a
-bound. At a terminal an ask and `\rows` end in how long they took: the
-request as the shell measured it, then the reply's `Server-Timing`. On
-a pipe they don't, so a script's output stays the same from run to run.
-The terminal is
-`rustyline`, since raw mode and line editing take `unsafe` that `std`
-lacks; without a terminal the shell reads lines from its input.
+anything else is an ask, `QUERY; PARAMETER...`. A backslash command
+is one line. An ask may take several, so a query pasted as written
+works: it ends at the line that holds the semicolon, or at a blank
+line or the end of input, with no parameters. The semicolon can't end
+the query itself, as Straum refuses one there (ADR-0004), and the
+shell tells an unfinished ask by those two marks alone, without
+parsing it. It completes from `/views` by cursor position, over every
+line of the ask: views after `FROM`, names after `SELECT`, a condition
+with the next `$n` after `WHERE`, keys after `GROUP BY`, the bucket
+range held for a bound. At a terminal an ask and `\rows` end in how
+long they took: the request as the shell measured it, then the reply's
+`Server-Timing`. On a pipe they don't, so a script's output stays the
+same from run to run. The terminal is `rustyline`, since raw mode and
+line editing take `unsafe` that `std` lacks; its `Validator` asks the
+same rule at each Enter. Without a terminal the shell reads lines from
+its input and counts the commands that failed.
 
 ## Consequences
 

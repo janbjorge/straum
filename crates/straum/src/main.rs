@@ -51,7 +51,7 @@ enum Failure {
     /// `straum status` printed the status of a Straum that is not ready.
     NotReady,
     Terminal(ReadlineError),
-    LinesFailed(usize),
+    CommandsFailed(usize),
     ReadingCommands(io::Error),
     WritingAnswer(io::Error),
     ReadingFile {
@@ -81,7 +81,7 @@ impl Display for Failure {
             Failure::Client(error) => error.fmt(formatter),
             Failure::NotReady => formatter.write_str("not ready"),
             Failure::Terminal(error) => write!(formatter, "reading the terminal: {error}"),
-            Failure::LinesFailed(count) => write!(formatter, "lines that failed: {count}"),
+            Failure::CommandsFailed(count) => write!(formatter, "commands that failed: {count}"),
             Failure::ReadingCommands(error) => write!(formatter, "reading commands: {error}"),
             Failure::WritingAnswer(error) => write!(formatter, "writing the answer: {error}"),
             Failure::ReadingFile { path, error } => write!(formatter, "reading {path}: {error}"),
@@ -196,7 +196,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
             match shell::piped(&server, input.lock(), output.lock(), io::stderr().lock()) {
                 Ok(0) => Ok(()),
-                Ok(failed) => Err(Failure::LinesFailed(failed)),
+                Ok(failed) => Err(Failure::CommandsFailed(failed)),
                 Err(error) => Err(Failure::ReadingCommands(error)),
             }
         }
@@ -435,7 +435,7 @@ mod tests {
                 "the role \"a\\nb\" holds a control character",
             ),
             (Failure::NotReady, "not ready"),
-            (Failure::LinesFailed(2), "lines that failed: 2"),
+            (Failure::CommandsFailed(2), "commands that failed: 2"),
             (Failure::ReadingCommands(gone()), "reading commands: gone"),
             (Failure::WritingAnswer(gone()), "writing the answer: gone"),
             (

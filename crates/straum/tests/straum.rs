@@ -519,7 +519,7 @@ fn shell_answers_a_line_at_a_time(url: &str, views: &str) {
         .unwrap();
     let shell = shell.wait_with_output().unwrap();
     let shelled = String::from_utf8(shell.stdout).unwrap();
-    // A line that fails goes to stderr and the others still answer; the
+    // A command that fails goes to stderr and the others still answer; the
     // exit says one failed.
     assert_eq!(shell.status.code(), Some(1), "{shelled}");
     assert_eq!(
@@ -527,7 +527,7 @@ fn shell_answers_a_line_at_a_time(url: &str, views: &str) {
         format!(
             "straum: {url} answered \"HTTP/1.1 404 Not Found\"\n\
              no view nope; GET /views lists them\n\
-             straum: lines that failed: 1\n"
+             straum: commands that failed: 1\n"
         )
     );
     let rows = "\
