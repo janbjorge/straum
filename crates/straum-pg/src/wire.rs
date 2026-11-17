@@ -155,8 +155,14 @@ impl Connection {
 
     fn authenticate(&mut self, dsn: &Dsn) -> Result<(), Error> {
         let mut scram: Option<ScramSha256> = None;
+        // The server's proof, in SASL final. Without TLS, a server that
+        // skips it may be anyone between Straum and PostgreSQL.
+        let mut proven = false;
         loop {
             match self.read()? {
+                Message::AuthenticationOk if scram.is_some() && !proven => {
+                    return Err(Error::Protocol(Unexpected::ScramUnproven));
+                }
                 Message::AuthenticationOk
                 | Message::ParameterStatus(_)
                 | Message::BackendKeyData(_)
@@ -192,6 +198,7 @@ impl Connection {
                         return Err(Error::Protocol(Unexpected::SaslFinal));
                     };
                     state.finish(body.data())?;
+                    proven = true;
                 }
                 Message::ReadyForQuery(_) => return Ok(()),
                 Message::ErrorResponse(body) => return Err(server_error(&body)),

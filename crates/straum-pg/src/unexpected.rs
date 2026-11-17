@@ -15,6 +15,9 @@ pub(crate) enum Unexpected {
     PasswordRequestWithoutPassword,
     SaslContinue,
     SaslFinal,
+    /// `AuthenticationOk` in a SCRAM exchange the server never finished:
+    /// it signed Straum in without proving it knows the password.
+    ScramUnproven,
     AuthenticationRequest,
     MessageDuringQuery,
     MessageDuringCopy,
@@ -64,6 +67,8 @@ impl fmt::Display for Unexpected {
             }
             Unexpected::SaslContinue => formatter.write_str("SASL continue"),
             Unexpected::SaslFinal => formatter.write_str("SASL final"),
+            Unexpected::ScramUnproven => formatter
+                .write_str("AuthenticationOk before its SCRAM proof that it knows the password"),
             Unexpected::AuthenticationRequest => formatter.write_str(
                 "an authentication request Straum doesn't support; \
                  Straum signs in with SCRAM-SHA-256 or trust",

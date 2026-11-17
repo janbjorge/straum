@@ -146,6 +146,17 @@ fn sign_in_errors() {
             .unwrap();
         assert_eq!(error.to_string(), expected);
     }
+    // A SCRAM exchange begun must end with the server's proof, which the
+    // real server gives: signed in without it, Straum refuses.
+    let mut unproven = sasl("SCRAM-SHA-256\0\0");
+    unproven.extend(signed_in());
+    let server = scripted(vec![now(unproven)]);
+    let dsn = server.dsn.to_string().replace("straum@", "straum:secret@");
+    let error = Connection::connect(&Dsn::parse(&dsn).unwrap(), ConnectionKind::Sql);
+    assert_eq!(
+        error.err().unwrap().to_string(),
+        "PostgreSQL sent AuthenticationOk before its SCRAM proof that it knows the password"
+    );
     // Notices and parameters along the way are fine.
     let mut chatty = message(b'N', b"SNOTICE\0Mhello\0\0");
     chatty.extend(message(b'S', b"TimeZone\0UTC\0"));
