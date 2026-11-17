@@ -128,10 +128,13 @@ impl Publisher {
         self.labels.extend(fresh.labels);
     }
 
-    /// Whether a column read is of an enum, whose labels a commit may add
-    /// to.
-    pub(crate) fn reads_enums(&self) -> bool {
+    /// Whether a column read of a table in one of `databases` is of an
+    /// enum, whose labels a commit there may add to.
+    pub(crate) fn reads_enums_in(&self, databases: &[Oid]) -> bool {
         for table in self.tables.values() {
+            if !databases.contains(&table.file.database) {
+                continue;
+            }
             for attribute in &table.attributes {
                 if attribute.kind == Kind::Enum {
                     return true;
