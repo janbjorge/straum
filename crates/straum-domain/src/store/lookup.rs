@@ -311,6 +311,16 @@ impl Wanted {
         wanted
     }
 
+    /// Keeps only the values `other` wants too: two conditions on one key
+    /// both hold for those alone.
+    pub(super) fn keep_shared(&mut self, other: &Wanted) {
+        self.ints.retain(|number| other.ints.contains(number));
+        self.texts.retain(|text| other.texts.contains(text));
+        for (kept, also) in self.bools.iter_mut().zip(other.bools) {
+            *kept &= also;
+        }
+    }
+
     /// Whether `value` is one of the values wanted.
     fn holds(&self, value: &Datum) -> bool {
         match value {

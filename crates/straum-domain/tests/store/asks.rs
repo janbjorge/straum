@@ -2,12 +2,13 @@
 //! their column's type, answer columns named and scaled as asked, one row
 //! when it groups by nothing, and an error for a name the spec lacks.
 
-use crate::common::{condition, id, lit};
+use crate::common::{Rng, condition, id, lit};
+use crate::random::trip;
 use crate::views::{spec, trip_types, typed};
-use crate::{END, FARE, PAY, ROW_COLUMNS, START, TIP};
+use crate::{AT, END, FARE, PAY, ROW_COLUMNS, START, TIP};
 use straum_domain::{
-    AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Identifier, Instead, Literal, Store,
-    Value,
+    AnswerRow, Ask, AskError, AskKey, ColumnType, Condition, Datum, Identifier, Instead, Literal,
+    Store, Value,
 };
 
 /// The trips over every bucket the tests fill, filtered.
@@ -200,4 +201,43 @@ fn unknown_names() {
             instead: Instead::Every(vec![id("trips")])
         }])
     );
+}
+
+/// `pay IN (values)`.
+fn pay_in(values: &[i64]) -> Condition {
+    let mut literals = Vec::new();
+    for value in values {
+        literals.push(Literal::Int(*value));
+    }
+    condition("pay", literals)
+}
+
+/// The trips `filter` keeps.
+fn trips_kept(store: &Store, filter: Vec<Condition>) -> Value {
+    store.ask(&trips_filtered(filter)).unwrap().rows[0].values[0].clone()
+}
+
+/// Conditions on one key all hold: the values they share, as SQL's AND
+/// of them says, however often one is repeated.
+#[test]
+fn conditions_on_one_key_hold_for_the_values_they_share() {
+    let mut store = typed(&spec());
+    let mut rng = Rng(7);
+    let mut paid = [0_i128; 3];
+    for _ in 0..300 {
+        let mut row = trip(&mut rng);
+        row[AT] = Datum::Int(START);
+        let pay = rng.below(3);
+        row[PAY] = Datum::Int(i64::try_from(pay).unwrap());
+        paid[pay] += 1;
+        store.add_row("trips", &row).unwrap();
+    }
+    let both = Value::Int(paid[1] + paid[2]);
+    assert_eq!(trips_kept(&store, vec![pay_in(&[1, 2])]), both);
+    let shared = vec![pay_in(&[1, 2]), pay_in(&[2, 0])];
+    assert_eq!(trips_kept(&store, shared), Value::Int(paid[2]));
+    let none = vec![pay_in(&[1]), pay_in(&[2])];
+    assert_eq!(trips_kept(&store, none), Value::Int(0));
+    let repeated = vec![pay_in(&[1]); 1_000];
+    assert_eq!(trips_kept(&store, repeated), Value::Int(paid[1]));
 }

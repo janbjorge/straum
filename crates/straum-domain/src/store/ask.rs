@@ -275,17 +275,37 @@ impl Store {
         read: Read<'s>,
         filter: &[Condition],
     ) -> Vec<ConditionCheck<'s>> {
-        let mut checks = Vec::with_capacity(filter.len());
+        // Conditions on one key fold into one check, of the values they
+        // share: each check keeps a memo the size of its key's codes, and
+        // an ask may repeat a condition a thousand times.
+        let mut checks: Vec<ConditionCheck<'s>> = Vec::new();
+        let mut keys: Vec<&Identifier> = Vec::new();
         for condition in filter {
+            let wanted = Wanted::new(&condition.values);
+            if let Some(position) = position_of_key(&keys, &condition.key) {
+                checks[position].wanted.keep_shared(&wanted);
+                continue;
+            }
+            keys.push(&condition.key);
             let lookup = self.lookup(fact, read, &condition.key);
             checks.push(ConditionCheck {
                 memo: vec![Known::Unknown; lookup.bound(read.rollup())],
                 lookup,
-                wanted: Wanted::new(&condition.values),
+                wanted,
             });
         }
         checks
     }
+}
+
+/// Where `key` is among `keys`.
+fn position_of_key(keys: &[&Identifier], key: &Identifier) -> Option<usize> {
+    for (position, candidate) in keys.iter().enumerate() {
+        if *candidate == key {
+            return Some(position);
+        }
+    }
+    None
 }
 
 /// Where `reference` is among the fact's refs.

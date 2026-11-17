@@ -16,8 +16,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use straum_domain::{
-    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Datum, Dim, Fact, Measure, Origin, Ref,
-    RefKind, Spec, Store, Time, Via, Width,
+    Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Literal,
+    Measure, Origin, Ref, RefKind, Spec, Store, Time, Via, Width,
 };
 
 mod common;
@@ -499,4 +499,32 @@ fn a_percentile_ask_allocates_per_doubling_of_its_values() {
         eprintln!("by {by:?}: {few} allocations, {many} with 8x the values");
         assert!(many - few <= 3 * groups, "by {by:?}: {few} then {many}");
     }
+}
+
+/// The most bytes an ask of the trips held at once, its filter
+/// `pu = 1` repeated `repeats` times.
+fn repeated_filter_peak(store: &Store, repeats: usize) -> isize {
+    let mut ask = ask(&[], 0, 1000);
+    let pickup = Condition {
+        key: id("pu"),
+        values: vec![Literal::Int(1)],
+    };
+    ask.filter = vec![pickup; repeats];
+    let before = live();
+    PEAK.set(before);
+    drop(store.ask(&ask).unwrap());
+    PEAK.get() - before
+}
+
+/// Conditions on one key fold into one check, so repeating one a thousand
+/// times keeps no memo of the key per repeat.
+#[test]
+fn a_repeated_condition_costs_no_memo_of_its_own() {
+    let store = store(8_000);
+    let once = repeated_filter_peak(&store, 1);
+    let often = repeated_filter_peak(&store, 1_000);
+    assert!(
+        often - once < 4_096,
+        "once {once} B, a thousand times {often} B"
+    );
 }
