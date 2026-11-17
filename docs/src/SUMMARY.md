@@ -3,6 +3,7 @@
 [Straum](introduction.md)
 
 - [Quick start](quick-start.md)
+- [Try it on your data](your-data.md)
 
 # Concepts
 

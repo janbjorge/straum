@@ -11,7 +11,7 @@
 #   STRAUM_TEST_POSTGRES=17 just test straum-pg
 # just --evaluate prints what a run will use.
 
-# PostgreSQL major of the tests and benchmarks
+# PostgreSQL major of the tests, benchmarks and try
 postgres := env("STRAUM_TEST_POSTGRES", "18")
 # Random workloads of the physical stream: how many, from which seed
 seeds := env("STRAUM_TEST_SEEDS", "6")
@@ -102,6 +102,12 @@ wal-bench:
 [group('taxi')]
 demo:
     bench/demo.py
+
+# Straum on a copy of your tables: a spec and a pg_dump, then straum shell
+[group('try')]
+[no-cd]
+try spec dump *flags:
+    {{ justfile_directory() }}/bench/try_your_data.py {{ spec }} {{ dump }} --postgres {{ postgres }} {{ flags }}
 
 [private]
 _named crates:

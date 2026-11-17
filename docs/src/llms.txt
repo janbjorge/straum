@@ -16,6 +16,9 @@ use the `usage` view over `public.events AS e` and
 - [Quick start](https://janbjorge.github.io/straum/quick-start.html):
   Does it work: the one tutorial, on the taxi trips. Examples use the
   taxi trips.
+- [Try it on your data](https://janbjorge.github.io/straum/your-data.html):
+  Does it answer my queries: a copy of your tables from pg_dump, in
+  Docker, with Straum on it. Examples use the usage view.
 
 ## Concepts
 

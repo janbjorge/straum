@@ -166,21 +166,5 @@ docker rm -f straum-pg
 docker network rm straum
 ```
 
-## Your own tables
-
-The same steps work on a database you have:
-
-1. Take the `GROUP BY` your app runs most and write it as a view: the
-   time column in `date_bin`, the columns it filters and groups by as
-   keys, its aggregates as measures ([Spec](spec.md)).
-2. `straum plan FILE` prints the setup SQL, or what is wrong with the
-   spec. A table owner runs the SQL once. PostgreSQL 17 and 18 also
-   need `wal_level = logical`, which takes a restart, or
-   `--wal physical` ([Setting up PostgreSQL](postgresql.md)).
-3. `straum run FILE` with `STRAUM_DSN` set, then ask.
-
-Start with few keys. Memory follows cells, one per distinct
-combination of keys and bucket ([Cells](how-it-works.md#cells)).
-
-Next: [How Straum works](how-it-works.md), what Straum keeps and how it
-stays current.
+Next: [Try it on your data](your-data.md), the same steps on a copy
+of your own tables.

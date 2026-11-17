@@ -1,6 +1,6 @@
 # ADR-0014: The guide is one path of fixed pages
 
-Status: Accepted 2026-11-16; revised 2026-11-16
+Status: Accepted 2026-11-16; revised 2026-11-17
 
 ## Context
 
@@ -27,15 +27,18 @@ before leaves:
 1. `introduction.md`, why Straum: the problem, the `usage` view, one
    ask, what Straum is not. It routes and owns no fact.
 2. `quick-start.md`, does it work: the one tutorial, on the taxi trips.
-3. `how-it-works.md`, how it works: load, follow, cells, dims, the
+3. `your-data.md`, does it answer my queries: a `pg_dump` of your
+   tables restored into Docker by `bench/try_your_data.py`, its flags,
+   comparing an ask with SQL, and the steps on the database itself.
+4. `how-it-works.md`, how it works: load, follow, cells, dims, the
    physical stream's mechanism, `as_of` and its consistency.
-4. `aggregates.md`, what a measure costs: merging, deletes, what a
+5. `aggregates.md`, what a measure costs: merging, deletes, what a
    cell keeps per measure.
-5. `postgresql.md`, connecting a database: logical and physical setup,
+6. `postgresql.md`, connecting a database: logical and physical setup,
    the start checks, what Straum costs the server.
-6. `deploy.md`, running it for real: the binary, the image, the chart.
+7. `deploy.md`, running it for real: the binary, the image, the chart.
    Chart values live in `deploy/helm/straum/README.md`.
-7. `performance.md`, what to expect: the benchmark and memory sizing.
+8. `performance.md`, what to expect: the benchmark and memory sizing.
 
 Off the path, looked up rather than read:
 
@@ -73,6 +76,7 @@ A new page, a moved fact or a changed order edits this record first.
 - A restructure is a diff against this list, not a rewrite.
 - A reader on the path never meets a term before its page.
 - Some repetition remains on purpose: a link's sentence of context.
-- Thirteen pages to keep true, one more than before: running splits
-  into deploy and the CLI reference.
+- Fourteen pages to keep true: running splits into deploy and the CLI
+  reference, and trying Straum on your own tables has a page of its
+  own, as its own script.
 - `llms.txt` is the agent index. It points at the HTML pages.
