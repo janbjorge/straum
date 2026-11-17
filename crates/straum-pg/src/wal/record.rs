@@ -411,6 +411,11 @@ fn image_fits(image: &Image, has_hole: bool) -> bool {
     if compressed && whole_page {
         return false;
     }
+    // A hole past the page's end would cut the page short, or past it.
+    let hole_end = usize::from(image.hole_offset) + usize::from(image.hole_length);
+    if hole_end > BLOCK_SIZE {
+        return false;
+    }
     if has_hole {
         image.hole_offset != 0 && image.hole_length != 0 && !whole_page
     } else {
@@ -569,6 +574,18 @@ mod tests {
         };
         let record = assemble(&plain_block(Some(short), Vec::new()));
         assert_eq!(decode_error(record), blocks_problem());
+        // A compressed image whose hole runs past the page, and one that
+        // ends at the page's end.
+        for (hole_length, fits) in [(9_000, false), (8_093, false), (8_092, true)] {
+            let holed = ImageSpec {
+                hole_offset: 100,
+                hole_length,
+                ..compressed_image()
+            };
+            let record = assemble(&plain_block(Some(holed), Vec::new()));
+            let decoded = decode(SEGMENT + LONG_HEADER, record.len() as u64, record);
+            assert_eq!(decoded.is_ok(), fits, "{hole_length}");
+        }
     }
 
     #[test]

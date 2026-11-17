@@ -829,20 +829,6 @@ fn reads_a_new_page_as_empty() {
     assert_eq!(page_at(&heap, 0).rows().count(), 0);
 }
 
-/// An image whose hole starts past the bytes it keeps can't be put back.
-#[test]
-fn refuses_an_image_whose_hole_lies_past_it() {
-    let mut heap = heap(18);
-    let hole_length = 100;
-    let past = ImageSpec {
-        hole_offset: 9_000,
-        hole_length,
-        ..image(vec![0; BLOCK_SIZE - usize::from(hole_length)])
-    };
-    let images = full_page_images(vec![imaged(0, past)]);
-    assert_eq!(error(&mut heap, &images), Problem::ImageNotDecompressing);
-}
-
 /// An insert into a slot that holds a row puts the new row there, and
 /// the bytes counted follow.
 #[test]
