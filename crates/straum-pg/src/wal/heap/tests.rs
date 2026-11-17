@@ -847,6 +847,28 @@ fn puts_a_row_over_the_one_in_its_slot() {
     assert_eq!(heap.bytes(), heap.recount());
 }
 
+/// From 19 a visibility-map set is logged as a prune that removes nothing,
+/// and without data checksums it brings no page image: it needs no page.
+/// One that removes a row still does.
+#[test]
+fn a_prune_that_removes_nothing_needs_no_page() {
+    let mut heap = heap(19);
+    let nothing = record(
+        RESOURCE_MANAGER_HEAP2,
+        HEAP2_PRUNE,
+        prune_main(19, 0),
+        vec![block(MAIN_BLOCK, 7, Vec::new(), None)],
+    );
+    assert_eq!(heap.apply(&nothing), Ok(vec![]));
+    let some = record(
+        RESOURCE_MANAGER_HEAP2,
+        HEAP2_PRUNE,
+        prune_main(19, PRUNE_HAS_DEAD_ITEMS),
+        vec![block(MAIN_BLOCK, 7, prune_list(1, &[1]), None)],
+    );
+    assert!(heap.apply(&some).is_err());
+}
+
 /// A prune that names slot 0, which no row has, and a truncate of
 /// another fork leave every row.
 #[test]

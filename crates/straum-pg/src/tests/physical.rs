@@ -152,6 +152,30 @@ fn follows_the_physical_wal_with_checksums_flipped() {
     follow(&plain(request), checksums);
 }
 
+/// On 19 without data checksums, a plain `VACUUM` after a checkpoint
+/// logs each visibility-map set as a prune that removes nothing and
+/// brings no page image: the stream passes it and goes on.
+#[test]
+fn follows_a_vacuum_on_19_without_checksums() {
+    let request = image(NINETEEN)
+        .with_env_var("POSTGRES_INITDB_ARGS", "--no-data-checksums")
+        .with_cmd(&["-c", "wal_level=replica"]);
+    let pg = plain(request);
+    let mut db = Db::new(&pg, "vacuumed", TABLES);
+    let mut rng = Rng::new(3);
+    for id in 0..20 {
+        db.run(&rng.trip(id));
+    }
+    let mut writer = db.physical_writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    db.run("CHECKPOINT");
+    db.run("VACUUM $S.trips");
+    db.run(&rng.trip(100));
+    applied(&mut writer);
+    assert_eq!(writer.app().status().starts, 1);
+    assert_eq!(writer.app().status().failures, 0);
+}
+
 /// Whether the major under test turns data checksums on by default, as
 /// 18 first does.
 fn checksums_by_default() -> bool {

@@ -347,6 +347,12 @@ impl Heap {
         let Some(gone) = prune_slots(record.block_data(block), flags) else {
             return Err(at(record.lsn, Problem::ShortHeapRecord));
         };
+        // From 19 a visibility-map set is logged as a prune that removes
+        // nothing and, without data checksums, brings no page image: no
+        // page is needed for it.
+        if gone.is_empty() {
+            return Ok(());
+        }
         let page = self.page_mut(record.lsn, block)?;
         for slot in gone {
             page.remove(slot);
