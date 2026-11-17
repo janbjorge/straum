@@ -300,13 +300,15 @@ mod tests {
     use crate::wal::test_support::{ROW_HEADER, ROW_PADDING};
     /// The commit time of every test commit, in microseconds since 2000.
     const COMMIT_TIME: i64 = 7;
+    /// `pg_class.oid` of the table read, its layout's and its check's.
+    const TABLE_OID: u32 = 77;
 
     /// `public.t (id int4)`, read by the spec as `t`.
     fn table() -> Layout {
         Layout {
             file: FILE,
             relation: Relation {
-                id: 77,
+                id: TABLE_OID,
                 schema: "public".to_owned(),
                 name: "t".to_owned(),
                 columns: vec![RelationColumn {
@@ -326,7 +328,10 @@ mod tests {
     }
 
     fn pipeline(max_bytes: usize) -> Pipeline {
-        let checked = Checked::public("t", "t", &["id"], vec![ColumnType::Int]);
+        let checked = Checked {
+            oid: TABLE_OID,
+            ..Checked::public("t", "t", &["id"], vec![ColumnType::Int])
+        };
         Pipeline::new(
             vec![checked],
             Layouts {
@@ -583,7 +588,10 @@ mod tests {
             lsn: 0x100_0028,
             block: 0,
         };
-        let checked = Checked::public("t", "t", &["id"], vec![ColumnType::Int]);
+        let checked = Checked {
+            oid: TABLE_OID,
+            ..Checked::public("t", "t", &["id"], vec![ColumnType::Int])
+        };
         let layouts = Layouts {
             tables: vec![table()],
             labels: HashMap::new(),

@@ -306,6 +306,8 @@ mod tests {
     use crate::wal::tuple::{EXTERNAL_POINTER, Kind, VARLENA_LENGTH};
 
     const INT: Kind = Kind::Read(ColumnType::Int);
+    /// `pg_class.oid` of the table read, its layout's and its check's.
+    const TABLE_OID: u32 = 77;
     /// `point`'s type OID, a type Straum doesn't read.
     const POINT: u32 = 600;
     /// `sizeof(Point)`: two `float8`s, aligned to 8.
@@ -330,7 +332,7 @@ mod tests {
         Layout {
             file: FILE,
             relation: Relation {
-                id: 77,
+                id: TABLE_OID,
                 schema: "public".to_owned(),
                 name: "zones".to_owned(),
                 columns: vec![
@@ -353,12 +355,15 @@ mod tests {
     }
 
     fn decoder() -> Decoder {
-        let checked = Checked::public(
-            "zones",
-            "zones",
-            &["id", "name"],
-            vec![ColumnType::Int, ColumnType::Text],
-        );
+        let checked = Checked {
+            oid: TABLE_OID,
+            ..Checked::public(
+                "zones",
+                "zones",
+                &["id", "name"],
+                vec![ColumnType::Int, ColumnType::Text],
+            )
+        };
         Decoder::new(vec![checked], 10)
     }
 
@@ -546,12 +551,15 @@ mod tests {
         let mut table = table();
         table.missing[4] = Datum::Int(7);
         table.relation.columns[3].name = "late".to_owned();
-        let checked = Checked::public(
-            "zones",
-            "zones",
-            &["id", "late"],
-            vec![ColumnType::Int, ColumnType::Int],
-        );
+        let checked = Checked {
+            oid: TABLE_OID,
+            ..Checked::public(
+                "zones",
+                "zones",
+                &["id", "late"],
+                vec![ColumnType::Int, ColumnType::Int],
+            )
+        };
         let mut decoder = Decoder::new(vec![checked], 10);
         let mut publisher = Publisher::new(layouts(vec![table]));
         let changes = vec![HeapChange::Insert {
