@@ -89,6 +89,8 @@ pub(crate) enum TableProblem {
     /// Another table inherits from it, whose rows a query of it reads.
     Children,
     NoSelect,
+    /// Unlogged, so the physical WAL holds none of its changes.
+    Unlogged,
     /// Row-level security filters what Straum's role, `role`, reads of
     /// it.
     RowSecurity {
@@ -246,6 +248,11 @@ fn write_table(
         TableProblem::NoSelect => write!(
             formatter,
             "{name}: Straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
+        ),
+        TableProblem::Unlogged => write!(
+            formatter,
+            "{name}: {qualified} is unlogged, so the WAL holds none of its changes: \
+             ALTER TABLE {qualified} SET LOGGED"
         ),
         TableProblem::RowSecurity { role } => write!(
             formatter,

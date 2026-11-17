@@ -9,6 +9,7 @@ mod joins;
 mod load;
 mod logical;
 mod physical;
+mod physical_setup;
 mod protocol;
 mod records;
 mod references;

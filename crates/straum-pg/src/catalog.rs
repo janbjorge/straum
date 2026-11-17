@@ -171,6 +171,8 @@ pub(crate) struct Class {
     pub(crate) name: String,
     /// `pg_class.relkind`: `r` for a plain table.
     pub(crate) relkind: String,
+    /// `pg_class.relpersistence`: `u` for an unlogged table.
+    pub(crate) persistence: String,
     pub(crate) scope: ReadScope,
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
@@ -285,7 +287,7 @@ fn classes(
     tables: &str,
 ) -> Result<Vec<Class>, Error> {
     let rows = connection.rows(&format!(
-        "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
+        "SELECT n.nspname, c.relname, c.relkind, c.relpersistence, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
                 array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL,
                 EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid),
@@ -302,6 +304,7 @@ fn classes(
             schema,
             name,
             relkind,
+            persistence,
             identity,
             select,
             published,
@@ -313,6 +316,7 @@ fn classes(
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
             relkind: relkind.unwrap_or_default(),
+            persistence: persistence.unwrap_or_default(),
             scope: ReadScope {
                 children: children.as_deref() == Some("t"),
                 row_security: row_security.as_deref() == Some("t"),
@@ -691,6 +695,10 @@ fn check_table(
         problems.push(names.table_problem(TableProblem::RowSecurity {
             role: catalog.role.clone(),
         }));
+    }
+    // An unlogged table writes no WAL; a publication refuses it.
+    if !logical && class.persistence == "u" {
+        problems.push(names.table_problem(TableProblem::Unlogged));
     }
     if logical && class.row_filter {
         problems.push(names.table_problem(TableProblem::RowFilter {
