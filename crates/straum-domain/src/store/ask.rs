@@ -18,6 +18,7 @@ use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, ViaFrom};
 use super::groups::{Grouping, Groups};
 use super::lookup::{
     AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, Known, Lookup, Memo, UNKNOWN,
+    Wanted,
 };
 use crate::value::{Threshold, Value};
 
@@ -280,7 +281,7 @@ impl Store {
             checks.push(ConditionCheck {
                 memo: vec![Known::Unknown; lookup.bound(read.rollup())],
                 lookup,
-                values: condition.values.clone(),
+                wanted: Wanted::new(&condition.values),
             });
         }
         checks

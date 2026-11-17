@@ -4,7 +4,7 @@
 //! it. Each is worked out once per code or per tuple of join codes and
 //! remembered, so a cell costs a lookup in a table, not in a dim.
 
-use crate::hash::FastMap;
+use crate::hash::{FastMap, FastSet};
 use crate::projection::{AttributeIndex, NULL, Projection};
 use crate::rollup::{Cells, PartIndex, Rollup};
 use crate::spec::{Literal, RefKind};
@@ -224,7 +224,7 @@ pub(super) struct ConditionCheck<'s> {
     pub(super) lookup: Lookup<'s>,
     /// The values the key may have; copied from the condition, so the
     /// check borrows nothing but the store.
-    pub(super) values: Vec<Literal>,
+    pub(super) wanted: Wanted,
     /// Per code of the key.
     pub(super) memo: Vec<Known>,
 }
@@ -270,15 +270,55 @@ impl ConditionCheck<'_> {
 
     fn resolve(&mut self, rollup: &Rollup, code: u32) -> Known {
         let value = self.lookup.value(rollup, code);
-        let mut known = Known::Fails;
-        for literal in &self.values {
-            if value.matches(literal) {
-                known = Known::Holds;
-                break;
-            }
-        }
+        let known = if self.wanted.holds(value) {
+            Known::Holds
+        } else {
+            Known::Fails
+        };
         self.memo[code as usize] = known;
         known
+    }
+}
+
+/// A condition's values, by kind, each found in one hash: matching a key
+/// value against a list of 340,000 one by one took 45 s under the read
+/// lock. As SQL's `=`: a value matches a literal of its own kind, and a
+/// null matches nothing.
+#[derive(Default)]
+pub(super) struct Wanted {
+    ints: FastSet<i64>,
+    texts: FastSet<String>,
+    bools: [bool; 2],
+}
+
+impl Wanted {
+    /// The values `values` lists, each once.
+    pub(super) fn new(values: &[Literal]) -> Wanted {
+        let mut wanted = Wanted::default();
+        for value in values {
+            match value {
+                Literal::Int(number) => {
+                    wanted.ints.insert(*number);
+                }
+                Literal::Text(text) => {
+                    wanted.texts.insert(text.clone());
+                }
+                Literal::Bool(flag) => wanted.bools[usize::from(*flag)] = true,
+                // No key Straum filters on holds one; the ask was refused.
+                Literal::Decimal { .. } => {}
+            }
+        }
+        wanted
+    }
+
+    /// Whether `value` is one of the values wanted.
+    fn holds(&self, value: &Datum) -> bool {
+        match value {
+            Datum::Null => false,
+            Datum::Bool(flag) => self.bools[usize::from(*flag)],
+            Datum::Int(number) => self.ints.contains(number),
+            Datum::Text(text) => self.texts.contains(&**text),
+        }
     }
 }
 
@@ -296,4 +336,43 @@ pub(super) fn all_hold(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// Each value matches a literal of its own kind, a null nothing, and a
+    /// list of any length is one hash away.
+    #[test]
+    fn a_value_is_wanted_as_sql_equals_says() {
+        let mut values = Vec::new();
+        for number in 0..340_000 {
+            values.push(Literal::Int(number * 2));
+        }
+        values.extend([
+            Literal::Text("cab".into()),
+            Literal::Text("cab".into()),
+            Literal::Bool(false),
+            Literal::Decimal { units: 7, scale: 0 },
+        ]);
+        let wanted = Wanted::new(&values);
+        for (value, holds) in [
+            (Datum::Int(0), true),
+            (Datum::Int(679_998), true),
+            (Datum::Int(7), false),
+            (Datum::Int(680_000), false),
+            (Datum::Text(Arc::from("cab")), true),
+            (Datum::Text(Arc::from("Cab")), false),
+            (Datum::Bool(false), true),
+            (Datum::Bool(true), false),
+            (Datum::Null, false),
+        ] {
+            assert_eq!(wanted.holds(&value), holds, "{value:?}");
+        }
+        let none = Wanted::new(&[]);
+        assert!(!none.holds(&Datum::Int(0)) && !none.holds(&Datum::Bool(false)));
+    }
 }

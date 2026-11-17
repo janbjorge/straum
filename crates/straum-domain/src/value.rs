@@ -76,18 +76,6 @@ pub enum Datum {
     Text(Arc<str>),
 }
 
-impl Datum {
-    /// SQL `=`: null matches nothing.
-    pub(crate) fn matches(&self, literal: &Literal) -> bool {
-        match (self, literal) {
-            (Datum::Bool(held), Literal::Bool(wanted)) => held == wanted,
-            (Datum::Int(held), Literal::Int(wanted)) => held == wanted,
-            (Datum::Text(held), Literal::Text(wanted)) => **held == **wanted,
-            _ => false,
-        }
-    }
-}
-
 /// One measure's answer for one group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
