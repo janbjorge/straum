@@ -2,13 +2,16 @@
 //! running Straum: `straum status`, `views`, `ask` and the shell. Each
 //! public function builds one `Request`, `fetch` writes it as HTTP/1.1 on
 //! a plain socket and reads the reply until Straum closes the connection,
-//! and the body comes back as text. A plain socket, since Straum's image
-//! holds nothing else to ask with.
+//! and the body comes back as text. An ask and a view's rows come back
+//! with a `Timing` too: how long the request took at this end, and the
+//! phases the reply's `Server-Timing` header names, which the shell
+//! prints. A plain socket, since Straum's image holds nothing else to ask
+//! with.
 
 use std::fmt::{self, Display, Write as _};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use straum_domain::Identifier;
@@ -16,6 +19,14 @@ use straum_domain::Identifier;
 use crate::complete::{View, read_views};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The header in which Straum says where an answer's time went.
+const SERVER_TIMING: &str = "server-timing";
+
+/// What follows a phase's name in `Server-Timing`, before its milliseconds.
+const PHASE_TOOK: &str = ";dur=";
+
+const MILLISECONDS_PER_SECOND: f64 = 1e3;
 
 /// A request to a running Straum that got no answer.
 #[derive(Debug)]
@@ -169,6 +180,54 @@ pub(crate) fn is_ready(url: &str) -> Result<bool, ClientError> {
     }
 }
 
+/// A reply's body, and how long it took to get.
+#[derive(Debug)]
+pub(crate) struct Timed {
+    pub(crate) text: String,
+    pub(crate) timing: Timing,
+}
+
+/// How long a request took: all of it as this end measured, from
+/// connecting until Straum closed the connection, and the phases of it
+/// in Straum as the reply's `Server-Timing` header names them.
+#[derive(Debug)]
+pub(crate) struct Timing {
+    pub(crate) round_trip: Duration,
+    pub(crate) phases: Vec<Phase>,
+}
+
+/// A part of answering in Straum, and how long it took.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Phase {
+    pub(crate) name: String,
+    pub(crate) took: Duration,
+}
+
+/// `Time: 3.412 ms (in Straum: parse 0.031, answer 2.480, total 2.950)`,
+/// the first as psql writes it; the request alone for a reply that names
+/// no phase.
+impl Display for Timing {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "Time: {} ms", milliseconds(self.round_trip))?;
+        let mut opening = " (in Straum: ";
+        for phase in &self.phases {
+            let took = milliseconds(phase.took);
+            write!(formatter, "{opening}{} {took}", phase.name)?;
+            opening = ", ";
+        }
+        if self.phases.is_empty() {
+            return Ok(());
+        }
+        formatter.write_str(")")
+    }
+}
+
+/// Milliseconds to three places, as `Server-Timing` writes them: an ask
+/// takes microseconds.
+fn milliseconds(took: Duration) -> String {
+    format!("{:.3}", took.as_secs_f64() * MILLISECONDS_PER_SECOND)
+}
+
 /// The views a running Straum holds, as `GET /views` says them.
 pub(crate) fn views(url: &str, output: Output) -> Result<String, ClientError> {
     let request = Request::get(Wanted::Views, "/views".to_owned(), output);
@@ -185,7 +244,7 @@ pub(crate) struct RowWindow {
 }
 
 /// A view's rows, as `GET /views/NAME` writes them.
-pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<String, ClientError> {
+pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<Timed, ClientError> {
     // The name goes into the request line as it is.
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
@@ -200,7 +259,7 @@ pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<String, C
         let _ = write!(path, "{separator}count={count}");
     }
     let request = Request::get(Wanted::Rows, path, Output::Text);
-    fetch(url, &request)
+    fetch_timed(url, &request)
 }
 
 /// A view's `CREATE VIEW` statement, as `GET /views/NAME/spec` writes it.
@@ -227,7 +286,7 @@ pub(crate) fn ask(
     query: &str,
     parameters: &[String],
     output: Output,
-) -> Result<String, ClientError> {
+) -> Result<Timed, ClientError> {
     let mut values = Vec::with_capacity(parameters.len());
     for text in parameters {
         values.push(parameter(text));
@@ -244,7 +303,7 @@ pub(crate) fn ask(
         accept: output,
         body: Some(body),
     };
-    fetch(url, &request)
+    fetch_timed(url, &request)
 }
 
 /// A parameter as JSON. A command line holds only text, so the text says
@@ -367,9 +426,15 @@ fn address_of(url: &str) -> Option<&str> {
 
 /// The body of the reply to one request.
 fn fetch(url: &str, request: &Request) -> Result<String, ClientError> {
+    Ok(fetch_timed(url, request)?.text)
+}
+
+/// The body of the reply to one request, and how long it took.
+fn fetch_timed(url: &str, request: &Request) -> Result<Timed, ClientError> {
     let Some(address) = address_of(url) else {
         return Err(ClientError::NotAnHttpUrl(url.to_owned()));
     };
+    let sent = Instant::now();
     let reply = match exchange(address, &request_text(address, request)) {
         Ok(reply) => reply,
         Err(error) => {
@@ -378,18 +443,61 @@ fn fetch(url: &str, request: &Request) -> Result<String, ClientError> {
             return Err(ClientError::Unreachable { url, wanted, error });
         }
     };
+    let round_trip = sent.elapsed();
     let Some((head, body)) = reply.split_once("\r\n\r\n") else {
         return Err(ClientError::NoReply {
             url: url.to_owned(),
         });
     };
     if head.starts_with("HTTP/1.1 200 ") {
-        return Ok(body.to_owned());
+        let timing = Timing {
+            round_trip,
+            phases: phases(head),
+        };
+        return Ok(Timed {
+            text: body.to_owned(),
+            timing,
+        });
     }
     Err(ClientError::Refused {
         url: url.to_owned(),
         status_line: head.lines().next().unwrap_or_default().to_owned(),
         body: body.to_owned(),
+    })
+}
+
+/// The phases `Server-Timing` names in a reply's head, in the order
+/// written: `parse;dur=0.031, answer;dur=2.480` and on, in milliseconds.
+/// None for a reply without the header. An entry written another way is
+/// left out, since its time can't be told.
+fn phases(head: &str) -> Vec<Phase> {
+    let mut phases = Vec::new();
+    for line in head.lines() {
+        let Some((name, entries)) = line.split_once(':') else {
+            continue;
+        };
+        // A header's name is in any case; a proxy may write its own.
+        if !name.eq_ignore_ascii_case(SERVER_TIMING) {
+            continue;
+        }
+        for entry in entries.split(',') {
+            if let Some(phase) = phase(entry.trim()) {
+                phases.push(phase);
+            }
+        }
+    }
+    phases
+}
+
+/// One entry of `Server-Timing`, `name;dur=milliseconds`, if it is one.
+fn phase(entry: &str) -> Option<Phase> {
+    let (name, took_ms) = entry.split_once(PHASE_TOOK)?;
+    let took_ms = took_ms.parse::<f64>().ok()?;
+    // Refuses a time below zero and one that is no number.
+    let took = Duration::try_from_secs_f64(took_ms / MILLISECONDS_PER_SECOND).ok()?;
+    Some(Phase {
+        name: name.to_owned(),
+        took,
     })
 }
 
@@ -445,6 +553,18 @@ mod tests {
         }
     }
 
+    /// The body of a reply that was timed, without its timing.
+    fn text(result: Result<Timed, ClientError>) -> Result<String, ClientError> {
+        Ok(result?.text)
+    }
+
+    fn phase_of(name: &str, took_us: u64) -> Phase {
+        Phase {
+            name: name.to_owned(),
+            took: Duration::from_micros(took_us),
+        }
+    }
+
     #[test]
     fn asks_for_the_status() {
         let reply = "HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\nready: yes\n";
@@ -481,13 +601,13 @@ mod tests {
         let url = answering(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\ntrips\n");
         let all = RowWindow::default();
         assert_eq!(
-            said(rows(&url, "trips", all)),
+            said(text(rows(&url, "trips", all))),
             Said::Body("trips\n".to_owned())
         );
         for name in ["trips HTTP/1.1", "a/b", "tri\rps", "trips;", "", "Trips"] {
             let error = format!("{name:?} is not a view's name");
             assert_eq!(
-                said(rows("http://127.0.0.1:1", name, all)),
+                said(text(rows("http://127.0.0.1:1", name, all))),
                 Said::Error(error)
             );
         }
@@ -514,7 +634,7 @@ mod tests {
             let url = answering(&request, "HTTP/1.1 200 OK\r\n\r\nsome\n");
             let window = RowWindow { start, count };
             assert_eq!(
-                said(rows(&url, "trips", window)),
+                said(text(rows(&url, "trips", window))),
                 Said::Body("some\n".to_owned()),
                 "{query}"
             );
@@ -565,20 +685,79 @@ mod tests {
         let url = answering(POST_ASK_JSON, "HTTP/1.1 200 OK\r\n\r\n{\"rows\":[]}");
         let parameters = args("7 paid true");
         let body = Said::Body("{\"rows\":[]}".to_owned());
-        assert_eq!(
-            said(ask(&url, "SELECT \"x\"", &parameters, Output::Json)),
-            body
-        );
+        let answered = ask(&url, "SELECT \"x\"", &parameters, Output::Json);
+        assert_eq!(said(text(answered)), body);
     }
 
     #[test]
     fn sends_an_ask_and_prints_its_table() {
         let url = answering(POST_ASK, "HTTP/1.1 200 OK\r\n\r\ntrips\n-----\n    1\n");
         let parameters = args("7 paid true");
+        let answered = ask(&url, "SELECT \"x\"", &parameters, Output::Text);
         assert_eq!(
-            said(ask(&url, "SELECT \"x\"", &parameters, Output::Text)),
+            said(text(answered)),
             Said::Body("trips\n-----\n    1\n".to_owned())
         );
+    }
+
+    #[test]
+    fn an_answer_comes_with_how_long_it_took() {
+        let reply = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
+            Server-Timing: parse;dur=0.031, answer;dur=2.480, text;dur=0.401, total;dur=2.950\r\n\
+            \r\n    1\n";
+        let url = answering(POST_ASK, reply);
+        let sent = Instant::now();
+        let answered = ask(&url, "SELECT \"x\"", &args("7 paid true"), Output::Text).unwrap();
+        let waited = sent.elapsed();
+        assert_eq!(answered.text, "    1\n");
+        let phases = [
+            phase_of("parse", 31),
+            phase_of("answer", 2480),
+            phase_of("text", 401),
+            phase_of("total", 2950),
+        ];
+        assert_eq!(answered.timing.phases, phases);
+        let round_trip = answered.timing.round_trip;
+        assert!(round_trip > Duration::ZERO && round_trip <= waited);
+        // A view's rows are an ask the app builds, timed the same.
+        let reply = "HTTP/1.1 200 OK\r\nserver-timing: total;dur=1.000\r\n\r\ntrips\n";
+        let url = answering(GET_ROWS, reply);
+        let answered = rows(&url, "trips", RowWindow::default()).unwrap();
+        assert_eq!(answered.timing.phases, [phase_of("total", 1000)]);
+    }
+
+    #[test]
+    fn a_reply_without_phases_is_timed_at_this_end_alone() {
+        let url = answering(POST_ASK, "HTTP/1.1 200 OK\r\n\r\n    1\n");
+        let answered = ask(&url, "SELECT \"x\"", &args("7 paid true"), Output::Text).unwrap();
+        assert_eq!(answered.timing.phases, []);
+        assert!(answered.timing.round_trip > Duration::ZERO);
+        // Only Server-Timing is read, and only entries that say a time.
+        let head = "HTTP/1.1 200 OK\r\nx-timing: parse;dur=1\r\n\
+            server-timing: total, cache;desc=hit, parse;dur=x, answer;dur=-1, \
+            text;dur=inf, json;dur=NaN, db;dur=1e400, miss;dur=, total;dur=2";
+        assert_eq!(phases(head), [phase_of("total", 2000)]);
+    }
+
+    #[test]
+    fn a_timing_is_written_as_a_line() {
+        let timing = Timing {
+            round_trip: Duration::from_micros(3412),
+            phases: vec![
+                phase_of("parse", 31),
+                phase_of("answer", 2480),
+                phase_of("total", 2950),
+            ],
+        };
+        assert_eq!(
+            timing.to_string(),
+            "Time: 3.412 ms (in Straum: parse 0.031, answer 2.480, total 2.950)"
+        );
+        let timing = Timing {
+            round_trip: Duration::from_millis(1500),
+            phases: Vec::new(),
+        };
+        assert_eq!(timing.to_string(), "Time: 1500.000 ms");
     }
 
     #[test]
@@ -590,15 +769,8 @@ mod tests {
         let refused = format!(
             "{url} answered \"HTTP/1.1 400 Bad Request\"\nkind asked twice\ntrips asked twice"
         );
-        assert_eq!(
-            said(ask(
-                &url,
-                "SELECT \"x\"",
-                &args("7 paid true"),
-                Output::Text
-            )),
-            Said::Error(refused)
-        );
+        let answered = ask(&url, "SELECT \"x\"", &args("7 paid true"), Output::Text);
+        assert_eq!(said(text(answered)), Said::Error(refused));
         // Nothing listens on port 1.
         let error = ask("http://127.0.0.1:1", "SELECT", &args(""), Output::Text).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for an answer: ";

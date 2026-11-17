@@ -54,7 +54,10 @@ prints its `CREATE VIEW`, `\rows VIEW [START [COUNT]]` prints rows,
 any other line is `QUERY; PARAMETER...`. It completes from `/views` by cursor position: views
 after `FROM`, names after `SELECT`, a condition with the next `$n`
 after `WHERE`, keys after `GROUP BY`, the bucket range held for a
-bound. The terminal is
+bound. At a terminal an ask and `\rows` end in how long they took: the
+request as the shell measured it, then the reply's `Server-Timing`. On
+a pipe they don't, so a script's output stays the same from run to run.
+The terminal is
 `rustyline`, since raw mode and line editing take `unsafe` that `std`
 lacks; without a terminal the shell reads lines from its input.
 

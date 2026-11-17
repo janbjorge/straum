@@ -6,8 +6,10 @@
 //! `QUERY; PARAMETER...`, where a value in single quotes may hold spaces. At a terminal, `interactive` edits the line with
 //! rustyline, Tab completes from the views the Straum serves (see
 //! `complete.rs`), the line entered last that starts as this one does is
-//! suggested past the cursor, and the lines entered are kept between
-//! sessions. On a pipe, `piped` reads one line at a time.
+//! suggested past the cursor, the lines entered are kept between
+//! sessions, and an ask or a view's rows end in a line that says how long
+//! they took, as `client.rs` timed them. On a pipe, `piped` reads one
+//! line at a time and prints the answers alone.
 
 use std::borrow::Cow;
 use std::env;
@@ -26,7 +28,7 @@ use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
 use crate::client::{
-    ClientError, Output, RowWindow, ask, load_views, parameter_words, rows, spec, views,
+    ClientError, Output, RowWindow, Timed, ask, load_views, parameter_words, rows, spec, views,
 };
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
@@ -72,8 +74,17 @@ enum Outcome {
     Leave,
 }
 
+/// Whether an ask and a view's rows end in a line that says how long they
+/// took. It is for a person at a terminal: on a pipe it would make a
+/// script's output differ from run to run.
+#[derive(Clone, Copy)]
+enum Timings {
+    Shown,
+    Hidden,
+}
+
 /// What one line asks for.
-fn answer(url: &str, line: &str) -> Outcome {
+fn answer(url: &str, line: &str, timings: Timings) -> Outcome {
     let words: Vec<&str> = line.split_whitespace().collect();
     let answered = match words[..] {
         [] => Ok(String::new()),
@@ -86,7 +97,7 @@ fn answer(url: &str, line: &str) -> Outcome {
                 Ok(window) => window,
                 Err(error) => return Outcome::Failed(error),
             };
-            rows(url, view, window)
+            timed(rows(url, view, window), timings)
         }
         [command, ..] if command.starts_with('\\') => {
             return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
@@ -97,12 +108,23 @@ fn answer(url: &str, line: &str) -> Outcome {
                 .into_iter()
                 .map(str::to_owned)
                 .collect();
-            ask(url, query.trim_end(), &parameters, Output::Text)
+            let answered = ask(url, query.trim_end(), &parameters, Output::Text);
+            timed(answered, timings)
         }
     };
     match answered {
         Ok(text) => Outcome::Print(text),
         Err(error) => Outcome::Failed(LineError::from(error)),
+    }
+}
+
+/// What an ask or a view's rows print: the table, and under it how long
+/// it took where `timings` shows that.
+fn timed(answered: Result<Timed, ClientError>, timings: Timings) -> Result<String, ClientError> {
+    let Timed { text, timing } = answered?;
+    match timings {
+        Timings::Shown => Ok(format!("{text}{timing}\n")),
+        Timings::Hidden => Ok(text),
     }
 }
 
@@ -149,7 +171,7 @@ pub(crate) fn piped(
     let mut failed = 0;
     let mut line = String::new();
     while input.read_line(&mut line)? > 0 {
-        match answer(url, line.trim()) {
+        match answer(url, line.trim(), Timings::Hidden) {
             Outcome::Leave => break,
             Outcome::Print(text) => match output.write_all(text.as_bytes()) {
                 // The reader has left, as `head` does after its lines.
@@ -237,7 +259,7 @@ fn prompt_until_leaving(
             Err(error) => return Err(error),
         };
         editor.add_history_entry(line.trim())?;
-        match answer(url, line.trim()) {
+        match answer(url, line.trim(), Timings::Shown) {
             Outcome::Leave => return Ok(()),
             Outcome::Print(text) => print!("{text}"),
             Outcome::Failed(error) => eprintln!("straum: {error}"),
@@ -396,6 +418,64 @@ mod tests {
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(&url, input.as_bytes(), &mut output, &mut errors).unwrap();
         (text(output, &url), text(errors, &url), failed)
+    }
+
+    /// A table of one row, with the phases Straum names for it.
+    const TIMED: &str = "HTTP/1.1 200 OK\r\n\
+        server-timing: parse;dur=0.031, answer;dur=2.480, text;dur=0.401, total;dur=2.950\r\n\
+        \r\n    1\n";
+
+    /// What `line` prints at a terminal and the error it says, at a
+    /// Straum that takes `request`. The time the shell measured differs
+    /// from run to run, so it reads `N`.
+    fn at_a_terminal(request: &str, reply: &'static str, line: &str) -> (String, String) {
+        let url = answering(request, reply);
+        match answer(&url, line, Timings::Shown) {
+            Outcome::Print(printed) => (steady(&printed), String::new()),
+            Outcome::Failed(error) => (String::new(), error.to_string().replace(&url, "URL")),
+            Outcome::Leave => (String::new(), String::new()),
+        }
+    }
+
+    fn steady(printed: &str) -> String {
+        let Some((before, rest)) = printed.split_once("Time: ") else {
+            return printed.to_owned();
+        };
+        let (measured, after) = rest.split_once(" ms").unwrap();
+        assert!(measured.parse::<f64>().is_ok(), "{printed}");
+        format!("{before}Time: N ms{after}")
+    }
+
+    #[test]
+    fn at_a_terminal_an_answer_ends_in_how_long_it_took() {
+        let timed = "    1\n\
+            Time: N ms (in Straum: parse 0.031, answer 2.480, text 0.401, total 2.950)\n";
+        let ask = "SELECT \"x\" ; 7 paid true";
+        let printed = at_a_terminal(POST_ASK, TIMED, ask);
+        assert_eq!(printed, (timed.to_owned(), String::new()));
+        let printed = at_a_terminal(GET_ROWS, TIMED, "\\rows trips");
+        assert_eq!(printed, (timed.to_owned(), String::new()));
+        // A Straum that names no phase is timed by the shell alone.
+        let printed = at_a_terminal(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\n    1\n", "\\rows trips");
+        assert_eq!(printed, ("    1\nTime: N ms\n".to_owned(), String::new()));
+    }
+
+    #[test]
+    fn only_an_answer_at_a_terminal_is_timed() {
+        // Not on a pipe, where a script reads the answer.
+        let written = shelled(POST_ASK, TIMED, "SELECT \"x\" ; 7 paid true\n");
+        assert_eq!(written, ("    1\n".to_owned(), String::new(), 0));
+        let written = shelled(GET_ROWS, TIMED, "\\rows trips\n");
+        assert_eq!(written, ("    1\n".to_owned(), String::new(), 0));
+        // Not the views, nor a line that fails or leaves.
+        let printed = at_a_terminal(GET_VIEWS, TIMED, "\\d");
+        assert_eq!(printed, ("    1\n".to_owned(), String::new()));
+        let refused = "HTTP/1.1 400 Bad Request\r\nserver-timing: total;dur=1\r\n\r\nno\n";
+        let printed = at_a_terminal(POST_ASK, refused, "SELECT \"x\" ; 7 paid true");
+        let error = "URL answered \"HTTP/1.1 400 Bad Request\"\nno";
+        assert_eq!(printed, (String::new(), error.to_owned()));
+        let printed = at_a_terminal(GET_VIEWS, TIMED, "\\q");
+        assert_eq!(printed, (String::new(), String::new()));
     }
 
     /// Takes nothing: its reader has left.

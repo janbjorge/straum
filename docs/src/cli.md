@@ -207,6 +207,7 @@ payment_type | trips
            3 |   19597
            4 |   46628
 5 rows, as of 2026-11-13T07:59:07.988040041Z
+Time: 1.728 ms (in Straum: parse 0.370, answer 0.208, text 0.133, total 0.763)
 ```
 
 `\rows` pages through a view as a Python slice does: rows count from 0,
@@ -217,6 +218,15 @@ has and, past the first, from which row they print.
 
 `\rows` reads every cell of the view, whichever rows it prints, so on a
 large view it takes as long as an ask over all its buckets.
+
+At a terminal an ask and `\rows` end in a line that says how long they
+took, in milliseconds. `Time` is the whole request as the shell
+measured it, from connecting to the last byte of the reply. In the
+parentheses is the reply's [`Server-Timing`](asks.md#the-answer)
+header, the time in Straum: reading the ask, answering it, writing the
+table, and `total` for all of it. `\rows` sends no ask to read, so its
+`parse` is 0. What `Time` holds beyond `total` is the network and the
+shell. A line that fails is not timed.
 
 At a terminal, Tab completes by where the cursor is: keys and measures
 after `SELECT`, views after `FROM`, `\d` or `\rows`, a whole condition with the next
@@ -235,7 +245,8 @@ what the next parameter is. Ctrl-R searches the lines entered.
 `NO_COLOR` turns off the dimming.
 
 With its input or its output anywhere but a terminal, the shell prints
-no prompt and completes nothing, so a script can drive it:
+no prompt, completes nothing and times nothing, so a script can drive
+it and reads the same output each run:
 
 ```sh
 printf '%s\n' '\d' '\rows trips' | straum shell

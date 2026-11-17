@@ -232,11 +232,14 @@ most 1000 rows. `GET /views/NAME/spec` replies with the view's
 `CREATE VIEW` statement, which `straum run` cut from the spec's text
 at start (`straum_notation::definitions`); the store never sees it.
 `straum shell` is a client of these endpoints: it
-reads the views as JSON to complete names and knows no Straum SQL.
+reads the views as JSON to complete names, prints an answer's
+`Server-Timing` under it beside the time it measured itself, and knows
+no Straum SQL.
 
 In the binary, `main.rs` reads the command line and wires the crates
 together. The commands that talk to a running Straum go through
-`client.rs`, one request on a plain socket. `complete.rs` is what Tab
+`client.rs`, one request on a plain socket, which also times an ask
+and a view's rows. `complete.rs` is what Tab
 offers, plain functions over a line and the views, and `shell.rs` is
 the prompt around both, the only code that touches the terminal.
 

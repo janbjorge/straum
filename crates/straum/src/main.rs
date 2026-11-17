@@ -182,7 +182,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             query,
             parameters,
             output,
-        } => print(&client::ask(&url, &query, &parameters, output)?),
+        } => print(&client::ask(&url, &query, &parameters, output)?.text),
         Command::Shell { url } => {
             let (input, output) = (io::stdin(), io::stdout());
             // A prompt is for a person at both ends: not for a script
