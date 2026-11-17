@@ -25,8 +25,9 @@ whole under its write lock, so every ask waits for it, and the rows wait in
 memory. This changes N rows in one transaction for several N while asking
 Straum back to back, and reports the time from the commit until Straum had
 applied it, the longest ask meanwhile, which is the lock hold as a client
-feels it, and how much Straum's resident set grew. --max-transaction-rows
-takes its default from this table.
+feels it, and how much Straum's resident set grew. After each N it checks
+the fares by payment type against PostgreSQL and fails if Straum started
+over. --max-transaction-rows takes its default from this table.
 
 shell: leaves you in `straum shell` at the trips.
 
@@ -173,6 +174,13 @@ ASKS = [
 ]
 
 SIZES = [1_000, 10_000, 100_000, 1_000_000]
+# The ask the transactions mode checks after each size: the update moves
+# every fare it touches.
+FARES_SQL, FARES_ASK = next(
+    (sql, orjson.dumps({"query": query, "parameters": parameters}))
+    for name, sql, query, parameters in ASKS
+    if name == "Fares by payment type"
+)
 # One day of hour buckets: the ask a dashboard refreshes.
 DASHBOARD_ASK = orjson.dumps(
     {
@@ -323,10 +331,15 @@ async def transactions(
         rss = process.memory_info().rss
         log(f"straum ready in {loaded:.1f} s; asking while idle")
         idle = statistics.median(await ask_until(http, lambda: True, 1.0))
+        starts = await status_field(http, "starts")
         rows = []
         for n in SIZES:
             log(f"updating {n:,} rows in one transaction")
             applied, stall, peak = await transaction(pg, http, process, n)
+            # A start over in the middle would time a reload as applied.
+            if await status_field(http, "starts") != starts:
+                raise SystemExit(f"taxi: straum started over during {n:,} rows")
+            await check(pg, http, f"fares after {n:,} rows", FARES_SQL, FARES_ASK)
             grew = max(0, peak - rss)
             rows.append(
                 (
@@ -487,6 +500,19 @@ async def compare(
 ) -> tuple[str, int, float, float]:
     """Checks that both sides answer alike, then times each."""
     body = orjson.dumps({"query": query, "parameters": parameters})
+    rows = await check(pg, http, name, sql, body)
+    pg_time = await median(lambda: pg.fetch(sql))
+    return name, rows, pg_time, await median(lambda: ask(http, body))
+
+
+async def check(
+    pg: asyncpg.Connection,
+    http: aiohttp.ClientSession,
+    name: str,
+    sql: str,
+    body: bytes,
+) -> int:
+    """Fails unless both sides answer alike; the rows they answered."""
     expected = [list(row.values()) for row in await pg.fetch(sql)]
     got = [list(row.values()) for row in await ask(http, body, exact)]
     places = scales(got)
@@ -494,8 +520,7 @@ async def compare(
         plain(row, places) for row in expected
     ):
         raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
-    pg_time = await median(lambda: pg.fetch(sql))
-    return name, len(got), pg_time, await median(lambda: ask(http, body))
+    return len(got)
 
 
 def scales(rows: list[list]) -> list[decimal.Decimal | None]:
@@ -580,13 +605,18 @@ async def transaction(
 
 
 async def applied(http: aiohttp.ClientSession) -> int:
+    position = (await status_field(http, "applied")).split(",")[0]
+    return lsn(position) if "/" in position else 0
+
+
+async def status_field(http: aiohttp.ClientSession, name: str) -> str:
+    """The value /status gives `name`, or "" if it gives none."""
     async with http.get("/status") as response:
         text = await response.text()
     for line in text.splitlines():
-        if line.startswith("applied:"):
-            position = line.split(":", 1)[1].strip().split(",")[0]
-            return lsn(position) if "/" in position else 0
-    return 0
+        if line.startswith(f"{name}:"):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def lsn(text: str) -> int:

@@ -195,7 +195,9 @@ trips, which both views follow, in one transaction while a client asks
 for one day of hour buckets as fast as the answers come. It measures
 three things: the time from the commit until Straum has applied it, the
 longest ask meanwhile, which is the lock hold as a client feels it, and
-how much Straum's resident set grew.
+how much Straum's resident set grew. After each, it checks the fares by
+payment type against PostgreSQL, and fails if Straum started over, which
+would time a reload as the apply.
 One run on 2026-11-14, the machine, build and PostgreSQL of the
 [Results](#results); Straum held 114 MiB after the load and an idle ask
 took 177 µs:
