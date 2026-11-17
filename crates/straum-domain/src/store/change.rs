@@ -136,6 +136,9 @@ impl Store {
             }
             let key_columns = self.projections[dim.0].key_column_count();
             if old.get(..key_columns) == new.get(..key_columns) {
+                // Add checks the width. A failure after the remove would
+                // drop `old` and return before the bound cells move.
+                self.projections[dim.0].check(new)?;
                 let changes = [
                     DimRowChange {
                         row: old,

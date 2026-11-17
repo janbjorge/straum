@@ -178,6 +178,53 @@ fn a_dim_update_moves_the_bound_cells_when_it_reads_otherwise() {
     assert_eq!(store.bound_cells("trips"), Some(2));
 }
 
+/// A dim update whose new row is the wrong width changes nothing. The
+/// answers stay, and a later update that keeps the key still moves them.
+#[test]
+fn a_short_dim_update_leaves_every_answer_as_it_was() {
+    let mut store = typed(&spec());
+    let labelled = [Datum::Int(1), text("v1")];
+    store.add_row("vendors", &labelled).unwrap();
+    let mut row = trip(&mut Rng(7));
+    row[AT] = Datum::Int(START);
+    row[VENDOR] = Datum::Int(1);
+    store.add_row("trips", &row).unwrap();
+    let by_label = Ask {
+        view: id("trips"),
+        measures: vec![id("trips")],
+        keys: vec![AskKey::Key(id("vend_label"))],
+        filter: Vec::new(),
+        having: Vec::new(),
+        from: Some(START),
+        to: Some(END),
+    };
+    let before = store.ask(&by_label).unwrap();
+    // Same key, one column short, then one column long. Each must fail
+    // before the old row leaves.
+    let short = [Datum::Int(1)];
+    let long = [Datum::Int(1), text("nope"), Datum::Int(0)];
+    let rejected = [(&short[..], 1), (&long[..], 3)];
+    for (new_row, found) in rejected {
+        assert_eq!(
+            store.update_row("vendors", &labelled, new_row),
+            Err(RowError::Arity { expected: 2, found })
+        );
+        assert_eq!(store.ask(&by_label).unwrap(), before);
+        assert_eq!(store.dim_rows("vendors"), Some(1));
+    }
+
+    let relabelled = [Datum::Int(1), text("v2")];
+    store.update_row("vendors", &labelled, &relabelled).unwrap();
+    assert_eq!(first_keys(&store, &by_label), [text("v2")]);
+    let mut later = row.clone();
+    later[AT] = Datum::Int(START + i64::from(WIDTH));
+    store.add_row("trips", &later).unwrap();
+    let after = store.ask(&by_label).unwrap();
+    assert_eq!(after.rows.len(), 1);
+    assert_eq!(after.rows[0].keys, [text("v2")]);
+    assert_eq!(after.rows[0].values, [Value::Int(2)]);
+}
+
 /// Combos of pickup zone 1 with vendors 1 and 2, labelled x and y, laid
 /// end to end.
 fn two_combos() -> Vec<Datum> {
