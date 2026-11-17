@@ -53,7 +53,7 @@ import asyncpg
 import orjson
 import psutil
 import tabulate
-from stack import POSTGRES, POSTGRES_PORT, Stack, postgres_service
+from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "trips.sql"
@@ -384,7 +384,7 @@ def postgres(password: str) -> dict:
         "maintenance_work_mem": "1GB",
         "max_parallel_maintenance_workers": "4",
     }
-    return postgres_service("postgres:18", password, settings, shm_size="1g")
+    return postgres_service(POSTGRES_IMAGE, password, settings, shm_size="1g")
 
 
 def build() -> str:

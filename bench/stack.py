@@ -21,6 +21,9 @@ from typing import Any, Self
 
 POSTGRES = "postgres"
 POSTGRES_PORT = 5432
+# The PostgreSQL image the benches run: the major the tests run, as the
+# justfile's postgres setting says.
+POSTGRES_IMAGE = f"postgres:{os.environ.get('STRAUM_TEST_POSTGRES', '18')}"
 
 
 def postgres_service(

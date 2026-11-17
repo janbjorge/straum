@@ -70,7 +70,8 @@ running the asks. Leaving the shell removes PostgreSQL.
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
 six months into `bench/data/`, which git ignores. Then it builds Straum,
-starts a throwaway `postgres:18`, loads the months with
+starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
+names (`just postgres=17 taxi`), loads the months with
 `bench/load_taxi_trips.py`, runs the SQL `straum plan` prints and
 starts `straum run`. Each ask goes to PostgreSQL as SQL
 over the raw tables and to Straum as an [ask](asks.md) over HTTP, and a

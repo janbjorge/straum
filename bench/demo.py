@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import asyncpg
 import orjson
-from stack import POSTGRES, POSTGRES_PORT, Stack, postgres_service
+from stack import POSTGRES, POSTGRES_IMAGE, POSTGRES_PORT, Stack, postgres_service
 
 type Rows = Sequence[Mapping[str, Any]]
 type Counts = dict[str | None, int]
@@ -131,7 +131,7 @@ async def run(stack: Stack, password: str) -> int:
 def postgres(password: str) -> dict:
     # wal_level on the command line, so the plan's ALTER SYSTEM needs no
     # restart. The rest of the server stays at its defaults.
-    return postgres_service("postgres:18", password, {"wal_level": "logical"})
+    return postgres_service(POSTGRES_IMAGE, password, {"wal_level": "logical"})
 
 
 def straum(password: str) -> dict:

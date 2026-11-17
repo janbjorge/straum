@@ -29,6 +29,7 @@ Needs Docker and uv.
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import secrets
@@ -53,7 +54,8 @@ SCHEMA_IN_IMAGE = "/schema.sql"
 READY_POLL_S = 0.2
 STRAUM_PORT = 8080
 POSTGRES_PORT = 5432
-POSTGRES_MAJOR = "18"
+# The tests' major, as the justfile's postgres setting says.
+POSTGRES_MAJOR = os.environ.get("STRAUM_TEST_POSTGRES", "18")
 RESTORE_JOBS = 4
 # A throwaway copy: a crash means running the script again, so the load
 # skips the fsyncs, page images, timed checkpoints and autovacuum that
