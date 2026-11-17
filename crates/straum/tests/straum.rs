@@ -683,7 +683,12 @@ fn answers_not_ready_until_a_silent_server_ends_it() {
     not_ready_exits_with_3(&format!("http://{}", straum.address));
     let (code, log) = straum.exited();
     assert_eq!(code, Some(1), "{log}");
-    assert!(log.contains("sent nothing for 10 s"), "{log}");
+    // The DSN's host and port lie between `@` and the database.
+    let (_, place) = dsn.split_once('@').unwrap();
+    let (place, _) = place.split_once('/').unwrap();
+    assert!(place.starts_with("127.0.0.1:"), "{place}");
+    let named = format!("PostgreSQL at {place} sent nothing for 10 s");
+    assert!(log.contains(&named), "{log}");
 }
 
 #[test]

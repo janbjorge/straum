@@ -175,19 +175,37 @@ fn sign_in_errors() {
 }
 
 /// A server that takes the socket and then says nothing fails the start
-/// at the handshake timeout, not never.
+/// at the handshake timeout, not never, naming the server's host and port.
 #[test]
 fn a_silent_server_fails_the_start() {
     let silence = HANDSHAKE_TIMEOUT * 6;
+    let server = scripted(vec![later(silence, signed_in())]);
     let clock = Instant::now();
-    let error = connect(vec![later(silence, signed_in())], ConnectionKind::Sql)
+    let error = Connection::connect(&server.dsn, ConnectionKind::Sql)
         .err()
         .unwrap();
     assert!(clock.elapsed() < silence, "the start waited out the server");
     assert_eq!(
         error.to_string(),
-        "connection to PostgreSQL: PostgreSQL sent nothing for 10 s while the connection started"
+        format!(
+            "connection to PostgreSQL: PostgreSQL at 127.0.0.1:{} sent nothing for 10 s \
+             while the connection started",
+            server.dsn.port
+        )
     );
+}
+
+/// A server that answers the start with an error fails it in its own
+/// words, with no host and port and no word of silence.
+#[test]
+fn a_server_that_answers_fails_the_start_without_the_place() {
+    let server = scripted(vec![now(error_response("28000", "no pg_hba.conf entry"))]);
+    let error = Connection::connect(&server.dsn, ConnectionKind::Sql)
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(error, "PostgreSQL: no pg_hba.conf entry (28000)");
+    assert!(!error.contains("127.0.0.1"), "{error}");
 }
 
 /// Once started, a connection waits on a quiet server past the handshake

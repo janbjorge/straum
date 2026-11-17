@@ -99,7 +99,8 @@ impl Connection {
                 return Err(Error::Io(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
-                        "PostgreSQL sent nothing for {} s while the connection started",
+                        "PostgreSQL at {} sent nothing for {} s while the connection started",
+                        place(dsn),
                         HANDSHAKE_TIMEOUT.as_secs()
                     ),
                 )));
@@ -447,12 +448,16 @@ fn connect_tcp(dsn: &Dsn) -> io::Result<TcpStream> {
 /// `error` led by the DSN's host and port, which the system's own words
 /// leave out.
 fn naming_the_place(dsn: &Dsn, error: &io::Error) -> io::Error {
-    let place = if dsn.host.contains(':') {
+    io::Error::new(error.kind(), format!("{}: {error}", place(dsn)))
+}
+
+/// The DSN's host and port as `host:port`, an IPv6 host in brackets.
+fn place(dsn: &Dsn) -> String {
+    if dsn.host.contains(':') {
         format!("[{}]:{}", dsn.host, dsn.port)
     } else {
         format!("{}:{}", dsn.host, dsn.port)
-    };
-    io::Error::new(error.kind(), format!("{place}: {error}"))
+    }
 }
 
 /// A row's values as text; `None` for a null.

@@ -54,7 +54,8 @@ It logs to stderr, each line starting `straum: `. A start logs the
 stream it opened, each table as it finishes loading, with how long it
 took, and then that it streams. A failure logs what went wrong, a line
 per problem, and exits with 1. A failed connection names the host and
-port it tried. SIGTERM or
+port it tried, as does a server that sends nothing for 10 s while the
+connection starts. SIGTERM or
 SIGINT stops it: it
 stops accepting, finishes the asks in flight, for at most 10 seconds,
 and exits, and PostgreSQL drops the slot as the connection closes. A
