@@ -136,6 +136,13 @@ impl Connection {
             // A policy that would hide a row makes a read fail, never come
             // back short.
             ("row_security", "off"),
+            // A load runs as long as its table takes, and its snapshot
+            // stays open between tables; a timeout set on the database or
+            // the role would cancel it on every start, as pg_dump knows.
+            ("statement_timeout", "0"),
+            ("lock_timeout", "0"),
+            ("idle_in_transaction_session_timeout", "0"),
+            ("transaction_timeout", "0"),
         ];
         if kind == ConnectionKind::Replication {
             parameters.push(("replication", "database"));

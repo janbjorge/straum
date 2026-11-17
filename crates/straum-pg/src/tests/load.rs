@@ -2,7 +2,7 @@
 //! reader handles every way a fake server's copy can go wrong. A load
 //! after the stream started is refused.
 
-use straum_app::Source;
+use straum_app::{Source, Step};
 use straum_domain::{ColumnType, Datum, Store};
 
 use super::references::*;
@@ -112,6 +112,31 @@ fn no_load_once_the_stream_runs() {
         error.unwrap_err().to_string(),
         "the replication stream stopped"
     );
+}
+
+/// Timeouts the database sets for every session cancel none of Straum's
+/// statements, which a load and its snapshot outlast: each connection
+/// switches them off.
+#[test]
+fn loads_whatever_timeouts_the_database_sets() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "timeouts", TABLES);
+    for setting in [
+        "statement_timeout",
+        "lock_timeout",
+        "idle_in_transaction_session_timeout",
+        "transaction_timeout",
+    ] {
+        db.run(&format!("ALTER DATABASE postgres SET {setting} = '1ms'"));
+    }
+    let mut writer = db.writer(SPEC);
+    assert!(matches!(writer.step(), Ok(Step::Started(_))));
+    db.run(&Rng::new(1).trip(1));
+    applied(&mut writer);
+    // A session of its own takes the database's setting, and is cut.
+    let mut cut = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
+    let error = cut.rows("SET statement_timeout = '1ms'; SELECT pg_sleep(0.1)");
+    assert!(error.unwrap_err().to_string().contains("statement timeout"));
 }
 
 /// `CopyOutResponse` for `columns` binary columns.
