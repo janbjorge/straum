@@ -107,10 +107,11 @@ With `--wal physical`, step 2 differs (ADR-0008);
 3. Try `pg_log_standby_snapshot()`, then wait for the **Consistent
    point**: past the first `RUNNING_XACTS` and every transaction it
    names.
-4. Begin the repeatable-read transaction, read `pg_current_snapshot()`,
-   check the catalog again and hand the snapshot to the stream thread
-   (`Stream::see`). A snapshot that misses a commit the stream dropped
-   gets `Sight::Blind`, and Straum takes another.
+4. Begin the repeatable-read transaction, read `pg_current_snapshot()`
+   and hand the snapshot to the stream thread (`Stream::see`). A
+   snapshot that misses a commit the stream dropped gets
+   `Sight::Blind`, and Straum takes another. Once one is taken, check
+   the catalog again in it, as the load will read the tables.
 
 The pure parts, `wal/` and the pipeline, read no socket: a layout read
 again after DDL comes in through a closure, given the DDL's xid.
