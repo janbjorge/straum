@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use straum_app::{AnswerError, App, Step, Writer};
+use straum_app::{AnswerError, App, Source, Step, Writer};
 use straum_domain::{AnswerRow, Ask, AskError, ColumnType, Datum, Literal, Value};
 
 use super::references::*;
@@ -758,4 +758,33 @@ fn the_stream_outlasts_a_busy_writer() {
         applied(&mut writer);
     }
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}
+
+/// A logical slot is made once every writing transaction open when it
+/// began has ended. A start waits for that at most its wait, then names
+/// the transactions, and starts once they end.
+#[test]
+fn a_start_says_which_transactions_hold_it_back() {
+    let pg = postgres();
+    let db = Db::new(&pg, "heldback", TABLES);
+    let spec = db.spec(SPEC);
+    let mut holder = db.another_connection();
+    holder.run("CREATE TABLE $S.other (id int)");
+    holder.run("BEGIN; INSERT INTO $S.other VALUES (1)");
+    let xid = holder.rows("SELECT pg_current_xact_id()::text")[0][0]
+        .clone()
+        .unwrap();
+    let mut source = db.pg();
+    source.consistent_wait = Duration::from_secs(2);
+    let error = source.open(&spec).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        format!(
+            "the start waited 2 s for transactions open on the server to end before its slot \
+             could be made: xid {xid}; a long or prepared one (pg_prepared_xacts) holds the \
+             start back"
+        )
+    );
+    holder.run("COMMIT");
+    assert!(source.open(&spec).is_ok());
 }

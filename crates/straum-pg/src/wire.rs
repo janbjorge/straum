@@ -319,9 +319,15 @@ impl Connection {
         self.read().map(Some)
     }
 
-    /// How long a read waits before `try_read` gives up.
+    /// How long a read waits before `try_read` gives up, or a query
+    /// fails with a timed-out read.
     pub(crate) fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
         self.socket.tcp().set_read_timeout(Some(timeout))
+    }
+
+    /// Reads wait for as long as the server takes again.
+    pub(crate) fn clear_read_timeout(&self) -> io::Result<()> {
+        self.socket.tcp().set_read_timeout(None)
     }
 
     /// A handle that can close the socket from another thread.
@@ -415,7 +421,7 @@ fn frame_length(header: Header) -> usize {
 
 /// Whether a read or write gave up at its timeout; platforms say so in
 /// either of two ways.
-fn timed_out(error: &io::Error) -> bool {
+pub(crate) fn timed_out(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut

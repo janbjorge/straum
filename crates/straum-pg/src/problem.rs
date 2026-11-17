@@ -195,6 +195,9 @@ pub(crate) enum WaitProblem {
     NotLogged,
     /// These transactions, open before the start, to end.
     OpenTransactions(Vec<Xid>),
+    /// These transactions, open on the server, to end before a logical
+    /// slot could be made.
+    SlotCreation(Vec<Xid>),
     /// These transactions, whose commits the stream read, to show in a
     /// snapshot: the load's, or that of the layouts read after DDL.
     InvisibleCommits(Vec<Xid>),
@@ -403,6 +406,13 @@ fn write_wait(
             formatter,
             "--wal physical waited {waited_seconds} s for transactions open before it started \
              to end: xid {}; a long or prepared one (pg_prepared_xacts) holds the start back",
+            xid_list(xids)
+        ),
+        WaitProblem::SlotCreation(xids) => write!(
+            formatter,
+            "the start waited {waited_seconds} s for transactions open on the server to end \
+             before its slot could be made: xid {}; a long or prepared one \
+             (pg_prepared_xacts) holds the start back",
             xid_list(xids)
         ),
         WaitProblem::InvisibleCommits(xids) => write!(

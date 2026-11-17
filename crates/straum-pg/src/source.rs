@@ -29,7 +29,7 @@ use crate::wal::pipeline::{Pipeline, Sight};
 use crate::wal::record_end;
 use crate::wal::transactions::{Consistency, TransactionSnapshot};
 use crate::watchdog::{SlotGuard, UNWATCHED, Watching};
-use crate::wire::{Connection, ConnectionKind, first_row_value};
+use crate::wire::{Connection, ConnectionKind, first_row_value, timed_out};
 
 /// Which WAL Straum streams: logical decoding's, through a publication,
 /// or the physical WAL, which `wal_level = replica` writes (ADR-0008).
@@ -131,14 +131,26 @@ fn snapshot(
     dsn: &Dsn,
     spec: &Spec,
     publication: &str,
+    wait: Duration,
     guard: &mut SlotGuard,
 ) -> Result<Snapshot, Error> {
     let mut connection = Connection::connect(dsn, ConnectionKind::Replication)?;
     connection.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")?;
     let slot = slot_name();
-    let created = match connection.rows(&format!(
+    // PostgreSQL makes the slot once every transaction that writes and
+    // was open when it began has ended: at most `wait`, then the start
+    // names them, as a physical start does.
+    connection.set_read_timeout(wait)?;
+    let created = connection.rows(&format!(
         "CREATE_REPLICATION_SLOT {slot} TEMPORARY LOGICAL pgoutput (SNAPSHOT 'use')"
-    )) {
+    ));
+    if let Err(Error::Io(error)) = &created
+        && timed_out(error)
+    {
+        return Err(waited_for(wait.as_secs(), slot_wait(dsn)?));
+    }
+    connection.clear_read_timeout()?;
+    let created = match created {
         Ok(created) => created,
         // Without the wal_level logical decoding needs, PostgreSQL's error
         // names no fix; the setup check says what to change.
@@ -240,6 +252,27 @@ fn physical_snapshot(
     })
 }
 
+/// What a logical slot waited for in vain: the transactions open with an
+/// xid, prepared ones included.
+fn slot_wait(dsn: &Dsn) -> Result<WaitProblem, Error> {
+    let mut connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    let rows = connection.rows(
+        "SELECT backend_xid::text FROM pg_stat_activity WHERE backend_xid IS NOT NULL
+         UNION SELECT transaction::text FROM pg_prepared_xacts",
+    )?;
+    let mut xids = Vec::new();
+    for row in rows {
+        let Some(Some(text)) = row.into_iter().next() else {
+            continue;
+        };
+        if let Ok(xid) = text.parse() {
+            xids.push(xid);
+        }
+    }
+    xids.sort_unstable();
+    Ok(WaitProblem::SlotCreation(xids))
+}
+
 /// Waits at most `wait` for the physical stream to be consistent; past
 /// it, says what holds it back.
 fn wait_consistent(stream: &mut Stream, wait: Duration) -> Result<(), Error> {
@@ -301,7 +334,13 @@ impl Source for Postgres {
         self.state = State::Closed;
         self.plain = None;
         let opened = match self.replication {
-            Replication::Logical => snapshot(&self.dsn, spec, &self.publication, &mut self.guard),
+            Replication::Logical => snapshot(
+                &self.dsn,
+                spec,
+                &self.publication,
+                self.consistent_wait,
+                &mut self.guard,
+            ),
             Replication::Physical { max_page_memory } => physical_snapshot(
                 &self.dsn,
                 spec,

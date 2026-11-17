@@ -129,6 +129,14 @@ dim accounts: Straum needs the whole old row of every update and delete: ALTER T
 view usage: join a joins account_id (an integer) to id (text); they must read alike
 ```
 
+PostgreSQL makes a logical slot once every transaction that writes and
+was open when the slot began has ended, on any table of the database. A
+start waits a minute for that, then names them and tries again:
+
+```text
+the start waited 60 s for transactions open on the server to end before its slot could be made: xid 7512; a long or prepared one (pg_prepared_xacts) holds the start back
+```
+
 ## What Straum costs the server
 
 - One replication connection and one slot per running Straum, out of
