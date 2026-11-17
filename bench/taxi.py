@@ -48,6 +48,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import AsyncIterator
 
 import aiohttp
 import asyncpg
@@ -227,8 +228,7 @@ async def run(
 ) -> int:
     port = stack.port(POSTGRES, POSTGRES_PORT)
     url = f"postgres://postgres:{password}@127.0.0.1:{port}/postgres"
-    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
-    try:
+    async with connected(url) as pg:
         # Set here, not on the command line, which ALTER SYSTEM can't
         # override when --wal physical turns it back on.
         await pg.execute("ALTER SYSTEM SET full_page_writes = off")
@@ -260,6 +260,15 @@ async def run(
                 return await transactions(pg, straum, dsn, flags)
             case _:
                 return await asks(pg, straum, dsn, flags)
+
+
+@contextlib.asynccontextmanager
+async def connected(url: str) -> AsyncIterator[asyncpg.Connection]:
+    """A connection to PostgreSQL at `url`, in New York's zone, closed on
+    the way out."""
+    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
+    try:
+        yield pg
     finally:
         await pg.close()
 

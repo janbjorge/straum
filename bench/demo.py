@@ -19,13 +19,14 @@ go to bench/data, which git ignores.
 
 import argparse
 import asyncio
+import contextlib
 import pathlib
 import secrets
 import statistics
 import subprocess
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -99,14 +100,22 @@ def main() -> int:
         return asyncio.run(run(stack, password))
 
 
+@contextlib.asynccontextmanager
+async def connected(url: str) -> AsyncIterator[asyncpg.Connection]:
+    """A connection to PostgreSQL at `url`, in New York's zone, closed on
+    the way out."""
+    pg = await asyncpg.connect(url, server_settings=NEW_YORK)
+    try:
+        yield pg
+    finally:
+        await pg.close()
+
+
 async def run(stack: Stack, password: str) -> int:
     started = time.perf_counter()
     port = stack.port(POSTGRES, POSTGRES_PORT)
-    pg = await asyncpg.connect(
-        f"postgres://postgres:{password}@127.0.0.1:{port}/postgres",
-        server_settings=NEW_YORK,
-    )
-    try:
+    server = f"postgres://postgres:{password}@127.0.0.1:{port}/postgres"
+    async with connected(server) as pg:
         log("loading January")
         load(stack)
         await pg.execute("ANALYZE")
@@ -123,8 +132,6 @@ async def run(stack: Stack, password: str) -> int:
             await move_airports(pg, http)
         stack.stop(STRAUM)
         await slot_gone(pg)
-    finally:
-        await pg.close()
     return 0
 
 
