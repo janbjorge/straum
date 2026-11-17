@@ -7,7 +7,9 @@ checks that the answers are equal, decimals to the last digit, an
 at the end is what two real tables measured.
 
 The data is the TLC yellow trips of January to June 2024, 20,332,093
-trips, and the 265 rows of `taxi_zone_lookup.csv`.
+trips, and the 265 rows of `taxi_zone_lookup.csv`. The loader pins
+each file's SHA-256 and stops if the TLC republished one, since these
+counts hold only for those bytes.
 
 ## Results
 
