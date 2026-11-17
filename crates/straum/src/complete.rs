@@ -630,14 +630,16 @@ pub(crate) fn hint(views: &[View], line: &str, cursor: usize) -> Option<String> 
         Some(value) if slot.key.name == BUCKET => format!(", Tab gives {}", value.trim_end()),
         _ => String::new(),
     };
-    let column_type = if column_type.is_empty() {
-        String::new()
+    // In parentheses and worded as a sentence, so it can't be taken for
+    // text to type: `$1: status = text` was typed as `$1 = ...`.
+    let value = if column_type.is_empty() {
+        "value"
     } else {
-        format!(" {column_type}")
+        column_type.as_str()
     };
     Some(format!(
-        "{gap}{}: {name} {}{column_type}{tab}",
-        slot.number, slot.operator
+        "{gap}(the {value} for {name} {} {}{tab})",
+        slot.operator, slot.number
     ))
 }
 
@@ -922,7 +924,7 @@ mod tests {
         );
         assert_eq!(
             hinted(&format!("{having}revenue >= $3; a b ")).as_deref(),
-            Some("$3: revenue >=")
+            Some("(the value for revenue >= $3)")
         );
     }
 
@@ -950,7 +952,7 @@ mod tests {
         );
         assert_eq!(
             hinted(&format!("{query}; 'a b' 'c d' ")).as_deref(),
-            Some("$3: shipped = boolean")
+            Some("(the boolean for shipped = $3)")
         );
     }
 
@@ -997,22 +999,25 @@ mod tests {
                      AND bucket >= $1 AND bucket < $2";
         assert_eq!(
             hinted(&format!("{query};")).as_deref(),
-            Some(" $1: bucket >= timestamptz, Tab gives 2026-01-01T09:00:00Z")
+            Some(" (the timestamptz for bucket >= $1, Tab gives 2026-01-01T09:00:00Z)")
         );
         assert_eq!(
             hinted(&format!("{query}; x ")).as_deref(),
-            Some("$2: bucket < timestamptz, Tab gives 2026-01-01T11:00:00Z")
+            Some("(the timestamptz for bucket < $2, Tab gives 2026-01-01T11:00:00Z)")
         );
         assert_eq!(
             hinted(&format!("{query}; x y ")).as_deref(),
-            Some("$3: status IN text")
+            Some("(the text for status IN $3)")
         );
         assert_eq!(
             hinted(&format!("{query}; x y z ")).as_deref(),
-            Some("$4: status IN text")
+            Some("(the text for status IN $4)")
         );
         let logins = "SELECT logins FROM logins WHERE bucket >= $1 AND bucket < $2; ";
-        assert_eq!(hinted(logins).as_deref(), Some("$1: bucket >= timestamp"));
+        assert_eq!(
+            hinted(logins).as_deref(),
+            Some("(the timestamp for bucket >= $1)")
+        );
         // None while a parameter is being typed, past the last one, in
         // the query, or with the cursor back in the line.
         assert_eq!(hinted(&format!("{query}; x")), None);

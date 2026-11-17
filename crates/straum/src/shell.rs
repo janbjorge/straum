@@ -333,7 +333,7 @@ mod tests {
         assert_eq!((start, candidates), (6, vec!["logins ".to_owned()]));
         let line = "SELECT logins FROM logins WHERE bucket >= $1; ";
         let note = Hinter::hint(&names, line, line.len(), &context).unwrap();
-        assert_eq!(note.display(), "$1: bucket >= timestamp");
+        assert_eq!(note.display(), "(the timestamp for bucket >= $1)");
         assert_eq!(note.completion(), None);
         assert_eq!(names.highlight_hint("$1"), "\x1b[2m$1\x1b[0m");
         assert!(Hinter::hint(&names, line, 0, &context).is_none());
