@@ -42,7 +42,8 @@ condition  alias.column = literal
            [NOT] EXISTS (SELECT 1 FROM schema.table AS alias
                          WHERE alias.column = alias.column [AND ...])
 
-width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days
+width      15 minutes, 1 hour, 1 day: seconds, minutes, hours or days,
+           in the largest unit that divides it, singular for one
 literal    42, -7, 'text', true, false
 fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point
 ```
@@ -52,8 +53,10 @@ repeats what is before it. Keys and measures come in any order.
 `EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. A
 parenthesis is written where the synopsis has one and nowhere else:
 around a null-ness key, never around a condition or a column. A spec is
-one or more views, with `;` between them. Identifiers are unquoted:
-lowercase letters, digits and `_`, at most 63 bytes. A key or measure
+one or more views, with `;` between them, and never empty. Identifiers
+are unquoted and written in lowercase: letters, digits and `_`, at most
+63 bytes. `CREATE OR REPLACE VIEW` is refused, as is `GROUP BY 01` or
+the width `'60 minutes'`, written `'1 hour'`. A key or measure
 name is one an ask can say, so not a word SQL reserves, such as `user`,
 `all` or `from`:
 

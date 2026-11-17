@@ -56,7 +56,10 @@ SELECT events, amount FROM usage
   every bucket held; `WHERE true` is refused. The bounds and the
   conditions come in any order. No condition is put in parentheses.
 - A parameter may be used more than once, but the text the uses come
-  to is at most 1 MiB, what one ask's body holds.
+  to is at most 1 MiB, what one ask's body holds. It is `$1`, never
+  `$01`.
+- Names are written in lowercase. An ask holds no comment and no `;`
+  after it.
 - An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`,
   `IN`, `+`, `::` and the like), as does each statement of a spec:
   each is a level of the tree Straum reads it into.
@@ -102,7 +105,8 @@ can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
 [HAVING](#having) comparison takes a number of any scale.
 
 The `bucket` bounds are RFC 3339 times, such as `"2026-11-13T00:00:00-05:00"`,
-or Unix seconds. Each bound written must fall on an edge of the view's
+or Unix seconds. A time is written `YYYY-MM-DDTHH:MM:SS`, then `Z` or an
+offset `+HH:MM`, with no leap second: `2026-11-13T09Z` is refused. Each bound written must fall on an edge of the view's
 `date_bin` buckets: Straum never answers for part of a bucket.
 
 ## The answer

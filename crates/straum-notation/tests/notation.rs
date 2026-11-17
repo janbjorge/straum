@@ -199,10 +199,19 @@ fn naive_origin_parses() {
     assert_eq!(Origin::Timestamptz.to_string(), "timestamptz 'epoch'");
 }
 
+/// A spec may hold comments; one with no view is refused, as no spec
+/// Straum could run.
 #[test]
 fn comments_and_empty_file() {
-    let spec = parse("-- nothing declared yet\n\n").unwrap();
-    assert!(spec.fact("trips").is_none());
+    let spec = parse(&format!("-- the trips\n{BASE}\n/* end */")).unwrap();
+    assert!(spec.fact("t").is_some());
+    let error = parse("-- nothing declared yet\n\n")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "a spec is one or more CREATE VIEW statements; this has none"
+    );
 }
 
 #[test]
@@ -253,7 +262,7 @@ fn a_column_measure_takes_a_filter() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let text = "CREATE OR REPLACE VIEW T WITH (buckets = '30 seconds') AS
+    let text = "CREATE VIEW t WITH (buckets = '30 seconds') AS
 SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
        f.a AS a, z.id AS z_id, z.name AS name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
@@ -288,7 +297,7 @@ GROUP BY 1, 2, 3, 4";
     );
     assert_eq!(spec.dim("z").unwrap().attributes, [id("name")]);
 
-    for (width, seconds) in [("1 second", 1), ("5 minute", 300), ("1 day", 86_400)] {
+    for (width, seconds) in [("1 second", 1), ("5 minutes", 300), ("1 day", 86_400)] {
         let spec = parse(&base("1 hour", width).replace("1 hour", width)).unwrap();
         assert_eq!(spec.fact("t").unwrap().time.width, Width { seconds });
     }

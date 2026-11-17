@@ -6,7 +6,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Origin, Time, Width};
 
-use super::{Scope, parse_width};
+use super::{Scope, WIDTH_FORM, parse_width};
 use crate::sql::{Clause, Reported, Walker, line};
 
 /// A call's arguments and how it treats them.
@@ -91,12 +91,10 @@ impl Walker {
             return Err(Reported);
         };
         let parsed = date_bin_width(width);
-        if parsed.is_none() {
-            self.error(
-                line(width),
-                format!("date_bin width {width}: use '<n> seconds|minutes|hours|days'"),
-            );
+        if let Err(fix) = &parsed {
+            self.error(line(width), format!("date_bin width {width}: {fix}"));
         }
+        let parsed = parsed.ok();
         let epoch = date_bin_origin(origin);
         if epoch.is_none() {
             self.error(
@@ -347,13 +345,13 @@ impl Walker {
 }
 
 /// `'<n> <unit>'` as `date_bin`'s first argument.
-fn date_bin_width(width: &sql::Expr) -> Option<Width> {
+fn date_bin_width(width: &sql::Expr) -> Result<Width, String> {
     let sql::Expr::Value(sql::ValueWithSpan {
         value: sql::Value::SingleQuotedString(text),
         span: _,
     }) = width
     else {
-        return None;
+        return Err(WIDTH_FORM.into());
     };
     parse_width(text)
 }

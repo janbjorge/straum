@@ -22,7 +22,7 @@ use jiff::Timestamp;
 use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::tokenizer::{Location, Token, Tokenizer};
+use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
@@ -34,6 +34,9 @@ const MEASURE_CONDITION: &str =
 
 /// An ask, its values taken from `parameters` by `$n`.
 pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlError>> {
+    if let Some(error) = extra_tokens(query) {
+        return Err(vec![error]);
+    }
     let statements = statements(query)?;
     let mut walker = Walker::default();
     let mut parameters = Parameters {
@@ -132,8 +135,17 @@ struct BucketBound<'tree> {
 /// Why a bucket bound is no instant.
 enum InstantError {
     Boolean,
-    NotWholeSecond { text: String },
-    NotRfc3339 { text: String, error: jiff::Error },
+    NotWholeSecond {
+        text: String,
+    },
+    NotRfc3339 {
+        text: String,
+        error: jiff::Error,
+    },
+    /// Read by jiff, but not written as RFC 3339's one form here.
+    NotItsForm {
+        text: String,
+    },
 }
 
 impl fmt::Display for InstantError {
@@ -144,6 +156,10 @@ impl fmt::Display for InstantError {
                 write!(formatter, "{text} is not a whole second")
             }
             InstantError::NotRfc3339 { text, error } => write!(formatter, "{text:?}: {error}"),
+            InstantError::NotItsForm { text } => write!(
+                formatter,
+                "{text:?}: write YYYY-MM-DDTHH:MM:SS, then Z or an offset such as +01:00"
+            ),
         }
     }
 }
@@ -394,6 +410,12 @@ impl Walker {
             return Err(Reported);
         };
         let count = parameters.values.len();
+        if let Some(digits) = name.strip_prefix("$0")
+            && !digits.is_empty()
+        {
+            self.error(line(expression), format!("{name}: write ${digits}"));
+            return Err(Reported);
+        }
         let Some(index) = parameter_index(name, count) else {
             self.error(
                 line(expression),
@@ -466,6 +488,11 @@ fn parameter_index(name: &str, count: usize) -> Option<usize> {
 }
 
 fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
+    if !rfc3339_form(text) {
+        return Err(InstantError::NotItsForm {
+            text: text.to_owned(),
+        });
+    }
     match text.parse::<Timestamp>() {
         Ok(at) if at.subsec_nanosecond() != 0 => Err(InstantError::NotWholeSecond {
             text: text.to_owned(),
@@ -475,6 +502,60 @@ fn rfc3339_seconds(text: &str) -> Result<i64, InstantError> {
             text: text.to_owned(),
             error,
         }),
+    }
+}
+
+/// Whether `text` is written `YYYY-MM-DDTHH:MM:SS`, a fraction or none,
+/// then `Z` or `+HH:MM`/`-HH:MM`, with a second below 60: the one form
+/// of RFC 3339 an ask takes. jiff reads more, such as `T09Z` or a leap
+/// second, which it moves to the next minute.
+fn rfc3339_form(text: &str) -> bool {
+    const SHAPE: &[u8] = b"dddd-dd-ddTdd:dd:dd";
+    let bytes = text.as_bytes();
+    let Some((head, mut rest)) = bytes.split_at_checked(SHAPE.len()) else {
+        return false;
+    };
+    for (&byte, &shape) in head.iter().zip(SHAPE) {
+        let fits = match shape {
+            b'd' => byte.is_ascii_digit(),
+            other => byte == other,
+        };
+        if !fits {
+            return false;
+        }
+    }
+    if head[17] >= b'6' {
+        return false;
+    }
+    if let [b'.', fraction @ ..] = rest {
+        let mut digits = 0;
+        for &byte in fraction {
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            digits += 1;
+        }
+        if digits == 0 {
+            return false;
+        }
+        rest = &fraction[digits..];
+    }
+    match rest {
+        [b'Z'] => true,
+        [
+            b'+' | b'-',
+            hour_tens,
+            hour_ones,
+            b':',
+            minute_tens,
+            minute_ones,
+        ] => {
+            hour_tens.is_ascii_digit()
+                && hour_ones.is_ascii_digit()
+                && minute_tens.is_ascii_digit()
+                && minute_ones.is_ascii_digit()
+        }
+        _ => false,
     }
 }
 
@@ -512,6 +593,39 @@ fn written_between(text: &str, start: Location, end: Location) -> String {
         }
     }
     between
+}
+
+/// A comment or a trailing `;` in an ask: it is one statement, written
+/// one way, so neither has a place in it. A `;` between statements is
+/// left to the parse, which says an ask is one `SELECT`. `None` when it
+/// holds neither, or when the tokenizer fails, which the parse reports.
+fn extra_tokens(query: &str) -> Option<SqlError> {
+    let tokens = Tokenizer::new(&PostgreSqlDialect {}, query)
+        .tokenize_with_location()
+        .ok()?;
+    let mut trailing = None;
+    for token in tokens {
+        match token.token {
+            Token::Whitespace(
+                Whitespace::SingleLineComment { .. } | Whitespace::MultiLineComment(_),
+            ) => {
+                return Some(refused_token(token.span.start.line, "a comment"));
+            }
+            Token::Whitespace(_) => {}
+            Token::SemiColon => trailing = Some(token.span.start.line),
+            _ => trailing = None,
+        }
+    }
+    let line = trailing?;
+    Some(refused_token(line, "a ;"))
+}
+
+/// `what`, at `line`, refused from an ask.
+fn refused_token(line: u64, what: &str) -> SqlError {
+    SqlError {
+        line: Some(line),
+        message: format!("{what}, write the ask without it, is not in Straum SQL"),
+    }
 }
 
 /// Whether the not-equal operator in `between`, the text between a
@@ -554,7 +668,7 @@ fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
     let sql::Expr::Identifier(identifier) = left.as_ref() else {
         return None;
     };
-    if identifier.quote_style.is_some() || !identifier.value.eq_ignore_ascii_case("bucket") {
+    if identifier.quote_style.is_some() || identifier.value != "bucket" {
         return None;
     }
     let end = match op {

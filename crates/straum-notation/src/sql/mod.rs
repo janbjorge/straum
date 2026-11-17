@@ -290,7 +290,15 @@ impl Walker {
             self.refuse(span.start.line, "quoted identifier", identifier);
             return Err(Reported);
         }
-        let Some(read) = Identifier::new(&value.to_ascii_lowercase()) else {
+        let lower = value.to_ascii_lowercase();
+        if *value != lower {
+            self.error(
+                span.start.line,
+                format!("{value}: write names in lowercase, {lower}"),
+            );
+            return Err(Reported);
+        }
+        let Some(read) = Identifier::new(value) else {
             self.error(span.start.line, format!("bad identifier {value}"));
             return Err(Reported);
         };
@@ -607,7 +615,7 @@ fn compares_a_name(expression: &sql::Expr) -> bool {
             | sql::BinaryOperator::Gt
             | sql::BinaryOperator::GtEq
     );
-    compares && !name.value.eq_ignore_ascii_case("bucket")
+    compares && name.value != "bucket"
 }
 
 /// A table reference's name and alias, as written.

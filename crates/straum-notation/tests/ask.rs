@@ -72,7 +72,7 @@ fn reads_every_part() {
 #[test]
 fn a_bound_left_out_leaves_its_end_open() {
     let ask = parse_ask(
-        "select TRIPS from Trips where bucket < $2 and bucket >= $1",
+        "select trips from trips where bucket < $2 and bucket >= $1",
         &range(),
     )
     .unwrap();
@@ -535,24 +535,18 @@ fn a_refused_ask_names_only_its_fault() {
         assert!(!any_contains(&found, "is not used"), "{refused}: {found:?}");
     }
     let ask = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING ";
-    for having in [
-        "trips /* != */ > $3",
-        "trips -- !=\n > $3",
-        "trips /* != */ <> $3",
-        "trips <> /* != */ $3",
-    ] {
+    // A comment is refused as itself, not read for what it says.
+    for having in ["trips /* != */ <> $3", "trips -- !=\n <> $3"] {
         let query = format!("{ask}{having}");
-        let parsed = parse_ask(&query, &three);
-        assert!(parsed.is_ok(), "{query}: {parsed:?}");
+        assert_eq!(
+            errors(&query, &three),
+            ["line 1: a comment, write the ask without it, is not in Straum SQL"],
+            "{query}"
+        );
     }
     // Unused, in an ask with nothing else wrong.
     let unused = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2";
     assert_eq!(errors(unused, &three), ["parameter $3 is not used"]);
-    // A real != beside a comment that says <> is still refused.
-    assert_eq!(
-        errors(&format!("{ask}trips != /* <> */ $3"), &three),
-        ["line 1: write <> for not equal, not !="]
-    );
 }
 
 /// An ask with `terms` more conditions on `kind` after the first.

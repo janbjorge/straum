@@ -4,8 +4,9 @@
 
 mod common;
 
-use common::{BASE, any_contains, any_message, base, edit, error_lines, rejects, sql_errors};
-use straum_notation::parse;
+use common::{any_contains, any_message, base, edit, error_lines, rejects, sql_errors};
+use straum_domain::Literal;
+use straum_notation::{parse, parse_ask};
 
 /// Statements and view shape.
 #[test]
@@ -129,19 +130,24 @@ fn view_options_other_than_buckets_are_rejected() {
     ]);
 }
 
-/// PostgreSQL folds the ASCII letters of an unquoted name, and no other:
-/// `KIND` is `kind`, the Kelvin sign before `ind` is no `k`.
+/// A name is written in lowercase, its one spelling: `KIND` is refused,
+/// naming `kind`, and the Kelvin sign before `ind` is no letter at all.
 #[test]
-fn names_fold_ascii_letters_only() {
-    rejects(&[(
-        "count(*) AS n",
-        "count(*) AS \u{212A}ind",
-        3,
-        "bad identifier \u{212A}ind",
-    )]);
-    let folded = edit(BASE, "count(*) AS n", "count(*) AS KIND");
-    let spec = parse(&folded).unwrap();
-    assert!(spec.fact("t").unwrap().measure("kind").is_some());
+fn names_are_written_in_lowercase() {
+    rejects(&[
+        (
+            "count(*) AS n",
+            "count(*) AS \u{212A}ind",
+            3,
+            "bad identifier \u{212A}ind",
+        ),
+        (
+            "count(*) AS n",
+            "count(*) AS KIND",
+            3,
+            "KIND: write names in lowercase, kind",
+        ),
+    ]);
 }
 
 /// Query.
@@ -964,4 +970,90 @@ fn a_name_no_ask_can_say_is_refused() {
         let view = base("f.a AS a,", &format!("f.a AS {word},"));
         assert!(parse(&view).is_ok(), "{view}: {:?}", parse(&view));
     }
+}
+
+/// One spelling per meaning (ADR-0004): each second spelling is refused,
+/// naming the one to write, and the one spelling parses.
+#[test]
+fn second_spellings_are_refused() {
+    rejects(&[
+        (
+            "CREATE VIEW",
+            "CREATE OR REPLACE VIEW",
+            1,
+            "OR REPLACE is not in Straum SQL",
+        ),
+        (
+            "'1 hour') AS",
+            "'60 minutes') AS",
+            1,
+            "bucket width '60 minutes': write '1 hour'",
+        ),
+        (
+            "'1 hour') AS",
+            "'+1 hour') AS",
+            1,
+            "bucket width '+1 hour': use '<n>",
+        ),
+        (
+            "'1 hour') AS",
+            "'1 hours') AS",
+            1,
+            "bucket width '1 hours': write '1 hour'",
+        ),
+        (
+            "GROUP BY 1, 2, 3, 4",
+            "GROUP BY 01, 2, 3, 4",
+            6,
+            "GROUP BY item, write the key's position in SELECT, `01`",
+        ),
+    ]);
+    let empty = parse("").unwrap_err().to_string();
+    assert_eq!(
+        empty,
+        "a spec is one or more CREATE VIEW statements; this has none"
+    );
+
+    let range = [
+        Literal::Text("2026-11-13T09:00:00Z".into()),
+        Literal::Text("2026-11-14T00:00:00+01:00".into()),
+    ];
+    let ask = "SELECT n FROM t WHERE bucket >= $1 AND bucket < $2";
+    assert!(parse_ask(ask, &range).is_ok());
+    let refused = [
+        (format!("{ask};"), "a ;, write the ask without it"),
+        (
+            format!("{ask} -- note"),
+            "a comment, write the ask without it",
+        ),
+        (ask.replace("$1", "$01"), "$01: write $1"),
+        (
+            ask.replace("SELECT n", "SELECT N"),
+            "N: write names in lowercase, n",
+        ),
+    ];
+    for (query, error) in refused {
+        let found = errors_of(&query, &range);
+        assert!(any_contains(&found, error), "{query}: {found:?}");
+    }
+    for bound in [
+        "2026-11-13T09Z",
+        "2026-11-13T23:59:60Z",
+        "2026-11-13 09:00:00Z",
+        "2026-11-13t09:00:00z",
+    ] {
+        let range = [Literal::Text(bound.into()), range[1].clone()];
+        let found = errors_of(ask, &range);
+        let error = format!("{bound:?}: write YYYY-MM-DDTHH:MM:SS, then Z or an offset");
+        assert!(any_contains(&found, &error), "{bound}: {found:?}");
+    }
+}
+
+/// The errors of an ask that fails, as text.
+fn errors_of(query: &str, parameters: &[Literal]) -> Vec<String> {
+    let mut found = Vec::new();
+    for error in parse_ask(query, parameters).unwrap_err() {
+        found.push(error.to_string());
+    }
+    found
 }

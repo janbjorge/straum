@@ -1,6 +1,6 @@
 # ADR-0004: Specs are a strict PostgreSQL CREATE VIEW subset
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -22,7 +22,11 @@ Names resolve as PostgreSQL resolves them, and each meaning has one
 spelling with nothing inferred: every schema, alias, column owner,
 output name (`AS`) and join kind is written. Where PostgreSQL would
 itself infer, the spelling is the one it resolves without a lookup:
-`GROUP BY` lists positions, a `FILTER` names columns. The canon is the
+`GROUP BY` lists positions, a `FILTER` names columns. Names are
+lowercase; a width is in the largest unit that divides it; a position
+or parameter has no leading zero; an ask holds no comment or trailing
+`;`; a bound is `YYYY-MM-DDTHH:MM:SS` with `Z` or an offset; a spec is
+never empty and never `OR REPLACE`. The canon is the
 grammar in `docs/src/spec.md` and `docs/src/asks.md`, whose examples
 the tests parse. A second spelling or a default revises this record.
 
