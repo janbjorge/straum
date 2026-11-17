@@ -4,7 +4,7 @@
 //! into a [`Value`] at the end. Every match on `Aggregate` is here, so a
 //! new aggregate is one variant and the arms the compiler asks for.
 
-use std::collections::HashSet;
+use crate::hash::{FastMap, FastSet};
 use std::mem;
 
 use crate::column::Counts;
@@ -209,7 +209,9 @@ fn any_counted(counts: &[u64]) -> bool {
 /// One measure merged over cells, per group: entries `group * LANES..`
 /// are group `group`'s. Group 0 takes the cells an ask passes over, so
 /// merging needs no test per cell; [`Partials::finish`] never reads it.
-pub(crate) enum Partials {
+// `'s` borrows the cells the ask reads: a count of distinct values
+// keeps references to their values rather than copies.
+pub(crate) enum Partials<'s> {
     Count(Vec<u64>),
     /// A sum and an average merge alike and part only when finished.
     Sum {
@@ -227,7 +229,7 @@ pub(crate) enum Partials {
         values: Vec<i64>,
         seen: Vec<bool>,
     },
-    Distinct(Vec<HashSet<Datum>>),
+    Distinct(Vec<Distinct<'s>>),
     /// Each group's values with their counts, one entry per cell a value
     /// is in, in no order.
     Percentile {
@@ -242,9 +244,44 @@ pub(crate) enum Partials {
     },
 }
 
-impl Partials {
+/// The distinct values one group has met.
+pub(crate) enum Distinct<'s> {
+    None,
+    /// The value counts of the one cell met, read in place: most groups
+    /// of a fine ask meet one cell, and copying its values cost as much
+    /// memory as the cell holds.
+    OneCell(&'s FastMap<Datum, u64>),
+    /// The values of several cells, borrowed from them.
+    Cells(FastSet<&'s Datum>),
+}
+
+impl<'s> Distinct<'s> {
+    /// Meets the value counts of one more cell.
+    fn meet(&mut self, values: &'s FastMap<Datum, u64>) {
+        match self {
+            Distinct::None => *self = Distinct::OneCell(values),
+            Distinct::OneCell(first) => {
+                let mut seen = FastSet::default();
+                seen.extend(first.keys());
+                seen.extend(values.keys());
+                *self = Distinct::Cells(seen);
+            }
+            Distinct::Cells(seen) => seen.extend(values.keys()),
+        }
+    }
+
+    fn count(&self) -> usize {
+        match self {
+            Distinct::None => 0,
+            Distinct::OneCell(values) => values.len(),
+            Distinct::Cells(seen) => seen.len(),
+        }
+    }
+}
+
+impl<'s> Partials<'s> {
     /// No group yet, for the measure's aggregate.
-    pub(crate) fn new(aggregate: &Aggregate) -> Partials {
+    pub(crate) fn new(aggregate: &Aggregate) -> Partials<'s> {
         match aggregate {
             Aggregate::Count | Aggregate::CountNotNull(_) => Partials::Count(Vec::new()),
             Aggregate::Sum(_) | Aggregate::Avg(_) => Partials::Sum {
@@ -291,7 +328,7 @@ impl Partials {
                 seen.resize(lanes, false);
             }
             // A set per lane would cost a merge of sets; one per group.
-            Partials::Distinct(seen) => seen.resize_with(groups, HashSet::new),
+            Partials::Distinct(seen) => seen.resize_with(groups, distinct_none),
             Partials::Percentile { values, .. } => values.resize_with(groups, Vec::new),
             Partials::Bools { trues, falses, .. } => {
                 trues.resize(lanes, 0);
@@ -303,7 +340,7 @@ impl Partials {
     /// Merges every cell of a bucket into its group, `groups` giving each
     /// cell's. `rows` are the cells' rows, which a count is and which a
     /// column's nulls are taken from.
-    pub(crate) fn merge(&mut self, groups: &[u32], rows: &Counts, state: Option<&State>) {
+    pub(crate) fn merge(&mut self, groups: &[u32], rows: &Counts, state: Option<&'s State>) {
         if let Some(group) = single_group(groups) {
             return self.merge_into(group, rows, state);
         }
@@ -350,13 +387,13 @@ impl Partials {
 
     /// The rest of [`Partials::merge`]: the aggregates that collect values
     /// rather than add them, and the booleans.
-    fn merge_collected(&mut self, groups: &[u32], state: Option<&State>) {
+    fn merge_collected(&mut self, groups: &[u32], state: Option<&'s State>) {
         match (self, state) {
             (Partials::Distinct(seen), Some(State::Distinct(counts))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
                 for (&group, counts) in groups.iter().zip(counts) {
                     if group != 0 {
-                        seen[group as usize].extend(counts.keys().cloned());
+                        seen[group as usize].meet(counts);
                     }
                 }
             }
@@ -388,7 +425,7 @@ impl Partials {
         group: u32,
         cell: usize,
         rows: &Counts,
-        state: Option<&State>,
+        state: Option<&'s State>,
     ) {
         let at = lane(cell, group);
         match (self, state) {
@@ -415,7 +452,7 @@ impl Partials {
                 seen[at] |= mins[cell] <= maxs[cell];
             }
             (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
-                seen[group as usize].extend(counts[cell].keys().cloned());
+                seen[group as usize].meet(&counts[cell]);
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
@@ -441,7 +478,7 @@ impl Partials {
 
     /// Every cell of a bucket into one group. Folding in registers beats
     /// adding to one place in memory, each add waiting on the last.
-    fn merge_into(&mut self, group: u32, rows: &Counts, state: Option<&State>) {
+    fn merge_into(&mut self, group: u32, rows: &Counts, state: Option<&'s State>) {
         let at = lane(0, group);
         let group = group as usize;
         match (self, state) {
@@ -473,7 +510,7 @@ impl Partials {
             }
             (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
                 for cell in counts {
-                    seen[group].extend(cell.keys().cloned());
+                    seen[group].meet(cell);
                 }
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
@@ -539,7 +576,7 @@ impl Partials {
                 }
                 Value::Int(most.into())
             }
-            Partials::Distinct(seen) => Value::Int(seen[group].len() as i128),
+            Partials::Distinct(seen) => Value::Int(seen[group].count() as i128),
             Partials::Percentile { fraction, values } => percentile(*fraction, &mut values[group]),
             Partials::Bools { trues, falses, all } => {
                 let any_true = any_counted(&trues[lanes.clone()]);
@@ -552,6 +589,11 @@ impl Partials {
             }
         }
     }
+}
+
+/// A group that has met no value yet.
+fn distinct_none<'s>() -> Distinct<'s> {
+    Distinct::None
 }
 
 /// The value at `fraction`'s rank among `values`, as `percentile_disc`

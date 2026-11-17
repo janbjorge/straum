@@ -603,3 +603,43 @@ fn a_window_builds_its_rows_alone() {
     let rows_bytes = isize::try_from(CELLS).unwrap() * 100;
     assert!(whole - windowed > rows_bytes, "{windowed} against {whole}");
 }
+
+fn tip_distinct() -> Measure {
+    measure("tip_distinct", Aggregate::CountDistinct(id("tip")))
+}
+
+/// The heap an ask of the distinct tips by the bucket and `by` reaches at
+/// its most, the answer dropped.
+fn distinct_peak(store: &Store, by: &[&str]) -> isize {
+    let mut ask = ask(by, 0, 1000);
+    ask.keys.insert(0, AskKey::Bucket);
+    ask.measures = vec![id("tip_distinct")];
+    let before = live();
+    PEAK.set(before);
+    drop(store.ask(&ask).unwrap());
+    PEAK.get() - before
+}
+
+/// A count of distinct values reads a group of one cell in place: by the
+/// bucket, pay and zone each group is one cell, and eight times its
+/// values cost the ask nothing. By the bucket alone a group meets 80
+/// cells, and a set of their values grows with them.
+#[test]
+fn a_count_distinct_reads_a_group_of_one_cell_in_place() {
+    const CELLS: i64 = 4_000;
+    let spec = || spec_measuring(&[], Zones::Apart, vec![tip_distinct()]);
+    let few = store_of(spec(), CELLS, 2);
+    let many = store_of(spec(), CELLS, 16);
+    let (few_cell, many_cell) = (
+        distinct_peak(&few, &["pay", "pu"]),
+        distinct_peak(&many, &["pay", "pu"]),
+    );
+    eprintln!("a cell a group: {few_cell} bytes, {many_cell} with 8x the values");
+    assert!(many_cell - few_cell < 1_024, "{few_cell} then {many_cell}");
+    let (few_cells, many_cells) = (distinct_peak(&few, &[]), distinct_peak(&many, &[]));
+    eprintln!("80 cells a group: {few_cells} bytes, {many_cells} with 8x the values");
+    assert!(
+        many_cells - few_cells > 16 << 10,
+        "{few_cells} then {many_cells}"
+    );
+}

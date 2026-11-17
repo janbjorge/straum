@@ -31,7 +31,7 @@ pub(super) struct CellLoop<'s> {
 
 /// A measure an ask names, as the cell loop merges it.
 pub(super) struct Asked<'s> {
-    pub(super) partials: Partials,
+    pub(super) partials: Partials<'s>,
     /// The cell state the measure reads; none for a count of rows.
     pub(super) state: Option<InputIndex>,
     /// The measure's own `FILTER`.
@@ -102,7 +102,7 @@ impl<'s> CellLoop<'s> {
     }
 
     /// Merges `cell` under one join row into its group.
-    fn merge_row(&mut self, cells: &Cells, cell: usize, row: &JoinRow<'_>) {
+    fn merge_row(&mut self, cells: &'s Cells, cell: usize, row: &JoinRow<'_>) {
         let rollup = self.rollup;
         let groups = &mut self.groups;
         groups.numbers.clear();
