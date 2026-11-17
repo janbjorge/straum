@@ -139,7 +139,8 @@ and the bounds of the buckets held.
   \\rows VIEW            the rows PostgreSQL would give for VIEW, the
                         first 1000
   QUERY; PARAMETER...   an ask, as straum ask takes it: the query, a
-                        semicolon, then the values of $1, $2 and on
+                        semicolon, then the values of $1, $2 and on;
+                        a value with spaces in single quotes
   \\?                    these commands
   \\q                    leave
 

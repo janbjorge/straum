@@ -1,10 +1,11 @@
 //! `straum shell`: a prompt at a running Straum. Each line goes to
 //! `answer`, which reads it as a command and asks Straum through
 //! `client.rs`: `\d` for the views, `\rows VIEW` for a view's rows, or an
-//! ask written as `QUERY; PARAMETER...`. At a terminal, `interactive`
-//! edits the line with rustyline, Tab completes from the views the Straum
-//! serves (see `complete.rs`), and the lines entered are kept between
-//! sessions. On a pipe, `piped` reads one line at a time.
+//! ask written as `QUERY; PARAMETER...`, where a value in single quotes
+//! may hold spaces. At a terminal, `interactive` edits the line with
+//! rustyline, Tab completes from the views the Straum serves (see
+//! `complete.rs`), and the lines entered are kept between sessions. On a
+//! pipe, `piped` reads one line at a time.
 
 use std::borrow::Cow;
 use std::env;
@@ -22,7 +23,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
-use crate::client::{ClientError, Output, ask, load_views, rows, views};
+use crate::client::{ClientError, Output, ask, load_views, parameter_words, rows, views};
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
 
@@ -76,8 +77,10 @@ fn answer(url: &str, line: &str) -> Outcome {
         }
         _ => {
             let (query, parameters) = line.split_once(';').unwrap_or((line, ""));
-            let parameters: Vec<String> =
-                parameters.split_whitespace().map(str::to_owned).collect();
+            let parameters: Vec<String> = parameter_words(parameters)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
             ask(url, query.trim_end(), &parameters, Output::Text)
         }
     };
@@ -260,7 +263,7 @@ impl rustyline::Helper for Names {}
 mod tests {
     use super::*;
     use crate::complete::read_views;
-    use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, answering};
+    use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, POST_ASK_SPACED, answering};
 
     #[test]
     fn rustyline_is_given_the_candidates_and_the_hint() {
@@ -368,6 +371,18 @@ mod tests {
     }
 
     #[test]
+    fn a_value_in_single_quotes_keeps_its_spaces() {
+        let ask = "SELECT \"x\"; 7 'Staten Island' true\n";
+        let written = shelled(POST_ASK_SPACED, "HTTP/1.1 200 OK\r\n\r\n    1\n", ask);
+        assert_eq!(written, ("    1\n".to_owned(), String::new(), 0));
+        // Without the quotes the words are two values, and the ask is
+        // another, which this Straum doesn't answer.
+        let ask = "SELECT \"x\"; 7 Staten Island true\n";
+        let (written, _, failed) = shelled(POST_ASK_SPACED, "HTTP/1.1 200 OK\r\n\r\n    1\n", ask);
+        assert_eq!((written.as_str(), failed), ("", 1));
+    }
+
+    #[test]
     fn the_shell_goes_on_after_an_error_and_leaves_when_told() {
         let (written, errors, failed) = shelled(
             GET_ROWS,
@@ -406,7 +421,8 @@ mod tests {
             \x20 \\rows VIEW            the rows PostgreSQL would give for VIEW, the\n\
             \x20                       first 1000\n\
             \x20 QUERY; PARAMETER...   an ask, as straum ask takes it: the query, a\n\
-            \x20                       semicolon, then the values of $1, $2 and on\n\
+            \x20                       semicolon, then the values of $1, $2 and on;\n\
+            \x20                       a value with spaces in single quotes\n\
             \x20 \\?                    these commands\n\
             \x20 \\q                    leave\n"
         );

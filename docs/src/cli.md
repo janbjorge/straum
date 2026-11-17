@@ -190,7 +190,7 @@ A prompt at the Straum at `--url`. Each line is a command:
 | --- | --- |
 | `\d` | Every view, as `straum views` does. |
 | `\rows VIEW` | The rows PostgreSQL would give for the view: every measure by the bucket and every key, over the buckets held. The first 1000. |
-| `QUERY; PARAMETER...` | The answer to an ask, as `straum ask` does: the query, a semicolon, then the values of `$1`, `$2` and on. |
+| `QUERY; PARAMETER...` | The answer to an ask, as `straum ask` does: the query, a semicolon, then the values of `$1`, `$2` and on. A value with spaces goes in single quotes: `'Staten Island'`. |
 | `\?` | These commands. |
 | `\q` | Nothing; it leaves, as the end of input does. |
 

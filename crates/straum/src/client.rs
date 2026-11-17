@@ -254,6 +254,61 @@ fn all_digits(text: &str) -> bool {
     true
 }
 
+/// The parameters of a shell line, the text past its semicolon, a word
+/// each. A word that opens with a single quote runs to the quote that
+/// closes it, spaces and all: the next `'` with whitespace or the end
+/// after it. One that never closes is read to the next whitespace, as any
+/// other word is, so `'` and `it's` mean what they mean to `straum ask`.
+pub(crate) fn parameter_words(text: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut rest = text.trim_start();
+    while !rest.is_empty() {
+        let length = match quoted_length(rest) {
+            Some(length) => length,
+            None => plain_length(rest),
+        };
+        words.push(&rest[..length]);
+        rest = rest[length..].trim_start();
+    }
+    words
+}
+
+/// Whether `text` opens a quote it doesn't close: the user is still
+/// typing a value. No later quote can close it, or it would be closed.
+pub(crate) fn has_open_quote(text: &str) -> bool {
+    for word in parameter_words(text) {
+        if word.starts_with('\'') && quoted_length(word).is_none() {
+            return true;
+        }
+    }
+    false
+}
+
+/// The bytes of the quoted word `text` starts with, quotes included, if
+/// it starts with one that closes.
+fn quoted_length(text: &str) -> Option<usize> {
+    let inside = text.strip_prefix('\'')?;
+    for (at, character) in inside.char_indices() {
+        if character != '\'' {
+            continue;
+        }
+        let after = &inside[at + 1..];
+        if after.is_empty() || after.starts_with(char::is_whitespace) {
+            // The opening quote, what it holds and the closing quote.
+            return Some(at + 2);
+        }
+    }
+    None
+}
+
+/// The bytes of `text` before its first whitespace.
+fn plain_length(text: &str) -> usize {
+    match text.find(char::is_whitespace) {
+        Some(at) => at,
+        None => text.len(),
+    }
+}
+
 /// `text` without the single quotes around it, if it has them.
 fn unquoted(text: &str) -> &str {
     let Some(rest) = text.strip_prefix('\'') else {
@@ -533,6 +588,36 @@ mod tests {
         ];
         for (text, json) in cases {
             assert_eq!(parameter(text), json, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_quoted_parameter_word_holds_its_spaces() {
+        let cases: [(&str, &[&str]); 7] = [
+            (" 7  paid\ttrue ", &["7", "paid", "true"]),
+            ("'Staten Island' 7", &["'Staten Island'", "7"]),
+            ("'O'Brien  St' x", &["'O'Brien  St'", "x"]),
+            ("'' 'blå bær'", &["''", "'blå bær'"]),
+            ("'7' '", &["'7'", "'"]),
+            ("it's 'a", &["it's", "'a"]),
+            ("", &[]),
+        ];
+        for (text, words) in cases {
+            assert_eq!(parameter_words(text), words, "{text}");
+        }
+        // The quoted word is one string, its quotes gone.
+        assert_eq!(parameter("'Staten Island'"), "\"Staten Island\"");
+    }
+
+    #[test]
+    fn a_quote_that_never_closes_is_a_word_like_any_other() {
+        assert_eq!(parameter_words("'Staten Island"), ["'Staten", "Island"]);
+        assert_eq!(parameter_words("'a'b c"), ["'a'b", "c"]);
+        for open in ["'", "x 'Staten", "'Staten Is", "'a'b"] {
+            assert!(has_open_quote(open), "{open}");
+        }
+        for closed in ["", "x", "it's", "'Staten Island'", "'' y", "'a' 'b'"] {
+            assert!(!has_open_quote(closed), "{closed}");
         }
     }
 

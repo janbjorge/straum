@@ -12,6 +12,8 @@ use std::fmt;
 
 use serde_json::Value;
 
+use crate::client::{has_open_quote, parameter_words};
+
 const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
 const BUCKET: &str = "bucket";
 /// What HAVING compares a measure with, as the ask writes it.
@@ -238,6 +240,13 @@ fn parameter_candidates(views: &[View], before: &str, query: &str) -> Completion
     // A parameter starts no earlier than the semicolon ends.
     let start = word_start(before, char::is_whitespace).max(parameters_start);
     let given = &before[parameters_start..start];
+    // Inside an open quote the word being typed is not a value yet.
+    if has_open_quote(&before[parameters_start..]) {
+        return Completion {
+            start,
+            candidates: Vec::new(),
+        };
+    }
     let candidates = match slot(views, query, given) {
         Some(slot) => slot.values(),
         None => Vec::new(),
@@ -559,7 +568,7 @@ impl Slot {
 
 /// The slot of the parameter after those `given`, by the `$n` it is.
 fn slot(views: &[View], query: &str, given: &str) -> Option<Slot> {
-    let number = ParameterNumber(given.split_whitespace().count() + 1);
+    let number = ParameterNumber(parameter_words(given).len() + 1);
     let query = words(query);
     let view = view_after_from(views, &query)?;
     let mut key: Option<Key> = None;
@@ -598,7 +607,7 @@ pub(crate) fn hint(views: &[View], line: &str, cursor: usize) -> Option<String> 
         Some(last) => !last.is_whitespace(),
         None => false,
     };
-    if typing {
+    if typing || has_open_quote(given) {
         return None;
     }
     let slot = slot(views, query, given)?;
@@ -905,6 +914,31 @@ mod tests {
         );
         assert_eq!(offers(&format!("{query}; a b ")), ["true ", "false "]);
         assert_eq!(offers(&format!("{query}; a b f")), ["false "]);
+    }
+
+    #[test]
+    fn a_quoted_value_is_one_parameter() {
+        let query = "SELECT orders FROM orders WHERE shipped = $3 \
+                     AND bucket >= $1 AND bucket < $2";
+        assert_eq!(
+            offers(&format!("{query}; 'a b' 'c d' ")),
+            ["true ", "false "]
+        );
+        assert_eq!(
+            hinted(&format!("{query}; 'a b' 'c d' ")).as_deref(),
+            Some("$3: shipped = boolean")
+        );
+    }
+
+    #[test]
+    fn inside_an_open_quote_nothing_is_offered_or_hinted() {
+        let query = "SELECT orders FROM orders WHERE shipped = $3 \
+                     AND bucket >= $1 AND bucket < $2";
+        for open in ["; 'a b ", "; a 'b c ", "; a 'b c f"] {
+            let line = format!("{query}{open}");
+            assert_eq!(offers(&line), Vec::<String>::new(), "{open}");
+            assert_eq!(hinted(&line), None, "{open}");
+        }
     }
 
     #[test]
