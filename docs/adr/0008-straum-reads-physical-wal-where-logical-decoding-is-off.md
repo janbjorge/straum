@@ -1,6 +1,6 @@
 # ADR-0008: Straum reads physical WAL where logical decoding is off
 
-Status: Accepted 2026-11-14; revised 2026-11-16
+Status: Accepted 2026-11-14; revised 2026-11-17
 
 ## Context
 
@@ -61,7 +61,9 @@ length needs a partial column walk per major.
   `--max-page-memory` answers a start-over; rows on disk behind a cache
   or cut rows wait for a measurement.
 - Heap records differ by major: 17, 18 and 19 are each parsed and
-  tested, guarded by the WAL page magic; 19 only moves prune flags.
+  tested; 19 only moves prune flags. The setup check refuses a newer
+  major, whose layout no test has seen. The WAL page magic guards only
+  a change of format mid-stream, not which major wrote it.
 - A physical value equals the load's, years the text reader refuses
   included; the logical stream still errors on those.
 - Proof: on a `wal_level = logical` server both modes yield equal

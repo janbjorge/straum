@@ -192,6 +192,7 @@ The start says so:
 ```text
 full_page_writes is off; --wal physical needs on
 wal_compression is zstd; --wal physical reads off, pglz and lz4
+--wal physical reads the WAL of PostgreSQL 17 to 19, not 20; read it through logical decoding
 the database's encoding is LATIN1; --wal physical reads UTF8 text
 usage: public.events is unlogged, so the WAL holds none of its changes: ALTER TABLE public.events SET LOGGED
 usage: column kind of public.events is virtual, so the WAL holds no value of it; --wal physical needs it STORED

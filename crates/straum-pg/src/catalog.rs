@@ -23,6 +23,9 @@ use crate::wire::Connection;
 pub(crate) const VERSION_NUM_PER_MAJOR: u32 = 10_000;
 /// The oldest server Straum reads: 17 (ADR-0007).
 const OLDEST_VERSION_NUM: u32 = 170_000;
+/// The first major `--wal physical` has not been tested on: each major's
+/// records are parsed by its own layout, and a newer one's are unknown.
+const NEWER_THAN_PHYSICAL_VERSION_NUM: u32 = 200_000;
 /// From 19, a logical slot turns logical decoding on under `replica`.
 const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = 190_000;
 
@@ -595,6 +598,11 @@ fn check_server(
             Some(true) => {}
         },
         Replication::Physical { .. } => {
+            if catalog.server_version >= NEWER_THAN_PHYSICAL_VERSION_NUM {
+                problems.push(Problem::Server(ServerProblem::TooNewForPhysical {
+                    major: catalog.server_version / VERSION_NUM_PER_MAJOR,
+                }));
+            }
             // The first change to a page after a checkpoint must bring
             // the page whole: deletes and updates name only a slot on it.
             if catalog.full_page_writes != "on" {

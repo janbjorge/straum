@@ -79,6 +79,11 @@ pub(crate) enum ServerProblem {
     FullPageWrites {
         setting: String,
     },
+    /// Newer than the majors the physical stream's layouts were tested
+    /// on, 17 to 19.
+    TooNewForPhysical {
+        major: u32,
+    },
     /// The physical stream can't read pages compressed with zstd.
     WalCompressionZstd,
     /// The physical stream reads text from pages as UTF-8.
@@ -239,6 +244,11 @@ impl fmt::Display for ServerProblem {
             ServerProblem::FullPageWrites { setting } => write!(
                 formatter,
                 "full_page_writes is {setting}; --wal physical needs on"
+            ),
+            ServerProblem::TooNewForPhysical { major } => write!(
+                formatter,
+                "--wal physical reads the WAL of PostgreSQL 17 to 19, not {major}; \
+                 read it through logical decoding"
             ),
             ServerProblem::WalCompressionZstd => formatter
                 .write_str("wal_compression is zstd; --wal physical reads off, pglz and lz4"),

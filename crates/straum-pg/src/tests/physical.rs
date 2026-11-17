@@ -690,8 +690,8 @@ struct Server {
     problems: Vec<&'static str>,
 }
 
-/// Servers `--wal physical` takes, then two it doesn't.
-fn servers_and_their_problems() -> [Server; 5] {
+/// Servers `--wal physical` takes, then three it doesn't.
+fn servers_and_their_problems() -> [Server; 6] {
     [
         server(170_000, ["replica", "on", "lz4"], vec![]),
         server(180_000, ["logical", "on", "pglz"], vec![]),
@@ -702,6 +702,13 @@ fn servers_and_their_problems() -> [Server; 5] {
             vec![
                 "PostgreSQL 16 is too old; Straum needs 17 or newer",
                 "wal_level is minimal; Straum needs replica or logical, which takes a restart",
+            ],
+        ),
+        server(
+            200_000,
+            ["replica", "on", "lz4"],
+            vec![
+                "--wal physical reads the WAL of PostgreSQL 17 to 19, not 20; read it through logical decoding",
             ],
         ),
         server(
