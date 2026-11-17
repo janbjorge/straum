@@ -219,6 +219,9 @@ next answer, as PostgreSQL's view would, and nothing starts over
 - Two joins can point at one dim table, each reading its own columns,
   as `a` and `referrer` do above. A dim table is one dim however
   many views join it, and all must join it on the same key columns.
+  A dim goes by its table's name without the schema, in one namespace
+  with the views: `crm.accounts` and `billing.accounts` can't both be
+  dims, and no view can be named `accounts` beside them.
 - The join itself has no value: asks group and filter by `region` or
   `account_id`, never by `a`.
 
@@ -334,7 +337,7 @@ usage.sql: line 3: unknown table alias a
 ```
 
 ```text
-straum: usage.sql: usage declared twice
+straum: usage.sql: usage declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema
 usage.sql: view usage: width of 420s does not divide a day
 ```
 

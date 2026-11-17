@@ -94,7 +94,11 @@ pub enum JoinError {
 impl fmt::Display for SpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpecError::Duplicate { scope: None, name } => write!(f, "{name} declared twice"),
+            SpecError::Duplicate { scope: None, name } => write!(
+                f,
+                "{name} declared twice: views and dims share one namespace, and a dim \
+                 goes by its table's name without the schema"
+            ),
             SpecError::Duplicate {
                 scope: Some(scope),
                 name,

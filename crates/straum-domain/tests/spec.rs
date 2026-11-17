@@ -289,7 +289,8 @@ fn every_error_is_reported_and_displayed() {
     assert_eq!(
         shown,
         [
-            "z declared twice",
+            "z declared twice: views and dims share one namespace, and a dim goes by its \
+             table's name without the schema",
             "z: name declared twice",
             "dim w: no key columns",
             "view z: width of 420s does not divide a day",

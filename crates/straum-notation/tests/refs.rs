@@ -666,3 +666,20 @@ GROUP BY 1, 2";
         "{error}"
     );
 }
+
+/// A dim goes by its table's name alone, in the views' namespace: two
+/// schemas' tables of one name clash, and the error says why.
+#[test]
+fn two_dims_of_one_table_name_clash_and_say_why() {
+    let two = CHAIN
+        .replace("public.accounts AS a", "crm.accounts AS a")
+        .replace(
+            "public.regions AS r ON r.name = a.region",
+            "billing.accounts AS r ON r.name = a.region",
+        );
+    let error = parse(&two).unwrap_err().to_string();
+    assert!(
+        error.contains("accounts declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema"),
+        "{error}"
+    );
+}
