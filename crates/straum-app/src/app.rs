@@ -683,7 +683,9 @@ mod tests {
 
     use straum_domain::{Ask, Datum, Identifier, Spec, Store, Value};
 
-    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Wal, Writer};
+    use straum_domain::{Cut, Start, Window};
+
+    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Step, Wal, Writer};
     use crate::lag::Lag;
     use crate::source::{Source, SourceError};
 
@@ -788,7 +790,8 @@ mod tests {
         assert_eq!(answered.answer.rows[0].values[0], Value::Int(1));
     }
 
-    /// A source whose server stands still: the WAL it reads never moves.
+    /// A source whose server stands still: the WAL it reads never moves,
+    /// and each commit it sends is empty.
     struct StandingStill;
 
     impl Source for StandingStill {
@@ -801,7 +804,11 @@ mod tests {
         }
 
         fn next_commit(&mut self, _wait: Duration) -> Result<Option<Commit>, SourceError> {
-            Ok(None)
+            Ok(Some(Commit {
+                lsn: Lsn(2),
+                committed: SystemTime::UNIX_EPOCH,
+                changes: Vec::new(),
+            }))
         }
 
         fn wal(&mut self) -> Result<Wal, SourceError> {
@@ -823,17 +830,20 @@ mod tests {
     #[test]
     fn a_reading_of_the_wal_and_the_status_wait_on_no_ask() {
         let app = app();
-        follow(&app);
         let mut writer = Writer::new(app.clone(), StandingStill);
+        assert_eq!(writer.step().unwrap(), Step::Started(Lsn(1)));
         let held = app.write();
         let (done, finished) = mpsc::channel();
         let reader = thread::spawn(move || {
             writer.take_wal_reading().unwrap();
             done.send(writer.app().status().ready).unwrap();
+            writer
         });
         assert_eq!(finished.recv_timeout(WAITING), Ok(true));
         drop(held);
-        reader.join().unwrap();
+        let mut writer = reader.join().unwrap();
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(2)));
+        assert_eq!(app.status().applied, Some(Lsn(2)));
     }
 
     /// An ask does wait on the store's lock: the writer holds it to apply.
@@ -851,5 +861,25 @@ mod tests {
         drop(held);
         assert_eq!(finished.recv_timeout(WAITING * 4), Ok(true));
         reader.join().unwrap();
+    }
+
+    /// A window of the answer builds its rows and says where they lie.
+    #[test]
+    fn a_window_of_an_answer_says_where_its_rows_lie() {
+        let app = app();
+        follow(&app);
+        let window = Window {
+            start: Start::FromLast(5),
+            count: 1,
+        };
+        let answered = app.ask_window(&count(), window).unwrap();
+        assert_eq!(answered.answer.rows.len(), 1);
+        let cut = Cut {
+            first: 0,
+            count: 1,
+            total: 1,
+        };
+        assert_eq!(answered.cut, cut);
+        assert_eq!(app.ask(&count()).unwrap().cut, Cut::whole(1));
     }
 }
