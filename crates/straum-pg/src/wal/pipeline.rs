@@ -50,6 +50,9 @@ pub(crate) struct Pipeline {
     /// Commits past the limit read before it: only those the load
     /// doesn't see stop the stream.
     too_big: Vec<TooBig>,
+    /// The last commit read before the load's snapshot is known, held or
+    /// not, without its changes: it carries a table made unfit by then.
+    last_before_snapshot: Option<Committed>,
     snapshot: Option<TransactionSnapshot>,
     /// Where the next record starts: every commit before it is read.
     read_to: u64,
@@ -76,6 +79,7 @@ impl Pipeline {
             decoder: Decoder::new(checked, limit),
             held: Vec::new(),
             too_big: Vec::new(),
+            last_before_snapshot: None,
             snapshot: None,
             read_to: 0,
         }
@@ -166,14 +170,17 @@ impl Pipeline {
             self.snapshot = Some(TransactionSnapshot::seeing_nothing());
         }
         let mut commits = self.commits(event, record)?;
+        let Some(carrier) = carrier else {
+            return Ok(commits);
+        };
+        if self.snapshot.is_none() {
+            self.last_before_snapshot = Some(carrier);
+            return Ok(commits);
+        }
         // A table made unfit by a commit that doesn't go on, as one the
         // load saw, must still stop the stream now: changes to its new
         // file pass by unread, and may never bring a commit of their own.
-        if commits.is_empty()
-            && self.snapshot.is_some()
-            && self.publisher.unfit_pending()
-            && let Some(carrier) = carrier
-        {
+        if commits.is_empty() && self.publisher.unfit_pending() {
             commits.extend(self.publisher.publish(&carrier, &mut self.decoder)?);
         }
         Ok(commits)
@@ -257,20 +264,19 @@ impl Pipeline {
         self.transactions.loaded();
         self.held_bytes = 0;
         let mut commits = Vec::new();
-        let mut last = None;
         for committed in mem::take(&mut self.held) {
             if !snapshot.sees(committed.xid) {
                 commits.extend(self.publisher.publish(&committed, &mut self.decoder)?);
             }
-            last = Some(committed);
         }
         // A table made unfit before the start, by DDL the load saw, stops
-        // the stream at once, as after it.
+        // the stream at once, as after it, though no commit was held, as
+        // before the first `RUNNING_XACTS`.
+        let last = self.last_before_snapshot.take();
         if commits.is_empty()
             && self.publisher.unfit_pending()
-            && let Some(mut last) = last
+            && let Some(last) = last
         {
-            last.changes = Vec::new();
             commits.extend(self.publisher.publish(&last, &mut self.decoder)?);
         }
         self.snapshot = Some(snapshot);
@@ -788,6 +794,28 @@ mod tests {
         let commits = before.record(&held, |xid| Ok(no_tables_for(&asked, xid)));
         assert_eq!(commits.unwrap(), []);
         let released = see_all(&mut before, "201:201:").unwrap();
+        assert_eq!(unfit_tables(&released), [&unfit]);
+    }
+
+    /// DDL that makes a table unfit before the first `RUNNING_XACTS` is
+    /// held by no commit, as its transaction may not be whole: the
+    /// snapshot still stops the stream, with no later commit.
+    #[test]
+    fn a_table_made_unfit_before_any_running_transactions_is_unfit_at_once() {
+        let unfit = Change::Unfit {
+            table: Identifier::new("t").unwrap(),
+        };
+        let asked = RefCell::new(Vec::new());
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        let mut pipeline = pipeline(1 << 20);
+        let early = ddl(&mut wal, 50);
+        let commits = pipeline.record(&early, |xid| Ok(no_tables_for(&asked, xid)));
+        assert_eq!(commits.unwrap(), []);
+        pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
+        let released = see_all(&mut pipeline, "100:100:").unwrap();
         assert_eq!(unfit_tables(&released), [&unfit]);
     }
 
