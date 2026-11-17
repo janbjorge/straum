@@ -96,6 +96,10 @@ enum Start {
         next_xid: TransactionId,
         running: HashSet<TransactionId>,
     },
+    /// A later one's oldest running xid was `next_xid` or past it: every
+    /// transaction since began after the start, so every commit is whole.
+    /// Comparing with `next_xid` would wrap 2^31 xids on.
+    Whole,
 }
 
 impl Transactions {
@@ -146,6 +150,7 @@ impl Transactions {
     pub(crate) fn consistency(&self) -> Consistency {
         match &self.start {
             Start::Unknown { .. } => Consistency::Unknown,
+            Start::Whole => Consistency::Consistent,
             Start::From { running, .. } if running.is_empty() => Consistency::Consistent,
             Start::From { running, .. } => {
                 let mut xids: Vec<TransactionId> = running.iter().copied().collect();
@@ -180,6 +185,7 @@ impl Transactions {
     fn commit(&mut self, ending: Ending, lsn: u64, end: u64) -> Result<Option<Committed>, TooBig> {
         let whole = match &self.start {
             Start::From { next_xid, .. } => follows(ending.xid, *next_xid),
+            Start::Whole => true,
             Start::Unknown { .. } => false,
         };
         let held = self.ended(&ending);
@@ -220,6 +226,7 @@ impl Transactions {
     /// Reads a `RUNNING_XACTS`: the first sets the start, every one lets
     /// go of what transactions a crash ended.
     fn running(&mut self, running: &Running) {
+        let first = matches!(self.start, Start::Unknown { .. });
         if let Start::Unknown { ended } = &self.start {
             // The record lists what ran when PostgreSQL looked, and goes
             // into the WAL after: a transaction may end in between, its
@@ -259,6 +266,12 @@ impl Transactions {
         if let Some(dropped) = &mut self.dropped {
             dropped.retain(|xid| follows(*xid, oldest));
         }
+        if let Start::From { next_xid, .. } = &self.start
+            && !first
+            && follows(oldest, *next_xid)
+        {
+            self.start = Start::Whole;
+        }
     }
 
     /// The commits dropped as not whole that `snapshot` doesn't see: it
@@ -291,6 +304,7 @@ impl Transactions {
             Start::From { running, .. } => {
                 running.remove(&ending.xid);
             }
+            Start::Whole => {}
         }
         let mut held = Vec::new();
         self.take_held(ending.xid, &mut held);
@@ -388,15 +402,40 @@ impl TransactionSnapshot {
         Some(TransactionSnapshot { xmax, running })
     }
 
+    /// A snapshot that sees no commit: what the load's comes to once
+    /// every transaction running began after it.
+    pub(crate) fn seeing_nothing() -> TransactionSnapshot {
+        TransactionSnapshot {
+            xmax: 0,
+            running: HashSet::new(),
+        }
+    }
+
     /// The snapshot sees `xid`'s commit: it ended before the snapshot. A
-    /// 32-bit xid is read as the 64-bit one nearest `xmax`.
+    /// 32-bit xid is read as the 64-bit one nearest `xmax`, so past 2^31
+    /// xids on it reads as before; [`TransactionSnapshot::precedes`] says
+    /// when to stop asking.
     pub(crate) fn sees(&self, xid: TransactionId) -> bool {
-        let low = u32::try_from(self.xmax & LOW_32_BITS).unwrap_or(0);
-        let distance = i64::from(i32::from_ne_bytes(xid.wrapping_sub(low).to_ne_bytes()));
-        let Some(full) = self.xmax.checked_add_signed(distance) else {
+        let Some(full) = self.widen(xid) else {
             return false;
         };
         full < self.xmax && !self.running.contains(&full)
+    }
+
+    /// `oldest`, the oldest xid still running, began after the snapshot:
+    /// it sees none of the commits to come.
+    pub(crate) fn precedes(&self, oldest: TransactionId) -> bool {
+        match self.widen(oldest) {
+            Some(full) => full >= self.xmax,
+            None => false,
+        }
+    }
+
+    /// `xid` as the 64-bit xid nearest `xmax`.
+    fn widen(&self, xid: TransactionId) -> Option<u64> {
+        let low = u32::try_from(self.xmax & LOW_32_BITS).unwrap_or(0);
+        let distance = i64::from(i32::from_ne_bytes(xid.wrapping_sub(low).to_ne_bytes()));
+        self.xmax.checked_add_signed(distance)
     }
 }
 
@@ -867,6 +906,20 @@ mod tests {
             "", "1", "1:2", "2:1:", "1:2:x", "1:2:3:4", "a:2:", "1:b:", "1:2:3,",
         ] {
             assert_eq!(TransactionSnapshot::parse(bad), None, "{bad}");
+        }
+    }
+
+    /// The load's snapshot reads an xid as the 64-bit one nearest its
+    /// `xmax`, and precedes every xid at or past it.
+    #[test]
+    fn a_snapshot_precedes_what_began_after_it() {
+        let snapshot = TransactionSnapshot::parse("100:105:102").unwrap();
+        assert!(snapshot.sees(101) && !snapshot.sees(102) && !snapshot.sees(105));
+        assert!(snapshot.precedes(105) && snapshot.precedes(106));
+        assert!(!snapshot.precedes(104) && !snapshot.precedes(102));
+        let nothing = TransactionSnapshot::seeing_nothing();
+        for xid in [0, 1, 105, 105 + (1 << 31), u32::MAX] {
+            assert!(!nothing.sees(xid), "{xid}");
         }
     }
 }

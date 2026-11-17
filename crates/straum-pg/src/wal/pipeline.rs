@@ -153,6 +153,14 @@ impl Pipeline {
                 invalidated: Vec::new(),
             });
         }
+        // Once every transaction running began after the load's snapshot,
+        // it sees none to come; asking it 2^31 xids on would wrap.
+        if let xact::Event::Running(running) = &event
+            && let Some(snapshot) = &self.snapshot
+            && snapshot.precedes(running.oldest_xid)
+        {
+            self.snapshot = Some(TransactionSnapshot::seeing_nothing());
+        }
         let mut commits = self.commits(event, record)?;
         // A table made unfit by a commit that doesn't go on, as one the
         // load saw, must still stop the stream now: changes to its new
@@ -736,6 +744,28 @@ mod tests {
         assert_eq!(commits.unwrap(), []);
         let released = see_all(&mut before, "201:201:").unwrap();
         assert_eq!(unfit_tables(&released), [&unfit]);
+    }
+
+    /// A stream that stays up 2^31 xids past its start still publishes:
+    /// once every transaction running began after the start and after
+    /// the load's snapshot, neither is asked about an xid again.
+    #[test]
+    fn publishes_two_to_the_31_xids_on() {
+        let mut pipeline = pipeline(1 << 20);
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        pipeline.record(&wal.running(100, &[]), no_layouts).unwrap();
+        see_all(&mut pipeline, "100:100:").unwrap();
+        pipeline.record(&wal.running(101, &[]), no_layouts).unwrap();
+        let far = 100 + (1 << 31);
+        let mut commits = Vec::new();
+        for (id, xid) in [(1, far - 1), (2, far), (3, far + 1)] {
+            let records = [wal.insert(xid, id), wal.commit(xid)];
+            commits.extend(read_all(&mut pipeline, &records).unwrap());
+        }
+        assert_eq!(ids(&commits), [1, 2, 3]);
     }
 
     /// A transaction past the limit stops the stream only if the load
