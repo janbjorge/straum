@@ -300,6 +300,22 @@ fn stream_errors() {
     }
 }
 
+/// A walsender's notice or a setting it reports, which any backend may
+/// send at any time, passes by: the stream goes on.
+#[test]
+fn notices_and_settings_on_the_stream_pass_by() {
+    let quiet = later(Duration::from_secs(2), keepalive(0x18, Reply::NotAsked));
+    let mut fake = scripted_stream(vec![
+        now(message(b'N', b"SWARNING\0Mwatch out\0\0")),
+        now(message(b'S', b"TimeZone\0UTC\0")),
+        quiet,
+    ]);
+    assert_eq!(fake.stream.next(Duration::from_millis(300)).unwrap(), None);
+    // Any other message still ends it.
+    let mut ended = scripted_stream(vec![now(message(b'c', b""))]);
+    assert!(ended.stream.next(LONG).is_err());
+}
+
 /// Under `synchronous_commit = off` a commit is acknowledged before its
 /// WAL is written, so the reading counts WAL as inserted: Straum is behind
 /// until it has the commit, and catches up once the WAL writer writes it.

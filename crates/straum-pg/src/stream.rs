@@ -220,7 +220,9 @@ impl StreamThread {
                 return Ok(());
             }
             match self.connection.try_read()? {
-                None => {}
+                // A walsender may warn or change a setting at any time, as
+                // any backend may; neither says anything of the stream.
+                None | Some(Backend::NoticeResponse(_) | Backend::ParameterStatus(_)) => {}
                 Some(Backend::CopyData(body)) => {
                     if !self.copy_data(body.data())? {
                         return Ok(());
