@@ -429,7 +429,16 @@ def wait_ready(stack: Stack) -> int:
     port = int(port_text)
     # There is no timeout, since the load takes as long as the tables need.
     url = f"http://127.0.0.1:{port}/readyz"
-    while not ready(url):
+    # Straum stays up when its setup check fails and tries again, so the
+    # wait says why it isn't ready each time the reason changes.
+    said = ""
+    while True:
+        is_ready, why = readiness(url)
+        if is_ready:
+            return port
+        if why and why != said:
+            print(f"try: {why}", file=sys.stderr)
+            said = why
         running = compose(
             stack.name, "ps", "--status", "running", "--quiet", STRAUM, capture=True
         )
@@ -437,15 +446,19 @@ def wait_ready(stack: Stack) -> int:
             logs = compose(stack.name, "logs", "--no-log-prefix", STRAUM, capture=True)
             raise SystemExit(f"try: Straum stopped\n{logs.stdout}{logs.stderr}")
         time.sleep(READY_POLL_S)
-    return port
 
 
-def ready(url: str) -> bool:
+def readiness(url: str) -> tuple[bool, str]:
+    """Whether /readyz answers 200, and the reason it gives when it doesn't:
+    empty while nothing answers yet."""
     try:
         with urllib.request.urlopen(url) as response:
-            return response.status == 200
+            return response.status == 200, ""
+    except urllib.error.HTTPError as error:
+        with error:
+            return False, error.read().decode(errors="replace").strip()
     except (urllib.error.URLError, ConnectionError):
-        return False
+        return False, ""
 
 
 def print_next_steps(port: int, project: str) -> None:
