@@ -5,7 +5,7 @@
 //! column, as PostgreSQL reads the view. Literals are read here too.
 
 use sqlparser::ast as sql;
-use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, Via};
+use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, RefKind, Via};
 
 use super::joins::{key_position, ref_position};
 use super::{Cast, KeyForm, Qualified, ResolvedColumn, Scope, ScopedKey, SelectedKeys};
@@ -282,10 +282,19 @@ impl Walker {
             return Err(Reported);
         };
         let joined = &scope.refs[through];
-        // A dim's key column reads the fact column it was joined on.
+        // Under INNER JOIN a dim's key column reads the fact column it was
+        // joined on. Under LEFT OUTER JOIN it is null where no dim row
+        // matches, and the fact column is not, so it is refused.
         if let Some(position) = key_position(joined, &column)
             && let Via::Fact(via) = &joined.reference.via[position]
         {
+            if joined.reference.kind == RefKind::Left {
+                self.error(
+                    line(expression),
+                    left_key_message(scope, &alias, &column, via),
+                );
+                return Err(Reported);
+            }
             return Ok(ColumnRead {
                 column: ResolvedColumn::Fact(via.clone()),
                 cast,
@@ -394,6 +403,21 @@ fn record_key(
             });
         }
     }
+}
+
+/// Why a key column of a `LEFT OUTER JOIN` can't be read, and what to
+/// write instead.
+pub(super) fn left_key_message(
+    scope: &Scope,
+    alias: &Identifier,
+    column: &Identifier,
+    via: &Identifier,
+) -> String {
+    let fact = &scope.alias;
+    format!(
+        "{alias}.{column} is null where no {alias} row matches, and {fact}.{via} is not; \
+         write {fact}.{via}, or join {alias} with INNER JOIN"
+    )
 }
 
 /// The key over a FILTER's column, a null-ness key or not; `None` when

@@ -6,8 +6,8 @@
 mod common;
 
 use common::{
-    BASE, FEB, JAN, any_message, ask_view_t, attribute, base, by_key, condition, id, key_text,
-    rejects, spec_errors, sql_errors, strings,
+    BASE, FEB, JAN, any_contains, any_message, ask_view_t, attribute, base, by_key, condition,
+    error_lines, id, key_text, rejects, spec_errors, sql_errors, strings,
 };
 use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecError, Via};
 use straum_notation::{Error, SqlError, parse};
@@ -32,12 +32,13 @@ fn a_ref_on_two_columns() {
     let dim = spec.dim("g").unwrap();
     assert_eq!(dim.key, [id("org_id"), id("grp_id")]);
     assert_eq!(dim.attributes, [id("label")]);
-    // A dim key column names the fact column joined to it.
-    let through = GROUPED.replace(
+    // An inner-joined dim's key column names the fact column joined to it.
+    let inner = GROUPED.replace("LEFT OUTER JOIN", "INNER JOIN");
+    let through = inner.replace(
         "f.org AS org, f.grp AS grp",
         "g.org_id AS org, f.grp AS grp",
     );
-    assert_eq!(parse(&through).unwrap(), spec);
+    assert_eq!(parse(&through).unwrap(), parse(&inner).unwrap());
 
     // Another view joins the same key in the other order: its via follows
     // the dim's key order.
@@ -401,13 +402,13 @@ fn spec_errors_pass_through() {
     );
 }
 
-/// A join's near side may be the key column of a dim joined before: it
+/// A join's near side may be the key column of an inner-joined dim: it
 /// reads the fact column that dim was joined on.
 #[test]
 fn a_join_through_a_dim_key_reads_the_fact_column() {
     let chain = base(
         "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
-        "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id\n\
+        "INNER JOIN public.z AS z ON z.id = f.z_id\n\
          LEFT OUTER JOIN public.w AS w ON w.id = z.id",
     )
     .replace(
@@ -427,6 +428,45 @@ fn a_join_through_a_dim_key_reads_the_fact_column() {
             through: 0,
             column: id("name")
         }]
+    );
+}
+
+/// A left-joined dim's key column is null where no dim row matches, and
+/// the fact column it was joined on is not, so no read stands in for the
+/// other: a key, a null-ness key, a FILTER, a measure or a join through it
+/// is refused, naming the fact column.
+#[test]
+fn a_left_joined_dim_key_is_refused() {
+    let named = "z.id is null where no z row matches, and f.z_id is not; \
+                 write f.z_id, or join z with INNER JOIN";
+    let reads = [
+        base("f.z_id AS z_id", "z.id AS z_id"),
+        base("f.z_id AS z_id", "(z.id IS NULL) AS orphan"),
+        base("count(*) AS n", "count(*) AS n, count(z.id) AS matched"),
+        base(
+            "count(*) AS n",
+            "count(*) AS n, count(*) FILTER (WHERE z.id = 1) AS ones",
+        ),
+        base(
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id",
+            "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id\n\
+             LEFT OUTER JOIN public.w AS w ON w.id = z.id",
+        )
+        .replace(
+            "z.name AS name, count(*)",
+            "z.name AS name, w.label AS label, count(*)",
+        )
+        .replace("GROUP BY 1, 2, 3, 4", "GROUP BY 1, 2, 3, 4, 5"),
+    ];
+    for text in reads {
+        let errors = error_lines(&text);
+        assert!(any_contains(&errors, named), "{text}\n{errors:?}");
+    }
+    // Under INNER JOIN each read is the fact column, and parses.
+    let inner = base("f.z_id AS z_id", "z.id AS z_id").replace("LEFT OUTER JOIN", "INNER JOIN");
+    assert_eq!(
+        parse(&inner).unwrap().fact("t").unwrap().by_keys[1],
+        by_key("z_id")
     );
 }
 

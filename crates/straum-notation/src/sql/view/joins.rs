@@ -6,6 +6,7 @@
 use sqlparser::ast as sql;
 use straum_domain::{Identifier, Ref, RefKind, Table, Via};
 
+use super::columns::left_key_message;
 use super::{JoinedRef, Qualified, Scope};
 use crate::sql::{NamedTable, Reported, Walker, and_parts, line};
 
@@ -25,6 +26,27 @@ struct Equalities {
 struct Equality {
     key: Identifier,
     via: Via,
+}
+
+/// Why one part of a join's ON gives no key equality.
+enum NotEquality {
+    /// The part has not the shape of one; the caller names the whole ON.
+    Shape,
+    /// The part's own error is reported already.
+    Reported,
+}
+
+/// What the near side of a join equality reads.
+enum Near {
+    Via(Via),
+    /// No column a join can go through.
+    Unknown,
+    /// A key column of a `LEFT OUTER JOIN`, joined on the fact's `via`.
+    LeftKey {
+        alias: Identifier,
+        column: Identifier,
+        via: Identifier,
+    },
 }
 
 /// FROM read: the fact table, the scope its joins make, and the WHERE
@@ -173,16 +195,20 @@ impl Walker {
         let mut key = Vec::new();
         let mut via = Vec::new();
         for part in parts {
-            let Some(equality) = self.equality(scope, alias, part) else {
-                self.error(
-                    line(on),
-                    format!(
-                        "join ON {alias}.<key> = {}.<column>, the joined table's column on \
-                         the left, one or more joined by AND; found {on}",
-                        scope.alias
-                    ),
-                );
-                return Err(Reported);
+            let equality = match self.equality(scope, alias, part) {
+                Ok(equality) => equality,
+                Err(NotEquality::Reported) => return Err(Reported),
+                Err(NotEquality::Shape) => {
+                    self.error(
+                        line(on),
+                        format!(
+                            "join ON {alias}.<key> = {}.<column>, the joined table's column \
+                             on the left, one or more joined by AND; found {on}",
+                            scope.alias
+                        ),
+                    );
+                    return Err(Reported);
+                }
             };
             key.push(equality.key);
             via.push(equality.via);
@@ -190,38 +216,48 @@ impl Walker {
         Ok(Equalities { key, via })
     }
 
-    /// One key equality; `None` when the part is none, which the caller
-    /// reports for the whole ON.
+    /// One key equality; `NotEquality::Shape` when the part is none,
+    /// which the caller reports for the whole ON.
     fn equality(
         &mut self,
         scope: &Scope,
         alias: &Identifier,
         expression: &sql::Expr,
-    ) -> Option<Equality> {
+    ) -> Result<Equality, NotEquality> {
         let sql::Expr::BinaryOp {
             left,
             op: sql::BinaryOperator::Eq,
             right,
         } = expression
         else {
-            return None;
+            return Err(NotEquality::Shape);
         };
         // Both sides are walked before either is judged, so each reports
         // its own errors.
         let joined_side = self.qualified(left);
         let near_side = self.qualified(right);
-        let Ok(joined_side) = joined_side else {
-            return None;
-        };
-        let Ok(near_side) = near_side else {
-            return None;
+        let (Ok(joined_side), Ok(near_side)) = (joined_side, near_side) else {
+            return Err(NotEquality::Shape);
         };
         if joined_side.alias != *alias {
-            return None;
+            return Err(NotEquality::Shape);
         }
-        Some(Equality {
+        let via = match near(scope, near_side) {
+            Near::Via(via) => via,
+            Near::Unknown => return Err(NotEquality::Shape),
+            Near::LeftKey {
+                alias: near_alias,
+                column,
+                via,
+            } => {
+                let message = left_key_message(scope, &near_alias, &column, &via);
+                self.error(line(right.as_ref()), message);
+                return Err(NotEquality::Reported);
+            }
+        };
+        Ok(Equality {
             key: joined_side.column,
-            via: near(scope, near_side)?,
+            via,
         })
     }
 
@@ -366,22 +402,33 @@ pub(super) fn key_position(joined: &JoinedRef, column: &Identifier) -> Option<us
 
 /// The near side of a join equality: a fact column, or a column of a
 /// dim joined before, which then carries it.
-fn near(scope: &Scope, near_side: Qualified) -> Option<Via> {
+fn near(scope: &Scope, near_side: Qualified) -> Near {
     let Qualified { alias, column } = near_side;
     if alias == scope.alias {
-        return Some(Via::Fact(column));
+        return Near::Via(Via::Fact(column));
     }
-    let through = ref_position(scope, &alias)?;
+    let Some(through) = ref_position(scope, &alias) else {
+        return Near::Unknown;
+    };
     let joined = &scope.refs[through];
     match joined.reference.kind {
         RefKind::Left | RefKind::Inner => {}
-        RefKind::Semi | RefKind::Anti => return None,
+        RefKind::Semi | RefKind::Anti => return Near::Unknown,
     }
-    // A key column of that dim is the column it was joined on.
+    // A key column of an inner-joined dim is the column it was joined on.
+    // Of a left-joined dim it is null where no row matches, and that
+    // column is not.
     if let Some(position) = key_position(joined, &column)
-        && let Via::Fact(_) = &joined.reference.via[position]
+        && let Via::Fact(via) = &joined.reference.via[position]
     {
-        return Some(joined.reference.via[position].clone());
+        if joined.reference.kind == RefKind::Left {
+            return Near::LeftKey {
+                alias,
+                column,
+                via: via.clone(),
+            };
+        }
+        return Near::Via(Via::Fact(via.clone()));
     }
-    Some(Via::Attribute { through, column })
+    Near::Via(Via::Attribute { through, column })
 }

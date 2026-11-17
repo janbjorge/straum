@@ -194,6 +194,12 @@ next answer, as PostgreSQL's view would, and nothing starts over
   counts the row's value twice. A dim needs no index on its key.
 - The fact column and the dim key column must be of the same kind,
   column for column.
+- Under `INNER JOIN` a dim key column, `a.id`, reads the fact column
+  joined to it, `e.account_id`, wherever it is written. Under `LEFT
+  OUTER JOIN` it is null where no dim row matches and the fact column
+  is not, so Straum refuses it as a key, a measure's column, a filter
+  or the near side of a chain: write the fact column, or join with
+  `INNER JOIN`.
 - A join must select at least one dim column. The fact column joined on,
   `e.account_id`, may be selected too or left out; either way it
   keys the cells, so a view with a join has one cell per distinct join

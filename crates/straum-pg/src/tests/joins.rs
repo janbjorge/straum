@@ -33,10 +33,12 @@ ALTER TABLE $S.orders REPLICA IDENTITY FULL;
 CREATE PUBLICATION $S FOR TABLE $S.customers, $S.tiers, $S.promos, $S.blocked, $S.orders;
 ";
 
+/// `c.id`, the key of an inner-joined dim, reads `o.customer_id`.
 const PAID_SPEC: &str = "
 CREATE VIEW paid WITH (buckets = '1 hour, 1 day') AS
 SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
        o.status AS status,
+       c.id AS customer,
        c.country AS country,
        t.label AS label,
        count(*) AS orders,
@@ -54,7 +56,7 @@ WHERE EXISTS (SELECT 1 FROM $S.promos AS p WHERE p.sku = o.sku)
   AND NOT EXISTS (SELECT 1 FROM $S.blocked AS b WHERE b.id = o.customer_id)
   AND o.status IN ('paid', 'shipped')
   AND c.country IN ('NO', 'SE', 'DK')
-GROUP BY 1, 2, 3, 4;
+GROUP BY 1, 2, 3, 4, 5;
 ";
 
 const OFFERS_SPEC: &str = "
@@ -89,13 +91,17 @@ fn shop_oracles() -> ShopReferences {
     ];
     let paid = Reference {
         sql: format!(
-            "SELECT extract(epoch FROM bucket)::int8, status, country, label, orders, qty,
-                    qty_max, round(qty_avg, 6), sizes, norwegian, all_gifts, any_gift
+            "SELECT extract(epoch FROM bucket)::int8, status, customer, country, label, orders,
+                    qty, qty_max, round(qty_avg, 6), sizes, norwegian, all_gifts, any_gift
                FROM ({}) v",
             body(PAID_SPEC, "paid")
         ),
-        ask: ask("paid", &PAID, &["bucket", "status", "country", "label"]),
-        scales: vec![0; 12],
+        ask: ask(
+            "paid",
+            &PAID,
+            &["bucket", "status", "customer", "country", "label"],
+        ),
+        scales: vec![0; 13],
     };
     let offers = Reference {
         sql: format!(

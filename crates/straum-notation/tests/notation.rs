@@ -7,7 +7,8 @@
 mod common;
 
 use common::{
-    BASE, ask_view_t, attribute, base, by_key, condition, id, key_text, spec_errors, sql_errors,
+    BASE, ask_view_t, attribute, base, by_key, condition, edit, id, key_text, spec_errors,
+    sql_errors,
 };
 use straum_domain::{
     Aggregate, ByKey, Fraction, Literal, Origin, RefKind, Spec, SpecError, Via, Width,
@@ -211,8 +212,9 @@ fn literals_and_filters() {
         "count(*) FILTER (WHERE f.a IN (-1, 2) AND z.name = 'it''s' AND f.z_id = 3 \
          AND z.id = 4 AND f.a = true) AS n",
     );
+    // An inner-joined dim's key column names the fact column joined to it.
+    let text = edit(&text, "LEFT OUTER JOIN", "INNER JOIN");
     let spec = parse(&text).unwrap();
-    // A dim key column names the fact column joined to it.
     assert_eq!(
         spec.fact("t").unwrap().measure("n").unwrap().filter,
         [
@@ -258,12 +260,12 @@ SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
        avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids,
        count(f.x) AS known, bool_and(f.a) AS every_a, bool_or(f.a) AS any_a
 FROM public.t AS f
-LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
+INNER JOIN public.z AS z ON z.id = f.z_id
 GROUP BY 1, 2, 3, 4";
     let spec = parse(text).unwrap();
     let fact = spec.fact("t").unwrap();
     assert_eq!(fact.time.width, Width { seconds: 30 });
-    // A dim key column names the fact column joined to it.
+    // An inner-joined dim's key column names the fact column joined to it.
     assert_eq!(fact.by_keys, [by_key("a"), by_key("z_id")]);
     let mut aggregates = Vec::new();
     for measure in &fact.measures {
