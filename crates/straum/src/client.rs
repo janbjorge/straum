@@ -64,7 +64,10 @@ impl Display for ClientError {
         match self {
             ClientError::NotAViewName(name) => write!(formatter, "{name:?} is not a view's name"),
             ClientError::NotAnHttpUrl(url) => {
-                write!(formatter, "--url takes http://HOST:PORT, not {url:?}")
+                write!(
+                    formatter,
+                    "--url or STRAUM_URL takes http://HOST:PORT, not {url:?}"
+                )
             }
             ClientError::Unreachable { url, wanted, error } => {
                 let wanted = wanted.as_str();
@@ -872,7 +875,7 @@ mod tests {
             "http:///",
             "http://x:1/status",
         ] {
-            let error = format!("--url takes http://HOST:PORT, not {bad:?}");
+            let error = format!("--url or STRAUM_URL takes http://HOST:PORT, not {bad:?}");
             assert_eq!(said(status(bad, Output::Text)), Said::Error(error), "{bad}");
         }
         // Nothing listens on port 1.
