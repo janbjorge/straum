@@ -34,6 +34,9 @@ const LOGICAL_UNDER_REPLICA_VERSION_NUM: u32 = 190_000;
 pub(crate) struct Checked {
     /// The spec's name for it.
     pub(crate) name: Identifier,
+    /// `pg_class.oid` when it was checked: another table made under its
+    /// name has another, and pgoutput names a relation by it.
+    pub(crate) oid: Oid,
     pub(crate) schema: Identifier,
     pub(crate) table_name: Identifier,
     /// What Straum reads of it, in order: `Fact::columns`, or the dim's
@@ -73,6 +76,7 @@ impl Checked {
     ) -> Checked {
         Checked {
             name: Identifier::new(name).unwrap(),
+            oid: 0,
             schema: Identifier::new("public").unwrap(),
             table_name: Identifier::new(table).unwrap(),
             columns: identifiers(columns),
@@ -174,6 +178,7 @@ pub(crate) struct EnumLabel {
 /// what the publication sends of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Class {
+    pub(crate) oid: Oid,
     pub(crate) schema: String,
     pub(crate) name: String,
     /// `pg_class.relkind`: `r` for a plain table.
@@ -307,7 +312,7 @@ fn classes(
     tables: &str,
 ) -> Result<Vec<Class>, Error> {
     let rows = connection.rows(&format!(
-        "SELECT n.nspname, c.relname, c.relkind, c.relpersistence, c.relreplident,
+        "SELECT c.oid, n.nspname, c.relname, c.relkind, c.relpersistence, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
                 array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL,
                 EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid),
@@ -321,6 +326,7 @@ fn classes(
     let mut classes = Vec::new();
     for row in rows {
         let [
+            oid,
             schema,
             name,
             relkind,
@@ -333,6 +339,7 @@ fn classes(
             row_security,
         ] = row.try_into().map_err(|_| shape("relations"))?;
         classes.push(Class {
+            oid: (oid.as_deref().unwrap_or_default().parse()).map_err(|_| shape("relations"))?,
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
             relkind: relkind.unwrap_or_default(),
@@ -349,6 +356,78 @@ fn classes(
         });
     }
     Ok(classes)
+}
+
+/// The spec's tables a stream follows, and how.
+pub(crate) struct Followed<'a> {
+    pub(crate) tables: &'a [Checked],
+    pub(crate) publication: &'a str,
+    pub(crate) replication: Replication,
+}
+
+/// Fails once a table the stream follows is gone from under its name,
+/// another table is there, or the publication left it out: none of it
+/// sends a message the stream reads. The setup check of the next start
+/// says what is wrong.
+pub(crate) fn still_followed(
+    connection: &mut Connection,
+    followed: &Followed<'_>,
+) -> Result<(), Error> {
+    if followed.tables.is_empty() {
+        return Ok(());
+    }
+    let mut values = Vec::new();
+    for (index, table) in followed.tables.iter().enumerate() {
+        values.push(format!(
+            "({index}, {}, {})",
+            escape_literal(table.schema.as_str()),
+            escape_literal(table.table_name.as_str())
+        ));
+    }
+    let rows = connection.rows(&format!(
+        "SELECT c.oid, p.tablename IS NOT NULL
+           FROM (VALUES {}) AS t(at, schema, name)
+           LEFT JOIN pg_namespace n ON n.nspname = t.schema
+           LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.name
+           LEFT JOIN pg_publication_tables p
+                  ON p.pubname = {} AND p.schemaname = t.schema AND p.tablename = t.name
+          ORDER BY t.at",
+        values.join(", "),
+        escape_literal(followed.publication)
+    ))?;
+    if rows.len() != followed.tables.len() {
+        return Err(shape("followed tables"));
+    }
+    let mut problems = Vec::new();
+    for (table, row) in followed.tables.iter().zip(rows) {
+        let [oid, published] = row.try_into().map_err(|_| shape("followed tables"))?;
+        let names = TableNames {
+            name: table.name.clone(),
+            qualified: table.qualified(),
+        };
+        let Some(oid) = oid else {
+            problems.push(names.table_problem(TableProblem::Missing));
+            continue;
+        };
+        let oid: Oid = oid.parse().map_err(|_| shape("followed tables"))?;
+        let problem = match oid {
+            oid if oid == table.oid => {
+                let logical = followed.replication == Replication::Logical;
+                if !logical || published.as_deref().is_some_and(is_true) {
+                    continue;
+                }
+                TableProblem::NotPublished {
+                    publication: followed.publication.to_owned(),
+                }
+            }
+            _ => TableProblem::Replaced,
+        };
+        problems.push(names.table_problem(problem));
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Setup(problems))
 }
 
 /// PostgreSQL's text for a true boolean.
@@ -784,6 +863,7 @@ fn check_table(
     }
     Some(Checked {
         name,
+        oid: class.oid,
         schema: table.schema.clone(),
         table_name: table.name.clone(),
         columns: read.columns,

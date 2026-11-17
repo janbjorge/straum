@@ -542,6 +542,7 @@ fn reads_layouts_once_a_snapshot_sees(db: &mut Db) {
     let xid: u32 = xid.unwrap().parse().unwrap();
     let checked = [Checked {
         name: id("trips"),
+        oid: 0,
         schema: id(&db.name),
         table_name: id("trips"),
         columns: Vec::new(),

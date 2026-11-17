@@ -490,6 +490,7 @@ mod tests {
     fn checked() -> Checked {
         Checked {
             name: id("t"),
+            oid: 0,
             schema: id("public"),
             table_name: id("t"),
             columns: vec![id("kept")],

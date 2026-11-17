@@ -127,13 +127,19 @@ impl Decoder {
     /// table whose columns now read differently is read again; one that
     /// lost a column, or whose column turned to a type Straum doesn't
     /// read, stops the stream, and the setup check on the next start says
-    /// what is wrong.
+    /// what is wrong. A table loaded under another name now, or another
+    /// table under its name, no longer reads as loaded.
     fn relation(&mut self, relation: &Relation) -> Result<(), Error> {
         let mut mappings = Vec::new();
         for (index, table) in self.tables.iter_mut().enumerate() {
-            if table.schema.as_str() != relation.schema
-                || table.table_name.as_str() != relation.name
-            {
+            let same_name = table.schema.as_str() == relation.schema
+                && table.table_name.as_str() == relation.name;
+            let same_table = table.oid == relation.id;
+            if !same_name && !same_table {
+                continue;
+            }
+            if same_name != same_table {
+                self.transaction.changes.push(unfit(table));
                 continue;
             }
             let mut positions = Vec::new();
@@ -338,18 +344,27 @@ mod tests {
         Change::Unfit { table: id(name) }
     }
 
+    /// `pg_class.oid` of `public.zones` when it was loaded.
+    const ZONES_OID: u32 = 7;
+
     /// Two facts read `public.zones`: `zones`, reading `id` and `name`, and
     /// `visits`, reading `name` alone.
     fn zones_decoder() -> Decoder {
         Decoder::new(
             vec![
-                Checked::public(
-                    "zones",
-                    "zones",
-                    &["id", "name"],
-                    vec![ColumnType::Int, ColumnType::Text],
-                ),
-                Checked::public("visits", "zones", &["name"], vec![ColumnType::Text]),
+                Checked {
+                    oid: ZONES_OID,
+                    ..Checked::public(
+                        "zones",
+                        "zones",
+                        &["id", "name"],
+                        vec![ColumnType::Int, ColumnType::Text],
+                    )
+                },
+                Checked {
+                    oid: ZONES_OID,
+                    ..Checked::public("visits", "zones", &["name"], vec![ColumnType::Text])
+                },
             ],
             LIMIT,
         )
@@ -430,6 +445,7 @@ mod tests {
     #[test]
     fn an_enum_column_reads_as_its_label() {
         let moods = Checked {
+            oid: ZONES_OID,
             enums: vec![777],
             ..Checked::public("moods", "zones", &["mood"], vec![ColumnType::Text])
         };
@@ -574,6 +590,36 @@ mod tests {
             expected.extend([unfit_named("zones"), unfit_named("visits")]);
         }
         assert_eq!(changes, expected);
+    }
+
+    /// The table loaded under another name now, or another table under its
+    /// name, no longer reads as loaded; its rows aren't read.
+    #[test]
+    fn a_table_renamed_or_replaced_is_unfit() {
+        let mut renamed = relation(ZONES_OID, &[("ref", UUID), ("id", INT4), ("name", TEXT)]);
+        if let Message::Relation(relation) = &mut renamed {
+            relation.name = "zones_old".into();
+        }
+        let replaced = relation(
+            ZONES_OID + 1,
+            &[("ref", UUID), ("id", INT4), ("name", TEXT)],
+        );
+        for message in [renamed, replaced] {
+            let mut decoder = zones_decoder();
+            let changes = feed(
+                &mut decoder,
+                vec![
+                    Message::Begin { final_lsn: 0x10 },
+                    message,
+                    Message::Insert {
+                        relation: ZONES_OID,
+                        new: row(Field::Text("1"), Field::Text("Bronx")),
+                    },
+                ],
+            )
+            .unwrap();
+            assert_eq!(changes, [unfit_named("zones"), unfit_named("visits")]);
+        }
     }
 
     #[test]

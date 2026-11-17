@@ -122,13 +122,16 @@ PostgreSQL can recycle WAL.
 A change that no longer fits makes Straum start over from a new slot:
 an update without its old row, a row never added, a dim row it never
 held, a value it can't read, a table whose columns now read
-differently, or a transaction above `--max-transaction-rows`. The
+differently, a table renamed away or another made under its name, or a
+transaction above `--max-transaction-rows`. The
 last is on purpose: a transaction waits in memory until its commit,
 and the new slot's snapshot is after the big commit, so its rows come
 in through the bulk `COPY` instead; the
 [benchmark](performance.md#transactions) sets the default. A lost
 connection or WAL past `--max-retained-wal` starts Straum over too
-([States](deploy.md#states)).
+([States](deploy.md#states)), and so does a spec table that the
+publication leaves out, that is gone from under its name, or that is
+another table now: each reading of the WAL, once a second, checks.
 
 ## The physical stream
 

@@ -113,6 +113,9 @@ pub(crate) enum TableProblem {
     NotPublished {
         publication: String,
     },
+    /// Under its name is now another table than the one loaded: renamed
+    /// away and another made, or dropped and made again.
+    Replaced,
     /// No `REPLICA IDENTITY FULL`; `kind` is "fact" or "dim".
     ReplicaIdentity {
         kind: &'static str,
@@ -299,6 +302,11 @@ fn write_table(
             formatter,
             "{name}: publication {publication} leaves out {qualified}: \
              ALTER PUBLICATION {publication} ADD TABLE {qualified}"
+        ),
+        TableProblem::Replaced => write!(
+            formatter,
+            "{name}: {qualified} is another table than the one Straum loaded; \
+             Straum loads it again"
         ),
         TableProblem::ReplicaIdentity { kind } => write!(
             formatter,

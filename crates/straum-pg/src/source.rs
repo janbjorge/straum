@@ -16,7 +16,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_app::{Commit, Lsn, Source, SourceError, Wal};
 use straum_domain::{Identifier, Spec, Store};
 
-use crate::catalog::{self, Checked, Tables};
+use crate::catalog::{self, Checked, Followed, Tables};
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
 use crate::error::Error;
@@ -73,6 +73,9 @@ pub struct Postgres {
     state: State,
     /// The slot of the last [`Source::open`].
     slot: String,
+    /// The spec's tables as the last [`Source::open`] checked them, which
+    /// each reading of the WAL checks are still those tables.
+    followed: Vec<Checked>,
     /// Reads the server's WAL, since the stream's connection is busy
     /// streaming. Connects again after an error.
     plain: Option<Connection>,
@@ -123,6 +126,7 @@ impl Postgres {
             }),
             state: State::Closed,
             slot: String::new(),
+            followed: Vec::new(),
             plain: None,
         }
     }
@@ -379,6 +383,7 @@ impl Source for Postgres {
         };
         let at = snapshot.at;
         self.slot.clone_from(&snapshot.slot);
+        self.followed = followed(&snapshot.tables);
         self.state = State::Loading(snapshot);
         Ok(at)
     }
@@ -425,10 +430,17 @@ impl Postgres {
         error.into()
     }
 
-    /// One reading of the WAL; its connection goes after a failure.
+    /// One reading of the WAL, and a check that the spec's tables are
+    /// still the ones loaded and published; its connection goes after a
+    /// failure.
     fn read_wal_once(&mut self) -> Result<Wal, Error> {
+        let followed = Followed {
+            tables: &self.followed,
+            publication: &self.publication,
+            replication: self.replication,
+        };
         let wal = match plain(&mut self.plain, &self.dsn) {
-            Ok(connection) => read_wal(connection, &self.slot),
+            Ok(connection) => read_wal_and_check(connection, &self.slot, &followed),
             Err(error) => Err(error),
         };
         if wal.is_err() {
@@ -475,6 +487,25 @@ fn loaded(snapshot: &mut Snapshot, table: &Identifier) -> Result<(), Error> {
         snapshot.connection.execute("COMMIT")?;
     }
     Ok(())
+}
+
+/// The server's WAL position, then a check that the spec's tables are
+/// still followed.
+fn read_wal_and_check(
+    connection: &mut Connection,
+    slot: &str,
+    followed: &Followed<'_>,
+) -> Result<Wal, Error> {
+    let wal = read_wal(connection, slot)?;
+    catalog::still_followed(connection, followed)?;
+    Ok(wal)
+}
+
+/// Every table of `tables`, facts then dims.
+fn followed(tables: &Tables) -> Vec<Checked> {
+    let mut followed = tables.facts.clone();
+    followed.extend(tables.dims.iter().cloned());
+    followed
 }
 
 /// The server's WAL position, and how far the slot has confirmed and keeps

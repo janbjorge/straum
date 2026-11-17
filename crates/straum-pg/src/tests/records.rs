@@ -463,6 +463,7 @@ fn datums_layouts(dsn: &Dsn) -> Layouts {
     }
     let checked = Checked {
         name: id("v"),
+        oid: 0,
         schema: id("datums"),
         table_name: id("v"),
         columns,
