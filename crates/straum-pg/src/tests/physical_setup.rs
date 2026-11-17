@@ -49,3 +49,32 @@ fn an_unlogged_table_is_refused() {
     db.run("ALTER TABLE $S.f SET LOGGED");
     assert_eq!(physical_problems(&mut db, &spec), Vec::<String>::new());
 }
+
+/// A virtual generated column, from 18, is computed as it is read and the
+/// pages hold no value of it; a stored one is read like any other.
+#[test]
+fn a_virtual_generated_column_is_refused() {
+    let pg = postgres_at_replica(&tag());
+    let generated = "raw text, kind text GENERATED ALWAYS AS (upper(raw))";
+    let mut db = Db::new(&pg, "stored", &tables(&format!("{generated} STORED")));
+    let spec = db.spec(SPEC);
+    assert_eq!(physical_problems(&mut db, &spec), Vec::<String>::new());
+    let major: u32 = tag()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap();
+    if major < 18 {
+        return;
+    }
+    let mut db = Db::new(&pg, "virtual", &tables(&format!("{generated} VIRTUAL")));
+    let spec = db.spec(SPEC);
+    assert_eq!(
+        physical_problems(&mut db, &spec),
+        [
+            "f: column kind of virtual.f is virtual, so the WAL holds no value of it; \
+          --wal physical needs it STORED"
+        ]
+    );
+}

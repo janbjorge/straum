@@ -173,13 +173,16 @@ GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO "straum";
 ```
 
 The server needs `full_page_writes = on` and a `wal_compression` of
-`off`, `pglz` or `lz4`, and a spec table must not be `UNLOGGED`, since
-such a table writes no WAL; the start says so when it isn't:
+`off`, `pglz` or `lz4`. A spec table must not be `UNLOGGED`, since such
+a table writes no WAL, and a column the spec reads must not be a virtual
+generated column, the default from 18, since no page holds its value.
+The start says so:
 
 ```text
 full_page_writes is off; --wal physical needs on
 wal_compression is zstd; --wal physical reads off, pglz and lz4
 usage: public.events is unlogged, so the WAL holds none of its changes: ALTER TABLE public.events SET LOGGED
+usage: column kind of public.events is virtual, so the WAL holds no value of it; --wal physical needs it STORED
 ```
 
 A start waits until every transaction open when it began has ended, as a

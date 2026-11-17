@@ -206,6 +206,9 @@ pub(crate) struct Column {
     pub(crate) type_name: String,
     /// `pg_type.typtype`: `e` for an enum.
     pub(crate) typtype: String,
+    /// `pg_attribute.attgenerated`: `v` for a virtual generated column,
+    /// which no row on disk holds.
+    pub(crate) generated: String,
 }
 
 /// Reads the catalog and checks it against the spec.
@@ -348,7 +351,7 @@ fn read_columns(
 ) -> Result<(), Error> {
     let rows = connection.rows(&format!(
         "SELECT n.nspname, c.relname, a.attname, a.atttypid, a.atttypmod,
-                format_type(a.atttypid, a.atttypmod), t.typtype
+                format_type(a.atttypid, a.atttypmod), t.typtype, a.attgenerated
            FROM pg_attribute a
            JOIN pg_class c ON c.oid = a.attrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -359,10 +362,18 @@ fn read_columns(
     ))?;
     for row in rows {
         // None of these is ever null.
-        let [schema, table, name, type_oid, typmod, type_name, typtype] =
-            <[Option<String>; 7]>::try_from(row)
-                .map_err(|_| shape("columns"))?
-                .map(Option::unwrap_or_default);
+        let [
+            schema,
+            table,
+            name,
+            type_oid,
+            typmod,
+            type_name,
+            typtype,
+            generated,
+        ] = <[Option<String>; 8]>::try_from(row)
+            .map_err(|_| shape("columns"))?
+            .map(Option::unwrap_or_default);
         let Some(class) = class_mut(classes, &schema, &table) else {
             return Err(shape("columns"));
         };
@@ -372,6 +383,7 @@ fn read_columns(
             typmod: typmod.parse().map_err(|_| shape("columns"))?,
             type_name,
             typtype,
+            generated,
         });
     }
     Ok(())
@@ -720,6 +732,7 @@ fn check_table(
     };
     let reader = ColumnReader {
         table: &names,
+        replication,
         publication,
         class,
         published,
@@ -748,6 +761,7 @@ fn check_table(
 // which nothing outlives.
 struct ColumnReader<'a> {
     table: &'a TableNames,
+    replication: Replication,
     publication: &'a str,
     class: &'a Class,
     /// The columns the publication sends; `None` when it sends all.
@@ -796,6 +810,11 @@ impl ColumnReader<'_> {
         let Some(column) = self.class.column(column_name) else {
             return Err(self.problem(column_name, ColumnProblem::Missing));
         };
+        // A virtual column's value is computed as it is read; the pages
+        // hold none.
+        if column.generated == "v" && self.replication != Replication::Logical {
+            return Err(self.problem(column_name, ColumnProblem::Virtual));
+        }
         if let Some(published) = self.published
             && !published.contains(&column.name)
         {

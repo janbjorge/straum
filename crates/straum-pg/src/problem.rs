@@ -123,6 +123,9 @@ pub(crate) enum ColumnProblem {
     },
     /// Dropped or changed type while the stream ran.
     Changed,
+    /// A virtual generated column, which the physical WAL holds no value
+    /// of.
+    Virtual,
 }
 
 /// What to change about a column's type.
@@ -301,6 +304,11 @@ fn write_column(
                 "{name}: column {column} of {qualified} is {type_name}{fix}"
             )
         }
+        ColumnProblem::Virtual => write!(
+            formatter,
+            "{name}: column {column} of {qualified} is virtual, so the WAL holds no value of it; \
+             --wal physical needs it STORED"
+        ),
         ColumnProblem::Changed => write!(
             formatter,
             "{name}: column {column} of {qualified} was dropped or changed type"
