@@ -82,6 +82,23 @@ pub(crate) struct Records {
     files: Option<FastSet<RelationFile>>,
     /// Where the record after the last one read or passed by may start.
     passed: u64,
+    /// How far the record being read has been gathered, so bytes that
+    /// come in pieces are gathered once, not again from its start on
+    /// every feed.
+    gathering: Option<Gathering>,
+}
+
+/// A record gathered up to where the bytes fed so far end.
+#[derive(Clone, Copy)]
+struct Gathering {
+    /// The record's first byte.
+    start: u64,
+    /// The record's bytes wanted, page headers left out.
+    length: usize,
+    /// The record's bytes gathered so far.
+    gathered: usize,
+    /// Where the next bytes to gather lie, page headers counted.
+    position: u64,
 }
 
 /// Where a record lies in the WAL: its first byte, and the byte after
@@ -124,6 +141,7 @@ impl Records {
             record: Record::empty(),
             files: None,
             passed: start,
+            gathering: None,
         }
     }
 
@@ -254,6 +272,7 @@ impl Records {
         let header_on_one_page = start % PAGE_SIZE + RECORD_HEADER as u64 <= PAGE_SIZE;
         let total_length = match self.bytes_at(start, RECORD_HEADER as u64) {
             Some(header) if header_on_one_page => read_u32(&header[RECORD_LENGTH]),
+            _ if self.past_header(start) => read_u32(&bytes[RECORD_LENGTH]),
             _ => {
                 if self.gather(start, RECORD_HEADER, Some(bytes))?.is_none() {
                     return Ok(None);
@@ -268,6 +287,16 @@ impl Records {
             return Err(at(start, Problem::Length));
         }
         Ok(Some(total_length))
+    }
+
+    /// Whether the record at `start` is partly gathered past its header,
+    /// which then opens the record's buffer: gathered there by
+    /// `total_length`, or by the gathering itself.
+    fn past_header(&self, start: u64) -> bool {
+        let Some(gathering) = self.gathering else {
+            return false;
+        };
+        gathering.start == start && gathering.gathered >= RECORD_HEADER
     }
 
     /// The `length` bytes at `lsn`, if they have come.
@@ -331,15 +360,16 @@ impl Records {
         length: usize,
         mut out: Option<&mut Vec<u8>>,
     ) -> Result<Option<u64>, WalError> {
-        if let Some(out) = out.as_deref_mut() {
+        let (mut gathered, mut position) = self.resume(start, length, out.as_deref());
+        if gathered == 0
+            && let Some(out) = out.as_deref_mut()
+        {
             out.clear();
         }
-        let mut gathered = 0;
-        let mut position = start;
         while gathered < length {
             if position.is_multiple_of(PAGE_SIZE) {
                 let Some(header) = self.page_header(position)? else {
-                    return Ok(None);
+                    return Ok(self.wait(start, length, gathered, position));
                 };
                 let left = (length - gathered) as u64;
                 let continues = header.flags & FIRST_IS_CONTINUATION != 0;
@@ -353,7 +383,7 @@ impl Records {
             let room = PAGE_SIZE - position % PAGE_SIZE;
             let take = room.min((length - gathered) as u64);
             let Some(bytes) = self.bytes_at(position, take) else {
-                return Ok(None);
+                return Ok(self.wait(start, length, gathered, position));
             };
             gathered += bytes.len();
             if let Some(out) = out.as_deref_mut() {
@@ -361,7 +391,37 @@ impl Records {
             }
             position += take;
         }
+        self.gathering = None;
         Ok(Some(position))
+    }
+
+    /// Where to go on gathering `length` bytes of the record at `start`:
+    /// from where the last feed stopped, when that was this record and
+    /// `out` still holds what was gathered, else from its start.
+    fn resume(&self, start: u64, length: usize, out: Option<&Vec<u8>>) -> (usize, u64) {
+        let Some(gathering) = self.gathering else {
+            return (0, start);
+        };
+        if gathering.start != start || gathering.length != length {
+            return (0, start);
+        }
+        if let Some(out) = out
+            && out.len() != gathering.gathered
+        {
+            return (0, start);
+        }
+        (gathering.gathered, gathering.position)
+    }
+
+    /// Keeps how far the record at `start` is gathered, for the next feed.
+    fn wait(&mut self, start: u64, length: usize, gathered: usize, position: u64) -> Option<u64> {
+        self.gathering = Some(Gathering {
+            start,
+            length,
+            gathered,
+            position,
+        });
+        None
     }
 }
 
@@ -441,6 +501,56 @@ mod tests {
             .unwrap();
         check(records.next_record().unwrap().unwrap(), &spec, lsns[0]);
         assert_eq!(records.next_record(), Ok(None));
+    }
+
+    #[test]
+    fn gathers_a_record_fed_in_pieces_once() {
+        let mut rng = Rng(4);
+        let mut spec = random_spec(&mut rng);
+        spec.main = rng.bytes(200_000);
+        let LaidOut { wal, lsns } = lay_out(SEGMENT, &[assemble(&spec)]);
+        let mut records = Records::new(lsns[0], SEGMENT);
+        let piece = 1000;
+        let mut at = 0;
+        while at + piece < wal.len() {
+            records
+                .feed(records.wanted(), &wal[at..at + piece])
+                .unwrap();
+            at += piece;
+            assert_eq!(records.next_record(), Ok(None));
+            let gathering = records.gathering.unwrap();
+            assert!(records.wanted() - gathering.position < PAGE_SIZE, "at {at}");
+        }
+        records.feed(records.wanted(), &wal[at..]).unwrap();
+        check(records.next_record().unwrap().unwrap(), &spec, lsns[0]);
+        assert!(records.gathering.is_none());
+    }
+
+    #[test]
+    fn goes_on_with_a_record_whose_header_runs_across_pages() {
+        let mut rng = Rng(5);
+        let left_on_page = 8;
+        let mut first = random_spec(&mut rng);
+        first.blocks.clear();
+        first.toplevel_xid = None;
+        first.origin = false;
+        let main_data_header = size_of::<u8>() + size_of::<u32>();
+        let first_room = usize::try_from(PAGE_SIZE - LONG_HEADER - left_on_page).unwrap();
+        first.main = rng.bytes(first_room - RECORD_HEADER - main_data_header);
+        let mut second = random_spec(&mut rng);
+        second.main = rng.bytes(30_000);
+        let LaidOut { wal, lsns } = lay_out(SEGMENT, &[assemble(&first), assemble(&second)]);
+        assert_eq!(lsns[1] % PAGE_SIZE, PAGE_SIZE - left_on_page);
+        let mut records = Records::new(lsns[0], SEGMENT);
+        let mut read = Vec::new();
+        for byte in wal.chunks(100) {
+            records.feed(records.wanted(), byte).unwrap();
+            while let Some(record) = records.next_record().unwrap() {
+                read.push(record.clone());
+            }
+        }
+        assert_eq!(read.len(), 2);
+        check(&read[1], &second, lsns[1]);
     }
 
     /// Whether a stream reading `files` must read `record`: its resource
