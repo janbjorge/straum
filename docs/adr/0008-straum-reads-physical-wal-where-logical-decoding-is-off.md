@@ -26,7 +26,7 @@ are decoded; the others are stepped over, as a busy table's other
 values were most of the decoding. The load is plain SQL in a
 `REPEATABLE READ` transaction, and commits its snapshot saw are
 skipped. A table rewrite, DDL or a TOASTed value Straum can't rebuild
-is `Unfit` and starts Straum over. `--wal logical` stays the default.
+is `Unfit` and stops Straum. `--wal logical` stays the default.
 
 The reader knows the spec tables' relation files and passes by each
 record that names only other files' pages and whose resource manager
@@ -43,7 +43,7 @@ Page state keeps each changed page of the spec's tables, its rows
 whole as PostgreSQL has them. A row goes when a prune or vacuum frees
 its slot; a page goes once a checkpoint's redo point passes its last
 change, since its next change brings a full image. Past
-`--max-page-memory` Straum starts over. Cutting rows at the last
+`--max-page-memory` Straum stops. Cutting rows at the last
 column read was dropped: rebuilding an update from a row of unknown
 length needs a partial column walk per major.
 

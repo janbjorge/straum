@@ -36,7 +36,7 @@ const LIMITS: Limits = Limits {
 /// applying it; `bench/taxi.py transactions` measures what a transaction this
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
-/// Rows a physical stream holds before starting over: a guard, far above
+/// Rows a physical stream holds before Straum stops: a guard, far above
 /// what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
 

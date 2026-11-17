@@ -28,7 +28,8 @@ pub(crate) const RUN_HELP: &str = "\
 usage: straum run FILE [flags]
 
 Loads every table FILE names, follows their changes and answers asks over
-HTTP. SIGTERM or SIGINT stops it. FILE is the spec.
+HTTP. SIGTERM or SIGINT stops it. FILE is the spec. Any failure to load
+or follow ends it with exit 1, for whatever runs it to start it again.
 
   --listen ADDRESS             where to serve HTTP (0.0.0.0:8080)
   --wal logical|physical       logical decoding through the publication, or
@@ -37,12 +38,12 @@ HTTP. SIGTERM or SIGINT stops it. FILE is the spec.
   --publication NAME           the publication straum plan made (straum)
   --dsn-file FILE              a file holding the DSN; else STRAUM_DSN
   --max-lag SECONDS            lag before /readyz turns off (30)
-  --max-retained-wal BYTES     WAL retained for the slot before Straum starts
-                               over (4Gi; takes Ki, Mi, Gi or Ti)
+  --max-retained-wal BYTES     WAL retained for the slot before Straum
+                               stops (4Gi; takes Ki, Mi, Gi or Ti)
   --max-transaction-rows ROWS  rows one transaction may change before
-                               Straum starts over (100000)
+                               Straum stops (100000)
   --max-page-memory BYTES      with --wal physical: rows held from the WAL
-                               before Straum starts over (1Gi)
+                               before Straum stops (1Gi)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 ";

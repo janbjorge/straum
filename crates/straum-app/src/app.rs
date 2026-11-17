@@ -45,7 +45,7 @@ pub struct Limits {
     /// Past this, Straum is not ready, though asks still answer.
     pub max_lag: Duration,
     /// Bytes of WAL the server may keep for Straum's slot. Past this,
-    /// Straum starts over, so a Straum that can't keep up doesn't fill the
+    /// Straum stops, so a Straum that can't keep up doesn't fill the
     /// server's disk.
     pub max_retained_wal: u64,
 }

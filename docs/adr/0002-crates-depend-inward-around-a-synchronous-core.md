@@ -50,7 +50,7 @@ the last two are the next step if the lock ever matters.
 - Readers never wait on PostgreSQL, and asks on other tables go on
   during a load.
 - A panic aborts the process, since the store may be half written. A
-  failed step starts over after 1 s, doubling to 60 s.
+  failed step ends it with exit 1 (ADR-0009).
 - A long ask delays the writer, which shows as lag, and `/readyz` waits
   behind it: an ask over every 15-minute bucket of the taxi month holds
   the lock 2.4 to 3.0 s.

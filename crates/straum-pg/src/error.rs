@@ -1,7 +1,7 @@
 //! `Error`, everything that stops straum-pg: the connection, PostgreSQL's
 //! own errors, bytes it sent that don't read, a failed setup check, a
 //! limit passed. Each module returns it; `source.rs` hands it to
-//! `straum-app` as a `SourceError`, and Straum starts over.
+//! `straum-app` as a `SourceError`, and Straum stops.
 
 use std::fmt;
 use std::io;
@@ -17,7 +17,7 @@ use crate::value::ValueError;
 use crate::wal::WalError;
 use crate::watchdog::Verdict;
 
-/// Whatever stops straum-pg. Straum starts over from a new stream after one.
+/// Whatever stops straum-pg, and Straum with it.
 #[derive(Debug)]
 pub(crate) enum Error {
     Io(io::Error),
@@ -109,24 +109,24 @@ impl fmt::Display for Error {
             Error::Transaction { lsn, limit } => write!(
                 formatter,
                 "transaction {lsn} changes more than {limit} rows Straum reads, \
-                 the --max-transaction-rows limit; Straum starts over from a snapshot after it"
+                 the --max-transaction-rows limit"
             ),
             Error::Memory { held, limit } => write!(
                 formatter,
                 "the physical stream holds {held} bytes of rows, past the --max-page-memory \
-                 limit of {limit}; Straum starts over"
+                 limit of {limit}"
             ),
             Error::Watchdog(Verdict::Retained { retained, limit }) => write!(
                 formatter,
                 "PostgreSQL held {} of WAL for Straum's slot, past the --max-retained-wal \
-                 limit of {}; the watchdog ended the slot's session, and Straum starts over",
+                 limit of {}; the watchdog ended the slot's session",
                 format_mebibytes(*retained),
                 format_mebibytes(*limit)
             ),
             Error::Watchdog(Verdict::Unwatched { unwatched }) => write!(
                 formatter,
                 "the watchdog couldn't read Straum's slot for {} s, so it ended the stream \
-                 rather than leave the slot's WAL unwatched; Straum starts over",
+                 rather than leave the slot's WAL unwatched",
                 unwatched.as_secs()
             ),
             Error::Stopped => formatter.write_str("the replication stream stopped"),
@@ -166,7 +166,7 @@ mod tests {
                     limit: 1024,
                 },
                 "the physical stream holds 2048 bytes of rows, past the --max-page-memory \
-                 limit of 1024; Straum starts over",
+                 limit of 1024",
             ),
             (
                 Error::from(DecodeError::Short),
@@ -202,7 +202,7 @@ mod tests {
                     limit: 100_000,
                 },
                 "transaction 16/B374D848 changes more than 100000 rows Straum reads, \
-                 the --max-transaction-rows limit; Straum starts over from a snapshot after it",
+                 the --max-transaction-rows limit",
             ),
             (Error::Stopped, "the replication stream stopped"),
         ];

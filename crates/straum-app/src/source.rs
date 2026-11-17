@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use straum_domain::{Datum, Identifier, Spec, Store};
 
 /// Whatever the source can't work around: the connection dropped, the setup
-/// is missing, a table no longer fits the spec. Straum starts over after one.
+/// is missing, a table no longer fits the spec. Straum stops after one.
 pub type SourceError = Box<dyn error::Error + Send + Sync>;
 
 /// A position in PostgreSQL's write-ahead log.

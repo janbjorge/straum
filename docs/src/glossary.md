@@ -165,10 +165,11 @@ the end are open.
 - **Start** (`Writer::start`): a new slot, a **load** of each table in
   its snapshot, then the stream
   ([Load once](how-it-works.md#load-once-follow-every-commit)).
-- **Start over**: after a failure, drop the slot, wait, start again
-  ([States](deploy.md#states)). A **restart** is PostgreSQL's or a pod's.
-- **Backoff**: the wait before a new start, 1 s doubling to 60 s.
-- **States**: Loading, Ready, Lagging, Waiting, Stopping
+- **Fail hard**: a failure ends the process with exit 1, and whatever
+  runs Straum starts it again from a new slot
+  ([States](deploy.md#states)). A **restart** is that, PostgreSQL's or
+  a pod's. Straum never retries in the process.
+- **States**: Loading, Ready, Lagging, Exited, Stopping
   ([States](deploy.md#states)); no enum.
 - **Ready** (`Status::ready`): every table loaded and lag within
   `--max-lag`; else "not ready" and why.
@@ -193,7 +194,7 @@ the end are open.
 - **Change** (`Change`, `HeapChange`): one insert, update, delete or
   truncate of a spec table.
 - **Unfit** (`Change::Unfit`): a change the store can't take, which
-  starts Straum over ([Following](how-it-works.md#following)).
+  stops Straum ([Following](how-it-works.md#following)).
 - **Apply** (`State::apply`): putting a commit into the store under the
   write lock.
 - **Source** (`Source`, `Postgres`): the port to PostgreSQL. "Source of

@@ -118,9 +118,7 @@ fn stops_past_the_page_memory() {
     };
     assert!(
         error.starts_with("the physical stream holds ")
-            && error.ends_with(
-                " bytes of rows, past the --max-page-memory limit of 65536; Straum starts over"
-            ),
+            && error.ends_with(" bytes of rows, past the --max-page-memory limit of 65536"),
         "{error}"
     );
 }

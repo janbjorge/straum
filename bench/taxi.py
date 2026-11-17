@@ -340,14 +340,10 @@ async def transactions(
         rss = process.memory_info().rss
         log(f"straum ready in {loaded:.1f} s; asking while idle")
         idle = statistics.median(await ask_until(http, lambda: True, 1.0))
-        starts = await status_field(http, "starts")
         rows = []
         for n in SIZES:
             log(f"updating {n:,} rows in one transaction")
             applied, stall, peak = await transaction(pg, http, process, n)
-            # A start over in the middle would time a reload as applied.
-            if await status_field(http, "starts") != starts:
-                raise SystemExit(f"taxi: straum started over during {n:,} rows")
             await check(pg, http, f"fares after {n:,} rows", FARES_SQL, FARES_ASK)
             grew = max(0, peak - rss)
             rows.append(

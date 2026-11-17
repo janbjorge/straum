@@ -84,7 +84,7 @@ the views read, nothing else, kept current from the stream. An ask reads
 
 So a dim change moves no cell. An account moved from `eu` to `us`
 moves all its events to `us` in the next answer, as
-PostgreSQL's view would, and nothing starts over. It also means a
+PostgreSQL's view would, and nothing stops. It also means a
 join to a dim with many rows means many cells, one per distinct join
 id in the fact.
 
@@ -128,8 +128,8 @@ reads ahead of the writer, up to 64 commits or 200,000 changes,
 whichever comes first, and confirms what the writer has applied, so
 PostgreSQL can recycle WAL.
 
-A change that no longer fits makes Straum start over from a new slot:
-an update without its old row, a row never added, a dim row it never
+A change that no longer fits stops Straum, with exit 1, and the next
+start loads from a new slot: an update without its old row, a row never added, a dim row it never
 held, a value it can't read, a table whose columns now read
 differently, a table renamed away or another made under its name, or a
 transaction above `--max-transaction-rows`. The
@@ -137,14 +137,14 @@ last is on purpose: a transaction waits in memory until its commit,
 and the new slot's snapshot is after the big commit, so its rows come
 in through the bulk `COPY` instead; the
 [benchmark](performance.md#transactions) sets the default. A lost
-connection or WAL past `--max-retained-wal` starts Straum over too
+connection or WAL past `--max-retained-wal` stops Straum too
 ([States](deploy.md#states)), and so does a spec table that the
 publication leaves out, that is gone from under its name, or that is
 another table now, and a column Straum reads that `ALTER COLUMN ..
 TYPE` rewrote, even to its own type `USING` an expression, which
 logical decoding sends no row of: each reading of the WAL, once a
-second, checks. `VACUUM FULL` and `CLUSTER` keep the values and start
-nothing over.
+second, checks. `VACUUM FULL` and `CLUSTER` keep the values and stop
+nothing.
 
 ## The physical stream
 
@@ -181,13 +181,13 @@ messages the logical slot sends, so one decoder serves both:
 - Memory. A page goes at the next checkpoint record whose redo point is
   past its last change: PostgreSQL logs it whole the next time. So
   Straum holds the pages changed in about one checkpoint cycle, not the
-  tables, and starts over past `--max-page-memory`.
+  tables, and stops past `--max-page-memory`.
 - DDL. A commit that changes a table's catalog entry makes Straum read
   the table's columns again, and the decoder sees what changed, as with
   pgoutput. The stream reads that commit before snapshots see it, as
   with the load, so Straum reads the columns in a snapshot that sees
-  it, waiting up to 10 s, then starting over. A table rewritten or
-  truncated starts Straum over.
+  it, waiting up to 10 s, then stopping. A table rewritten or
+  truncated stops Straum.
 
 ## Answering an ask
 

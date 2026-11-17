@@ -39,7 +39,7 @@ pub(super) const LIMITS: Limits = Limits {
     max_lag: Duration::from_secs(30),
     max_retained_wal: MAX_RETAINED_WAL_BYTES,
 };
-/// Rows a transaction may change before Straum starts over; no test but
+/// Rows a transaction may change before Straum stops; no test but
 /// the one for it comes near.
 pub(super) const ROW_LIMIT: usize = 10_000;
 /// The rows a physical stream may hold in these tests.

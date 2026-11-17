@@ -1,4 +1,4 @@
-# ADR-0009: A change that can't apply starts Straum over
+# ADR-0009: A change that can't apply stops Straum
 
 Status: Accepted 2026-11-10; revised 2026-11-17
 
@@ -13,13 +13,18 @@ without the server's, and a commit time stops on a quiet database.
 
 ## Decision
 
-Straum starts over from a new slot. Its snapshot is after the failing
-commit, so those rows arrive through the bulk load (ADR-0007) instead
-of being held and applied under the write lock.
-`--max-transaction-rows` (100000) caps the changes a transaction may
-hold, a default measured by `bench/taxi.py transactions`. Past
-`--max-retained-wal` (4Gi) Straum starts over too, since Azure fixes
-`max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
+Straum fails hard. Any failure of the writer, at a start or while
+following, logs the error and ends the process with exit 1. Whatever
+runs Straum starts it again, and the new process loads from a new slot.
+Its snapshot is after the failing commit, so those rows arrive through
+the bulk load (ADR-0007) instead of being held and applied under the
+write lock. Starting over inside the process, after a backoff of 1 s
+doubling to 60 s, was dropped on 2026-11-17: each failure left state to
+reset by hand, and every supervisor already restarts with a backoff of
+its own. `--max-transaction-rows` (100000) caps the changes a
+transaction may hold, a default measured by `bench/taxi.py
+transactions`. Past `--max-retained-wal` (4Gi) Straum stops too, since
+Azure fixes `max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
 an overflowing numeric, non-UTF-8 text) fails the load naming table
 and column.
 
@@ -59,18 +64,21 @@ during a load counts from its start. `/readyz` is off past `--max-lag`
 
 ## Consequences
 
-- One recovery path to test, not per-table reload plus restart.
+- One recovery path, the process's own start, and no retry inside it
+  to test. A setup that can never work fails each start, and the
+  supervisor's restart count shows it.
 - No thread of Straum's has to move for the WAL limit to hold; the
   watchdog costs one more connection and one query a second. A server
-  the watchdog can't reach for 10 seconds starts Straum over.
+  the watchdog can't reach for 10 seconds stops Straum.
 - A network cut between Straum and the server is beyond the watchdog:
   it can't reach the server, and shut sockets send the server nothing.
   A load's session, blocked writing `COPY` rows, then lasts until the
   server's TCP gives up, unless the server sets `tcp_user_timeout`.
-- Asks answer not ready while a load runs; `/readyz` says why and the
-  log says why Straum started over.
-- A load slower than the WAL cap allows starts over again and again,
-  which the log shows.
+- Asks answer not ready while a load runs, and get no answer between a
+  failure and the next start, as the port closes; the failed run's last
+  log lines say why it stopped.
+- A load slower than the WAL cap allows fails each start, which the
+  supervisor's restarts show.
 - Lag is up to a second longer than the truth, never shorter. The
   readings need no grant beyond the tables'.
 - Per-table reload and a chunked apply are open, not planned.

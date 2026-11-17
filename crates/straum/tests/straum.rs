@@ -185,8 +185,6 @@ fn output(command: &mut Command) -> (Option<i32>, String, String) {
 enum Until {
     /// `/readyz` answers 200.
     Ready,
-    /// The log holds this text.
-    Logged(&'static str),
     /// The ask in `ASK` answers with these rows at the end.
     Answers(String),
 }
@@ -218,8 +216,20 @@ fn run(args: &[&str], dsn: &str) -> Running {
             log.push('\n');
         }
     });
+    let mut gatherer = Some(gatherer);
     let start = Instant::now();
     while !log.lock().unwrap().contains("listening on ") {
+        if child.try_wait().unwrap().is_some() {
+            // An exit may come before its log is read: the gatherer ends
+            // with the pipe, so the log is whole once it joins.
+            gatherer.take().unwrap().join().unwrap();
+            let log = log.lock().unwrap();
+            assert!(
+                log.contains("listening on "),
+                "Straum exited; its log:\n{log}"
+            );
+            break;
+        }
         wait(&mut child, &log, "Straum to listen", start);
     }
     let address = {
@@ -231,7 +241,7 @@ fn run(args: &[&str], dsn: &str) -> Running {
         child,
         address,
         log,
-        gatherer: Some(gatherer),
+        gatherer,
     }
 }
 
@@ -264,7 +274,6 @@ impl Running {
     fn reached(&self, until: &Until) -> bool {
         match until {
             Until::Ready => self.call("GET", "/readyz", "").0 == 200,
-            Until::Logged(text) => self.log().contains(text),
             Until::Answers(rows) => self.call("POST", "/ask", ASK).1.ends_with(rows),
         }
     }
@@ -301,11 +310,30 @@ impl Running {
     }
 
     /// Sends the signal and waits for Straum to exit.
-    fn stop(mut self, signal: &str) -> (Option<i32>, String) {
+    fn stop(self, signal: &str) -> (Option<i32>, String) {
         self.signal(signal);
-        let status = self.child.wait().unwrap();
+        self.exited()
+    }
+
+    /// Waits a minute at most for Straum to exit on its own, and returns
+    /// its exit code and whole log.
+    fn exited(mut self) -> (Option<i32>, String) {
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "Straum never exited; its log:\n{}",
+                self.log()
+            );
+            thread::sleep(Duration::from_millis(100));
+        };
         // The gatherer ends with the pipe, so the log is whole once it joins.
-        self.gatherer.take().unwrap().join().unwrap();
+        if let Some(gatherer) = self.gatherer.take() {
+            gatherer.join().unwrap();
+        }
         (status.code(), self.log())
     }
 }
@@ -561,12 +589,7 @@ fn stops_on_sigterm(pg: &PostgresContainer, straum: Running) {
         log.ends_with("straum: stopping: finishing the asks in flight\nstraum: stopped\n"),
         "{log}"
     );
-    // The temporary slot went with Straum's connection.
-    let start = Instant::now();
-    while pg.psql("SELECT count(*) FROM pg_replication_slots") != "0" {
-        assert!(start.elapsed() < Duration::from_secs(30), "the slot stayed");
-        thread::sleep(Duration::from_millis(100));
-    }
+    no_slot_left(pg);
 }
 
 /// Not ready is exit 3 for every command that asks Straum, so a script
@@ -583,38 +606,84 @@ fn not_ready_exits_with_3(url: &str) {
     assert_eq!(code, Some(3), "{stderr}");
 }
 
+/// Waits for the replication slots to be gone: a temporary one goes with
+/// the connection that made it.
+fn no_slot_left(pg: &PostgresContainer) {
+    let start = Instant::now();
+    while pg.psql("SELECT count(*) FROM pg_replication_slots") != "0" {
+        assert!(start.elapsed() < Duration::from_secs(30), "the slot stayed");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Straum fails hard: a setup missing at the start, or a table that
+/// stops fitting while it runs, ends it with exit 1 naming the problem,
+/// for whatever runs it to start it again. Its slot goes with it. With
+/// the setup whole it serves until the table stops fitting.
 #[test]
-fn waits_for_the_setup() {
+fn a_failure_ends_straum_with_exit_1() {
     let pg = postgres();
     pg.psql(TABLES);
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
     let publication = set_up(&pg, &spec, Some("CREATE PUBLICATION"));
-    let mut straum = run(
-        &["run", &spec, "--listen", "127.0.0.1:0"],
-        &pg.dsn("straum"),
-    );
-    // Each try waits twice as long as the one before.
-    straum.wait_for("two failed starts", &Until::Logged("starting over in 2 s"));
-    assert!(straum.log().contains("starting over in 1 s"));
+    let args = ["run", &spec, "--listen", "127.0.0.1:0"];
+    let (code, log) = run(&args, &pg.dsn("straum")).exited();
+    assert_eq!(code, Some(1), "{log}");
+    assert!(log.contains("publication"), "{log}");
+    for line in log.lines() {
+        assert!(line.starts_with("straum: "), "{line}");
+    }
+    no_slot_left(&pg);
+
+    pg.psql(&publication[0]);
+    let mut straum = run(&args, &pg.dsn("straum"));
+    straum.wait_for("ready", &Until::Ready);
+    let (status, body) = straum.call("POST", "/ask", ASK);
+    assert_eq!(status, 200, "{body}");
+    pg.psql("ALTER PUBLICATION straum DROP TABLE shop.trips");
+    let (code, log) = straum.exited();
+    assert_eq!(code, Some(1), "{log}");
+    assert!(log.contains("leaves out shop.trips"), "{log}");
+    no_slot_left(&pg);
+}
+
+/// A server that takes the connection and never answers: Straum's start
+/// waits on it.
+fn silent_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || hold_connections(&listener));
+    format!("postgres://straum:straum@127.0.0.1:{port}/postgres?sslmode=disable")
+}
+
+fn hold_connections(listener: &TcpListener) {
+    let mut held = Vec::new();
+    for stream in listener.incoming() {
+        held.push(stream);
+    }
+}
+
+/// While its start waits, Straum answers not ready; a server silent for
+/// 10 s then ends it with exit 1. Needs no PostgreSQL.
+#[test]
+fn answers_not_ready_until_a_silent_server_ends_it() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let dsn = silent_server();
+    let straum = run(&["run", &spec, "--listen", "127.0.0.1:0"], &dsn);
     let (status, body) = straum.call("GET", "/readyz", "");
     assert_eq!(status, 503);
     assert!(body.starts_with("not ready: "), "{body}");
-    assert!(body.contains("publication"), "{body}");
     let (status, body) = straum.call("POST", "/ask", ASK);
     assert_eq!(
         (status, body.as_str()),
         (503, r#"{"errors":["not ready"]}"#)
     );
     not_ready_exits_with_3(&format!("http://{}", straum.address));
-
-    // Once the setup is there, the next try starts.
-    pg.psql(&publication[0]);
-    straum.wait_for("ready", &Until::Ready);
-    let (status, body) = straum.call("POST", "/ask", ASK);
-    assert_eq!(status, 200, "{body}");
-    let (code, log) = straum.stop("-INT");
-    assert_eq!(code, Some(0), "{log}");
+    let (code, log) = straum.exited();
+    assert_eq!(code, Some(1), "{log}");
+    assert!(log.contains("sent nothing for 10 s"), "{log}");
 }
 
 #[test]
@@ -786,15 +855,20 @@ fn says_what_is_wrong() {
 }
 
 /// A stop waits for a request still coming in, but at most 10 s, and a
-/// second signal ends Straum at once. Needs no server: the HTTP side
-/// listens while the start fails.
+/// second signal ends Straum at once.
 #[test]
 fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
+    let pg = postgres();
+    pg.psql(TABLES);
     let scratch = Scratch::new();
     let spec = scratch.file("spec.sql", SPEC);
-    let closed = "postgres://straum:straum@127.0.0.1:1/postgres?sslmode=disable";
+    set_up(&pg, &spec, None);
     for twice in [false, true] {
-        let mut straum = run(&["run", &spec, "--listen", "127.0.0.1:0"], closed);
+        let mut straum = run(
+            &["run", &spec, "--listen", "127.0.0.1:0"],
+            &pg.dsn("straum"),
+        );
+        straum.wait_for("ready", &Until::Ready);
         let mut held = TcpStream::connect(straum.address).unwrap();
         // A head never ended: hyper waits 30 s for the rest.
         held.write_all(b"POST /ask HTTP/1.1\r\nhost: straum\r\n")
@@ -810,9 +884,6 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
         let (code, log) = straum.stop("-0");
         let waited = clock.elapsed();
         assert_eq!(code, Some(0), "{log}");
-        // The start failed on the closed port: each line of it, and of
-        // the wait after, says it is Straum's.
-        assert!(log.contains("\nstraum: starting over in 1 s\n"), "{log}");
         for line in log.lines() {
             assert!(line.starts_with("straum: "), "{line}");
         }
@@ -837,13 +908,12 @@ fn a_reader_that_left_is_no_failure() {
     }
     let (reader, writer) = io::pipe().unwrap();
     drop(reader);
-    let closed = "postgres://straum:straum@127.0.0.1:1/postgres?sslmode=disable";
     let mut child = straum(&["run", &spec, "--listen", "127.0.0.1:0"])
-        .env("STRAUM_DSN", closed)
+        .env("STRAUM_DSN", silent_server())
         .stderr(writer)
         .spawn()
         .unwrap();
-    // It fails to start and logs so, then waits a second to try again.
+    // It logs that it listens, and waits on the silent server for 10 s.
     thread::sleep(Duration::from_secs(2));
     assert_eq!(child.try_wait().unwrap(), None, "straum run exited");
     child.kill().unwrap();

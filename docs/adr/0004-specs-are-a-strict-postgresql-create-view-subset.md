@@ -78,5 +78,5 @@ PeerDB do, was rejected as inference.
   ask-time zones are out; a zone over `timestamp` has no instant.
 - A null-ness key keys cells on two values, not a column's cardinality.
 - Enum labels sort as text. `ADD VALUE` costs nothing; `RENAME VALUE`
-  is not streamed and starts Straum over at the next miss (ADR-0009),
+  is not streamed and stops Straum at the next miss (ADR-0009),
   as does an unmapped type OID. Two enum columns can't be joined.

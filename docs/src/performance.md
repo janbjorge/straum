@@ -200,8 +200,8 @@ for one day of hour buckets as fast as the answers come. It measures
 three things: the time from the commit until Straum has applied it, the
 longest ask meanwhile, which is the lock hold as a client feels it, and
 how much Straum's resident set grew. After each, it checks the fares by
-payment type against PostgreSQL, and fails if Straum started over, which
-would time a reload as the apply.
+payment type against PostgreSQL. A failure ends Straum, and the run
+with it.
 One run on 2026-11-17, the machine and PostgreSQL of the
 [Results](#results), with `synchronous_commit` back on once the trips
 are loaded, so a commit counts from its flush as on a real server;
@@ -223,7 +223,7 @@ transaction wait in Straum until its commit, about 480 bytes each, so a
 million-row transaction holds nearly four times what both views do. That
 sets the default of `--max-transaction-rows` at 100,000: a transaction
 at the limit holds the lock for 118 ms, and anything larger is cheaper to
-[start over](how-it-works.md#following), which takes the rows
+[stop and load again](how-it-works.md#following), which takes the rows
 through the bulk `COPY` instead.
 
 ## Physical WAL
@@ -305,7 +305,7 @@ borough, zone and service zone, with two filtered counts. The test
 compares asks with the view body in PostgreSQL six times: after the
 load, after 200 streamed commits, after an update, after a zone is
 renamed, after a zone moves to a new key, and after a trip in the
-renamed zone changes. Nothing starts over. Release build, Docker on
+renamed zone changes. Nothing stops. Release build, Docker on
 the same laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
@@ -379,7 +379,7 @@ until Straum had applied it:
 
 The last three change dims. Each is applied to the projection, no cell
 moves, and the next ask reads the new category or type; Straum never
-started over.
+stopped.
 
 The asks, PostgreSQL run twice on the loaded tables and Straum the better
 of two:

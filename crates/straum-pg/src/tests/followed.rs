@@ -64,9 +64,7 @@ fn a_table_renamed_away_and_made_again_stops_the_stream() {
     let error = source.wal().unwrap_err().to_string();
     assert_eq!(
         error,
-        db.sql(
-            "trips: $S.trips is another table than the one Straum loaded; Straum loads it again"
-        )
+        db.sql("trips: $S.trips is another table than the one Straum loaded")
     );
 }
 
@@ -98,7 +96,7 @@ fn a_label_renamed_stops_the_logical_stream() {
     let error = source.wal().unwrap_err().to_string();
     assert_eq!(
         error,
-        db.sql("tasks: a label of an enum $S.tasks reads was renamed; Straum loads it again")
+        db.sql("tasks: a label of an enum $S.tasks reads was renamed")
     );
 }
 
@@ -198,7 +196,7 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
         }
         assert_eq!(
             held.unwrap_err().to_string(),
-            db.sql("trips: $S.trips was rewritten as Straum started; Straum starts again")
+            db.sql("trips: $S.trips was rewritten as Straum started")
         );
     }
 }
@@ -227,6 +225,6 @@ fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
     let error = source.wal().unwrap_err().to_string();
     assert_eq!(
         error,
-        db.sql("trips: a column Straum reads of $S.trips was altered; Straum loads it again")
+        db.sql("trips: a column Straum reads of $S.trips was altered")
     );
 }

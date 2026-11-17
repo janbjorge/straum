@@ -26,7 +26,9 @@ command line is wrong, and 3 when Straum is not ready yet: loading, or
 further behind PostgreSQL than `--max-lag`. A script waits on 3 and
 asks again; the other failures need a change first. `straum shell` on
 a pipe is the one exception: it goes on past a failed line, a not
-ready one too, and exits with 1 if any failed.
+ready one too, and exits with 1 if any failed. `straum run` exits with
+1 on any failure to load or follow, for whatever runs it to start it
+again ([States](deploy.md#states)).
 
 ## straum run
 
@@ -44,15 +46,15 @@ changes and answers [asks](asks.md) over HTTP.
 | `--publication NAME` | The publication `straum plan` made. |
 | `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
-| `--max-retained-wal BYTES` | WAL retained for the slot before Straum starts over. A watchdog checks it every second, during loads too, and ends the slot's session past it. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
-| `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [starts over](how-it-works.md#following) instead of applying it. |
-| `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it starts over. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-retained-wal BYTES` | WAL retained for the slot before Straum stops. A watchdog checks it every second, during loads too, and ends the slot's session past it. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
+| `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
+| `--max-page-memory BYTES` | With `--wal physical`: the rows Straum may hold from the WAL, pages and open transactions' changes, before it stops. It counts the rows' bytes, not the reader's buffer or the maps that track pages and transactions. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 
 It logs to stderr, each line starting `straum: `. A start logs the
 stream it opened, each table as it finishes loading, with how long it
 took, and then that it streams. A failure logs what went wrong, a line
-per problem, then when it starts over. A failed connection names the
-host and port it tried. SIGTERM or
+per problem, and exits with 1. A failed connection names the host and
+port it tried. SIGTERM or
 SIGINT stops it: it
 stops accepting, finishes the asks in flight, for at most 10 seconds,
 and exits, and PostgreSQL drops the slot as the connection closes. A

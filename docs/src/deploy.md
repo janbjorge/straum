@@ -46,32 +46,33 @@ says.
 ![The states of a running Straum](diagrams/lifecycle.svg)
 
 *Loading turns Ready once every table is in. Ready turns Lagging past
-`--max-lag` and back when it catches up. Any failure leads to Waiting,
-then Loading from a new slot. SIGTERM leads to Stopping.*
+`--max-lag` and back when it catches up. Any failure ends the process
+with exit 1, and the new process whatever runs Straum starts loads from
+a new slot. SIGTERM leads to Stopping.*
 
 | State | `/readyz` | Asks |
 | --- | --- | --- |
-| Loading | 503 `not ready: loading`, or the failure that led here | 503 |
+| Loading | 503 `not ready: loading` | 503 |
 | Ready | 200 `ready` | Answered |
 | Lagging | 503 `not ready: 45 s behind PostgreSQL` | Answered, each with its `as_of` |
-| Waiting | 503 `not ready: ` and the failure | 503 |
+| Exited | No answer: the port is closed | Refused |
 
 Straum reads the server's WAL position every second. Lag is the time
 since Straum last caught up with a position the server had reached. It
 can overstate the true delay by up to one second, never understate it.
 
-Any failure leads to Waiting: a lost connection, a change Straum can't
-apply, a table altered under it, or too much WAL retained for its slot.
-Straum closes the connection, which drops the slot, and waits: 1 second
-after the first failure, twice as long after each failure in a row, up
-to 60 seconds. Then it loads every table again from a new slot. The
-wait goes back to 1 second once the stream has run clean after a load
-for as long as the last wait, so a failure that comes back after every
-load still waits a minute between loads.
+Straum fails hard. Any failure ends the process with exit 1: a lost
+connection, a missing setup, a change Straum can't apply, a table
+altered under it, or too much WAL retained for its slot. The last lines
+of its log say why. The connections close with it, and PostgreSQL drops
+the temporary slot. Straum keeps no state across a failure and never
+retries inside the process. Whatever runs it starts it again, with a
+wait of its own: Kubernetes restarts the pod with a backoff up to five
+minutes, and systemd wants `Restart=on-failure`. The new process loads
+every table from a new slot.
 
 ```text
-straum: PostgreSQL holds 5120.0 MiB of WAL for straum's slot, past the limit of 4096.0 MiB
-straum: starting over in 1 s
+straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-retained-wal limit of 4096.0 MiB; the watchdog ended the slot's session
 ```
 
 `straum status` says which state it is in and why

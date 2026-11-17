@@ -53,18 +53,17 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Start             | Writer      | Spec, Source              | A store at L           | [Start](#start) |
 | Follow            | Writer      | The stream                | One commit applied     | [Applying a commit](#applying-a-commit) |
 | Answer an ask     | Client      | Query and parameters      | Answer with `as_of`    | [Answering an ask](#answering-an-ask) |
-| Start over        | Writer      | A failure                 | A new start            | [States](deploy.md#states) |
+| Fail              | Writer      | A failure                 | Exit 1, slots dropped  | [States](deploy.md#states) |
 | Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
 Run Straum is `run` in the binary: read the spec and the DSN, bind the
 listener, make an **App** with an empty **Store** and the **Limits**,
 make a **Writer** over a **Postgres** source, spawn the writer thread,
 serve HTTP until a signal. A panic aborts the process (the hook `run`
-sets), since the store may be half written. Start over is
-`Writer::step` and `run_writer`: the failure is recorded and
-**Following** removed, so asks answer 503; the thread sleeps the
-backoff; the next step is a start, whose `open` drops the old stream
-first, and PostgreSQL drops its slot as the connection closes.
+sets), since the store may be half written. Fail is `run_writer`: a
+step that fails logs its error and ends the process with exit 1, and
+PostgreSQL drops the slot as the connection closes. Straum never
+retries in the process; whatever runs it starts it again.
 
 ## Start
 
@@ -90,8 +89,7 @@ first, and PostgreSQL drops its slot as the connection closes.
    keepalives and confirms what the writer has applied, so the server
    can recycle WAL.
 
-Any error is a **Failure**, and the next step is a start over. The
-load fills a new store outside the lock, so asks never wait on
+Any error is a **Failure**, and Straum exits. The load fills a new store outside the lock, so asks never wait on
 PostgreSQL; they answer 503 until step 5.
 
 With `--wal physical`, step 2 differs (ADR-0008);
@@ -358,7 +356,7 @@ makes a property test fail.
    `App::read` by asks and `App::write` by the writer alone.
 4. **A row removed was added.** `RowError::Missing` from a cell, a
    value count or a projection entry ends the step
-   (`Rollup::remove`, `Projection::remove`), and Straum starts over.
+   (`Rollup::remove`, `Projection::remove`), and Straum exits.
 5. **Types come from the catalog only.** The load sets them
    (`Store::set_types`); a filter value must fit its column
    (`ColumnType::fits`); a Relation message that changes them is
@@ -392,10 +390,9 @@ makes a property test fail.
 
 ## State machines
 
-The running states, Loading, Ready, Lagging, Waiting and Stopping, are
+The running states, Loading, Ready, Lagging, Exited and Stopping, are
 drawn under [States](deploy.md#states). There is no enum: **Following**
-is `None` while loading or waiting, `Failure` says which, and lag
-against `--max-lag` tells Ready from Lagging (`App::status`,
+is `None` while loading, Exited is the process gone, and lag against `--max-lag` tells Ready from Lagging (`App::status`,
 `why_not` in `straum-http`). One smaller machine, the source
 connection:
 

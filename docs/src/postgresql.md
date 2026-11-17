@@ -133,15 +133,15 @@ Once the checks pass, the load holds each spec table in `ACCESS SHARE`
 mode until its last `COPY`, so a rewrite (`VACUUM FULL`, `CLUSTER`, an
 `ALTER TABLE` that rewrites) waits for the load. A rewrite that ended
 before Straum held the tables would read empty in the load's snapshot;
-Straum finds it and starts again:
+Straum finds it and stops, and the next start loads it whole:
 
 ```text
-usage: public.events was rewritten as Straum started; Straum starts again
+usage: public.events was rewritten as Straum started
 ```
 
 PostgreSQL makes a logical slot once every transaction that writes and
 was open when the slot began has ended, on any table of the database. A
-start waits a minute for that, then names them and tries again:
+start waits a minute for that, then names them and stops:
 
 ```text
 the start waited 60 s for transactions open on the server to end before its slot could be made: xid 7512; a long or prepared one (pg_prepared_xacts) holds the start back
@@ -154,7 +154,7 @@ the start waited 60 s for transactions open on the server to end before its slot
   keep some of each for themselves.
 - WAL, until Straum confirms it, which it does every second. If the server
   holds more than `--max-retained-wal` for the slot (4 GiB by default),
-  Straum starts over, so a Straum that can't keep up can't fill the disk.
+  Straum stops, so a Straum that can't keep up can't fill the disk.
   A watchdog on a connection of its own checks this every second, during
   loads too, and has PostgreSQL end the slot's session, which drops the
   slot, even if the rest of Straum is stuck. A watchdog that can't read
@@ -167,7 +167,7 @@ the start waited 60 s for transactions open on the server to end before its slot
 - Nothing after Straum is gone: the slot is temporary, so PostgreSQL drops
   it when the connection closes, crashes and deleted pods included.
   Temporary slots don't move to a standby either, so after a failover
-  Straum loads again from the new primary.
+  the next start loads from the new primary.
 - A snapshot during each load, which holds back vacuum for the whole
   database and makes `ALTER TABLE` on its tables wait; Straum ends it
   right after the last table loads.
@@ -235,7 +235,7 @@ it waits for and tries again:
 
 The last wait comes after DDL too, while Straum streams: it reads a
 changed table's columns once a snapshot sees the DDL. That one gives up
-after 10 s, says so as above, and Straum starts over.
+after 10 s, says so as above, and Straum stops.
 
 [The physical stream](how-it-works.md#the-physical-stream) says why
 the start waits.
@@ -248,16 +248,16 @@ What it costs beyond the logical stream:
 - Memory: the rows of the spec's pages changed since the last
   checkpoint, and the changes of open transactions. A shorter
   `checkpoint_timeout` lowers it and raises the WAL. Past
-  `--max-page-memory` (1 GiB by default) Straum starts over.
+  `--max-page-memory` (1 GiB by default) Straum stops.
 
-What starts Straum over in physical mode, besides what starts the
-logical stream over:
+What stops Straum in physical mode, besides what stops the logical
+stream:
 
 - A value of a column the spec reads that PostgreSQL stored out of line
   in its TOAST table: the page holds only a pointer. A row over about
   2 KB has its largest values moved there, one by one, until it fits,
   so a short value can go too, beside long ones. Each change to such a
-  row starts Straum over.
+  row stops Straum.
 - `TRUNCATE`, `VACUUM FULL`, `CLUSTER` and an `ALTER TABLE` that
   rewrites one of the spec's tables: its rows move to a new file.
   `ADD COLUMN`, `DROP COLUMN` and other DDL that keeps the file are

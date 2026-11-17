@@ -268,7 +268,7 @@ fn a_transaction_past_the_limit_starts_over() {
         error,
         format!(
             "transaction {} changes more than {CAP} rows Straum reads, the --max-transaction-rows \
-             limit; Straum starts over from a snapshot after it",
+             limit",
             error.split(' ').nth(1).unwrap_or_default()
         ),
         "{error}"

@@ -179,7 +179,7 @@ A join points from a column of the fact, or of a dim already joined, to
 the key of a dim. The dim columns the view selects, here
 `a.region AS region`, are keys like any other, read as the dim is now:
 an account moved from `eu` to `us` moves all its events to `us` in the
-next answer, as PostgreSQL's view would, and nothing starts over
+next answer, as PostgreSQL's view would, and nothing stops
 ([Dims](how-it-works.md#dims)).
 
 - `INNER JOIN` keeps a fact row only while a dim row matches it;
@@ -281,7 +281,7 @@ the column. `::text` is the one cast, and it goes nowhere else: not in
 written without it, and the cast on a column of any other type, so a
 spec says what it reads. A `FILTER` literal must be one of the type's
 labels, which Straum reads at start. A label added later is read as
-it comes. A label renamed starts Straum over, since the rows it loaded
+it comes. A label renamed stops Straum, since the rows it loaded
 hold the old text: each reading of the server's WAL, once a second,
 compares the labels. The label is a text key: asks
 filter it with a string, and answers sort labels as text, not in the

@@ -1,6 +1,6 @@
 # ADR-0006: Refs are bound at ask time
 
-Status: Accepted 2026-11-11; revised 2026-11-16
+Status: Accepted 2026-11-11; revised 2026-11-17
 
 ## Context
 
@@ -44,7 +44,7 @@ batched pass per commit was dropped: it held changed keys until it ran.
 
 ## Consequences
 
-- A dim change is seen by the next answer. Nothing starts over.
+- A dim change is seen by the next answer. Nothing stops.
 - Every join kind is exact, chains included; a dim needs no unique
   index, only `REPLICA IDENTITY FULL` (ADR-0007).
 - Memory follows distinct join ids plus projections: the warehouse

@@ -37,7 +37,7 @@ use crate::wire::{Connection, ConnectionKind, first_row_value, timed_out};
 pub enum Replication {
     /// Logical decoding's changes, through the publication.
     Logical,
-    /// Past `max_page_memory` bytes of rows held, Straum starts over.
+    /// Past `max_page_memory` bytes of rows held, Straum stops.
     Physical { max_page_memory: usize },
 }
 
@@ -64,7 +64,7 @@ pub struct Postgres {
     dsn: Dsn,
     publication: String,
     /// The most rows one transaction may change in the spec's tables; past
-    /// it Straum starts over, so a bulk update costs a load and not the
+    /// it Straum stops, so a bulk update costs a load and not the
     /// write lock for all of it.
     max_transaction_rows: usize,
     replication: Replication,
@@ -476,7 +476,7 @@ impl Source for Postgres {
         }
         // A reading's connection may die on its own, terminated or cut,
         // while the stream is whole: one more try, on a new connection,
-        // before Straum starts over for it.
+        // before Straum stops for it.
         match self.read_wal_once() {
             Ok(wal) => Ok(wal),
             Err(_) => Ok(self.read_wal_once()?),

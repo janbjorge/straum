@@ -314,20 +314,19 @@ fn write_table(
         ),
         TableProblem::Replaced => write!(
             formatter,
-            "{name}: {qualified} is another table than the one Straum loaded; \
-             Straum loads it again"
+            "{name}: {qualified} is another table than the one Straum loaded"
         ),
         TableProblem::Relabelled => write!(
             formatter,
-            "{name}: a label of an enum {qualified} reads was renamed; Straum loads it again"
+            "{name}: a label of an enum {qualified} reads was renamed"
         ),
         TableProblem::Rewritten => write!(
             formatter,
-            "{name}: {qualified} was rewritten as Straum started; Straum starts again"
+            "{name}: {qualified} was rewritten as Straum started"
         ),
         TableProblem::Altered => write!(
             formatter,
-            "{name}: a column Straum reads of {qualified} was altered; Straum loads it again"
+            "{name}: a column Straum reads of {qualified} was altered"
         ),
         TableProblem::ReplicaIdentity { kind } => write!(
             formatter,

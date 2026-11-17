@@ -21,7 +21,7 @@ use crate::value::{Oid, read, type_of};
 /// it: `Fact::columns` or `Dim::columns`.
 pub(crate) struct Decoder {
     /// Each with its types as last loaded or announced. A Relation that
-    /// changes them changes what rows read as, so Straum starts over.
+    /// changes them changes what rows read as, so Straum stops.
     tables: Vec<Checked>,
     /// By relation id. A table read by two members of the spec maps to
     /// both.
@@ -299,7 +299,7 @@ impl Mapping {
 
     /// The old row of an update or delete as Straum needs it; `None` when
     /// the change can't be read whole. A key-only old row is one: the table
-    /// no longer has `REPLICA IDENTITY FULL`, so Straum starts over and the
+    /// no longer has `REPLICA IDENTITY FULL`, so Straum stops and the
     /// setup check says so.
     fn old(&self, table: &Checked, old: &pgoutput::Old) -> Result<Option<Vec<Datum>>, Error> {
         match old {

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="376" viewBox="0 0 720 376" role="img" aria-labelledby="t d">
   <title id="t">/readyz is 200 only while Straum keeps up</title>
-  <desc id="d">Straum starts in Loading. Loading turns Ready once every table is loaded. Ready turns Lagging past --max-lag behind and back when it catches up; both answer asks. A failure in any of them leads to Waiting: 1 s, doubling, up to 60 s, then Loading from a new slot. SIGTERM, in any state, leads to Stopping, which drains asks and exits.</desc>
+  <desc id="d">Straum starts in Loading. Loading turns Ready once every table is loaded. Ready turns Lagging past --max-lag behind and back when it catches up; both answer asks. A failure in any of them ends the process with exit 1; whatever runs Straum starts a new one, which begins in Loading from a new slot. SIGTERM, in any state, leads to Stopping, which drains asks and exits.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -105,9 +105,9 @@
   <text x="300" y="296" class="s ink2">more than</text>
   <text x="300" y="315" class="mono ink2">--max-lag behind</text>
   <rect class="errbox" x="24" y="250" width="166" height="74" rx="8"/>
-  <text x="38" y="275" class="h err">Waiting</text>
-  <text x="38" y="296" class="s ink2">1 s, doubling,</text>
-  <text x="38" y="315" class="s ink2">up to 60 s</text>
+  <text x="38" y="275" class="h err">Exited</text>
+  <text x="38" y="296" class="s ink2">exit 1, until</text>
+  <text x="38" y="315" class="s ink2">started again</text>
   <rect class="box" x="556" y="172" width="140" height="74" rx="8"/>
   <text x="570" y="197" class="h">Stopping</text>
   <text x="570" y="218" class="s ink2">drains asks,</text>
@@ -122,8 +122,8 @@
   <path class="a-err" d="M80 170 L80 246" marker-end="url(#m-err)"/>
   <text x="72" y="212" class="s err halo" text-anchor="end">failure</text>
   <path class="a" d="M140 250 L140 174" marker-end="url(#m)"/>
-  <text x="146" y="216" class="s ink2 halo" text-anchor="start">after</text>
-  <text x="146" y="234" class="s ink2 halo" text-anchor="start">the wait</text>
+  <text x="146" y="216" class="s ink2 halo" text-anchor="start">a new</text>
+  <text x="146" y="234" class="s ink2 halo" text-anchor="start">process</text>
   <path class="a-err" d="M270 300 L194 300" marker-end="url(#m-err)"/>
   <text x="232" y="292" class="s err halo" text-anchor="middle">failure</text>
   <path class="a" d="M490 209 L552 209" marker-end="url(#m)"/>
