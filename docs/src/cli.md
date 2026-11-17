@@ -199,7 +199,7 @@ each error, and exits with 1:
 $ straum ask 'SELECT trips FROM trips WHERE payment_type = $1
     AND bucket >= $2 AND bucket < $3' card 0 3600
 straum: http://127.0.0.1:8080 answered "HTTP/1.1 400 Bad Request"
-payment_type is an integer, so it can't be the text "card"
+straum: payment_type is an integer, so it can't be the text "card"
 ```
 
 ## straum shell

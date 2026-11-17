@@ -428,7 +428,7 @@ van  | null    |     1 | null
         stderr,
         format!(
             "straum: {url} answered \"HTTP/1.1 400 Bad Request\"\n\
-             kind is text, so it can't be the integer 7\n"
+             straum: kind is text, so it can't be the integer 7\n"
         )
     );
 }
