@@ -43,7 +43,9 @@ maxPageMemory: "1Gi"
 
 # listenAddress is the address straum serves HTTP on, port 8080 within
 # the pod: "0.0.0.0", every IPv4 address, or "[::]" on an IPv6-only
-# cluster, whose probes reach no IPv4 address.
+# cluster, whose probes reach no IPv4 address. The chart always passes
+# it: without --listen, straum serves only 127.0.0.1, which no probe or
+# Service reaches.
 listenAddress: "0.0.0.0"
 
 # publication is the publication straum reads, as `straum plan` made it.

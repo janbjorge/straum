@@ -166,7 +166,8 @@ fn shutdown_finishes_requests_in_flight() {
     let idle = TcpStream::connect(server.address).unwrap();
     let mut busy = TcpStream::connect(server.address).unwrap();
     let head = format!(
-        "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-length: {}\r\n\r\n",
+        "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\n\r\n",
         ask.len()
     );
     busy.write_all(head.as_bytes()).unwrap();

@@ -12,6 +12,10 @@ curl --json '{
 }' http://localhost:8080/ask
 ```
 
+The request says `Content-Type: application/json`, as `curl --json`
+sends it; an ask without it is refused with 415, so a page on another
+site can't make a browser run one ([Who can ask](deploy.md#who-can-ask)).
+
 | Field | Required | Value |
 | --- | --- | --- |
 | `query` | yes | One `SELECT` over a view, in the subset below. |
@@ -200,6 +204,7 @@ timeout or fall back to `as_of`.
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
+| 415 | `{"errors": ["an ask is JSON, sent with Content-Type: application/json"]}`: the request has no `Content-Type`, or another media type than `application/json`. Its parameters, such as `; charset=utf-8`, and its case don't matter. |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 
 A panic in Straum ends the process rather than answering from a store
@@ -221,7 +226,7 @@ sees the connection close.
 
 | Endpoint | Answers |
 | --- | --- |
-| `POST /ask` | An ask, as JSON; as a table with `Accept: text/plain`. |
+| `POST /ask` | An ask sent with `Content-Type: application/json`, as JSON; as a table with `Accept: text/plain`. |
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes` and `max_retained_wal_bytes`. What is unknown until every table is loaded is null. |

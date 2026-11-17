@@ -41,6 +41,25 @@ whether the process serves ([endpoints](asks.md#endpoints)). A Straum
 that lags still answers asks, each with its `as_of`, as the table below
 says.
 
+## Who can ask
+
+Straum has no authentication and no TLS. Anyone who reaches its port
+can ask, read its status and read every view's rows. So `straum run`
+listens on `127.0.0.1:8080` unless told, which only its own host
+reaches. In a container that is the container itself: give `--listen
+0.0.0.0:8080` there, as the [quick start](quick-start.md) and the chart
+do.
+
+Once it listens on more than loopback, decide who reaches it in front
+of Straum: a Kubernetes NetworkPolicy that admits only the apps that
+ask, a proxy that authenticates and ends TLS, or a service mesh. Don't
+publish the port to a network you don't trust.
+
+`POST /ask` refuses a request that is not sent with `Content-Type:
+application/json` ([errors](asks.md#errors)). A browser sends a form
+or plain text to any site without asking first, but not JSON, so a page
+on another site can't make a visitor's browser run asks.
+
 ## States
 
 ![The states of a running Straum](diagrams/lifecycle.svg)
@@ -102,7 +121,10 @@ kubectl exec deployment/straum -- /straum status
 
 The chart makes a Deployment, a ConfigMap with the spec, a ClusterIP
 Service on port 8080 and a ServiceAccount. For a release named `straum`,
-apps in the cluster ask at `http://straum:8080/ask`.
+apps in the cluster ask at `http://straum:8080/ask`. The chart passes
+`--listen 0.0.0.0:8080`, or `[::]:8080` on an IPv6-only cluster, so any
+pod in the cluster reaches it; a NetworkPolicy narrows that
+([Who can ask](#who-can-ask)).
 [`values.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/values.yaml)
 documents every value, and `values.schema.json` refuses values Straum
 can't take, such as a `maxLag` of 0. Size `resources` by the

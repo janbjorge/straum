@@ -229,7 +229,16 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
         },
         STRAUM: {
             "image": args.image,
-            "command": ["run", SPEC_IN_IMAGE, "--wal", args.wal],
+            # Every address in the container: unless told, Straum serves its
+            # own loopback, which the published port never reaches.
+            "command": [
+                "run",
+                SPEC_IN_IMAGE,
+                "--wal",
+                args.wal,
+                "--listen",
+                f"0.0.0.0:{STRAUM_PORT}",
+            ],
             "environment": {"STRAUM_DSN": dsn(password)},
             "volumes": [f"{args.spec}:{SPEC_IN_IMAGE}:ro"],
             "ports": [published],

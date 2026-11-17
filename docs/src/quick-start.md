@@ -23,7 +23,7 @@ services:
       interval: 1s
   straum:
     image: ghcr.io/janbjorge/straum
-    command: run /spec/trips.sql
+    command: run /spec/trips.sql --listen 0.0.0.0:8080
     environment:
       STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
     volumes:

@@ -16,8 +16,9 @@ use straum_pg::Replication;
 use crate::client::{Output, Server, TIMEOUT};
 use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
 
-/// Where `straum run` listens unless told.
-const LISTEN: &str = "0.0.0.0:8080";
+/// Where `straum run` listens unless told: this host only, as Straum
+/// has no authentication or TLS.
+const LISTEN: &str = "127.0.0.1:8080";
 const PUBLICATION: &str = "straum";
 /// The role `straum plan` sets up when neither `--role` nor a DSN names one.
 pub(crate) const ROLE: &str = "straum";

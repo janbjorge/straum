@@ -52,7 +52,11 @@ kubectl exec deployment/straum -- /straum status
 values straum can't take.
 
 On an IPv6-only cluster set `listenAddress: "[::]"`, so the probes
-reach straum; it listens on `0.0.0.0` otherwise.
+reach straum; it listens on `0.0.0.0` otherwise. The chart always
+passes `--listen`: on its own straum listens on `127.0.0.1`, which no
+probe or Service reaches. straum has no authentication or TLS, so any
+pod that reaches the Service can ask; add a NetworkPolicy to narrow
+that.
 
 With `wal: physical`, set `maxPageMemory` well under
 `resources.limits.memory`: the rows it bounds come on top of the cells,

@@ -35,8 +35,8 @@ use the `usage` view over `public.events AS e` and
   Connecting a database: logical and physical setup, the start checks,
   and what Straum costs the server. Examples use the usage view.
 - [Deploying Straum](https://janbjorge.github.io/straum/deploy.html):
-  Running it for real: the binary, the image and the chart. Examples
-  use the usage view.
+  Running it for real: the binary, the image, the chart and who can
+  reach it. Examples use the usage view.
 - [Performance](https://janbjorge.github.io/straum/performance.html):
   What to expect: the benchmark and memory sizing. Examples use the
   taxi trips.

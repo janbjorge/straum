@@ -1,7 +1,7 @@
 //! The route handlers: `handle` takes one request from the server loop in
 //! `lib.rs`, picks the handler by method and path, and returns the reply.
-//! An ask goes body, then `ask.rs`, then the `ReadAsk`, then the app on a
-//! blocking thread, then `answer.rs`; the other routes read the app and
+//! An ask sent as JSON goes body, then `ask.rs`, then the `ReadAsk`, then
+//! the app on a blocking thread, then `answer.rs`; the other routes read the app and
 //! hand what they read to `status.rs` or `views.rs`, or reply with a
 //! view's definition as the spec wrote it.
 
@@ -119,7 +119,13 @@ pub(crate) async fn handle(
     let accept = parts.headers.get(ACCEPT);
     let reply = match (&parts.method, parts.uri.path()) {
         (&Method::POST, "/ask") => {
-            post_ask(body, &app, read_ask, Format::of(accept, Format::Json)).await
+            let format = Format::of(accept, Format::Json);
+            if is_json(parts.headers.get(CONTENT_TYPE)) {
+                post_ask(body, &app, read_ask, format).await
+            } else {
+                let error = format!("an ask is JSON, sent with Content-Type: {JSON}");
+                format.errors(StatusCode::UNSUPPORTED_MEDIA_TYPE, &[error])
+            }
         }
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => get_readyz(&app),
@@ -147,6 +153,18 @@ pub(crate) async fn handle(
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
     };
     Ok(reply)
+}
+
+/// Whether `Content-Type` names JSON, whatever its parameters or case.
+/// A page on another site may have a browser send a form or plain text
+/// to Straum without asking first, but not JSON, so this keeps such a
+/// page from running asks.
+fn is_json(content_type: Option<&HeaderValue>) -> bool {
+    let Some(Ok(content_type)) = content_type.map(HeaderValue::to_str) else {
+        return false;
+    };
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    media_type.eq_ignore_ascii_case(JSON)
 }
 
 async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) -> Reply {
@@ -477,6 +495,40 @@ mod tests {
 
     fn window(start: Start, count: usize) -> Window {
         Window { start, count }
+    }
+
+    fn content_type(value: &'static str) -> HeaderValue {
+        HeaderValue::from_static(value)
+    }
+
+    #[test]
+    fn an_ask_is_json_whatever_its_parameters_or_case() {
+        for value in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "Application/JSON",
+            " application/json ;charset=UTF-8",
+        ] {
+            assert!(is_json(Some(&content_type(value))), "{value}");
+        }
+    }
+
+    #[test]
+    fn an_ask_in_any_other_media_type_is_not_json() {
+        assert!(!is_json(None));
+        for value in [
+            "",
+            "text/plain",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data; boundary=x",
+            "application/jsonx",
+            "application/json-seq",
+            "text/plain; application/json",
+        ] {
+            assert!(!is_json(Some(&content_type(value))), "{value}");
+        }
+        let not_text = HeaderValue::from_bytes(b"application/json\xff").unwrap();
+        assert!(!is_json(Some(&not_text)));
     }
 
     #[test]

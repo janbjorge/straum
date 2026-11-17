@@ -282,12 +282,13 @@ impl Running {
         self.wait_for(what, &Until::Answers(pg.expected_rows()));
     }
 
-    /// The status and body.
+    /// The status and body, the body sent as JSON.
     fn call(&self, method: &str, path: &str, body: &str) -> (u16, String) {
         let mut stream = TcpStream::connect(self.address).unwrap();
         write!(
             stream,
-            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
         )
         .unwrap();

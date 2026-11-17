@@ -13,8 +13,10 @@ stated target, an aggregate could land at any speed.
 
 ## Decision
 
-`POST /ask` takes `{"query", "parameters"}`. The query is one `SELECT`
-over a view the client names: keys then measures by name; `WHERE`, if
+`POST /ask` takes `{"query", "parameters"}`, sent as
+`application/json` and refused with 415 otherwise (ADR-0011). The query
+is one `SELECT` over a view the client names: keys then measures by
+name; `WHERE`, if
 written, holds `=` and `IN` on keys joined by `AND`, and at most one
 each of `bucket >= $n` and `bucket < $m`. A bound left out leaves its
 end open, at the edge of the buckets held, so an ask with no `WHERE`

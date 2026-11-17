@@ -1,6 +1,6 @@
-//! `POST /ask` end to end: answers as JSON and as a table, the errors of
-//! the body, the query and the app, `Server-Timing`, and a `ReadAsk` other
-//! than Straum SQL. Each test starts a server over the fake in `fake.rs`.
+//! `POST /ask` end to end: answers as JSON and as a table, asks not sent
+//! as JSON, the errors of the body, the query and the app,
+//! `Server-Timing`, and a `ReadAsk` other than Straum SQL. Each test starts a server over the fake in `fake.rs`.
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
@@ -14,8 +14,8 @@ use straum_http::QueryError;
 
 use crate::fake::{COMMIT, HOUR, JAN_1, loaded, writer};
 use crate::{
-    ask, call, call_as_text, first_hour, header, read_reply, request, rows_of, send, serve,
-    serve_with, started,
+    Headers, Reply, ask, call, call_as_text, first_hour, header, read_reply, request, request_with,
+    rows_of, send, serve, serve_with, started,
 };
 
 const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
@@ -312,7 +312,8 @@ fn asks_straum_cant_answer() {
 fn a_stalled_body_times_out() {
     let server = serve(writer().app().clone());
     let mut stream = TcpStream::connect(server.address).unwrap();
-    let head = "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-length: 100\r\n\r\n";
+    let head = "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-type: application/json\r\n\
+        content-length: 100\r\n\r\n";
     stream.write_all(head.as_bytes()).unwrap();
     stream.write_all(br#"{"query":"#).unwrap();
     let clock = Instant::now();
@@ -345,7 +346,8 @@ fn ask_bodies_too_big_or_broken_are_refused() {
     // A chunked body that breaks off.
     let reply = send(
         server.address,
-        "POST /ask HTTP/1.1\r\nhost: straum\r\ntransfer-encoding: chunked\r\n\r\nzz\r\n",
+        "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-type: application/json\r\n\
+         transfer-encoding: chunked\r\n\r\nzz\r\n",
     );
     assert_eq!(reply.status, 400);
     assert!(
@@ -353,6 +355,52 @@ fn ask_bodies_too_big_or_broken_are_refused() {
         "{}",
         reply.body
     );
+    server.stop();
+}
+
+/// An ask sent without `Content-Type`, or with `content_type`, and read
+/// back in `accept`.
+fn ask_sent_as(address: SocketAddr, content_type: Option<&str>, accept: Option<&str>) -> Reply {
+    let headers = Headers {
+        accept,
+        content_type,
+    };
+    request_with(address, "POST", "/ask", &headers, &first_hour())
+}
+
+/// A browser sends a form or plain text to any site without asking it
+/// first, so an ask in anything but JSON is refused before it is read.
+#[test]
+fn asks_not_sent_as_json_are_refused() {
+    let (_writer, server) = started(writer());
+    let refused = r#"{"errors":["an ask is JSON, sent with Content-Type: application/json"]}"#;
+    for content_type in [
+        None,
+        Some("text/plain"),
+        Some("application/x-www-form-urlencoded"),
+        Some("multipart/form-data; boundary=x"),
+        Some("application/jsonx"),
+    ] {
+        let reply = ask_sent_as(server.address, content_type, None);
+        assert_eq!(
+            (reply.status, reply.body.as_str()),
+            (415, refused),
+            "{content_type:?}"
+        );
+    }
+    let reply = ask_sent_as(server.address, Some("text/plain"), Some("text/plain"));
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            415,
+            "an ask is JSON, sent with Content-Type: application/json\n"
+        )
+    );
+    for content_type in ["application/json", "Application/JSON; charset=utf-8"] {
+        let reply = ask_sent_as(server.address, Some(content_type), None);
+        assert_eq!(reply.status, 200, "{content_type}: {}", reply.body);
+        assert_eq!(rows_of(&reply.body), r#"[{"trips":0}]"#);
+    }
     server.stop();
 }
 

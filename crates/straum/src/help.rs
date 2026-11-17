@@ -31,7 +31,7 @@ Loads every table FILE names, follows their changes and answers asks over
 HTTP. SIGTERM or SIGINT stops it. FILE is the spec. Any failure to load
 or follow ends it with exit 1, for whatever runs it to start it again.
 
-  --listen ADDRESS             where to serve HTTP (0.0.0.0:8080)
+  --listen ADDRESS             where to serve HTTP (127.0.0.1:8080)
   --wal logical|physical       logical decoding through the publication, or
                                the physical WAL wal_level replica writes
                                (logical)

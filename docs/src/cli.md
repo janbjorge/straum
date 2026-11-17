@@ -41,7 +41,7 @@ changes and answers [asks](asks.md) over HTTP.
 
 | Flag | Meaning |
 | --- | --- |
-| `--listen ADDRESS` | Where to serve HTTP. |
+| `--listen ADDRESS` | Where to serve HTTP: `127.0.0.1:8080`, this host only, unless told ([Who can ask](deploy.md#who-can-ask)). |
 | `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#without-logical-decoding) `wal_level = replica` writes. |
 | `--publication NAME` | The publication `straum plan` made. |
 | `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |

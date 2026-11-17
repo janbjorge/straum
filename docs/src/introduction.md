@@ -61,7 +61,10 @@ is counts, sums, averages, minima or maxima by a few keys over time:
 - Dashboard tiles and charts: events per hour, amounts by region, the
   same `GROUP BY` on every page load.
 - Numbers an app shows its own users, such as usage this month or
-  orders today. Make the tenant a key and each ask filters on it.
+  orders today. Make the account a key, and your app's backend puts the
+  signed-in user's account in each ask. Straum checks no one: anyone who
+  reaches it can ask for any account
+  ([Who can ask](deploy.md#who-can-ask)).
 - A summary you maintain by hand today: a materialized view refreshed
   on a schedule, or a rollup table kept by triggers. Straum follows
   inserts, updates and deletes itself, and every answer is exact.

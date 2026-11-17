@@ -9,6 +9,7 @@ mod fake;
 mod health;
 mod views;
 
+use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::ops::Range;
@@ -116,7 +117,11 @@ fn read_reply(stream: &mut TcpStream) -> Reply {
     }
 }
 
-/// A request with an `Accept` header if one is given.
+/// The media type a JSON body is sent as.
+const JSON: &str = "application/json";
+
+/// A request with an `Accept` header if one is given, and a POST's body
+/// sent as JSON.
 fn request(
     address: SocketAddr,
     method: &str,
@@ -124,15 +129,39 @@ fn request(
     accept: Option<&str>,
     body: &str,
 ) -> Reply {
-    let accept = match accept {
-        Some(accept) => format!("accept: {accept}\r\n"),
-        None => String::new(),
+    let content_type = if method == "POST" { Some(JSON) } else { None };
+    let headers = Headers {
+        accept,
+        content_type,
     };
+    request_with(address, method, path, &headers, body)
+}
+
+/// The optional headers of a request.
+struct Headers<'a> {
+    accept: Option<&'a str>,
+    content_type: Option<&'a str>,
+}
+
+fn request_with(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &Headers,
+    body: &str,
+) -> Reply {
+    let mut lines = String::new();
+    if let Some(accept) = headers.accept {
+        write!(lines, "accept: {accept}\r\n").unwrap();
+    }
+    if let Some(content_type) = headers.content_type {
+        write!(lines, "content-type: {content_type}\r\n").unwrap();
+    }
     let length = body.len();
     send(
         address,
         &format!(
-            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{accept}content-length: {length}\r\n\r\n{body}"
+            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{lines}content-length: {length}\r\n\r\n{body}"
         ),
     )
 }

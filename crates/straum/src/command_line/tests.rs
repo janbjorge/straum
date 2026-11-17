@@ -85,6 +85,22 @@ fn reads_run_and_plan() {
     );
 }
 
+/// The address `straum run` serves on for `line`.
+fn listen_of(line: &str) -> std::net::SocketAddr {
+    let Ok(Command::Run(run)) = command_of(&args(line)) else {
+        panic!("{line}");
+    };
+    run.listen.parse().unwrap()
+}
+
+/// Straum has no authentication, so unless told it serves this host only.
+#[test]
+fn listens_on_this_host_only_unless_told() {
+    assert!(listen_of("run s.sql").ip().is_loopback());
+    let every = listen_of("run s.sql --listen 0.0.0.0:8080");
+    assert!(!every.ip().is_loopback());
+}
+
 #[test]
 fn reads_plan() {
     assert_eq!(

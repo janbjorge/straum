@@ -47,6 +47,14 @@ They find Straum at `--url`, else `STRAUM_URL`, else
 `http://127.0.0.1:8080`, as `STRAUM_DSN` stands in for `--dsn-file`.
 With `--json` they print the JSON body instead, for scripts and agents.
 
+The HTTP has no authentication and no TLS. `straum run` listens on
+`127.0.0.1:8080` unless told, the address those commands try first, so
+Straum alone is reached only from its own host. Who reaches it beyond
+that is decided in front of it: a network policy, a proxy or a mesh.
+`POST /ask` takes only `Content-Type: application/json`, which a
+browser won't send to another site without a preflight Straum never
+answers, so a page elsewhere can't run asks through a visitor.
+
 `straum ask` reads a parameter's type from its text: an integer,
 `true` or `false`, a number, else a string; single quotes make a
 string. `straum shell` is a prompt: `\d` lists views, `\d VIEW`
@@ -84,3 +92,6 @@ its input and counts the commands that failed.
 - `straum ask` infers types; the HTTP ask infers nothing (ADR-0005).
 - The terminal glue is untested; the completion under it is plain
   functions with tests.
+- A container or pod passes `--listen 0.0.0.0:8080`; the chart does.
+  Exposed that way, anyone who reaches the port can ask and read every
+  view.

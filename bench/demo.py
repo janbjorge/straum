@@ -145,7 +145,9 @@ def postgres(password: str) -> dict:
 def straum(password: str) -> dict:
     return {
         "image": IMAGE,
-        "command": ["run", SPEC_IN_IMAGE],
+        # Every address in the container: unless told, Straum serves its
+        # own loopback, which the published port never reaches.
+        "command": ["run", SPEC_IN_IMAGE, "--listen", f"0.0.0.0:{STRAUM_PORT}"],
         "environment": {"STRAUM_DSN": dsn(password)},
         "volumes": [f"{SPEC}:{SPEC_IN_IMAGE}:ro"],
         "ports": [{"target": STRAUM_PORT, "host_ip": "127.0.0.1"}],
