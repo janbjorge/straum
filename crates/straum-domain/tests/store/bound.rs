@@ -5,7 +5,7 @@
 use crate::common::{id, text};
 use crate::views::{Widths, zones_spec};
 use crate::{END, START};
-use straum_domain::{Ask, AskKey, Datum, RefKind, Store, Value};
+use straum_domain::{Ask, AskKey, Attribute, Datum, RefKind, Spec, Store, Value};
 
 /// Zones 1 to 3 in borough m, 4 to 6 in q, and a trip from each at
 /// `START`.
@@ -145,4 +145,27 @@ fn a_zone_update_moves_only_the_trips_that_name_it() {
     assert_eq!(rekeyed.rows[0].keys, [Datum::Null]);
     assert_eq!(rekeyed.rows[0].values, [Value::Int(1)]);
     assert_eq!(rekeyed.rows[1].values, [Value::Int(3)]);
+}
+
+/// A ref may read one dim column under two names, each a key of its own
+/// with the same values; the bound cells key both.
+#[test]
+fn a_dim_column_read_under_two_names_answers_both() {
+    let spec = zones_spec(Some(RefKind::Left), Widths::Quarter);
+    let mut facts = spec.facts().to_vec();
+    facts[0].refs[0].reads.push(Attribute {
+        name: id("area"),
+        column: id("borough"),
+    });
+    let spec = Spec::new(spec.dims().to_vec(), facts).unwrap();
+    let mut store = Store::new(spec);
+    store.add_row("zones", &[Datum::Int(1), text("m")]).unwrap();
+    store
+        .add_row("trips", &[Datum::Int(START), Datum::Int(1), Datum::Int(1)])
+        .unwrap();
+    let mut by_area = by_borough();
+    by_area.keys = vec![AskKey::Key(id("borough")), AskKey::Key(id("area"))];
+    let answer = store.ask(&by_area).unwrap();
+    assert_eq!(answer.rows.len(), 1);
+    assert_eq!(answer.rows[0].keys, [text("m"), text("m")]);
 }

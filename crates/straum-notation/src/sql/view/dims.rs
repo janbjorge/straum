@@ -120,7 +120,7 @@ impl Walker {
 fn new_dim(joined: &JoinedRef) -> Dim {
     let mut attributes = Vec::new();
     for attribute in &joined.reference.reads {
-        attributes.push(attribute.column.clone());
+        push_once(&mut attributes, &attribute.column);
     }
     Dim {
         name: joined.reference.dim.clone(),

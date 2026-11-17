@@ -304,9 +304,11 @@ fn every_error_is_reported_and_displayed() {
             "view u: join r joins on 2 columns, but the key of dim z has 1",
             "view u: join s joins on a twice",
             "view u: join s joins on 2 columns, but the key of dim z has 1",
-            "view u: join e reads no column of its dim",
+            "view u: join e reads no column of its dim; a key column reads the column it is \
+             joined to, so select another",
             "view u: join q reads nope, which dim z has no column of",
-            "q: name declared twice",
+            // q reads name twice, which is fine; it names the second `a`,
+            // a key the view has.
             "u: a declared twice",
             "view u: no measures",
         ]

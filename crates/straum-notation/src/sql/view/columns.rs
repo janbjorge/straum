@@ -293,21 +293,28 @@ impl Walker {
             );
             return Err(Reported);
         }
-        // Under INNER JOIN a dim's key column reads the fact column it was
-        // joined on. Under LEFT OUTER JOIN it is null where no dim row
-        // matches, and the fact column is not, so it is refused.
-        if let Some(position) = key_position(joined, &column)
-            && let Via::Fact(via) = &joined.reference.via[position]
-        {
+        // Under INNER JOIN a dim's key column reads the column it was
+        // joined on, the fact's or, in a chain, a dim's joined before.
+        // Under LEFT OUTER JOIN it is null where no dim row matches, and
+        // that column is not, so it is refused.
+        if let Some(position) = key_position(joined, &column) {
+            let resolved = match &joined.reference.via[position] {
+                Via::Fact(via) => ResolvedColumn::Fact(via.clone()),
+                Via::Attribute {
+                    through: before,
+                    column: via,
+                } => ResolvedColumn::Attribute {
+                    through: *before,
+                    column: via.clone(),
+                },
+            };
             if joined.reference.kind == RefKind::Left {
-                self.error(
-                    line(expression),
-                    left_key_message(scope, &alias, &column, via),
-                );
+                let near = written(scope, &resolved);
+                self.error(line(expression), left_key_message(&alias, &column, &near));
                 return Err(Reported);
             }
             return Ok(ColumnRead {
-                column: ResolvedColumn::Fact(via.clone()),
+                column: resolved,
                 cast,
             });
         }
@@ -424,18 +431,22 @@ fn record_key(
     }
 }
 
+/// A resolved column as the view writes it, `alias.column`.
+fn written(scope: &Scope, column: &ResolvedColumn) -> String {
+    match column {
+        ResolvedColumn::Fact(column) => format!("{}.{column}", scope.alias),
+        ResolvedColumn::Attribute { through, column } => {
+            format!("{}.{column}", scope.refs[*through].reference.alias)
+        }
+    }
+}
+
 /// Why a key column of a `LEFT OUTER JOIN` can't be read, and what to
-/// write instead.
-pub(super) fn left_key_message(
-    scope: &Scope,
-    alias: &Identifier,
-    column: &Identifier,
-    via: &Identifier,
-) -> String {
-    let fact = &scope.alias;
+/// write instead: `near`, the column joined to it, as the view writes it.
+pub(super) fn left_key_message(alias: &Identifier, column: &Identifier, near: &str) -> String {
     format!(
-        "{alias}.{column} is null where no {alias} row matches, and {fact}.{via} is not; \
-         write {fact}.{via}, or join {alias} with INNER JOIN"
+        "{alias}.{column} is null where no {alias} row matches, and {near} is not; \
+         write {near}, or join {alias} with INNER JOIN"
     )
 }
 

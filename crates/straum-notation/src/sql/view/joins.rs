@@ -250,7 +250,8 @@ impl Walker {
                 column,
                 via,
             } => {
-                let message = left_key_message(scope, &near_alias, &column, &via);
+                let message =
+                    left_key_message(&near_alias, &column, &format!("{}.{via}", scope.alias));
                 self.error(line(right.as_ref()), message);
                 return Err(NotEquality::Reported);
             }

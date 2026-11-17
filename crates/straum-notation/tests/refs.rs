@@ -98,7 +98,10 @@ fn a_ref_on_two_columns_rejected() {
     );
     assert_eq!(
         strings(&errors),
-        ["view t: join g reads no column of its dim"]
+        [
+            "view t: join g reads no column of its dim; a key column reads the column it is joined to, \
+         so select another"
+        ]
     );
     // Another view joins the dim on another key list: fewer columns, or
     // as many but not the same.
@@ -580,4 +583,86 @@ fn exists_groups_by_nothing_and_joins_nothing() {
             "a join inside EXISTS is not in Straum SQL",
         ),
     ]);
+}
+
+/// The guide's chain: `regions` joined through `accounts`.
+const CHAIN: &str = "CREATE VIEW usage WITH (buckets = '1 hour') AS
+SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+       a.region AS region, r.code AS code, count(*) AS n
+FROM public.events AS e
+INNER JOIN public.accounts AS a ON a.id = e.account_id
+LEFT OUTER JOIN public.regions AS r ON r.name = a.region
+GROUP BY 1, 2, 3";
+
+/// A chained dim's key column reads the dim column it is joined to, as
+/// a dim's joined to the fact reads the fact column: under INNER JOIN it
+/// is that column, under LEFT OUTER JOIN it is refused for it.
+#[test]
+fn a_chained_key_column_reads_the_column_it_is_joined_to() {
+    let named = CHAIN
+        .replace("r.code AS code", "r.code AS code, r.name AS region_name")
+        .replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2, 3, 4");
+    let error = sql_errors(&named);
+    assert!(
+        any_message(
+            &error,
+            Some(3),
+            "r.name is null where no r row matches, and a.region is not; \
+             write a.region, or join r with INNER JOIN"
+        ),
+        "{error:?}"
+    );
+    let inner = named.replace(
+        "LEFT OUTER JOIN public.regions",
+        "INNER JOIN public.regions",
+    );
+    let spec = parse(&inner).unwrap();
+    let reads = &spec.fact("usage").unwrap().refs[0].reads;
+    assert_eq!(
+        reads,
+        &[
+            attribute("region", "region"),
+            attribute("region_name", "region")
+        ]
+    );
+}
+
+/// One dim column selected under two names is two keys, as a fact
+/// column is: the dim holds the column once.
+#[test]
+fn a_dim_column_may_be_selected_twice() {
+    let twice = CHAIN
+        .replace("r.code AS code", "r.code AS code, r.code AS code_again")
+        .replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2, 3, 4");
+    let spec = parse(&twice).unwrap();
+    assert_eq!(spec.dim("regions").unwrap().attributes, [id("code")]);
+    let reads = &spec.fact("usage").unwrap().refs[1].reads;
+    assert_eq!(
+        reads,
+        &[attribute("code", "code"), attribute("code_again", "code")]
+    );
+    // Two keys still may not share a name.
+    let clash = CHAIN
+        .replace("r.code AS code", "r.code AS code, r.name AS code")
+        .replace("GROUP BY 1, 2, 3", "GROUP BY 1, 2, 3, 4");
+    assert!(parse(&clash).is_err());
+}
+
+/// An inner join that selects only its key column reads nothing of its
+/// dim, and the error says why.
+#[test]
+fn a_join_selecting_only_its_key_says_why_it_reads_nothing() {
+    let only_key = "CREATE VIEW usage WITH (buckets = '1 hour') AS
+SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+       a.id AS account, count(*) AS n
+FROM public.events AS e
+INNER JOIN public.accounts AS a ON a.id = e.account_id
+GROUP BY 1, 2";
+    let error = parse(only_key).unwrap_err().to_string();
+    assert!(
+        error.contains(
+            "join a reads no column of its dim; a key column reads the column it is joined to"
+        ),
+        "{error}"
+    );
 }

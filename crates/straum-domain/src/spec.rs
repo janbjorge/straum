@@ -730,14 +730,10 @@ fn check_reads<'a>(
     keys: &mut HashSet<&'a Identifier>,
     errors: &mut Vec<SpecError>,
 ) {
-    let mut read = HashSet::new();
+    // A column may be read under two names, as a fact column may key
+    // two `by` keys: each name is a key of its own.
     for attribute in &join.reads {
-        if !read.insert(&attribute.column) {
-            errors.push(SpecError::Duplicate {
-                scope: Some(join.alias.clone()),
-                name: attribute.column.clone(),
-            });
-        } else if let Some(dim) = dim {
+        if let Some(dim) = dim {
             check_read(fact, join, dim, &attribute.column, errors);
         }
         if !keys.insert(&attribute.name) {

@@ -159,7 +159,10 @@ impl fmt::Display for JoinError {
                 "joins on {via} columns, but the key of dim {dim} has {key}"
             ),
             JoinError::UnknownDim { dim } => write!(f, "points at unknown dim {dim}"),
-            JoinError::ReadsNothing => f.write_str("reads no column of its dim"),
+            JoinError::ReadsNothing => f.write_str(
+                "reads no column of its dim; a key column reads the column it is joined to, \
+                 so select another",
+            ),
             JoinError::ReadsColumns { kind } => {
                 write!(f, "is {kind} and reads columns, which it has none of")
             }
