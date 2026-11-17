@@ -78,8 +78,8 @@ the end are open.
   inside `date_bin` ([Time](spec.md#time)).
 - **Bucket**: one span of the time column at one width, and `bucket`,
   the time key's name ([Cells](how-it-works.md#cells)).
-- **Bucket width** (`Width`): a span that divides a day, each wider one
-  a multiple of the one before. Also "grain".
+- **Bucket width** (`Width`): a span, the `date_bin` one dividing a
+  day, each wider one a multiple of the one before. Also "grain".
 - **Narrowest width** (`Time::width`): the `date_bin` width; the rest
   are the **wider widths** (`Time::wider`). Also "finest".
 - **Level** (`Level`): the cells of one width

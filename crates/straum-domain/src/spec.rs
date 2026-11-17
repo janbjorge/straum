@@ -14,7 +14,8 @@ use crate::identifier::Identifier;
 use crate::spec_error::{JoinError, SpecError};
 use crate::value::ColumnType;
 
-/// Seconds per day. Every width divides it, so buckets roll up to days.
+/// Seconds per day. The `date_bin` width divides it, so its buckets lie
+/// alike in every day; the wider widths need only be multiples of it.
 const DAY: u32 = 86_400;
 
 /// A `schema.table` in PostgreSQL.

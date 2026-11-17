@@ -278,8 +278,9 @@ name one input column (`Aggregate::input`).
 - Keys, attributes and measures share one namespace per view, and
   nothing may be named `bucket` (`SpecError::NamedBucket`). An ask
   reaches any of them by that name alone (`Fact::resolve`).
-- **Width** divides a day; each wider width is a whole multiple of
-  the one before (`SpecError::BadWidth`, `SpecError::BadBucket`).
+- **Width**: the `date_bin` width divides a day; each wider width is a
+  whole multiple of the one before, and need not divide a day
+  (`SpecError::BadWidth`, `SpecError::BadBucket`).
 
 Derived from a fact, not stored:
 
@@ -350,8 +351,8 @@ makes a property test fail.
    a lookup with a null finds nothing (`Projection::add`,
    `Projection::matches`).
 7. **A row with no time is kept, never answered** (`Level::bucket`).
-8. **Every width divides a day and nests in the next**
-   (`SpecError::BadWidth`); every ask bound is on a `date_bin` edge
+8. **The `date_bin` width divides a day, and every width nests in the
+   next** (`SpecError::BadWidth`, `SpecError::BadBucket`); every ask bound is on a `date_bin` edge
    (`AskError::RangeUnaligned`); an ask never reads part of a bucket.
 9. **Levels agree.** Every row goes into one cell per width in the
    same add (`Rollup::add`); `Rollup::cover` reads each instant of a
