@@ -392,7 +392,7 @@ fn aggregate_problems(pg: &PostgresContainer) {
             published("x int, k float8"),
             &fact("", "count(t.k) AS n").spec,
             Some(
-                "f: column k of uncounted.f is double precision; straum needs a type it reads \
+                "f: column k of uncounted.f is double precision; Straum needs a type it reads \
              there: an integer type, numeric(p, s), boolean, text, timestamptz or timestamp",
             ),
         ),
@@ -864,6 +864,15 @@ fn reports_wal_level_and_read_access() {
             "PostgreSQL 16 is too old; Straum needs 17 or newer".to_owned()
         ])
     );
+    // A server too old has its tables left unread, whose columns its
+    // catalog may lack: the check names the version alone.
+    let tables = std::mem::take(&mut catalog.classes);
+    let too_old = catalog::check(&spec, &catalog, "access", Replication::Logical);
+    assert_eq!(too_old.unwrap_err().len(), 1);
+    catalog.server_version = 170_000;
+    let unread = catalog::check(&spec, &catalog, "access", Replication::Logical);
+    assert!(unread.unwrap_err().len() > 1);
+    catalog.classes = tables;
     the_role_must_read_every_table(&mut db, &pg, &spec);
 }
 

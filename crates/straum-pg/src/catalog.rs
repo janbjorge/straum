@@ -233,6 +233,11 @@ pub(crate) fn query(
     let publication = escape_literal(publication);
     let tables = table_list(spec);
     let mut catalog = settings(connection, &publication)?;
+    // Older servers lack columns the queries below read; the check says
+    // the server is too old, and no more.
+    if catalog.server_version < OLDEST_VERSION_NUM {
+        return Ok(catalog);
+    }
     catalog.classes = classes(connection, &publication, &tables)?;
     read_columns(connection, &tables, &mut catalog.classes)?;
     catalog.labels = labels(connection, &tables)?;
@@ -484,7 +489,7 @@ impl Purpose {
             }
             Purpose::Boolean => "Straum needs boolean there".into(),
             Purpose::Nullness => {
-                "straum needs a type it reads there: an integer type, numeric(p, s), \
+                "Straum needs a type it reads there: an integer type, numeric(p, s), \
                                boolean, text, timestamptz or timestamp"
                     .into()
             }
@@ -502,6 +507,10 @@ pub(crate) fn check(
 ) -> Result<Tables, Vec<Problem>> {
     let mut problems = Vec::new();
     check_server(catalog, publication, replication, &mut problems);
+    // Its tables weren't read: the server's problems are all there is.
+    if catalog.server_version < OLDEST_VERSION_NUM {
+        return Err(problems);
+    }
     let mut tables = Tables {
         facts: Vec::new(),
         dims: Vec::new(),
