@@ -34,6 +34,9 @@ pub(crate) use view::{Views, parse};
 /// How much of a rejected construct an error quotes before it cuts.
 const QUOTE_CHARACTERS: usize = 60;
 
+/// How every refusal ends, so no one takes it for PostgreSQL's error.
+const NOT_IN_STRAUM_SQL: &str = "is not in Straum SQL, the PostgreSQL subset made only for Straum";
+
 /// One thing wrong with a spec or an ask, and the line it is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlError {
@@ -272,10 +275,7 @@ impl Walker {
     /// Every rejection says Straum SQL is Straum's own subset, so no one
     /// takes it for PostgreSQL's error.
     fn not_in_subset(&mut self, line: u64, what: &str) {
-        self.error(
-            line,
-            format!("{what} is not in Straum SQL, the PostgreSQL subset made only for Straum"),
-        );
+        self.error(line, format!("{what} {NOT_IN_STRAUM_SQL}"));
     }
 
     /// An unquoted name, folded to lower case as PostgreSQL does: ASCII

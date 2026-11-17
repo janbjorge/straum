@@ -28,7 +28,7 @@ use straum_domain::{
 };
 
 use super::{
-    Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
+    NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
     without_leading_zeros,
 };
 
@@ -627,7 +627,7 @@ fn extra_tokens(query: &str) -> Option<SqlError> {
 fn refused_token(line: u64, what: &str) -> SqlError {
     SqlError {
         line: Some(line),
-        message: format!("{what}, write the ask without it, is not in Straum SQL"),
+        message: format!("{what}, write the ask without it, {NOT_IN_STRAUM_SQL}"),
     }
 }
 

@@ -598,13 +598,35 @@ fn a_refused_ask_names_only_its_fault() {
         let query = format!("{ask}{having}");
         assert_eq!(
             errors(&query, &three),
-            ["line 1: a comment, write the ask without it, is not in Straum SQL"],
+            [
+                "line 1: a comment, write the ask without it, is not in Straum SQL, \
+              the PostgreSQL subset made only for Straum"
+            ],
             "{query}"
         );
     }
     // Unused, in an ask with nothing else wrong.
     let unused = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2";
     assert_eq!(errors(unused, &three), ["parameter $3 is not used"]);
+}
+
+/// A comment or a trailing `;` is refused as any construct is, saying
+/// Straum SQL is Straum's own subset; the ask without it parses.
+#[test]
+fn a_comment_or_a_trailing_semicolon_is_not_in_straum_sql() {
+    for (query, what) in [
+        ("SELECT trips FROM t -- trips", "a comment"),
+        ("SELECT trips FROM t;", "a ;"),
+    ] {
+        assert_eq!(
+            errors(query, &[]),
+            [format!(
+                "line 1: {what}, write the ask without it, is not in Straum SQL, \
+                 the PostgreSQL subset made only for Straum"
+            )],
+        );
+    }
+    assert!(parse_ask("SELECT trips FROM t", &[]).is_ok());
 }
 
 /// An ask with `terms` more conditions on `kind` after the first.
