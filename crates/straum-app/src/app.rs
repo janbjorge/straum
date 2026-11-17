@@ -287,8 +287,8 @@ impl App {
             keys,
             filter: Vec::new(),
             having: Vec::new(),
-            from: range.start,
-            to: range.end,
+            from: Some(range.start),
+            to: Some(range.end),
         })
     }
 
@@ -647,8 +647,8 @@ mod tests {
             keys: Vec::new(),
             filter: Vec::new(),
             having: Vec::new(),
-            from: 0,
-            to: 3_600,
+            from: Some(0),
+            to: Some(3_600),
         }
     }
 

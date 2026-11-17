@@ -243,8 +243,8 @@ fn every_key_at_once_uses_the_sparse_index() {
         keys,
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(
         store.ask(&ask).unwrap(),

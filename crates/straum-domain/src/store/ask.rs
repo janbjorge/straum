@@ -1,7 +1,10 @@
 //! Answering an ask. The spec checks it and names its view; the store
 //! picks the cells that answer it (bound or keyed), works out how each
 //! key, filter and join reads a cell, runs the cell loop over the buckets
-//! of the ask's range, and turns the groups met into answer rows.
+//! of the ask's range (an open end reaching to the buckets held), and
+//! turns the groups met into answer rows.
+
+use std::ops::Range;
 
 use crate::aggregate::Partials;
 use crate::ask::{Ask, AskError, AskKey, Comparison};
@@ -308,7 +311,18 @@ pub(super) fn buckets<'r>(
             cover = Cover::EachDateBin;
         }
     }
-    rollup.cover(ask.from, ask.to, cover)
+    let range = read_range(rollup, ask);
+    rollup.cover(range.start, range.end, cover)
+}
+
+/// The range an ask reads: its bounds, an open end at the edge of the
+/// buckets held. With no bucket held there is nothing to read, so an open
+/// end stands at 0.
+fn read_range(rollup: &Rollup, ask: &Ask) -> Range<i64> {
+    let held = rollup.range().unwrap_or(0..0);
+    let start = ask.from.unwrap_or(held.start);
+    let end = ask.to.unwrap_or(held.end);
+    start..end
 }
 
 /// The `by` keys, then the measures, as the ask names them.

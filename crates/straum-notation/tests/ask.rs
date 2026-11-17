@@ -61,8 +61,8 @@ fn reads_every_part() {
                 condition("vendor_id", vec![Literal::Int(1)]),
             ],
             having: Vec::new(),
-            from: JAN,
-            to: FEB,
+            from: Some(JAN),
+            to: Some(FEB),
         }
     );
 }
@@ -81,7 +81,13 @@ fn both_bounds_are_required() {
     .unwrap();
     assert_eq!(
         (ask.view, ask.measures, ask.keys, ask.from, ask.to),
-        (id("trips"), vec![id("trips")], Vec::new(), JAN, FEB)
+        (
+            id("trips"),
+            vec![id("trips")],
+            Vec::new(),
+            Some(JAN),
+            Some(FEB)
+        )
     );
     assert_eq!(
         errors("SELECT trips FROM t", &[]),

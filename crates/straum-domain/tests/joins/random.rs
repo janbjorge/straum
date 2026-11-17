@@ -128,8 +128,16 @@ fn random_ask(rng: &mut Rng, shape: Shape) -> Ask {
     }
     let mut ask = ask(&measures, &by, filter);
     if rng.chance(30) {
-        ask.from = START + HOUR * rng.int(0, 24);
-        ask.to = ask.from + HOUR * rng.int(1, 24);
+        let from = START + HOUR * rng.int(0, 24);
+        ask.from = Some(from);
+        ask.to = Some(from + HOUR * rng.int(1, 24));
+    }
+    // An open end reads to the buckets held.
+    if rng.chance(15) {
+        ask.from = None;
+    }
+    if rng.chance(15) {
+        ask.to = None;
     }
     ask
 }

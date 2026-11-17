@@ -5,7 +5,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{bool_or_null, holds, int_or_null, percentile_disc};
+use crate::common::{bool_or_null, holds, in_range, int_or_null, percentile_disc};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
@@ -184,7 +184,7 @@ fn groups<'r>(fact: &Fact, ask: &Ask, rows: &'r [Vec<Datum>], dims: &Dims) -> Gr
     let vend_kind = join_kind(fact, "vend");
     for row in rows {
         let Datum::Int(time) = row[AT] else { continue };
-        if time < ask.from || time >= ask.to || !passes(row, &ask.filter, dims) {
+        if !in_range(ask, time) || !passes(row, &ask.filter, dims) {
             continue;
         }
         if vend_kind == RefKind::Inner && !vendor_joins(row, dims) {

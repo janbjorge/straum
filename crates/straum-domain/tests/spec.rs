@@ -469,8 +469,8 @@ fn ask() -> Ask {
             values: vec![Literal::Text("x".into())],
         }],
         having: Vec::new(),
-        from: 0,
-        to: 86_400,
+        from: Some(0),
+        to: Some(86_400),
     }
 }
 
@@ -493,7 +493,7 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
             AskKey::Bucket,
             AskKey::Bucket,
         ],
-        from: 60,
+        from: Some(60),
         ..ask()
     };
     assert_eq!(
@@ -593,8 +593,8 @@ fn an_ask_of_a_bad_shape_is_rejected() {
             key: id("fare"),
             values: vec![Literal::Int(1)],
         }],
-        from: 86_400,
-        to: 60,
+        from: Some(86_400),
+        to: Some(60),
         ..ask()
     };
     assert_eq!(
@@ -618,13 +618,13 @@ fn an_ask_of_a_bad_shape_is_rejected() {
 
     // One bucket is the narrowest range; none is empty.
     let narrowest = Ask {
-        from: 3_600,
-        to: 7_200,
+        from: Some(3_600),
+        to: Some(7_200),
         ..ask()
     };
     assert!(spec.check_ask(&narrowest).is_ok());
     let none = Ask {
-        to: 3_600,
+        to: Some(3_600),
         ..narrowest
     };
     assert_eq!(
@@ -632,6 +632,29 @@ fn an_ask_of_a_bad_shape_is_rejected() {
         [AskError::RangeEmpty {
             from: 3_600,
             to: 3_600,
+        }]
+    );
+}
+
+#[test]
+fn an_open_end_needs_no_bound_and_the_other_is_still_checked() {
+    let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    for (from, to) in [(None, None), (Some(3_600), None), (None, Some(3_600))] {
+        let open = Ask { from, to, ..ask() };
+        assert!(spec.check_ask(&open).is_ok(), "{from:?}..{to:?}");
+    }
+    // Against an open end no range is empty, but a bound must sit on an
+    // edge.
+    let unaligned = Ask {
+        from: Some(60),
+        to: None,
+        ..ask()
+    };
+    assert_eq!(
+        spec.check_ask(&unaligned).unwrap_err(),
+        [AskError::RangeUnaligned {
+            at: 60,
+            width: Width { seconds: 3_600 },
         }]
     );
 }

@@ -24,9 +24,12 @@ pub struct Ask {
     pub filter: Vec<Condition>,
     /// Every condition must hold of a group for it to be answered.
     pub having: Vec<MeasureCondition>,
-    /// The half-open range `[from, to)`, Unix seconds, on bucket edges.
-    pub from: i64,
-    pub to: i64,
+    /// The first bucket read, in Unix seconds on a bucket edge; `None`
+    /// reads from the first bucket held.
+    pub from: Option<i64>,
+    /// The end of the range, not read, in Unix seconds on a bucket edge;
+    /// `None` reads to the end of the last bucket held.
+    pub to: Option<i64>,
 }
 
 /// `measure op value` in HAVING: a measure the ask selects, compared with
@@ -246,13 +249,15 @@ fn check_names(ask: &Ask, errors: &mut Vec<AskError>) {
 }
 
 fn check_range(width: Width, ask: &Ask, errors: &mut Vec<AskError>) {
-    if ask.from >= ask.to {
-        errors.push(AskError::RangeEmpty {
-            from: ask.from,
-            to: ask.to,
-        });
+    if let (Some(from), Some(to)) = (ask.from, ask.to)
+        && from >= to
+    {
+        errors.push(AskError::RangeEmpty { from, to });
     }
-    for at in [ask.from, ask.to] {
+    for end in [ask.from, ask.to] {
+        let Some(at) = end else {
+            continue;
+        };
         if at.rem_euclid(i64::from(width.seconds)) != 0 {
             errors.push(AskError::RangeUnaligned { at, width });
         }

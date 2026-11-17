@@ -33,8 +33,8 @@ fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
         keys: vec![AskKey::Key(id("pay"))],
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     values_of(store.ask(&ask).unwrap())
 }
@@ -135,8 +135,8 @@ fn removing_an_extreme_reveals_the_next() {
         keys: Vec::new(),
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
@@ -177,8 +177,8 @@ fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
         keys,
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: START + i64::from(HOUR),
+        from: Some(START),
+        to: Some(START + i64::from(HOUR)),
     };
     values_of(store.ask(&ask).unwrap())
 }

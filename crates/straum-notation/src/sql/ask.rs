@@ -161,8 +161,8 @@ impl Walker {
             keys,
             filter,
             having,
-            from: from.seconds()?,
-            to: to.seconds()?,
+            from: Some(from.seconds()?),
+            to: Some(to.seconds()?),
         })
     }
 

@@ -177,8 +177,8 @@ fn insert_task_tables(db: &mut Db, rng: &mut Rng) {
 /// The hour before `START` holds the row a microsecond before it alone.
 fn assert_edge_buckets(app: &App) {
     let edges = Ask {
-        from: START - 3_600,
-        to: START + 3_600,
+        from: Some(START - 3_600),
+        to: Some(START + 3_600),
         ..ask("tasks", &["tasks"], &["bucket"])
     };
     let answered = app.ask(&edges).unwrap();
@@ -378,8 +378,8 @@ fn tasks_of_a_gone_group_read_null(app: &App) {
         Literal::Int(2),
     );
     let null_tasks = Ask {
-        from: START,
-        to: START + 3_600,
+        from: Some(START),
+        to: Some(START + 3_600),
         ..organization_2
     };
     let answered = app.ask(&null_tasks).unwrap();

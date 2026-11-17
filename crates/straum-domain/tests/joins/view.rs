@@ -289,8 +289,8 @@ pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
         keys,
         filter,
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     }
 }
 

@@ -247,8 +247,8 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         keys,
         filter: vec![],
         having: Vec::new(),
-        from: from * i64::from(HOUR),
-        to: to * i64::from(HOUR),
+        from: Some(from * i64::from(HOUR)),
+        to: Some(to * i64::from(HOUR)),
     }
 }
 

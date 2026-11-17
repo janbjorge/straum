@@ -69,8 +69,8 @@ fn ask(keys: Vec<AskKey>, filter: Vec<Condition>, conditions: Vec<MeasureConditi
         keys,
         filter,
         having: conditions,
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     }
 }
 

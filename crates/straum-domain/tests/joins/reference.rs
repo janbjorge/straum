@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{bool_or_null, holds, int_or_null, percentile_disc};
+use crate::common::{bool_or_null, holds, in_range, int_or_null, percentile_disc};
 use crate::view::{
     AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
     QUANTITY, TAGS, TIERS,
@@ -138,7 +138,7 @@ pub fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds
     }
     for row in rows {
         let Datum::Int(at) = row[AT] else { continue };
-        if at < ask.from || at >= ask.to {
+        if !in_range(ask, at) {
             continue;
         }
         for joined in join_rows(row, dims, kinds, chained) {

@@ -328,16 +328,16 @@ pub(super) fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         keys: by.iter().copied().map(ask_key).collect(),
         filter: Vec::new(),
         having: Vec::new(),
-        from: 0,
-        to: END,
+        from: Some(0),
+        to: Some(END),
     }
 }
 
 /// `ask` over the window from [`WINDOW_FROM`] to [`WINDOW_TO`].
 pub(super) fn in_window(ask: Ask) -> Ask {
     Ask {
-        from: WINDOW_FROM,
-        to: WINDOW_TO,
+        from: Some(WINDOW_FROM),
+        to: Some(WINDOW_TO),
         ..ask
     }
 }

@@ -137,8 +137,8 @@ pub fn ask_view_t(by: &[&str]) -> Ask {
         keys,
         filter: vec![],
         having: Vec::new(),
-        from: JAN,
-        to: FEB,
+        from: Some(JAN),
+        to: Some(FEB),
     }
 }
 

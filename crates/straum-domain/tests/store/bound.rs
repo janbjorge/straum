@@ -41,8 +41,8 @@ fn by_borough_over(from: i64, to: i64) -> Ask {
         keys: vec![AskKey::Key(id("borough"))],
         filter: Vec::new(),
         having: Vec::new(),
-        from,
-        to,
+        from: Some(from),
+        to: Some(to),
     }
 }
 

@@ -1,5 +1,5 @@
 //! Ranges and buckets: an ask reads the buckets from its start to its end,
-//! a time floors to its bucket even before 1970, and a row without a time
+//! an open end reaching to the buckets held, a time floors to its bucket even before 1970, and a row without a time
 //! is kept but never answered.
 
 use crate::common::{Rng, id};
@@ -60,6 +60,57 @@ fn a_range_cuts_at_both_ends() {
     assert_eq!(trips_counted(&empty, START, END), Value::Int(0));
 }
 
+/// An open end reads to the edge of the buckets held, on either side, and
+/// a bound still cuts the other side.
+#[test]
+fn an_open_end_reads_to_the_buckets_held() {
+    let spec = spec();
+    let mut store = typed(&spec);
+    let mut rng = Rng(5);
+    let width = i64::from(WIDTH);
+    for bucket in 0..4 {
+        let mut row = trip(&mut rng);
+        row[AT] = Datum::Int(START + width * bucket);
+        store.add_row("trips", &row).unwrap();
+    }
+    assert_eq!(trips_reaching(&store, None, None), Value::Int(4));
+    assert_eq!(
+        trips_reaching(&store, Some(START + width), None),
+        Value::Int(3)
+    );
+    assert_eq!(
+        trips_reaching(&store, None, Some(START + width)),
+        Value::Int(1)
+    );
+    assert_eq!(trips_reaching(&store, Some(END), None), Value::Int(0));
+    assert_eq!(trips_reaching(&store, None, Some(START)), Value::Int(0));
+    let by_bucket = Ask {
+        from: None,
+        to: None,
+        ..trips_over(START, END, vec![AskKey::Bucket])
+    };
+    assert_eq!(store.ask(&by_bucket).unwrap().rows.len(), 4);
+}
+
+/// With no bucket held, an open end reads nothing, whatever the other end.
+#[test]
+fn an_open_end_over_an_empty_store_reads_nothing() {
+    let empty = typed(&spec());
+    assert_eq!(trips_reaching(&empty, None, None), Value::Int(0));
+    assert_eq!(trips_reaching(&empty, Some(START), None), Value::Int(0));
+    assert_eq!(trips_reaching(&empty, None, Some(END)), Value::Int(0));
+}
+
+/// The trips over a range whose ends may be open.
+fn trips_reaching(store: &Store, from: Option<i64>, to: Option<i64>) -> Value {
+    let ask = Ask {
+        from,
+        to,
+        ..trips_over(START, END, Vec::new())
+    };
+    first_value(store, &ask)
+}
+
 /// The first measure of the first row of the answer.
 pub(crate) fn first_value(store: &Store, ask: &Ask) -> Value {
     store.ask(ask).unwrap().rows[0].values[0].clone()
@@ -78,8 +129,8 @@ fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
         keys,
         filter: Vec::new(),
         having: Vec::new(),
-        from,
-        to,
+        from: Some(from),
+        to: Some(to),
     }
 }
 

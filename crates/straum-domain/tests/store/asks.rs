@@ -18,8 +18,8 @@ fn trips_filtered(filter: Vec<Condition>) -> Ask {
         keys: Vec::new(),
         filter,
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     }
 }
 
@@ -84,8 +84,8 @@ fn types_stay_through_clear() {
         keys: vec![AskKey::Key(id("pay")), AskKey::Key(id("pickup_zone"))],
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(answer_scales(&store, &ask), [0, 0, 0, 0, 0]);
     let mut types = vec![ColumnType::Int; ROW_COLUMNS];
@@ -112,8 +112,8 @@ fn columns_name_keys_and_measures_as_asked() {
         keys: vec![AskKey::Key(id("pickup_zone")), AskKey::Bucket],
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let columns = store.ask(&ask).unwrap().columns;
     let mut names = Vec::new();
@@ -140,8 +140,8 @@ fn ask_without_by_answers_one_row() {
         keys: Vec::new(),
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     let zero = Value::Int(0);
     let null = Value::Null;
@@ -190,8 +190,8 @@ fn unknown_names() {
         keys: Vec::new(),
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(
         store.ask(&ask),

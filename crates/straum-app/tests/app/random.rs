@@ -284,8 +284,8 @@ fn random_ask(random: &mut Rng) -> Ask {
     // Sometimes one day of the range.
     if random.chance(30) {
         let from = DAY * random.int(0, 3);
-        ask.from = from;
-        ask.to = from + DAY;
+        ask.from = Some(from);
+        ask.to = Some(from + DAY);
     }
     ask
 }

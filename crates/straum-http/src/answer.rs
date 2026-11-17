@@ -90,11 +90,14 @@ fn latest_seconds() -> i64 {
 
 /// A time key starts in its ask's range or at most `LOOK_BACK_SECONDS`
 /// before it, so an ask that passes here never fails `write`, whoever
-/// read it.
+/// read it. An open end has no bound to check.
 pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
     let writable = earliest_seconds()..=latest_seconds();
     let mut errors = Vec::new();
-    for (end, at_seconds) in [(RangeEnd::Start, ask.from), (RangeEnd::End, ask.to)] {
+    for (end, bound) in [(RangeEnd::Start, ask.from), (RangeEnd::End, ask.to)] {
+        let Some(at_seconds) = bound else {
+            continue;
+        };
         if !writable.contains(&at_seconds) {
             errors.push(RangeError { end, at_seconds });
         }
@@ -664,7 +667,7 @@ bucket | shared | fare
         );
     }
 
-    fn ask_over(from: i64, to: i64) -> Ask {
+    fn ask_over(from: Option<i64>, to: Option<i64>) -> Ask {
         Ask {
             view: straum_domain::Identifier::new("trips").unwrap(),
             measures: Vec::new(),
@@ -678,8 +681,8 @@ bucket | shared | fare
 
     #[test]
     fn a_range_jiff_can_write_has_no_errors() {
-        assert!(range_errors(&ask_over(0, 3_600)).is_empty());
-        let errors = range_errors(&ask_over(i64::MIN, i64::MAX));
+        assert!(range_errors(&ask_over(Some(0), Some(3_600))).is_empty());
+        let errors = range_errors(&ask_over(Some(i64::MIN), Some(i64::MAX)));
         let mut lines = Vec::new();
         for error in &errors {
             lines.push(error.to_string());
@@ -687,6 +690,14 @@ bucket | shared | fare
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("range start -9223372036854775808 is not between "));
         assert!(lines[1].starts_with("range end 9223372036854775807 is not between "));
+    }
+
+    #[test]
+    fn an_open_end_has_no_range_error() {
+        assert!(range_errors(&ask_over(None, None)).is_empty());
+        let errors = range_errors(&ask_over(None, Some(i64::MAX)));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().starts_with("range end "));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Helpers the test binaries share: builders for spec pieces, the SQL
-//! rules a reference needs (`=` and `percentile_disc`), and a seeded
+//! rules a reference needs (`=`, `percentile_disc` and an ask's range),
+//! and a seeded
 //! random number source.
 
 // Every test binary compiles this module and uses only some of it.
@@ -8,9 +9,23 @@
 #![allow(dead_code)]
 
 use straum_domain::{
-    Aggregate, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal, Measure, Table,
-    Value,
+    Aggregate, Ask, Attribute, ByKey, Condition, Datum, Fraction, Identifier, Literal, Measure,
+    Table, Value,
 };
+
+/// Whether a row at `at` is in the ask's range, as PostgreSQL reads
+/// `bucket >= from AND bucket < to`; an open end leaves its side unbounded.
+pub fn in_range(ask: &Ask, at: i64) -> bool {
+    let after_start = match ask.from {
+        Some(from) => at >= from,
+        None => true,
+    };
+    let before_end = match ask.to {
+        Some(to) => at < to,
+        None => true,
+    };
+    after_start && before_end
+}
 
 /// `percentile_disc(units / 10^places)` over `column`.
 pub fn percentile(units: u64, places: u32, column: &str) -> Aggregate {

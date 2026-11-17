@@ -101,8 +101,8 @@ fn a_dim_change_moves_the_answer_at_once() {
         keys: vec![AskKey::Key(id("vend_label"))],
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(first_keys(&store, &by_label), [text("v1")]);
     let cells = store.cells("trips");
@@ -205,8 +205,8 @@ fn by_combo_label() -> Ask {
         keys: vec![AskKey::Key(id("combo_label"))],
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     }
 }
 
@@ -279,8 +279,8 @@ fn a_filter_on_an_attribute_reads_the_dim() {
         keys: Vec::new(),
         filter: Vec::new(),
         having: Vec::new(),
-        from: START,
-        to: END,
+        from: Some(START),
+        to: Some(END),
     };
     assert_eq!(first_value(&store, &mq_fare), Value::Int(100));
     store

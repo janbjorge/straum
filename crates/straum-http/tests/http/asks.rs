@@ -365,8 +365,8 @@ fn trips_from(from: i64) -> Ask {
         keys: Vec::new(),
         filter: Vec::new(),
         having: Vec::new(),
-        from,
-        to: JAN_1 + 24 * HOUR,
+        from: Some(from),
+        to: Some(JAN_1 + 24 * HOUR),
     }
 }
 

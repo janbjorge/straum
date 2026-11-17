@@ -241,9 +241,17 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         keys: by,
         filter,
         having,
-        from,
-        to,
+        from: maybe_open(rng, from),
+        to: maybe_open(rng, to),
     }
+}
+
+/// `at`, or now and then an open end, which reads to the buckets held.
+fn maybe_open(rng: &mut Rng, at: i64) -> Option<i64> {
+    if rng.chance(15) {
+        return None;
+    }
+    Some(at)
 }
 
 /// A HAVING condition on `measure`, its value near what the measure
