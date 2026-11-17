@@ -216,7 +216,8 @@ after `SELECT`, views after `FROM`, a whole condition with the next
 free parameter after `WHERE` or `AND`, a selected measure and then a
 comparison after `HAVING`, and past the semicolon the start or end of
 the buckets held. It offers what is likely next; Straum still checks
-the ask.
+the ask. A completed word ends in a space, so the next is typed straight
+on, and where the candidates differ the first Tab lists them.
 
 The lines entered are kept in `$XDG_STATE_HOME/straum/history`,
 `~/.local/state/straum/history` unless that variable is set; without a

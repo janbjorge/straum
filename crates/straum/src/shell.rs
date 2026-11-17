@@ -154,12 +154,19 @@ fn is_absolute(path: &OsString) -> bool {
     PathBuf::from(path).is_absolute()
 }
 
+/// How the line is edited: Tab completes what all candidates share and
+/// lists them at once when they differ. Waiting for a second Tab showed
+/// nothing where the candidates differ in case, as `fare` and `FROM` do.
+fn editor_config() -> Config {
+    Config::builder()
+        .completion_type(CompletionType::List)
+        .completion_show_all_if_ambiguous(true)
+        .build()
+}
+
 /// The prompt at a terminal, with line editing, history and completion.
 pub(crate) fn interactive(url: &str) -> Result<(), ReadlineError> {
-    let config = Config::builder()
-        .completion_type(CompletionType::List)
-        .build();
-    let mut editor: Editor<Names, DefaultHistory> = Editor::with_config(config)?;
+    let mut editor: Editor<Names, DefaultHistory> = Editor::with_config(editor_config())?;
     editor.set_helper(Some(Names { views: Vec::new() }));
     let history = history_file(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     if let Some(file) = &history {
@@ -275,13 +282,22 @@ mod tests {
         let history = DefaultHistory::new();
         let context = Context::new(&history);
         let (start, candidates) = names.complete("\\rows lo", 8, &context).unwrap();
-        assert_eq!((start, candidates), (6, vec!["logins".to_owned()]));
+        assert_eq!((start, candidates), (6, vec!["logins ".to_owned()]));
         let line = "SELECT logins FROM logins WHERE bucket >= $1; ";
         let note = Hinter::hint(&names, line, line.len(), &context).unwrap();
         assert_eq!(note.display(), "$1: bucket >= timestamp");
         assert_eq!(note.completion(), None);
         assert_eq!(names.highlight_hint("$1"), "\x1b[2m$1\x1b[0m");
         assert!(Hinter::hint(&names, line, 0, &context).is_none());
+    }
+
+    #[test]
+    fn the_first_tab_lists_candidates_that_differ() {
+        let config = editor_config();
+        assert_eq!(config.completion_type(), CompletionType::List);
+        assert!(config.completion_show_all_if_ambiguous());
+        // rustyline's own default waits for a second Tab.
+        assert!(!Config::default().completion_show_all_if_ambiguous());
     }
 
     /// What the shell wrote, with the URL of the server in it as `URL`.

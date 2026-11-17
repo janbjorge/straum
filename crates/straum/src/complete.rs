@@ -222,10 +222,16 @@ pub(crate) fn complete(views: &[View], line: &str, cursor: usize) -> Completion 
     };
     let typed = &before[offered.start..];
     let mut candidates = Vec::new();
-    for candidate in offered.candidates {
-        if starts_with_ignoring_case(&candidate, typed) {
-            candidates.push(candidate);
+    for mut candidate in offered.candidates {
+        if !starts_with_ignoring_case(&candidate, typed) {
+            continue;
         }
+        // A finished word ends in a space, so the next is typed straight
+        // on, as readline does; `trips ,` still reads as `trips,`.
+        if !candidate.ends_with(' ') {
+            candidate.push(' ');
+        }
+        candidates.push(candidate);
     }
     Completion {
         start: offered.start,
@@ -292,7 +298,7 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
         return line_starts();
     };
     if is(first, "\\rows") && before.len() == 1 {
-        return view_names(views, "");
+        return view_names(views);
     }
     let view = view_after_from(views, &all);
     let selected = selected_keys(view.as_ref(), &all);
@@ -308,7 +314,7 @@ fn query_candidates(views: &[View], line: &str, before: &str) -> Vec<String> {
     }
     if let Some(named) = after(&before, "FROM") {
         if named.is_empty() {
-            return view_names(views, " ");
+            return view_names(views);
         }
         return vec!["WHERE ".to_owned()];
     }
@@ -327,11 +333,11 @@ fn line_starts() -> Vec<String> {
     starts
 }
 
-/// Each view's name, followed by `ending`.
-fn view_names(views: &[View], ending: &str) -> Vec<String> {
+/// Each view's name.
+fn view_names(views: &[View]) -> Vec<String> {
     let mut names = Vec::with_capacity(views.len());
     for view in views {
-        names.push(format!("{}{ending}", view.name));
+        names.push(view.name.clone());
     }
     names
 }
@@ -720,12 +726,12 @@ mod tests {
 
     #[test]
     fn a_line_starts_with_select_or_a_command() {
-        assert_eq!(offers(""), ["SELECT ", "\\d", "\\rows ", "\\?", "\\q"]);
+        assert_eq!(offers(""), ["SELECT ", "\\d ", "\\rows ", "\\? ", "\\q "]);
         assert_eq!(tab("se"), ("se".to_owned(), vec!["SELECT ".to_owned()]));
-        assert_eq!(offers("\\"), ["\\d", "\\rows ", "\\?", "\\q"]);
+        assert_eq!(offers("\\"), ["\\d ", "\\rows ", "\\? ", "\\q "]);
         assert_eq!(offers("\\r"), ["\\rows "]);
-        assert_eq!(offers("\\rows "), ["orders", "logins"]);
-        assert_eq!(offers("\\rows lo"), ["logins"]);
+        assert_eq!(offers("\\rows "), ["orders ", "logins "]);
+        assert_eq!(offers("\\rows lo"), ["logins "]);
         assert_eq!(offers("\\rows logins "), Vec::<String>::new());
         assert_eq!(offers("\\d "), Vec::<String>::new());
     }
@@ -736,25 +742,25 @@ mod tests {
         assert_eq!(
             offers("SELECT "),
             [
-                "bucket", "status", "shipped", "country", "orders", "revenue", "logins"
+                "bucket ", "status ", "shipped ", "country ", "orders ", "revenue ", "logins "
             ]
         );
-        assert_eq!(offers("select s"), ["status", "shipped"]);
+        assert_eq!(offers("select s"), ["status ", "shipped "]);
         assert_eq!(
             offers("SELECT status, "),
             [
-                "bucket", "shipped", "country", "orders", "revenue", "logins", "FROM "
+                "bucket ", "shipped ", "country ", "orders ", "revenue ", "logins ", "FROM "
             ]
         );
-        assert_eq!(offers("SELECT status,o"), ["orders"]);
+        assert_eq!(offers("SELECT status,o"), ["orders "]);
         assert_eq!(offers("SELECT status, orders f"), ["FROM "]);
         // With the view named further on, only its names.
         let (typed, candidates) = tab("SELECT ");
         assert_eq!(typed, "");
-        assert!(candidates.contains(&"logins".to_owned()));
+        assert!(candidates.contains(&"logins ".to_owned()));
         let line = "SELECT  FROM logins";
         let Completion { candidates, .. } = complete(&held(), line, 7);
-        assert_eq!(candidates, ["bucket", "country", "logins"]);
+        assert_eq!(candidates, ["bucket ", "country ", "logins "]);
     }
 
     #[test]
@@ -775,17 +781,17 @@ mod tests {
         assert_eq!(
             offers(line),
             [
-                "bucket >= $1 AND bucket < $2",
-                "status = $1",
-                "shipped = $1",
-                "country = $1"
+                "bucket >= $1 AND bucket < $2 ",
+                "status = $1 ",
+                "shipped = $1 ",
+                "country = $1 "
             ]
         );
         assert_eq!(
             tab(&format!("{line}bu")),
             (
                 "bu".to_owned(),
-                vec!["bucket >= $1 AND bucket < $2".to_owned()]
+                vec!["bucket >= $1 AND bucket < $2 ".to_owned()]
             )
         );
         // A key is conditioned once, and a bound written is not offered.
@@ -793,23 +799,23 @@ mod tests {
         assert_eq!(
             offers(&line),
             [
-                "bucket >= $2 AND bucket < $3",
-                "shipped = $2",
-                "country = $2"
+                "bucket >= $2 AND bucket < $3 ",
+                "shipped = $2 ",
+                "country = $2 "
             ]
         );
         let line = format!("{line}bucket >= $2 AND ");
         assert_eq!(
             offers(&line),
-            ["bucket < $3", "shipped = $3", "country = $3"]
+            ["bucket < $3 ", "shipped = $3 ", "country = $3 "]
         );
         assert_eq!(
             offers("SELECT orders FROM orders WHERE bucket<$1 AND "),
             [
-                "bucket >= $2",
-                "status = $2",
-                "shipped = $2",
-                "country = $2"
+                "bucket >= $2 ",
+                "status = $2 ",
+                "shipped = $2 ",
+                "country = $2 "
             ]
         );
     }
@@ -824,7 +830,7 @@ mod tests {
         // A view Straum doesn't serve has only its bounds.
         assert_eq!(
             offers("SELECT x FROM nope WHERE "),
-            ["bucket >= $1 AND bucket < $2"]
+            ["bucket >= $1 AND bucket < $2 "]
         );
         // With both bounds written and no view, nothing is left.
         assert_eq!(
@@ -865,8 +871,8 @@ mod tests {
         let line = "SELECT status, country, orders FROM orders \
                     WHERE bucket >= $1 AND bucket < $2 GROUP ";
         assert_eq!(offers(line), ["BY "]);
-        assert_eq!(offers(&format!("{line}BY ")), ["status, country"]);
-        assert_eq!(offers(&format!("{line}BY country, ")), ["status"]);
+        assert_eq!(offers(&format!("{line}BY ")), ["status, country "]);
+        assert_eq!(offers(&format!("{line}BY country, ")), ["status "]);
         assert_eq!(
             offers(&format!("{line}BY country, status ")),
             ["; ", "HAVING "]
@@ -882,7 +888,7 @@ mod tests {
         assert_eq!(offers(&having), ["orders ", "revenue "]);
         assert_eq!(
             offers(&format!("{having}orders ")),
-            ["= $3", "<> $3", "< $3", "<= $3", "> $3", ">= $3"]
+            ["= $3 ", "<> $3 ", "< $3 ", "<= $3 ", "> $3 ", ">= $3 "]
         );
         assert_eq!(offers(&format!("{having}orders > $3 ")), ["AND ", "; "]);
         assert_eq!(
