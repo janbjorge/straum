@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   # A release is published on the release page, which makes its tag
-  # (ADR-0036). Drafts start nothing.
+  # (ADR-0012). Drafts start nothing.
   release:
     types: [published]
 
