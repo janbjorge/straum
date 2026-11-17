@@ -276,8 +276,13 @@ fn decimal(text: &str, scale: u32) -> Option<i128> {
 
 /// `2024-01-15 10:30:00.5+00` is 1705314600. Offsets other than `+00` are
 /// read, though Straum always asks for UTC. A `timestamp` has no offset,
-/// and its text must have none. `BC` dates are `None`.
+/// and its text must have none. A ` BC` at the end counts years back from
+/// 1 BC, the year before 1 AD, as the binary form does.
 fn timestamp(text: &str, zoned: bool) -> Option<i64> {
+    let (text, before_christ) = match text.strip_suffix(" BC") {
+        Some(text) => (text, true),
+        None => (text, false),
+    };
     let (date, rest) = text.split_once(' ')?;
     let (year_month, day) = date.rsplit_once('-')?;
     let (year, month) = year_month.rsplit_once('-')?;
@@ -294,7 +299,15 @@ fn timestamp(text: &str, zoned: bool) -> Option<i64> {
     if clock.next().is_some() {
         return None;
     }
-    let days = days_from_civil(number(year)?, number(month)?, number(day)?)?;
+    let mut year = number(year)?;
+    // 1 BC is year 0, 2 BC year -1, and there is no 0 BC.
+    if before_christ {
+        if year == 0 {
+            return None;
+        }
+        year = 1 - year;
+    }
+    let days = days_from_civil(year, number(month)?, number(day)?)?;
     let seconds =
         days * SECONDS_PER_DAY + hour * SECONDS_PER_HOUR + minute * SECONDS_PER_MINUTE + second;
     let offset = if zoned { offset_seconds(offset)? } else { 0 };
@@ -578,6 +591,13 @@ mod tests {
             (naive, "2024-02-29 13:47:05.999", Datum::Int(1_709_214_425)),
             (naive, "1969-12-31 23:59:59.5", Datum::Int(-1)),
             (naive, "0001-01-01 00:00:00", Datum::Int(-62_135_596_800)),
+            // 1 BC, a leap year, is year 0.
+            (naive, "0001-01-01 00:00:00 BC", Datum::Int(-62_167_219_200)),
+            (
+                zoned,
+                "0044-03-15 12:00:00+00 BC",
+                Datum::Int(-63_517_780_800),
+            ),
             // The infinities are times no bucket holds.
             (zoned, "infinity", Datum::Null),
             (zoned, "-infinity", Datum::Null),
@@ -609,7 +629,8 @@ mod tests {
             (ColumnType::Bool, "true"),
             (zoned, "Infinity"),
             (zoned, "+infinity"),
-            (zoned, "0044-03-15 12:00:00+00 BC"),
+            (zoned, "0000-01-01 00:00:00+00 BC"),
+            (zoned, "0044-03-15 12:00:00+00 AD"),
             (zoned, "2024-13-01 00:00:00+00"),
             (zoned, "2024-00-01 00:00:00+00"),
             (zoned, "2024-01-32 00:00:00+00"),
@@ -632,7 +653,7 @@ mod tests {
             // under the wrong type.
             (naive, "2024-01-01 00:00:00+00"),
             (naive, "2024-01-01 00:00:00-05"),
-            (naive, "0044-03-15 12:00:00 BC"),
+            (naive, "0044-03-15 12:00:00+00 BC"),
             (naive, "2024-01-01 00:00"),
             (naive, "2024-01-01"),
         ];
