@@ -42,7 +42,8 @@ type Counts = dict[str | None, int]
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = ROOT / "bench" / "demo.sql"
 DATA = ROOT / "bench" / "data"
-IMAGE = "ghcr.io/janbjorge/straum:0.8.0"
+# The newest release: each release bumps it and runs the demo once (ADR-0012).
+IMAGE = "ghcr.io/janbjorge/straum:0.10.1"
 STRAUM = "straum"
 STRAUM_PORT = 8080
 SPEC_IN_IMAGE = "/spec/trips.sql"
