@@ -562,6 +562,33 @@ fn the_stream_answers_and_reports() {
     }
 }
 
+/// A report between transactions may name a keepalive's position past
+/// the last commit; one sent inside the next transaction must not go
+/// back to that commit, which would move a physical slot back.
+#[test]
+fn the_stream_never_reports_less_than_before() {
+    let pause = Duration::from_millis(500);
+    let mut begin = vec![b'B'];
+    begin.extend([0; 20]);
+    let mut fake = scripted_stream(vec![
+        now(empty_commit(0x20)),
+        later(pause, keepalive(0x40, Reply::Asked)),
+        later(pause, xlog_data(&begin)),
+        later(pause, keepalive(0x48, Reply::Asked)),
+        // Open until the wait below ends.
+        later(pause * 4, Vec::new()),
+    ]);
+    assert_eq!(fake.stream.next(LONG).unwrap().unwrap().lsn, Lsn(0x20));
+    // Asking again applies 0x20; nothing more commits.
+    assert_eq!(fake.stream.next(pause * 4).unwrap(), None);
+    drop(fake.stream);
+    let reported = reported(&fake.received.join().unwrap());
+    assert!(reported.contains(&0x40), "{reported:x?}");
+    for pair in reported.windows(2) {
+        assert!(pair[0] <= pair[1], "{reported:x?}");
+    }
+}
+
 #[test]
 fn a_commit_handed_out_is_not_yet_applied() {
     // The writer takes the commit at 0x20 and never asks for the next, so

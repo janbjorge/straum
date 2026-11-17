@@ -198,7 +198,9 @@ The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The watchdog
 (`watchdog.rs`) is two threads, from the slot's making to its end. Its
 reader reads what the slot holds every second on a connection of its
-own; past `--max-retained-wal` it shuts the stream's sockets, the
+own, counting a physical slot's WAL from where it was made, not from
+the redo point it keeps WAL from; past `--max-retained-wal` it shuts
+the stream's sockets, the
 load's too, then has PostgreSQL end the slot's session each second the
 slot is still there, so a writer stuck under its lock can't keep the
 slot. Its clock touches no network: after 10

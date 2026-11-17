@@ -10,17 +10,19 @@ use std::fmt::Write as _;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use straum_app::Source;
+use straum_app::{Lsn, Source};
 use straum_domain::{Spec, Store};
 
 use super::references::*;
 use super::support::*;
 use crate::dsn::Dsn;
 use crate::error::Error;
-use crate::source::{Postgres, Replication};
+use crate::source::{Postgres, Replication, parse_lsn};
 use crate::watchdog::{UNWATCHED, Verdict, Watchdog, Watching, past_limit};
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
+/// Counts every byte of WAL a slot keeps, as for a logical slot.
+const ALL_WAL: Lsn = Lsn(0);
 /// A `--max-retained-wal` the filler passes: 8 MiB.
 const SMALL_LIMIT_BYTES: u64 = 8 << 20;
 /// About 20 MiB of WAL, written by the superuser beside Straum.
@@ -80,6 +82,7 @@ fn the_clock_ends_the_stream_while_the_reader_hangs() {
     let watchdog = Watchdog::start(
         &stalled.dsn,
         "straum_stalled",
+        ALL_WAL,
         watching,
         vec![stream.closer().unwrap()],
     )
@@ -124,7 +127,7 @@ fn ends_the_session_that_owns_the_slot() {
         max_retained_wal: SMALL_LIMIT_BYTES,
         unwatched: UNWATCHED,
     };
-    let watchdog = Watchdog::start(&dsn, "straum_owned", watching, Vec::new()).unwrap();
+    let watchdog = Watchdog::start(&dsn, "straum_owned", ALL_WAL, watching, Vec::new()).unwrap();
     db.run(FILLER);
     assert_slot_goes(&mut db, "the slot outlived the limit");
     assert!(matches!(
@@ -154,7 +157,7 @@ fn leaves_the_session_that_owns_a_slot_within_the_limit() {
         max_retained_wal: MAX_RETAINED_WAL_BYTES,
         unwatched: UNWATCHED,
     };
-    let watchdog = Watchdog::start(&dsn, "straum_kept", watching, Vec::new()).unwrap();
+    let watchdog = Watchdog::start(&dsn, "straum_kept", ALL_WAL, watching, Vec::new()).unwrap();
     db.run(FILLER);
     thread::sleep(ROUNDS);
     assert_eq!(watchdog.verdict(), None);
@@ -195,7 +198,8 @@ fn ends_a_walsender_whose_client_reads_nothing() {
         max_retained_wal: SMALL_LIMIT_BYTES,
         unwatched: UNWATCHED,
     };
-    let watchdog = Watchdog::start(&dsn, "straum_endedagain", watching, Vec::new()).unwrap();
+    let watchdog =
+        Watchdog::start(&dsn, "straum_endedagain", ALL_WAL, watching, Vec::new()).unwrap();
     assert_slot_goes(&mut db, "the walsender outlived the watchdog");
     assert!(matches!(watchdog.verdict(), Some(Verdict::Retained { .. })));
 }
@@ -220,6 +224,36 @@ fn ends_a_physical_slot_a_load_holds_past_the_limit() {
 fn keeps_a_slot_a_load_holds_within_the_limit() {
     let pg = postgres_at_replica(&tag());
     load_holds(&pg, "withinlimit", PHYSICAL, MAX_RETAINED_WAL_BYTES);
+}
+
+/// A physical slot keeps WAL from the redo point, before it was made;
+/// that WAL is the server's to recycle at its next checkpoint, so the
+/// watchdog counts only what came after. Past the limit after it, the
+/// slot still ends.
+#[test]
+fn counts_a_physical_slots_wal_from_where_it_was_made() {
+    let pg = postgres_at_replica(&tag());
+    let mut db = Db::new(&pg, "made", TABLES);
+    let dsn = reader(&mut db, &pg);
+    db.run("CHECKPOINT");
+    db.run(FILLER);
+    let mut owner = Connection::connect(&dsn, ConnectionKind::Replication).unwrap();
+    owner
+        .rows("CREATE_REPLICATION_SLOT straum_made TEMPORARY PHYSICAL (RESERVE_WAL)")
+        .unwrap();
+    let made = db.rows("SELECT pg_current_wal_lsn()::text");
+    let made = parse_lsn(made[0][0].as_deref().unwrap()).unwrap();
+    let watching = Watching {
+        max_retained_wal: SMALL_LIMIT_BYTES,
+        unwatched: UNWATCHED,
+    };
+    let watchdog = Watchdog::start(&dsn, "straum_made", made, watching, Vec::new()).unwrap();
+    thread::sleep(ROUNDS);
+    assert_eq!(watchdog.verdict(), None, "older WAL counted");
+    assert_eq!(straum_slots(&mut db), 1, "the slot ended for older WAL");
+    db.run(FILLER_MORE);
+    assert_slot_goes(&mut db, "the slot outlived the limit");
+    assert!(matches!(watchdog.verdict(), Some(Verdict::Retained { .. })));
 }
 
 /// A writer that stops applying leaves the stream's thread answering the

@@ -54,6 +54,8 @@ pub(crate) struct Physical {
     slot: String,
     records: Records,
     major: u32,
+    /// The server's WAL position when the slot was made.
+    made: Lsn,
 }
 
 impl Physical {
@@ -79,6 +81,7 @@ impl Physical {
             slot,
             records,
             major: reserved.major,
+            made: reserved.made,
         };
         Ok((physical, reserved.start))
     }
@@ -111,6 +114,13 @@ impl Physical {
     /// The server's major version, which says how some records read.
     pub(crate) fn major(&self) -> u32 {
         self.major
+    }
+
+    /// The server's WAL position when the slot was made. The WAL between
+    /// the redo point and here the server keeps anyway until its next
+    /// checkpoint, so the watchdog counts only what comes after.
+    pub(crate) fn made(&self) -> Lsn {
+        self.made
     }
 
     /// The replication connection, and the rest of the stream for its
@@ -148,14 +158,16 @@ struct Reserved {
     start: Lsn,
     segment_size: u64,
     major: u32,
+    /// The server's WAL position just after the slot was made.
+    made: Lsn,
 }
 
 fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> {
     // The command's consistent point is a logical slot's; a physical
     // slot reserves from the redo point, which only the view shows.
     let rows = connection.rows(&format!(
-        "SELECT restart_lsn, setting, current_setting('server_version_num') \
-         FROM pg_replication_slots, pg_settings \
+        "SELECT restart_lsn, setting, current_setting('server_version_num'), \
+         pg_current_wal_lsn() FROM pg_replication_slots, pg_settings \
          WHERE slot_name = {} AND name = 'wal_segment_size'",
         escape_literal(slot)
     ))?;
@@ -167,10 +179,13 @@ fn reserved(connection: &mut Connection, slot: &str) -> Result<Reserved, Error> 
     let version = (first_row_value(&rows, 2).map(str::parse::<u32>))
         .and_then(Result::ok)
         .ok_or(Error::Protocol(Unexpected::NoServerVersion))?;
+    let made = (first_row_value(&rows, 3).and_then(parse_lsn))
+        .ok_or(Error::Protocol(Unexpected::NoWalPosition))?;
     Ok(Reserved {
         start,
         segment_size,
         major: version / VERSION_NUM_PER_MAJOR,
+        made,
     })
 }
 

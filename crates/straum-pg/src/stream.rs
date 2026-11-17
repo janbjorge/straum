@@ -120,6 +120,7 @@ impl Stream {
             shared: Arc::clone(&shared),
             sent: start.0,
             idle: start.0,
+            reported: start.0,
             last_report: Instant::now(),
         };
         let thread = thread::Builder::new()
@@ -250,6 +251,9 @@ struct StreamThread {
     /// The server's position at the last keepalive between transactions.
     /// Every commit up to it has been queued.
     idle: u64,
+    /// The last position reported. A physical slot moves its restart
+    /// point to whatever is reported, back too, so no report goes below.
+    reported: u64,
     last_report: Instant,
 }
 
@@ -401,7 +405,9 @@ impl StreamThread {
         } else {
             applied
         };
-        self.connection.send_copy_data(&status_update(done))?;
+        self.reported = self.reported.max(done);
+        self.connection
+            .send_copy_data(&status_update(self.reported))?;
         self.last_report = Instant::now();
         Ok(())
     }

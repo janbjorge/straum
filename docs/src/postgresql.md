@@ -160,6 +160,10 @@ the start waited 60 s for transactions open on the server to end before its slot
   slot, even if the rest of Straum is stuck. A watchdog that can't read
   the slot for 10 seconds, for whatever reason, ends the stream too. Many managed services
   fix `max_slot_wal_keep_size` at -1, so this is the only limit there.
+  A physical slot (`--wal physical`) keeps WAL from the last
+  checkpoint's redo point, which the server keeps until its next
+  checkpoint anyway; the watchdog counts that slot's WAL from where it
+  was made.
 - Nothing after Straum is gone: the slot is temporary, so PostgreSQL drops
   it when the connection closes, crashes and deleted pods included.
   Temporary slots don't move to a standby either, so after a failover

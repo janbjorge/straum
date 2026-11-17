@@ -45,6 +45,9 @@ pub enum Replication {
 /// transactions run, which the background writer does every 15 seconds
 /// while the WAL moves, and `pg_log_standby_snapshot()` at once.
 const CONSISTENT_WAIT: Duration = Duration::from_secs(60);
+/// Where a logical slot's WAL counts from for the watchdog: all of it,
+/// as the slot keeps WAL only from its consistent point on.
+const LOGICAL_FROM: Lsn = Lsn(0);
 /// How long a reading of the WAL position waits for its answer: as long
 /// as the watchdog gives the slot's.
 pub(crate) const WAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -172,7 +175,7 @@ fn snapshot(
     };
     // The loads run on this connection, so nothing reads the slot until
     // they end; the watchdog bounds the WAL it holds meanwhile.
-    guard.watch(dsn, &slot, vec![connection.closer()?])?;
+    guard.watch(dsn, &slot, LOGICAL_FROM, vec![connection.closer()?])?;
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
@@ -215,6 +218,7 @@ fn physical_snapshot(
     guard.watch(
         dsn,
         stream.slot(),
+        stream.made(),
         vec![
             stream.closer()?,
             connection.closer()?,

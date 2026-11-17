@@ -22,6 +22,8 @@ use postgres_protocol::escape::escape_literal;
 
 use crate::dsn::Dsn;
 use crate::error::Error;
+use straum_app::Lsn;
+
 use crate::wire::{Closer, Connection, ConnectionKind, first_row_value};
 
 /// How often the reader reads what the slot holds.
@@ -85,6 +87,9 @@ struct Shared {
 struct Watch {
     dsn: Dsn,
     slot: String,
+    /// Where the slot's WAL counts from: WAL the slot keeps from before
+    /// this is the server's to recycle at its next checkpoint.
+    from: Lsn,
     watching: Watching,
     /// Shut the sockets of the stream's sessions: the one that owns the
     /// slot, and the one the tables load on if that is another.
@@ -107,16 +112,18 @@ impl SlotGuard {
         }
     }
 
-    /// Watches `slot` in place of any slot watched before; `closers`
-    /// shut the stream's sessions when the watchdog ends it.
+    /// Watches `slot` in place of any slot watched before, counting its
+    /// WAL from `from`; `closers` shut the stream's sessions when the
+    /// watchdog ends it.
     pub(crate) fn watch(
         &mut self,
         dsn: &Dsn,
         slot: &str,
+        from: Lsn,
         closers: Vec<Closer>,
     ) -> Result<(), Error> {
         self.watchdog = None;
-        self.watchdog = Some(Watchdog::start(dsn, slot, self.watching, closers)?);
+        self.watchdog = Some(Watchdog::start(dsn, slot, from, self.watching, closers)?);
         Ok(())
     }
 
@@ -139,10 +146,12 @@ impl SlotGuard {
 }
 
 impl Watchdog {
-    /// Watches `slot`; `closers` shut the stream's sessions.
+    /// Watches `slot`, counting its WAL from `from`; `closers` shut the
+    /// stream's sessions.
     pub(crate) fn start(
         dsn: &Dsn,
         slot: &str,
+        from: Lsn,
         watching: Watching,
         closers: Vec<Closer>,
     ) -> Result<Watchdog, Error> {
@@ -155,6 +164,7 @@ impl Watchdog {
         let watch = Arc::new(Watch {
             dsn: dsn.clone(),
             slot: slot.to_owned(),
+            from,
             watching,
             closers,
         });
@@ -271,9 +281,12 @@ fn read_slot(
         None => open(&watch.dsn)?,
     };
     let connection = connection.insert(opened);
+    // GREATEST passes a NULL restart_lsn by, so the CASE keeps it NULL.
     let rows = connection.rows(&format!(
-        "SELECT active_pid, pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint \
+        "SELECT active_pid, pg_wal_lsn_diff(pg_current_wal_lsn(), \
+         CASE WHEN restart_lsn IS NOT NULL THEN GREATEST(restart_lsn, {}::pg_lsn) END)::bigint \
          FROM pg_replication_slots WHERE slot_name = {}",
+        escape_literal(&watch.from.to_string()),
         escape_literal(&watch.slot)
     ))?;
     if rows.is_empty() {
