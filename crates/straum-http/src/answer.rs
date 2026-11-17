@@ -104,6 +104,10 @@ pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
     errors
 }
 
+/// The most bytes the JSON writer reserves ahead of the rows: past it the
+/// body grows by doubling.
+const MAX_RESERVE: usize = 64 << 20;
+
 /// The answer as a JSON body; the LSN is the caller's to send.
 pub(crate) fn write(answered: &Answered) -> Vec<u8> {
     let Answered { answer, as_of, .. } = answered;
@@ -121,8 +125,11 @@ pub(crate) fn write(answered: &Answered) -> Vec<u8> {
         push_row_json(&mut out, &names, &answer.columns, row, &mut last_time);
         if row_index == 0 {
             // The rows to come, at about the first one's length: growing
-            // by doubling copies the answer written so far each time.
-            out.reserve((out.len() - start + 1) * (answer.rows.len() - 1));
+            // by doubling copies the answer written so far each time. At
+            // most `MAX_RESERVE`: one long first row is no measure of the
+            // rest, and a 200 MB key times a million rows aborted.
+            let rows_to_come = (out.len() - start + 1).saturating_mul(answer.rows.len() - 1);
+            out.reserve(rows_to_come.min(MAX_RESERVE));
         }
     }
     out.push_str("]}");
@@ -489,6 +496,22 @@ mod tests {
             applied: Lsn(0),
             as_of: UNIX_EPOCH,
         }
+    }
+
+    /// A long first row reserves no more than [`MAX_RESERVE`] for the
+    /// rest: one key of a megabyte before 100,000 short rows would have
+    /// reserved 100 GB.
+    #[test]
+    fn a_long_first_row_reserves_a_bounded_amount() {
+        let long = "x".repeat(1 << 20);
+        let mut rows = vec![row(Datum::Text(long.as_str().into()), Value::Int(1))];
+        for _ in 0..100_000 {
+            rows.push(row(Datum::Bool(true), Value::Int(1)));
+        }
+        let body = write(&answered(rows));
+        assert!(body.len() > long.len() && body.capacity() < 2 * MAX_RESERVE);
+        let short = write(&answered(vec![row(Datum::Bool(true), Value::Int(1))]));
+        assert!(short.ends_with(b"]}"));
     }
 
     /// A row in the second day of 1970.
