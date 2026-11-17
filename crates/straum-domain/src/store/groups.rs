@@ -152,8 +152,8 @@ impl<'s> Grouping<'s> {
                 .value(rollup, *left)
                 .cmp(lookup.value(rollup, *right))
         });
-        // Sized by the codes met: a join row's code may lie past the
-        // bound a cell's has.
+        // Sized by the codes met, not by every code the key has: an ask
+        // may meet a few of millions.
         let mut most = 0;
         for &number in met {
             most = most.max(number as usize);
