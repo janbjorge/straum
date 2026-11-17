@@ -211,7 +211,13 @@ impl Connection {
         let mut rows = Vec::new();
         let mut error = None;
         loop {
-            match self.read()? {
+            // After a FATAL error the server hangs up with no
+            // ReadyForQuery: its error says why, not the hang-up.
+            let message = match self.read() {
+                Ok(message) => message,
+                Err(read_error) => return Err(error.unwrap_or(read_error)),
+            };
+            match message {
                 Message::DataRow(row) => rows.push(row_fields(&row)?),
                 Message::RowDescription(_)
                 | Message::CommandComplete(_)

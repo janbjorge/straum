@@ -222,6 +222,11 @@ fn query_errors() {
         error,
         "connection to PostgreSQL: PostgreSQL closed the connection"
     );
+    // A FATAL error, then the hang-up: the error says why.
+    let fatal = error_response("57P01", "terminating connection");
+    let mut connection = connect(vec![now(signed_in()), now(fatal)], ConnectionKind::Sql).unwrap();
+    let error = connection.execute("SELECT 1").unwrap_err().to_string();
+    assert_eq!(error, "PostgreSQL: terminating connection (57P01)");
 }
 
 #[test]
