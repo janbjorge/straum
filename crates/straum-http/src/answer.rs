@@ -322,10 +322,18 @@ fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
     Cell { text, align }
 }
 
+/// What a text `null` shows as, so it differs from a null: a backslash in
+/// text shows as two, so no other text shows as this.
+const NULL_TEXT: &str = "\\null";
+
 /// Text as a cell shows it: a backslash and each control character as
 /// JSON writes them, `\\`, `\n` or `\u001b`, so data can't break a line
-/// of the table or reach the terminal as an escape sequence.
+/// of the table or reach the terminal as an escape sequence; the text
+/// `null` as [`NULL_TEXT`].
 fn escaped(text: &str) -> String {
+    if text == "null" {
+        return NULL_TEXT.to_owned();
+    }
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
         match character {
@@ -600,6 +608,24 @@ bucket               | shared | fare
             "{text}"
         );
         assert_eq!(escaped("plain | text"), "plain | text");
+    }
+
+    /// A null prints as `null`, and the text `null` otherwise, so the two
+    /// differ; text that only holds `null` prints as written.
+    #[test]
+    fn a_table_tells_a_null_from_the_text_null() {
+        let rows = vec![
+            row(Datum::Null, Value::Int(1)),
+            row(Datum::Text("null".into()), Value::Int(2)),
+            row(Datum::Text("nullable".into()), Value::Int(3)),
+            row(Datum::Text("\\null".into()), Value::Int(4)),
+        ];
+        let text = table(&answered(rows), Some(first(4)));
+        let mut keys = Vec::new();
+        for line in text.lines().skip(2).take(4) {
+            keys.push(line.split(" | ").nth(1).unwrap().trim_end().to_owned());
+        }
+        assert_eq!(keys, ["null", r"\null", "nullable", r"\\null"], "{text}");
     }
 
     fn first(count: usize) -> Window {
