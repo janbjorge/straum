@@ -28,6 +28,10 @@ const LSN: HeaderName = HeaderName::from_static("straum-lsn");
 const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 const MAX_ASK_BYTES: usize = 1 << 20;
+/// How long an ask's body may take to come whole, from the end of its
+/// head: hyper bounds the head alone, and a client that stops mid-body
+/// would hold its connection open for ever.
+const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The rows `GET /views/NAME` writes at most. A view may hold millions,
 /// which no one reads.
@@ -130,7 +134,15 @@ pub(crate) async fn handle(
 
 async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) -> Reply {
     let start = Instant::now();
-    let body = match Limited::new(body, MAX_ASK_BYTES).collect().await {
+    let collected = Limited::new(body, MAX_ASK_BYTES).collect();
+    let Ok(collected) = tokio::time::timeout(BODY_TIMEOUT, collected).await else {
+        let error = format!(
+            "the ask's body did not come whole within {} s",
+            BODY_TIMEOUT.as_secs()
+        );
+        return format.errors(StatusCode::REQUEST_TIMEOUT, &[error]);
+    };
+    let body = match collected {
         Ok(body) => body.to_bytes(),
         Err(error) if error.is::<LengthLimitError>() => {
             let error = format!("an ask is at most {MAX_ASK_BYTES} bytes");

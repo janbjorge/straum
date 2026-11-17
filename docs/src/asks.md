@@ -190,6 +190,7 @@ timeout or fall back to `as_of`.
 | 200 | The answer. |
 | 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. |
 | 405 | Not a `POST`. |
+| 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
 | 500 | Straum failed while answering; its log says why. |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |

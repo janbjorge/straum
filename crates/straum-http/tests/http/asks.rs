@@ -2,7 +2,8 @@
 //! the body, the query and the app, `Server-Timing`, and a `ReadAsk` other
 //! than Straum SQL. Each test starts a server over the fake in `fake.rs`.
 
-use std::net::SocketAddr;
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
 use std::num::NonZero;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,7 +14,8 @@ use straum_http::QueryError;
 
 use crate::fake::{COMMIT, HOUR, JAN_1, loaded, writer};
 use crate::{
-    ask, call, call_as_text, first_hour, header, request, rows_of, send, serve, serve_with, started,
+    ask, call, call_as_text, first_hour, header, read_reply, request, rows_of, send, serve,
+    serve_with, started,
 };
 
 const BY_BUCKET: &str = "SELECT bucket, kind, borough, trips, fare, fare_avg, fare_max \
@@ -297,6 +299,32 @@ fn asks_straum_cant_answer() {
         let reply = call(server.address, "POST", "/ask", &body);
         assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{body}");
     }
+    server.stop();
+}
+
+/// A body that stops coming is answered 408 once it is 10 s late, and
+/// the connection closes; one that comes whole in time is read.
+#[test]
+fn a_stalled_body_times_out() {
+    let server = serve(writer().app().clone());
+    let mut stream = TcpStream::connect(server.address).unwrap();
+    let head = "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-length: 100\r\n\r\n";
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(br#"{"query":"#).unwrap();
+    let clock = Instant::now();
+    let reply = read_reply(&mut stream);
+    let waited = clock.elapsed();
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (
+            408,
+            r#"{"errors":["the ask's body did not come whole within 10 s"]}"#
+        )
+    );
+    assert!(
+        waited >= Duration::from_secs(9) && waited < Duration::from_secs(20),
+        "{waited:?}"
+    );
     server.stop();
 }
 
