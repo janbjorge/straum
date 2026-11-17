@@ -22,7 +22,7 @@ use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::load;
 use crate::physical::{self, Physical};
-use crate::problem::{Problem, WaitProblem};
+use crate::problem::{Problem, TableNames, TableProblem, WaitProblem};
 use crate::stream::{Reader, Stream};
 use crate::unexpected::Unexpected;
 use crate::wal::pipeline::{Pipeline, Sight};
@@ -176,6 +176,7 @@ fn snapshot(
     let at = (first_row_value(&created, 1).and_then(parse_lsn))
         .ok_or(Error::Protocol(Unexpected::SlotWithoutConsistentPoint))?;
     let tables = catalog::read(&mut connection, spec, publication, Replication::Logical)?;
+    hold_tables(&mut connection, &tables)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -260,6 +261,7 @@ fn physical_snapshot(
         }
     };
     let tables = catalog::read(&mut connection, spec, publication, physical)?;
+    hold_tables(&mut connection, &tables)?;
     let unloaded = unloaded(&tables);
     Ok(Snapshot {
         connection,
@@ -269,6 +271,51 @@ fn physical_snapshot(
         unloaded,
         stream: Some(stream),
     })
+}
+
+/// Holds every spec table against a rewrite until the snapshot's
+/// transaction ends with the last load, and fails when one was rewritten
+/// since the snapshot was taken. A rewrite gives its rows the xid of the
+/// transaction that rewrote them, so the snapshot sees the table empty,
+/// and the logical stream sends nothing of it.
+pub(crate) fn hold_tables(connection: &mut Connection, tables: &Tables) -> Result<(), Error> {
+    let mut names = Vec::new();
+    let mut oids = Vec::new();
+    for table in tables.facts.iter().chain(&tables.dims) {
+        names.push(catalog::escaped(&table.schema, &table.table_name));
+        oids.push(table.oid.to_string());
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    connection.execute(&format!(
+        "LOCK TABLE {} IN ACCESS SHARE MODE",
+        names.join(", ")
+    ))?;
+    // The snapshot reads `pg_class` as it was; the function reads the
+    // file the table has now, the lock having taken in what changed.
+    let rewritten = connection.rows(&format!(
+        "SELECT c.oid FROM pg_class c
+          WHERE c.oid IN ({}) AND c.relfilenode <> pg_relation_filenode(c.oid)",
+        oids.join(", ")
+    ))?;
+    let mut problems = Vec::new();
+    for table in tables.facts.iter().chain(&tables.dims) {
+        let oid = table.oid.to_string();
+        for row in &rewritten {
+            if row.first().and_then(Option::as_deref) == Some(oid.as_str()) {
+                let names = TableNames {
+                    name: table.name.clone(),
+                    qualified: table.qualified(),
+                };
+                problems.push(names.table_problem(TableProblem::Rewritten));
+            }
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Setup(problems))
 }
 
 /// What a logical slot waited for in vain: the transactions open with an

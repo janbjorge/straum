@@ -129,6 +129,16 @@ dim accounts: Straum needs the whole old row of every update and delete: ALTER T
 view usage: join a joins account_id (an integer) to id (text); they must read alike
 ```
 
+Once the checks pass, the load holds each spec table in `ACCESS SHARE`
+mode until its last `COPY`, so a rewrite (`VACUUM FULL`, `CLUSTER`, an
+`ALTER TABLE` that rewrites) waits for the load. A rewrite that ended
+before Straum held the tables would read empty in the load's snapshot;
+Straum finds it and starts again:
+
+```text
+usage: public.events was rewritten as Straum started; Straum starts again
+```
+
 PostgreSQL makes a logical slot once every transaction that writes and
 was open when the slot began has ended, on any table of the database. A
 start waits a minute for that, then names them and tries again:

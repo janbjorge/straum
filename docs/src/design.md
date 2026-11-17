@@ -75,6 +75,9 @@ first, and PostgreSQL drops its slot as the connection closes.
    transaction, create a temporary logical slot with `pgoutput` and
    `SNAPSHOT 'use'`, read L. Read the catalog and [check
    it](postgresql.md#what-straum-checks-at-start) against the spec.
+   Hold the spec tables in `ACCESS SHARE` mode (`hold_tables`), and
+   fail if one was rewritten after the snapshot: its new file reads
+   empty in it.
 3. `Source::load` each dim, then each fact: set the column types from
    the catalog, run one binary `COPY` of the columns the spec names,
    add rows by the batch (`Store::add_rows`). The snapshot
@@ -111,7 +114,8 @@ With `--wal physical`, step 2 differs (ADR-0008);
    and hand the snapshot to the stream thread (`Stream::see`). A
    snapshot that misses a commit the stream dropped gets
    `Sight::Blind`, and Straum takes another. Once one is taken, check
-   the catalog again in it, as the load will read the tables.
+   the catalog again in it, as the load will read the tables, and hold
+   them as the logical start does.
 
 The pure parts, `wal/` and the pipeline, read no socket: a layout read
 again after DDL comes in through a closure, given the DDL's xid.
