@@ -430,14 +430,29 @@ pub(crate) fn timed_out(error: &io::Error) -> bool {
 
 /// The first of the host's addresses that answers, or the last failure.
 fn connect_tcp(dsn: &Dsn) -> io::Result<TcpStream> {
+    let addresses = match (dsn.host.as_str(), dsn.port).to_socket_addrs() {
+        Ok(addresses) => addresses,
+        Err(error) => return Err(naming_the_place(dsn, &error)),
+    };
     let mut failure = io::Error::new(io::ErrorKind::NotFound, "no address");
-    for address in (dsn.host.as_str(), dsn.port).to_socket_addrs()? {
+    for address in addresses {
         match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
             Ok(tcp) => return Ok(tcp),
             Err(error) => failure = error,
         }
     }
-    Err(failure)
+    Err(naming_the_place(dsn, &failure))
+}
+
+/// `error` led by the DSN's host and port, which the system's own words
+/// leave out.
+fn naming_the_place(dsn: &Dsn, error: &io::Error) -> io::Error {
+    let place = if dsn.host.contains(':') {
+        format!("[{}]:{}", dsn.host, dsn.port)
+    } else {
+        format!("{}:{}", dsn.host, dsn.port)
+    };
+    io::Error::new(error.kind(), format!("{place}: {error}"))
 }
 
 /// A row's values as text; `None` for a null.

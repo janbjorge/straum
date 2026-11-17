@@ -104,7 +104,15 @@ pub struct Writer<S> {
     app: App,
     /// When the server's WAL was last read.
     wal_read_at: Instant,
+    /// Where the start says what it is doing, line by line.
+    report: Report,
 }
+
+/// Takes one line saying what the writer is doing: the binary logs it.
+pub type Report = fn(&str);
+
+/// Says nothing.
+fn report_nothing(_line: &str) {}
 
 /// What one [`Writer::step`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,7 +472,15 @@ impl<S: Source> Writer<S> {
             source,
             app,
             wal_read_at: Instant::now(),
+            report: report_nothing,
         }
+    }
+
+    /// The writer, saying through `report` what each start does: the
+    /// stream it opened and each table as it loads.
+    #[must_use]
+    pub fn reporting(self, report: Report) -> Writer<S> {
+        Writer { report, ..self }
     }
 
     /// The app this writer keeps in step, for asks.
@@ -505,13 +521,17 @@ impl<S: Source> Writer<S> {
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
+        let tables = spec.dims().len() + spec.facts().len();
+        (self.report)(&format!(
+            "opened a stream at {start}; loading {tables} tables"
+        ));
         let mut store = Store::new(spec.clone());
         // Dims first, so a fact's rows find theirs when asked.
         for dim in spec.dims() {
-            self.source.load(&dim.name, &mut store)?;
+            self.load(&dim.name, "dim", &mut store)?;
         }
         for fact in spec.facts() {
-            self.source.load(&fact.name, &mut store)?;
+            self.load(&fact.name, "view", &mut store)?;
         }
         let wal = self.read_wal()?;
         let mut lag = Lag::new(opened);
@@ -528,6 +548,15 @@ impl<S: Source> Writer<S> {
         });
         progress.starts += 1;
         Ok(start)
+    }
+
+    /// Loads one table, saying when it is done and how long it took.
+    fn load(&mut self, name: &Identifier, kind: &str, store: &mut Store) -> Result<(), Error> {
+        let clock = Instant::now();
+        self.source.load(name, store)?;
+        let seconds = clock.elapsed().as_secs_f64();
+        (self.report)(&format!("loaded {kind} {name} in {seconds:.1} s"));
+        Ok(())
     }
 
     fn apply_next(&mut self) -> Result<Lsn, Error> {

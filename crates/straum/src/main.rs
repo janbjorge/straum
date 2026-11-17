@@ -339,7 +339,8 @@ fn run(
             limits.max_retained_wal,
             replication,
         ),
-    );
+    )
+    .reporting(log);
     thread::Builder::new()
         .name("straum-writer".into())
         .spawn(move || run_writer(writer))

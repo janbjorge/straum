@@ -266,3 +266,41 @@ fn count_aside(app: &App, fact: &str) -> Result<Value, AnswerError> {
     let answered = aside(app, ask(fact, &[fact], &[]))?;
     Ok(answered.answer.rows[0].values[0].clone())
 }
+
+thread_local! {
+    /// What the writer under test reported, line by line.
+    static REPORTED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record(line: &str) {
+    REPORTED.with_borrow_mut(|lines| lines.push(line.to_owned()));
+}
+
+/// A start says what it does as it goes: the stream it opened, then each
+/// table loaded, dims first. A start that fails before the stream opens
+/// says nothing.
+#[test]
+fn a_start_reports_each_table_it_loads() {
+    let Harness { database, writer } = setup();
+    let mut writer = writer.reporting(record);
+    database.borrow_mut().drop_connection = true;
+    assert!(writer.step().is_err());
+    assert_eq!(REPORTED.with_borrow(Vec::len), 0);
+
+    let lsn = database.borrow().lsn();
+    assert_eq!(writer.step().unwrap(), Step::Started(lsn));
+    let lines = REPORTED.take();
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        format!("opened a stream at {lsn}; loading 3 tables")
+    );
+    let expected = [
+        "loaded dim zones in ",
+        "loaded view trips in ",
+        "loaded view logins in ",
+    ];
+    for (line, start) in lines[1..].iter().zip(expected) {
+        assert!(line.starts_with(start) && line.ends_with(" s"), "{line}");
+    }
+}

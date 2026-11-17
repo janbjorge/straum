@@ -75,19 +75,29 @@ fn a_failed_query_keeps_the_connection(db: &mut Db) {
     assert_eq!(db.rows("SELECT 1"), [[Some("1".to_owned())]]);
 }
 
+/// A connection that fails names where it tried: a port nothing
+/// listens on, and a host no name server knows.
 fn nothing_listens_on_port_1(spec: &Spec) {
-    let closed = Dsn::parse("postgres://straum@127.0.0.1:1/straum").unwrap();
-    let error = Postgres::new(
-        closed,
-        "p",
-        ROW_LIMIT,
-        MAX_RETAINED_WAL_BYTES,
-        Replication::Logical,
-    )
-    .open(spec)
-    .unwrap_err()
-    .to_string();
-    assert!(error.starts_with("connection to PostgreSQL: "), "{error}");
+    for (dsn, place) in [
+        ("postgres://straum@127.0.0.1:1/straum", "127.0.0.1:1"),
+        (
+            "postgres://straum@nowhere.invalid:5432/straum",
+            "nowhere.invalid:5432",
+        ),
+    ] {
+        let error = Postgres::new(
+            Dsn::parse(dsn).unwrap(),
+            "p",
+            ROW_LIMIT,
+            MAX_RETAINED_WAL_BYTES,
+            Replication::Logical,
+        )
+        .open(spec)
+        .unwrap_err()
+        .to_string();
+        let start = format!("connection to PostgreSQL: {place}: ");
+        assert!(error.starts_with(&start), "{error}");
+    }
 }
 
 fn an_error_brings_its_detail(db: &mut Db) {

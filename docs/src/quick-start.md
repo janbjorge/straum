@@ -91,10 +91,15 @@ docker compose up straum
 
 ```text
 straum-1  | straum: listening on 0.0.0.0:8080
+straum-1  | straum: opened a stream at 0/1933EF18; loading 3 tables
+straum-1  | straum: loaded dim taxi_zones in 0.0 s
+straum-1  | straum: loaded view trips in 0.6 s
+straum-1  | straum: loaded view dropoffs in 0.4 s
 straum-1  | straum: loaded every table; streaming from 0/1933EF18
 ```
 
-The load takes about a second.
+The load takes about a second; each table logs when it is done, with
+how long it took.
 
 ## 4. Ask
 

@@ -550,10 +550,13 @@ fn follows_changes(pg: &PostgresContainer, straum: &mut Running) {
 fn stops_on_sigterm(pg: &PostgresContainer, straum: Running) {
     let (code, log) = straum.stop("-TERM");
     assert_eq!(code, Some(0), "{log}");
-    assert!(
-        log.contains("straum: loaded every table; streaming from "),
-        "{log}"
-    );
+    for line in [
+        "straum: opened a stream at ",
+        "straum: loaded view trips in ",
+        "straum: loaded every table; streaming from ",
+    ] {
+        assert!(log.contains(line), "{log}");
+    }
     assert!(
         log.ends_with("straum: stopping: finishing the asks in flight\nstraum: stopped\n"),
         "{log}"
