@@ -133,7 +133,8 @@ usage: straum shell [flags]
 
 Reads commands for the Straum at URL, a line each, until \\q or the end
 of input. At a terminal Tab completes views, keys, measures, conditions
-and the bounds of the buckets held.
+and the bounds of the buckets held, and the right arrow takes the line
+entered before that is shown dimmed past the cursor.
 
   \\d                    every view, as straum views prints them
   \\rows VIEW            the rows PostgreSQL would give for VIEW, the

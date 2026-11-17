@@ -4,8 +4,9 @@
 //! ask written as `QUERY; PARAMETER...`, where a value in single quotes
 //! may hold spaces. At a terminal, `interactive` edits the line with
 //! rustyline, Tab completes from the views the Straum serves (see
-//! `complete.rs`), and the lines entered are kept between sessions. On a
-//! pipe, `piped` reads one line at a time.
+//! `complete.rs`), the line entered last that starts as this one does is
+//! suggested past the cursor, and the lines entered are kept between
+//! sessions. On a pipe, `piped` reads one line at a time.
 
 use std::borrow::Cow;
 use std::env;
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
-use rustyline::hint::{Hint, Hinter};
+use rustyline::hint::{Hint, Hinter, HistoryHinter};
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
@@ -216,10 +217,12 @@ struct Names {
     views: Vec<View>,
 }
 
-/// A hint that the right arrow doesn't take into the line: it describes
-/// what to type, it isn't it.
+/// What is shown dimmed past the cursor, and what the right arrow takes
+/// into the line: the rest of a line entered before, or nothing for a
+/// note on the next parameter, which describes what to type and isn't it.
 struct Note {
     text: String,
+    completion: Option<String>,
 }
 
 impl Hint for Note {
@@ -228,7 +231,7 @@ impl Hint for Note {
     }
 
     fn completion(&self) -> Option<&str> {
-        None
+        self.completion.as_deref()
     }
 }
 
@@ -249,9 +252,20 @@ impl Completer for Names {
 impl Hinter for Names {
     type Hint = Note;
 
-    fn hint(&self, line: &str, cursor: usize, _: &Context<'_>) -> Option<Note> {
+    fn hint(&self, line: &str, cursor: usize, context: &Context<'_>) -> Option<Note> {
+        // A line entered before comes first: it is what the user typed, so
+        // it is right more often than a guess, and taking it saves the most.
+        if let Some(rest) = HistoryHinter::new().hint(line, cursor, context) {
+            return Some(Note {
+                text: rest.clone(),
+                completion: Some(rest),
+            });
+        }
         let text = hint(&self.views, line, cursor)?;
-        Some(Note { text })
+        Some(Note {
+            text,
+            completion: None,
+        })
     }
 }
 
@@ -271,6 +285,7 @@ mod tests {
     use super::*;
     use crate::complete::read_views;
     use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, POST_ASK_SPACED, answering};
+    use rustyline::history::History;
 
     #[test]
     fn rustyline_is_given_the_candidates_and_the_hint() {
@@ -289,6 +304,42 @@ mod tests {
         assert_eq!(note.completion(), None);
         assert_eq!(names.highlight_hint("$1"), "\x1b[2m$1\x1b[0m");
         assert!(Hinter::hint(&names, line, 0, &context).is_none());
+    }
+
+    #[test]
+    fn a_line_entered_before_is_suggested_and_the_arrow_takes_it() {
+        let logins = r#"{"views":[{"name":"logins","measures":["logins"],
+            "keys":[{"name":"bucket","type":"timestamp"}]}]}"#;
+        let names = Names {
+            views: read_views(logins).unwrap(),
+        };
+        let mut history = DefaultHistory::new();
+        let asked = "SELECT logins FROM logins WHERE bucket >= $1; 0";
+        history.add(asked).unwrap();
+        history.add("\\d").unwrap();
+        let context = Context::new(&history);
+        let note = Hinter::hint(&names, "SELECT l", 8, &context).unwrap();
+        assert_eq!(note.display(), &asked[8..]);
+        assert_eq!(note.completion(), Some(&asked[8..]));
+        // It goes before the note on the next parameter.
+        let line = "SELECT logins FROM logins WHERE bucket >= $1; ";
+        let note = Hinter::hint(&names, line, line.len(), &context).unwrap();
+        assert_eq!(note.completion(), Some("0"));
+    }
+
+    #[test]
+    fn nothing_is_suggested_without_a_line_that_starts_the_same() {
+        let names = Names { views: Vec::new() };
+        let mut history = DefaultHistory::new();
+        history.add("\\d").unwrap();
+        let context = Context::new(&history);
+        // No such line, the whole line, an empty line, the cursor mid-line.
+        for (line, cursor) in [("SELECT", 6), ("\\d", 2), ("", 0), ("\\", 0)] {
+            assert!(
+                Hinter::hint(&names, line, cursor, &context).is_none(),
+                "{line}"
+            );
+        }
     }
 
     #[test]

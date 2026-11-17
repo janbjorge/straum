@@ -221,8 +221,11 @@ on, and where the candidates differ the first Tab lists them.
 
 The lines entered are kept in `$XDG_STATE_HOME/straum/history`,
 `~/.local/state/straum/history` unless that variable is set; without a
-home directory, as in the image, they are not kept. `NO_COLOR` turns
-off the dimmed hint of the next parameter.
+home directory, as in the image, they are not kept. The last line
+entered that starts as the line being typed shows dimmed past the
+cursor, and the right arrow takes it; with none, a dimmed hint says
+what the next parameter is. Ctrl-R searches the lines entered.
+`NO_COLOR` turns off the dimming.
 
 With its input or its output anywhere but a terminal, the shell prints
 no prompt and completes nothing, so a script can drive it:
