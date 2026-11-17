@@ -662,3 +662,60 @@ fn a_percentile_reads_a_group_of_one_cell_in_place() {
     eprintln!("a cell a group: {few_peak} bytes, {many_peak} with 8x the values");
     assert!(many_peak - few_peak < 1_024, "{few_peak} then {many_peak}");
 }
+
+/// A zone held twice repeats its trips through the join; once the second
+/// row goes, every key holds one row again and an ask walks each cell
+/// once, allocating per group as before.
+#[test]
+fn a_dim_key_back_to_one_row_counts_each_cell_once_again() {
+    let mut store = store(8_000);
+    let before = allocations(&store, &["borough"]);
+    let twice = [Datum::Int(3), Datum::Text(BOROUGHS[3].into())];
+    store.add_row("zones", &twice).unwrap();
+    let repeating = allocations(&store, &["borough"]);
+    store.remove_row("zones", &twice).unwrap();
+    let after = allocations(&store, &["borough"]);
+    eprintln!("{before} allocations, {repeating} with a zone twice, {after} after");
+    assert!(repeating > before, "{repeating} against {before}");
+    assert_eq!(after, before);
+}
+
+/// A truncate gives back the codes of the values the view held, not only
+/// its cells: the store holds what a new one does.
+#[test]
+fn a_cleared_view_holds_no_codes() {
+    const PICKUPS: i64 = 20_000;
+    let fresh = held(|| {
+        let mut store = Store::new(spec_of(&[], Zones::Apart));
+        store.add_row("trips", &trip_row(&store, 0, 0)).unwrap();
+        store.clear("trips");
+        store
+    });
+    let cleared = held(|| {
+        let mut store = Store::new(spec_of(&[], Zones::Apart));
+        for pickup in 0..PICKUPS {
+            store
+                .add_row("trips", &trip_row(&store, pickup, 0))
+                .unwrap();
+        }
+        store.clear("trips");
+        store
+    });
+    eprintln!("{fresh} bytes cleared after one row, {cleared} after {PICKUPS}");
+    assert!(cleared - fresh < 4 << 10, "{cleared} against {fresh}");
+}
+
+/// A trip of `store`'s view with pickup zone `pickup` and the tip
+/// offset `tip`.
+fn trip_row(store: &Store, pickup: i64, tip: i64) -> Vec<Datum> {
+    let columns = store.spec().fact("trips").unwrap().columns();
+    let mut row = Vec::with_capacity(columns.len());
+    for column in columns {
+        let mut value = trip_value(column.as_str(), 0, tip);
+        if column.as_str() == "pu" {
+            value = Datum::Int(pickup);
+        }
+        row.push(value);
+    }
+    row
+}

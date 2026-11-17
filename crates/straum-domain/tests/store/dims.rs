@@ -3,12 +3,15 @@
 //! a key of several columns matches on all; a key with a null joins
 //! nothing.
 
-use crate::common::{Rng, condition, id, lit, text};
+use crate::common::{Rng, attribute, by_key, condition, id, lit, table, text};
 use crate::random::trip;
 use crate::ranges::first_value;
-use crate::views::{spec, typed};
+use crate::views::{new_measure, spec, typed};
 use crate::{AT, DRO, END, FARE, PU, SHARED, START, VENDOR, WIDTH};
-use straum_domain::{Ask, AskKey, ColumnType, Datum, RowError, Store, Value};
+use straum_domain::{
+    Aggregate, Ask, AskKey, ColumnType, Datum, Dim, Fact, Origin, Ref, RefKind, RowError, Spec,
+    Store, Time, Value, Via, Width,
+};
 
 fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
     store.key_type("trips", &id(name))
@@ -343,4 +346,89 @@ fn a_dim_row_with_a_null_key_is_never_held() {
     store.remove_row("combos", &unkeyed).unwrap();
     // A row with its key whole is missed when it is not held.
     assert_eq!(store.remove_row("combos", &keyed), Err(RowError::Missing));
+}
+
+/// Trips by pay, pickup and vendor, joined to the combos on both: every
+/// via column is a by key, so asks read the dim through the projection,
+/// not through bound cells.
+fn combos_on_by_keys_spec() -> Spec {
+    let combos = Dim {
+        as_text: Vec::new(),
+        name: id("combos"),
+        table: table("combos"),
+        key: vec![id("pu_id"), id("vendor_id")],
+        attributes: vec![id("label")],
+    };
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: WIDTH },
+            wider: Vec::new(),
+            origin: Origin::Timestamptz,
+        },
+        refs: vec![Ref {
+            alias: id("combo"),
+            dim: id("combos"),
+            via: vec![Via::Fact(id("pu")), Via::Fact(id("vendor"))],
+            kind: RefKind::Left,
+            reads: vec![attribute("combo_label", "label")],
+        }],
+        by_keys: vec![by_key("pay"), by_key("pu"), by_key("vendor")],
+        filter: vec![],
+        measures: vec![new_measure("trips", Aggregate::Count, vec![])],
+    };
+    Spec::new(vec![combos], vec![trips]).unwrap()
+}
+
+/// A dim key of two columns read through the projection matches on
+/// both: two combos share a pickup and differ in vendor, and each trip
+/// finds its own.
+#[test]
+fn a_key_of_two_columns_read_through_the_projection_matches_on_both() {
+    let spec = combos_on_by_keys_spec();
+    let mut store = Store::new(spec.clone());
+    assert_eq!(store.bound_cells("trips"), None);
+    store
+        .set_types(
+            "combos",
+            &[ColumnType::Int, ColumnType::Int, ColumnType::Text],
+        )
+        .unwrap();
+    for (vendor, label) in [(1, "a"), (2, "b")] {
+        let combo = [Datum::Int(7), Datum::Int(vendor), text(label)];
+        store.add_row("combos", &combo).unwrap();
+    }
+    let columns = spec.fact("trips").unwrap().columns().clone();
+    for vendor in [1, 2, 2] {
+        let mut row = Vec::new();
+        for column in &columns {
+            row.push(match column.as_str() {
+                "at" => Datum::Int(START),
+                "pu" => Datum::Int(7),
+                "vendor" => Datum::Int(vendor),
+                _ => Datum::Int(1),
+            });
+        }
+        store.add_row("trips", &row).unwrap();
+    }
+    let ask = Ask {
+        view: id("trips"),
+        measures: vec![id("trips")],
+        keys: vec![AskKey::Key(id("combo_label"))],
+        filter: Vec::new(),
+        having: Vec::new(),
+        from: Some(START),
+        to: Some(END),
+    };
+    let mut counted = Vec::new();
+    for row in store.ask(&ask).unwrap().rows {
+        counted.push((row.keys[0].clone(), row.values[0].clone()));
+    }
+    assert_eq!(
+        counted,
+        [(text("a"), Value::Int(1)), (text("b"), Value::Int(2))]
+    );
 }

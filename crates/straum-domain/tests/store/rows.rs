@@ -2,11 +2,17 @@
 //! types its measures read, and held before it is removed. Also where the
 //! columns of a row and the parts of the rollup key lie.
 
-use crate::common::{Rng, id, text};
+use crate::common::{Rng, by_key, id, table, text};
 use crate::random::trip;
-use crate::views::spec;
-use crate::{AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, TIP, TOLLED, VENDOR};
-use straum_domain::{ColumnType, Datum, Identifier, KeyPart, RowError, Store};
+use crate::views::{new_measure, spec};
+use crate::{
+    AT, DIST, DRO, FARE, HOME, PAY, PU, RIDER, ROW_COLUMNS, SHARED, START, TIP, TOLLED, VENDOR,
+    WIDTH,
+};
+use straum_domain::{
+    Aggregate, ColumnType, Datum, Fact, Identifier, KeyPart, Origin, RowError, Spec, Store, Time,
+    Width,
+};
 
 #[test]
 fn rows_added_together_add_none_on_error() {
@@ -156,6 +162,77 @@ fn row_errors() {
             found: ROW_COLUMNS + 1
         })
     );
+}
+
+/// Trips by pay with the sum of their fares, joined to nothing: no bound
+/// cell or other state of the fare stands in for a check the keyed cells
+/// make.
+fn fare_sum_spec() -> Spec {
+    let trips = Fact {
+        as_text: Vec::new(),
+        name: id("trips"),
+        table: table("trips"),
+        time: Time {
+            column: id("at"),
+            width: Width { seconds: WIDTH },
+            wider: Vec::new(),
+            origin: Origin::Timestamptz,
+        },
+        refs: Vec::new(),
+        by_keys: vec![by_key("pay")],
+        filter: vec![],
+        measures: vec![new_measure("fare", Aggregate::Sum(id("fare")), vec![])],
+    };
+    Spec::new(Vec::new(), vec![trips]).unwrap()
+}
+
+/// A trip of [`fare_sum_spec`].
+fn fare_trip(spec: &Spec, pay: i64, fare: &Datum) -> Vec<Datum> {
+    fare_trip_at(spec, START, pay, fare)
+}
+
+/// As [`fare_trip`], at `at`.
+fn fare_trip_at(spec: &Spec, at: i64, pay: i64, fare: &Datum) -> Vec<Datum> {
+    let mut row = Vec::new();
+    for column in spec.fact("trips").unwrap().columns() {
+        row.push(match column.as_str() {
+            "at" => Datum::Int(at),
+            "pay" => Datum::Int(pay),
+            _ => fare.clone(),
+        });
+    }
+    row
+}
+
+/// A row never added is missed, and leaves the store as it was: one
+/// whose bucket holds other cells but not its own, and one whose cell
+/// holds only nulls where it has a value.
+#[test]
+fn a_row_never_added_is_missed_beside_rows_that_were() {
+    let spec = fare_sum_spec();
+    let mut store = Store::new(spec.clone());
+    store
+        .add_row("trips", &fare_trip(&spec, 1, &Datum::Int(500)))
+        .unwrap();
+    // Pay 2 is known, in the next bucket, but has no cell in this one.
+    let later = START + i64::from(WIDTH);
+    store
+        .add_row("trips", &fare_trip_at(&spec, later, 2, &Datum::Int(500)))
+        .unwrap();
+    let other_pay = fare_trip(&spec, 2, &Datum::Int(500));
+    assert_eq!(
+        store.remove_row("trips", &other_pay),
+        Err(RowError::Missing)
+    );
+    assert_eq!(store.cells("trips"), Some(2));
+
+    let mut store = Store::new(spec.clone());
+    let unpriced = fare_trip(&spec, 1, &Datum::Null);
+    store.add_row("trips", &unpriced).unwrap();
+    let priced = fare_trip(&spec, 1, &Datum::Int(500));
+    assert_eq!(store.remove_row("trips", &priced), Err(RowError::Missing));
+    store.remove_row("trips", &unpriced).unwrap();
+    assert_eq!(store.cells("trips"), Some(0));
 }
 
 #[test]

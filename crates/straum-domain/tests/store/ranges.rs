@@ -5,7 +5,7 @@
 use crate::common::{Rng, id};
 use crate::random::trip;
 use crate::views::{Widths, spec, typed, zones_spec};
-use crate::{AT, END, START, WEEK, WIDTH};
+use crate::{AT, END, HOUR, START, WEEK, WIDTH};
 use straum_domain::{AnswerRow, Ask, AskKey, Datum, RowError, Store, Value, Width};
 
 /// A row of the zones view without its join: a time and pay 1.
@@ -31,6 +31,45 @@ fn the_range_spans_the_buckets_held() {
         .add_row("trips", &paid_trip_at(Datum::Int(START + 3 * width)))
         .unwrap();
     assert_eq!(store.range("trips"), Some(START..START + 4 * width));
+    // A bucket whose last row leaves is gone, and the range with it.
+    store
+        .remove_row("trips", &paid_trip_at(Datum::Int(START + 3 * width)))
+        .unwrap();
+    assert_eq!(store.range("trips"), Some(START..START + width));
+    store
+        .remove_row("trips", &paid_trip_at(Datum::Int(START + 1)))
+        .unwrap();
+    assert_eq!(store.range("trips"), None);
+}
+
+/// Before 1970 a range rounds to the wider buckets inside it toward the
+/// range, not toward zero: a quarter-aligned range over a quarter and an
+/// hour reads the quarters it holds, one row each, and no more.
+#[test]
+fn a_range_before_1970_reads_the_wider_buckets_inside_it() {
+    let mut store = Store::new(zones_spec(None, Widths::QuarterAndHour));
+    let width = i64::from(WIDTH);
+    let hour = i64::from(HOUR);
+    let mut at = -4 * hour;
+    while at < 0 {
+        store
+            .add_row("trips", &paid_trip_at(Datum::Int(at)))
+            .unwrap();
+        at += width;
+    }
+    for (from, to) in [
+        (-2 * hour - width, -width),
+        (-3 * hour - 3 * width, -hour + width),
+        (-4 * hour, -hour - width),
+        (-hour - width, 0),
+    ] {
+        let quarters = (to - from) / width;
+        assert_eq!(
+            trips_counted(&store, from, to),
+            Value::Int(quarters.into()),
+            "{from}..{to}"
+        );
+    }
 }
 
 /// A bound cuts even past everything held, and an empty store answers a
