@@ -175,6 +175,9 @@ work.
 `Arc<RwLock<State>>`: `Arc` lets the writer thread and the HTTP
 threads share it, `RwLock` lets many asks read at once while one
 commit writes. `read()` and `write()` in `app.rs` take the lock.
+The writer's progress sits beside it in `Arc<Mutex<Progress>>`: a
+`Mutex` lets one thread at a time in, which is enough for a few
+fields read and set in an instant. `progress()` takes it.
 
 **Modules.** `mod store;` pulls in `store.rs`, or `store/mod.rs`
 when the module is a folder of files. `pub` is visible to

@@ -81,8 +81,8 @@ first, and PostgreSQL drops its slot as the connection closes.
    transaction commits with the last load.
 4. Read the server's WAL once; start the **Lag** from when the slot
    was opened.
-5. Take the write lock, swap the store in, set **Following** at L,
-   count the start. Straum is ready. The stream thread starts at the
+5. Take the write lock, swap the store in at L, then set
+   **Following** at L and count the start in the progress. Straum is ready. The stream thread starts at the
    first `next_commit`: it reads the stream, answers the server's
    keepalives and confirms what the writer has applied, so the server
    can recycle WAL.
@@ -310,14 +310,20 @@ conditions; its range is two bucket edges with `from < to`. An
 
 ![The running system](diagrams/runtime.svg)
 
-*A writer owns the source port and an app. The app holds the limits
-and a state behind a read-write lock: the store, a following while
-every table is loaded, and the last failure.*
+*A writer owns the source port and an app. The app holds the limits,
+a state behind a read-write lock, the store, and a progress behind a
+mutex: a following while every table is loaded, and the last
+failure.*
 
-- **App** is an `Arc<RwLock<State>>` beside the limits, which never
-  change; clones share it. Asks take the read lock, the writer the
-  write lock only to apply a commit it has read or to swap a store in
-  (`State::apply`, `Writer::start`).
+- **App** is an `Arc<RwLock<State>>`, the store and the LSN it holds
+  up to, beside an `Arc<Mutex<Progress>>`, the following, the last
+  failure and the counts, and the limits, which never change; clones
+  share them. Asks take the read lock, the writer the write lock only
+  to apply a commit it has read or to swap a store in
+  (`State::apply`, `Writer::start`). The status and the writer's
+  readings of the WAL take only the progress's lock, so they never
+  wait on an ask, and a writer waiting for the write lock holds back
+  no ask for a reading. The store's lock is always taken first.
 - **Following** exists only while every table is loaded; a failure
   removes it (`Writer::step`). Its absence is "not ready".
 - **Lag** keeps the WAL readings the slot hasn't confirmed, at most

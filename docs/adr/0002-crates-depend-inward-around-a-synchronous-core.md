@@ -1,6 +1,6 @@
 # ADR-0002: Crates depend inward around a synchronous core
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -33,7 +33,9 @@ macros.
 One store sits behind an `RwLock`. `App` is the store and how far it
 has followed the source, cheap to clone. The writer takes the write
 lock only to apply a commit it has already read, or to swap a table in
-or out: a load takes the table out and fills it outside the lock. A
+or out: a load takes the table out and fills it outside the lock. How
+far it has followed, its lag and its WAL readings, sit behind a mutex
+of their own, so the status and the readings never wait on an ask. A
 lock per table, copy-on-write shards and `left-right` were passed over;
 the last two are the next step if the lock ever matters.
 

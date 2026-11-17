@@ -1,12 +1,14 @@
 //! The heart of Straum: one store, filled and kept up to date by the
 //! `Writer`, and read by asks through `App`. The writer loads every table
-//! from the `Source`, then applies one commit at a time; it takes the lock
-//! only to apply what it has read, never while it waits on PostgreSQL, so
-//! asks never wait on the database.
+//! from the `Source`, then applies one commit at a time; it takes the
+//! store's lock only to apply what it has read, never while it waits on
+//! PostgreSQL, so asks never wait on the database. Its readings of the
+//! server's WAL, and the status, go behind a lock of their own, so they
+//! never wait on an ask.
 
 use std::fmt;
 use std::ops::Range;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
@@ -19,6 +21,13 @@ use crate::source::{Change, Commit, Lsn, Source, SourceError, Wal};
 
 /// The store may be half updated, so nothing reads it again.
 const POISONED: &str = "the writer panicked while it held the store";
+
+const PROGRESS_POISONED: &str = "a thread panicked while it held the writer's progress";
+
+/// The store's lock is taken before the progress's, never after, so
+/// while an ask holds the store with a stream applied the progress
+/// follows that stream.
+const FOLLOWING: &str = "the progress follows a stream while the store has one applied";
 
 const IN_SPEC: &str = "the store holds every view and dim of its spec";
 
@@ -45,12 +54,25 @@ pub struct Limits {
 #[derive(Clone)]
 pub struct App {
     state: Arc<RwLock<State>>,
+    /// Behind a lock of its own, so the status and the writer's readings
+    /// of the WAL never wait on the store's: a long ask holds it for
+    /// reading, and a writer waiting for it holds back every new reader.
+    progress: Arc<Mutex<Progress>>,
+    /// The store's spec, which never changes, read without its lock.
+    spec: Arc<Spec>,
     limits: Limits,
 }
 
-/// Everything behind the lock: the store and what the writer did to it.
+/// Behind the store's lock: the store, and the commit it holds up to.
 struct State {
     store: Store,
+    /// Every commit up to here is in the store. `None` until every table
+    /// is loaded, and again after a failure.
+    applied: Option<Lsn>,
+}
+
+/// What the writer did, beside the store.
+struct Progress {
     /// `None` until every table is loaded, and again after a failure.
     following: Option<Following>,
     /// The last failure and when it came, kept across starts.
@@ -200,8 +222,12 @@ impl App {
     /// it.
     pub fn new(spec: Spec, limits: Limits) -> App {
         App {
+            spec: Arc::new(spec.clone()),
             state: Arc::new(RwLock::new(State {
                 store: Store::new(spec),
+                applied: None,
+            })),
+            progress: Arc::new(Mutex::new(Progress {
                 following: None,
                 last_failure: None,
                 starts: 0,
@@ -226,20 +252,23 @@ impl App {
         // An ask the spec refuses is refused even while loading; only a
         // load knows the types the store checks.
         (state.store.spec().check_ask(ask)).map_err(AnswerError::Invalid)?;
-        let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
+        let applied = state.applied.ok_or(AnswerError::NotReady)?;
         let WindowAnswer { answer, cut } =
             (state.store.ask_window(ask, window)).map_err(AnswerError::Invalid)?;
+        // The slot never confirms past what the store holds, so the time
+        // the progress was last caught up is never ahead of the answer.
+        let as_of = self.progress().following.as_ref().expect(FOLLOWING).as_of();
         Ok(Answered {
             answer,
             cut,
-            applied: following.applied,
-            as_of: following.as_of(),
+            applied,
+            as_of,
         })
     }
 
     /// How Straum stands now: loaded or not, how far behind, what failed.
     pub fn status(&self) -> Status {
-        let state = self.read();
+        let progress = self.progress();
         let mut status = Status {
             ready: false,
             applied: None,
@@ -248,11 +277,11 @@ impl App {
             lag: None,
             wal: None,
             limits: self.limits,
-            last_failure: state.last_failure.clone(),
-            starts: state.starts,
-            failures: state.failures,
+            last_failure: progress.last_failure.clone(),
+            starts: progress.starts,
+            failures: progress.failures,
         };
-        if let Some(following) = &state.following {
+        if let Some(following) = &progress.following {
             let lag = following.lag.behind(Instant::now());
             status.ready = lag <= self.limits.max_lag;
             status.applied = Some(following.applied);
@@ -267,7 +296,7 @@ impl App {
     /// `None` until every table is loaded: only a load knows the types.
     pub fn held(&self) -> Option<Held> {
         let state = self.read();
-        state.following.as_ref()?;
+        state.applied?;
         let store = &state.store;
         let mut views = Vec::new();
         for fact in store.spec().facts() {
@@ -288,8 +317,7 @@ impl App {
     /// measure by the bucket and every key, both ends of the range open.
     /// `None` for a name no view has.
     pub fn rows_ask(&self, view: &str) -> Option<Ask> {
-        let state = self.read();
-        let fact = state.store.spec().fact(view)?;
+        let fact = self.spec.fact(view)?;
         let mut keys = vec![AskKey::Bucket];
         for key in fact.keys() {
             keys.push(AskKey::Key(key.clone()));
@@ -311,6 +339,10 @@ impl App {
 
     fn write(&self) -> RwLockWriteGuard<'_, State> {
         self.state.write().expect(POISONED)
+    }
+
+    fn progress(&self) -> MutexGuard<'_, Progress> {
+        self.progress.lock().expect(PROGRESS_POISONED)
     }
 }
 
@@ -374,19 +406,17 @@ impl Following {
     }
 }
 
-impl State {
+impl Progress {
     fn following(&mut self) -> &mut Following {
         self.following.as_mut().expect(STARTED)
     }
+}
 
+impl State {
     /// Applies the commit to every fact and dim, or names the first table
     /// it no longer fits, and why.
-    fn apply(&mut self, commit: Commit) -> Result<(), Error> {
-        let Commit {
-            lsn,
-            committed,
-            changes,
-        } = commit;
+    fn apply(&mut self, commit: &Commit) -> Result<(), Error> {
+        let Commit { lsn, changes, .. } = commit;
         for change in changes {
             let table = change.table();
             let spec = self.store.spec();
@@ -394,20 +424,18 @@ impl State {
             if spec.fact(table.as_str()).is_none() && spec.dim(table.as_str()).is_none() {
                 continue;
             }
-            if let Err(why) = apply_change(&mut self.store, &change) {
+            if let Err(why) = apply_change(&mut self.store, change) {
                 // The earlier changes of this commit are in the store.
                 // Clear the stream before the write guard drops, so an ask
                 // waiting on it cannot read them.
-                self.following = None;
+                self.applied = None;
                 return Err(Error::Unfit {
                     table: table.clone(),
                     why,
                 });
             }
         }
-        let following = self.following();
-        following.applied = lsn;
-        following.committed = Some(committed);
+        self.applied = Some(*lsn);
         Ok(())
     }
 }
@@ -449,14 +477,15 @@ impl<S: Source> Writer<S> {
     /// After an error Straum is not ready, and the next step starts over
     /// from a new stream.
     pub fn step(&mut self) -> Result<Step, Error> {
-        let started = self.app.read().following.is_some();
+        let started = self.app.progress().following.is_some();
         let step = if started {
             self.apply_next().map(Step::Applied)
         } else {
             self.start().map(Step::Started)
         };
         if let Err(error) = &step {
-            let mut state = self.app.write();
+            self.app.write().applied = None;
+            let mut state = self.app.progress();
             state.following = None;
             state.last_failure = Some(Failure {
                 at: SystemTime::now(),
@@ -489,32 +518,44 @@ impl<S: Source> Writer<S> {
         lag.read(&wal, self.wal_read_at);
         let mut state = self.app.write();
         state.store = store;
-        state.following = Some(Following {
+        state.applied = Some(start);
+        let mut progress = self.app.progress();
+        progress.following = Some(Following {
             applied: start,
             committed: None,
             lag,
             wal,
         });
-        state.starts += 1;
+        progress.starts += 1;
         Ok(start)
     }
 
     fn apply_next(&mut self) -> Result<Lsn, Error> {
         loop {
             if self.wal_read_at.elapsed() >= WAL_EVERY {
-                let wal = self.read_wal()?;
-                let mut state = self.app.write();
-                let following = state.following();
-                following.lag.read(&wal, self.wal_read_at);
-                following.wal = wal;
+                self.take_wal_reading()?;
             }
             let wait = WAL_EVERY.saturating_sub(self.wal_read_at.elapsed());
             if let Some(commit) = self.source.next_commit(wait)? {
-                let lsn = commit.lsn;
-                self.app.write().apply(commit)?;
-                return Ok(lsn);
+                let mut state = self.app.write();
+                state.apply(&commit)?;
+                let mut progress = self.app.progress();
+                let following = progress.following();
+                following.applied = commit.lsn;
+                following.committed = Some(commit.committed);
+                return Ok(commit.lsn);
             }
         }
+    }
+
+    /// Reads the server's WAL into the lag, without the store's lock.
+    fn take_wal_reading(&mut self) -> Result<(), Error> {
+        let wal = self.read_wal()?;
+        let mut progress = self.app.progress();
+        let following = progress.following();
+        following.lag.read(&wal, self.wal_read_at);
+        following.wal = wal;
+        Ok(())
     }
 
     /// Reads the server's WAL, and fails once the slot retains more of it
@@ -636,12 +677,15 @@ impl std::error::Error for AnswerError {}
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Instant, SystemTime};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime};
 
-    use straum_domain::{Ask, Datum, Identifier, Value};
+    use straum_domain::{Ask, Datum, Identifier, Spec, Store, Value};
 
-    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Wal};
+    use super::{AnswerError, App, Change, Commit, Following, Limits, Lsn, Wal, Writer};
     use crate::lag::Lag;
+    use crate::source::{Source, SourceError};
 
     fn id(name: &str) -> Identifier {
         Identifier::new(name).unwrap()
@@ -672,7 +716,8 @@ mod tests {
 
     fn follow(app: &App) {
         let mut state = app.write();
-        state.following = Some(Following {
+        state.applied = Some(Lsn(1));
+        app.progress().following = Some(Following {
             applied: Lsn(1),
             committed: None,
             lag: Lag::new(Instant::now()),
@@ -701,7 +746,7 @@ mod tests {
         let app = app();
         follow(&app);
         let mut state = app.write();
-        let applied = state.apply(Commit {
+        let applied = state.apply(&Commit {
             lsn: Lsn(2),
             committed: SystemTime::UNIX_EPOCH,
             changes: vec![
@@ -713,7 +758,7 @@ mod tests {
             ],
         });
         assert!(applied.is_err());
-        assert!(state.following.is_none());
+        assert!(state.applied.is_none());
         // The insert landed. Nothing can answer it: the stream is already clear.
         assert!(state.store.cells("trips").unwrap() > 0);
         drop(state);
@@ -727,7 +772,7 @@ mod tests {
         {
             let mut state = app.write();
             state
-                .apply(Commit {
+                .apply(&Commit {
                     lsn: Lsn(2),
                     committed: SystemTime::UNIX_EPOCH,
                     changes: vec![Change::Insert {
@@ -736,11 +781,75 @@ mod tests {
                     }],
                 })
                 .unwrap();
-            let following = state.following.as_ref().unwrap();
-            assert_eq!(following.applied, Lsn(2));
+            assert_eq!(state.applied, Some(Lsn(2)));
         }
         let answered = app.ask(&count()).unwrap();
         assert_eq!(answered.applied, Lsn(2));
         assert_eq!(answered.answer.rows[0].values[0], Value::Int(1));
+    }
+
+    /// A source whose server stands still: the WAL it reads never moves.
+    struct StandingStill;
+
+    impl Source for StandingStill {
+        fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
+            Ok(Lsn(1))
+        }
+
+        fn load(&mut self, _table: &Identifier, _store: &mut Store) -> Result<(), SourceError> {
+            Ok(())
+        }
+
+        fn next_commit(&mut self, _wait: Duration) -> Result<Option<Commit>, SourceError> {
+            Ok(None)
+        }
+
+        fn wal(&mut self) -> Result<Wal, SourceError> {
+            Ok(Wal {
+                written: Lsn(1),
+                confirmed: Lsn(1),
+                restart: Lsn(1),
+            })
+        }
+    }
+
+    /// How long a call here may take before it counts as waiting on the
+    /// store's lock.
+    const WAITING: Duration = Duration::from_millis(500);
+
+    /// The writer's reading of the WAL and the status don't wait on the
+    /// store's lock: a long ask holds it, and a writer that waited for it
+    /// would hold back every ask after.
+    #[test]
+    fn a_reading_of_the_wal_and_the_status_wait_on_no_ask() {
+        let app = app();
+        follow(&app);
+        let mut writer = Writer::new(app.clone(), StandingStill);
+        let held = app.write();
+        let (done, finished) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            writer.take_wal_reading().unwrap();
+            done.send(writer.app().status().ready).unwrap();
+        });
+        assert_eq!(finished.recv_timeout(WAITING), Ok(true));
+        drop(held);
+        reader.join().unwrap();
+    }
+
+    /// An ask does wait on the store's lock: the writer holds it to apply.
+    #[test]
+    fn an_ask_waits_while_the_writer_holds_the_store() {
+        let app = app();
+        follow(&app);
+        let held = app.write();
+        let (done, finished) = mpsc::channel();
+        let asking = app.clone();
+        let reader = thread::spawn(move || {
+            done.send(asking.ask(&count()).is_ok()).unwrap();
+        });
+        assert!(finished.recv_timeout(WAITING).is_err());
+        drop(held);
+        assert_eq!(finished.recv_timeout(WAITING * 4), Ok(true));
+        reader.join().unwrap();
     }
 }

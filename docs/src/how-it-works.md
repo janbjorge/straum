@@ -112,7 +112,9 @@ lock for one commit at a time; asks read under the read lock.*
 
 Asks share the store with the writer behind a read-write lock, which
 the writer takes only to apply a commit it has already read. A long
-ask delays the writer, and that shows as lag. The stream thread reads
+ask delays the writer, and that shows as lag. The writer's readings of
+the server's WAL, and the status, keep to a lock of their own, so an
+ask waits on the writer only while a commit arrives. The stream thread reads
 ahead of the writer, up to 64 commits, and confirms what the writer
 has applied, so PostgreSQL can recycle WAL.
 

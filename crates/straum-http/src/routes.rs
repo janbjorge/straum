@@ -124,7 +124,16 @@ pub(crate) async fn handle(
         (&Method::GET, "/livez") => text(StatusCode::OK, "live\n".into()),
         (&Method::GET, "/readyz") => get_readyz(&app),
         (&Method::GET, "/status") => get_status(&app, Format::of(accept, Format::Text)),
-        (&Method::GET, "/views") => get_views(&app, Format::of(accept, Format::Text)),
+        (&Method::GET, "/views") => {
+            let format = Format::of(accept, Format::Text);
+            let app = Arc::clone(&app);
+            // The views are read under the store's lock, which a long ask
+            // or a writer can hold: the health routes don't queue behind.
+            match tokio::task::spawn_blocking(move || get_views(&app, format)).await {
+                Ok(reply) => reply,
+                Err(_) => failed(format),
+            }
+        }
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {

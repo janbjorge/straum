@@ -180,9 +180,12 @@ the end are open.
   snapshot is taken and the stream starts. The guide says "LSN L".
 - **Stream** (`Stream`): the commits after the consistent point;
   `Following` is where it stands.
-- **Applied** and **committed** (`Following::applied`,
+- **Applied** and **committed** (`State::applied`, `Following::applied`,
   `Commit::committed`): the last commit in the store, and when
   PostgreSQL committed it.
+- **Progress** (`Progress`): what the writer did beside the store: the
+  following, the last failure and the counts, behind a lock of its own
+  so the status never waits on an ask.
 - **Step** (`Writer::step`): one turn of the writer; one that fails is a
   **failure** (`Failure`).
 - **Commit** (`Commit`): one transaction's changes, applied whole.
