@@ -203,6 +203,25 @@ fn errors_are_lines_to_those_who_accept_text() {
     server.stop();
 }
 
+/// An ask without WHERE reads every bucket held, as does one whose bounds
+/// lie past both ends of them; a bound still cuts its side.
+#[test]
+fn an_ask_without_bounds_reads_every_bucket_held() {
+    let (_writer, server) = started(writer());
+    let bounded = ask(BY_BUCKET, "[0, 4102444800]");
+    let every = call(server.address, "POST", "/ask", &bounded);
+    let open = BY_BUCKET.replace("WHERE bucket >= $1 AND bucket < $2 ", "");
+    let reply = call(server.address, "POST", "/ask", &ask(&open, "[]"));
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(rows_of(&reply.body), rows_of(&every.body));
+    let later = BY_BUCKET.replace(" AND bucket < $2", "");
+    let fewer = call(server.address, "POST", "/ask", &ask(&later, "[1704070800]"));
+    assert_eq!(fewer.status, 200, "{}", fewer.body);
+    assert_ne!(rows_of(&fewer.body), rows_of(&every.body));
+    assert!(rows_of(&fewer.body).starts_with(r#"[{"bucket":"2024-01-01T01:00:00Z""#));
+    server.stop();
+}
+
 /// Asks the view can't answer, each with the errors its reply holds.
 fn unanswerable() -> [(String, &'static str); 6] {
     [

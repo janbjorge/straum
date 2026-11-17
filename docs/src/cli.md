@@ -118,7 +118,7 @@ dim public.taxi_zones
 
 - `holds`: the [cells](how-it-works.md#cells) at the narrowest width,
   and the bound cells of a view that keeps them. Then the range of its
-  buckets, which are the bounds an ask takes to read everything. A few
+  buckets, which an ask without bounds reads. A few
   trips in the month carry a wrong year, hence the range from 2003.
 - `keys`: every name an ask may group or filter by, each with the type
   a parameter for it must have.

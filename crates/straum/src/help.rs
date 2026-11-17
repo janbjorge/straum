@@ -107,8 +107,9 @@ exactly as written, true and false are booleans, anything else is a
 string, and '7' in quotes is the string 7.
 
 QUERY reads one view by the names straum views prints. Every value is a
-parameter. bucket >= $n AND bucket < $n bound the buckets read; both are
-needed. A selected key is also in GROUP BY. A measure is its name, never
+parameter. bucket >= $n AND bucket < $n bound the buckets read; a bound
+left out leaves its end open, so with no WHERE an ask reads every bucket
+held. A selected key is also in GROUP BY. A measure is its name, never
 sum(...) or count(...).
 
 examples:

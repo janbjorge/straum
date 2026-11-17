@@ -67,13 +67,10 @@ fn reads_every_part() {
     );
 }
 
-/// Both bounds are written, whichever order; an ask says what it reads.
-fn missing_bound(bound: &str) -> String {
-    format!("line 1: an ask writes both bounds; {bound} is missing")
-}
-
+/// The bounds come in either order, and each may be left out: its end
+/// is open.
 #[test]
-fn both_bounds_are_required() {
+fn a_bound_left_out_leaves_its_end_open() {
     let ask = parse_ask(
         "select TRIPS from Trips where bucket < $2 and bucket >= $1",
         &range(),
@@ -89,23 +86,32 @@ fn both_bounds_are_required() {
             Some(FEB)
         )
     );
+    let every = parse_ask("SELECT trips FROM t", &[]).unwrap();
+    assert_eq!((every.from, every.to), (None, None));
+    let filtered = parse_ask("SELECT trips FROM t WHERE kind = $1", &[Literal::Int(1)]).unwrap();
+    assert_eq!((filtered.from, filtered.to), (None, None));
+    let since = parse_ask(
+        "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
+        &[Literal::Int(1), Literal::Int(JAN)],
+    )
+    .unwrap();
+    assert_eq!((since.from, since.to), (Some(JAN), None));
+    let until = parse_ask(
+        "SELECT trips FROM t WHERE bucket < $1",
+        &[Literal::Int(FEB)],
+    )
+    .unwrap();
+    assert_eq!((until.from, until.to), (None, Some(FEB)));
+}
+
+/// No WHERE is the one spelling of every row; a condition that is no
+/// condition is refused.
+#[test]
+fn where_true_is_refused() {
     assert_eq!(
-        errors("SELECT trips FROM t", &[]),
-        [missing_bound("bucket >= $n"), missing_bound("bucket < $n")]
-    );
-    assert_eq!(
-        errors(
-            "SELECT trips FROM t WHERE kind = $1 AND bucket >= $2",
-            &[Literal::Int(1), Literal::Int(JAN)]
-        ),
-        [missing_bound("bucket < $n")]
-    );
-    assert_eq!(
-        errors(
-            "SELECT trips FROM t WHERE bucket < $1",
-            &[Literal::Int(FEB)]
-        ),
-        [missing_bound("bucket >= $n")]
+        errors("SELECT trips FROM t WHERE true", &[]),
+        ["line 1: filter condition, write = or IN joined by AND, \
+          `true` is not in Straum SQL, the PostgreSQL subset made only for Straum"]
     );
 }
 

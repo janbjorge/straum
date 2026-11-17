@@ -86,8 +86,8 @@ the end are open.
   ([The store](design.md#the-store)).
 - **Origin** (`Origin`): `date_bin`'s third argument, the `'epoch'` of
   the column's type.
-- **Bucket edge**: a multiple of the `date_bin` width; both bounds of an
-  ask sit on one ([Parameters](asks.md#parameters)).
+- **Bucket edge**: a multiple of the `date_bin` width; each bound an
+  ask writes sits on one ([Parameters](asks.md#parameters)).
 - **Wall clock**: how a `timestamp` reads: no zone, printed with a `Z`
   that means nothing ([Time](spec.md#time)).
 

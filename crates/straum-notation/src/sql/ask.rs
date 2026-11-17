@@ -12,8 +12,9 @@
 //! Every value is a `$n` parameter, so no value is ever spliced into the
 //! query text. Keys and measures go by the names the view gives them.
 //! `bucket` is the view's time bucket; a spec can't name a key or measure
-//! `bucket`, so it never clashes. Both bounds are written: an ask says
-//! what it reads.
+//! `bucket`, so it never clashes. Each bound may be left out: an ask
+//! without `bucket >= $n` reads from the first bucket held, one without
+//! `bucket < $n` to the last, and one with no `WHERE` reads them all.
 
 use std::fmt;
 
@@ -78,7 +79,7 @@ impl End {
     }
 }
 
-/// What an ask's WHERE holds: the filter and both bounds.
+/// What an ask's WHERE holds: the filter and the bounds written.
 struct Where {
     filter: Vec<Condition>,
     from: Bound,
@@ -87,17 +88,19 @@ struct Where {
 
 /// A bucket bound as the ask writes it; `Bad` is one already reported.
 enum Bound {
-    Missing,
+    Open,
     Bad,
     At { seconds: i64 },
 }
 
 impl Bound {
-    /// The bound in Unix seconds; a missing or bad one is already reported.
-    fn seconds(&self) -> Result<i64, Reported> {
+    /// The bound in Unix seconds, `None` for an open end; a bad one is
+    /// already reported.
+    fn seconds(&self) -> Result<Option<i64>, Reported> {
         match self {
-            Bound::At { seconds } => Ok(*seconds),
-            Bound::Missing | Bound::Bad => Err(Reported),
+            Bound::At { seconds } => Ok(Some(*seconds)),
+            Bound::Open => Ok(None),
+            Bound::Bad => Err(Reported),
         }
     }
 }
@@ -153,7 +156,7 @@ impl Walker {
                 self.error(at, format!("GROUP BY {key} is not selected"));
             }
         }
-        let Where { filter, from, to } = self.ask_where(at, select.selection.as_ref(), parameters);
+        let Where { filter, from, to } = self.ask_where(select.selection.as_ref(), parameters);
         let having = self.ask_having(select.having.as_ref(), text, parameters);
         Ok(Ask {
             view: view?,
@@ -161,8 +164,8 @@ impl Walker {
             keys,
             filter,
             having,
-            from: Some(from.seconds()?),
-            to: Some(to.seconds()?),
+            from: from.seconds()?,
+            to: to.seconds()?,
         })
     }
 
@@ -248,20 +251,15 @@ impl Walker {
     }
 
     /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
-    /// both bounds required.
-    fn ask_where(
-        &mut self,
-        at: u64,
-        selection: Option<&sql::Expr>,
-        parameters: &mut Parameters,
-    ) -> Where {
+    /// a bound not written leaving its end open.
+    fn ask_where(&mut self, selection: Option<&sql::Expr>, parameters: &mut Parameters) -> Where {
         let mut parts = Vec::new();
         if let Some(expression) = selection {
             and_parts(expression, &mut parts);
         }
         let mut filter = Vec::new();
-        let mut from = Bound::Missing;
-        let mut to = Bound::Missing;
+        let mut from = Bound::Open;
+        let mut to = Bound::Open;
         for part in parts {
             let Some(BucketBound { end, value }) = bucket_bound(part) else {
                 self.read_conditions(part, &mut filter, &mut Names::Ask(parameters));
@@ -271,7 +269,7 @@ impl Walker {
                 End::From => &mut from,
                 End::To => &mut to,
             };
-            if !matches!(bound, Bound::Missing) {
+            if !matches!(bound, Bound::Open) {
                 let operator = end.spelling();
                 self.error(line(part), format!("bucket {operator} given twice"));
                 continue;
@@ -280,12 +278,6 @@ impl Walker {
                 Ok(seconds) => Bound::At { seconds },
                 Err(Reported) => Bound::Bad,
             };
-        }
-        if let Bound::Missing = from {
-            self.missing_bound(at, &End::From);
-        }
-        if let Bound::Missing = to {
-            self.missing_bound(at, &End::To);
         }
         Where { filter, from, to }
     }
@@ -336,14 +328,6 @@ impl Walker {
             }
         }
         conditions
-    }
-
-    fn missing_bound(&mut self, at: u64, end: &End) {
-        let operator = end.spelling();
-        self.error(
-            at,
-            format!("an ask writes both bounds; bucket {operator} $n is missing"),
-        );
     }
 
     /// A key by the name the view gives it; `bucket` takes only the range.

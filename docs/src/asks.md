@@ -22,21 +22,24 @@ curl --json '{
 ```text
 SELECT [key, ...] measure, ...
 FROM view
-WHERE [condition AND ...] bucket >= $n AND bucket < $n
+[WHERE condition [AND ...]]
 [GROUP BY key, ...]
 [HAVING comparison [AND ...]]
 
 condition   key = $n
             key IN ($n, $n, ...)
+            bucket >= $n
+            bucket < $n
 comparison  measure { = | <> | < | <= | > | >= } $n
 ```
 
 The notation is that of the [spec's synopsis](spec.md#synopsis), and
 this is the whole language: anything it does not show is an error that
-names the construct and says what to write. The shortest ask:
+names the construct and says what to write. The shortest ask reads
+every bucket Straum holds:
 
 ```sql
-SELECT events, amount FROM usage WHERE bucket >= $1 AND bucket < $2
+SELECT events, amount FROM usage
 ```
 
 - A key or a measure goes by the name the view gives it with `AS`:
@@ -47,9 +50,11 @@ SELECT events, amount FROM usage WHERE bucket >= $1 AND bucket < $2
 - Each name is selected at most once, since the names become the
   fields of each answer row. `GROUP BY` names exactly the selected
   keys.
-- `bucket >= $n` and `bucket < $n` bound the range, once each, and both
-  are written: an ask says what it reads. They and the conditions come
-  in any order. No condition is put in parentheses.
+- `bucket >= $n` and `bucket < $n` bound the range, each at most once.
+  Leave one out and that end is open: the ask reads from the first
+  bucket held, or to the end of the last. With no `WHERE` it reads
+  every bucket held; `WHERE true` is refused. The bounds and the
+  conditions come in any order. No condition is put in parentheses.
 
 ## HAVING
 
@@ -91,8 +96,8 @@ can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
 [HAVING](#having) comparison takes a number of any scale.
 
 The `bucket` bounds are RFC 3339 times, such as `"2026-11-13T00:00:00-05:00"`,
-or Unix seconds. Both must fall on an edge of the view's `date_bin`
-buckets: Straum never answers for part of a bucket.
+or Unix seconds. Each bound written must fall on an edge of the view's
+`date_bin` buckets: Straum never answers for part of a bucket.
 
 ## The answer
 
@@ -122,7 +127,9 @@ buckets: Straum never answers for part of a bucket.
   rest null.
 
 `timestamptz` buckets are their start in UTC. `timestamp` buckets are
-wall clock readings formatted with `Z`. Measures print as the
+wall clock readings formatted with `Z`. PostgreSQL keeps times past
+the year 9999, which RFC 3339 can't write; an open end reads them, and
+such a bucket prints as `Unix second` and its number. Measures print as the
 [measures table](spec.md#measures) says: `1875.70` for a
 `numeric(12, 2)` sum, and `44.273058` for an `avg_amount` of 18240.50
 over 412 events, at four places past the scale. A
@@ -184,7 +191,7 @@ timeout or fall back to `as_of`.
 {"errors": ["unknown measure amout; did you mean amount?"]}
 {"errors": ["zip is not a key of the view; the view's keys are bucket, kind, account_id, region"]}
 {"errors": ["region is a key; add it to GROUP BY"]}
-{"errors": ["line 1: an ask writes both bounds; bucket < $n is missing"]}
+{"errors": ["line 1: bucket >= given twice"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
 {"errors": ["bound 1794558600 is not on a 3600s bucket edge"]}

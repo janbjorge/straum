@@ -1,6 +1,6 @@
 # ADR-0005: Asks are Straum SQL with parameters
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -14,9 +14,11 @@ stated target, an aggregate could land at any speed.
 ## Decision
 
 `POST /ask` takes `{"query", "parameters"}`. The query is one `SELECT`
-over a view the client names: keys then measures by name; `WHERE`
-holds `=` and `IN` on keys joined by `AND`, and both `bucket >= $n` and
-`bucket < $m`; `GROUP BY` names exactly the selected keys; `HAVING
+over a view the client names: keys then measures by name; `WHERE`, if
+written, holds `=` and `IN` on keys joined by `AND`, and at most one
+each of `bucket >= $n` and `bucket < $m`. A bound left out leaves its
+end open, at the edge of the buckets held, so an ask with no `WHERE`
+reads them all. `GROUP BY` names exactly the selected keys; `HAVING
 measure op $n [AND ...]`, `op` one of `= <> < <= > >=`, compares
 selected measures. A key in `HAVING` or a measure in `WHERE` is
 refused, naming the other place. Every value is a `$n`; a literal is
@@ -51,6 +53,14 @@ it lands.
   columns and the writer needs no ask.
 - `as_of` lags the truth by up to a second, never leads it, and moves
   on a quiet database. A WAL barrier can use the header later.
+- Until 2026-11-17 both bounds were required, so an ask said what it
+  read. Reading everything then took sentinel bounds such as
+  `2000-01-01` and `2100-01-01`: many spellings of one meaning, and no
+  cheaper, since the store reads only the buckets it holds. No `WHERE`
+  is the one spelling; `WHERE true` stays refused.
+- A time past the year 9999, which PostgreSQL keeps and RFC 3339 can't
+  write, is reachable only through an open end. The answer writes it as
+  `Unix second` and its number rather than fail.
 - `HAVING` costs one pass over the groups. An unselected measure can't
   be compared; allowing it later breaks no ask. `!=`, `OR`, parentheses
   and expressions are refused.

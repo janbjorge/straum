@@ -1,7 +1,7 @@
 //! Writes an answer from the app for a client: `write` as JSON for
 //! programs, `table` as plain text for people. `routes.rs` calls
-//! `range_errors` before asking the app, so every time key here can be
-//! printed, then calls one of the two writers on the app's answer.
+//! `range_errors` on the bounds an ask writes before asking the app, then
+//! calls one of the two writers on the app's answer.
 //!
 //! ```json
 //! {
@@ -88,9 +88,8 @@ fn latest_seconds() -> i64 {
     Timestamp::MAX.as_second()
 }
 
-/// A time key starts in its ask's range or at most `LOOK_BACK_SECONDS`
-/// before it, so an ask that passes here never fails `write`, whoever
-/// read it. An open end has no bound to check.
+/// The bounds an ask writes that jiff could not write as a time; an open
+/// end has none to check.
 pub(crate) fn range_errors(ask: &Ask) -> Vec<RangeError> {
     let writable = earliest_seconds()..=latest_seconds();
     let mut errors = Vec::new();
@@ -196,7 +195,12 @@ fn as_of_text(as_of: SystemTime) -> String {
 }
 
 fn time_key(seconds: i64) -> String {
-    rfc3339(seconds).expect("range_errors keeps time keys in range")
+    match rfc3339(seconds) {
+        Some(text) => text,
+        // PostgreSQL keeps times past jiff's year 9999, and an open end
+        // reads them.
+        None => format!("Unix second {seconds}"),
+    }
 }
 
 /// Numbers line up on the right, as their digits do.
@@ -701,9 +705,9 @@ bucket | shared | fare
     }
 
     #[test]
-    #[should_panic(expected = "range_errors keeps time keys in range")]
-    fn a_time_key_past_jiff_is_a_bug() {
-        time_key(i64::MAX);
+    fn a_time_key_past_jiff_is_written_in_unix_seconds() {
+        assert_eq!(time_key(0), "1970-01-01T00:00:00Z");
+        assert_eq!(time_key(i64::MAX), "Unix second 9223372036854775807");
     }
 
     fn written(sum: i128, count: u64, scale: u32) -> String {
