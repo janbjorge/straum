@@ -157,9 +157,14 @@ fn literal(index: ParameterIndex, value: &Json) -> Result<Literal, BodyError> {
     }
 }
 
+/// The most digits after the point a number may have: what `numeric`'s
+/// scale at 38 digits of precision allows. Printing one past it, as an
+/// error does, wrote every zero of `1e-100000000`.
+const MAX_SCALE: u32 = 38;
+
 /// A JSON number as a decimal, exactly: the digits as written, the point
 /// moved by the exponent, trailing zeros after it dropped. `None` past
-/// what an `i128` holds.
+/// what an `i128` holds, or past [`MAX_SCALE`] digits after the point.
 fn exact(number: &str) -> Option<Literal> {
     let (mantissa, exponent) = match number.split_once(['e', 'E']) {
         Some((mantissa, exponent)) => (mantissa, exponent.parse::<i64>().ok()?),
@@ -171,6 +176,9 @@ fn exact(number: &str) -> Option<Literal> {
     let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
     if scale >= 0 {
         let scale = u32::try_from(scale).ok()?;
+        if scale > MAX_SCALE {
+            return None;
+        }
         return Some(Literal::Decimal { units, scale });
     }
     let places = u32::try_from(scale.unsigned_abs()).ok()?;
@@ -233,6 +241,8 @@ mod tests {
             ("0e5", 0, 0),
             ("9223372036854775808", 9_223_372_036_854_775_808, 0),
             ("1e38", 10_i128.pow(38), 0),
+            ("1e-38", 1, 38),
+            ("0.00000000000000000000000000000000000001", 1, 38),
         ];
         for (number, units, scale) in cases {
             let body = format!(r#"{{"query": "SELECT", "parameters": [{number}]}}"#);
@@ -246,13 +256,16 @@ mod tests {
 
     #[test]
     fn numbers_past_an_i128_are_refused() {
-        let body = r#"{"query": "SELECT", "parameters": [1.5, 1e39, 1e99999999999999999999, 340282366920938463463374607431768211456]}"#;
+        let body = r#"{"query": "SELECT", "parameters": [1.5, 1e39, 1e99999999999999999999, 340282366920938463463374607431768211456, 1e-39, 0e-100000000, 1e-100000000]}"#;
         assert_eq!(
             errors_of(body),
             [
                 r#""parameters[1]" ($2) 1e+39 has more digits than Straum keeps exactly"#,
                 r#""parameters[2]" ($3) 1e+99999999999999999999 has more digits than Straum keeps exactly"#,
                 r#""parameters[3]" ($4) 340282366920938463463374607431768211456 has more digits than Straum keeps exactly"#,
+                r#""parameters[4]" ($5) 1e-39 has more digits than Straum keeps exactly"#,
+                r#""parameters[5]" ($6) 0e-100000000 has more digits than Straum keeps exactly"#,
+                r#""parameters[6]" ($7) 1e-100000000 has more digits than Straum keeps exactly"#,
             ]
         );
     }
