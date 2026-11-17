@@ -228,3 +228,34 @@ fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
         db.sql("trips: a column Straum reads of $S.trips was altered")
     );
 }
+
+/// A grant on a column, its statistics target, its storage and a first
+/// default write its catalog row anew and leave its values and type as
+/// they were: none stops Straum. A type of another width does.
+#[test]
+fn a_column_granted_keeps_the_logical_stream_and_one_retyped_stops_it() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "granted", TABLES);
+    db.run(&Rng::new(3).trip(1));
+    let spec = db.spec(SPEC);
+    let mut source = db.pg();
+    source.open(&spec).unwrap();
+    load_all(&mut source, &spec);
+    for kept in [
+        "GRANT SELECT (fare) ON $S.trips TO PUBLIC",
+        "ALTER TABLE $S.trips ALTER COLUMN fare SET STATISTICS 500",
+        "ALTER TABLE $S.trips ALTER COLUMN rider SET STORAGE EXTERNAL",
+        "ALTER TABLE $S.trips ALTER COLUMN tip SET DEFAULT 0",
+    ] {
+        db.run(kept);
+        source
+            .wal()
+            .unwrap_or_else(|error| panic!("{kept}: {error}"));
+    }
+    db.run("ALTER TABLE $S.trips ALTER COLUMN fare TYPE numeric(12, 2)");
+    let error = source.wal().unwrap_err().to_string();
+    assert_eq!(
+        error,
+        db.sql("trips: a column Straum reads of $S.trips was altered")
+    );
+}

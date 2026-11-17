@@ -144,7 +144,8 @@ another table now, and a column Straum reads that `ALTER COLUMN ..
 TYPE` rewrote, even to its own type `USING` an expression, which
 logical decoding sends no row of: each reading of the WAL, once a
 second, checks. `VACUUM FULL` and `CLUSTER` keep the values and stop
-nothing.
+nothing, nor does a `GRANT` on a column, `SET STATISTICS`, `SET
+STORAGE` or `SET DEFAULT`: they leave its type and values as they were.
 
 ## The physical stream
 

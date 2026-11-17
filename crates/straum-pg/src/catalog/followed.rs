@@ -142,16 +142,34 @@ fn relabelled(
     Ok(())
 }
 
-/// The version of a table's columns Straum reads: each one's catalog row
-/// and the transaction that last wrote it. `ALTER COLUMN .. TYPE` writes
-/// the row anew and rewrites the table's rows, to the same type too,
-/// which the logical stream sends nothing of. `VACUUM FULL` and `CLUSTER`
-/// rewrite the rows alone, with the same values, and leave it.
+/// The version of a table's columns Straum reads: each one's type, the
+/// transaction that last wrote its catalog row, and the table's file.
+/// `ALTER COLUMN .. TYPE` writes the row anew and rewrites the table's
+/// rows, to the same type too, which the logical stream sends nothing
+/// of. `VACUUM FULL` and `CLUSTER` rewrite the rows alone, with the same
+/// values, and leave the catalog row. A column-level `GRANT`, `SET
+/// STATISTICS`, `SET STORAGE` or a first `SET DEFAULT` write the catalog
+/// row alone and leave the file. So a column is altered when its type
+/// changed, or its catalog row and the file both did; the last also
+/// takes such a write and a `VACUUM FULL` both since the load, and stops
+/// Straum for nothing, which is safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ColumnVersions {
     pub(crate) oid: Oid,
-    /// `name@xmin` of each column read, in column order.
-    pub(crate) versions: String,
+    /// `name:atttypid:atttypmod:attnotnull` of each column read, in
+    /// column order.
+    pub(crate) types: String,
+    /// The `xmin` of each column's catalog row, in column order.
+    pub(crate) rows: String,
+    /// `pg_class.relfilenode`: the table's file.
+    pub(crate) file: String,
+}
+
+impl ColumnVersions {
+    /// Whether `now` is a version Straum did not load: see the type.
+    fn is_altered_in(&self, now: &ColumnVersions) -> bool {
+        self.types != now.types || (self.rows != now.rows && self.file != now.file)
+    }
 }
 
 /// The versions of `tables`' columns read, as `connection` sees them.
@@ -173,20 +191,27 @@ pub(crate) fn column_versions(
         return Ok(Vec::new());
     }
     let rows = connection.rows(&format!(
-        "SELECT a.attrelid, string_agg(a.attname || '@' || a.xmin::text, ',' ORDER BY a.attnum)
+        "SELECT a.attrelid,
+                string_agg(a.attname || ':' || a.atttypid || ':' || a.atttypmod
+                           || ':' || a.attnotnull, ',' ORDER BY a.attnum),
+                string_agg(a.xmin::text, ',' ORDER BY a.attnum),
+                c.relfilenode
            FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
            JOIN (VALUES {}) AS t(rel, col) ON a.attrelid = t.rel AND a.attname = t.col
-          GROUP BY a.attrelid",
+          GROUP BY a.attrelid, c.relfilenode",
         wanted.join(", ")
     ))?;
     let mut found = Vec::new();
     for row in rows {
-        let [oid, versions] = <[Option<String>; 2]>::try_from(row)
+        let [oid, types, rows, file] = <[Option<String>; 4]>::try_from(row)
             .map_err(|_| shape("column versions"))?
             .map(Option::unwrap_or_default);
         found.push(ColumnVersions {
             oid: oid.parse().map_err(|_| shape("column versions"))?,
-            versions,
+            types,
+            rows,
+            file,
         });
     }
     Ok(found)
@@ -207,17 +232,17 @@ fn altered(
         let mut loaded = None;
         for versions in followed.versions {
             if versions.oid == table.oid {
-                loaded = Some(&versions.versions);
+                loaded = Some(versions);
             }
         }
         let mut current = None;
         for versions in &now {
             if versions.oid == table.oid {
-                current = Some(&versions.versions);
+                current = Some(versions);
             }
         }
         if let (Some(loaded), Some(current)) = (loaded, current)
-            && loaded != current
+            && loaded.is_altered_in(current)
         {
             let names = TableNames {
                 name: table.name.clone(),
