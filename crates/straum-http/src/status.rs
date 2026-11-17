@@ -9,8 +9,7 @@
 //!  "committed": "2024-01-02T00:00:00.123456Z",
 //!  "as_of": "2024-01-02T00:01:00Z", "lag_ms": 1300, "max_lag_ms": 30000,
 //!  "wal_written": "16/C0000000", "wal_retained_bytes": 268435456,
-//!  "max_retained_wal_bytes": 4294967296, "starts": 2, "failures": 1,
-//!  "last_failure": {"at": "2024-01-01T00:00:00Z", "error": "..."}}
+//!  "max_retained_wal_bytes": 4294967296}
 //! ```
 //!
 //! What is unknown until every table is loaded is null, as is a time past
@@ -19,7 +18,7 @@
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
-use straum_app::{Failure, Status, format_mebibytes};
+use straum_app::{Status, format_mebibytes};
 
 use crate::json::quoted;
 use crate::time::rfc3339_of;
@@ -34,11 +33,10 @@ pub(crate) fn why_not(status: &Status) -> Option<String> {
     if status.ready {
         return None;
     }
-    // No lag means no stream: the last failure, if any, is why.
-    let why = match (status.lag, &status.last_failure) {
-        (Some(lag), _) => format!("{} s behind PostgreSQL", lag.as_secs()),
-        (None, Some(failure)) => failure.error.clone(),
-        (None, None) => "loading".to_owned(),
+    // No lag means no stream yet: a failed one ends the process.
+    let why = match status.lag {
+        Some(lag) => format!("{} s behind PostgreSQL", lag.as_secs()),
+        None => "loading".to_owned(),
     };
     Some(why)
 }
@@ -51,9 +49,6 @@ pub(crate) fn write(status: &Status) -> String {
     write_line(&mut out, "as of", &as_of(status));
     write_line(&mut out, "lag", &lag(status));
     write_line(&mut out, "WAL retained", &wal(status));
-    write_line(&mut out, "starts", &status.starts.to_string());
-    write_line(&mut out, "failures", &status.failures.to_string());
-    write_line(&mut out, "last failure", &last_failure(status));
     out
 }
 
@@ -84,19 +79,6 @@ pub(crate) fn json(status: &Status) -> Vec<u8> {
     fields.push(format!("\"wal_retained_bytes\":{retained}"));
     let max_retained = status.limits.max_retained_wal;
     fields.push(format!("\"max_retained_wal_bytes\":{max_retained}"));
-    fields.push(format!("\"starts\":{}", status.starts));
-    fields.push(format!("\"failures\":{}", status.failures));
-    let failure = match &status.last_failure {
-        None => "null".to_owned(),
-        Some(Failure { at, error }) => {
-            format!(
-                "{{\"at\":{},\"error\":{}}}",
-                time_or_null(Some(*at)),
-                quoted(error)
-            )
-        }
-    };
-    fields.push(format!("\"last_failure\":{failure}"));
     format!("{{{}}}\n", fields.join(",")).into_bytes()
 }
 
@@ -116,8 +98,6 @@ fn time_or_null(time: Option<SystemTime>) -> String {
 
 fn write_line(out: &mut String, label: &str, value: &str) {
     let label = format!("{label}:");
-    // An error of several lines keeps them under its value.
-    let value = value.replace('\n', &format!("\n{:LABEL_WIDTH$}", ""));
     let _ = writeln!(out, "{label:LABEL_WIDTH$}{value}");
 }
 
@@ -166,13 +146,6 @@ fn wal(status: &Status) -> String {
     }
 }
 
-fn last_failure(status: &Status) -> String {
-    match &status.last_failure {
-        None => "none".to_owned(),
-        Some(Failure { at, error }) => format!("{}: {error}", timestamp(*at)),
-    }
-}
-
 fn timestamp(time: SystemTime) -> String {
     match rfc3339_of(time) {
         Some(text) => text,
@@ -210,12 +183,6 @@ mod tests {
                 max_lag: Duration::from_secs(30),
                 max_retained_wal: FOUR_GIBIBYTES,
             },
-            last_failure: Some(Failure {
-                at: UNIX_EPOCH + Duration::from_secs(JAN_1),
-                error: "a change no longer fits trips".to_owned(),
-            }),
-            starts: 2,
-            failures: 1,
         }
     }
 
@@ -229,9 +196,6 @@ applied:      16/B374D848, committed 2024-01-02T00:00:00.123456Z
 as of:        2024-01-02T00:01:00Z, every commit before it applied
 lag:          1.3 s, at most 30 s
 WAL retained: 256.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/C0000000
-starts:       2
-failures:     1
-last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
 "
         );
     }
@@ -246,9 +210,7 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
             r#"{"ready":true,"why_not":null,"applied":"16/B374D848","#,
             r#""committed":"2024-01-02T00:00:00.123456Z","as_of":"2024-01-02T00:01:00Z","#,
             r#""lag_ms":1300,"max_lag_ms":30000,"wal_written":"16/C0000000","#,
-            r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296,"#,
-            r#""starts":2,"failures":1,"last_failure":{"at":"2024-01-01T00:00:00Z","#,
-            r#""error":"a change no longer fits trips"}}"#,
+            r#""wal_retained_bytes":268435456,"max_retained_wal_bytes":4294967296}"#,
             "\n",
         );
         assert_eq!(String::from_utf8(json(&status())).unwrap(), expected);
@@ -256,20 +218,17 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
 
     #[test]
     fn json_says_null_for_what_is_unknown() {
-        let failed = json_of(&failed());
-        assert_eq!(failed["ready"], false);
-        assert_eq!(failed["why_not"], "trips: one\ntrips: two");
+        let loading = json_of(&loading());
+        assert_eq!(loading["ready"], false);
+        assert_eq!(loading["why_not"], "loading");
         for unknown in ["applied", "committed", "as_of", "lag_ms"] {
-            assert!(failed[unknown].is_null(), "{unknown}");
+            assert!(loading[unknown].is_null(), "{unknown}");
         }
-        assert!(failed["wal_written"].is_null());
-        assert!(failed["wal_retained_bytes"].is_null());
-        assert_eq!(failed["last_failure"]["error"], "trips: one\ntrips: two");
-        let clean = Status {
-            last_failure: None,
-            ..status()
-        };
-        assert!(json_of(&clean)["last_failure"].is_null());
+        assert!(loading["wal_written"].is_null());
+        assert!(loading["wal_retained_bytes"].is_null());
+        let streaming = json_of(&status());
+        assert!(streaming["why_not"].is_null());
+        assert_eq!(streaming["wal_written"], "16/C0000000");
         let broken_clock = Status {
             as_of: Some(UNIX_EPOCH + Duration::from_secs(400_000_000_000)),
             ..status()
@@ -289,8 +248,8 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
         assert_eq!(why_not(&status()), None);
     }
 
-    /// No stream, after a failure of two lines.
-    fn failed() -> Status {
+    /// No stream yet: every table is loading.
+    fn loading() -> Status {
         Status {
             ready: false,
             applied: None,
@@ -298,53 +257,31 @@ last failure: 2024-01-01T00:00:00Z: a change no longer fits trips
             as_of: None,
             lag: None,
             wal: None,
-            last_failure: Some(Failure {
-                at: UNIX_EPOCH,
-                error: "trips: one\ntrips: two".to_owned(),
-            }),
             ..status()
         }
     }
 
     #[test]
-    fn says_the_last_failure_without_a_stream() {
-        let failed = failed();
-        assert_eq!(why_not(&failed).as_deref(), Some("trips: one\ntrips: two"));
+    fn says_loading_before_a_stream() {
+        assert_eq!(why_not(&loading()).as_deref(), Some("loading"));
+        assert_eq!(why_not(&status()), None);
         assert_eq!(
-            write(&failed),
+            write(&loading()),
             "\
-ready:        no, trips: one
-              trips: two
+ready:        no, loading
 applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-starts:       2
-failures:     1
-last failure: 1970-01-01T00:00:00Z: trips: one
-              trips: two
 "
         );
-    }
-
-    #[test]
-    fn says_loading_before_a_stream_or_a_failure() {
-        let loading = Status {
-            last_failure: None,
-            ..failed()
-        };
-        assert_eq!(why_not(&loading).as_deref(), Some("loading"));
-        assert_eq!(why_not(&status()), None);
     }
 
     #[test]
     fn where_the_stream_started_and_broken_clocks() {
         let started = Status {
             committed: None,
-            last_failure: Some(Failure {
-                at: UNIX_EPOCH + Duration::from_secs(400_000_000_000),
-                error: "x".to_owned(),
-            }),
+            as_of: Some(UNIX_EPOCH + Duration::from_secs(400_000_000_000)),
             ..status()
         };
         let text = write(&started);
@@ -353,7 +290,7 @@ last failure: 1970-01-01T00:00:00Z: trips: one
             "{text}"
         );
         assert!(
-            text.contains("last failure: an unreadable time: x\n"),
+            text.contains("as of:        an unreadable time, every commit before it applied\n"),
             "{text}"
         );
     }

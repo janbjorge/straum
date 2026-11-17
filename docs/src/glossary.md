@@ -185,10 +185,11 @@ the end are open.
   `Commit::committed`): the last commit in the store, and when
   PostgreSQL committed it.
 - **Progress** (`Progress`): what the writer did beside the store: the
-  following, the last failure and the counts, behind a lock of its own
-  so the status never waits on an ask.
+  following, behind a lock of its own so the status never waits on an
+  ask.
 - **Step** (`Writer::step`): one turn of the writer; one that fails is a
-  **failure** (`Failure`).
+  **failure**, after which the writer takes no more steps and Straum
+  exits.
 - **Commit** (`Commit`): one transaction's changes, applied whole.
   "Transaction" only where PostgreSQL's word is needed.
 - **Change** (`Change`, `HeapChange`): one insert, update, delete or

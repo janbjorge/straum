@@ -274,7 +274,7 @@ fn physical_snapshot(
     let tables = catalog::read(&mut connection, spec, publication, physical)?;
     hold_tables(&mut connection, &tables)?;
     let unloaded = unloaded(&tables);
-    // The physical stream reads a rewrite in the WAL and starts over.
+    // The physical stream reads a rewrite in the WAL and stops.
     Ok(Snapshot {
         connection,
         slot,

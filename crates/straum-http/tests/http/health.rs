@@ -70,9 +70,6 @@ applied:      nothing yet
 as of:        unknown until every table is loaded
 lag:          unknown until every table is loaded
 WAL retained: unknown until every table is loaded
-starts:       0
-failures:     0
-last failure: none
 "
     );
     server.stop();
@@ -103,7 +100,7 @@ fn status_says_what_the_stream_applied() {
         lines[4],
         "WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 16/B374D848"
     );
-    assert_eq!(lines[5..7], ["starts:       1", "failures:     0"]);
+    assert_eq!(lines.len(), 5);
     server.stop();
 }
 
@@ -119,13 +116,11 @@ fn readiness_says_why_not() {
     writer.step().unwrap();
     let reply = call(server.address, "GET", "/readyz", "");
     assert_eq!((reply.status, reply.body.as_str()), (200, "ready\n"));
+    // A failed writer's app is not ready; the process ends with it.
     writer.step().unwrap();
     writer.step().unwrap_err();
     let reply = call(server.address, "GET", "/readyz", "");
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (503, "not ready: connection dropped\n")
-    );
+    assert_eq!(reply.status, 503);
     server.stop();
 }
 

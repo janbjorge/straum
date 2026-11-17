@@ -87,7 +87,7 @@ const HELD_PAGE_BYTES: usize = 8192 + 4096;
 const SMALL_PAGE_MEMORY_BYTES: usize = 64 << 10;
 
 /// Past `--max-page-memory` the physical stream stops and says so, and
-/// Straum starts over rather than grow.
+/// Straum stops rather than grow.
 #[test]
 fn stops_past_the_page_memory() {
     let pg = postgres_at_replica(&tag());
@@ -170,8 +170,6 @@ fn follows_a_vacuum_on_19_without_checksums() {
     db.run("VACUUM $S.trips");
     db.run(&rng.trip(100));
     applied(&mut writer);
-    assert_eq!(writer.app().status().starts, 1);
-    assert_eq!(writer.app().status().failures, 0);
 }
 
 /// Whether the major under test turns data checksums on by default, as
@@ -327,6 +325,7 @@ fn a_prepared_transaction_holds_the_start_back() {
         "{error}"
     );
     db.run("COMMIT PREPARED 'held'");
+    writer = db.physical_writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     let mut next = 1_000;
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
@@ -611,10 +610,10 @@ fn run_without_waiting_for_flush(
     })
 }
 
-/// A walsender that dies takes the physical stream with it; Straum
-/// starts over from a new slot and follows on.
+/// A walsender that dies takes the physical stream with it and stops the
+/// writer; a new one, as Straum started again, follows on from a new slot.
 #[test]
-fn starts_over_when_the_physical_stream_dies() {
+fn stops_when_the_physical_stream_dies() {
     let pg = postgres_at_replica(&tag());
     let mut db = Db::new(&pg, "dies", TABLES);
     let mut rng = Rng::new(4);
@@ -636,6 +635,8 @@ fn starts_over_when_the_physical_stream_dies() {
             break;
         }
     }
+    assert!(!writer.app().status().ready);
+    writer = db.physical_writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     catch_up(&mut db, &mut writer, &mut rng, &mut next);
 }

@@ -1,8 +1,8 @@
 //! The logical stream end to end: Straum loads the tables, follows the
 //! changes pgoutput (PostgreSQL's logical decoding plugin) sends, and
-//! after each commit every view equals its SQL. Also how it starts over:
-//! past the transaction limit, on a value it can't read, on an altered
-//! table.
+//! after each commit every view equals its SQL. Also how it stops: past
+//! the transaction limit, on a value it can't read, on an altered table;
+//! a new writer then loads again, as Straum started again does.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -73,7 +73,7 @@ fn follows_the_database() {
         }
         sql.push("COMMIT;".into());
         db.run(&sql.join("\n"));
-        applied_or_started(&mut writer);
+        applied_or_started_again(&db, SPEC, &mut writer);
         if compare(&mut db, writer.app(), &taxi_oracles(2)).is_some() {
             compared += 1;
         }
@@ -232,11 +232,13 @@ fn task_changes() -> [String; 15] {
     ]
 }
 
-/// A transaction at the limit applies; one past it starts Straum over, and
-/// the new load holds its rows.
+/// `--max-transaction-rows` for the capped writer.
+const CAP: usize = 50;
+
+/// A transaction at the limit applies; one past it stops the writer, and
+/// the next one's load holds its rows.
 #[test]
-fn a_transaction_past_the_limit_starts_over() {
-    const CAP: usize = 50;
+fn a_transaction_past_the_limit_stops_the_writer() {
     let pg = postgres();
     let mut db = Db::new(&pg, "capped", TABLES);
     db.run("INSERT INTO $S.zones VALUES (1, 'Queens', 1.5), (2, 'Bronx', NULL)");
@@ -244,16 +246,7 @@ fn a_transaction_past_the_limit_starts_over() {
     for id in 0..20 {
         db.run(&rng.trip(id));
     }
-    let mut writer = Writer::new(
-        App::new(db.spec(SPEC), LIMITS),
-        Postgres::new(
-            db.dsn.clone(),
-            &db.name,
-            CAP,
-            MAX_RETAINED_WAL_BYTES,
-            Replication::Logical,
-        ),
-    );
+    let mut writer = capped_writer(&db);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     db.run(&batch(&mut rng, 100, CAP));
     applied(&mut writer);
@@ -274,18 +267,31 @@ fn a_transaction_past_the_limit_starts_over() {
         "{error}"
     );
     // The transaction's commit record ends at or before the server's
-    // position now, and the failure is what /status shows.
+    // position now.
     let named = error.split(' ').nth(1).unwrap();
     assert!(
         parse_lsn(named).unwrap() <= parse_lsn(&lsn).unwrap(),
         "transaction {named} is past the server at {lsn}"
     );
-    assert_eq!(writer.app().status().last_failure.unwrap().error, error);
+    assert!(!writer.app().status().ready);
+    let mut writer = capped_writer(&db);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run(&rng.trip(300));
     applied(&mut writer);
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
+}
+
+/// A writer that refuses a transaction of more than `CAP` rows.
+fn capped_writer(db: &Db) -> Writer<Postgres> {
+    let source = Postgres::new(
+        db.dsn.clone(),
+        &db.name,
+        CAP,
+        MAX_RETAINED_WAL_BYTES,
+        Replication::Logical,
+    );
+    Writer::new(App::new(db.spec(SPEC), LIMITS), source)
 }
 
 /// One transaction inserting `rows` trips from id `from`.
@@ -300,7 +306,7 @@ fn batch(rng: &mut Rng, from: u64, rows: usize) -> String {
 
 /// The same tables under two views: a dim change is a change to the dim's
 /// projection, and every ask reads the dim as it is now, as PostgreSQL's
-/// view does. Nothing starts over.
+/// view does. Nothing loads again.
 #[test]
 fn a_dim_change_shows_at_once() {
     let pg = postgres();
@@ -322,8 +328,6 @@ fn a_dim_change_shows_at_once() {
         compare_after(&mut db, picks.app(), &picks_oracles(), &change);
         compare_after(&mut db, tasks.app(), &task_oracles(), &change);
     }
-    assert_eq!(picks.app().status().starts, 1);
-    assert_eq!(tasks.app().status().starts, 1);
     tasks_of_a_gone_group_read_null(picks.app());
 }
 
@@ -410,8 +414,9 @@ fn a_poison_value_names_its_column() {
             && error.ends_with("as a numeric of scale 2 in column fare of poison.trips"),
         "{error}"
     );
-    assert_eq!(writer.app().status().last_failure.unwrap().error, error);
+    assert!(!writer.app().status().ready);
     db.run("UPDATE $S.trips SET fare = 1.50 WHERE id = 1");
+    writer = db.writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
@@ -423,6 +428,7 @@ fn a_poison_value_names_its_column() {
         "can't read \"NaN\" as a numeric of scale 2 in column fare of poison.trips"
     );
     db.run("UPDATE $S.trips SET fare = 2.50 WHERE id = 1");
+    writer = db.writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the fix");
 }
@@ -509,7 +515,7 @@ fn holds_the_marker(rows: &[AnswerRow]) -> bool {
 }
 
 #[test]
-fn an_unfit_change_starts_over() {
+fn an_unfit_change_stops_the_writer() {
     let pg = postgres();
     let mut db = Db::new(&pg, "unfit", TABLES);
     db.run("INSERT INTO $S.logins VALUES (1, to_timestamp(1705276800), 1)");
@@ -517,8 +523,8 @@ fn an_unfit_change_starts_over() {
     writer.step().unwrap();
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready");
 
-    // A fact that stops sending old rows starts over, and the setup then
-    // says what to fix.
+    // A fact that stops sending old rows stops the writer, and the setup
+    // of the next one says what to fix.
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY DEFAULT");
     db.run("UPDATE $S.logins SET zone_id = 2");
     let error = writer.step().unwrap_err().to_string();
@@ -534,12 +540,14 @@ fn an_unfit_change_starts_over() {
         writer.app().ask(&ask("trips", &["trips"], &[])),
         Err(AnswerError::NotReady)
     );
+    writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(
         error.contains("fact logins: Straum needs the whole old row of every update and delete"),
         "{error}"
     );
     db.run("ALTER TABLE $S.logins REPLICA IDENTITY FULL");
+    writer = db.writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the new load");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 3)");
@@ -560,12 +568,14 @@ fn an_unfit_change_starts_over() {
          the table was altered or rewritten, or a change came without its old row"
         )
     );
+    writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(
         error.contains("dim zones: Straum needs the whole old row of every update and delete"),
         "{error}"
     );
     db.run("ALTER TABLE $S.zones REPLICA IDENTITY FULL");
+    writer = db.writer(SPEC);
     assert!(matches!(writer.step(), Ok(Step::Started(_))));
     compare(&mut db, writer.app(), &taxi_oracles(2)).expect("ready after the dim's new load");
 }
@@ -671,7 +681,7 @@ fn follows_at_replica_from_19() {
 }
 
 #[test]
-fn a_changed_column_type_starts_over() {
+fn a_changed_column_type_stops_the_writer() {
     let pg = postgres();
     let mut db = Db::new(&pg, "altered", TABLES);
     db.run(&Rng::new(1).trip(1));
@@ -690,6 +700,7 @@ fn a_changed_column_type_starts_over() {
          the table was altered or rewritten, or a change came without its old row"
         )
     );
+    writer = db.writer(SPEC);
     writer.step().unwrap();
     db.run(&Rng::new(2).trip(3));
     applied(&mut writer);
@@ -703,6 +714,7 @@ fn a_changed_column_type_starts_over() {
     );
     let error = writer.step().unwrap_err().to_string();
     assert!(error.contains("column rider of"), "{error}");
+    writer = db.writer(SPEC);
     let error = writer.step().unwrap_err().to_string();
     assert!(error.contains("has no column rider"), "{error}");
 }

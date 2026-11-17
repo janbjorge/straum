@@ -34,11 +34,12 @@ fn follows_the_database_over_tls() {
     // Past wal_sender_timeout (4 s): reads time out and keepalives are
     // answered, over TLS.
     thread::sleep(Duration::from_secs(6));
-    // An altered table starts over, on a new TLS connection. The new
-    // Relation comes with the next change to the table.
+    // An altered table stops the writer; the next one loads again, on a
+    // new TLS connection. The new Relation comes with the next change to
+    // the table.
     db.run("ALTER TABLE $S.logins ADD COLUMN note text");
     db.run("INSERT INTO $S.logins VALUES (2, to_timestamp(1705276800), 1)");
-    applied_or_started(&mut writer);
+    applied_or_started_again(&db, SPEC, &mut writer);
     for id in 60..70 {
         db.run(&rng.trip(id));
         applied(&mut writer);

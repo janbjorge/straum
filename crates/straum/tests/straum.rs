@@ -406,8 +406,8 @@ fn status_says_ready(url: &str) {
         status.starts_with("ready:        yes\napplied:      "),
         "{status}"
     );
-    let counts = "\nstarts:       1\nfailures:     0\nlast failure: none\n";
-    assert!(status.ends_with(counts), "{status}");
+    assert!(status.contains("\nWAL retained: "), "{status}");
+    assert!(!status.contains("failure"), "{status}");
 }
 
 fn views_lists_the_view_and_the_dim(url: &str) -> String {
@@ -479,7 +479,7 @@ fn scripts_read_json_from_straum_url(url: &str) {
     assert_eq!(code, Some(0), "{status}");
     let status = json(&status);
     assert_eq!(status["ready"], true, "{status}");
-    assert_eq!(status["starts"], 1, "{status}");
+    assert!(status["why_not"].is_null(), "{status}");
     assert!(status["lag_ms"].is_u64(), "{status}");
 
     let (code, views, _) = with_url_variable(url, &["views", "--json"]);
@@ -567,7 +567,7 @@ fn follows_changes(pg: &PostgresContainer, straum: &mut Running) {
     straum.wait_for_rows(pg, "the changes");
 
     // A zone renamed shows in the next answer: the dim is held and
-    // followed, so nothing starts over.
+    // followed, so nothing loads again.
     pg.psql("UPDATE shop.zones SET borough = 'Brooklyn' WHERE id = 2");
     straum.wait_for_rows(pg, "the dim change");
     pg.psql("UPDATE shop.trips SET fare = 20 WHERE id = 2");

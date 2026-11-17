@@ -1,17 +1,18 @@
 //! Commits after the start: fact and dim rows that change in place, and
-//! the changes that no longer fit, after which Straum starts over.
+//! the changes that no longer fit, after which the writer is done and a
+//! new one, as Straum started again, loads every table.
 
 use straum_app::{AnswerError, Change, Error, Step};
 use straum_domain::{AnswerRow, Datum, Value};
 
 use crate::common::{
-    DAY, Harness, ask, by_borough, count, insert, int, login, reference_answer, row, setup, text,
-    trip, zone,
+    DAY, Harness, again, ask, by_borough, count, insert, int, login, reference_answer, row, setup,
+    text, trip, zone,
 };
 use crate::fake::{Row, Write, id};
 
 #[test]
-fn a_dropped_stream_starts_over() {
+fn a_dropped_stream_stops_the_writer() {
     let Harness {
         database,
         mut writer,
@@ -27,8 +28,9 @@ fn a_dropped_stream_starts_over() {
     assert!(!writer.app().status().ready);
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
 
-    // The new stream starts after the second commit, and the new load counts
-    // the first trip once.
+    // The new writer's stream starts after the second commit, and its load
+    // counts the first trip once.
+    writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(second));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
 }
@@ -74,7 +76,7 @@ fn fact_rows_change_through_the_old_row() {
 }
 
 #[test]
-fn fact_change_without_the_old_row_starts_over() {
+fn fact_change_without_the_old_row_stops_the_writer() {
     let Harness {
         database,
         mut writer,
@@ -93,6 +95,7 @@ fn fact_change_without_the_old_row_starts_over() {
     );
     assert!(!writer.app().status().ready);
     let lsn = database.borrow().lsn();
+    writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert_eq!(database.borrow().loads[3..], ["zones", "trips", "logins"]);
     assert_eq!(count(writer.app(), "logins"), Ok(Value::Int(1)));
@@ -104,6 +107,7 @@ fn fact_change_without_the_old_row_starts_over() {
         row: vec![int(DAY), int(2)],
     }]);
     assert!(writer.step().is_err());
+    writer = again(&database);
     writer.step().unwrap();
     let by_bucket = ask("logins", &["logins"], &["bucket", "borough"]);
     assert_eq!(
@@ -114,7 +118,7 @@ fn fact_change_without_the_old_row_starts_over() {
 
 /// A cell is keyed by the join column, so a dim change is one row in the
 /// dim's projection and the next ask reads the dim as it is: no cell
-/// moves, nothing starts over.
+/// moves, nothing loads again.
 #[test]
 fn dim_changes_show_at_once() {
     let Harness {
@@ -261,7 +265,7 @@ fn truncate_empties_the_table() {
 }
 
 #[test]
-fn altered_table_starts_over() {
+fn an_altered_table_stops_the_writer() {
     let Harness {
         database,
         mut writer,
@@ -274,22 +278,24 @@ fn altered_table_starts_over() {
         Write::Alter { table: "trips" },
     ]);
     assert!(matches!(writer.step(), Err(Error::Unfit { table, .. }) if table == id("trips")));
+    writer = again(&database);
     writer.step().unwrap();
     assert_eq!(database.borrow().loads.len(), 6);
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
 
-    // A dim altered starts over too: Straum holds its rows.
+    // A dim altered stops the writer too: Straum holds its rows.
     database
         .borrow_mut()
         .commit(vec![Write::Alter { table: "zones" }]);
     assert!(matches!(writer.step(), Err(Error::Unfit { table, .. }) if table == id("zones")));
+    writer = again(&database);
     writer.step().unwrap();
     assert_eq!(database.borrow().loads.len(), 9);
 }
 
 /// The insert before the unfit change is in the store, and not in any
 /// answer: the stream is cleared before the write lock drops. The next
-/// start loads the commit whole, from the snapshot.
+/// writer loads the commit whole, from the snapshot.
 #[test]
 fn a_commit_that_stops_fitting_is_not_answered() {
     let Harness {
@@ -310,6 +316,7 @@ fn a_commit_that_stops_fitting_is_not_answered() {
     );
     assert_eq!(count(writer.app(), "trips"), Err(AnswerError::NotReady));
     assert_eq!(writer.app().status().applied, None);
+    writer = again(&database);
     writer.step().unwrap();
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(2)));
     assert!(writer.app().status().ready);
@@ -348,6 +355,7 @@ fn a_row_that_does_not_fit_stops_straum() {
         error.to_string(),
         "a change no longer fits trips: column fare is not an integer"
     );
+    writer = again(&database);
     let error = writer.step().unwrap_err();
     assert_eq!(error.to_string(), "column fare is not an integer");
     assert!(!writer.app().status().ready);
@@ -360,6 +368,7 @@ fn a_row_that_does_not_fit_stops_straum() {
         new_key: int(1),
         row,
     }]);
+    writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(1)));
 }
@@ -373,7 +382,7 @@ fn never_added() -> Row {
 }
 
 #[test]
-fn a_change_that_does_not_fit_starts_over() {
+fn a_change_that_does_not_fit_stops_the_writer() {
     let cases = [
         (
             "fact update from a row Straum never saw",
@@ -422,11 +431,11 @@ fn a_change_that_does_not_fit_starts_over() {
         ),
     ];
     for (name, change) in cases {
-        starts_over_after(name, change);
+        stops_after(name, change);
     }
 }
 
-fn starts_over_after(name: &str, change: Change) {
+fn stops_after(name: &str, change: Change) {
     let Harness {
         database,
         mut writer,
@@ -451,6 +460,7 @@ fn starts_over_after(name: &str, change: Change) {
         "{name}: {said}"
     );
     assert!(!writer.app().status().ready, "{name}");
+    writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(lsn), "{name}");
     let by_borough = ask("trips", &["trips", "fare"], &["borough"]);
     assert_eq!(

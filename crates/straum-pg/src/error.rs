@@ -40,7 +40,7 @@ pub(crate) enum Error {
     /// fix.
     Setup(Vec<Problem>),
     /// A transaction changed more rows Straum reads than
-    /// `--max-transaction-rows` allows. Starting over is the cheap way
+    /// `--max-transaction-rows` allows. Starting again is the cheap way
     /// through it: the new slot's snapshot is after the commit, so its rows
     /// come in the bulk load instead of being held and applied under the
     /// write lock.
@@ -49,8 +49,8 @@ pub(crate) enum Error {
         limit: usize,
     },
     /// The physical stream holds more rows than `--max-page-memory`
-    /// allows: pages, and changes of transactions not ended. Starting over
-    /// lets go of them all.
+    /// allows: pages, and changes of transactions not ended. Starting
+    /// again lets go of them all.
     Memory {
         held: usize,
         limit: usize,

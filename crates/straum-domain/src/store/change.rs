@@ -101,7 +101,7 @@ impl Store {
     }
 
     /// Removes one row equal to the one given. A row never added is not
-    /// found, so the caller starts over.
+    /// found, so the caller stops.
     pub fn remove_row(&mut self, table: &str, row: &[Datum]) -> Result<(), RowError> {
         let removed = self.remove_row_coded(table, row);
         self.reclaim_codes();

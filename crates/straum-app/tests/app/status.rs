@@ -1,5 +1,5 @@
 //! What the app reports about itself: ready or not, how far behind, the
-//! WAL the slot holds, the last failure; and how its values print.
+//! WAL the slot holds; and how its values print.
 
 use std::cell::RefCell;
 use std::thread;
@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime};
 use straum_app::{AnswerError, App, Error, Limits, Lsn, Status, Step, Wal, Writer};
 use straum_domain::{AskError, Instead, Value};
 
-use crate::common::{BYTES_PER_GIB, Harness, LIMITS, ask, count, setup, spec, trip, wal, watched};
+use crate::common::{
+    BYTES_PER_GIB, Harness, LIMITS, again, ask, count, setup, spec, trip, wal, watched,
+};
 use crate::fake::{Database, Fake, id, time};
 
 #[test]
@@ -36,7 +38,6 @@ fn ready_only_within_the_lag_bound() {
     // Answers are as of before the load, not the reading after it.
     let behind = writer.app().ask(&ask("trips", &["trips"], &[])).unwrap();
     assert!(behind.as_of + Duration::from_millis(2) <= SystemTime::now());
-    assert_eq!(writer.app().status().last_failure, None);
     // Asks still answer, at the LSN they reflect.
     assert_eq!(count(writer.app(), "trips"), Ok(Value::Int(0)));
 
@@ -68,8 +69,7 @@ fn status_reports_what_straum_did() {
     status_before_the_first_step(writer.app());
     let start = status_after_a_start(&database, &mut writer);
     status_while_waiting_for_a_commit(&database, &mut writer, start);
-    let failed = status_after_a_failure(&database, &mut writer);
-    status_after_the_next_start(&database, &mut writer, &failed);
+    status_after_a_failure(&database, &mut writer);
 }
 
 fn status_before_the_first_step(app: &App) {
@@ -83,9 +83,6 @@ fn status_before_the_first_step(app: &App) {
             lag: None,
             wal: None,
             limits: LIMITS,
-            last_failure: None,
-            starts: 0,
-            failures: 0,
         }
     );
 }
@@ -110,7 +107,6 @@ fn status_after_a_start(database: &RefCell<Database>, writer: &mut Writer<Fake>)
         restart: start,
     };
     assert_eq!(status.wal, Some(caught_up));
-    assert_eq!((status.starts, status.failures), (1, 0));
     start
 }
 
@@ -137,36 +133,19 @@ fn status_while_waiting_for_a_commit(
     assert_eq!(status.wal, Some(held));
 }
 
-fn status_after_a_failure(database: &RefCell<Database>, writer: &mut Writer<Fake>) -> Status {
+// A failed writer's app says nothing of the stream it had.
+fn status_after_a_failure(database: &RefCell<Database>, writer: &mut Writer<Fake>) {
     database.borrow_mut().drop_connection = true;
     database.borrow_mut().commit(vec![trip(3, 1, 1, 10)]);
-    writer.step().unwrap_err();
+    assert_eq!(writer.step().unwrap_err().to_string(), "connection dropped");
     let status = writer.app().status();
     assert!(!status.ready);
     assert_eq!((status.applied, status.lag, status.wal), (None, None, None));
     assert_eq!(status.as_of, None);
-    let failure = status.last_failure.clone().unwrap();
-    assert_eq!(failure.error, "connection dropped");
-    assert_eq!((status.starts, status.failures), (1, 1));
-    status
-}
-
-// The next start keeps the last failure.
-fn status_after_the_next_start(
-    database: &RefCell<Database>,
-    writer: &mut Writer<Fake>,
-    failed: &Status,
-) {
-    database.borrow_mut().wal = None;
-    writer.step().unwrap();
-    let after = writer.app().status();
-    assert!(after.ready);
-    assert_eq!(after.last_failure, failed.last_failure);
-    assert_eq!((after.starts, after.failures), (2, 1));
 }
 
 #[test]
-fn too_much_wal_starts_over() {
+fn too_much_wal_stops_the_writer() {
     let Harness {
         database,
         mut writer,
@@ -182,10 +161,10 @@ fn too_much_wal_starts_over() {
     );
     assert_eq!(error.to_string(), message);
     assert!(!writer.app().status().ready);
-    assert_eq!(writer.app().status().last_failure.unwrap().error, message);
 
-    // Up to the limit is fine.
+    // Up to the limit is fine, for the writer Straum starts again with.
     database.borrow_mut().wal = Some(wal(100 + limit, 100));
+    let mut writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().status().ready);
 

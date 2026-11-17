@@ -11,7 +11,7 @@ use straum_domain::{
 };
 
 use crate::common::{
-    Harness, LIMITS, aside, ask, count, int, login, setup, spec, text, trip, watched, zone,
+    Harness, LIMITS, again, aside, ask, count, int, login, setup, spec, text, trip, watched, zone,
 };
 use crate::fake::id;
 
@@ -209,17 +209,19 @@ fn the_rows_ask_reads_the_whole_view() {
     assert_eq!(app.ask(&empty).unwrap().answer.rows, []);
 }
 
+/// A start that fails leaves Straum not ready; a new writer, as Straum
+/// started again, loads.
 #[test]
-fn a_failed_start_is_tried_again() {
-    let Harness {
-        database,
-        mut writer,
-    } = setup();
+fn a_failed_start_leaves_straum_not_ready() {
+    let Harness { database, writer } = setup();
+    let mut failed = writer;
     database.borrow_mut().drop_connection = true;
-    assert_eq!(writer.step().unwrap_err().to_string(), "connection dropped");
-    assert!(!writer.app().status().ready);
+    assert_eq!(failed.step().unwrap_err().to_string(), "connection dropped");
+    assert!(!failed.app().status().ready);
+    let mut writer = again(&database);
     assert_eq!(writer.step().unwrap(), Step::Started(Lsn(100)));
     assert!(writer.app().status().ready);
+    assert!(!failed.app().status().ready);
 }
 
 #[test]
@@ -282,11 +284,12 @@ fn record(line: &str) {
 #[test]
 fn a_start_reports_each_table_it_loads() {
     let Harness { database, writer } = setup();
-    let mut writer = writer.reporting(record);
+    let mut failed = writer.reporting(record);
     database.borrow_mut().drop_connection = true;
-    assert!(writer.step().is_err());
+    assert!(failed.step().is_err());
     assert_eq!(REPORTED.with_borrow(Vec::len), 0);
 
+    let mut writer = again(&database).reporting(record);
     let lsn = database.borrow().lsn();
     assert_eq!(writer.step().unwrap(), Step::Started(lsn));
     let lines = REPORTED.take();

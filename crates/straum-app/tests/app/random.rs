@@ -1,7 +1,7 @@
-//! Random writes, dropped connections and restarts, the zones moving too.
-//! After every step the writer's
-//! answers must equal a fresh load of the database at the same LSN, dims
-//! and facts.
+//! Random writes, dropped connections and a new writer after each
+//! failure, the zones moving too. After every step the writer's answers
+//! must equal a fresh load of the database at the same LSN, dims and
+//! facts.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +11,8 @@ use straum_app::{AnswerError, App, Error, Lsn, Step, Writer};
 use straum_domain::{Ask, Condition, Datum, Literal};
 
 use crate::common::{
-    BOROUGHS, DAY, Harness, LIMITS, RANGE, RIDERS, aside, ask, int, spec, text, watched, zone,
+    BOROUGHS, DAY, Harness, LIMITS, RANGE, RIDERS, aside, ask, int, spec, text, watched, watching,
+    zone,
 };
 use crate::fake::{Database, Fake, Row, Write, id};
 
@@ -141,7 +142,7 @@ impl Transaction {
                 key: self.new_key(),
                 row: random_login(random),
             },
-            // Logins send no old rows; these make Straum start over.
+            // Logins send no old rows; these stop the writer.
             80..84 => self.login_change(random)?,
             84..87 => Write::Insert {
                 table: "audit",
@@ -360,6 +361,15 @@ fn followed() -> Followed {
     Followed { harness, aside }
 }
 
+/// A new writer over the database that checks asks aside in the middle
+/// of every load, adding their count to `aside`.
+fn checking_aside(database: &Rc<RefCell<Database>>, aside: &Rc<RefCell<usize>>) -> Writer<Fake> {
+    let count = Rc::clone(aside);
+    watching(App::new(spec(), LIMITS), database, move |app, _| {
+        *count.borrow_mut() += check_aside(app);
+    })
+}
+
 /// Follows random writes, checking asks at every LSN.
 fn follow(seed: u64, tally: &mut Seen) {
     let mut random = Rng(seed);
@@ -385,6 +395,8 @@ fn follow(seed: u64, tally: &mut Seen) {
             assert!(steps < 100, "seed {seed}: stuck");
             position = step(&mut writer, tally);
             let Some(lsn) = position else {
+                // As whatever runs Straum starts it again.
+                writer = checking_aside(&database, &aside);
                 continue;
             };
             check(writer.app(), &database.borrow(), lsn, &mut random, tally);

@@ -109,19 +109,33 @@ pub fn harness(app: App) -> Harness {
     Harness { database, writer }
 }
 
+/// A new writer over the same database, as whatever runs Straum starts
+/// it again after a failure: a new app, empty until its first step.
+pub fn again(database: &Rc<RefCell<Database>>) -> Writer<Fake> {
+    Writer::new(App::new(spec(), LIMITS), Fake::new(database))
+}
+
 /// A writer whose loads call `on_load` with the app and the table, in the
 /// middle of each load.
 // Takes the case's own closure, so it may capture what the case checks
 // after; `'static` because the fake keeps it.
-pub fn watched(app: App, mut on_load: impl FnMut(&App, &str) + 'static) -> Harness {
+pub fn watched(app: App, on_load: impl FnMut(&App, &str) + 'static) -> Harness {
     let database = Database::new(&TABLES).shared();
-    let mut fake = Fake::new(&database);
+    let writer = watching(app, &database, on_load);
+    Harness { database, writer }
+}
+
+/// As [`watched`], over a database the case already has.
+// `impl FnMut` and `'static` as in `watched`, which hands its closure on.
+pub fn watching(
+    app: App,
+    database: &Rc<RefCell<Database>>,
+    mut on_load: impl FnMut(&App, &str) + 'static,
+) -> Writer<Fake> {
+    let mut fake = Fake::new(database);
     let watch = app.clone();
     fake.on_load = Some(Box::new(move |table| on_load(&watch, table)));
-    Harness {
-        database,
-        writer: Writer::new(app, fake),
-    }
+    Writer::new(app, fake)
 }
 
 /// A new row under primary key `key`.

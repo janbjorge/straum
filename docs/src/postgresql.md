@@ -106,9 +106,9 @@ built-in ones.
 ## What Straum checks at start
 
 Before it loads, Straum compares the server with the spec and reports
-every problem at once, each with its fix, in its log, `/readyz` and
-`straum status`. It stays not ready and [tries again](deploy.md#states)
-after a wait. A spec table must be a plain table that no table inherits
+every problem at once, each with its fix, in its log. Then it
+[exits with 1](deploy.md#states), for whatever runs it to start it
+again. A spec table must be a plain table that no table inherits
 from: a partitioned table, a view or a TimescaleDB hypertable is
 refused. Some of the checks:
 
@@ -225,7 +225,7 @@ logical slot's creation does, and for PostgreSQL to log which
 transactions run. The last checkpoint logs that, so the wait is short,
 except on a server that just restarted, where `pg_log_standby_snapshot()`
 logs it at once if the role may run it. After a minute Straum says what
-it waits for and tries again:
+it waits for and exits, to be started again:
 
 ```text
 --wal physical waited 60 s for PostgreSQL to log which transactions run; GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO Straum's role

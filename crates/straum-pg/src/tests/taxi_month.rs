@@ -73,7 +73,6 @@ fn taxi_month() {
     applied(&mut writer);
     check_taxi_month(&mut sql, writer.app(), &references, "after an update");
     change_taxi_zones(&mut sql, &mut writer, &references);
-    assert_eq!(writer.app().status().starts, 1);
 }
 
 /// The shared memory PostgreSQL's container gets for the month: 1 GiB,
@@ -149,7 +148,7 @@ fn taxi_month_references(spec_text: &str) -> [Reference; 2] {
 }
 
 /// Dims change: a zone renamed, another moved to a new key, then a trip
-/// in the renamed zone. Each is one commit applied; nothing starts over.
+/// in the renamed zone. Each is one commit applied; nothing loads again.
 fn change_taxi_zones(
     sql: &mut Connection,
     writer: &mut Writer<Postgres>,

@@ -33,6 +33,8 @@ const IN_SPEC: &str = "the store holds every view and dim of its spec";
 
 const STARTED: &str = "the writer applies commits only to a started stream";
 
+const FAILED: &str = "a writer that failed takes no more steps: start a new one";
+
 /// How often the writer reads the server's WAL while it waits for commits.
 /// The lag can look up to this much longer than it is.
 const WAL_EVERY: Duration = Duration::from_secs(1);
@@ -75,10 +77,6 @@ struct State {
 struct Progress {
     /// `None` until every table is loaded, and again after a failure.
     following: Option<Following>,
-    /// The last failure and when it came, kept across starts.
-    last_failure: Option<Failure>,
-    starts: u64,
-    failures: u64,
 }
 
 /// Where a stream with every table loaded stands.
@@ -96,16 +94,30 @@ struct Following {
 }
 
 /// Reads the source and keeps an [`App`] in step with it: the loop that
-/// does the I/O. One writer per app.
+/// does the I/O. One writer per app, and one stream per writer: a writer
+/// that failed takes no more steps.
 // Generic over the source: the binary runs it on PostgreSQL, the tests on
 // an in-memory fake.
 pub struct Writer<S> {
     source: S,
     app: App,
+    phase: Phase,
     /// When the server's WAL was last read.
     wal_read_at: Instant,
     /// Where the start says what it is doing, line by line.
     report: Report,
+}
+
+/// Where a writer is in its one run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Nothing loaded yet: the next step loads every table.
+    Loading,
+    /// Every table loaded: the next step applies the next commit.
+    Following,
+    /// A step failed. Straum starts again in a new process, from a new
+    /// stream, so this writer never loads again.
+    Failed,
 }
 
 /// Takes one line saying what the writer is doing: the binary logs it.
@@ -159,19 +171,6 @@ pub struct Status {
     /// The last reading of the server's WAL, while a stream runs.
     pub wal: Option<Wal>,
     pub limits: Limits,
-    /// The last failure and when it came, kept across starts.
-    pub last_failure: Option<Failure>,
-    /// Streams started, each with every table loaded.
-    pub starts: u64,
-    /// Steps that failed, after which Straum started over.
-    pub failures: u64,
-}
-
-/// A step that failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure {
-    pub at: SystemTime,
-    pub error: String,
 }
 
 /// What [`App::held`] reports, read at one moment: every view and dim.
@@ -235,12 +234,7 @@ impl App {
                 store: Store::new(spec),
                 applied: None,
             })),
-            progress: Arc::new(Mutex::new(Progress {
-                following: None,
-                last_failure: None,
-                starts: 0,
-                failures: 0,
-            })),
+            progress: Arc::new(Mutex::new(Progress { following: None })),
             limits,
         }
     }
@@ -274,7 +268,7 @@ impl App {
         })
     }
 
-    /// How Straum stands now: loaded or not, how far behind, what failed.
+    /// How Straum stands now: loaded or not, how far behind.
     pub fn status(&self) -> Status {
         let progress = self.progress();
         let mut status = Status {
@@ -285,9 +279,6 @@ impl App {
             lag: None,
             wal: None,
             limits: self.limits,
-            last_failure: progress.last_failure.clone(),
-            starts: progress.starts,
-            failures: progress.failures,
         };
         if let Some(following) = &progress.following {
             let lag = following.lag.behind(Instant::now());
@@ -471,6 +462,7 @@ impl<S: Source> Writer<S> {
         Writer {
             source,
             app,
+            phase: Phase::Loading,
             wal_read_at: Instant::now(),
             report: report_nothing,
         }
@@ -490,34 +482,33 @@ impl<S: Source> Writer<S> {
 
     /// Loads every table when nothing is loaded yet, else applies the next
     /// commit, waiting for one and reading the server's WAL meanwhile.
-    /// After an error Straum is not ready, and the next step starts over
-    /// from a new stream.
+    /// After an error Straum is not ready and the writer is done: Straum
+    /// starts again with a new app and writer, from a new stream.
+    ///
+    /// # Panics
+    ///
+    /// On a step after one that failed.
     pub fn step(&mut self) -> Result<Step, Error> {
-        let started = self.app.progress().following.is_some();
-        let step = if started {
-            self.apply_next().map(Step::Applied)
-        } else {
-            self.start().map(Step::Started)
+        let step = match self.phase {
+            Phase::Loading => self.start().map(Step::Started),
+            Phase::Following => self.apply_next().map(Step::Applied),
+            Phase::Failed => panic!("{FAILED}"),
         };
-        if let Err(error) = &step {
+        if step.is_err() {
+            self.phase = Phase::Failed;
+            // No state of a failed run is answered from.
             self.app.write().applied = None;
-            let mut state = self.app.progress();
-            state.following = None;
-            state.last_failure = Some(Failure {
-                at: SystemTime::now(),
-                error: error.to_string(),
-            });
-            state.failures += 1;
+            self.app.progress().following = None;
+        } else {
+            self.phase = Phase::Following;
         }
         step
     }
 
     /// Loads every dim and fact into a new store outside the lock, then
-    /// swaps it in. The old store goes first, so the two never take memory
-    /// at once.
+    /// swaps it in.
     fn start(&mut self) -> Result<Lsn, Error> {
         let spec = self.app.read().store.spec().clone();
-        self.app.write().store = Store::new(spec.clone());
         // WAL the server writes from here on waits for the load.
         let opened = Instant::now();
         let start = self.source.open(&spec)?;
@@ -546,7 +537,6 @@ impl<S: Source> Writer<S> {
             lag,
             wal,
         });
-        progress.starts += 1;
         Ok(start)
     }
 
@@ -603,7 +593,7 @@ impl<S: Source> Writer<S> {
     }
 }
 
-/// Why a [`Writer::step`] failed; the next step starts over.
+/// Why a [`Writer::step`] failed; the writer takes no more steps.
 #[derive(Debug)]
 pub enum Error {
     Source(SourceError),
@@ -847,6 +837,53 @@ mod tests {
                 restart: Lsn(1),
             })
         }
+    }
+
+    /// A source whose server never answers.
+    struct Unreachable;
+
+    impl Source for Unreachable {
+        fn open(&mut self, _spec: &Spec) -> Result<Lsn, SourceError> {
+            Err("connection refused".into())
+        }
+
+        fn load(&mut self, _table: &Identifier, _store: &mut Store) -> Result<(), SourceError> {
+            Err("connection refused".into())
+        }
+
+        fn next_commit(&mut self, _wait: Duration) -> Result<Option<Commit>, SourceError> {
+            Err("connection refused".into())
+        }
+
+        fn wal(&mut self) -> Result<Wal, SourceError> {
+            Err("connection refused".into())
+        }
+    }
+
+    /// A writer that steps clean steps on; one that failed is done, and
+    /// leaves its app not ready.
+    #[test]
+    fn a_failed_writer_leaves_its_app_not_ready() {
+        let mut writer = Writer::new(app(), StandingStill);
+        assert_eq!(writer.step().unwrap(), Step::Started(Lsn(1)));
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(2)));
+        assert_eq!(writer.step().unwrap(), Step::Applied(Lsn(2)));
+
+        let mut failed = Writer::new(app(), Unreachable);
+        assert_eq!(failed.step().unwrap_err().to_string(), "connection refused");
+        assert!(!failed.app().status().ready);
+        assert!(matches!(
+            failed.app().ask(&count()),
+            Err(AnswerError::NotReady)
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "a writer that failed takes no more steps")]
+    fn a_failed_writer_takes_no_more_steps() {
+        let mut writer = Writer::new(app(), Unreachable);
+        writer.step().unwrap_err();
+        let _ = writer.step();
     }
 
     /// How long a call here may take before it counts as waiting on the

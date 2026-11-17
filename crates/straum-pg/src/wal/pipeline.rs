@@ -142,7 +142,7 @@ impl Pipeline {
             let stale = self.publisher.stale(&ending.invalidated);
             // An enum's new label invalidates no table; rows to come may
             // hold it. A label renamed is caught by the reading of the
-            // WAL, which starts Straum over.
+            // WAL, which stops Straum.
             let relabel = ending.catalog_changed && self.publisher.reads_enums();
             if !stale.is_empty() || relabel {
                 let fresh = layouts(ending.xid)?;

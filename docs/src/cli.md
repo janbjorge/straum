@@ -88,9 +88,6 @@ applied:      0/17B2958, committed 2026-11-09T17:12:57.346371Z
 as of:        2026-11-09T17:14:02.118250Z, every commit before it applied
 lag:          0.0 s, at most 30 s
 WAL retained: 0.0 MiB, at most 4096.0 MiB; PostgreSQL is at 0/17B2958
-starts:       1
-failures:     0
-last failure: none
 ```
 
 - `ready`: `yes`, or `no` and why, as `/readyz` says.
@@ -99,8 +96,10 @@ last failure: none
   database is quiet.
 - `lag` and `WAL retained`: against `--max-lag` and
   `--max-retained-wal`.
-- `starts` and `failures`: loads that finished, and failures, since the
-  process started.
+
+A failure ends the process (ADR-0009), so the status keeps no count of
+starts or failures: whatever runs Straum counts its restarts, and the
+log of the run that stopped says why.
 
 It exits with 3 while `ready` is no, as `/readyz` answers 503, so a
 script can wait for Straum:

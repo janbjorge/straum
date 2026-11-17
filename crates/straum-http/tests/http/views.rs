@@ -22,17 +22,17 @@ fn views_wait_for_every_table() {
     );
 
     writer.step().unwrap();
+    let reply = call(server.address, "GET", "/views", "");
+    assert_eq!(reply.status, 200);
+    // A failed writer leaves no views to read.
     writer.step().unwrap();
     writer.step().unwrap_err();
     let reply = call(server.address, "GET", "/views", "");
-    assert_eq!(
-        (reply.status, reply.body.as_str()),
-        (503, "not ready: connection dropped\n")
-    );
+    assert_eq!(reply.status, 503);
     let reply = views_as_json(server.address);
     assert_eq!(
         (reply.status, reply.body.as_str()),
-        (503, r#"{"errors":["not ready: connection dropped"]}"#)
+        (503, r#"{"errors":["not ready: loading"]}"#)
     );
     server.stop();
 }

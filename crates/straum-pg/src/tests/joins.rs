@@ -170,8 +170,6 @@ fn every_join_kind_matches_postgresql() {
         compare_after(&mut db, paid.app(), &references.paid, &change);
         compare_after(&mut db, offers.app(), &references.offers, &change);
     }
-    assert_eq!(paid.app().status().starts, 1);
-    assert_eq!(offers.app().status().starts, 1);
 }
 
 /// Customer 7 is held twice, 8 not at all; tier 4 and sku 5 have no row;

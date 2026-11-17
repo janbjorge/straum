@@ -426,11 +426,14 @@ pub(super) fn applied(writer: &mut Writer<Postgres>) {
     }
 }
 
-/// Applies the next commit, or starts over when it doesn't fit a table.
-pub(super) fn applied_or_started(writer: &mut Writer<Postgres>) {
+/// Applies the next commit. When it doesn't fit a table, the writer is
+/// done: a new one for `spec` takes its place and loads, as Straum started
+/// again does.
+pub(super) fn applied_or_started_again(db: &Db, spec: &str, writer: &mut Writer<Postgres>) {
     match writer.step() {
         Ok(Step::Applied(_)) => {}
         Err(straum_app::Error::Unfit { .. }) => {
+            *writer = db.writer(spec);
             assert!(matches!(writer.step(), Ok(Step::Started(_))));
         }
         other => panic!("expected a commit, got {other:?}"),

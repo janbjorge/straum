@@ -1,10 +1,10 @@
 //! A spec table that stops being the one Straum loaded, with no change
 //! the stream reads to say so: left out of the publication, renamed away
 //! with another table made under its name, a label of an enum it reads
-//! renamed, a column it reads rewritten to its own type. Each reading of the WAL
-//! checks the tables, so Straum starts over, and the setup check of the
+//! renamed, a column it reads rewritten to its own type. Each reading of
+//! the WAL checks the tables, so Straum stops, and the setup check of the
 //! next start names the problem. The physical stream reads the catalog's
-//! own changes and starts over on the DDL itself.
+//! own changes and stops on the DDL itself.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -101,10 +101,10 @@ fn a_label_renamed_stops_the_logical_stream() {
 }
 
 /// The physical stream reads an enum's labels again after a commit that
-/// changes the catalog: a label added reads as itself, with no start
-/// over, and a label renamed starts Straum over.
+/// changes the catalog: a label added reads as itself, and a label
+/// renamed stops Straum.
 #[test]
-fn the_physical_stream_reads_a_label_added_and_starts_over_on_one_renamed() {
+fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     let pg = postgres_at_replica(&tag());
     let mut db = Db::new(&pg, "relabelled_physical", TASKS);
     db.run(SOME_TASKS);
@@ -121,7 +121,7 @@ fn the_physical_stream_reads_a_label_added_and_starts_over_on_one_renamed() {
     db.run("ALTER TYPE $S.kind RENAME VALUE 'shelf' TO 'rack'");
     let deadline = Instant::now() + LONG;
     let error = loop {
-        assert!(Instant::now() < deadline, "never started over");
+        assert!(Instant::now() < deadline, "never stopped");
         match writer.step() {
             Ok(_) => {}
             Err(error) => break error.to_string(),
@@ -205,7 +205,7 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
 /// rewrites every row and sends nothing the logical stream reads: the
 /// reading of the WAL finds the column's catalog row written anew. A
 /// `VACUUM FULL` rewrites the rows with the same values and a column
-/// added is no column Straum reads: neither starts Straum over.
+/// added is no column Straum reads: neither stops Straum.
 #[test]
 fn a_column_altered_to_its_own_type_stops_the_logical_stream() {
     let pg = postgres();
