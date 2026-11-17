@@ -33,6 +33,7 @@ fn check(counts: &ValueCounts, held: &BTreeMap<i64, u64>, at: &str) {
     let entries = entries_of(held);
     assert!(counts.iter().eq(entries.iter().copied()), "{at}");
     assert_eq!(counts.ends(), ends_of(held), "{at}");
+    assert_eq!(counts.len(), held.len(), "{at}: distinct values");
     let anew = ValueCounts::from_ascending(&entries);
     assert!(
         anew.iter().eq(entries.iter().copied()),

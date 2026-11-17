@@ -6,10 +6,10 @@
 
 use crate::aggregate::Reads;
 use crate::column::{Counts, Sums, put};
-use crate::hash::FastMap;
 use crate::value::Datum;
 use crate::value_counts::ValueCounts;
 
+use super::distinct::DistinctCells;
 use super::row_error::RowError;
 
 /// A form of [`State`], which [`crate::Aggregate`]'s `state_kind` picks
@@ -54,8 +54,9 @@ pub(crate) enum State {
         maxs: Vec<i64>,
         counts: Vec<ValueCounts>,
     },
-    /// Count per value.
-    Distinct(Vec<FastMap<Datum, u64>>),
+    /// Count per value: per number as for `Extent` while the column
+    /// holds only numbers, else in a map.
+    Distinct(DistinctCells),
     /// Counts of true and of false, so removing the last false turns a
     /// `bool_and` true.
     Bools { trues: Counts, falses: Counts },
@@ -84,7 +85,7 @@ impl State {
                 maxs: Vec::new(),
                 counts: Vec::new(),
             },
-            StateKind::Distinct => State::Distinct(Vec::new()),
+            StateKind::Distinct => State::Distinct(DistinctCells::Numbers(Vec::new())),
             StateKind::Bools => State::Bools {
                 trues: Counts::Zero(0),
                 falses: Counts::Zero(0),
@@ -105,7 +106,7 @@ impl State {
                 put(maxs, i64::MIN);
                 put(counts, ValueCounts::EMPTY);
             }
-            State::Distinct(counts) => put(counts, FastMap::default()),
+            State::Distinct(cells) => cells.push(),
             State::Bools { trues, falses } => {
                 trues.push();
                 falses.push();
@@ -126,7 +127,7 @@ impl State {
                 maxs.swap_remove(cell);
                 counts.swap_remove(cell);
             }
-            State::Distinct(counts) => drop(counts.swap_remove(cell)),
+            State::Distinct(cells) => cells.swap_remove(cell),
             State::Bools { trues, falses } => {
                 trues.swap_remove(cell);
                 falses.swap_remove(cell);
@@ -146,7 +147,7 @@ impl State {
                 maxs[cell] = maxs[cell].max(number);
                 counts[cell].add(number, 1);
             }
-            (State::Distinct(counts), _) => *counts[cell].entry(value.clone()).or_default() += 1,
+            (State::Distinct(cells), _) => cells.add(cell, value),
             (State::Bools { trues, .. }, Datum::Bool(true)) => trues.add(cell, 1),
             (State::Bools { falses, .. }, Datum::Bool(false)) => falses.add(cell, 1),
             _ => unreachable!("Rollup::check lets through only what a state reads"),
@@ -175,16 +176,7 @@ impl State {
                     maxs[cell] = ends.greatest;
                 }
             }
-            (State::Distinct(counts), _) => {
-                let tree = &mut counts[cell];
-                let Some(count) = tree.get_mut(value) else {
-                    return Err(RowError::Missing);
-                };
-                *count -= 1;
-                if *count == 0 {
-                    tree.remove(value);
-                }
-            }
+            (State::Distinct(cells), _) => held(cells.remove(cell, value))?,
             (State::Bools { trues: counts, .. }, Datum::Bool(true))
             | (State::Bools { falses: counts, .. }, Datum::Bool(false)) => {
                 held(counts.get(cell) > 0)?;
@@ -239,8 +231,8 @@ impl State {
                     ..
                 },
             ) => counts[cell].covers(&source_counts[source_cell]),
-            (State::Distinct(counts), State::Distinct(source_counts)) => {
-                distinct_covers(&counts[cell], &source_counts[source_cell])
+            (State::Distinct(cells), State::Distinct(source_cells)) => {
+                cells.covers(cell, source_cells, source_cell)
             }
             (
                 State::Bools { trues, falses },
@@ -289,10 +281,8 @@ impl State {
                 mins[cell] = ends.least;
                 maxs[cell] = ends.greatest;
             }
-            (State::Distinct(counts), State::Distinct(source_counts)) => {
-                for (value, count) in &source_counts[source_cell] {
-                    *counts[cell].entry(value.clone()).or_default() += *count;
-                }
+            (State::Distinct(cells), State::Distinct(source_cells)) => {
+                cells.add_from(cell, source_cells, source_cell);
             }
             (
                 State::Bools { trues, falses },
@@ -341,14 +331,8 @@ impl State {
                 mins[cell] = ends.least;
                 maxs[cell] = ends.greatest;
             }
-            (State::Distinct(counts), State::Distinct(source_counts)) => {
-                for (value, count) in &source_counts[source_cell] {
-                    let have = counts[cell].get_mut(value).expect("covers checked");
-                    *have -= *count;
-                    if *have == 0 {
-                        counts[cell].remove(value);
-                    }
-                }
+            (State::Distinct(cells), State::Distinct(source_cells)) => {
+                cells.sub_from(cell, source_cells, source_cell);
             }
             (
                 State::Bools { trues, falses },
@@ -371,17 +355,4 @@ fn held(present: bool) -> Result<(), RowError> {
     } else {
         Err(RowError::Missing)
     }
-}
-
-/// Whether `held` counts each value of `given` as often at least.
-fn distinct_covers(held: &FastMap<Datum, u64>, given: &FastMap<Datum, u64>) -> bool {
-    for (value, count) in given {
-        let Some(have) = held.get(value) else {
-            return false;
-        };
-        if have < count {
-            return false;
-        }
-    }
-    true
 }

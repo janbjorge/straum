@@ -17,11 +17,13 @@ use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
 
 mod cells;
+mod distinct;
 mod level;
 mod row_error;
 mod state;
 
 pub(crate) use cells::Cells;
+pub(crate) use distinct::DistinctCells;
 use level::{CodedRows, Level, MoveCell, Shift};
 pub use row_error::RowError;
 pub(crate) use row_error::{arity, split_rows};

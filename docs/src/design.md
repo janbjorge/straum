@@ -146,7 +146,11 @@ width; a bucket is columnar cells with one state per input.*
   positions, the keys themselves staying in their column. A cell goes
   with its last row (`Rollup::remove`).
   `Aggregate::state_kind` picks which **State** a measure reads, so
-  measures over one column share it.
+  measures over one column share it. A count distinct keeps value
+  counts as a min or max does while its column holds only numbers,
+  and a hash map per cell from its first value of another type
+  (`DistinctCells`): the load sets the column types only after the
+  states exist.
 - A **Projection** maps key values to the attribute codes of every
   row under them. `Null` is code 0 in every attribute, so no row and
   a null read alike.

@@ -5,11 +5,13 @@
 //! new aggregate is one variant and the arms the compiler asks for.
 
 use crate::hash::{FastMap, FastSet};
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::mem;
 
 use crate::column::Counts;
 use crate::identifier::Identifier;
-use crate::rollup::{State, StateKind};
+use crate::rollup::{DistinctCells, State, StateKind};
 use crate::value::{Datum, Value};
 use crate::value_counts::{ValueCount, ValueCounts};
 
@@ -243,39 +245,158 @@ pub(crate) enum Partials<'s> {
     },
 }
 
-/// The distinct values one group has met.
-pub(crate) enum Distinct<'s> {
+/// The distinct values one group has met: the cells of numbers, read in
+/// place, and the values of cells of other kinds.
+pub(crate) struct Distinct<'s> {
+    numbers: Numbers<'s>,
+    values: Values<'s>,
+}
+
+/// The cells of numbers one group has met.
+enum Numbers<'s> {
     None,
-    /// The value counts of the one cell met, read in place: most groups
-    /// of a fine ask meet one cell, and copying its values cost as much
-    /// memory as the cell holds.
+    /// Most groups of a fine ask meet one cell, which counts its values.
+    OneCell(&'s ValueCounts),
+    Cells(Vec<&'s ValueCounts>),
+}
+
+/// The values of the cells of other kinds one group has met.
+enum Values<'s> {
+    None,
+    /// The value counts of the one cell met, read in place: copying its
+    /// values cost as much memory as the cell holds.
     OneCell(&'s FastMap<Datum, u64>),
     /// The values of several cells, borrowed from them.
     Cells(FastSet<&'s Datum>),
 }
 
 impl<'s> Distinct<'s> {
-    /// Meets the value counts of one more cell.
-    fn meet(&mut self, values: &'s FastMap<Datum, u64>) {
-        match self {
-            Distinct::None => *self = Distinct::OneCell(values),
-            Distinct::OneCell(first) => {
-                let mut seen = FastSet::default();
-                seen.extend(first.keys());
-                seen.extend(values.keys());
-                *self = Distinct::Cells(seen);
+    /// Meets the value counts of cell `cell` of `cells`.
+    fn meet(&mut self, cells: &'s DistinctCells, cell: usize) {
+        match cells {
+            DistinctCells::Numbers(counts) => self.numbers.meet(&counts[cell]),
+            DistinctCells::Values(counts) => self.values.meet(&counts[cell]),
+        }
+    }
+
+    /// The values met, a number met both as a number and as a value
+    /// counted once.
+    fn count(&self) -> usize {
+        let mut count = self.numbers.count();
+        match &self.values {
+            Values::None => {}
+            Values::OneCell(values) => {
+                for value in values.keys() {
+                    count += usize::from(!self.numbers.has(value));
+                }
             }
-            Distinct::Cells(seen) => seen.extend(values.keys()),
+            Values::Cells(seen) => {
+                for value in seen {
+                    count += usize::from(!self.numbers.has(value));
+                }
+            }
+        }
+        count
+    }
+}
+
+impl<'s> Numbers<'s> {
+    fn meet(&mut self, counts: &'s ValueCounts) {
+        match self {
+            Numbers::None => *self = Numbers::OneCell(counts),
+            Numbers::OneCell(first) => *self = Numbers::Cells(vec![*first, counts]),
+            Numbers::Cells(cells) => cells.push(counts),
         }
     }
 
     fn count(&self) -> usize {
         match self {
-            Distinct::None => 0,
-            Distinct::OneCell(values) => values.len(),
-            Distinct::Cells(seen) => seen.len(),
+            Numbers::None => 0,
+            Numbers::OneCell(counts) => counts.len(),
+            Numbers::Cells(cells) => distinct_in_order(cells),
         }
     }
+
+    /// Whether a cell met holds `value`, a number.
+    fn has(&self, value: &Datum) -> bool {
+        let &Datum::Int(number) = value else {
+            return false;
+        };
+        match self {
+            Numbers::None => false,
+            Numbers::OneCell(counts) => counts.has(number, 1),
+            Numbers::Cells(cells) => {
+                for counts in cells {
+                    if counts.has(number, 1) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+}
+
+impl<'s> Values<'s> {
+    fn meet(&mut self, values: &'s FastMap<Datum, u64>) {
+        match self {
+            Values::None => *self = Values::OneCell(values),
+            Values::OneCell(first) => {
+                let mut seen = FastSet::default();
+                seen.extend(first.keys());
+                seen.extend(values.keys());
+                *self = Values::Cells(seen);
+            }
+            Values::Cells(seen) => seen.extend(values.keys()),
+        }
+    }
+}
+
+/// A cell's place among the cells a group met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MetIndex(usize);
+
+/// The least value a cell has not yet given up, and the cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Head {
+    value: i64,
+    cell: MetIndex,
+}
+
+/// The distinct values of several cells, each read in value order: a
+/// merge takes the least value any cell has left, and counts it when it
+/// differs from the last one taken. The heap holds one value per cell,
+/// never a set of all of them.
+// A heap rather than a scan of every cell for the least: a group may
+// meet thousands of cells, and the scan costs that many per value.
+fn distinct_in_order(cells: &[&ValueCounts]) -> usize {
+    let mut entries = Vec::with_capacity(cells.len());
+    let mut heads = BinaryHeap::with_capacity(cells.len());
+    for (position, counts) in cells.iter().enumerate() {
+        let mut cell_entries = counts.iter();
+        if let Some(entry) = cell_entries.next() {
+            heads.push(Reverse(Head {
+                value: entry.value,
+                cell: MetIndex(position),
+            }));
+        }
+        entries.push(cell_entries);
+    }
+    let mut count = 0;
+    let mut last = None;
+    while let Some(Reverse(head)) = heads.pop() {
+        if last != Some(head.value) {
+            count += 1;
+            last = Some(head.value);
+        }
+        if let Some(entry) = entries[head.cell.0].next() {
+            heads.push(Reverse(Head {
+                value: entry.value,
+                cell: head.cell,
+            }));
+        }
+    }
+    count
 }
 
 /// The values one group has gathered for a percentile, with their
@@ -422,11 +543,11 @@ impl<'s> Partials<'s> {
     /// rather than add them, and the booleans.
     fn merge_collected(&mut self, groups: &[u32], state: Option<&'s State>) {
         match (self, state) {
-            (Partials::Distinct(seen), Some(State::Distinct(counts))) => {
+            (Partials::Distinct(seen), Some(State::Distinct(cells))) => {
                 // Unlike a sum, a value set costs its group 0 merge.
-                for (&group, counts) in groups.iter().zip(counts) {
+                for (cell, &group) in groups.iter().enumerate() {
                     if group != 0 {
-                        seen[group as usize].meet(counts);
+                        seen[group as usize].meet(cells, cell);
                     }
                 }
             }
@@ -484,8 +605,8 @@ impl<'s> Partials<'s> {
                 values[at] = values[at].max(maxs[cell]);
                 seen[at] |= mins[cell] <= maxs[cell];
             }
-            (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
-                seen[group as usize].meet(&counts[cell]);
+            (Partials::Distinct(seen), Some(State::Distinct(cells))) if group != 0 => {
+                seen[group as usize].meet(cells, cell);
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
                 if group != 0 =>
@@ -541,9 +662,9 @@ impl<'s> Partials<'s> {
                 }
                 seen[at] |= any_value(mins, maxs);
             }
-            (Partials::Distinct(seen), Some(State::Distinct(counts))) if group != 0 => {
-                for cell in counts {
-                    seen[group].meet(cell);
+            (Partials::Distinct(seen), Some(State::Distinct(cells))) if group != 0 => {
+                for cell in 0..cells.len() {
+                    seen[group].meet(cells, cell);
                 }
             }
             (Partials::Percentile { values, .. }, Some(State::Extent { counts, .. }))
@@ -626,7 +747,10 @@ impl<'s> Partials<'s> {
 
 /// A group that has met no value yet.
 fn distinct_none<'s>() -> Distinct<'s> {
-    Distinct::None
+    Distinct {
+        numbers: Numbers::None,
+        values: Values::None,
+    }
 }
 
 /// A group that has gathered no value yet.

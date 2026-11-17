@@ -1,6 +1,6 @@
 # ADR-0003: Straum holds cells and nothing else
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -20,8 +20,10 @@ a join needs of a dim (ADR-0006) and, in physical mode, page state
 Cell state is per input column, shared by measures, one enum with no
 accumulator trait. Sum and avg share a sum and a null count;
 `count(column)` keeps a null count; min, max and `percentile_disc`
-share value counts; `bool_and` and `bool_or` share counts of true and
-false. Filtered measures keep no state: a `FILTER` names rollup-key
+share value counts; `count(DISTINCT c)` keeps value counts of its own
+while its column holds only numbers, and a hash map per cell from its
+first value of another type; `bool_and` and `bool_or` share counts of
+true and false. Filtered measures keep no state: a `FILTER` names rollup-key
 parts only, so asks apply it to cells.
 
 Numbers are integers: integer columns, and `numeric(p <= 18, s)` as a
@@ -63,4 +65,7 @@ PostgreSQL name differs from PostgreSQL. `percentile_cont`, `median`,
   a cell; Straum is ready in 12.9 s, not 17.8.
 - A percentile adds no bytes beyond a min or max, but costs by values
   in range: milliseconds where a sum takes microseconds (ADR-0005).
-- `count(DISTINCT c)` keeps a hash map per cell; its memory is open.
+- `count(DISTINCT c)` of numbers holds less than a max on the same
+  values, where its hash map per cell held over 15 times as much; an
+  ask merges several cells' values in order, one value of each held.
+  Text, uuid, date and boolean keep the map; its memory is open.

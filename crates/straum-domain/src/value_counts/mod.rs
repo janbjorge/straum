@@ -199,7 +199,8 @@ impl ValueCounts {
         true
     }
 
-    fn has(&self, value: i64, count: u64) -> bool {
+    /// Whether this cell holds `value` `count` times at least.
+    pub(crate) fn has(&self, value: i64, count: u64) -> bool {
         let records = match self {
             ValueCounts::Runs(runs) => Records::of(&runs[&key_of(runs, value)]),
             ValueCounts::Inline(cell) => Records::in_cell(cell),
@@ -209,6 +210,21 @@ impl ValueCounts {
             return false;
         };
         records.count(record) >= count
+    }
+
+    /// How many distinct values the cell holds, read from the headers.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            ValueCounts::Inline(cell) => Records::in_cell(cell).record_count,
+            ValueCounts::Run(run) => Records::of(run).record_count,
+            ValueCounts::Runs(runs) => {
+                let mut values = 0;
+                for run in runs.values() {
+                    values += Records::of(run).record_count;
+                }
+                values
+            }
+        }
     }
 
     /// Each value and its count, ascending by value.

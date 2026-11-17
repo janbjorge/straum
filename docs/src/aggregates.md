@@ -84,7 +84,7 @@ count of false for the same reason.
 | `count(c)` | a count of the nulls among its rows | adding | subtracting one |
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
-| `count(DISTINCT c)` | a count per value | uniting the values | lowering the value's count |
+| `count(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order | lowering the value's count |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank | lowering the value's count |
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
@@ -101,8 +101,10 @@ Two things follow that a spec's author can see:
   on its column costs nothing more. A `min` or `max` keeps a value in as few bytes as its cell's
   values need: `max(fare_amount)` per hour and dropoff zone keeps
   14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
-  `count(DISTINCT c)` over a column with many values holds every one
-  of them.
+  `count(DISTINCT c)` of numbers keeps them the same way, in fewer
+  bytes than a `max`; one of `text`, `uuid`, `date` or `boolean`
+  keeps a hash map per cell, over 15 times as many bytes in a test of
+  40 values a cell. Either holds every distinct value.
 - Rows counted twice: a dim that holds a key twice adds the fact
   row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
   doubles; a count per value merged twice keeps the same `min`, `max`
@@ -148,8 +150,9 @@ sorting them all. An ask over a long range of many values takes
 milliseconds where the others take microseconds: the median fare over
 the six months of [benchmark](performance.md) trips takes about 30 ms.
 A group of one cell is read in place, its values in order, with
-nothing gathered, and a `count(DISTINCT c)` unites the values of
-several cells by reference, without copying them.
+nothing gathered. A `count(DISTINCT c)` of numbers merges the values
+of several cells in order, holding one value of each cell at a time,
+and one of other types unites them by reference, without copying.
 
 Other systems answer with a sketch: a small summary that merges and
 gives an approximate answer, t-digest, KLL and DDSketch for

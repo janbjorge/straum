@@ -1,8 +1,8 @@
 //! What an ask costs: it allocates per group, never per cell, reads only
 //! the cells of the buckets in its range, and stays within a time per cell.
 //! What a store holds: one set of cells for a join on a key, the bytes a
-//! cell's numbers need and no more, and a few bytes a value for a min or
-//! max, and no bucket a dim change emptied.
+//! cell's numbers need and no more, a few bytes a value for a min, max
+//! or count of distinct numbers, and no bucket a dim change emptied.
 //! A percentile holds nothing beyond its column's min or max, and its ask
 //! holds the values of its range, however many cells lie outside it.
 //!
@@ -669,7 +669,8 @@ fn by_bucket_peak(store: &Store, by: &[&str], measure: &str) -> isize {
 /// A count of distinct values reads a group of one cell in place: by the
 /// bucket, pay and zone each group is one cell, and eight times its
 /// values cost the ask nothing. By the bucket alone a group meets 80
-/// cells, and a set of their values grows with them.
+/// cells, merged in value order with one value of each at hand: eight
+/// times their values cost nothing either, where a set of them grew.
 #[test]
 fn a_count_distinct_reads_a_group_of_one_cell_in_place() {
     const CELLS: i64 = 4_000;
@@ -688,7 +689,7 @@ fn a_count_distinct_reads_a_group_of_one_cell_in_place() {
     );
     eprintln!("80 cells a group: {few_cells} bytes, {many_cells} with 8x the values");
     assert!(
-        many_cells - few_cells > 16 << 10,
+        many_cells - few_cells < 1_024,
         "{few_cells} then {many_cells}"
     );
 }
@@ -950,4 +951,46 @@ fn a_dim_row_renamed_holds_a_bounded_number_of_names() {
     let many = renamed(100_000);
     eprintln!("{few} bytes after 100 renames, {many} after 100,000");
     assert!(many - few < 1 << 20, "{many} bytes against {few}");
+}
+
+/// As [`store_of`] with 40 tips a cell and the distinct tips measured,
+/// each tip written as text, which a map of values keeps.
+fn text_tips_store() -> Store {
+    let spec = spec_measuring(&[], Zones::Apart, vec![tip_distinct()]);
+    let columns = spec.fact("trips").unwrap().columns().clone();
+    let mut store = Store::new(spec);
+    for cell in 0..2_000 {
+        for tip in 0..40 {
+            let mut row = Vec::with_capacity(columns.len());
+            for column in &columns {
+                row.push(match trip_value(column.as_str(), cell, tip) {
+                    Datum::Int(tip) if column.as_str() == "tip" => {
+                        Datum::Text(tip.to_string().into())
+                    }
+                    value => value,
+                });
+            }
+            store.add_row("trips", &row).unwrap();
+        }
+    }
+    store
+}
+
+/// A count of distinct numbers keeps a cell's values as a max does, in a
+/// run of as many bytes as they need, and holds no min or max beside. A
+/// map of values was over 15 times a max. Text keeps its map, and
+/// answers alike.
+#[test]
+fn a_count_distinct_of_numbers_holds_what_a_max_holds() {
+    let max = held_by(|| vec![tip_max()]);
+    let numbers = held_by(|| vec![tip_distinct()]);
+    let text = held(text_tips_store);
+    eprintln!("max {max} bytes, distinct numbers {numbers}, distinct text {text}");
+    assert!(numbers <= max, "{numbers} bytes against {max}");
+    assert!(text > 4 * max, "{text} bytes against {max}");
+    let mut ask = ask(&["pay"], 0, 1000);
+    ask.measures = vec![id("tip_distinct")];
+    let spec = spec_measuring(&[], Zones::Apart, vec![tip_distinct()]);
+    let answer = store_of(spec, 2_000, 40).ask(&ask).unwrap();
+    assert_eq!(text_tips_store().ask(&ask).unwrap(), answer);
 }
