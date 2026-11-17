@@ -15,7 +15,8 @@ Every mode loads the trips into a throwaway PostgreSQL and starts
 `straum run` on bench/trips.sql. Then:
 
 asks: each ask goes to PostgreSQL as the SQL anyone would write over the raw
-tables and to Straum as JSON over HTTP. The answers must be equal. Then each
+tables and to Straum as JSON over HTTP. The answers must be equal, decimals
+exactly, PostgreSQL's avg rounded half to even at Straum's places. Then each
 side is timed from this one client, over its own protocol, with a warm
 cache. The table goes to stdout.
 
@@ -39,6 +40,7 @@ import asyncio
 import contextlib
 import datetime
 import decimal
+import json
 import os
 import pathlib
 import secrets
@@ -458,7 +460,7 @@ async def wait_ready(
     raise SystemExit("taxi: straum did not get ready")
 
 
-async def ask(http: aiohttp.ClientSession, body: bytes) -> list:
+async def ask(http: aiohttp.ClientSession, body: bytes, decode=orjson.loads) -> list:
     async with http.post("/ask", data=body) as response:
         reply = await response.read()
     # A refusal may be no JSON, as from a proxy: its words, not a decode
@@ -466,7 +468,13 @@ async def ask(http: aiohttp.ClientSession, body: bytes) -> list:
     if response.status != 200:
         said = reply.decode(errors="replace")
         raise SystemExit(f"taxi: straum answered {response.status}: {said}")
-    return orjson.loads(reply)["rows"]
+    return decode(reply)["rows"]
+
+
+def exact(reply: bytes) -> dict:
+    """The reply with its decimals as decimals: orjson reads them as
+    floats, which round."""
+    return json.loads(reply, parse_float=decimal.Decimal)
 
 
 async def compare(
@@ -479,27 +487,44 @@ async def compare(
 ) -> tuple[str, int, float, float]:
     """Checks that both sides answer alike, then times each."""
     body = orjson.dumps({"query": query, "parameters": parameters})
-    expected = await pg.fetch(sql)
-    got = await ask(http, body)
-    if Counter(map(plain, got)) != Counter(map(plain, expected)):
+    expected = [list(row.values()) for row in await pg.fetch(sql)]
+    got = [list(row.values()) for row in await ask(http, body, exact)]
+    places = scales(got)
+    if Counter(plain(row, places) for row in got) != Counter(
+        plain(row, places) for row in expected
+    ):
         raise SystemExit(f"taxi: {name}: Straum answered {got}, PostgreSQL {expected}")
     pg_time = await median(lambda: pg.fetch(sql))
     return name, len(got), pg_time, await median(lambda: ask(http, body))
 
 
-def plain(row) -> tuple:
-    """The row in one form for both sides. orjson reads Straum's exact
-    decimals as floats, so both sides compare as floats to four places,
-    which Straum's avg always has; its buckets come as RFC 3339 text."""
+def scales(rows: list[list]) -> list[decimal.Decimal | None]:
+    """Per column, the finest place Straum's decimals reach: a sum keeps
+    its column's scale, an avg four places more."""
+    finest: list[decimal.Decimal | None] = [None] * (len(rows[0]) if rows else 0)
+    for row in rows:
+        for column, value in enumerate(row):
+            if not isinstance(value, decimal.Decimal):
+                continue
+            place = decimal.Decimal(1).scaleb(value.as_tuple().exponent)
+            if finest[column] is None or place < finest[column]:
+                finest[column] = place
+    return finest
+
+
+def plain(row: list, places: list[decimal.Decimal | None]) -> tuple:
+    """The row in one form for both sides. A decimal is exact on both,
+    PostgreSQL's avg rounded half to even at the place Straum's has; a
+    bucket comes from Straum as RFC 3339 text."""
     values = []
-    for value in row.values():
+    for column, value in enumerate(row):
         match value:
-            case decimal.Decimal():
-                value = float(value)
+            case decimal.Decimal() if places[column] is not None:
+                value = value.quantize(places[column], rounding=decimal.ROUND_HALF_EVEN)
+            case int() if places[column] is not None:
+                value = decimal.Decimal(value).quantize(places[column])
             case datetime.datetime():
                 value = value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        if isinstance(value, float):
-            value = round(value, 4)
         values.append(value)
     return tuple(values)
 

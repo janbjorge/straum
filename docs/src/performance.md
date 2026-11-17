@@ -2,7 +2,8 @@
 
 What should you expect from Straum? Its benchmark sends Straum and
 PostgreSQL the same asks about six months of New York taxi trips,
-checks that the answers are equal, and times both. [Memory](#memory)
+checks that the answers are equal, decimals to the last digit, an
+`avg` at the places Straum gives it, and times both. [Memory](#memory)
 at the end is what two real tables measured.
 
 The data is the TLC yellow trips of January to June 2024, 20,332,093
