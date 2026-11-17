@@ -15,7 +15,9 @@ and ends with `try: --url URL, or set STRAUM_URL`.
 Every command exits with 0 when done, 1 when it failed, 2 when its
 command line is wrong, and 3 when Straum is not ready yet: loading, or
 further behind PostgreSQL than `--max-lag`. A script waits on 3 and
-asks again; the other failures need a change first.
+asks again; the other failures need a change first. `straum shell` on
+a pipe is the one exception: it goes on past a failed line, a not
+ready one too, and exits with 1 if any failed.
 
 ## straum run
 
