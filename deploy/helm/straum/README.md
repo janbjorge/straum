@@ -51,6 +51,11 @@ kubectl exec deployment/straum -- /straum status
 `values.yaml` documents every value, and `values.schema.json` refuses the
 values straum can't take.
 
+With `wal: physical`, set `maxPageMemory` well under
+`resources.limits.memory`: the rows it bounds come on top of the cells,
+and at the defaults, both `1Gi`, Kubernetes kills the pod for its memory
+before straum's own limit can start it over.
+
 ## Checks
 
 `scripts/check-chart.py` runs `helm lint --strict`, the

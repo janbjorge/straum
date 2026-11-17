@@ -36,6 +36,9 @@ wal: "logical"
 # maxPageMemory, with wal "physical", is how many bytes of rows straum may
 # hold from the WAL, pages changed since the last checkpoint and changes of
 # open transactions, before it loads again; with a Ki, Mi, Gi or Ti suffix.
+# It comes on top of the cells, so keep it well under
+# resources.limits.memory: at the defaults, both 1Gi, the pod is killed
+# for its memory before straum's own limit can start it over.
 maxPageMemory: "1Gi"
 
 # publication is the publication straum reads, as `straum plan` made it.
