@@ -192,8 +192,11 @@ timeout or fall back to `as_of`.
 | 405 | Not a `POST`. |
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
-| 500 | Straum failed while answering; its log says why. |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
+
+A panic in Straum ends the process rather than answering from a store
+it may have left half written, so no ask is answered 500; the client
+sees the connection close.
 
 ```json
 {"errors": ["unknown measure amout; did you mean amount?"]}
@@ -216,4 +219,4 @@ timeout or fall back to `as_of`.
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes`, `max_retained_wal_bytes`, `starts`, `failures` and `last_failure` with its `at` and `error`. What is unknown until every table is loaded is null. |
 | `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names and range of buckets as JSON, which `straum shell` completes from. |
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
-| `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has. |
+| `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |
