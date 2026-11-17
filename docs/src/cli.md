@@ -7,6 +7,9 @@ the next word or after `=`: `--url http://straum:8080` or
 `--url=http://straum:8080`. The examples run against
 the [quick start](quick-start.md)'s trips.
 
+A word that starts with `-` is a flag, up to a `--`: after it, a spec
+or a query is taken as written, as in `straum run -- -spec.sql`.
+
 `status`, `views`, `ask` and `shell` talk to a running Straum. They find
 it at `--url`, else at the URL in `STRAUM_URL`, else at
 `http://127.0.0.1:8080`. When nothing answers there, the error says so

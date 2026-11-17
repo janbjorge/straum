@@ -329,8 +329,15 @@ fn is_help(arg: &str) -> bool {
     arg == "-h" || arg == "--help"
 }
 
+/// `--`, after which every word is taken as written, never as a flag.
+const END_OF_FLAGS: &str = "--";
+
+/// Whether a flag before any `--` asks for help.
 fn asks_for_help(args: &[String]) -> bool {
     for arg in args {
+        if arg == END_OF_FLAGS {
+            return false;
+        }
         if is_help(arg) {
             return true;
         }
@@ -344,7 +351,7 @@ fn asks_for_help(args: &[String]) -> bool {
 fn query_at(rest: &[String]) -> usize {
     let mut at = 0;
     while let Some(arg) = rest.get(at) {
-        if !arg.starts_with('-') {
+        if !arg.starts_with('-') || arg == END_OF_FLAGS {
             break;
         }
         let alone = is_help(arg) || Name::Ask.switches().contains(&arg.as_str());
@@ -387,6 +394,11 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
             if asks_for_help(rest) {
                 return Ok(Command::Help(Some(name)));
             }
+            // A query that starts with `-` follows a `--`.
+            let query = match query.split_first() {
+                Some((first, after)) if first == END_OF_FLAGS => after,
+                _ => query,
+            };
             ask_command(&Flags::read(name, rest)?, query, url)
         }
         Name::Plan => plan_command(&Flags::read(name, rest)?),
@@ -510,8 +522,13 @@ impl Flags {
             spec: None,
         };
         let mut rest = rest.iter();
+        let mut flags_ended = false;
         while let Some(word) = rest.next() {
-            if takes_spec && !word.starts_with('-') {
+            if word == END_OF_FLAGS && !flags_ended {
+                flags_ended = true;
+                continue;
+            }
+            if takes_spec && (flags_ended || !word.starts_with('-')) {
                 if flags.spec.is_some() {
                     return Err(UsageError::OneSpec(name));
                 }

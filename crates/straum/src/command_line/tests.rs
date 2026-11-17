@@ -201,6 +201,35 @@ fn a_long_flag_takes_its_value_after_an_equals_sign_too() {
     }
 }
 
+/// After `--`, a word that starts with `-` is a spec or a query, not a
+/// flag; before it, it is a flag.
+#[test]
+fn a_double_dash_ends_the_flags() {
+    let Ok(Command::Run(run)) = command_of(&args("run --listen a -- -spec.sql")) else {
+        panic!("run");
+    };
+    assert_eq!((run.spec.as_str(), run.listen.as_str()), ("-spec.sql", "a"));
+    let Ok(Command::Plan(plan)) = command_of(&args("plan -- -h")) else {
+        panic!("plan -- -h asks for no help");
+    };
+    assert_eq!(plan.spec, "-h");
+    let ask = command_of(&args("ask --json -- -x $1 -y"));
+    let Ok(Command::Ask {
+        query, parameters, ..
+    }) = ask
+    else {
+        panic!("{ask:?}");
+    };
+    assert_eq!((query.as_str(), parameters), ("-x", args("$1 -y")));
+    for (line, error) in [
+        ("run -spec.sql", "straum run takes no \"-spec.sql\""),
+        ("plan -- a b", "straum plan takes one spec"),
+        ("ask --", "straum ask needs a query"),
+    ] {
+        assert!(usage(line).starts_with(error), "{line}: {}", usage(line));
+    }
+}
+
 #[test]
 fn json_is_a_switch_of_the_commands_that_print_what_straum_says() {
     let status = command_of(&args("status --json --url http://straum:9"));
