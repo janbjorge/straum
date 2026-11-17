@@ -473,6 +473,27 @@ fn a_left_joined_dim_key_is_refused() {
     );
 }
 
+/// A join side that fails says only its own error on the join's line, not
+/// the whole ON's besides; the side written right parses.
+#[test]
+fn a_failed_join_side_is_reported_once() {
+    let join = "LEFT OUTER JOIN public.z AS z ON z.id = f.z_id";
+    for (side, error) in [
+        ("z.id = F.z_id", "line 5: F: write names in lowercase, f"),
+        ("Z.id = f.z_id", "line 5: Z: write names in lowercase, z"),
+    ] {
+        let text = base(join, &format!("LEFT OUTER JOIN public.z AS z ON {side}"));
+        let mut on_line = Vec::new();
+        for found in error_lines(&text) {
+            if found.starts_with("line 5:") {
+                on_line.push(found);
+            }
+        }
+        assert_eq!(on_line, [error], "{side}");
+    }
+    assert!(parse(&base(join, join)).is_ok());
+}
+
 /// Semi and anti joins: one shape of EXISTS.
 #[test]
 fn exists_has_one_shape() {

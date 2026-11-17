@@ -232,12 +232,18 @@ impl Walker {
         else {
             return Err(NotEquality::Shape);
         };
+        // A literal side, such as `true`, makes the part no key equality,
+        // which the whole ON says best. Any other side says only its own
+        // error.
+        if is_value(left) || is_value(right) {
+            return Err(NotEquality::Shape);
+        }
         // Both sides are walked before either is judged, so each reports
         // its own errors.
         let joined_side = self.qualified(left);
         let near_side = self.qualified(right);
         let (Ok(joined_side), Ok(near_side)) = (joined_side, near_side) else {
-            return Err(NotEquality::Shape);
+            return Err(NotEquality::Reported);
         };
         if joined_side.alias != *alias {
             return Err(NotEquality::Shape);
@@ -367,6 +373,11 @@ fn selects_one(projection: &[sql::SelectItem]) -> bool {
         return false;
     };
     number == "1"
+}
+
+/// Whether a join side is a literal value, such as `1` or `true`.
+fn is_value(expression: &sql::Expr) -> bool {
+    matches!(expression, sql::Expr::Value(_))
 }
 
 fn groups_by_nothing(group_by: &sql::GroupByExpr) -> bool {
