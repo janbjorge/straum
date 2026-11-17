@@ -64,6 +64,12 @@ impl Dsn {
         };
         let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
         let (authority, database) = rest.split_once('/').unwrap_or((rest, ""));
+        // A password with a raw `?` or `/` before its `@` puts the `@` in
+        // the parameters or the database: refused, or the host after it
+        // would be read from the password, and errors would quote it.
+        if database.contains('@') || query.contains('@') {
+            return Err(DsnError::StrayAt);
+        }
         let (userinfo, hostport) = authority.rsplit_once('@').ok_or(DsnError::User)?;
         let (user, password) = match userinfo.split_once(':') {
             Some((user, password)) => (user, Some(decode(password)?)),
@@ -93,7 +99,7 @@ impl Dsn {
                     return Err(DsnError::Fallback(mode.to_owned()));
                 }
                 Some(("sslrootcert", file)) if !file.is_empty() => root_cert = Some(decode(file)?),
-                _ => return Err(DsnError::Parameter(pair.to_owned())),
+                _ => return Err(DsnError::Parameter(parameter_name(pair))),
             }
         }
         let tls = match (plain, root_cert) {
@@ -179,7 +185,46 @@ pub enum DsnError {
     RootCert,
     /// A host no certificate can name.
     TlsHost(String),
-    Parameter(String),
+    /// A parameter not taken, or not with that value: by name when it is
+    /// one libpq knows, never by its text, which may be a password's tail.
+    Parameter(Option<&'static str>),
+    /// An `@` past the host, as an unescaped `?` or `/` in the password
+    /// puts it.
+    StrayAt,
+}
+
+/// libpq's parameters a DSN may name, which an error may repeat.
+const KNOWN_PARAMETERS: [&str; 16] = [
+    "sslmode",
+    "sslrootcert",
+    "sslcert",
+    "sslkey",
+    "sslpassword",
+    "sslnegotiation",
+    "sslcrl",
+    "connect_timeout",
+    "application_name",
+    "options",
+    "target_session_attrs",
+    "keepalives",
+    "channel_binding",
+    "gssencmode",
+    "requiressl",
+    "client_encoding",
+];
+
+/// The name of `pair`'s parameter, if it is one libpq knows.
+fn parameter_name(pair: &str) -> Option<&'static str> {
+    let name = match pair.split_once('=') {
+        Some((name, _)) => name,
+        None => pair,
+    };
+    for known in KNOWN_PARAMETERS {
+        if known == name {
+            return Some(known);
+        }
+    }
+    None
 }
 
 impl fmt::Display for DsnError {
@@ -202,9 +247,18 @@ impl fmt::Display for DsnError {
                 formatter,
                 "TLS needs a DNS name or IP address as the DSN host, not {host:?}"
             ),
-            DsnError::Parameter(parameter) => {
-                write!(formatter, "DSN parameter {parameter} is not supported")
-            }
+            DsnError::Parameter(Some(name)) => write!(
+                formatter,
+                "DSN parameter {name} is not supported as given; Straum takes sslmode and \
+                 sslrootcert"
+            ),
+            DsnError::Parameter(None) => formatter.write_str(
+                "DSN has a parameter Straum doesn't know; it takes sslmode and sslrootcert",
+            ),
+            DsnError::StrayAt => formatter.write_str(
+                "DSN has an @ past its host; percent-encode @, ? and / in the password as \
+                 %40, %3F and %2F",
+            ),
         }
     }
 }
@@ -314,7 +368,7 @@ mod tests {
             ),
             (
                 "postgres://straum@h/taxi?sslmode=Disable",
-                DsnError::Parameter("sslmode=Disable".into()),
+                DsnError::Parameter(Some("sslmode")),
             ),
             (
                 "postgres://straum@h/taxi?sslmode=disable&sslrootcert=ca.pem",
@@ -322,7 +376,7 @@ mod tests {
             ),
             (
                 "postgres://straum@h/taxi?sslrootcert=",
-                DsnError::Parameter("sslrootcert=".into()),
+                DsnError::Parameter(Some("sslrootcert")),
             ),
             ("postgres://straum@h/taxi?sslrootcert=%g", DsnError::Escape),
             ("postgres://straum@-h/taxi", DsnError::TlsHost("-h".into())),
@@ -332,16 +386,23 @@ mod tests {
             ),
             (
                 "postgres://straum@h/taxi?sslcert=me.pem",
-                DsnError::Parameter("sslcert=me.pem".into()),
+                DsnError::Parameter(Some("sslcert")),
             ),
             (
                 "postgres://straum@h/taxi?connect_timeout=5",
-                DsnError::Parameter("connect_timeout=5".into()),
+                DsnError::Parameter(Some("connect_timeout")),
             ),
             (
                 "postgres://straum@h/taxi?sslmode",
-                DsnError::Parameter("sslmode".into()),
+                DsnError::Parameter(Some("sslmode")),
             ),
+            // A password's tail is never repeated, nor read as the host.
+            (
+                "postgres://straum@h/taxi?secret=1",
+                DsnError::Parameter(None),
+            ),
+            ("postgres://u:pa?ss@h/taxi", DsnError::StrayAt),
+            ("postgres://u:pa/ss@evil/taxi", DsnError::StrayAt),
         ];
         for (url, error) in cases {
             assert_eq!(Dsn::parse(url), Err(error), "{url}");
@@ -373,8 +434,18 @@ mod tests {
                 "TLS needs a DNS name or IP address as the DSN host, not \"-h\"",
             ),
             (
-                DsnError::Parameter("x=1".into()),
-                "DSN parameter x=1 is not supported",
+                DsnError::Parameter(Some("sslcert")),
+                "DSN parameter sslcert is not supported as given; Straum takes sslmode and \
+                 sslrootcert",
+            ),
+            (
+                DsnError::Parameter(None),
+                "DSN has a parameter Straum doesn't know; it takes sslmode and sslrootcert",
+            ),
+            (
+                DsnError::StrayAt,
+                "DSN has an @ past its host; percent-encode @, ? and / in the password as \
+                 %40, %3F and %2F",
             ),
         ];
         for (error, message) in cases {

@@ -76,7 +76,9 @@ postgres://straum:PASSWORD@db.example.com:5432/app
 ```
 
 The port defaults to 5432 and the database to the user's name.
-Percent-encode reserved characters in the password, such as `@` or `/`.
+Percent-encode reserved characters in the password, such as `@`, `?`
+or `/` as `%40`, `%3F` and `%2F`: a raw one is refused, and an error
+about a parameter never repeats its text, which could be a password's.
 Use the server's direct endpoint, not a pooler: the replication
 connection needs a session of its own.
 
