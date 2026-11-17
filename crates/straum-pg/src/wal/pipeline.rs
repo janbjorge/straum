@@ -137,13 +137,39 @@ impl Pipeline {
         // DDL changes how the rows after it lie on the pages, whether or
         // not its commit goes on: one before the start, or that the load
         // saw, too.
+        let mut carrier = None;
         if let xact::Event::Commit(ending) = &event {
             let stale = self.publisher.stale(&ending.invalidated);
             if !stale.is_empty() {
                 let fresh = layouts(ending.xid)?;
                 self.publisher.relayout(&stale, fresh);
             }
+            carrier = Some(Committed {
+                xid: ending.xid,
+                lsn: record.lsn,
+                end: record.next(),
+                time: ending.time,
+                changes: Vec::new(),
+                invalidated: Vec::new(),
+            });
         }
+        let mut commits = self.commits(event, record)?;
+        // A table made unfit by a commit that doesn't go on, as one the
+        // load saw, must still stop the stream now: changes to its new
+        // file pass by unread, and may never bring a commit of their own.
+        if commits.is_empty()
+            && self.snapshot.is_some()
+            && self.publisher.unfit_pending()
+            && let Some(carrier) = carrier
+        {
+            commits.extend(self.publisher.publish(&carrier, &mut self.decoder)?);
+        }
+        Ok(commits)
+    }
+
+    /// The commits `event` makes: none until the load's snapshot is
+    /// known, then those it doesn't see.
+    fn commits(&mut self, event: xact::Event, record: &Record) -> Result<Vec<Commit>, Error> {
         let committed = match self.transactions.event(event, record.lsn, record.next()) {
             Ok(Some(committed)) => committed,
             Ok(None) => return Ok(Vec::new()),
@@ -219,10 +245,21 @@ impl Pipeline {
         self.transactions.loaded();
         self.held_bytes = 0;
         let mut commits = Vec::new();
+        let mut last = None;
         for committed in mem::take(&mut self.held) {
             if !snapshot.sees(committed.xid) {
                 commits.extend(self.publisher.publish(&committed, &mut self.decoder)?);
             }
+            last = Some(committed);
+        }
+        // A table made unfit before the start, by DDL the load saw, stops
+        // the stream at once, as after it.
+        if commits.is_empty()
+            && self.publisher.unfit_pending()
+            && let Some(mut last) = last
+        {
+            last.changes = Vec::new();
+            commits.extend(self.publisher.publish(&last, &mut self.decoder)?);
         }
         self.snapshot = Some(snapshot);
         Ok((Sight::Through(seen), commits))
@@ -657,6 +694,48 @@ mod tests {
         let commits = pipeline.record(&seen, |xid| Ok(the_table_for(&asked, xid)));
         assert_eq!(commits.unwrap(), []);
         assert_eq!(*asked.borrow(), [50, 101]);
+    }
+
+    /// The changes of a commit, with every `Unfit` among them.
+    fn unfit_tables(commits: &[Commit]) -> Vec<&Change> {
+        let mut unfit = Vec::new();
+        for commit in commits {
+            for change in &commit.changes {
+                if let Change::Unfit { .. } = change {
+                    unfit.push(change);
+                }
+            }
+        }
+        unfit
+    }
+
+    /// A table rewritten by DDL the load saw stops the stream with that
+    /// DDL's commit, or with the snapshot if the commit came before it:
+    /// changes to its new file pass by unread and bring no commit.
+    #[test]
+    fn a_rewrite_the_load_saw_is_unfit_at_once() {
+        let unfit = Change::Unfit {
+            table: Identifier::new("t").unwrap(),
+        };
+        let asked = RefCell::new(Vec::new());
+        let mut wal = Wal {
+            lsn: 0x100_0028,
+            block: 0,
+        };
+        let mut after = pipeline(1 << 20);
+        after.record(&wal.running(100, &[]), no_layouts).unwrap();
+        see_all(&mut after, "100:102:").unwrap();
+        let seen = ddl(&mut wal, 101);
+        let commits = after.record(&seen, |xid| Ok(no_tables_for(&asked, xid)));
+        assert_eq!(unfit_tables(&commits.unwrap()), [&unfit]);
+
+        let mut before = pipeline(1 << 20);
+        before.record(&wal.running(200, &[]), no_layouts).unwrap();
+        let held = ddl(&mut wal, 200);
+        let commits = before.record(&held, |xid| Ok(no_tables_for(&asked, xid)));
+        assert_eq!(commits.unwrap(), []);
+        let released = see_all(&mut before, "201:201:").unwrap();
+        assert_eq!(unfit_tables(&released), [&unfit]);
     }
 
     /// A transaction past the limit stops the stream only if the load

@@ -127,6 +127,12 @@ impl Publisher {
         self.labels.extend(fresh.labels);
     }
 
+    /// Whether a table no longer reads as loaded, and no commit has said
+    /// so yet.
+    pub(crate) fn unfit_pending(&self) -> bool {
+        !self.unfit.is_empty()
+    }
+
     /// The file of the table Straum reads whose OID is `oid`.
     fn file_with_oid(&self, oid: Oid) -> Option<RelationFile> {
         for table in self.tables.values() {
