@@ -449,10 +449,13 @@ async def wait_ready(
 
 async def ask(http: aiohttp.ClientSession, body: bytes) -> list:
     async with http.post("/ask", data=body) as response:
-        answer = orjson.loads(await response.read())
+        reply = await response.read()
+    # A refusal may be no JSON, as from a proxy: its words, not a decode
+    # error.
     if response.status != 200:
-        raise SystemExit(f"taxi: straum answered {response.status}: {answer}")
-    return answer["rows"]
+        said = reply.decode(errors="replace")
+        raise SystemExit(f"taxi: straum answered {response.status}: {said}")
+    return orjson.loads(reply)["rows"]
 
 
 async def compare(

@@ -313,10 +313,13 @@ async def ask(http: aiohttp.ClientSession, body: bytes) -> list[dict[str, Any]]:
     async with http.post(
         "/ask", data=body, headers={"Content-Type": "application/json"}
     ) as response:
-        answer = orjson.loads(await response.read())
+        reply = await response.read()
+    # A refusal may be no JSON, as from a proxy: its words, not a decode
+    # error.
     if response.status != 200:
-        raise SystemExit(f"demo: Straum answered {response.status}: {answer}")
-    rows = answer["rows"]
+        said = reply.decode(errors="replace")
+        raise SystemExit(f"demo: Straum answered {response.status}: {said}")
+    rows = orjson.loads(reply)["rows"]
     if not isinstance(rows, list):
         raise SystemExit(f"demo: rows was {rows!r}")
     return rows
