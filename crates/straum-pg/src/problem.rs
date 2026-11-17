@@ -86,6 +86,8 @@ pub(crate) enum ServerProblem {
 pub(crate) enum TableProblem {
     Missing,
     NotPlain,
+    /// Another table inherits from it, whose rows a query of it reads.
+    Children,
     NoSelect,
     RowFilter {
         publication: String,
@@ -232,6 +234,10 @@ fn write_table(
     match problem {
         TableProblem::Missing => write!(formatter, "{name}: table {qualified} does not exist"),
         TableProblem::NotPlain => write!(formatter, "{name}: {qualified} is not a plain table"),
+        TableProblem::Children => write!(
+            formatter,
+            "{name}: tables inherit from {qualified}; Straum reads a table without children"
+        ),
         TableProblem::NoSelect => write!(
             formatter,
             "{name}: Straum's role can't read {qualified}: GRANT SELECT ON {qualified}"

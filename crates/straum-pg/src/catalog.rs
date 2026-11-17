@@ -169,6 +169,8 @@ pub(crate) struct Class {
     pub(crate) name: String,
     /// `pg_class.relkind`: `r` for a plain table.
     pub(crate) relkind: String,
+    /// Whether another table inherits from it (`pg_inherits`).
+    pub(crate) children: bool,
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
     pub(crate) select: bool,
@@ -270,7 +272,8 @@ fn classes(
     let rows = connection.rows(&format!(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
-                array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL
+                array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL,
+                EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid)
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
            LEFT JOIN pg_publication_tables p
                   ON p.pubname = {publication}
@@ -287,11 +290,13 @@ fn classes(
             select,
             published,
             row_filter,
+            children,
         ] = row.try_into().map_err(|_| shape("relations"))?;
         classes.push(Class {
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
             relkind: relkind.unwrap_or_default(),
+            children: children.as_deref() == Some("t"),
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
             published: published.as_deref().map(comma_list),
@@ -652,6 +657,11 @@ fn check_table(
     if class.relkind != "r" {
         problems.push(names.table_problem(TableProblem::NotPlain));
         return None;
+    }
+    // A query of the table reads its children's rows too, the load
+    // included, but their changes come under their own names.
+    if class.children {
+        problems.push(names.table_problem(TableProblem::Children));
     }
     if !class.select {
         problems.push(names.table_problem(TableProblem::NoSelect));

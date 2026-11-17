@@ -98,13 +98,16 @@ postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum/ca.pem
 Before it loads, Straum compares the server with the spec and reports
 every problem at once, each with its fix, in its log, `/readyz` and
 `straum status`. It stays not ready and [tries again](deploy.md#states)
-after a wait. Some of the checks:
+after a wait. A spec table must be a plain table that no table inherits
+from: a partitioned table, a view or a TimescaleDB hypertable is
+refused. Some of the checks:
 
 ```text
 wal_level is replica; Straum needs logical, which takes a restart
 publication straum does not exist; run the SQL straum plan prints
 usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD TABLE public.events
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
+usage: tables inherit from public.events; Straum reads a table without children
 usage: column amount of public.events is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
 usage: column kind of public.events is event_kind, an enum; write kind::text
 usage: column region of public.accounts is text, not an enum; drop the ::text

@@ -218,6 +218,21 @@ fn publication_problems(pg: &PostgresContainer) {
             Some("f: partitioned.f is not a plain table"),
         ),
         case(
+            "inherited",
+            format!("{table} CREATE TABLE $S.f_2026 () INHERITS ($S.f); {PUBLISH}"),
+            &spec,
+            Some("f: tables inherit from inherited.f; Straum reads a table without children"),
+        ),
+        case(
+            "child",
+            format!(
+                "CREATE TABLE $S.parent (id int); {table} ALTER TABLE $S.f INHERIT $S.parent; \
+                 {PUBLISH}"
+            ),
+            &spec,
+            None,
+        ),
+        case(
             "filtered",
             format!("{table} CREATE PUBLICATION $S FOR TABLE $S.f WHERE (x > 0);"),
             &spec,
