@@ -137,3 +137,39 @@ fn a_view_shows_its_first_thousand_rows() {
     assert!(count.starts_with("1000 of 1001 rows, as of "), "{count}");
     server.stop();
 }
+
+/// The lines of a reply after the names and the rule.
+fn rows_and_count(body: &str) -> Vec<&str> {
+    body.lines().skip(2).collect()
+}
+
+#[test]
+fn a_view_shows_the_rows_its_query_string_picks() {
+    let (_writer, server) = started(writer_with(LIMITS, more_trips_than_shown()));
+    let reply = call(server.address, "GET", "/views/trips?start=-2&count=1", "");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let lines = rows_and_count(&reply.body);
+    assert_eq!(lines.len(), 2, "{}", reply.body);
+    assert!(lines[0].contains("|  999 |"), "{}", reply.body);
+    assert!(
+        lines[1].starts_with("1 of 1001 rows from row 999, as of "),
+        "{}",
+        reply.body
+    );
+    let reply = call(server.address, "GET", "/views/trips?start=1000", "");
+    let lines = rows_and_count(&reply.body);
+    assert!(lines[0].contains("| 1000 |"), "{}", reply.body);
+    assert!(lines[1].starts_with("1 of 1001 rows from row 1000, as of "));
+
+    let reply = call(server.address, "GET", "/views/trips?count=1001", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (400, "count is 0 to 1000, not \"1001\"\n")
+    );
+    let reply = call(server.address, "GET", "/views/zones?start=x", "");
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (404, "no view zones; GET /views lists them\n")
+    );
+    server.stop();
+}

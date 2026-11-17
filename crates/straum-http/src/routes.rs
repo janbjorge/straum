@@ -16,6 +16,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::Ask;
 
+use crate::answer::{Start, Window};
 use crate::json::quoted;
 use crate::{ReadAsk, answer, ask, status, views};
 
@@ -27,8 +28,8 @@ const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
 
 const MAX_ASK_BYTES: usize = 1 << 20;
 
-/// The rows `GET /views/NAME` writes. A view may hold millions, which no
-/// one reads.
+/// The rows `GET /views/NAME` writes at most. A view may hold millions,
+/// which no one reads.
 const MAX_ROWS: usize = 1000;
 
 const ROWS_PREFIX: &str = "/views/";
@@ -110,7 +111,7 @@ pub(crate) async fn handle(
         (_, "/ask") => not_allowed("POST"),
         (_, "/livez" | "/readyz" | "/status" | "/views") => not_allowed("GET"),
         (&Method::GET, path) if path.starts_with(ROWS_PREFIX) => {
-            get_rows(&app, &path[ROWS_PREFIX.len()..]).await
+            get_rows(&app, &path[ROWS_PREFIX.len()..], parts.uri.query()).await
         }
         (_, path) if path.starts_with(ROWS_PREFIX) => not_allowed("GET"),
         (_, path) => text(StatusCode::NOT_FOUND, format!("no {path} here\n")),
@@ -142,13 +143,14 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
     };
     let writing = Writing {
         format,
-        max_rows: None,
+        window: None,
     };
     answer(app, asked, writing, parsing.elapsed(), start).await
 }
 
-/// Every row of a view, as an ask for them is answered.
-async fn get_rows(app: &App, view: &str) -> Reply {
+/// The rows of a view the query string picks, as an ask for every row
+/// is answered.
+async fn get_rows(app: &App, view: &str, query: Option<&str>) -> Reply {
     let start = Instant::now();
     let Some(asked) = app.rows_ask(view) else {
         return text(
@@ -156,19 +158,75 @@ async fn get_rows(app: &App, view: &str) -> Reply {
             format!("no view {view}; GET /views lists them\n"),
         );
     };
+    let window = match rows_window(query.unwrap_or("")) {
+        Ok(window) => window,
+        Err(error) => return text(StatusCode::BAD_REQUEST, format!("{error}\n")),
+    };
     let writing = Writing {
         format: Format::Text,
-        max_rows: Some(MAX_ROWS),
+        window: Some(window),
     };
     answer(app, asked, writing, Duration::ZERO, start).await
 }
 
-/// How an answer is to be written: its format, and how many rows a table
+/// The rows `GET /views/NAME` writes, from `start` and `count` in its
+/// query string: `start` is the first, a negative one counted back from
+/// the end, 0 when not given; `count` is at most `MAX_ROWS`, which it is
+/// when not given.
+fn rows_window(query: &str) -> Result<Window, String> {
+    let mut start = None;
+    let mut count = None;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let slot = match name {
+            "start" => &mut start,
+            "count" => &mut count,
+            _ => {
+                return Err(format!(
+                    "GET /views/NAME takes start and count, not {name:?}"
+                ));
+            }
+        };
+        if slot.replace(value).is_some() {
+            return Err(format!("{name} is given twice"));
+        }
+    }
+    Ok(Window {
+        start: window_start(start.unwrap_or("0"))?,
+        count: window_count(count)?,
+    })
+}
+
+fn window_start(value: &str) -> Result<Start, String> {
+    let Ok(row) = value.parse::<i64>() else {
+        return Err(format!("start is a row number, not {value:?}"));
+    };
+    let from = usize::try_from(row.unsigned_abs()).unwrap_or(usize::MAX);
+    if row < 0 {
+        return Ok(Start::FromLast(from));
+    }
+    Ok(Start::FromFirst(from))
+}
+
+fn window_count(value: Option<&str>) -> Result<usize, String> {
+    let Some(value) = value else {
+        return Ok(MAX_ROWS);
+    };
+    match value.parse::<usize>() {
+        Ok(count) if count <= MAX_ROWS => Ok(count),
+        _ => Err(format!("count is 0 to {MAX_ROWS}, not {value:?}")),
+    }
+}
+
+/// How an answer is to be written: its format, and which rows a table
 /// shows.
 #[derive(Clone, Copy)]
 struct Writing {
     format: Format,
-    max_rows: Option<usize>,
+    window: Option<Window>,
 }
 
 async fn answer(
@@ -211,7 +269,7 @@ fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, Answe
     let written_from = Instant::now();
     let body = match writing.format {
         Format::Json => answer::write(&answered),
-        Format::Text => answer::table(&answered, writing.max_rows).into_bytes(),
+        Format::Text => answer::table(&answered, writing.window).into_bytes(),
     };
     Ok(Timed {
         applied: answered.applied,
@@ -333,4 +391,61 @@ fn respond(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Rep
     // Straum and a client may keep one.
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     reply
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(start: Start, count: usize) -> Window {
+        Window { start, count }
+    }
+
+    #[test]
+    fn a_query_string_picks_the_rows() {
+        let first = Start::FromFirst(0);
+        assert_eq!(rows_window(""), Ok(window(first, MAX_ROWS)));
+        assert_eq!(rows_window("&"), Ok(window(first, MAX_ROWS)));
+        assert_eq!(
+            rows_window("start=40"),
+            Ok(window(Start::FromFirst(40), MAX_ROWS))
+        );
+        assert_eq!(
+            rows_window("start=-20"),
+            Ok(window(Start::FromLast(20), MAX_ROWS))
+        );
+        assert_eq!(rows_window("start=-0"), Ok(window(first, MAX_ROWS)));
+        assert_eq!(
+            rows_window("count=5&start=3"),
+            Ok(window(Start::FromFirst(3), 5))
+        );
+        assert_eq!(rows_window("count=0"), Ok(window(first, 0)));
+        assert_eq!(rows_window("count=1000"), Ok(window(first, 1000)));
+        let far = i64::MIN.unsigned_abs();
+        let far = usize::try_from(far).unwrap_or(usize::MAX);
+        assert_eq!(
+            rows_window("start=-9223372036854775808"),
+            Ok(window(Start::FromLast(far), MAX_ROWS))
+        );
+    }
+
+    #[test]
+    fn a_query_string_says_what_is_wrong_with_it() {
+        let wrong = [
+            (
+                "limit=5",
+                "GET /views/NAME takes start and count, not \"limit\"",
+            ),
+            ("start", "start is a row number, not \"\""),
+            ("start=x", "start is a row number, not \"x\""),
+            ("start=1.5", "start is a row number, not \"1.5\""),
+            ("start=1&start=2", "start is given twice"),
+            ("count=1001", "count is 0 to 1000, not \"1001\""),
+            ("count=-1", "count is 0 to 1000, not \"-1\""),
+            ("count=", "count is 0 to 1000, not \"\""),
+        ];
+        for (query, error) in wrong {
+            assert_eq!(rows_window(query), Err(error.to_owned()), "{query}");
+        }
+    }
 }

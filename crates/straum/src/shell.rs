@@ -1,6 +1,7 @@
 //! `straum shell`: a prompt at a running Straum. Each line goes to
 //! `answer`, which reads it as a command and asks Straum through
-//! `client.rs`: `\d` for the views, `\rows VIEW` for a view's rows, or an
+//! `client.rs`: `\d` for the views, `\rows VIEW [START [COUNT]]` for a
+//! view's rows, a negative START counting back from the end, or an
 //! ask written as `QUERY; PARAMETER...`, where a value in single quotes
 //! may hold spaces. At a terminal, `interactive` edits the line with
 //! rustyline, Tab completes from the views the Straum serves (see
@@ -24,7 +25,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor};
 
-use crate::client::{ClientError, Output, ask, load_views, parameter_words, rows, views};
+use crate::client::{
+    ClientError, Output, RowWindow, ask, load_views, parameter_words, rows, views,
+};
 use crate::complete::{Completion, View, complete, hint};
 use crate::help::SHELL_HELP;
 
@@ -37,6 +40,7 @@ const UNDIM: &str = "\x1b[0m";
 #[derive(Debug)]
 enum LineError {
     NoSuchCommand(String),
+    NotARowNumber(String),
     Client(ClientError),
 }
 
@@ -46,6 +50,10 @@ impl Display for LineError {
             LineError::NoSuchCommand(line) => {
                 write!(formatter, "no command {line:?}; \\? lists them")
             }
+            LineError::NotARowNumber(word) => write!(
+                formatter,
+                "\\rows takes VIEW [START [COUNT]], whole numbers, not {word:?}"
+            ),
             LineError::Client(error) => error.fmt(formatter),
         }
     }
@@ -72,7 +80,13 @@ fn answer(url: &str, line: &str) -> Outcome {
         ["\\q"] => return Outcome::Leave,
         ["\\?"] => Ok(shell_commands()),
         ["\\d"] => views(url, Output::Text),
-        ["\\rows", view] => rows(url, view),
+        ["\\rows", view, ref bounds @ ..] if bounds.len() <= 2 => {
+            let window = match row_window(bounds) {
+                Ok(window) => window,
+                Err(error) => return Outcome::Failed(error),
+            };
+            rows(url, view, window)
+        }
         [command, ..] if command.starts_with('\\') => {
             return Outcome::Failed(LineError::NoSuchCommand(line.to_owned()));
         }
@@ -89,6 +103,24 @@ fn answer(url: &str, line: &str) -> Outcome {
         Ok(text) => Outcome::Print(text),
         Err(error) => Outcome::Failed(LineError::from(error)),
     }
+}
+
+/// The START and COUNT after `\rows VIEW`, each optional.
+fn row_window(bounds: &[&str]) -> Result<RowWindow, LineError> {
+    let mut window = RowWindow::default();
+    if let Some(start) = bounds.first() {
+        let Ok(start) = start.parse() else {
+            return Err(LineError::NotARowNumber((*start).to_owned()));
+        };
+        window.start = Some(start);
+    }
+    if let Some(count) = bounds.get(1) {
+        let Ok(count) = count.parse() else {
+            return Err(LineError::NotARowNumber((*count).to_owned()));
+        };
+        window.count = Some(count);
+    }
+    Ok(window)
 }
 
 fn shell_commands() -> String {
@@ -358,7 +390,7 @@ mod tests {
 
     /// What the shell writes for `input`, at a Straum that takes
     /// `request`: its output, its errors, and how many lines failed.
-    fn shelled(request: &'static str, reply: &'static str, input: &str) -> (String, String, usize) {
+    fn shelled(request: &str, reply: &'static str, input: &str) -> (String, String, usize) {
         let url = answering(request, reply);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let failed = piped(&url, input.as_bytes(), &mut output, &mut errors).unwrap();
@@ -438,6 +470,26 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_asks_for_the_rows_from_start_and_count() {
+        let asked = [
+            ("\\rows trips -20", "?start=-20"),
+            ("\\rows trips 40 5", "?start=40&count=5"),
+        ];
+        for (line, query) in asked {
+            let request = GET_ROWS.replacen("trips", &format!("trips{query}"), 1);
+            let written = shelled(&request, "HTTP/1.1 200 OK\r\n\r\nsome\n", line);
+            assert_eq!(written, ("some\n".to_owned(), String::new(), 0), "{line}");
+        }
+        let (_, errors, failed) = shelled(GET_ROWS, "", "\\rows trips 0 -1\n\\rows trips 1.5\n");
+        assert_eq!(failed, 2);
+        assert_eq!(
+            errors,
+            "straum: \\rows takes VIEW [START [COUNT]], whole numbers, not \"-1\"\n\
+             straum: \\rows takes VIEW [START [COUNT]], whole numbers, not \"1.5\"\n"
+        );
+    }
+
+    #[test]
     fn a_value_in_single_quotes_keeps_its_spaces() {
         let ask = "SELECT \"x\"; 7 'Staten Island' true\n";
         let written = shelled(POST_ASK_SPACED, "HTTP/1.1 200 OK\r\n\r\n    1\n", ask);
@@ -454,13 +506,14 @@ mod tests {
         let (written, errors, failed) = shelled(
             GET_ROWS,
             "HTTP/1.1 404 Not Found\r\n\r\nno view trips; GET /views lists them\n",
-            "\\rows\n\\rows a b\n\\nope\n\\rows trips\n\\q\n\\d\n",
+            "\\rows\n\\rows a b\n\\rows a 1 2 3\n\\nope\n\\rows trips\n\\q\n\\d\n",
         );
-        assert_eq!((written.as_str(), failed), ("", 4));
+        assert_eq!((written.as_str(), failed), ("", 5));
         assert_eq!(
             errors,
             "straum: no command \"\\\\rows\"; \\? lists them\n\
-             straum: no command \"\\\\rows a b\"; \\? lists them\n\
+             straum: \\rows takes VIEW [START [COUNT]], whole numbers, not \"b\"\n\
+             straum: no command \"\\\\rows a 1 2 3\"; \\? lists them\n\
              straum: no command \"\\\\nope\"; \\? lists them\n\
              straum: URL answered \"HTTP/1.1 404 Not Found\"\n\
              no view trips; GET /views lists them\n"
@@ -485,8 +538,11 @@ mod tests {
         assert_eq!(
             commands,
             "  \\d                    every view, as straum views prints them\n\
-            \x20 \\rows VIEW            the rows PostgreSQL would give for VIEW, the\n\
-            \x20                       first 1000\n\
+            \x20 \\rows VIEW [START [COUNT]]\n\
+            \x20                       the rows PostgreSQL would give for VIEW:\n\
+            \x20                       COUNT of them, at most and else 1000, from\n\
+            \x20                       row START, else 0; a negative START counts\n\
+            \x20                       back from the end, so -20 is the last 20\n\
             \x20 QUERY; PARAMETER...   an ask, as straum ask takes it: the query, a\n\
             \x20                       semicolon, then the values of $1, $2 and on;\n\
             \x20                       a value with spaces in single quotes\n\

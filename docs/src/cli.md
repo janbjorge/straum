@@ -189,7 +189,7 @@ A prompt at the Straum at `--url`. Each line is a command:
 | Line | Prints |
 | --- | --- |
 | `\d` | Every view, as `straum views` does. |
-| `\rows VIEW` | The rows PostgreSQL would give for the view: every measure by the bucket and every key, over the buckets held. The first 1000. |
+| `\rows VIEW [START [COUNT]]` | The rows PostgreSQL would give for the view: every measure by the bucket and every key, over the buckets held. COUNT of them, at most and else 1000, from row START, else 0. A negative START counts back from the end. |
 | `QUERY; PARAMETER...` | The answer to an ask, as `straum ask` does: the query, a semicolon, then the values of `$1`, `$2` and on. A value with spaces goes in single quotes: `'Staten Island'`. |
 | `\?` | These commands. |
 | `\q` | Nothing; it leaves, as the end of input does. |
@@ -208,8 +208,14 @@ payment_type | trips
 5 rows, as of 2026-11-13T07:59:07.988040041Z
 ```
 
-`\rows` reads every cell of the view, so on a large view it takes as
-long as an ask over all its buckets.
+`\rows` pages through a view as a Python slice does: rows count from 0,
+and a negative START counts back from the end. `\rows trips 1000 50`
+prints rows 1000 to 1049, `\rows trips -20` the last 20. A START past
+either end is held at it. The last line says how many rows the view
+has and, past the first, from which row they print.
+
+`\rows` reads every cell of the view, whichever rows it prints, so on a
+large view it takes as long as an ask over all its buckets.
 
 At a terminal, Tab completes by where the cursor is: keys and measures
 after `SELECT`, views after `FROM`, a whole condition with the next

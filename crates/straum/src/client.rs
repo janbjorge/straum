@@ -173,13 +173,31 @@ pub(crate) fn views(url: &str, output: Output) -> Result<String, ClientError> {
     fetch(url, &request)
 }
 
+/// Which of a view's rows to ask for: from `start`, a negative one
+/// counted back from the end, and at most `count`. Straum picks either
+/// one not given: the first row, and as many as it shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct RowWindow {
+    pub(crate) start: Option<i64>,
+    pub(crate) count: Option<u64>,
+}
+
 /// A view's rows, as `GET /views/NAME` writes them.
-pub(crate) fn rows(url: &str, view: &str) -> Result<String, ClientError> {
+pub(crate) fn rows(url: &str, view: &str, window: RowWindow) -> Result<String, ClientError> {
     // The name goes into the request line as it is.
     if Identifier::new(view).is_none() {
         return Err(ClientError::NotAViewName(view.to_owned()));
     }
-    let request = Request::get(Wanted::Rows, format!("/views/{view}"), Output::Text);
+    let mut path = format!("/views/{view}");
+    let mut separator = '?';
+    if let Some(start) = window.start {
+        let _ = write!(path, "{separator}start={start}");
+        separator = '&';
+    }
+    if let Some(count) = window.count {
+        let _ = write!(path, "{separator}count={count}");
+    }
+    let request = Request::get(Wanted::Rows, path, Output::Text);
     fetch(url, &request)
 }
 
@@ -449,13 +467,20 @@ mod tests {
     #[test]
     fn asks_for_a_views_rows() {
         let url = answering(GET_ROWS, "HTTP/1.1 200 OK\r\n\r\ntrips\n");
-        assert_eq!(said(rows(&url, "trips")), Said::Body("trips\n".to_owned()));
+        let all = RowWindow::default();
+        assert_eq!(
+            said(rows(&url, "trips", all)),
+            Said::Body("trips\n".to_owned())
+        );
         for name in ["trips HTTP/1.1", "a/b", "tri\rps", "trips;", "", "Trips"] {
             let error = format!("{name:?} is not a view's name");
-            assert_eq!(said(rows("http://127.0.0.1:1", name)), Said::Error(error));
+            assert_eq!(
+                said(rows("http://127.0.0.1:1", name, all)),
+                Said::Error(error)
+            );
         }
         // Nothing listens on port 1.
-        let error = rows("http://127.0.0.1:1", "trips").unwrap_err();
+        let error = rows("http://127.0.0.1:1", "trips", all).unwrap_err();
         let asking = "asking http://127.0.0.1:1 for its rows: ";
         let said = error.to_string();
         assert!(said.starts_with(asking), "{said}");
@@ -463,6 +488,25 @@ mod tests {
             said.ends_with("\ntry: --url URL, or set STRAUM_URL"),
             "{said}"
         );
+    }
+
+    #[test]
+    fn asks_for_the_rows_a_window_picks() {
+        let asked = [
+            (Some(-20), None, "?start=-20"),
+            (Some(5), Some(10), "?start=5&count=10"),
+            (None, Some(0), "?count=0"),
+        ];
+        for (start, count, query) in asked {
+            let request = GET_ROWS.replacen("trips", &format!("trips{query}"), 1);
+            let url = answering(&request, "HTTP/1.1 200 OK\r\n\r\nsome\n");
+            let window = RowWindow { start, count };
+            assert_eq!(
+                said(rows(&url, "trips", window)),
+                Said::Body("some\n".to_owned()),
+                "{query}"
+            );
+        }
     }
 
     #[test]

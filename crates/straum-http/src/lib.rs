@@ -19,9 +19,11 @@
 //!   for people; `straum views` prints it. 503 until every table is loaded.
 //!   With `Accept: application/json` each view's names and range as JSON,
 //!   which `straum shell` completes from (see `views.rs`).
-//! - `GET /views/NAME`: the rows PostgreSQL would give for the view, the
-//!   first `MAX_ROWS` of them, as the table an ask gets; the `\rows` of
-//!   `straum shell`. 404 for a name no view has.
+//! - `GET /views/NAME`: the rows PostgreSQL would give for the view, as
+//!   the table an ask gets: `count` of them, at most `MAX_ROWS`, from row
+//!   `start`, a negative one counted back from the end; the `\rows` of
+//!   `straum shell`. 400 for a query string it can't read, 404 for a name
+//!   no view has.
 
 #![forbid(unsafe_code)]
 

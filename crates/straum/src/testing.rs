@@ -14,13 +14,13 @@ pub(crate) fn args(line: &str) -> Vec<String> {
 }
 
 /// A server that sends `reply` to one request, if it is `request`; its URL.
-pub(crate) fn answering(request: &'static str, reply: &'static str) -> String {
+pub(crate) fn answering(request: &str, reply: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let url = format!("http://{address}");
+    let request = request.replace("ADDRESS", &address.to_string());
     thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let request = request.replace("ADDRESS", &address.to_string());
         let mut read = vec![0; request.len()];
         if stream.read_exact(&mut read).is_ok() && read == request.as_bytes() {
             stream.write_all(reply.as_bytes()).unwrap();

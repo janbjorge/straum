@@ -1,6 +1,6 @@
 # ADR-0011: Operators read plain text through the binary
 
-Status: Accepted 2026-11-10; revised 2026-11-16
+Status: Accepted 2026-11-10; revised 2026-11-17
 
 ## Context
 
@@ -36,7 +36,8 @@ No metrics and no OTLP. Straum writes what people read, as plain text:
 `as_of`, starts and failures); `GET /views` (each view's widths,
 cells, bucket range, typed keys and measures, each dim's rows and
 the view keys that read it);
-`GET /views/NAME` (the first 1000 rows of `App::rows_ask`); and `POST
+`GET /views/NAME` (up to 1000 rows of `App::rows_ask`, from a row
+`start` that a negative value counts from the end); and `POST
 /ask` with `Accept: text/plain`. `/status` and `/views` with `Accept:
 application/json` serve programs. The binary prints those bodies:
 `straum status`, `straum views`, `straum ask QUERY [PARAMETER...]`.
@@ -46,11 +47,12 @@ With `--json` they print the JSON body instead, for scripts and agents.
 
 `straum ask` reads a parameter's type from its text: an integer,
 `true` or `false`, a number, else a string; single quotes make a
-string. `straum shell` is a prompt: `\d` lists views, `\rows VIEW`
-prints rows, any other line is `QUERY; PARAMETER...`. It completes
-from `/views` by cursor position: views after `FROM`, names after
-`SELECT`, a condition with the next `$n` after `WHERE`, keys after
-`GROUP BY`, the bucket range held for a bound. The terminal is
+string. `straum shell` is a prompt: `\d` lists views, `\rows VIEW
+[START [COUNT]]` prints rows, any other line is `QUERY;
+PARAMETER...`. It completes from `/views` by cursor position: views
+after `FROM`, names after `SELECT`, a condition with the next `$n`
+after `WHERE`, keys after `GROUP BY`, the bucket range held for a
+bound. The terminal is
 `rustyline`, since raw mode and line editing take `unsafe` that `std`
 lacks; without a terminal the shell reads lines from its input.
 
@@ -66,7 +68,7 @@ lacks; without a terminal the shell reads lines from its input.
   what the walker then refuses.
 - Text layout is for people and may change; JSON is the contract.
 - `/views` is 503 until every table is loaded: only a load knows the
-  types. `\rows` reads every cell of the view to print 1000.
+  types. `\rows` reads every cell of the view to print up to 1000.
 - `straum ask` infers types; the HTTP ask infers nothing (ADR-0005).
 - The terminal glue is untested; the completion under it is plain
   functions with tests.
