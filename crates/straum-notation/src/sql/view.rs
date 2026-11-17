@@ -298,15 +298,24 @@ impl Walker {
             return Vec::new();
         };
         let mut widths = Vec::new();
-        for width in text.split(',').map(str::trim) {
+        let mut written = Vec::new();
+        let mut every_width_read = true;
+        for width in text.split(',') {
+            let width = width.trim();
+            written.push(width);
             let parsed = match parse_width(width) {
                 Ok(parsed) => parsed,
                 Err(fix) => {
                     self.error(line(value), format!("bucket width '{width}': {fix}"));
+                    every_width_read = false;
                     continue;
                 }
             };
             widths.push(parsed);
+        }
+        let list = written.join(", ");
+        if every_width_read && list != *text {
+            self.error(line(value), format!("buckets '{text}': write '{list}'"));
         }
         widths
     }

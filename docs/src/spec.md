@@ -162,8 +162,8 @@ date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
   the load or the stream with the table and column named.
 
 `WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width
-Straum keeps, narrowest first, and the first must be the `date_bin`
-width. Each wider width is a whole multiple of the one before and
+Straum keeps, narrowest first, a comma and one space between them, and
+the first must be the `date_bin` width. Each wider width is a whole multiple of the one before and
 starts at the epoch, so `7 days` buckets start on Thursdays. An ask
 over a long range reads its middle from the widest buckets that fit
 and its ends from narrower ones, so it reads far fewer cells, as drawn

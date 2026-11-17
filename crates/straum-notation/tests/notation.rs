@@ -138,7 +138,7 @@ fn keys_go_by_their_select_name() {
 
 #[test]
 fn buckets_parse() {
-    let text = base("buckets = '1 hour'", "buckets = '1 hour, 1 day,7 days'");
+    let text = base("buckets = '1 hour'", "buckets = '1 hour, 1 day, 7 days'");
     let spec = parse(&text).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.wider,

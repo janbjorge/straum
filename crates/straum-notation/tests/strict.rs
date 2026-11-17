@@ -283,6 +283,23 @@ fn every_select_item_is_named() {
     ]);
 }
 
+/// The bucket widths are separated by a comma and one space: any other
+/// spacing is refused, naming the list to write.
+#[test]
+fn bucket_widths_are_separated_by_a_comma_and_a_space() {
+    for written in ["1 hour,1 day", "1 hour,   1 day", " 1 hour, 1 day"] {
+        let spaced = canon("'1 hour, 1 day'", &format!("'{written}'"));
+        assert_eq!(
+            error_lines(&spaced),
+            [format!(
+                "line 1: buckets '{written}': write '1 hour, 1 day'"
+            )],
+        );
+    }
+    let spec = parse(CANON).unwrap();
+    assert_eq!(spec.fact("orders").unwrap().time.wider.len(), 1);
+}
+
 /// A GROUP BY position has no leading zero: the error names the one to
 /// write, and the position without it parses.
 #[test]
