@@ -221,8 +221,10 @@ What starts Straum over in physical mode, besides what starts the
 logical stream over:
 
 - A value of a column the spec reads that PostgreSQL stored out of line
-  in its TOAST table: the page holds only a pointer. Values over about
-  2 KB go there. Each change to such a row starts Straum over.
+  in its TOAST table: the page holds only a pointer. A row over about
+  2 KB has its largest values moved there, one by one, until it fits,
+  so a short value can go too, beside long ones. Each change to such a
+  row starts Straum over.
 - `TRUNCATE`, `VACUUM FULL`, `CLUSTER` and an `ALTER TABLE` that
   rewrites one of the spec's tables: its rows move to a new file.
   `ADD COLUMN`, `DROP COLUMN` and other DDL that keeps the file are
