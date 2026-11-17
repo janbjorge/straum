@@ -520,3 +520,40 @@ fn having_takes_one_spelling() {
         ["line 1: write <> for not equal, not !="]
     );
 }
+
+/// An ask with `terms` more conditions on `kind` after the first.
+fn chain(terms: usize) -> String {
+    format!(
+        "SELECT trips FROM t WHERE kind = $1{}",
+        " AND kind = $1".repeat(terms)
+    )
+}
+
+/// A chain of operators is a tree as deep as the chain, which reading it
+/// recurses down: past 512 operators in one statement the ask is refused
+/// before it is parsed, whatever the operators, and a chain within it is
+/// read.
+#[test]
+fn a_long_chain_of_operators_is_refused_before_it_is_parsed() {
+    let refused = "more than 512 operators in one statement; Straum SQL takes fewer";
+    // 1 + 2 per AND: 511 operators, then 513.
+    let ask = parse_ask(&chain(255), &[text("cab")]).unwrap();
+    assert_eq!(ask.filter.len(), 256);
+    assert_eq!(
+        errors(&chain(256), &[text("cab")]),
+        [format!("line 1: {refused}")]
+    );
+    for deep in [
+        chain(2_500),
+        format!("SELECT {} AS n FROM t", vec!["1"; 3_000].join(" + ")),
+        format!(
+            "SELECT trips FROM t HAVING trips > $1{}",
+            " OR trips > $1".repeat(3_000)
+        ),
+        format!("SELECT trips FROM t WHERE kind{}", " IS NULL".repeat(3_000)),
+        format!("SELECT trips FROM t WHERE kind{}", "::text".repeat(3_000)),
+    ] {
+        let found = errors(&deep, &[text("cab")]);
+        assert_eq!(found, [format!("line 1: {refused}")], "{}", &deep[..60]);
+    }
+}

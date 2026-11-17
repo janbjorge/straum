@@ -453,6 +453,12 @@ fn parser_errors_and_deep_nesting_are_errors() {
         errors[0].message
     );
 
+    // The tokenizer's own error comes as the parser's would.
+    let errors = sql_errors("CREATE VIEW t AS SELECT 'unclosed");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].line, None);
+    assert!(errors[0].message.contains("Unterminated string"), "{errors:?}");
+
     let deep = format!("{}1{}", "(".repeat(500), ")".repeat(500));
     let errors = sql_errors(&base(
         "count(*) AS n",

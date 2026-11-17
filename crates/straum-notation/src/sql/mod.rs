@@ -16,7 +16,9 @@ use std::fmt;
 use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
 use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
+use sqlparser::keywords::Keyword;
+use sqlparser::parser::{Parser, ParserError};
+use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
 use straum_domain::{Condition, Identifier, Literal};
 
 mod ask;
@@ -45,13 +47,101 @@ pub struct SqlError {
 #[derive(Debug)]
 struct Reported;
 
+/// The most operators one statement may hold, counted before it is
+/// parsed. `sqlparser` builds a chain of them, `a AND b AND ...` or
+/// `1 + 1 + ...`, as a tree as deep as the chain, and the walk, a node's
+/// span and the tree's own drop recurse down it: 2,500 overflowed the 2
+/// MiB stack an ask is read on, and aborted Straum. No view or ask needs
+/// near this many.
+const MAX_OPERATORS: usize = 512;
+
 fn statements(text: &str) -> Result<Vec<sql::Statement>, Vec<SqlError>> {
-    match Parser::parse_sql(&PostgreSqlDialect {}, text) {
+    let dialect = PostgreSqlDialect {};
+    let tokenized = Tokenizer::new(&dialect, text)
+        .with_unescape(true)
+        .tokenize_with_location();
+    let tokens = match tokenized {
+        Ok(tokens) => tokens,
+        Err(error) => return Err(parser_error(&ParserError::from(error))),
+    };
+    if let Some(error) = too_many_operators(&tokens) {
+        return Err(vec![error]);
+    }
+    let mut parser = Parser::new(&dialect).with_tokens_with_locations(tokens);
+    match parser.parse_statements() {
         Ok(statements) => Ok(statements),
-        Err(error) => Err(vec![SqlError {
-            line: None,
-            message: error.to_string(),
-        }]),
+        Err(error) => Err(parser_error(&error)),
+    }
+}
+
+/// `sqlparser`'s error, which knows no line of its own.
+fn parser_error(error: &ParserError) -> Vec<SqlError> {
+    vec![SqlError {
+        line: None,
+        message: error.to_string(),
+    }]
+}
+
+/// The error for the first statement of `tokens` with more than
+/// [`MAX_OPERATORS`] operators, at the line of the one past it.
+fn too_many_operators(tokens: &[TokenWithSpan]) -> Option<SqlError> {
+    let mut operators = 0;
+    for token in tokens {
+        if token.token == Token::SemiColon {
+            operators = 0;
+        } else if is_operator(&token.token) {
+            operators += 1;
+        }
+        if operators > MAX_OPERATORS {
+            return Some(SqlError {
+                line: Some(token.span.start.line),
+                message: format!(
+                    "more than {MAX_OPERATORS} operators in one statement; \
+                     Straum SQL takes fewer"
+                ),
+            });
+        }
+    }
+    None
+}
+
+/// A token that can join or follow an expression and so deepen its tree:
+/// a symbol other than a comma, a parenthesis or a period, or a keyword
+/// such as `AND`, `IS` or `IN`. Literals, names and parameters are not.
+fn is_operator(token: &Token) -> bool {
+    match token {
+        Token::Word(word) => matches!(
+            word.keyword,
+            Keyword::AND
+                | Keyword::OR
+                | Keyword::NOT
+                | Keyword::IS
+                | Keyword::IN
+                | Keyword::LIKE
+                | Keyword::ILIKE
+                | Keyword::SIMILAR
+                | Keyword::BETWEEN
+                | Keyword::COLLATE
+                | Keyword::AT
+                | Keyword::OVERLAPS
+        ),
+        Token::EOF
+        | Token::Number(..)
+        | Token::SingleQuotedString(_)
+        | Token::DoubleQuotedString(_)
+        | Token::DollarQuotedString(_)
+        | Token::NationalStringLiteral(_)
+        | Token::EscapedStringLiteral(_)
+        | Token::UnicodeStringLiteral(_)
+        | Token::HexStringLiteral(_)
+        | Token::Placeholder(_)
+        | Token::Whitespace(_)
+        | Token::Comma
+        | Token::LParen
+        | Token::RParen
+        | Token::Period
+        | Token::SemiColon => false,
+        _ => true,
     }
 }
 
