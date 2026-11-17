@@ -67,10 +67,7 @@ pub fn plan(
         sql.push(format!("CREATE ROLE {role} LOGIN REPLICATION;"));
         sql.push(format!("-- Then give {role} a password: \\password {role}"));
     }
-    sql.extend([
-        format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
-        format!("GRANT SELECT ON {list} TO {role};"),
-    ]);
+    sql.extend(grants(&schemas, &list, &role));
     if matches!(replication, Replication::Physical { .. }) {
         sql.extend([
             "-- Lets Straum start without waiting for the next checkpoint; a superuser grants it."
@@ -103,6 +100,17 @@ pub fn plan(
         ));
     }
     sql.join("\n") + "\n"
+}
+
+/// Lets `role` read `tables`, an SQL list, in `schemas`, and says what a
+/// table with row-level security needs.
+fn grants(schemas: &[String], tables: &str, role: &str) -> [String; 4] {
+    [
+        format!("GRANT USAGE ON SCHEMA {} TO {role};", schemas.join(", ")),
+        format!("GRANT SELECT ON {tables} TO {role};"),
+        "-- If a policy of row-level security hides rows of a table, a superuser runs:".to_owned(),
+        format!("-- ALTER ROLE {role} BYPASSRLS;"),
+    ]
 }
 
 fn qualified(table: &straum_domain::Table) -> String {
@@ -207,6 +215,7 @@ mod tests {
         for present in [
             "CREATE ROLE \"r\" LOGIN REPLICATION;\n",
             "GRANT SELECT ON \"a\".\"t\" TO \"r\";\n",
+            "-- ALTER ROLE \"r\" BYPASSRLS;\n",
             "GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO \"r\";\n",
         ] {
             assert!(sql.contains(present), "{present}: {sql}");

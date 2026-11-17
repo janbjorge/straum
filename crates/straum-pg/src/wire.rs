@@ -133,6 +133,9 @@ impl Connection {
             ("client_encoding", "UTF8"),
             ("DateStyle", "ISO"),
             ("TimeZone", "UTC"),
+            // A policy that would hide a row makes a read fail, never come
+            // back short.
+            ("row_security", "off"),
         ];
         if kind == ConnectionKind::Replication {
             parameters.push(("replication", "database"));

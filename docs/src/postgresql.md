@@ -41,6 +41,8 @@ ALTER SYSTEM SET wal_level = logical;
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
+-- If a policy of row-level security hides rows of a table, a superuser runs:
+-- ALTER ROLE "straum" BYPASSRLS;
 CREATE PUBLICATION "straum" FOR TABLE "public"."accounts", "public"."events";
 -- fact usage: Straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE "public"."events" REPLICA IDENTITY FULL;
@@ -108,6 +110,7 @@ publication straum does not exist; run the SQL straum plan prints
 usage: publication straum leaves out public.events: ALTER PUBLICATION straum ADD TABLE public.events
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
 usage: tables inherit from public.events; Straum reads a table without children
+usage: row-level security filters what straum reads of public.events; Straum needs every row: ALTER ROLE straum BYPASSRLS, as a superuser
 usage: column amount of public.events is double precision; Straum needs an integer type or numeric(p, s) with p at most 18 there
 usage: column kind of public.events is event_kind, an enum; write kind::text
 usage: column region of public.accounts is text, not an enum; drop the ::text
@@ -163,6 +166,8 @@ FULL`:
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
+-- If a policy of row-level security hides rows of a table, a superuser runs:
+-- ALTER ROLE "straum" BYPASSRLS;
 -- Lets Straum start without waiting for the next checkpoint; a superuser grants it.
 GRANT EXECUTE ON FUNCTION pg_log_standby_snapshot() TO "straum";
 ```

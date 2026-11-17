@@ -141,6 +141,8 @@ fn named<'a>(tables: &'a [Checked], name: &Identifier) -> Option<&'a Checked> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Catalog {
     pub(crate) server_version: u32,
+    /// The role Straum signed in as.
+    pub(crate) role: String,
     pub(crate) wal_level: String,
     pub(crate) full_page_writes: String,
     pub(crate) wal_compression: String,
@@ -169,8 +171,7 @@ pub(crate) struct Class {
     pub(crate) name: String,
     /// `pg_class.relkind`: `r` for a plain table.
     pub(crate) relkind: String,
-    /// Whether another table inherits from it (`pg_inherits`).
-    pub(crate) children: bool,
+    pub(crate) scope: ReadScope,
     /// `pg_class.relreplident`: `d`efault, `f`ull, `i`ndex or `n`othing.
     pub(crate) identity: String,
     pub(crate) select: bool,
@@ -179,6 +180,18 @@ pub(crate) struct Class {
     pub(crate) published: Option<Vec<String>>,
     pub(crate) row_filter: bool,
     pub(crate) columns: Vec<Column>,
+}
+
+/// Where a query of a table and the stream of its changes part: rows a
+/// query reads that the stream names otherwise, or rows it hides that the
+/// stream sends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReadScope {
+    /// Another table inherits from it (`pg_inherits`), and a query reads
+    /// its rows too.
+    pub(crate) children: bool,
+    /// Row-level security filters what Straum's role reads of it.
+    pub(crate) row_security: bool,
 }
 
 /// A column of a spec table as `pg_attribute` and `pg_type` have it.
@@ -236,7 +249,7 @@ fn table_list(spec: &Spec) -> String {
 /// The server's settings, in a catalog with nothing else yet.
 fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, Error> {
     let settings = connection.rows(&format!(
-        "SELECT current_setting('server_version_num'), current_setting('wal_level'),
+        "SELECT current_setting('server_version_num'), current_user, current_setting('wal_level'),
                 current_setting('full_page_writes'), current_setting('wal_compression'),
                 (SELECT pubinsert AND pubupdate AND pubdelete AND pubtruncate
                    FROM pg_publication WHERE pubname = {publication})"
@@ -246,6 +259,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
     };
     let [
         version,
+        role,
         wal_level,
         full_page_writes,
         wal_compression,
@@ -255,6 +269,7 @@ fn settings(connection: &mut Connection, publication: &str) -> Result<Catalog, E
         (version.as_deref().unwrap_or_default().parse()).map_err(|_| shape("settings"))?;
     Ok(Catalog {
         server_version,
+        role: role.unwrap_or_default(),
         wal_level: wal_level.unwrap_or_default(),
         full_page_writes: full_page_writes.unwrap_or_default(),
         wal_compression: wal_compression.unwrap_or_default(),
@@ -273,7 +288,8 @@ fn classes(
         "SELECT n.nspname, c.relname, c.relkind, c.relreplident,
                 has_table_privilege(c.oid, 'SELECT'),
                 array_to_string(p.attnames, ','), p.rowfilter IS NOT NULL,
-                EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid)
+                EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid),
+                row_security_active(c.oid)
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
            LEFT JOIN pg_publication_tables p
                   ON p.pubname = {publication}
@@ -291,12 +307,16 @@ fn classes(
             published,
             row_filter,
             children,
+            row_security,
         ] = row.try_into().map_err(|_| shape("relations"))?;
         classes.push(Class {
             schema: schema.unwrap_or_default(),
             name: name.unwrap_or_default(),
             relkind: relkind.unwrap_or_default(),
-            children: children.as_deref() == Some("t"),
+            scope: ReadScope {
+                children: children.as_deref() == Some("t"),
+                row_security: row_security.as_deref() == Some("t"),
+            },
             identity: identity.unwrap_or_default(),
             select: select.as_deref() == Some("t"),
             published: published.as_deref().map(comma_list),
@@ -660,11 +680,17 @@ fn check_table(
     }
     // A query of the table reads its children's rows too, the load
     // included, but their changes come under their own names.
-    if class.children {
+    if class.scope.children {
         problems.push(names.table_problem(TableProblem::Children));
     }
     if !class.select {
         problems.push(names.table_problem(TableProblem::NoSelect));
+    }
+    // A policy filters the load, never the stream, which sends every row.
+    if class.scope.row_security {
+        problems.push(names.table_problem(TableProblem::RowSecurity {
+            role: catalog.role.clone(),
+        }));
     }
     if logical && class.row_filter {
         problems.push(names.table_problem(TableProblem::RowFilter {

@@ -89,6 +89,11 @@ pub(crate) enum TableProblem {
     /// Another table inherits from it, whose rows a query of it reads.
     Children,
     NoSelect,
+    /// Row-level security filters what Straum's role, `role`, reads of
+    /// it.
+    RowSecurity {
+        role: String,
+    },
     RowFilter {
         publication: String,
     },
@@ -241,6 +246,11 @@ fn write_table(
         TableProblem::NoSelect => write!(
             formatter,
             "{name}: Straum's role can't read {qualified}: GRANT SELECT ON {qualified}"
+        ),
+        TableProblem::RowSecurity { role } => write!(
+            formatter,
+            "{name}: row-level security filters what {role} reads of {qualified}; \
+             Straum needs every row: ALTER ROLE {role} BYPASSRLS, as a superuser"
         ),
         TableProblem::RowFilter { publication } => write!(
             formatter,

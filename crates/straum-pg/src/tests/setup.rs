@@ -11,6 +11,7 @@ use crate::catalog::{self};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Postgres, Replication};
+use crate::wire::{Connection, ConnectionKind};
 
 #[test]
 fn says_to_set_wal_level_logical() {
@@ -41,6 +42,8 @@ CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 -- Then give \"straum_plan\" a password: \\password \"straum_plan\"
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";
 GRANT SELECT ON \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\" TO \"straum_plan\";
+-- If a policy of row-level security hides rows of a table, a superuser runs:
+-- ALTER ROLE \"straum_plan\" BYPASSRLS;
 CREATE PUBLICATION \"plan\" FOR TABLE \"plan\".\"zones\", \"plan\".\"trips\", \"plan\".\"logins\";
 -- fact trips: Straum needs the old row of every update and delete; inserts cost no more.
 ALTER TABLE \"plan\".\"trips\" REPLICA IDENTITY FULL;
@@ -128,6 +131,7 @@ fn setup_problems_say_what_to_fix() {
     enum_problems(&pg);
     dim_problems(&pg);
     dim_role_problems(&pg);
+    row_security_problems(&pg);
     pair_problems(&pg);
     chain_problems(&pg);
 }
@@ -589,6 +593,55 @@ fn dim_role_problems(pg: &PostgresContainer) {
         ["d: Straum's role can't read dimnoselect.d: GRANT SELECT ON dimnoselect.d"],
         "{name}"
     );
+}
+
+/// A policy that hides rows from Straum's role, which no owner,
+/// superuser or `BYPASSRLS` role is subject to.
+fn row_security_problems(pg: &PostgresContainer) {
+    let name = "policed";
+    let Fact { table, spec } = summed_fact();
+    let tables = format!(
+        "{table} {PUBLISH}
+         CREATE ROLE $S LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO $S;
+         GRANT SELECT ON $S.f TO $S;
+         ALTER TABLE $S.f ENABLE ROW LEVEL SECURITY;
+         CREATE POLICY positive ON $S.f USING (x > 0);"
+    );
+    let mut db = Db::new(pg, name, &tables);
+    let dsn = pg
+        .dsn
+        .to_string()
+        .replace("postgres@", &format!("{name}:r@"));
+    let spec = db.spec(&spec);
+    assert_eq!(
+        setup_problems(name, logical_source(&dsn, name).open(&spec)),
+        [
+            "f: row-level security filters what policed reads of policed.f; \
+             Straum needs every row: ALTER ROLE policed BYPASSRLS, as a superuser"
+        ],
+    );
+    // Past the check, a read the policy would cut fails whole.
+    let mut connection =
+        Connection::connect(&Dsn::parse(&dsn).unwrap(), ConnectionKind::Sql).unwrap();
+    let error = connection
+        .rows(&db.sql("SELECT count(*) FROM $S.f"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("row-level security"), "{error}");
+    db.run("ALTER ROLE $S BYPASSRLS");
+    let opened = logical_source(&dsn, name).open(&spec);
+    assert_eq!(setup_problems(name, opened), Vec::<String>::new());
+}
+
+/// A logical source over the publication `name`, signed in as `dsn` says.
+fn logical_source(dsn: &str, name: &str) -> Postgres {
+    Postgres::new(
+        Dsn::parse(dsn).unwrap(),
+        name,
+        ROW_LIMIT,
+        MAX_RETAINED_WAL_BYTES,
+        Replication::Logical,
+    )
 }
 
 /// A dim keyed by two columns, with or without a key of its own.
