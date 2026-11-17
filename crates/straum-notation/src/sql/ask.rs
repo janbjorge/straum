@@ -59,6 +59,11 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
     walker.finish(ask)
 }
 
+/// The most names an ask's SELECT, or its GROUP BY, may list: more than
+/// any view has, since each is named once. Checking each name against the
+/// ones before is quadratic in them.
+const MAX_NAMES: usize = 256;
+
 /// The most bytes of text an ask's parameters may come to as it uses
 /// them: the most an ask's body holds. Each use is a copy, so a long text
 /// named many times would grow far past the body.
@@ -148,6 +153,17 @@ impl Walker {
     ) -> Result<Ask, Reported> {
         let select = self.one_select(query, "ask")?;
         let at = self.select_clauses(select);
+        let grouped = match &select.group_by {
+            sql::GroupByExpr::Expressions(expressions, _) => expressions.len(),
+            sql::GroupByExpr::All(_) => 0,
+        };
+        if select.projection.len() > MAX_NAMES || grouped > MAX_NAMES {
+            self.error(
+                at,
+                format!("an ask selects and groups by at most {MAX_NAMES} names each"),
+            );
+            return Err(Reported);
+        }
         let view = if let [sql::TableWithJoins { relation, joins }] = select.from.as_slice() {
             for join in joins {
                 self.refuse(line(join), "join in an ask, read FROM one view,", join);
@@ -321,7 +337,9 @@ impl Walker {
             let measure = self.ask_name(left);
             let value = self.parameter(right, parameters);
             // sqlparser reads != as <>, and prints it so; the text tells.
-            if written_between(text, left.span().end, right.span().start).contains("!=") {
+            if comparison == Comparison::NotEqual
+                && written_between(text, left.span().end, right.span().start).contains("!=")
+            {
                 self.error(line(part), "write <> for not equal, not !=".into());
                 continue;
             }
@@ -471,10 +489,17 @@ fn comparison(operator: &sql::BinaryOperator) -> Option<Comparison> {
 
 /// The text from `start` to `end`, located as sqlparser does: lines and
 /// columns from 1, columns in characters.
+// Reads only the lines from `start` to `end`: one scan of the whole text
+// per comparison made reading a long ask quadratic.
 fn written_between(text: &str, start: Location, end: Location) -> String {
     let mut between = String::new();
-    for (line_index, line_text) in text.lines().enumerate() {
+    let first_line = usize::try_from(start.line.saturating_sub(1)).unwrap_or(usize::MAX);
+    let lines = text.lines().enumerate().skip(first_line);
+    for (line_index, line_text) in lines {
         let line_number = line_index as u64 + 1;
+        if line_number > end.line {
+            break;
+        }
         for (column_index, character) in line_text.chars().enumerate() {
             let at = Location::new(line_number, column_index as u64 + 1);
             if at >= start && at < end {

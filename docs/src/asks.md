@@ -49,7 +49,7 @@ SELECT events, amount FROM usage
   `SELECT` and `GROUP BY`.
 - Each name is selected at most once, since the names become the
   fields of each answer row. `GROUP BY` names exactly the selected
-  keys.
+  keys. Each lists at most 256 names.
 - `bucket >= $n` and `bucket < $n` bound the range, each at most once.
   Leave one out and that end is open: the ask reads from the first
   bucket held, or to the end of the last. With no `WHERE` it reads

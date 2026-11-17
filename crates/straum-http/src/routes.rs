@@ -142,13 +142,13 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
         }
     };
     let parsing = Instant::now();
-    let sent = match ask::read(&body) {
-        Ok(sent) => sent,
-        Err(errors) => return format.errors(StatusCode::BAD_REQUEST, &errors),
-    };
-    let asked = match read_ask(&sent.query, &sent.parameters) {
-        Ok(asked) => asked,
-        Err(errors) => return format.errors(StatusCode::BAD_REQUEST, &errors),
+    // Reading a 1 MiB ask takes time an async thread can't spare: the
+    // health routes queue behind it.
+    let read = tokio::task::spawn_blocking(move || read_body(&body, read_ask)).await;
+    let asked = match read {
+        Ok(Ok(asked)) => asked,
+        Ok(Err(errors)) => return format.errors(StatusCode::BAD_REQUEST, &errors),
+        Err(_) => return failed(format),
     };
     let writing = Writing {
         format,
@@ -157,8 +157,34 @@ async fn post_ask(body: Incoming, app: &App, read_ask: ReadAsk, format: Format) 
     answer(app, asked, writing, parsing.elapsed(), start).await
 }
 
-/// The rows of a view the query string picks, as an ask for every row
-/// is answered.
+/// The ask a body holds, or every error in it.
+fn read_body(body: &Bytes, read_ask: ReadAsk) -> Result<Ask, Vec<String>> {
+    let sent = match ask::read(body) {
+        Ok(sent) => sent,
+        Err(errors) => return Err(lines(&errors)),
+    };
+    match read_ask(&sent.query, &sent.parameters) {
+        Ok(asked) => Ok(asked),
+        Err(errors) => Err(lines(&errors)),
+    }
+}
+
+/// Each error as the reply says it.
+// Any error a body or a query can have.
+fn lines<E: Display>(errors: &[E]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(errors.len());
+    for error in errors {
+        lines.push(error.to_string());
+    }
+    lines
+}
+
+/// The reply when a task off the async threads panicked.
+fn failed(format: Format) -> Reply {
+    let error = "Straum failed while answering; its log says why";
+    format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
+}
+
 /// The view's `CREATE VIEW` statement. The spec is fixed at start, so it
 /// answers while the tables still load.
 fn get_spec(definitions: &[Definition], view: &str) -> Reply {
@@ -271,10 +297,7 @@ async fn answer(
     match answered {
         Ok(Ok(timed)) => answered_reply(timed, format, parse_time, start),
         Ok(Err(error)) => answer_error(&error, format),
-        Err(_) => {
-            let error = "Straum failed while answering; its log says why";
-            format.errors(StatusCode::INTERNAL_SERVER_ERROR, &[error])
-        }
+        Err(_) => failed(format),
     }
 }
 

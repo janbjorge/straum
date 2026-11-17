@@ -3,6 +3,9 @@
 //! than Straum SQL. Each test starts a server over the fake in `fake.rs`.
 
 use std::net::SocketAddr;
+use std::num::NonZero;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use straum_app::Step;
 use straum_domain::{Ask, Identifier, Literal};
@@ -400,6 +403,38 @@ fn read_every_trip(_: &str, _: &[Literal]) -> Result<Ask, Vec<QueryError>> {
 #[expect(clippy::unnecessary_wraps, reason = "a ReadAsk returns a Result")]
 fn read_past_jiff(_: &str, _: &[Literal]) -> Result<Ask, Vec<QueryError>> {
     Ok(trips_from(i64::MIN))
+}
+
+/// Reads every ask as all trips, taking a second as a long ask does.
+#[expect(clippy::unnecessary_wraps, reason = "a ReadAsk returns a Result")]
+fn read_slowly(_: &str, _: &[Literal]) -> Result<Ask, Vec<QueryError>> {
+    thread::sleep(Duration::from_secs(1));
+    Ok(trips_from(JAN_1))
+}
+
+/// Asks read off the async threads: with one being read on each core,
+/// `/livez` still answers at once.
+#[test]
+fn reading_asks_leaves_the_health_routes_free() {
+    let writer = loaded();
+    let server = serve_with(writer.app().clone(), read_slowly);
+    let address = server.address;
+    let cores = thread::available_parallelism().map_or(4, NonZero::get);
+    let mut asks = Vec::new();
+    for _ in 0..cores {
+        asks.push(thread::spawn(move || {
+            call(address, "POST", "/ask", ANY_QUERY)
+        }));
+    }
+    thread::sleep(Duration::from_millis(200));
+    let clock = Instant::now();
+    assert_eq!(call(address, "GET", "/livez", "").status, 200);
+    let waited = clock.elapsed();
+    assert!(waited < Duration::from_millis(500), "{waited:?}");
+    for ask in asks {
+        assert_eq!(ask.join().unwrap().status, 200);
+    }
+    server.stop();
 }
 
 fn query_error(line: Option<u64>, message: &str) -> QueryError {

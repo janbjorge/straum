@@ -587,10 +587,34 @@ fn the_text_parameters_come_to_at_most_a_mebibyte() {
 /// stays small however many mistakes it holds.
 #[test]
 fn an_ask_says_its_first_fifty_errors_and_counts_the_rest() {
-    let items = vec!["1"; 20_000].join(", ");
+    let items = vec!["1"; 256].join(", ");
     let found = errors(&format!("SELECT {items} FROM t"), &[]);
-    assert_eq!(found.len(), 51, "{:?}", &found[..3]);
-    assert_eq!(found[50], "and 19950 more errors");
+    assert_eq!(found.len(), 51, "{found:?}");
+    assert_eq!(found[50], "and 206 more errors");
     let few = errors("SELECT 1, 1 FROM t", &[]);
     assert_eq!(few.len(), 2, "{few:?}");
+}
+
+/// `count` names, `a0` on, as a SELECT or GROUP BY list.
+fn names(count: usize) -> String {
+    let mut names = Vec::new();
+    for index in 0..count {
+        names.push(format!("a{index}"));
+    }
+    names.join(", ")
+}
+
+/// An ask names at most 256 items in SELECT and in GROUP BY, each name
+/// once: past that it is refused whole, before any name is read.
+#[test]
+fn an_ask_names_at_most_256_items() {
+    let refused = "line 1: an ask selects and groups by at most 256 names each";
+    let many = names(20_000);
+    let wide = format!("SELECT {many}, trips FROM t GROUP BY {many}");
+    assert_eq!(errors(&wide, &[]), [refused]);
+    let selected = format!("SELECT {}, trips FROM t", names(256));
+    assert_eq!(errors(&selected, &[]), [refused]);
+    let allowed = format!("SELECT {} FROM t", names(256));
+    let ask = parse_ask(&allowed, &[]).unwrap();
+    assert_eq!(ask.measures.len(), 256);
 }
