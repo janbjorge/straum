@@ -5,7 +5,7 @@
 //! thread answers keepalives and reports the applied LSN (a WAL position)
 //! in standby status updates, so PostgreSQL never times Straum out.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -33,6 +33,10 @@ pub(crate) const POLL: Duration = Duration::from_secs(1);
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Commits read ahead of the writer.
 const QUEUE: usize = 64;
+/// Changes read ahead of the writer, beside [`QUEUE`]: 64 commits at the
+/// row limit would hold gigabytes. A commit bigger than this still goes
+/// in alone.
+const QUEUED_CHANGES: usize = 200_000;
 /// How long the thread waits for room in a full queue before trying again.
 const WAIT: Duration = Duration::from_millis(10);
 /// How long a failed stream may take to hand over its error once the
@@ -78,6 +82,8 @@ struct Shared {
     /// Set by the thread before it queues its error, which a full queue
     /// holds back.
     failed: AtomicBool,
+    /// Changes in the queue's commits.
+    queued_changes: AtomicUsize,
     /// A physical stream's state before its load: how far it is from
     /// where every later commit is whole, the load's snapshot with the WAL
     /// position it was taken at, for the thread to take, and what the
@@ -102,6 +108,7 @@ impl Stream {
             applied: AtomicU64::new(start.0),
             stop: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            queued_changes: AtomicUsize::new(0),
             consistency: Mutex::new(Consistency::Unknown),
             snapshot: Mutex::new(None),
             sight: Mutex::new(None),
@@ -156,6 +163,10 @@ impl Stream {
         match self.commits.recv_timeout(wait) {
             Ok(Ok(commit)) => {
                 self.applied = commit.lsn;
+                let changes = commit.changes.len();
+                self.shared
+                    .queued_changes
+                    .fetch_sub(changes, Ordering::AcqRel);
                 Ok(Some(commit))
             }
             Ok(Err(error)) => Err(error),
@@ -337,24 +348,40 @@ impl StreamThread {
         Ok(true)
     }
 
-    /// Queues the item, answering the server while the queue is full.
-    /// `false` once the writer is gone or the stream is stopping.
+    /// Queues the item, answering the server while the queue is full, in
+    /// commits or in changes. `false` once the writer is gone or the
+    /// stream is stopping.
     fn deliver(&mut self, mut item: Result<Commit, Error>) -> Result<bool, Error> {
+        let changes = match &item {
+            Ok(commit) => commit.changes.len(),
+            Err(_) => 0,
+        };
         loop {
-            match self.commits.try_send(item) {
-                Ok(()) => return Ok(true),
-                Err(TrySendError::Disconnected(_)) => return Ok(false),
-                Err(TrySendError::Full(back)) => {
-                    item = back;
-                    if self.shared.stop.load(Ordering::Acquire) {
-                        return Ok(false);
+            let queued = self.shared.queued_changes.load(Ordering::Acquire);
+            if has_room(queued, changes) {
+                // Counted before it is sent: the writer may take it and
+                // count it out at once.
+                self.shared
+                    .queued_changes
+                    .fetch_add(changes, Ordering::AcqRel);
+                match self.commits.try_send(item) {
+                    Ok(()) => return Ok(true),
+                    Err(TrySendError::Disconnected(_)) => return Ok(false),
+                    Err(TrySendError::Full(back)) => {
+                        self.shared
+                            .queued_changes
+                            .fetch_sub(changes, Ordering::AcqRel);
+                        item = back;
                     }
-                    if self.last_report.elapsed() >= REPORT_INTERVAL {
-                        self.report()?;
-                    }
-                    thread::sleep(WAIT);
                 }
             }
+            if self.shared.stop.load(Ordering::Acquire) {
+                return Ok(false);
+            }
+            if self.last_report.elapsed() >= REPORT_INTERVAL {
+                self.report()?;
+            }
+            thread::sleep(WAIT);
         }
     }
 
@@ -380,6 +407,12 @@ impl StreamThread {
     }
 }
 
+/// Whether a commit of `changes` fits beside the `queued` changes: always
+/// into an empty queue.
+fn has_room(queued: usize, changes: usize) -> bool {
+    queued == 0 || queued.saturating_add(changes) <= QUEUED_CHANGES
+}
+
 /// A standby status update saying everything before `done` is applied.
 pub(crate) fn status_update(done: u64) -> Vec<u8> {
     let now = value::timestamp_micros(SystemTime::now());
@@ -401,3 +434,21 @@ const STATUS_UPDATE_POSITIONS: usize = 3;
 /// The tag, eight bytes for each position and for the clock, and the
 /// reply flag.
 const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The queue takes commits until their changes reach the bound, and
+    /// a commit past the bound on its own into an empty queue, so a big
+    /// transaction still streams.
+    #[test]
+    fn the_queue_is_bounded_in_changes() {
+        assert!(has_room(0, 1));
+        assert!(has_room(0, QUEUED_CHANGES * 3));
+        assert!(has_room(QUEUED_CHANGES - 10, 10));
+        assert!(!has_room(QUEUED_CHANGES - 10, 11));
+        assert!(!has_room(1, QUEUED_CHANGES));
+        assert!(!has_room(usize::MAX, 1));
+    }
+}

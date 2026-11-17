@@ -114,9 +114,10 @@ Asks share the store with the writer behind a read-write lock, which
 the writer takes only to apply a commit it has already read. A long
 ask delays the writer, and that shows as lag. The writer's readings of
 the server's WAL, and the status, keep to a lock of their own, so an
-ask waits on the writer only while a commit arrives. The stream thread reads
-ahead of the writer, up to 64 commits, and confirms what the writer
-has applied, so PostgreSQL can recycle WAL.
+ask waits on the writer only while a commit arrives. The stream thread
+reads ahead of the writer, up to 64 commits or 200,000 changes,
+whichever comes first, and confirms what the writer has applied, so
+PostgreSQL can recycle WAL.
 
 A change that no longer fits makes Straum start over from a new slot:
 an update without its old row, a row never added, a dim row it never
@@ -158,9 +159,9 @@ messages the logical slot sends, so one decoder serves both:
   see it, longer while a synchronous standby answers, so Straum takes
   the snapshot again until it does. A transaction past the row limit
   that the load saw doesn't stop the stream. The stream reads on
-  during the load until 64 commits wait for the writer, then holds its
-  place, answering the server. A stream that fails meanwhile stops the
-  load at its next batch of rows.
+  during the load until 64 commits or 200,000 changes wait for the
+  writer, then holds its place, answering the server. A stream that
+  fails meanwhile stops the load at its next batch of rows.
 - Memory. A page goes at the next checkpoint record whose redo point is
   past its last change: PostgreSQL logs it whole the next time. So
   Straum holds the pages changed in about one checkpoint cycle, not the
