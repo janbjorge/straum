@@ -9,7 +9,8 @@
 """Straum on a copy of your tables, in Docker.
 
 Restores a pg_dump into a throwaway PostgreSQL with logical decoding on,
-applies `straum plan` for the spec, starts `straum run` from the image
+or at wal_level replica with --wal physical, applies `straum plan` for
+the spec and the WAL, starts `straum run` from the image
 and waits until it has loaded. Then it prints how to ask over HTTP and
 reach PostgreSQL, and opens `straum shell`. Leaving the shell removes
 both containers. Nothing here connects to the database the dump came
@@ -58,19 +59,20 @@ POSTGRES_PORT = 5432
 POSTGRES_MAJOR = os.environ.get("STRAUM_TEST_POSTGRES", "18")
 RESTORE_JOBS = 4
 # A throwaway copy: a crash means running the script again, so the load
-# skips the fsyncs, page images, timed checkpoints and autovacuum that
-# keep a real server safe. wal_level is set here, so the plan needs no
-# restart.
+# skips the fsyncs, timed checkpoints and autovacuum that keep a real
+# server safe. wal_level is set by --wal, so the plan needs no restart.
+# The load skips page images too, through ALTER SYSTEM, which a flag on
+# the command line would outrank when --wal physical turns them back on.
 POSTGRES_FLAGS = (
-    "wal_level=logical",
     "max_wal_size=8GB",
     "checkpoint_timeout=1h",
     "fsync=off",
     "synchronous_commit=off",
-    "full_page_writes=off",
     "autovacuum=off",
     "maintenance_work_mem=512MB",
 )
+# The wal_level each --wal needs.
+WAL_LEVELS = {"logical": "logical", "physical": "replica"}
 # The data goes in as a replica's would, with no foreign key checks and
 # no triggers, since the schema names tables the dump may lack.
 AS_REPLICA = "-c session_replication_role=replica"
@@ -102,12 +104,21 @@ def main() -> int:
         # Planned before the restore: the plan needs no database, so a spec
         # it refuses stops the run at once, and it names the tables to
         # restore.
-        setup_sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE)
+        setup_sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE, "--wal", args.wal)
         log(f"starting PostgreSQL {args.postgres} in stack {stack.name}")
         stack.up(POSTGRES)
         project = stack.name
+        run_sql(project, "ALTER SYSTEM SET full_page_writes = off")
+        run_sql(project, "SELECT pg_reload_conf()")
         restore(project, args.data, args.schema, args.jobs, spec_tables(setup_sql))
         psql(project, "-c", "ANALYZE")
+        if args.wal == "physical":
+            # The physical stream rebuilds rows from page images, which the
+            # restore skipped; after this checkpoint each page's next
+            # change brings it whole.
+            run_sql(project, "ALTER SYSTEM RESET full_page_writes")
+            run_sql(project, "SELECT pg_reload_conf()")
+            run_sql(project, "CHECKPOINT")
         applied = psql(project, "-q", "-v", "ON_ERROR_STOP=1", input_text=setup_sql)
         if applied.returncode:
             raise SystemExit("try: the plan's SQL failed, printed above")
@@ -152,6 +163,12 @@ def parse() -> argparse.Namespace:
     )
     parser.add_argument("--image", default=IMAGE, help=f"Straum image ({IMAGE})")
     parser.add_argument(
+        "--wal",
+        choices=sorted(WAL_LEVELS),
+        default="logical",
+        help="the WAL Straum reads: logical decoding's, or the physical WAL (logical)",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         help="local port Straum answers on (a free one Docker picks)",
@@ -187,7 +204,8 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
     volumes = [f"{args.data}:{DUMP_IN_IMAGE}:ro"]
     if args.schema:
         volumes.append(f"{args.schema}:{SCHEMA_IN_IMAGE}:ro")
-    flags = [part for flag in POSTGRES_FLAGS for part in ("-c", flag)]
+    settings = (f"wal_level={WAL_LEVELS[args.wal]}", *POSTGRES_FLAGS)
+    flags = [part for flag in settings for part in ("-c", flag)]
     # Straum alone is published, on loopback only, since the copy holds
     # your rows; the restore and psql reach PostgreSQL through
     # docker compose exec.
@@ -211,7 +229,7 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
         },
         STRAUM: {
             "image": args.image,
-            "command": ["run", SPEC_IN_IMAGE],
+            "command": ["run", SPEC_IN_IMAGE, "--wal", args.wal],
             "environment": {"STRAUM_DSN": dsn(password)},
             "volumes": [f"{args.spec}:{SPEC_IN_IMAGE}:ro"],
             "ports": [published],
@@ -484,6 +502,13 @@ def shell(project: str) -> None:
         ["docker", "compose", "-p", project, "exec", *tty, STRAUM, "/straum", "shell"],
         check=False,
     )
+
+
+def run_sql(project: str, sql: str) -> None:
+    """Runs one statement, which ALTER SYSTEM must be alone in, or fails."""
+    ran = psql(project, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql)
+    if ran.returncode:
+        raise SystemExit(f"try: {sql} failed, printed above")
 
 
 def psql(

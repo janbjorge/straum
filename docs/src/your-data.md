@@ -55,7 +55,9 @@ uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/try_your_da
 From a clone of the repository, `just try --spec usage.sql --data
 data.dump --schema schema.sql --port 8080` runs the same.
 [`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
-starts PostgreSQL with `wal_level = logical`, restores the schema,
+starts PostgreSQL with `wal_level = logical`, or `replica` with
+`--wal physical` to try the [physical
+stream](postgresql.md#without-logical-decoding), restores the schema,
 then the data of the tables the spec reads, with foreign keys and
 triggers off, and runs `straum plan`'s SQL. The dump's other tables
 stay out, so they take no disk. The indexes of the spec's tables,
