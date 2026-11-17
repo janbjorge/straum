@@ -14,7 +14,7 @@ use straum_domain::{
     Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Width,
 };
 
-use super::{Names, NullTest, Reported, SqlError, Walker, line, statements};
+use super::{Clause, Names, NullTest, Reported, SqlError, Walker, line, statements};
 use measures::is_date_bin;
 
 mod columns;
@@ -337,7 +337,7 @@ impl Walker {
             joined.reference.reads = reads;
         }
         let as_text = cast_columns(&mut scope);
-        let filter = self.read_filter(&scope, &conditions)?;
+        let filter = self.read_filter(&scope, &conditions, Clause::Where)?;
         if measures_share_filter(&measures) {
             self.error(
                 at,
@@ -441,11 +441,12 @@ impl Walker {
         &mut self,
         scope: &Scope,
         conditions: &[&sql::Expr],
+        clause: Clause,
     ) -> Result<Vec<Condition>, Reported> {
         let mut filter = Vec::new();
         for condition in conditions {
             let before = self.met();
-            self.read_conditions(condition, &mut filter, &mut Names::View(scope));
+            self.read_conditions(condition, &mut filter, &mut Names::View(scope, clause));
             if self.met() > before {
                 return Err(Reported);
             }

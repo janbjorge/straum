@@ -175,8 +175,17 @@ struct Walker {
 // Borrows the scope or the parameters for one condition, so it needs a
 // lifetime; they belong to the walk that holds them.
 enum Names<'walk> {
-    View(&'walk Scope),
+    View(&'walk Scope, Clause),
     Ask(&'walk mut Parameters),
+}
+
+/// Which clause of a view a condition is in, so an error names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Clause {
+    /// The view's `WHERE`.
+    Where,
+    /// A measure's `FILTER (WHERE ..)`.
+    Filter,
 }
 
 /// Which null test a condition or a null-ness key writes.
@@ -463,7 +472,7 @@ impl Walker {
         for part in parts {
             match part {
                 sql::Expr::IsNull(column) | sql::Expr::IsNotNull(column) => {
-                    let Names::View(scope) = names else {
+                    let Names::View(scope, clause) = names else {
                         self.refuse(line(part), CONDITION, part);
                         continue;
                     };
@@ -471,7 +480,7 @@ impl Walker {
                         sql::Expr::IsNull(_) => NullTest::IsNull,
                         _ => NullTest::IsNotNull,
                     };
-                    if let Ok(condition) = self.null_condition(scope, part, column, test) {
+                    if let Ok(condition) = self.null_condition(scope, *clause, part, column, test) {
                         conditions.push(condition);
                     }
                 }
@@ -547,7 +556,7 @@ impl Walker {
         expression: &sql::Expr,
     ) -> Result<Identifier, Reported> {
         match names {
-            Names::View(scope) => self.key_of(scope, expression),
+            Names::View(scope, clause) => self.key_of(scope, expression, *clause),
             Names::Ask(_) => self.ask_name(expression),
         }
     }
@@ -558,7 +567,7 @@ impl Walker {
         expression: &sql::Expr,
     ) -> Result<Literal, Reported> {
         match names {
-            Names::View(_) => self.literal(expression),
+            Names::View(..) => self.literal(expression),
             Names::Ask(parameters) => self.parameter(expression, parameters),
         }
     }

@@ -21,7 +21,8 @@ use std::fmt;
 use jiff::Timestamp;
 use sqlparser::ast as sql;
 use sqlparser::ast::Spanned;
-use sqlparser::tokenizer::Location;
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::tokenizer::{Location, Token, Tokenizer};
 use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
@@ -51,8 +52,11 @@ pub fn parse_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<SqlErro
             Err(Reported)
         }
     };
+    // A refused part may hold the parameter the walk never reached: an
+    // unused one is news only in an ask with nothing else wrong.
+    let refused = walker.met() > 0;
     for (index, used) in parameters.used.iter().enumerate() {
-        if !used {
+        if !used && !refused {
             walker.error(0, format!("parameter ${} is not used", index + 1));
         }
     }
@@ -338,7 +342,7 @@ impl Walker {
             let value = self.parameter(right, parameters);
             // sqlparser reads != as <>, and prints it so; the text tells.
             if comparison == Comparison::NotEqual
-                && written_between(text, left.span().end, right.span().start).contains("!=")
+                && spelled_with_bang(&written_between(text, left.span().end, right.span().start))
             {
                 self.error(line(part), "write <> for not equal, not !=".into());
                 continue;
@@ -508,6 +512,22 @@ fn written_between(text: &str, start: Location, end: Location) -> String {
         }
     }
     between
+}
+
+/// Whether the not-equal operator in `between`, the text between a
+/// comparison's sides, is written `!=`. A comment there may hold either
+/// spelling, so the tokens tell, not the text.
+fn spelled_with_bang(between: &str) -> bool {
+    let tokenized = Tokenizer::new(&PostgreSqlDialect {}, between).tokenize_with_location();
+    let Ok(tokens) = tokenized else {
+        return false;
+    };
+    for token in tokens {
+        if token.token == Token::Neq {
+            return written_between(between, token.span.start, token.span.end) == "!=";
+        }
+    }
+    false
 }
 
 /// `bucket >= value` or `bucket < value`; `None` for any other condition.

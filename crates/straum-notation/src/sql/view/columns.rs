@@ -9,7 +9,7 @@ use straum_domain::{Attribute, ByKey, Condition, Identifier, Literal, RefKind, V
 
 use super::joins::{key_position, ref_position};
 use super::{Cast, KeyForm, Qualified, ResolvedColumn, Scope, ScopedKey, SelectedKeys};
-use crate::sql::{NullTest, Reported, Walker, line};
+use crate::sql::{Clause, NullTest, Reported, Walker, line};
 
 /// `alias.column` and whether it is cast, before the alias is resolved.
 struct Reference {
@@ -334,19 +334,24 @@ impl Walker {
         Ok(FactColumnRead { column, cast })
     }
 
-    /// `FILTER (WHERE alias.column = ...)` reaches the key that reads the
-    /// column, by the column, as PostgreSQL reads the view: an output name
-    /// is no column there.
+    /// `alias.column = ...` in a `WHERE` or `FILTER (WHERE ..)` reaches
+    /// the key that reads the column, by the column, as PostgreSQL reads
+    /// the view: an output name is no column there.
     pub(crate) fn key_of(
         &mut self,
         scope: &Scope,
         expression: &sql::Expr,
+        clause: Clause,
     ) -> Result<Identifier, Reported> {
         let ColumnRead { column, cast } = self.column(scope, expression)?;
         let Some(key) = filter_key(scope, &column, KeyKind::Value) else {
+            let clause = match clause {
+                Clause::Where => "WHERE",
+                Clause::Filter => "FILTER",
+            };
             self.error(
                 line(expression),
-                format!("FILTER on {expression} needs {expression} AS <name> in SELECT"),
+                format!("{clause} on {expression} needs {expression} AS <name> in SELECT"),
             );
             return Err(Reported);
         };
@@ -354,11 +359,13 @@ impl Walker {
         Ok(key.name)
     }
 
-    /// `FILTER (WHERE alias.column IS NULL)` counts through the null-ness
-    /// key over that column, which holds for the rows the test picks out.
+    /// `alias.column IS NULL` in a `WHERE` or `FILTER (WHERE ..)` counts
+    /// through the null-ness key over that column, which holds for the
+    /// rows the test picks out.
     pub(crate) fn null_condition(
         &mut self,
         scope: &Scope,
+        clause: Clause,
         whole_test: &sql::Expr,
         expression: &sql::Expr,
         test: NullTest,
@@ -367,12 +374,13 @@ impl Walker {
             self.fact_column(scope, expression, "the IS NULL column")?;
         let column = ResolvedColumn::Fact(column);
         let Some(key) = filter_key(scope, &column, KeyKind::NullNess) else {
+            let written = match clause {
+                Clause::Where => format!("WHERE {whole_test}"),
+                Clause::Filter => format!("FILTER (WHERE {whole_test})"),
+            };
             self.error(
                 line(whole_test),
-                format!(
-                    "FILTER (WHERE {whole_test}) needs the key ({expression} IS NULL) AS <name> \
-                     in SELECT"
-                ),
+                format!("{written} needs the key ({expression} IS NULL) AS <name> in SELECT"),
             );
             return Err(Reported);
         };

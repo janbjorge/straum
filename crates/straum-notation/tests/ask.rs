@@ -521,6 +521,40 @@ fn having_takes_one_spelling() {
     );
 }
 
+/// A refused ask names only what is wrong with it: a parameter it never
+/// reached is not reported unused, and `!=` in a comment is no `!=`.
+#[test]
+fn a_refused_ask_names_only_its_fault() {
+    let three = [Literal::Int(JAN), Literal::Int(FEB), Literal::Int(7)];
+    for refused in [
+        "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 AND (kind = $3)",
+        "DELETE FROM t WHERE kind = $3",
+    ] {
+        let found = errors(refused, &three);
+        assert_eq!(found.len(), 1, "{refused}: {found:?}");
+        assert!(!any_contains(&found, "is not used"), "{refused}: {found:?}");
+    }
+    let ask = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 HAVING ";
+    for having in [
+        "trips /* != */ > $3",
+        "trips -- !=\n > $3",
+        "trips /* != */ <> $3",
+        "trips <> /* != */ $3",
+    ] {
+        let query = format!("{ask}{having}");
+        let parsed = parse_ask(&query, &three);
+        assert!(parsed.is_ok(), "{query}: {parsed:?}");
+    }
+    // Unused, in an ask with nothing else wrong.
+    let unused = "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2";
+    assert_eq!(errors(unused, &three), ["parameter $3 is not used"]);
+    // A real != beside a comment that says <> is still refused.
+    assert_eq!(
+        errors(&format!("{ask}trips != /* <> */ $3"), &three),
+        ["line 1: write <> for not equal, not !="]
+    );
+}
+
 /// An ask with `terms` more conditions on `kind` after the first.
 fn chain(terms: usize) -> String {
     format!(

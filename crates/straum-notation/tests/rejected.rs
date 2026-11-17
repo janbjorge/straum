@@ -304,7 +304,13 @@ fn select_clauses_outside_the_subset_are_rejected() {
             "\nGROUP BY",
             "\nWHERE f.b = 1\nGROUP BY",
             6,
-            "FILTER on f.b needs f.b AS <name> in SELECT",
+            "WHERE on f.b needs f.b AS <name> in SELECT",
+        ),
+        (
+            "\nGROUP BY",
+            "\nWHERE f.b IS NULL\nGROUP BY",
+            6,
+            "WHERE f.b IS NULL needs the key (f.b IS NULL) AS <name> in SELECT",
         ),
         (
             "\nGROUP BY",

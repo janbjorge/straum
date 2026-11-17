@@ -7,7 +7,7 @@ use sqlparser::ast as sql;
 use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Origin, Time, Width};
 
 use super::{Scope, parse_width};
-use crate::sql::{Reported, Walker, line};
+use crate::sql::{Clause, Reported, Walker, line};
 
 /// A call's arguments and how it treats them.
 // Borrows from the tree, which outlives the walk.
@@ -131,7 +131,8 @@ impl Walker {
         match name.as_deref() {
             Some("percentile_disc") => {
                 let aggregate = self.percentile_disc(scope, function, &call);
-                let filter = self.read_filter(scope, filter_condition.as_slice())?;
+                let filter =
+                    self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
                 return Ok(Aggregated {
                     aggregate: aggregate?,
                     filter,
@@ -158,7 +159,7 @@ impl Walker {
                 aggregate(column)
             }
         };
-        let filter = self.read_filter(scope, filter_condition.as_slice())?;
+        let filter = self.read_filter(scope, filter_condition.as_slice(), Clause::Filter)?;
         Ok(Aggregated { aggregate, filter })
     }
 
