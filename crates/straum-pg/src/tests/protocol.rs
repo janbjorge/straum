@@ -13,7 +13,7 @@ use super::references::*;
 use super::support::*;
 use crate::decode::Decoder;
 use crate::dsn::Dsn;
-use crate::source::{Postgres, Replication, read_wal};
+use crate::source::{Postgres, Replication, WAL_READ_TIMEOUT, plain, read_wal};
 use crate::stream::{Reader, Stream};
 use crate::wire::{Connection, ConnectionKind, HANDSHAKE_TIMEOUT};
 
@@ -414,6 +414,61 @@ fn reads_the_servers_wal() {
     let mut connection = Connection::connect(&pg.dsn, ConnectionKind::Sql).unwrap();
     let error = read_wal(&mut connection, "nope").unwrap_err().to_string();
     assert_eq!(error, "PostgreSQL sent no WAL position for slot nope");
+}
+
+/// The reply to the reading of the WAL: the insert position, the slot's
+/// confirmed and restart positions, and the segment size.
+fn wal_reply() -> Vec<u8> {
+    let columns = ["0/3000000", "0/2000000", "0/1000000", "16777216"];
+    let mut description = i16::try_from(columns.len()).unwrap().to_be_bytes().to_vec();
+    let mut row = description.clone();
+    for (column, value) in columns.iter().enumerate() {
+        description.extend(format!("c{column}\0").as_bytes());
+        // Table, column number, type, length, modifier, text format.
+        description.extend([0; 4]);
+        description.extend([0; 2]);
+        description.extend(25_i32.to_be_bytes());
+        description.extend((-1_i16).to_be_bytes());
+        description.extend((-1_i32).to_be_bytes());
+        description.extend([0; 2]);
+        row.extend(i32::try_from(value.len()).unwrap().to_be_bytes());
+        row.extend(value.as_bytes());
+    }
+    let mut reply = message(b'T', &description);
+    reply.extend(message(b'D', &row));
+    reply.extend(message(b'C', b"SELECT 1\0"));
+    reply.extend(message(b'Z', b"I"));
+    reply
+}
+
+/// The reading of the WAL fails once its server stays silent for the
+/// read timeout, so the lag it no longer moves can grow; a server that
+/// answers within the timeout is read.
+#[test]
+fn a_silent_server_fails_the_reading_of_the_wal() {
+    let slack = Duration::from_secs(2);
+    let just_within = WAL_READ_TIMEOUT.saturating_sub(slack);
+    let silent = scripted(vec![
+        now(signed_in()),
+        later(WAL_READ_TIMEOUT * 3, Vec::new()),
+    ]);
+    let mut connection = None;
+    let reading = plain(&mut connection, &silent.dsn).unwrap();
+    let clock = Instant::now();
+    assert!(read_wal(reading, "straum").is_err());
+    assert!(clock.elapsed() >= just_within);
+    assert!(
+        clock.elapsed() < WAL_READ_TIMEOUT + slack,
+        "the reading waited out the server"
+    );
+
+    let slow = scripted(vec![now(signed_in()), later(just_within, wal_reply())]);
+    let mut connection = None;
+    let reading = plain(&mut connection, &slow.dsn).unwrap();
+    assert_eq!(
+        read_wal(reading, "straum").unwrap().confirmed,
+        Lsn(0x200_0000)
+    );
 }
 
 #[test]

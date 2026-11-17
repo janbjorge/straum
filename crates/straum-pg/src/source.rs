@@ -47,7 +47,7 @@ pub enum Replication {
 const CONSISTENT_WAIT: Duration = Duration::from_secs(60);
 /// How long a reading of the WAL position waits for its answer: as long
 /// as the watchdog gives the slot's.
-const WAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const WAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a physical start waits before it takes the load's snapshot
 /// again.
 const SNAPSHOT_AGAIN: Duration = Duration::from_millis(20);
@@ -331,7 +331,10 @@ pub(crate) fn slot_name() -> String {
 
 /// The plain connection, made on first use and after a failure.
 // 'c: the connection returned is the one held in `plain`.
-fn plain<'c>(plain: &'c mut Option<Connection>, dsn: &Dsn) -> Result<&'c mut Connection, Error> {
+pub(crate) fn plain<'c>(
+    plain: &'c mut Option<Connection>,
+    dsn: &Dsn,
+) -> Result<&'c mut Connection, Error> {
     if let Some(connection) = plain.take() {
         return Ok(plain.insert(connection));
     }
