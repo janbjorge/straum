@@ -56,13 +56,22 @@ enum Format {
 }
 
 impl Format {
-    /// The format `Accept` names, else the route's own.
+    /// The first format `Accept` names among its media ranges, whatever
+    /// their parameters or case, else the route's own.
     fn of(accept: Option<&HeaderValue>, default: Format) -> Format {
-        match accept {
-            Some(accept) if accept == JSON => Format::Json,
-            Some(accept) if accept == "text/plain" => Format::Text,
-            _ => default,
+        let Some(Ok(accept)) = accept.map(HeaderValue::to_str) else {
+            return default;
+        };
+        for range in accept.split(',') {
+            let media_type = range.split(';').next().unwrap_or_default().trim();
+            if media_type.eq_ignore_ascii_case(JSON) {
+                return Format::Json;
+            }
+            if media_type.eq_ignore_ascii_case("text/plain") {
+                return Format::Text;
+            }
         }
+        default
     }
 
     fn content_type(self) -> &'static str {

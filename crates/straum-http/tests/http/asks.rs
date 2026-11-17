@@ -162,6 +162,10 @@ fn accept_picks_the_format_and_each_route_its_default() {
     for (accept, ask, views) in [
         (Some("application/json"), json, json),
         (Some("text/plain"), text, text),
+        (Some("application/json; charset=utf-8"), json, json),
+        (Some("Application/JSON"), json, json),
+        (Some("text/html, TEXT/plain;q=0.9, */*;q=0.1"), text, text),
+        (Some("text/html"), json, text),
         (Some("*/*"), json, text),
         (None, json, text),
     ] {
