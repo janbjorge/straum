@@ -6,6 +6,7 @@
 //! superuser. The clock's test runs against fake servers that never
 //! answer.
 
+use std::fmt::Write as _;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -113,7 +114,7 @@ fn ends_the_session_that_owns_the_slot() {
     };
     let watchdog = Watchdog::start(&dsn, "straum_owned", watching, Vec::new()).unwrap();
     db.run(FILLER);
-    assert!(slot_gone(&mut db), "the slot outlived the limit");
+    assert_slot_goes(&mut db, "the slot outlived the limit");
     assert!(matches!(
         watchdog.verdict(),
         Some(Verdict::Retained {
@@ -212,7 +213,7 @@ fn load_holds(pg: &PostgresContainer, name: &str, replication: Replication, limi
     assert_eq!(straum_slots(&mut db), 1, "{name}: no slot");
     db.run(FILLER);
     if limit < MAX_RETAINED_WAL_BYTES {
-        assert!(slot_gone(&mut db), "{name}: the slot outlived the limit");
+        assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));
         let error = load_everything(&mut source, &spec).unwrap_err();
         assert!(error.contains("--max-retained-wal"), "{name}: {error}");
     } else {
@@ -248,7 +249,7 @@ fn writer_stuck(pg: &PostgresContainer, name: &str, replication: Replication) {
         ));
     }
     db.run(FILLER);
-    assert!(slot_gone(&mut db), "{name}: the slot outlived the limit");
+    assert_slot_goes(&mut db, &format!("{name}: the slot outlived the limit"));
     // The writer wakes, takes what was queued, then the reason.
     let deadline = Instant::now() + LONG;
     let error = loop {
@@ -287,7 +288,7 @@ fn watchdog_cut_off(pg: &PostgresContainer, name: &str, reconnect: Reconnect) {
     }
     end_watchdog_session(&mut db);
     if reconnect == Reconnect::Refused {
-        assert!(slot_gone(&mut db), "{name}: the slot outlived its watchdog");
+        assert_slot_goes(&mut db, &format!("{name}: the slot outlived its watchdog"));
         let error = load_everything(&mut source, &spec).unwrap_err();
         assert!(
             error.contains("couldn't read Straum's slot"),
@@ -356,15 +357,35 @@ fn straum_slots(db: &mut Db) -> usize {
     rows[0][0].as_deref().unwrap().parse().unwrap()
 }
 
-/// Waits for Straum's slot to go; `false` if it is still there after
-/// [`LONG`].
-fn slot_gone(db: &mut Db) -> bool {
-    let deadline = Instant::now() + LONG;
-    while Instant::now() < deadline {
-        if straum_slots(db) == 0 {
-            return true;
+/// Each round of [`assert_slot_goes`]: Straum's slots, what WAL they
+/// hold and what their sessions wait on.
+const SLOT_ROUND: &str = "SELECT s.slot_name, s.active_pid, s.restart_lsn,
+        pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)::bigint,
+        a.state, a.wait_event_type, a.wait_event
+    FROM pg_replication_slots s LEFT JOIN pg_stat_activity a ON a.pid = s.active_pid
+    WHERE s.slot_name LIKE 'straum%'";
+
+/// Waits for Straum's slot to go. Still there after [`LONG`], it fails
+/// with `message` and what each round saw, so a failure on a slow runner
+/// says where the slot stuck.
+fn assert_slot_goes(db: &mut Db, message: &str) {
+    let start = Instant::now();
+    let mut timeline = String::new();
+    while start.elapsed() < LONG {
+        let rows = db.rows(SLOT_ROUND);
+        if rows.is_empty() {
+            return;
+        }
+        for row in &rows {
+            let _ = write!(timeline, "{:>6} ms", start.elapsed().as_millis());
+            for field in row {
+                let _ = write!(timeline, "  {}", field.as_deref().unwrap_or("-"));
+            }
+            timeline.push('\n');
         }
         thread::sleep(Duration::from_millis(100));
     }
-    false
+    panic!(
+        "{message}\nms since the wait began  slot  pid  restart_lsn  held  state  wait\n{timeline}"
+    );
 }
