@@ -201,7 +201,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     straum = build()
-    plan = subprocess.check_output([straum, "plan", SPEC, "--wal", args.wal], text=True)
+    # The plan reads its role from STRAUM_DSN when one is set; the bench's
+    # role is straum, whatever the caller exported.
+    environment = {
+        name: value for name, value in os.environ.items() if name != "STRAUM_DSN"
+    }
+    plan = subprocess.check_output(
+        [straum, "plan", SPEC, "--wal", args.wal], text=True, env=environment
+    )
     password = secrets.token_hex(16)
     with Stack("straum-taxi", {POSTGRES: postgres(password)}) as stack:
         log(f"starting PostgreSQL in stack {stack.name}")
