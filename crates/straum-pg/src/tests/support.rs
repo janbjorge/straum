@@ -13,10 +13,10 @@ use std::process;
 use std::thread;
 use std::time::Duration;
 
-use straum_app::{App, Limits, Lsn, Step, Writer};
+use straum_app::{App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
-    Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Value,
-    decimal,
+    Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Store,
+    Value, decimal,
 };
 
 use crate::dsn::Dsn;
@@ -699,5 +699,17 @@ pub(super) fn relation_file(db: &mut Db, table: &str) -> TableFile {
     TableFile {
         relation,
         pages: numbers[3],
+    }
+}
+
+/// Loads every table of `spec` from a source just opened: the load holds
+/// its tables until the last one, so DDL a test runs waits for it.
+pub(super) fn load_all(source: &mut Postgres, spec: &Spec) {
+    let mut store = Store::new(spec.clone());
+    for dim in spec.dims() {
+        source.load(&dim.name, &mut store).unwrap();
+    }
+    for fact in spec.facts() {
+        source.load(&fact.name, &mut store).unwrap();
     }
 }

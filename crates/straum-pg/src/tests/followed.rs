@@ -202,15 +202,3 @@ fn a_rewrite_before_the_tables_are_held_fails_the_start() {
         );
     }
 }
-
-/// Loads every table of `spec` from a source just opened: the load holds
-/// its tables until the last one, so DDL a test runs waits for it.
-fn load_all(source: &mut crate::source::Postgres, spec: &straum_domain::Spec) {
-    let mut store = Store::new(spec.clone());
-    for dim in spec.dims() {
-        source.load(&dim.name, &mut store).unwrap();
-    }
-    for fact in spec.facts() {
-        source.load(&fact.name, &mut store).unwrap();
-    }
-}
