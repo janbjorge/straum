@@ -75,8 +75,9 @@ case of an enum, and the compiler refuses a `match` that forgets one.
 `matches!(value, Pattern)` is `true` when the value has that shape.
 
 **Errors kept in a list: `Reported`.** The Straum SQL walker in
-`straum-notation` reports every error in a spec at once, so it pushes
-each one onto a list instead of returning it. A walk that failed
+`straum-notation` reports the errors in a spec at once, the first 50
+and a count of the rest, so it pushes each one onto a list instead of
+returning it. A walk that failed
 returns `Err(Reported)`: an empty marker saying the error is already
 on the list. The caller stops there and adds nothing of its own. A
 plain `Option` is left for "there is none", which is no error.

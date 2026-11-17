@@ -188,7 +188,7 @@ timeout or fall back to `as_of`.
 | Status | When |
 | --- | --- |
 | 200 | The answer. |
-| 400 | The ask is wrong; `errors` lists every problem. |
+| 400 | The ask is wrong; `errors` lists the problems, the first 50 and then how many more. |
 | 405 | Not a `POST`. |
 | 413 | The ask is over 1 MiB. |
 | 500 | Straum failed while answering; its log says why. |

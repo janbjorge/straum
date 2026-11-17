@@ -582,3 +582,15 @@ fn the_text_parameters_come_to_at_most_a_mebibyte() {
     let ask = parse_ask(&named(300), &[text("cab")]).unwrap();
     assert_eq!(ask.filter[0].values.len(), 300);
 }
+
+/// An ask keeps its first 50 errors and counts the rest, so its reply
+/// stays small however many mistakes it holds.
+#[test]
+fn an_ask_says_its_first_fifty_errors_and_counts_the_rest() {
+    let items = vec!["1"; 20_000].join(", ");
+    let found = errors(&format!("SELECT {items} FROM t"), &[]);
+    assert_eq!(found.len(), 51, "{:?}", &found[..3]);
+    assert_eq!(found[50], "and 19950 more errors");
+    let few = errors("SELECT 1, 1 FROM t", &[]);
+    assert_eq!(few.len(), 2, "{few:?}");
+}

@@ -139,7 +139,7 @@ struct SelectedKeys {
 
 impl Walker {
     fn view(&mut self, view: &sql::CreateView, dims: &mut Vec<Dim>) -> Result<Fact, Reported> {
-        let before = self.errors.len();
+        let before = self.met();
         let at = self.view_clauses(view);
         let fact_name = self.bare_name(&view.name, "view");
         let buckets = self.options(at, &view.options);
@@ -161,7 +161,7 @@ impl Walker {
         let Some([first, wider @ ..]) = buckets.as_deref() else {
             return Err(Reported);
         };
-        if self.errors.len() > before {
+        if self.met() > before {
             return Err(Reported);
         }
         let Body {
@@ -444,9 +444,9 @@ impl Walker {
     ) -> Result<Vec<Condition>, Reported> {
         let mut filter = Vec::new();
         for condition in conditions {
-            let before = self.errors.len();
+            let before = self.met();
             self.read_conditions(condition, &mut filter, &mut Names::View(scope));
-            if self.errors.len() > before {
+            if self.met() > before {
                 return Err(Reported);
             }
         }

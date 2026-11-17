@@ -155,11 +155,18 @@ const ASK_COMPARISON: &str =
     "comparison, WHERE takes = or IN on a key; compare a measure in HAVING,";
 const PARENTHESES: &str = "parentheses, write the condition without them,";
 
-/// Walks one spec or one ask, keeping every error in the order met, so a
-/// reader sees them all at once.
+/// The most errors a walk keeps. A 1 MiB ask can hold half a million
+/// mistakes, and keeping and printing each made a 74 MB reply; the rest
+/// are counted.
+const MAX_ERRORS: usize = 50;
+
+/// Walks one spec or one ask, keeping its first [`MAX_ERRORS`] errors in
+/// the order met, so a reader sees them at once, and counting the rest.
 #[derive(Default)]
 struct Walker {
     errors: Vec<SqlError>,
+    /// Errors met past the ones kept.
+    more: usize,
 }
 
 /// What a condition's keys and values are read against: a view's scope,
@@ -181,17 +188,34 @@ enum NullTest {
 
 impl Walker {
     fn error(&mut self, line: u64, message: String) {
+        if self.errors.len() == MAX_ERRORS {
+            self.more += 1;
+            return;
+        }
         // `sqlparser` gives an empty span line 0.
         let line = if line == 0 { None } else { Some(line) };
         self.errors.push(SqlError { line, message });
     }
 
-    /// The walk's value, or every error it met.
+    /// How many errors the walk has met, kept or counted.
+    fn met(&self) -> usize {
+        self.errors.len() + self.more
+    }
+
+    /// The walk's value, or the errors it kept and how many more it met.
     // Generic over what was walked: a spec's views or an ask.
-    fn finish<T>(self, value: Result<T, Reported>) -> Result<T, Vec<SqlError>> {
+    fn finish<T>(mut self, value: Result<T, Reported>) -> Result<T, Vec<SqlError>> {
         match value {
             Ok(value) if self.errors.is_empty() => Ok(value),
-            _ => Err(self.errors),
+            _ => {
+                if self.more > 0 {
+                    self.errors.push(SqlError {
+                        line: None,
+                        message: format!("and {} more errors", self.more),
+                    });
+                }
+                Err(self.errors)
+            }
         }
     }
 
