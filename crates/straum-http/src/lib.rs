@@ -59,6 +59,9 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 /// How long to wait before accepting again after an accept fails, as when
 /// the process is out of file descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+/// How long a stop waits for the requests in flight: inside the 30 s a
+/// Kubernetes pod gets before it is killed.
+pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One thing wrong with an ask's query, as the `ReadAsk` that read it
 /// says it.
@@ -117,14 +120,19 @@ pub async fn serve(
         }
     }
     drop(listener);
-    graceful.shutdown().await;
+    // A client may hold a request open for as long as hyper lets it; a
+    // stop waits for none past the deadline.
+    tokio::time::timeout(DRAIN_DEADLINE, graceful.shutdown())
+        .await
+        .ok();
     Ok(())
 }
 
 /// Serves `app` on `listener` on a tokio runtime of its own until SIGTERM
-/// or SIGINT, then finishes the requests in flight and returns. The
+/// or SIGINT, then finishes the requests in flight, for at most
+/// [`DRAIN_DEADLINE`], and returns; a second signal returns at once. The
 /// caller stays synchronous, since only this crate runs tokio (ADR-0002).
-/// `stopping` runs when the signal arrives.
+/// `stopping` runs when the first signal arrives.
 pub fn serve_until_signal(
     listener: net::TcpListener,
     app: App,
@@ -135,10 +143,14 @@ pub fn serve_until_signal(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    // Signals register with the runtime, so they need it entered.
-    let (mut terminate, mut interrupt) = {
+    // Signals register with the runtime, so they need it entered. Each
+    // pair hears every signal: the first pair stops the server, the
+    // second counts two.
+    let (mut terminate, mut interrupt, mut terminate_again, mut interrupt_again) = {
         let _entered = runtime.enter();
         (
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::interrupt())?,
             signal(SignalKind::terminate())?,
             signal(SignalKind::interrupt())?,
         )
@@ -147,7 +159,32 @@ pub fn serve_until_signal(
         either_signal(&mut terminate, &mut interrupt).await;
         stopping();
     };
-    runtime.block_on(serve(listener, app, read_ask, definitions, shutdown))
+    let second = async move {
+        either_signal(&mut terminate_again, &mut interrupt_again).await;
+        either_signal(&mut terminate_again, &mut interrupt_again).await;
+    };
+    let served = serve(listener, app, read_ask, definitions, shutdown);
+    let result = runtime.block_on(until_done_or(served, second));
+    // An answer still running on a blocking thread is not waited for.
+    runtime.shutdown_background();
+    result
+}
+
+/// `served`'s result, or `Ok` as soon as `cut_short` completes first.
+// `impl Future`: both are `async` blocks, whose types have no name.
+async fn until_done_or(
+    served: impl Future<Output = io::Result<()>>,
+    cut_short: impl Future<Output = ()>,
+) -> io::Result<()> {
+    let mut served = pin!(served);
+    let mut cut_short = pin!(cut_short);
+    poll_fn(|context| {
+        if let Poll::Ready(result) = served.as_mut().poll(context) {
+            return Poll::Ready(result);
+        }
+        cut_short.as_mut().poll(context).map(Ok)
+    })
+    .await
 }
 
 async fn either_signal(terminate: &mut Signal, interrupt: &mut Signal) {

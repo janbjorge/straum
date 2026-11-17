@@ -288,11 +288,21 @@ impl Running {
         (head[STATUS_CODE].parse().unwrap(), body.to_owned())
     }
 
-    /// Sends the signal and waits for Straum to exit.
-    fn stop(mut self, signal: &str) -> (Option<i32>, String) {
+    /// Sends `signal`, such as `-TERM`, and goes on.
+    fn signal(&self, signal: &str) {
         let pid = self.child.id().to_string();
         let sent = Command::new("kill").args([signal, &pid]).status().unwrap();
         assert!(sent.success());
+    }
+
+    /// Whether Straum is still running.
+    fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    /// Sends the signal and waits for Straum to exit.
+    fn stop(mut self, signal: &str) -> (Option<i32>, String) {
+        self.signal(signal);
         let status = self.child.wait().unwrap();
         // The gatherer ends with the pipe, so the log is whole once it joins.
         self.gatherer.take().unwrap().join().unwrap();
@@ -757,5 +767,36 @@ fn says_what_is_wrong() {
             "{args:?}: {stderr:?} is not {error:?}"
         );
         assert!(!stderr.contains("secret"), "{stderr}");
+    }
+}
+
+/// A stop waits for a request still coming in, but at most 10 s, and a
+/// second signal ends Straum at once. Needs no server: the HTTP side
+/// listens while the start fails.
+#[test]
+fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let closed = "postgres://straum:straum@127.0.0.1:1/postgres?sslmode=disable";
+    for twice in [false, true] {
+        let mut straum = run(&["run", &spec, "--listen", "127.0.0.1:0"], closed);
+        let mut held = TcpStream::connect(straum.address).unwrap();
+        // A head never ended: hyper waits 30 s for the rest.
+        held.write_all(b"POST /ask HTTP/1.1\r\nhost: straum\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(200));
+        let clock = Instant::now();
+        straum.signal("-TERM");
+        thread::sleep(Duration::from_secs(1));
+        assert!(straum.running(), "stopped with a request in flight");
+        if twice {
+            straum.signal("-TERM");
+        }
+        let (code, log) = straum.stop("-0");
+        let waited = clock.elapsed();
+        assert_eq!(code, Some(0), "{log}");
+        let within = if twice { 1..3 } else { 9..15 };
+        assert!(within.contains(&waited.as_secs()), "{twice}: {waited:?}");
+        drop(held);
     }
 }
