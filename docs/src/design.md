@@ -230,8 +230,9 @@ and `straum ask` print what the server wrote, as `straum status` does.
 
 `GET /views/NAME` answers an ask the app builds (`App::rows_ask`):
 every measure by the bucket and every key over the buckets the view
-holds, through the same steps as any ask, written as a table of at
-most 1000 rows. `GET /views/NAME/spec` replies with the view's
+holds, through the same steps as any ask (`App::ask_window`). The
+store builds only the rows of the window asked for, at most 1000,
+though it still merges every cell into its group. `GET /views/NAME/spec` replies with the view's
 `CREATE VIEW` statement, which `straum run` cut from the spec's text
 at start (`straum_notation::definitions`); the store never sees it.
 `straum shell` is a client of these endpoints: it

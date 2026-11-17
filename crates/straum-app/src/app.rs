@@ -10,8 +10,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use straum_domain::{
-    Answer, Ask, AskError, AskKey, ColumnType, Fact, Identifier, RowError, Spec, Store, Table,
-    Width,
+    Answer, Ask, AskError, AskKey, ColumnType, Cut, Fact, Identifier, RowError, Spec, Store, Table,
+    Width, Window, WindowAnswer,
 };
 
 use crate::lag::Lag;
@@ -97,6 +97,9 @@ pub enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answered {
     pub answer: Answer,
+    /// Where the answer's rows lie among all it has: every one, unless
+    /// asked for a window of them.
+    pub cut: Cut,
     /// The answer reflects every commit up to here and none after.
     pub applied: Lsn,
     /// Every commit made before this, by Straum's clock, is in the answer:
@@ -210,14 +213,25 @@ impl App {
 
     /// Answers once every table is loaded.
     pub fn ask(&self, ask: &Ask) -> Result<Answered, AnswerError> {
+        self.answer(ask, None)
+    }
+
+    /// As [`App::ask`], building only the rows `window` shows.
+    pub fn ask_window(&self, ask: &Ask, window: Window) -> Result<Answered, AnswerError> {
+        self.answer(ask, Some(window))
+    }
+
+    fn answer(&self, ask: &Ask, window: Option<Window>) -> Result<Answered, AnswerError> {
         let state = self.read();
         // An ask the spec refuses is refused even while loading; only a
         // load knows the types the store checks.
         (state.store.spec().check_ask(ask)).map_err(AnswerError::Invalid)?;
         let following = state.following.as_ref().ok_or(AnswerError::NotReady)?;
-        let answer = state.store.ask(ask).map_err(AnswerError::Invalid)?;
+        let WindowAnswer { answer, cut } =
+            (state.store.ask_window(ask, window)).map_err(AnswerError::Invalid)?;
         Ok(Answered {
             answer,
+            cut,
             applied: following.applied,
             as_of: following.as_of(),
         })

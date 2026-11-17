@@ -40,5 +40,5 @@ pub use spec::{
     Ref, RefKind, Spec, Table, Time, Via, Width,
 };
 pub use spec_error::{JoinError, SpecError};
-pub use store::{Answer, AnswerColumn, AnswerRow, Store};
+pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};
 pub use value::{ColumnType, Datum, Value, decimal, push_decimal};

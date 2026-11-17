@@ -12,11 +12,11 @@ use crate::rollup::{Cells, InputIndex, PartIndex, Rollup, State};
 use crate::spec::RefKind;
 use crate::value::{Datum, Value};
 
-use super::AnswerRow;
 use super::ask::{HavingCheck, buckets, meets};
 use super::bound::{JoinRow, keep};
 use super::groups::{Grouping, Groups};
 use super::lookup::{ConditionCheck, JoinCheck, all_hold};
+use super::{AnswerRow, Cut, Window};
 
 /// What the cell loop fills in: per by key its grouping, the groups met,
 /// the ask's and the view's filter, and per measure its partial answers.
@@ -120,11 +120,12 @@ impl<'s> CellLoop<'s> {
     }
 
     /// One row per group met that meets every HAVING check, in the order
-    /// of its keys. A group's checked measures are finished first; a group
-    /// they drop finishes no other measure and reads no keys.
+    /// of its keys; with a window, only the rows it shows. A group's
+    /// checked measures are finished first; a group they drop finishes no
+    /// other measure and reads no keys.
     // Benchmark: `bench/taxi.py`'s ask by hour and zone over six months,
     // 509,200 groups, of which HAVING keeps one in eight.
-    pub(super) fn answer_rows(self, having: &[HavingCheck]) -> Vec<AnswerRow> {
+    pub(super) fn answer_rows(self, having: &[HavingCheck], window: Option<Window>) -> Rows {
         let CellLoop {
             rollup,
             by,
@@ -140,30 +141,42 @@ impl<'s> CellLoop<'s> {
         for measure in &mut measures {
             measure.partials.grow(group_count);
         }
-        // Sized for every group, as without HAVING: growing by doubling
-        // would hold two lists at once.
-        let mut rows = Vec::with_capacity(groups.made);
         let mut values = vec![Value::Null; measures.len()];
-        for group in groups.in_key_order(&by, rollup) {
-            let place = group as usize;
-            finish_where(&mut measures, &checked, Which::Checked, place, &mut values);
-            if !meets(&values, having) {
-                continue;
+        let mut kept = groups.in_key_order(&by, rollup);
+        if !having.is_empty() {
+            let mut meeting = Vec::new();
+            for group in kept {
+                let place = group as usize;
+                finish_where(&mut measures, &checked, Which::Checked, place, &mut values);
+                if meets(&values, having) {
+                    meeting.push(group);
+                }
             }
-            finish_where(
-                &mut measures,
-                &checked,
-                Which::Unchecked,
-                place,
-                &mut values,
-            );
+            kept = meeting;
+        }
+        // Only the rows the window shows: a view of millions of cells
+        // asked for a few rows builds those few.
+        let cut = Cut::of(window, kept.len());
+        let mut rows = Vec::with_capacity(cut.end() - cut.first);
+        for &group in &kept[cut.first..cut.end()] {
+            let place = group as usize;
+            for which in [Which::Checked, Which::Unchecked] {
+                finish_where(&mut measures, &checked, which, place, &mut values);
+            }
             rows.push(AnswerRow {
                 keys: groups.key_values(&by, rollup, group),
                 values: values.clone(),
             });
         }
-        rows
+        Rows { rows, cut }
     }
+}
+
+/// The rows of an answer the cell loop built, and where they lie among
+/// all of its rows.
+pub(super) struct Rows {
+    pub(super) rows: Vec<AnswerRow>,
+    pub(super) cut: Cut,
 }
 
 /// Which of a group's measures to finish: those a HAVING check reads, or

@@ -15,9 +15,8 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
-use straum_domain::{Ask, Definition};
+use straum_domain::{Ask, Definition, Start, Window};
 
-use crate::answer::{Start, Window};
 use crate::json::quoted;
 use crate::{ReadAsk, answer, ask, status, views};
 
@@ -332,11 +331,14 @@ struct Timed {
 
 fn answer_timed(app: &App, asked: &Ask, writing: Writing) -> Result<Timed, AnswerError> {
     let answering = Instant::now();
-    let answered = app.ask(asked)?;
+    let answered = match writing.window {
+        Some(window) => app.ask_window(asked, window)?,
+        None => app.ask(asked)?,
+    };
     let written_from = Instant::now();
     let body = match writing.format {
         Format::Json => answer::write(&answered),
-        Format::Text => answer::table(&answered, writing.window).into_bytes(),
+        Format::Text => answer::table(&answered).into_bytes(),
     };
     Ok(Timed {
         applied: answered.applied,

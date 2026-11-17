@@ -38,7 +38,7 @@ use std::time::SystemTime;
 
 use jiff::Timestamp;
 use straum_app::Answered;
-use straum_domain::{AnswerColumn, AnswerRow, Ask, Datum, Value, decimal, push_decimal};
+use straum_domain::{AnswerColumn, AnswerRow, Ask, Cut, Datum, Value, decimal, push_decimal};
 
 use crate::json::quoted;
 use crate::time::{rfc3339, rfc3339_of};
@@ -223,53 +223,16 @@ struct Cell {
     align: Align,
 }
 
-/// Which rows of an answer a table shows: at most `count` from `start`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Window {
-    pub(crate) start: Start,
-    pub(crate) count: usize,
-}
-
-/// Where a window starts, as a Python slice does: a row counted from the
-/// first, which is 0, or back from the end, the last row being 1.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Start {
-    FromFirst(usize),
-    FromLast(usize),
-}
-
-/// The rows of `total` a window shows, from `first` up to `end`. A start
-/// past either end is held at it, as a slice is, so no window fails.
-struct Shown {
-    first: usize,
-    end: usize,
-}
-
-fn shown(window: Option<Window>, total: usize) -> Shown {
-    let Some(Window { start, count }) = window else {
-        return Shown {
-            first: 0,
-            end: total,
-        };
-    };
-    let first = match start {
-        Start::FromFirst(row) => row.min(total),
-        Start::FromLast(rows) => total.saturating_sub(rows),
-    };
-    let end = first.saturating_add(count).min(total);
-    Shown { first, end }
-}
-
 /// The answer as a table: the names, a rule, a line per row, then the
 /// row count and `as_of`. Values print as in the JSON, text without its
-/// quotes. With a window only its rows show, and the count says how many
-/// there are and from which row.
-pub(crate) fn table(answered: &Answered, window: Option<Window>) -> String {
-    let Answered { answer, as_of, .. } = answered;
-    let total = answer.rows.len();
-    let Shown { first, end } = shown(window, total);
+/// quotes. An answer cut to a window says how many rows there are and
+/// from which row it starts.
+pub(crate) fn table(answered: &Answered) -> String {
+    let Answered {
+        answer, as_of, cut, ..
+    } = answered;
     let mut lines = vec![name_cells(&answer.columns)];
-    for row in &answer.rows[first..end] {
+    for row in &answer.rows {
         lines.push(row_cells(&answer.columns, row));
     }
     let widths = column_widths(&lines);
@@ -281,7 +244,7 @@ pub(crate) fn table(answered: &Answered, window: Option<Window>) -> String {
             out.push_str(&rule(&widths));
         }
     }
-    let rows = row_count(total, Shown { first, end });
+    let rows = row_count(*cut);
     let _ = writeln!(out, "{rows}, as of {}", as_of_text(*as_of));
     out
 }
@@ -397,9 +360,13 @@ fn rule(widths: &[usize]) -> String {
     format!("{}\n", dashes.join("-+-"))
 }
 
-fn row_count(total: usize, Shown { first, end }: Shown) -> String {
+fn row_count(cut: Cut) -> String {
+    let Cut {
+        first,
+        count,
+        total,
+    } = cut;
     let noun = if total == 1 { "row" } else { "rows" };
-    let count = end - first;
     if count == total {
         return format!("{total} {noun}");
     }
@@ -470,7 +437,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use straum_app::Lsn;
-    use straum_domain::Answer;
+    use straum_domain::{Answer, Start, Window};
 
     use super::*;
 
@@ -512,6 +479,7 @@ mod tests {
     }
 
     fn answered(rows: Vec<AnswerRow>) -> Answered {
+        let cut = Cut::whole(rows.len());
         Answered {
             answer: Answer {
                 columns: vec![
@@ -521,6 +489,7 @@ mod tests {
                 ],
                 rows,
             },
+            cut,
             applied: Lsn(0),
             as_of: UNIX_EPOCH,
         }
@@ -574,7 +543,7 @@ mod tests {
             row(Datum::Null, Value::Null),
         ];
         assert_eq!(
-            table(&answered(rows.clone()), Some(first(2))),
+            table(&windowed(rows.clone(), first(2))),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -584,7 +553,7 @@ bucket               | shared | fare
 "
         );
         assert_eq!(
-            table(&answered(rows), Some(first(1))),
+            table(&windowed(rows, first(1))),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -601,7 +570,7 @@ bucket               | shared | fare
     fn a_table_escapes_control_characters_in_text() {
         let forged = "Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u{1b}[31m\\ ø";
         let rows = vec![row(Datum::Text(forged.into()), Value::Int(100))];
-        let text = table(&answered(rows), Some(first(1)));
+        let text = table(&windowed(rows, first(1)));
         assert_eq!(text.lines().count(), 4, "{text}");
         assert!(
             text.contains(r"Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u001b[31m\\ ø"),
@@ -620,12 +589,21 @@ bucket               | shared | fare
             row(Datum::Text("nullable".into()), Value::Int(3)),
             row(Datum::Text("\\null".into()), Value::Int(4)),
         ];
-        let text = table(&answered(rows), Some(first(4)));
+        let text = table(&windowed(rows, first(4)));
         let mut keys = Vec::new();
         for line in text.lines().skip(2).take(4) {
             keys.push(line.split(" | ").nth(1).unwrap().trim_end().to_owned());
         }
         assert_eq!(keys, ["null", r"\null", "nullable", r"\\null"], "{text}");
+    }
+
+    /// The answer of `rows` cut to `window`, as the store cuts it.
+    fn windowed(rows: Vec<AnswerRow>, window: Window) -> Answered {
+        let cut = Cut::of(Some(window), rows.len());
+        let mut answered = answered(rows);
+        answered.answer.rows = answered.answer.rows[cut.first..cut.end()].to_vec();
+        answered.cut = cut;
+        answered
     }
 
     fn first(count: usize) -> Window {
@@ -642,7 +620,7 @@ bucket               | shared | fare
         for fare in 0..5 {
             rows.push(row(Datum::Null, Value::Int(fare * 100)));
         }
-        let text = table(&answered(rows), Some(Window { start, count }));
+        let text = table(&windowed(rows, Window { start, count }));
         let mut lines: Vec<&str> = text.lines().skip(2).collect();
         let count = lines.pop().unwrap();
         let (count, _) = count.split_once(", as of").unwrap();
@@ -704,7 +682,7 @@ bucket               | shared | fare
     #[test]
     fn a_count_of_one_row_says_row() {
         let rows = vec![row(Datum::Null, Value::Null)];
-        let text = table(&answered(rows), Some(first(0)));
+        let text = table(&windowed(rows, first(0)));
         assert!(
             text.ends_with("0 of 1 row, as of 1970-01-01T00:00:00Z\n"),
             "{text}"
@@ -718,7 +696,7 @@ bucket               | shared | fare
             row(Datum::Null, Value::Int(123_456)),
         ];
         assert_eq!(
-            table(&answered(rows), None),
+            table(&answered(rows)),
             "\
 bucket               | shared | fare
 ---------------------+--------+--------
@@ -732,7 +710,7 @@ bucket               | shared | fare
     #[test]
     fn a_table_without_rows_keeps_its_names() {
         assert_eq!(
-            table(&answered(Vec::new()), None),
+            table(&answered(Vec::new())),
             "\
 bucket | shared | fare
 -------+--------+-----
@@ -749,7 +727,7 @@ bucket | shared | fare
         };
         let json = String::from_utf8(write(&answered)).unwrap();
         assert_eq!(json, r#"{"as_of":"1970-01-01T00:00:00Z","rows":[]}"#);
-        let text = table(&answered, None);
+        let text = table(&answered);
         assert!(
             text.ends_with("0 rows, as of 1970-01-01T00:00:00Z\n"),
             "{text}"

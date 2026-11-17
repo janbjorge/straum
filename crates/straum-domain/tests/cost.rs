@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Literal,
-    Measure, Origin, Ref, RefKind, Spec, Store, Time, Via, Width,
+    Measure, Origin, Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
 };
 
 mod common;
@@ -568,4 +568,38 @@ fn checking_an_ask_s_types_keeps_no_memo_of_its_joins() {
     assert!(refused < 4_096, "refused, {refused} B");
     let answered = borough_filter_peak(&store, Literal::Text("m".into()));
     assert!(answered >= memo, "answered, {answered} B");
+}
+
+/// The most bytes an ask of the trips by every key held at once, built
+/// whole or only its first row.
+fn by_every_key_peak(store: &Store, window: Option<Window>) -> isize {
+    let ask = ask(&["pay", "pu"], 0, 1000);
+    let mut by_bucket = ask.clone();
+    by_bucket.keys.insert(0, AskKey::Bucket);
+    let before = live();
+    PEAK.set(before);
+    match window {
+        Some(window) => drop(store.ask_window(&by_bucket, Some(window)).unwrap()),
+        None => drop(store.ask(&by_bucket).unwrap()),
+    }
+    PEAK.get() - before
+}
+
+/// A window of one row builds that row, not every row of the answer: the
+/// groups and their measures cost the same, the rows built only the
+/// whole answer's.
+#[test]
+fn a_window_builds_its_rows_alone() {
+    const CELLS: i64 = 20_000;
+    let store = store(CELLS);
+    let first_row = Window {
+        start: Start::FromFirst(0),
+        count: 1,
+    };
+    let windowed = by_every_key_peak(&store, Some(first_row));
+    let whole = by_every_key_peak(&store, None);
+    eprintln!("{windowed} bytes for one row, {whole} for {CELLS}");
+    // Each row holds three keys and three measures, at least 100 bytes.
+    let rows_bytes = isize::try_from(CELLS).unwrap() * 100;
+    assert!(whole - windowed > rows_bytes, "{windowed} against {whole}");
 }

@@ -1,14 +1,15 @@
 //! HAVING on hand-made groups: each comparison keeps the groups it holds
 //! for and drops the rest, a null measure meets no comparison, an average
-//! compares exactly, and every wrong condition says what is wrong.
+//! compares exactly, and every wrong condition says what is wrong. A
+//! window of the rows HAVING keeps builds those rows alone.
 
 use crate::common::id;
 use crate::rows::base_trip_with;
 use crate::views::{spec, trip_types, typed};
 use crate::{AT, END, FARE, PAY, START, TIP, TOLLED};
 use straum_domain::{
-    Ask, AskKey, ColumnType, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition,
-    Store,
+    Ask, AskKey, ColumnType, Comparison, Condition, Cut, Datum, Identifier, Literal,
+    MeasureCondition, Start, Store, Window,
 };
 
 /// The measures each ask here selects.
@@ -246,4 +247,49 @@ fn comparisons_print_as_an_ask_writes_them() {
         written.push(comparison.to_string());
     }
     assert_eq!(written, ["=", "<>", "<", "<=", ">", ">="]);
+}
+
+/// The rows of `total` a window shows, as a Python slice gives them:
+/// `rows[start:start + count]`, or `rows[-start:][:count]` from the end.
+fn sliced(start: Start, count: usize, total: usize) -> std::ops::Range<usize> {
+    let first = match start {
+        Start::FromFirst(row) => row.min(total),
+        Start::FromLast(rows) => total - rows.min(total),
+    };
+    first..(first + count).min(total)
+}
+
+/// A window builds the rows the whole answer has at its place, from
+/// either end, and says where they lie among how many; past either end
+/// it holds none. With HAVING, the rows counted are the ones it keeps.
+#[test]
+fn a_window_builds_the_rows_the_whole_answer_has_there() {
+    let store = store();
+    let kept_by = [
+        vec![],
+        vec![having("trips", Comparison::Greater, Literal::Int(0))],
+        vec![having("trips", Comparison::Equal, Literal::Int(1))],
+    ];
+    for conditions in kept_by {
+        let by_pay = ask(vec![AskKey::Key(id("pay"))], Vec::new(), conditions);
+        let whole = store.ask(&by_pay).unwrap();
+        let total = whole.rows.len();
+        for row in 0..=total + 1 {
+            for start in [Start::FromFirst(row), Start::FromLast(row)] {
+                for count in 0..=total + 1 {
+                    let window = Window { start, count };
+                    let cut = store.ask_window(&by_pay, Some(window)).unwrap();
+                    let range = sliced(start, count, total);
+                    let expected = Cut {
+                        first: range.start,
+                        count: range.len(),
+                        total,
+                    };
+                    assert_eq!(cut.cut, expected, "{window:?} of {total}");
+                    assert_eq!(cut.answer.columns, whole.columns);
+                    assert_eq!(cut.answer.rows, whole.rows[range], "{window:?}");
+                }
+            }
+        }
+    }
 }

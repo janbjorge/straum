@@ -65,6 +65,73 @@ pub struct Answer {
     pub rows: Vec<AnswerRow>,
 }
 
+/// Which rows of an answer to build: at most `count` from `start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    pub start: Start,
+    pub count: usize,
+}
+
+/// Where a window starts, as a Python slice does: a row counted from the
+/// first, which is 0, or back from the end, the last row being 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    FromFirst(usize),
+    FromLast(usize),
+}
+
+/// Which of an answer's rows were built: `count` of them from row
+/// `first`, of `total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut {
+    pub first: usize,
+    pub count: usize,
+    pub total: usize,
+}
+
+impl Cut {
+    /// Every row of `total`.
+    pub fn whole(total: usize) -> Cut {
+        Cut {
+            first: 0,
+            count: total,
+            total,
+        }
+    }
+
+    /// The rows of `total` that `window` shows, every one without it. A
+    /// start past either end is held at it, as a slice's is, so no
+    /// window fails.
+    pub fn of(window: Option<Window>, total: usize) -> Cut {
+        let Some(Window { start, count }) = window else {
+            return Cut::whole(total);
+        };
+        let first = match start {
+            Start::FromFirst(row) => row.min(total),
+            Start::FromLast(rows) => total.saturating_sub(rows),
+        };
+        let end = first.saturating_add(count).min(total);
+        Cut {
+            first,
+            count: end - first,
+            total,
+        }
+    }
+
+    /// The row after the last one built.
+    pub fn end(&self) -> usize {
+        self.first + self.count
+    }
+}
+
+/// An answer cut to a window, and where its rows lie among all of the
+/// answer's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowAnswer {
+    pub answer: Answer,
+    pub cut: Cut,
+}
+
 /// One group of an answer: its key values and its measures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnswerRow {

@@ -14,7 +14,7 @@ use crate::projection::AttributeIndex;
 use crate::rollup::{Cover, CoveredBucket, Rollup};
 use crate::spec::{Condition, Fact, Key, KeyPart, Measure, Ref, RefKind, Via};
 
-use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, ViaFrom};
+use super::cell_loop::{Asked, CellLoop, Expander, RefPlan, Rows, ViaFrom};
 use super::groups::{Grouping, Groups};
 use super::lookup::{
     AttributeLookup, ConditionCheck, JoinCheck, JoinKeeps, Joined, Known, Lookup, Memo, UNKNOWN,
@@ -22,7 +22,10 @@ use super::lookup::{
 };
 use crate::value::{ColumnType, Threshold, Value};
 
-use super::{Answer, AnswerColumn, CHECKED, Store, bound_part_of, key_part_of, position_of};
+use super::{
+    Answer, AnswerColumn, CHECKED, Store, Window, WindowAnswer, bound_part_of, key_part_of,
+    position_of,
+};
 
 /// The cells an ask reads: a fact's bound cells, where every key the
 /// view names is a part of the cell key, or its keyed cells, where a dim
@@ -59,6 +62,16 @@ impl Store {
     /// rows, or a join through another dim, walks each cell once per row
     /// its joins find, as PostgreSQL repeats the fact row.
     pub fn ask(&self, ask: &Ask) -> Result<Answer, Vec<AskError>> {
+        Ok(self.ask_window(ask, None)?.answer)
+    }
+
+    /// As [`Store::ask`], building only the rows `window` shows, every row
+    /// without one, and saying where they lie among all of the answer's.
+    pub fn ask_window(
+        &self,
+        ask: &Ask,
+        window: Option<Window>,
+    ) -> Result<WindowAnswer, Vec<AskError>> {
         let Reading { fact, read } = self.reading(ask)?;
         self.check_types(fact, read, ask)?;
         let rollup = read.rollup();
@@ -84,8 +97,11 @@ impl Store {
             Some(mut expander) => cell_loop.ask_expanded(ask, &mut expander),
         }
         let checks = having_checks(ask, &columns);
-        let rows = cell_loop.answer_rows(&checks);
-        Ok(Answer { columns, rows })
+        let Rows { rows, cut } = cell_loop.answer_rows(&checks, window);
+        Ok(WindowAnswer {
+            answer: Answer { columns, rows },
+            cut,
+        })
     }
 
     /// Cells the ask reads.
