@@ -168,7 +168,10 @@ Unknown       |   527 |    9738.86 |  18.47981
 
 Quote the query with single quotes, so `$1` reaches Straum as written.
 The table holds what the [JSON answer](asks.md#the-answer) holds:
-values print the same, text without its quotes, a null as `null`.
+values print the same, text without its quotes, a null as `null`. In
+text, a backslash and each control character print as JSON writes them,
+`\\`, `\n` or `\u001b`, so data can't break a line of the table or
+reach the terminal as an escape sequence.
 `--json`, before the query, prints that JSON answer itself, for a
 script. Errors go to stderr, as without it: a line naming the URL and
 the reply's status, then the reply, `{"errors": [...]}`, as Straum sent

@@ -312,7 +312,7 @@ fn row_cells(columns: &[AnswerColumn], row: &AnswerRow) -> Vec<Cell> {
 fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
     let text = match key {
         &Datum::Int(seconds) if column.is_time => time_key(seconds),
-        Datum::Text(text) => text.to_string(),
+        Datum::Text(text) => escaped(text),
         key => datum_json(key, column.scale),
     };
     let align = match key {
@@ -320,6 +320,26 @@ fn key_cell(column: &AnswerColumn, key: &Datum) -> Cell {
         _ => Align::Left,
     };
     Cell { text, align }
+}
+
+/// Text as a cell shows it: a backslash and each control character as
+/// JSON writes them, `\\`, `\n` or `\u001b`, so data can't break a line
+/// of the table or reach the terminal as an escape sequence.
+fn escaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control.is_control() => {
+                let _ = write!(out, "\\u{:04x}", u32::from(control));
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn value_cell(column: &AnswerColumn, value: &Value) -> Cell {
@@ -564,6 +584,22 @@ bucket               | shared | fare
 1 of 2 rows, as of 1970-01-01T00:00:00Z
 "
         );
+    }
+
+    /// Text from the data can't forge a row of the table or reach the
+    /// terminal as an escape: a backslash and control characters show as
+    /// JSON writes them, and other text as it is.
+    #[test]
+    fn a_table_escapes_control_characters_in_text() {
+        let forged = "Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u{1b}[31m\\ ø";
+        let rows = vec![row(Datum::Text(forged.into()), Value::Int(100))];
+        let text = table(&answered(rows), Some(first(1)));
+        assert_eq!(text.lines().count(), 4, "{text}");
+        assert!(
+            text.contains(r"Bronx\n1970-01-02T00:00:00Z | true | 1.00\r\t\u001b[31m\\ ø"),
+            "{text}"
+        );
+        assert_eq!(escaped("plain | text"), "plain | text");
     }
 
     fn first(count: usize) -> Window {
