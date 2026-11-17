@@ -178,6 +178,23 @@ fn values_come_as_parameters() {
     ]);
 }
 
+/// A parameter has no leading zero: the error names the one to write, and
+/// a name of zeros only is no parameter.
+#[test]
+fn a_parameter_has_no_leading_zero() {
+    let one = [Literal::Int(1)];
+    for (name, error) in [
+        ("$01", "$01: write $1"),
+        ("$007", "$007: write $7"),
+        ("$00", "$00 is not a parameter: there are 1, $1 on"),
+    ] {
+        let query = format!("SELECT trips FROM t WHERE kind = {name}");
+        assert_eq!(errors(&query, &one), [format!("line 1: {error}")], "{name}");
+    }
+    let ask = parse_ask("SELECT trips FROM t WHERE kind = $1", &one).unwrap();
+    assert_eq!(ask.filter, [condition("kind", vec![Literal::Int(1)])]);
+}
+
 #[test]
 fn bucket_bounds_come_once_each() {
     assert_each_names_what_is_wrong(&[

@@ -27,7 +27,10 @@ use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
 
-use super::{Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements};
+use super::{
+    Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
+    without_leading_zeros,
+};
 
 const MEASURE_CONDITION: &str =
     "HAVING condition, write a measure, = <> < <= > or >=, and $n, joined by AND,";
@@ -410,9 +413,7 @@ impl Walker {
             return Err(Reported);
         };
         let count = parameters.values.len();
-        if let Some(digits) = name.strip_prefix("$0")
-            && !digits.is_empty()
-        {
+        if let Some(digits) = name.strip_prefix('$').and_then(without_leading_zeros) {
             self.error(line(expression), format!("{name}: write ${digits}"));
             return Err(Reported);
         }

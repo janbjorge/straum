@@ -618,6 +618,17 @@ fn compares_a_name(expression: &sql::Expr) -> bool {
     compares && name.value != "bucket"
 }
 
+/// `digits` as its one spelling, `7` for `007`, when written with leading
+/// zeros; `None` when it has none, or is zeros only and so no number
+/// Straum SQL counts from 1.
+fn without_leading_zeros(digits: &str) -> Option<&str> {
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.len() == digits.len() || trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed)
+}
+
 /// A table reference's name and alias, as written.
 // Borrows both from the tree, which outlives the walk; a copy would clone
 // them for nothing.
