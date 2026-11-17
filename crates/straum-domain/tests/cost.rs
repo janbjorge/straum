@@ -765,3 +765,44 @@ fn trip_row(store: &Store, pickup: i64, tip: i64) -> Vec<Datum> {
     }
     row
 }
+
+/// A store of `ids` trips, each in an hour of its own from a zone id of
+/// its own: the zones name a few of the ids, as a dim of accounts names
+/// the ones still open.
+fn store_of_ids(ids: i64) -> Store {
+    let mut store = Store::new(spec(&[]));
+    load_zones(&mut store);
+    for id in 0..ids {
+        let row = [
+            Datum::Int(id * i64::from(HOUR)),
+            Datum::Int(0),
+            Datum::Int(id),
+            Datum::Int(id),
+            Datum::Int(0),
+        ];
+        store.add_row("trips", &row).unwrap();
+    }
+    store
+}
+
+/// The heap an ask by borough over the first `hours` reaches at its most.
+fn peak_by_borough(store: &Store, hours: i64) -> isize {
+    let ask = ask(&["borough"], 0, hours);
+    let before = live();
+    PEAK.set(before);
+    drop(store.ask(&ask).unwrap());
+    PEAK.get() - before
+}
+
+/// An ask that reads a dim value through a join works it out once per
+/// zone id it meets, in a memo of the ids it read, not of every id the
+/// trips ever named: 100 times the ids cost an ask of a few cells nothing,
+/// where a memo of every id would be 4 bytes an id.
+#[test]
+fn an_ask_of_a_dim_value_holds_what_its_cells_name() {
+    let few = store_of_ids(1_000);
+    let many = store_of_ids(100_000);
+    let (few, many) = (peak_by_borough(&few, 10), peak_by_borough(&many, 10));
+    eprintln!("10 hours by borough: {few} bytes, {many} with 100 times the ids");
+    assert_eq!(few, many, "the memo grows with the ids");
+}

@@ -90,7 +90,7 @@ impl Store {
                 // The bound cells hold only what the joins keep.
                 let mut joins = match read {
                     Read::Bound(_) => Vec::new(),
-                    Read::Keyed(_) => self.join_checks(fact, rollup),
+                    Read::Keyed(_) => self.join_checks(fact, rollup, cells_in(rollup, ask)),
                 };
                 cell_loop.ask_once(&mut joins, ask);
             }
@@ -107,11 +107,7 @@ impl Store {
     /// Cells the ask reads.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
         let reading = self.reading(ask)?;
-        let mut cells = 0;
-        for covered in buckets(reading.read.rollup(), ask) {
-            cells += covered.cells.len();
-        }
-        Ok(cells)
+        Ok(cells_in(reading.read.rollup(), ask))
     }
 
     /// The ask's fact and the cells that answer it: the bound cells when
@@ -137,22 +133,23 @@ impl Store {
     ) -> CellLoop<'s> {
         let rollup = read.rollup();
         let buckets = buckets(rollup, ask).count();
+        let cells = cells_in(rollup, ask);
         let mut by = Vec::with_capacity(ask.keys.len());
         for key in &ask.keys {
             by.push(match key {
-                AskKey::Key(name) => Grouping::lookup(self.lookup(fact, read, name), rollup),
+                AskKey::Key(name) => Grouping::lookup(self.lookup(fact, read, name, cells), rollup),
                 AskKey::Bucket => Grouping::time(fact.time.width, buckets),
             });
         }
         let mut groups = Groups::new(&by);
-        let mut filter = self.condition_checks(fact, read, &fact.filter);
-        filter.extend(self.condition_checks(fact, read, &ask.filter));
+        let mut filter = self.condition_checks(fact, read, &fact.filter, cells);
+        filter.extend(self.condition_checks(fact, read, &ask.filter, cells));
         let mut measures = Vec::with_capacity(asked.len());
         for measure in asked {
             measures.push(Asked {
                 partials: Partials::new(&measure.aggregate),
                 state: rollup.state_of(&measure.aggregate),
-                filter: self.condition_checks(fact, read, &measure.filter),
+                filter: self.condition_checks(fact, read, &measure.filter, cells),
             });
         }
         if by.is_empty() {
@@ -246,14 +243,15 @@ impl Store {
 
     /// The joins that keep or drop a whole cell, for a view that counts
     /// each cell once: every ref but the left ones, which keep them all.
-    fn join_checks<'s>(&'s self, fact: &Fact, rollup: &Rollup) -> Vec<JoinCheck<'s>> {
+    /// The ask reads `cells` cells.
+    fn join_checks<'s>(&'s self, fact: &Fact, rollup: &Rollup, cells: usize) -> Vec<JoinCheck<'s>> {
         let mut checks = Vec::new();
         for reference in &fact.refs {
             if reference.kind == RefKind::Left {
                 continue;
             }
             checks.push(JoinCheck {
-                joined: self.joined(fact, reference, rollup),
+                joined: self.joined(fact, reference, rollup, cells),
                 keeps: JoinKeeps::of(reference.kind),
             });
         }
@@ -261,16 +259,24 @@ impl Store {
     }
 
     /// How a cell's key finds a ref's dim rows, through the rollup-key
-    /// parts of its fact-side via columns.
-    fn joined<'s>(&'s self, fact: &Fact, reference: &Ref, rollup: &Rollup) -> Joined<'s> {
+    /// parts of its fact-side via columns, for an ask of `cells` cells.
+    fn joined<'s>(
+        &'s self,
+        fact: &Fact,
+        reference: &Ref,
+        rollup: &Rollup,
+        cells: usize,
+    ) -> Joined<'s> {
         let mut via = Vec::with_capacity(reference.via.len());
         for column in &reference.via {
             if let Via::Fact(column) = column {
                 via.push(key_part_of(fact, KeyPart::Column(column)));
             }
         }
+        // A memo of every code costs per id ever seen: only an ask that
+        // reads as many cells as there are codes pays for one.
         let memo = match via[..] {
-            [part] => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
+            [part] if rollup.codes(part) <= cells => Memo::Dense(vec![UNKNOWN; rollup.codes(part)]),
             _ => Memo::Sparse(FastMap::default()),
         };
         Joined {
@@ -283,8 +289,15 @@ impl Store {
     }
 
     /// Where a key's values come from: a part of the cells read, or a
-    /// dim's projection reached through a ref.
-    fn lookup<'s>(&'s self, fact: &Fact, read: Read<'s>, name: &Identifier) -> Lookup<'s> {
+    /// dim's projection reached through a ref, for an ask of `cells`
+    /// cells.
+    fn lookup<'s>(
+        &'s self,
+        fact: &Fact,
+        read: Read<'s>,
+        name: &Identifier,
+        cells: usize,
+    ) -> Lookup<'s> {
         let rollup = match read {
             Read::Bound(_) => return Lookup::KeyPart(bound_part_of(fact, name)),
             Read::Keyed(rollup) => rollup,
@@ -296,7 +309,7 @@ impl Store {
                 Lookup::Attribute(AttributeLookup {
                     reference: ref_position(fact, reference),
                     attribute: AttributeIndex(position_of(&dim.attributes, &attribute.column)),
-                    joined: self.joined(fact, reference, rollup),
+                    joined: self.joined(fact, reference, rollup, cells),
                 })
             }
         }
@@ -307,6 +320,7 @@ impl Store {
         fact: &Fact,
         read: Read<'s>,
         filter: &[Condition],
+        cells: usize,
     ) -> Vec<ConditionCheck<'s>> {
         // Conditions on one key fold into one check, of the values they
         // share: each check keeps a memo the size of its key's codes, and
@@ -320,7 +334,7 @@ impl Store {
                 continue;
             }
             keys.push(&condition.key);
-            let lookup = self.lookup(fact, read, &condition.key);
+            let lookup = self.lookup(fact, read, &condition.key, cells);
             checks.push(ConditionCheck {
                 memo: vec![Known::Unknown; lookup.bound(read.rollup())],
                 lookup,
@@ -367,6 +381,15 @@ pub(super) fn buckets<'r>(
     }
     let range = read_range(rollup, ask);
     rollup.cover(range.start, range.end, cover)
+}
+
+/// The cells an ask reads.
+fn cells_in(rollup: &Rollup, ask: &Ask) -> usize {
+    let mut cells = 0;
+    for covered in buckets(rollup, ask) {
+        cells += covered.cells.len();
+    }
+    cells
 }
 
 /// The range an ask reads: its bounds, an open end at the edge of the

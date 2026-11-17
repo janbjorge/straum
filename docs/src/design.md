@@ -222,7 +222,9 @@ The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
 5. `Store::ask`: read the cells of the buckets in the range
    (`Rollup::cover`). A dim column is part of the bound cells' key
    while they hold, else read from the dim's projection through the
-   join id in the cell key; a cell whose join keeps no row is passed
+   join id in the cell key, once per id met (`Joined`): in a list of
+   every id when the ask reads as many cells as there are ids, else in
+   a map of those it met. A cell whose join keeps no row is passed
    over. Then add, filter and sort as
    [Answering an ask](how-it-works.md#answering-an-ask) says.
 6. Answer with `as_of` from the **Lag** and the applied LSN in the
