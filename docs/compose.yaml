@@ -1,10 +1,9 @@
-# Quick start. From any directory:
-# curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml \
-#   | docker compose -f - up --detach --wait \
-#   && docker compose -p straum exec straum /straum shell
+# Quick start. From any directory, with bash or zsh:
+# docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml) \
+#   run --rm shell
 # Postgres answers, then load brings in the taxi month and the setup,
-# then Straum starts. --wait returns once Straum is ready, and the
-# shell opens. The project name is straum.
+# then Straum starts. The shell service waits until Straum is healthy.
+# The project name is straum.
 name: straum
 
 services:
@@ -64,13 +63,25 @@ services:
     ports:
       - 127.0.0.1:8080:8080
     # The image has no shell. status exits 0 once /readyz says ready,
-    # so `up --wait` can tell, and non-zero until then.
+    # which is service_healthy, and non-zero until then.
     healthcheck:
       test: ["CMD", "/straum", "status"]
       interval: 1s
       timeout: 15s
       retries: 30
       start_period: 20s
+
+  # `run` starts this after Straum is healthy and attaches the terminal.
+  # A profile keeps `up` from starting it, since it would take no input.
+  shell:
+    image: ghcr.io/janbjorge/straum
+    profiles: ["shell"]
+    depends_on:
+      straum:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    command: ["shell", "--url", "http://straum:8080"]
 
 configs:
   trips:

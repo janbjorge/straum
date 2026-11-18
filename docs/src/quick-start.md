@@ -2,32 +2,32 @@
 
 Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
-and the 265 taxi zones. You need Docker and `curl`. The download is
-50 MB. One command ends in the shell. The command line and
-performance pages use these tables too.
+and the 265 taxi zones. You need Docker and `curl`, and bash or zsh.
+The download is 50 MB. One command ends in the shell. The command
+line and performance pages use these tables too.
 
 ## 1. Start
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml \
-  | docker compose -f - up --detach --wait \
-  && docker compose -p straum exec straum /straum shell
+```bash
+docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml) \
+  run --rm shell
 ```
 
 The file starts PostgreSQL. A load service waits until it answers,
 fetches the month, loads it, runs the setup, and exits. Straum starts
-once that service has exited. The command waits until Straum is ready,
-then opens the shell:
+once that service has exited, and is healthy once it can answer. The
+shell service waits for that, `service_healthy`, then takes the
+terminal. `<(...)` is bash or zsh, so the terminal stays the shell's
+input. The load container stays on Waiting while it fetches the month.
 
 ```text
-Straum at http://127.0.0.1:8080. Tab completes; \? lists the commands, \q leaves.
+Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
 straum>
 ```
 
-The wait is the download and the load. The load container stays on
-Waiting while it fetches the month. The `&&` keeps the shell out of
-the pipe, so its input is your terminal. `\q` leaves the shell. Straum
-keeps running, and this opens the shell again:
+`\q` leaves the shell and removes that container. Straum keeps
+running. This opens the shell again, inside the Straum container, at
+`http://127.0.0.1:8080`:
 
 ```sh
 docker compose -p straum exec straum /straum shell
@@ -51,8 +51,7 @@ zone. Money and distance are `numeric`, so sums are exact. Straum's
 own load takes about a second. The file in the repository is
 `docs/compose.yaml`.
 
-The file is not on disk after the pipe. Later commands name the
-project `straum`.
+The file is not saved. Later commands name the project `straum`.
 
 ## 2. The spec
 
