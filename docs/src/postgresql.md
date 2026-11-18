@@ -162,10 +162,11 @@ this for every `sslmode` but `disable`:
 
 The built-in roots are Mozilla's. If your provider signs with a CA of
 its own, as Amazon RDS and Cloud SQL do, download its bundle and name
-it with `sslrootcert`; the [chart](deploy.md#kubernetes) mounts one:
+it with `sslrootcert`. The [chart](deploy.md#kubernetes) mounts
+its bundle at `/etc/straum-tls/ca.pem`:
 
 ```text
-postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum/ca.pem
+postgres://straum:PASSWORD@db.example.com/app?sslrootcert=/etc/straum-tls/ca.pem
 ```
 
 `sslrootcert=system`, libpq's word for the system's roots, means the
