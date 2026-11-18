@@ -1,199 +1,156 @@
 # How Straum works
 
-How does Straum answer without reading rows? It keeps cells, not
-rows, and keeps them current from PostgreSQL's replication stream.
-[Design](design.md) names the code behind each step, for
-contributors.
+Straum answers from cells, not rows. It loads each table once, then keeps
+the cells current from PostgreSQL's replication stream. [Design](design.md)
+names the code behind each step.
 
 ## Load once, follow every commit
 
-`straum run` opens a temporary logical replication slot. The slot
-names a point in the WAL, an LSN called L, and gives a snapshot of
-the database at L. Straum loads every table the spec names from that
-snapshot, then streams every commit after L through the slot. No
-commit is missed between the load and the stream, and none is applied
-twice.
+`straum run` opens a temporary logical replication slot. The slot names a
+point in the WAL, an LSN called L, and gives a snapshot at L. Straum loads
+each spec table from that snapshot, then streams every commit after L. No
+commit is missed or applied twice.
 
 ![The load and the stream split the commits at L](diagrams/start.svg)
 
-*Every commit up to L comes in with the load, every commit after it
-through the slot. None comes in both ways, and none in neither.*
+*Commits up to L come in with the load, later ones through the slot.*
 
-A load is one binary `COPY` of the columns the spec names, grouped
-into cells as the rows come, so Straum never holds a table's rows.
-Nothing of Straum runs in PostgreSQL. The slot is temporary, so
-PostgreSQL drops it when the connection closes, and nothing is on
-disk: every start loads every table again.
+The load is one binary `COPY` per table, grouped into cells as rows arrive,
+so Straum never holds a table's rows. Nothing runs in PostgreSQL and nothing
+is written to disk. The slot is temporary, so every start loads again.
 
 ## Cells
 
-A cell is one distinct combination of a view's keys and its bucket.
-For the `usage` view of the [introduction](introduction.md) that is
-one cell per hour, kind and account. Each width in `WITH (buckets = ...)`
-keeps cells of its own, so a view with hours and days holds every row
-in two cells.
+A cell is one distinct combination of a view's keys and its bucket. In the
+`usage` view of the [introduction](introduction.md), that is one cell per
+hour, kind and account. Each width in `WITH (buckets = ...)` keeps its own
+cells.
 
 ![Where a row's time puts it](diagrams/buckets.svg)
 
-*A row's time is floored to each width the view keeps, all aligned to
-1970-01-01, so it lands in one bucket per width in the same commit.*
+*A row's time is floored to each width, aligned to 1970-01-01.*
 
-A measure is an aggregate the view names, such as `sum(e.amount) AS
-amount`. A cell holds its row count and what each measure needs, always
-counts and sums, so cells merge and a row can leave one as exactly as it
-came. [Aggregates 101](aggregates.md) says why each measure keeps what
-it does, and how a median reads the counts `min` and `max` keep. A
-`FILTER` keeps nothing of its own: it names parts of the cell key, so a
-cell counts whole or not at all.
+A measure is an aggregate the view names, such as `sum(e.amount) AS amount`.
+A cell keeps a row count plus the counts and sums each measure needs, so a
+row can be added or removed exactly. [Aggregates 101](aggregates.md) covers
+the details. A `FILTER` names parts of the cell key, so a cell counts whole
+or not at all.
 
 ![A row adds to its cell](diagrams/cell.svg)
 
-*The bucket and the keys pick the cell, and the row's count and amount
-add to it. The row is not kept, so a delete subtracts the same
-numbers. Each width the view keeps gets the same add.*
+*A row adds to its cell. A delete subtracts the same numbers, so the row is
+never kept.*
 
-A row whose time is null or infinite is kept in a bucket no ask
-reads. A cell goes with its last row.
+Rows with a null or infinite time go in a bucket no ask reads. A cell is
+dropped with its last row.
 
-Memory follows cells. Per width:
+Memory per width:
 
 ```text
 cells <= min(rows, distinct key combinations x buckets)
 ```
 
-Keys that are nearly unique per row keep nearly a cell per row. Fewer
-keys, keys with fewer values and wider buckets collapse more rows into
-each cell. The [benchmark](performance.md#memory) has what real tables
-measured.
+Keys close to unique per row keep nearly a cell per row. The
+[benchmark](performance.md#memory) has measured numbers.
 
-A cell holds its key's values as small codes, each value stored once.
-A value whose last cell or dim row went keeps its code until a
-column's dead codes may outnumber its live ones and pass 4,096; then
-Straum drops them in one pass under the write lock. So memory follows
-the cells and dim rows held, plus at most a few thousand old values a
-column, not every value seen since the start.
+A value keeps its code after its last cell or dim row goes. Once a column's
+dead codes outnumber its live ones and pass 4,096, Straum drops them in one
+pass under the write lock.
 
 ## Dims
 
-The table in a view's `FROM` is its fact table, and a table it joins is
-a dim, here `accounts`. A view that joins a dim keys its cells by the
-join column, `e.account_id`, not by the dim column, `a.region`. Beside
-the cells Straum holds a projection of the dim: its key and the columns
-the views read, nothing else, kept current from the stream. An ask reads
-`region` through each cell's `account_id`, as the account rows are now.
+A view's `FROM` table is its fact table. A table it joins is a dim, here
+`accounts`. Cells key on the join column, `e.account_id`, not the dim column,
+`a.region`. Straum keeps a projection of each dim: its key and the columns
+the views read, kept current from the stream. An ask reads `region` through
+each cell's `account_id`.
 
-So a dim change moves no cell. An account moved from `eu` to `us`
-moves all its events to `us` in the next answer, as
-PostgreSQL's view would, and nothing stops. It also means a
-join to a dim with many rows means many cells, one per distinct join
-id in the fact.
+So a dim change moves no cell. Moving an account from `eu` to `us` changes
+its events' region in the next answer, as PostgreSQL's view would. A join to
+a dim with many rows means many cells, one per distinct join id.
 
-For a view whose joins all read fact columns, one of them a column
-that is not a key of the view, Straum also keeps bound cells: the
-same cells keyed by the dim columns' values, which are few next to
-the ids, so an ask reads no projection. A dim change moves the bound
-cells that name its key: it walks the fact's keyed cells once, under
-the write lock, comparing codes, and skips the walk for a key no fact
-row ever named. A view that keeps its join columns as keys,
-as `usage` does, has none: they would be as many as its
-cells.
+For a view whose joins all read fact columns, and at least one of which is
+not a key of the view, Straum also keeps bound cells: the same cells keyed by
+the dim columns' values. A dim change walks the fact's keyed cells once under
+the write lock, and skips keys no fact row names. A view whose join columns
+are keys, as `usage` is, has none.
 
 ## Following
 
-Changes arrive after their transaction commits, and Straum applies
-the transaction whole, under one write lock, with nothing read from
-PostgreSQL in between:
-
-- An insert into a fact table adds the row to its cell; one into a
-  dim table adds the row to the projection.
-- An update takes the old row out and adds the new one. The logical
-  stream has the old row because every spec table has `REPLICA
-  IDENTITY FULL`. The physical stream rebuilds that row from the page,
-  so it does not need `FULL`.
-- A delete takes the old row out.
-- A truncate empties the view's cells, or the dim's projection.
+Each transaction applies whole, under one write lock, with nothing read from
+PostgreSQL in between. An insert adds its row to a cell, or to a projection
+for a dim. An update removes the old row and adds the new one. The logical
+stream sends the old row because every spec table has `REPLICA IDENTITY
+FULL`; the physical stream rebuilds it from the page. A delete removes the
+old row. A truncate empties the cells or the projection.
 
 ![Following and answering at once](diagrams/follow.svg)
 
-*The stream thread hands the writer whole commits and tells
-PostgreSQL what the writer has applied. The writer holds the write
-lock for one commit at a time; asks read under the read lock.*
+*The stream thread hands the writer whole commits and reports what it has
+applied. The writer takes the write lock per commit; asks take the read
+lock.*
 
-Asks share the store with the writer behind a read-write lock, which
-the writer takes only to apply a commit it has already read. A long
-ask delays the writer, and that shows as lag. The writer's readings of
-the server's WAL, and the status, keep to a lock of their own, so an
-ask waits on the writer only while a commit arrives. The stream thread
-reads ahead of the writer, up to 64 commits or 200,000 changes,
-whichever comes first, and confirms what the writer has applied, so
+Asks and the writer share the store behind a read-write lock. A long ask
+delays the writer, which shows as lag. The stream reads up to 64 commits or
+200,000 changes ahead of the writer and confirms what has been applied, so
 PostgreSQL can recycle WAL.
 
-A change that no longer fits stops Straum, with exit 1, and the next
-start loads from a new slot: an update without its old row, a row never added, a dim row it never
-held, a value it can't read, a table whose columns now read
-differently, a table renamed away or another made under its name, or a
-transaction above `--max-transaction-rows`. The
-last is on purpose: a transaction waits in memory until its commit,
-and the new slot's snapshot is after the big commit, so its rows come
-in through the bulk `COPY` instead; the
-[benchmark](performance.md#transactions) sets the default. A lost
-connection or WAL past `--max-retained-wal` stops Straum too
-([States](deploy.md#states)), and so does a spec table that the
-publication leaves out, that is gone from under its name, or that is
-another table now, and a column Straum reads that `ALTER COLUMN ..
-TYPE` rewrote, even to its own type `USING` an expression, which
-logical decoding sends no row of: each reading of the WAL, once a
-second, checks. `VACUUM FULL` and `CLUSTER` keep the values and stop
-nothing, nor does a `GRANT` on a column, `SET STATISTICS`, `SET
-STORAGE` or `SET DEFAULT`: they leave its type and values as they were.
+Straum stops with exit 1 when a change does not fit what it holds, and the
+next start loads from a new slot. That covers an update or delete whose old
+row is missing, a row never added, a dim row never held, a value it cannot
+read, a table whose columns now read differently, and a transaction above
+`--max-transaction-rows`. The row limit is deliberate: a large transaction
+would wait in memory, while the new slot's snapshot brings its rows in
+through the bulk `COPY`. The [benchmark](performance.md#transactions) sets
+the default.
+
+Straum also stops on a lost connection or WAL past `--max-retained-wal`
+([States](deploy.md#states)), on a spec table that the publication drops,
+that is renamed away, or that is replaced by another table under its name,
+and on a column that `ALTER COLUMN .. TYPE` rewrote, since logical decoding
+sends no row for it. It checks for these once a second.
+
+`VACUUM FULL`, `CLUSTER`, a `GRANT` on a column, `SET STATISTICS`,
+`SET STORAGE` and `SET DEFAULT` stop nothing. They leave the type and values
+as they were.
 
 ## The physical stream
 
-With `--wal physical` there is no logical decoding to send rows
-(ADR-0008). A temporary physical slot streams the server's WAL from the
-last checkpoint's redo point, and Straum turns it into the same
-messages the logical slot sends, so one decoder serves both:
+`--wal physical` skips logical decoding (ADR-0008). A temporary physical slot
+streams the WAL from the last checkpoint's redo point, and Straum turns it
+into the same messages, so one decoder serves both.
 
-- Records. Most name only other tables' pages. Straum reads each
-  record's block headers where they lie and passes such a record by,
-  not copied, checksummed or decoded; every record it reads it checks.
-- Pages. The first change to a page after a checkpoint carries a full
-  image of it; Straum keeps the rows of each page of the spec's tables
-  from there and applies the inserts, updates, deletes, pruning and
-  vacuuming that follow, as PostgreSQL's redo does. A delete names only
-  a slot on a page, and an update may log only the bytes that differ
-  from the old row: the page has the rest.
-- Transactions. Changes wait by transaction until its commit record,
-  with its subtransactions', and go in WAL order; an abort drops them.
-- Rows. A row's bytes become the values the load reads from its
-  binary `COPY`, then the pgoutput messages: the old row of an update
-  or delete is whole, as under `REPLICA IDENTITY FULL`.
-- The load. Straum waits until every transaction open when the stream
-  began has ended, so each later one is whole in the WAL it reads, then
-  takes the load's snapshot. Commits the snapshot saw are in the load
-  and dropped; the rest stream. A commit read before that point must
-  be in the load; PostgreSQL logs a commit a moment before snapshots
-  see it, longer while a synchronous standby answers, so Straum takes
-  the snapshot again until it does. A transaction past the row limit
-  that the load saw doesn't stop the stream. The stream reads on
-  during the load until 64 commits or 200,000 changes wait for the
-  writer, then holds its place, answering the server. A stream that
-  fails meanwhile stops the load at its next batch of rows.
-- Memory. A page goes at the next checkpoint record whose redo point is
-  past its last change: PostgreSQL logs it whole the next time. So
-  Straum holds the pages changed in about one checkpoint cycle, not the
-  tables, and stops past `--max-page-memory`.
-- DDL. A commit that changes a table's catalog entry makes Straum read
-  the table's columns again, and the decoder sees what changed, as with
-  pgoutput. The stream reads that commit before snapshots see it, as
-  with the load, so Straum reads the columns in a snapshot that sees
-  it, waiting up to 10 s, then stopping. A table rewritten or
-  truncated stops Straum.
+Most records name only other tables' pages, so Straum reads their block
+headers and passes them by. Every record it does read, it checks. The first
+change to a page after a checkpoint carries a full image of that page. From
+there Straum keeps the rows of each spec-table page and applies the inserts,
+updates, deletes, pruning and vacuuming that follow, as PostgreSQL's own redo
+does. A delete names only a slot on the page, and an update may log only the
+bytes that changed, because the page holds the rest.
+
+Changes wait per transaction until its commit record, then go in WAL order.
+An abort drops them. Row bytes become the same values the load reads, and
+the old row of an update or delete is whole, as under `REPLICA IDENTITY FULL`.
+
+The load and the stream meet here. Straum waits until every transaction open
+at start has ended, takes the load's snapshot, drops the commits that
+snapshot saw, and streams the rest. PostgreSQL logs a commit before snapshots
+see it, so Straum takes the snapshot again until every commit it read is in
+the load. While the load runs, the stream keeps reading until 64 commits or
+200,000 changes wait for the writer, then holds its place and answers the
+server.
+
+Pages are held for about one checkpoint cycle: each is dropped at the next
+checkpoint record whose redo point is past its last change, since PostgreSQL
+logs it whole the next time. Straum stops past `--max-page-memory`.
+
+A commit that changes a table's catalog entry makes Straum read the table's
+columns again, in a snapshot that sees the commit. It waits up to 10 s, then
+stops. A table rewritten or truncated stops Straum.
 
 ## Answering an ask
 
-This ask reads the purchases of two regions over the hour from 9:00
-UTC:
+This ask reads the purchases of two regions over the hour from 9:00 UTC:
 
 ```sql
 SELECT region, events, amount FROM usage
@@ -219,24 +176,20 @@ accounts, projected: 7 -> eu, 18 -> apac, 132 -> us, 138 -> us, ...
 answer: eu 2 220.00, us 273 14769.29
 ```
 
-An ask reads the cells of the buckets in its range, adds each to its
-group and to each measure whose filter holds, keeps the groups that
-meet its `HAVING`, and sorts the rows by key. It never touches PostgreSQL and never reads a row, so its cost
-follows the number of cells it reads.
+An ask reads the cells in its range, adds each to its group and to each
+measure whose filter holds, keeps the groups that meet `HAVING`, and sorts by
+key. It never touches PostgreSQL or reads a row, so its cost follows the
+cells it reads.
 
 ![How an ask range is read](diagrams/cover.svg)
 
-*Each width takes the whole buckets inside the range, and what is
-left at the ends falls to the next narrower width. An ask grouped by
-bucket reads the `date_bin` width only.*
+*Each width takes the whole buckets inside the range. The ends fall to the
+next narrower width.*
 
-Answers don't change with the widths a view keeps; only how many
-cells an ask reads does.
+Answers do not depend on the widths a view keeps. Only the cell count does.
 
-Every answer carries `as_of`, and every commit made before it is in
-the answer. Following is asynchronous, so an answer can predate a
-client's own commit; [Seeing your own
-write](asks.md#seeing-your-own-write) says how to wait for it.
+Every answer carries `as_of` and includes every commit before it. Following
+is asynchronous, so an answer can predate your own commit.
+[Seeing your own write](asks.md#seeing-your-own-write) explains how to wait.
 
-Next: [Aggregates 101](aggregates.md), what each measure keeps in a
-cell.
+Next: [Aggregates 101](aggregates.md), what each measure keeps in a cell.
