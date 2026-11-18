@@ -1,9 +1,10 @@
 # Asks and endpoints
 
-An ask is a JSON object sent to `POST /ask`: a query and its parameters.
-The examples ask the `usage` view of [Spec](spec.md#synopsis).
-This one asks for purchases in two regions per hour, from 9:00 to
-12:00 UTC:
+This page is for writing asks: the JSON sent to `POST /ask`, the query
+language it holds, the answer, the errors and the endpoints beside it.
+An ask is a JSON object with a query and its parameters. The examples
+ask the `usage` view of [Spec](spec.md#synopsis). This one asks for
+purchases in two regions per hour, from 9:00 to 12:00 UTC:
 
 ```sh
 curl --json '{
@@ -46,27 +47,31 @@ every bucket Straum holds:
 SELECT events, amount FROM usage
 ```
 
-- A key or a measure goes by the name the view gives it with `AS`:
-  `region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
-  ask can use; neither is `a`, the join, nor a table name.
-  `bucket` is the view's time bucket, and a key like any other in
-  `SELECT` and `GROUP BY`.
-- Each name is selected at most once, since the names become the
-  fields of each answer row. `GROUP BY` names exactly the selected
-  keys. Each lists at most 256 names.
-- `bucket >= $n` and `bucket < $n` bound the range, each at most once.
-  Leave one out and that end is open: the ask reads from the first
-  bucket held, or to the end of the last. With no `WHERE` it reads
-  every bucket held; `WHERE true` is refused. The bounds and the
-  conditions come in any order. No condition is put in parentheses.
-- A parameter may be used more than once, but the text the uses come
-  to is at most 1 MiB, what one ask's body holds. It is `$1`, never
-  `$01`.
-- Names are written in lowercase. An ask holds no comment and no `;`
-  after it.
-- An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`,
-  `IN`, `+`, `::` and the like), as does each statement of a spec:
-  each is a level of the tree Straum reads it into.
+A key or a measure goes by the name the view gives it with `AS`:
+`region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
+ask can use; neither is `a`, the join, nor a table name. `bucket` is
+the view's time bucket, and a key like any other in `SELECT` and
+`GROUP BY`.
+
+Each name is selected at most once, since the names become the fields
+of each answer row. `GROUP BY` names exactly the selected keys. Each
+lists at most 256 names.
+
+`bucket >= $n` and `bucket < $n` bound the range, each at most once.
+Leave one out and that end is open: the ask reads from the first bucket
+held, or to the end of the last. With no `WHERE` it reads every bucket
+held; `WHERE true` is refused. The bounds and the conditions come in
+any order. No condition is put in parentheses.
+
+A parameter may be used more than once, but the text the uses come to
+is at most 1 MiB, what one ask's body holds. It is `$1`, never `$01`.
+
+Names are written in lowercase. An ask holds no comment and no `;`
+after it.
+
+An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
+`+`, `::` and the like), as does each statement of a spec: each is a
+level of the tree Straum reads it into.
 
 ## HAVING
 
@@ -78,18 +83,23 @@ with more than 40 purchases in an hour, and their amounts:
 SELECT bucket, region, events, amount FROM usage WHERE kind = $1 AND bucket >= $2 AND bucket < $3 GROUP BY bucket, region HAVING events > $4
 ```
 
-- A comparison names a measure the ask selects, so the answer shows
-  every value a group was kept for. A key goes in `WHERE`, a measure in
-  `HAVING`; each refuses the other and says where it goes.
-- Not equal is `<>`; `!=` is refused. Comparisons join by `AND`.
-- A measure that is null meets no comparison, `<>` included, as in
-  PostgreSQL, so its group is left out.
-- A count, sum, min, max, percentile or average compares with a number
-  parameter, exactly: `avg_amount > 44.27` is true of 44.273058, and
-  `amount = 1875.7` of 1875.70. Up to 38 digits may follow the point.
-- `bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
-- An ask without keys answers its one row only if it meets every
-  comparison; otherwise none.
+A comparison names a measure the ask selects, so the answer shows every
+value a group was kept for. A key goes in `WHERE`, a measure in
+`HAVING`; each refuses the other and says where it goes.
+
+Not equal is `<>`; `!=` is refused. Comparisons join by `AND`.
+
+A measure that is null meets no comparison, `<>` included, as in
+PostgreSQL, so its group is left out.
+
+A count, sum, min, max, percentile or average compares with a number
+parameter, exactly: `avg_amount > 44.27` is true of 44.273058, and
+`amount = 1875.7` of 1875.70. Up to 38 digits may follow the point.
+
+`bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
+
+An ask without keys answers its one row only if it meets every
+comparison; otherwise none.
 
 ## Parameters
 
@@ -107,18 +117,18 @@ for a boolean or a null-ness key. A `date` or `uuid` key takes a string
 spelled as PostgreSQL prints the value and as the answer shows it:
 `"2024-01-15"`, `"0044-03-15 BC"` or `"infinity"` for a date, lowercase
 hex in groups of 8-4-4-4-12 for a uuid. `"2024-1-15"` or an uppercase
-uuid is an error that says how to write it. `account_id = $1` with `"7"` is an
-error, not an answer with no rows. A `numeric` key with a scale above 0
-can't be filtered on: at scale 2, `1` could mean 1 or 0.01. A
-[HAVING](#having) comparison takes a number of any scale.
+uuid is an error that says how to write it. `account_id = $1` with
+`"7"` is an error, not an answer with no rows. A `numeric` key with a
+scale above 0 can't be filtered on: at scale 2, `1` could mean 1 or
+0.01. A [HAVING](#having) comparison takes a number of any scale.
 
-The `bucket` bounds are RFC 3339 times, such as `"2026-11-13T00:00:00-05:00"`,
-or Unix seconds. A time is written `YYYY-MM-DDTHH:MM:SS`, then `Z` or an
-offset `+HH:MM`, with no fraction and no leap second:
-`2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are refused. A zero
-offset is `Z`, never `+00:00` or `-00:00`. Each bound written must fall
-on an edge of the view's `date_bin` buckets: Straum never answers for
-part of a bucket.
+The `bucket` bounds are RFC 3339 times, such as
+`"2026-11-13T00:00:00-05:00"`, or Unix seconds. A time is written
+`YYYY-MM-DDTHH:MM:SS`, then `Z` or an offset `+HH:MM`, with no fraction
+and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
+refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
+written must fall on an edge of the view's `date_bin` buckets: Straum
+never answers for part of a bucket.
 
 ## The answer
 
@@ -136,16 +146,17 @@ part of a bucket.
 }
 ```
 
-- `as_of`: every commit made before this time is in the answer. It is
-  Straum's wall time when it last confirmed that it had applied all WAL
-  PostgreSQL had written, so it keeps moving on a quiet database. A
-  transaction is applied whole, so an answer never sees half of one.
-  An answer can predate a client's commit ([Seeing your own
-  write](#seeing-your-own-write)).
-- `rows`: one object per group, keyed by the names in `SELECT`, sorted by
-  key, nulls first. An ask without keys answers one row even when
-  nothing matches, as SQL does without `GROUP BY`: counts are 0, the
-  rest null.
+`as_of` says that every commit made before this time is in the answer.
+It is Straum's wall time when it last confirmed that it had applied all
+WAL PostgreSQL had written, so it keeps moving on a quiet database. A
+transaction is applied whole, so an answer never sees half of one. An
+answer can predate a client's commit ([Seeing your own
+write](#seeing-your-own-write)).
+
+`rows` holds one object per group, keyed by the names in `SELECT`,
+sorted by key, nulls first. An ask without keys answers one row even
+when nothing matches, as SQL does without `GROUP BY`: counts are 0, the
+rest null.
 
 `timestamptz` buckets are their start in UTC. `timestamp` buckets are
 wall clock readings formatted with `Z`. PostgreSQL keeps times past
