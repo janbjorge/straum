@@ -3,19 +3,39 @@
 Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
 and the 265 taxi zones. You need Docker and `curl`. The download is
-50 MB. One command ends with Straum answering. The command line and
+50 MB. One command ends in the shell. The command line and
 performance pages use these tables too.
 
 ## 1. Start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml | docker compose -f - up
+curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml \
+  | docker compose -f - up --detach --wait \
+  && docker compose -p straum exec straum /straum shell
 ```
 
 The file starts PostgreSQL. A load service waits until it answers,
 fetches the month, loads it, runs the setup, and exits. Straum starts
-once that service has exited. Leave the command running. The log ends
-like this:
+once that service has exited. The command waits until Straum is ready,
+then opens the shell:
+
+```text
+Straum at http://127.0.0.1:8080. Tab completes; \? lists the commands, \q leaves.
+straum>
+```
+
+The wait is the download and the load. The load container stays on
+Waiting while it fetches the month. The `&&` keeps the shell out of
+the pipe, so its input is your terminal. `\q` leaves the shell. Straum
+keeps running, and this opens the shell again:
+
+```sh
+docker compose -p straum exec straum /straum shell
+```
+
+An interrupt during the wait stops the wait and leaves the containers
+running. The log is `docker compose -p straum logs`. It ends like
+this:
 
 ```text
 load-1  | loading taxi trips
@@ -59,8 +79,18 @@ GROUP BY 1, 2, 3, 4;
 
 ## 3. Ask
 
-In another terminal, ask for trips and fares by pickup borough on
-Wednesday 17 January, New York time:
+At the prompt, ask for trips and fares by pickup borough on Wednesday
+17 January, New York time. The semicolon ends the ask, and the
+parameters follow it:
+
+```text
+straum> SELECT borough, trips, fare, avg_fare
+FROM trips
+WHERE bucket >= $1 AND bucket < $2
+GROUP BY borough; 2024-01-17T00:00:00-05:00 2024-01-18T00:00:00-05:00
+```
+
+The same ask over HTTP, from another terminal:
 
 ```sh
 curl --json '{
@@ -91,9 +121,9 @@ parameters and the answer.
 
 ## Change the data
 
-Add a card trip from Newark Airport at noon, and move JFK and
-LaGuardia, zones 132 and 138, out of Queens into a borough of their
-own, then ask for the day again:
+In another terminal, add a card trip from Newark Airport at noon, and
+move JFK and LaGuardia, zones 132 and 138, out of Queens into a
+borough of their own, then ask for the day again:
 
 ```sh
 docker compose -p straum exec postgres psql -U postgres -c "
@@ -131,15 +161,14 @@ so if the answer's `as_of` predates the write, ask once more.
 
 ## Look around, then clean up
 
-`docker compose -p straum exec straum /straum shell` is a prompt at
-the running Straum, with Tab completion: `\d` lists the views with
-the names and types an ask may use, `\d trips` prints the view's
-`CREATE VIEW`, and `\rows trips` prints its rows. [Command
-line](cli.md#straum-shell) has the shell and the `straum status`,
-`straum views` and `straum ask` commands beside it.
+At the `straum>` prompt, `\d` lists the views with the names and types
+an ask may use, `\d trips` prints the view's `CREATE VIEW`, and
+`\rows trips` prints its rows. [Command line](cli.md#straum-shell) has
+the shell and the `straum status`, `straum views` and `straum ask`
+commands beside it.
 
-Stop with Ctrl-C, then remove the containers, their data and the
-network:
+Leave the shell with `\q`, then remove the containers, their data and
+the network:
 
 ```sh
 docker compose -p straum down --volumes

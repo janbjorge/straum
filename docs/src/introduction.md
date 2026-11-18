@@ -91,5 +91,6 @@ stream.
 [llms.txt](llms.txt) lists these pages for an agent.
 
 The [quick start](quick-start.md) runs Straum in Docker with one
-command, on a month of New York taxi trips. After it, a [spec](spec.md)
-and an [ask](asks.md) are the two things you write.
+command, on a month of New York taxi trips, and leaves you in the
+shell. After it, a [spec](spec.md) and an [ask](asks.md) are the two
+things you write.

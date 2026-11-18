@@ -1,7 +1,10 @@
 # Quick start. From any directory:
-# curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml | docker compose -f - up
+# curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml \
+#   | docker compose -f - up --detach --wait \
+#   && docker compose -p straum exec straum /straum shell
 # Postgres answers, then load brings in the taxi month and the setup,
-# then Straum starts. The project name is straum.
+# then Straum starts. --wait returns once Straum is ready, and the
+# shell opens. The project name is straum.
 name: straum
 
 services:
@@ -60,6 +63,14 @@ services:
         target: /spec/trips.sql
     ports:
       - 127.0.0.1:8080:8080
+    # The image has no shell. status exits 0 once /readyz says ready,
+    # so `up --wait` can tell, and non-zero until then.
+    healthcheck:
+      test: ["CMD", "/straum", "status"]
+      interval: 1s
+      timeout: 15s
+      retries: 30
+      start_period: 20s
 
 configs:
   trips:

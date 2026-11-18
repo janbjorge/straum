@@ -71,7 +71,7 @@ curl --json '{
 
 Every commit made before `as_of` is in the answer. The
 [quick start](https://janbjorge.github.io/straum/quick-start.html) runs
-it in Docker with one command.
+it in Docker with one command and opens the shell.
 
 ## Development
 
