@@ -101,73 +101,41 @@ straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-reta
 
 ## Kubernetes
 
-The Helm chart runs Straum as one pod with the spec in a ConfigMap and
-the DSN in a Secret. Each release publishes it at
-`oci://ghcr.io/janbjorge/charts/straum`, at the release's version,
-pulling that release's image. Put the DSN in a Secret, since the chart
-never holds it, or have your secret store sync one, such as the
-External Secrets Operator or the Secrets Store CSI driver:
-
-```sh
-kubectl create secret generic straum-dsn \
-  --from-literal=dsn='postgres://straum:PASSWORD@HOST:5432/DATABASE'
-helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
-  --version X.Y.Z \
-  --set dsn.existingSecret=straum-dsn \
-  --set-file spec=usage.sql
-kubectl exec deployment/straum -- /straum status
-```
-
-The chart in the repository, `deploy/helm/straum`, names no release:
-installed from a checkout, it needs `--set image.tag=X.Y.Z`. Set
-`image.repository` for a mirror or an image built with the
-repository's `compose.yaml`.
-
-The chart makes a Deployment, a ConfigMap with the spec, a ClusterIP
-Service on port 8080 and a ServiceAccount. For a release named `straum`,
-apps in the cluster ask at `http://straum:8080/ask`. The chart passes
-`--listen 0.0.0.0:8080`, or `[::]:8080` on an IPv6-only cluster, so any
-pod in the cluster reaches it; a NetworkPolicy narrows that
-([Who can ask](#who-can-ask)).
+The chart is
+[`deploy/helm/straum`](https://github.com/janbjorge/straum/tree/main/deploy/helm/straum).
+Each release publishes it at `oci://ghcr.io/janbjorge/charts/straum`,
+at that release's version, pulling that release's image. The chart in
+the repository names no release: its `appVersion` is 0.0.0. Its
+[README](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/README.md)
+says what it requires, and
 [`values.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/helm/straum/values.yaml)
-documents every value, and `values.schema.json` refuses values Straum
-can't take, such as a `maxLag` of 0. Size `resources` by the
-[cells](how-it-works.md#cells) the spec keeps, request equal to limit.
+documents every value.
 
-Readiness is `/readyz` and liveness is `/livez`, so a load or lag takes
-the pod out of the Service but never restarts it. A new spec rolls the
-pod. The new pod loads every table before the old one stops, so asks
-keep answering, and PostgreSQL holds two slots until the old pod is
-gone. Each replica holds its own slot and loads every table.
-Kubernetes calls a rollout failed, and `helm --wait` with it, if the
-new pod isn't ready within `progressDeadlineSeconds`, an hour by
-default; raise it if the spec's tables take longer to load. The
-chart needs Kubernetes 1.30 or newer. A stopping pod leaves the
-Service as shutdown starts, keeps serving through a 5 second pause,
-then gets SIGTERM and finishes the asks in flight. The 30 second
-grace period covers the pause and that finish, because the countdown
-starts before the pause.
+It runs one pod. The spec is a ConfigMap. The DSN comes from a Secret,
+which the chart never holds. Readiness is `/readyz` and liveness is
+`/livez`, so a load or a lag takes the pod out of the Service and
+never restarts it. The new pod loads every table before the old one
+stops, so asks keep answering, and PostgreSQL holds two slots until
+the old pod is gone. Each replica holds its own slot and loads every
+table. The rollout waits an hour for that load. A stopping pod leaves
+the Service, pauses 5 seconds, then takes SIGTERM and finishes the
+asks in flight. The chart needs Kubernetes 1.30 or newer.
 
-The pod meets the Restricted Pod Security Standard: a non-root user,
-no capabilities, no privilege escalation, a read-only root filesystem
-and the `RuntimeDefault` seccomp profile. The chart pins no user. On
-Kubernetes the image's user, 65532, applies. OpenShift's
-`restricted-v2` refuses a pinned user outside the project's range and,
-with none pinned, assigns one from that range. It mounts no
-ServiceAccount token, since Straum never calls the Kubernetes API, and
-its only volumes are the spec and, if named, the roots below.
+It listens on `0.0.0.0:8080`, or `[::]:8080` on an IPv6-only cluster.
+With no `--listen`, Straum serves `127.0.0.1`, which no probe or
+Service reaches. Any pod that reaches the Service can ask
+([Who can ask](#who-can-ask)). For a release named `straum`, that is
+`http://straum:8080/ask`. The pod pins no user. On Kubernetes the
+image's user, 65532, applies. OpenShift's `restricted-v2` assigns one
+from the project's range, and refuses one pinned outside it. No
+ServiceAccount token: Straum never calls the Kubernetes API. Size
+`resources` by the [cells](how-it-works.md#cells) the spec keeps,
+request equal to limit.
 
-A server whose CA isn't one of Straum's built-in roots, such as Amazon
-RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), needs its
-PEM roots in a Secret. Name it in `rootCert.existingSecret`, and the key in
-`rootCert.key` (`ca.pem` by default). The chart mounts the roots at
-`/etc/straum-tls/ca.pem`, and the DSN names them:
-
-```sh
-kubectl create secret generic straum-ca --from-file=ca.pem=global-bundle.pem
-helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
-  --version X.Y.Z --reuse-values --set rootCert.existingSecret=straum-ca
-```
+A CA Straum does not already trust, such as Amazon RDS or Cloud SQL
+([Connect](postgresql.md#2-connect)), is a Secret named by
+`rootCert.existingSecret`. The chart mounts it at
+`/etc/straum-tls/ca.pem`. The DSN names that path:
 
 ```text
 postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
@@ -176,86 +144,38 @@ postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
 ## Docker Compose
 
 [`deploy/compose/compose.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/compose/compose.yaml)
-runs the release's image on one host. Beside it put the spec as
-`spec.sql` and the DSN in a file `dsn`, which Compose hands to Straum
-as a secret, never in its environment. A file secret is a bind
-mount of the host file, so its owner and mode are what the container
-sees, and user 65532, the image's, must be able to read it. `spec.sql`
-is mounted the same way; a file at mode 644 already is. The health
-check's `start_interval` needs Compose 2.20.2 or newer:
-
-```sh
-printf '%s' 'postgres://straum:PASSWORD@HOST:5432/DATABASE' > dsn
-sudo chown 65532 dsn && chmod 400 dsn
-STRAUM_VERSION=X.Y.Z docker compose -p straum up -d
-docker compose -p straum exec straum /straum status
-```
-
-Straum publishes on `127.0.0.1:8080`, so only the host reaches it
-([Who can ask](#who-can-ask)). Compose starts it again after a failure.
-Its health check is `straum status`, healthy once loaded and within
-`--max-lag`; Compose only reports it, so a long load stops nothing.
+runs a release's image. `STRAUM_VERSION` names the release. The spec
+is `spec.sql` beside the file. The DSN is the file `dsn`, passed as a
+secret, so it never sits in the environment. The spec and the DSN must
+be readable by user 65532, the image's user. Straum listens on
+`127.0.0.1:8080` ([Who can ask](#who-can-ask)). The health check is
+`straum status`, and a failed check does not restart it: a load or a
+lag must not.
 
 ## systemd
 
 [`deploy/systemd/straum.service`](https://github.com/janbjorge/straum/blob/main/deploy/systemd/straum.service)
-runs the binary from [Get straum](#get-straum) on `127.0.0.1:8080` as
-a user made for the service, which can write nowhere. It reads the
-spec at `/etc/straum/spec.sql` and the DSN from `/etc/straum/dsn`,
-handed over as a credential:
-
-```sh
-sudo install -d -m 755 /etc/straum
-sudo install -m 644 usage.sql /etc/straum/spec.sql
-sudo install -m 600 /dev/stdin /etc/straum/dsn \
-  <<< 'postgres://straum:PASSWORD@HOST:5432/DATABASE'
-sudo install -m 644 straum.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now straum
-journalctl -u straum -f
-```
-
-After a failure systemd starts Straum again 10 seconds later, with no
-limit on how often. Set `MemoryMax` by the
-[cells](how-it-works.md#cells) the spec keeps.
+runs the binary from [Get straum](#get-straum) on `127.0.0.1:8080`.
+The spec is `/etc/straum/spec.sql`. The DSN is `/etc/straum/dsn`,
+passed as a credential, so it never sits in the environment. The
+service user can write nowhere. After a failure it starts Straum again
+10 seconds later, with no limit, because Straum exits 1 and keeps no
+state. `MemoryMax` follows the [cells](how-it-works.md#cells).
 
 ## Amazon ECS
 
 [`deploy/ecs/`](https://github.com/janbjorge/straum/tree/main/deploy/ecs)
-runs Straum as a Fargate task. A task mounts no file, so the spec, and
-RDS's `global-bundle.pem` for the DSN's
-`sslrootcert=/etc/straum-tls/ca.pem`, are built into an image on top of
-the release's. Put both beside the `Dockerfile`, or drop its bundle
-line for a server with a public CA, then build and push to ECR:
+is a Fargate task. A task mounts no file, so the spec, and the CA
+roots when the DSN needs `sslrootcert=/etc/straum-tls/ca.pem`, are
+built into an image on top of the release's. The DSN arrives as
+`STRAUM_DSN`. Run one task, and let the new one become ready before
+the old one stops: PostgreSQL then holds two slots only while both
+are up.
 
-```sh
-export STRAUM_VERSION=X.Y.Z
-export STRAUM_ECS_IMAGE=ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1
-docker compose build straum
-docker compose push straum
-```
-
-`task-definition.json` takes the DSN from Secrets Manager as
-`STRAUM_DSN`; fill in `ACCOUNT`, `REGION` and the image, and give the
-execution role `secretsmanager:GetSecretValue` on the secret and
-`logs:CreateLogGroup`, which `awslogs-create-group` requires. Run one
-task with `minimumHealthyPercent` 100 and `maximumPercent` 200, so a
-new task loads before the old one stops:
-
-```sh
-aws ecs register-task-definition --cli-input-json file://task-definition.json
-aws ecs create-service --cluster CLUSTER --service-name straum \
-  --task-definition straum --desired-count 1 --launch-type FARGATE \
-  --deployment-configuration minimumHealthyPercent=100,maximumPercent=200 \
-  --network-configuration 'awsvpcConfiguration={subnets=[SUBNET],securityGroups=[GROUP]}'
-```
-
-ECS has one health check where Kubernetes has two, and it replaces a
-task that fails it. The check is `straum status`, healthy once loaded
-and within `--max-lag`. It allows 15 minutes for a load (a 300-second
-start period, then 10 failures 60 seconds apart) and 10 minutes of lag
-before ECS starts a new task. These are ECS's limits, so a spec whose
-tables take longer to load can't run on ECS. Its security group
-decides who can ask ([Who can ask](#who-can-ask)).
+ECS has one health check, and it replaces a task that fails it. The
+check is `straum status`. A load has about 15 minutes, and a lag about
+10, before that happens. A spec whose tables take longer to load
+cannot run there. Who can ask is the task's security group
+([Who can ask](#who-can-ask)).
 
 Next: [Performance](performance.md), what to expect from a deployment.
