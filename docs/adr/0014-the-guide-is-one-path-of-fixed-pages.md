@@ -38,8 +38,8 @@ before leaves:
 6. `postgresql.md`, connecting a database: logical and physical setup,
    the start checks, what Straum costs the server.
 7. `deploy.md`, running it for real: the binary, the image, and what
-   Straum requires on Kubernetes, Docker Compose, systemd and Amazon
-   ECS. The commands that set each one up live in the file, not on the
+   Straum requires on Kubernetes, Docker Compose and Amazon ECS. The
+   commands that set each one up live in the file, not on the
    page. Chart values live in `deploy/helm/straum/README.md`; each
    other file under `deploy/` opens with a comment.
 8. `performance.md`, what to expect: the benchmark and memory sizing.

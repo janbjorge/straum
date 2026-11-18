@@ -2,8 +2,8 @@
 
 How do you run Straum for real? As one static binary, its image, or the
 Helm chart, next to the apps that ask it: on
-[Kubernetes](#kubernetes), with [Docker Compose](#docker-compose),
-under [systemd](#systemd) or on [Amazon ECS](#amazon-ecs). Set up
+[Kubernetes](#kubernetes), with [Docker Compose](#docker-compose) or on
+[Amazon ECS](#amazon-ecs). Set up
 [PostgreSQL](postgresql.md) first; every flag is under
 [Command line](cli.md).
 
@@ -89,8 +89,8 @@ of its log say why. The connections close with it, and PostgreSQL drops
 the temporary slot. Straum keeps no state across a failure and never
 retries inside the process. Whatever runs it starts it again, with a
 wait of its own: Kubernetes restarts the pod with a backoff up to five
-minutes, and systemd wants `Restart=on-failure`. The new process loads
-every table from a new slot.
+minutes, and Docker Compose restarts the container unless it was
+stopped. The new process loads every table from a new slot.
 
 ```text
 straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-retained-wal limit of 4096.0 MiB; the watchdog ended the slot's session
@@ -151,16 +151,6 @@ be readable by user 65532, the image's user. Straum listens on
 `127.0.0.1:8080` ([Who can ask](#who-can-ask)). The health check is
 `straum status`, and a failed check does not restart it: a load or a
 lag must not.
-
-## systemd
-
-[`deploy/systemd/straum.service`](https://github.com/janbjorge/straum/blob/main/deploy/systemd/straum.service)
-runs the binary from [Get straum](#get-straum) on `127.0.0.1:8080`.
-The spec is `/etc/straum/spec.sql`. The DSN is `/etc/straum/dsn`,
-passed as a credential, so it never sits in the environment. The
-service user can write nowhere. After a failure it starts Straum again
-10 seconds later, with no limit, because Straum exits 1 and keeps no
-state. `MemoryMax` follows the [cells](how-it-works.md#cells).
 
 ## Amazon ECS
 

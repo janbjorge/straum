@@ -32,15 +32,13 @@ helm-unittest and kubeconform on Kubernetes 1.33 and 1.36. The
 chart requires 1.30 or newer: its preStop pause is a sleep action, on
 by default from 1.30 and stable from 1.34.
 
-Besides the chart, `deploy/` holds three more ways to run the same
-image or binary, chosen to cover where long-running services run:
-Docker Compose on one host, a systemd unit for the binary, and an
-Amazon ECS Fargate task definition with an image on top of the
-release's for the spec and CA roots. They are files to copy, like the
-chart, and Straum runs no tool over them. Cloud Run and Azure
-Container Apps get none:
-they throttle or stop an instance between requests, which stalls the
-stream.
+Besides the chart, `deploy/` holds two more ways to run the same
+image, chosen to cover where long-running services run: Docker
+Compose on one host, and an Amazon ECS Fargate task definition with
+an image on top of the release's for the spec and CA roots. They are
+files to copy, like the chart, and Straum runs no tool over them.
+Cloud Run and Azure Container Apps get none: they throttle or stop
+an instance between requests, which stalls the stream.
 
 The name is Straum, Nynorsk for a stream, everywhere: crates, binary,
 `STRAUM_DSN`, default role and publication, slot prefix,
