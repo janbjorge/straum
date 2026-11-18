@@ -1,9 +1,12 @@
-# image is the straum container image the Dockerfile builds.
+# image is the straum container image a release publishes, or one the
+# Dockerfile builds.
 image:
-  # image.repository is where the image lives, such as
-  # registry.example.com/straum. Required.
-  repository: ""
-  # image.tag is the image's tag; empty means the chart's appVersion.
+  # image.repository is where the image lives, such as a mirror at
+  # registry.example.com/straum.
+  repository: "ghcr.io/janbjorge/straum"
+  # image.tag is the image's tag; empty means the chart's appVersion,
+  # the release's version in a published chart. The chart in the
+  # repository names no release, so installing it needs a tag.
   tag: ""
   # image.digest pins the image, as sha256:...; it wins over image.tag.
   digest: ""

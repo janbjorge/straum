@@ -99,25 +99,27 @@ straum: PostgreSQL held 5120.0 MiB of WAL for Straum's slot, past the --max-reta
 
 ## Kubernetes
 
-The Helm chart, `deploy/helm/straum`, runs Straum as one pod with the
-spec in a ConfigMap and the DSN in a Secret. Build the image with the
-repository's `compose.yaml` and push it, then put the DSN in a Secret,
-since the chart never holds it, or have your secret store sync one, such
-as the External Secrets Operator or the Secrets Store CSI driver:
+The Helm chart runs Straum as one pod with the spec in a ConfigMap and
+the DSN in a Secret. Each release publishes it at
+`oci://ghcr.io/janbjorge/charts/straum`, at the release's version,
+pulling that release's image. Put the DSN in a Secret, since the chart
+never holds it, or have your secret store sync one, such as the
+External Secrets Operator or the Secrets Store CSI driver:
 
 ```sh
-export STRAUM_IMAGE=registry.example.com/straum:0.0.0
-docker compose build straum
-docker compose push straum
 kubectl create secret generic straum-dsn \
   --from-literal=dsn='postgres://straum:PASSWORD@HOST:5432/DATABASE'
-helm upgrade --install straum deploy/helm/straum \
-  --set image.repository=registry.example.com/straum \
-  --set image.tag=0.0.0 \
+helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
+  --version X.Y.Z \
   --set dsn.existingSecret=straum-dsn \
   --set-file spec=usage.sql
 kubectl exec deployment/straum -- /straum status
 ```
+
+The chart in the repository, `deploy/helm/straum`, names no release:
+installed from a checkout, it needs `--set image.tag=X.Y.Z`. Set
+`image.repository` for a mirror or an image built with the
+repository's `compose.yaml`.
 
 The chart makes a Deployment, a ConfigMap with the spec, a ClusterIP
 Service on port 8080 and a ServiceAccount. For a release named `straum`,
@@ -157,8 +159,8 @@ a Secret. Name it in `rootCert.existingSecret`, and the key in
 
 ```sh
 kubectl create secret generic straum-ca --from-file=ca.pem=global-bundle.pem
-helm upgrade --install straum deploy/helm/straum \
-  --reuse-values --set rootCert.existingSecret=straum-ca
+helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
+  --version X.Y.Z --reuse-values --set rootCert.existingSecret=straum-ca
 ```
 
 ```text

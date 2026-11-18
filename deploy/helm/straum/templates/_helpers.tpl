@@ -54,13 +54,17 @@ The ServiceAccount the pod runs as.
 {{- end }}
 
 {{/*
-The image, by digest when one is given.
+The image, by digest when one is given. The chart in the repository has
+appVersion 0.0.0, which no release publishes, so it needs a tag.
 */}}
 {{- define "straum.image" -}}
-{{- $repository := required "image.repository: set the straum image, such as registry.example.com/straum" .Values.image.repository }}
+{{- $repository := required "image.repository: set the straum image, such as ghcr.io/janbjorge/straum" .Values.image.repository }}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
 {{- if .Values.image.digest }}
 {{- printf "%s@%s" $repository .Values.image.digest }}
+{{- else if eq $tag "0.0.0" }}
+{{- fail "image.tag: set a release's version, such as 1.2.3; the chart in the repository names no release" }}
 {{- else }}
-{{- printf "%s:%s" $repository (.Values.image.tag | default .Chart.AppVersion) }}
+{{- printf "%s:%s" $repository $tag }}
 {{- end }}
 {{- end }}

@@ -6,6 +6,7 @@ release:
   name: demo
 set:
   image.repository: registry.example/straum
+  image.tag: "1.0.0"
   dsn.existingSecret: straum-dsn
   spec: "CREATE VIEW trips WITH (buckets = '1 hour') AS SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
 tests:
@@ -19,7 +20,7 @@ tests:
           value: demo-straum
       - equal:
           path: spec.template.spec.containers[0].image
-          value: registry.example/straum:0.0.0
+          value: registry.example/straum:1.0.0
       - equal:
           path: spec.template.spec.containers[0].args
           value:
@@ -280,7 +281,7 @@ tests:
       - equal:
           path: spec.template.metadata.labels
           value:
-            helm.sh/chart: straum-0.1.0
+            helm.sh/chart: straum-0.0.0
             app.kubernetes.io/name: straum
             app.kubernetes.io/instance: demo
             app.kubernetes.io/version: "0.0.0"

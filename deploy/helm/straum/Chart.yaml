@@ -4,7 +4,7 @@ description: >-
   Straum keeps declared aggregates over PostgreSQL tables in memory, fed by
   logical replication, and answers asks over HTTP.
 type: application
-version: 0.1.0
+version: 0.0.0
 appVersion: "0.0.0"
 home: https://github.com/janbjorge/straum
 sources:

@@ -38,13 +38,17 @@ The name is Straum, Nynorsk for a stream, everywhere: crates, binary,
 The maintainer publishes a release on the release page with a new tag
 `vX.Y.Z` on `main`, a pre-release exactly when it has a suffix such as
 `-rc.1`. A draft or a push to `main` publishes nothing. The tag is the
-version: `Cargo.toml` stays `0.0.0` and `straum version` prints what
-CI passes. CI checks the tagged commit, fails unless the tag is well
-formed, on `main` and its release has no assets, then publishes the
-image as `X.Y.Z`, `X.Y` and, for the highest unsuffixed tag, `latest`.
-It copies the amd64 and arm64 binaries out of that image, checks the
-amd64 one prints the version, attests both and attaches them with
-`SHA256SUMS`.
+version: `Cargo.toml` and the chart's `version` and `appVersion` stay
+`0.0.0`, and `straum version` prints what CI passes. CI checks the
+tagged commit, fails unless the tag is well formed, on `main` and its
+release has no assets, then publishes the image as `X.Y.Z`, `X.Y` and,
+for the highest unsuffixed tag, `latest`. It copies the amd64 and arm64
+binaries out of that image, checks the amd64 one prints the version,
+attests both and attaches them with `SHA256SUMS`. It pushes the chart,
+both versions `X.Y.Z`, to `oci://ghcr.io/janbjorge/charts/straum` and
+attests it. The chart's image defaults to `ghcr.io/janbjorge/straum`;
+installed from the repository, with `appVersion` 0.0.0, it refuses to
+render without a tag.
 
 ## Consequences
 
@@ -60,6 +64,8 @@ amd64 one prints the version, attests both and attaches them with
 - `latest` is the newest stable release; `main` reaches an image only
   through one. A binary is the bytes its image runs, checked with
   `sha256sum -c` and `gh attestation verify`.
+- GHCR makes a new package private, so the maintainer makes
+  `charts/straum` public once, after the first release that pushes it.
 - Immutable releases can't be on (they refuse assets, and drafts start
   no workflow); a ruleset on `v*` tags stops a tag moving. A release
   publishes once; a re-run with assets fails.

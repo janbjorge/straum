@@ -1,6 +1,6 @@
 # What scripts/check-chart.py lints and renders the chart with.
 image:
-  repository: "registry.example/straum"
+  tag: "1.0.0"
 dsn:
   existingSecret: "straum-dsn"
 rootCert:

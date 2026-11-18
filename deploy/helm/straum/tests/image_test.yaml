@@ -1,0 +1,55 @@
+suite: image
+templates:
+  - deployment.yaml
+  - configmap.yaml
+release:
+  name: demo
+set:
+  dsn.existingSecret: straum-dsn
+  spec: "CREATE VIEW trips WITH (buckets = '1 hour') AS SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
+tests:
+  - it: pulls the published chart's release from GHCR
+    template: deployment.yaml
+    chart:
+      version: 1.2.3
+      appVersion: 1.2.3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/janbjorge/straum:1.2.3
+
+  - it: takes a tag over the published chart's release
+    template: deployment.yaml
+    chart:
+      appVersion: 1.2.3
+    set:
+      image.tag: "1.2.4"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/janbjorge/straum:1.2.4
+
+  - it: needs a tag when installed from the repository
+    template: deployment.yaml
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.tag: set a release's version"
+
+  - it: refuses the unreleased 0.0.0 as a tag
+    template: deployment.yaml
+    chart:
+      appVersion: 1.2.3
+    set:
+      image.tag: "0.0.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.tag: set a release's version"
+
+  - it: takes a digest from the repository's chart, since it names the image
+    template: deployment.yaml
+    set:
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/janbjorge/straum@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

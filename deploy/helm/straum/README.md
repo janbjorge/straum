@@ -16,9 +16,7 @@ more.
    tables' owner: the role, its grants and the publication. With
    `wal: physical`, `straum plan spec.sql --wal physical`: the role
    and its grants.
-3. The image, built from the repository's `Dockerfile` and pushed to your
-   registry.
-4. A Secret holding the DSN of the role `straum plan` made:
+3. A Secret holding the DSN of the role `straum plan` made:
 
    ```sh
    kubectl create secret generic straum-dsn \
@@ -27,7 +25,7 @@ more.
 
    straum checks the server's certificate and name against the roots built
    into it; add `?sslmode=disable` only on a network you trust.
-5. For a server whose CA isn't a public one, such as Amazon RDS's or
+4. For a server whose CA isn't a public one, such as Amazon RDS's or
    Cloud SQL's, a Secret holding its PEM roots, named in `rootCert`.
    The chart mounts them at `/etc/straum-tls/ca.pem`, which the DSN names:
 
@@ -41,13 +39,20 @@ more.
 
 ## Install
 
+Each release publishes the chart at its version, pulling its image,
+`ghcr.io/janbjorge/straum:X.Y.Z`:
+
 ```sh
-helm upgrade --install straum deploy/helm/straum \
-  --set image.repository=registry.example.com/straum \
-  --set image.tag=0.0.0 \
+helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
+  --version X.Y.Z \
   --set dsn.existingSecret=straum-dsn \
   --set-file spec=spec.sql
 ```
+
+The chart in the repository has `appVersion` 0.0.0, which no release
+publishes, so installed from a checkout it needs `--set
+image.tag=X.Y.Z`. Set `image.repository` for a mirror or an image built
+from the repository's `Dockerfile`.
 
 The pod turns ready once every table is loaded and straum is within
 `maxLag` seconds of PostgreSQL. A new spec rolls the pod, and the new pod
