@@ -18,8 +18,8 @@ use straum_domain::Identifier;
 
 use crate::complete::{View, read_views};
 
-/// How long a request waits to connect, and then for its reply, when
-/// `--timeout` doesn't say.
+/// How long a request waits for the whole exchange, connect and the
+/// reply together, when `--timeout` doesn't say.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The header in which Straum says where an answer's time went.
@@ -35,7 +35,7 @@ const MILLISECONDS_PER_SECOND: f64 = 1e3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Server {
     pub(crate) url: String,
-    /// How long to wait to connect, and then for the reply.
+    /// How long the whole exchange may take: connect, send and the reply.
     pub(crate) timeout: Duration,
 }
 
@@ -638,47 +638,96 @@ fn request_text(address: &str, request: &Request) -> String {
     text
 }
 
-/// Sends `request` to `address` and reads the reply until Straum closes
-/// the connection.
+/// Bytes one read takes from the socket.
+const READ_AT_ONCE: usize = 8192;
+
+/// Sends `request` to `address` and reads the reply until the server
+/// closes the connection. One deadline covers the exchange: a timeout
+/// on each read would let a byte at a time run forever.
 fn exchange(address: &str, request: &str, timeout: Duration) -> Result<String, Exchange> {
-    let mut stream = connect(address, timeout).map_err(Exchange::Failed)?;
+    let deadline = Instant::now() + timeout;
+    let mut stream = connect(address, deadline).map_err(Exchange::Failed)?;
+    write_within(&mut stream, request.as_bytes(), deadline)?;
+    let bytes = read_within(&mut stream, deadline)?;
+    String::from_utf8(bytes).map_err(|_| {
+        Exchange::Failed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
+}
+
+/// Writes `bytes`, waiting at most the time left. A request is a few
+/// kilobytes, which the socket buffer takes in one write, so one
+/// timeout over `write_all` keeps to the deadline.
+fn write_within(stream: &mut TcpStream, bytes: &[u8], deadline: Instant) -> Result<(), Exchange> {
     stream
-        .set_read_timeout(Some(timeout))
+        .set_write_timeout(Some(time_left(deadline)?))
         .map_err(Exchange::Failed)?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(Exchange::Failed)?;
-    let mut reply = String::new();
-    match stream.read_to_string(&mut reply) {
-        Ok(_) => Ok(reply),
-        // The read timeout ends a read as either, by platform.
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Err(Exchange::Silent)
-        }
+    match stream.write_all(bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if gave_up(&error) => Err(Exchange::Silent),
         Err(error) => Err(Exchange::Failed(error)),
     }
+}
+
+/// Reads until the server closes the connection. Each read waits only
+/// for the time left, so a slow trickle cannot outlast the deadline.
+fn read_within(stream: &mut TcpStream, deadline: Instant) -> Result<Vec<u8>, Exchange> {
+    let mut reply = Vec::new();
+    let mut buf = [0u8; READ_AT_ONCE];
+    loop {
+        stream
+            .set_read_timeout(Some(time_left(deadline)?))
+            .map_err(Exchange::Failed)?;
+        match stream.read(&mut buf) {
+            Ok(0) => return Ok(reply),
+            Ok(read) => reply.extend_from_slice(&buf[..read]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if gave_up(&error) => return Err(Exchange::Silent),
+            Err(error) => return Err(Exchange::Failed(error)),
+        }
+    }
+}
+
+/// The time left until `deadline`. A zero timeout is refused by the
+/// socket, so none left is the deadline itself, not a zero wait.
+fn time_left(deadline: Instant) -> Result<Duration, Exchange> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(Exchange::Silent);
+    }
+    Ok(left)
+}
+
+/// A read or write that gave up at its timeout. Platforms say so as
+/// either `WouldBlock` or `TimedOut`.
+fn gave_up(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// Why an exchange got no reply.
 enum Exchange {
     /// No connection, or it broke.
     Failed(io::Error),
-    /// Connected, but nothing came within the timeout.
+    /// The deadline passed before a whole reply arrived.
     Silent,
 }
 
-/// A connection to `address`, each of its addresses tried for at most
-/// `timeout`: a host that drops packets would hold `connect` for
-/// minutes.
-fn connect(address: &str, timeout: Duration) -> io::Result<TcpStream> {
+/// A connection to `address`. Every address shares `deadline`, so a
+/// host that drops packets cannot hold `connect` for minutes, and
+/// several addresses cannot each take a full timeout.
+fn connect(address: &str, deadline: Instant) -> io::Result<TcpStream> {
     let mut failure = io::Error::new(io::ErrorKind::NotFound, "no address");
     for socket_address in address.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&socket_address, timeout) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+        }
+        match TcpStream::connect_timeout(&socket_address, left) {
             Ok(stream) => return Ok(stream),
             Err(error) => failure = error,
         }

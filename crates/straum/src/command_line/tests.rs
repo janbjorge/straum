@@ -369,7 +369,7 @@ fn help_names_each_default() {
     for name in [Name::Status, Name::Views, Name::Ask, Name::Shell] {
         let default = format!("({URL_VARIABLE}, else {URL})");
         assert!(name.help().contains(&default), "{name:?}");
-        let timeout = format!("the reply ({})", TIMEOUT.as_secs());
+        let timeout = format!("the reply may take ({})", TIMEOUT.as_secs());
         assert!(name.help().contains(&timeout), "{name:?}");
     }
 }

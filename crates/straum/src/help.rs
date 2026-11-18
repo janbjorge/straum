@@ -78,7 +78,7 @@ kubectl exec deployment/straum -- /straum status
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
   --timeout SECONDS
-             how long to wait to connect, then for the reply (10)
+             how long connect, send and the reply may take (10)
   --json     print the same facts as one JSON object, null where unknown
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-status
@@ -94,7 +94,7 @@ Then each dim, its rows and the view keys that read it.
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
   --timeout SECONDS
-             how long to wait to connect, then for the reply (10)
+             how long connect, send and the reply may take (10)
   --json     print each view's keys with their types, its measures and the
              range of buckets it holds, as JSON
 
@@ -128,7 +128,7 @@ examples:
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
   --timeout SECONDS
-             how long to wait to connect, then for the reply (10)
+             how long connect, send and the reply may take (10)
   --json     print the answer as JSON: as_of and a row object per group
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-ask
@@ -165,7 +165,7 @@ Straum, in milliseconds.
 
   --url URL  where Straum serves HTTP (STRAUM_URL, else http://127.0.0.1:8080)
   --timeout SECONDS
-             how long to wait to connect, then for the reply (10)
+             how long connect, send and the reply may take (10)
 
 Guide: https://janbjorge.github.io/straum/cli.html#straum-shell
 ";

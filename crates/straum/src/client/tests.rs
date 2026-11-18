@@ -101,6 +101,122 @@ fn a_silent_server_is_given_the_timeout() {
     holder.join().unwrap();
 }
 
+/// Gaps shorter than the timeout, over a reply that takes longer, are
+/// still cut off: the timeout bounds the whole reply, not each read.
+#[test]
+fn a_trickling_reply_is_cut_off_at_the_timeout() {
+    let timeout = Duration::from_secs(1);
+    let gap = Duration::from_millis(250);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let holder = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nodelay(true).unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        // Twelve bytes, then close. At one byte per gap the total is
+        // well past the timeout, and each gap is shorter than it.
+        for byte in b"HTTP/1.1 200" {
+            if stream.write_all(&[*byte]).is_err() {
+                return;
+            }
+            std::thread::sleep(gap);
+        }
+    });
+    let slow = Server {
+        url: url.clone(),
+        timeout,
+    };
+    let (send, recv) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let result = status(&slow, Output::Text).map_err(|error| error.to_string());
+        let _ = send.send((started.elapsed(), result));
+    });
+    let (elapsed, result) = recv
+        .recv_timeout(timeout * 4)
+        .expect("the client did not return");
+    assert!(elapsed >= timeout, "{elapsed:?}");
+    assert!(
+        elapsed < timeout * 2,
+        "waited {elapsed:?}, past {timeout:?}: {result:?}"
+    );
+    assert_eq!(
+        result,
+        Err(format!(
+            "asking {url} for its status: no reply came within 1 s"
+        ))
+    );
+    holder.join().unwrap();
+}
+
+/// A reply that arrives slowly, but whole before the timeout, is read.
+#[test]
+fn a_slow_reply_within_the_timeout_is_read() {
+    let timeout = Duration::from_secs(1);
+    let pause = Duration::from_millis(200);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let holder = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n";
+        let mid = reply.len() / 2;
+        stream.write_all(&reply[..mid]).unwrap();
+        std::thread::sleep(pause);
+        stream.write_all(&reply[mid..]).unwrap();
+    });
+    let started = Instant::now();
+    let body = status(&Server { url, timeout }, Output::Text).unwrap();
+    assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
+    assert_eq!(body, "ok\n");
+    holder.join().unwrap();
+}
+
+/// No time left is the deadline, not a zero socket timeout, which the
+/// platform refuses.
+#[test]
+fn a_deadline_already_past_is_silent() {
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .unwrap();
+    assert!(matches!(time_left(deadline), Err(Exchange::Silent)));
+    let error = connect("127.0.0.1:9", deadline).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+/// A peer that never reads, and a deadline already past, end the write.
+#[test]
+fn a_write_that_cannot_finish_ends_the_exchange() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let holder = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        drop(stream);
+    });
+    let mut stream = TcpStream::connect(address).unwrap();
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let big = vec![0u8; 8 * 1024 * 1024];
+    let started = Instant::now();
+    let error = write_within(&mut stream, &big, deadline).unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(matches!(error, Exchange::Silent));
+    let past = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .unwrap();
+    assert!(matches!(
+        write_within(&mut stream, b"x", past),
+        Err(Exchange::Silent)
+    ));
+    holder.join().unwrap();
+}
+
 #[test]
 fn asks_for_the_views() {
     let url = answering(GET_VIEWS, "HTTP/1.1 200 OK\r\n\r\nview trips\n");
