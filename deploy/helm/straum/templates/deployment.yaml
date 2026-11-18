@@ -6,6 +6,7 @@ metadata:
     {{- include "straum.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds | int64 }}
   strategy:
     type: RollingUpdate
     # The new pod loads every table before the old one stops.
@@ -31,6 +32,9 @@ spec:
     spec:
       serviceAccountName: {{ include "straum.serviceAccountName" . }}
       automountServiceAccountToken: false
+      # Room for the preStop sleep and straum's 10 s drain of the asks in
+      # flight.
+      terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -75,6 +79,13 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # The Service drops a stopping pod a moment after SIGTERM; until
+          # then asks still reach it, so straum keeps serving that long.
+          # A sleep action, since the image has no shell.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           # Off while the tables load and while straum lags past maxLag.
           # A long ask can hold /readyz up, hence the timeout.
           readinessProbe:

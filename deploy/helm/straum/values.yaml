@@ -82,6 +82,12 @@ maxTransactionRows: 100000
 # and walsender on PostgreSQL, so keep it low.
 replicaCount: 1
 
+# progressDeadlineSeconds is how long a new pod may take to turn ready
+# before Kubernetes calls the rollout failed, which fails `helm --wait`
+# and `kubectl rollout status`. The new pod loads every table first, so
+# give it the longest load the spec's tables take, with room to grow.
+progressDeadlineSeconds: 3600
+
 # service is the ClusterIP Service for asks, /livez and /readyz.
 service:
   # service.port is the Service's port.

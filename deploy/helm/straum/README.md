@@ -51,7 +51,9 @@ helm upgrade --install straum deploy/helm/straum \
 
 The pod turns ready once every table is loaded and straum is within
 `maxLag` seconds of PostgreSQL. A new spec rolls the pod, and the new pod
-loads before the old one stops. `straum status` says what it has done:
+loads before the old one stops. Raise `progressDeadlineSeconds`, an hour
+by default, if a load takes longer, or Kubernetes calls the rollout
+failed. `straum status` says what it has done:
 whether it is ready and why not, its lag and the WAL PostgreSQL holds for
 it:
 

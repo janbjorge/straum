@@ -135,6 +135,11 @@ the pod out of the Service but never restarts it. A new spec rolls the
 pod. The new pod loads every table before the old one stops, so asks
 keep answering, and PostgreSQL holds two slots until the old pod is
 gone. Each replica holds its own slot and loads every table.
+Kubernetes calls a rollout failed, and `helm --wait` with it, if the
+new pod isn't ready within `progressDeadlineSeconds`, an hour by
+default; raise it if the spec's tables take longer to load. A stopping
+pod keeps serving for 5 seconds after SIGTERM, while the Service drops
+it, then finishes the asks in flight.
 
 The pod meets the Restricted Pod Security Standard: a non-root user,
 no capabilities, no privilege escalation, a read-only root filesystem

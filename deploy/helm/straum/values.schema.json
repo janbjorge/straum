@@ -47,6 +47,7 @@
     "maxRetainedWal": { "type": "string", "pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti)?$" },
     "maxTransactionRows": { "type": "integer", "minimum": 1 },
     "replicaCount": { "type": "integer", "minimum": 0 },
+    "progressDeadlineSeconds": { "type": "integer", "minimum": 1 },
     "service": {
       "type": "object",
       "additionalProperties": false,

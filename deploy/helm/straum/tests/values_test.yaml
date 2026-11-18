@@ -83,6 +83,20 @@ tests:
       - failedTemplate:
           errorPattern: "maxTransactionRows"
 
+  - it: refuses a rollout deadline of nothing
+    set:
+      progressDeadlineSeconds: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "progressDeadlineSeconds"
+
+  - it: refuses a rollout deadline that isn't whole seconds
+    set:
+      progressDeadlineSeconds: "1h"
+    asserts:
+      - failedTemplate:
+          errorPattern: "progressDeadlineSeconds"
+
   - it: refuses an empty key for the roots
     set:
       rootCert.existingSecret: rds-ca
