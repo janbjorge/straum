@@ -312,7 +312,11 @@ jobs:
           push-to-registry: true
       - name: Attach the binaries and extend the notes
         run: |
-          gh release upload "$TAG" dist/*
+          ls -la dist
+          gh release upload "$TAG" \
+            dist/straum-x86_64-unknown-linux-musl \
+            dist/straum-aarch64-unknown-linux-musl \
+            dist/SHA256SUMS
           gh release view "$TAG" --json body --jq .body > notes.md
           fence='```'
           cat >> notes.md <<NOTES
