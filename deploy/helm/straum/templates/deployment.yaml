@@ -43,10 +43,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # The Restricted Pod Security Standard. No user or group: the
-      # image's numeric user, 65532, applies, and OpenShift's
-      # restricted-v2 refuses a pod that pins one outside the namespace's
-      # range.
+      # The Restricted Pod Security Standard. No user or group is pinned.
+      # On Kubernetes the image's numeric user, 65532, applies, which
+      # runAsNonRoot can check. OpenShift's restricted-v2 refuses a user
+      # outside the project's range and assigns one from that range when
+      # none is set.
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -83,9 +84,11 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          # The Service drops a stopping pod a moment after SIGTERM; until
-          # then asks still reach it, so straum keeps serving that long.
-          # A sleep action, since the image has no shell.
+          # The hook finishes before SIGTERM, and the grace period is
+          # already counting. The Service marks the pod not ready as
+          # shutdown starts, while straum is still serving; the sleep
+          # covers that. It runs in the kubelet, so the image needs no
+          # shell, and it needs Kubernetes 1.30, where it is on by default.
           lifecycle:
             preStop:
               sleep:

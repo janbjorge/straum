@@ -141,15 +141,19 @@ keep answering, and PostgreSQL holds two slots until the old pod is
 gone. Each replica holds its own slot and loads every table.
 Kubernetes calls a rollout failed, and `helm --wait` with it, if the
 new pod isn't ready within `progressDeadlineSeconds`, an hour by
-default; raise it if the spec's tables take longer to load. A stopping
-pod keeps serving for 5 seconds after SIGTERM, while the Service drops
-it, then finishes the asks in flight.
+default; raise it if the spec's tables take longer to load. The
+chart needs Kubernetes 1.30 or newer. A stopping pod leaves the
+Service as shutdown starts, keeps serving through a 5 second pause,
+then gets SIGTERM and finishes the asks in flight. The 30 second
+grace period covers the pause and that finish, because the countdown
+starts before the pause.
 
 The pod meets the Restricted Pod Security Standard: a non-root user,
 no capabilities, no privilege escalation, a read-only root filesystem
-and the `RuntimeDefault` seccomp profile. The chart pins no user, so
-the image's, 65532, applies, and OpenShift's `restricted-v2` admits
-the pod with a user from the namespace's range. It mounts no
+and the `RuntimeDefault` seccomp profile. The chart pins no user. On
+Kubernetes the image's user, 65532, applies. OpenShift's
+`restricted-v2` refuses a pinned user outside the project's range and,
+with none pinned, assigns one from that range. It mounts no
 ServiceAccount token, since Straum never calls the Kubernetes API, and
 its only volumes are the spec and, if named, the roots below.
 
@@ -174,8 +178,11 @@ postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
 [`deploy/compose/compose.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/compose/compose.yaml)
 runs the release's image on one host. Beside it put the spec as
 `spec.sql` and the DSN in a file `dsn`, which Compose hands to Straum
-as a secret, never in its environment. Compose mounts the file as it
-is, so user 65532, the image's, must be able to read it:
+as a secret, never in its environment. A file secret is a bind
+mount of the host file, so its owner and mode are what the container
+sees, and user 65532, the image's, must be able to read it. `spec.sql`
+is mounted the same way; a file at mode 644 already is. The health
+check's `start_interval` needs Compose 2.20.2 or newer:
 
 ```sh
 printf '%s' 'postgres://straum:PASSWORD@HOST:5432/DATABASE' > dsn
@@ -230,7 +237,8 @@ docker compose push straum
 
 `task-definition.json` takes the DSN from Secrets Manager as
 `STRAUM_DSN`; fill in `ACCOUNT`, `REGION` and the image, and give the
-execution role `secretsmanager:GetSecretValue` on the secret. Run one
+execution role `secretsmanager:GetSecretValue` on the secret and
+`logs:CreateLogGroup`, which `awslogs-create-group` requires. Run one
 task with `minimumHealthyPercent` 100 and `maximumPercent` 200, so a
 new task loads before the old one stops:
 

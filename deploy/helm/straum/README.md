@@ -54,6 +54,9 @@ publishes, so installed from a checkout it needs `--set
 image.tag=X.Y.Z`. Set `image.repository` for a mirror or an image built
 from the repository's `Dockerfile`.
 
+Needs Kubernetes 1.30 or newer: the pod's pause before SIGTERM is a
+sleep action, on by default from 1.30.
+
 The pod turns ready once every table is loaded and straum is within
 `maxLag` seconds of PostgreSQL. A new spec rolls the pod, and the new pod
 loads before the old one stops. Raise `progressDeadlineSeconds`, an hour

@@ -34,8 +34,9 @@ services:
       - no-new-privileges:true
     # Size it by the cells the spec keeps.
     mem_limit: 1g
-    # Healthy once loaded and within --max-lag. Compose only reports it,
-    # never restarts on it, so a long load or a lag stops nothing.
+    # Healthy once loaded and within --max-lag. start_interval needs
+    # Compose 2.20.2. Compose only reports the check and never
+    # restarts on it, so a long load or a lag stops nothing.
     healthcheck:
       test: ["CMD", "/straum", "status", "--timeout", "3"]
       interval: 10s
