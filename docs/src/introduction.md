@@ -1,7 +1,8 @@
 # Straum
 
-Straum keeps aggregates of PostgreSQL tables in memory and answers
-asks about them over HTTP. Counts and sums come back in microseconds.
+This page says what Straum is and which work it suits. Straum keeps
+aggregates of PostgreSQL tables in memory and answers asks about them
+over HTTP. Counts and sums come back in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
 PostgreSQL reads the rows again each time. Straum reads them once,
@@ -55,19 +56,21 @@ loads the tables and follows them. Apps ask over HTTP.*
 
 ## What it is good for
 
-A question asked often, about tables that keep changing, whose answer
-is counts, sums, averages, minima or maxima by a few keys over time:
+Straum suits a question asked often, about tables that keep changing,
+whose answer is counts, sums, averages, minima or maxima by a few keys
+over time. Dashboard tiles and charts fit well: events per hour, amounts
+by region, the same `GROUP BY` on every page load.
 
-- Dashboard tiles and charts: events per hour, amounts by region, the
-  same `GROUP BY` on every page load.
-- Numbers an app shows its own users, such as usage this month or
-  orders today. Make the account a key, and your app's backend puts the
-  signed-in user's account in each ask. Straum checks no one: anyone who
-  reaches it can ask for any account
-  ([Who can ask](deploy.md#who-can-ask)).
-- A summary you maintain by hand today: a materialized view refreshed
-  on a schedule, or a rollup table kept by triggers. Straum follows
-  inserts, updates and deletes itself, and every answer is exact.
+Numbers an app shows its own users fit too, such as usage this month or
+orders today. Make the account a key, and your app's backend puts the
+signed-in user's account in each ask. Straum checks no one: anyone who
+reaches it can ask for any account
+([Who can ask](deploy.md#who-can-ask)).
+
+Straum also suits a summary you maintain by hand today, such as a
+materialized view refreshed on a schedule or a rollup table kept by
+triggers. Straum follows inserts, updates and deletes itself, and every
+answer is exact.
 
 ## What it is not
 
@@ -81,9 +84,8 @@ truth.
 Straum supports PostgreSQL 17 and newer as shipped, with no extension
 and no superuser, so managed services work. It reads a publication, or
 with `--wal physical` the WAL the server already writes
-([setup](postgresql.md)). The name is Nynorsk
-for a stream or current: Straum's input is PostgreSQL's replication
-stream.
+([setup](postgresql.md)). The name is Nynorsk for a stream or current:
+Straum's input is PostgreSQL's replication stream.
 
 > [!WARNING]
 > Straum is not stable yet. The spec, the asks and the flags may change.
