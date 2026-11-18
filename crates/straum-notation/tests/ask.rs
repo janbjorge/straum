@@ -271,6 +271,10 @@ fn a_bound_has_no_fraction_and_writes_z_for_a_zero_offset() {
     for (bound, error) in [
         ("2026-11-13T09:00:00.000Z", form),
         ("2026-11-13T09:00:00.5Z", form),
+        ("2026-11-13T09Z", form),
+        ("2026-11-13T23:59:60Z", form),
+        ("2026-11-13 09:00:00Z", form),
+        ("2026-11-13t09:00:00z", form),
         ("2026-11-13T09:00:00+00:00", "write Z for a zero offset"),
         ("2026-11-13T09:00:00-00:00", "write Z for a zero offset"),
         (
@@ -291,6 +295,16 @@ fn a_bound_has_no_fraction_and_writes_z_for_a_zero_offset() {
         let at = parse_ask(ask, &[text(bound)]).unwrap();
         assert_eq!(at.from, Some(nine), "{bound}");
     }
+    let both = [
+        text("2026-11-13T09:00:00Z"),
+        text("2026-11-14T00:00:00+01:00"),
+    ];
+    assert!(parse_ask("SELECT n FROM t WHERE bucket >= $1 AND bucket < $2", &both,).is_ok());
+    assert_each_names_what_is_wrong(&[(
+        "SELECT N FROM t WHERE bucket >= $1 AND bucket < $2",
+        &both,
+        "N: write names in lowercase, n",
+    )]);
 }
 
 #[test]

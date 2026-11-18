@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{any_contains, edit, error_lines};
+use common::{any_contains, edit, error_lines, rejects};
 use straum_domain::{Literal, RefKind};
 use straum_notation::parse;
 
@@ -584,6 +584,31 @@ fn a_dim_column_cast_in_a_later_view_is_named() {
     let message = "shop.customers.country is read ::text here and without it in another \
                    view; write it alike";
     assert!(any_contains(&error_lines(&two), message));
+}
+
+/// A bucket-list width has one spelling. The error names the one to write.
+#[test]
+fn a_bucket_width_has_one_spelling() {
+    rejects(&[
+        (
+            "'1 hour') AS",
+            "'60 minutes') AS",
+            1,
+            "bucket width '60 minutes': write '1 hour'",
+        ),
+        (
+            "'1 hour') AS",
+            "'+1 hour') AS",
+            1,
+            "bucket width '+1 hour': use '<n>",
+        ),
+        (
+            "'1 hour') AS",
+            "'1 hours') AS",
+            1,
+            "bucket width '1 hours': write '1 hour'",
+        ),
+    ]);
 }
 
 #[test]
