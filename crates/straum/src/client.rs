@@ -69,6 +69,11 @@ pub(crate) enum ClientError {
         wanted: Wanted,
         timeout: Duration,
     },
+    /// A reply whose bytes are not UTF-8, which Straum never sends.
+    NotText {
+        url: String,
+        wanted: Wanted,
+    },
     /// A chunked reply, which Straum never sends: something stands
     /// between.
     Chunked {
@@ -127,6 +132,11 @@ impl Display for ClientError {
                 "asking {url} for {}: no reply came within {} s",
                 wanted.as_str(),
                 timeout.as_secs()
+            ),
+            ClientError::NotText { url, wanted } => write!(
+                formatter,
+                "asking {url} for {}: the reply is not UTF-8 text",
+                wanted.as_str()
             ),
             ClientError::Chunked { url } => write!(
                 formatter,
@@ -510,6 +520,12 @@ fn fetch_timed(server: &Server, request: &Request) -> Result<Timed, ClientError>
                 timeout: server.timeout,
             });
         }
+        Err(Exchange::NotText) => {
+            return Err(ClientError::NotText {
+                url: url_owned,
+                wanted,
+            });
+        }
     };
     let round_trip = sent.elapsed();
     let Some((head, body)) = reply.split_once("\r\n\r\n") else {
@@ -649,12 +665,7 @@ fn exchange(address: &str, request: &str, timeout: Duration) -> Result<String, E
     let mut stream = connect(address, deadline).map_err(Exchange::Failed)?;
     write_within(&mut stream, request.as_bytes(), deadline)?;
     let bytes = read_within(&mut stream, deadline)?;
-    String::from_utf8(bytes).map_err(|_| {
-        Exchange::Failed(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stream did not contain valid UTF-8",
-        ))
-    })
+    String::from_utf8(bytes).map_err(|_| Exchange::NotText)
 }
 
 /// Writes `bytes`, waiting at most the time left. A request is a few
@@ -709,12 +720,14 @@ fn gave_up(error: &io::Error) -> bool {
     )
 }
 
-/// Why an exchange got no reply.
+/// Why an exchange got no reply to read as text.
 enum Exchange {
     /// No connection, or it broke.
     Failed(io::Error),
     /// The deadline passed before a whole reply arrived.
     Silent,
+    /// A whole reply came, but its bytes are not UTF-8.
+    NotText,
 }
 
 /// A connection to `address`. Every address shares `deadline`, so a

@@ -217,6 +217,28 @@ fn a_write_that_cannot_finish_ends_the_exchange() {
     holder.join().unwrap();
 }
 
+/// A reply whose bytes are not UTF-8 is named as such, not as a server
+/// that cannot be reached.
+#[test]
+fn a_reply_that_is_not_utf8_is_not_text() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let holder = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let mut reply = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+        reply.push(0xff);
+        let _ = stream.write_all(&reply);
+    });
+    let said = status(&server(&url), Output::Text).unwrap_err().to_string();
+    assert_eq!(
+        said,
+        format!("asking {url} for its status: the reply is not UTF-8 text")
+    );
+    holder.join().unwrap();
+}
+
 #[test]
 fn asks_for_the_views() {
     let url = answering(GET_VIEWS, "HTTP/1.1 200 OK\r\n\r\nview trips\n");
