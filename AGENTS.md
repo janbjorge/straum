@@ -35,13 +35,11 @@ which the `usage` view over `public.events AS e` and
 
 - Change under `deploy/helm/`: run `scripts/check-chart.py`. Needs uv,
   helm, the helm-unittest plugin and kubeconform.
-- Change under `deploy/compose/`, `deploy/ecs/` or `deploy/systemd/`:
-  run `scripts/check-deploy.py`. Needs uv and Docker with Compose.
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 
 The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just lint`, `just test`, `just cov`, `just layers`, `just correctness`,
-`just chart`, `just deploy`, `just docs` (live preview), `just docs-build`,
+`just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
 `just wal-bench`, `just demo`, `just try --spec FILE --data DUMP`.
@@ -91,11 +89,12 @@ change.
   benchmarks, CI and docs. One project per run or test, named so runs
   side by side never share a network, container name or port. Code
   builds the Compose file as JSON and pipes it to `docker compose -f -`;
-  docs ship a `compose.yaml`; the image builds and pushes through the
-  root `compose.yaml`. Reach a running project by name: `docker compose
-  -p NAME exec`, `port`, `ps`, `logs`, `cp`. No plain `docker run`,
-  `exec`, `build`, `network` or the like, and no testcontainers. The one
-  exception is `docker login`, which Compose lacks.
+  docs ship the files in `docs/compose/`; the image builds and pushes
+  through the root `compose.yaml`. Reach a running project by name:
+  `docker compose -p NAME exec`, `port`, `ps`, `logs`, `cp`. No plain
+  `docker run`, `exec`, `build`, `network` or the like, and no
+  testcontainers. The one exception is `docker login`, which Compose
+  lacks.
 - Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
   before changing its `ALLOWED` table.
 - No `unsafe`, no macros of our own, traits only at ports. Two

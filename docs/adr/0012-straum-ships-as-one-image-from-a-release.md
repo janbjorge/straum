@@ -36,10 +36,9 @@ Besides the chart, `deploy/` holds three more ways to run the same
 image or binary, chosen to cover where long-running services run:
 Docker Compose on one host, a systemd unit for the binary, and an
 Amazon ECS Fargate task definition with an image on top of the
-release's for the spec and CA roots. `scripts/check-deploy.py` has
-Compose read both compose files, checks the task definition against
-botocore's ECS model and runs `systemd-analyze verify` on the unit,
-failing on any warning. Cloud Run and Azure Container Apps get none:
+release's for the spec and CA roots. They are files to copy, like the
+chart, and Straum runs no tool over them. Cloud Run and Azure
+Container Apps get none:
 they throttle or stop an instance between requests, which stalls the
 stream.
 

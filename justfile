@@ -73,11 +73,6 @@ correctness:
 chart:
     scripts/check-chart.py
 
-# Compose, ECS and systemd deployment checks (needs uv and Docker)
-[group('check')]
-deploy:
-    scripts/check-deploy.py
-
 # Serve the book with live reload
 [group('docs')]
 docs:
