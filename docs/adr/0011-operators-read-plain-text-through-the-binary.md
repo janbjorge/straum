@@ -16,9 +16,9 @@ was one block printed on every argument error.
 
 A DSN never comes from an argument. `straum plan` and `straum run`
 read `STRAUM_DSN` or `--dsn-file`. `straum copy` reads `STRAUM_FROM`
-or `--from-file` for the source and `STRAUM_TO` or `--to-file` for
-the destination. When that Straum variable is unset, `plan`, `run`
-and the source of `copy` read libpq's variables, `PGHOST` and the
+for the source and `STRAUM_TO` for the destination. When that Straum
+variable is unset, `plan`, `run` and the source of `copy` read
+libpq's variables, `PGHOST` and the
 rest. The destination does not, because libpq has one set. A set
 Straum variable wins. Arguments are read by hand, as getopt reads
 long options: a flag takes the next word or the text after `=`.

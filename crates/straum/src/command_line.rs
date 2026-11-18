@@ -113,7 +113,7 @@ impl Name {
                 "--max-page-memory",
             ],
             Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", "--out"],
-            Name::Copy => &["--from-file", "--to-file"],
+            Name::Copy => &[],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
     }
@@ -183,8 +183,6 @@ pub(crate) struct Plan {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Copy {
     pub(crate) spec: String,
-    pub(crate) from_file: Option<String>,
-    pub(crate) to_file: Option<String>,
 }
 
 /// A command line Straum can't run, printed with a hint at the help.
@@ -456,11 +454,7 @@ fn copy_command(flags: &Flags) -> Result<Command, UsageError> {
     let Some(spec) = flags.spec.clone() else {
         return Err(UsageError::NeedsSpec(Name::Copy));
     };
-    Ok(Command::Copy(Copy {
-        spec,
-        from_file: flags.text("--from-file"),
-        to_file: flags.text("--to-file"),
-    }))
+    Ok(Command::Copy(Copy { spec }))
 }
 
 fn run_command(flags: &Flags) -> Result<Command, UsageError> {

@@ -778,16 +778,13 @@ fn copy_needs_both_databases() {
     missing.env_remove("STRAUM_FROM").env_remove("STRAUM_TO");
     let (code, stdout, stderr) = output(&mut missing);
     assert_eq!((code, stdout.as_str()), (Some(1), ""));
-    assert_eq!(
-        stderr,
-        "straum: set STRAUM_FROM, pass --from-file, or set PGHOST\n"
-    );
+    assert_eq!(stderr, "straum: set STRAUM_FROM or PGHOST\n");
     let mut one = straum(&["copy", &spec]);
     one.env_remove("STRAUM_TO")
         .env("STRAUM_FROM", "postgres://u@db/app?sslmode=disable");
     let (code, stdout, stderr) = output(&mut one);
     assert_eq!((code, stdout.as_str()), (Some(1), ""));
-    assert_eq!(stderr, "straum: set STRAUM_TO or pass --to-file\n");
+    assert_eq!(stderr, "straum: set STRAUM_TO\n");
 }
 
 #[test]

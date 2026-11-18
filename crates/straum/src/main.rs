@@ -69,8 +69,9 @@ enum Failure {
     Dsn(DsnError),
     NoDsn {
         variable: &'static str,
-        flag: &'static str,
-        /// `PGHOST` and the other libpq variables are a third way.
+        /// The file flag, when this command has one.
+        flag: Option<&'static str>,
+        /// `PGHOST` and the other libpq variables are another way.
         libpq: bool,
     },
     Copy(CopyError),
@@ -110,13 +111,14 @@ impl Display for Failure {
                 variable,
                 flag,
                 libpq,
-            } => {
-                if *libpq {
+            } => match (flag, libpq) {
+                (Some(flag), true) => {
                     write!(formatter, "set {variable}, pass {flag}, or set PGHOST")
-                } else {
-                    write!(formatter, "set {variable} or pass {flag}")
                 }
-            }
+                (Some(flag), false) => write!(formatter, "set {variable} or pass {flag}"),
+                (None, true) => write!(formatter, "set {variable} or PGHOST"),
+                (None, false) => write!(formatter, "set {variable}"),
+            },
             Failure::Copy(error) => error.fmt(formatter),
             Failure::RoleControl(role) => {
                 write!(formatter, "the role {role:?} holds a control character")
@@ -353,15 +355,14 @@ fn pg_env() -> PgEnv {
     }
 }
 
-/// `variable`, or the file `flag` names. The URL stays out of the command
-/// line, where other users of the machine can read it.
+/// `variable`. The URL stays out of the command line, where other users
+/// of the machine can read it.
 fn require_dsn(
     variable: &'static str,
-    file: Option<&str>,
-    flag: &'static str,
+    flag: Option<&'static str>,
     libpq: bool,
 ) -> Result<Dsn, Failure> {
-    match read_dsn(variable, file, libpq)? {
+    match read_dsn(variable, None, libpq)? {
         Some(dsn) => Ok(dsn),
         None => Err(Failure::NoDsn {
             variable,
@@ -371,16 +372,10 @@ fn require_dsn(
     }
 }
 
-fn copy_tables(
-    Copy {
-        spec,
-        from_file,
-        to_file,
-    }: Copy,
-) -> Result<(), Failure> {
+fn copy_tables(Copy { spec }: Copy) -> Result<(), Failure> {
     let spec = read_spec(&spec)?.spec;
-    let from = require_dsn("STRAUM_FROM", from_file.as_deref(), "--from-file", true)?;
-    let to = require_dsn("STRAUM_TO", to_file.as_deref(), "--to-file", false)?;
+    let from = require_dsn("STRAUM_FROM", None, true)?;
+    let to = require_dsn("STRAUM_TO", None, false)?;
     straum_pg::copy(&spec, &from, &to).map_err(Failure::Copy)
 }
 
@@ -399,7 +394,7 @@ fn run(
     let Some(dsn) = read_dsn("STRAUM_DSN", dsn_file.as_deref(), true)? else {
         return Err(Failure::NoDsn {
             variable: "STRAUM_DSN",
-            flag: "--dsn-file",
+            flag: Some("--dsn-file"),
             libpq: true,
         });
     };
@@ -523,7 +518,7 @@ mod tests {
             (
                 Failure::NoDsn {
                     variable: "STRAUM_DSN",
-                    flag: "--dsn-file",
+                    flag: Some("--dsn-file"),
                     libpq: true,
                 },
                 "set STRAUM_DSN, pass --dsn-file, or set PGHOST",
@@ -531,18 +526,18 @@ mod tests {
             (
                 Failure::NoDsn {
                     variable: "STRAUM_FROM",
-                    flag: "--from-file",
+                    flag: None,
                     libpq: true,
                 },
-                "set STRAUM_FROM, pass --from-file, or set PGHOST",
+                "set STRAUM_FROM or PGHOST",
             ),
             (
                 Failure::NoDsn {
                     variable: "STRAUM_TO",
-                    flag: "--to-file",
+                    flag: None,
                     libpq: false,
                 },
-                "set STRAUM_TO or pass --to-file",
+                "set STRAUM_TO",
             ),
             (
                 Failure::RoleControl("a\nb".into()),
@@ -600,7 +595,7 @@ mod tests {
         assert_eq!(
             Failure::NoDsn {
                 variable: "STRAUM_DSN",
-                flag: "--dsn-file",
+                flag: Some("--dsn-file"),
                 libpq: true,
             }
             .exit_code(),

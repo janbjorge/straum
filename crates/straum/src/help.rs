@@ -74,7 +74,7 @@ Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 
 /// What `straum copy --help` prints.
 pub(crate) const COPY_HELP: &str = "\
-usage: straum copy FILE [flags]
+usage: straum copy FILE
 
 Copies every table FILE names from one database into another. FILE is
 the spec. The source is read in one snapshot, and only read. The
@@ -82,9 +82,9 @@ destination gets the columns, the enums they use and the rows. Indexes,
 keys and defaults are left behind. A composite column, or a type an
 extension provides, stops the copy and names the column.
 
-  --from-file FILE  a file holding the source DSN; else STRAUM_FROM,
-                    else PGHOST and the other libpq variables
-  --to-file FILE    a file holding the destination DSN; else STRAUM_TO
+The source is STRAUM_FROM, or PGHOST and the other libpq variables
+when that is unset. The destination is STRAUM_TO. A URL is never an
+argument.
 
 Guide: https://janbjorge.github.io/straum/your-data.html
 ";

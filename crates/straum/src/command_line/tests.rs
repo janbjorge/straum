@@ -144,19 +144,7 @@ fn reads_plan() {
 fn reads_copy() {
     assert_eq!(
         command_of(&args("copy s")),
-        Ok(Command::Copy(Copy {
-            spec: "s".into(),
-            from_file: None,
-            to_file: None,
-        }))
-    );
-    assert_eq!(
-        command_of(&args("copy s --from-file from --to-file to")),
-        Ok(Command::Copy(Copy {
-            spec: "s".into(),
-            from_file: Some("from".into()),
-            to_file: Some("to".into()),
-        }))
+        Ok(Command::Copy(Copy { spec: "s".into() }))
     );
 }
 
@@ -483,7 +471,7 @@ fn command_errors() {
         ("copy", "straum copy needs a spec"),
         ("copy a b", "straum copy takes one spec"),
         ("copy s --listen x", "straum copy takes no \"--listen\""),
-        ("copy --from-file", "--from-file needs a value"),
+        ("copy --from-file", "straum copy takes no \"--from-file\""),
         ("status --spec s", "straum status takes no \"--spec\""),
         ("status --url", "--url needs a value"),
         ("views --spec s", "straum views takes no \"--spec\""),
@@ -616,7 +604,7 @@ fn reads_sizes() {
 
 /// Pieces a command line is built from: every command and flag, the
 /// shapes values take, and the characters a parser trips on.
-const PIECES: [&str; 34] = [
+const PIECES: [&str; 32] = [
     "run",
     "plan",
     "copy",
@@ -630,8 +618,6 @@ const PIECES: [&str; 34] = [
     "--timeout",
     "--json",
     "--wal",
-    "--from-file",
-    "--to-file",
     "--listen",
     "--max-lag",
     "--max-retained-wal",

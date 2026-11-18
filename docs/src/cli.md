@@ -82,23 +82,17 @@ in `FILE`, or what is wrong with the spec and exits with 1.
 ## straum copy
 
 ```text
-straum copy FILE [flags]
+straum copy FILE
 ```
 
-Copies every table the spec in `FILE` names from one database into
-another. The source is read in one snapshot, and only read. The
-destination gets the columns, the enums they use and the rows.
-Indexes, keys and defaults are left behind. A composite column, or a
-type an extension provides, stops the copy and names the column.
-
-The URLs are DSNs ([Connect](postgresql.md#2-connect)). They are read
-from the environment, or from a file, and never from the command
-line. [Try it on your data](your-data.md) runs this for you.
-
-| Flag | Meaning |
-| --- | --- |
-| `--from-file FILE` | Source DSN file; else `STRAUM_FROM`, else `PGHOST`. |
-| `--to-file FILE` | Destination DSN file; else `STRAUM_TO`. |
+Copies every table the spec in `FILE` names. The source is one
+read-only snapshot: `STRAUM_FROM`, or `PGHOST` and the other libpq
+variables when that is unset. The destination is `STRAUM_TO`. It keeps
+the columns, the enums and the rows. Indexes, keys and defaults are
+left behind. A composite column, or a type an extension provides,
+stops the copy and names the column. Neither URL is an argument
+([Connect](postgresql.md#2-connect)).
+[Try it on your data](your-data.md) runs this for you.
 
 ## straum status
 

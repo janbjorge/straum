@@ -1,9 +1,9 @@
-//! Copies the tables a spec names from one database into another.
-//! `straum copy` does this for a try: the source only answers a snapshot
-//! read, and the destination gets the columns, their enums and the rows.
-//! Indexes, keys and defaults stay behind. Text `COPY`, not binary: a
-//! binary array carries the element type's oid, and an enum's oid differs
-//! between databases.
+//! Stores one snapshot of the tables a spec names.
+//! The source is a read-only repeatable-read transaction, so the tables
+//! agree and the source is not written. The destination gets the columns,
+//! their enums and the rows. Indexes, keys and defaults stay behind.
+//! Text `COPY`, not binary: a binary array carries the element type's oid,
+//! and an enum's oid differs between databases.
 
 use std::fmt;
 
@@ -63,51 +63,37 @@ impl fmt::Display for CopyError {
     }
 }
 
-struct Relation {
-    schema: String,
-    name: String,
-    select: bool,
-}
-
 struct Column {
     name: String,
     sql_type: String,
 }
 
-struct TableCopy {
+struct Table {
     schema: String,
     name: String,
     columns: Vec<Column>,
 }
 
-struct EnumCopy {
+struct EnumType {
     schema: String,
     name: String,
     labels: Vec<String>,
 }
 
-struct Read {
-    tables: Vec<TableCopy>,
-    enums: Vec<EnumCopy>,
-}
-
-/// Copies the spec's tables from `from` into `to`.
+/// Copies one snapshot of the spec's tables from `from` into `to`.
 pub fn copy(spec: &Spec, from: &Dsn, to: &Dsn) -> Result<(), CopyError> {
     let mut source = connect(from)?;
-    // Read only, so this cannot write to their database. One snapshot, so
-    // the tables agree with each other.
-    run(&mut source, from, "SET default_transaction_read_only = on")?;
     run(
         &mut source,
         from,
         "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     )?;
-    let read = read(&mut source, from, spec)?;
+    let (tables, enums) = snapshot(&mut source, from, spec)?;
     let mut dest = connect(to)?;
     run(&mut dest, to, "BEGIN")?;
-    create(&mut dest, to, &read)?;
-    for table in &read.tables {
-        copy_rows(&mut source, from, &mut dest, to, table)?;
+    create(&mut dest, to, &tables, &enums)?;
+    for table in &tables {
+        copy_table(&mut source, from, &mut dest, to, table)?;
     }
     run(&mut dest, to, "COMMIT")?;
     run(&mut source, from, "COMMIT")?;
@@ -137,166 +123,145 @@ fn failed(dsn: &Dsn, error: &Error) -> CopyError {
     }
 }
 
-fn read(connection: &mut Connection, dsn: &Dsn, spec: &Spec) -> Result<Read, CopyError> {
-    let pairs = table_pairs(spec);
-    let relations = relations(connection, dsn, &pairs)?;
-    let rows = columns(connection, dsn, &pairs)?;
+/// The tables and enums in the open snapshot.
+fn snapshot(
+    connection: &mut Connection,
+    dsn: &Dsn,
+    spec: &Spec,
+) -> Result<(Vec<Table>, Vec<EnumType>), CopyError> {
+    let rows = query(connection, dsn, &catalog(&table_pairs(spec)))?;
     let mut enums = Vec::new();
     let mut tables = Vec::new();
     for table in spec.tables() {
-        let schema = table.schema.as_str();
-        let name = table.name.as_str();
-        let Some(relation) = find_relation(&relations, schema, name) else {
-            return Err(CopyError::Missing {
-                schema: schema.to_owned(),
-                table: name.to_owned(),
-            });
-        };
-        if !relation.select {
-            return Err(CopyError::Unreadable {
-                schema: schema.to_owned(),
-                table: name.to_owned(),
-            });
-        }
-        let columns = take_columns(&rows, dsn, schema, name, &mut enums)?;
-        if columns.is_empty() {
-            return Err(CopyError::Empty {
-                schema: schema.to_owned(),
-                table: name.to_owned(),
-            });
-        }
-        tables.push(TableCopy {
-            schema: schema.to_owned(),
-            name: name.to_owned(),
-            columns,
-        });
+        tables.push(one_table(
+            &rows,
+            dsn,
+            table.schema.as_str(),
+            table.name.as_str(),
+            &mut enums,
+        )?);
     }
-    let enums = enum_labels(connection, dsn, enums)?;
-    Ok(Read { tables, enums })
+    Ok((tables, enum_labels(connection, dsn, enums)?))
 }
 
-fn relations(
-    connection: &mut Connection,
-    dsn: &Dsn,
-    pairs: &str,
-) -> Result<Vec<Relation>, CopyError> {
-    let rows = query(
-        connection,
-        dsn,
-        &format!(
-            "SELECT n.nspname, c.relname, has_table_privilege(c.oid, 'SELECT')
-               FROM pg_class c
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-                AND (n.nspname, c.relname) IN (VALUES {pairs})"
-        ),
-    )?;
-    let mut relations = Vec::new();
-    for row in rows {
-        let schema = field(&row, 0, dsn)?;
-        let name = field(&row, 1, dsn)?;
-        let select = field(&row, 2, dsn)?;
-        relations.push(Relation {
-            schema,
-            name,
-            select: select == "t",
-        });
-    }
-    Ok(relations)
-}
-
-fn columns(
-    connection: &mut Connection,
-    dsn: &Dsn,
-    pairs: &str,
-) -> Result<Vec<Vec<Option<String>>>, CopyError> {
-    query(
-        connection,
-        dsn,
-        &format!(
-            "SELECT n.nspname, c.relname, a.attname,
-                    format_type(u.oid, CASE WHEN t.typtype = 'd' THEN t.typtypmod
-                                            ELSE a.atttypmod END),
-                    u.typtype, un.nspname, u.typname,
-                    et.typtype, etn.nspname, et.typname
-               FROM pg_attribute a
-               JOIN pg_class c ON c.oid = a.attrelid
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-               JOIN pg_type t ON t.oid = a.atttypid
-               JOIN pg_type u ON u.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype
-                                              ELSE t.oid END
-               JOIN pg_namespace un ON un.oid = u.typnamespace
-               LEFT JOIN pg_type et ON et.oid = u.typelem
-               LEFT JOIN pg_namespace etn ON etn.oid = et.typnamespace
-              WHERE a.attnum > 0 AND NOT a.attisdropped
-                AND (n.nspname, c.relname) IN (VALUES {pairs})
-              ORDER BY n.nspname, c.relname, a.attnum"
-        ),
+fn catalog(pairs: &str) -> String {
+    format!(
+        "SELECT n.nspname, c.relname, has_table_privilege(c.oid, 'SELECT'),
+                a.attname,
+                format_type(u.oid, CASE WHEN t.typtype = 'd' THEN t.typtypmod
+                                        ELSE a.atttypmod END),
+                u.typtype, un.nspname, u.typname,
+                et.typtype, etn.nspname, et.typname
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           LEFT JOIN pg_attribute a
+             ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+           LEFT JOIN pg_type t ON t.oid = a.atttypid
+           LEFT JOIN pg_type u ON u.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype
+                                               ELSE t.oid END
+           LEFT JOIN pg_namespace un ON un.oid = u.typnamespace
+           LEFT JOIN pg_type et ON et.oid = u.typelem
+           LEFT JOIN pg_namespace etn ON etn.oid = et.typnamespace
+          WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND (n.nspname, c.relname) IN (VALUES {pairs})
+          ORDER BY n.nspname, c.relname, a.attnum"
     )
 }
 
-/// The columns of `schema.table`, and any enum they need, from `rows`.
-fn take_columns(
+fn one_table(
     rows: &[Vec<Option<String>>],
     dsn: &Dsn,
     schema: &str,
-    table: &str,
+    name: &str,
     enums: &mut Vec<(String, String)>,
-) -> Result<Vec<Column>, CopyError> {
+) -> Result<Table, CopyError> {
+    let mut saw = false;
+    let mut readable = false;
     let mut columns = Vec::new();
     for row in rows {
         if row.first().and_then(Option::as_deref) != Some(schema) {
             continue;
         }
-        if row.get(1).and_then(Option::as_deref) != Some(table) {
+        if row.get(1).and_then(Option::as_deref) != Some(name) {
             continue;
         }
-        let name = field(row, 2, dsn)?;
-        let formatted = field(row, 3, dsn)?;
-        let sql_type = match kind(row, dsn)? {
-            Kind::Builtin => formatted,
-            Kind::Enum { array } => enum_type(row, array, enums, dsn)?,
+        saw = true;
+        readable = field(row, 2, dsn)? == "t";
+        if !readable {
+            continue;
+        }
+        let Some(column) = row.get(3).and_then(Option::as_deref) else {
+            continue;
         };
-        columns.push(Column { name, sql_type });
+        columns.push(Column {
+            name: column.to_owned(),
+            sql_type: sql_type(row, enums, dsn)?,
+        });
     }
-    Ok(columns)
+    if !saw {
+        return Err(CopyError::Missing {
+            schema: schema.to_owned(),
+            table: name.to_owned(),
+        });
+    }
+    if !readable {
+        return Err(CopyError::Unreadable {
+            schema: schema.to_owned(),
+            table: name.to_owned(),
+        });
+    }
+    if columns.is_empty() {
+        return Err(CopyError::Empty {
+            schema: schema.to_owned(),
+            table: name.to_owned(),
+        });
+    }
+    Ok(Table {
+        schema: schema.to_owned(),
+        name: name.to_owned(),
+        columns,
+    })
 }
 
-enum Kind {
-    Builtin,
-    Enum { array: bool },
-}
-
-fn kind(row: &[Option<String>], dsn: &Dsn) -> Result<Kind, CopyError> {
-    if row.get(7).and_then(Option::as_deref) == Some("e") {
-        return Ok(Kind::Enum { array: true });
+/// The destination type of one column. A domain is its base type, so the
+/// destination does not need the domain.
+fn sql_type(
+    row: &[Option<String>],
+    enums: &mut Vec<(String, String)>,
+    dsn: &Dsn,
+) -> Result<String, CopyError> {
+    if row.get(8).and_then(Option::as_deref) == Some("e") {
+        return enum_type(row, 9, true, enums, dsn);
     }
-    if field(row, 4, dsn)? == "e" {
-        return Ok(Kind::Enum { array: false });
+    if field(row, 5, dsn)? == "e" {
+        return enum_type(row, 6, false, enums, dsn);
     }
-    if field(row, 5, dsn)? == "pg_catalog" {
-        return Ok(Kind::Builtin);
+    if field(row, 6, dsn)? == "pg_catalog" {
+        return field(row, 4, dsn);
     }
     Err(CopyError::Unsupported {
         schema: field(row, 0, dsn)?,
         table: field(row, 1, dsn)?,
-        column: field(row, 2, dsn)?,
-        type_name: field(row, 3, dsn)?,
+        column: field(row, 3, dsn)?,
+        type_name: field(row, 4, dsn)?,
     })
 }
 
 fn enum_type(
     row: &[Option<String>],
+    at: usize,
     array: bool,
     enums: &mut Vec<(String, String)>,
     dsn: &Dsn,
 ) -> Result<String, CopyError> {
-    let (schema, name) = if array {
-        (field(row, 8, dsn)?, field(row, 9, dsn)?)
-    } else {
-        (field(row, 5, dsn)?, field(row, 6, dsn)?)
-    };
-    remember(enums, &schema, &name);
+    let schema = field(row, at, dsn)?;
+    let name = field(row, at + 1, dsn)?;
+    if !enums
+        .iter()
+        .any(|(have_schema, have_name)| have_schema == &schema && have_name == &name)
+    {
+        enums.push((schema.clone(), name.clone()));
+    }
     let mut sql_type = qualified(&schema, &name);
     if array {
         sql_type.push_str("[]");
@@ -304,20 +269,11 @@ fn enum_type(
     Ok(sql_type)
 }
 
-fn remember(enums: &mut Vec<(String, String)>, schema: &str, name: &str) {
-    for (have_schema, have_name) in enums.iter() {
-        if have_schema == schema && have_name == name {
-            return;
-        }
-    }
-    enums.push((schema.to_owned(), name.to_owned()));
-}
-
 fn enum_labels(
     connection: &mut Connection,
     dsn: &Dsn,
     enums: Vec<(String, String)>,
-) -> Result<Vec<EnumCopy>, CopyError> {
+) -> Result<Vec<EnumType>, CopyError> {
     if enums.is_empty() {
         return Ok(Vec::new());
     }
@@ -354,7 +310,7 @@ fn enum_labels(
             }
             labels.push(field(row, 2, dsn)?);
         }
-        copied.push(EnumCopy {
+        copied.push(EnumType {
             schema,
             name,
             labels,
@@ -363,15 +319,20 @@ fn enum_labels(
     Ok(copied)
 }
 
-fn create(connection: &mut Connection, dsn: &Dsn, read: &Read) -> Result<(), CopyError> {
-    for schema in schemas(read) {
+fn create(
+    connection: &mut Connection,
+    dsn: &Dsn,
+    tables: &[Table],
+    enums: &[EnumType],
+) -> Result<(), CopyError> {
+    for schema in schemas(tables, enums) {
         run(
             connection,
             dsn,
             &format!("CREATE SCHEMA IF NOT EXISTS {}", escape_identifier(&schema)),
         )?;
     }
-    for enum_type in &read.enums {
+    for enum_type in enums {
         let mut labels = Vec::new();
         for label in &enum_type.labels {
             labels.push(escape_literal(label));
@@ -386,30 +347,30 @@ fn create(connection: &mut Connection, dsn: &Dsn, read: &Read) -> Result<(), Cop
             ),
         )?;
     }
-    for table in &read.tables {
+    for table in tables {
         run(connection, dsn, &create_table(table))?;
     }
     Ok(())
 }
 
-fn schemas(read: &Read) -> Vec<String> {
+fn schemas(tables: &[Table], enums: &[EnumType]) -> Vec<String> {
     let mut schemas = Vec::new();
-    for table in &read.tables {
-        remember_schema(&mut schemas, &table.schema);
+    for table in tables {
+        remember(&mut schemas, &table.schema);
     }
-    for enum_type in &read.enums {
-        remember_schema(&mut schemas, &enum_type.schema);
+    for enum_type in enums {
+        remember(&mut schemas, &enum_type.schema);
     }
     schemas
 }
 
-fn remember_schema(schemas: &mut Vec<String>, schema: &str) {
+fn remember(schemas: &mut Vec<String>, schema: &str) {
     if !schemas.iter().any(|have| have == schema) {
         schemas.push(schema.to_owned());
     }
 }
 
-fn create_table(table: &TableCopy) -> String {
+fn create_table(table: &Table) -> String {
     let mut columns = Vec::new();
     for column in &table.columns {
         columns.push(format!(
@@ -425,12 +386,12 @@ fn create_table(table: &TableCopy) -> String {
     )
 }
 
-fn copy_rows(
+fn copy_table(
     source: &mut Connection,
     from: &Dsn,
     dest: &mut Connection,
     to: &Dsn,
-    table: &TableCopy,
+    table: &Table,
 ) -> Result<(), CopyError> {
     let list = column_list(table);
     let qualified = qualified(&table.schema, &table.name);
@@ -446,7 +407,7 @@ fn copy_rows(
     dest.finish_copy_in().map_err(|error| failed(to, &error))
 }
 
-fn column_list(table: &TableCopy) -> String {
+fn column_list(table: &Table) -> String {
     let mut names = Vec::new();
     for column in &table.columns {
         names.push(escape_identifier(&column.name));
@@ -464,15 +425,6 @@ fn table_pairs(spec: &Spec) -> String {
         ));
     }
     pairs.join(", ")
-}
-
-fn find_relation<'a>(relations: &'a [Relation], schema: &str, name: &str) -> Option<&'a Relation> {
-    for relation in relations {
-        if relation.schema == schema && relation.name == name {
-            return Some(relation);
-        }
-    }
-    None
 }
 
 fn qualified(schema: &str, name: &str) -> String {
