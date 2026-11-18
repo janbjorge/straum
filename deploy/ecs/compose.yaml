@@ -1,0 +1,16 @@
+# Builds and pushes the image the task definition runs: the release's
+# image with spec.sql and RDS's global-bundle.pem beside this file.
+#
+#   export STRAUM_VERSION=X.Y.Z
+#   export STRAUM_ECS_IMAGE=ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1
+#   docker compose build straum && docker compose push straum
+name: straum-ecs
+services:
+  straum:
+    image: ${STRAUM_ECS_IMAGE:?set STRAUM_ECS_IMAGE to the ECR repository and tag to push}
+    build:
+      context: .
+      args:
+        STRAUM_VERSION: ${STRAUM_VERSION:?set STRAUM_VERSION to a release, such as 1.2.3}
+      platforms:
+        - linux/arm64

@@ -25,11 +25,21 @@ The image is the static musl binary from `rust:1.100.0-alpine` in
 running as user 65532 on a read-only root. The chart,
 `deploy/helm/straum` (Helm 4, API v2), is a Deployment, spec ConfigMap,
 DSN Secret, optional CA bundle Secret, ClusterIP Service and
-ServiceAccount under the Restricted
-Pod Security Standard, pinning no user so OpenShift's `restricted-v2`
-admits it; no PDB, HPA, Ingress or NetworkPolicy.
-`scripts/check-chart.py` runs `helm lint --strict`, helm-unittest and
-kubeconform on Kubernetes 1.33 and 1.36.
+ServiceAccount under the Restricted Pod Security Standard, pinning no
+user so OpenShift's `restricted-v2` admits it; no PDB, HPA, Ingress or
+NetworkPolicy. `scripts/check-chart.py` runs `helm lint --strict`,
+helm-unittest and kubeconform on Kubernetes 1.33 and 1.36.
+
+Besides the chart, `deploy/` holds three more ways to run the same
+image or binary, chosen to cover where long-running services run:
+Docker Compose on one host, a systemd unit for the binary, and an
+Amazon ECS Fargate task definition with an image on top of the
+release's for the spec and CA roots. `scripts/check-deploy.py` has
+Compose read both compose files, checks the task definition against
+botocore's ECS model and runs `systemd-analyze verify` on the unit,
+failing on any warning. Cloud Run and Azure Container Apps get none:
+they throttle or stop an instance between requests, which stalls the
+stream.
 
 The name is Straum, Nynorsk for a stream, everywhere: crates, binary,
 `STRAUM_DSN`, default role and publication, slot prefix,

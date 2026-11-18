@@ -1,0 +1,56 @@
+{
+  "family": "straum",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "cpu": "512",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/straum-execution",
+  "containerDefinitions": [
+    {
+      "name": "straum",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1",
+      "essential": true,
+      "command": ["run", "/etc/straum/spec.sql", "--listen", "0.0.0.0:8080"],
+      "secrets": [
+        {
+          "name": "STRAUM_DSN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:straum-dsn"
+        }
+      ],
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 8080,
+          "protocol": "tcp",
+          "appProtocol": "http"
+        }
+      ],
+      "user": "65532",
+      "readonlyRootFilesystem": true,
+      "linuxParameters": {
+        "capabilities": { "drop": ["ALL"] }
+      },
+      "healthCheck": {
+        "command": ["CMD", "/straum", "status", "--timeout", "3"],
+        "interval": 60,
+        "timeout": 5,
+        "retries": 10,
+        "startPeriod": 300
+      },
+      "stopTimeout": 20,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/straum",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "straum",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

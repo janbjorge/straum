@@ -1,0 +1,47 @@
+# Straum on one host with Docker Compose: the release's image, the spec
+# from spec.sql beside this file, and the DSN from the file dsn, read
+# through a Compose secret so it never sits in the environment.
+#
+#   STRAUM_VERSION=X.Y.Z docker compose -p straum up -d
+#   docker compose -p straum exec straum /straum status
+name: straum
+services:
+  straum:
+    image: ghcr.io/janbjorge/straum:${STRAUM_VERSION:?set STRAUM_VERSION to a release, such as 1.2.3}
+    command:
+      - run
+      - /etc/straum/spec.sql
+      - --dsn-file
+      - /run/secrets/dsn
+      - --listen
+      - 0.0.0.0:8080
+    secrets:
+      - dsn
+    volumes:
+      - ./spec.sql:/etc/straum/spec.sql:ro
+    # Only this host reaches it: Straum has no authentication or TLS.
+    ports:
+      - 127.0.0.1:8080:8080
+    # Straum exits 1 on any failure and keeps no state, so starting it
+    # again is the whole recovery; it loads every table from a new slot.
+    restart: unless-stopped
+    # Room for straum's 10 s drain of the asks in flight.
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Size it by the cells the spec keeps.
+    mem_limit: 1g
+    # Healthy once loaded and within --max-lag. Compose only reports it,
+    # never restarts on it, so a long load or a lag stops nothing.
+    healthcheck:
+      test: ["CMD", "/straum", "status", "--timeout", "3"]
+      interval: 10s
+      timeout: 5s
+      start_period: 1h
+      start_interval: 5s
+secrets:
+  dsn:
+    file: ./dsn

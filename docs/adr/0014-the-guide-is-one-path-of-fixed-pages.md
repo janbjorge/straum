@@ -1,6 +1,6 @@
 # ADR-0014: The guide is one path of fixed pages
 
-Status: Accepted 2026-11-16; revised 2026-11-17
+Status: Accepted 2026-11-16; revised 2026-11-18
 
 ## Context
 
@@ -36,8 +36,10 @@ before leaves:
    cell keeps per measure.
 6. `postgresql.md`, connecting a database: logical and physical setup,
    the start checks, what Straum costs the server.
-7. `deploy.md`, running it for real: the binary, the image, the chart.
-   Chart values live in `deploy/helm/straum/README.md`.
+7. `deploy.md`, running it for real: the binary, the image, the chart,
+   Docker Compose, systemd and Amazon ECS. Chart values live in
+   `deploy/helm/straum/README.md`; the other files under `deploy/`
+   carry a comment each and the page says the rest.
 8. `performance.md`, what to expect: the benchmark and memory sizing.
 
 Off the path, looked up rather than read:

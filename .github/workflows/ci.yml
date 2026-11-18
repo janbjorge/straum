@@ -147,6 +147,16 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: python3 scripts/check-chart.py
 
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The botocore scripts/check-deploy.py pins, for ECS's API model.
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet botocore==1.40.76
+          "$RUNNER_TEMP/venv/bin/python" scripts/check-deploy.py
+
   image:
     runs-on: ubuntu-latest
     steps:
@@ -208,7 +218,7 @@ jobs:
   # index annotations come from the repository's description and license;
   # provenance and SBOM attestations are signed through GitHub OIDC.
   publish:
-    needs: [gate, format, lint, architecture, test, correctness, chart, image]
+    needs: [gate, format, lint, architecture, test, correctness, chart, deploy, image]
     if: needs.gate.outputs.publish == 'true'
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:

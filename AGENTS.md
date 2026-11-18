@@ -33,13 +33,15 @@ dataset. In docs, ADR-0014 says which pages use the taxi trips and
 which the `usage` view over `public.events AS e` and
 `public.accounts AS a`.
 
-- Change under `deploy/`: run `scripts/check-chart.py`. Needs uv,
+- Change under `deploy/helm/`: run `scripts/check-chart.py`. Needs uv,
   helm, the helm-unittest plugin and kubeconform.
+- Change under `deploy/compose/`, `deploy/ecs/` or `deploy/systemd/`:
+  run `scripts/check-deploy.py`. Needs uv and Docker with Compose.
 - Change under `docs/`: run `mdbook build docs`. CI uses mdBook 0.5.4.
 
 The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just lint`, `just test`, `just cov`, `just layers`, `just correctness`,
-`just chart`, `just docs` (live preview), `just docs-build`,
+`just chart`, `just deploy`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
 `just wal-bench`, `just demo`, `just try --spec FILE --data DUMP`.

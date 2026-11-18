@@ -1,7 +1,9 @@
 # Deploying Straum
 
 How do you run Straum for real? As one static binary, its image, or the
-Helm chart, next to the apps that ask it. Set up
+Helm chart, next to the apps that ask it: on
+[Kubernetes](#kubernetes), with [Docker Compose](#docker-compose),
+under [systemd](#systemd) or on [Amazon ECS](#amazon-ecs). Set up
 [PostgreSQL](postgresql.md) first; every flag is under
 [Command line](cli.md).
 
@@ -147,13 +149,13 @@ The pod meets the Restricted Pod Security Standard: a non-root user,
 no capabilities, no privilege escalation, a read-only root filesystem
 and the `RuntimeDefault` seccomp profile. The chart pins no user, so
 the image's, 65532, applies, and OpenShift's `restricted-v2` admits
-the pod with a user from the namespace's range. It mounts no ServiceAccount
-token, since Straum never calls the Kubernetes API, and its only
-volumes are the spec and, if named, the roots below.
+the pod with a user from the namespace's range. It mounts no
+ServiceAccount token, since Straum never calls the Kubernetes API, and
+its only volumes are the spec and, if named, the roots below.
 
 A server whose CA isn't one of Straum's built-in roots, such as Amazon
-RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), needs its PEM roots in
-a Secret. Name it in `rootCert.existingSecret`, and the key in
+RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), needs its
+PEM roots in a Secret. Name it in `rootCert.existingSecret`, and the key in
 `rootCert.key` (`ca.pem` by default). The chart mounts the roots at
 `/etc/straum-tls/ca.pem`, and the DSN names them:
 
@@ -166,5 +168,86 @@ helm upgrade --install straum oci://ghcr.io/janbjorge/charts/straum \
 ```text
 postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
 ```
+
+## Docker Compose
+
+[`deploy/compose/compose.yaml`](https://github.com/janbjorge/straum/blob/main/deploy/compose/compose.yaml)
+runs the release's image on one host. Beside it put the spec as
+`spec.sql` and the DSN in a file `dsn`, which Compose hands to Straum
+as a secret, never in its environment. Compose mounts the file as it
+is, so user 65532, the image's, must be able to read it:
+
+```sh
+printf '%s' 'postgres://straum:PASSWORD@HOST:5432/DATABASE' > dsn
+sudo chown 65532 dsn && chmod 400 dsn
+STRAUM_VERSION=X.Y.Z docker compose -p straum up -d
+docker compose -p straum exec straum /straum status
+```
+
+Straum publishes on `127.0.0.1:8080`, so only the host reaches it
+([Who can ask](#who-can-ask)). Compose starts it again after a failure.
+Its health check is `straum status`, healthy once loaded and within
+`--max-lag`; Compose only reports it, so a long load stops nothing.
+
+## systemd
+
+[`deploy/systemd/straum.service`](https://github.com/janbjorge/straum/blob/main/deploy/systemd/straum.service)
+runs the binary from [Get straum](#get-straum) on `127.0.0.1:8080` as
+a user made for the service, which can write nowhere. It reads the
+spec at `/etc/straum/spec.sql` and the DSN from `/etc/straum/dsn`,
+handed over as a credential:
+
+```sh
+sudo install -d -m 755 /etc/straum
+sudo install -m 644 usage.sql /etc/straum/spec.sql
+sudo install -m 600 /dev/stdin /etc/straum/dsn \
+  <<< 'postgres://straum:PASSWORD@HOST:5432/DATABASE'
+sudo install -m 644 straum.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now straum
+journalctl -u straum -f
+```
+
+After a failure systemd starts Straum again 10 seconds later, with no
+limit on how often. Set `MemoryMax` by the
+[cells](how-it-works.md#cells) the spec keeps.
+
+## Amazon ECS
+
+[`deploy/ecs/`](https://github.com/janbjorge/straum/tree/main/deploy/ecs)
+runs Straum as a Fargate task. A task mounts no file, so the spec, and
+RDS's `global-bundle.pem` for the DSN's
+`sslrootcert=/etc/straum-tls/ca.pem`, are built into an image on top of
+the release's. Put both beside the `Dockerfile`, or drop its bundle
+line for a server with a public CA, then build and push to ECR:
+
+```sh
+export STRAUM_VERSION=X.Y.Z
+export STRAUM_ECS_IMAGE=ACCOUNT.dkr.ecr.REGION.amazonaws.com/straum:1
+docker compose build straum
+docker compose push straum
+```
+
+`task-definition.json` takes the DSN from Secrets Manager as
+`STRAUM_DSN`; fill in `ACCOUNT`, `REGION` and the image, and give the
+execution role `secretsmanager:GetSecretValue` on the secret. Run one
+task with `minimumHealthyPercent` 100 and `maximumPercent` 200, so a
+new task loads before the old one stops:
+
+```sh
+aws ecs register-task-definition --cli-input-json file://task-definition.json
+aws ecs create-service --cluster CLUSTER --service-name straum \
+  --task-definition straum --desired-count 1 --launch-type FARGATE \
+  --deployment-configuration minimumHealthyPercent=100,maximumPercent=200 \
+  --network-configuration 'awsvpcConfiguration={subnets=[SUBNET],securityGroups=[GROUP]}'
+```
+
+ECS has one health check where Kubernetes has two, and it replaces a
+task that fails it. The check is `straum status`, healthy once loaded
+and within `--max-lag`. It allows 15 minutes for a load (a 300-second
+start period, then 10 failures 60 seconds apart) and 10 minutes of lag
+before ECS starts a new task. These are ECS's limits, so a spec whose
+tables take longer to load can't run on ECS. Its security group
+decides who can ask ([Who can ask](#who-can-ask)).
 
 Next: [Performance](performance.md), what to expect from a deployment.
