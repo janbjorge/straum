@@ -1,14 +1,13 @@
 # Aggregates 101
 
-What does a measure cost? Straum never holds a row. It holds
-[cells](how-it-works.md#cells), and that asks two things of every
-aggregate:
+This page says what each aggregate keeps in a cell, and why. Straum never
+holds a row. It holds [cells](how-it-works.md#cells), and that asks two
+things of every aggregate.
 
-1. **Can cells merge?** An ask reads many cells and merges them into
-   one answer per group.
-2. **Can a row leave?** A `DELETE` or `UPDATE` in PostgreSQL takes a
-   row out of a cell, and the cell must then read as if the row had
-   never been there.
+The first is whether cells can merge. An ask reads many cells and merges
+them into one answer per group. The second is whether a row can leave. A
+`DELETE` or `UPDATE` in PostgreSQL takes a row out of a cell, and the cell
+must then read as if the row had never been there.
 
 Which aggregates Straum has, and what each cell keeps for them, follow
 from these two questions.
@@ -30,19 +29,16 @@ median        20            60                    45
 ```
 
 Merge the two hours from their own answers and compare with the last
-column:
+column. The `min` is right: the smaller of 10 and 40 is 10. The `sum` is
+right: 60 and 720 add to 780. The `count` is right: 3 and 5 add to 8. The
+merge of two counts is a sum, not a count.
 
-- `min`: the smaller of 10 and 40 is 10. Right.
-- `sum`: 60 and 720 add to 780. Right.
-- `count`: 3 and 5 add to 8. Right. The merge of two counts is a sum,
-  not a count.
-- `avg`: the average of 20 and 144 is 82, not 97.5. Wrong: the second
-  hour has more rows and must weigh more.
-- `median`: the median of 20 and 60 is 40, not 45. Wrong, and no
-  weight fixes it.
+The `avg` is wrong. The average of 20 and 144 is 82, not 97.5, because the
+second hour has more rows and must weigh more. The `median` is wrong too.
+The median of 20 and 60 is 40, not 45, and no weight fixes it.
 
-Aggregates fall in three classes by what a part must keep for the
-merge to come out right:
+Aggregates fall in three classes by what a part must keep for the merge to
+come out right:
 
 | Class | A part keeps | Examples |
 | --- | --- | --- |
@@ -51,30 +47,30 @@ merge to come out right:
 | Holistic | more as it holds more values | median, percentiles, mode, `count(DISTINCT c)` |
 
 `avg` is right once each hour keeps its sum and count instead of its
-average: 780 over 8 is 97.5. A median has no such handful of numbers.
-To merge medians exactly each part must keep its values, or a count
-per value.
+average: 780 over 8 is 97.5. A median has no such handful of numbers. To
+merge medians exactly each part must keep its values, or a count per
+value.
 
 ## Removing a row
 
-Delete the event with an amount of 10 from the first hour.
+Delete the event with an amount of 10 from the first hour. The `sum` and
+`count` subtract: 60 less 10 is 50, 3 less 1 is 2. The cell needs nothing
+it does not already hold.
 
-- `sum` and `count` subtract: 60 less 10 is 50, 3 less 1 is 2. The
-  cell needs nothing it does not already hold.
-- `min` was 10. The new minimum is 20, and a cell that kept only "10"
-  has no way to know that. PostgreSQL would scan the rows again;
-  Straum has no rows.
+The `min` was 10. The new minimum is 20, and a cell that kept only "10" has
+no way to know that. PostgreSQL would scan the rows again; Straum has no
+rows.
 
-So a second split, apart from the first: an aggregate whose state can
-subtract takes a delete, and one that keeps only the winner does not.
+So there is a second split, apart from the first. An aggregate whose state
+can subtract takes a delete, and one that keeps only the winner does not.
 `min` and `max` merge well and delete badly.
 
-Straum's way out is to keep more than the answer. For `min` and `max`
-a cell keeps a count per value, `10: 1, 20: 1, 30: 1`. Deleting 10
-drops its count to zero and 20 is the smallest value left. The same
-count per value is how `count(DISTINCT c)` knows when a value's last
-row has gone, and `bool_and` and `bool_or` keep a count of true and a
-count of false for the same reason.
+Straum's way out is to keep more than the answer. For `min` and `max` a
+cell keeps a count per value, `10: 1, 20: 1, 30: 1`. Deleting 10 drops its
+count to zero, and 20 is the smallest value left. The same count per value
+is how `count(DISTINCT c)` knows when a value's last row has gone. The
+`bool_and` and `bool_or` aggregates keep a count of true and a count of
+false for the same reason.
 
 ## What a cell keeps
 
@@ -89,32 +85,31 @@ count of false for the same reason.
 | `bool_and(c)`, `bool_or(c)` | a count of true and of false | adding both | subtracting one |
 
 Every state is a count or a sum, so every one both merges and takes a
-delete, and every answer is exact. Sums are integers for that reason:
-a float sum gives a different answer by the order it was added in and
+delete, and every answer is exact. Sums are integers for that reason. A
+float sum gives a different answer by the order it was added in, and it
 can't be subtracted from exactly, so Straum refuses float columns.
 
-Two things follow that a spec's author can see:
+Two things follow that a spec's author can see. The first is memory. The
+first three rows cost a few numbers a cell. `min`, `max`, `percentile_disc`
+and `count(DISTINCT c)` cost by the distinct values in each cell. A
+percentile beside a `min` or `max` on its column costs nothing more. A
+`min` or `max` keeps a value in as few bytes as its cell's values need:
+`max(fare_amount)` per hour and dropoff zone keeps 14,943,826 fares of the
+[taxi trips](performance.md) in 76 MiB. A `count(DISTINCT c)` of numbers
+keeps them the same way, in fewer bytes than a `max`. One of `text`, `uuid`,
+`date` or `boolean` keeps a hash map per cell, over 15 times as many bytes
+in a test of 40 values a cell. Either holds every distinct value.
 
-- Memory: the first three rows cost a few numbers a cell. `min`,
-  `max`, `percentile_disc` and `count(DISTINCT c)` cost by the
-  distinct values in each cell; a percentile beside a `min` or `max`
-  on its column costs nothing more. A `min` or `max` keeps a value in as few bytes as its cell's
-  values need: `max(fare_amount)` per hour and dropoff zone keeps
-  14,943,826 fares of the [taxi trips](performance.md) in 76 MiB. A
-  `count(DISTINCT c)` of numbers keeps them the same way, in fewer
-  bytes than a `max`; one of `text`, `uuid`, `date` or `boolean`
-  keeps a hash map per cell, over 15 times as many bytes in a test of
-  40 values a cell. Either holds every distinct value.
-- Rows counted twice: a dim that holds a key twice adds the fact
-  row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
-  doubles; a count per value merged twice keeps the same `min`, `max`
-  and distinct values.
+The second is rows counted twice. A dim that holds a key twice adds the
+fact row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
+doubles. A count per value merged twice keeps the same `min`, `max` and
+distinct values.
 
 ## Median and percentiles
 
-An exact median needs each cell's values or a count per value, and a
-`min` or `max` already keeps the counts. So Straum has
-`percentile_disc`, exact and following deletes:
+An exact median needs each cell's values or a count per value, and a `min`
+or `max` already keeps the counts. So Straum has `percentile_disc`, which is
+exact and follows deletes:
 
 ```sql
 CREATE VIEW usage WITH (buckets = '1 hour, 1 day') AS
@@ -127,43 +122,42 @@ FROM public.events AS e
 GROUP BY 1, 2;
 ```
 
-`max` and both percentiles read one count per value of `e.amount`.
-Take the two hours above. An ask over both gathers the counts of their
-cells, `10 20 30 40 50 60 70 500`, and counts up to rank
-`ceil(fraction * n)`: the median is the 4th of 8, 40, and p99 the 8th,
-500. That 40 is a value the rows hold, where the 45 in the table
-above, which `percentile_cont` would give, lies between two. Delete
-the 500 and p99 is the 7th of 7, 70.
+`max` and both percentiles read one count per value of `e.amount`. Take the
+two hours above. An ask over both gathers the counts of their cells,
+`10 20 30 40 50 60 70 500`, and counts up to rank `ceil(fraction * n)`. The
+median is the 4th of 8, 40, and p99 is the 8th, 500. That 40 is a value the
+rows hold, where the 45 in the table above, which `percentile_cont` would
+give, lies between two. Delete the 500 and p99 is the 7th of 7, 70.
 
 The rank is taken in float8, as PostgreSQL takes it, so the answer is
-PostgreSQL's to the row: 0.07 of 100 values is the 8th there, not the
-7th. Nulls are skipped, no values give null, and the answer keeps the
-column's type.
+PostgreSQL's to the row: 0.07 of 100 values is the 8th there, not the 7th.
+Nulls are skipped, no values give null, and the answer keeps the column's
+type.
 
 What Straum refuses where PostgreSQL takes more is under
 [Measures](spec.md#measures).
 
-The cost is in the ask. A `sum` merges a number a cell; a percentile
+The cost is in the ask. A `sum` merges a number a cell. A percentile
 gathers every value of every cell in its range and finds the one at its
 rank, splitting the values left at their middle one each step without
 sorting them all. An ask over a long range of many values takes
-milliseconds where the others take microseconds: the median fare over
-the six months of [benchmark](performance.md) trips takes about 30 ms.
-A group of one cell is read in place, its values in order, with
-nothing gathered. A `count(DISTINCT c)` of numbers merges the values
-of several cells in order, holding one value of each cell at a time,
-and one of other types unites them by reference, without copying.
+milliseconds where the others take microseconds: the median fare over the
+six months of [benchmark](performance.md) trips takes about 30 ms. A group
+of one cell is read in place, its values in order, with nothing gathered.
+A `count(DISTINCT c)` of numbers merges the values of several cells in
+order, holding one value of each cell at a time. One of other types unites
+them by reference, without copying.
 
-Other systems answer with a sketch: a small summary that merges and
-gives an approximate answer, t-digest, KLL and DDSketch for
-percentiles, HyperLogLog for distinct counts. The common sketches
-merge but can't take a delete, and their answers are estimates.
-Straum's answers are exact and follow deletes, so it has no sketch
+Other systems answer with a sketch: a small summary that merges and gives
+an approximate answer. Examples are t-digest, KLL and DDSketch for
+percentiles, and HyperLogLog for distinct counts. The common sketches merge
+but can't take a delete, and their answers are estimates. Straum's answers
+are exact and follow deletes, so it has no sketch
 ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)).
 
-The sources behind this page, and how PostgreSQL and other systems
-handle the same two questions, are in
+The sources behind this page, and how PostgreSQL and other systems handle
+the same two questions, are in
 [AGGREGATES.md](https://github.com/janbjorge/straum/blob/main/research/AGGREGATES.md).
 
-Next: [Setting up PostgreSQL](postgresql.md), to connect a database of
-your own.
+Next: [Setting up PostgreSQL](postgresql.md), to connect a database of your
+own.
