@@ -57,7 +57,7 @@ data.dump --schema schema.sql --port 8080` runs the same.
 [`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
 starts PostgreSQL with `wal_level = logical`, or `replica` with
 `--wal physical` to try the [physical
-stream](postgresql.md#without-logical-decoding), restores the schema,
+stream](postgresql.md#physical-wal), restores the schema,
 then the data of the tables the spec reads, with foreign keys and
 triggers off, and runs `straum plan`'s SQL. The dump's other tables
 stay out, so they take no disk. The indexes of the spec's tables,
@@ -142,8 +142,8 @@ Once the answers hold, point Straum at the database you dumped:
    spec. A table owner runs the SQL once. You do not edit it.
 2. `straum run FILE` with `STRAUM_DSN` set, then ask.
 
-[Setting up PostgreSQL](postgresql.md) is that SQL, the one server
-setting PostgreSQL 17 and 18 need, and what a failed line means.
+[Setting up PostgreSQL](postgresql.md) is that SQL for either stream,
+and what a failed line means.
 
 Start with few keys. Memory follows cells, one per distinct
 combination of keys and bucket ([Cells](how-it-works.md#cells)).

@@ -43,9 +43,9 @@ changes and answers [asks](asks.md) over HTTP.
 | Flag | Meaning |
 | --- | --- |
 | `--listen ADDRESS` | Where to serve HTTP: `127.0.0.1:8080`, this host only, unless told ([Who can ask](deploy.md#who-can-ask)). |
-| `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#without-logical-decoding) `wal_level = replica` writes. |
+| `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#physical-wal) `wal_level = replica` writes. |
 | `--publication NAME` | The publication `straum plan` made. |
-| `--dsn-file FILE` | A file holding the [DSN](postgresql.md#3-connect); without it, the `STRAUM_DSN` environment variable. |
+| `--dsn-file FILE` | A file holding the [DSN](postgresql.md#2-connect); without it, the `STRAUM_DSN` environment variable. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | WAL retained for the slot before Straum stops. A watchdog checks it every second, during loads too, and ends the slot's session past it. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
@@ -68,7 +68,7 @@ second signal exits at once.
 straum plan FILE [flags]
 ```
 
-Prints the [setup SQL](postgresql.md#2-run-the-setup-sql) for the spec
+Prints the [setup SQL](postgresql.md#1-run-the-setup-sql) for the spec
 in `FILE`, or what is wrong with the spec and exits with 1.
 
 | Flag | Meaning |

@@ -79,9 +79,9 @@ leaves no slot behind holding WAL. PostgreSQL stays the source of
 truth.
 
 Straum supports PostgreSQL 17 and newer as shipped, with no extension
-and no superuser, so managed services work. Where `wal_level = logical`
-can't be had, `--wal physical` reads the WAL `replica` writes
-([setup](postgresql.md#without-logical-decoding)). The name is Nynorsk
+and no superuser, so managed services work. It reads a publication, or
+with `--wal physical` the WAL the server already writes
+([setup](postgresql.md)). The name is Nynorsk
 for a stream or current: Straum's input is PostgreSQL's replication
 stream.
 

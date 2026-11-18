@@ -26,7 +26,7 @@ borough of their own. It needs Docker and
 needs PostgreSQL 17 or newer, with no extension and no superuser.
 `--wal physical` reads the WAL a server you run already writes; RDS,
 Aurora and Cloud SQL do not hand out that stream
-([setup](https://janbjorge.github.io/straum/postgresql.html#without-logical-decoding)).
+([setup](https://janbjorge.github.io/straum/postgresql.html#physical-wal)).
 
 ## What it looks like
 

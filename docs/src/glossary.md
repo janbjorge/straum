@@ -224,7 +224,7 @@ the end are open.
 ## PostgreSQL
 
 - **Setup**: the SQL `straum plan` prints
-  ([Setting up PostgreSQL](postgresql.md#2-run-the-setup-sql)).
+  ([Setting up PostgreSQL](postgresql.md#1-run-the-setup-sql)).
 - **Setup check** (`catalog::check`, `Error::Setup`): the catalog
   compared with the spec at every start
   ([What Straum checks](postgresql.md#what-straum-checks-at-start)).
@@ -232,7 +232,7 @@ the end are open.
 - **Problem**: one line of a failed setup check.
 - **Role**: the role Straum connects as (`--role`); unrelated to
   `catalog::Purpose`.
-- **DSN** (`Dsn`): the connection URL ([Connect](postgresql.md#3-connect)).
+- **DSN** (`Dsn`): the connection URL ([Connect](postgresql.md#2-connect)).
 - **Publication**: holds every spec table on the logical stream
   (`--publication`).
 - **Replication slot**: the temporary slot each start creates; "the

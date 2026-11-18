@@ -88,7 +88,7 @@ once the data is there.
 under [Transactions](#transactions).
 
 Each mode takes `--wal physical` to have Straum read the
-[physical WAL](postgresql.md#without-logical-decoding) in place of
+[physical WAL](postgresql.md#physical-wal) in place of
 logical decoding. It turns `full_page_writes` back on after the load and
 checkpoints, since the physical stream needs page images.
 
