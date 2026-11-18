@@ -13,8 +13,14 @@ or at wal_level replica with --wal physical, applies `straum plan` for
 the spec and the WAL, starts `straum run` from the image
 and waits until it has loaded. Then it prints how to ask over HTTP and
 reach PostgreSQL, and opens `straum shell`. Leaving the shell removes
-both containers. Nothing here connects to the database the dump came
-from.
+both containers.
+
+Without --data, the tables the spec reads are copied from the database
+the libpq variables of this shell name (PGHOST, PGUSER, PGPASSWORD and
+the rest): their definitions from pg_dump --schema-only and their rows
+as COPY, into a temporary file that is restored and removed when the
+run ends. COPY reads only the tables, so a read-only role can make it.
+Those are the only connections to that database.
 
 --data is any pg_dump output: a directory (--format=directory), a
 custom or tar archive, or a plain .sql file; pg_restore -l tells them
@@ -37,6 +43,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -99,38 +106,47 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     args = parse()
     password = secrets.token_hex(16)
-    with Stack(args.stack, compose_file(args, password)) as stack:
-        stack.pull(STRAUM, args.image)
-        # Planned before the restore: the plan needs no database, so a spec
-        # it refuses stops the run at once, and it names the tables to
-        # restore.
-        setup_sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE, "--wal", args.wal)
-        log(f"starting PostgreSQL {args.postgres} in stack {stack.name}")
-        stack.up(POSTGRES)
-        project = stack.name
-        run_sql(project, "ALTER SYSTEM SET full_page_writes = off")
+    with tempfile.TemporaryDirectory() as work:
+        dump = args.data or touch(pathlib.Path(work) / "source.sql")
+        with Stack(args.stack, compose_file(args, password, dump)) as stack:
+            run_stack(stack, args, dump)
+        return 0
+
+
+def run_stack(stack: "Stack", args: argparse.Namespace, dump: pathlib.Path) -> None:
+    stack.pull(STRAUM, args.image)
+    # Planned before the restore: the plan needs no database, so a spec
+    # it refuses stops the run at once, and it names the tables to
+    # restore.
+    setup_sql = stack.run(STRAUM, "plan", SPEC_IN_IMAGE, "--wal", args.wal)
+    log(f"starting PostgreSQL {args.postgres} in stack {stack.name}")
+    stack.up(POSTGRES)
+    project = stack.name
+    run_sql(project, "ALTER SYSTEM SET full_page_writes = off")
+    run_sql(project, "SELECT pg_reload_conf()")
+    tables = spec_tables(setup_sql)
+    if args.data is None:
+        dump_source(dump, tables)
+    restore(project, dump, args.schema, args.jobs, tables)
+    psql(project, "-c", "ANALYZE")
+    if args.wal == "physical":
+        # The physical stream rebuilds rows from page images, which the
+        # restore skipped; after this checkpoint each page's next
+        # change brings it whole.
+        run_sql(project, "ALTER SYSTEM RESET full_page_writes")
         run_sql(project, "SELECT pg_reload_conf()")
-        restore(project, args.data, args.schema, args.jobs, spec_tables(setup_sql))
-        psql(project, "-c", "ANALYZE")
-        if args.wal == "physical":
-            # The physical stream rebuilds rows from page images, which the
-            # restore skipped; after this checkpoint each page's next
-            # change brings it whole.
-            run_sql(project, "ALTER SYSTEM RESET full_page_writes")
-            run_sql(project, "SELECT pg_reload_conf()")
-            run_sql(project, "CHECKPOINT")
-        applied = psql(project, "-q", "-v", "ON_ERROR_STOP=1", input_text=setup_sql)
-        if applied.returncode:
-            raise SystemExit("try: the plan's SQL failed, printed above")
-        log("starting Straum")
-        started = time.perf_counter()
-        stack.up(STRAUM)
-        port = wait_ready(stack)
-        log(f"straum ready in {time.perf_counter() - started:.0f} s")
-        print_next_steps(port, project)
-        shell(project)
-        log(f"removing stack {stack.name}")
-    return 0
+        run_sql(project, "CHECKPOINT")
+    applied = psql(project, "-q", "-v", "ON_ERROR_STOP=1", input_text=setup_sql)
+    if applied.returncode:
+        raise SystemExit("try: the plan's SQL failed, printed above")
+    log("starting Straum")
+    started = time.perf_counter()
+    stack.up(STRAUM)
+    port = wait_ready(stack)
+    log(f"straum ready in {time.perf_counter() - started:.0f} s")
+    print_next_steps(port, project)
+    shell(project)
+    log(f"removing stack {stack.name}")
 
 
 def stop(signal_number: int, frame: object) -> None:
@@ -142,10 +158,19 @@ def parse() -> argparse.Namespace:
         description=__doc__.splitlines()[0], epilog="Needs Docker and uv."
     )
     parser.add_argument(
-        "--spec", type=existing, required=True, help="the spec: one or more views"
+        "spec_file",
+        nargs="?",
+        type=existing,
+        metavar="SPEC",
+        help="the spec: one or more views (or --spec)",
     )
     parser.add_argument(
-        "--data", type=existing, required=True, help="pg_dump output to restore"
+        "--spec", dest="spec_flag", type=existing, help="the spec, as a flag"
+    )
+    parser.add_argument(
+        "--data",
+        type=existing,
+        help="pg_dump output to restore (default: copy from the libpq source)",
     )
     parser.add_argument(
         "--schema",
@@ -180,6 +205,13 @@ def parse() -> argparse.Namespace:
         help=f"pg_restore jobs and index builds at a time ({RESTORE_JOBS})",
     )
     args = parser.parse_args()
+    if args.schema and not args.data:
+        parser.error("--schema goes with --data")
+    if args.spec_file and args.spec_flag:
+        parser.error("give the spec once: as SPEC or as --spec, not both")
+    args.spec = args.spec_file or args.spec_flag
+    if args.spec is None:
+        parser.error("the spec is required: SPEC or --spec")
     args.stack = stack_name(args.stack or STACK_PREFIX + args.spec.stem)
     return args
 
@@ -199,9 +231,9 @@ def existing(path: str) -> pathlib.Path:
     return resolved
 
 
-def compose_file(args: argparse.Namespace, password: str) -> str:
+def compose_file(args: argparse.Namespace, password: str, dump: pathlib.Path) -> str:
     """The stack's Compose file, as JSON, which Compose reads as YAML."""
-    volumes = [f"{args.data}:{DUMP_IN_IMAGE}:ro"]
+    volumes = [f"{dump}:{DUMP_IN_IMAGE}:ro"]
     if args.schema:
         volumes.append(f"{args.schema}:{SCHEMA_IN_IMAGE}:ro")
     settings = (f"wal_level={WAL_LEVELS[args.wal]}", *POSTGRES_FLAGS)
@@ -320,6 +352,51 @@ def restore(
     started = time.perf_counter()
     build_indexes(project, definitions, jobs)
     log(f"indexes built in {time.perf_counter() - started:.0f} s")
+
+
+def touch(path: pathlib.Path) -> pathlib.Path:
+    """An empty file at `path`, so Compose mounts a file, not a directory."""
+    path.touch()
+    return path
+
+
+def dump_source(dump: pathlib.Path, tables: list[str]) -> None:
+    """Writes the spec's tables from the libpq source of this shell into
+    `dump`, which is mounted in the PostgreSQL service: the definitions of
+    their schemas from pg_dump --schema-only, then each table's rows as COPY.
+
+    pg_dump -t leaves out the types the tables use, so the schemas are
+    dumped whole, as definitions only. pg_dump's data dump also reads each
+    owned sequence, which a read-only role may not; COPY ... TO STDOUT
+    reads the table alone."""
+    log(f"dumping {', '.join(tables)} from the source")
+    schemas = sorted({table.rsplit(".", 1)[0] for table in tables})
+    # -e takes the extensions too: an index may use one, such as pg_trgm's.
+    flags = [part for name in schemas for part in ("-n", name)] + ["-e", "*"]
+    # The same inode the container mounts, so the file is written in place.
+    with dump.open("w") as sql:
+        # The dump's rows may name rows of tables it doesn't carry, so the
+        # restore's foreign keys are not checked, as a replica's are not.
+        sql.write("SET session_replication_role = replica;\n")
+        sql.flush()
+        definitions = subprocess.run(
+            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", *flags],
+            stdout=sql,
+            check=False,
+        )
+        if definitions.returncode:
+            raise SystemExit("try: pg_dump failed, printed above")
+        for table in tables:
+            sql.write(f"COPY {table} FROM stdin;\n")
+            sql.flush()
+            rows = subprocess.run(
+                ["psql", "-X", "-q", "-c", f"COPY {table} TO STDOUT"],
+                stdout=sql,
+                check=False,
+            )
+            if rows.returncode:
+                raise SystemExit(f"try: copying {table} failed, printed above")
+            sql.write("\\.\n")
 
 
 def restore_data(

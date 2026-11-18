@@ -42,7 +42,7 @@ The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,
-`just wal-bench`, `just demo`, `just try --spec FILE --data DUMP`.
+`just wal-bench`, `just demo`, `just try SPEC [--data DUMP]`.
 With no crate named, crate recipes take the crates changed since HEAD.
 Every setting has a default, overridden on the command line (`just postgres=17 seeds=50 correctness`)
 or through its environment variable; `just --evaluate` shows them.
