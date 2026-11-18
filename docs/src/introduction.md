@@ -1,7 +1,6 @@
 # Straum
 
-This page says what Straum is and which work it suits. Straum keeps
-aggregates of PostgreSQL tables in memory and answers asks about them
+Straum keeps aggregates of PostgreSQL tables in memory and answers asks about them
 over HTTP. Counts and sums come back in microseconds.
 
 A dashboard runs the same `GROUP BY` over the same tables all day, and
