@@ -912,7 +912,7 @@ fn says_what_is_wrong() {
         (
             &["run", &spec],
             None,
-            "straum: set STRAUM_DSN or pass --dsn-file\n".to_owned(),
+            "straum: set STRAUM_DSN, pass --dsn-file, or set PGHOST\n".to_owned(),
         ),
         (
             &["run", &spec],
