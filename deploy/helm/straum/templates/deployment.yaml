@@ -32,6 +32,10 @@ spec:
     spec:
       serviceAccountName: {{ include "straum.serviceAccountName" . }}
       automountServiceAccountToken: false
+      # A Service named straum would put STRAUM_PORT, STRAUM_SERVICE_HOST
+      # and more in the environment, under the prefix straum reads its
+      # own settings from.
+      enableServiceLinks: false
       # Room for the preStop sleep and straum's 10 s drain of the asks in
       # flight.
       terminationGracePeriodSeconds: 30

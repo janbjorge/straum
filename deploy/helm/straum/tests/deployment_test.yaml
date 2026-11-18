@@ -226,6 +226,16 @@ tests:
           path: spec.template.spec.terminationGracePeriodSeconds
           value: 30
 
+  - it: keeps the Services' variables out of straum's environment
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+      - lengthEqual:
+          path: spec.template.spec.containers[0].env
+          count: 1
+
   - it: takes another rollout deadline
     template: deployment.yaml
     set:
