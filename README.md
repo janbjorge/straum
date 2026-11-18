@@ -4,9 +4,9 @@
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
 
-Straum keeps the aggregates a spec declares as cells in memory, loaded
-from a snapshot and kept current by every commit after it, and answers
-asks about them over HTTP in microseconds
+Straum keeps the aggregates a spec declares as cells in memory. It loads
+them from a snapshot, keeps them current with every commit after it, and
+answers asks about them over HTTP in microseconds
 ([performance](https://janbjorge.github.io/straum/performance.html)).
 PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 
@@ -80,13 +80,12 @@ need Docker.
 
 ## Documentation
 
-- [User guide](https://janbjorge.github.io/straum/), built from `docs/`
-- [llms.txt](https://janbjorge.github.io/straum/llms.txt),
-  an index of the guide for agents
-- [Decisions](docs/adr/)
-- [Straum and PostgreSQL](research/POSTGRESQL.md)
-- [Joins: history and sources](research/JOINS.md)
-- [Aggregates: merge and delete](research/AGGREGATES.md)
+The [User guide](https://janbjorge.github.io/straum/) is built from `docs/`.
+An [llms.txt](https://janbjorge.github.io/straum/llms.txt) file indexes the
+guide for agents. Decisions are in [docs/adr/](docs/adr/). Research on
+the same topics is in [Straum and PostgreSQL](research/POSTGRESQL.md),
+[Joins: history and sources](research/JOINS.md) and
+[Aggregates: merge and delete](research/AGGREGATES.md).
 
 ## License
 
