@@ -2,53 +2,46 @@
 
 Straum against PostgreSQL 18, both in Docker, on one month of New York
 taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
-and the 265 taxi zones. You need Docker, [uv](https://docs.astral.sh/uv/)
-and `curl`, and the download is 50 MB. Four steps end in an answer.
-The command line and performance pages use these tables too.
+and the 265 taxi zones. You need Docker and `curl`. The download is
+50 MB. One command ends with Straum answering. The command line and
+performance pages use these tables too.
 
-## 1. Start PostgreSQL with the trips
-
-Save as `compose.yaml`:
-
-```yaml
-name: straum
-services:
-  postgres:
-    image: postgres:18
-    command: postgres -c wal_level=logical
-    environment:
-      POSTGRES_PASSWORD: postgres
-    healthcheck:
-      test: pg_isready -h 127.0.0.1 -U postgres
-      interval: 1s
-  straum:
-    image: ghcr.io/janbjorge/straum
-    command: run /spec/trips.sql --listen 0.0.0.0:8080
-    environment:
-      STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
-    volumes:
-      - ./trips.sql:/spec/trips.sql:ro
-    ports:
-      - 127.0.0.1:8080:8080
-```
-
-Start PostgreSQL, wait until it answers, and load the trips:
+## 1. Start
 
 ```sh
-docker compose up --detach --wait postgres
-uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py |
-  docker compose exec -T postgres psql -U postgres -q
+curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml | docker compose -f - up
+```
+
+The file starts PostgreSQL. A load service waits until it answers,
+fetches the month, loads it, runs the setup, and exits. Straum starts
+once that service has exited. Leave the command running. The log ends
+like this:
+
+```text
+load-1  | loading taxi trips
+load-1  | setup applied
+straum-1  | straum: listening on 0.0.0.0:8080
+straum-1  | straum: loaded every table; streaming from 0/19337960
 ```
 
 [`load_taxi_trips.py`](https://github.com/janbjorge/straum/blob/main/bench/load_taxi_trips.py)
-downloads the trips into `data/` and prints them as SQL: the tables
-`taxi_zones` and `yellow_trips`, then their rows. The TLC's times are
-New York wall clock, so it reads them in that time zone. Money and
-distance are `numeric`, so sums are exact.
+downloads the trips and loads `taxi_zones` and `yellow_trips`. The
+TLC's times are New York wall clock, so it reads them in that time
+zone. Money and distance are `numeric`, so sums are exact. Straum's
+own load takes about a second. The file in the repository is
+`docs/compose.yaml`.
 
-## 2. Write a spec
+The file is not on disk after the pipe. Later commands name the
+project `straum`.
 
-Save as `trips.sql`:
+## 2. The spec
+
+The compose file holds this view. You do not save it. PostgreSQL
+would give the same rows. Straum never creates the view; it keeps one
+cell per hour, payment type, pickup zone and borough in memory.
+`WITH (buckets = ...)` lists every bucket width it keeps: the hour of
+the `date_bin`, then days and weeks for long ranges.
+[Spec](spec.md) explains each line.
 
 ```sql
 CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
@@ -64,44 +57,7 @@ LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_loc
 GROUP BY 1, 2, 3, 4;
 ```
 
-PostgreSQL would give the same rows for this view. Straum never creates
-it; it keeps one cell per hour, payment type, pickup zone and borough
-in memory. `WITH (buckets = ...)` lists every bucket width it keeps:
-the hour of the `date_bin`, then days and weeks for long ranges.
-[Spec](spec.md) explains each line.
-
-## 3. Set up PostgreSQL and run Straum
-
-Straum connects as the user in `STRAUM_DSN`, set in `compose.yaml`.
-`straum plan` reads it too, and prints the SQL that makes that role
-with that password, lets it read the tables and publishes them. Run
-the SQL as the tables' owner:
-
-```sh
-docker compose run --rm --no-deps -T straum plan /spec/trips.sql |
-  docker compose exec -T postgres psql -U postgres
-```
-
-This PostgreSQL has no TLS, hence `sslmode=disable`. Otherwise Straum
-always connects with TLS. Then run it:
-
-```sh
-docker compose up straum
-```
-
-```text
-straum-1  | straum: listening on 0.0.0.0:8080
-straum-1  | straum: opened a stream at 0/1933EF18; loading 3 tables
-straum-1  | straum: loaded dim taxi_zones in 0.0 s
-straum-1  | straum: loaded view trips in 0.6 s
-straum-1  | straum: loaded view dropoffs in 0.4 s
-straum-1  | straum: loaded every table; streaming from 0/1933EF18
-```
-
-The load takes about a second; each table logs when it is done, with
-how long it took.
-
-## 4. Ask
+## 3. Ask
 
 In another terminal, ask for trips and fares by pickup borough on
 Wednesday 17 January, New York time:
@@ -140,7 +96,7 @@ LaGuardia, zones 132 and 138, out of Queens into a borough of their
 own, then ask for the day again:
 
 ```sh
-docker compose exec postgres psql -U postgres -c "
+docker compose -p straum exec postgres psql -U postgres -c "
   INSERT INTO yellow_trips (vendor_id, pickup_at, pu_location_id, do_location_id,
                             payment_type, fare_amount, tip_amount, trip_distance)
   VALUES (2, '2024-01-17 12:00-05', 1, 132, 1, 120.00, 0, 17.50);
@@ -175,19 +131,19 @@ so if the answer's `as_of` predates the write, ask once more.
 
 ## Look around, then clean up
 
-`docker compose exec straum /straum shell` is a prompt at the running
-Straum, with Tab completion: `\d` lists the views with the names and
-types an ask may use, `\d trips` prints the view's `CREATE VIEW`, and
-`\rows trips` prints its rows. [Command
+`docker compose -p straum exec straum /straum shell` is a prompt at
+the running Straum, with Tab completion: `\d` lists the views with
+the names and types an ask may use, `\d trips` prints the view's
+`CREATE VIEW`, and `\rows trips` prints its rows. [Command
 line](cli.md#straum-shell) has the shell and the `straum status`,
 `straum views` and `straum ask` commands beside it.
 
-Stop straum with Ctrl-C and remove both containers, their data and
-the network:
+Stop with Ctrl-C, then remove the containers, their data and the
+network:
 
 ```sh
-docker compose down --volumes
+docker compose -p straum down --volumes
 ```
 
-Next: [Try it on your data](your-data.md), the same steps on a copy
-of your own tables.
+Next: [Try it on your data](your-data.md), on a copy of your own
+tables.

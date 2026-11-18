@@ -136,14 +136,14 @@ moves. [Asks](asks.md) explains the query and the answer.
 
 ## On the database itself
 
-Once the answers hold, the same steps run against the database you
-dumped:
+Once the answers hold, point Straum at the database you dumped:
 
 1. `straum plan FILE` prints the setup SQL, or what is wrong with the
-   spec. A table owner runs the SQL once. PostgreSQL 17 and 18 also
-   need `wal_level = logical`, which takes a restart, or
-   `--wal physical` ([Setting up PostgreSQL](postgresql.md)).
+   spec. A table owner runs the SQL once. You do not edit it.
 2. `straum run FILE` with `STRAUM_DSN` set, then ask.
+
+[Setting up PostgreSQL](postgresql.md) is that SQL, the one server
+setting PostgreSQL 17 and 18 need, and what a failed line means.
 
 Start with few keys. Memory follows cells, one per distinct
 combination of keys and bucket ([Cells](how-it-works.md#cells)).

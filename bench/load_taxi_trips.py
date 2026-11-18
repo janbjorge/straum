@@ -6,10 +6,17 @@
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
 # ///
-"""Prints the TLC's New York taxi trips of 2024 as SQL for psql."""
+"""Prints the TLC's New York taxi trips of 2024 as SQL for psql.
+
+With `--setup`, loads the database the PG* environment names and runs
+that SQL after. asyncpg reads those variables. Setup tolerates a role
+or publication that already exists, so a second run only re-applies it.
+"""
 
 import argparse
+import asyncio
 import hashlib
+import io
 import pathlib
 import sys
 import urllib.request
@@ -77,8 +84,16 @@ def main() -> None:
     parser.add_argument(
         "--data", type=pathlib.Path, default=pathlib.Path("data"), help="downloads"
     )
+    parser.add_argument(
+        "--setup",
+        type=pathlib.Path,
+        help="load via the PG* environment, then run this SQL",
+    )
     args = parser.parse_args()
     args.data.mkdir(parents=True, exist_ok=True)
+    if args.setup is not None:
+        load_database(args.data, args.months, args.setup)
+        return
     zones = download(args.data, f"{TLC}/misc/taxi_zone_lookup.csv")
     out = sys.stdout.buffer
     out.write(SCHEMA.encode())
@@ -124,6 +139,105 @@ def check(path: pathlib.Path, name: str) -> None:
             f"{name}: SHA-256 {got}, not the pinned {wanted}; "
             "the TLC changed the file, so the counts in the docs no longer hold"
         )
+
+
+def load_database(data: pathlib.Path, months: int, setup: pathlib.Path) -> None:
+    """Loads the trips, then runs `setup`. The database is the PG* environment."""
+    asyncio.run(load(data, months, setup))
+
+
+async def load(data: pathlib.Path, months: int, setup: pathlib.Path) -> None:
+    """Loads the trips through asyncpg, then runs `setup`."""
+    import asyncpg
+
+    zones = download(data, f"{TLC}/misc/taxi_zone_lookup.csv")
+    files = []
+    for month in range(1, months + 1):
+        name = f"yellow_tripdata_2024-{month:02}.parquet"
+        files.append(download(data, f"{TLC}/trip-data/{name}"))
+    # The TLC's times are New York wall clock. The session zone makes
+    # the timestamptz copy read them that way. Host, user, password,
+    # database and sslmode come from PGHOST and the other PG* variables.
+    conn = await asyncpg.connect(server_settings={"timezone": "America/New_York"})
+    try:
+        present = await conn.fetchval("SELECT to_regclass('public.yellow_trips')")
+        if present is None:
+            print("loading taxi trips", file=sys.stderr)
+            async with conn.transaction():
+                await copy_trips(conn, zones, files)
+        else:
+            print("taxi trips already loaded", file=sys.stderr)
+        await apply_setup(conn, setup.read_text())
+    finally:
+        await conn.close()
+
+
+async def copy_trips(conn, zones: pathlib.Path, files: list[pathlib.Path]) -> None:
+    """Creates the two tables and copies `zones` and each month in `files`."""
+    for statement in statements(table_sql()):
+        await conn.execute(statement)
+    await conn.copy_to_table(
+        "taxi_zones",
+        source=io.BytesIO(zones.read_bytes()),
+        schema_name="public",
+        format="csv",
+        header=True,
+    )
+    columns = list(COLUMNS.values())
+    names = list(COLUMNS)
+    options = pyarrow.csv.WriteOptions(include_header=False)
+    for path in files:
+        buf = io.BytesIO()
+        parquet = pyarrow.parquet.ParquetFile(path)
+        for batch in parquet.iter_batches(columns=names):
+            pyarrow.csv.write_csv(batch.select(names), buf, options)
+        buf.seek(0)
+        await conn.copy_to_table(
+            "yellow_trips",
+            source=buf,
+            columns=columns,
+            schema_name="public",
+            format="csv",
+        )
+
+
+def table_sql() -> str:
+    """The `CREATE TABLE` statements `SCHEMA` also sends to psql."""
+    lines = []
+    for line in SCHEMA.splitlines():
+        if line.startswith("\\") or line.startswith("COPY ") or line.startswith("SET "):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def apply_setup(conn, sql: str) -> None:
+    """Runs `sql`. A role or publication that already exists is left as it is."""
+    import asyncpg
+
+    for statement in statements(sql):
+        try:
+            await conn.execute(statement)
+        except asyncpg.exceptions.DuplicateObjectError:
+            continue
+    print("setup applied", file=sys.stderr)
+
+
+def statements(sql: str) -> list[str]:
+    """Statements of `sql`, comments and blank lines dropped."""
+    pending: list[str] = []
+    found = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        pending.append(stripped)
+        if stripped.endswith(";"):
+            found.append(" ".join(pending))
+            pending = []
+    if pending:
+        raise SystemExit("SQL ended inside a statement")
+    return found
 
 
 if __name__ == "__main__":

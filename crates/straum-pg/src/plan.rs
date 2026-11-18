@@ -101,7 +101,10 @@ pub fn plan(
 /// Makes `role`, quoted already, with the password's verifier, or says
 /// how to set one.
 fn role_lines(role: &str, password: Option<&str>) -> Vec<String> {
-    let mut sql = vec!["-- A superuser: only one may give a role REPLICATION.".to_owned()];
+    let mut sql = vec![
+        "-- A superuser creates the role Straum connects as.".to_owned(),
+        "-- REPLICATION is a privilege of that role, not another user.".to_owned(),
+    ];
     if let Some(password) = password {
         sql.push(format!(
             "CREATE ROLE {role} LOGIN REPLICATION PASSWORD {};",

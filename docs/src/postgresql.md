@@ -1,12 +1,10 @@
 # Setting up PostgreSQL
 
-How do you connect your own database? Straum supports PostgreSQL 17 and
-newer, self-hosted or managed; its tests run on 17, 18 and the 19
-release candidate. It uses logical replication with `pgoutput`, a
-temporary slot and an exported snapshot, with no extension and no
-superuser. Setup is three steps, done once. Where `wal_level = logical`
-can't be had, Straum can read the physical WAL instead: see [Without
-logical decoding](#without-logical-decoding).
+How do you connect your own database? Three steps, done once. Straum
+needs PostgreSQL 17 or newer, self-hosted or managed. Its tests run on
+17, 18 and the 19 release candidate. No extension and no superuser.
+Where `wal_level = logical` can't be had, Straum reads the physical WAL
+instead: [Without logical decoding](#without-logical-decoding).
 
 ## 1. Turn on logical decoding
 
@@ -32,13 +30,16 @@ tables. With `STRAUM_DSN` or `--dsn-file` set, the role is the DSN's
 user, and its password goes in as a SCRAM-SHA-256 verifier, so the
 password itself appears in neither the SQL nor the server's log. Without
 a DSN the role is `straum` and the SQL says how to give it a password.
-For the `usage` view of [Spec](spec.md#synopsis):
+The `CREATE ROLE` line is that role. `REPLICATION` beside `LOGIN` is a
+privilege PostgreSQL requires so the role can follow commits. It is
+not another user. For the `usage` view of [Spec](spec.md#synopsis):
 
 ```sql
 -- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
 -- A superuser: wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
--- A superuser: only one may give a role REPLICATION.
+-- A superuser creates the role Straum connects as.
+-- REPLICATION is a privilege of that role, not another user.
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";
@@ -52,8 +53,8 @@ ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 ```
 
 Run it as an owner of the tables, since only an owner can add a table to a
-publication. The lines said so need a superuser: `ALTER SYSTEM`, a role
-with `REPLICATION`, and `BYPASSRLS` where a table needs it. Straum never
+publication. The lines said so need a superuser: `ALTER SYSTEM`, granting
+`REPLICATION`, and `BYPASSRLS` where a table needs it. Straum never
 asks for `FOR ALL TABLES`, which needs a superuser too. The setup lives in the catalog and survives restarts.
 
 - Some managed services grant replication through a role of their own,
@@ -194,7 +195,8 @@ FULL`:
 ```sql
 -- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
 -- --wal physical: wal_level replica and full_page_writes on, the defaults.
--- A superuser: only one may give a role REPLICATION.
+-- A superuser creates the role Straum connects as.
+-- REPLICATION is a privilege of that role, not another user.
 CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'SCRAM-SHA-256$4096:...';
 GRANT USAGE ON SCHEMA "public" TO "straum";
 GRANT SELECT ON "public"."accounts", "public"."events" TO "straum";

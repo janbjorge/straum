@@ -95,7 +95,7 @@ checkpoints, since the physical stream needs page images.
 ## The views
 
 `bench/trips.sql` opens with `trips`, the [quick start's
-view](quick-start.md#2-write-a-spec) with a median and a p99 fare
+view](quick-start.md#2-the-spec) with a median and a p99 fare
 added: what a dashboard over these trips would declare. `dropoffs` is
 the other end of the same trips: tips, the average distance and fares
 per hour and dropoff zone.

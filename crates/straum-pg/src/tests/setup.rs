@@ -38,7 +38,8 @@ fn plan_sets_up_what_straum_needs() {
         "-- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
 -- A superuser: wal_level takes a restart. On Azure, set the server parameter instead.
 ALTER SYSTEM SET wal_level = logical;
--- A superuser: only one may give a role REPLICATION.
+-- A superuser creates the role Straum connects as.
+-- REPLICATION is a privilege of that role, not another user.
 CREATE ROLE \"straum_plan\" LOGIN REPLICATION;
 -- Then give \"straum_plan\" a password: \\password \"straum_plan\"
 GRANT USAGE ON SCHEMA \"plan\" TO \"straum_plan\";

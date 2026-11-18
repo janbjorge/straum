@@ -1,0 +1,98 @@
+# Quick start. From any directory:
+# curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml | docker compose -f - up
+# Postgres answers, then load brings in the taxi month and the setup,
+# then Straum starts. The project name is straum.
+name: straum
+
+services:
+  postgres:
+    image: postgres:18
+    command: postgres -c wal_level=logical
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  load:
+    image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      PGSSLMODE: disable
+    volumes:
+      - taxi:/data
+    configs:
+      - source: setup
+        target: /setup.sql
+    command:
+      - /usr/local/bin/uv
+      - run
+      - --with
+      - asyncpg
+      - https://raw.githubusercontent.com/janbjorge/straum/main/bench/load_taxi_trips.py
+      - --months
+      - "1"
+      - --data
+      - /data
+      - --setup
+      - /setup.sql
+
+  straum:
+    image: ghcr.io/janbjorge/straum
+    depends_on:
+      load:
+        condition: service_completed_successfully
+    command: ["run", "/spec/trips.sql", "--listen", "0.0.0.0:8080"]
+    environment:
+      STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
+    configs:
+      - source: trips
+        target: /spec/trips.sql
+    ports:
+      - 127.0.0.1:8080:8080
+
+configs:
+  trips:
+    content: |
+      CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
+      SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
+             trips.payment_type AS payment_type,
+             trips.pu_location_id AS pu_location_id,
+             pickup.borough AS borough,
+             count(*) AS trips,
+             sum(trips.fare_amount) AS fare,
+             avg(trips.fare_amount) AS avg_fare
+      FROM public.yellow_trips AS trips
+      LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
+      GROUP BY 1, 2, 3, 4;
+
+  setup:
+    content: |
+      -- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
+      -- A superuser: wal_level takes a restart. On Azure, set the server parameter instead.
+      ALTER SYSTEM SET wal_level = logical;
+      -- A superuser creates the role Straum connects as.
+      -- REPLICATION is a privilege of that role, not another user.
+      CREATE ROLE "straum" LOGIN REPLICATION PASSWORD 'straum';
+      GRANT USAGE ON SCHEMA "public" TO "straum";
+      GRANT SELECT ON "public"."taxi_zones", "public"."yellow_trips" TO "straum";
+      -- If a policy of row-level security hides rows of a table, a superuser runs:
+      -- ALTER ROLE "straum" BYPASSRLS;
+      CREATE PUBLICATION "straum" FOR TABLE "public"."taxi_zones", "public"."yellow_trips";
+      -- fact trips: Straum needs the old row of every update and delete; inserts cost no more.
+      ALTER TABLE "public"."yellow_trips" REPLICA IDENTITY FULL;
+      -- dim taxi_zones: Straum holds its key and the columns the views read, and follows it.
+      ALTER TABLE "public"."taxi_zones" REPLICA IDENTITY FULL;
+
+volumes:
+  taxi:
