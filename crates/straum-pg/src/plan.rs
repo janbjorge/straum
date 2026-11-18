@@ -128,6 +128,12 @@ fn grants(schemas: &[String], tables: &str, role: &str) -> [String; 4] {
     ]
 }
 
+/// The spec's tables, each as `plan` quotes it, in the order `plan` lists
+/// them. A dump takes them as they are, so it needs no other parsing.
+pub fn table_names(spec: &Spec) -> Vec<String> {
+    spec.tables().into_iter().map(qualified).collect()
+}
+
 fn qualified(table: &straum_domain::Table) -> String {
     escaped(&table.schema, &table.name)
 }
@@ -157,6 +163,16 @@ mod tests {
             }
         }
         lines[0]
+    }
+
+    #[test]
+    fn table_names_are_the_spec_tables_quoted_once_each() {
+        let views = [view("x", "a.t"), view("y", "b.u"), view("z", "a.t")].concat();
+        let spec = straum_notation::parse(&views).unwrap();
+        assert_eq!(
+            table_names(&spec),
+            vec!["\"a\".\"t\"".to_owned(), "\"b\".\"u\"".to_owned()]
+        );
     }
 
     #[test]

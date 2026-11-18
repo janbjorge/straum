@@ -32,7 +32,9 @@ use straum_notation::SqlError;
 use straum_pg::{CopyError, Dsn, DsnError, PgEnv, Postgres};
 
 use crate::client::ClientError;
-use crate::command_line::{Command, Copy, Environment, Plan, ROLE, Run, URL_VARIABLE, command};
+use crate::command_line::{
+    Command, Copy, Environment, Plan, Printed, ROLE, Run, URL_VARIABLE, command,
+};
 use crate::help::HELP;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
@@ -280,9 +282,15 @@ fn plan(
         role,
         dsn_file,
         out,
+        printed,
     }: Plan,
 ) -> Result<(), Failure> {
     let spec = read_spec(&spec)?.spec;
+    if printed == Printed::Tables {
+        let mut names = straum_pg::table_names(&spec).join("\n");
+        names.push('\n');
+        return write_or_print(out.as_deref(), &names);
+    }
     let dsn = read_dsn("STRAUM_DSN", dsn_file.as_deref(), true)?;
     let role = match (&role, &dsn) {
         (Some(role), _) => role.as_str(),
@@ -297,10 +305,15 @@ fn plan(
         None => None,
     };
     let sql = straum_pg::plan(&spec, &publication, role, password, replication);
-    let Some(path) = out.as_deref() else {
-        return print(&sql);
+    write_or_print(out.as_deref(), &sql)
+}
+
+/// Writes `text` to `path`, or prints it when there is no path.
+fn write_or_print(path: Option<&str>, text: &str) -> Result<(), Failure> {
+    let Some(path) = path else {
+        return print(text);
     };
-    match fs::write(path, sql) {
+    match fs::write(path, text) {
         Ok(()) => Ok(()),
         Err(error) => {
             let path = path.to_owned();

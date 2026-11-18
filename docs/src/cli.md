@@ -77,7 +77,8 @@ in `FILE`, or what is wrong with the spec and exits with 1.
 | `--publication NAME` | The publication to make; give `straum run` the same name. |
 | `--role NAME` | The role `straum run` connects as; without it, the DSN's user, else `straum`. |
 | `--dsn-file FILE` | As for `straum run`. With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
-| `--out FILE` | Write the SQL to this file instead of stdout. |
+| `--tables` | Print the tables the spec names, one per line, quoted, in the order the setup lists them, instead of the SQL. For `pg_dump -t`. No DSN is read. |
+| `--out FILE` | Write the SQL (or the tables) to this file instead of stdout. |
 
 ## straum copy
 

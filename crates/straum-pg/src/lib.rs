@@ -39,5 +39,5 @@ mod wire;
 
 pub use copy::{CopyError, copy};
 pub use dsn::{Dsn, DsnError, PgEnv};
-pub use plan::plan;
+pub use plan::{plan, table_names};
 pub use source::{Postgres, Replication};

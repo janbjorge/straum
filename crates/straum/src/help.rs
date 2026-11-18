@@ -67,7 +67,9 @@ file instead of stdout.
                       else straum)
   --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, else
                       PGHOST and the other libpq variables
-  --out FILE          write the SQL to FILE
+  --tables            print the spec's tables instead, one per line, as
+                      `pg_dump -t` takes them
+  --out FILE          write the SQL (or the tables) to FILE
 
 Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 ";

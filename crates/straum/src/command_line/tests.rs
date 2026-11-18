@@ -112,6 +112,7 @@ fn reads_plan() {
             role: None,
             dsn_file: None,
             out: None,
+            printed: Printed::Setup,
         }))
     );
     assert_eq!(
@@ -125,6 +126,7 @@ fn reads_plan() {
             role: Some("r".into()),
             dsn_file: Some("d".into()),
             out: None,
+            printed: Printed::Setup,
         }))
     );
     assert_eq!(
@@ -136,7 +138,31 @@ fn reads_plan() {
             role: None,
             dsn_file: None,
             out: Some("setup.sql".into()),
+            printed: Printed::Setup,
         }))
+    );
+    assert_eq!(
+        command_of(&args("plan s --tables --out t.txt")),
+        Ok(Command::Plan(Plan {
+            spec: "s".into(),
+            replication: Replication::Logical,
+            publication: PUBLICATION.into(),
+            role: None,
+            dsn_file: None,
+            out: Some("t.txt".into()),
+            printed: Printed::Tables,
+        }))
+    );
+    let refused = command_of(&args("copy --tables s"));
+    assert!(
+        matches!(
+            refused,
+            Err(Usage::Wrong {
+                error: UsageError::FlagNotTaken { .. },
+                ..
+            })
+        ),
+        "{refused:?}"
     );
 }
 

@@ -28,6 +28,8 @@ pub(crate) const ROLE: &str = "straum";
 const URL: &str = "http://127.0.0.1:8080";
 /// The switch that asks for JSON instead of a table.
 const JSON: &str = "--json";
+/// The switch that makes `plan` print the spec's tables, not its SQL.
+const TABLES: &str = "--tables";
 /// The environment variable that names the URL when `--url` doesn't.
 pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
 const FOUR_GIBIBYTES: u64 = 4 << 30;
@@ -122,7 +124,8 @@ impl Name {
     fn switches(self) -> &'static [&'static str] {
         match self {
             Name::Status | Name::Views | Name::Ask => &[JSON],
-            Name::Run | Name::Plan | Name::Copy | Name::Shell => &[],
+            Name::Plan => &[TABLES],
+            Name::Run | Name::Copy | Name::Shell => &[],
         }
     }
 }
@@ -177,6 +180,15 @@ pub(crate) struct Plan {
     pub(crate) dsn_file: Option<String>,
     /// Where to write the setup SQL. `None` prints it.
     pub(crate) out: Option<String>,
+    pub(crate) printed: Printed,
+}
+
+/// What `straum plan` prints: the setup SQL, or the spec's tables, one per
+/// line, for a dump to take.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Printed {
+    Setup,
+    Tables,
 }
 
 /// What `straum copy` was told.
@@ -447,6 +459,11 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
         role: flags.text("--role"),
         dsn_file: flags.text("--dsn-file"),
         out: flags.text("--out"),
+        printed: if flags.switch(TABLES) {
+            Printed::Tables
+        } else {
+            Printed::Setup
+        },
     }))
 }
 
@@ -643,6 +660,10 @@ impl Flags {
     }
 
     /// JSON with `--json`, else a table.
+    fn switch(&self, flag: &str) -> bool {
+        self.switches.iter().any(|switch| switch == flag)
+    }
+
     fn output(&self) -> Output {
         for switch in &self.switches {
             if switch == JSON {
