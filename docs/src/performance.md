@@ -1,10 +1,10 @@
 # Performance
 
-What should you expect from Straum? Its benchmark sends Straum and
-PostgreSQL the same asks about six months of New York taxi trips,
-checks that the answers are equal, decimals to the last digit, an
-`avg` at the places Straum gives it, and times both. [Memory](#memory)
-at the end is what two real tables measured.
+This page says what to expect from Straum and how to measure it yourself.
+Its benchmark sends Straum and PostgreSQL the same asks about six months of
+New York taxi trips, checks that the answers are equal, decimals to the
+last digit, an `avg` at the places Straum gives it, and times both.
+[Memory](#memory) at the end is what two real tables measured.
 
 The data is the TLC yellow trips of January to June 2024, 20,332,093
 trips, and the 265 rows of `taxi_zone_lookup.csv`. The loader pins
@@ -41,26 +41,28 @@ the two percentile asks over every trip miss it.
 Straum was ready 16.8 s after it started and held 113 MiB resident, the
 265 zone rows' projection included. The bench now reads what Straum
 holds from macOS's footprint, which counts the pages the system
-compressed; one resident set read 21 MiB on a busy machine. In PostgreSQL the table and its indexes
-take 2,475 MiB.
+compressed; one resident set read 21 MiB on a busy machine. In PostgreSQL
+the table and its indexes take 2,475 MiB.
 
-- Reads run with PostgreSQL's defaults, two parallel workers per query,
-  except `shared_buffers`: 2 GB. The rest of the table comes from the
-  OS cache. The other settings in `bench/taxi.py` only speed the load.
-  `yellow_trips` has an index on `pickup_at`, which the week and day
-  asks use, and the gap is smallest there, where PostgreSQL reads least.
-- PostgreSQL's time follows the rows it reads: every trip, but for
-  the week and day asks, which read a week's or a day's. Straum's hardly
-  changes from ask to ask: most of it is the HTTP round trip, reading
-  the query and writing JSON.
-- The percentile asks are the exception: Straum gathers every fare of
-  the cells in range, so their time follows the fares the range holds,
-  as [Median and percentiles](aggregates.md#median-and-percentiles)
-  says.
-- Straum answers only what the views keep: these keys, on hour edges.
-  PostgreSQL answers any query over the raw rows. Straum keeps its
-  cells current as trips change; a summary table in PostgreSQL would
-  have to be rebuilt or maintained.
+Reads run with PostgreSQL's defaults, two parallel workers per query,
+except `shared_buffers`, which is 2 GB. The rest of the table comes from
+the OS cache. The other settings in `bench/taxi.py` only speed the load.
+`yellow_trips` has an index on `pickup_at`, which the week and day asks
+use. The gap is smallest there, where PostgreSQL reads least.
+
+PostgreSQL's time follows the rows it reads: every trip, except for the
+week and day asks, which read a week's or a day's. Straum's time hardly
+changes from ask to ask. Most of its time is the HTTP round trip, reading
+the query and writing JSON.
+
+The percentile asks are the exception. Straum gathers every fare of the
+cells in range, so their time follows the fares the range holds, as
+[Median and percentiles](aggregates.md#median-and-percentiles) says.
+
+Straum answers only what the views keep: these keys, on hour edges.
+PostgreSQL answers any query over the raw rows. Straum keeps its cells
+current as trips change. A summary table in PostgreSQL would have to be
+rebuilt or maintained.
 
 ## Running it yourself
 
