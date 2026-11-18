@@ -1,0 +1,159 @@
+# Try it on your data. From the directory that holds schema.sql,
+# data.dump and usage.sql, with bash or zsh:
+# docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
+#   run --rm shell
+# PostgreSQL 18 starts with logical decoding on. psql runs schema.sql,
+# pg_restore loads the rows in data.dump, straum plan writes the setup
+# SQL for usage.sql and psql runs it, then Straum starts. The shell
+# waits until Straum is healthy. The project name is straum-try.
+#
+# ${PWD} is the directory you ran from. The file from <(...) is not, so
+# a relative path would miss the three files.
+name: straum-try
+
+services:
+  postgres:
+    image: postgres:18
+    # wal_level is on from the start, so the setup SQL's ALTER SYSTEM
+    # needs no restart.
+    command: postgres -c wal_level=logical
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # psql and pg_restore from the same image as the server. The command
+  # is the client, so these services do not start another PostgreSQL.
+  schema:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      PGSSLMODE: disable
+    volumes:
+      - type: bind
+        source: ${PWD}/schema.sql
+        target: /schema.sql
+        read_only: true
+        bind:
+          create_host_path: false
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/schema.sql"]
+
+  data:
+    image: postgres:18
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      PGSSLMODE: disable
+      # A -t dump can omit a table a foreign key names.
+      PGOPTIONS: "-c session_replication_role=replica"
+    volumes:
+      - type: bind
+        source: ${PWD}/data.dump
+        target: /data.dump
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - pg_restore
+      - --data-only
+      - --no-owner
+      - --no-privileges
+      - --exit-on-error
+      - --dbname
+      - postgres
+      - /data.dump
+
+  # The image runs as a user who cannot create a file on a new volume,
+  # so plan runs as root and writes the setup SQL there.
+  plan:
+    image: ghcr.io/janbjorge/straum
+    user: "0"
+    depends_on:
+      data:
+        condition: service_completed_successfully
+    restart: "no"
+    environment:
+      STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
+    volumes:
+      - type: bind
+        source: ${PWD}/usage.sql
+        target: /usage.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - setup:/setup
+    command: ["plan", "/usage.sql", "--out", "/setup/setup.sql"]
+
+  apply:
+    image: postgres:18
+    depends_on:
+      plan:
+        condition: service_completed_successfully
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      PGSSLMODE: disable
+    volumes:
+      - setup:/setup:ro
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/setup/setup.sql"]
+
+  straum:
+    image: ghcr.io/janbjorge/straum
+    depends_on:
+      apply:
+        condition: service_completed_successfully
+    command: ["run", "/usage.sql", "--listen", "0.0.0.0:8080"]
+    environment:
+      STRAUM_DSN: postgres://straum:straum@postgres:5432/postgres?sslmode=disable
+    volumes:
+      - type: bind
+        source: ${PWD}/usage.sql
+        target: /usage.sql
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - 127.0.0.1:8080:8080
+    # The image has no shell. status exits 0 once /readyz says ready.
+    # A large copy can take a while to load, so the wait is an hour.
+    healthcheck:
+      test: ["CMD", "/straum", "status"]
+      interval: 1s
+      timeout: 15s
+      retries: 30
+      start_period: 1h
+
+  # `run` starts this after Straum is healthy and attaches the terminal.
+  # A profile keeps `up` from starting it, since it would take no input.
+  shell:
+    image: ghcr.io/janbjorge/straum
+    profiles: ["shell"]
+    depends_on:
+      straum:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    command: ["shell", "--url", "http://straum:8080"]
+
+volumes:
+  setup:

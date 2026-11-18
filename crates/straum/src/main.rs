@@ -58,6 +58,10 @@ enum Failure {
         path: String,
         error: io::Error,
     },
+    WritingFile {
+        path: String,
+        error: io::Error,
+    },
     Spec {
         path: String,
         error: straum_notation::Error,
@@ -85,6 +89,7 @@ impl Display for Failure {
             Failure::ReadingCommands(error) => write!(formatter, "reading commands: {error}"),
             Failure::WritingAnswer(error) => write!(formatter, "writing the answer: {error}"),
             Failure::ReadingFile { path, error } => write!(formatter, "reading {path}: {error}"),
+            Failure::WritingFile { path, error } => write!(formatter, "writing {path}: {error}"),
             Failure::Spec { path, error } => {
                 // Each line names the file, as a compiler's errors do.
                 let text = error.to_string();
@@ -246,6 +251,7 @@ fn read_spec(path: &str) -> Result<SpecFile, Failure> {
 
 /// The role and its password come from the DSN when there is one, so the
 /// setup and `straum run` agree on them without being told twice.
+/// `--out` writes the SQL there. Otherwise it is printed.
 fn plan(
     Plan {
         spec,
@@ -253,6 +259,7 @@ fn plan(
         publication,
         role,
         dsn_file,
+        out,
     }: Plan,
 ) -> Result<(), Failure> {
     let spec = read_spec(&spec)?.spec;
@@ -270,7 +277,16 @@ fn plan(
         None => None,
     };
     let sql = straum_pg::plan(&spec, &publication, role, password, replication);
-    print(&sql)
+    let Some(path) = out.as_deref() else {
+        return print(&sql);
+    };
+    match fs::write(path, sql) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let path = path.to_owned();
+            Err(Failure::WritingFile { path, error })
+        }
+    }
 }
 
 /// Reads an ask's query as Straum SQL, for `straum-http`.
@@ -438,6 +454,13 @@ mod tests {
             (Failure::CommandsFailed(2), "commands that failed: 2"),
             (Failure::ReadingCommands(gone()), "reading commands: gone"),
             (Failure::WritingAnswer(gone()), "writing the answer: gone"),
+            (
+                Failure::WritingFile {
+                    path: "s".into(),
+                    error: gone(),
+                },
+                "writing s: gone",
+            ),
             (
                 Failure::Listening {
                     address: "x".into(),

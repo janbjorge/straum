@@ -759,6 +759,34 @@ fn plan_prints_the_setup_sql() {
 }
 
 #[test]
+fn plan_can_write_the_setup_sql() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let out = scratch.path.join("setup.sql");
+    let out = out.to_str().unwrap();
+    let parsed = straum_notation::parse(SPEC).unwrap();
+    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--out", out]));
+    assert_eq!((code, stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
+    let wrote = fs::read_to_string(out).unwrap();
+    assert_eq!(
+        wrote,
+        straum_pg::plan(
+            &parsed,
+            "straum",
+            "straum",
+            None,
+            straum_pg::Replication::Logical
+        )
+    );
+    let missing = scratch.path.join("missing").join("setup.sql");
+    let missing = missing.to_str().unwrap();
+    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, "--out", missing]));
+    assert_eq!((code, stdout.as_str()), (Some(1), ""));
+    let start = format!("straum: writing {missing}: ");
+    assert!(stderr.starts_with(&start), "{stderr}");
+}
+
+#[test]
 fn prints_help_and_version() {
     let (code, stdout, _) = output(&mut straum(&["help"]));
     assert_eq!(code, Some(0));

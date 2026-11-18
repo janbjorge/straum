@@ -28,7 +28,8 @@ before leaves:
    ask, what Straum is not. It routes and owns no fact.
 2. `quick-start.md`, does it work: the one tutorial, on the taxi trips.
 3. `your-data.md`, does it answer my queries: a `pg_dump` of your
-   tables restored into Docker by `bench/try_your_data.py`, its flags,
+   tables restored into Docker by `docs/compose/try.yaml`, or by
+   `bench/try_your_data.py` for a large dump or the physical stream;
    comparing an ask with SQL, and the steps on the database itself.
 4. `how-it-works.md`, how it works: load, follow, cells, dims, the
    physical stream's mechanism, `as_of` and its consistency.
@@ -80,5 +81,5 @@ A new page, a moved fact or a changed order edits this record first.
 - Some repetition remains on purpose: a link's sentence of context.
 - Fourteen pages to keep true: running splits into deploy and the CLI
   reference, and trying Straum on your own tables has a page of its
-  own, as its own script.
+  own, with its compose file and its script.
 - `llms.txt` is the agent index. It points at the HTML pages.

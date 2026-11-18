@@ -55,7 +55,8 @@ usage: straum plan FILE [flags]
 Prints the SQL that sets PostgreSQL up for FILE, the spec: logical
 decoding, the role, its grants and the publication. With --wal physical
 only the role and its grants. With a DSN the role is its user and gets
-its password, as a SCRAM-SHA-256 verifier.
+its password, as a SCRAM-SHA-256 verifier. --out writes the SQL to a
+file instead of stdout.
 
   --wal logical|physical
                       the WAL straum run reads (logical)
@@ -63,6 +64,7 @@ its password, as a SCRAM-SHA-256 verifier.
   --role NAME         the role straum run connects as (the DSN's user,
                       else straum)
   --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, if set
+  --out FILE          write the SQL to FILE
 
 Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
 ";

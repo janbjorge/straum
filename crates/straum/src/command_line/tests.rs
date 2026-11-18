@@ -111,6 +111,7 @@ fn reads_plan() {
             publication: PUBLICATION.into(),
             role: None,
             dsn_file: None,
+            out: None,
         }))
     );
     assert_eq!(
@@ -123,6 +124,18 @@ fn reads_plan() {
             publication: PUBLICATION.into(),
             role: Some("r".into()),
             dsn_file: Some("d".into()),
+            out: None,
+        }))
+    );
+    assert_eq!(
+        command_of(&args("plan s --out setup.sql")),
+        Ok(Command::Plan(Plan {
+            spec: "s".into(),
+            replication: Replication::Logical,
+            publication: PUBLICATION.into(),
+            role: None,
+            dsn_file: None,
+            out: Some("setup.sql".into()),
         }))
     );
 }
@@ -442,6 +455,8 @@ fn command_errors() {
         ("run a b", "straum run takes one spec"),
         ("plan a b", "straum plan takes one spec"),
         ("plan s --listen x", "straum plan takes no \"--listen\""),
+        ("plan --out", "--out needs a value"),
+        ("run s --out setup.sql", "straum run takes no \"--out\""),
         ("run --spec=s", "straum run takes no \"--spec\""),
         ("run", "straum run needs a spec"),
         ("plan --role r", "straum plan needs a spec"),

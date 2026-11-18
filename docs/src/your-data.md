@@ -3,7 +3,7 @@
 Does Straum answer the queries you run? Copy your tables into a
 throwaway PostgreSQL in Docker and run Straum on the copy. The
 database they came from serves the dump and nothing else. You need
-Docker, [uv](https://docs.astral.sh/uv/) and `pg_dump`.
+Docker, `curl` and `pg_dump`, and bash or zsh.
 
 The dump holds your rows. Keep it where your data may be.
 
@@ -47,52 +47,65 @@ which Straum reads as text through `::text`
 
 ## 3. Run
 
-```sh
-uv run https://raw.githubusercontent.com/janbjorge/straum/main/bench/try_your_data.py \
-  --spec usage.sql --data data.dump --schema schema.sql --port 8080
+In the directory that holds `schema.sql`, `data.dump` and `usage.sql`:
+
+```bash
+docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
+  run --rm shell
 ```
 
-From a clone of the repository, `just try --spec usage.sql --data
-data.dump --schema schema.sql --port 8080` runs the same.
-[`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
-starts PostgreSQL with `wal_level = logical`, or `replica` with
-`--wal physical` to try the [physical
-stream](postgresql.md#physical-wal), restores the schema,
-then the data of the tables the spec reads, with foreign keys and
-triggers off, and runs `straum plan`'s SQL. The dump's other tables
-stay out, so they take no disk. The indexes of the spec's tables,
-other than primary keys and unique constraints, go in after the data,
-`--jobs` at a time, since a table loads many times faster with no
-index to keep up. Then it starts `straum run` from the
-image, waits until Straum has loaded, and opens
-[`straum shell`](cli.md#straum-shell):
+The file starts PostgreSQL 18 with logical decoding on. `psql` runs
+`schema.sql`. `pg_restore` loads the rows in `data.dump`, with foreign
+keys and triggers off, because a `-t` dump can omit a table a key
+names. `straum plan` writes the setup SQL for `usage.sql`, and `psql`
+runs it. Straum starts once that has exited, and is healthy once it
+can answer. The shell waits for that, for up to an hour, then takes
+the terminal. `<(...)` is bash or zsh, so the terminal stays the
+shell's input. The file in the repository is `docs/compose/try.yaml`.
 
 ```text
-try: starting PostgreSQL 18 in stack straum-try-usage
-...
-try: straum ready in 0 s
-
-Ask:        curl --json '{"query": "SELECT <keys>, <measures> FROM <view>
-              WHERE bucket >= $1 AND bucket < $2 GROUP BY <keys>",
-              "parameters": ["<from>", "<to>"]}' http://127.0.0.1:8080/ask
-PostgreSQL: docker compose -p straum-try-usage exec postgres psql -U postgres
-
-Opening straum shell. Leaving it removes both containers.
+Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
+straum>
 ```
 
 `\d` lists the views, `\d usage` prints a view's `CREATE VIEW`, and
 `\rows usage` prints its rows.
 
-Both containers run in one Docker Compose project, the stack, named
-`straum-try-` and the spec's file name, with its own network. Stacks of
-different specs run side by side; `--stack` names another. A run
-removes what a killed run of its stack left. Straum alone is published,
-on `127.0.0.1` only, at a port Docker picks unless `--port` names one.
+`\q` leaves the shell and removes that container. The copy keeps
+running, on `127.0.0.1:8080`. Stop a quick start on that port first.
+This opens the shell again:
 
-A statement the restore can't run, such as an extension the image
-lacks, is printed and skipped. A table the spec reads but the restore
-missed stops the run at `straum plan`, which names it
-([Checking a spec](spec.md#checking-a-spec)).
+```sh
+docker compose -p straum-try exec straum /straum shell
+```
+
+An interrupt during the wait stops the wait and leaves the containers
+running. The log is `docker compose -p straum-try logs`.
+`docker compose -p straum-try down --volumes` removes the copy. Run
+that and the command again to load a change to the three files. The
+file is not saved. The copy is the database `postgres`.
+
+A statement in `schema.sql` that the image cannot run, such as an
+extension it lacks, stops the run and prints the line. So does a table
+the spec names that the schema restore missed, when `psql` runs the
+setup. The indexes in the schema stay. On a large dump that is slow.
+
+From a clone, this is faster, and it can try the physical stream:
+
+```sh
+just try --spec usage.sql --data data.dump --schema schema.sql --port 8080
+```
+
+[`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
+restores only the data of the tables the spec reads, so the dump's
+other tables stay out. It drops the spec tables' indexes, other than
+primary keys and unique constraints, for the load and builds them
+after, `--jobs` at a time. `--wal physical` tries the [physical
+stream](postgresql.md#physical-wal). A run removes what a killed run
+of its stack left. Leaving the shell removes both containers. A
+statement the restore can't run is printed and skipped. A table the
+spec reads but the restore missed stops the run at `straum plan`,
+which names it ([Checking a spec](spec.md#checking-a-spec)).
 
 | Flag | Default | |
 | --- | --- | --- |
@@ -124,7 +137,7 @@ Run the SQL anyone would write over the raw tables in the copy, and
 compare:
 
 ```sh
-docker compose -p straum-try-usage exec postgres psql -U postgres -c "
+docker compose -p straum-try exec postgres psql -U postgres -c "
   SELECT a.region, count(*) AS events, sum(e.amount) AS amount
     FROM events e LEFT JOIN accounts a ON a.id = e.account_id
    WHERE e.at >= '2026-11-01T00:00:00Z' AND e.at < '2026-12-01T00:00:00Z'

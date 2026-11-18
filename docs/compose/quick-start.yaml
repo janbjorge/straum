@@ -1,5 +1,5 @@
 # Quick start. From any directory, with bash or zsh:
-# docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml) \
+# docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/quick-start.yaml) \
 #   run --rm shell
 # Postgres answers, then load brings in the taxi month and the setup,
 # then Straum starts. The shell service waits until Straum is healthy.

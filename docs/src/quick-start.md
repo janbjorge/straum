@@ -9,7 +9,7 @@ line and performance pages use these tables too.
 ## 1. Start
 
 ```bash
-docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose.yaml) \
+docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/quick-start.yaml) \
   run --rm shell
 ```
 
@@ -49,7 +49,7 @@ downloads the trips and loads `taxi_zones` and `yellow_trips`. The
 TLC's times are New York wall clock, so it reads them in that time
 zone. Money and distance are `numeric`, so sums are exact. Straum's
 own load takes about a second. The file in the repository is
-`docs/compose.yaml`.
+`docs/compose/quick-start.yaml`.
 
 The file is not saved. Later commands name the project `straum`.
 

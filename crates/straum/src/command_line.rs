@@ -106,7 +106,7 @@ impl Name {
                 "--max-transaction-rows",
                 "--max-page-memory",
             ],
-            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file"],
+            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", "--out"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
     }
@@ -167,6 +167,8 @@ pub(crate) struct Plan {
     pub(crate) publication: String,
     pub(crate) role: Option<String>,
     pub(crate) dsn_file: Option<String>,
+    /// Where to write the setup SQL. `None` prints it.
+    pub(crate) out: Option<String>,
 }
 
 /// A command line Straum can't run, printed with a hint at the help.
@@ -429,6 +431,7 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
         publication: flags.publication(),
         role: flags.text("--role"),
         dsn_file: flags.text("--dsn-file"),
+        out: flags.text("--out"),
     }))
 }
 

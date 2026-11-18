@@ -77,6 +77,7 @@ in `FILE`, or what is wrong with the spec and exits with 1.
 | `--publication NAME` | The publication to make; give `straum run` the same name. |
 | `--role NAME` | The role `straum run` connects as; without it, the DSN's user, else `straum`. |
 | `--dsn-file FILE` | As for `straum run`. With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
+| `--out FILE` | Write the SQL to this file instead of stdout. |
 
 ## straum status
 
