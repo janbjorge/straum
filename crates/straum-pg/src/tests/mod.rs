@@ -4,6 +4,7 @@
 //! `support` and `references` hold what the subject files share.
 
 pub(crate) mod compose;
+mod copy;
 mod decoding;
 mod followed;
 mod heap_fixtures;

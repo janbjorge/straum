@@ -232,7 +232,8 @@ the end are open.
 - **Problem**: one line of a failed setup check.
 - **Role**: the role Straum connects as (`--role`); unrelated to
   `catalog::Purpose`.
-- **DSN** (`Dsn`): the connection URL ([Connect](postgresql.md#2-connect)).
+- **DSN** (`Dsn`): the connection URL, or libpq's variables when no
+  URL is set ([Connect](postgresql.md#2-connect)).
 - **Publication**: holds every spec table on the logical stream
   (`--publication`).
 - **Replication slot**: the temporary slot each start creates; "the

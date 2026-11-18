@@ -1,9 +1,10 @@
 //! One connection to PostgreSQL over TCP or TLS, speaking its frontend and
 //! backend protocol: startup and SCRAM (password sign-in), simple queries,
-//! `COPY` out for loads, and the copy-both stream of a replication
-//! connection. Every other module talks to PostgreSQL through
-//! `Connection`. Messages are read whole into a buffer, so a read that
-//! times out loses nothing; rustls keeps a TLS record it has read part of.
+//! `COPY` out for loads, `COPY` in for a try's copy, and the copy-both
+//! stream of a replication connection. Every other module talks to
+//! PostgreSQL through `Connection`. Messages are read whole into a buffer,
+//! so a read that times out loses nothing; rustls keeps a TLS record it
+//! has read part of.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -269,6 +270,71 @@ impl Connection {
                 | Message::ParameterStatus(_) => {}
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 Message::ReadyForQuery(_) => return Ok(()),
+                _ => return Err(Error::Protocol(Unexpected::MessageDuringCopy)),
+            }
+        }
+    }
+
+    /// Starts `COPY ... FROM STDIN`. The caller sends the bytes, then
+    /// [`Connection::finish_copy_in`]. After an error the connection is
+    /// mid-copy; drop it.
+    pub(crate) fn start_copy_in(&mut self, sql: &str) -> Result<(), Error> {
+        frontend::query(sql, &mut self.output)?;
+        self.flush()?;
+        let mut error = None;
+        loop {
+            let message = match self.read() {
+                Ok(message) => message,
+                Err(read_error) => return Err(error.unwrap_or(read_error)),
+            };
+            match message {
+                Message::CopyInResponse(_) => {
+                    return match error {
+                        None => Ok(()),
+                        Some(error) => Err(error),
+                    };
+                }
+                Message::NoticeResponse(_) | Message::ParameterStatus(_) => {}
+                Message::ErrorResponse(body) => {
+                    if error.is_none() {
+                        error = Some(server_error(&body));
+                    }
+                }
+                Message::ReadyForQuery(_) => {
+                    return Err(error.unwrap_or(Error::Protocol(Unexpected::MessageDuringCopy)));
+                }
+                _ => return Err(Error::Protocol(Unexpected::MessageDuringCopy)),
+            }
+        }
+    }
+
+    /// Ends a `COPY` in and reads its result. The first error is the one
+    /// that says why; the rest of the reply is read, so the connection
+    /// stays usable.
+    pub(crate) fn finish_copy_in(&mut self) -> Result<(), Error> {
+        frontend::copy_done(&mut self.output);
+        self.flush()?;
+        let mut error = None;
+        loop {
+            let message = match self.read() {
+                Ok(message) => message,
+                Err(read_error) => return Err(error.unwrap_or(read_error)),
+            };
+            match message {
+                Message::CommandComplete(_)
+                | Message::NoticeResponse(_)
+                | Message::ParameterStatus(_) => {}
+                Message::ErrorResponse(body) => {
+                    if error.is_none() {
+                        error = Some(server_error(&body));
+                    }
+                }
+                Message::ReadyForQuery(_) => {
+                    return match error {
+                        None => Ok(()),
+                        Some(error) => Err(error),
+                    };
+                }
                 _ => return Err(Error::Protocol(Unexpected::MessageDuringCopy)),
             }
         }

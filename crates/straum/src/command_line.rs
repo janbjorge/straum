@@ -1,6 +1,6 @@
 //! Reading a command line into a `Command`. `command` takes the words
-//! after `straum`: the first names the command. `run` and `plan` take
-//! the spec as the one word that is not a flag; `ask` takes its query
+//! after `straum`: the first names the command. `run`, `plan` and `copy`
+//! take the spec as the one word that is not a flag; `ask` takes its query
 //! and parameters after the flags. `Flags::read` checks the flags
 //! against the ones that command takes, and each `*_command` function
 //! builds the command from them, filling in defaults. A line Straum
@@ -14,7 +14,9 @@ use straum_domain::closest;
 use straum_pg::Replication;
 
 use crate::client::{Output, Server, TIMEOUT};
-use crate::help::{ASK_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP};
+use crate::help::{
+    ASK_HELP, COPY_HELP, HELP, PLAN_HELP, RUN_HELP, SHELL_HELP, STATUS_HELP, VIEWS_HELP,
+};
 
 /// Where `straum run` listens unless told: this host only, as Straum
 /// has no authentication or TLS.
@@ -46,6 +48,7 @@ const MAX_PAGE_MEMORY: usize = 1 << 30;
 pub(crate) enum Name {
     Run,
     Plan,
+    Copy,
     Status,
     Views,
     Ask,
@@ -53,9 +56,10 @@ pub(crate) enum Name {
 }
 
 impl Name {
-    const ALL: [Name; 6] = [
+    const ALL: [Name; 7] = [
         Name::Run,
         Name::Plan,
+        Name::Copy,
         Name::Status,
         Name::Views,
         Name::Ask,
@@ -75,6 +79,7 @@ impl Name {
         match self {
             Name::Run => "run",
             Name::Plan => "plan",
+            Name::Copy => "copy",
             Name::Status => "status",
             Name::Views => "views",
             Name::Ask => "ask",
@@ -87,6 +92,7 @@ impl Name {
         match self {
             Name::Run => RUN_HELP,
             Name::Plan => PLAN_HELP,
+            Name::Copy => COPY_HELP,
             Name::Status => STATUS_HELP,
             Name::Views => VIEWS_HELP,
             Name::Ask => ASK_HELP,
@@ -107,6 +113,7 @@ impl Name {
                 "--max-page-memory",
             ],
             Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", "--out"],
+            Name::Copy => &["--from-file", "--to-file"],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
     }
@@ -115,7 +122,7 @@ impl Name {
     fn switches(self) -> &'static [&'static str] {
         match self {
             Name::Status | Name::Views | Name::Ask => &[JSON],
-            Name::Run | Name::Plan | Name::Shell => &[],
+            Name::Run | Name::Plan | Name::Copy | Name::Shell => &[],
         }
     }
 }
@@ -125,6 +132,7 @@ impl Name {
 pub(crate) enum Command {
     Run(Run),
     Plan(Plan),
+    Copy(Copy),
     Status {
         server: Server,
         output: Output,
@@ -169,6 +177,14 @@ pub(crate) struct Plan {
     pub(crate) dsn_file: Option<String>,
     /// Where to write the setup SQL. `None` prints it.
     pub(crate) out: Option<String>,
+}
+
+/// What `straum copy` was told.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Copy {
+    pub(crate) spec: String,
+    pub(crate) from_file: Option<String>,
+    pub(crate) to_file: Option<String>,
 }
 
 /// A command line Straum can't run, printed with a hint at the help.
@@ -405,6 +421,7 @@ fn flags(name: Name, rest: &[String], url: &str) -> Result<Command, UsageError> 
             ask_command(&Flags::read(name, rest)?, query, url)
         }
         Name::Plan => plan_command(&Flags::read(name, rest)?),
+        Name::Copy => copy_command(&Flags::read(name, rest)?),
         Name::Run => run_command(&Flags::read(name, rest)?),
     }
 }
@@ -432,6 +449,17 @@ fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
         role: flags.text("--role"),
         dsn_file: flags.text("--dsn-file"),
         out: flags.text("--out"),
+    }))
+}
+
+fn copy_command(flags: &Flags) -> Result<Command, UsageError> {
+    let Some(spec) = flags.spec.clone() else {
+        return Err(UsageError::NeedsSpec(Name::Copy));
+    };
+    Ok(Command::Copy(Copy {
+        spec,
+        from_file: flags.text("--from-file"),
+        to_file: flags.text("--to-file"),
     }))
 }
 
@@ -516,10 +544,10 @@ struct Flags {
 }
 
 impl Flags {
-    /// A flag takes the next word, so for `run` and `plan` the spec is
-    /// whichever word is left.
+    /// A flag takes the next word, so for `run`, `plan` and `copy` the
+    /// spec is whichever word is left.
     fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
-        let takes_spec = matches!(name, Name::Run | Name::Plan);
+        let takes_spec = matches!(name, Name::Run | Name::Plan | Name::Copy);
         let mut flags = Flags {
             given: Vec::new(),
             switches: Vec::new(),

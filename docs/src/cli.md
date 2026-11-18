@@ -1,11 +1,11 @@
 # Command line
 
-`straum` is one binary with eight commands: `run`, `plan`, `status`,
-`views`, `ask`, `shell`, `version` and `help`. `straum <command> --help`
-prints a command's flags with their defaults. A flag takes its value as
-the next word or after `=`: `--url http://straum:8080` or
-`--url=http://straum:8080`. The examples run against
-the [quick start](quick-start.md)'s trips.
+`straum` is one binary with nine commands: `run`, `plan`, `copy`,
+`status`, `views`, `ask`, `shell`, `version` and `help`.
+`straum <command> --help` prints a command's flags with their defaults.
+A flag takes its value as the next word or after `=`:
+`--url http://straum:8080` or `--url=http://straum:8080`. The examples
+run against the [quick start](quick-start.md)'s trips.
 
 A word that starts with `-` is a flag, up to a `--`: after it, a spec
 or a query is taken as written, as in `straum run -- -spec.sql`.
@@ -45,7 +45,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--listen ADDRESS` | Where to serve HTTP: `127.0.0.1:8080`, this host only, unless told ([Who can ask](deploy.md#who-can-ask)). |
 | `--wal logical\|physical` | Logical decoding through the publication, the default, or the [physical WAL](postgresql.md#physical-wal) `wal_level = replica` writes. |
 | `--publication NAME` | The publication `straum plan` made. |
-| `--dsn-file FILE` | A file holding the [DSN](postgresql.md#2-connect); without it, the `STRAUM_DSN` environment variable. |
+| `--dsn-file FILE` | [DSN](postgresql.md#2-connect) file; else `STRAUM_DSN`, else `PGHOST`. |
 | `--max-lag SECONDS` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | WAL retained for the slot before Straum stops. A watchdog checks it every second, during loads too, and ends the slot's session past it. Takes `Ki`, `Mi`, `Gi` or `Ti`. |
 | `--max-transaction-rows ROWS` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
@@ -78,6 +78,27 @@ in `FILE`, or what is wrong with the spec and exits with 1.
 | `--role NAME` | The role `straum run` connects as; without it, the DSN's user, else `straum`. |
 | `--dsn-file FILE` | As for `straum run`. With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
 | `--out FILE` | Write the SQL to this file instead of stdout. |
+
+## straum copy
+
+```text
+straum copy FILE [flags]
+```
+
+Copies every table the spec in `FILE` names from one database into
+another. The source is read in one snapshot, and only read. The
+destination gets the columns, the enums they use and the rows.
+Indexes, keys and defaults are left behind. A composite column, or a
+type an extension provides, stops the copy and names the column.
+
+The URLs are DSNs ([Connect](postgresql.md#2-connect)). They are read
+from the environment, or from a file, and never from the command
+line. [Try it on your data](your-data.md) runs this for you.
+
+| Flag | Meaning |
+| --- | --- |
+| `--from-file FILE` | Source DSN file; else `STRAUM_FROM`, else `PGHOST`. |
+| `--to-file FILE` | Destination DSN file; else `STRAUM_TO`. |
 
 ## straum status
 

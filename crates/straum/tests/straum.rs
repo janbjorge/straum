@@ -165,6 +165,18 @@ impl Drop for Scratch {
 fn straum(args: &[&str]) -> Command {
     let mut command = Command::new(STRAUM);
     command.args(args).env_remove("STRAUM_DSN");
+    for variable in [
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGPORT",
+        "PGUSER",
+        "PGPASSWORD",
+        "PGDATABASE",
+        "PGSSLMODE",
+        "PGSSLROOTCERT",
+    ] {
+        command.env_remove(variable);
+    }
     command
 }
 
@@ -756,6 +768,57 @@ fn plan_prints_the_setup_sql() {
         stderr,
         "straum: DSN must start with postgres:// or postgresql://\n"
     );
+}
+
+#[test]
+fn copy_needs_both_databases() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let mut missing = straum(&["copy", &spec]);
+    missing.env_remove("STRAUM_FROM").env_remove("STRAUM_TO");
+    let (code, stdout, stderr) = output(&mut missing);
+    assert_eq!((code, stdout.as_str()), (Some(1), ""));
+    assert_eq!(
+        stderr,
+        "straum: set STRAUM_FROM, pass --from-file, or set PGHOST\n"
+    );
+    let mut one = straum(&["copy", &spec]);
+    one.env_remove("STRAUM_TO")
+        .env("STRAUM_FROM", "postgres://u@db/app?sslmode=disable");
+    let (code, stdout, stderr) = output(&mut one);
+    assert_eq!((code, stdout.as_str()), (Some(1), ""));
+    assert_eq!(stderr, "straum: set STRAUM_TO or pass --to-file\n");
+}
+
+#[test]
+fn plan_reads_the_libpq_variables() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let mut command = straum(&["plan", &spec]);
+    command
+        .env("PGHOST", "db.example")
+        .env("PGUSER", "reader")
+        .env("PGPASSWORD", "secret")
+        .env("PGDATABASE", "app")
+        .env("PGSSLMODE", "disable");
+    let (code, stdout, stderr) = output(&mut command);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(
+        stdout.contains("CREATE ROLE \"reader\" LOGIN REPLICATION PASSWORD "),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("secret"), "{stdout}");
+    let mut both = straum(&["plan", &spec]);
+    both.env(
+        "STRAUM_DSN",
+        "postgres://owner@db.example/app?sslmode=disable",
+    )
+    .env("PGUSER", "reader")
+    .env("PGHOST", "other.example");
+    let (code, stdout, stderr) = output(&mut both);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(stdout.contains("CREATE ROLE \"owner\""), "{stdout}");
+    assert!(!stdout.contains("\"reader\""), "{stdout}");
 }
 
 #[test]

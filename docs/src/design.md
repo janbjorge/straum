@@ -65,6 +65,12 @@ step that fails logs its error and ends the process with exit 1, and
 PostgreSQL drops the slot as the connection closes. Straum never
 retries in the process; whatever runs it starts it again.
 
+`straum copy` reads the spec and writes those tables into another
+database. The source is one read-only snapshot. The destination gets
+the columns, the enums and the rows, and not the indexes, keys or
+defaults. It sits next to `plan` in `straum-pg`. `Source` stays the
+port that loads the store and then streams.
+
 ## Start
 
 `Writer::start`:

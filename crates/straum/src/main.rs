@@ -29,10 +29,10 @@ use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
 use straum_http::QueryError;
 use straum_notation::SqlError;
-use straum_pg::{Dsn, DsnError, Postgres};
+use straum_pg::{CopyError, Dsn, DsnError, PgEnv, Postgres};
 
 use crate::client::ClientError;
-use crate::command_line::{Command, Environment, Plan, ROLE, Run, URL_VARIABLE, command};
+use crate::command_line::{Command, Copy, Environment, Plan, ROLE, Run, URL_VARIABLE, command};
 use crate::help::HELP;
 
 // 2, not 1, so a script can tell a misused command line from a failed run.
@@ -67,7 +67,13 @@ enum Failure {
         error: straum_notation::Error,
     },
     Dsn(DsnError),
-    NoDsn,
+    NoDsn {
+        variable: &'static str,
+        flag: &'static str,
+        /// `PGHOST` and the other libpq variables are a third way.
+        libpq: bool,
+    },
+    Copy(CopyError),
     /// A role name with a control character, which would end a comment
     /// line of the setup SQL and start a statement.
     RoleControl(String),
@@ -100,7 +106,18 @@ impl Display for Failure {
                 formatter.write_str(&lines.join("\n"))
             }
             Failure::Dsn(error) => error.fmt(formatter),
-            Failure::NoDsn => formatter.write_str("set STRAUM_DSN or pass --dsn-file"),
+            Failure::NoDsn {
+                variable,
+                flag,
+                libpq,
+            } => {
+                if *libpq {
+                    write!(formatter, "set {variable}, pass {flag}, or set PGHOST")
+                } else {
+                    write!(formatter, "set {variable} or pass {flag}")
+                }
+            }
+            Failure::Copy(error) => error.fmt(formatter),
             Failure::RoleControl(role) => {
                 write!(formatter, "the role {role:?} holds a control character")
             }
@@ -177,6 +194,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             print(&format!("straum {version}\n"))
         }
         Command::Plan(args) => plan(args),
+        Command::Copy(args) => copy_tables(args),
         Command::Run(args) => run(args),
         Command::Status { server, output } => {
             print(&client::status(&server, output)?)?;
@@ -263,7 +281,7 @@ fn plan(
     }: Plan,
 ) -> Result<(), Failure> {
     let spec = read_spec(&spec)?.spec;
-    let dsn = read_dsn(dsn_file.as_deref())?;
+    let dsn = read_dsn("STRAUM_DSN", dsn_file.as_deref(), true)?;
     let role = match (&role, &dsn) {
         (Some(role), _) => role.as_str(),
         (None, Some(dsn)) => dsn.user(),
@@ -302,15 +320,68 @@ fn read_ask(query: &str, parameters: &[Literal]) -> Result<Ask, Vec<QueryError>>
     Err(errors)
 }
 
-/// From the file, else from `STRAUM_DSN`. Never from the command line, where
-/// other users of the machine can read it.
-fn read_dsn(file: Option<&str>) -> Result<Option<Dsn>, Failure> {
-    let text = match (file, env::var("STRAUM_DSN")) {
+/// From the file, else from `variable`, else from libpq's variables when
+/// `libpq` says so. Never from the command line, where other users of the
+/// machine can read it. A set Straum variable wins, even when libpq's are
+/// set too.
+fn read_dsn(variable: &str, file: Option<&str>, libpq: bool) -> Result<Option<Dsn>, Failure> {
+    let text = match (file, env::var(variable)) {
         (Some(path), _) => read_file(path)?,
         (None, Ok(text)) => text,
-        (None, Err(_)) => return Ok(None),
+        (None, Err(_)) => {
+            if !libpq {
+                return Ok(None);
+            }
+            return Dsn::from_pg(&pg_env()).map_err(Failure::Dsn);
+        }
     };
     Ok(Some(Dsn::parse(text.trim())?))
+}
+
+/// What libpq would read from the environment.
+fn pg_env() -> PgEnv {
+    PgEnv {
+        host: env::var("PGHOST").ok(),
+        host_addr: env::var("PGHOSTADDR").ok(),
+        port: env::var("PGPORT").ok(),
+        user: env::var("PGUSER").ok(),
+        os_user: env::var("USER").ok(),
+        password: env::var("PGPASSWORD").ok(),
+        database: env::var("PGDATABASE").ok(),
+        sslmode: env::var("PGSSLMODE").ok(),
+        ssl_root_cert: env::var("PGSSLROOTCERT").ok(),
+    }
+}
+
+/// `variable`, or the file `flag` names. The URL stays out of the command
+/// line, where other users of the machine can read it.
+fn require_dsn(
+    variable: &'static str,
+    file: Option<&str>,
+    flag: &'static str,
+    libpq: bool,
+) -> Result<Dsn, Failure> {
+    match read_dsn(variable, file, libpq)? {
+        Some(dsn) => Ok(dsn),
+        None => Err(Failure::NoDsn {
+            variable,
+            flag,
+            libpq,
+        }),
+    }
+}
+
+fn copy_tables(
+    Copy {
+        spec,
+        from_file,
+        to_file,
+    }: Copy,
+) -> Result<(), Failure> {
+    let spec = read_spec(&spec)?.spec;
+    let from = require_dsn("STRAUM_FROM", from_file.as_deref(), "--from-file", true)?;
+    let to = require_dsn("STRAUM_TO", to_file.as_deref(), "--to-file", false)?;
+    straum_pg::copy(&spec, &from, &to).map_err(Failure::Copy)
 }
 
 fn run(
@@ -325,8 +396,12 @@ fn run(
     }: Run,
 ) -> Result<(), Failure> {
     let SpecFile { spec, definitions } = read_spec(&spec)?;
-    let Some(dsn) = read_dsn(dsn_file.as_deref())? else {
-        return Err(Failure::NoDsn);
+    let Some(dsn) = read_dsn("STRAUM_DSN", dsn_file.as_deref(), true)? else {
+        return Err(Failure::NoDsn {
+            variable: "STRAUM_DSN",
+            flag: "--dsn-file",
+            libpq: true,
+        });
     };
     let Bound { listener, address } = match bind(&listen) {
         Ok(bound) => bound,
@@ -445,7 +520,30 @@ mod tests {
                 },
                 "reading s: gone",
             ),
-            (Failure::NoDsn, "set STRAUM_DSN or pass --dsn-file"),
+            (
+                Failure::NoDsn {
+                    variable: "STRAUM_DSN",
+                    flag: "--dsn-file",
+                    libpq: true,
+                },
+                "set STRAUM_DSN, pass --dsn-file, or set PGHOST",
+            ),
+            (
+                Failure::NoDsn {
+                    variable: "STRAUM_FROM",
+                    flag: "--from-file",
+                    libpq: true,
+                },
+                "set STRAUM_FROM, pass --from-file, or set PGHOST",
+            ),
+            (
+                Failure::NoDsn {
+                    variable: "STRAUM_TO",
+                    flag: "--to-file",
+                    libpq: false,
+                },
+                "set STRAUM_TO or pass --to-file",
+            ),
             (
                 Failure::RoleControl("a\nb".into()),
                 "the role \"a\\nb\" holds a control character",
@@ -499,6 +597,14 @@ mod tests {
         assert!(HELP.contains(&format!("{NOT_READY} Straum not\nready")));
         let wrong = refused("HTTP/1.1 400 Bad Request");
         assert_eq!(wrong.exit_code(), ExitCode::FAILURE);
-        assert_eq!(Failure::NoDsn.exit_code(), ExitCode::FAILURE);
+        assert_eq!(
+            Failure::NoDsn {
+                variable: "STRAUM_DSN",
+                flag: "--dsn-file",
+                libpq: true,
+            }
+            .exit_code(),
+            ExitCode::FAILURE
+        );
     }
 }

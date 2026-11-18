@@ -10,6 +10,7 @@ usage: straum <command> [flags]
 
   run     load the spec's tables, follow their changes, answer asks
   plan    print the SQL that sets PostgreSQL up for the spec
+  copy    copy the spec's tables into another database
   status  print what a running Straum has done
   views   print the views a running Straum holds, and how much of each
   ask     ask a running Straum and print the answer as a table
@@ -36,7 +37,8 @@ or follow ends it with exit 1, for whatever runs it to start it again.
                                the physical WAL wal_level replica writes
                                (logical)
   --publication NAME           the publication straum plan made (straum)
-  --dsn-file FILE              a file holding the DSN; else STRAUM_DSN
+  --dsn-file FILE              a file holding the DSN; else STRAUM_DSN,
+                               else PGHOST and the other libpq variables
   --max-lag SECONDS            lag before /readyz turns off (30)
   --max-retained-wal BYTES     WAL retained for the slot before Straum
                                stops (4Gi; takes Ki, Mi, Gi or Ti)
@@ -63,10 +65,28 @@ file instead of stdout.
   --publication NAME  the publication to make (straum)
   --role NAME         the role straum run connects as (the DSN's user,
                       else straum)
-  --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, if set
+  --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, else
+                      PGHOST and the other libpq variables
   --out FILE          write the SQL to FILE
 
 Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
+";
+
+/// What `straum copy --help` prints.
+pub(crate) const COPY_HELP: &str = "\
+usage: straum copy FILE [flags]
+
+Copies every table FILE names from one database into another. FILE is
+the spec. The source is read in one snapshot, and only read. The
+destination gets the columns, the enums they use and the rows. Indexes,
+keys and defaults are left behind. A composite column, or a type an
+extension provides, stops the copy and names the column.
+
+  --from-file FILE  a file holding the source DSN; else STRAUM_FROM,
+                    else PGHOST and the other libpq variables
+  --to-file FILE    a file holding the destination DSN; else STRAUM_TO
+
+Guide: https://janbjorge.github.io/straum/your-data.html
 ";
 
 /// What `straum status --help` prints.

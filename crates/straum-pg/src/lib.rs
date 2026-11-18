@@ -4,7 +4,8 @@
 //! hands a thread the stream (`stream.rs`), which turns pgoutput
 //! (`pgoutput.rs`, `decode.rs`) or WAL records (`physical.rs`, `wal/`) into
 //! commits, while `watchdog.rs` keeps the slot from holding too much WAL.
-//! `wire.rs` is the connection under all of it.
+//! `wire.rs` is the connection under all of it. `copy.rs` copies the
+//! spec's tables into another database.
 
 // The test build counts allocations with the one `unsafe` it allows,
 // in `wal/test_support.rs` (ADR-0013); `forbid` would refuse even that.
@@ -12,6 +13,7 @@
 #![cfg_attr(test, deny(unsafe_code))]
 
 mod catalog;
+mod copy;
 mod decode;
 mod dsn;
 mod error;
@@ -35,6 +37,7 @@ mod watchdog;
 mod wal_bench;
 mod wire;
 
-pub use dsn::{Dsn, DsnError};
+pub use copy::{CopyError, copy};
+pub use dsn::{Dsn, DsnError, PgEnv};
 pub use plan::plan;
 pub use source::{Postgres, Replication};

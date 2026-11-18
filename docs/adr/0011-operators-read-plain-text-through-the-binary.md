@@ -1,6 +1,6 @@
 # ADR-0011: Operators read plain text through the binary
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-18
 
 ## Context
 
@@ -14,11 +14,17 @@ was one block printed on every argument error.
 
 ## Decision
 
-The DSN comes from `STRAUM_DSN` or `--dsn-file`, never an argument.
-Arguments are read by hand, as getopt reads long options: a flag
-takes the next word or the text after `=`. `straum plan` makes the DSN's user the
-role, with its password as a SCRAM-SHA-256 verifier; without a DSN it
-prints a setup for the default role `straum`.
+A DSN never comes from an argument. `straum plan` and `straum run`
+read `STRAUM_DSN` or `--dsn-file`. `straum copy` reads `STRAUM_FROM`
+or `--from-file` for the source and `STRAUM_TO` or `--to-file` for
+the destination. When that Straum variable is unset, `plan`, `run`
+and the source of `copy` read libpq's variables, `PGHOST` and the
+rest. The destination does not, because libpq has one set. A set
+Straum variable wins. Arguments are read by hand, as getopt reads
+long options: a flag takes the next word or the text after `=`.
+`straum plan` makes the DSN's user the role, with its password as a
+SCRAM-SHA-256 verifier; without a DSN it prints a setup for the
+default role `straum`.
 
 Help follows clig.dev: `straum help` lists the commands a line each;
 `straum <command> --help`, `-h` anywhere or `straum help <command>`

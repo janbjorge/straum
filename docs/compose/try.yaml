@@ -1,14 +1,16 @@
-# Try it on your data. From the directory that holds schema.sql,
-# data.dump and usage.sql, with bash or zsh:
+# Try it on your data. From the directory that holds usage.sql, with
+# DATABASE_URL set to a role that can SELECT the spec's tables, and
+# with bash or zsh:
 # docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
 #   run --rm shell
-# PostgreSQL 18 starts with logical decoding on. psql runs schema.sql,
-# pg_restore loads the rows in data.dump, straum plan writes the setup
-# SQL for usage.sql and psql runs it, then Straum starts. The shell
-# waits until Straum is healthy. The project name is straum-try.
+# PostgreSQL 18 starts with logical decoding on. straum copy copies the
+# tables usage.sql names, straum plan writes the setup SQL and psql runs
+# it, then Straum starts. The shell waits until Straum is healthy. The
+# project name is straum-try.
 #
 # ${PWD} is the directory you ran from. The file from <(...) is not, so
-# a relative path would miss the three files.
+# a relative path would miss usage.sql. host.docker.internal reaches
+# the host, including on Linux.
 name: straum-try
 
 services:
@@ -26,59 +28,27 @@ services:
       retries: 30
       start_period: 20s
 
-  # psql and pg_restore from the same image as the server. The command
-  # is the client, so these services do not start another PostgreSQL.
-  schema:
-    image: postgres:18
+  # Copies the spec's tables from DATABASE_URL. The source is only
+  # read. host.docker.internal is the machine Docker runs on.
+  copy:
+    image: ghcr.io/janbjorge/straum
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      PGHOST: postgres
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: postgres
-      PGSSLMODE: disable
+      STRAUM_FROM: ${DATABASE_URL:?set DATABASE_URL}
+      STRAUM_TO: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
     volumes:
       - type: bind
-        source: ${PWD}/schema.sql
-        target: /schema.sql
+        source: ${PWD}/usage.sql
+        target: /usage.sql
         read_only: true
         bind:
           create_host_path: false
-    command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/schema.sql"]
-
-  data:
-    image: postgres:18
-    depends_on:
-      schema:
-        condition: service_completed_successfully
-    restart: "no"
-    environment:
-      PGHOST: postgres
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: postgres
-      PGSSLMODE: disable
-      # A -t dump can omit a table a foreign key names.
-      PGOPTIONS: "-c session_replication_role=replica"
-    volumes:
-      - type: bind
-        source: ${PWD}/data.dump
-        target: /data.dump
-        read_only: true
-        bind:
-          create_host_path: false
-    command:
-      - pg_restore
-      - --data-only
-      - --no-owner
-      - --no-privileges
-      - --exit-on-error
-      - --dbname
-      - postgres
-      - /data.dump
+    command: ["copy", "/usage.sql"]
 
   # The image runs as a user who cannot create a file on a new volume,
   # so plan runs as root and writes the setup SQL there.
@@ -86,7 +56,7 @@ services:
     image: ghcr.io/janbjorge/straum
     user: "0"
     depends_on:
-      data:
+      copy:
         condition: service_completed_successfully
     restart: "no"
     environment:

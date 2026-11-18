@@ -1,28 +1,12 @@
 # Try it on your data
 
-Does Straum answer the queries you run? Copy your tables into a
-throwaway PostgreSQL in Docker and run Straum on the copy. The
-database they came from serves the dump and nothing else. You need
-Docker, `curl` and `pg_dump`, and bash or zsh.
+Does Straum answer the queries you run? Write a spec. Compose copies
+the tables it names into a throwaway PostgreSQL and opens the shell.
+Their database serves that copy and nothing else: no publication, and
+no change to `wal_level`. You need Docker, `curl`, and bash or zsh.
+Docker has to reach the database.
 
-The dump holds your rows. Keep it where your data may be.
-
-## 1. Dump the tables
-
-Take the whole schema, then the tables the spec reads:
-
-```sh
-pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges -f schema.sql
-pg_dump "$DATABASE_URL" --format=directory --jobs=4 \
-  -t public.events -t public.accounts -f data.dump
-```
-
-`-t` leaves out what the tables depend on: their types, extensions
-and the tables their foreign keys name. The schema dump brings those.
-`pg_dump` takes one snapshot, so the tables agree with each other. It
-must be the server's major version or newer.
-
-## 2. Write a spec
+## 1. Write a spec
 
 Save as `usage.sql`:
 
@@ -45,23 +29,29 @@ aggregates as measures ([Spec](spec.md)). Here `kind` is an enum,
 which Straum reads as text through `::text`
 ([Enum columns](spec.md#enum-columns)).
 
-## 3. Run
+## 2. Run
 
-In the directory that holds `schema.sql`, `data.dump` and `usage.sql`:
+In the directory that holds `usage.sql`, with `DATABASE_URL` set to a
+role that can `SELECT` the spec's tables:
 
 ```bash
 docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/try.yaml) \
   run --rm shell
 ```
 
-The file starts PostgreSQL 18 with logical decoding on. `psql` runs
-`schema.sql`. `pg_restore` loads the rows in `data.dump`, with foreign
-keys and triggers off, because a `-t` dump can omit a table a key
-names. `straum plan` writes the setup SQL for `usage.sql`, and `psql`
-runs it. Straum starts once that has exited, and is healthy once it
-can answer. The shell waits for that, for up to an hour, then takes
-the terminal. `<(...)` is bash or zsh, so the terminal stays the
-shell's input. The file in the repository is `docs/compose/try.yaml`.
+The URL is the DSN `straum run` takes
+([Connect](postgresql.md#2-connect)). From inside Docker, `localhost`
+is the container. On Docker Desktop, write `host.docker.internal` as
+the host.
+
+The file starts PostgreSQL 18 with logical decoding on. `straum copy`
+reads the spec and copies each table it names: the columns, the enums
+they use, and the rows, in one snapshot. `straum plan` writes the
+setup SQL, and `psql` runs it. Straum starts once that has exited, and
+is healthy once it can answer. The shell waits for that, for up to an
+hour, then takes the terminal. `<(...)` is bash or zsh, so the
+terminal stays the shell's input. The file in the repository is
+`docs/compose/try.yaml`.
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
@@ -82,15 +72,16 @@ docker compose -p straum-try exec straum /straum shell
 An interrupt during the wait stops the wait and leaves the containers
 running. The log is `docker compose -p straum-try logs`.
 `docker compose -p straum-try down --volumes` removes the copy. Run
-that and the command again to load a change to the three files. The
-file is not saved. The copy is the database `postgres`.
+that and the command again to load a change to the spec. The file
+is not saved. The copy is the database `postgres`.
 
-A statement in `schema.sql` that the image cannot run, such as an
-extension it lacks, stops the run and prints the line. So does a table
-the spec names that the schema restore missed, when `psql` runs the
-setup. The indexes in the schema stay. On a large dump that is slow.
+The copy has the rows, and not the indexes, keys or defaults. A
+composite column, or a type an extension provides, stops the copy and
+names the column. A table the spec names that the role cannot see
+stops it and names the table. So does a row security policy.
 
-From a clone, this is faster, and it can try the physical stream:
+From a clone, a dump you already have can be loaded instead, and the
+physical stream can be tried:
 
 ```sh
 just try --spec usage.sql --data data.dump --schema schema.sql --port 8080
@@ -121,7 +112,7 @@ which names it ([Checking a spec](spec.md#checking-a-spec)).
 `--data` may be a directory, a custom or tar archive, or a plain `.sql`
 file. A dump of the whole database needs no `--schema`.
 
-## 4. Ask and compare
+## 3. Ask and compare
 
 In another terminal, ask for events and amounts by region over
 November:
@@ -149,11 +140,12 @@ moves. [Asks](asks.md) explains the query and the answer.
 
 ## On the database itself
 
-Once the answers hold, point Straum at the database you dumped:
+Once the answers hold, point Straum at the database:
 
 1. `straum plan FILE` prints the setup SQL, or what is wrong with the
    spec. A table owner runs the SQL once. You do not edit it.
-2. `straum run FILE` with `STRAUM_DSN` set, then ask.
+2. `straum run FILE` with `STRAUM_DSN` or libpq's `PGHOST` and the
+   rest set, then ask.
 
 [Setting up PostgreSQL](postgresql.md) is that SQL for either stream,
 and what a failed line means.

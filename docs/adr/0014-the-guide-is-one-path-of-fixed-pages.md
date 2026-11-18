@@ -27,9 +27,9 @@ before leaves:
 1. `introduction.md`, why Straum: the problem, the `usage` view, one
    ask, what Straum is not. It routes and owns no fact.
 2. `quick-start.md`, does it work: the one tutorial, on the taxi trips.
-3. `your-data.md`, does it answer my queries: a `pg_dump` of your
-   tables restored into Docker by `docs/compose/try.yaml`, or by
-   `bench/try_your_data.py` for a large dump or the physical stream;
+3. `your-data.md`, does it answer my queries: the spec's tables
+   copied into Docker by `docs/compose/try.yaml`, or a dump restored
+   by `bench/try_your_data.py` for a large one or the physical stream;
    comparing an ask with SQL, and the steps on the database itself.
 4. `how-it-works.md`, how it works: load, follow, cells, dims, the
    physical stream's mechanism, `as_of` and its consistency.

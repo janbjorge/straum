@@ -1,13 +1,38 @@
 //! Where and as whom Straum connects: a `postgres://` URL, as libpq
-//! (PostgreSQL's client library) takes it. `Dsn::parse` reads the URL once
-//! at start; `wire.rs` connects with it and `tls.rs` checks the server's
-//! certificate against what it says.
+//! (PostgreSQL's client library) takes it, or libpq's environment
+//! variables when no URL is set. `Dsn::parse` reads the URL and
+//! `Dsn::from_pg` the variables, once at start; `wire.rs` connects with
+//! the result and `tls.rs` checks the server's certificate against what
+//! it says.
 
 use std::fmt;
 
 use rustls::pki_types::ServerName;
 
 const DEFAULT_PORT: u16 = 5432;
+
+/// libpq's environment variables that name one connection. Each is
+/// `None` when the variable is unset.
+pub struct PgEnv {
+    /// `PGHOST`.
+    pub host: Option<String>,
+    /// `PGHOSTADDR`, used when `PGHOST` is unset.
+    pub host_addr: Option<String>,
+    /// `PGPORT`.
+    pub port: Option<String>,
+    /// `PGUSER`.
+    pub user: Option<String>,
+    /// The OS user, used when `PGUSER` is unset.
+    pub os_user: Option<String>,
+    /// `PGPASSWORD`.
+    pub password: Option<String>,
+    /// `PGDATABASE`.
+    pub database: Option<String>,
+    /// `PGSSLMODE`.
+    pub sslmode: Option<String>,
+    /// `PGSSLROOTCERT`.
+    pub ssl_root_cert: Option<String>,
+}
 
 /// A parsed connection URL. Its `Display` leaves out the password.
 #[derive(Clone, PartialEq, Eq)]
@@ -101,14 +126,7 @@ impl Dsn {
                 _ => return Err(DsnError::Parameter(parameter_name(pair))),
             }
         }
-        let tls = match (plain, root_cert) {
-            (true, Some(_)) => return Err(DsnError::RootCert),
-            (true, None) => Tls::Off,
-            (false, root_cert) => match ServerName::try_from(host.to_owned()) {
-                Ok(name) => Tls::Verify { name, root_cert },
-                Err(_) => return Err(DsnError::TlsHost(host.to_owned())),
-            },
-        };
+        let tls = tls(host, plain, root_cert)?;
         let database = match decode(database)? {
             decoded if decoded.is_empty() => user.clone(),
             decoded => decoded,
@@ -121,6 +139,101 @@ impl Dsn {
             database,
             tls,
         })
+    }
+
+    /// The connection libpq's variables name. `None` when none of them is
+    /// set, so a URL can stay the only way. `PGPORT` defaults to 5432,
+    /// `PGUSER` to `os_user`, and the database to the user. No `PGSSLMODE`
+    /// verifies TLS, as a URL with no `sslmode` does. `PGHOST` names one
+    /// host.
+    pub fn from_pg(env: &PgEnv) -> Result<Option<Dsn>, DsnError> {
+        if !env.names_a_connection() {
+            return Ok(None);
+        }
+        let host = match text(env.host.as_deref()) {
+            Some(host) => host,
+            None => match text(env.host_addr.as_deref()) {
+                Some(host) => host,
+                None => return Err(DsnError::PgHost),
+            },
+        };
+        if host.contains(',') {
+            return Err(DsnError::PgHosts);
+        }
+        let port = match text(env.port.as_deref()) {
+            Some(port) => port.parse().map_err(|_| DsnError::PgPort)?,
+            None => DEFAULT_PORT,
+        };
+        let user = match text(env.user.as_deref()) {
+            Some(user) => user.to_owned(),
+            None => match text(env.os_user.as_deref()) {
+                Some(user) => user.to_owned(),
+                None => return Err(DsnError::PgUser),
+            },
+        };
+        let database = match text(env.database.as_deref()) {
+            Some(database) => database.to_owned(),
+            None => user.clone(),
+        };
+        let plain = plain_tcp(text(env.sslmode.as_deref()))?;
+        let root_cert = match text(env.ssl_root_cert.as_deref()) {
+            Some("system") | None => None,
+            Some(file) => Some(file.to_owned()),
+        };
+        let tls = tls(host, plain, root_cert)?;
+        Ok(Some(Dsn {
+            host: host.to_owned(),
+            port,
+            user,
+            password: text(env.password.as_deref()).map(str::to_owned),
+            database,
+            tls,
+        }))
+    }
+}
+
+impl PgEnv {
+    /// Whether any libpq variable is set. The OS user does not count: it
+    /// is set on its own, and is only a default for `PGUSER`.
+    fn names_a_connection(&self) -> bool {
+        text(self.host.as_deref()).is_some()
+            || text(self.host_addr.as_deref()).is_some()
+            || text(self.port.as_deref()).is_some()
+            || text(self.user.as_deref()).is_some()
+            || text(self.password.as_deref()).is_some()
+            || text(self.database.as_deref()).is_some()
+            || text(self.sslmode.as_deref()).is_some()
+            || text(self.ssl_root_cert.as_deref()).is_some()
+    }
+}
+
+/// `sslmode=disable` is plain TCP. Omitted, `require`, `verify-ca` and
+/// `verify-full` verify. `allow` and `prefer` are refused.
+fn plain_tcp(mode: Option<&str>) -> Result<bool, DsnError> {
+    match mode {
+        Some("disable") => Ok(true),
+        None | Some("require" | "verify-ca" | "verify-full") => Ok(false),
+        Some(mode @ ("allow" | "prefer")) => Err(DsnError::Fallback(mode.to_owned())),
+        Some(_) => Err(DsnError::Parameter(Some("sslmode"))),
+    }
+}
+
+fn tls(host: &str, plain: bool, root_cert: Option<String>) -> Result<Tls, DsnError> {
+    match (plain, root_cert) {
+        (true, Some(_)) => Err(DsnError::RootCert),
+        (true, None) => Ok(Tls::Off),
+        (false, root_cert) => match ServerName::try_from(host.to_owned()) {
+            Ok(name) => Ok(Tls::Verify { name, root_cert }),
+            Err(_) => Err(DsnError::TlsHost(host.to_owned())),
+        },
+    }
+}
+
+/// A set variable, `None` when it is absent or empty.
+fn text(value: Option<&str>) -> Option<&str> {
+    match value {
+        Some(text) if !text.is_empty() => Some(text),
+        _ => None,
     }
 }
 
@@ -190,6 +303,15 @@ pub enum DsnError {
     RootCert,
     /// A host no certificate can name.
     TlsHost(String),
+    /// Libpq's variables name a connection and neither `PGHOST` nor
+    /// `PGHOSTADDR` is set.
+    PgHost,
+    /// `PGHOST` lists more than one host.
+    PgHosts,
+    /// `PGPORT` is not a port number.
+    PgPort,
+    /// `PGUSER` is unset, and so is the OS user.
+    PgUser,
     /// A parameter not taken, or not with that value: by name when it is
     /// one libpq knows, never by its text, which may be a password's tail.
     Parameter(Option<&'static str>),
@@ -289,6 +411,10 @@ impl fmt::Display for DsnError {
                 "DSN has an @ past its host; percent-encode @, ? and / in the password as \
                  %40, %3F and %2F",
             ),
+            DsnError::PgHost => formatter.write_str("set PGHOST"),
+            DsnError::PgHosts => formatter.write_str("PGHOST names more than one host"),
+            DsnError::PgPort => formatter.write_str("PGPORT is not a port number"),
+            DsnError::PgUser => formatter.write_str("set PGUSER"),
         }
     }
 }
@@ -506,9 +632,111 @@ mod tests {
                 "DSN has an @ past its host; percent-encode @, ? and / in the password as \
                  %40, %3F and %2F",
             ),
+            (DsnError::PgHost, "set PGHOST"),
+            (DsnError::PgHosts, "PGHOST names more than one host"),
+            (DsnError::PgPort, "PGPORT is not a port number"),
+            (DsnError::PgUser, "set PGUSER"),
         ];
         for (error, message) in cases {
             assert_eq!(error.to_string(), message);
         }
+    }
+
+    fn blank() -> PgEnv {
+        PgEnv {
+            host: None,
+            host_addr: None,
+            port: None,
+            user: None,
+            os_user: None,
+            password: None,
+            database: None,
+            sslmode: None,
+            ssl_root_cert: None,
+        }
+    }
+
+    #[test]
+    fn reads_libpq_variables() {
+        assert_eq!(Dsn::from_pg(&blank()).unwrap(), None);
+        let mut env = blank();
+        env.host = Some(String::new());
+        env.user = Some(String::new());
+        assert_eq!(Dsn::from_pg(&env).unwrap(), None);
+        env.host = Some("db.example".into());
+        env.port = Some("6543".into());
+        env.user = Some("reader".into());
+        env.password = Some("s@cr:t".into());
+        env.database = Some("app".into());
+        env.sslmode = Some("disable".into());
+        let dsn = Dsn::from_pg(&env).unwrap().unwrap();
+        assert_eq!(
+            dsn,
+            Dsn::parse("postgres://reader:s%40cr%3At@db.example:6543/app?sslmode=disable").unwrap()
+        );
+        env.sslmode = None;
+        env.ssl_root_cert = Some("ca.pem".into());
+        let verified = Dsn::from_pg(&env).unwrap().unwrap();
+        assert_eq!(
+            verified.tls,
+            Tls::Verify {
+                name: ServerName::try_from("db.example").unwrap(),
+                root_cert: Some("ca.pem".into()),
+            }
+        );
+        env.user = None;
+        env.os_user = Some("ann".into());
+        env.database = None;
+        env.password = None;
+        env.ssl_root_cert = Some("system".into());
+        env.host = None;
+        env.host_addr = Some("127.0.0.1".into());
+        env.port = None;
+        let defaults = Dsn::from_pg(&env).unwrap().unwrap();
+        assert_eq!(
+            (
+                defaults.user.as_str(),
+                defaults.database.as_str(),
+                defaults.port
+            ),
+            ("ann", "ann", 5432)
+        );
+        assert_eq!(defaults.host, "127.0.0.1");
+        assert_eq!(defaults.password, None);
+        assert!(matches!(
+            defaults.tls,
+            Tls::Verify {
+                root_cert: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn refuses_bad_libpq_variables() {
+        let mut env = blank();
+        env.user = Some("reader".into());
+        env.host = Some("a,b".into());
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::PgHosts));
+        env.host = None;
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::PgHost));
+        env.host = Some("db".into());
+        env.port = Some("no".into());
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::PgPort));
+        env.port = None;
+        env.user = None;
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::PgUser));
+        env.user = Some("reader".into());
+        env.sslmode = Some("prefer".into());
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::Fallback("prefer".into())));
+        env.sslmode = Some("disable".into());
+        env.ssl_root_cert = Some("ca.pem".into());
+        assert_eq!(Dsn::from_pg(&env), Err(DsnError::RootCert));
+        env.ssl_root_cert = None;
+        env.sslmode = Some("nope".into());
+        assert_eq!(
+            Dsn::from_pg(&env),
+            Err(DsnError::Parameter(Some("sslmode")))
+        );
     }
 }
