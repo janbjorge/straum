@@ -35,11 +35,12 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # The image's user; the Restricted Pod Security Standard.
+      # The Restricted Pod Security Standard. No user or group: the
+      # image's numeric user, 65532, applies, and OpenShift's
+      # restricted-v2 refuses a pod that pins one outside the namespace's
+      # range.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:

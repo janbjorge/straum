@@ -218,10 +218,12 @@ tests:
           path: spec.template.spec.securityContext
           value:
             runAsNonRoot: true
-            runAsUser: 65532
-            runAsGroup: 65532
             seccompProfile:
               type: RuntimeDefault
+      - notExists:
+          path: spec.template.spec.securityContext.runAsUser
+      - notExists:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
       - equal:
           path: spec.template.spec.containers[0].securityContext
           value:

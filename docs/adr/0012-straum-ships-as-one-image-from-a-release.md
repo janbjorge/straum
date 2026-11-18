@@ -26,7 +26,8 @@ running as user 65532 on a read-only root. The chart,
 `deploy/helm/straum` (Helm 4, API v2), is a Deployment, spec ConfigMap,
 DSN Secret, optional CA bundle Secret, ClusterIP Service and
 ServiceAccount under the Restricted
-Pod Security Standard; no PDB, HPA, Ingress or NetworkPolicy.
+Pod Security Standard, pinning no user so OpenShift's `restricted-v2`
+admits it; no PDB, HPA, Ingress or NetworkPolicy.
 `scripts/check-chart.py` runs `helm lint --strict`, helm-unittest and
 kubeconform on Kubernetes 1.33 and 1.36.
 

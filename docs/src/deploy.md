@@ -136,9 +136,11 @@ pod. The new pod loads every table before the old one stops, so asks
 keep answering, and PostgreSQL holds two slots until the old pod is
 gone. Each replica holds its own slot and loads every table.
 
-The pod meets the Restricted Pod Security Standard: user 65532, no
-capabilities, no privilege escalation, a read-only root filesystem and
-the `RuntimeDefault` seccomp profile. It mounts no ServiceAccount
+The pod meets the Restricted Pod Security Standard: a non-root user,
+no capabilities, no privilege escalation, a read-only root filesystem
+and the `RuntimeDefault` seccomp profile. The chart pins no user, so
+the image's, 65532, applies, and OpenShift's `restricted-v2` admits
+the pod with a user from the namespace's range. It mounts no ServiceAccount
 token, since Straum never calls the Kubernetes API, and its only
 volumes are the spec and, if named, the roots below.
 
