@@ -84,6 +84,43 @@ tests:
           path: spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key
           value: url
 
+  - it: mounts the roots that check PostgreSQL's certificate, beside the spec
+    template: deployment.yaml
+    set:
+      rootCert.existingSecret: rds-ca
+      rootCert.key: global-bundle.pem
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: spec
+              mountPath: /etc/straum
+              readOnly: true
+            - name: root-cert
+              mountPath: /etc/straum-tls
+              readOnly: true
+      - equal:
+          path: spec.template.spec.volumes[1]
+          value:
+            name: root-cert
+            secret:
+              secretName: rds-ca
+              items:
+                - key: global-bundle.pem
+                  path: ca.pem
+
+  - it: mounts no roots unless named
+    template: deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: root-cert
+          any: true
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 1
+
   - it: listens on IPv6 when asked
     template: deployment.yaml
     set:

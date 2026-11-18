@@ -83,6 +83,14 @@ tests:
       - failedTemplate:
           errorPattern: "maxTransactionRows"
 
+  - it: refuses an empty key for the roots
+    set:
+      rootCert.existingSecret: rds-ca
+      rootCert.key: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "rootCert"
+
   - it: refuses a digest that isn't sha256
     set:
       image.digest: latest

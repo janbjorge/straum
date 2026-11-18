@@ -31,6 +31,14 @@
         "key": { "type": "string", "minLength": 1 }
       }
     },
+    "rootCert": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "key": { "type": "string", "minLength": 1 }
+      }
+    },
     "wal": { "enum": ["logical", "physical"] },
     "maxPageMemory": { "type": "string", "pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti)?$" },
     "listenAddress": { "enum": ["0.0.0.0", "[::]"] },

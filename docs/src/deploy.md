@@ -140,10 +140,22 @@ The pod meets the Restricted Pod Security Standard: user 65532, no
 capabilities, no privilege escalation, a read-only root filesystem and
 the `RuntimeDefault` seccomp profile. It mounts no ServiceAccount
 token, since Straum never calls the Kubernetes API, and its only
-volume is the spec.
+volumes are the spec and, if named, the roots below.
 
-> [!NOTE]
-> The chart mounts no CA bundle, so a server whose certificate needs
-> `sslrootcert` can't be reached through the chart yet.
+A server whose CA isn't one of Straum's built-in roots, such as Amazon
+RDS's or Cloud SQL's ([Connect](postgresql.md#2-connect)), needs its PEM roots in
+a Secret. Name it in `rootCert.existingSecret`, and the key in
+`rootCert.key` (`ca.pem` by default). The chart mounts the roots at
+`/etc/straum-tls/ca.pem`, and the DSN names them:
+
+```sh
+kubectl create secret generic straum-ca --from-file=ca.pem=global-bundle.pem
+helm upgrade --install straum deploy/helm/straum \
+  --reuse-values --set rootCert.existingSecret=straum-ca
+```
+
+```text
+postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
+```
 
 Next: [Performance](performance.md), what to expect from a deployment.

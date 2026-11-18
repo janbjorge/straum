@@ -27,6 +27,17 @@ more.
 
    straum checks the server's certificate and name against the roots built
    into it; add `?sslmode=disable` only on a network you trust.
+5. For a server whose CA isn't a public one, such as Amazon RDS's or
+   Cloud SQL's, a Secret holding its PEM roots, named in `rootCert`.
+   The chart mounts them at `/etc/straum-tls/ca.pem`, which the DSN names:
+
+   ```sh
+   kubectl create secret generic straum-ca --from-file=ca.pem=global-bundle.pem
+   ```
+
+   ```text
+   postgres://straum:PASSWORD@HOST:5432/DATABASE?sslrootcert=/etc/straum-tls/ca.pem
+   ```
 
 ## Install
 

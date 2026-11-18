@@ -102,10 +102,25 @@ spec:
             - name: spec
               mountPath: /etc/straum
               readOnly: true
+            {{- if .Values.rootCert.existingSecret }}
+            # Beside the spec, not under it: a mount point can't be made
+            # inside the read-only ConfigMap volume.
+            - name: root-cert
+              mountPath: /etc/straum-tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: spec
           configMap:
             name: {{ include "straum.fullname" . }}
+        {{- with .Values.rootCert.existingSecret }}
+        - name: root-cert
+          secret:
+            secretName: {{ . | quote }}
+            items:
+              - key: {{ $.Values.rootCert.key | quote }}
+                path: ca.pem
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

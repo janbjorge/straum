@@ -3,6 +3,8 @@ image:
   repository: "registry.example/straum"
 dsn:
   existingSecret: "straum-dsn"
+rootCert:
+  existingSecret: "straum-ca"
 spec: |
   CREATE VIEW trips WITH (buckets = '1 hour') AS
   SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,

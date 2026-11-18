@@ -27,6 +27,18 @@ dsn:
   # dsn.key is the key in that Secret that holds the DSN.
   key: "dsn"
 
+# rootCert says where the PEM roots come from that check PostgreSQL's
+# certificate, for a server whose CA isn't one of the public roots built
+# into straum, such as Amazon RDS's or Cloud SQL's. The chart mounts them
+# at /etc/straum-tls/ca.pem; the DSN names them with
+# ?sslrootcert=/etc/straum-tls/ca.pem.
+rootCert:
+  # rootCert.existingSecret names the Secret that holds the roots; empty
+  # mounts none.
+  existingSecret: ""
+  # rootCert.key is the key in that Secret that holds them.
+  key: "ca.pem"
+
 # wal is the WAL straum reads: "logical", logical decoding through the
 # publication, or "physical", the WAL wal_level replica writes, for a server
 # that can't take the restart logical decoding needs. Run

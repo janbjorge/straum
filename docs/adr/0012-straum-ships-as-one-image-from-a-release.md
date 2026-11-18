@@ -1,6 +1,6 @@
 # ADR-0012: Straum ships as one image, from a release
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-18
 
 ## Context
 
@@ -24,7 +24,8 @@ The image is the static musl binary from `rust:1.100.0-alpine` in
 `gcr.io/distroless/static-debian13:nonroot`, both pinned by digest,
 running as user 65532 on a read-only root. The chart,
 `deploy/helm/straum` (Helm 4, API v2), is a Deployment, spec ConfigMap,
-DSN Secret, ClusterIP Service and ServiceAccount under the Restricted
+DSN Secret, optional CA bundle Secret, ClusterIP Service and
+ServiceAccount under the Restricted
 Pod Security Standard; no PDB, HPA, Ingress or NetworkPolicy.
 `scripts/check-chart.py` runs `helm lint --strict`, helm-unittest and
 kubeconform on Kubernetes 1.33 and 1.36.
@@ -48,8 +49,9 @@ amd64 one prints the version, attests both and attaches them with
 
 - graviola needs AES, AVX, AVX2, ADX, BMI1/2 and PCLMULQDQ on x86_64,
   or AES, NEON, PMULL and SHA2 on aarch64, else it panics and aborts.
-- No DSN is weaker than libpq's `verify-full`. The chart can't mount a
-  CA bundle yet, so a chain needing `sslrootcert` is out of its reach.
+- No DSN is weaker than libpq's `verify-full`. The chart mounts a CA
+  bundle from a Secret for a chain needing `sslrootcert`, as Amazon
+  RDS's and Cloud SQL's do.
 - One replica: more throughput is a bigger pod. The binary is its own
   client in the pod (ADR-0011). The AKS test cluster never runs it.
 - `rg -i straum` finds every rename site. Trademarks are unchecked, so
