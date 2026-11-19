@@ -185,6 +185,48 @@ fn fare_sum_spec() -> Spec {
     Spec::new(Vec::new(), vec![trips]).unwrap()
 }
 
+/// Trips by pay with one aggregate of the fare's distinct values.
+fn distinct_fare_spec(aggregate: Aggregate) -> Spec {
+    let mut trips = fare_sum_spec().fact("trips").unwrap().clone();
+    trips.measures = vec![new_measure("fare", aggregate, vec![])];
+    Spec::new(Vec::new(), vec![trips]).unwrap()
+}
+
+/// `sum(DISTINCT c)` and `avg(DISTINCT c)` add their values, so they read
+/// numbers only, though the state they share with `count(DISTINCT c)`
+/// tells any values apart; that count takes text.
+#[test]
+fn a_distinct_sum_or_average_reads_numbers_only() {
+    let fare = id("fare");
+    for aggregate in [
+        Aggregate::SumDistinct(fare.clone()),
+        Aggregate::AvgDistinct(fare.clone()),
+    ] {
+        let spec = distinct_fare_spec(aggregate.clone());
+        let mut store = Store::new(spec.clone());
+        assert_eq!(
+            store.add_row("trips", &fare_trip(&spec, 1, &text("cheap"))),
+            Err(RowError::NotInt { column: id("fare") }),
+            "{aggregate:?}"
+        );
+        assert_eq!(
+            store.add_row("trips", &fare_trip(&spec, 1, &Datum::Bool(true))),
+            Err(RowError::NotInt { column: id("fare") }),
+            "{aggregate:?}"
+        );
+        store
+            .add_row("trips", &fare_trip(&spec, 1, &Datum::Int(500)))
+            .unwrap();
+        assert_eq!(store.cells("trips"), Some(1));
+    }
+    let spec = distinct_fare_spec(Aggregate::CountDistinct(fare));
+    let mut store = Store::new(spec.clone());
+    store
+        .add_row("trips", &fare_trip(&spec, 1, &text("cheap")))
+        .unwrap();
+    assert_eq!(store.cells("trips"), Some(1));
+}
+
 /// A trip of [`fare_sum_spec`].
 fn fare_trip(spec: &Spec, pay: i64, fare: &Datum) -> Vec<Datum> {
     fare_trip_at(spec, START, pay, fare)

@@ -104,6 +104,8 @@ pub(crate) struct Rollup {
     /// order without the bucket.
     key_columns: Vec<Coded>,
     inputs: Vec<Input>,
+    /// What each measure reads of its column, which a row's value must be.
+    column_reads: Vec<ColumnRead>,
     /// One per rollup-key column: its values under small codes, so a cell
     /// key is a few integers.
     codes: Vec<Codes>,
@@ -153,6 +155,15 @@ impl Coded {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Input {
     kind: StateKind,
+    column: ColumnIndex,
+}
+
+/// A column a measure reads, and what of it. Read from the aggregate, not
+/// the input: `sum(DISTINCT c)` keeps the state `count(DISTINCT c)` does,
+/// which tells any values apart, yet adds its values, so reads numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ColumnRead {
+    reads: Reads,
     column: ColumnIndex,
 }
 
@@ -233,17 +244,22 @@ impl Rollup {
 
     fn build(fact: &Fact, columns: Vec<Identifier>, key_columns: Vec<Coded>) -> Rollup {
         let mut inputs = Vec::new();
+        let mut column_reads = Vec::new();
         for measure in &fact.measures {
             let aggregate = &measure.aggregate;
-            let (Some(kind), Some(name)) = (aggregate.state_kind(), aggregate.input()) else {
+            let (Some(kind), Some(reads), Some(name)) =
+                (aggregate.state_kind(), aggregate.reads(), aggregate.input())
+            else {
                 continue;
             };
-            let input = Input {
-                kind,
-                column: position_of(&columns, name),
-            };
+            let column = position_of(&columns, name);
+            let input = Input { kind, column };
             if !inputs.contains(&input) {
                 inputs.push(input);
+            }
+            let read = ColumnRead { reads, column };
+            if !column_reads.contains(&read) {
+                column_reads.push(read);
             }
         }
         let inputs = shared(&inputs);
@@ -265,6 +281,7 @@ impl Rollup {
             codes,
             key_columns,
             inputs,
+            column_reads,
             cells: 0,
             key: Vec::new(),
             types: vec![ColumnType::Int; columns.len()],
@@ -566,20 +583,17 @@ impl Rollup {
             });
         }
         // Numbers before booleans, so a row wrong in both names a number.
-        for input in &self.inputs {
-            let column = input.column.0;
-            if input.kind.reads() == Reads::Numbers
-                && !matches!(row[column], Datum::Null | Datum::Int(_))
-            {
+        for read in &self.column_reads {
+            let column = read.column.0;
+            if read.reads == Reads::Numbers && !matches!(row[column], Datum::Null | Datum::Int(_)) {
                 return Err(RowError::NotInt {
                     column: self.columns[column].clone(),
                 });
             }
         }
-        for input in &self.inputs {
-            let column = input.column.0;
-            if input.kind.reads() == Reads::Booleans
-                && !matches!(row[column], Datum::Null | Datum::Bool(_))
+        for read in &self.column_reads {
+            let column = read.column.0;
+            if read.reads == Reads::Booleans && !matches!(row[column], Datum::Null | Datum::Bool(_))
             {
                 return Err(RowError::NotBool {
                     column: self.columns[column].clone(),
