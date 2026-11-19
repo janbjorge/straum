@@ -24,8 +24,8 @@ Four participants:
 
 ## Architecture
 
-Six crates, dependencies inward only (ADR-0002), enforced by
-`scripts/check-layers.py`.
+Straum has six crates. Dependencies point inward only (ADR-0002), and
+`scripts/check-layers.py` enforces it.
 
 ![The six crates and their dependencies, inward only](diagrams/crates.svg)
 
@@ -63,14 +63,14 @@ apps post asks to `straum-http`, which reads the store through the app.
 | Fail              | Writer      | A failure                 | Exit 1, slots dropped  | [States](deploy.md#states) |
 | Stop              | Operator    | SIGTERM or SIGINT         | Exit, slots dropped    | [straum run](cli.md#straum-run) |
 
-Run Straum is `run` in the binary: read the spec and the DSN, bind the
-listener, set a panic hook that aborts the process, since the store
-may be half written, make an **App** with an empty **Store** and the
-**Limits**, make a **Writer** over a **Postgres** source, spawn the
-writer thread, and serve HTTP until a signal. Fail is `run_writer`: a
-step that fails logs its error and ends the process with exit 1, and
-PostgreSQL drops the slot as the connection closes. Straum never
-retries in the process; whatever runs it starts it again.
+Run Straum is `run` in the binary. It reads the spec and the DSN, binds
+the listener and sets a panic hook that aborts the process, since the
+store may be half written. Then it makes an **App** with an empty
+**Store** and the **Limits**, makes a **Writer** over a **Postgres**
+source, spawns the writer thread and serves HTTP until a signal. Fail is
+`run_writer`: a step that fails logs its error and ends the process with
+exit 1, and PostgreSQL drops the slot as the connection closes. Straum
+never retries in the process; whatever runs it starts it again.
 
 `straum plan --copy` writes the psql scripts that copy the spec's
 tables into another database (ADR-0015); Straum itself reads no
@@ -135,7 +135,7 @@ xid.
 
 ## The store
 
-What the store holds, mutable, one per process, owned by **App**.
+The store is mutable, one per process, and owned by **App**.
 
 ![What the store holds](diagrams/store.svg)
 
@@ -168,15 +168,15 @@ width; a bucket is columnar cells with one state per input.*
   of every row under them. `Null` is code 0 in every dim column, so no
   row and a null read alike.
 - **Bound** cells are a second rollup of a fact whose joins all read
-  fact columns, one of them a column no key reads: keyed by the keys
-  and the dim columns' values, so they are fewer than the fact's
-  cells and an ask reads no projection (ADR-0006). A fact row goes into both
-  rollups; into the bound one once per way its joins resolve now
-  (`Bound::rows`). A change to a dim the fact reads moves the ones
-  whose join columns name the changed key (`Store::retarget`); a dim
-  truncate or load makes them again from the keyed cells
-  (`Store::rebuild_dim`). A dim update that reads the same changes
-  nothing (`Store::update_row`).
+  fact columns, one of them a column no key reads. They are keyed by
+  the keys and the dim columns' values, so they are fewer than the
+  fact's cells and an ask reads no projection (ADR-0006). A fact row
+  goes into both rollups, and into the bound one once per way its
+  joins resolve now (`Bound::rows`). A change to a dim the fact reads
+  moves the ones whose join columns name the changed key
+  (`Store::retarget`); a dim truncate or load makes them again from
+  the keyed cells (`Store::rebuild_dim`). A dim update that reads the
+  same changes nothing (`Store::update_row`).
 
 `Rollup::add` puts a row in its cells, here the row of
 [Cells](how-it-works.md#cells):
@@ -211,12 +211,13 @@ Steps 2 to 4 repeat for every level.
 
 The stream thread (`StreamThread`) reads ahead of the writer, as
 [Following](how-it-works.md#following) says. The watchdog
-(`watchdog.rs`) is two threads, from the slot's making to its end:
+(`watchdog.rs`) runs two threads from when the slot is made until it
+ends:
 
 - Its reader reads what the slot holds every second, on a connection
   of its own. It counts a physical slot's WAL from where the slot was
   made, not from the redo point it keeps WAL from. Past
-  `--max-retained-wal` it shuts the stream's sockets, the load's too,
+  `--max-retained-wal` it shuts the stream's sockets and the load's,
   then has PostgreSQL end the slot's session each second the slot is
   still there, so a writer stuck under its lock can't keep the slot.
 - Its clock touches no network: after 10 seconds without a reading,
@@ -226,15 +227,15 @@ The stream thread (`StreamThread`) reads ahead of the writer, as
 
 The HTTP handler in `straum-http` (`routes.rs`) and `App::ask`:
 
-1. Read at most 1 MiB of body; parse the query with the parameters
-   bound to `$n`; refuse a range jiff can't print.
+1. Read at most 1 MiB of body, parse the query with the parameters
+   bound to `$n`, and refuse a range jiff can't print.
 2. On a blocking thread, take the read lock.
 3. Check the ask against the spec and refuse any ask it can't answer
    exactly. An invalid ask is 400 even while loading. Once a load has
    read the column types, a filter value of another type than its
    column is refused too.
-4. Until a load is in (no applied LSN in the `State`), 503 not
-   ready.
+4. Until a load is in (no applied LSN in the `State`), answer 503
+   not ready.
 5. `Store::ask`: read the cells of the buckets in the range
    (`Rollup::cover`). A dim column is part of the bound cells' key
    when the fact keeps them, else read from the dim's projection
@@ -332,8 +333,7 @@ conditions; its range is two bucket edges with `from < to`. An
   the view doesn't keep, `buckets` or range bounds on a name that is
   not the time (`AskError::NotTime`), the time in `WHERE`, a name
   asked twice, an empty range and a bound off an edge of the row
-  width. The
-  store adds the type check once a load has set the types
+  width. The store adds the type check once a load has set the types
   (`AskError::WrongType`).
 - **Answered** wraps an answer with the applied LSN and `as_of`. The
   domain never knows time or LSNs beyond the bucket.
@@ -351,10 +351,10 @@ mutex: a following while every table is loaded.*
   and the limits, which never change. Clones share them. Asks take
   the read lock, the writer the write lock only to apply a commit it
   has read or to swap the loaded store in (`State::apply`,
-  `Writer::start`). The status and the writer's
-  readings of the WAL take only the progress's lock, so they never
-  wait on an ask, and a writer waiting for the write lock holds back
-  no ask for a reading. The store's lock is always taken first.
+  `Writer::start`). The status and the writer's readings of the WAL
+  take only the progress's lock. They never wait on an ask, and a
+  writer waiting for the write lock holds back no ask for a reading.
+  The store's lock is always taken first.
 - **Following** exists only while every table is loaded; a failure
   removes it (`Writer::step`). Its absence is "not ready". A writer
   whose step failed is done: a step after that panics, and Straum
@@ -406,8 +406,8 @@ makes a property test fail.
     cells (`Bound::new`). A dim change moves the ones that name its
     key (`Store::retarget`), one walk for an update that keeps the key,
     none for a key the join columns never coded, and a dim truncate or
-    load makes them again (`Store::rebuild_dim`). An ask
-    reads them whenever the fact keeps them (`Store::reading`).
+    load makes them again (`Store::rebuild_dim`). An ask reads them
+    whenever the fact keeps them (`Store::reading`).
 11. **Lag never understates.** Readings merge only toward older
     (`Lag::read`); `matches_every_reading_kept` checks it against a
     reference that keeps every reading.
