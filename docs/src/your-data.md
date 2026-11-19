@@ -1,8 +1,8 @@
 # Try it on your data
 
 Does Straum answer the queries you run? Write a spec, run one command,
-and Straum's shell opens on a copy of your tables in Docker. Your
-database is only read.
+and Straum's shell opens on a copy of your tables in Docker. Straum
+only reads your database.
 
 You need Docker with Compose, and a role that can `SELECT` the tables
 the spec reads.
@@ -31,8 +31,8 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Change the tables, keys and measures to the `GROUP BY` your app runs
-most; [Spec](spec.md) has every rule. The file must be named
+Change the tables, keys and measures to match the `GROUP BY` your app
+runs most; [Spec](spec.md) has every rule. The file must be named
 `usage.sql`, whatever its views are called.
 
 ## 2. Run
@@ -80,7 +80,7 @@ docker compose -p straum-try exec postgres psql -U postgres -c "
    GROUP BY a.region"
 ```
 
-Write to the copy through that `psql` and ask again, and the answer
+Write to the copy through that `psql`, ask again, and the answer
 follows the write. [Asks](asks.md) explains the query and the answer.
 
 ## 4. Stop
