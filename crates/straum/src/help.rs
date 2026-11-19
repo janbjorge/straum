@@ -79,7 +79,7 @@ psql connects, so Straum reads no database.
                       `pg_dump -t` takes them
   --out FILE          write the SQL (or the tables) to FILE
 
-Guide: https://janbjorge.github.io/straum/postgresql.html#2-run-the-setup-sql
+Guide: https://janbjorge.github.io/straum/postgresql.html#1-run-the-setup-sql
 ";
 
 /// What `straum status --help` prints.
@@ -297,5 +297,100 @@ mod tests {
         assert!(check_example(&spec, &not_straum).is_err());
         let not_ask = ["straum".to_owned(), "status".to_owned()];
         assert!(check_example(&spec, &not_ask).is_err());
+    }
+
+    /// Where the guide's pages link from.
+    const GUIDE: &str = "https://janbjorge.github.io/straum/";
+
+    /// A heading's anchor as mdBook makes it: lower case, whitespace to
+    /// `-`, and every other character but letters, digits, `-` and `_`
+    /// dropped.
+    fn anchor(heading: &str) -> String {
+        let mut slug = String::new();
+        for character in heading.chars() {
+            if character.is_alphanumeric() || character == '-' || character == '_' {
+                slug.extend(character.to_lowercase());
+            } else if character.is_whitespace() {
+                slug.push('-');
+            }
+        }
+        slug
+    }
+
+    /// The anchors of a page's headings, outside its fenced code.
+    fn anchors(markdown: &str) -> Vec<String> {
+        let mut anchors = Vec::new();
+        let mut fenced = false;
+        for line in markdown.lines() {
+            if line.starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            if fenced || !line.starts_with('#') {
+                continue;
+            }
+            anchors.push(anchor(line.trim_start_matches('#').trim()));
+        }
+        anchors
+    }
+
+    /// Each link to the guide in `help` whose page or anchor isn't in
+    /// `docs/src`.
+    fn broken_links(help: &str) -> Vec<String> {
+        let docs = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/");
+        let mut broken = Vec::new();
+        for word in help.split_whitespace() {
+            let Some(link) = word.strip_prefix(GUIDE) else {
+                continue;
+            };
+            if link.is_empty() {
+                // The guide itself, which mdBook opens at its first page.
+                continue;
+            }
+            let (page, anchor) = link.split_once('#').unwrap_or((link, ""));
+            let Some(name) = page.strip_suffix(".html") else {
+                broken.push(link.to_owned());
+                continue;
+            };
+            let Ok(markdown) = std::fs::read_to_string(format!("{docs}{name}.md")) else {
+                broken.push(link.to_owned());
+                continue;
+            };
+            if !anchor.is_empty() && !anchors(&markdown).contains(&anchor.to_owned()) {
+                broken.push(link.to_owned());
+            }
+        }
+        broken
+    }
+
+    #[test]
+    fn every_link_to_the_guide_finds_its_heading() {
+        let helps = [
+            HELP,
+            RUN_HELP,
+            PLAN_HELP,
+            STATUS_HELP,
+            VIEWS_HELP,
+            ASK_HELP,
+            SHELL_HELP,
+        ];
+        for help in helps {
+            assert_eq!(broken_links(help), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_link_to_no_page_or_heading_is_broken() {
+        assert_eq!(anchor("1. Run the setup SQL"), "1-run-the-setup-sql");
+        assert_eq!(anchor("`straum run`"), "straum-run");
+        let fenced = "# Top\n```sh\n# not a heading\n```\n## Next one\n";
+        assert_eq!(anchors(fenced), ["top", "next-one"]);
+        let links = format!(
+            "{GUIDE}cli.html#straum-nope {GUIDE}nowhere.html {GUIDE}cli.md {GUIDE}cli.html"
+        );
+        assert_eq!(
+            broken_links(&links),
+            ["cli.html#straum-nope", "nowhere.html", "cli.md"]
+        );
     }
 }
