@@ -44,8 +44,8 @@ const LIMITS: Limits = Limits {
 /// applying it; `bench/taxi.py transactions` measures what a transaction this
 /// size holds the write lock for.
 const MAX_TRANSACTION_ROWS: usize = 100_000;
-/// Rows a physical stream holds before Straum stops: a guard, far above
-/// what a checkpoint cycle's pages and open transactions take.
+/// Bytes of rows a physical stream holds before Straum stops: a guard,
+/// far above what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
 /// The longest `--timeout`: a day. A timeout is added to the clock, and
 /// one near `u64::MAX` seconds would overflow it.
@@ -689,18 +689,23 @@ impl Flags {
         self.text_or("--publication", PUBLICATION)
     }
 
-    /// JSON with `--json`, else a table.
+    /// Whether the switch `flag` is on the line.
     fn switch(&self, flag: &str) -> bool {
-        self.switches.iter().any(|switch| switch == flag)
-    }
-
-    fn output(&self) -> Output {
         for switch in &self.switches {
-            if switch == JSON {
-                return Output::Json;
+            if switch == flag {
+                return true;
             }
         }
-        Output::Text
+        false
+    }
+
+    /// JSON with `--json`, else a table.
+    fn output(&self) -> Output {
+        if self.switch(JSON) {
+            Output::Json
+        } else {
+            Output::Text
+        }
     }
 
     /// `--url`, else `default`, which the environment may have set, and

@@ -588,6 +588,16 @@ fn wal_flags_say_what_they_take() {
     }
 }
 
+#[test]
+fn a_switch_is_on_only_when_given() {
+    let flags = Flags::read(Name::Plan, &args("s --tables")).unwrap();
+    assert!(flags.switch(TABLES));
+    assert!(!flags.switch(JSON));
+    let none = Flags::read(Name::Status, &[]).unwrap();
+    assert!(!none.switch(JSON));
+    assert_eq!(none.output(), Output::Text);
+}
+
 /// A command that talks to a running Straum waits `--timeout` seconds
 /// for it, else ten.
 #[test]
