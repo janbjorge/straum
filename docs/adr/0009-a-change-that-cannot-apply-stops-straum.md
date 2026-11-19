@@ -1,6 +1,6 @@
 # ADR-0009: A change that can't apply stops Straum
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-19
 
 ## Context
 
@@ -40,11 +40,11 @@ sees its socket close and ends, which drops the temporary slot. Each
 second the slot is still there, it runs `pg_terminate_backend` on the
 slot's session. A role may end its own sessions, so it needs no grant.
 One `pg_terminate_backend` first was rejected: a walsender whose client
-reads nothing takes it, then blocks for good sending the client its
-FATAL, and keeps the slot (PostgreSQL 17, 18 and 19rc2; still there
-after 100 seconds). A second one, coming while it is blocked, ends it
-without sending. Ten seconds
-without a reading end the stream the same way: an unwatched slot has no
+reads nothing takes it, then blocks sending the client its FATAL for
+as long as the socket stays full, and keeps the slot (PostgreSQL 17,
+18 and 19rc2; still there after 100 seconds). A second one, coming
+while it is blocked, ends it without sending. Ten seconds without a
+reading end the stream the same way: an unwatched slot has no
 bound. A second watchdog thread, which touches no network, keeps that
 time, so a reader stuck in DNS, a connect or a silent server can't
 stretch it. Every connection also gives a server 10 seconds of silence

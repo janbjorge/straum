@@ -313,9 +313,9 @@ fn open(dsn: &Dsn) -> Result<Connection, Error> {
 /// Has PostgreSQL end the session that owns the slot, which drops the
 /// temporary slot. A role may end its own sessions. The reader asks again
 /// each round the slot is still there: a walsender whose client reads
-/// nothing takes the first ask, then blocks for good sending the client
-/// its FATAL; only a second ask, coming while it is blocked, ends it
-/// without sending.
+/// nothing takes the first ask, then blocks sending the client its FATAL
+/// for as long as the socket stays full; only a second ask, coming while
+/// it is blocked, ends it without sending.
 fn end_owner(connection: &mut Option<Connection>, owner: Option<i32>) {
     let (Some(connection), Some(owner)) = (connection.as_mut(), owner) else {
         return;

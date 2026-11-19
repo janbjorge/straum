@@ -165,29 +165,13 @@ fn leaves_the_session_that_owns_a_slot_within_the_limit() {
     owner.execute("SELECT 1").unwrap();
 }
 
-/// The PostgreSQL quirk the watchdog's repeated asks answer: a walsender
-/// whose client reads nothing takes one `pg_terminate_backend`, then
-/// blocks for good sending the client its FATAL, and keeps the slot.
-#[test]
-fn one_end_leaves_a_walsender_whose_client_reads_nothing() {
-    let pg = postgres_with_small_send_buffers();
-    let mut db = Db::new(&pg, "endedonce", TABLES);
-    let dsn = reader(&mut db, &pg);
-    let (_stream, walsender) = stream_reading_nothing(&mut db, &dsn, "straum_endedonce");
-    db.run(&format!("SELECT pg_terminate_backend({walsender})"));
-    thread::sleep(ROUNDS);
-    let waits = db.rows(&format!(
-        "SELECT wait_event FROM pg_stat_activity WHERE pid = {walsender}"
-    ));
-    assert_eq!(
-        waits,
-        vec![vec![Some("ClientWrite".to_owned())]],
-        "the walsender ended at the first ask"
-    );
-}
-
-/// The watchdog asks each round until the slot is gone, so even that
-/// walsender ends, with no socket of its stream to shut.
+/// A walsender whose client reads nothing takes one
+/// `pg_terminate_backend`, then blocks sending the client its FATAL and
+/// keeps the slot. The watchdog asks each round until the slot is gone,
+/// so even that walsender ends, with no socket of its stream to shut.
+/// Whether the first ask falls short is left untested: Docker's port
+/// forwarder on the host sometimes takes in the full socket's bytes, and
+/// then the FATAL goes out and the walsender ends at the first ask.
 #[test]
 fn ends_a_walsender_whose_client_reads_nothing() {
     let pg = postgres_with_small_send_buffers();
