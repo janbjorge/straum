@@ -214,11 +214,16 @@ def main() -> int:
     )
     args = parser.parse_args()
     straum = build()
-    # The plan reads its role from STRAUM_DSN when one is set; the bench's
-    # role is straum, whatever the caller exported.
+    # The plan reads its role from STRAUM_DSN, else PGUSER, else the OS
+    # user; the bench's role is straum, whatever the caller exported.
     environment = {
-        name: value for name, value in os.environ.items() if name != "STRAUM_DSN"
+        name: value
+        for name, value in os.environ.items()
+        if name != "STRAUM_DSN" and not name.startswith("PG")
     }
+    # The plan takes only the role from these; no host is reached.
+    environment["PGUSER"] = "straum"
+    environment["PGHOST"] = "localhost"
     plan = subprocess.check_output(
         [straum, "plan", SPEC, "--wal", args.wal], text=True, env=environment
     )
