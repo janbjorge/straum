@@ -80,45 +80,34 @@ composite column, or a type an extension provides, stops the copy and
 names the column. A table the spec names that the role cannot see
 stops it and names the table. So does a row security policy.
 
-From a clone, the spec alone copies its tables from the database the
-libpq variables of your shell name (`PGHOST`, `PGUSER`, `PGPASSWORD`,
-and the rest), with a read-only role too: the definitions come from
-`pg_dump --schema-only` and the rows from `COPY`, into a temporary file
-that is restored and removed when the run ends. A dump you already have
-can be loaded instead, and the physical stream can be tried:
+From a clone, `just try` loads a copy made with [`straum plan
+--copy`](cli.md#straum-plan) instead, and can try the [physical
+stream](postgresql.md#physical-wal). psql makes the copy, so any
+sign-in libpq takes works, and a read-only role is enough:
 
 ```sh
-just try usage.sql
-just try --spec usage.sql --data data.dump --schema schema.sql --port 8080
+straum plan usage.sql --copy copy
+psql "$DATABASE_URL" -f copy/export.sql
+just try usage.sql --data copy
 ```
 
 [`try_your_data.py`](https://github.com/janbjorge/straum/blob/main/bench/try_your_data.py)
-restores only the data of the tables the spec reads, so the dump's
-other tables stay out. It drops the spec tables' indexes, other than
-primary keys and unique constraints, for the load and builds them
-after, `--jobs` at a time. `--wal physical` tries the [physical
-stream](postgresql.md#physical-wal). A run removes what a killed run
-of its stack left. Leaving the shell removes both containers. A
-statement the restore can't run is printed and skipped. A table the
-spec reads but the restore missed stops the run at `straum plan`,
-which names it ([Checking a spec](spec.md#checking-a-spec)).
+runs the copy's `load.sql` in a throwaway PostgreSQL. Each table prints
+as it starts, with its rows once loaded. The first error stops the load
+and the run, and names the line. Then it applies `straum plan`, starts
+Straum and opens the shell. One copy can serve several specs: give
+`straum plan --copy` all of them. A run removes what a killed run of
+its stack left. Leaving the shell removes both containers.
 
 | Flag | Default | |
 | --- | --- | --- |
 | `SPEC` or `--spec FILE` | required | the spec |
-| `--data DUMP` | none: copy from the libpq source | `pg_dump` output to restore |
-| `--schema FILE` | none | `pg_dump --schema-only` output, restored first; needs `--data` |
-| `--postgres N` | `18` | PostgreSQL major; the dump's or newer |
+| `--data DIR` | required | the directory `straum plan --copy` wrote, after its `export.sql` ran |
+| `--wal logical\|physical` | `logical` | the stream Straum reads |
+| `--postgres N` | `18` | PostgreSQL major |
 | `--image IMAGE` | `ghcr.io/janbjorge/straum` | Straum image; a local tag works |
 | `--stack NAME` | `straum-try-` and the spec's name | Compose project to run in |
 | `--port N` | a free one | local port Straum answers on |
-| `--jobs N` | `4` | `pg_restore` jobs and index builds at a time |
-
-`--data` may be a directory, a custom or tar archive, or a plain `.sql`
-file. A dump of the whole database needs no `--schema`. The copy from
-the source dumps the definitions of the spec's schemas, so their types
-and extensions come along, and their other tables are created empty.
-Only the spec's tables get rows.
 
 ## 3. Ask and compare
 

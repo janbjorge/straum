@@ -20,8 +20,6 @@ seed_from := env("STRAUM_TEST_SEED_FROM", "0")
 runs := env("STRAUM_BENCH_RUNS", "3")
 # The WAL Straum reads in taxi: logical or physical
 wal := env("STRAUM_TAXI_WAL", "logical")
-# Local database that restore writes to
-to := env("STRAUM_TO", "postgres://postgres:postgres@127.0.0.1:5432/straum?sslmode=disable")
 # Line coverage cov fails under
 coverage := env("STRAUM_COVERAGE", "98")
 
@@ -105,16 +103,11 @@ wal-bench:
 demo:
     bench/demo.py
 
-# Straum on a copy of your tables: the spec copies them from the libpq source, or --data; then straum shell
+# Straum on a copy from straum plan --copy: SPEC --data DIR, then straum shell
 [group('try')]
 [no-cd]
 try *flags:
     {{ justfile_directory() }}/bench/try_your_data.py --postgres {{ postgres }} {{ flags }}
-
-# Restore a dump file into the local postgres; never reads the source
-[group('copy')]
-restore dump:
-    psql -v ON_ERROR_STOP=1 -q "{{ to }}" -f {{ dump }}
 
 [private]
 _named crates:
