@@ -244,6 +244,10 @@ fn decode(text: &str) -> Result<String, DsnError> {
     while let Some((&byte, tail)) = rest.split_first() {
         if byte == b'%' {
             let hex = tail.get(..2).ok_or(DsnError::Escape)?;
+            // `from_str_radix` takes a leading sign, as in `%+1`.
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return Err(DsnError::Escape);
+            }
             let hex = std::str::from_utf8(hex).map_err(|_| DsnError::Escape)?;
             bytes.push(u8::from_str_radix(hex, 16).map_err(|_| DsnError::Escape)?);
             rest = &tail[2..];
@@ -543,6 +547,8 @@ mod tests {
             ("postgres://we%2@h/taxi", DsnError::Escape),
             ("postgres://we%zz@h/taxi", DsnError::Escape),
             ("postgres://we%ff@h/taxi", DsnError::Escape),
+            // Two hex digits, no sign, though Rust's parse takes one.
+            ("postgres://we%+1@h/taxi", DsnError::Escape),
             (
                 "postgres://straum@h/taxi?sslmode=allow",
                 DsnError::Fallback("allow".into()),
