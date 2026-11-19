@@ -83,7 +83,7 @@ changes and answers [asks](asks.md) over HTTP.
 | `--listen ADDRESS` | `127.0.0.1:8080` | Where to serve HTTP. The default reaches this host only ([Who can ask](deploy.md#who-can-ask)). |
 | `--wal logical\|physical` | `logical` | Logical decoding through the publication, or the [physical WAL](postgresql.md#physical-wal) that `wal_level = replica` writes. |
 | `--publication NAME` | `straum` | The publication `straum plan` made. |
-| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables (`PGHOST` and the rest) | A file holding the [DSN](postgresql.md#2-connect). |
+| `--dsn-file FILE` | `STRAUM_DSN`, else libpq's variables, when any of `PGHOST`, `PGUSER`, `PGPASSWORD` and the rest is set | A file holding the [DSN](postgresql.md#2-connect). |
 | `--max-lag SECONDS` | `30` | How far behind PostgreSQL before `/readyz` turns off. |
 | `--max-retained-wal BYTES` | `4Gi` | WAL retained for the slot before Straum stops. The [watchdog](postgresql.md#what-straum-costs-the-server) checks it every second, during loads too. |
 | `--max-transaction-rows ROWS` | `100000` | Rows one transaction may change in the spec's tables before Straum [stops](how-it-works.md#following) instead of applying it. |
