@@ -75,7 +75,7 @@ reaches it can ask for any account
 
 Straum also suits a summary you maintain by hand today, such as a
 materialized view refreshed on a schedule or a rollup table kept by
-triggers. Straum follows inserts, updates and deletes itself, and every
+triggers. It follows inserts, updates and deletes itself, and every
 answer is exact.
 
 ## What it is not
