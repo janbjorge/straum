@@ -37,8 +37,9 @@ pub const DIM_NAMES: [&str; 5] = ["customers", "tiers", "tags", "promos", "block
 pub type Kinds = [RefKind; 5];
 
 pub const KEYS: [&str; 6] = ["customer", "product", "country", "label", "tag", "bucket"];
-pub const MEASURES: [&str; 9] = [
-    "n", "q", "q_max", "q_min", "q_median", "products", "q_n", "all_even", "any_even",
+pub const MEASURES: [&str; 11] = [
+    "n", "q", "q_max", "q_min", "q_median", "products", "q_n", "all_even", "any_even", "q_var",
+    "q_sd_pop",
 ];
 /// A measure with a filter of its own, over a column a join reads.
 pub const FILTERED: &str = "q_no";
@@ -213,6 +214,8 @@ fn measures() -> Vec<Measure> {
         measure("q_max", Aggregate::Max(id("qty"))),
         measure("q_min", Aggregate::Min(id("qty"))),
         measure("q_median", percentile(5, 1, "qty")),
+        measure("q_var", Aggregate::VarSamp(id("qty"))),
+        measure("q_sd_pop", Aggregate::StddevPop(id("qty"))),
         measure("products", Aggregate::CountDistinct(id("product"))),
         measure("q_n", Aggregate::CountNotNull(id("qty"))),
         measure("all_even", Aggregate::BoolAnd(id("even"))),

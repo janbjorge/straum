@@ -12,8 +12,10 @@ use std::mem;
 use crate::column::Counts;
 use crate::identifier::Identifier;
 use crate::rollup::{DistinctCells, State, StateKind};
+use crate::spread::{Moments, SPREAD_PLACES, Spread};
 use crate::value::{Datum, Value};
 use crate::value_counts::{ValueCount, ValueCounts};
+use crate::wide::U256;
 
 /// What a measure reads of its input column, which decides the types the
 /// column may have.
@@ -33,7 +35,8 @@ pub enum Reads {
 /// it with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Answers {
-    /// Integers in the column's scale, or an average of them.
+    /// Integers in the column's scale, an average of them, or a variance
+    /// or deviation of them in a scale of its own.
     Numbers,
     /// True or false.
     Booleans,
@@ -55,6 +58,10 @@ pub enum Aggregate {
         fraction: Fraction,
         column: Identifier,
     },
+    VarSamp(Identifier),
+    VarPop(Identifier),
+    StddevSamp(Identifier),
+    StddevPop(Identifier),
 }
 
 /// A fraction from 0 to 1 as written: its digits and how many follow the
@@ -106,7 +113,33 @@ impl Aggregate {
             | Aggregate::PercentileDisc { column, .. }
             | Aggregate::CountDistinct(column)
             | Aggregate::BoolAnd(column)
-            | Aggregate::BoolOr(column) => Some(column),
+            | Aggregate::BoolOr(column)
+            | Aggregate::VarSamp(column)
+            | Aggregate::VarPop(column)
+            | Aggregate::StddevSamp(column)
+            | Aggregate::StddevPop(column) => Some(column),
+        }
+    }
+
+    /// The scale of the answer, for an input column of `column_scale`: a
+    /// variance is in the column's units squared, so twice its scale, and
+    /// a variance and a deviation keep [`SPREAD_PLACES`] more.
+    pub(crate) fn answer_scale(&self, column_scale: u32) -> u32 {
+        match self.spread() {
+            Some(Spread::VarSamp | Spread::VarPop) => 2 * column_scale + SPREAD_PLACES,
+            Some(Spread::StddevSamp | Spread::StddevPop) => column_scale + SPREAD_PLACES,
+            None => column_scale,
+        }
+    }
+
+    /// Which spread the aggregate gives, if it is a variance or deviation.
+    fn spread(&self) -> Option<Spread> {
+        match self {
+            Aggregate::VarSamp(_) => Some(Spread::VarSamp),
+            Aggregate::VarPop(_) => Some(Spread::VarPop),
+            Aggregate::StddevSamp(_) => Some(Spread::StddevSamp),
+            Aggregate::StddevPop(_) => Some(Spread::StddevPop),
+            _ => None,
         }
     }
 
@@ -122,7 +155,11 @@ impl Aggregate {
             | Aggregate::Min(_)
             | Aggregate::Max(_)
             | Aggregate::PercentileDisc { .. }
-            | Aggregate::CountDistinct(_) => Answers::Numbers,
+            | Aggregate::CountDistinct(_)
+            | Aggregate::VarSamp(_)
+            | Aggregate::VarPop(_)
+            | Aggregate::StddevSamp(_)
+            | Aggregate::StddevPop(_) => Answers::Numbers,
         }
     }
 
@@ -144,6 +181,10 @@ impl Aggregate {
             }
             Aggregate::CountDistinct(_) => Some(StateKind::Distinct),
             Aggregate::BoolAnd(_) | Aggregate::BoolOr(_) => Some(StateKind::Bools),
+            Aggregate::VarSamp(_)
+            | Aggregate::VarPop(_)
+            | Aggregate::StddevSamp(_)
+            | Aggregate::StddevPop(_) => Some(StateKind::Spread),
         }
     }
 }
@@ -215,11 +256,13 @@ fn any_counted(counts: &[u64]) -> bool {
 // keeps references to their values rather than copies.
 pub(crate) enum Partials<'s> {
     Count(Vec<u64>),
-    /// A sum and an average merge alike and part only when finished.
+    /// A sum, an average, a variance and a deviation merge alike and part
+    /// only when finished. Only the last two fill `squares`.
     Sum {
         sums: Vec<i128>,
         counts: Vec<u64>,
-        average: bool,
+        squares: Vec<U256>,
+        finish: Finish,
     },
     /// The least value, or `i64::MAX` while there is none, and whether
     /// there is one.
@@ -243,6 +286,14 @@ pub(crate) enum Partials<'s> {
         falses: Vec<u64>,
         all: bool,
     },
+}
+
+/// What a [`Partials::Sum`] gives when finished.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Finish {
+    Sum,
+    Avg,
+    Spread(Spread),
 }
 
 /// The distinct values one group has met: the cells of numbers, read in
@@ -438,11 +489,8 @@ impl<'s> Partials<'s> {
     pub(crate) fn new(aggregate: &Aggregate) -> Partials<'s> {
         match aggregate {
             Aggregate::Count | Aggregate::CountNotNull(_) => Partials::Count(Vec::new()),
-            Aggregate::Sum(_) | Aggregate::Avg(_) => Partials::Sum {
-                sums: Vec::new(),
-                counts: Vec::new(),
-                average: matches!(aggregate, Aggregate::Avg(_)),
-            },
+            Aggregate::Sum(_) => Partials::sums(Finish::Sum),
+            Aggregate::Avg(_) => Partials::sums(Finish::Avg),
             Aggregate::Min(_) => Partials::Min {
                 values: Vec::new(),
                 seen: Vec::new(),
@@ -461,6 +509,22 @@ impl<'s> Partials<'s> {
                 falses: Vec::new(),
                 all: matches!(aggregate, Aggregate::BoolAnd(_)),
             },
+            Aggregate::VarSamp(_)
+            | Aggregate::VarPop(_)
+            | Aggregate::StddevSamp(_)
+            | Aggregate::StddevPop(_) => {
+                let spread = aggregate.spread().expect("a variance or deviation");
+                Partials::sums(Finish::Spread(spread))
+            }
+        }
+    }
+
+    fn sums(finish: Finish) -> Partials<'s> {
+        Partials::Sum {
+            sums: Vec::new(),
+            counts: Vec::new(),
+            squares: Vec::new(),
+            finish,
         }
     }
 
@@ -469,9 +533,17 @@ impl<'s> Partials<'s> {
         let lanes = groups * LANES;
         match self {
             Partials::Count(counts) => counts.resize(lanes, 0),
-            Partials::Sum { sums, counts, .. } => {
+            Partials::Sum {
+                sums,
+                counts,
+                squares,
+                finish,
+            } => {
                 sums.resize(lanes, 0);
                 counts.resize(lanes, 0);
+                if let Finish::Spread(_) = finish {
+                    squares.resize(lanes, U256::ZERO);
+                }
             }
             Partials::Min { values, seen } => {
                 values.resize(lanes, i64::MAX);
@@ -505,10 +577,16 @@ impl<'s> Partials<'s> {
                 take_counts(counts, groups, nulls);
             }
             (
-                Partials::Sum { sums, counts, .. },
+                Partials::Sum {
+                    sums,
+                    counts,
+                    squares,
+                    ..
+                },
                 Some(State::Sum {
                     sums: cell_sums,
                     nulls,
+                    squares: cell_squares,
                 }),
             ) => {
                 // Benchmark: as for `add_counts`.
@@ -518,6 +596,14 @@ impl<'s> Partials<'s> {
                     counts[at] += count;
                 });
                 take_counts(counts, groups, nulls);
+                if let Some(cell_squares) = cell_squares
+                    && !squares.is_empty()
+                {
+                    for (cell, &group) in groups.iter().enumerate() {
+                        let at = lane(cell, group);
+                        squares[at] = squares[at].wrapping_add(cell_squares.get(cell));
+                    }
+                }
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 let cells = groups.iter().zip(mins).zip(maxs);
@@ -588,14 +674,25 @@ impl<'s> Partials<'s> {
                 counts[at] += rows.get(cell) - nulls.get(cell);
             }
             (
-                Partials::Sum { sums, counts, .. },
+                Partials::Sum {
+                    sums,
+                    counts,
+                    squares,
+                    ..
+                },
                 Some(State::Sum {
                     sums: cell_sums,
                     nulls,
+                    squares: cell_squares,
                 }),
             ) => {
                 sums[at] += cell_sums.get(cell);
                 counts[at] += rows.get(cell) - nulls.get(cell);
+                if let Some(cell_squares) = cell_squares
+                    && !squares.is_empty()
+                {
+                    squares[at] = squares[at].wrapping_add(cell_squares.get(cell));
+                }
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 values[at] = values[at].min(mins[cell]);
@@ -641,14 +738,27 @@ impl<'s> Partials<'s> {
                 counts[at] += rows.total() - nulls.total();
             }
             (
-                Partials::Sum { sums, counts, .. },
+                Partials::Sum {
+                    sums,
+                    counts,
+                    squares,
+                    ..
+                },
                 Some(State::Sum {
                     sums: cell_sums,
                     nulls,
+                    squares: cell_squares,
                 }),
             ) => {
                 sums[at] += cell_sums.total();
                 counts[at] += rows.total() - nulls.total();
+                if let Some(cell_squares) = cell_squares
+                    && !squares.is_empty()
+                {
+                    for cell in 0..cell_squares.len() {
+                        squares[at] = squares[at].wrapping_add(cell_squares.get(cell));
+                    }
+                }
             }
             (Partials::Min { values, seen }, Some(State::Extent { mins, maxs, .. })) => {
                 for &min in mins {
@@ -699,16 +809,26 @@ impl<'s> Partials<'s> {
             Partials::Sum {
                 sums,
                 counts,
-                average,
+                squares,
+                finish,
             } => {
                 let count: u64 = counts[lanes.clone()].iter().sum();
-                let sum: i128 = sums[lanes].iter().sum();
-                if count == 0 {
-                    Value::Null
-                } else if *average {
-                    Value::Avg { sum, count }
-                } else {
-                    Value::Int(sum)
+                let sum: i128 = sums[lanes.clone()].iter().sum();
+                match finish {
+                    _ if count == 0 => Value::Null,
+                    Finish::Sum => Value::Int(sum),
+                    Finish::Avg => Value::Avg { sum, count },
+                    Finish::Spread(spread) => {
+                        let mut total = U256::ZERO;
+                        for &square in &squares[lanes] {
+                            total = total.wrapping_add(square);
+                        }
+                        spread.answer(Moments {
+                            count,
+                            sum,
+                            squares: total,
+                        })
+                    }
                 }
             }
             Partials::Min { seen, .. } | Partials::Max { seen, .. }

@@ -79,6 +79,7 @@ false for the same reason.
 | `count(*)` | its row count | adding | subtracting one |
 | `count(c)` | a count of the nulls among its rows | adding | subtracting one |
 | `sum(c)`, `avg(c)` | a sum, and a count of the nulls among its rows | adding both | subtracting both |
+| `var_samp(c)`, `var_pop(c)`, `stddev_samp(c)`, `stddev_pop(c)` | the same, and a sum of squares | adding all three | subtracting all three |
 | `min(c)`, `max(c)` | a count per value | taking the smaller or larger end | lowering the value's count |
 | `count(DISTINCT c)` | a count per value, numbers kept as `min` and `max` keep them | merging the values in order | lowering the value's count |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | a count per value, the one `min` and `max` keep | gathering the counts, then counting up to the rank | lowering the value's count |
@@ -90,7 +91,7 @@ float sum gives a different answer by the order it was added in, and it
 can't be subtracted from exactly, so Straum refuses float columns.
 
 Two things follow that a spec's author can see. The first is memory. The
-first three rows cost a few numbers a cell. `min`, `max`, `percentile_disc`
+first four rows cost a few numbers a cell. `min`, `max`, `percentile_disc`
 and `count(DISTINCT c)` cost by the distinct values in each cell. A
 percentile beside a `min` or `max` on its column costs nothing more. A
 `min` or `max` keeps a value in as few bytes as its cell's values need:
@@ -104,6 +105,44 @@ The second is rows counted twice. A dim that holds a key twice adds the
 fact row twice ([Joining a dim](spec.md#joining-a-dim)). A sum of counts
 doubles. A count per value merged twice keeps the same `min`, `max` and
 distinct values.
+
+## Variance and standard deviation
+
+A variance merges as `avg` does: from a few numbers per part, never from
+the parts' own answers. Each cell keeps the count `n` of its values, their
+sum and the sum of their squares, and the squared distances from the mean
+come out of those three:
+
+```text
+sum of (x - mean)^2  =  sum of x^2  -  (sum of x)^2 / n
+
+var_pop   =  (n * sum of x^2 - (sum of x)^2) / n^2
+var_samp  =  (n * sum of x^2 - (sum of x)^2) / (n * (n - 1))
+```
+
+Take the two hours above:
+
+```text
+              09:00         10:00                 both hours
+n             3             5                     8
+sum           60            720                   780
+sum of x^2    1400          262600                264000
+var_samp      100           39730                 26850
+```
+
+The three numbers add across hours, and the formula gives 26850 from the
+merged ones, the variance of all eight amounts. The mean of the two hours'
+own variances is 19915, which is wrong for the reason the mean of two
+averages is. A delete subtracts its value, its square and one from `n`.
+
+Integers add and subtract exactly, so the three never drift, in whatever
+order rows come and go. Straum divides only when it answers, rounds there,
+and takes a standard deviation as the square root of the merged variance.
+The sum of squares of values near the ends of `bigint` passes 128 bits, so
+it widens to 256 as a sum widens from 32 to 64 bits.
+
+A `sum` or `avg` on the same column shares the cell's sum and count, so
+a variance beside them adds only its sum of squares.
 
 ## Median and percentiles
 

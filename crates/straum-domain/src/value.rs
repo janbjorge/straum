@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::date::parse_date;
 use crate::spec::Literal;
 use crate::uuid::parse_uuid;
+use crate::wide::{U256, U256_DIGITS};
 
 /// A column's type. Only the source knows it, so a load sets it per column;
 /// asks compare values with it, and answers print numbers in its scale.
@@ -122,6 +123,9 @@ pub enum Value {
         sum: i128,
         count: u64,
     },
+    /// A number in the measure's scale past what an `i128` holds: a
+    /// variance of values near the ends of `bigint`.
+    Wide(U256),
 }
 
 /// The most digits after the point a HAVING value may have: `10^38` is
@@ -139,9 +143,9 @@ pub(crate) enum Threshold {
     /// The value in units of the measure's scale, as a fraction: whole
     /// unless the value has more digits after the point than the measure.
     Number(Ratio),
-    /// Past what an `i128` holds at the measure's scale, so every value
-    /// orders against it this way.
-    Beyond(Ordering),
+    /// `units * 10^shift` in units of the measure's scale, past what an
+    /// `i128` holds, so only a [`Value::Wide`] can reach it.
+    Beyond { units: i128, shift: u32 },
 }
 
 impl Threshold {
@@ -156,13 +160,9 @@ impl Threshold {
             Literal::Text(_) => return None,
         };
         if wanted_scale <= scale {
-            let Some(scaled) = scaled_up(units, scale - wanted_scale) else {
-                let order = if units > 0 {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                };
-                return Some(Threshold::Beyond(order));
+            let shift = scale - wanted_scale;
+            let Some(scaled) = scaled_up(units, shift) else {
+                return Some(Threshold::Beyond { units, shift });
             };
             return Some(Threshold::Number(Ratio {
                 numerator: scaled,
@@ -198,11 +198,37 @@ impl Value {
                 numerator: *sum,
                 denominator: i128::from(*count),
             },
+            Value::Wide(units) => return wide_order(*units, threshold),
         };
         match threshold {
             Threshold::Number(wanted) => Some(held.order(wanted)),
-            Threshold::Beyond(order) => Some(order),
+            Threshold::Beyond { units, .. } if units > 0 => Some(Ordering::Less),
+            Threshold::Beyond { .. } => Some(Ordering::Greater),
             Threshold::Boolean(_) => None,
+        }
+    }
+}
+
+/// How a value past an `i128`, never below zero, orders against
+/// `threshold`. A `Number` threshold lies within an `i128`, so below it.
+fn wide_order(units: U256, threshold: Threshold) -> Option<Ordering> {
+    match threshold {
+        Threshold::Boolean(_) => None,
+        Threshold::Number(_) => Some(Ordering::Greater),
+        Threshold::Beyond { units: wanted, .. } if wanted < 0 => Some(Ordering::Greater),
+        Threshold::Beyond {
+            units: wanted,
+            shift,
+        } => {
+            let mut scaled = U256::from(wanted.unsigned_abs());
+            for _ in 0..shift {
+                let (product, overflowed) = scaled.overflowing_mul(10);
+                if overflowed {
+                    return Some(Ordering::Less);
+                }
+                scaled = product;
+            }
+            Some(units.cmp(&scaled))
         }
     }
 }
@@ -311,10 +337,23 @@ pub fn push_decimal(out: &mut String, units: i128, scale: u32) {
             rest /= 10;
         }
     }
-    let digits = &digits[first..];
     if units < 0 {
         out.push('-');
     }
+    push_placed(out, &digits[first..], scale);
+}
+
+/// A [`U256`] in units of `10^-scale`, as [`push_decimal`] prints an
+/// `i128`.
+pub fn push_wide_decimal(out: &mut String, units: U256, scale: u32) {
+    let mut digits = [0; U256_DIGITS];
+    let count = units.digits(&mut digits);
+    push_placed(out, &digits[U256_DIGITS - count..], scale);
+}
+
+/// `digits`, most significant first, with a point `scale` places from
+/// the right.
+fn push_placed(out: &mut String, digits: &[u8], scale: u32) {
     let scale = scale as usize;
     if scale == 0 {
         push_digits(out, digits);
@@ -451,6 +490,42 @@ mod tests {
                 Some(Equal),
             ),
         ]);
+    }
+
+    /// A value past an `i128`, as a variance near the ends of `bigint`
+    /// is, orders exactly against a HAVING value past one too, and above
+    /// any that fits.
+    #[test]
+    fn wide_values_order_exactly_against_a_having_value() {
+        use Ordering::{Equal, Greater, Less};
+        // 10^39 units at scale 40, which is 0.1.
+        let tenth = Value::Wide(U256::product(10u128.pow(38), 10));
+        assert_orders(vec![
+            (tenth.clone(), 40, decimal_literal(1, 1), Some(Equal)),
+            (tenth.clone(), 40, decimal_literal(2, 1), Some(Less)),
+            (tenth.clone(), 40, decimal_literal(9, 2), Some(Greater)),
+            (tenth.clone(), 40, Literal::Int(-1), Some(Greater)),
+            (tenth.clone(), 40, decimal_literal(0, 0), Some(Greater)),
+            (tenth.clone(), 0, Literal::Int(5), Some(Greater)),
+            // Past 2^256 at the measure's scale.
+            (tenth.clone(), 70, Literal::Int(i64::MAX), Some(Less)),
+            (tenth, 0, Literal::Bool(true), None),
+        ]);
+    }
+
+    #[test]
+    fn wide_decimals_print_every_digit() {
+        let tenth = U256::product(10u128.pow(38), 10);
+        for (scale, printed) in [
+            (0, format!("1{}", "0".repeat(39))),
+            (40, format!("0.1{}", "0".repeat(39))),
+            (42, format!("0.001{}", "0".repeat(39))),
+            (2, format!("1{}.00", "0".repeat(37))),
+        ] {
+            let mut out = String::new();
+            push_wide_decimal(&mut out, tenth, scale);
+            assert_eq!(out, printed, "at {scale}");
+        }
     }
 
     /// Past an i128 at either end, and nothing for null or a value of

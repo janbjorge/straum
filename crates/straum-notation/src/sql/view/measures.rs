@@ -192,6 +192,14 @@ impl Walker {
             self.refuse(at, "every, write bool_and,", function);
             return Err(Reported);
         }
+        if name == "variance" {
+            self.refuse(at, "variance, write var_samp,", function);
+            return Err(Reported);
+        }
+        if name == "stddev" {
+            self.refuse(at, "stddev, write stddev_samp,", function);
+            return Err(Reported);
+        }
         let aggregate = match name {
             "sum" => Aggregate::Sum,
             "min" => Aggregate::Min,
@@ -199,6 +207,10 @@ impl Walker {
             "avg" => Aggregate::Avg,
             "bool_and" => Aggregate::BoolAnd,
             "bool_or" => Aggregate::BoolOr,
+            "var_samp" => Aggregate::VarSamp,
+            "var_pop" => Aggregate::VarPop,
+            "stddev_samp" => Aggregate::StddevSamp,
+            "stddev_pop" => Aggregate::StddevPop,
             _ => {
                 self.refuse(at, "aggregate", function);
                 return Err(Reported);

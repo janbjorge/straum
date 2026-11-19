@@ -6,7 +6,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{bool_or_null, holds, in_range, int_or_null, percentile_disc};
+use crate::common::{
+    SPREAD_PLACES, bool_or_null, holds, in_range, int_or_null, percentile_disc, spread,
+};
 use crate::view::{
     AT, BLOCKED, CUSTOMER, CUSTOMERS, DIM_NAMES, Dims, EVEN, HOUR, Kinds, Loaded, PRODUCT,
     QUANTITY, TAGS, TIERS,
@@ -170,7 +172,8 @@ pub fn reference(spec: &Spec, ask: &Ask, rows: &[Vec<Datum>], dims: &Dims, kinds
     }
 }
 
-/// The ask's keys, then its measures, each unscaled.
+/// The ask's keys, then its measures, over unscaled columns: a variance
+/// or deviation keeps its places past them.
 fn answer_columns(ask: &Ask) -> Vec<AnswerColumn> {
     let mut columns = Vec::with_capacity(ask.keys.len() + ask.measures.len());
     for key in &ask.keys {
@@ -181,9 +184,13 @@ fn answer_columns(ask: &Ask) -> Vec<AnswerColumn> {
         });
     }
     for name in &ask.measures {
+        let scale = match name.as_str() {
+            "q_var" | "q_sd_pop" => SPREAD_PLACES,
+            _ => 0,
+        };
         columns.push(AnswerColumn {
             name: name.to_string(),
-            scale: 0,
+            scale,
             is_time: false,
         });
     }
@@ -221,6 +228,10 @@ fn reference_value(measure: &Measure, group: &[ViewRow<'_>]) -> Value {
             }
             Value::Int(seen.len() as i128)
         }
+        Aggregate::VarSamp(_)
+        | Aggregate::VarPop(_)
+        | Aggregate::StddevSamp(_)
+        | Aggregate::StddevPop(_) => spread(&measure.aggregate, &quantities(&rows)),
         Aggregate::BoolAnd(_) => bool_or_null(evens(&rows).into_iter().min()),
         Aggregate::BoolOr(_) => bool_or_null(evens(&rows).into_iter().max()),
         Aggregate::Avg(_) => unreachable!("no average here"),

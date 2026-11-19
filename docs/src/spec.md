@@ -33,6 +33,8 @@ measure    count(*)
            sum(alias.column)       min(alias.column)
            max(alias.column)       avg(alias.column)
            bool_and(alias.column)  bool_or(alias.column)
+           var_samp(alias.column)  var_pop(alias.column)
+           stddev_samp(alias.column)  stddev_pop(alias.column)
            percentile_disc(fraction) WITHIN GROUP (ORDER BY alias.column)
            each of these [FILTER (WHERE condition [AND ...])]
 
@@ -226,8 +228,9 @@ next answer, as PostgreSQL's view would, and nothing stops
 - Any number of dim rows may match a key. A key the dim holds twice
   counts the fact row twice, as PostgreSQL's join does: `count(*)`,
   `count(c)` and `sum` double, `min`, `max`, `count(DISTINCT ...)`,
-  `bool_and` and `bool_or` don't, `avg` stays, and `percentile_disc`
-  counts the row's value twice. A dim needs no index on its key.
+  `bool_and` and `bool_or` don't, `avg` stays, and `percentile_disc`,
+  the variances and the standard deviations count the row's value
+  twice. A dim needs no index on its key.
 - The fact column and the dim key column must be of the same kind,
   column for column.
 - Under `INNER JOIN` a dim key column, `a.id`, reads the fact column
@@ -322,6 +325,8 @@ Which types take the cast is listed here; today it is enums alone.
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
 | `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
+| `var_samp(c)`, `var_pop(c)` | the same | a decimal rounded half to even at four places past twice `c`'s scale |
+| `stddev_samp(c)`, `stddev_pop(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 | `bool_and(c)`, `bool_or(c)` | `boolean` | `true` or `false` |
 
 Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
@@ -334,11 +339,19 @@ both are null when no `c` is
 values that are not null, at least the first, and null when there are
 none; ascending is its one order, so `ASC` and `DESC` are not written
 ([Median and percentiles](aggregates.md#median-and-percentiles)).
+`var_samp(c)` is the sum of the squared distances of the values from
+their mean, over `n - 1`; `var_pop(c)` the same over `n`.
+`stddev_samp(c)` and `stddev_pop(c)` are their square roots. All four
+are null when no `c` is, and the two `_samp` ones also for a single
+value. A variance is in `c`'s units squared, so its scale is twice
+`c`'s: of a `numeric(10, 2)` it prints eight places
+([Variance and standard deviation](aggregates.md#variance-and-standard-deviation)).
 
 `percentile_disc` takes one fraction, as the synopsis writes it, and
 `ORDER BY alias.column` alone: no array, `DESC`, `USING`, `NULLS` or
 expression. `percentile_cont`, `mode` and the hypothetical-set
-aggregates are refused.
+aggregates are refused. So are `variance` and `stddev`, PostgreSQL's
+other names for `var_samp` and `stddev_samp`: write those.
 
 `FILTER` makes a measure count only some rows:
 

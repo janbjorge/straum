@@ -210,7 +210,7 @@ fn each_wrong_condition_says_what_is_wrong() {
             "HAVING compares tip_max, which the ask doesn't select",
             "unknown measure colour; the view's measures are trips, fare, tip_min, \
              tip_max, tip_median, tip_lowest, tip_highest, fare_p07, card_tip_p90, \
-             tip_avg, distance, riders, pickups, card, shared_fare, mq_fare, m_riders, \
+             fare_var, tip_var_pop, distance_sd, card_tip_sd_pop, tip_avg, distance, riders, pickups, card, shared_fare, mq_fare, m_riders, \
              far_tip, zone_four_distance, tipped, far_riders, all_tolled, any_tolled, \
              card_tolled",
             r#"fare is a number, so it can't be compared with the text "1""#,

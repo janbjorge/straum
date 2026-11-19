@@ -123,9 +123,10 @@ Not equal is `<>`; `!=` is refused. Comparisons join by `AND`.
 A measure that is null meets no comparison, `<>` included, as in
 PostgreSQL, so its group is left out.
 
-A count, sum, min, max, percentile or average compares with a number
-parameter, exactly: `avg_amount > 44.27` is true of 44.273058, and
-`amount = 1875.7` of 1875.70. Up to 38 digits may follow the point.
+A count, sum, min, max, percentile, average, variance or standard
+deviation compares with a number parameter, exactly: `avg_amount >
+44.27` is true of 44.273058, and `amount = 1875.7` of 1875.70. Up to 38
+digits may follow the point.
 
 `bool_and` and `bool_or` compare with a boolean, by `=` or `<>` only.
 

@@ -13,9 +13,9 @@ counts hold only for those bytes.
 
 ## Results
 
-Ten fixed asks over the benchmark's two views, each sent to PostgreSQL
+Fourteen fixed asks over the benchmark's two views, each sent to PostgreSQL
 as SQL over the raw tables and to Straum as an ask over HTTP. One run on
-an Apple M2 Pro with 16 GB, on 2026-11-15: PostgreSQL 18.6 in Docker
+an Apple M2 Pro with 16 GB, on 2026-11-19: PostgreSQL 18.7 in Docker
 Desktop with 10 CPUs, and Straum's release build on the same machine.
 Each time is the median over at least a second, from one Python client:
 asyncpg for PostgreSQL, aiohttp and orjson for Straum. Rows are the
@@ -23,23 +23,30 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 270.8 ms | 166 µs | 1,636x |
-| Card trips | 1 | 489.6 ms | 261 µs | 1,872x |
-| Trips by pickup borough | 8 | 1,501.8 ms | 377 µs | 3,986x |
-| Fares by payment type | 6 | 1,086.1 ms | 413 µs | 2,632x |
-| Median fare | 1 | 6,584.6 ms | 32.3 ms | 204x |
-| p99 fare by payment type | 6 | 11,057.6 ms | 29.5 ms | 375x |
-| Median fare per hour, one day | 24 | 62.6 ms | 807 µs | 78x |
-| Manhattan pickups, one week | 1 | 86.5 ms | 239 µs | 362x |
-| Trips per hour, one day | 24 | 22.3 ms | 184 µs | 121x |
-| Tips by dropoff borough | 8 | 2,376.2 ms | 250 µs | 9,492x |
+| Trips | 1 | 225.5 ms | 141 µs | 1,597x |
+| Card trips | 1 | 384.7 ms | 237 µs | 1,626x |
+| Trips by pickup borough | 8 | 1,070.7 ms | 263 µs | 4,074x |
+| Fares by payment type | 6 | 806.2 ms | 333 µs | 2,419x |
+| Fare spread by payment type | 6 | 857.9 ms | 433 µs | 1,980x |
+| Median fare | 1 | 4,731.4 ms | 25.5 ms | 185x |
+| p99 fare by payment type | 6 | 8,012.3 ms | 22.7 ms | 352x |
+| Median fare per hour, one day | 24 | 43.0 ms | 623 µs | 69x |
+| Manhattan pickups, one week | 1 | 73.1 ms | 199 µs | 367x |
+| Trips per hour, one day | 24 | 27.7 ms | 159 µs | 174x |
+| Trips per hour by borough, one month | 4,454 | 883.4 ms | 2.6 ms | 342x |
+| Trips per day by borough, one month | 243 | 904.0 ms | 379 µs | 2,384x |
+| Fares per week | 31 | 1,961.5 ms | 227 µs | 8,630x |
+| Tips by dropoff borough | 8 | 1,728.1 ms | 210 µs | 8,232x |
 
 The target is under 1 ms for every ask
 ([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
-the two percentile asks over every trip miss it.
+the two percentile asks over every trip miss it, and so does the month
+of hourly rows by borough, which writes 4,454 rows.
 
-Straum was ready 16.8 s after it started and held 113 MiB resident, the
-265 zone rows' projection included. The bench now reads what Straum
+Straum was ready 14.7 s after it started and held 205 MiB resident, the
+265 zone rows' projection included. The same run without the fare's
+variance and standard deviation held 190 MiB: their sums of squares
+take 15 MiB. The bench now reads what Straum
 holds from macOS's footprint, which counts the pages the system
 compressed; one resident set read 21 MiB on a busy machine. In PostgreSQL
 the table and its indexes take 2,475 MiB.
@@ -144,6 +151,11 @@ SELECT payment_type, count(*), sum(fare_amount), avg(fare_amount)
   FROM yellow_trips
  GROUP BY payment_type;
 
+-- Fare spread by payment type
+SELECT payment_type, var_samp(fare_amount), stddev_samp(fare_amount)
+  FROM yellow_trips
+ GROUP BY payment_type;
+
 -- Median fare
 SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY fare_amount) FROM yellow_trips;
 
@@ -171,6 +183,27 @@ SELECT count(*)
 SELECT date_trunc('hour', pickup_at), count(*)
   FROM yellow_trips
  WHERE pickup_at >= '2024-01-17' AND pickup_at < '2024-01-18'
+ GROUP BY 1;
+
+-- Trips per hour by borough, one month
+SELECT date_bin('1 hour', t.pickup_at, timestamptz 'epoch'), z.borough, count(*)
+  FROM yellow_trips t
+  LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
+ WHERE t.pickup_at >= '2024-01-01T00:00:00Z' AND t.pickup_at < '2024-02-01T00:00:00Z'
+ GROUP BY 1, 2;
+
+-- Trips per day by borough, one month
+SELECT date_bin('1 day', t.pickup_at, timestamptz 'epoch'), z.borough, count(*)
+  FROM yellow_trips t
+  LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
+ WHERE t.pickup_at >= '2024-01-01T00:00:00Z' AND t.pickup_at < '2024-02-01T00:00:00Z'
+ GROUP BY 1, 2;
+
+-- Fares per week
+SELECT date_bin('7 days', pickup_at, timestamptz 'epoch'), count(*),
+       sum(fare_amount)
+  FROM yellow_trips
+ WHERE pickup_at IS NOT NULL
  GROUP BY 1;
 
 -- Tips by dropoff borough
@@ -291,7 +324,8 @@ and projections included, before bound cells. A cell has taken fewer
 bytes since ([ADR-0003](https://github.com/janbjorge/straum/blob/main/docs/adr/0003-straum-holds-cells-and-nothing-else.md)):
 the benchmark's two views held 65 MiB for their 2,078,586 cells, 33
 bytes a cell, before `trips` kept its fares for the percentiles; with
-them they hold 113 MiB.
+them they held 113 MiB on 2026-11-15, and 205 MiB on 2026-11-19 with
+the fare's variance and standard deviation besides.
 
 ### The taxi month under a wide key
 

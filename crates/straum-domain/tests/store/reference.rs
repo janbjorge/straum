@@ -5,7 +5,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use crate::common::{bool_or_null, holds, in_range, int_or_null, percentile_disc};
+use crate::common::{
+    SPREAD_PLACES, bool_or_null, holds, in_range, int_or_null, percentile_disc, spread,
+};
 use crate::views::trip_types;
 use crate::{AT, DIST, DRO, Dims, FARE, HOME, PAY, PU, RIDER, SHARED, TIP, TOLLED, VENDOR, WIDTH};
 use straum_domain::{
@@ -154,6 +156,7 @@ fn order(value: &Value, scale: u32, wanted: &Literal) -> Option<Ordering> {
         }
         Value::Int(units) => (*units, 1),
         Value::Avg { sum, count } => (*sum, i128::from(*count)),
+        Value::Wide(_) => unreachable!("the trips' values are far from the ends of bigint"),
     };
     let (units, wanted_scale) = match wanted {
         Literal::Int(integer) => (i128::from(*integer), 0),
@@ -162,9 +165,15 @@ fn order(value: &Value, scale: u32, wanted: &Literal) -> Option<Ordering> {
     };
     let finer = scale.max(wanted_scale);
     let held = numerator * 10_i128.pow(finer - scale);
+    if units == 0 {
+        return Some(held.cmp(&0));
+    }
+    // A variance's scale can pass the 38 places an i128 holds a power of
+    // ten for.
     let Some(asked) = units
         .checked_mul(count)
-        .and_then(|product| product.checked_mul(10_i128.pow(finer - wanted_scale)))
+        .zip(10_i128.checked_pow(finer - wanted_scale))
+        .and_then(|(product, shift)| product.checked_mul(shift))
     else {
         // Only an i64 extreme against a fine scale gets here: past any
         // held value, on its side of zero.
@@ -261,6 +270,13 @@ pub(crate) fn measure_scale(aggregate: &Aggregate) -> u32 {
         | Aggregate::PercentileDisc { column: input, .. } => {
             trip_types()[column(input.as_str())].scale()
         }
+        // A variance is in the column's units squared.
+        Aggregate::VarSamp(input) | Aggregate::VarPop(input) => {
+            2 * trip_types()[column(input.as_str())].scale() + SPREAD_PLACES
+        }
+        Aggregate::StddevSamp(input) | Aggregate::StddevPop(input) => {
+            trip_types()[column(input.as_str())].scale() + SPREAD_PLACES
+        }
     }
 }
 
@@ -304,6 +320,10 @@ fn measure(measure: &Measure, rows: &[&[Datum]], dims: &Dims) -> Value {
         Aggregate::PercentileDisc { fraction, column } => {
             percentile_disc(ints_in(&rows, column), *fraction)
         }
+        Aggregate::VarSamp(input)
+        | Aggregate::VarPop(input)
+        | Aggregate::StddevSamp(input)
+        | Aggregate::StddevPop(input) => spread(&measure.aggregate, &ints_in(&rows, input)),
     }
 }
 

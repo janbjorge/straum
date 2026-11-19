@@ -24,12 +24,14 @@ mod projection;
 mod rollup;
 mod spec;
 mod spec_error;
+mod spread;
 mod store;
 #[cfg(test)]
 mod test_rng;
 mod uuid;
 mod value;
 mod value_counts;
+mod wide;
 mod width;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
@@ -46,5 +48,6 @@ pub use spec::{
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};
 pub use uuid::{format_uuid, parse_uuid};
-pub use value::{ColumnType, Datum, Value, decimal, push_decimal};
+pub use value::{ColumnType, Datum, Value, decimal, push_decimal, push_wide_decimal};
+pub use wide::U256;
 pub use width::{UNITS, Unit, Width};

@@ -1,5 +1,5 @@
 //! The views the tests build their stores from: `trips` joined to zones,
-//! combos and vendors with every kind of measure, a smaller one joined to
+//! combos and vendors with every kind of measure, variances among them, a smaller one joined to
 //! zones alone, and one of percentiles. Also the column types a load sets,
 //! so a store here is typed as the source would type it.
 
@@ -167,6 +167,16 @@ fn count_sum_and_rank_measures() -> Vec<Measure> {
         new_measure(
             "card_tip_p90",
             percentile(90, 2, "tip"),
+            vec![condition("pay", vec![Literal::Int(1)])],
+        ),
+        // Beside the fare's sum and the distance's average, so they share
+        // one state; the tip's on its own.
+        new_measure("fare_var", Aggregate::VarSamp(id("fare")), vec![]),
+        new_measure("tip_var_pop", Aggregate::VarPop(id("tip")), vec![]),
+        new_measure("distance_sd", Aggregate::StddevSamp(id("dist")), vec![]),
+        new_measure(
+            "card_tip_sd_pop",
+            Aggregate::StddevPop(id("tip")),
             vec![condition("pay", vec![Literal::Int(1)])],
         ),
     ]

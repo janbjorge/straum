@@ -1,7 +1,6 @@
 //! Helpers the test binaries share: builders for spec pieces, the SQL
-//! rules a reference needs (`=`, `percentile_disc` and an ask's range),
-//! and a seeded
-//! random number source.
+//! rules a reference needs (`=`, `percentile_disc`, the variances and an
+//! ask's range), and a seeded random number source.
 
 // Every test binary compiles this module and uses only some of it.
 // `#[expect(dead_code)]` would fail in a binary that uses all of it,
@@ -51,6 +50,80 @@ pub fn percentile_disc(mut values: Vec<i128>, fraction: Fraction) -> Value {
         Some(&value) => Value::Int(value),
         None => Value::Null,
     }
+}
+
+/// Places past its scale a variance or deviation answers to.
+pub const SPREAD_PLACES: u32 = 4;
+
+/// A variance or deviation by its definition, in a pass over the values
+/// apart from the one that sums them: with `n` values and sum `s1`, the
+/// squared deviations from the mean are `sum((n * x - s1)^2) / n^2`.
+/// Never through `n * s2 - s1^2`, the form Straum keeps, so a wrong
+/// merge or formula can't agree with it by sharing it. Rounded half to
+/// even at [`SPREAD_PLACES`]; null for no value, or a sample of one.
+pub fn spread(aggregate: &Aggregate, values: &[i128]) -> Value {
+    let count = values.len() as i128;
+    let mut sum = 0;
+    for value in values {
+        sum += value;
+    }
+    let mut squared = 0;
+    for value in values {
+        let apart = count * value - sum;
+        squared += apart * apart;
+    }
+    let (denominator, root) = match aggregate {
+        Aggregate::VarSamp(_) => (count * count * (count - 1), false),
+        Aggregate::VarPop(_) => (count * count * count, false),
+        Aggregate::StddevSamp(_) => (count * count * (count - 1), true),
+        Aggregate::StddevPop(_) => (count * count * count, true),
+        other => panic!("{other:?} is no variance or deviation"),
+    };
+    if denominator <= 0 {
+        return Value::Null;
+    }
+    let factor = 10_i128.pow(SPREAD_PLACES);
+    if root {
+        Value::Int(nearest_root(squared * factor * factor, denominator))
+    } else {
+        Value::Int(nearest(squared * factor, denominator))
+    }
+}
+
+/// `numerator / denominator`, both at least zero, rounded half to even.
+fn nearest(numerator: i128, denominator: i128) -> i128 {
+    let whole = numerator / denominator;
+    let twice_rest = 2 * (numerator % denominator);
+    if twice_rest > denominator || (twice_rest == denominator && whole % 2 == 1) {
+        whole + 1
+    } else {
+        whole
+    }
+}
+
+/// The whole `u` nearest `sqrt(numerator / denominator)`, ties to even:
+/// the least `u` whose upper halfway square, `(u + 1/2)^2`, is not below
+/// the quotient, found by halving.
+fn nearest_root(numerator: i128, denominator: i128) -> i128 {
+    let (mut low, mut high) = (0, 1);
+    while !halfway_reaches(high, numerator, denominator) {
+        high *= 2;
+    }
+    while low < high {
+        let middle = low.midpoint(high);
+        if halfway_reaches(middle, numerator, denominator) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let tie = (2 * low + 1) * (2 * low + 1) * denominator == 4 * numerator;
+    if tie && low % 2 == 1 { low + 1 } else { low }
+}
+
+/// Whether `(root + 1/2)^2` reaches `numerator / denominator`.
+fn halfway_reaches(root: i128, numerator: i128, denominator: i128) -> bool {
+    (2 * root + 1) * (2 * root + 1) * denominator >= 4 * numerator
 }
 
 /// A measure named `name` with no `FILTER`.

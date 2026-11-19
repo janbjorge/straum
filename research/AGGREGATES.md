@@ -313,7 +313,7 @@ a new answer over a state, or one more column in one.
 
 | Order | Aggregate | State | Note |
 | --- | --- | --- | --- |
-| 1 | `var_pop`, `var_samp`, `variance`, `stddev_pop`, `stddev_samp`, `stddev` | `Sum` and a column of squares | §4.5, §4.6 |
+| built | `var_pop`, `var_samp`, `stddev_pop`, `stddev_samp` | `Sum` and a column of squares | §4.5, §4.6; `variance` and `stddev` refused, one spelling (ADR-0004) |
 | 2 | `mode() WITHIN GROUP (ORDER BY c)` | `Extent` | ties take the first value (U) |
 | 3 | `sum(DISTINCT c)`, `avg(DISTINCT c)` | `Distinct` | |
 | open | `percentile_cont` | `Extent` | PostgreSQL answers in `double precision` |
@@ -352,9 +352,12 @@ as a bug, gave a wrong answer in 17423 trials. Merging variances or
 standard deviations directly is the trap `aggregates.md` shows for
 averages.
 
-Not shown: that the division and the square root round as PostgreSQL's
-`numeric` does, and that one value gives null for `var_samp` and 0 for
-`var_pop` (U). The tests in §4.7 settle both.
+PostgreSQL agrees on the edges (R, `crates/straum-pg/src/tests/`
+against a running server): one value gives null for `var_samp` and
+`stddev_samp`, 0 for the `_pop` ones. Straum rounds half to even at
+four places past the answer's scale, as `avg` does; PostgreSQL's own
+answer carries more places, so the tests round it half to even there
+before comparing.
 
 ### 4.6 Overflow of the squares
 
@@ -368,8 +371,11 @@ it (`crates/straum-domain/src/column.rs`). One more width, 256 bits,
 ends the overflow: below 2^64 rows, the bound ADR-0003 gives for sums,
 S2 needs at most 191 bits. The ask needs 256 bits in any case, as S1^2
 takes up to 255. Only a column whose values need it pays. `std` has no
-256-bit integer; a hand-written one (add, subtract, multiply, divide,
-square root, print) or a crate is open.
+256-bit integer, so Straum has its own, `U256` in
+`crates/straum-domain/src/wide.rs` (jb, 2026-11-19: no crate): add and
+subtract that wrap, products, division by a `u128`, square root and
+decimal digits. A variance past an `i128` at its scale answers as
+`Value::Wide`.
 
 Rejected: refusing variance on `bigint` and wide `numeric` when the
 spec is checked, which shuts out the common amount column; and a
@@ -378,16 +384,24 @@ takes.
 
 ### 4.7 How the tests hold it
 
-- `crates/straum-domain/tests/store/workload.rs` adds, updates and
-  removes random trips, truncates them, and checks random asks across
-  buckets and levels against `tests/store/reference.rs`. The reference
-  for variance computes the definition in two passes over the rows,
-  not n·S2 - S1^2, so it does not repeat the code's own formula.
-- `crates/straum-pg/src/tests/references.rs` compares the same asks
-  with PostgreSQL's SQL over the same rows, which settles rounding and
-  the one-value cases.
-- Planted bugs: `remove` that subtracts x but not x^2, and a merge that
-  averages variances. The workload must fail on each.
+- `crates/straum-domain/src/spread.rs` checks the answer of merged
+  cells, with rows taken out, against the definition in exact integers,
+  ties and the values at the ends of `bigint` included; `wide.rs`
+  checks `U256` against `u128` and against its own inverses.
+- The workloads, `crates/straum-domain/tests/store/workload.rs` and
+  `tests/joins/`, add, update and remove random rows and check random
+  asks across buckets and widths against a reference,
+  `tests/common/mod.rs` `spread`. It computes `sum((n * x - s1)^2)` in
+  a pass of its own, not `n * s2 - s1^2`, so it shares no formula with
+  the code.
+- `crates/straum-pg/src/tests/references.rs` compares the taxi asks
+  with PostgreSQL's `var_samp`, `var_pop`, `stddev_samp` and
+  `stddev_pop` over the same rows.
+- Planted bugs, each run once and each failing (2026-11-19): `remove`
+  that leaves x^2 in; `add_from` that drops a cell's squares when it
+  moves; an ask that merges only the first cell's squares when one
+  group takes a bucket; a `var_samp` over n^2; a sample of one that
+  answers 0; a lost carry in `U256::product`.
 
 ## Open points
 
@@ -398,8 +412,6 @@ takes.
   would make it a binary search on value; unbuilt.
 - Count distinct's memory (ADR-0003) is the same question as a
   percentile's.
-- Variance and standard deviation: how PostgreSQL's `numeric` rounds
-  them, and a hand-written 256-bit integer or a crate (§4.5, §4.6).
 - `percentile_cont`: exact to PostgreSQL's bit, but a `double
   precision` answer. Add it, or keep `percentile_disc` as the median
   (§4.4).

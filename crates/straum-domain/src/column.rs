@@ -8,6 +8,8 @@
 
 use std::ops::{Add, RangeInclusive};
 
+use crate::wide::U256;
+
 // The functions below are generic over the type of a column's entries
 // (`u8` up to `i128`): one body serves every byte width, where a copy per
 // width would be four or five functions alike but for a type.
@@ -457,6 +459,111 @@ impl Iterator for SumsIter<'_> {
     }
 }
 
+/// Sums of squares, one a cell, for a variance: as [`Sums`] while every
+/// sum fits an `i128`, then in 256 bits. A square of an `i64` is below
+/// 2^126, so two near the ends of `bigint` already pass an `i128`; below
+/// 2^64 rows a sum stays below 2^190.
+#[derive(Debug)]
+pub(crate) enum Squares {
+    Narrow(Sums),
+    Wide(Vec<U256>),
+}
+
+impl Squares {
+    pub(crate) const fn new() -> Squares {
+        Squares::Narrow(Sums::new())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Squares::Narrow(sums) => sums.len(),
+            Squares::Wide(column) => column.len(),
+        }
+    }
+
+    /// The sum of squares of `cell`.
+    pub(crate) fn get(&self, cell: usize) -> U256 {
+        match self {
+            Squares::Narrow(sums) => wrapped(sums.get(cell)),
+            Squares::Wide(column) => column[cell],
+        }
+    }
+
+    /// Adds `square` to the sum of `cell`, widening the column if it must.
+    pub(crate) fn add(&mut self, cell: usize, square: U256) {
+        if let Squares::Narrow(sums) = self {
+            if let Some(square) = narrow(square)
+                && sums.get(cell).checked_add(square).is_some()
+            {
+                sums.add(cell, square);
+                return;
+            }
+            self.widen();
+        }
+        let Squares::Wide(column) = self else {
+            unreachable!("widened above")
+        };
+        column[cell] = column[cell].wrapping_add(square);
+    }
+
+    /// Takes `square` out of the sum of `cell`, which holds it.
+    pub(crate) fn sub(&mut self, cell: usize, square: U256) {
+        if let Squares::Narrow(sums) = self {
+            if let Some(square) = narrow(square) {
+                sums.add(cell, -square);
+                return;
+            }
+            self.widen();
+        }
+        let Squares::Wide(column) = self else {
+            unreachable!("widened above")
+        };
+        column[cell] = column[cell].wrapping_sub(square);
+    }
+
+    pub(crate) fn push(&mut self) {
+        match self {
+            Squares::Narrow(sums) => sums.push(),
+            Squares::Wide(column) => put(column, U256::ZERO),
+        }
+    }
+
+    pub(crate) fn swap_remove(&mut self, cell: usize) {
+        match self {
+            Squares::Narrow(sums) => sums.swap_remove(cell),
+            Squares::Wide(column) => drop(column.swap_remove(cell)),
+        }
+    }
+
+    fn widen(&mut self) {
+        let Squares::Narrow(sums) = self else {
+            return;
+        };
+        let mut column = Vec::with_capacity(sums.len());
+        for sum in sums.iter() {
+            column.push(wrapped(sum));
+        }
+        *self = Squares::Wide(column);
+    }
+}
+
+/// `square` as an `i128`, if it fits one.
+fn narrow(square: U256) -> Option<i128> {
+    i128::try_from(square.to_u128()?).ok()
+}
+
+/// `sum` modulo 2^256. A sum of squares is below zero only for a cell
+/// whose rows went out without coming in; wrapping keeps it exact once
+/// they do.
+fn wrapped(sum: i128) -> U256 {
+    let magnitude = U256::from(sum.unsigned_abs());
+    if sum < 0 {
+        U256::ZERO.wrapping_sub(magnitude)
+    } else {
+        magnitude
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +771,55 @@ mod tests {
                     assert!(sums_of(&list).iter().eq(list.iter().copied()), "{at}");
                 }
             }
+        }
+    }
+
+    /// Sums of squares follow a list kept modulo 2^256, through adds
+    /// and takes small and past an `i128`, a cell taken below zero, and
+    /// cells pushed and dropped before and after the column widens.
+    #[test]
+    fn squares_follow_a_list_past_an_i128() {
+        for seed in 0..4 {
+            let mut rng = Rng::new(seed);
+            let mut squares = Squares::new();
+            let mut list: Vec<U256> = Vec::new();
+            for step in 0..2_000 {
+                let at = format!("seed {seed}, step {step}");
+                match (rng.below(10), list.len()) {
+                    (0..=1, _) | (_, 0) => {
+                        squares.push();
+                        list.push(U256::ZERO);
+                    }
+                    (2, length) => {
+                        let cell = rng.position_below(length);
+                        squares.swap_remove(cell);
+                        list.swap_remove(cell);
+                    }
+                    (draw, length) => {
+                        let cell = rng.position_below(length);
+                        // Mostly small, now and then the square of a value
+                        // near the ends of bigint, which passes an i128.
+                        let root = if rng.below(40) == 0 {
+                            u128::from(rng.next() | 1 << 63)
+                        } else {
+                            u128::from(rng.below(1_000))
+                        };
+                        let square = U256::product(root, root);
+                        if draw < 7 {
+                            squares.add(cell, square);
+                            list[cell] = list[cell].wrapping_add(square);
+                        } else {
+                            squares.sub(cell, square);
+                            list[cell] = list[cell].wrapping_sub(square);
+                        }
+                    }
+                }
+                assert_eq!(squares.len(), list.len(), "{at}");
+                for (cell, &expected) in list.iter().enumerate() {
+                    assert_eq!(squares.get(cell), expected, "{at}, cell {cell}");
+                }
+            }
+            assert!(matches!(squares, Squares::Wide(_)), "seed {seed} widened");
         }
     }
 

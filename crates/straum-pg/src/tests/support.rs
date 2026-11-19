@@ -16,7 +16,7 @@ use std::time::Duration;
 use straum_app::{App, Limits, Lsn, Source, Step, Writer};
 use straum_domain::{
     Ask, AskKey, Comparison, Condition, Datum, Identifier, Literal, MeasureCondition, Spec, Store,
-    Value, decimal, format_date, format_uuid,
+    Value, decimal, format_date, format_uuid, push_wide_decimal,
 };
 
 use crate::dsn::Dsn;
@@ -383,6 +383,11 @@ pub(super) fn text(value: &Value, scale: u32) -> Option<String> {
     match *value {
         Value::Null => None,
         Value::Int(number) => Some(decimal(number, scale)),
+        Value::Wide(units) => {
+            let mut printed = String::new();
+            push_wide_decimal(&mut printed, units, scale);
+            Some(printed)
+        }
         Value::Bool(flag) => Some(boolean(flag)),
         // As `round(avg(c), 6)`: half away from zero.
         Value::Avg { sum, count } => {

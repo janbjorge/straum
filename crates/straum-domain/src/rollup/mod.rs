@@ -172,6 +172,31 @@ fn coded(columns: &[Identifier], parts: &[KeyPart<'_>]) -> Vec<Coded> {
     coded
 }
 
+/// `inputs` without a `Sum` whose column has a `Spread`: the spread keeps
+/// the sum and count too, so sum and avg read it instead.
+fn shared(inputs: &[Input]) -> Vec<Input> {
+    let mut kept = Vec::with_capacity(inputs.len());
+    for &input in inputs {
+        if input.kind == StateKind::Sum && inputs.contains(&spread_beside(input)) {
+            continue;
+        }
+        kept.push(input);
+    }
+    kept
+}
+
+/// The `Spread` input that serves a `Sum` input's column as well; for any
+/// other kind, the input itself.
+fn spread_beside(input: Input) -> Input {
+    match input.kind {
+        StateKind::Sum => Input {
+            kind: StateKind::Spread,
+            column: input.column,
+        },
+        _ => input,
+    }
+}
+
 fn position_of(columns: &[Identifier], name: &Identifier) -> ColumnIndex {
     for (position, column) in columns.iter().enumerate() {
         if column == name {
@@ -221,6 +246,7 @@ impl Rollup {
                 inputs.push(input);
             }
         }
+        let inputs = shared(&inputs);
         let mut levels = Vec::with_capacity(1 + fact.time.wider.len());
         levels.push(Level {
             width: i64::from(fact.time.width.seconds),
@@ -318,7 +344,7 @@ impl Rollup {
     pub(crate) fn scale_of(&self, aggregate: &Aggregate) -> u32 {
         match (aggregate.reads(), aggregate.input()) {
             (Some(Reads::Numbers), Some(column)) => {
-                self.types[self.column(column).expect(COLUMNS).0].scale()
+                aggregate.answer_scale(self.types[self.column(column).expect(COLUMNS).0].scale())
             }
             _ => 0,
         }
@@ -513,7 +539,7 @@ impl Rollup {
         let column = self.column(aggregate.input()?)?;
         let wanted = Input { kind, column };
         for (position, input) in self.inputs.iter().enumerate() {
-            if *input == wanted {
+            if *input == wanted || *input == spread_beside(wanted) {
                 return Some(InputIndex(position));
             }
         }

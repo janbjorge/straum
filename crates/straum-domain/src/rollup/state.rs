@@ -5,9 +5,10 @@
 //! between keyed and bound cells.
 
 use crate::aggregate::Reads;
-use crate::column::{Counts, Sums, put};
+use crate::column::{Counts, Squares, Sums, put};
 use crate::value::Datum;
 use crate::value_counts::ValueCounts;
+use crate::wide::U256;
 
 use super::distinct::DistinctCells;
 use super::row_error::RowError;
@@ -18,6 +19,8 @@ use super::row_error::RowError;
 pub(crate) enum StateKind {
     Count,
     Sum,
+    /// A sum with a sum of squares beside it, for a variance.
+    Spread,
     Extent,
     Distinct,
     Bools,
@@ -29,7 +32,7 @@ impl StateKind {
     pub(crate) fn reads(self) -> Reads {
         match self {
             StateKind::Count => Reads::Nullness,
-            StateKind::Sum | StateKind::Extent => Reads::Numbers,
+            StateKind::Sum | StateKind::Spread | StateKind::Extent => Reads::Numbers,
             StateKind::Distinct => Reads::Values,
             StateKind::Bools => Reads::Booleans,
         }
@@ -42,8 +45,13 @@ pub(crate) enum State {
     /// The nulls among each cell's rows: its count is the rows that are
     /// not. Most columns hold none, and then this holds nothing.
     Count { nulls: Counts },
-    /// Each cell's sum, and the nulls among its rows as for a count.
-    Sum { sums: Sums, nulls: Counts },
+    /// Each cell's sum, and the nulls among its rows as for a count. With
+    /// a variance on the column, each cell's sum of squares too.
+    Sum {
+        sums: Sums,
+        nulls: Counts,
+        squares: Option<Squares>,
+    },
     /// Count per value, so removing the min or max reveals the next one.
     /// `mins` and `maxs` mirror each cell's ends, so an ask reads them
     /// without walking a tree. An empty cell's are `i64::MAX` and
@@ -79,6 +87,12 @@ impl State {
             StateKind::Sum => State::Sum {
                 sums: Sums::new(),
                 nulls: Counts::Zero(0),
+                squares: None,
+            },
+            StateKind::Spread => State::Sum {
+                sums: Sums::new(),
+                nulls: Counts::Zero(0),
+                squares: Some(Squares::new()),
             },
             StateKind::Extent => State::Extent {
                 mins: Vec::new(),
@@ -97,9 +111,16 @@ impl State {
     pub(super) fn push(&mut self) {
         match self {
             State::Count { nulls } => nulls.push(),
-            State::Sum { sums, nulls } => {
+            State::Sum {
+                sums,
+                nulls,
+                squares,
+            } => {
                 sums.push();
                 nulls.push();
+                if let Some(squares) = squares {
+                    squares.push();
+                }
             }
             State::Extent { mins, maxs, counts } => {
                 put(mins, i64::MAX);
@@ -118,9 +139,16 @@ impl State {
     pub(super) fn swap_remove(&mut self, cell: usize) {
         match self {
             State::Count { nulls } => nulls.swap_remove(cell),
-            State::Sum { sums, nulls } => {
+            State::Sum {
+                sums,
+                nulls,
+                squares,
+            } => {
                 sums.swap_remove(cell);
                 nulls.swap_remove(cell);
+                if let Some(squares) = squares {
+                    squares.swap_remove(cell);
+                }
             }
             State::Extent { mins, maxs, counts } => {
                 mins.swap_remove(cell);
@@ -141,7 +169,12 @@ impl State {
         match (self, value) {
             (State::Count { nulls } | State::Sum { nulls, .. }, Datum::Null) => nulls.add(cell, 1),
             (_, Datum::Null) | (State::Count { .. }, _) => {}
-            (State::Sum { sums, .. }, &Datum::Int(number)) => sums.add(cell, number.into()),
+            (State::Sum { sums, squares, .. }, &Datum::Int(number)) => {
+                sums.add(cell, number.into());
+                if let Some(squares) = squares {
+                    squares.add(cell, square(number));
+                }
+            }
             (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
                 mins[cell] = mins[cell].min(number);
                 maxs[cell] = maxs[cell].max(number);
@@ -164,9 +197,19 @@ impl State {
             (_, Datum::Null) => {}
             // A value that is not null leaves only a cell that holds one.
             (State::Count { nulls }, _) => held(nulls.get(cell) < rows)?,
-            (State::Sum { sums, nulls }, &Datum::Int(number)) => {
+            (
+                State::Sum {
+                    sums,
+                    nulls,
+                    squares,
+                },
+                &Datum::Int(number),
+            ) => {
                 held(nulls.get(cell) < rows)?;
                 sums.add(cell, -i128::from(number));
+                if let Some(squares) = squares {
+                    squares.sub(cell, square(number));
+                }
             }
             (State::Extent { mins, maxs, counts }, &Datum::Int(number)) => {
                 held(counts[cell].sub(number, 1))?;
@@ -193,7 +236,20 @@ impl State {
         matches!(
             (self, other),
             (State::Count { .. }, State::Count { .. })
-                | (State::Sum { .. }, State::Sum { .. })
+                | (
+                    State::Sum { squares: None, .. },
+                    State::Sum { squares: None, .. }
+                )
+                | (
+                    State::Sum {
+                        squares: Some(_),
+                        ..
+                    },
+                    State::Sum {
+                        squares: Some(_),
+                        ..
+                    }
+                )
                 | (State::Extent { .. }, State::Extent { .. })
                 | (State::Distinct(_), State::Distinct(_))
                 | (State::Bools { .. }, State::Bools { .. })
@@ -260,14 +316,22 @@ impl State {
                 nulls.add(cell, source_nulls.get(source_cell));
             }
             (
-                State::Sum { sums, nulls },
+                State::Sum {
+                    sums,
+                    nulls,
+                    squares,
+                },
                 State::Sum {
                     sums: source_sums,
                     nulls: source_nulls,
+                    squares: source_squares,
                 },
             ) => {
                 sums.add(cell, source_sums.get(source_cell));
                 nulls.add(cell, source_nulls.get(source_cell));
+                if let (Some(squares), Some(source_squares)) = (squares, source_squares) {
+                    squares.add(cell, source_squares.get(source_cell));
+                }
             }
             (
                 State::Extent { mins, maxs, counts },
@@ -310,14 +374,22 @@ impl State {
                 nulls.sub(cell, source_nulls.get(source_cell));
             }
             (
-                State::Sum { sums, nulls },
+                State::Sum {
+                    sums,
+                    nulls,
+                    squares,
+                },
                 State::Sum {
                     sums: source_sums,
                     nulls: source_nulls,
+                    squares: source_squares,
                 },
             ) => {
                 sums.add(cell, -source_sums.get(source_cell));
                 nulls.sub(cell, source_nulls.get(source_cell));
+                if let (Some(squares), Some(source_squares)) = (squares, source_squares) {
+                    squares.sub(cell, source_squares.get(source_cell));
+                }
             }
             (
                 State::Extent { mins, maxs, counts },
@@ -347,6 +419,12 @@ impl State {
             _ => unreachable!("Cells::release checks the column kinds"),
         }
     }
+}
+
+/// `number` squared, below 2^126 for any `i64`.
+fn square(number: i64) -> U256 {
+    let magnitude = u128::from(number.unsigned_abs());
+    U256::from(magnitude * magnitude)
 }
 
 fn held(present: bool) -> Result<(), RowError> {

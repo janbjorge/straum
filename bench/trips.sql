@@ -11,6 +11,8 @@ SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
        count(*) AS trips,
        sum(trips.fare_amount) AS fare,
        avg(trips.fare_amount) AS avg_fare,
+       var_samp(trips.fare_amount) AS fare_variance,
+       stddev_samp(trips.fare_amount) AS fare_deviation,
        percentile_disc(0.5) WITHIN GROUP (ORDER BY trips.fare_amount) AS median_fare,
        percentile_disc(0.99) WITHIN GROUP (ORDER BY trips.fare_amount) AS p99_fare
 FROM public.yellow_trips AS trips

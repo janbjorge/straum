@@ -25,7 +25,11 @@ SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
        count(*) FILTER (WHERE pickup.borough = 'Manhattan') AS manhattan,
        count(*) FILTER (WHERE f.zone_id IN (1, 2)) AS near,
        percentile_disc(0.5) WITHIN GROUP (ORDER BY f.fare) AS fare_median,
-       percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip) AS tip_p90
+       percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip) AS tip_p90,
+       var_samp(f.fare) AS fare_var,
+       stddev_pop(f.fare) AS fare_sd_pop,
+       var_pop(f.tip) AS tip_var_pop,
+       stddev_samp(f.tip) AS tip_sd
 FROM $S.trips AS f
 LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
@@ -138,35 +142,28 @@ pub(super) struct Reference {
 /// hours at either end, against the raw rows. `fare_scale` follows `fare`'s
 /// type.
 pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
-    const MEASURES: [&str; 11] = [
-        "trips",
-        "fare",
-        "fare_max",
-        "fare_avg",
-        "riders",
-        "named",
-        "tips",
-        "manhattan",
-        "near",
-        "fare_median",
-        "tip_p90",
-    ];
+    let spreads = SpreadScales::of(fare_scale);
     let trips = Reference {
         sql: format!(
             "SELECT extract(epoch FROM bucket)::int8, kind, zone_id, borough, trips, fare,
                     fare_max, round(fare_avg, 6), riders, named, tips, manhattan, near,
-                    fare_median, tip_p90
+                    fare_median, tip_p90, {}
                FROM ({}) v",
+            spreads.sql(["fare_var", "fare_sd_pop", "tip_var_pop", "tip_sd"]),
             body(SPEC, "trips")
         ),
         ask: ask(
             "trips",
-            &MEASURES,
+            &TAXI_MEASURES,
             &["bucket", "kind", "zone_id", "borough"],
         ),
-        scales: vec![
-            0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
-        ],
+        scales: [
+            &[
+                0, 0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
+            ][..],
+            &spreads.scales(),
+        ]
+        .concat(),
     };
     let logins = Reference {
         sql: format!(
@@ -176,24 +173,112 @@ pub(super) fn taxi_oracles(fare_scale: u32) -> Vec<Reference> {
         ask: ask("logins", &["logins"], &["bucket", "zone_id", "toll"]),
         scales: vec![0, 0, 1, 0],
     };
-    let window = Reference {
+    vec![
+        trips,
+        logins,
+        window(&spreads, fare_scale),
+        kept_by_having(fare_scale),
+    ]
+}
+
+/// Every measure of the taxi spec's trips view.
+const TAXI_MEASURES: [&str; 15] = [
+    "trips",
+    "fare",
+    "fare_max",
+    "fare_avg",
+    "riders",
+    "named",
+    "tips",
+    "manhattan",
+    "near",
+    "fare_median",
+    "tip_p90",
+    "fare_var",
+    "fare_sd_pop",
+    "tip_var_pop",
+    "tip_sd",
+];
+
+/// Trips without the bucket over the window, against the raw rows.
+fn window(spreads: &SpreadScales, fare_scale: u32) -> Reference {
+    Reference {
         sql: format!(
             "SELECT f.kind, f.zone_id, pickup.borough, count(*), sum(f.fare), max(f.fare),
                     round(avg(f.fare), 6), count(DISTINCT f.rider), count(f.rider), sum(f.tip),
                     count(*) FILTER (WHERE pickup.borough = 'Manhattan'),
                     count(*) FILTER (WHERE f.zone_id IN (1, 2)),
                     percentile_disc(0.5) WITHIN GROUP (ORDER BY f.fare),
-                    percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip)
+                    percentile_disc(0.9) WITHIN GROUP (ORDER BY f.tip), {}
                FROM $S.trips f LEFT JOIN $S.zones pickup ON pickup.id = f.zone_id
               WHERE f.at >= to_timestamp({WINDOW_FROM}) AND f.at < to_timestamp({WINDOW_TO})
-              GROUP BY 1, 2, 3"
+              GROUP BY 1, 2, 3",
+            spreads.sql([
+                "var_samp(f.fare)",
+                "stddev_pop(f.fare)",
+                "var_pop(f.tip)",
+                "stddev_samp(f.tip)"
+            ])
         ),
-        ask: in_window(ask("trips", &MEASURES, &["kind", "zone_id", "borough"])),
-        scales: vec![
-            0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
-        ],
-    };
-    vec![trips, logins, window, kept_by_having(fare_scale)]
+        ask: in_window(ask(
+            "trips",
+            &TAXI_MEASURES,
+            &["kind", "zone_id", "borough"],
+        )),
+        scales: [
+            &[
+                0, 0, 0, 0, fare_scale, fare_scale, fare_scale, 0, 0, 0, 0, 0, fare_scale, 0,
+            ][..],
+            &spreads.scales(),
+        ]
+        .concat(),
+    }
+}
+
+/// The scales of the taxi spec's variance and deviation of the fare and
+/// of the tip, an integer: a variance is in its column's units squared,
+/// and both keep four places past.
+struct SpreadScales {
+    fare_variance: u32,
+    fare_deviation: u32,
+}
+
+impl SpreadScales {
+    fn of(fare_scale: u32) -> SpreadScales {
+        SpreadScales {
+            fare_variance: 2 * fare_scale + 4,
+            fare_deviation: fare_scale + 4,
+        }
+    }
+
+    /// The fare's variance and deviation, then the tip's.
+    fn scales(&self) -> [u32; 4] {
+        [self.fare_variance, self.fare_deviation, 4, 4]
+    }
+
+    /// The four columns `expressions` names, in that order, each rounded
+    /// as Straum rounds it.
+    fn sql(&self, expressions: [&str; 4]) -> String {
+        let mut columns = Vec::with_capacity(4);
+        for (expression, places) in expressions.into_iter().zip(self.scales()) {
+            columns.push(even(expression, places));
+        }
+        columns.join(", ")
+    }
+}
+
+/// `expression` rounded half to even at `places`, as Straum rounds a
+/// variance or deviation. PostgreSQL's `round` takes a half away from
+/// zero, so a tie, a value whose last digit past `places` is a 5 with
+/// only zeros after, is taken to the even neighbour here. The values are
+/// never below zero.
+fn even(expression: &str, places: u32) -> String {
+    format!(
+        "CASE WHEN ({expression}) * 10 ^ {places}::numeric % 1 = 0.5
+                   AND trunc(({expression}) * 10 ^ {places}::numeric) % 2 = 0
+              THEN trunc({expression}, {places})
+              ELSE round({expression}, {places}) END"
+    )
 }
 
 /// The window's groups PostgreSQL's HAVING keeps: fares run from 0 to

@@ -112,6 +112,16 @@ ASKS = [
         ALL_TIME,
     ),
     (
+        "Fare spread by payment type",
+        """SELECT payment_type, var_samp(fare_amount), stddev_samp(fare_amount)
+             FROM yellow_trips
+            GROUP BY payment_type""",
+        """SELECT payment_type, fare_variance, fare_deviation FROM trips
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY payment_type""",
+        ALL_TIME,
+    ),
+    (
         "Median fare",
         "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY fare_amount) FROM yellow_trips",
         "SELECT median_fare FROM trips WHERE bucket >= $1 AND bucket < $2",
@@ -576,7 +586,8 @@ async def check(
 
 def scales(rows: list[list]) -> list[decimal.Decimal | None]:
     """Per column, the finest place Straum's decimals reach: a sum keeps
-    its column's scale, an avg four places more."""
+    its column's scale, an avg and a standard deviation four places more,
+    a variance four past twice its column's."""
     finest: list[decimal.Decimal | None] = [None] * (len(rows[0]) if rows else 0)
     for row in rows:
         for column, value in enumerate(row):
@@ -590,7 +601,8 @@ def scales(rows: list[list]) -> list[decimal.Decimal | None]:
 
 def plain(row: list, places: list[decimal.Decimal | None]) -> tuple:
     """The row in one form for both sides. A decimal is exact on both,
-    PostgreSQL's avg rounded half to even at the place Straum's has; a
+    PostgreSQL's avg, variance and standard deviation rounded half to even
+    at the place Straum's has; a
     bucket comes from Straum as RFC 3339 text."""
     values = []
     for column, value in enumerate(row):

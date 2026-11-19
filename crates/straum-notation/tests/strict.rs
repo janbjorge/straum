@@ -380,6 +380,21 @@ fn one_measure_spelling() {
         ),
         (
             "count(*) AS orders",
+            "variance(orders.id) AS orders",
+            "variance, write var_samp, `variance(orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
+            "stddev(orders.id) AS orders",
+            "stddev, write stddev_samp, `stddev(orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
+            "var_samp(DISTINCT orders.id) AS orders",
+            "DISTINCT outside count `var_samp(DISTINCT orders.id)`",
+        ),
+        (
+            "count(*) AS orders",
             "bool_or(DISTINCT orders.id) AS orders",
             "DISTINCT outside count `bool_or(DISTINCT orders.id)`",
         ),

@@ -41,7 +41,9 @@ An answer is `{"as_of", "rows"}`, each row keyed by its `SELECT`
 names. `as_of` is when the slot last confirmed all WAL the server had
 written (ADR-0009): every commit before it is in the answer. The LSN
 goes in a `Straum-LSN` header. avg rounds half to even four places past
-its column's scale, trailing zeros dropped, in `straum-http`.
+its column's scale, trailing zeros dropped, in `straum-http`. A
+variance or standard deviation rounds half to even in `straum-domain`,
+four places past its answer's scale (ADR-0003), and prints every place.
 
 Every ask in `bench/taxi.py` answers in under 1 ms, HTTP round trip
 included, on the machine `docs/src/performance.md` names. An aggregate

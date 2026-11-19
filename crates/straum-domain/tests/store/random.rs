@@ -292,7 +292,9 @@ fn random_having(rng: &mut Rng, fact: &Fact, measure: Identifier) -> MeasureCond
         Comparison::Greater,
         Comparison::GreaterOrEqual,
     ]);
-    let scale = measure_scale(aggregate);
+    // A variance's scale, twice its column's, can pass what a value may
+    // be written in.
+    let scale = measure_scale(aggregate).min(MOST_PLACES - 1);
     let value = match rng.below(4) {
         0 => Literal::Int(rng.int(-2, 12)),
         // Past an i128 at the measure's scale.
@@ -313,6 +315,9 @@ fn random_having(rng: &mut Rng, fact: &Fact, measure: Identifier) -> MeasureCond
     }
 }
 
+/// The most digits after the point a HAVING value may have.
+const MOST_PLACES: u32 = 38;
+
 /// Sets half the number values of `ask`'s HAVING to what a group of
 /// `answer`, the ask without HAVING, holds, so a boundary is met exactly:
 /// `>` and `>=` part there. An average that is no whole number of its
@@ -331,6 +336,9 @@ pub(crate) fn meet_a_group(rng: &mut Rng, ask: &mut Ask, answer: &Answer) {
             position += 1;
         }
         let scale = answer.columns[key_count + position].scale;
+        if scale > MOST_PLACES {
+            continue;
+        }
         let row = rng.pick(&answer.rows);
         let units = match row.values[position] {
             Value::Int(units) => units,

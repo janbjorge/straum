@@ -40,7 +40,7 @@ use jiff::Timestamp;
 use straum_app::Answered;
 use straum_domain::{
     AnswerColumn, AnswerRow, Ask, Cut, Datum, Value, decimal, format_date, format_uuid,
-    push_decimal,
+    push_decimal, push_wide_decimal,
 };
 
 use crate::json::quoted;
@@ -320,7 +320,7 @@ fn escaped(text: &str) -> String {
 
 fn value_cell(column: &AnswerColumn, value: &Value) -> Cell {
     let align = match value {
-        Value::Int(_) | Value::Avg { .. } => Align::Right,
+        Value::Int(_) | Value::Avg { .. } | Value::Wide(_) => Align::Right,
         Value::Null | Value::Bool(_) => Align::Left,
     };
     Cell {
@@ -402,6 +402,7 @@ fn push_value_json(out: &mut String, value: &Value, scale: u32) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Int(integer) => push_decimal(out, *integer, scale),
+        Value::Wide(units) => push_wide_decimal(out, *units, scale),
         Value::Bool(true) => out.push_str("true"),
         Value::Bool(false) => out.push_str("false"),
         Value::Avg { sum, count } => {
@@ -444,7 +445,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use straum_app::Lsn;
-    use straum_domain::{Answer, Start, Window};
+    use straum_domain::{Answer, Start, U256, Window};
 
     use super::*;
 
@@ -470,6 +471,7 @@ mod tests {
             (Value::Avg { sum: 15, count: 4 }, 1),
             (Value::Bool(true), 0),
             (Value::Bool(false), 0),
+            (Value::Wide(U256::product(10u128.pow(38), 10)), 8),
         ] {
             out.push_str(&value_json(&value, scale));
             out.push(' ');
@@ -477,7 +479,8 @@ mod tests {
         assert_eq!(
             out,
             "null true false -1.5 \"a\\\"b\" \"2024-01-15\" \"infinity\" \
-             \"abababab-abab-abab-abab-abababababab\" null 0.07 0.375 true false "
+             \"abababab-abab-abab-abab-abababababab\" null 0.07 0.375 true false \
+             10000000000000000000000000000000.00000000 "
         );
     }
 

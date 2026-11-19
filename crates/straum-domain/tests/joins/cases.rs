@@ -149,8 +149,11 @@ fn inner_keeps_matched_rows_and_left_keeps_all() {
     check(&loaded, kinds, &orders, &by_tag);
 }
 
-/// Every measure of one order of quantity 5, counted `rows` times.
+/// Every measure of one order of quantity 5, counted `rows` times. The
+/// copies are alike, so they spread by nothing; a sample of one has no
+/// variance.
 fn every_measure_of_five(rows: i128) -> Vec<Value> {
+    let variance = if rows > 1 { Value::Int(0) } else { Value::Null };
     vec![
         Value::Int(rows),
         Value::Int(5 * rows),
@@ -161,6 +164,8 @@ fn every_measure_of_five(rows: i128) -> Vec<Value> {
         Value::Int(rows),
         Value::Bool(false),
         Value::Bool(false),
+        variance,
+        Value::Int(0),
     ]
 }
 
