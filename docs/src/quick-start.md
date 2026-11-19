@@ -24,7 +24,8 @@ The file starts PostgreSQL. A load service waits until it answers,
 fetches the month, loads it, runs the setup, and exits. Its container
 stays on Waiting while it fetches the month. Straum starts once that
 service has exited, and is healthy once it can answer. The shell
-service waits for that, `service_healthy`, then takes the terminal:
+service waits for that condition, `service_healthy`, then takes the
+terminal:
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
