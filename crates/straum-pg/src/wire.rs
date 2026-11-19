@@ -38,6 +38,19 @@ pub(crate) enum ConnectionKind {
     Replication,
 }
 
+/// How far a sign-in has come. Only `SignedIn` may end it: without TLS,
+/// a server that skips `AuthenticationOk` or the SCRAM proof may be anyone
+/// between Straum and PostgreSQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignIn {
+    Waiting,
+    /// Straum sent its SCRAM first message; the server owes its proof.
+    ScramBegun,
+    /// The server proved, in SASL final, that it knows the password.
+    ScramProven,
+    SignedIn,
+}
+
 /// An open, signed-in connection to PostgreSQL.
 pub(crate) struct Connection {
     socket: Socket,
@@ -157,16 +170,14 @@ impl Connection {
 
     fn authenticate(&mut self, dsn: &Dsn) -> Result<(), Error> {
         let mut scram: Option<ScramSha256> = None;
-        // The server's proof, in SASL final. Without TLS, a server that
-        // skips it may be anyone between Straum and PostgreSQL.
-        let mut proven = false;
+        let mut sign_in = SignIn::Waiting;
         loop {
             match self.read()? {
-                Message::AuthenticationOk if scram.is_some() && !proven => {
+                Message::AuthenticationOk if sign_in == SignIn::ScramBegun => {
                     return Err(Error::Protocol(Unexpected::ScramUnproven));
                 }
-                Message::AuthenticationOk
-                | Message::ParameterStatus(_)
+                Message::AuthenticationOk => sign_in = SignIn::SignedIn,
+                Message::ParameterStatus(_)
                 | Message::BackendKeyData(_)
                 | Message::NoticeResponse(_) => {}
                 Message::AuthenticationSasl(body) => {
@@ -186,6 +197,7 @@ impl Connection {
                     )?;
                     self.flush()?;
                     scram = Some(state);
+                    sign_in = SignIn::ScramBegun;
                 }
                 Message::AuthenticationSaslContinue(body) => {
                     let Some(state) = scram.as_mut() else {
@@ -200,9 +212,12 @@ impl Connection {
                         return Err(Error::Protocol(Unexpected::SaslFinal));
                     };
                     state.finish(body.data())?;
-                    proven = true;
+                    sign_in = SignIn::ScramProven;
                 }
-                Message::ReadyForQuery(_) => return Ok(()),
+                Message::ReadyForQuery(_) if sign_in == SignIn::SignedIn => return Ok(()),
+                Message::ReadyForQuery(_) => {
+                    return Err(Error::Protocol(Unexpected::ReadyBeforeSignIn));
+                }
                 Message::ErrorResponse(body) => return Err(server_error(&body)),
                 _ => {
                     return Err(Error::Protocol(Unexpected::AuthenticationRequest));

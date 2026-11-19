@@ -167,6 +167,20 @@ fn sign_in_errors() {
         error.err().unwrap().to_string(),
         "PostgreSQL sent AuthenticationOk before its SCRAM proof that it knows the password"
     );
+    // Ready with no AuthenticationOk at all: after a SCRAM exchange begun,
+    // or with no sign-in, Straum refuses. The honest exchange signs in to
+    // the real server in `connection_errors`.
+    let mut skipped = sasl("SCRAM-SHA-256\0\0");
+    skipped.extend(message(b'Z', b"I"));
+    for reply in [skipped, message(b'Z', b"I")] {
+        let server = scripted(vec![now(reply)]);
+        let dsn = server.dsn.to_string().replace("straum@", "straum:secret@");
+        let error = Connection::connect(&Dsn::parse(&dsn).unwrap(), ConnectionKind::Sql);
+        assert_eq!(
+            error.err().unwrap().to_string(),
+            "PostgreSQL sent ReadyForQuery before AuthenticationOk"
+        );
+    }
     // Notices and parameters along the way are fine.
     let mut chatty = message(b'N', b"SNOTICE\0Mhello\0\0");
     chatty.extend(message(b'S', b"TimeZone\0UTC\0"));
