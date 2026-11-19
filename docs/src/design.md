@@ -94,13 +94,14 @@ the port that loads the store and then streams.
 4. Read the server's WAL once; start the **Lag** from when the slot
    was opened.
 5. Take the write lock, swap the store in at L, then set
-   **Following** at L in the progress. Straum is ready. The stream thread starts at the
-   first `next_commit`: it reads the stream, answers the server's
-   keepalives and confirms what the writer has applied, so the server
-   can recycle WAL.
+   **Following** at L in the progress. Straum is ready. The stream
+   thread starts at the first `next_commit`: it reads the stream,
+   answers the server's keepalives and confirms what the writer has
+   applied, so the server can recycle WAL.
 
-Any error is a **Failure**, and Straum exits. The load fills a new store outside the lock, so asks never wait on
-PostgreSQL; they answer 503 until step 5.
+Any error is a **Failure**, and Straum exits. The load fills a new
+store outside the lock, so asks never wait on PostgreSQL; they answer
+503 until step 5.
 
 With `--wal physical`, step 2 differs (ADR-0008);
 [The physical stream](how-it-works.md#the-physical-stream) says why:
@@ -252,9 +253,10 @@ and `straum ask` print what the server wrote, as `straum status` does.
 every measure by the bucket and every key over the buckets the view
 holds, through the same steps as any ask (`App::ask_window`). The
 store builds only the rows of the window asked for, at most 1000,
-though it still merges every cell into its group. `GET /views/NAME/spec` replies with the view's
-`CREATE VIEW` statement, which `straum run` cut from the spec's text
-at start (`straum_notation::definitions`); the store never sees it.
+though it still merges every cell into its group.
+`GET /views/NAME/spec` replies with the view's `CREATE VIEW`
+statement, which `straum run` cut from the spec's text at start
+(`straum_notation::definitions`); the store never sees it.
 `straum shell` is a client of these endpoints: it
 reads the views as JSON to complete names, prints an answer's
 `Server-Timing` under it beside the time it measured itself, and knows
@@ -399,9 +401,9 @@ makes a property test fail.
     of them no key: any other fact's would be as many as its keyed
     cells (`Bound::new`). A dim change moves the ones that
     name its key (`Store::retarget`), one walk for an update that keeps
-    the key, none for a key the via parts never coded, and a dim truncate or load makes
-    them again (`Store::rebuild_dim`). An ask reads them whenever the
-    fact keeps them (`Store::reading`).
+    the key, none for a key the via parts never coded, and a dim
+    truncate or load makes them again (`Store::rebuild_dim`). An ask
+    reads them whenever the fact keeps them (`Store::reading`).
 11. **Lag never understates.** Readings merge only toward older
     (`Lag::read`); `matches_every_reading_kept` checks it against a
     reference that keeps every reading.

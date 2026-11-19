@@ -16,8 +16,9 @@ was one block printed on every argument error.
 
 A DSN never comes from an argument. `straum plan` and `straum run`
 read `STRAUM_DSN` or `--dsn-file`. When neither is set, they read
-libpq's variables, `PGHOST` and the rest. A set `STRAUM_DSN` wins. Arguments are read by hand, as getopt reads
-long options: a flag takes the next word or the text after `=`.
+libpq's variables, `PGHOST` and the rest. A set `STRAUM_DSN` wins.
+Arguments are read by hand, as getopt reads long options: a flag takes
+the next word or the text after `=`.
 `straum plan` makes the DSN's user the role, with its password as a
 SCRAM-SHA-256 verifier; without a DSN it prints a setup for the
 default role `straum`.

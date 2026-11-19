@@ -22,10 +22,11 @@ write lock. Starting over inside the process, after a backoff of 1 s
 doubling to 60 s, was dropped on 2026-11-17: each failure left state to
 reset by hand, and every supervisor already restarts with a backoff of
 its own. A writer whose step failed takes no more steps, and `/status`
-dropped the starts, failures and last failure it kept across starts. `--max-transaction-rows` (100000) caps the changes a
-transaction may hold, a default measured by `bench/taxi.py
-transactions`. Past `--max-retained-wal` (4Gi) Straum stops too, since
-Azure fixes `max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
+dropped the starts, failures and last failure it kept across starts.
+`--max-transaction-rows` (100000) caps the changes a transaction may
+hold, a default measured by `bench/taxi.py transactions`. Past
+`--max-retained-wal` (4Gi) Straum stops too, since Azure fixes
+`max_slot_wal_keep_size` at `-1`. A value Straum can't read (`NaN`,
 an overflowing numeric, non-UTF-8 text) fails the load naming table
 and column.
 
