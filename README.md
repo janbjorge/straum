@@ -41,12 +41,15 @@ SELECT buckets(e.at, '1 hour', '1 day', '7 days') AS bucket,
        e.kind AS kind,
        e.account_id AS account_id,
        a.region AS region,
+       (e.device_id IS NOT NULL) AS has_device,
        count(*) AS events,
        sum(e.amount) AS amount,
-       avg(e.amount) AS avg_amount
+       avg(e.amount) AS avg_amount,
+       count(*) FILTER (WHERE e.kind = 'purchase') AS purchases,
+       count(*) FILTER (WHERE e.device_id IS NOT NULL) AS from_devices
 FROM public.events AS e
 LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
-GROUP BY 1, 2, 3, 4;
+GROUP BY 1, 2, 3, 4, 5;
 ```
 
 `straum plan` prints the SQL a table owner runs once; `straum run` loads
