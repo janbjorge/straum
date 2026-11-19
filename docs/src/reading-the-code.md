@@ -64,16 +64,16 @@ in its `Display`.
 
 **`?`: return the error.** `self.remove_row(table, old)?;` means: if
 that returned `Err`, return the same error from here; otherwise carry
-on with the value. Most functions read as a straight line of steps
-because of it.
+on with the value. It lets most functions read as a straight line of
+steps.
 
 **Errors kept in a list: `Reported`.** The Straum SQL walker in
 `straum-notation` reports the errors in a spec at once, the first 50
 and a count of the rest, so it pushes each one onto a list instead of
-returning it. A walk that failed returns `Err(Reported)`: an empty
-marker saying the error is already on the list. The caller stops
-there and adds nothing of its own. A plain `Option` is left for
-"there is none", which is no error.
+returning it. A walk that failed returns `Err(Reported)`, an empty
+marker saying the error is already on the list, and the caller stops
+there without adding its own. A plain `Option` stays for "there is
+none", which is no error.
 
 **`let ... else`: stop early.**
 
@@ -201,8 +201,8 @@ written in place or in a `tests.rs` beside the file; `tests/` beside
 
 **Type aliases.** `type TransactionId = u32;` gives `u32` a second
 name, so `xid: TransactionId` says what the number is. The two are the
-same type: the compiler doesn't stop a slot number going where an xid
-should, it only tells the reader.
+same type, so the compiler doesn't stop a slot number going where an
+xid should; the name only tells the reader.
 
 **Reading bytes.** The WAL code reads PostgreSQL's structs from raw
 bytes. A field's place is a named constant, often a range:
@@ -225,5 +225,5 @@ when they had to be changed, such as decompressed, owned
 measured, the code keeps a denser form and a comment names the
 benchmark. Everywhere else it is a plain `for` loop. `#[inline]` above
 a function is such a case: it asks the compiler to copy the function
-into each caller, which four functions an ask calls per cell need
+into each caller. Four functions an ask calls per cell need it
 (`Lookup::code` in `store/lookup.rs` names the benchmark).
