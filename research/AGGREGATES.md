@@ -418,10 +418,11 @@ takes.
 - Count distinct's memory (ADR-0003) is the same question as a
   percentile's. Measured 2026-11-19 on the taxi trips: the distinct
   fares took 101 MiB beside the counts `max` and the percentiles keep
-  on the same column, and count, sum and average of distinct fares by
-  payment type took 423.3 ms, a heap merge over every hourly cell.
-  Reading the `Extent` counts when the column has them, and gathering
-  as a percentile does (about 25 ms there), is unbuilt.
+  on the same column. Count, sum and average of distinct fares by
+  payment type took 423.3 ms as a heap merge over every hourly cell,
+  and 24.4 ms marking each fare in a set of bits (2026-11-19). Each of
+  the three measures still marks the fares anew, and reading the
+  `Extent` counts when the column has them is unbuilt.
 - `percentile_cont`: exact to PostgreSQL's bit, but a `double
   precision` answer. Add it, or keep `percentile_disc` as the median
   (§4.4).

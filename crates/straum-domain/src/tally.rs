@@ -3,9 +3,6 @@
 //! cell, read in place, merged in value order for several cells, and
 //! [`Tally`], how many there were and what they add up to.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-
 use crate::hash::{FastMap, FastSet};
 use crate::rollup::DistinctCells;
 use crate::value::Datum;
@@ -119,7 +116,7 @@ impl<'s> Numbers<'s> {
                 }
                 tally
             }
-            Numbers::Cells(cells) => distinct_in_order(cells),
+            Numbers::Cells(cells) => distinct_of_cells(cells),
         }
     }
 
@@ -158,50 +155,81 @@ impl<'s> Values<'s> {
     }
 }
 
-/// A cell's place among the cells a group met.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct MetIndex(usize);
+/// Bits a value set may spend per value counted in its cells before it
+/// sorts the values instead: at 64 a set of bits takes no more memory
+/// than a list of the values would.
+const BITS_PER_ENTRY: u128 = 64;
 
-/// The least value a cell has not yet given up, and the cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Head {
-    value: i64,
-    cell: MetIndex,
+/// The distinct values of several cells. Most columns hold values close
+/// together, a fare a few thousand cents from the next, so a set of bits
+/// from the least value to the greatest marks each value met; the set's
+/// ones are then counted and added. Values too far apart for that are
+/// listed, sorted and counted once each.
+// Benchmark: the distinct fares of the six taxi months for one payment
+// type, 1.4 million entries in 6,398 cells, took 96 ms merged in order
+// through a heap.
+fn distinct_of_cells(cells: &[&ValueCounts]) -> Tally {
+    let mut entries = 0;
+    let mut least = i64::MAX;
+    let mut greatest = i64::MIN;
+    for counts in cells {
+        let ends = counts.ends();
+        least = least.min(ends.least);
+        greatest = greatest.max(ends.greatest);
+        entries += counts.len();
+    }
+    if entries == 0 {
+        return Tally::default();
+    }
+    let span = u128::from(greatest.abs_diff(least)) + 1;
+    if span <= entries as u128 * BITS_PER_ENTRY {
+        return distinct_by_bits(cells, least, span);
+    }
+    distinct_by_sorting(cells, entries)
 }
 
-/// The distinct values of several cells, each read in value order: a
-/// merge takes the least value any cell has left, and counts and adds it
-/// when it differs from the last one taken. The heap holds one value per
-/// cell, never a set of all of them.
-// A heap rather than a scan of every cell for the least: a group may
-// meet thousands of cells, and the scan costs that many per value.
-fn distinct_in_order(cells: &[&ValueCounts]) -> Tally {
-    let mut entries = Vec::with_capacity(cells.len());
-    let mut heads = BinaryHeap::with_capacity(cells.len());
-    for (position, counts) in cells.iter().enumerate() {
-        let mut cell_entries = counts.iter();
-        if let Some(entry) = cell_entries.next() {
-            heads.push(Reverse(Head {
-                value: entry.value,
-                cell: MetIndex(position),
-            }));
+/// Bits in one word of a value set.
+const WORD_BITS: usize = u64::BITS as usize;
+
+/// [`distinct_of_cells`] over values that lie within `span` of `least`.
+fn distinct_by_bits(cells: &[&ValueCounts], least: i64, span: u128) -> Tally {
+    let words = usize::try_from(span.div_ceil(WORD_BITS as u128)).expect("span is bounded");
+    let mut bits = vec![0_u64; words];
+    for counts in cells {
+        for entry in counts.iter() {
+            let offset = usize::try_from(entry.value.abs_diff(least)).expect("within the span");
+            bits[offset / WORD_BITS] |= 1 << (offset % WORD_BITS);
         }
-        entries.push(cell_entries);
     }
     let mut tally = Tally::default();
-    let mut last = None;
-    while let Some(Reverse(head)) = heads.pop() {
-        if last != Some(head.value) {
+    for (word, &set) in bits.iter().enumerate() {
+        let mut left = set;
+        while left != 0 {
+            let offset = word * WORD_BITS + left.trailing_zeros() as usize;
             tally.count += 1;
-            tally.sum += i128::from(head.value);
-            last = Some(head.value);
+            tally.sum += i128::from(least) + offset as i128;
+            left &= left - 1;
         }
-        if let Some(entry) = entries[head.cell.0].next() {
-            heads.push(Reverse(Head {
-                value: entry.value,
-                cell: head.cell,
-            }));
+    }
+    tally
+}
+
+/// [`distinct_of_cells`] over values too far apart for a set of bits.
+fn distinct_by_sorting(cells: &[&ValueCounts], entries: usize) -> Tally {
+    let mut values = Vec::with_capacity(entries);
+    for counts in cells {
+        for entry in counts.iter() {
+            values.push(entry.value);
         }
+    }
+    values.sort_unstable();
+    values.dedup();
+    let mut tally = Tally {
+        count: values.len(),
+        sum: 0,
+    };
+    for value in values {
+        tally.sum += i128::from(value);
     }
     tally
 }

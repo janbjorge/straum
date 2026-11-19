@@ -140,10 +140,8 @@ error into another.
 
 **`#[derive(..)]`.** Asks the compiler to write the obvious functions:
 `Debug` to print for a developer, `Clone` to copy, `PartialEq` to
-compare. `PartialOrd` and `Ord` order a struct by its fields in turn,
-which a heap needs: the `BinaryHeap` of `distinct_in_order` in
-`aggregate.rs` hands out its greatest item first, and each item
-wrapped in `Reverse` makes that the least.
+compare. `PartialOrd` and `Ord` order a struct by its fields in turn:
+a `ValueCount` in `value_counts/` sorts by its value, then its count.
 
 **`impl Trait` in a parameter.** `input: impl BufRead` takes any type
 that can read lines, without naming it. `straum shell` passes the

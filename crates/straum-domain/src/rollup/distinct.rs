@@ -216,6 +216,9 @@ mod tests {
     const GROUPS: usize = 3;
     /// The one column given text as well as numbers.
     const MIXED: usize = 2;
+    /// How far apart a run's numbers lie: in one word of bits, across
+    /// several, and too far apart for bits, so sorted.
+    const SPACINGS: [i64; 3] = [1, 7, 1_000];
     /// Steps before the columns start over, so most hold numbers only.
     const STEPS: usize = 100;
 
@@ -231,10 +234,13 @@ mod tests {
     struct Followed {
         columns: Vec<State>,
         reference: Vec<Vec<BTreeMap<Datum, u64>>>,
+        /// How far apart the numbers lie: close, an ask marks them in a
+        /// set of bits; far, it sorts them.
+        spacing: i64,
     }
 
     impl Followed {
-        fn new() -> Followed {
+        fn new(spacing: i64) -> Followed {
             let mut columns = Vec::new();
             for _ in 0..COLUMNS {
                 let mut state = State::new(StateKind::Distinct);
@@ -246,6 +252,7 @@ mod tests {
             Followed {
                 columns,
                 reference: vec![vec![BTreeMap::new(); CELLS]; COLUMNS],
+                spacing,
             }
         }
     }
@@ -259,12 +266,12 @@ mod tests {
 
     /// A number, near enough to others to repeat; text in the mixed
     /// column now and then.
-    fn value(rng: &mut Rng, column: usize) -> Datum {
+    fn value(rng: &mut Rng, column: usize, spacing: i64) -> Datum {
         let number = i64::try_from(rng.below(40)).unwrap() - 10;
         if column == MIXED && rng.below(3) == 0 {
             return Datum::Text(number.to_string().into());
         }
-        Datum::Int(number * 1_000)
+        Datum::Int(number * spacing)
     }
 
     fn take_from(counts: &mut BTreeMap<Datum, u64>, value: &Datum, count: u64) {
@@ -301,7 +308,7 @@ mod tests {
 
     fn add(followed: &mut Followed, rng: &mut Rng) {
         let at = place(rng);
-        let datum = value(rng, at.column);
+        let datum = value(rng, at.column, followed.spacing);
         followed.columns[at.column].add(at.cell, &datum);
         *followed.reference[at.column][at.cell]
             .entry(datum)
@@ -310,7 +317,7 @@ mod tests {
 
     fn remove(followed: &mut Followed, rng: &mut Rng) {
         let at = place(rng);
-        let datum = value(rng, at.column);
+        let datum = value(rng, at.column, followed.spacing);
         let counts = &mut followed.reference[at.column][at.cell];
         let held = counts.contains_key(&datum);
         let removed = followed.columns[at.column].remove(at.cell, 1, &datum);
@@ -356,12 +363,16 @@ mod tests {
         cells.push(BTreeMap::new());
     }
 
-    /// Asks the distinct values of each group, the cells put in groups
-    /// at random, against a set of every value.
+    /// Asks the count and sum of the distinct values of each group, the
+    /// cells put in groups at random, against a set of every value.
     fn ask(followed: &Followed, rng: &mut Rng) {
-        let aggregate = Aggregate::CountDistinct(Identifier::new("x").unwrap());
-        let mut partials = Partials::new(&aggregate);
-        partials.grow(GROUPS);
+        let column_name = Identifier::new("x").unwrap();
+        let counted = Aggregate::CountDistinct(column_name.clone());
+        let summed = Aggregate::SumDistinct(column_name);
+        let mut counts = Partials::new(&counted);
+        let mut sums = Partials::new(&summed);
+        counts.grow(GROUPS);
+        sums.grow(GROUPS);
         let rows = Counts::Zero(CELLS);
         let mut expected = vec![BTreeSet::new(); GROUPS];
         for column in 0..COLUMNS {
@@ -371,12 +382,30 @@ mod tests {
                 groups.push(u32::try_from(group).unwrap());
                 expected[group].extend(followed.reference[column][cell].keys());
             }
-            partials.merge(&groups, &rows, Some(&followed.columns[column]));
+            counts.merge(&groups, &rows, Some(&followed.columns[column]));
+            sums.merge(&groups, &rows, Some(&followed.columns[column]));
         }
         for (group, values) in expected.iter().enumerate().skip(1) {
             let count = i128::try_from(values.len()).unwrap();
-            assert_eq!(partials.finish(group), Value::Int(count), "group {group}");
+            assert_eq!(counts.finish(group), Value::Int(count), "group {group}");
+            assert_eq!(sums.finish(group), sum_of(values), "group {group}");
         }
+    }
+
+    /// What `sum(DISTINCT x)` gives over `values`: the numbers added,
+    /// null with no value. A sum reads only columns of numbers, so the
+    /// text of the mixed column adds nothing.
+    fn sum_of(values: &BTreeSet<&Datum>) -> Value {
+        if values.is_empty() {
+            return Value::Null;
+        }
+        let mut sum = 0;
+        for value in values {
+            if let Datum::Int(number) = value {
+                sum += i128::from(*number);
+            }
+        }
+        Value::Int(sum)
     }
 
     /// Counts per number and per value, moved in and out of other cells
@@ -385,8 +414,9 @@ mod tests {
     #[test]
     fn distinct_counts_follow_a_map_of_every_value() {
         let mut rng = Rng::new(17);
-        for _ in 0..200 {
-            let mut followed = Followed::new();
+        for run in 0..200 {
+            let spacing = SPACINGS[run % SPACINGS.len()];
+            let mut followed = Followed::new(spacing);
             for _ in 0..STEPS {
                 match rng.below(10) {
                     0..4 => add(&mut followed, &mut rng),
