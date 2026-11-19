@@ -142,10 +142,11 @@ The chart passes `--listen 0.0.0.0:8080`, or `[::]:8080` on an
 IPv6-only cluster. With no `--listen`, Straum serves `127.0.0.1`,
 which no probe or Service reaches. Any pod that reaches the Service
 can ask ([Who can ask](#who-can-ask)). For a release named `straum`,
-that is `http://straum:8080/ask`. The pod pins no user. On Kubernetes
-the image's user, 65532, applies. OpenShift's `restricted-v2` assigns
-one from the project's range, and refuses one pinned outside it. No
-ServiceAccount token: Straum never calls the Kubernetes API.
+that is `http://straum:8080/ask`. The pod pins no user, so on
+Kubernetes the image's user, 65532, applies. OpenShift's
+`restricted-v2` assigns one from the project's range, and refuses one
+pinned outside it. The pod mounts no ServiceAccount token, since
+Straum never calls the Kubernetes API.
 
 Size `resources` by the cells the spec keeps
 ([Memory](performance.md#memory)), request equal to limit. With
@@ -171,7 +172,7 @@ secret, so it never sits in the environment. The spec and the DSN must
 be readable by user 65532, the image's user. Straum listens on
 `0.0.0.0:8080` inside the container, and Compose publishes it on the
 host's `127.0.0.1:8080` only ([Who can ask](#who-can-ask)). The health
-check is `straum status`, and a failed check does not restart it: a
+check is `straum status`. A failed check does not restart it, since a
 load or a lag must not.
 
 ## Amazon ECS
@@ -184,10 +185,10 @@ built into an image on top of the release's. The DSN arrives as
 the old one stops: PostgreSQL then holds two slots only while both
 are up.
 
-ECS has one health check, and it replaces a task that fails it. The
-check is `straum status`. A load has about 15 minutes, and a lag about
+ECS has one health check, `straum status`, and it replaces a task
+that fails it. A load has about 15 minutes, and a lag about
 10, before that happens. A spec whose tables take longer to load
-cannot run there. Who can ask is the task's security group
+cannot run there. The task's security group decides who can ask
 ([Who can ask](#who-can-ask)).
 
 Next: [Performance](performance.md), what to expect from a deployment.
