@@ -1,10 +1,12 @@
 # Quick start
 
-Straum against PostgreSQL 18, both in Docker, on one month of New York
-taxi trips: the TLC's yellow trips of January 2024, 2,964,624 of them,
-and the 265 taxi zones. You need Docker and `curl`, and bash or zsh.
-The download is 50 MB. One command ends in the shell. The command
-line and performance pages use these tables too.
+Does Straum work? One command runs it against PostgreSQL 18, both in
+Docker, on one month of New York taxi trips: the TLC's yellow trips of
+January 2024, 2,964,624 of them, and the 265 taxi zones. It ends in
+Straum's shell, where you ask, change the data and ask again. The
+command line and performance pages use these tables too.
+
+You need Docker and `curl`, and bash or zsh. The download is 50 MB.
 
 ## 1. Start
 
@@ -13,24 +15,20 @@ docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/strau
   run --rm shell
 ```
 
+`<(...)` is bash or zsh: it hands Compose the file and keeps the
+terminal as the shell's input. The file is not saved; it is
+`docs/compose/quick-start.yaml` in the repository, and it names the
+project `straum`, which later commands use.
+
 The file starts PostgreSQL. A load service waits until it answers,
-fetches the month, loads it, runs the setup, and exits. Straum starts
-once that service has exited, and is healthy once it can answer. The
-shell service waits for that, `service_healthy`, then takes the
-terminal. `<(...)` is bash or zsh, so the terminal stays the shell's
-input. The load container stays on Waiting while it fetches the month.
+fetches the month, loads it, runs the setup, and exits. Its container
+stays on Waiting while it fetches the month. Straum starts once that
+service has exited, and is healthy once it can answer. The shell
+service waits for that, `service_healthy`, then takes the terminal:
 
 ```text
 Straum at http://straum:8080. Tab completes; \? lists the commands, \q leaves.
 straum>
-```
-
-`\q` leaves the shell and removes that container. Straum keeps
-running. This opens the shell again, inside the Straum container, at
-`http://127.0.0.1:8080`:
-
-```sh
-docker compose -p straum exec straum /straum shell
 ```
 
 An interrupt during the wait stops the wait and leaves the containers
@@ -48,19 +46,26 @@ straum-1  | straum: loaded every table; streaming from 0/19337960
 downloads the trips and loads `taxi_zones` and `yellow_trips`. The
 TLC's times are New York wall clock, so it reads them in that time
 zone. Money and distance are `numeric`, so sums are exact. Straum's
-own load takes about a second. The file in the repository is
-`docs/compose/quick-start.yaml`.
+own load takes about a second.
 
-The file is not saved. Later commands name the project `straum`.
+`\q` leaves the shell and removes its container. Straum keeps running.
+This opens the shell again, inside the Straum container, at
+`http://127.0.0.1:8080`:
+
+```sh
+docker compose -p straum exec straum /straum shell
+```
 
 ## 2. The spec
 
-The compose file holds this view. You do not save it. Straum never
-creates the view; it keeps one cell per hour, payment type, pickup zone
-and borough in memory. `buckets(...)` is the view's time: the column,
-then every bucket width Straum keeps, the hour each trip goes in first,
-then days and weeks for long ranges.
-[Spec](spec.md) explains each line.
+The compose file holds this spec, one view, so there is nothing to
+save. Straum never creates the view in PostgreSQL. `buckets(...)` is
+the view's time: the column, then every bucket width Straum keeps, the
+hour each trip goes in first, then days and weeks for long ranges.
+Straum keeps one cell per hour, payment type and pickup zone, and the
+same per day and per week. It reads each cell's borough from
+`taxi_zones` through its pickup zone. [Spec](spec.md) explains each
+line.
 
 ```sql
 CREATE VIEW trips AS
@@ -118,7 +123,7 @@ Every commit made before `as_of` is in the answer, and every value in
 an ask is a parameter. [Asks](asks.md) explains the query, the
 parameters and the answer.
 
-## Change the data
+## 4. Change the data
 
 In another terminal, add a card trip from Newark Airport at noon, and
 move JFK and LaGuardia, zones 132 and 138, out of Queens into a
@@ -158,13 +163,13 @@ left Queens for Airports, as PostgreSQL's view would show them
 ([Dims](how-it-works.md#dims)). Straum follows commits asynchronously,
 so if the answer's `as_of` predates the write, ask once more.
 
-## Look around, then clean up
+## 5. Look around, then clean up
 
 At the `straum>` prompt, `\d` lists the views with the names and types
 an ask may use, `\d trips` prints the view's `CREATE VIEW`, and
-`\rows trips` prints its rows. [Command line](cli.md#straum-shell) has
-the shell and the `straum status`, `straum views` and `straum ask`
-commands beside it.
+`\rows trips` prints the rows PostgreSQL's view would give.
+[Command line](cli.md#straum-shell) has the shell and the
+`straum status`, `straum views` and `straum ask` commands beside it.
 
 Leave the shell with `\q`, then remove the containers, their data and
 the network:
