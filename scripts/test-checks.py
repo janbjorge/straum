@@ -193,7 +193,9 @@ class LayerCheck(unittest.TestCase):
     def test_a_target_from_another_crate_fails(self):
         target = self.workspace.target("straum-pg", "lib", "src/lib.rs")
         self.workspace.packages["straum-domain"]["targets"] = [target]
-        self.assert_refused("straum-domain: target straum-pg builds from crates/straum-pg")
+        self.assert_refused(
+            "straum-domain: target straum-pg builds from crates/straum-pg"
+        )
 
     def test_a_library_in_a_test_folder_fails(self):
         target = self.workspace.target("straum-app", "lib", "tests/lib.rs")
@@ -209,7 +211,9 @@ class LayerCheck(unittest.TestCase):
 
     def test_the_domain_takes_no_outside_crate(self):
         self.workspace.depend("straum-domain", "jiff")
-        self.assert_refused("straum-domain: reaches outside crate straum-domain -> jiff")
+        self.assert_refused(
+            "straum-domain: reaches outside crate straum-domain -> jiff"
+        )
 
     def test_the_domain_takes_no_optional_outside_crate(self):
         self.workspace.depend("straum-domain", "serde", resolved=False)
@@ -268,7 +272,9 @@ class LayerCheck(unittest.TestCase):
                 self.assert_refused("outside straum-app's ports")
 
     def test_a_trait_at_the_ports_or_in_tests_passes(self):
-        self.write("crates/straum-app/src/lib.rs", "pub trait Source { fn open(&self); }\n")
+        self.write(
+            "crates/straum-app/src/lib.rs", "pub trait Source { fn open(&self); }\n"
+        )
         self.write("crates/straum-pg/tests/fake.rs", "trait Fake {}\n")
         self.write(
             "crates/straum-domain/src/lib.rs",
@@ -337,7 +343,9 @@ class LayerCheck(unittest.TestCase):
             '#[path = "../../straum-pg/src/\\x6cib.rs"]',
         ]:
             with self.subTest(attribute=attribute):
-                self.write("crates/straum-domain/src/lib.rs", f"{attribute}\nmod pulled;\n")
+                self.write(
+                    "crates/straum-domain/src/lib.rs", f"{attribute}\nmod pulled;\n"
+                )
                 self.assert_refused("pulls in straum-pg's crates/straum-pg/src/lib.rs")
 
     def test_a_path_attribute_inside_an_inline_module_resolves_as_rustc_does(self):
@@ -355,12 +363,17 @@ class LayerCheck(unittest.TestCase):
         self.assert_refused("crates/straum-domain/src/store.rs:2: pulls in straum-pg's")
 
     def test_code_from_outside_every_crate_fails(self):
-        self.write("shared/m.rs", '#[path = "../crates/straum-pg/src/lib.rs"]\nmod evil;\n')
         self.write(
-            "crates/straum-domain/src/lib.rs", '#[path = "../../../shared/m.rs"]\nmod m;\n'
+            "shared/m.rs", '#[path = "../crates/straum-pg/src/lib.rs"]\nmod evil;\n'
+        )
+        self.write(
+            "crates/straum-domain/src/lib.rs",
+            '#[path = "../../../shared/m.rs"]\nmod m;\n',
         )
         self.assert_refused("pulls in code from shared/m.rs")
-        self.write("crates/straum-domain/src/lib.rs", 'include!("../../../shared/m.rs");\n')
+        self.write(
+            "crates/straum-domain/src/lib.rs", 'include!("../../../shared/m.rs");\n'
+        )
         self.assert_refused("pulls in code from shared/m.rs")
 
     def test_an_include_into_another_crate_fails(self):
@@ -382,7 +395,9 @@ class LayerCheck(unittest.TestCase):
         self.write("crates/straum-app/tests/spec.rs", include)
         self.assert_passes()
         self.write("crates/straum-app/src/lib.rs", include)
-        self.assert_refused("crates/straum-app/src/lib.rs:1: pulls in straum-notation's")
+        self.assert_refused(
+            "crates/straum-app/src/lib.rs:1: pulls in straum-notation's"
+        )
 
     def test_an_include_a_dependency_allows_passes(self):
         self.write(
@@ -428,7 +443,11 @@ class LayerCheck(unittest.TestCase):
         self.assert_passes()
 
     def test_a_file_that_is_no_rust_fails(self):
-        for text in [b"\xff\xfe", b"/* never closed", b'const S: &str = "never closed;']:
+        for text in [
+            b"\xff\xfe",
+            b"/* never closed",
+            b'const S: &str = "never closed;',
+        ]:
             with self.subTest(text=text):
                 self.write("crates/straum-app/src/lib.rs", text)
                 self.assert_refused("so not read")
@@ -461,19 +480,63 @@ class DomainSyntaxCheck(unittest.TestCase):
         # Written down here, not taken from the script's own lists.
         cases = []
         for word in [
-            "SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "HAVING",
-            "FILTER", "JOIN", "DISTINCT", "EXISTS", "WITHIN GROUP",
-            "IS NULL", "IS NOT NULL", "AND", "OR", "IN", "AS", "ON", "NOT",
-            "WITH", "LIMIT", "OFFSET", "CREATE VIEW", "NULL", "CAST", "ASC",
-            "DESC", "OVER", "LEFT", "OUTER", "UNION", "CASE", "BETWEEN",
-            "LIKE", "INTERVAL",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "GROUP BY",
+            "ORDER BY",
+            "HAVING",
+            "FILTER",
+            "JOIN",
+            "DISTINCT",
+            "EXISTS",
+            "WITHIN GROUP",
+            "IS NULL",
+            "IS NOT NULL",
+            "AND",
+            "OR",
+            "IN",
+            "AS",
+            "ON",
+            "NOT",
+            "WITH",
+            "LIMIT",
+            "OFFSET",
+            "CREATE VIEW",
+            "NULL",
+            "CAST",
+            "ASC",
+            "DESC",
+            "OVER",
+            "LEFT",
+            "OUTER",
+            "UNION",
+            "CASE",
+            "BETWEEN",
+            "LIKE",
+            "INTERVAL",
         ]:
             cases.append((f'const S: &str = "write {word} here";', word))
         for function in [
-            "date_bin", "buckets", "count", "sum", "avg", "min", "max",
-            "bool_and", "bool_or", "var_samp", "var_pop", "stddev_samp",
-            "stddev_pop", "percentile_disc", "mode", "percentile_cont",
-            "stddev", "variance", "every",
+            "date_bin",
+            "buckets",
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "bool_and",
+            "bool_or",
+            "var_samp",
+            "var_pop",
+            "stddev_samp",
+            "stddev_pop",
+            "percentile_disc",
+            "mode",
+            "percentile_cont",
+            "stddev",
+            "variance",
+            "every",
         ]:
             cases.append((f'const S: &str = "write {function}(x)";', f"{function}("))
         for item, words in cases:
@@ -519,10 +582,18 @@ class DomainSyntaxCheck(unittest.TestCase):
 
     def test_passes_english_and_rust_paths(self):
         for text in [
-            "a count of rows", "count (of rows)", "every (key, value) pair",
-            "checked by Spec::new", "jiff::civil::date", "crate::uuid",
-            "Value::Date", "as in", "an inner join", "asks whether it is null",
-            "in order", "the mode of a column",
+            "a count of rows",
+            "count (of rows)",
+            "every (key, value) pair",
+            "checked by Spec::new",
+            "jiff::civil::date",
+            "crate::uuid",
+            "Value::Date",
+            "as in",
+            "an inner join",
+            "asks whether it is null",
+            "in order",
+            "the mode of a column",
         ]:
             with self.subTest(text=text):
                 self.assert_passes({"lib.rs": f'const S: &str = "{text}";\n'})
@@ -593,7 +664,12 @@ class DomainSyntaxCheck(unittest.TestCase):
         self.assertEqual(len(domain_errors({"lib.rs": source})), 1)
 
     def test_a_file_that_is_no_rust_fails_without_hanging(self):
-        for text in [b"/* never closed", b'const S: &str = "never;', b"\xff\xfe", b'r#"x']:
+        for text in [
+            b"/* never closed",
+            b'const S: &str = "never;',
+            b"\xff\xfe",
+            b'r#"x',
+        ]:
             with self.subTest(text=text):
                 errors = domain_errors({"lib.rs": text})
                 self.assertEqual(len(errors), 1, errors)

@@ -397,7 +397,9 @@ def main() -> int:
     if data is None:
         print("architecture dependency check failed: cargo metadata:", file=sys.stderr)
         print(why, file=sys.stderr)
-        print("a stale Cargo.lock? run cargo metadata once and commit it", file=sys.stderr)
+        print(
+            "a stale Cargo.lock? run cargo metadata once and commit it", file=sys.stderr
+        )
         return 1
     errors = check(data)
     if errors:

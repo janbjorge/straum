@@ -74,8 +74,12 @@ OPERATOR = re.compile(r"\s*(?:=|<|>|<=|>=|<>|!=|\|\||::)\s*")
 # Char literals of Straum SQL's operators.
 OPERATOR_CHARS = set("=<>!|$")
 
-TEST_BLOCK_MODULE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub\s+)?mod\s+\w+\s*\{")
-TEST_FILE_MODULE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub\s+)?mod\s+(\w+)\s*;")
+TEST_BLOCK_MODULE = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub\s+)?mod\s+\w+\s*\{"
+)
+TEST_FILE_MODULE = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub\s+)?mod\s+(\w+)\s*;"
+)
 CONCAT = re.compile(r"\bconcat\s*!\s*[\(\[\{]")
 
 

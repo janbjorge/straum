@@ -205,7 +205,7 @@ def table_sql() -> str:
     """The `CREATE TABLE` statements `SCHEMA` also sends to psql."""
     lines = []
     for line in SCHEMA.splitlines():
-        if line.startswith("\\") or line.startswith("COPY ") or line.startswith("SET "):
+        if line.startswith(("\\", "COPY ", "SET ")):
             continue
         lines.append(line)
     return "\n".join(lines)

@@ -47,7 +47,9 @@ IDENTIFIER = re.compile(r"[A-Za-z0-9_]")
 RAW_STRING = re.compile(r'(?:b|c)?r(#*)"')
 STRING = re.compile(r'(?:b|c)?"')
 CHAR = re.compile(r"b?'")
-ESCAPE = re.compile(r"\\(?:\n\s*|u\{([0-9A-Fa-f_]+)\}|x([0-9A-Fa-f]{2})|(.))", re.DOTALL)
+ESCAPE = re.compile(
+    r"\\(?:\n\s*|u\{([0-9A-Fa-f_]+)\}|x([0-9A-Fa-f]{2})|(.))", re.DOTALL
+)
 SIMPLE_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "0": "\0"}
 
 
