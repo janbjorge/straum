@@ -711,8 +711,8 @@ fn by_bucket_peak(store: &Store, by: &[&str], measure: &str) -> isize {
 /// A count of distinct values reads a group of one cell in place: by the
 /// bucket, pay and zone each group is one cell, and eight times its
 /// values cost the ask nothing. By the bucket alone a group meets 80
-/// cells, merged in value order with one value of each at hand: eight
-/// times their values cost nothing either, where a set of them grew.
+/// cells, marked in a set of bits from the least value to the greatest:
+/// eight times their values cost nothing either, where a set of them grew.
 #[test]
 fn a_count_distinct_reads_a_group_of_one_cell_in_place() {
     const CELLS: i64 = 4_000;

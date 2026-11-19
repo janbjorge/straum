@@ -18,7 +18,7 @@ pub enum SpecError {
         scope: Option<Identifier>,
         name: Identifier,
     },
-    /// The `date_bin` width does not divide a day.
+    /// The narrowest width does not divide a day.
     BadWidth { fact: Identifier, seconds: u32 },
     /// A bucket width that isn't a wider whole multiple of the width
     /// before it.

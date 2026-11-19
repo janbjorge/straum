@@ -173,7 +173,6 @@ impl Cells {
         }
     }
 
-    /// Drops `cell`, the last cell taking its place.
     /// Gives each key part with a map the codes it maps to, then indexes
     /// the cells again, since their keys hash anew.
     pub(super) fn recode(&mut self, maps: &[Option<Vec<u32>>]) {
@@ -194,6 +193,7 @@ impl Cells {
         }
     }
 
+    /// Drops `cell`, the last cell taking its place.
     pub(super) fn swap_remove(&mut self, cell: usize) {
         let last = self.len() - 1;
         let key_parts = self.key_parts;
