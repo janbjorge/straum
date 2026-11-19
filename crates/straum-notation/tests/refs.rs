@@ -787,6 +787,13 @@ fn an_ask_names_the_time_as_the_view_does() {
             &[][..],
             "buckets(pickup, '1 hour') is the view's own width; write pickup",
         ),
+        // A refused width bounds nothing: no bucket edge to be on.
+        (
+            "SELECT buckets(pickup, '0 seconds'), n FROM t WHERE pickup >= $1 \
+             GROUP BY buckets(pickup, '0 seconds')",
+            &range[..1],
+            "bucket width '0 seconds' is not kept by the view; it keeps 1 hour, 1 day",
+        ),
         (
             "SELECT pickup, n FROM t",
             &[][..],

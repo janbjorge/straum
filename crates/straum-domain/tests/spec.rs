@@ -587,6 +587,22 @@ fn rows_at_a_width_not_kept_or_the_narrowest_width_are_refused() {
             ],
         }]
     );
+    // Bounds are checked against no width but a kept one: a day edge
+    // off the 2 day grid, and a zero width with no grid at all.
+    for width in [2 * DAY, 0] {
+        assert_eq!(
+            spec.check_ask(&rows_of(width, 0, DAY_START)).unwrap_err(),
+            [AskError::WidthNotKept {
+                width: Width { seconds: width },
+                kept: vec![
+                    Width { seconds: 3_600 },
+                    Width { seconds: DAY },
+                    Width { seconds: WEEK },
+                ],
+            }],
+            "{width}"
+        );
+    }
     // One spelling: the view's own width is plain `bucket`.
     let hours = rows_of(3_600, 0, DAY_START);
     assert_eq!(

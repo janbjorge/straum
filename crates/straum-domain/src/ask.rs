@@ -104,14 +104,21 @@ impl Fact {
 
 impl Ask {
     /// The width of the buckets the ask answers by: the one it names in
-    /// `buckets`, else `narrowest`, the view's own.
-    pub fn row_width(&self, narrowest: Width) -> Width {
+    /// `buckets`, else the narrowest width, the view's own. `None` when
+    /// `buckets` names a width `fact` does not keep, or reads something
+    /// other than its time: such a width has no stored grid, and may be
+    /// none at all, so no bound can be on one of its edges.
+    pub fn row_width(&self, fact: &Fact) -> Option<Width> {
         for key in &self.keys {
-            if let AskKey::WiderBucket { width, .. } = key {
-                return *width;
+            let AskKey::WiderBucket { name, width } = key else {
+                continue;
+            };
+            if *name == fact.time.name && fact.time.wider.contains(width) {
+                return Some(*width);
             }
+            return None;
         }
-        narrowest
+        Some(fact.time.width)
     }
 }
 
@@ -152,7 +159,7 @@ impl Spec {
         if let Some(name) = &ask.bounded {
             check_is_time(fact, name, &mut errors);
         }
-        check_range(ask.row_width(fact.time.width), ask, &mut errors);
+        check_range(ask.row_width(fact), ask, &mut errors);
         if errors.is_empty() {
             Ok(fact)
         } else {
@@ -319,12 +326,18 @@ fn check_names(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     }
 }
 
-fn check_range(width: Width, ask: &Ask, errors: &mut Vec<AskError>) {
+/// A bound is checked against the edges of `width` only when the view
+/// keeps it; a refused width has its own error, and advice on its edges
+/// would point at buckets nothing stores.
+fn check_range(width: Option<Width>, ask: &Ask, errors: &mut Vec<AskError>) {
     if let (Some(from), Some(to)) = (ask.from, ask.to)
         && from >= to
     {
         errors.push(AskError::RangeEmpty { from, to });
     }
+    let Some(width) = width else {
+        return;
+    };
     for end in [ask.from, ask.to] {
         let Some(at) = end else {
             continue;
