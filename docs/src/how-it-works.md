@@ -24,7 +24,7 @@ start loads again.
 
 ## Cells
 
-A cell is one distinct combination of a view's cell key: its fact
+A cell is one distinct value of a view's cell key, which is its fact
 table's keys, its join columns and its bucket. In the `usage` view of the
 [introduction](introduction.md), that is one cell per hour, `kind`,
 `account_id` and `has_device`. A dim column such as `region` is a key of
@@ -77,9 +77,9 @@ column with many distinct values means many cells, one per value.
 For a view whose joins all read fact columns, and at least one of which is
 not a key of the view, Straum also keeps bound cells: the same cells keyed by
 the dim columns' values, so an ask reads them without a projection. A dim
-change walks the fact's keyed cells once under
-the write lock, and skips keys no fact row names. A view whose join columns
-are keys, as `usage` is, has none.
+change walks the fact's keyed cells once under the write lock, and skips
+keys no fact row names. A view whose join columns are keys, as `usage` is,
+has none.
 
 ## Following
 
@@ -129,9 +129,9 @@ streams the WAL from the last checkpoint's redo point, and Straum turns it
 into the same messages, so one decoder serves both.
 
 Most records name only other tables' pages, so Straum reads their block
-headers and passes them by. Every record it does read, it checks against
-the record's CRC-32C checksum. The first
-change to a page after a checkpoint carries a full image of that page. From
+headers and passes them by. Each record it does read, it checks against
+its CRC-32C checksum. The first change to a page after a checkpoint
+carries a full image of that page. From
 there Straum keeps the rows of each spec-table page and applies the inserts,
 updates, deletes, pruning and vacuuming that follow, as PostgreSQL's own redo
 does. A delete names only a slot on the page, and an update may log only the
@@ -156,8 +156,8 @@ waiting for their commit pass `--max-page-memory`.
 
 A commit that changes a table's catalog entry makes Straum read the table's
 columns again, in a snapshot that sees the commit. It waits up to 10 s, then
-stops. A table rewritten, by `VACUUM FULL` or `CLUSTER` too, or
-truncated stops Straum, since its pages went with the old file.
+stops. A table that is truncated or rewritten, `VACUUM FULL` and `CLUSTER`
+included, stops Straum, since its pages went with the old file.
 
 ## Answering an ask
 
@@ -198,8 +198,7 @@ cells it reads.
 *Each width takes the whole buckets inside the range. The ends fall to the
 next narrower width.*
 
-Answers do not depend on the widths a view keeps. Only the cell count does.
-An ask grouped by the bucket reads no bucket wider than its rows: hours
+The widths a view keeps change its cell count, never its answers. An ask grouped by the bucket reads no bucket wider than its rows: hours
 for `bucket`, days for `buckets(bucket, '1 day')`, one stored day a
 row ([Rows a day or a week apart](asks.md#rows-a-day-or-a-week-apart)).
 
