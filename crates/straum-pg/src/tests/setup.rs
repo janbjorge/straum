@@ -26,6 +26,37 @@ fn says_to_set_wal_level_logical() {
     }
 }
 
+/// PostgreSQL 16 lacks `transaction_timeout`, so Straum leaves it unset
+/// there and the check says the server is too old, not that a setting is
+/// unknown.
+#[test]
+fn says_postgresql_16_is_too_old() {
+    let pg = postgres_at_replica("16");
+    let db = Db::new(&pg, "old", "");
+    let error = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
+    assert!(
+        error.contains("PostgreSQL 16 is too old; Straum needs 17 or newer"),
+        "{error}"
+    );
+}
+
+/// A timeout set on the database would cancel a long load: from 17 on,
+/// each connection turns `transaction_timeout` off for itself.
+#[test]
+fn a_connection_turns_the_transaction_timeout_off() {
+    let pg = postgres();
+    let mut db = Db::new(&pg, "timeouts", "");
+    db.run("ALTER DATABASE postgres SET transaction_timeout = '5s'");
+    let mut fresh = db.another_connection();
+    assert_eq!(
+        fresh.rows("SHOW transaction_timeout"),
+        [[Some("0".to_owned())]]
+    );
+    let mut replication = Connection::connect(&pg.dsn, ConnectionKind::Replication).unwrap();
+    let shown = replication.rows("SHOW transaction_timeout").unwrap();
+    assert_eq!(shown, [[Some("0".to_owned())]]);
+}
+
 #[test]
 fn plan_sets_up_what_straum_needs() {
     let pg = postgres();

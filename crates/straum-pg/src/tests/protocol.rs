@@ -188,6 +188,31 @@ fn sign_in_errors() {
     assert!(connect(vec![now(chatty)], ConnectionKind::Replication).is_ok());
 }
 
+/// From 17 on, a connection turns `transaction_timeout` off once signed
+/// in; PostgreSQL 16, which lacks it, never hears of it.
+#[test]
+fn the_transaction_timeout_goes_to_17_and_newer() {
+    for (version, sent) in [("17.2", true), ("18beta1", true), ("16.9", false)] {
+        let mut start = message(b'R', &0_i32.to_be_bytes());
+        start.extend(message(
+            b'S',
+            format!("server_version\0{version}\0").as_bytes(),
+        ));
+        start.extend(message(b'Z', b"I"));
+        let mut done = message(b'C', b"SET\0");
+        done.extend(message(b'Z', b"I"));
+        let server = scripted(vec![now(start), now(done)]);
+        drop(Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap());
+        let received = String::from_utf8_lossy(&server.received.join().unwrap()).into_owned();
+        assert_eq!(
+            received.contains("SET transaction_timeout = 0"),
+            sent,
+            "{version}"
+        );
+        assert!(!received.contains("transaction_timeout\0"), "{version}");
+    }
+}
+
 /// A server that takes the socket and then says nothing fails the start
 /// at the handshake timeout, not never, naming the server's host and port.
 #[test]

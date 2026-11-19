@@ -28,6 +28,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// nothing would otherwise hang a start, the watchdog's own among them.
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_CHUNK: usize = 64 * 1024;
+/// The first major with `transaction_timeout`.
+const TRANSACTION_TIMEOUT_MAJOR: u32 = 17;
 /// `CopyBothResponse`, which `postgres_protocol` doesn't parse.
 const COPY_BOTH: u8 = b'W';
 
@@ -157,26 +159,39 @@ impl Connection {
             ("statement_timeout", "0"),
             ("lock_timeout", "0"),
             ("idle_in_transaction_session_timeout", "0"),
-            ("transaction_timeout", "0"),
         ];
         if kind == ConnectionKind::Replication {
             parameters.push(("replication", "database"));
         }
         frontend::startup_message(parameters, &mut connection.output)?;
         connection.flush()?;
-        connection.authenticate(dsn)?;
+        let major = connection.authenticate(dsn)?;
+        // PostgreSQL 16 ends a startup that names a setting it lacks, so
+        // the setup check could never say the server is too old.
+        // PostgreSQL reports `server_version` at every startup.
+        if let Some(major) = major
+            && major >= TRANSACTION_TIMEOUT_MAJOR
+        {
+            connection.execute("SET transaction_timeout = 0")?;
+        }
         Ok(connection)
     }
 
-    fn authenticate(&mut self, dsn: &Dsn) -> Result<(), Error> {
+    /// Signs in and returns the major version the server reports, if it
+    /// reads as one.
+    fn authenticate(&mut self, dsn: &Dsn) -> Result<Option<u32>, Error> {
         let mut scram: Option<ScramSha256> = None;
         let mut sign_in = SignIn::Waiting;
+        let mut major = None;
         loop {
             match self.read()? {
                 Message::AuthenticationOk if sign_in == SignIn::ScramBegun => {
                     return Err(Error::Protocol(Unexpected::ScramUnproven));
                 }
                 Message::AuthenticationOk => sign_in = SignIn::SignedIn,
+                Message::ParameterStatus(body) if body.name()? == "server_version" => {
+                    major = leading_number(body.value()?);
+                }
                 Message::ParameterStatus(_)
                 | Message::BackendKeyData(_)
                 | Message::NoticeResponse(_) => {}
@@ -214,7 +229,7 @@ impl Connection {
                     state.finish(body.data())?;
                     sign_in = SignIn::ScramProven;
                 }
-                Message::ReadyForQuery(_) if sign_in == SignIn::SignedIn => return Ok(()),
+                Message::ReadyForQuery(_) if sign_in == SignIn::SignedIn => return Ok(major),
                 Message::ReadyForQuery(_) => {
                     return Err(Error::Protocol(Unexpected::ReadyBeforeSignIn));
                 }
@@ -518,6 +533,19 @@ pub(crate) fn server_error(body: &ErrorResponseBody) -> Error {
         message = format!("{message}: {detail}");
     }
     Error::Server { code, message }
+}
+
+/// The digits `text` starts with, as a number: 16 of `16.9`, 19 of
+/// `19rc2`. `None` if it starts with none.
+fn leading_number(text: &str) -> Option<u32> {
+    let mut end = 0;
+    for character in text.chars() {
+        if !character.is_ascii_digit() {
+            break;
+        }
+        end += 1;
+    }
+    text[..end].parse().ok()
 }
 
 /// The SASL mechanism names, copied out of the message they borrow from.
