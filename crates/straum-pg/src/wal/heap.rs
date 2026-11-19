@@ -235,9 +235,15 @@ impl Heap {
         Ok(())
     }
 
-    /// Every record that names a page sets its LSN, whether or not it
-    /// changes a row Straum reads: a lock, a freeze. Counts each such
-    /// page's bytes again.
+    /// Takes a record that names a page as setting its LSN, whether or
+    /// not it changes a row Straum reads: a lock, a freeze. Counts each
+    /// such page's bytes again.
+    // Not every such record sets it: `XLOG_HEAP2_VISIBLE` names the heap
+    // page beside the visibility map's, and from 19 a prune that only
+    // sets the map does too, yet without checksums or `wal_log_hints`
+    // neither stamps the heap page. The LSN kept is then later than the
+    // page's, so `evict` keeps the page longer, never shorter: a page
+    // whose next change brings no image is never let go.
     fn count_changed_pages(&mut self, record: &Record) {
         for block in &record.blocks {
             if !self.is_tracked(block) {
