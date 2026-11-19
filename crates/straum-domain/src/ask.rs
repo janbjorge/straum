@@ -77,7 +77,7 @@ pub enum AskKey {
     /// its narrowest width.
     Key(Identifier),
     /// The view's time at a wider width it keeps, as
-    /// `date_bin('1 day', hour)` writes it: each row one stored bucket.
+    /// `buckets(hour, '1 day')` writes it: each row one stored bucket.
     WiderBucket { name: Identifier, width: Width },
 }
 
@@ -104,14 +104,14 @@ impl Fact {
 
 impl Ask {
     /// The width of the buckets the ask answers by: the one it names in
-    /// `date_bin`, else `date_bin_width`, the view's own.
-    pub fn row_width(&self, date_bin_width: Width) -> Width {
+    /// `buckets`, else `narrowest`, the view's own.
+    pub fn row_width(&self, narrowest: Width) -> Width {
         for key in &self.keys {
             if let AskKey::WiderBucket { width, .. } = key {
                 return *width;
             }
         }
-        date_bin_width
+        narrowest
     }
 }
 
@@ -207,7 +207,8 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     }
 }
 
-/// `date_bin` and the range bounds read the view's time and nothing else.
+/// A wider width and the range bounds read the view's time and nothing
+/// else.
 fn check_is_time(fact: &Fact, name: &Identifier, errors: &mut Vec<AskError>) {
     if *name != fact.time.name {
         errors.push(AskError::NotTime {
@@ -222,7 +223,7 @@ fn check_is_time(fact: &Fact, name: &Identifier, errors: &mut Vec<AskError>) {
 /// as asking by those and adding them up.
 fn check_row_width(fact: &Fact, width: Width, errors: &mut Vec<AskError>) {
     if width == fact.time.width {
-        errors.push(AskError::DateBinOwnWidth {
+        errors.push(AskError::OwnWidth {
             name: fact.time.name.clone(),
             width,
         });
@@ -385,20 +386,21 @@ pub enum AskError {
     KeyNotGrouped(Identifier),
     NoMeasures,
     TimeKeyTwice,
-    /// `date_bin` at the view's own width, which the time's name alone
+    /// A wider width that is the view's own, which the time's name alone
     /// says.
-    DateBinOwnWidth {
+    OwnWidth {
         name: Identifier,
         width: Width,
     },
-    /// `date_bin` or a range bound on a name that is not the view's time.
+    /// A wider width or a range bound on a name that is not the view's
+    /// time.
     NotTime {
         name: Identifier,
         time: Identifier,
     },
     /// The view's time in WHERE, which bounds it with `>=` and `<`.
     TimeInWhere(Identifier),
-    /// A `date_bin` width the view doesn't keep, beside the ones it does.
+    /// A wider width the view doesn't keep, beside the ones it does.
     WidthNotKept {
         width: Width,
         kept: Vec<Width>,

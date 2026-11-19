@@ -216,9 +216,9 @@ ASKS = [
              LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
             WHERE t.pickup_at >= '2024-01-01T00:00:00Z' AND t.pickup_at < '2024-02-01T00:00:00Z'
             GROUP BY 1, 2""",
-        """SELECT date_bin('1 day', bucket), borough, trips FROM trips
+        """SELECT buckets(bucket, '1 day'), borough, trips FROM trips
             WHERE bucket >= $1 AND bucket < $2
-            GROUP BY date_bin('1 day', bucket), borough""",
+            GROUP BY buckets(bucket, '1 day'), borough""",
         ONE_MONTH,
     ),
     # 7-day rows start on Thursdays, the epoch's weekday. Open ends read
@@ -230,8 +230,8 @@ ASKS = [
              FROM yellow_trips
             WHERE pickup_at IS NOT NULL
             GROUP BY 1""",
-        """SELECT date_bin('7 days', bucket), trips, fare FROM trips
-            GROUP BY date_bin('7 days', bucket)""",
+        """SELECT buckets(bucket, '7 days'), trips, fare FROM trips
+            GROUP BY buckets(bucket, '7 days')""",
         [],
     ),
     (

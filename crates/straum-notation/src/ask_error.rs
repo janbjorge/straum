@@ -50,13 +50,13 @@ impl fmt::Display for Described<'_> {
             AskError::KeyNotGrouped(name) => write!(out, "{name} is a key; add it to GROUP BY"),
             AskError::NoMeasures => out.write_str("no measures asked"),
             AskError::TimeKeyTwice => out.write_str("more than one time key"),
-            AskError::DateBinOwnWidth { name, width } => write!(
+            AskError::OwnWidth { name, width } => write!(
                 out,
-                "date_bin('{width}', {name}) is the view's own width; write {name}"
+                "buckets({name}, '{width}') is the view's own width; write {name}"
             ),
             AskError::NotTime { name, time } => write!(
                 out,
-                "{name} is not the view's time; date_bin and the range read {time}"
+                "{name} is not the view's time; buckets and the range read {time}"
             ),
             AskError::TimeInWhere(name) => write!(
                 out,
@@ -156,7 +156,7 @@ fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Widt
     }
     write!(
         formatter,
-        "date_bin width '{width}' is not kept by the view; it keeps {}",
+        "bucket width '{width}' is not kept by the view; it keeps {}",
         texts.join(", ")
     )
 }

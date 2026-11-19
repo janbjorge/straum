@@ -314,7 +314,7 @@ writing `::text` wherever the view reads the column: on a key, in a
 null-ness key, `(e.kind::text IS NULL)`, in a `FILTER` and
 in `WHERE`, spelled alike in every place and in every view that reads
 the column. `::text` is the one cast, and it goes nowhere else: not in
-`ON`, `EXISTS`, `date_bin` or a measure. Straum refuses an enum column
+`ON`, `EXISTS`, `buckets` or a measure. Straum refuses an enum column
 written without it, and the cast on a column of any other type, so a
 spec says what it reads. A `FILTER` literal must be one of the type's
 labels, which Straum reads at start. A label added later is read as

@@ -24,10 +24,14 @@ name is the time, and refuses `>=` or `<` on any other. A bound left out leaves 
 end open, at the edge of the buckets held, so an ask with no `WHERE`
 reads them all. `GROUP BY` names exactly the selected keys; `HAVING
 measure op $n [AND ...]`, `op` one of `= <> < <= > >=`, compares
-selected measures. A key may be `date_bin('<width>', time)`, the
+selected measures. A key may be `buckets(time, '<width>')`, the
 same in `SELECT` and `GROUP BY`: rows that width apart, at a width the
 view keeps wider than its narrowest, with bounds on its edges, so
-each row is one stored bucket. A key in `HAVING` or a measure in `WHERE` is
+each row is one stored bucket. It is the spec's own `buckets`, so one
+function names the time's widths in a view and in an ask; until
+2026-11-19 an ask wrote `date_bin('<width>', time)`, PostgreSQL's name
+without the origin PostgreSQL requires, and it is now refused, naming
+the `buckets` to write. A key in `HAVING` or a measure in `WHERE` is
 refused, naming the other place. Every value is a `$n`; a literal is
 an error, so values never become query text.
 
@@ -71,7 +75,7 @@ it lands.
 - A time past the year 9999, which PostgreSQL keeps and RFC 3339 can't
   write, is reachable only through an open end. The answer writes it as
   `Unix second` and its number rather than fail.
-- A `date_bin` row reads one stored bucket: 24 times fewer cells than
+- A `buckets` row reads one stored bucket: 24 times fewer cells than
   hours for a day, 168 for a week, where every hour holds the same
   keys (`rows_at_a_wider_width_read_its_buckets` in `tests/cost.rs`).
   The width is query text, not a `$n`, since it sets the answer's

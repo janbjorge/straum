@@ -32,7 +32,7 @@ FROM view
 [HAVING comparison [AND ...]]
 
 key         name
-            date_bin('width', time)
+            buckets(time, 'width')
 condition   key = $n
             key IN ($n, $n, ...)
             time >= $n
@@ -80,12 +80,13 @@ level of the tree Straum reads it into.
 ## Rows a day or a week apart
 
 `GROUP BY bucket` answers a row per bucket of the view's narrowest
-width, an hour in `usage`. `date_bin('1 day', bucket)` answers a row per day instead,
+width, an hour in `usage`. `buckets(bucket, '1 day')`, the view's own
+`buckets` at one of its wider widths, answers a row per day instead,
 read from the day buckets the view keeps. Each row is one stored
 bucket, so a month of days reads 31 buckets, not 744 hours:
 
 ```sql
-SELECT date_bin('1 day', bucket), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY date_bin('1 day', bucket), region
+SELECT buckets(bucket, '1 day'), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY buckets(bucket, '1 day'), region
 ```
 
 - The width is one the view's `buckets` item lists after its first,
@@ -95,15 +96,15 @@ SELECT date_bin('1 day', bucket), region, events FROM usage WHERE bucket >= $1 A
   the narrowest width itself, write `bucket`.
 - The width is part of the query, not a parameter: it sets the
   answer's shape, as the view's own width does.
-- `SELECT` and `GROUP BY` write the same `date_bin`. The answer names
-  the column by the time, `bucket`, and each row's value is the start of its day or
-  week.
+- `SELECT` and `GROUP BY` write the same `buckets`. The answer names
+  the column by the time, `bucket`, and each row's value is the start
+  of its day or week.
 - Each bound written falls on an edge of that width, so no row covers
   part of a day. An open end reaches the buckets held, so the first or
   last row may cover part of its day: nothing lies beyond it.
-- There is no third argument: buckets start at the epoch. Days are UTC
-  days and `7 days` runs Thursday to Thursday, since every width is a
-  grid from the epoch ([Time](spec.md#time)).
+- PostgreSQL's `date_bin` is refused, naming the `buckets` to write.
+  Days are UTC days and `7 days` runs Thursday to Thursday, since
+  every width is a grid from the epoch ([Time](spec.md#time)).
 
 ## HAVING
 
@@ -161,7 +162,7 @@ The time's bounds are RFC 3339 times, such as
 and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
 refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
 written must fall on an edge of the ask's rows: the view's narrowest
-buckets, or the wider ones a [`date_bin` key](#rows-a-day-or-a-week-apart)
+buckets, or the wider ones a [`buckets` key](#rows-a-day-or-a-week-apart)
 names. Straum never answers for part of a bucket, and the error names
 the edges on either side.
 
@@ -275,7 +276,7 @@ sees the connection close.
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
 {"errors": ["bound 1794558600 is not on a 1 hour bucket edge; the nearest are 1794556800 and 1794560400"]}
-{"errors": ["date_bin width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
+{"errors": ["bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
 ```
 

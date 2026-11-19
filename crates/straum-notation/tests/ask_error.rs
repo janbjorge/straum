@@ -69,18 +69,18 @@ fn ask_errors_display() {
 fn width_and_range_errors_display() {
     let cases = [
         (
-            AskError::DateBinOwnWidth {
+            AskError::OwnWidth {
                 name: id("bucket"),
                 width: Width { seconds: 3_600 },
             },
-            "date_bin('1 hour', bucket) is the view's own width; write bucket",
+            "buckets(bucket, '1 hour') is the view's own width; write bucket",
         ),
         (
             AskError::WidthNotKept {
                 width: Width { seconds: 2 * DAY },
                 kept: vec![Width { seconds: 3_600 }, Width { seconds: DAY }],
             },
-            "date_bin width '2 days' is not kept by the view; it keeps 1 hour, 1 day",
+            "bucket width '2 days' is not kept by the view; it keeps 1 hour, 1 day",
         ),
         (
             AskError::RangeUnaligned {
@@ -113,7 +113,7 @@ fn time_and_clause_errors_display() {
                 name: id("a"),
                 time: id("pickup"),
             },
-            "a is not the view's time; date_bin and the range read pickup",
+            "a is not the view's time; buckets and the range read pickup",
         ),
         (
             AskError::TimeInWhere(id("pickup")),

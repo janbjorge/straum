@@ -573,7 +573,7 @@ fn rows_at_a_kept_width_on_its_edges_check() {
 }
 
 #[test]
-fn rows_at_a_width_not_kept_or_the_date_bin_width_are_refused() {
+fn rows_at_a_width_not_kept_or_the_narrowest_width_are_refused() {
     let spec = days_and_weeks();
     let two_days = rows_of(2 * DAY, 0, 2 * DAY_START);
     assert_eq!(
@@ -591,7 +591,7 @@ fn rows_at_a_width_not_kept_or_the_date_bin_width_are_refused() {
     let hours = rows_of(3_600, 0, DAY_START);
     assert_eq!(
         spec.check_ask(&hours).unwrap_err(),
-        [AskError::DateBinOwnWidth {
+        [AskError::OwnWidth {
             name: id("bucket"),
             width: Width { seconds: 3_600 }
         }]

@@ -188,7 +188,7 @@ next narrower width.*
 
 Answers do not depend on the widths a view keeps. Only the cell count does.
 An ask grouped by the bucket reads no bucket wider than its rows: hours
-for `bucket`, days for `date_bin('1 day', bucket)`, one stored day a
+for `bucket`, days for `buckets(bucket, '1 day')`, one stored day a
 row ([Rows a day or a week apart](asks.md#rows-a-day-or-a-week-apart)).
 
 Every answer carries `as_of` and includes every commit before it. Following

@@ -92,7 +92,7 @@ the end are open.
   ([The store](design.md#the-store)).
 - **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the width
   of the buckets an ask answers by: the narrowest for the time's name,
-  or the wider one `date_bin('1 day', bucket)` names ([Rows a day or a
+  or the wider one `buckets(bucket, '1 day')` names ([Rows a day or a
   week apart](asks.md#rows-a-day-or-a-week-apart)).
 - **Bucket edge**: a multiple of a bucket width; each bound an ask
   writes sits on one of its row width ([Parameters](asks.md#parameters)).

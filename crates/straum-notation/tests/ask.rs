@@ -502,11 +502,11 @@ fn group_by_names_the_selected_keys() {
 }
 
 #[test]
-fn date_bin_asks_rows_at_a_wider_width() {
+fn buckets_asks_rows_at_a_wider_width() {
     let ask = parse_ask(
-        "SELECT date_bin('1 day', bucket), borough, trips FROM trips
+        "SELECT buckets(bucket, '1 day'), borough, trips FROM trips
          WHERE bucket >= $1 AND bucket < $2
-         GROUP BY borough, DATE_BIN('1 day', bucket)",
+         GROUP BY borough, BUCKETS(bucket, '1 day')",
         &range(),
     )
     .unwrap();
@@ -517,7 +517,7 @@ fn date_bin_asks_rows_at_a_wider_width() {
     assert_eq!(ask.keys, [day, key("borough")]);
     // The spec decides which widths a view keeps; the parse reads any.
     let weeks = parse_ask(
-        "SELECT date_bin('7 days', bucket), trips FROM trips GROUP BY date_bin('7 days', bucket)",
+        "SELECT buckets(bucket, '7 days'), trips FROM trips GROUP BY buckets(bucket, '7 days')",
         &[],
     )
     .unwrap();
@@ -536,58 +536,71 @@ fn grouped(select: &str, group_by: &str) -> String {
 }
 
 #[test]
-fn date_bin_is_written_one_way() {
+fn buckets_in_an_ask_is_written_one_way() {
     assert_each_names_what_is_wrong(&[
         (
-            &grouped(
-                "date_bin('24 hours', bucket)",
-                "date_bin('24 hours', bucket)",
-            ),
+            &grouped("buckets(bucket, '24 hours')", "buckets(bucket, '24 hours')"),
             &[],
-            "date_bin width '24 hours': write '1 day'",
+            "bucket width '24 hours': write '1 day'",
         ),
         (
-            &grouped("date_bin($1, bucket)", "date_bin($1, bucket)"),
+            &grouped("buckets(bucket, $1)", "buckets(bucket, $1)"),
             &[Literal::Text("1 day".into())],
-            "date_bin width $1: use '<n> seconds|minutes|hours|days'",
+            "bucket width $1: use '<n> seconds|minutes|hours|days'",
         ),
         (
-            &grouped("date_bin('1 day', bucket + 1)", "kind"),
+            &grouped("buckets(bucket + 1, '1 day')", "kind"),
             &[],
-            "date_bin in an ask reads the view's time by name, not bucket + 1",
+            "buckets in an ask reads the view's time by name, not bucket + 1",
         ),
         (
             &grouped(
-                "date_bin('1 day', bucket, timestamptz 'epoch')",
-                "date_bin('1 day', bucket, timestamptz 'epoch')",
+                "buckets(bucket, '1 day', '7 days')",
+                "buckets(bucket, '1 day', '7 days')",
             ),
             &[],
-            "date_bin arguments in an ask, write date_bin('<width>', <time>),",
+            "buckets arguments in an ask, write buckets(<time>, '<width>'),",
         ),
         (
-            &grouped("date_bin(DISTINCT '1 day', bucket)", "kind"),
+            &grouped("buckets('1 day', bucket)", "kind"),
             &[],
-            "DISTINCT on date_bin is not in Straum SQL",
+            "buckets in an ask reads the view's time by name, not '1 day'",
         ),
+        // PostgreSQL's spelling, in either form, names the one to write.
         (
-            &grouped("date_bin('1 day', bucket)", "date_bin('7 days', bucket)"),
+            &grouped("date_bin('1 day', bucket)", "date_bin('1 day', bucket)"),
             &[],
-            "date_bin('1 day', bucket) is selected but not in GROUP BY",
+            "date_bin in an ask: write buckets(<time>, '<width>')",
         ),
         (
-            &grouped("date_bin('1 day', bucket)", "date_bin('7 days', bucket)"),
+            &grouped("date_bin('1 day', bucket, timestamptz 'epoch')", "kind"),
+            &[],
+            "date_bin in an ask: write buckets(<time>, '<width>')",
+        ),
+        (
+            &grouped("buckets(DISTINCT bucket, '1 day')", "kind"),
+            &[],
+            "DISTINCT on buckets is not in Straum SQL",
+        ),
+        (
+            &grouped("buckets(bucket, '1 day')", "buckets(bucket, '7 days')"),
+            &[],
+            "buckets(bucket, '1 day') is selected but not in GROUP BY",
+        ),
+        (
+            &grouped("buckets(bucket, '1 day')", "buckets(bucket, '7 days')"),
             &[],
             "GROUP BY bucket is not selected",
         ),
         (
-            "SELECT trips FROM t WHERE date_bin('1 day', bucket) = $1",
+            "SELECT trips FROM t WHERE buckets(bucket, '1 day') = $1",
             &[Literal::Int(0)],
-            "date_bin goes only in SELECT and GROUP BY",
+            "buckets goes only in SELECT and GROUP BY",
         ),
         (
-            "SELECT trips FROM t HAVING date_bin('1 day', bucket) > $1",
+            "SELECT trips FROM t HAVING buckets(bucket, '1 day') > $1",
             &[Literal::Int(0)],
-            "date_bin goes only in SELECT and GROUP BY",
+            "buckets goes only in SELECT and GROUP BY",
         ),
         (
             &grouped("lower(bucket)", "lower(bucket)"),

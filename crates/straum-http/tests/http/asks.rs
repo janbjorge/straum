@@ -232,8 +232,8 @@ fn an_ask_without_bounds_reads_every_bucket_held() {
     server.stop();
 }
 
-const BY_DAY: &str = "SELECT date_bin('1 day', bucket), kind, trips, fare, fare_avg \
-    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY date_bin('1 day', bucket), kind";
+const BY_DAY: &str = "SELECT buckets(bucket, '1 day'), kind, trips, fare, fare_avg \
+    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY buckets(bucket, '1 day'), kind";
 
 /// Rows a day apart answer under `bucket`, each the day's start in
 /// RFC 3339, its measures over the day's hours.
@@ -257,8 +257,8 @@ fn answers_rows_a_day_apart() {
 #[test]
 fn rows_off_the_day_grid_or_at_a_width_not_kept_are_refused() {
     let (_writer, server) = started(writer());
-    let by_week = "SELECT date_bin('7 days', bucket), trips FROM trips \
-        GROUP BY date_bin('7 days', bucket)";
+    let by_week = "SELECT buckets(bucket, '7 days'), trips FROM trips \
+        GROUP BY buckets(bucket, '7 days')";
     let cases = [
         (
             ask(BY_DAY, "[1704070800, 1704240000]"),
@@ -270,7 +270,7 @@ fn rows_off_the_day_grid_or_at_a_width_not_kept_are_refused() {
         (
             ask(by_week, "[]"),
             concat!(
-                r#"{"errors":["date_bin width '7 days' is not kept by the view; "#,
+                r#"{"errors":["bucket width '7 days' is not kept by the view; "#,
                 r#"it keeps 1 hour, 1 day"]}"#
             ),
         ),

@@ -357,14 +357,11 @@ fn views_share_a_dim() {
 
 #[test]
 fn spec_errors_pass_through() {
-    let text = base("'1 hour'", "'7 minutes'")
-        .replace("date_bin('1 hour'", "date_bin('7 minutes'")
-        .replace("f.a AS a,", "f.id AS id, f.z_id AS z,");
+    let text = base("'1 hour'", "'7 minutes'").replace("f.a AS a,", "f.id AS id, f.z_id AS z,");
     assert!(matches!(parse(&text), Err(Error::Sql(_))));
 
-    let text = base("'1 hour'", "'7 minutes'")
-        .replace("date_bin('1 hour'", "date_bin('7 minutes'")
-        .replace("count(*) AS n", "count(*) AS n, count(*) AS n");
+    let text =
+        base("'1 hour'", "'7 minutes'").replace("count(*) AS n", "count(*) AS n, count(*) AS n");
     assert_eq!(
         spec_errors(&text),
         [
@@ -746,7 +743,7 @@ fn two_dims_of_one_table_name_clash_and_say_why() {
 }
 
 /// The view names its time, and an ask uses that name: to group by it,
-/// at a wider width with `date_bin`, and to bound the range. Nothing else
+/// at a wider width with `buckets`, and to bound the range. Nothing else
 /// takes the time's place, and the time takes no key's.
 #[test]
 fn an_ask_names_the_time_as_the_view_does() {
@@ -758,8 +755,8 @@ fn an_ask_names_the_time_as_the_view_does() {
     let range = [Literal::Int(JAN), Literal::Int(FEB)];
     let fine = [
         "SELECT pickup, a, n FROM t WHERE pickup >= $1 AND pickup < $2 GROUP BY pickup, a",
-        "SELECT date_bin('1 day', pickup), n FROM t WHERE pickup >= $1 AND pickup < $2 \
-         GROUP BY date_bin('1 day', pickup)",
+        "SELECT buckets(pickup, '1 day'), n FROM t WHERE pickup >= $1 AND pickup < $2 \
+         GROUP BY buckets(pickup, '1 day')",
     ];
     for query in fine {
         assert_eq!(checked(&spec, query, &range), Ok(()), "{query}");
@@ -778,17 +775,17 @@ fn an_ask_names_the_time_as_the_view_does() {
         (
             "SELECT n FROM t WHERE a >= $1 AND a < $2",
             &range[..],
-            "a is not the view's time; date_bin and the range read pickup",
+            "a is not the view's time; buckets and the range read pickup",
         ),
         (
-            "SELECT date_bin('1 day', a), n FROM t GROUP BY date_bin('1 day', a)",
+            "SELECT buckets(a, '1 day'), n FROM t GROUP BY buckets(a, '1 day')",
             &[][..],
-            "a is not the view's time; date_bin and the range read pickup",
+            "a is not the view's time; buckets and the range read pickup",
         ),
         (
-            "SELECT date_bin('1 hour', pickup), n FROM t GROUP BY date_bin('1 hour', pickup)",
+            "SELECT buckets(pickup, '1 hour'), n FROM t GROUP BY buckets(pickup, '1 hour')",
             &[][..],
-            "date_bin('1 hour', pickup) is the view's own width; write pickup",
+            "buckets(pickup, '1 hour') is the view's own width; write pickup",
         ),
         (
             "SELECT pickup, n FROM t",

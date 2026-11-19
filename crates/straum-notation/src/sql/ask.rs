@@ -12,7 +12,7 @@
 //! Every value is a `$n` parameter, so no value is ever spliced into the
 //! query text. Keys, measures and the view's time go by the names the view
 //! gives them; the walk doesn't know the view, so the spec's check says
-//! which name is the time. `date_bin('1 day', hour)` in `SELECT` and
+//! which name is the time. `buckets(hour, '1 day')` in `SELECT` and
 //! `GROUP BY` asks for rows a wider width apart; the width is part of the
 //! query, not a parameter, since it sets the answer's shape. Each bound
 //! may be left out: an ask without `hour >= $n` reads from the first
@@ -301,12 +301,20 @@ impl Walker {
     }
 
     /// A key or measure by the name the view gives it, or
-    /// `date_bin('<width>', name)` for the view's time at a wider width.
+    /// `buckets(name, '<width>')` for the view's time at a wider width.
     fn ask_key(&mut self, expression: &sql::Expr) -> Result<AskKey, Reported> {
-        if let sql::Expr::Function(function) = expression
-            && is_call(function, "date_bin")
-        {
-            return self.wider_bucket(function);
+        if let sql::Expr::Function(function) = expression {
+            if is_call(function, "buckets") {
+                return self.wider_bucket(function);
+            }
+            // PostgreSQL's spelling, which a reader of SQL reaches for.
+            if is_call(function, "date_bin") {
+                self.error(
+                    line(function),
+                    "date_bin in an ask: write buckets(<time>, '<width>')".into(),
+                );
+                return Err(Reported);
+            }
         }
         let sql::Expr::Identifier(identifier) = expression else {
             self.refuse(
@@ -319,37 +327,36 @@ impl Walker {
         Ok(AskKey::Key(self.read_identifier(identifier)?))
     }
 
-    /// `date_bin('<width>', name)`: the view's time at a width the spec
-    /// must keep. PostgreSQL's third argument, the origin, is left out:
-    /// buckets start at the epoch. The spec says whether `name` is the
-    /// view's time.
+    /// `buckets(name, '<width>')`: the view's time at a width the spec
+    /// must keep, as the view's own `buckets` item lists it. The spec says
+    /// whether `name` is the view's time.
     fn wider_bucket(&mut self, function: &sql::Function) -> Result<AskKey, Reported> {
         let at = line(function);
-        self.reject_if_present(at, function.filter.is_some(), "FILTER on date_bin");
+        self.reject_if_present(at, function.filter.is_some(), "FILTER on buckets");
         let Call {
             arguments,
             distinct,
             ..
         } = self.call(function)?;
-        self.reject_if_present(at, distinct, "DISTINCT on date_bin");
+        self.reject_if_present(at, distinct, "DISTINCT on buckets");
         let [
-            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
         ] = arguments
         else {
             self.refuse(
                 at,
-                "date_bin arguments in an ask, write date_bin('<width>', <time>),",
+                "buckets arguments in an ask, write buckets(<time>, '<width>'),",
                 function,
             );
             return Err(Reported);
         };
         let parsed = width_literal(width);
         if let Err(fix) = &parsed {
-            self.error(line(width), format!("date_bin width {width}: {fix}"));
+            self.error(line(width), format!("bucket width {width}: {fix}"));
         }
         let sql::Expr::Identifier(identifier) = column else {
-            let message = format!("date_bin in an ask reads the view's time by name, not {column}");
+            let message = format!("buckets in an ask reads the view's time by name, not {column}");
             self.error(line(column), message);
             return Err(Reported);
         };
@@ -462,7 +469,7 @@ impl Walker {
         conditions
     }
 
-    /// A key or measure by the name the view gives it; `date_bin` goes
+    /// A key or measure by the name the view gives it; `buckets` goes
     /// only in SELECT and GROUP BY.
     pub(super) fn ask_name(&mut self, expression: &sql::Expr) -> Result<Identifier, Reported> {
         match self.ask_key(expression)? {
@@ -470,7 +477,7 @@ impl Walker {
             AskKey::WiderBucket { .. } => {
                 self.error(
                     line(expression),
-                    "date_bin goes only in SELECT and GROUP BY".into(),
+                    "buckets goes only in SELECT and GROUP BY".into(),
                 );
                 Err(Reported)
             }

@@ -321,8 +321,8 @@ conditions; its range is two bucket edges with `from < to`. An
 **Answer** is one column per key and measure and one row per group.
 
 - `Spec::check_ask` resolves names, finds the time by its name
-  (`Fact::time_width`), refuses two time keys, a `date_bin` row width
-  the view doesn't keep, `date_bin` or range bounds on a name that is
+  (`Fact::time_width`), refuses two time keys, a `buckets` row width
+  the view doesn't keep, `buckets` or range bounds on a name that is
   not the time (`AskError::NotTime`), the time in `WHERE`, a name
   asked twice, an empty range and a bound off an edge of the row
   width. The
