@@ -11,10 +11,10 @@ answers asks about them over HTTP in microseconds
 PostgreSQL stays the source of truth; Straum keeps nothing on disk.
 
 On six months of New York taxi trips, 20,332,093 of them, tips by
-dropoff borough take PostgreSQL 1,765.8 ms and Straum 213 µs, 8,272x
+dropoff borough take PostgreSQL 1,746.0 ms and Straum 225 µs, 7,754x
 faster. One run on an Apple M2 Pro with 16 GB, on 2026-11-19. The
 [performance](https://janbjorge.github.io/straum/performance.html) page
-has every ask, including the median fare, which takes Straum 25.1 ms.
+has every ask, including the median fare, which takes Straum 25.2 ms.
 
 `bench/demo.py` loads January and times trips by pickup borough on your
 machine, then inserts a trip, deletes it, and moves two zones into a

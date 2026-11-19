@@ -149,12 +149,15 @@ impl Store {
         let mut filter = self.condition_checks(fact, read, &fact.filter, cells);
         filter.extend(self.condition_checks(fact, read, &ask.filter, cells));
         let mut measures = Vec::with_capacity(asked.len());
-        for measure in asked {
-            measures.push(Asked {
+        for (position, measure) in asked.iter().enumerate() {
+            let mut next = Asked {
                 partials: Partials::new(&measure.aggregate),
                 state: rollup.state_of(&measure.aggregate),
                 filter: self.condition_checks(fact, read, &measure.filter, cells),
-            });
+                shares: None,
+            };
+            next.share_tally(&mut measures, asked, position);
+            measures.push(next);
         }
         if by.is_empty() {
             // As in SQL without GROUP BY: one row even when nothing matches.

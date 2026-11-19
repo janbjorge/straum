@@ -212,7 +212,8 @@ fn ask_without_by_answers_one_row() {
                 null.clone(),
                 null.clone(),
                 null.clone(),
-                // The five percentiles: of no values, none.
+                // The five percentiles and the two modes: of no values,
+                // none.
                 null.clone(),
                 null.clone(),
                 null.clone(),
@@ -220,9 +221,12 @@ fn ask_without_by_answers_one_row() {
                 null.clone(),
                 null.clone(),
                 null.clone(),
-                // The two modes, the two of distinct values and the four
-                // variances and deviations: of no values, none.
+                // A sum of distinct values, two counts of them, an
+                // average of them and the four variances and deviations:
+                // of no values, none, or none counted.
                 null.clone(),
+                zero.clone(),
+                zero.clone(),
                 null.clone(),
                 null.clone(),
                 null.clone(),

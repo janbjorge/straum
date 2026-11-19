@@ -419,9 +419,9 @@ takes.
   percentile's. Measured 2026-11-19 on the taxi trips: the distinct
   fares took 101 MiB beside the counts `max` and the percentiles keep
   on the same column. Count, sum and average of distinct fares by
-  payment type took 423.3 ms as a heap merge over every hourly cell,
-  and 24.4 ms marking each fare in a set of bits (2026-11-19). Each of
-  the three measures still marks the fares anew, and reading the
+  payment type took 423.3 ms as a heap merge over every weekly cell,
+  24.4 ms marking each fare in a set of bits once per measure, and
+  8.2 ms with the three sharing one tally (2026-11-19). Reading the
   `Extent` counts when the column has them is unbuilt.
 - `percentile_cont`: exact to PostgreSQL's bit, but a `double
   precision` answer. Add it, or keep `percentile_disc` as the median

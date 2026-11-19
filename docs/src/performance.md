@@ -23,22 +23,22 @@ answer's.
 
 | Ask | Rows | PostgreSQL | Straum | Faster |
 | --- | ---: | ---: | ---: | ---: |
-| Trips | 1 | 218.2 ms | 144 µs | 1,512x |
-| Card trips | 1 | 384.6 ms | 229 µs | 1,678x |
-| Trips by pickup borough | 8 | 1,075.4 ms | 274 µs | 3,924x |
-| Fares by payment type | 6 | 798.8 ms | 320 µs | 2,493x |
-| Fare spread by payment type | 6 | 840.3 ms | 430 µs | 1,953x |
-| Median fare | 1 | 4,835.0 ms | 25.1 ms | 193x |
-| p99 fare by payment type | 6 | 8,461.3 ms | 22.5 ms | 376x |
-| Most common fare by payment type | 6 | 9,527.1 ms | 37.2 ms | 256x |
-| Distinct fares by payment type | 6 | 10,793.2 ms | 24.4 ms | 443x |
-| Median fare per hour, one day | 24 | 48.8 ms | 653 µs | 75x |
-| Manhattan pickups, one week | 1 | 67.0 ms | 204 µs | 329x |
-| Trips per hour, one day | 24 | 16.8 ms | 173 µs | 97x |
-| Trips per hour by borough, one month | 4,454 | 947.8 ms | 2.7 ms | 351x |
-| Trips per day by borough, one month | 243 | 953.0 ms | 394 µs | 2,422x |
-| Fares per week | 31 | 2,347.7 ms | 233 µs | 10,096x |
-| Tips by dropoff borough | 8 | 1,765.8 ms | 213 µs | 8,272x |
+| Trips | 1 | 214.8 ms | 146 µs | 1,472x |
+| Card trips | 1 | 381.8 ms | 223 µs | 1,715x |
+| Trips by pickup borough | 8 | 1,058.8 ms | 269 µs | 3,938x |
+| Fares by payment type | 6 | 795.3 ms | 340 µs | 2,342x |
+| Fare spread by payment type | 6 | 839.9 ms | 437 µs | 1,921x |
+| Median fare | 1 | 4,839.8 ms | 25.2 ms | 192x |
+| p99 fare by payment type | 6 | 8,670.9 ms | 22.1 ms | 392x |
+| Most common fare by payment type | 6 | 9,550.7 ms | 36.2 ms | 264x |
+| Distinct fares by payment type | 6 | 10,972.6 ms | 8.2 ms | 1,336x |
+| Median fare per hour, one day | 24 | 47.7 ms | 669 µs | 71x |
+| Manhattan pickups, one week | 1 | 84.2 ms | 236 µs | 356x |
+| Trips per hour, one day | 24 | 16.8 ms | 164 µs | 103x |
+| Trips per hour by borough, one month | 4,454 | 964.9 ms | 2.7 ms | 358x |
+| Trips per day by borough, one month | 243 | 966.0 ms | 395 µs | 2,444x |
+| Fares per week | 31 | 2,154.9 ms | 233 µs | 9,260x |
+| Tips by dropoff borough | 8 | 1,746.0 ms | 225 µs | 7,754x |
 
 The target is under 1 ms for every ask
 ([ADR-0005](https://github.com/janbjorge/straum/blob/main/docs/adr/0005-asks-are-straum-sql-with-parameters.md));
@@ -46,7 +46,7 @@ the percentile, mode and distinct asks over every trip miss it, and so
 does the month
 of hourly rows by borough, which writes 4,454 rows.
 
-Straum was ready 14.3 s after it started and held 306 MiB resident, the
+Straum was ready 16.3 s after it started and held 305 MiB resident, the
 265 zone rows' projection included. Runs the same day held 190 MiB
 without the fare's variance, standard deviation, mode and distinct
 values, 205 MiB with the first two, and 204 MiB with the mode too: the
@@ -72,9 +72,11 @@ The percentile and mode asks are the exception. Straum gathers every
 fare of the cells in range, so their time follows the fares the range
 holds, as [Median and percentiles](aggregates.md#median-and-percentiles)
 says. The distinct ask is the same: a group by payment type over six months
-meets every hourly cell of every zone, 1,426,949 fares in 6,398 cells
+meets every weekly cell of every zone, 1,426,949 fares in 6,398 cells
 for the largest, and marks each in a set of bits from the least fare to
-the greatest. Merging them in order on a heap took 423.3 ms.
+the greatest. Count, sum and average of the distinct fares mark them
+once and share the tally. Merging them in order on a heap, once per
+measure, took 423.3 ms; marking them once per measure, 24.4 ms.
 
 Straum answers only what the views keep: these keys, on hour edges.
 PostgreSQL answers any query over the raw rows. Straum keeps its cells

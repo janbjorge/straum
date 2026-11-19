@@ -9,7 +9,7 @@ use crate::gathered::{Gathered, Pick, gathered_none};
 use crate::identifier::Identifier;
 use crate::rollup::{State, StateKind};
 use crate::spread::{Moments, SPREAD_PLACES, Spread};
-use crate::tally::{Distinct, Tallied, distinct_none};
+use crate::tally::{Distinct, Tallied, Tally, distinct_none};
 use crate::value::Value;
 use crate::wide::U256;
 
@@ -288,9 +288,12 @@ pub(crate) enum Partials<'s> {
         seen: Vec<bool>,
     },
     /// `count`, `sum` and `avg` of distinct values merge alike and part
-    /// only when finished.
+    /// only when finished. Each group's tally is kept once worked out, so
+    /// the other distinct measures of the column read it too.
     Distinct {
         seen: Vec<Distinct<'s>>,
+        tallies: Vec<Option<Tally>>,
+        tallied: Tallied,
         finish: DistinctFinish,
     },
     /// Each group's values with their counts, for a percentile or a mode.
@@ -366,6 +369,8 @@ impl<'s> Partials<'s> {
     fn distinct(finish: DistinctFinish) -> Partials<'s> {
         Partials::Distinct {
             seen: Vec::new(),
+            tallies: Vec::new(),
+            tallied: finish.tallied(),
             finish,
         }
     }
@@ -405,7 +410,10 @@ impl<'s> Partials<'s> {
                 seen.resize(lanes, false);
             }
             // A set per lane would cost a merge of sets; one per group.
-            Partials::Distinct { seen, .. } => seen.resize_with(groups, distinct_none),
+            Partials::Distinct { seen, tallies, .. } => {
+                seen.resize_with(groups, distinct_none);
+                tallies.resize(groups, None);
+            }
             Partials::Percentile { values, .. } => values.resize_with(groups, gathered_none),
             Partials::Bools { trues, falses, .. } => {
                 trues.resize(lanes, 0);
@@ -701,7 +709,10 @@ impl<'s> Partials<'s> {
                 }
                 Value::Int(most.into())
             }
-            Partials::Distinct { seen, finish } => distinct_answer(&seen[group], *finish),
+            Partials::Distinct { finish, .. } => {
+                let finish = *finish;
+                self.finish_as(group, finish)
+            }
             Partials::Percentile { pick, values } => values[group].answer(*pick),
             Partials::Bools { trues, falses, all } => {
                 let any_true = any_counted(&trues[lanes.clone()]);
@@ -716,21 +727,61 @@ impl<'s> Partials<'s> {
     }
 }
 
-/// The answer of a group's distinct values: their count, or their sum or
-/// average, null when there are none.
-fn distinct_answer(seen: &Distinct<'_>, finish: DistinctFinish) -> Value {
-    let tallied = match finish {
-        DistinctFinish::Count => Tallied::Count,
-        DistinctFinish::Sum | DistinctFinish::Avg => Tallied::CountAndSum,
-    };
-    let tally = seen.tally(tallied);
-    match finish {
-        DistinctFinish::Count => Value::Int(tally.count as i128),
-        _ if tally.count == 0 => Value::Null,
-        DistinctFinish::Sum => Value::Int(tally.sum),
-        DistinctFinish::Avg => Value::Avg {
-            sum: tally.sum,
-            count: tally.count as u64,
-        },
+impl DistinctFinish {
+    /// What a tally must hold to give this answer.
+    fn tallied(self) -> Tallied {
+        match self {
+            DistinctFinish::Count => Tallied::Count,
+            DistinctFinish::Sum | DistinctFinish::Avg => Tallied::CountAndSum,
+        }
+    }
+}
+
+impl Partials<'_> {
+    /// The answer a distinct measure gives, when this is one.
+    pub(crate) fn distinct_finish(&self) -> Option<DistinctFinish> {
+        match self {
+            Partials::Distinct { finish, .. } => Some(*finish),
+            _ => None,
+        }
+    }
+
+    /// Readies these distinct partials to give `finish` as well, from the
+    /// same tallies.
+    pub(crate) fn share(&mut self, finish: DistinctFinish) {
+        let Partials::Distinct { tallied, .. } = self else {
+            unreachable!("only distinct partials are shared");
+        };
+        if let Tallied::CountAndSum = finish.tallied() {
+            *tallied = Tallied::CountAndSum;
+        }
+    }
+
+    /// Group `group`'s distinct values as `finish` gives them: their
+    /// count, or their sum or average, null when there are none. The
+    /// tally is worked out on first ask and kept.
+    pub(crate) fn finish_as(&mut self, group: usize, finish: DistinctFinish) -> Value {
+        let Partials::Distinct {
+            seen,
+            tallies,
+            tallied,
+            ..
+        } = self
+        else {
+            unreachable!("only distinct partials are shared");
+        };
+        if tallies[group].is_none() {
+            tallies[group] = Some(seen[group].tally(*tallied));
+        }
+        let tally = tallies[group].expect("worked out above");
+        match finish {
+            DistinctFinish::Count => Value::Int(tally.count as i128),
+            _ if tally.count == 0 => Value::Null,
+            DistinctFinish::Sum => Value::Int(tally.sum),
+            DistinctFinish::Avg => Value::Avg {
+                sum: tally.sum,
+                count: tally.count as u64,
+            },
+        }
     }
 }

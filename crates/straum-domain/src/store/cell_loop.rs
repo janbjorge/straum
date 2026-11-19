@@ -9,7 +9,7 @@ use crate::ask::Ask;
 use crate::hash::FastMap;
 use crate::projection::{AttributeIndex, Projection};
 use crate::rollup::{Cells, Cover, InputIndex, PartIndex, Rollup, State};
-use crate::spec::RefKind;
+use crate::spec::{Measure, RefKind};
 use crate::value::{Datum, Value};
 
 use super::ask::{HavingCheck, buckets, meets};
@@ -38,6 +38,41 @@ pub(super) struct Asked<'s> {
     pub(super) state: Option<InputIndex>,
     /// The measure's own `FILTER`.
     pub(super) filter: Vec<ConditionCheck<'s>>,
+    /// An earlier measure whose distinct values this one reads, merging
+    /// none of its own: `count`, `sum` and `avg` of one column's distinct
+    /// values under one `FILTER` tally them once.
+    pub(super) shares: Option<AskedIndex>,
+}
+
+/// A measure's place among those an ask names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AskedIndex(pub(super) usize);
+
+impl<'s> Asked<'s> {
+    /// Points this measure, `asked[position]`, at the first of `measures`
+    /// that tallies the same distinct values: the same column's state
+    /// under the same `FILTER`.
+    pub(super) fn share_tally(
+        &mut self,
+        measures: &mut [Asked<'s>],
+        asked: &[&Measure],
+        position: usize,
+    ) {
+        let Some(finish) = self.partials.distinct_finish() else {
+            return;
+        };
+        for (earlier, measure) in measures.iter_mut().enumerate() {
+            let alike = measure.shares.is_none()
+                && measure.state == self.state
+                && measure.partials.distinct_finish().is_some()
+                && asked[earlier].filter == asked[position].filter;
+            if alike {
+                measure.partials.share(finish);
+                self.shares = Some(AskedIndex(earlier));
+                return;
+            }
+        }
+    }
 }
 
 fn state_in(cells: &Cells, input: Option<InputIndex>) -> Option<&State> {
@@ -70,6 +105,9 @@ impl<'s> CellLoop<'s> {
             }
             (self.groups).assign(&mut self.by, rollup, cells, &mut cell_groups);
             for measure in &mut self.measures {
+                if measure.shares.is_some() {
+                    continue;
+                }
                 measure.partials.grow(self.groups.len());
                 let read = if measure.filter.is_empty() {
                     &cell_groups
@@ -113,6 +151,9 @@ impl<'s> CellLoop<'s> {
         }
         let group = groups.insert();
         for measure in &mut self.measures {
+            if measure.shares.is_some() {
+                continue;
+            }
             measure.partials.grow(groups.len());
             if all_hold(&mut measure.filter, rollup, cells, cell, row) {
                 let state = state_in(cells, measure.state);
@@ -198,15 +239,23 @@ fn finish_where(
     group: usize,
     values: &mut [Value],
 ) {
-    for (position, measure) in measures.iter_mut().enumerate() {
+    for position in 0..measures.len() {
         let kind = if checked[position] {
             Which::Checked
         } else {
             Which::Unchecked
         };
-        if kind == which {
-            values[position] = measure.partials.finish(group);
+        if kind != which {
+            continue;
         }
+        values[position] = match measures[position].shares {
+            Some(AskedIndex(source)) => {
+                let finish = measures[position].partials.distinct_finish();
+                let finish = finish.expect("only a distinct measure shares");
+                measures[source].partials.finish_as(group, finish)
+            }
+            None => measures[position].partials.finish(group),
+        };
     }
 }
 
