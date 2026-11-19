@@ -2,6 +2,8 @@
 //! `Command` it names or the `Usage` error it is, and the help checked
 //! against the flags and defaults the code takes.
 
+use std::time::Instant;
+
 use super::*;
 
 /// A command line read with no `STRAUM_URL` set.
@@ -614,6 +616,28 @@ fn the_timeout_is_the_flag_else_ten_seconds() {
     );
 }
 
+/// A timeout is added to the clock: one past the maximum is refused on
+/// the command line, before it can overflow the deadline.
+#[test]
+fn the_timeout_has_a_maximum() {
+    let most = MAX_TIMEOUT.as_secs();
+    assert!(
+        TIMEOUT_TAKES.ends_with(&format!(" {most}")),
+        "{TIMEOUT_TAKES}"
+    );
+    let Ok(Command::Status { server, .. }) = command_of(&args(&format!("status --timeout {most}")))
+    else {
+        panic!("status --timeout {most}");
+    };
+    assert_eq!(server.timeout, MAX_TIMEOUT);
+    assert!(Instant::now().checked_add(server.timeout).is_some());
+    for timeout in [most + 1, u64::MAX] {
+        let line = format!("status --timeout {timeout}");
+        let error = format!("--timeout takes {TIMEOUT_TAKES}, not \"{timeout}\"");
+        assert_eq!(usage(&line), error, "{timeout}");
+    }
+}
+
 #[test]
 fn number_flags_say_what_they_take() {
     for lag in ["0", "-1", "1.5", "30s", ""] {
@@ -627,7 +651,7 @@ fn number_flags_say_what_they_take() {
     }
     for timeout in ["0", "-1", "1.5", "10s"] {
         let line = format!("status --timeout {timeout}");
-        let error = format!("--timeout takes whole seconds above 0, not {timeout:?}");
+        let error = format!("--timeout takes {TIMEOUT_TAKES}, not {timeout:?}");
         assert_eq!(usage(&line), error, "{timeout}");
     }
     for size in ["0", "0Gi", "4GB", "4gi", "Gi", "16777216Ti"] {
@@ -661,7 +685,7 @@ fn reads_sizes() {
 
 /// Pieces a command line is built from: every command and flag, the
 /// shapes values take, and the characters a parser trips on.
-const PIECES: [&str; 32] = [
+const PIECES: [&str; 33] = [
     "run",
     "plan",
     "--copy",
@@ -689,6 +713,7 @@ const PIECES: [&str; 32] = [
     "4Gi",
     "0",
     "-7",
+    "18446744073709551615",
     "http://x:1",
     "SELECT",
     "$1",
@@ -735,11 +760,17 @@ impl Words {
     }
 }
 
-/// Everything a command line reaches: the parse, the error's words, and
-/// the help it may ask for.
+/// Everything a command line reaches: the parse, the error's words, the
+/// help it may ask for, and the deadline a timeout sets.
 fn read_all_of(words: &[String], environment: &Environment) {
     match command(words, environment) {
         Ok(Command::Help(Some(name))) => assert_ne!(name.help(), ""),
+        Ok(
+            Command::Status { server, .. }
+            | Command::Views { server, .. }
+            | Command::Ask { server, .. }
+            | Command::Shell { server },
+        ) => assert!(Instant::now().checked_add(server.timeout).is_some()),
         Ok(_) => {}
         Err(usage) => assert_ne!(usage.to_string(), ""),
     }

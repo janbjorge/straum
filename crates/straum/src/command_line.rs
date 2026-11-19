@@ -47,6 +47,11 @@ const MAX_TRANSACTION_ROWS: usize = 100_000;
 /// Rows a physical stream holds before Straum stops: a guard, far above
 /// what a checkpoint cycle's pages and open transactions take.
 const MAX_PAGE_MEMORY: usize = 1 << 30;
+/// The longest `--timeout`: a day. A timeout is added to the clock, and
+/// one near `u64::MAX` seconds would overflow it.
+const MAX_TIMEOUT: Duration = Duration::from_hours(24);
+/// What `--timeout` takes, as its error says.
+const TIMEOUT_TAKES: &str = "whole seconds from 1 to 86400";
 
 /// A command's name, the first word after `straum`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -703,7 +708,7 @@ impl Flags {
     fn server(&self, default: &str) -> Result<Server, UsageError> {
         Ok(Server {
             url: self.text_or("--url", default),
-            timeout: self.parsed("--timeout", TIMEOUT, seconds, "whole seconds above 0")?,
+            timeout: self.parsed("--timeout", TIMEOUT, timeout, TIMEOUT_TAKES)?,
         })
     }
 
@@ -736,6 +741,14 @@ fn positive(text: &str) -> Option<u64> {
 
 fn seconds(text: &str) -> Option<Duration> {
     positive(text).map(Duration::from_secs)
+}
+
+fn timeout(text: &str) -> Option<Duration> {
+    let timeout = seconds(text)?;
+    if timeout > MAX_TIMEOUT {
+        return None;
+    }
+    Some(timeout)
 }
 
 fn count(text: &str) -> Option<usize> {

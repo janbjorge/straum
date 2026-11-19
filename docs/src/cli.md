@@ -17,7 +17,8 @@ and ends with `try: --url URL, or set STRAUM_URL`. The URL is where
 Straum listens, reached directly: plain HTTP, no TLS, and no proxy
 that rewrites the reply into chunks, which the client refuses. Each
 request waits at most `--timeout` seconds for the whole exchange.
-Connecting, sending and the reply share that one wait: 10 unless told.
+Connecting, sending and the reply share that one wait: 10 unless told,
+and at most 86400, a day.
 A byte arriving inside the wait does not start it again. The shell
 reads the views before each prompt, so each prompt may wait that long
 on a Straum that has stopped answering.
