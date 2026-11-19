@@ -31,8 +31,9 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Write the `GROUP BY` your app runs most ([Spec](spec.md)). The file
-must be named `usage.sql`, whatever its views are called.
+Change the tables, keys and measures to the `GROUP BY` your app runs
+most; [Spec](spec.md) has every rule. The file must be named
+`usage.sql`, whatever its views are called.
 
 ## 2. Run
 
@@ -111,20 +112,25 @@ keys or defaults. The file in the repository is
 ## Copy once, from a clone
 
 Step 2 reads your database each time. From a clone of the repository,
-make the copy once and load it as often as you like. This also lets
-you try the [physical stream](postgresql.md#physical-wal):
+make the copy once and load it as often as you like. You need the
+[`straum` binary](deploy.md#get-straum), `psql`, `just`,
+[uv](https://docs.astral.sh/uv/) and Docker with Compose:
 
 ```sh
 straum plan usage.sql --copy copy
-psql -f copy/export.sql
+psql "$DATABASE_URL" -f copy/export.sql
 just try usage.sql --data copy
 ```
 
 [`straum plan --copy`](cli.md#straum-plan) writes the scripts into
-`copy/`, `psql` runs the export on the database your `PG*` variables
-name, and
-`just try` loads `copy/` and opens the shell. `just try --help` lists
-its flags.
+`copy/`, `psql` runs the export on your database, and `just try` loads
+`copy/` into a new PostgreSQL, starts Straum and opens the shell. It
+prints the port Straum answers on, which Docker picks unless `--port`
+names one. Leaving the shell removes both containers.
+
+`--wal physical` has Straum read the
+[physical WAL](postgresql.md#physical-wal) in place of logical
+decoding. `just try --help` lists the other flags.
 
 ## On the database itself
 
