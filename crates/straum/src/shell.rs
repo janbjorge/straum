@@ -21,13 +21,13 @@ use std::ffi::OsString;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hint, Hinter, HistoryHinter};
-use rustyline::history::DefaultHistory;
+use rustyline::history::{DefaultHistory, History};
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{CompletionType, Config, Context, Editor};
 
@@ -309,25 +309,37 @@ pub(crate) fn interactive(server: &Server) -> Result<(), ReadlineError> {
     editor.set_helper(Some(Names { views: Vec::new() }));
     let history = history_file(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     if let Some(file) = &history {
-        // There is none before the first session.
+        // There is none before the first session, nor its directory.
         editor.load_history(file).ok();
-    }
-    println!("Straum at {server}. Tab completes; \\? lists the commands, \\q leaves.");
-    let result = prompt_until_leaving(server, &mut editor);
-    if let Some(file) = &history {
-        // A history that can't be kept, as on a read-only disk, is lost
-        // and nothing else.
         if let Some(directory) = file.parent() {
             fs::create_dir_all(directory).ok();
         }
-        editor.save_history(file).ok();
     }
-    result
+    println!("Straum at {server}. Tab completes; \\? lists the commands, \\q leaves.");
+    prompt_until_leaving(server, &mut editor, history.as_deref())
+}
+
+/// Adds a line entered to the history and saves the history at once:
+/// Ctrl-C while an ask runs ends the process, and with it every line
+/// not yet saved.
+fn keep_entered(
+    history: &mut DefaultHistory,
+    line: &str,
+    file: Option<&Path>,
+) -> Result<(), ReadlineError> {
+    history.add(line)?;
+    if let Some(file) = file {
+        // A history that can't be kept, as on a read-only disk, is lost
+        // and nothing else.
+        history.save(file).ok();
+    }
+    Ok(())
 }
 
 fn prompt_until_leaving(
     server: &Server,
     editor: &mut Editor<Names, DefaultHistory>,
+    history: Option<&Path>,
 ) -> Result<(), ReadlineError> {
     loop {
         // Read again before each line: a view's buckets move on.
@@ -341,7 +353,7 @@ fn prompt_until_leaving(
             Err(ReadlineError::Eof) => return Ok(()),
             Err(error) => return Err(error),
         };
-        editor.add_history_entry(line.trim())?;
+        keep_entered(editor.history_mut(), line.trim(), history)?;
         match answer(server, line.trim(), Timings::Shown) {
             Outcome::Leave => return Ok(()),
             Outcome::Print(text) => print!("{text}"),
@@ -436,7 +448,6 @@ mod tests {
     use super::*;
     use crate::complete::read_views;
     use crate::testing::{GET_ROWS, GET_VIEWS, POST_ASK, POST_ASK_SPACED, answering, server};
-    use rustyline::history::History;
 
     #[test]
     fn rustyline_is_given_the_candidates_and_the_hint() {
@@ -636,6 +647,36 @@ mod tests {
         assert_eq!(history(Some(""), Some("")), None);
         assert_eq!(history(None, Some("home")), None);
         assert_eq!(history(None, None), None);
+    }
+
+    /// The lines a history file holds, read as the next session reads it.
+    fn saved(file: &Path) -> Vec<String> {
+        let mut loaded = DefaultHistory::new();
+        loaded.load(file).unwrap();
+        let mut lines = Vec::new();
+        for line in loaded.iter() {
+            lines.push(line.clone());
+        }
+        lines
+    }
+
+    #[test]
+    fn each_line_entered_is_saved_at_once() {
+        let file = std::env::temp_dir().join(format!("straum-history-{}", std::process::id()));
+        fs::remove_file(&file).ok();
+        let mut history = DefaultHistory::new();
+        keep_entered(&mut history, "\\d", Some(&file)).unwrap();
+        assert_eq!(saved(&file), ["\\d"]);
+        keep_entered(&mut history, "SELECT trips FROM trips;", Some(&file)).unwrap();
+        assert_eq!(saved(&file), ["\\d", "SELECT trips FROM trips;"]);
+        fs::remove_file(&file).unwrap();
+        // With no file the line is kept for this session alone, and a
+        // file that can't be written loses the line and nothing else.
+        keep_entered(&mut history, "\\q", None).unwrap();
+        let unwritable = file.join("history");
+        keep_entered(&mut history, "\\rows trips", Some(&unwritable)).unwrap();
+        assert!(!file.exists());
+        assert_eq!(history.len(), 4);
     }
 
     #[test]

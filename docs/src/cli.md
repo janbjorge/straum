@@ -276,7 +276,8 @@ ends at the line that holds its semicolon, so its parameters go on that
 line. Without a semicolon, Enter starts another line of the ask, and a
 blank line sends it with no parameters. The semicolon is the shell's:
 it never reaches Straum, which refuses one at the end of an ask. Ctrl-C
-drops the lines typed so far.
+at the prompt drops the lines typed so far. While a command runs,
+Ctrl-C ends the shell, and the commands entered are still kept.
 
 ```text
 straum> SELECT payment_type, trips
@@ -314,9 +315,10 @@ the buckets held. It offers what is likely next; Straum still checks
 the ask. A completed word ends in a space, so the next is typed straight
 on, and where the candidates differ the first Tab lists them.
 
-The commands entered are kept in `$XDG_STATE_HOME/straum/history`,
-`~/.local/state/straum/history` unless that variable is set; without a
-home directory, as in the image, they are not kept. The last command
+The commands entered are kept, each as it is entered, in
+`$XDG_STATE_HOME/straum/history`, `~/.local/state/straum/history`
+unless that variable is set; without a home directory, as in the
+image, they are not kept. The last command
 entered that starts as the one being typed shows dimmed past the
 cursor, and the right arrow takes it; with none, a dimmed hint says
 what the next parameter is. Ctrl-R searches the commands entered.
