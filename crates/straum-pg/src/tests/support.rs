@@ -228,7 +228,7 @@ pub(super) fn start(service: Service) -> Stack {
 pub(super) struct Db {
     pub(super) connection: Connection,
     pub(super) name: String,
-    pub(super) dsn: Dsn,
+    pub(crate) dsn: Dsn,
 }
 
 impl Db {
@@ -588,7 +588,7 @@ impl Rng {
 }
 
 /// A message as PostgreSQL frames it: tag, length counting itself, body.
-pub(super) fn message(tag: u8, body: &[u8]) -> Vec<u8> {
+pub(crate) fn message(tag: u8, body: &[u8]) -> Vec<u8> {
     let length = i32::try_from(body.len() + 4).unwrap();
     let mut framed = vec![tag];
     framed.extend(length.to_be_bytes());
@@ -597,7 +597,7 @@ pub(super) fn message(tag: u8, body: &[u8]) -> Vec<u8> {
 }
 
 /// `AuthenticationOk`, then `ReadyForQuery`.
-pub(super) fn signed_in() -> Vec<u8> {
+pub(crate) fn signed_in() -> Vec<u8> {
     let mut messages = message(b'R', &0_i32.to_be_bytes());
     messages.extend(message(b'Z', b"I"));
     messages
@@ -630,31 +630,31 @@ pub(super) fn error_response(code: &str, text: &str) -> Vec<u8> {
 }
 
 /// Bytes a fake server writes once `pause` has passed.
-pub(super) struct Part {
+pub(crate) struct Part {
     pause: Duration,
     bytes: Vec<u8>,
 }
 
 /// `bytes`, written at once.
-pub(super) fn now(bytes: Vec<u8>) -> Part {
+pub(crate) fn now(bytes: Vec<u8>) -> Part {
     later(Duration::ZERO, bytes)
 }
 
 /// `bytes`, written after `pause`.
-pub(super) fn later(pause: Duration, bytes: Vec<u8>) -> Part {
+pub(crate) fn later(pause: Duration, bytes: Vec<u8>) -> Part {
     Part { pause, bytes }
 }
 
 /// A fake server's address, and the thread that returns what the client
 /// sent it.
-pub(super) struct FakeServer {
-    pub(super) dsn: Dsn,
-    pub(super) received: thread::JoinHandle<Vec<u8>>,
+pub(crate) struct FakeServer {
+    pub(crate) dsn: Dsn,
+    pub(crate) received: thread::JoinHandle<Vec<u8>>,
 }
 
 /// A fake for PostgreSQL: writes each part after its pause, then stops
 /// writing, reads until the client hangs up and returns what it sent.
-pub(super) fn scripted(parts: Vec<Part>) -> FakeServer {
+pub(crate) fn scripted(parts: Vec<Part>) -> FakeServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let received = thread::spawn(move || serve(&listener, parts));

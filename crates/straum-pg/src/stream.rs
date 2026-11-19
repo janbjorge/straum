@@ -93,6 +93,21 @@ struct Shared {
     sight: Mutex<Option<Sight>>,
 }
 
+impl Shared {
+    /// Nothing queued, nothing failed, everything before `start` applied.
+    fn new(start: Lsn) -> Shared {
+        Shared {
+            applied: AtomicU64::new(start.0),
+            stop: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+            queued_changes: AtomicUsize::new(0),
+            consistency: Mutex::new(Consistency::Unknown),
+            snapshot: Mutex::new(None),
+            sight: Mutex::new(None),
+        }
+    }
+}
+
 impl Stream {
     /// Takes over a connection on which `START_REPLICATION` has begun,
     /// streaming from `start`.
@@ -104,15 +119,7 @@ impl Stream {
         connection.set_read_timeout(POLL)?;
         let closer = connection.closer()?;
         let (commits, receiver) = mpsc::sync_channel(QUEUE);
-        let shared = Arc::new(Shared {
-            applied: AtomicU64::new(start.0),
-            stop: AtomicBool::new(false),
-            failed: AtomicBool::new(false),
-            queued_changes: AtomicUsize::new(0),
-            consistency: Mutex::new(Consistency::Unknown),
-            snapshot: Mutex::new(None),
-            sight: Mutex::new(None),
-        });
+        let shared = Arc::new(Shared::new(start));
         let thread = StreamThread {
             connection,
             reader,
@@ -151,11 +158,19 @@ impl Stream {
         }
         loop {
             match self.commits.recv_timeout(FAILURE_WAIT) {
-                Ok(Ok(_)) => {}
+                // Counted out, so the error the thread holds back finds room.
+                Ok(Ok(commit)) => self.count_out(&commit),
                 Ok(Err(error)) => return Err(error),
                 Err(_) => return Err(Error::Stopped),
             }
         }
+    }
+
+    /// Takes `commit`'s changes off the count of those queued.
+    fn count_out(&self, commit: &Commit) {
+        self.shared
+            .queued_changes
+            .fetch_sub(commit.changes.len(), Ordering::AcqRel);
     }
 
     /// The next commit, waiting at most `wait` for one.
@@ -164,10 +179,7 @@ impl Stream {
         match self.commits.recv_timeout(wait) {
             Ok(Ok(commit)) => {
                 self.applied = commit.lsn;
-                let changes = commit.changes.len();
-                self.shared
-                    .queued_changes
-                    .fetch_sub(changes, Ordering::AcqRel);
+                self.count_out(&commit);
                 Ok(Some(commit))
             }
             Ok(Err(error)) => Err(error),
@@ -260,10 +272,15 @@ struct StreamThread {
 impl StreamThread {
     fn run(mut self) {
         if let Err(error) = self.serve() {
-            self.shared.failed.store(true, Ordering::Release);
-            // The writer may be gone, or the connection with it.
-            let _ = self.deliver(Err(error));
+            self.fail(error);
         }
+    }
+
+    /// Says the stream failed and queues `error` for the writer.
+    fn fail(&mut self, error: Error) {
+        self.shared.failed.store(true, Ordering::Release);
+        // The writer may be gone, or the connection with it.
+        let _ = self.deliver(Err(error));
     }
 
     fn serve(&mut self) -> Result<(), Error> {
@@ -444,6 +461,78 @@ const STATUS_UPDATE_SIZE: usize = 1 + 8 * STATUS_UPDATE_POSITIONS + 8 + 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::support::{now, scripted, signed_in};
+    use crate::wire::ConnectionKind;
+    use straum_app::Change;
+    use straum_domain::Identifier;
+
+    /// A commit of `count` inserts into one table.
+    fn commit_of(count: usize) -> Commit {
+        let table = Identifier::new("trips").unwrap();
+        let mut changes = Vec::new();
+        for _ in 0..count {
+            let row = Vec::new();
+            let table = table.clone();
+            changes.push(Change::Insert { table, row });
+        }
+        Commit {
+            lsn: Lsn(0x20),
+            committed: SystemTime::now(),
+            changes,
+        }
+    }
+
+    /// The writer's end and the thread's end of a stream from a fake
+    /// server, the thread's end not yet running.
+    fn ends() -> (Stream, StreamThread) {
+        let server = scripted(vec![now(signed_in())]);
+        let connection = Connection::connect(&server.dsn, ConnectionKind::Sql).unwrap();
+        let closer = connection.closer().unwrap();
+        let (commits, receiver) = mpsc::sync_channel(QUEUE);
+        let shared = Arc::new(Shared::new(Lsn(0)));
+        let thread = StreamThread {
+            connection,
+            reader: Reader::Logical(Decoder::new(Vec::new(), 1)),
+            commits,
+            shared: Arc::clone(&shared),
+            sent: 0,
+            idle: 0,
+            reported: 0,
+            last_report: Instant::now(),
+        };
+        let stream = Stream {
+            commits: receiver,
+            shared,
+            closer,
+            others: Vec::new(),
+            thread: None,
+            applied: Lsn(0),
+        };
+        (stream, thread)
+    }
+
+    /// Once the load's check takes the commits queued before a failure,
+    /// the error after them fits and the check gives it, not a stream that
+    /// merely stopped: after a commit past the bound, and after a small one.
+    #[test]
+    fn a_check_gives_the_error_after_the_commits_queued() {
+        for count in [QUEUED_CHANGES + 1, 1] {
+            let (mut stream, mut thread) = ends();
+            let handle = thread::spawn(move || {
+                assert!(thread.deliver(Ok(commit_of(count))).unwrap());
+                thread.fail(Error::Protocol(Unexpected::StreamEnded));
+            });
+            stream.thread = Some(handle);
+            while !stream.shared.failed.load(Ordering::Acquire) {
+                thread::sleep(WAIT);
+            }
+            let error = stream.check().unwrap_err().to_string();
+            assert_eq!(
+                error, "PostgreSQL sent a message that ended the stream",
+                "{count}"
+            );
+        }
+    }
 
     /// The queue takes commits until their changes reach the bound, and
     /// a commit past the bound on its own into an empty queue, so a big
