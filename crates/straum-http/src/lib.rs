@@ -4,6 +4,9 @@
 //! files each write one kind of reply: `answer.rs` an answer, `views.rs`
 //! the views, `status.rs` the status; `ask.rs` and `json.rs` read an ask.
 //!
+//! On loopback a request whose `Host` names another machine or port gets
+//! 421 (see `host.rs`).
+//!
 //! - `POST /ask`: a query and its parameters as JSON (see `ask.rs`), the
 //!   query read by the `AskSyntax` that `serve` is given; the answer as JSON
 //!   (see `answer.rs`), with the LSN it reflects in `Straum-LSN` and where
@@ -32,6 +35,7 @@
 
 mod answer;
 mod ask;
+mod host;
 mod json;
 mod routes;
 mod status;
@@ -53,6 +57,8 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use straum_app::App;
 use straum_domain::{Ask, AskError, Definition, Literal};
+
+use crate::host::Hosts;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -110,6 +116,7 @@ pub async fn serve(
     definitions: Vec<Definition>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
+    let hosts = Hosts::of(listener.local_addr()?);
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
     let app = Arc::new(app);
@@ -126,7 +133,7 @@ pub async fn serve(
         match accepted {
             None => break,
             Some(Ok((stream, _))) => {
-                spawn_connection(stream, &app, syntax, &definitions, &graceful);
+                spawn_connection(stream, &app, syntax, &definitions, hosts, &graceful);
             }
             Some(Err(_)) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
@@ -218,6 +225,7 @@ fn spawn_connection(
     app: &Arc<App>,
     syntax: AskSyntax,
     definitions: &Arc<[Definition]>,
+    hosts: Hosts,
     graceful: &GracefulShutdown,
 ) {
     // Nagle would hold an answer's second write until the client acks
@@ -228,7 +236,13 @@ fn spawn_connection(
     // hyper takes the handler as a closure; each request gets its own
     // handle on the app and the definitions.
     let service = service_fn(move |request| {
-        routes::handle(request, Arc::clone(&app), syntax, Arc::clone(&definitions))
+        routes::handle(
+            request,
+            Arc::clone(&app),
+            syntax,
+            Arc::clone(&definitions),
+            hosts,
+        )
     });
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())

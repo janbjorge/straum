@@ -62,6 +62,14 @@ application/json` ([errors](asks.md#errors)). A browser sends a form
 or plain text to any site without asking first, but not JSON, so a page
 on another site can't make a visitor's browser run asks.
 
+On loopback Straum answers only a request whose `Host` is
+`localhost`, `127.0.0.1`, `[::1]` or the address it listens on, with
+its port; any other gets 421 Misdirected Request on every endpoint. A
+page whose name an attacker points at 127.0.0.1 (DNS rebinding) makes
+the browser send that name, so it can't read a Straum on a laptop. On
+any other address, `0.0.0.0` too, every `Host` is answered: whoever
+reaches the port can ask anyway, by whatever name points at it.
+
 ## States
 
 ![The states of a running Straum](diagrams/lifecycle.svg)

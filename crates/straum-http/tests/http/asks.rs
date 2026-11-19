@@ -363,8 +363,11 @@ fn asks_straum_cant_answer() {
 fn a_stalled_body_times_out() {
     let server = serve(writer().app().clone());
     let mut stream = TcpStream::connect(server.address).unwrap();
-    let head = "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-type: application/json\r\n\
-        content-length: 100\r\n\r\n";
+    let head = format!(
+        "POST /ask HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\n\
+         content-length: 100\r\n\r\n",
+        server.address
+    );
     stream.write_all(head.as_bytes()).unwrap();
     stream.write_all(br#"{"query":"#).unwrap();
     let clock = Instant::now();
@@ -397,8 +400,11 @@ fn ask_bodies_too_big_or_broken_are_refused() {
     // A chunked body that breaks off.
     let reply = send(
         server.address,
-        "POST /ask HTTP/1.1\r\nhost: straum\r\ncontent-type: application/json\r\n\
-         transfer-encoding: chunked\r\n\r\nzz\r\n",
+        &format!(
+            "POST /ask HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\n\
+             transfer-encoding: chunked\r\n\r\nzz\r\n",
+            server.address
+        ),
     );
     assert_eq!(reply.status, 400);
     assert!(

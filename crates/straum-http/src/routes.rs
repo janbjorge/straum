@@ -1,5 +1,6 @@
 //! The route handlers: `handle` takes one request from the server loop in
-//! `lib.rs`, picks the handler by method and path, and returns the reply.
+//! `lib.rs`, refuses it if its `Host` is not one `host.rs` allows, picks
+//! the handler by method and path, and returns the reply.
 //! An ask sent as JSON goes body, then `ask.rs`, then the `AskSyntax`, then
 //! the app on a blocking thread, then `answer.rs`; the other routes read the app and
 //! hand what they read to `status.rs` or `views.rs`, or reply with a
@@ -12,11 +13,12 @@ use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
+use hyper::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use straum_app::{AnswerError, App, Lsn};
 use straum_domain::{Ask, Definition, Start, Window};
 
+use crate::host::Hosts;
 use crate::json::quoted;
 use crate::{AskSyntax, DescribeAskError, answer, ask, status, views};
 
@@ -114,8 +116,15 @@ pub(crate) async fn handle(
     app: Arc<App>,
     syntax: AskSyntax,
     definitions: Arc<[Definition]>,
+    hosts: Hosts,
 ) -> Result<Reply, Infallible> {
     let (parts, body) = request.into_parts();
+    // 421, as for a name this server does not serve: the request was not
+    // meant for it. 403 would say the client lacks a right it could have.
+    let host = parts.headers.get(HOST).map(HeaderValue::as_bytes);
+    if let Some(refusal) = hosts.refusal(host) {
+        return Ok(text(StatusCode::MISDIRECTED_REQUEST, refusal));
+    }
     let accept = parts.headers.get(ACCEPT);
     let reply = match (&parts.method, parts.uri.path()) {
         (&Method::POST, "/ask") => {

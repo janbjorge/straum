@@ -2,16 +2,18 @@
 //! fills the app, `serve` runs `straum_http::serve` on a thread of its
 //! own, and the tests send raw HTTP/1.1 and read the reply back. This file
 //! holds the server and the request helpers; the tests are split by route:
-//! `asks.rs`, `views.rs` and `health.rs`.
+//! `asks.rs`, `views.rs` and `health.rs`, and the `Host` a request may
+//! name in `hosts.rs`.
 
 mod asks;
 mod fake;
 mod health;
+mod hosts;
 mod views;
 
 use std::fmt::Write as _;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::ops::Range;
 use std::thread::{self, JoinHandle};
 
@@ -66,8 +68,15 @@ fn serve_with(app: App, read_ask: ReadAsk) -> Server {
 }
 
 fn serve_in(app: App, syntax: AskSyntax) -> Server {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
+    serve_on(app, syntax, "127.0.0.1:0")
+}
+
+/// Serves `app` on `listen`, reached through loopback whatever address
+/// it listens on.
+fn serve_on(app: App, syntax: AskSyntax, listen: &str) -> Server {
+    let listener = TcpListener::bind(listen).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let (stop, stopped) = oneshot::channel::<()>();
     let thread = thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -171,7 +180,7 @@ fn request_with(
     send(
         address,
         &format!(
-            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n{lines}content-length: {length}\r\n\r\n{body}"
+            "{method} {path} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n{lines}content-length: {length}\r\n\r\n{body}"
         ),
     )
 }

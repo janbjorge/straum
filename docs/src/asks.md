@@ -266,6 +266,7 @@ timeout or fall back to `as_of`.
 | 408 | The ask's body did not come whole within 10 s of its head. |
 | 413 | The ask is over 1 MiB. |
 | 415 | `{"errors": ["an ask is JSON, sent with Content-Type: application/json"]}`: the request has no `Content-Type`, or another media type than `application/json`. Its parameters, such as `; charset=utf-8`, and its case don't matter. |
+| 421 | Straum listens on loopback and the `Host` names another machine or port, on every endpoint ([Who can ask](deploy.md#who-can-ask)). |
 | 503 | `{"errors": ["not ready"]}`: Straum is [loading](deploy.md#states). Retry after `/readyz` returns 200. |
 
 A panic in Straum ends the process rather than answering from a store

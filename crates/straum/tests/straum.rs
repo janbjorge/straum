@@ -299,8 +299,9 @@ impl Running {
         let mut stream = TcpStream::connect(self.address).unwrap();
         write!(
             stream,
-            "{method} {path} HTTP/1.1\r\nhost: straum\r\nconnection: close\r\n\
+            "{method} {path} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\n\
              content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            self.address,
             body.len()
         )
         .unwrap();
@@ -1004,8 +1005,8 @@ fn a_stop_waits_for_requests_in_flight_at_most_ten_seconds() {
         straum.wait_for("ready", &Until::Ready);
         let mut held = TcpStream::connect(straum.address).unwrap();
         // A head never ended: hyper waits 30 s for the rest.
-        held.write_all(b"POST /ask HTTP/1.1\r\nhost: straum\r\n")
-            .unwrap();
+        let unended = format!("POST /ask HTTP/1.1\r\nhost: {}\r\n", straum.address);
+        held.write_all(unended.as_bytes()).unwrap();
         thread::sleep(Duration::from_millis(200));
         let clock = Instant::now();
         straum.signal("-TERM");

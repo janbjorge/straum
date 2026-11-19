@@ -27,7 +27,8 @@ before it.
    `tuple.rs` and `messages.rs` (values and messages), `pipeline.rs`
    (all of it in a row).
 5. `straum-http`: serves asks and status over HTTP. `lib.rs` is the
-   server loop; `routes.rs` picks the handler for each request.
+   server loop; `routes.rs` picks the handler for each request, once
+   `host.rs` allows its `Host`.
 6. `straum`: the binary. `main.rs` starts it all.
 
 Every file opens with a few lines saying what it holds. Read those
