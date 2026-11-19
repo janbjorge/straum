@@ -108,6 +108,7 @@ change.
   crate, no outside crate and no `std` I/O in `straum-domain` and
   `straum-app`, an async runtime only through `straum-http`, no
   package from a path outside the workspace, no link out of a crate,
+  no trait defined outside `straum-app`'s ports but in a test folder,
   and no `#[path]` or `include` of another crate's file that the same
   rules would refuse. Ask before
   changing `ALLOWED`, `PURE` or `RUNTIMES`.

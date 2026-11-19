@@ -248,6 +248,32 @@ class LayerCheck(unittest.TestCase):
         self.write("crates/straum-pg/src/lib.rs", "use std::net::TcpStream;\n")
         self.assert_passes()
 
+    # Traits.
+
+    def test_a_trait_outside_the_ports_fails(self):
+        for crate, text in [
+            ("straum-domain", "pub trait Rows { fn rows(&self); }"),
+            ("straum-pg", "pub(crate) unsafe trait Reader {}"),
+            ("straum-http", "mod inner {\n    trait Route {}\n}"),
+        ]:
+            with self.subTest(crate=crate):
+                self.setUp()
+                self.write(f"crates/{crate}/src/lib.rs", text)
+                self.assert_refused(f"crates/{crate}/src/lib.rs")
+                self.assert_refused("outside straum-app's ports")
+
+    def test_a_trait_at_the_ports_or_in_tests_passes(self):
+        self.write("crates/straum-app/src/lib.rs", "pub trait Source { fn open(&self); }\n")
+        self.write("crates/straum-pg/tests/fake.rs", "trait Fake {}\n")
+        self.write(
+            "crates/straum-domain/src/lib.rs",
+            "// a trait Rows would do\n"
+            'const S: &str = "trait Rows";\n'
+            "impl std::fmt::Display for X {}\nfn f(x: &dyn Source) {}\n"
+            "impl Subtrait for X {}\n",
+        )
+        self.assert_passes()
+
     # Runtimes.
 
     def test_tokio_directly_outside_straum_http_fails(self):

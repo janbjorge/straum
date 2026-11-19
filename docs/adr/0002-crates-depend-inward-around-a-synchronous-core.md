@@ -28,8 +28,9 @@ operator of it in a domain string, enforced by
 words it, and the binary hands those words to straum-http beside the
 ask reader (`AskSyntax`). A dependency check alone let ask syntax
 collect in the domain's error text: 13 strings at e4e18d1.
-Traits exist only at the port (`Source`); the per-row path is concrete
-structs, enums and functions.
+Traits exist only at the port (`Source`), and `scripts/check-layers.py`
+refuses a trait defined outside `straum-app`; the per-row path is
+concrete structs, enums and functions.
 
 Straum is synchronous. `App` is a core that never waits, driven by a
 `Writer` loop that does the I/O and applies commits in order.

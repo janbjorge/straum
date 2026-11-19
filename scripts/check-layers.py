@@ -23,6 +23,8 @@ path. A crate:
 - resolves no package from a path outside the workspace, by a path
   dependency or a `[patch]`;
 - holds no link that leaves its folder;
+- defines a trait only if it is PORTS, where the ports are, or in a test
+  folder;
 - pulls in another crate's file with `#[path]` or an `include` macro
   only where it may depend on that crate: from a test folder as a
   dev-dependency, from anywhere else as a normal one. Code from outside
@@ -64,6 +66,8 @@ IO_MODULES = "fs|net|process|env|io|os"
 # through straum-http or not at all. mio is tokio's own I/O.
 RUNTIMES = {"tokio", "mio", "async-std", "smol", "async-io", "async-executor"}
 RUNTIME_HOME = "straum-http"
+# Traits exist only at the ports, which the use cases define.
+PORTS = "straum-app"
 # Cargo's kinds that end up in the crate as built: normal and build.
 BUILT = {None, "build"}
 # Folders of a crate whose files build only for its tests.
@@ -73,6 +77,7 @@ TEST_TARGETS = {"test", "bench", "example"}
 ATTRIBUTE = re.compile(r"#\s*!?\s*\[")
 PATH_VALUE = re.compile(r"\bpath\s*=\s*(\S)")
 INCLUDE = re.compile(r"\binclude(_str|_bytes)?\s*!\s*[\(\[\{]\s*(\S)")
+TRAIT = re.compile(r"\btrait\s+(?:r#)?(\w+)")
 INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*\{")
 IO_PATH = re.compile(
     rf"\bstd\s*::\s*(?:(?:{IO_MODULES})\b|\{{[^}}]*\b(?:{IO_MODULES})\b)"
@@ -356,6 +361,11 @@ def check_file(file, folder, name, crates, root) -> list[str]:
         for match in IO_PATH.finditer(source.code):
             line = source.code.count("\n", 0, match.start()) + 1
             errors.append(f"{shown}:{line}: I/O in a pure crate: {match.group(0)!r}")
+    if name != PORTS and kind is None:
+        for match in TRAIT.finditer(source.code):
+            line = source.code.count("\n", 0, match.start()) + 1
+            trait = match.group(1)
+            errors.append(f"{shown}:{line}: trait {trait} outside {PORTS}'s ports")
     return errors
 
 
