@@ -91,22 +91,23 @@ bucket, so a month of days reads 31 buckets, not 744 hours:
 SELECT buckets(bucket, '1 day'), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY buckets(bucket, '1 day'), region
 ```
 
-- The width is one the view's `buckets` item lists after its first,
-  written as the spec writes widths: `'1 day'`, never `'24 hours'`. Any
-  other width is refused, naming the widths the view keeps. A width
-  built from narrower buckets would cost as much as asking by those. At
-  the narrowest width itself, write `bucket`.
-- The width is part of the query, not a parameter: it sets the
-  answer's shape, as the view's own width does.
-- `SELECT` and `GROUP BY` write the same `buckets`. The answer names
-  the column by the time, `bucket`, and each row's value is the start
-  of its day or week.
-- Each bound written falls on an edge of that width, so no row covers
-  part of a day. An open end reaches the buckets held, so the first or
-  last row may cover part of its day: nothing lies beyond it.
-- PostgreSQL's `date_bin` is refused, naming the `buckets` to write.
-  Days are UTC days and `7 days` runs Thursday to Thursday, since
-  every width is a grid from the epoch ([Time](spec.md#time)).
+The width is one the view's `buckets` item lists after its first,
+written as the spec writes widths: `'1 day'`, never `'24 hours'`. Any
+other width is refused, naming the widths the view keeps. A width built
+from narrower buckets would cost as much as asking by those. At the
+narrowest width itself, write `bucket`. The width is part of the query,
+not a parameter, since it sets the answer's shape, as the view's own
+width does.
+
+`SELECT` and `GROUP BY` write the same `buckets`. The answer names the
+column by the time, `bucket`, and each row's value is the start of its
+day or week. Each bound written falls on an edge of that width, so no
+row covers part of a day. An open end reaches the buckets held, so the
+first or last row may cover part of its day: nothing lies beyond it.
+
+PostgreSQL's `date_bin` is refused, naming the `buckets` to write. Days
+are UTC days and `7 days` runs Thursday to Thursday, since every width
+is a grid from the epoch ([Time](spec.md#time)).
 
 ## HAVING
 
