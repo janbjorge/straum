@@ -79,11 +79,11 @@ fn taxi_month() {
 /// where Docker's default is 64 MiB.
 const SHARED_MEMORY_BYTES: u64 = 1 << 30;
 
-/// PostgreSQL 18 with the taxi month, which `bench/load_taxi_trips.py`
-/// puts there.
+/// PostgreSQL at the major `STRAUM_TEST_POSTGRES` names, with the taxi
+/// month, which `bench/load_taxi_trips.py` puts there.
 fn taxi_month_postgres(root: &Path) -> PostgresContainer {
     let pg = plain(
-        image("18")
+        image(&tag())
             .with_shm_size(SHARED_MEMORY_BYTES)
             .with_cmd(&["-c", "wal_level=logical"]),
     );
