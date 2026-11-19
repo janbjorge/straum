@@ -408,9 +408,9 @@ fn push_value_json(out: &mut String, value: &Value, scale: u32) {
         Value::Bool(false) => out.push_str("false"),
         Value::Avg { sum, count } => {
             push_decimal(out, avg(*sum, *count), scale + AVG_PLACES);
-            // The places past the column's scale are only as long as they
-            // need to be. AVG_PLACES puts a point in every average, so
-            // the zeros end at it.
+            // An average is only as long as it needs to be: every trailing
+            // zero goes, those of the column's own scale too. AVG_PLACES
+            // puts a point in every average, so the zeros end at it.
             while out.ends_with('0') {
                 out.pop();
             }
