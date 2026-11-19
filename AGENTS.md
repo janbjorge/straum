@@ -14,6 +14,7 @@ cargo llvm-cov -p <crate> --all-targets --fail-under-lines 98
 scripts/check-layers.py
 scripts/check-domain-syntax.py
 scripts/test-checks.py
+bench/test-stack.py
 ```
 
 A change to a check script changes `scripts/test-checks.py` with it: a
@@ -44,7 +45,7 @@ which the `usage` view over `public.events AS e` and
 
 The `justfile` is the entry point to every tool: `just check`, `just fmt`,
 `just lint`, `just test`, `just cov`, `just layers`, `just domain-syntax`,
-`just test-checks`, `just correctness`,
+`just test-checks`, `just test-bench`, `just correctness`,
 `just chart`, `just docs` (live preview), `just docs-build`,
 `just taxi [asks|transactions|shell]` (`wal=physical` for the
 physical WAL), `just taxi-month`,

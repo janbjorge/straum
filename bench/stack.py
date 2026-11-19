@@ -1,7 +1,10 @@
 """A Docker Compose project, the stack, for the bench scripts.
 
-Each run is one project named after its script and process, so runs
-side by side get their own network, container names and ports. The
+Each run is one project named after its script and process,
+`<tool>-pid<pid>`, so runs side by side get their own network,
+container names and ports. A run killed too hard to clean up, by
+SIGKILL, leaves its project behind; the next run of the same tool
+removes each such project whose process is gone. The
 Compose file is built here as JSON, which Compose reads as YAML, and
 goes to `docker compose` on stdin. Every Docker command goes through
 `docker compose`. Leaving the stack removes its containers, volumes and
@@ -13,6 +16,7 @@ where this file is not beside it.
 
 import json
 import os
+import re
 import signal
 import subprocess
 from collections.abc import Mapping
@@ -51,16 +55,24 @@ def postgres_service(
 
 
 class Stack:
-    """One Compose project: entering removes what a killed run left under
-    the same name, leaving removes all of it."""
+    """One Compose project for this run: entering removes what killed runs
+    of the same tool left, leaving removes all of this run's."""
 
     def __init__(self, tool: str, services: Mapping[str, Mapping[str, Any]]) -> None:
-        self.name = f"{tool}-{os.getpid()}"
+        self.tool = tool
+        self.name = run_name(tool, os.getpid())
         self.compose = json.dumps({"name": self.name, "services": services})
 
     def __enter__(self) -> Self:
         signal.signal(signal.SIGTERM, stopped)
-        self.down()
+        listed = subprocess.run(
+            ["docker", "compose", "ls", "--all", "--format", "json"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        for name in leftover_projects(listed.stdout, self.tool):
+            compose(name, "down", "--volumes", "--remove-orphans")
         return self
 
     def __exit__(
@@ -100,7 +112,13 @@ class Stack:
     def port(self, service: str, target: int) -> int:
         """The loopback port Docker published for `target`."""
         published = compose(self.name, "port", service, str(target))
-        return int(published.stdout.splitlines()[0].rpartition(":")[2])
+        port = published_port(published.stdout)
+        if port is None:
+            raise SystemExit(
+                f"{service} published no port for {target}"
+                f"\n{published.stderr}{self.logs(service)}"
+            )
+        return port
 
     def running(self, service: str) -> bool:
         listed = compose(self.name, "ps", "--status", "running", "--quiet", service)
@@ -117,6 +135,45 @@ class Stack:
 
     def compose_command(self, *args: str) -> subprocess.CompletedProcess[str]:
         return compose(self.name, "-f", "-", *args, input_text=self.compose)
+
+
+def run_name(tool: str, pid: int) -> str:
+    """The project name of `tool`'s run in process `pid`."""
+    return f"{tool}-pid{pid}"
+
+
+def leftover_projects(listed: str, tool: str) -> list[str]:
+    """The projects in `docker compose ls --format json` output that runs
+    of `tool` left: named for a process that is gone."""
+    pattern = re.compile(re.escape(tool) + r"-pid(\d+)")
+    names = []
+    for project in json.loads(listed or "[]"):
+        match = pattern.fullmatch(project.get("Name", ""))
+        if match is not None and not process_alive(int(match.group(1))):
+            names.append(match.group(0))
+    return names
+
+
+def process_alive(pid: int) -> bool:
+    """Whether process `pid` runs. One that can't be asked counts as
+    running, so a project in doubt stays."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True
+    return True
+
+
+def published_port(listed: str) -> int | None:
+    """The port in `docker compose port` output, `host:port` per line, or
+    None when there is none."""
+    for line in listed.splitlines():
+        _, colon, port = line.strip().rpartition(":")
+        if colon and port.isdigit():
+            return int(port)
+    return None
 
 
 def stopped(signal_number: int, frame: object) -> None:

@@ -34,9 +34,9 @@ changed := `{ git diff --name-only HEAD -- crates; git ls-files -o --exclude-sta
 default:
     @just --list
 
-# fmt, clippy, test, layers, domain syntax and their tests for the changed crates
+# fmt, clippy, test, layers, domain syntax and the script tests for the changed crates
 [group('check')]
-check crates=changed: (_named crates) fmt (lint crates) (test crates) layers domain-syntax test-checks
+check crates=changed: (_named crates) fmt (lint crates) (test crates) layers domain-syntax test-checks test-bench
 
 # Format the workspace
 [group('check')]
@@ -72,6 +72,11 @@ domain-syntax:
 [group('check')]
 test-checks:
     scripts/test-checks.py
+
+# Tests of how the bench scripts name and clean up their Compose projects
+[group('check')]
+test-bench:
+    bench/test-stack.py
 
 # Physical stream against random workloads, as CI's correctness job
 [group('check')]

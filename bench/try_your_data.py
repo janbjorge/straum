@@ -80,7 +80,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     args = parse()
     password = secrets.token_hex(16)
-    with Stack(args.stack, compose_file(args, password)) as stack:
+    with Stack(args.tool, args.stack, compose_file(args, password)) as stack:
         run_stack(stack, args)
     return 0
 
@@ -142,7 +142,8 @@ def parse() -> argparse.Namespace:
     )
     parser.add_argument(
         "--stack",
-        help=f"Compose project to run in ({STACK_PREFIX}<spec file name>)",
+        help="Compose project to run in, before -pid<process id>"
+        f" ({STACK_PREFIX}<spec file name>)",
     )
     parser.add_argument(
         "--postgres",
@@ -167,7 +168,8 @@ def parse() -> argparse.Namespace:
     args.spec = args.spec_file or args.spec_flag
     if args.spec is None:
         parser.error("the spec is required: SPEC or --spec")
-    args.stack = stack_name(args.stack or STACK_PREFIX + args.spec.stem)
+    args.tool = stack_name(args.stack or STACK_PREFIX + args.spec.stem)
+    args.stack = run_name(args.tool, os.getpid())
     return args
 
 
@@ -247,15 +249,25 @@ def compose_file(args: argparse.Namespace, password: str) -> str:
 
 
 class Stack:
-    """One Compose project: entering removes what a killed run of it left,
-    leaving removes its containers, volumes and network."""
+    """One Compose project for this run, `<tool>-pid<pid>`, so two runs on
+    one spec never share it: entering removes what killed runs of the
+    same tool left, leaving removes its containers, volumes and network."""
 
-    def __init__(self, name: str, compose: str) -> None:
+    def __init__(self, tool: str, name: str, compose: str) -> None:
+        self.tool = tool
         self.name = name
         self.compose = compose
 
     def __enter__(self) -> Self:
-        self.down()
+        listed = subprocess.run(
+            ["docker", "compose", "ls", "--all", "--format", "json"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        for name in leftover_projects(listed.stdout, self.tool):
+            log(f"removing stack {name}, left by a run that is gone")
+            compose(name, "down", "--volumes", "--remove-orphans", capture=True)
         return self
 
     def __exit__(
@@ -319,8 +331,13 @@ def load(project: str, data: pathlib.Path) -> None:
 def wait_ready(stack: Stack) -> int:
     """The local port Straum answers on, once it has loaded."""
     published = compose(stack.name, "port", STRAUM, str(STRAUM_PORT), capture=True)
-    _, _, port_text = published.stdout.strip().splitlines()[0].rpartition(":")
-    port = int(port_text)
+    port = published_port(published.stdout)
+    if port is None:
+        logs = compose(stack.name, "logs", "--no-log-prefix", STRAUM, capture=True)
+        raise SystemExit(
+            f"try: Straum published no port for {STRAUM_PORT}\n"
+            f"{published.stderr}{logs.stdout}{logs.stderr}"
+        )
     # There is no timeout, since the load takes as long as the tables need.
     url = f"http://127.0.0.1:{port}/readyz"
     # Straum stays up when its setup check fails and tries again, so the
@@ -340,6 +357,45 @@ def wait_ready(stack: Stack) -> int:
             logs = compose(stack.name, "logs", "--no-log-prefix", STRAUM, capture=True)
             raise SystemExit(f"try: Straum stopped\n{logs.stdout}{logs.stderr}")
         time.sleep(READY_POLL_S)
+
+
+def run_name(tool: str, pid: int) -> str:
+    """The project name of `tool`'s run in process `pid`."""
+    return f"{tool}-pid{pid}"
+
+
+def leftover_projects(listed: str, tool: str) -> list[str]:
+    """The projects in `docker compose ls --format json` output that runs
+    of `tool` left: named for a process that is gone."""
+    pattern = re.compile(re.escape(tool) + r"-pid(\d+)")
+    names = []
+    for project in json.loads(listed or "[]"):
+        match = pattern.fullmatch(project.get("Name", ""))
+        if match is not None and not process_alive(int(match.group(1))):
+            names.append(match.group(0))
+    return names
+
+
+def process_alive(pid: int) -> bool:
+    """Whether process `pid` runs. One that can't be asked counts as
+    running, so a project in doubt stays."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True
+    return True
+
+
+def published_port(listed: str) -> int | None:
+    """The port in `docker compose port` output, `host:port` per line, or
+    None when there is none."""
+    for line in listed.splitlines():
+        _, colon, port = line.strip().rpartition(":")
+        if colon and port.isdigit():
+            return int(port)
+    return None
 
 
 def readiness(url: str) -> tuple[bool, str]:
