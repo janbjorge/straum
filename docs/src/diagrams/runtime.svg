@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="410" viewBox="0 0 720 410" role="img" aria-labelledby="t d">
   <title id="t">The running system</title>
-  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Limits and a State behind an RwLock, which clones share. State holds the Store, a Following while every table is loaded, with the applied LSN, Lag and last WAL reading.</desc>
+  <desc id="d">A Writer owns the Source port, through which commits come one at a time, and an App. App holds the Limits, a State behind an RwLock and a Progress behind a Mutex of its own, which clones share. State holds the Store. Progress holds a Following while every table is loaded, with the applied LSN, Lag and last WAL reading.</desc>
   <style>
   text{font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;Noto Sans&quot;, Helvetica, Arial, sans-serif;font-size:15px}
   .mono{font-family:ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace;font-size:14px}
@@ -115,18 +115,23 @@
   <rect class="box" x="500" y="184" width="196" height="60" rx="8"/>
   <text x="514" y="209" class="h">Store</text>
   <text x="514" y="230" class="s ink2">one</text>
-  <rect class="box" x="500" y="264" width="196" height="80" rx="8"/>
-  <text x="514" y="289" class="h">Following</text>
-  <text x="514" y="310" class="s ink2">0 or 1: applied LSN,</text>
-  <text x="514" y="329" class="s ink2">Lag, WAL reading</text>
+  <rect class="box" x="250" y="304" width="186" height="80" rx="8"/>
+  <text x="264" y="329" class="h">Progress</text>
+  <text x="264" y="350" class="s ink2">one, behind a</text>
+  <text x="264" y="369" class="s ink2">mutex of its own</text>
+  <rect class="box" x="500" y="304" width="196" height="80" rx="8"/>
+  <text x="514" y="329" class="h">Following</text>
+  <text x="514" y="350" class="s ink2">0 or 1: applied LSN,</text>
+  <text x="514" y="369" class="s ink2">Lag, WAL reading</text>
   <path class="a" d="M184 124 H216" marker-end="url(#m)"/>
   <path class="a" d="M436 124 H466" marker-end="url(#m)"/>
   <path class="a" d="M104 164 V190" marker-end="url(#m)"/>
   <path class="a-plan" d="M104 274 V300" marker-end="url(#m-plan)"/>
   <text x="112" y="292" class="s muted halo" text-anchor="start">hands over</text>
-  <path class="a" d="M234 164 V234"/>
+  <path class="a" d="M234 164 V344"/>
   <path class="a" d="M234 234 H246" marker-end="url(#m)"/>
-  <path class="a" d="M484 164 V304"/>
+  <path class="a" d="M234 344 H246" marker-end="url(#m)"/>
+  <path class="a" d="M484 164 V214"/>
   <path class="a" d="M484 214 H496" marker-end="url(#m)"/>
-  <path class="a" d="M484 304 H496" marker-end="url(#m)"/>
+  <path class="a" d="M436 344 H496" marker-end="url(#m)"/>
 </svg>
