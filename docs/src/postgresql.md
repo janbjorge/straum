@@ -6,8 +6,8 @@ needs PostgreSQL 17 or newer, self-hosted or managed. Its tests run on
 connects as a role that is not a superuser. A superuser runs a few
 lines of the setup once.
 
-Pick a stream first. Logical decoding is the default. The physical WAL
-leaves `wal_level` alone.
+Pick a stream first: logical decoding, the default, or the physical
+WAL, which leaves `wal_level` alone.
 
 | | Physical WAL | Logical decoding |
 | --- | --- | --- |
@@ -30,8 +30,8 @@ Without a DSN the role is `straum` and the SQL says how to give it a
 password. `--role NAME` picks another role
 ([flags](cli.md#straum-plan)).
 
-`REPLICATION` beside `LOGIN` is a privilege of that role, so it can
-follow commits. It is not another user.
+`REPLICATION` beside `LOGIN` is a privilege of that role, not another
+user. It lets the role follow commits.
 
 Run the SQL as an owner of the tables. A superuser runs the lines the
 comments name: creating the role, `wal_level` for logical decoding,
@@ -40,8 +40,8 @@ setup lives in the catalog and survives restarts.
 
 ### Physical WAL
 
-No change to `wal_level`, no publication, no `REPLICA IDENTITY FULL`.
-The pages hold the old row.
+The physical WAL needs no change to `wal_level`, no publication and no
+`REPLICA IDENTITY FULL`, since the pages hold the old row.
 
 ```sql
 -- Straum setup: run once, as an owner of the tables; a superuser runs the lines said so.
@@ -71,17 +71,16 @@ changed table's columns. That wait gives up after 10 seconds and
 Straum stops.
 [The physical stream](how-it-works.md#the-physical-stream) says why.
 
-Straum also stops on:
+Straum also stops on an insert, update or delete of a row whose value,
+in a column the spec reads, is stored out of line in the table's TOAST
+table: the page holds only a pointer. PostgreSQL moves the largest
+values of a row over about 2 KB there, one by one, until the row fits,
+so a short value can go too. A value out of line in a column no view
+reads is passed over.
 
-- An insert, update or delete of a row whose value, in a column the
-  spec reads, is stored out of line in the table's TOAST table. The
-  page holds only a pointer. PostgreSQL moves the largest values of a
-  row over about 2 KB there, one by one, until the row fits, so a
-  short value can go too. A value out of line in a column no view
-  reads is passed over.
-- A rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`, `CLUSTER`, or
-  an `ALTER TABLE` that moves the rows to a new file. `ADD COLUMN`,
-  `DROP COLUMN` and other DDL that keeps the file are followed.
+It stops too on a rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`,
+`CLUSTER`, or an `ALTER TABLE` that moves the rows to a new file. It
+follows `ADD COLUMN`, `DROP COLUMN` and other DDL that keeps the file.
 
 The stream carries the whole server's WAL, every database. Straum
 reads only its tables' pages and passes the other records by from
@@ -193,7 +192,7 @@ every problem at once, each with its fix, in its log. Then it
 again. A spec table must be a plain table that no table inherits from.
 A partitioned table, a view or a TimescaleDB hypertable is refused.
 
-Either stream:
+With either stream:
 
 ```text
 the server is a standby in recovery; give Straum the primary's DSN
@@ -245,7 +244,7 @@ dim accounts: Straum needs the whole old row of every update and delete: ALTER T
 the start waited 60 s for transactions open on the server to end before its slot could be made: xid 7512; a long or prepared one (pg_prepared_xacts) holds the start back
 ```
 
-Physical WAL. The last three lines are the waits under
+With the physical WAL, the last three lines below are the waits under
 [Physical WAL](#physical-wal); the last says 10 s when it is the wait
 after DDL:
 
@@ -263,35 +262,40 @@ usage: column kind of public.events is virtual, so the WAL holds no value of it;
 
 ## What Straum costs the server
 
-- One replication connection and one slot per running Straum, out of
-  `max_wal_senders` and `max_replication_slots`. Managed services often
-  keep some of each for themselves.
-- WAL, until Straum confirms it, every second. Past
-  `--max-retained-wal` (4 GiB by default) Straum stops, so one that
-  cannot keep up cannot fill the disk.
-- A watchdog on a connection of its own checks that every second,
-  during loads too. Past the limit it ends the slot's session, even if
-  the rest of Straum is stuck. A watchdog that cannot read the slot for
-  10 seconds ends the stream too.
-- Many managed services fix `max_slot_wal_keep_size` at -1, so the flag
-  above is the only limit there. A physical slot keeps WAL from the
-  last checkpoint's redo point, which the server keeps until its next
-  checkpoint anyway. The watchdog counts that slot's WAL from where it
-  was made.
-- Nothing after Straum is gone. The slot is temporary, so PostgreSQL
-  drops it when the connection closes, crashes and deleted pods
-  included. Temporary slots do not move to a standby, so after a
-  failover the next start loads from the new primary.
-- A snapshot during each load. It holds back vacuum for the whole
-  database and makes `ALTER TABLE` on its tables wait. Straum ends it
-  right after the last table loads.
-- Plain connections beside the replication connection: one for the WAL
-  position every second and one for the watchdog, and with `--wal
-  physical` one for the load and one for table layouts. Nothing else
-  is read after the load. A role `CONNECTION LIMIT` needs room for
-  them all.
-- WAL decoding per replication connection. Run one Straum per
-  database. A second needs another slot and load.
+Each running Straum takes one replication connection and one slot, out
+of `max_wal_senders` and `max_replication_slots`. Managed services
+often keep some of each for themselves.
+
+The server keeps WAL until Straum confirms it, which Straum does every
+second. Past `--max-retained-wal` (4 GiB by default) Straum stops, so
+one that cannot keep up cannot fill the disk.
+
+A watchdog on a connection of its own checks that every second, during
+loads too. Past the limit it ends the slot's session, even if the rest
+of Straum is stuck. A watchdog that cannot read the slot for 10 seconds
+ends the stream too. Many managed services fix `max_slot_wal_keep_size` at -1,
+so the flag above is the only limit there. A physical slot keeps WAL
+from the last checkpoint's redo point, which the server keeps until its
+next checkpoint anyway. The watchdog counts that slot's WAL from where
+it was made.
+
+Nothing stays after Straum is gone. The slot is temporary, so
+PostgreSQL drops it when the connection closes, crashes and deleted
+pods included. Temporary slots do not move to a standby, so after a
+failover the next start loads from the new primary.
+
+Each load takes a snapshot. It holds back vacuum for the whole database
+and makes `ALTER TABLE` on its tables wait. Straum ends it right after
+the last table loads.
+
+Beside the replication connection, Straum opens plain connections: one
+for the WAL position every second and one for the watchdog, and with
+`--wal physical` one for the load and one for table layouts. Nothing
+else is read after the load. A role `CONNECTION LIMIT` needs room for
+them all.
+
+The server decodes the WAL once per replication connection. Run one
+Straum per database; a second needs another slot and load.
 
 What `--wal physical` adds, the whole server's WAL and the page
 memory, is under [Physical WAL](#physical-wal).
