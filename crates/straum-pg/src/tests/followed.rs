@@ -101,8 +101,9 @@ fn a_label_renamed_stops_the_logical_stream() {
 }
 
 /// The physical stream reads an enum's labels again after a commit that
-/// changes the catalog: a label added reads as itself, and a label
-/// renamed stops Straum.
+/// changes one: a label added reads as itself, and a label renamed
+/// stops Straum at the rename's commit, before the rows it holds. The
+/// reading of the WAL, once a second, may find the rename first.
 #[test]
 fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     let pg = postgres_at_replica(&tag());
@@ -118,7 +119,10 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
     }
     compare(&mut db, writer.app(), &task_oracles()).expect("the added label reads as itself");
 
-    db.run("ALTER TYPE $S.kind RENAME VALUE 'shelf' TO 'rack'");
+    db.run(
+        "ALTER TYPE $S.kind RENAME VALUE 'shelf' TO 'rack';
+         INSERT INTO $S.tasks VALUES (4, 1, 2, '2024-01-15 13:00', NULL, 6, 'rack')",
+    );
     let deadline = Instant::now() + LONG;
     let error = loop {
         assert!(Instant::now() < deadline, "never stopped");
@@ -127,7 +131,11 @@ fn the_physical_stream_reads_a_label_added_and_stops_on_one_renamed() {
             Err(error) => break error.to_string(),
         }
     };
-    assert!(error.contains("a label of an enum"), "{error}");
+    assert!(
+        error.starts_with("a change no longer fits tasks: ")
+            || error.contains("a label of an enum"),
+        "{error}"
+    );
 }
 
 /// A rewrite gives its rows the xid of the transaction that made it, so

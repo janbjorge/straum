@@ -532,7 +532,7 @@ fn logical_read(kind: Kind, text: Option<&str>) -> Option<Datum> {
             seconds => seconds.parse().ok().map(Datum::Int),
         },
         Kind::Read(column_type) => value::read(column_type, text).ok(),
-        Kind::Enum => Some(Datum::Text(text.into())),
+        Kind::Enum(_) => Some(Datum::Text(text.into())),
         Kind::Other => Some(Datum::Null),
     }
 }

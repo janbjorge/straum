@@ -13,7 +13,7 @@ use straum_domain::{Datum, FastMap, FastSet};
 
 use super::heap::{HeapChange, HeapTuple};
 use super::transactions::Committed;
-use super::tuple::{self, Attribute, Kind, Value};
+use super::tuple::{self, Attribute, Kind, Label, Value};
 use super::xact::Invalidated;
 use super::{Oid, Problem, RelationFile, WalError};
 use crate::decode::Decoder;
@@ -43,14 +43,14 @@ pub(crate) struct Layout {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Layouts {
     pub(crate) tables: Vec<Layout>,
-    pub(crate) labels: HashMap<Oid, String>,
+    pub(crate) labels: HashMap<Oid, Label>,
 }
 
 /// Turns commits into messages for the tables Straum reads.
 pub(crate) struct Publisher {
     tables: FastMap<RelationFile, Layout>,
     /// Enum labels by `pg_enum` OID.
-    labels: HashMap<Oid, String>,
+    labels: HashMap<Oid, Label>,
     /// Tables whose `Relation` the decoder has.
     announced: FastSet<RelationFile>,
     /// Tables rewritten or dropped, by OID, for the next commit to say.
@@ -111,7 +111,9 @@ impl Publisher {
     /// before its next change, as pgoutput does after an invalidation,
     /// and the decoder sees what changed. A column added may be of an
     /// enum no table had before, and an enum may have gained a label, so
-    /// the labels come along, `stale` empty or not.
+    /// the labels come along, `stale` empty or not. A label renamed makes
+    /// every table that reads its enum unfit and keeps its old text, so
+    /// no row with the new text joins the rows loaded with the old.
     pub(crate) fn relayout(&mut self, stale: &[Oid], fresh: Layouts) {
         for &oid in stale {
             let Some(file) = self.file_with_oid(oid) else {
@@ -125,7 +127,26 @@ impl Publisher {
                 _ => self.unfit.push(oid),
             }
         }
-        self.labels.extend(fresh.labels);
+        for (oid, label) in fresh.labels {
+            let Some(loaded) = self.labels.get(&oid) else {
+                self.labels.insert(oid, label);
+                continue;
+            };
+            if loaded.text != label.text {
+                self.unfit_reading(label.enum_type);
+            }
+        }
+    }
+
+    /// Makes every table with a column read of the enum `enum_type`
+    /// unfit.
+    fn unfit_reading(&mut self, enum_type: Oid) {
+        for table in self.tables.values() {
+            let oid = table.relation.id;
+            if reads_enum(table, enum_type) && !self.unfit.contains(&oid) {
+                self.unfit.push(oid);
+            }
+        }
     }
 
     /// Whether a column read of a table in one of `databases` is of an
@@ -136,7 +157,7 @@ impl Publisher {
                 continue;
             }
             for attribute in &table.attributes {
-                if attribute.kind == Kind::Enum {
+                if let Kind::Enum(_) = attribute.kind {
                     return true;
                 }
             }
@@ -245,10 +266,20 @@ fn invalidates(message: Invalidated, table: &Layout) -> bool {
         && (message.relation == table.relation.id || message.relation == 0)
 }
 
+/// Whether a column `table` reads is of the enum `enum_type`.
+fn reads_enum(table: &Layout, enum_type: Oid) -> bool {
+    for attribute in &table.attributes {
+        if attribute.kind == Kind::Enum(enum_type) {
+            return true;
+        }
+    }
+    false
+}
+
 /// What reading a row of one table in one commit needs.
 struct Read<'a> {
     table: &'a Layout,
-    labels: &'a HashMap<Oid, String>,
+    labels: &'a HashMap<Oid, Label>,
     lsn: u64,
 }
 
@@ -327,6 +358,13 @@ mod tests {
     const TABLE_OID: u32 = 77;
     /// `point`'s type OID, a type Straum doesn't read.
     const POINT: u32 = 600;
+    /// An enum's type OID, and two of its labels' OIDs.
+    const MOOD: Oid = 16_400;
+    const CALM: Oid = 16_401;
+    const RUSHED: Oid = 16_402;
+    /// Another enum's type OID, and one of its labels' OIDs.
+    const OTHER_ENUM: Oid = 16_500;
+    const TIDE: Oid = 16_501;
     /// `sizeof(Point)`: two `float8`s, aligned to 8.
     const POINT_SIZE: usize = 16;
     const POINT_LENGTH: i16 = 16;
@@ -592,6 +630,71 @@ mod tests {
                 row,
             }]
         );
+    }
+
+    /// `zones` with `name` of the enum `MOOD`.
+    fn enum_table() -> Layout {
+        let mut table = table();
+        table.attributes[2] = attribute(4, 4, Kind::Enum(MOOD));
+        table
+    }
+
+    /// The labels `pairs` name, by label OID, `TIDE` of an enum no table
+    /// reads.
+    fn labels(pairs: &[(Oid, &str)]) -> Layouts {
+        let mut labels = HashMap::new();
+        for &(oid, text) in pairs {
+            let enum_type = if oid == TIDE { OTHER_ENUM } else { MOOD };
+            let text = text.to_owned();
+            labels.insert(oid, Label { enum_type, text });
+        }
+        Layouts {
+            tables: vec![enum_table()],
+            labels,
+        }
+    }
+
+    /// The changes of one insert into `zones` of a row of label `oid`.
+    fn insert_labelled(publisher: &mut Publisher, oid: Oid) -> Vec<Change> {
+        let changes = vec![HeapChange::Insert {
+            file: FILE,
+            new: row(1, &oid.to_le_bytes()),
+        }];
+        let commit = publisher.publish(&committed(changes), &mut decoder());
+        commit.unwrap().unwrap().changes
+    }
+
+    /// A label added reads as itself, and one of an enum no table reads
+    /// renamed is nothing. A label renamed makes the tables that read its
+    /// enum unfit at the commit that renamed it, first, and keeps the old
+    /// text, which the rows loaded hold: no row reads as the new.
+    #[test]
+    fn a_label_renamed_makes_its_tables_unfit() {
+        let loaded = labels(&[(CALM, "calm"), (TIDE, "low")]);
+        let mut publisher = Publisher::new(loaded.clone());
+        publisher.relayout(
+            &[],
+            labels(&[(CALM, "calm"), (TIDE, "high"), (RUSHED, "rushed")]),
+        );
+        assert_eq!(
+            insert_labelled(&mut publisher, RUSHED),
+            [labelled_insert("rushed")]
+        );
+        let mut publisher = Publisher::new(loaded);
+        publisher.relayout(&[], labels(&[(CALM, "relaxed"), (TIDE, "low")]));
+        let unfit = Change::Unfit { table: zones() };
+        assert_eq!(
+            insert_labelled(&mut publisher, CALM),
+            [unfit, labelled_insert("calm")]
+        );
+    }
+
+    /// The insert into `zones` of row 1 with the label `text`.
+    fn labelled_insert(text: &str) -> Change {
+        Change::Insert {
+            table: zones(),
+            row: vec![Datum::Int(1), Datum::Text(text.into())],
+        }
     }
 
     #[test]

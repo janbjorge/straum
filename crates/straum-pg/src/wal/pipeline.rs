@@ -145,8 +145,8 @@ impl Pipeline {
         if let xact::Event::Commit(ending) = &event {
             let stale = self.publisher.stale(&ending.invalidated);
             // An enum's new label invalidates no table; rows to come may
-            // hold it. A label renamed is caught by the reading of the
-            // WAL, which stops Straum.
+            // hold it. A label renamed makes the tables that read its
+            // enum unfit at this commit, which stops Straum.
             let relabel = self.publisher.reads_enums_in(&ending.enums_changed);
             if !stale.is_empty() || relabel {
                 let fresh = layouts(ending.xid)?;
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn reads_layouts_again_only_after_an_enum_change_in_its_database() {
         let mut layout = table();
-        layout.attributes[0].kind = Kind::Enum;
+        layout.attributes[0].kind = Kind::Enum(0);
         let checked = Checked {
             oid: TABLE_OID,
             ..Checked::public("t", "t", &["id"], vec![ColumnType::Text])

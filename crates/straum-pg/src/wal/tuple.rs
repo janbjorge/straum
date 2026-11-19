@@ -83,13 +83,21 @@ pub(crate) struct Attribute {
     pub(crate) kind: Kind,
 }
 
-/// How a column's bytes read: as a type Straum reads, as an enum's
-/// label, or not at all, only stepped over.
+/// How a column's bytes read: as a type Straum reads, as a label of the
+/// enum whose type OID it holds, or not at all, only stepped over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Read(ColumnType),
-    Enum,
+    Enum(Oid),
     Other,
+}
+
+/// One label of an enum, as `pg_enum` has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Label {
+    /// The type OID of the enum it belongs to.
+    pub(crate) enum_type: Oid,
+    pub(crate) text: String,
 }
 
 /// One column's value in a row.
@@ -110,7 +118,7 @@ pub(crate) enum Value {
 pub(crate) fn values(
     tuple: &HeapTuple,
     attributes: &[Attribute],
-    labels: &HashMap<Oid, String>,
+    labels: &HashMap<Oid, Label>,
 ) -> Result<Vec<Value>, Problem> {
     let mut values = Vec::new();
     values_into(tuple, attributes, labels, &mut values)?;
@@ -122,7 +130,7 @@ pub(crate) fn values(
 pub(crate) fn values_into(
     tuple: &HeapTuple,
     attributes: &[Attribute],
-    labels: &HashMap<Oid, String>,
+    labels: &HashMap<Oid, Label>,
     values: &mut Vec<Value>,
 ) -> Result<(), Problem> {
     values.clear();
@@ -261,19 +269,19 @@ fn detoast(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>, Problem> {
 fn value(
     attribute: &Attribute,
     bytes: &[u8],
-    labels: &HashMap<Oid, String>,
+    labels: &HashMap<Oid, Label>,
 ) -> Result<Value, Problem> {
     let wrong = Problem::WrongLength;
     let column_type = match attribute.kind {
         Kind::Read(column_type) => column_type,
         Kind::Other => return Ok(Value::Datum(Datum::Null)),
-        Kind::Enum => {
+        Kind::Enum(_) => {
             let Ok(oid) = bytes.try_into() else {
                 return Err(wrong);
             };
             let oid = u32::from_le_bytes(oid);
             let label = labels.get(&oid).ok_or(Problem::UnlabelledEnum)?;
-            return Ok(Value::Datum(Datum::Text(label.as_str().into())));
+            return Ok(Value::Datum(Datum::Text(label.text.as_str().into())));
         }
     };
     let datum = match column_type {
@@ -373,6 +381,8 @@ mod tests {
     const TIME: Kind = Kind::Read(ColumnType::Time { zoned: true });
     const DATE: Kind = Kind::Read(ColumnType::Date);
     const UUID: Kind = Kind::Read(ColumnType::Uuid);
+    /// An enum's type OID.
+    const MOOD: Oid = 16_400;
     use crate::wal::heap::TUPLE_HEADER;
     /// `MAXALIGN`: where a row's columns start is a multiple of it.
     const MAXALIGN: usize = 8;
@@ -451,7 +461,7 @@ mod tests {
             attribute(4, 4, INT),
             attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(4, 4, Kind::Other),
-            attribute(4, 4, Kind::Enum),
+            attribute(4, 4, Kind::Enum(MOOD)),
             attribute(VARLENA_LENGTH, 4, TEXT),
             attribute(8, 8, TIME),
         ];
@@ -468,7 +478,11 @@ mod tests {
             Some(&short_varlena("")),
             Some(&(-1_500_000i64).to_le_bytes()),
         ];
-        let labels = HashMap::from([(77, "happy".to_owned())]);
+        let happy = Label {
+            enum_type: MOOD,
+            text: "happy".to_owned(),
+        };
+        let labels = HashMap::from([(77, happy)]);
         let got = values(&row(&attributes, &columns), &attributes, &labels).unwrap();
         assert_eq!(
             got,
@@ -672,10 +686,14 @@ mod tests {
         check(&fits, &[attribute(4, 1, UUID)], Problem::WrongLength);
         let two = row(&[attribute(2, 2, INT)], &[Some(&[1, 2])]);
         check(&two, &[attribute(2, 2, DATE)], Problem::WrongLength);
-        check(&fits, &[attribute(2, 2, Kind::Enum)], Problem::WrongLength);
         check(
             &fits,
-            &[attribute(4, 4, Kind::Enum)],
+            &[attribute(2, 2, Kind::Enum(MOOD))],
+            Problem::WrongLength,
+        );
+        check(
+            &fits,
+            &[attribute(4, 4, Kind::Enum(MOOD))],
             Problem::UnlabelledEnum,
         );
         let three = row(&[int], &[Some(&[1, 2, 3])]);

@@ -102,5 +102,6 @@ PeerDB do, was rejected as inference.
   zones are out; a zone over `timestamp` has no instant.
 - A null-ness key keys cells on two values, not a column's cardinality.
 - Enum labels sort as text. `ADD VALUE` costs nothing; `RENAME VALUE`
-  is not streamed and stops Straum at the next miss (ADR-0009),
-  as does an unmapped type OID. Two enum columns can't be joined.
+  is not streamed and stops Straum (ADR-0009): the physical stream at
+  the rename's commit, the logical one at the next reading of the WAL.
+  An unmapped type OID stops it too. Two enum columns can't be joined.

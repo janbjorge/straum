@@ -28,7 +28,7 @@ use crate::value::{Oid, read, type_of};
 use crate::wal::messages::{Layout, Layouts};
 use crate::wal::pipeline::Pipeline;
 use crate::wal::transactions::TransactionSnapshot;
-use crate::wal::tuple::{Attribute, Kind};
+use crate::wal::tuple::{Attribute, Kind, Label};
 use crate::wal::{Records, RelationFile, TransactionId};
 use crate::wire::{Closer, Connection, ConnectionKind, first_row_value};
 
@@ -335,7 +335,11 @@ pub(crate) fn read_layouts(
     }
     let mut labels = HashMap::new();
     for label in catalog::labels(connection, &names)? {
-        labels.insert(label.oid, label.label);
+        let read = Label {
+            enum_type: label.type_oid,
+            text: label.label,
+        };
+        labels.insert(label.oid, read);
     }
     Ok(Layouts { tables, labels })
 }
@@ -446,7 +450,7 @@ fn push_attribute(
     let kind = match type_of(attribute.type_oid, attribute.typmod) {
         _ if attribute.dropped || spec_use == SpecUse::Skips => Kind::Other,
         Some(column_type) => Kind::Read(column_type),
-        None if attribute.is_enum => Kind::Enum,
+        None if attribute.is_enum => Kind::Enum(attribute.type_oid),
         None => Kind::Other,
     };
     if !attribute.dropped {
@@ -464,7 +468,7 @@ fn push_attribute(
     });
     table.missing.push(match (attribute.missing, kind) {
         (Some(text), Kind::Read(column_type)) => read(column_type, text)?,
-        (Some(text), Kind::Enum) => Datum::Text(text.into()),
+        (Some(text), Kind::Enum(_)) => Datum::Text(text.into()),
         _ => Datum::Null,
     });
     Ok(())
