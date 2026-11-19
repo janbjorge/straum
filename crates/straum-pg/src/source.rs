@@ -244,37 +244,12 @@ fn physical_snapshot(
         physical,
         AfterRead::Nothing,
     )?;
-    let checked = checked(tables);
-    // After the slot: a rewrite between the two would be in neither the
-    // layouts nor the WAL read.
-    let (stream, start) = Physical::start(dsn)?;
-    // The stream thread reads layouts on this one after DDL: a server
-    // that falls silent there must not hold it, nor a stop that joins it.
-    let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
-    layouts_connection.set_read_timeout(physical::DDL_WAIT)?;
-    let layouts_closer = layouts_connection.closer()?;
-    guard.watch(
-        dsn,
-        stream.slot(),
-        stream.made(),
-        vec![
-            stream.closer()?,
-            connection.closer()?,
-            layouts_connection.closer()?,
-        ],
-    )?;
-    let layouts = physical::read_layouts(&mut connection, &checked)?;
-    let slot = stream.slot().to_owned();
-    let pipeline = Pipeline::new(
-        checked.clone(),
-        layouts,
-        stream.major(),
+    let pages = PageLimits {
         limit,
         max_page_memory,
-    );
-    let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
-    let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
-    stream.close_too(layouts_closer);
+    };
+    let started = start_physical_stream(dsn, &mut connection, checked(tables), pages, guard)?;
+    let PhysicalStream { mut stream, slot } = started;
     // Logs which transactions run now, rather than at the next checkpoint
     // or background writer round. Superusers, and roles granted it, may.
     let _ = connection.execute("SELECT pg_log_standby_snapshot()");
@@ -298,6 +273,63 @@ fn physical_snapshot(
         unloaded,
         stream: Some(stream),
     })
+}
+
+/// What bounds a physical stream's rows: the row limit of a commit, and
+/// the bytes of rows its pages may hold.
+#[derive(Debug, Clone, Copy)]
+struct PageLimits {
+    limit: usize,
+    max_page_memory: usize,
+}
+
+/// A physical stream started, and the name of its slot.
+struct PhysicalStream {
+    stream: Stream,
+    slot: String,
+}
+
+/// Starts the physical stream from the last redo point for `checked`,
+/// whose layouts it reads on `connection`, and has the watchdog close it
+/// and `connection` once the slot holds too much WAL.
+fn start_physical_stream(
+    dsn: &Dsn,
+    connection: &mut Connection,
+    checked: Vec<Checked>,
+    pages: PageLimits,
+    guard: &mut SlotGuard,
+) -> Result<PhysicalStream, Error> {
+    // After the slot: a rewrite between the two would be in neither the
+    // layouts nor the WAL read.
+    let (stream, start) = Physical::start(dsn)?;
+    // The stream thread reads layouts on this one after DDL: a server
+    // that falls silent there must not hold it, nor a stop that joins it.
+    let layouts_connection = Connection::connect(dsn, ConnectionKind::Sql)?;
+    layouts_connection.set_read_timeout(physical::DDL_WAIT)?;
+    let layouts_closer = layouts_connection.closer()?;
+    guard.watch(
+        dsn,
+        stream.slot(),
+        stream.made(),
+        vec![
+            stream.closer()?,
+            connection.closer()?,
+            layouts_connection.closer()?,
+        ],
+    )?;
+    let layouts = physical::read_layouts(connection, &checked)?;
+    let slot = stream.slot().to_owned();
+    let pipeline = Pipeline::new(
+        checked.clone(),
+        layouts,
+        stream.major(),
+        pages.limit,
+        pages.max_page_memory,
+    );
+    let (replication, replay) = stream.into_replay(pipeline, layouts_connection, checked);
+    let mut stream = Stream::start(replication, Reader::Physical(Box::new(replay)), start)?;
+    stream.close_too(layouts_closer);
+    Ok(PhysicalStream { stream, slot })
 }
 
 /// Begins the load's transaction on `connection` once its snapshot sees

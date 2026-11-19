@@ -7,55 +7,10 @@ use straum_app::{App, Lsn, Source, SourceError, Writer};
 
 use super::references::*;
 use super::support::*;
-use crate::catalog::{self};
 use crate::dsn::Dsn;
 use crate::error::Error;
 use crate::source::{Postgres, Replication};
 use crate::wire::{Connection, ConnectionKind};
-
-#[test]
-fn says_to_set_wal_level_logical() {
-    for tag in ["17", "18"] {
-        let pg = postgres_at_replica(tag);
-        let db = Db::new(&pg, "replica", TABLES);
-        let error = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
-        assert!(
-            error.contains("wal_level is replica; Straum needs logical, which takes a restart"),
-            "{tag}: {error}"
-        );
-    }
-}
-
-/// PostgreSQL 16 lacks `transaction_timeout`, so Straum leaves it unset
-/// there and the check says the server is too old, not that a setting is
-/// unknown.
-#[test]
-fn says_postgresql_16_is_too_old() {
-    let pg = postgres_at_replica("16");
-    let db = Db::new(&pg, "old", "");
-    let error = db.pg().open(&db.spec(SPEC)).unwrap_err().to_string();
-    assert!(
-        error.contains("PostgreSQL 16 is too old; Straum needs 17 or newer"),
-        "{error}"
-    );
-}
-
-/// A timeout set on the database would cancel a long load: from 17 on,
-/// each connection turns `transaction_timeout` off for itself.
-#[test]
-fn a_connection_turns_the_transaction_timeout_off() {
-    let pg = postgres();
-    let mut db = Db::new(&pg, "timeouts", "");
-    db.run("ALTER DATABASE postgres SET transaction_timeout = '5s'");
-    let mut fresh = db.another_connection();
-    assert_eq!(
-        fresh.rows("SHOW transaction_timeout"),
-        [[Some("0".to_owned())]]
-    );
-    let mut replication = Connection::connect(&pg.dsn, ConnectionKind::Replication).unwrap();
-    let shown = replication.rows("SHOW transaction_timeout").unwrap();
-    assert_eq!(shown, [[Some("0".to_owned())]]);
-}
 
 #[test]
 fn plan_sets_up_what_straum_needs() {
@@ -947,82 +902,13 @@ fn chain_problems(pg: &PostgresContainer) {
     expect_problems(pg, cases);
 }
 
+/// A role that may not read the tables can't open, and the error names
+/// each table.
 #[test]
-fn reports_wal_level_and_read_access() {
+fn the_role_must_read_every_table() {
     let pg = postgres();
     let mut db = Db::new(&pg, "access", TABLES);
     let spec = db.spec(SPEC);
-    let mut catalog = catalog::query(&mut db.connection, &spec, "access").unwrap();
-    assert!(!catalog.in_recovery);
-    assert!(catalog::check(&spec, &catalog, "access", Replication::Logical).is_ok());
-    let major: String = tag().chars().take_while(char::is_ascii_digit).collect();
-    assert_eq!(
-        catalog.server_version / 10_000,
-        major.parse::<u32>().unwrap()
-    );
-    for (version, wal_level, needs) in [
-        (170_000, "replica", Some("logical")),
-        (170_000, "logical", None),
-        (180_000, "replica", Some("logical")),
-        (180_000, "logical", None),
-        (190_000, "replica", None),
-        (190_000, "logical", None),
-        (190_000, "minimal", Some("replica or logical")),
-        (200_000, "replica", None),
-    ] {
-        catalog.server_version = version;
-        catalog.wal_level = wal_level.into();
-        let mut expected = None;
-        if let Some(needs) = needs {
-            expected = Some(vec![format!(
-                "wal_level is {wal_level}; Straum needs {needs}, which takes a restart"
-            )]);
-        }
-        assert_eq!(
-            catalog::check(&spec, &catalog, "access", Replication::Logical)
-                .err()
-                .as_deref()
-                .map(crate::problem::lines),
-            expected,
-            "{version} {wal_level}"
-        );
-    }
-    catalog.server_version = 160_009;
-    catalog.wal_level = "logical".into();
-    assert_eq!(
-        catalog::check(&spec, &catalog, "access", Replication::Logical)
-            .err()
-            .as_deref()
-            .map(crate::problem::lines),
-        Some(vec![
-            "PostgreSQL 16 is too old; Straum needs 17 or newer".to_owned()
-        ])
-    );
-    // A server too old has its tables left unread, whose columns its
-    // catalog may lack: the check names the version alone.
-    // A standby is no source, whatever else it is.
-    catalog.server_version = 180_000;
-    catalog.in_recovery = true;
-    let standby = catalog::check(&spec, &catalog, "access", Replication::Logical);
-    assert_eq!(
-        crate::problem::lines(&standby.unwrap_err()),
-        ["the server is a standby in recovery; give Straum the primary's DSN"]
-    );
-    catalog.in_recovery = false;
-    catalog.server_version = 160_009;
-    let tables = std::mem::take(&mut catalog.classes);
-    let too_old = catalog::check(&spec, &catalog, "access", Replication::Logical);
-    assert_eq!(too_old.unwrap_err().len(), 1);
-    catalog.server_version = 170_000;
-    let unread = catalog::check(&spec, &catalog, "access", Replication::Logical);
-    assert!(unread.unwrap_err().len() > 1);
-    catalog.classes = tables;
-    the_role_must_read_every_table(&mut db, &pg, &spec);
-}
-
-/// A role that may not read the tables can't open, and the error names
-/// each table.
-fn the_role_must_read_every_table(db: &mut Db, pg: &PostgresContainer, spec: &straum_domain::Spec) {
     db.run("CREATE ROLE reader LOGIN REPLICATION PASSWORD 'r'; GRANT USAGE ON SCHEMA $S TO reader");
     let dsn = pg.dsn.to_string().replace("postgres@", "reader:r@");
     let mut reader = Postgres::new(
@@ -1032,7 +918,7 @@ fn the_role_must_read_every_table(db: &mut Db, pg: &PostgresContainer, spec: &st
         MAX_RETAINED_WAL_BYTES,
         Replication::Logical,
     );
-    let error = reader.open(spec).unwrap_err().to_string();
+    let error = reader.open(&spec).unwrap_err().to_string();
     for table in ["zones", "trips", "logins"] {
         let line =
             format!("Straum's role can't read access.{table}: GRANT SELECT ON access.{table}");

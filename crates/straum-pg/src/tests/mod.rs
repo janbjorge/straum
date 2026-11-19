@@ -15,6 +15,7 @@ mod physical_setup;
 mod protocol;
 mod records;
 mod references;
+mod server;
 mod setup;
 pub(crate) mod support;
 mod taxi_month;

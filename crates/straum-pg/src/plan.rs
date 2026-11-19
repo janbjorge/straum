@@ -75,6 +75,13 @@ pub fn plan(
     sql.push(format!(
         "CREATE PUBLICATION {publication} FOR TABLE {list};"
     ));
+    sql.extend(replica_identities(spec));
+    sql.join("\n") + "\n"
+}
+
+/// `REPLICA IDENTITY FULL` for each fact, then each dim, saying why.
+fn replica_identities(spec: &Spec) -> Vec<String> {
+    let mut sql = Vec::new();
     for fact in spec.facts() {
         sql.push(format!(
             "-- fact {}: Straum needs the old row of every update and delete; inserts cost no more.",
@@ -95,7 +102,7 @@ pub fn plan(
             qualified(&dim.table)
         ));
     }
-    sql.join("\n") + "\n"
+    sql
 }
 
 /// Makes `role`, quoted already, with the password's verifier, or says

@@ -542,29 +542,7 @@ fn check_table(
         problems.push(names.table_problem(TableProblem::NotPlain));
         return None;
     }
-    // A query of the table reads its children's rows too, the load
-    // included, but their changes come under their own names.
-    if class.scope.children {
-        problems.push(names.table_problem(TableProblem::Children));
-    }
-    if !class.select {
-        problems.push(names.table_problem(TableProblem::NoSelect));
-    }
-    // A policy filters the load, never the stream, which sends every row.
-    if class.scope.row_security {
-        problems.push(names.table_problem(TableProblem::RowSecurity {
-            role: catalog.role.clone(),
-        }));
-    }
-    // An unlogged table writes no WAL; a publication refuses it.
-    if !logical && class.persistence == "u" {
-        problems.push(names.table_problem(TableProblem::Unlogged));
-    }
-    if logical && class.row_filter {
-        problems.push(names.table_problem(TableProblem::RowFilter {
-            publication: publication.to_owned(),
-        }));
-    }
+    check_reads(class, catalog, &names, publication, replication, problems);
     // A missing publication is reported once, not per table.
     let published = match (&class.published, catalog.publication) {
         // The physical WAL holds every table, every column.
@@ -603,6 +581,42 @@ fn check_table(
         types: read.types,
         enums: read.enums,
     })
+}
+
+/// Whether the load and the stream read the plain table's rows alike: no
+/// children, no policy, no row filter, readable, and in the WAL.
+fn check_reads(
+    class: &Class,
+    catalog: &Catalog,
+    names: &TableNames,
+    publication: &str,
+    replication: Replication,
+    problems: &mut Vec<Problem>,
+) {
+    let logical = replication == Replication::Logical;
+    // A query of the table reads its children's rows too, the load
+    // included, but their changes come under their own names.
+    if class.scope.children {
+        problems.push(names.table_problem(TableProblem::Children));
+    }
+    if !class.select {
+        problems.push(names.table_problem(TableProblem::NoSelect));
+    }
+    // A policy filters the load, never the stream, which sends every row.
+    if class.scope.row_security {
+        problems.push(names.table_problem(TableProblem::RowSecurity {
+            role: catalog.role.clone(),
+        }));
+    }
+    // An unlogged table writes no WAL; a publication refuses it.
+    if !logical && class.persistence == "u" {
+        problems.push(names.table_problem(TableProblem::Unlogged));
+    }
+    if logical && class.row_filter {
+        problems.push(names.table_problem(TableProblem::RowFilter {
+            publication: publication.to_owned(),
+        }));
+    }
 }
 
 /// What a table's columns are checked against, and named by in problems.
