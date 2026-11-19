@@ -121,6 +121,9 @@ fn export_script(copied: &[Copied], needed: &str, dir: &str) -> String {
         // A lock held on a table fails the export rather than queue behind
         // it, and every query behind that.
         format!("SET LOCAL lock_timeout = '{LOCK_TIMEOUT}';"),
+        // A row security policy would hide rows without a word; off, the
+        // query that a policy would filter fails instead.
+        "SET LOCAL row_security = off;".to_owned(),
         check_sql(needed),
         "\\set QUIET on".to_owned(),
         "\\pset tuples_only on".to_owned(),
@@ -379,6 +382,11 @@ mod tests {
             scripts
                 .export
                 .contains("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"),
+            "{}",
+            scripts.export
+        );
+        assert!(
+            scripts.export.contains("SET LOCAL row_security = off;\n"),
             "{}",
             scripts.export
         );

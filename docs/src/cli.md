@@ -89,7 +89,9 @@ every table is from the same moment, and writes nothing on the source.
 It needs `SELECT` on the columns the specs read, and nothing on their
 sequences. First it checks every column and stops, naming each one it
 can't copy: a table or column the source lacks, one the role can't
-read, or a type that is neither built in nor an enum. Then it writes
+read, or a type that is neither built in nor an enum. A table a row
+security policy would filter stops it too, rather than lose rows. Then
+it writes
 `schema.sql` (the schemas, the enums and the tables, with only those
 columns; a domain becomes its base type) and one CSV per table,
 `schema.table.csv`, with a header. A table locked for more than 5 s
