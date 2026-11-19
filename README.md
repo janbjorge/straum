@@ -1,39 +1,55 @@
 # Straum
 
-**In-memory PostgreSQL aggregates, kept current as PostgreSQL commits.**
+**Exact answers to your dashboard's `GROUP BY` in microseconds, current
+to the last commit.**
 
 [![CI](https://github.com/janbjorge/straum/actions/workflows/ci.yml/badge.svg)](https://github.com/janbjorge/straum/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-user%20guide-blue)](https://janbjorge.github.io/straum/)
 
-Straum keeps the aggregates a spec declares as cells in memory. It loads
-them from a snapshot, keeps them current with every commit after it, and
-answers asks about them over HTTP in microseconds
-([performance](https://janbjorge.github.io/straum/performance.html)).
-PostgreSQL stays the source of truth; Straum keeps nothing on disk.
+A dashboard runs the same `GROUP BY` over the same tables all day, and
+PostgreSQL reads every row again each time. Straum reads them once,
+keeps each group in memory, and follows every insert, update and delete
+from PostgreSQL's replication stream. Apps ask over HTTP and never
+touch the database.
 
-On six months of New York taxi trips, 20,332,093 of them, tips by
-dropoff borough take PostgreSQL 1,746.0 ms and Straum 225 µs, 7,754x
-faster. One run on an Apple M2 Pro with 16 GB, on 2026-11-19. The
-[performance](https://janbjorge.github.io/straum/performance.html) page
-has every ask, including the median fare, which takes Straum 25.2 ms.
+It takes the place of a materialized view refreshed on a schedule or a
+rollup table kept by triggers, and needs no extension or superuser.
+PostgreSQL stays the source of truth.
 
-`bench/demo.py` loads January and times trips by pickup borough on your
-machine, then inserts a trip, deletes it, and moves two zones into a
-borough of their own. It needs Docker and
-[uv](https://docs.astral.sh/uv/). The times it prints are not the
-7,754x above.
+## How fast
 
-**Not stable.** The spec, the asks and the flags may change. Straum
-needs PostgreSQL 17 or newer, with no extension and no superuser.
-`--wal physical` reads the WAL a server you run already writes; RDS,
-Aurora and Cloud SQL do not hand out that stream
-([setup](https://janbjorge.github.io/straum/postgresql.html#physical-wal)).
+Six months of New York taxi trips, 20,332,093 rows, the same ask to
+both, answers checked equal
+([all sixteen asks](https://janbjorge.github.io/straum/performance.html)):
 
-## What it looks like
+| Ask | PostgreSQL | Straum | Faster |
+| --- | ---: | ---: | ---: |
+| Trips by pickup borough | 1,058.8 ms | 269 µs | 3,938x |
+| Tips by dropoff borough | 1,746.0 ms | 225 µs | 7,754x |
+| Fares per week | 2,154.9 ms | 233 µs | 9,260x |
+| Median fare | 4,839.8 ms | 25.2 ms | 192x |
 
-A spec is a view in a small subset of PostgreSQL's `CREATE VIEW`, here
-over an `events` table and the `accounts` it belongs to. Straum never
-creates it. `buckets(...)` is the view's time: the column, then every
-bucket width Straum keeps.
+One run on an Apple M2 Pro with 16 GB, on 2026-11-19. Straum held
+305 MiB; the table and its indexes take 2,475 MiB in PostgreSQL.
+
+## Try it
+
+One command starts PostgreSQL, loads a month of taxi trips, starts
+Straum and opens its shell. Needs Docker and bash or zsh.
+
+```bash
+docker compose -f <(curl -fsSL https://raw.githubusercontent.com/janbjorge/straum/main/docs/compose/quick-start.yaml) \
+  run --rm shell
+```
+
+The [quick start](https://janbjorge.github.io/straum/quick-start.html)
+walks through it.
+
+## What you write
+
+A spec is a view, in a small subset of PostgreSQL's `CREATE VIEW`.
+Straum never creates it. `buckets(...)` names the time column and each
+bucket width to keep.
 
 ```sql
 CREATE VIEW usage AS
@@ -55,9 +71,9 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-`straum plan` prints the SQL a table owner runs once; `straum run` loads
-the view and follows it. An ask is a `SELECT` over the view, every value
-a parameter, here purchases by region on one day:
+`straum plan` prints the SQL a table owner runs once; `straum run`
+loads the view and follows it. An ask is a `SELECT` over the view,
+every value a parameter:
 
 ```sh
 curl --json '{
@@ -76,24 +92,48 @@ curl --json '{
 }
 ```
 
-Every commit made before `as_of` is in the answer. The
-[quick start](https://janbjorge.github.io/straum/quick-start.html) runs
-it in Docker with one command and opens the shell.
+Every commit made before `as_of` is in the answer.
+
+## What you get
+
+Every answer is exact, percentiles included. A spec can use `count`,
+`sum`, `avg`, `min`, `max`, variance and standard deviation,
+percentiles, `mode`, distinct counts and `FILTER`
+([aggregates](https://janbjorge.github.io/straum/aggregates.html)). It
+can join lookup tables and keep hourly, daily and weekly buckets side
+by side.
+
+Straum runs against PostgreSQL 17 or newer as shipped. It needs a role
+with `SELECT` and a publication, so managed services work. `--wal
+physical` reads the WAL a server you run already writes; RDS, Aurora
+and Cloud SQL do not hand out that stream
+([setup](https://janbjorge.github.io/straum/postgresql.html)).
+
+Straum keeps nothing on disk. Every start loads the tables again, and a
+crash leaves no slot behind holding WAL.
+
+Straum is not a SQL engine, a replica or a cache. It answers only what
+its spec declares.
+
+> [!WARNING]
+> Straum is not stable yet. The spec, the asks and the flags may change.
+
+## Documentation
+
+The [user guide](https://janbjorge.github.io/straum/) is built from
+`docs/`, and [llms.txt](https://janbjorge.github.io/straum/llms.txt)
+indexes it for agents. Decisions are in [docs/adr/](docs/adr/).
+Research: [Straum and PostgreSQL](research/POSTGRESQL.md),
+[Joins](research/JOINS.md), [Aggregates](research/AGGREGATES.md),
+[User-defined aggregates](research/UDAF.md).
 
 ## Development
 
 [AGENTS.md](AGENTS.md) has the commands and the rules. PostgreSQL tests
-need Docker.
-
-## Documentation
-
-The [User guide](https://janbjorge.github.io/straum/) is built from `docs/`.
-An [llms.txt](https://janbjorge.github.io/straum/llms.txt) file indexes the
-guide for agents. Decisions are in [docs/adr/](docs/adr/). Research on
-the same topics is in [Straum and PostgreSQL](research/POSTGRESQL.md),
-[Joins: history and sources](research/JOINS.md),
-[Aggregates: merge and delete](research/AGGREGATES.md) and
-[User-defined aggregates](research/UDAF.md).
+need Docker. `bench/demo.py` loads January's trips on your machine,
+times trips by pickup borough, then inserts a trip, deletes it, and
+moves two zones into a borough of their own. It needs Docker and
+[uv](https://docs.astral.sh/uv/).
 
 ## License
 
