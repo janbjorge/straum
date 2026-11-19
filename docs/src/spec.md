@@ -4,7 +4,7 @@ A spec is a file of `CREATE VIEW` statements, one per table you
 aggregate, in a small subset of PostgreSQL's syntax. One item is
 Straum's own: `buckets(...)`, the view's time, which PostgreSQL writes
 as `date_bin` ([Time](#time)). With that item written so, PostgreSQL
-would give the same rows for each view. Straum never creates it, and
+gives the same rows for each view. Straum never creates the view, and
 nothing in the spec runs in PostgreSQL: to load a view, Straum copies
 only the columns it reads.
 
@@ -58,22 +58,31 @@ fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point,
 ```
 
 Brackets hold what may be left out, `|` separates a choice, and `...`
-repeats what is before it. The time, keys and measures come in any
-order.
-`EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. A
-parenthesis is written where the synopsis has one and nowhere else:
-around a null-ness key, never around a condition or a column. A spec is
-one or more views, with `;` between them, and never empty. Identifiers
-are unquoted and written in lowercase: letters, digits and `_`, at most
-63 bytes. So are function names: `count`, not `COUNT`. Keywords such as
-`SELECT`, `AS` and `GROUP BY` take any case. `CREATE OR REPLACE VIEW` is refused, as is `WITH (...)`, `GROUP BY 01`
-or the width `'60 minutes'`, written `'1 hour'`. The name of the time,
-a key or a measure is one an ask can say, so not a word SQL reserves, such as `user`,
-`all` or `from`:
+repeats what is before it. What the synopsis can't show:
 
-```text
-line 3: user is a word SQL reserves, so no ask could name it; name it otherwise
-```
+- A spec is one or more views, with `;` between them, and never empty.
+  `CREATE OR REPLACE VIEW` and view options such as `WITH (...)` are
+  refused.
+- A view has one time, at least one measure, and any number of keys,
+  in any order.
+- The time, a measure and a null-ness key read a column of the fact
+  table. A key or a condition may read a dim column too.
+- `IN` lists two values or more; for one, write `=`.
+- `EXISTS` goes in the view's `WHERE` only, not in a `FILTER`.
+- A parenthesis is written where the synopsis has one and nowhere
+  else: around a null-ness key, never around a condition or a column.
+- Identifiers are unquoted and lowercase: a letter or `_`, then
+  letters, digits and `_`, at most 63 bytes. Function names too:
+  `count`, not `COUNT`. Keywords such as `SELECT`, `AS` and `GROUP BY`
+  take any case.
+- Each number and width has one spelling: `GROUP BY 1`, never `01`;
+  `'1 hour'`, never `'60 minutes'`.
+- The name of the time, a key or a measure is one an ask can say, so
+  not a word SQL reserves, such as `user`, `all` or `from`:
+
+  ```text
+  line 3: user is a word SQL reserves, so no ask could name it; name it otherwise
+  ```
 
 A view over an `events` table and the `accounts` it belongs to, with
 a null-ness key and two filtered measures:
@@ -98,9 +107,10 @@ LEFT OUTER JOIN public.accounts AS a ON a.id = e.account_id
 GROUP BY 1, 2, 3, 4, 5;
 ```
 
-Straum keeps one cell per distinct hour, kind, account, region and
-`has_device`, holding what the measures need. An ask
-merges cells and never reads a row.
+Straum keeps one cell per distinct hour, `kind`, `account_id` and
+`has_device`, holding what the measures need. `region` is read from
+the account's row in `accounts` when an ask runs. An ask merges cells
+and never reads a row.
 
 ## The tables
 
@@ -130,10 +140,13 @@ set `FULL`.
 
 ## Keys
 
-Every `SELECT` item that is not a measure is a key, and each cell is
-one distinct combination of the keys. A key is a column of the fact
-table (`e.kind`), a column of a dim (`a.region`), a
-[null-ness key](#null-ness-keys) or the [time](#time).
+Every `SELECT` item that is not a measure is a key: a column of the
+fact table (`e.kind`), a column of a dim (`a.region`), a
+[null-ness key](#null-ness-keys) or the [time](#time). Each cell is
+one distinct combination of the keys read from the fact table, the
+[join columns](#joining-a-dim) and the bucket. A dim column is no part
+of the cell: an ask reads it through the join
+([Dims](how-it-works.md#dims)).
 
 The `AS name` is what asks use, and it is the only way an ask reaches
 the item: it says `region`, never `a.region`. Names are
@@ -143,13 +156,19 @@ lookup, where an output name it may read as an input column.
 
 A key column is an integer type, `numeric(p, s)`, `boolean`, `text`,
 `varchar`, `date` or `uuid`, or an [enum written
-`::text`](#enum-columns). A `character(n)` key is refused: PostgreSQL
-compares it without its trailing spaces, so `'ab'` finds `'ab   '`,
-and Straum compares text whole. A `real` or `double precision` column
-is refused wherever the view reads it: a float's sums can't equal
-PostgreSQL's exactly ([Aggregates 101](aggregates.md)). Fewer keys,
-or keys with fewer values, mean fewer cells, and memory follows cells
-([Cells](how-it-works.md#cells)).
+`::text`](#enum-columns). Wherever the view reads a column:
+
+- A `numeric` column is declared `numeric(p, s)` with `p` at most 18.
+  A bare `numeric` has no fixed scale and is refused.
+- A `real` or `double precision` column is refused: a float's sums
+  can't equal PostgreSQL's exactly ([Aggregates 101](aggregates.md)).
+- A `character(n)` column is refused as a key, a join column or the
+  column of `count(DISTINCT ...)`: PostgreSQL compares it without its
+  trailing spaces, so `'ab'` finds `'ab   '`, and Straum compares text
+  whole.
+
+Fewer keys, or keys with fewer values, mean fewer cells, and memory
+follows cells ([Cells](how-it-works.md#cells)).
 
 ## Time
 
@@ -243,15 +262,15 @@ next answer, as PostgreSQL's view would, and nothing stops
   Straum then holds `region` in its projection of `accounts` and reads
   `regions` through it. A chain through a semi or anti join is
   refused: those keep no row to read through.
-- Any number of dim rows may match a key. A key the dim holds twice
-  counts the fact row twice, as PostgreSQL's join does: `count(*)`,
+- Any number of dim rows may match a dim key. A dim key the dim holds
+  twice counts the fact row twice, as PostgreSQL's join does: `count(*)`,
   `count(c)` and `sum` double, `min`, `max`, `count(DISTINCT ...)`,
   `sum(DISTINCT ...)`, `avg(DISTINCT ...)`, `bool_and` and `bool_or`
   don't, `avg` stays, and `percentile_disc`,
   `mode`, the variances and the standard deviations count the row's
   value twice. A dim needs no index on its key.
-- The fact column and the dim key column must be of the same kind,
-  column for column.
+- The column joined on and the dim key column must be of the same
+  type, column for column.
 - Under `INNER JOIN` a dim key column, `a.id`, reads the fact column
   joined to it, `e.account_id`, wherever it is written; in a chain,
   `r.name` reads `a.region`. Under `LEFT OUTER JOIN` it is null where
@@ -263,7 +282,7 @@ next answer, as PostgreSQL's view would, and nothing stops
   selected under two names, each a key. The fact column joined on,
   `e.account_id`, may be selected too or left out; either way it
   keys the cells, so a view with a join has one cell per distinct join
-  id, bucket and other keys, and a dim with many rows means many
+  column, bucket and other keys, and a dim with many rows means many
   cells.
 - Two joins can point at one dim table, each reading its own columns,
   as `a` and `referrer` do above. A dim table is one dim however
@@ -317,24 +336,28 @@ PostgreSQL runs, since the key's name is no column there.
 e.kind::text AS kind
 ```
 
-Had `kind` been an enum, the view would read it so. An enum
-column is read as its label, the text PostgreSQL prints for it, by
-writing `::text` wherever the view reads the column: on a key, in a
-null-ness key, `(e.kind::text IS NULL)`, in a `FILTER` and
-in `WHERE`, spelled alike in every place and in every view that reads
-the column. `::text` is the one cast, and it goes nowhere else: not in
-`ON`, `EXISTS`, `buckets` or a measure. Straum refuses an enum column
-written without it, and the cast on a column of any other type, so a
-spec says what it reads. A `FILTER` literal must be one of the type's
-labels, which Straum reads at start. A label added later is read as
-it comes. A label renamed stops Straum, since the rows it loaded
-hold the old text: each reading of the server's WAL, once a second,
-compares the labels, and under `--wal physical` the rename's own
-commit stops it, before any row with the new text. The label is a
-text key: asks
-filter it with a string, and answers sort labels as text, not in the
-type's order ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
-Which types take the cast is listed here; today it is enums alone.
+Had `kind` been an enum, the view would read it so: as its label, the
+text PostgreSQL prints for it.
+
+- `::text` goes wherever the view reads the column: on a key, in a
+  null-ness key, `(e.kind::text IS NULL)`, in a `FILTER` and in
+  `WHERE`, spelled alike in every place and in every view that reads
+  the column.
+- It is the one cast, and it goes nowhere else: not in `ON`, `EXISTS`,
+  `buckets` or a measure. Straum refuses an enum column written
+  without it, and the cast on a column of any other type, so a spec
+  says what it reads. Which types take the cast is listed here; today
+  it is enums alone.
+- A literal in a `FILTER` or the view's `WHERE` must be one of the
+  type's labels, which Straum reads at start. A label added later is
+  read as it comes.
+- A renamed label stops Straum, since the rows it loaded hold the old
+  text. Each reading of the server's WAL, once a second, compares the
+  labels, and under `--wal physical` the rename's own commit stops it,
+  before any row with the new text.
+- The label is a text key: asks filter it with a string, and answers
+  sort labels as text, not in the type's order
+  ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
 
 ## Measures
 
@@ -344,7 +367,7 @@ Which types take the cast is listed here; today it is enums alone.
 | `count(c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `timestamptz`, `timestamp`, `date` or `uuid` | an integer |
 | `count(DISTINCT c)` | an integer type, `numeric(p, s)`, `boolean`, `text`, `date` or `uuid` | an integer |
 | `sum(c)`, `min(c)`, `max(c)` | an integer type, or `numeric(p, s)` with `p` at most 18 | an exact decimal in `c`'s scale |
-| `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
+| `avg(c)` | the same | a decimal rounded half to even at four places past `c`'s scale, its trailing zeros dropped |
 | `sum(DISTINCT c)`, `avg(DISTINCT c)` | the same | as `sum(c)` and `avg(c)`, of each value once |
 | `percentile_disc(f) WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
 | `mode() WITHIN GROUP (ORDER BY c)` | the same | a value of `c`, in `c`'s scale |
@@ -352,7 +375,8 @@ Which types take the cast is listed here; today it is enums alone.
 | `stddev_samp(c)`, `stddev_pop(c)` | the same | a decimal rounded half to even at four places past `c`'s scale |
 | `bool_and(c)`, `bool_or(c)` | `boolean` | `true` or `false` |
 
-Nulls are skipped, as in SQL. Sums are exact: Straum adds integers, with
+A measure's column is one of the fact table. Nulls are skipped, as in
+SQL. Sums are exact: Straum adds integers, with
 numeric values scaled by their column's scale. `count(*)` counts rows
 and `count(c)` the rows where `c` is not null. `bool_and(c)` is true
 when every `c` that is not null is true, and `bool_or(c)` when any is;
@@ -401,17 +425,23 @@ never a `sum`, `min` or `max`.
 ## Checking a spec
 
 `straum plan FILE` prints the setup SQL, or what is wrong and exits
-1. Syntax outside the subset comes first, with its line, then every
-problem between declarations at once:
+with status 1. Each line of the report names the file. Straum reads
+the spec in two passes and reports every problem of the first that
+finds any. The first reads each statement and names the line of each
+problem, such as syntax outside the subset or an unknown alias. It
+lists the first 50, then how many more:
 
 ```text
 straum: usage.sql: line 6: JOIN, write INNER JOIN, `JOIN public.accounts AS a ON a.id = e.account_id` is not in Straum SQL, the PostgreSQL subset made only for Straum
-usage.sql: line 3: unknown table alias a
+straum: usage.sql: line 3: unknown table alias a
 ```
+
+The second checks the views against each other and against their own
+rules, such as names declared twice and widths:
 
 ```text
 straum: usage.sql: usage declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema
-usage.sql: view usage: width of 7 minutes does not divide a day
+straum: usage.sql: view usage: width of 7 minutes does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a
