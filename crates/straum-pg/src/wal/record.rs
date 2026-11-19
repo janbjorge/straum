@@ -643,6 +643,39 @@ mod tests {
         }
     }
 
+    /// The resource managers read whatever pages they name are those of
+    /// checkpoints and switches, transaction endings, relation files cut
+    /// short and running transactions, by their ids in PostgreSQL's
+    /// `rmgrlist.h`, the same from 17 to 19; a record of any other id,
+    /// built in or custom, that names only another table's page is passed
+    /// by.
+    #[test]
+    fn always_reads_postgresql_s_xlog_xact_smgr_and_standby_records() {
+        // `RM_XLOG_ID`, `RM_XACT_ID`, `RM_SMGR_ID` and `RM_STANDBY_ID`.
+        let postgresql_ids: [u8; 4] = [0, 1, 2, 8];
+        assert_eq!(ALWAYS_READ, postgresql_ids);
+        let theirs: FastSet<RelationFile> = [RelationFile {
+            relation: FILE.relation + 1,
+            ..FILE
+        }]
+        .into_iter()
+        .collect();
+        for resource_manager in 0..=u8::MAX {
+            let spec = Spec {
+                resource_manager,
+                ..plain_block(None, vec![1; 8])
+            };
+            let bytes = assemble(&spec);
+            let expected = if postgresql_ids.contains(&resource_manager) {
+                Interest::Read
+            } else {
+                Interest::PassBy
+            };
+            let got = interest(&bytes, bytes.len(), &theirs);
+            assert_eq!(got, expected, "{resource_manager}");
+        }
+    }
+
     #[test]
     fn refuses_images_of_more_than_a_page() {
         // Compressed to a whole page: PostgreSQL would have stored it plain.
