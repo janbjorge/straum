@@ -338,6 +338,7 @@ impl Walker {
             distinct,
             ..
         } = self.call(function)?;
+        self.require_lowercase_name(function);
         self.reject_if_present(at, distinct, "DISTINCT on buckets");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),

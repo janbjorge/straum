@@ -506,7 +506,7 @@ fn buckets_asks_rows_at_a_wider_width() {
     let ask = parse_ask(
         "SELECT buckets(bucket, '1 day'), borough, trips FROM trips
          WHERE bucket >= $1 AND bucket < $2
-         GROUP BY borough, BUCKETS(bucket, '1 day')",
+         GROUP BY borough, buckets(bucket, '1 day')",
         &range(),
     )
     .unwrap();
@@ -515,6 +515,14 @@ fn buckets_asks_rows_at_a_wider_width() {
         width: Width { seconds: 86_400 },
     };
     assert_eq!(ask.keys, [day, key("borough")]);
+    // A name is lowercase, a function's too.
+    assert_eq!(
+        errors(
+            &grouped("buckets(bucket, '1 day')", "BUCKETS(bucket, '1 day')"),
+            &[]
+        ),
+        ["line 1: BUCKETS: write names in lowercase, buckets"]
+    );
     // The spec decides which widths a view keeps; the parse reads any.
     let weeks = parse_ask(
         "SELECT buckets(bucket, '7 days'), trips FROM trips GROUP BY buckets(bucket, '7 days')",

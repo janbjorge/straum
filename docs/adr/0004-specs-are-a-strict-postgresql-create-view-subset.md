@@ -23,8 +23,9 @@ Names resolve as PostgreSQL resolves them, and each meaning has one
 spelling with nothing inferred: every schema, alias, column owner,
 output name (`AS`) and join kind is written. Where PostgreSQL would
 itself infer, the spelling is the one it resolves without a lookup:
-`GROUP BY` lists positions, a `FILTER` names columns. Names are
-lowercase; a width is in the largest unit that divides it; a position,
+`GROUP BY` lists positions, a `FILTER` names columns. Names, function
+names too, are lowercase; keywords (`SELECT`, `GROUP BY`) take any
+case; a width is in the largest unit that divides it; a position,
 parameter or integer literal has no leading zero, and `0` no sign; a
 fraction is written shortest, `0.5` not `0.50` or `00.5`, `1` not
 `1.0`; an ask holds no comment or trailing `;`; a bound is

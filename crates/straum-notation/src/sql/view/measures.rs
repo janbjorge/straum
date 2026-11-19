@@ -76,6 +76,7 @@ impl Walker {
             distinct,
             ..
         } = self.call(function)?;
+        self.require_lowercase_name(function);
         self.reject_if_present(at, distinct, "DISTINCT on buckets");
         let [
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
@@ -120,7 +121,18 @@ impl Walker {
         })
     }
 
+    /// An aggregate Straum SQL lists, its name in lowercase.
     fn aggregate(
+        &mut self,
+        scope: &Scope,
+        function: &sql::Function,
+    ) -> Result<Aggregated, Reported> {
+        let aggregated = self.listed_aggregate(scope, function)?;
+        self.require_lowercase_name(function);
+        Ok(aggregated)
+    }
+
+    fn listed_aggregate(
         &mut self,
         scope: &Scope,
         function: &sql::Function,
@@ -353,6 +365,21 @@ impl Walker {
         Ok(fraction)
     }
 
+    /// A function Straum SQL lists, found in any case, is named in
+    /// lowercase as every name is: `COUNT` is refused, saying `count`.
+    pub(in crate::sql) fn require_lowercase_name(&mut self, function: &sql::Function) {
+        let Some(written) = function_name(function) else {
+            return;
+        };
+        let lower = written.to_ascii_lowercase();
+        if written != lower {
+            self.error(
+                line(function),
+                format!("{written}: write names in lowercase, {lower}"),
+            );
+        }
+    }
+
     /// The arguments of a plain call `name(args)`, after rejecting
     /// anything else about the call.
     // Borrows the arguments from the tree, which outlives the walk.
@@ -476,7 +503,8 @@ fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {
     Fraction::new(units, places)
 }
 
-/// Whether the call is to the function `name`, in any case.
+/// Whether the call is to the function `name`, in any case, so a name
+/// in capitals is refused as itself and not as some other call.
 pub(in crate::sql) fn is_call(function: &sql::Function, name: &str) -> bool {
     match function_name(function) {
         Some(written) => written.eq_ignore_ascii_case(name),

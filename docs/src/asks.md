@@ -70,8 +70,9 @@ any order. No condition is put in parentheses.
 A parameter may be used more than once, but the text the uses come to
 is at most 1 MiB, what one ask's body holds. It is `$1`, never `$01`.
 
-Names are written in lowercase. An ask holds no comment and no `;`
-after it.
+Names are written in lowercase, `buckets` too; keywords such as
+`SELECT` and `GROUP BY` take any case. An ask holds no comment and no
+`;` after it.
 
 An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
 `+`, `::` and the like), as does each statement of a spec: each is a

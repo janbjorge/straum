@@ -351,6 +351,47 @@ fn an_integer_literal_has_one_spelling() {
     assert_eq!(error_lines(&spec), ["line 9: literal 02: write 2"]);
 }
 
+/// A function's name is lowercase, as every name is; keywords take any
+/// case. The error names the one to write.
+#[test]
+fn a_function_name_is_lowercase() {
+    for (from, to, error) in [
+        (
+            "count(*) AS orders",
+            "COUNT(*) AS orders",
+            "line 7: COUNT: write names in lowercase, count",
+        ),
+        (
+            "sum(orders.amount)",
+            "Sum(orders.amount)",
+            "line 8: Sum: write names in lowercase, sum",
+        ),
+        (
+            "sum(orders.amount)",
+            "MODE() WITHIN GROUP (ORDER BY orders.amount)",
+            "line 8: MODE: write names in lowercase, mode",
+        ),
+        (
+            "sum(orders.amount)",
+            "Percentile_Disc(0.5) WITHIN GROUP (ORDER BY orders.amount)",
+            "line 8: Percentile_Disc: write names in lowercase, percentile_disc",
+        ),
+        (
+            "buckets(orders.placed_at",
+            "BUCKETS(orders.placed_at",
+            "line 2: BUCKETS: write names in lowercase, buckets",
+        ),
+    ] {
+        assert_eq!(error_lines(&canon(from, to)), [error], "{to}");
+    }
+    let keywords = CANON
+        .replace("SELECT", "select")
+        .replace(" AS ", " as ")
+        .replace("GROUP BY", "group by")
+        .replace("FILTER (WHERE", "filter (where");
+    assert!(parse(&keywords).is_ok());
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

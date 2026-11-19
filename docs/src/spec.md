@@ -65,7 +65,8 @@ parenthesis is written where the synopsis has one and nowhere else:
 around a null-ness key, never around a condition or a column. A spec is
 one or more views, with `;` between them, and never empty. Identifiers
 are unquoted and written in lowercase: letters, digits and `_`, at most
-63 bytes. `CREATE OR REPLACE VIEW` is refused, as is `WITH (...)`, `GROUP BY 01`
+63 bytes. So are function names: `count`, not `COUNT`. Keywords such as
+`SELECT`, `AS` and `GROUP BY` take any case. `CREATE OR REPLACE VIEW` is refused, as is `WITH (...)`, `GROUP BY 01`
 or the width `'60 minutes'`, written `'1 hour'`. The name of the time,
 a key or a measure is one an ask can say, so not a word SQL reserves, such as `user`,
 `all` or `from`:
