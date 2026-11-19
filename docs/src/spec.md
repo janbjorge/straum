@@ -163,12 +163,34 @@ date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
 
 `WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width
 Straum keeps, narrowest first, a comma and one space between them, and
-the first must be the `date_bin` width. Each wider width is a whole multiple of the one before and
-starts at the epoch, so `7 days` buckets start on Thursdays. An ask
-over a long range reads its middle from the widest buckets that fit
-and its ends from narrower ones, so it reads far fewer cells, as drawn
-under [How Straum works](how-it-works.md#answering-an-ask). Answers
-stay the same, and each width costs memory.
+the first must be the `date_bin` width. Each wider width is a whole
+multiple of the one before. An ask over a long range reads its middle
+from the widest buckets that fit and its ends from narrower ones, so it
+reads far fewer cells, as drawn under [How Straum
+works](how-it-works.md#answering-an-ask). Answers stay the same. A
+wider width also lets an ask answer [a row per day or
+week](asks.md#rows-a-day-or-a-week-apart), one stored bucket a row.
+Each width costs memory.
+
+Every width is a fixed grid of buckets counted from the epoch,
+1970-01-01 00:00 UTC, whatever the data and whenever the ask. A width
+that divides a day starts a bucket on every UTC midnight, so `1 day` is
+a UTC day. A wider one starts wherever the count from the epoch lands.
+The epoch was a Thursday, so `7 days` buckets run Thursday to Thursday,
+not as calendar weeks, and `2 days` buckets start on 2023-12-31 and
+2024-01-02, never on 2024-01-01. January 2024 in `7 days` buckets:
+
+```text
+2023-12-28T00:00:00Z to 2024-01-04T00:00:00Z
+2024-01-04T00:00:00Z to 2024-01-11T00:00:00Z
+2024-01-11T00:00:00Z to 2024-01-18T00:00:00Z
+2024-01-18T00:00:00Z to 2024-01-25T00:00:00Z
+2024-01-25T00:00:00Z to 2024-02-01T00:00:00Z
+```
+
+PostgreSQL's `date_bin('7 days', e.at, timestamptz 'epoch')` gives the
+same buckets. Weeks from Monday would need another origin, and a month
+or a local day is no fixed number of seconds, so neither is a width.
 
 ## Joining a dim
 
@@ -348,7 +370,7 @@ usage.sql: line 3: unknown table alias a
 
 ```text
 straum: usage.sql: usage declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema
-usage.sql: view usage: width of 420s does not divide a day
+usage.sql: view usage: width of 7 minutes does not divide a day
 ```
 
 `straum run` checks the tables themselves, such as a missing column or a

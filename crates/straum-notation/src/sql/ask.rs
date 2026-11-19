@@ -12,7 +12,9 @@
 //! Every value is a `$n` parameter, so no value is ever spliced into the
 //! query text. Keys and measures go by the names the view gives them.
 //! `bucket` is the view's time bucket; a spec can't name a key or measure
-//! `bucket`, so it never clashes. Each bound may be left out: an ask
+//! `bucket`, so it never clashes. `date_bin('1 day', bucket)` in `SELECT`
+//! and `GROUP BY` asks for rows a wider width apart; the width is part of
+//! the query, not a parameter, since it sets the answer's shape. Each bound may be left out: an ask
 //! without `bucket >= $n` reads from the first bucket held, one without
 //! `bucket < $n` to the last, and one with no `WHERE` reads them all.
 
@@ -27,6 +29,7 @@ use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
 
+use super::view::{Call, date_bin_width, is_date_bin};
 use super::{
     NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
     without_leading_zeros,
@@ -246,7 +249,7 @@ impl Walker {
             }
             match key {
                 AskKey::Key(name) => measures.push(name),
-                AskKey::Bucket => self.error(
+                AskKey::Bucket | AskKey::WiderBucket(_) => self.error(
                     line(expression),
                     format!("{expression} is selected but not in GROUP BY"),
                 ),
@@ -288,8 +291,14 @@ impl Walker {
         keys
     }
 
-    /// A key or measure by the name the view gives it, or `bucket`.
+    /// A key or measure by the name the view gives it, `bucket`, or
+    /// `date_bin('<width>', bucket)`.
     fn ask_key(&mut self, expression: &sql::Expr) -> Result<AskKey, Reported> {
+        if let sql::Expr::Function(function) = expression
+            && is_date_bin(function)
+        {
+            return self.wider_bucket(function);
+        }
         let sql::Expr::Identifier(identifier) = expression else {
             self.refuse(
                 line(expression),
@@ -303,6 +312,51 @@ impl Walker {
             return Ok(AskKey::Bucket);
         }
         Ok(AskKey::Key(name))
+    }
+
+    /// `date_bin('<width>', bucket)`: the bucket at a width the spec must
+    /// keep. PostgreSQL's third argument, the origin, is left out: an ask
+    /// takes the view's.
+    fn wider_bucket(&mut self, function: &sql::Function) -> Result<AskKey, Reported> {
+        let at = line(function);
+        self.reject_if_present(at, function.filter.is_some(), "FILTER on date_bin");
+        let Call {
+            arguments,
+            distinct,
+            ..
+        } = self.call(function)?;
+        self.reject_if_present(at, distinct, "DISTINCT on date_bin");
+        let [
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
+            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
+        ] = arguments
+        else {
+            self.refuse(
+                at,
+                "date_bin arguments in an ask, write date_bin('<width>', bucket),",
+                function,
+            );
+            return Err(Reported);
+        };
+        let parsed = date_bin_width(width);
+        if let Err(fix) = &parsed {
+            self.error(line(width), format!("date_bin width {width}: {fix}"));
+        }
+        let reads_bucket = match column {
+            sql::Expr::Identifier(identifier) => {
+                self.read_identifier(identifier)?.as_str() == "bucket"
+            }
+            _ => false,
+        };
+        if !reads_bucket {
+            let message = format!("date_bin in an ask reads bucket, not {column}");
+            self.error(line(column), message);
+            return Err(Reported);
+        }
+        let Ok(width) = parsed else {
+            return Err(Reported);
+        };
+        Ok(AskKey::WiderBucket(width))
     }
 
     /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
@@ -394,7 +448,7 @@ impl Walker {
     pub(super) fn ask_name(&mut self, expression: &sql::Expr) -> Result<Identifier, Reported> {
         match self.ask_key(expression)? {
             AskKey::Key(name) => Ok(name),
-            AskKey::Bucket => {
+            AskKey::Bucket | AskKey::WiderBucket(_) => {
                 self.error(
                     line(expression),
                     "bucket takes only bucket >= $n AND bucket < $m".into(),

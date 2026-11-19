@@ -9,7 +9,12 @@ use crate::view::{
     AT, DIM_NAMES, Dims, FILTERED, HOUR, KEYS, Kinds, Loaded, MEASURES, START, Shape, ask, keyed,
     load, order, spec_with,
 };
-use straum_domain::{Ask, Datum, Literal, RefKind};
+use straum_domain::{Ask, AskKey, Datum, Literal, RefKind, Width};
+
+/// A day, the view's wider width.
+const DAY: i64 = 24 * HOUR;
+/// Rows a day apart.
+const DAY_ROWS: Width = Width { seconds: 86_400 };
 
 /// The kinds a seed runs with. Over eight seeds: every way the three
 /// joins that read a column are left or inner, and each kind twice for
@@ -131,6 +136,20 @@ fn random_ask(rng: &mut Rng, shape: Shape) -> Ask {
         let from = START + HOUR * rng.int(0, 24);
         ask.from = Some(from);
         ask.to = Some(from + HOUR * rng.int(1, 24));
+    }
+    // Now and then rows a day apart in place of the hour's, with bounds
+    // on day edges, as a day ask's must be.
+    if rng.chance(25) {
+        let mut keys = vec![AskKey::WiderBucket(DAY_ROWS)];
+        for key in ask.keys {
+            if !matches!(key, AskKey::Bucket) {
+                keys.push(key);
+            }
+        }
+        ask.keys = keys;
+        let from = START + DAY * rng.int(0, 2);
+        ask.from = Some(from);
+        ask.to = Some(from + DAY * rng.int(1, 3));
     }
     // An open end reads to the buckets held.
     if rng.chance(15) {

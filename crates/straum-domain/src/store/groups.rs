@@ -9,8 +9,8 @@
 
 use crate::hash::FastMap;
 use crate::rollup::{Cells, Rollup};
-use crate::spec::Width;
 use crate::value::{ColumnType, Datum};
+use crate::width::Width;
 
 use super::bound::JoinRow;
 use super::lookup::Lookup;

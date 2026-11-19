@@ -1,6 +1,6 @@
 # ADR-0005: Asks are Straum SQL with parameters
 
-Status: Accepted 2026-11-10; revised 2026-11-17
+Status: Accepted 2026-11-10; revised 2026-11-19
 
 ## Context
 
@@ -22,7 +22,10 @@ each of `bucket >= $n` and `bucket < $m`. A bound left out leaves its
 end open, at the edge of the buckets held, so an ask with no `WHERE`
 reads them all. `GROUP BY` names exactly the selected keys; `HAVING
 measure op $n [AND ...]`, `op` one of `= <> < <= > >=`, compares
-selected measures. A key in `HAVING` or a measure in `WHERE` is
+selected measures. A key may be `date_bin('<width>', bucket)`, the
+same in `SELECT` and `GROUP BY`: rows that width apart, at a width the
+view keeps wider than its `date_bin` one, with bounds on its edges, so
+each row is one stored bucket. A key in `HAVING` or a measure in `WHERE` is
 refused, naming the other place. Every value is a `$n`; a literal is
 an error, so values never become query text.
 
@@ -63,6 +66,16 @@ it lands.
 - A time past the year 9999, which PostgreSQL keeps and RFC 3339 can't
   write, is reachable only through an open end. The answer writes it as
   `Unix second` and its number rather than fail.
+- A `date_bin` row reads one stored bucket: 24 times fewer cells than
+  hours for a day, 168 for a week, where every hour holds the same
+  keys (`rows_at_a_wider_width_read_its_buckets` in `tests/cost.rs`).
+  The width is query text, not a `$n`, since it sets the answer's
+  shape. Rejected: any multiple of the `date_bin` width, built from
+  narrower buckets, which costs what asking by those does.
+- Rows follow the epoch grid: UTC days, weeks from Thursday. Rejected:
+  a grid from the first row held, which would move as older rows
+  arrive and part from PostgreSQL's `date_bin`. Local days, Monday
+  weeks and months wait for an origin or zone on the view.
 - `HAVING` costs one pass over the groups. An unselected measure can't
   be compared; allowing it later breaks no ask. `!=`, `OR`, parentheses
   and expressions are refused.

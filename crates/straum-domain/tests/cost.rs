@@ -390,6 +390,36 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
     );
 }
 
+/// Rows a day or a week apart read one stored bucket a row, so 24 or 168
+/// times fewer cells than the hours under them: every hour here holds the
+/// same keys, which a real day rarely does.
+#[test]
+fn rows_at_a_wider_width_read_its_buckets() {
+    let per_hour = 2 * ZONES;
+    let store = store_with(720 * per_hour, &[24, 168]);
+    let mut by_day = ask(&[], 24, 696);
+    by_day.keys = vec![AskKey::WiderBucket(Width { seconds: 24 * HOUR })];
+    assert_eq!(
+        store.cells_read(&by_day).unwrap(),
+        usize::try_from(28 * per_hour).unwrap()
+    );
+    let mut by_week = ask(&[], 168, 672);
+    by_week.keys = vec![AskKey::WiderBucket(Width {
+        seconds: 168 * HOUR,
+    })];
+    assert_eq!(
+        store.cells_read(&by_week).unwrap(),
+        usize::try_from(3 * per_hour).unwrap()
+    );
+    // Open ends stand on the hours held, here whole days.
+    by_day.from = None;
+    by_day.to = None;
+    assert_eq!(
+        store.cells_read(&by_day).unwrap(),
+        usize::try_from(30 * per_hour).unwrap()
+    );
+}
+
 fn live() -> isize {
     LIVE.get()
 }

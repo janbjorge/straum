@@ -46,7 +46,7 @@ fn views_say_what_straum_holds() {
         reply.body,
         "\
 view trips
-  buckets:  3600s
+  buckets:  1 hour, 1 day
   holds:    4 cells, 2024-01-01T00:00:00Z to 2024-01-02T00:00:00Z
   keys:     bucket timestamptz, kind integer, zone_id integer, borough text
   measures: trips, fare, fare_avg, fare_max

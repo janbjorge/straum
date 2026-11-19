@@ -159,7 +159,7 @@ holds, from its `GET /views`.
 ```text
 $ straum views
 view trips
-  buckets:  3600s, 86400s, 604800s
+  buckets:  1 hour, 1 day, 7 days
   holds:    173660 cells, 2003-01-01T03:00:00Z to 2024-02-01T06:00:00Z
   keys:     bucket timestamptz, payment_type integer, pu_location_id integer, borough text
   measures: trips, fare, avg_fare

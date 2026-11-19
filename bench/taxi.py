@@ -71,6 +71,8 @@ NEW_YORK = {"timezone": "America/New_York"}
 # matches SQL without one; an ask may leave either end open too.
 ALL_TIME = ["2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]
 ONE_DAY = ["2024-01-17T00:00:00-05:00", "2024-01-18T00:00:00-05:00"]
+# January 2024 in UTC days, on the edges of the view's day buckets.
+ONE_MONTH = ["2024-01-01T00:00:00Z", "2024-02-01T00:00:00Z"]
 
 # Each ask as PostgreSQL SQL over the raw tables, then as a Straum SQL ask
 # over one of the views, whose values must be parameters.
@@ -159,6 +161,46 @@ ASKS = [
             WHERE bucket >= $1 AND bucket < $2
             GROUP BY bucket""",
         ONE_DAY,
+    ),
+    # One month by borough, rows an hour then a day apart: the daily rows
+    # read the view's day buckets, one stored bucket a row. Days are UTC
+    # days, on the epoch grid, as date_bin with the epoch origin bins them.
+    (
+        "Trips per hour by borough, one month",
+        """SELECT date_bin('1 hour', t.pickup_at, timestamptz 'epoch'), z.borough, count(*)
+             FROM yellow_trips t
+             LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
+            WHERE t.pickup_at >= '2024-01-01T00:00:00Z' AND t.pickup_at < '2024-02-01T00:00:00Z'
+            GROUP BY 1, 2""",
+        """SELECT bucket, borough, trips FROM trips
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY bucket, borough""",
+        ONE_MONTH,
+    ),
+    (
+        "Trips per day by borough, one month",
+        """SELECT date_bin('1 day', t.pickup_at, timestamptz 'epoch'), z.borough, count(*)
+             FROM yellow_trips t
+             LEFT JOIN taxi_zones z ON z.location_id = t.pu_location_id
+            WHERE t.pickup_at >= '2024-01-01T00:00:00Z' AND t.pickup_at < '2024-02-01T00:00:00Z'
+            GROUP BY 1, 2""",
+        """SELECT date_bin('1 day', bucket), borough, trips FROM trips
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY date_bin('1 day', bucket), borough""",
+        ONE_MONTH,
+    ),
+    # 7-day rows start on Thursdays, the epoch's weekday. Open ends read
+    # every bucket held, so a stray old trip makes a row of its own.
+    (
+        "Fares per week",
+        """SELECT date_bin('7 days', pickup_at, timestamptz 'epoch'), count(*),
+                  sum(fare_amount)
+             FROM yellow_trips
+            WHERE pickup_at IS NOT NULL
+            GROUP BY 1""",
+        """SELECT date_bin('7 days', bucket), trips, fare FROM trips
+            GROUP BY date_bin('7 days', bucket)""",
+        [],
     ),
     (
         "Tips by dropoff borough",

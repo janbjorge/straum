@@ -177,14 +177,14 @@ fn buckets_are_required_and_start_at_the_grain() {
         assert!(
             errors[0]
                 .message
-                .ends_with("but date_bin is 3600s: list every width, the date_bin width first"),
+                .ends_with("but date_bin is 1 hour: list every width, the date_bin width first"),
             "{wrong}: {errors:?}"
         );
     }
     assert!(
         sql_errors(&base("buckets = '1 hour'", "buckets = '1 day, 1 hour'"))[0]
             .message
-            .starts_with("view t: buckets starts with 86400s but")
+            .starts_with("view t: buckets starts with 1 day but")
     );
 }
 

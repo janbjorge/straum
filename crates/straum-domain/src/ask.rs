@@ -10,8 +10,9 @@ use std::fmt;
 use crate::aggregate::Answers;
 use crate::closest::closest;
 use crate::identifier::Identifier;
-use crate::spec::{Condition, Fact, Literal, Spec, Width};
+use crate::spec::{Condition, Fact, Literal, Spec};
 use crate::value::{ColumnType, MAX_SCALE, decimal};
+use crate::width::Width;
 
 /// One `SELECT` over a view: its measures, the keys it groups by, its
 /// filter and its time range.
@@ -85,8 +86,31 @@ impl fmt::Display for Comparison {
 pub enum AskKey {
     /// A key by the name the view gives it.
     Key(Identifier),
-    /// The time bucket.
+    /// The time bucket, at the `date_bin` width.
     Bucket,
+    /// The time bucket at a wider width the view keeps, as
+    /// `date_bin('1 day', bucket)` writes it: each row one stored bucket.
+    WiderBucket(Width),
+}
+
+impl AskKey {
+    /// Whether this is the time bucket, at any width.
+    pub fn is_time(&self) -> bool {
+        matches!(self, AskKey::Bucket | AskKey::WiderBucket(_))
+    }
+}
+
+impl Ask {
+    /// The width of the buckets the ask answers by: the one it names in
+    /// `date_bin`, else `date_bin_width`, the view's own.
+    pub fn row_width(&self, date_bin_width: Width) -> Width {
+        for key in &self.keys {
+            if let AskKey::WiderBucket(width) = key {
+                return *width;
+            }
+        }
+        date_bin_width
+    }
 }
 
 impl Spec {
@@ -121,7 +145,7 @@ impl Spec {
         for condition in &ask.having {
             check_having(fact, ask, condition, &mut errors);
         }
-        check_range(fact.time.width, ask, &mut errors);
+        check_range(ask.row_width(fact.time.width), ask, &mut errors);
         if errors.is_empty() {
             Ok(fact)
         } else {
@@ -150,20 +174,36 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
 fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     let mut bucket = false;
     for key in &ask.keys {
-        match key {
-            AskKey::Key(name) => {
-                if fact.resolve(name).is_none() {
-                    errors.push(unknown_key(fact, name));
-                }
+        if let AskKey::Key(name) = key {
+            if fact.resolve(name).is_none() {
+                errors.push(unknown_key(fact, name));
             }
-            AskKey::Bucket => {
-                if bucket {
-                    errors.push(AskError::TimeKeyTwice);
-                }
-                bucket = true;
-            }
+            continue;
+        }
+        if bucket {
+            errors.push(AskError::TimeKeyTwice);
+        }
+        bucket = true;
+        if let AskKey::WiderBucket(width) = key {
+            check_row_width(fact, *width, errors);
         }
     }
+}
+
+/// A row width must be one the view keeps, so each row is one stored
+/// bucket: a width built from narrower buckets would read as many cells
+/// as asking by those and adding them up.
+fn check_row_width(fact: &Fact, width: Width, errors: &mut Vec<AskError>) {
+    if width == fact.time.width {
+        errors.push(AskError::DateBinOwnWidth(width));
+        return;
+    }
+    if fact.time.wider.contains(&width) {
+        return;
+    }
+    let mut kept = vec![fact.time.width];
+    kept.extend(&fact.time.wider);
+    errors.push(AskError::WidthNotKept { width, kept });
 }
 
 fn unknown_measure(fact: &Fact, name: &Identifier) -> AskError {
@@ -258,7 +298,7 @@ fn check_range(width: Width, ask: &Ask, errors: &mut Vec<AskError>) {
         let Some(at) = end else {
             continue;
         };
-        if at.rem_euclid(i64::from(width.seconds)) != 0 {
+        if !width.is_edge(at) {
             errors.push(AskError::RangeUnaligned { at, width });
         }
     }
@@ -330,6 +370,13 @@ pub enum AskError {
     KeyNotGrouped(Identifier),
     NoMeasures,
     TimeKeyTwice,
+    /// `date_bin` at the view's own width, which plain `bucket` says.
+    DateBinOwnWidth(Width),
+    /// A `date_bin` width the view doesn't keep, beside the ones it does.
+    WidthNotKept {
+        width: Width,
+        kept: Vec<Width>,
+    },
     /// A key or measure named twice, or a key and a measure of one name.
     AskedTwice(String),
     /// A measure in WHERE, which filters rows; HAVING compares measures.
@@ -370,7 +417,8 @@ pub enum AskError {
         from: i64,
         to: i64,
     },
-    /// A range end falls inside a bucket. Asks never read raw rows.
+    /// A range end falls inside a bucket of the ask's row width. Asks
+    /// never read raw rows, and a row covers a whole bucket.
     RangeUnaligned {
         at: i64,
         width: Width,
@@ -395,6 +443,11 @@ impl fmt::Display for AskError {
             AskError::KeyNotGrouped(name) => write!(f, "{name} is a key; add it to GROUP BY"),
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
+            AskError::DateBinOwnWidth(width) => write!(
+                f,
+                "date_bin('{width}', bucket) is the view's own width; write bucket"
+            ),
+            AskError::WidthNotKept { width, kept } => write_not_kept(f, *width, kept),
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
             AskError::MeasureInWhere(name) => {
                 write!(f, "{name} is a measure; compare it in HAVING")
@@ -441,14 +494,37 @@ impl fmt::Display for AskError {
                 }
             }
             AskError::RangeEmpty { from, to } => write!(f, "empty range [{from}, {to})"),
-            AskError::RangeUnaligned { at, width } => {
-                write!(f, "bound {at} is not on a {width} bucket edge")
-            }
+            AskError::RangeUnaligned { at, width } => write_unaligned(f, *at, *width),
         }
     }
 }
 
 impl std::error::Error for AskError {}
+
+/// [`AskError::WidthNotKept`], naming every width the view keeps.
+fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Width]) -> fmt::Result {
+    let mut texts = Vec::with_capacity(kept.len());
+    for kept_width in kept {
+        texts.push(kept_width.to_string());
+    }
+    write!(
+        formatter,
+        "date_bin width '{width}' is not kept by the view; it keeps {}",
+        texts.join(", ")
+    )
+}
+
+/// [`AskError::RangeUnaligned`], with the edges on either side, so the
+/// next try needn't work out the grid. Past the last edge `i64` holds,
+/// only the one before.
+fn write_unaligned(formatter: &mut fmt::Formatter<'_>, at: i64, width: Width) -> fmt::Result {
+    write!(formatter, "bound {at} is not on a {width} bucket edge")?;
+    let before = width.bucket_start(at);
+    match before.checked_add(i64::from(width.seconds)) {
+        Some(after) => write!(formatter, "; the nearest are {before} and {after}"),
+        None => write!(formatter, "; the nearest before it is {before}"),
+    }
+}
 
 /// A value as an error names it.
 fn described(value: &Literal) -> String {
@@ -465,7 +541,7 @@ impl fmt::Display for AskKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AskKey::Key(name) => write!(f, "{name}"),
-            AskKey::Bucket => f.write_str("bucket"),
+            AskKey::Bucket | AskKey::WiderBucket(_) => f.write_str("bucket"),
         }
     }
 }

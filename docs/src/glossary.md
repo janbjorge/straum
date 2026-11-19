@@ -79,15 +79,21 @@ the end are open.
 - **Bucket**: one span of the time column at one width, and `bucket`,
   the time key's name ([Cells](how-it-works.md#cells)).
 - **Bucket width** (`Width`): a span, the `date_bin` one dividing a
-  day, each wider one a multiple of the one before. Also "grain".
+  day, each wider one a multiple of the one before; each a grid from
+  the epoch, written in its largest unit (`1 hour`, `7 days`). Also
+  "grain".
 - **Narrowest width** (`Time::width`): the `date_bin` width; the rest
   are the **wider widths** (`Time::wider`). Also "finest".
 - **Level** (`Level`): the cells of one width
   ([The store](design.md#the-store)).
 - **Origin** (`Origin`): `date_bin`'s third argument, the `'epoch'` of
   the column's type.
-- **Bucket edge**: a multiple of the `date_bin` width; each bound an
-  ask writes sits on one ([Parameters](asks.md#parameters)).
+- **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the width
+  of the buckets an ask answers by: the `date_bin` width for `bucket`,
+  or the wider one `date_bin('1 day', bucket)` names ([Rows a day or a
+  week apart](asks.md#rows-a-day-or-a-week-apart)).
+- **Bucket edge**: a multiple of a bucket width; each bound an ask
+  writes sits on one of its row width ([Parameters](asks.md#parameters)).
 - **Wall clock**: how a `timestamp` reads: no zone, printed with a `Z`
   that means nothing ([Time](spec.md#time)).
 

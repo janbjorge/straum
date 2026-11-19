@@ -31,6 +31,9 @@ FROM view
 [GROUP BY key, ...]
 [HAVING comparison [AND ...]]
 
+key         name
+            bucket
+            date_bin('width', bucket)
 condition   key = $n
             key IN ($n, $n, ...)
             bucket >= $n
@@ -72,6 +75,34 @@ after it.
 An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
 `+`, `::` and the like), as does each statement of a spec: each is a
 level of the tree Straum reads it into.
+
+## Rows a day or a week apart
+
+`GROUP BY bucket` answers a row per `date_bin` bucket, an hour in
+`usage`. `date_bin('1 day', bucket)` answers a row per day instead,
+read from the day buckets the view keeps. Each row is one stored
+bucket, so a month of days reads 31 buckets, not 744 hours:
+
+```sql
+SELECT date_bin('1 day', bucket), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY date_bin('1 day', bucket), region
+```
+
+- The width is one the view lists in `WITH (buckets = ...)`, wider than
+  its `date_bin` width, and written as the spec writes widths: `'1 day'`,
+  never `'24 hours'`. Any other width is refused, naming the widths the
+  view keeps. A width built from narrower buckets would cost as much as
+  asking by those. At the `date_bin` width itself, write `bucket`.
+- The width is part of the query, not a parameter: it sets the
+  answer's shape, as the view's own width does.
+- `SELECT` and `GROUP BY` write the same `date_bin`. The answer calls
+  the column `bucket`, and each row's value is the start of its day or
+  week.
+- Each bound written falls on an edge of that width, so no row covers
+  part of a day. An open end reaches the buckets held, so the first or
+  last row may cover part of its day: nothing lies beyond it.
+- There is no third argument: the origin is the view's. Days are UTC
+  days and `7 days` runs Thursday to Thursday, since every width is a
+  grid from the epoch ([Time](spec.md#time)).
 
 ## HAVING
 
@@ -127,8 +158,10 @@ The `bucket` bounds are RFC 3339 times, such as
 `YYYY-MM-DDTHH:MM:SS`, then `Z` or an offset `+HH:MM`, with no fraction
 and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
 refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
-written must fall on an edge of the view's `date_bin` buckets: Straum
-never answers for part of a bucket.
+written must fall on an edge of the ask's rows: the view's `date_bin`
+buckets, or the wider ones a [`date_bin` key](#rows-a-day-or-a-week-apart)
+names. Straum never answers for part of a bucket, and the error names
+the edges on either side.
 
 ## The answer
 
@@ -239,7 +272,8 @@ sees the connection close.
 {"errors": ["line 1: bucket >= given twice"]}
 {"errors": ["unknown field \"tz\""]}
 {"errors": ["line 1: value, use a parameter such as $1, `'eu'` is not in Straum SQL, the PostgreSQL subset made only for Straum"]}
-{"errors": ["bound 1794558600 is not on a 3600s bucket edge"]}
+{"errors": ["bound 1794558600 is not on a 1 hour bucket edge; the nearest are 1794556800 and 1794560400"]}
+{"errors": ["date_bin width '2 days' is not kept by the view; it keeps 1 hour, 1 day, 7 days"]}
 {"errors": ["account_id is an integer, so it can't be the text \"7\""]}
 ```
 

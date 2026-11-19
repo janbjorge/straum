@@ -13,6 +13,7 @@ use crate::aggregate::Aggregate;
 use crate::identifier::Identifier;
 use crate::spec_error::{JoinError, SpecError};
 use crate::value::ColumnType;
+use crate::width::Width;
 
 /// Seconds per day. The `date_bin` width divides it, so its buckets lie
 /// alike in every day; the wider widths need only be multiples of it.
@@ -158,19 +159,6 @@ impl fmt::Display for Origin {
             Origin::Timestamptz => "timestamptz 'epoch'",
             Origin::Timestamp => "timestamp 'epoch'",
         })
-    }
-}
-
-/// A bucket width.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Width {
-    pub seconds: u32,
-}
-
-impl Width {
-    /// The start of the bucket `seconds` falls in. Buckets are UTC.
-    pub fn bucket_start(self, seconds: i64) -> i64 {
-        seconds.div_euclid(i64::from(self.seconds)) * i64::from(self.seconds)
     }
 }
 
@@ -849,11 +837,5 @@ impl fmt::Display for RefKind {
             RefKind::Semi => "a semi join",
             RefKind::Anti => "an anti join",
         })
-    }
-}
-
-impl fmt::Display for Width {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}s", self.seconds)
     }
 }

@@ -430,7 +430,7 @@ fn views_lists_the_view_and_the_dim(url: &str) -> String {
         views,
         "\
 view trips
-  buckets:  3600s
+  buckets:  1 hour
   holds:    4 cells, 2024-01-01T00:00:00Z to 2024-01-01T04:00:00Z
   keys:     bucket timestamptz, kind text, zone_id integer, borough text
   measures: trips, fare

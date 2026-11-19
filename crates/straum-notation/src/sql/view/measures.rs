@@ -11,9 +11,9 @@ use crate::sql::{Clause, Reported, Walker, line};
 
 /// A call's arguments and how it treats them.
 // Borrows from the tree, which outlives the walk.
-struct Call<'tree> {
-    arguments: &'tree [sql::FunctionArg],
-    distinct: bool,
+pub(in crate::sql) struct Call<'tree> {
+    pub(in crate::sql) arguments: &'tree [sql::FunctionArg],
+    pub(in crate::sql) distinct: bool,
     within_group: &'tree [sql::OrderByExpr],
 }
 
@@ -282,7 +282,10 @@ impl Walker {
     /// The arguments of a plain call `name(args)`, after rejecting
     /// anything else about the call.
     // Borrows the arguments from the tree, which outlives the walk.
-    fn call<'tree>(&mut self, function: &'tree sql::Function) -> Result<Call<'tree>, Reported> {
+    pub(in crate::sql) fn call<'tree>(
+        &mut self,
+        function: &'tree sql::Function,
+    ) -> Result<Call<'tree>, Reported> {
         let call = self.ordered_call(function)?;
         self.reject_if_present(
             line(function),
@@ -345,7 +348,7 @@ impl Walker {
 }
 
 /// `'<n> <unit>'` as `date_bin`'s first argument.
-fn date_bin_width(width: &sql::Expr) -> Result<Width, String> {
+pub(in crate::sql) fn date_bin_width(width: &sql::Expr) -> Result<Width, String> {
     let sql::Expr::Value(sql::ValueWithSpan {
         value: sql::Value::SingleQuotedString(text),
         span: _,
@@ -406,7 +409,7 @@ fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {
 }
 
 /// Whether the call is `date_bin`, the bucket.
-pub(super) fn is_date_bin(function: &sql::Function) -> bool {
+pub(in crate::sql) fn is_date_bin(function: &sql::Function) -> bool {
     match function_name(function) {
         Some(name) => name.eq_ignore_ascii_case("date_bin"),
         None => false,

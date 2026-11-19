@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::value::Datum;
+use crate::width::Width;
 
 use super::cells::Cells;
 use super::row_error::RowError;
@@ -207,13 +208,23 @@ impl Rollup {
         cover: Cover,
     ) -> impl Iterator<Item = CoveredBucket<'_>> {
         let widest = match cover {
-            Cover::EachDateBin => DATE_BIN,
+            Cover::NoWiderThan(width) => self.level_of(width),
             Cover::WidestFit => LevelIndex(self.levels.len() - 1),
         };
         let mut runs = Vec::new();
         self.runs(widest, from, to, &mut runs);
         runs.into_iter()
             .flat_map(move |run| self.levels[run.level.0].buckets_in(run.from, run.to))
+    }
+
+    /// The level of `width`, which the view keeps.
+    fn level_of(&self, width: Width) -> LevelIndex {
+        for (index, level) in self.levels.iter().enumerate() {
+            if level.width == i64::from(width.seconds) {
+                return LevelIndex(index);
+            }
+        }
+        panic!("the spec keeps every width an ask's rows take")
     }
 
     /// Splits `from..to` into runs of whole buckets of `level` and narrower,

@@ -314,8 +314,9 @@ An **Ask** names one fact and, by name, its measures, keys and
 conditions; its range is two bucket edges with `from < to`. An
 **Answer** is one column per key and measure and one row per group.
 
-- `Spec::check_ask` resolves names, refuses two time keys, a name
-  asked twice, an empty range and a bound off a bucket edge. The
+- `Spec::check_ask` resolves names, refuses two time keys, a
+  `date_bin` row width the view doesn't keep, a name asked twice, an
+  empty range and a bound off an edge of the row width. The
   store adds the type check once a load has set the types
   (`AskError::WrongType`).
 - **Answered** wraps an answer with the applied LSN and `as_of`. The
@@ -376,8 +377,10 @@ makes a property test fail.
    `Projection::matches`).
 7. **A row with no time is kept, never answered** (`Level::bucket`).
 8. **The `date_bin` width divides a day, and every width nests in the
-   next** (`SpecError::BadWidth`, `SpecError::BadBucket`); every ask bound is on a `date_bin` edge
-   (`AskError::RangeUnaligned`); an ask never reads part of a bucket.
+   next** (`SpecError::BadWidth`, `SpecError::BadBucket`); every ask
+   bound is on an edge of its row width (`AskError::RangeUnaligned`),
+   which the view keeps (`AskError::WidthNotKept`); an ask never reads
+   part of a bucket.
 9. **Levels agree.** Every row goes into one cell per width in the
    same add (`Rollup::add`); `Rollup::cover` reads each instant of a
    range from exactly one level.

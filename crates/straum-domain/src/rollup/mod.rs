@@ -15,6 +15,7 @@ use crate::codes::{Codes, worth_recoding};
 use crate::identifier::Identifier;
 use crate::spec::{Fact, KeyPart};
 use crate::value::{ColumnType, Datum};
+use crate::width::Width;
 
 mod cells;
 mod distinct;
@@ -78,8 +79,10 @@ pub(crate) struct CoveredBucket<'r> {
 pub(crate) enum Cover {
     /// The widest buckets that fit, narrower ones at the ends.
     WidestFit,
-    /// Only `date_bin` buckets, as an ask grouped by the bucket needs.
-    EachDateBin,
+    /// The widest buckets that fit, none wider than a kept width, so each
+    /// lies inside one bucket of it: an ask grouped by the bucket at that
+    /// width needs no more.
+    NoWiderThan(Width),
 }
 
 /// Whether rows go into the cells or come out of them.
@@ -252,6 +255,14 @@ impl Rollup {
     /// removed.
     pub(crate) fn cells(&self) -> usize {
         self.cells
+    }
+
+    /// The `date_bin` width, of the narrowest buckets.
+    pub(crate) fn date_bin_width(&self) -> Width {
+        let seconds = self.levels[DATE_BIN.0].width;
+        Width {
+            seconds: u32::try_from(seconds).expect("a level is as wide as a Width"),
+        }
     }
 
     /// From the start of the first `date_bin` bucket to the end of the

@@ -5,7 +5,7 @@
 mod common;
 
 use common::{FEB, JAN, any_contains, condition, id, strings};
-use straum_domain::{Ask, AskKey, Comparison, Literal, MeasureCondition};
+use straum_domain::{Ask, AskKey, Comparison, Literal, MeasureCondition, Width};
 use straum_notation::parse_ask;
 
 fn key(name: &str) -> AskKey {
@@ -499,6 +499,101 @@ fn group_by_names_the_selected_keys() {
             "SELECT kind, trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY ROLLUP (kind)",
             &range(),
             "is not in Straum SQL",
+        ),
+    ]);
+}
+
+#[test]
+fn date_bin_asks_rows_at_a_wider_width() {
+    let ask = parse_ask(
+        "SELECT date_bin('1 day', bucket), borough, trips FROM trips
+         WHERE bucket >= $1 AND bucket < $2
+         GROUP BY borough, DATE_BIN('1 day', bucket)",
+        &range(),
+    )
+    .unwrap();
+    let day = AskKey::WiderBucket(Width { seconds: 86_400 });
+    assert_eq!(ask.keys, [day, key("borough")]);
+    // The spec decides which widths a view keeps; the parse reads any.
+    let weeks = parse_ask(
+        "SELECT date_bin('7 days', bucket), trips FROM trips GROUP BY date_bin('7 days', bucket)",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        weeks.keys,
+        [AskKey::WiderBucket(Width { seconds: 604_800 })]
+    );
+}
+
+/// An ask that selects `select` and groups by `group_by`.
+fn grouped(select: &str, group_by: &str) -> String {
+    format!("SELECT {select}, trips FROM t GROUP BY {group_by}")
+}
+
+#[test]
+fn date_bin_is_written_one_way() {
+    assert_each_names_what_is_wrong(&[
+        (
+            &grouped(
+                "date_bin('24 hours', bucket)",
+                "date_bin('24 hours', bucket)",
+            ),
+            &[],
+            "date_bin width '24 hours': write '1 day'",
+        ),
+        (
+            &grouped("date_bin($1, bucket)", "date_bin($1, bucket)"),
+            &[Literal::Text("1 day".into())],
+            "date_bin width $1: use '<n> seconds|minutes|hours|days'",
+        ),
+        (
+            &grouped("date_bin('1 day', kind)", "date_bin('1 day', kind)"),
+            &[],
+            "date_bin in an ask reads bucket, not kind",
+        ),
+        (
+            &grouped("date_bin('1 day', bucket + 1)", "kind"),
+            &[],
+            "date_bin in an ask reads bucket, not bucket + 1",
+        ),
+        (
+            &grouped(
+                "date_bin('1 day', bucket, timestamptz 'epoch')",
+                "date_bin('1 day', bucket, timestamptz 'epoch')",
+            ),
+            &[],
+            "date_bin arguments in an ask, write date_bin('<width>', bucket),",
+        ),
+        (
+            &grouped("date_bin(DISTINCT '1 day', bucket)", "kind"),
+            &[],
+            "DISTINCT on date_bin is not in Straum SQL",
+        ),
+        (
+            &grouped("date_bin('1 day', bucket)", "date_bin('7 days', bucket)"),
+            &[],
+            "date_bin('1 day', bucket) is selected but not in GROUP BY",
+        ),
+        (
+            &grouped("date_bin('1 day', bucket)", "date_bin('7 days', bucket)"),
+            &[],
+            "GROUP BY bucket is not selected",
+        ),
+        (
+            "SELECT trips FROM t WHERE date_bin('1 day', bucket) = $1",
+            &[Literal::Int(0)],
+            "bucket takes only bucket >= $n AND bucket < $m",
+        ),
+        (
+            "SELECT trips FROM t HAVING date_bin('1 day', bucket) > $1",
+            &[Literal::Int(0)],
+            "bucket takes only bucket >= $n AND bucket < $m",
+        ),
+        (
+            &grouped("lower(bucket)", "lower(bucket)"),
+            &[],
+            "expression, write the name the view gives the key or measure, `lower(bucket)`",
         ),
     ]);
 }

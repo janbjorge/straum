@@ -195,6 +195,7 @@ fn groups<'r>(fact: &Fact, ask: &Ask, rows: &'r [Vec<Datum>], dims: &Dims) -> Gr
             key.push(match asked {
                 AskKey::Key(name) => value(row, name, dims),
                 AskKey::Bucket => Datum::Int(Width { seconds: WIDTH }.bucket_start(time)),
+                AskKey::WiderBucket(width) => Datum::Int(width.bucket_start(time)),
             });
         }
         groups.entry(key).or_default().push(row);
@@ -228,7 +229,7 @@ fn reference_columns(fact: &Fact, ask: &Ask) -> Vec<AnswerColumn> {
                 scale: scale(name),
                 is_time: false,
             },
-            AskKey::Bucket => AnswerColumn {
+            AskKey::Bucket | AskKey::WiderBucket(_) => AnswerColumn {
                 name: asked.to_string(),
                 scale: 0,
                 is_time: true,

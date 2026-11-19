@@ -10,6 +10,12 @@ use straum_domain::{
 
 mod common;
 
+const DAY: u32 = 86_400;
+const WEEK: u32 = 604_800;
+/// [`DAY`] and [`WEEK`] as bounds, in Unix seconds.
+const DAY_START: i64 = 86_400;
+const WEEK_START: i64 = 604_800;
+
 use common::{attribute, by_key, id, percentile, table};
 
 fn dim() -> Dim {
@@ -189,8 +195,8 @@ fn buckets_widen_by_whole_multiples() {
     assert_eq!(
         shown,
         [
-            "view t: bucket of 5400s is not a wider multiple of 3600s",
-            "view t: bucket of 86400s is not a wider multiple of 86400s",
+            "view t: bucket of 90 minutes is not a wider multiple of 1 hour",
+            "view t: bucket of 1 day is not a wider multiple of 1 day",
         ]
     );
 }
@@ -293,7 +299,7 @@ fn every_error_is_reported_and_displayed() {
              table's name without the schema",
             "z: name declared twice",
             "dim w: no key columns",
-            "view z: width of 420s does not divide a day",
+            "view z: width of 7 minutes does not divide a day",
             "view z: at is the time column, so it can't be a by column too",
             "z: id declared twice",
             "view z: no_time asks whether the time column at is null, which no ask could see: \
@@ -516,6 +522,116 @@ fn ask() -> Ask {
 fn an_ask_by_every_key_form_checks() {
     let spec = Spec::new(vec![dim()], vec![fact()]).unwrap();
     assert_eq!(spec.check_ask(&ask()).unwrap().name, id("t"));
+}
+
+/// `t` keeping days and weeks beside its hours.
+fn days_and_weeks() -> Spec {
+    let mut kept = fact();
+    kept.time.wider = vec![Width { seconds: DAY }, Width { seconds: WEEK }];
+    Spec::new(vec![dim()], vec![kept]).unwrap()
+}
+
+/// [`ask`] by the bucket at `width`, over `[from, to)`.
+fn rows_of(width: u32, from: i64, to: i64) -> Ask {
+    let mut keys = ask().keys;
+    keys.pop();
+    keys.push(AskKey::WiderBucket(Width { seconds: width }));
+    Ask {
+        keys,
+        from: Some(from),
+        to: Some(to),
+        ..ask()
+    }
+}
+
+#[test]
+fn rows_at_a_kept_width_on_its_edges_check() {
+    let spec = days_and_weeks();
+    // 1970-01-01 was a Thursday, so a week from the epoch is a whole one.
+    for (width, from, to) in [(DAY, DAY_START, 3 * DAY_START), (WEEK, 0, 2 * WEEK_START)] {
+        let asked = rows_of(width, from, to);
+        assert_eq!(spec.check_ask(&asked).unwrap().name, id("t"), "{width}");
+    }
+    // Open ends need no edge.
+    let open = Ask {
+        from: None,
+        to: None,
+        ..rows_of(WEEK, 0, WEEK_START)
+    };
+    assert!(spec.check_ask(&open).is_ok());
+}
+
+#[test]
+fn rows_at_a_width_not_kept_or_the_date_bin_width_are_refused() {
+    let spec = days_and_weeks();
+    let two_days = rows_of(2 * DAY, 0, 2 * DAY_START);
+    assert_eq!(
+        spec.check_ask(&two_days).unwrap_err(),
+        [AskError::WidthNotKept {
+            width: Width { seconds: 2 * DAY },
+            kept: vec![
+                Width { seconds: 3_600 },
+                Width { seconds: DAY },
+                Width { seconds: WEEK },
+            ],
+        }]
+    );
+    // One spelling: the view's own width is plain `bucket`.
+    let hours = rows_of(3_600, 0, DAY_START);
+    assert_eq!(
+        spec.check_ask(&hours).unwrap_err(),
+        [AskError::DateBinOwnWidth(Width { seconds: 3_600 })]
+    );
+    // A view that keeps no wider width keeps none to ask by.
+    let only_hours = Spec::new(vec![dim()], vec![fact()]).unwrap();
+    assert_eq!(
+        only_hours
+            .check_ask(&rows_of(DAY, 0, DAY_START))
+            .unwrap_err(),
+        [AskError::WidthNotKept {
+            width: Width { seconds: DAY },
+            kept: vec![Width { seconds: 3_600 }],
+        }]
+    );
+    let twice = Ask {
+        keys: vec![AskKey::Bucket, AskKey::WiderBucket(Width { seconds: DAY })],
+        ..rows_of(DAY, 0, DAY_START)
+    };
+    assert_eq!(
+        spec.check_ask(&twice).unwrap_err(),
+        [AskError::TimeKeyTwice]
+    );
+}
+
+#[test]
+fn rows_wider_than_a_bound_s_bucket_are_refused() {
+    let spec = days_and_weeks();
+    // On an hour edge, but inside a day: the first row would be part of
+    // a day.
+    let mid_day = rows_of(DAY, 3_600, 2 * DAY_START);
+    assert_eq!(
+        spec.check_ask(&mid_day).unwrap_err(),
+        [AskError::RangeUnaligned {
+            at: 3_600,
+            width: Width { seconds: DAY },
+        }]
+    );
+    // A Monday is a day edge, not a week edge.
+    let monday = 4 * DAY_START;
+    let from_monday = rows_of(WEEK, monday, monday + WEEK_START);
+    assert_eq!(
+        spec.check_ask(&from_monday).unwrap_err(),
+        [
+            AskError::RangeUnaligned {
+                at: monday,
+                width: Width { seconds: WEEK },
+            },
+            AskError::RangeUnaligned {
+                at: monday + WEEK_START,
+                width: Width { seconds: WEEK },
+            },
+        ]
+    );
 }
 
 #[test]
@@ -744,11 +860,69 @@ fn ask_errors_display() {
                 at: 60,
                 width: Width { seconds: 900 },
             },
-            "bound 60 is not on a 900s bucket edge",
+            "bound 60 is not on a 15 minutes bucket edge; the nearest are 0 and 900",
         ),
     ];
     for (error, shown) in cases {
         assert_eq!(error.to_string(), shown);
     }
     assert_eq!(AskKey::Bucket.to_string(), "bucket");
+    let days = AskKey::WiderBucket(Width { seconds: DAY });
+    assert_eq!(days.to_string(), "bucket");
+    assert!(days.is_time() && AskKey::Bucket.is_time());
+    assert!(!AskKey::Key(id("a")).is_time());
+}
+
+#[test]
+fn width_and_range_errors_display() {
+    let cases = [
+        (
+            AskError::DateBinOwnWidth(Width { seconds: 3_600 }),
+            "date_bin('1 hour', bucket) is the view's own width; write bucket",
+        ),
+        (
+            AskError::WidthNotKept {
+                width: Width { seconds: 2 * DAY },
+                kept: vec![Width { seconds: 3_600 }, Width { seconds: DAY }],
+            },
+            "date_bin width '2 days' is not kept by the view; it keeps 1 hour, 1 day",
+        ),
+        (
+            AskError::RangeUnaligned {
+                at: -60,
+                width: Width { seconds: WEEK },
+            },
+            "bound -60 is not on a 7 days bucket edge; the nearest are -604800 and 0",
+        ),
+        (
+            AskError::RangeUnaligned {
+                at: i64::MAX,
+                width: Width { seconds: 900 },
+            },
+            "bound 9223372036854775807 is not on a 15 minutes bucket edge; \
+             the nearest before it is 9223372036854775800",
+        ),
+    ];
+    for (error, shown) in cases {
+        assert_eq!(error.to_string(), shown);
+    }
+}
+
+#[test]
+fn a_width_is_written_in_the_largest_unit_that_divides_it() {
+    let cases = [
+        (1, "1 second"),
+        (90, "90 seconds"),
+        (900, "15 minutes"),
+        (3_600, "1 hour"),
+        (5_400, "90 minutes"),
+        (DAY, "1 day"),
+        (WEEK, "7 days"),
+        (0, "0 seconds"),
+    ];
+    for (seconds, written) in cases {
+        assert_eq!(Width { seconds }.to_string(), written);
+    }
+    assert!(Width { seconds: DAY }.is_edge(-i64::from(DAY)));
+    assert!(!Width { seconds: DAY }.is_edge(3_600));
 }

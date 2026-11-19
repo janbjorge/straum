@@ -1,6 +1,7 @@
 //! `POST /ask` end to end: answers as JSON and as a table, asks not sent
-//! as JSON, the errors of the body, the query and the app,
-//! `Server-Timing`, and a `ReadAsk` other than Straum SQL. Each test starts a server over the fake in `fake.rs`.
+//! as JSON, rows a day apart, the errors of the body, the query and the
+//! app, `Server-Timing`, and a `ReadAsk` other than Straum SQL. Each test
+//! starts a server over the fake in `fake.rs`.
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
@@ -231,6 +232,56 @@ fn an_ask_without_bounds_reads_every_bucket_held() {
     server.stop();
 }
 
+const BY_DAY: &str = "SELECT date_bin('1 day', bucket), kind, trips, fare, fare_avg \
+    FROM trips WHERE bucket >= $1 AND bucket < $2 GROUP BY date_bin('1 day', bucket), kind";
+
+/// Rows a day apart answer under `bucket`, each the day's start in
+/// RFC 3339, its measures over the day's hours.
+#[test]
+fn answers_rows_a_day_apart() {
+    let (_writer, server) = started(writer());
+    let range = r#"["2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z"]"#;
+    let reply = call(server.address, "POST", "/ask", &ask(BY_DAY, range));
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(
+        rows_of(&reply.body),
+        concat!(
+            r#"[{"bucket":"2024-01-01T00:00:00Z","kind":1,"trips":2,"fare":15.00,"fare_avg":7.5},"#,
+            r#"{"bucket":"2024-01-01T00:00:00Z","kind":2,"trips":2,"fare":-0.05,"fare_avg":-0.05}]"#
+        )
+    );
+    server.stop();
+}
+
+/// Rows a day apart need bounds on day edges and a width the view keeps.
+#[test]
+fn rows_off_the_day_grid_or_at_a_width_not_kept_are_refused() {
+    let (_writer, server) = started(writer());
+    let by_week = "SELECT date_bin('7 days', bucket), trips FROM trips \
+        GROUP BY date_bin('7 days', bucket)";
+    let cases = [
+        (
+            ask(BY_DAY, "[1704070800, 1704240000]"),
+            concat!(
+                r#"{"errors":["bound 1704070800 is not on a 1 day bucket edge; "#,
+                r#"the nearest are 1704067200 and 1704153600"]}"#
+            ),
+        ),
+        (
+            ask(by_week, "[]"),
+            concat!(
+                r#"{"errors":["date_bin width '7 days' is not kept by the view; "#,
+                r#"it keeps 1 hour, 1 day"]}"#
+            ),
+        ),
+    ];
+    for (body, errors) in cases {
+        let reply = call(server.address, "POST", "/ask", &body);
+        assert_eq!((reply.status, reply.body.as_str()), (400, errors), "{body}");
+    }
+    server.stop();
+}
+
 /// Asks the view can't answer, each with the errors its reply holds.
 fn unanswerable() -> [(String, &'static str); 6] {
     [
@@ -245,7 +296,7 @@ fn unanswerable() -> [(String, &'static str); 6] {
                 r#"trips, fare, fare_avg, fare_max","#,
                 r#""zone_nope is not a key of the view; the view's keys are "#,
                 r#"bucket, kind, zone_id, borough","#,
-                r#""bound 1 is not on a 3600s bucket edge"]}"#
+                r#""bound 1 is not on a 1 hour bucket edge; the nearest are 0 and 3600"]}"#
             ),
         ),
         (

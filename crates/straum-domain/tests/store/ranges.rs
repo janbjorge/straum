@@ -1,5 +1,6 @@
 //! Ranges and buckets: an ask reads the buckets from its start to its end,
-//! an open end reaching to the buckets held, a time floors to its bucket even before 1970, and a row without a time
+//! an open end reaching to the buckets held, a time floors to its bucket
+//! at every width even before 1970, and a row without a time
 //! is kept but never answered.
 
 use crate::common::{Rng, id};
@@ -223,6 +224,37 @@ fn a_time_before_the_epoch_floors_to_its_bucket() {
     assert_eq!(store.cells_read(&trips_over(0, week, Vec::new())), Ok(0));
     store.remove_row("trips", &row).unwrap();
     assert_eq!(store.cells("trips"), Some(0));
+}
+
+/// Rows a week apart floor before 1970 too: the week before the epoch
+/// holds a second before the epoch and its own start, a second before
+/// that start falls a week earlier, and the epoch starts a week of its own.
+#[test]
+fn rows_a_week_apart_floor_before_1970() {
+    let mut store = typed(&spec());
+    let week = i64::from(WEEK);
+    let mut row = trip(&mut Rng(2));
+    for at in [-1, -week, -week - 1, 0] {
+        row[AT] = Datum::Int(at);
+        store.add_row("trips", &row).unwrap();
+    }
+    let by_week = Ask {
+        from: None,
+        to: None,
+        ..trips_over(0, 0, vec![AskKey::WiderBucket(Width { seconds: WEEK })])
+    };
+    let mut weeks = Vec::new();
+    for AnswerRow { keys, values } in store.ask(&by_week).unwrap().rows {
+        weeks.push((keys, values));
+    }
+    assert_eq!(
+        weeks,
+        [
+            (vec![Datum::Int(-2 * week)], vec![Value::Int(1)]),
+            (vec![Datum::Int(-week)], vec![Value::Int(2)]),
+            (vec![Datum::Int(0)], vec![Value::Int(1)]),
+        ]
+    );
 }
 
 /// A row without a time is kept, and no ask reads it, however wide its

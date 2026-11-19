@@ -185,7 +185,9 @@ fields read and set in an instant. `progress()` takes it.
 **Modules.** `mod store;` pulls in `store.rs`, or `store/mod.rs`
 when the module is a folder of files. `pub` is visible to
 other crates, `pub(crate)` only inside this one, `pub(super)` only
-in the folder's other files, nothing at all only inside the file.
+in the folder's other files, `pub(in crate::sql)` only inside the
+module named and the ones under it, nothing at all only inside the
+file.
 `#[cfg(test)] mod tests` at the end of a file holds its unit tests;
 `tests/` beside `src/` holds the tests that use the crate from
 outside.

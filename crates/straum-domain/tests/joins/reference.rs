@@ -121,6 +121,7 @@ fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> 
                 }
                 .bucket_start(at),
             ),
+            AskKey::WiderBucket(width) => Datum::Int(width.bucket_start(at)),
         });
     }
     key
@@ -176,7 +177,7 @@ fn answer_columns(ask: &Ask) -> Vec<AnswerColumn> {
         columns.push(AnswerColumn {
             name: key.to_string(),
             scale: 0,
-            is_time: *key == AskKey::Bucket,
+            is_time: key.is_time(),
         });
     }
     for name in &ask.measures {

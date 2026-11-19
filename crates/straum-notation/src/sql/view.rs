@@ -11,13 +11,13 @@ use std::fmt;
 
 use sqlparser::ast as sql;
 use straum_domain::{
-    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, Width,
+    Attribute, ByKey, Condition, Dim, Fact, Identifier, Measure, Ref, Table, Time, UNITS, Width,
 };
 
 use super::{
     Clause, Names, NullTest, Reported, SqlError, Walker, line, statements, without_leading_zeros,
 };
-use measures::is_date_bin;
+pub(super) use measures::{Call, date_bin_width, is_date_bin};
 
 mod columns;
 mod dims;
@@ -538,32 +538,6 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
 /// What to write for a width that can't be read.
 pub(super) const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
 
-/// A unit of a width, and its seconds.
-struct Unit {
-    name: &'static str,
-    seconds: u32,
-}
-
-/// The units a width takes, largest first.
-const UNITS: [Unit; 4] = [
-    Unit {
-        name: "day",
-        seconds: 86_400,
-    },
-    Unit {
-        name: "hour",
-        seconds: 3_600,
-    },
-    Unit {
-        name: "minute",
-        seconds: 60,
-    },
-    Unit {
-        name: "second",
-        seconds: 1,
-    },
-];
-
 /// A width `'<n> <unit>'`, written one way: `n` plain digits, the
 /// largest unit that divides it, singular for one. `Err` says what to
 /// write instead.
@@ -573,7 +547,7 @@ pub(super) fn parse_width(text: &str) -> Result<Width, String> {
     };
     let name = unit.strip_suffix('s').unwrap_or(unit);
     let mut scale = None;
-    for candidate in &UNITS {
+    for candidate in UNITS {
         if candidate.name == name {
             scale = Some(candidate.seconds);
         }
@@ -587,11 +561,12 @@ pub(super) fn parse_width(text: &str) -> Result<Width, String> {
     let Some(seconds) = count.checked_mul(scale) else {
         return Err(WIDTH_FORM.into());
     };
-    let written = width_text(seconds);
+    let width = Width { seconds };
+    let written = width.to_string();
     if text != written {
         return Err(format!("write '{written}'"));
     }
-    Ok(Width { seconds })
+    Ok(width)
 }
 
 /// Whether `text` is one or more ASCII digits, with no sign.
@@ -602,20 +577,6 @@ fn plain_digits(text: &str) -> bool {
         }
     }
     !text.is_empty()
-}
-
-/// `seconds` as its one spelling: the largest unit that divides it.
-fn width_text(seconds: u32) -> String {
-    let mut unit = &UNITS[UNITS.len() - 1];
-    for candidate in &UNITS {
-        if seconds > 0 && seconds.is_multiple_of(candidate.seconds) {
-            unit = candidate;
-            break;
-        }
-    }
-    let count = seconds / unit.seconds;
-    let plural = if count == 1 { "" } else { "s" };
-    format!("{count} {}{plural}", unit.name)
 }
 
 /// The columns the view reads as `::text`: the fact's, returned, and each

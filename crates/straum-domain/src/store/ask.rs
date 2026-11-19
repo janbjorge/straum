@@ -139,6 +139,7 @@ impl Store {
             by.push(match key {
                 AskKey::Key(name) => Grouping::lookup(self.lookup(fact, read, name, cells), rollup),
                 AskKey::Bucket => Grouping::time(fact.time.width, buckets),
+                AskKey::WiderBucket(width) => Grouping::time(*width, buckets),
             });
         }
         let mut groups = Groups::new(&by);
@@ -365,8 +366,8 @@ fn ref_position(fact: &Fact, reference: &Ref) -> usize {
     panic!("{CHECKED}")
 }
 
-/// The buckets an ask reads: `date_bin` buckets when it groups by the
-/// bucket, else the widest that fit.
+/// The buckets an ask reads: the widest that fit, none wider than its row
+/// width when it groups by the bucket.
 // An iterator, not a `Vec`: an ask allocates per group, never per bucket
 // (`an_ask_allocates_per_group_not_per_cell` in tests/cost.rs).
 pub(super) fn buckets<'r>(
@@ -375,8 +376,10 @@ pub(super) fn buckets<'r>(
 ) -> impl Iterator<Item = CoveredBucket<'r>> {
     let mut cover = Cover::WidestFit;
     for key in &ask.keys {
-        if *key == AskKey::Bucket {
-            cover = Cover::EachDateBin;
+        match key {
+            AskKey::Key(_) => {}
+            AskKey::Bucket => cover = Cover::NoWiderThan(rollup.date_bin_width()),
+            AskKey::WiderBucket(width) => cover = Cover::NoWiderThan(*width),
         }
     }
     let range = read_range(rollup, ask);
@@ -452,7 +455,7 @@ fn answer_columns(
         columns.push(AnswerColumn {
             name: key.to_string(),
             scale: grouping.column_type(rollup).scale(),
-            is_time: *key == AskKey::Bucket,
+            is_time: key.is_time(),
         });
     }
     for (name, measure) in ask.measures.iter().zip(measures) {

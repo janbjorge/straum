@@ -241,13 +241,13 @@ mod tests {
             write(&held),
             "\
 view trips
-  buckets:  900s, 86400s
+  buckets:  15 minutes, 1 day
   holds:    412 cells and 1 bound cell, 2024-01-01T00:00:00Z to 2024-01-03T00:00:00Z
   keys:     bucket timestamptz, kind integer, fare numeric scale 2, shared boolean, borough text
   measures: trips, fare_sum
 
 view logins
-  buckets:  90s
+  buckets:  90 seconds
   holds:    1 cell
   keys:     bucket timestamp
   measures: logins

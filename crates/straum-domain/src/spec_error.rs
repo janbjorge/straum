@@ -7,6 +7,7 @@ use std::fmt;
 
 use crate::identifier::Identifier;
 use crate::spec::RefKind;
+use crate::width::Width;
 
 /// One thing wrong with a spec. `Spec::new` reports every one it finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +105,8 @@ impl fmt::Display for SpecError {
                 name,
             } => write!(f, "{scope}: {name} declared twice"),
             SpecError::BadWidth { fact, seconds } => {
-                write!(f, "view {fact}: width of {seconds}s does not divide a day")
+                let width = Width { seconds: *seconds };
+                write!(f, "view {fact}: width of {width} does not divide a day")
             }
             SpecError::BadBucket {
                 fact,
@@ -112,7 +114,9 @@ impl fmt::Display for SpecError {
                 below,
             } => write!(
                 f,
-                "view {fact}: bucket of {seconds}s is not a wider multiple of {below}s"
+                "view {fact}: bucket of {} is not a wider multiple of {}",
+                Width { seconds: *seconds },
+                Width { seconds: *below }
             ),
             SpecError::TimeAsKey { fact, column } => write!(
                 f,

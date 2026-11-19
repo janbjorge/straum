@@ -30,6 +30,7 @@ mod test_rng;
 mod uuid;
 mod value;
 mod value_counts;
+mod width;
 
 pub use aggregate::{Aggregate, Fraction, Reads};
 pub use ask::{Ask, AskError, AskKey, Comparison, Instead, MeasureCondition};
@@ -40,9 +41,10 @@ pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use spec::{
     Attribute, ByKey, Condition, Definition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin,
-    Ref, RefKind, Spec, Table, Time, Via, Width,
+    Ref, RefKind, Spec, Table, Time, Via,
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};
 pub use uuid::{format_uuid, parse_uuid};
 pub use value::{ColumnType, Datum, Value, decimal, push_decimal};
+pub use width::{UNITS, Unit, Width};

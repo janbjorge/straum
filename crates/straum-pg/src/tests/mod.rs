@@ -22,3 +22,4 @@ mod tls;
 mod transactions;
 mod types;
 mod watchdog;
+mod wide_rows;

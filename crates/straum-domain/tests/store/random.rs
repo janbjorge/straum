@@ -6,11 +6,15 @@ use std::collections::BTreeMap;
 
 use crate::common::{Rng, condition, dim_row, id, lit, text};
 use crate::reference::measure_scale;
-use crate::{DRO, DimRows, Dims, END, HOME, KEYS, START, WIDTH};
+use crate::{DAY, DRO, DimRows, Dims, END, HOME, HOUR, KEYS, START, WEEK, WIDTH};
 use straum_domain::{
     Aggregate, Answer, Ask, AskKey, Comparison, Condition, Datum, Fact, Identifier, Literal,
-    MeasureCondition, Spec, Store, Value,
+    MeasureCondition, Spec, Store, Value, Width,
 };
+
+/// The widths an ask's rows may take: the `date_bin` width and each
+/// wider one the view keeps.
+const ROW_WIDTHS: [u32; 4] = [WIDTH, HOUR, DAY, WEEK];
 
 impl Rng {
     /// One of a few texts, or null `percent` percent of the time, as a
@@ -197,8 +201,9 @@ pub(crate) fn change_dim(rng: &mut Rng, store: &mut Store, dims: &mut Dims) {
     rows.insert(key, attributes);
 }
 
-/// An ask over random keys, filters and measures of `trips`, and a random
-/// range that may reach past the rows at either end.
+/// An ask over random keys, filters and measures of `trips`, rows by the
+/// bucket at a random width it keeps, and a random range on that width's
+/// edges that may reach past the rows at either end.
 pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
     let mut by = Vec::new();
     for key in KEYS {
@@ -206,9 +211,18 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
             by.push(AskKey::Key(id(key)));
         }
     }
+    let mut row_width = Width { seconds: WIDTH };
     if rng.chance(60) {
         let at = rng.below(by.len() + 1);
-        by.insert(at, AskKey::Bucket);
+        row_width = Width {
+            seconds: *rng.pick(&ROW_WIDTHS),
+        };
+        let key = if row_width.seconds == WIDTH {
+            AskKey::Bucket
+        } else {
+            AskKey::WiderBucket(row_width)
+        };
+        by.insert(at, key);
     }
     let mut filter = Vec::new();
     for condition in condition_pool() {
@@ -232,9 +246,11 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         let measure = rng.pick(&measures).clone();
         having.push(random_having(rng, fact, measure));
     }
-    let buckets = (END - START) / i64::from(WIDTH);
-    let from = START + i64::from(WIDTH) * rng.int(-10, buckets);
-    let to = from + i64::from(WIDTH) * rng.int(1, buckets + 20);
+    let step = i64::from(row_width.seconds);
+    let first = row_width.bucket_start(START);
+    let buckets = (END - first) / step;
+    let from = first + step * rng.int(-10, buckets);
+    let to = from + step * rng.int(1, buckets + 20);
     Ask {
         view: id("trips"),
         measures,
