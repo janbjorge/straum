@@ -520,6 +520,7 @@ fn trips_from(from: i64) -> Ask {
         having: Vec::new(),
         from: Some(from),
         to: Some(JAN_1 + 24 * HOUR),
+        bounded: None,
     }
 }
 

@@ -147,8 +147,8 @@ mod tests {
     /// A view `name` counting the rows of `table` by the hour.
     fn view(name: &str, table: &str) -> String {
         format!(
-            "CREATE VIEW {name} WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+            "CREATE VIEW {name} AS
+             SELECT buckets(f.at, '1 hour') AS bucket, count(*) AS n
              FROM {table} AS f GROUP BY 1;"
         )
     }
@@ -204,8 +204,8 @@ mod tests {
     #[test]
     fn a_password_becomes_a_scram_verifier() {
         let spec = straum_notation::parse(
-            "CREATE VIEW x WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+            "CREATE VIEW x AS
+             SELECT buckets(f.at, '1 hour') AS bucket, count(*) AS n
              FROM a.t AS f GROUP BY 1;",
         )
         .unwrap();
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn physical_needs_only_the_role_and_grants() {
         let spec = straum_notation::parse(
-            "CREATE VIEW x WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, count(*) AS n
+            "CREATE VIEW x AS
+             SELECT buckets(f.at, '1 hour') AS bucket, count(*) AS n
              FROM a.t AS f GROUP BY 1;",
         )
         .unwrap();

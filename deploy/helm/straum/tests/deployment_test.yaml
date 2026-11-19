@@ -8,7 +8,7 @@ set:
   image.repository: registry.example/straum
   image.tag: "1.0.0"
   dsn.existingSecret: straum-dsn
-  spec: "CREATE VIEW trips WITH (buckets = '1 hour') AS SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
+  spec: "CREATE VIEW trips AS SELECT buckets(t.at, '1 hour') AS bucket, count(*) AS trips FROM public.trips AS t GROUP BY 1;"
 tests:
   - it: runs straum on the spec, with the DSN from the Secret
     template: deployment.yaml

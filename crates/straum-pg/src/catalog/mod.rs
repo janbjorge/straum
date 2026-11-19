@@ -9,7 +9,7 @@
 
 use postgres_protocol::escape::{escape_identifier, escape_literal};
 use straum_domain::{
-    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Origin, Reads, Spec, Via, decimal,
+    ByKey, ColumnType, Dim, Fact, Identifier, Key, Literal, Reads, Spec, Via, decimal,
 };
 
 use crate::error::Error;
@@ -256,8 +256,8 @@ fn shape(query: &'static str) -> Error {
 /// What a column is for, which decides the types it may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Purpose {
-    /// The fact's time column, of the type its `date_bin` origin has.
-    Time(Origin),
+    /// The fact's time column: `timestamptz` or `timestamp`.
+    Time,
     /// A value Straum sums, or keeps the least and greatest of.
     Number,
     /// A value Straum groups, joins or counts distinct.
@@ -272,7 +272,7 @@ pub(crate) enum Purpose {
 impl Purpose {
     fn allows(self, column_type: ColumnType) -> bool {
         match self {
-            Purpose::Time(origin) => column_type == origin.column_type(),
+            Purpose::Time => matches!(column_type, ColumnType::Time { .. }),
             Purpose::Number => matches!(column_type, ColumnType::Int | ColumnType::Numeric { .. }),
             Purpose::Key => !matches!(column_type, ColumnType::Time { .. }),
             Purpose::Boolean => column_type == ColumnType::Bool,
@@ -283,17 +283,7 @@ impl Purpose {
     /// What to change, after what the column is.
     pub(crate) fn needs(self) -> String {
         match self {
-            Purpose::Time(origin) => {
-                let other = match origin {
-                    Origin::Timestamptz => Origin::Timestamp,
-                    Origin::Timestamp => Origin::Timestamptz,
-                };
-                format!(
-                    "the date_bin origin {origin} needs {} there; for {} column, write {other}",
-                    origin.column_type(),
-                    other.column_type()
-                )
-            }
+            Purpose::Time => "Straum needs timestamptz or timestamp there".into(),
             Purpose::Number => {
                 "Straum needs an integer type or numeric(p, s) with p at most 18 there".into()
             }
@@ -468,7 +458,7 @@ fn dim_uses(dim: &Dim) -> Vec<ColumnUse> {
 fn fact_uses(fact: &Fact) -> Vec<ColumnUse> {
     let mut uses = vec![ColumnUse {
         column: fact.time.column.clone(),
-        purpose: Purpose::Time(fact.time.origin),
+        purpose: Purpose::Time,
     }];
     for by in &fact.by_keys {
         uses.push(match by {

@@ -8,7 +8,7 @@ use crate::aggregate::Partials;
 use crate::ask::Ask;
 use crate::hash::FastMap;
 use crate::projection::{AttributeIndex, Projection};
-use crate::rollup::{Cells, InputIndex, PartIndex, Rollup, State};
+use crate::rollup::{Cells, Cover, InputIndex, PartIndex, Rollup, State};
 use crate::spec::RefKind;
 use crate::value::{Datum, Value};
 
@@ -23,6 +23,8 @@ use super::{AnswerRow, Cut, Window};
 // The `'s` in this file borrows the store for the length of the ask.
 pub(super) struct CellLoop<'s> {
     pub(super) rollup: &'s Rollup,
+    /// Which buckets the ask reads.
+    pub(super) cover: Cover,
     pub(super) by: Vec<Grouping<'s>>,
     pub(super) groups: Groups,
     pub(super) filter: Vec<ConditionCheck<'s>>,
@@ -55,7 +57,7 @@ impl<'s> CellLoop<'s> {
         // cells passed over. Again per measure with a filter of its own.
         let mut cell_groups = Vec::new();
         let mut measure_groups = Vec::new();
-        for covered in buckets(rollup, ask) {
+        for covered in buckets(rollup, ask, self.cover) {
             let cells = covered.cells;
             self.groups.enter(&mut self.by, covered.id.start);
             cell_groups.clear();
@@ -88,7 +90,7 @@ impl<'s> CellLoop<'s> {
     /// join row its joins resolve it to.
     pub(super) fn ask_expanded(&mut self, ask: &Ask, expander: &mut Expander<'s>) {
         let rollup = self.rollup;
-        for covered in buckets(rollup, ask) {
+        for covered in buckets(rollup, ask, self.cover) {
             let cells = covered.cells;
             self.groups.enter(&mut self.by, covered.id.start);
             for cell in 0..cells.len() {

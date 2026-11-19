@@ -283,14 +283,6 @@ impl Rollup {
         self.cells
     }
 
-    /// The `date_bin` width, of the narrowest buckets.
-    pub(crate) fn date_bin_width(&self) -> Width {
-        let seconds = self.levels[DATE_BIN.0].width;
-        Width {
-            seconds: u32::try_from(seconds).expect("a level is as wide as a Width"),
-        }
-    }
-
     /// From the start of the first `date_bin` bucket to the end of the
     /// last. Rows without a time are in no bucket
     /// an ask reads, so they count for nothing here.

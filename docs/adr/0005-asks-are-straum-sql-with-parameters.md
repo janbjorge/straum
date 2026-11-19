@@ -18,13 +18,15 @@ stated target, an aggregate could land at any speed.
 is one `SELECT` over a view the client names: keys then measures by
 name; `WHERE`, if
 written, holds `=` and `IN` on keys joined by `AND`, and at most one
-each of `bucket >= $n` and `bucket < $m`. A bound left out leaves its
+each of `time >= $n` and `time < $m`, `time` the name the view gives
+its time. The walk doesn't know the view; the spec check says which
+name is the time, and refuses `>=` or `<` on any other. A bound left out leaves its
 end open, at the edge of the buckets held, so an ask with no `WHERE`
 reads them all. `GROUP BY` names exactly the selected keys; `HAVING
 measure op $n [AND ...]`, `op` one of `= <> < <= > >=`, compares
-selected measures. A key may be `date_bin('<width>', bucket)`, the
+selected measures. A key may be `date_bin('<width>', time)`, the
 same in `SELECT` and `GROUP BY`: rows that width apart, at a width the
-view keeps wider than its `date_bin` one, with bounds on its edges, so
+view keeps wider than its narrowest, with bounds on its edges, so
 each row is one stored bucket. A key in `HAVING` or a measure in `WHERE` is
 refused, naming the other place. Every value is a `$n`; a literal is
 an error, so values never become query text.
@@ -53,7 +55,8 @@ it lands.
 ## Consequences
 
 - An ask is not valid PostgreSQL: measures go by bare name and refs
-  are in scope without a join. `bucket` is reserved.
+  are in scope without a join. No name is reserved: the time is
+  whatever the view calls it.
 - `straum-notation` walks an ask like a spec; `straum-http` reads only
   the JSON around it.
 - A key or measure asked twice is refused, so `Answer` names its own
@@ -72,7 +75,7 @@ it lands.
   hours for a day, 168 for a week, where every hour holds the same
   keys (`rows_at_a_wider_width_read_its_buckets` in `tests/cost.rs`).
   The width is query text, not a `$n`, since it sets the answer's
-  shape. Rejected: any multiple of the `date_bin` width, built from
+  shape. Rejected: any multiple of the narrowest width, built from
   narrower buckets, which costs what asking by those does.
 - Rows follow the epoch grid: UTC days, weeks from Thursday. Rejected:
   a grid from the first row held, which would move as older rows

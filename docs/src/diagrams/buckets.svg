@@ -88,7 +88,7 @@
   </defs>
   <rect class="canvas" x="0.5" y="0.5" width="719" height="487" rx="10"/>
   <text x="24" y="38" class="title">A row lands in one bucket per width</text>
-  <text x="24" y="62" class="s muted">One row at Fri 2026-11-13 09:41:07Z, with buckets = '1 hour, 1 day, 7 days'.</text>
+  <text x="24" y="62" class="s muted">One row at Fri 2026-11-13 09:41:07Z, with buckets(e.at, '1 hour', '1 day', '7 days').</text>
   <text x="24" y="112" class="h" text-anchor="start">7 days</text>
   <rect class="accbox" x="120" y="86" width="576" height="42" rx="8"/>
   <text x="408.0" y="112.0" class="b acc" text-anchor="middle">Thu 2026-11-12 to Thu 2026-11-19</text>

@@ -154,8 +154,8 @@ fn line(node: &impl Spanned) -> u64 {
 }
 
 const CONDITION: &str = "filter condition, write = or IN joined by AND,";
-const ASK_COMPARISON: &str =
-    "comparison, WHERE takes = or IN on a key; compare a measure in HAVING,";
+const ASK_COMPARISON: &str = "comparison, WHERE takes = or IN on a key, >= and < on the \
+                              time; compare a measure in HAVING,";
 const PARENTHESES: &str = "parentheses, write the condition without them,";
 
 /// The most errors a walk keeps. A 1 MiB ask can hold half a million
@@ -309,8 +309,7 @@ impl Walker {
     /// say.
     fn read_output_name(&mut self, alias: &sql::Ident) -> Result<Identifier, Reported> {
         let name = self.read_identifier(alias)?;
-        // An ask reads `bucket` as the time; the spec's own check says so.
-        if name.as_str() != "bucket" && !ask::askable(&name) {
+        if !ask::askable(&name) {
             self.error(
                 alias.span.start.line,
                 format!(
@@ -598,15 +597,15 @@ impl Walker {
     }
 }
 
-/// `name <> value`, `<`, `<=`, `>` or `>=`, the name not `bucket`: what
-/// HAVING writes, so likely meant for a measure.
+/// `name <> value`, `<`, `<=`, `>` or `>=`: what HAVING writes, so
+/// likely meant for a measure.
 fn compares_a_name(expression: &sql::Expr) -> bool {
     let sql::Expr::BinaryOp { left, op, .. } = expression else {
         return false;
     };
-    let sql::Expr::Identifier(name) = left.as_ref() else {
+    if !matches!(left.as_ref(), sql::Expr::Identifier(_)) {
         return false;
-    };
+    }
     let compares = matches!(
         op,
         sql::BinaryOperator::NotEq
@@ -615,7 +614,7 @@ fn compares_a_name(expression: &sql::Expr) -> bool {
             | sql::BinaryOperator::Gt
             | sql::BinaryOperator::GtEq
     );
-    compares && name.value != "bucket"
+    compares
 }
 
 /// `digits` as its one spelling, `7` for `007`, when written with leading

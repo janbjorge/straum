@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use crate::common::{condition, dim_row, id, lit, measure, percentile, table};
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Measure,
-    Origin, Ref, RefKind, Spec, Store, Via, Width,
+    Ref, RefKind, Spec, Store, Via, Width,
 };
 
 pub const HOUR: i64 = 3_600;
@@ -142,7 +142,7 @@ pub fn spec_with(kinds: Kinds, filter: Vec<Condition>, shape: Shape) -> Spec {
             wider: vec![Width {
                 seconds: 24 * u32::try_from(HOUR).unwrap(),
             }],
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: refs(kinds, shape),
         by_keys,
@@ -297,7 +297,7 @@ pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
     let mut keys = Vec::with_capacity(by.len());
     for key in by {
         keys.push(match *key {
-            "bucket" => AskKey::Bucket,
+            "bucket" => AskKey::Key(id("bucket")),
             name => AskKey::Key(id(name)),
         });
     }
@@ -309,6 +309,7 @@ pub fn ask(measures: &[&str], by: &[&str], filter: Vec<Condition>) -> Ask {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     }
 }
 

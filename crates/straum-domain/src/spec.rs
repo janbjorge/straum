@@ -12,7 +12,6 @@ use std::fmt;
 use crate::aggregate::Aggregate;
 use crate::identifier::Identifier;
 use crate::spec_error::{JoinError, SpecError};
-use crate::value::ColumnType;
 use crate::width::Width;
 
 /// Seconds per day. The `date_bin` width divides it, so its buckets lie
@@ -120,46 +119,19 @@ impl ByKey {
     }
 }
 
-/// The view's time: the column `date_bin` reads, and the bucket widths
-/// kept.
+/// The view's time: the name the view gives its buckets, the column
+/// they divide, and the bucket widths kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Time {
+    /// The name an ask groups and bounds the buckets by.
+    pub name: Identifier,
     pub column: Identifier,
+    /// The narrowest width, the one every row is put in a bucket of.
     pub width: Width,
     /// Wider bucket widths kept beside `width`, narrowest first. Each is a
     /// whole multiple of the width before it, so one of its buckets is made
     /// of whole buckets of every narrower width.
     pub wider: Vec<Width>,
-    pub origin: Origin,
-}
-
-/// The `date_bin` origin, which must be of the time column's type: with a
-/// `timestamp` column, PostgreSQL would cast a `timestamptz 'epoch'`
-/// through the session zone, and the view body would not mean what Straum
-/// computes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
-    Timestamptz,
-    Timestamp,
-}
-
-impl Origin {
-    /// The column type that goes with this origin.
-    pub fn column_type(self) -> ColumnType {
-        match self {
-            Origin::Timestamptz => ColumnType::Time { zoned: true },
-            Origin::Timestamp => ColumnType::Time { zoned: false },
-        }
-    }
-}
-
-impl fmt::Display for Origin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Origin::Timestamptz => "timestamptz 'epoch'",
-            Origin::Timestamp => "timestamp 'epoch'",
-        })
-    }
 }
 
 /// A join from the fact, or from a dim already joined, to a dim's key,
@@ -524,9 +496,10 @@ fn check_dim(dim: &Dim, errors: &mut Vec<SpecError>) {
 
 fn check_fact(fact: &Fact, dims: &[Dim], errors: &mut Vec<SpecError>) {
     check_time(fact, errors);
-    // `by` keys and the attributes refs read share one namespace, since
-    // an ask names either by its name alone.
+    // The time, `by` keys, attributes refs read and measures share one
+    // namespace, since an ask names each by its name alone.
     let mut keys: HashSet<&Identifier> = HashSet::new();
+    keys.insert(&fact.time.name);
     check_by(fact, &mut keys, errors);
     let mut ref_names = HashSet::new();
     for (position, join) in fact.refs.iter().enumerate() {
@@ -766,9 +739,6 @@ fn check_measures<'a>(
     if fact.measures.is_empty() {
         errors.push(SpecError::NoMeasures { fact: name.clone() });
     }
-    if names_bucket(fact) {
-        errors.push(SpecError::NamedBucket { fact: name.clone() });
-    }
     for measure in &fact.measures {
         if !keys.insert(&measure.name) {
             errors.push(SpecError::Duplicate {
@@ -779,21 +749,6 @@ fn check_measures<'a>(
         check_filter(fact, Some(&measure.name), &measure.filter, errors);
     }
     check_filter(fact, None, &fact.filter, errors);
-}
-
-/// Whether a key or measure of the view is named `bucket`.
-fn names_bucket(fact: &Fact) -> bool {
-    for key in fact.keys() {
-        if key.as_str() == "bucket" {
-            return true;
-        }
-    }
-    for measure in &fact.measures {
-        if measure.name.as_str() == "bucket" {
-            return true;
-        }
-    }
-    false
 }
 
 /// Every condition of `filter`, a measure's or else the view's, names a

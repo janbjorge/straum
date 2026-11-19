@@ -136,7 +136,7 @@ read fact columns, one projection per dim. A rollup is one level per
 width; a bucket is columnar cells with one state per input.*
 
 - A **Rollup** is every cell of one fact: one **Level** per width,
-  the `date_bin` width first, and one **Codes** per rollup-key
+  the narrowest first, and one **Codes** per rollup-key
   column. The bucket is not coded; it keys the level's map. Rows
   without a time go under `None` (`Level::bucket`).
 - A **Bucket** holds its **Cells**, every bucket in memory
@@ -293,10 +293,11 @@ all but count name one input column (`Aggregate::input`).
   the dim's key has (`JoinError::KeyLength`). Left and inner refs read
   at least one **Attribute**; semi and anti read none
   (`JoinError::ReadsNothing`, `JoinError::ReadsColumns`).
-- Keys, attributes and measures share one namespace per view, and
-  nothing may be named `bucket` (`SpecError::NamedBucket`). An ask
-  reaches any of them by that name alone (`Fact::resolve`).
-- **Width**: the `date_bin` width divides a day; each wider width is a
+- The time, keys, attributes and measures share one namespace per
+  view (`SpecError::Duplicate`). An ask reaches any of them by that
+  name alone: the time by `Time::name`, the rest through
+  `Fact::resolve`.
+- **Width**: the narrowest width divides a day; each wider width is a
   whole multiple of the one before, and need not divide a day
   (`SpecError::BadWidth`, `SpecError::BadBucket`).
 
@@ -315,9 +316,12 @@ An **Ask** names one fact and, by name, its measures, keys and
 conditions; its range is two bucket edges with `from < to`. An
 **Answer** is one column per key and measure and one row per group.
 
-- `Spec::check_ask` resolves names, refuses two time keys, a
-  `date_bin` row width the view doesn't keep, a name asked twice, an
-  empty range and a bound off an edge of the row width. The
+- `Spec::check_ask` resolves names, finds the time by its name
+  (`Fact::time_width`), refuses two time keys, a `date_bin` row width
+  the view doesn't keep, `date_bin` or range bounds on a name that is
+  not the time (`AskError::NotTime`), the time in `WHERE`, a name
+  asked twice, an empty range and a bound off an edge of the row
+  width. The
   store adds the type check once a load has set the types
   (`AskError::WrongType`).
 - **Answered** wraps an answer with the applied LSN and `as_of`. The
@@ -377,7 +381,7 @@ makes a property test fail.
    a lookup with a null finds nothing (`Projection::add`,
    `Projection::matches`).
 7. **A row with no time is kept, never answered** (`Level::bucket`).
-8. **The `date_bin` width divides a day, and every width nests in the
+8. **The narrowest width divides a day, and every width nests in the
    next** (`SpecError::BadWidth`, `SpecError::BadBucket`); every ask
    bound is on an edge of its row width (`AskError::RangeUnaligned`),
    which the view keeps (`AskError::WidthNotKept`); an ask never reads
@@ -398,9 +402,9 @@ makes a property test fail.
     reference that keeps every reading.
 12. **Two stores never take memory at once.** The old store goes
     before the new load (`Writer::start`).
-13. **One name, one thing, per view.** Keys, attributes and measures
-    share a namespace, `bucket` is reserved, and an answer's columns
-    are its names (`Spec::new`, `Spec::check_ask`).
+13. **One name, one thing, per view.** The time, keys, attributes and
+    measures share a namespace, and an answer's columns are its names
+    (`Spec::new`, `Spec::check_ask`).
 
 ## State machines
 

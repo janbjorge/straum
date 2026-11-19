@@ -3,7 +3,7 @@
 //! seeds over one shape of view, so between them every join kind meets
 //! every kind of cells an ask may read: keyed and bound.
 
-use crate::common::{Rng, condition, lit, text};
+use crate::common::{Rng, condition, id, lit, text};
 use crate::reference::reference;
 use crate::view::{
     AT, DIM_NAMES, Dims, FILTERED, HOUR, KEYS, Kinds, Loaded, MEASURES, START, Shape, ask, keyed,
@@ -140,9 +140,12 @@ fn random_ask(rng: &mut Rng, shape: Shape) -> Ask {
     // Now and then rows a day apart in place of the hour's, with bounds
     // on day edges, as a day ask's must be.
     if rng.chance(25) {
-        let mut keys = vec![AskKey::WiderBucket(DAY_ROWS)];
+        let mut keys = vec![AskKey::WiderBucket {
+            name: id("bucket"),
+            width: DAY_ROWS,
+        }];
         for key in ask.keys {
-            if !matches!(key, AskKey::Bucket) {
+            if key.name().as_str() != "bucket" {
                 keys.push(key);
             }
         }

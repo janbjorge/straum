@@ -18,8 +18,8 @@ pub const JAN: i64 = 1_704_067_200;
 pub const FEB: i64 = 1_706_745_600;
 
 /// One fact `t` with a ref `z`, valid as written. Tests swap one piece.
-pub const BASE: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+pub const BASE: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.a AS a, f.z_id AS z_id, z.name AS name, count(*) AS n
 FROM public.t AS f
 LEFT OUTER JOIN public.z AS z ON z.id = f.z_id
@@ -139,6 +139,7 @@ pub fn ask_view_t(by: &[&str]) -> Ask {
         having: Vec::new(),
         from: Some(JAN),
         to: Some(FEB),
+        bounded: None,
     }
 }
 

@@ -4,12 +4,12 @@
 use super::*;
 
 const VIEWS: &str = r#"{"views":[
-    {"name":"orders",
+    {"name":"orders","time":"bucket",
      "from":"2026-01-01T09:00:00Z","to":"2026-01-01T11:00:00Z",
      "keys":[{"name":"bucket","type":"timestamptz"},{"name":"status","type":"text"},
              {"name":"shipped","type":"boolean"},{"name":"country","type":"text"}],
      "measures":["orders","revenue"]},
-    {"name":"logins",
+    {"name":"logins","time":"bucket",
      "from":null,"to":null,
      "keys":[{"name":"bucket","type":"timestamp"},{"name":"country","type":"text"}],
      "measures":["logins"]}]}"#;
@@ -48,6 +48,7 @@ fn reads_the_views_a_straum_serves() {
         views[1],
         View {
             name: "logins".to_owned(),
+            time: "bucket".to_owned(),
             keys: vec![key("bucket", "timestamp"), key("country", "text")],
             measures: vec!["logins".to_owned()],
             from: None,
@@ -56,7 +57,7 @@ fn reads_the_views_a_straum_serves() {
     );
     assert_eq!(views[0].from.as_deref(), Some("2026-01-01T09:00:00Z"));
     // A numeric says its scale beside its type.
-    let scaled = r#"{"views":[{"name":"v","measures":[],
+    let scaled = r#"{"views":[{"name":"v","time":"t","measures":[],
         "keys":[{"name":"fare","type":"numeric","scale":2}]}]}"#;
     assert_eq!(
         read_views(scaled).unwrap()[0].keys,
@@ -74,6 +75,7 @@ fn reads_the_views_a_straum_serves() {
         r#"{"views":[{"name":"v","keys":[{"name":"k"}]}]}"#,
         r#"{"views":[{"name":"v","keys":[]}]}"#,
         r#"{"views":[{"name":"v","keys":[],"measures":[1]}]}"#,
+        r#"{"views":[{"name":"v","keys":[],"measures":[]}]}"#,
     ] {
         assert_eq!(read_views(not_views), None, "{not_views}");
     }
@@ -81,7 +83,7 @@ fn reads_the_views_a_straum_serves() {
 
 #[test]
 fn a_scale_that_is_not_a_number_is_left_out() {
-    let scaled = r#"{"views":[{"name":"v","measures":[],
+    let scaled = r#"{"views":[{"name":"v","time":"t","measures":[],
         "keys":[{"name":"fare","type":"numeric","scale":"two"}]}]}"#;
     assert_eq!(
         read_views(scaled).unwrap()[0].keys,
@@ -202,15 +204,29 @@ fn where_offers_nothing_mid_condition_or_for_an_unknown_view() {
         offers("SELECT orders FROM orders WHERE status "),
         Vec::<String>::new()
     );
-    // A view Straum doesn't serve has only its bounds.
+    // A view Straum doesn't serve names no time, so nothing is offered.
+    assert_eq!(offers("SELECT x FROM nope WHERE "), Vec::<String>::new());
+}
+
+/// The bounds go by the name the view gives its time.
+#[test]
+fn where_bounds_the_time_by_its_name() {
+    let views = r#"{"views":[{"name":"trips","time":"pickup",
+        "from":"2026-01-01T09:00:00Z","to":"2026-01-01T11:00:00Z",
+        "keys":[{"name":"pickup","type":"timestamptz"},{"name":"kind","type":"text"}],
+        "measures":["trips"]}]}"#;
+    let held = read_views(views).unwrap();
+    let line = "SELECT trips FROM trips WHERE ";
+    let Completion { candidates, .. } = complete(&held, line, line.len());
+    assert_eq!(candidates, ["pickup >= $1 AND pickup < $2 ", "kind = $1 "]);
+    // With both bounds written, only the keys are left.
+    let both = "SELECT trips FROM trips WHERE pickup >= $1 AND pickup < $2 AND ";
+    let Completion { candidates, .. } = complete(&held, both, both.len());
+    assert_eq!(candidates, ["kind = $3 "]);
+    let bounded = "SELECT trips FROM trips WHERE pickup >= $1; ";
     assert_eq!(
-        offers("SELECT x FROM nope WHERE "),
-        ["bucket >= $1 AND bucket < $2 "]
-    );
-    // With both bounds written and no view, nothing is left.
-    assert_eq!(
-        offers("SELECT x FROM nope WHERE bucket >= $1 AND bucket < $2 AND "),
-        Vec::<String>::new()
+        hint(&held, bounded, bounded.len()).unwrap(),
+        "(the timestamptz for pickup >= $1, Tab gives 2026-01-01T09:00:00Z)"
     );
 }
 

@@ -120,8 +120,8 @@ the other end of the same trips: tips, the average distance and fares
 per hour and dropoff zone.
 
 ```sql
-CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', dropoffs.pickup_at, timestamptz 'epoch') AS bucket,
+CREATE VIEW dropoffs AS
+SELECT buckets(dropoffs.pickup_at, '1 hour', '1 day', '7 days') AS bucket,
        dropoffs.do_location_id AS do_location_id,
        dropoff.borough AS borough,
        count(*) AS trips,

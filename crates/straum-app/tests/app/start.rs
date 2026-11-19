@@ -117,7 +117,7 @@ fn held_says_what_the_store_holds_once_loaded() {
             HeldView {
                 name: id("trips"),
                 widths: vec![Width { seconds: 3_600 }],
-                bucket: ColumnType::Time { zoned: true },
+                time: held_key("bucket", ColumnType::Time { zoned: true }),
                 keys: vec![
                     held_key("kind", ColumnType::Int),
                     held_key("zone_id", ColumnType::Int),
@@ -131,7 +131,7 @@ fn held_says_what_the_store_holds_once_loaded() {
             HeldView {
                 name: id("logins"),
                 widths: vec![Width { seconds: 86_400 }],
-                bucket: ColumnType::Time { zoned: true },
+                time: held_key("bucket", ColumnType::Time { zoned: true }),
                 keys: vec![held_key("borough", ColumnType::Text)],
                 measures: vec![id("logins")],
                 cells: 0,

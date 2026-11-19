@@ -10,8 +10,7 @@ use crate::{
     WIDTH,
 };
 use straum_domain::{
-    Aggregate, ColumnType, Datum, Fact, Identifier, KeyPart, Origin, RowError, Spec, Store, Time,
-    Width,
+    Aggregate, ColumnType, Datum, Fact, Identifier, KeyPart, RowError, Spec, Store, Time, Width,
 };
 
 #[test]
@@ -176,7 +175,7 @@ fn fare_sum_spec() -> Spec {
             column: id("at"),
             width: Width { seconds: WIDTH },
             wider: Vec::new(),
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: Vec::new(),
         by_keys: vec![by_key("pay")],

@@ -43,6 +43,7 @@ fn by_borough_over(from: i64, to: i64) -> Ask {
         having: Vec::new(),
         from: Some(from),
         to: Some(to),
+        bounded: None,
     }
 }
 

@@ -31,6 +31,9 @@ pub struct Ask {
     /// The end of the range, not read, in Unix seconds on a bucket edge;
     /// `None` reads to the end of the last bucket held.
     pub to: Option<i64>,
+    /// The name the range bounds compare, which must be the view's time;
+    /// `None` when neither end is written.
+    pub bounded: Option<Identifier>,
 }
 
 /// `measure op value` in HAVING: a measure the ask selects, compared with
@@ -84,19 +87,32 @@ impl fmt::Display for Comparison {
 /// A key an ask groups by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskKey {
-    /// A key by the name the view gives it.
+    /// A key by the name the view gives it; the view's time is one, at
+    /// its narrowest width.
     Key(Identifier),
-    /// The time bucket, at the `date_bin` width.
-    Bucket,
-    /// The time bucket at a wider width the view keeps, as
-    /// `date_bin('1 day', bucket)` writes it: each row one stored bucket.
-    WiderBucket(Width),
+    /// The view's time at a wider width it keeps, as
+    /// `date_bin('1 day', hour)` writes it: each row one stored bucket.
+    WiderBucket { name: Identifier, width: Width },
 }
 
 impl AskKey {
-    /// Whether this is the time bucket, at any width.
-    pub fn is_time(&self) -> bool {
-        matches!(self, AskKey::Bucket | AskKey::WiderBucket(_))
+    /// The name the key reads.
+    pub fn name(&self) -> &Identifier {
+        match self {
+            AskKey::Key(name) | AskKey::WiderBucket { name, .. } => name,
+        }
+    }
+}
+
+impl Fact {
+    /// The width `key` groups the view's time by; `None` for a key that
+    /// is not the time.
+    pub fn time_width(&self, key: &AskKey) -> Option<Width> {
+        match key {
+            AskKey::Key(name) if *name == self.time.name => Some(self.time.width),
+            AskKey::Key(_) => None,
+            AskKey::WiderBucket { width, .. } => Some(*width),
+        }
     }
 }
 
@@ -105,7 +121,7 @@ impl Ask {
     /// `date_bin`, else `date_bin_width`, the view's own.
     pub fn row_width(&self, date_bin_width: Width) -> Width {
         for key in &self.keys {
-            if let AskKey::WiderBucket(width) = key {
+            if let AskKey::WiderBucket { width, .. } = key {
                 return *width;
             }
         }
@@ -130,13 +146,15 @@ impl Spec {
         let mut errors = Vec::new();
         check_measures(fact, ask, &mut errors);
         check_keys(fact, ask, &mut errors);
-        check_names(ask, &mut errors);
+        check_names(fact, ask, &mut errors);
         for condition in &ask.filter {
             let name = &condition.key;
             if fact.resolve(name).is_some() {
                 continue;
             }
-            if fact.measure(name.as_str()).is_some() {
+            if *name == fact.time.name {
+                errors.push(AskError::TimeInWhere(name.clone()));
+            } else if fact.measure(name.as_str()).is_some() {
                 errors.push(AskError::MeasureInWhere(name.clone()));
             } else {
                 errors.push(unknown_key(fact, name));
@@ -144,6 +162,9 @@ impl Spec {
         }
         for condition in &ask.having {
             check_having(fact, ask, condition, &mut errors);
+        }
+        if let Some(name) = &ask.bounded {
+            check_is_time(fact, name, &mut errors);
         }
         check_range(ask.row_width(fact.time.width), ask, &mut errors);
         if errors.is_empty() {
@@ -163,7 +184,7 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
             continue;
         }
         // A name SELECT lists but GROUP BY doesn't reads as a measure.
-        if fact.resolve(measure).is_some() {
+        if fact.resolve(measure).is_some() || *measure == fact.time.name {
             errors.push(AskError::KeyNotGrouped(measure.clone()));
         } else {
             errors.push(unknown_measure(fact, measure));
@@ -174,19 +195,39 @@ fn check_measures(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
 fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     let mut bucket = false;
     for key in &ask.keys {
-        if let AskKey::Key(name) = key {
-            if fact.resolve(name).is_none() {
-                errors.push(unknown_key(fact, name));
+        match key {
+            AskKey::Key(name) if *name == fact.time.name => {}
+            AskKey::Key(name) => {
+                if fact.resolve(name).is_none() {
+                    errors.push(unknown_key(fact, name));
+                }
+                continue;
             }
-            continue;
+            AskKey::WiderBucket { name, width } => {
+                if *name != fact.time.name {
+                    errors.push(AskError::NotTime {
+                        name: name.clone(),
+                        time: fact.time.name.clone(),
+                    });
+                    continue;
+                }
+                check_row_width(fact, *width, errors);
+            }
         }
         if bucket {
             errors.push(AskError::TimeKeyTwice);
         }
         bucket = true;
-        if let AskKey::WiderBucket(width) = key {
-            check_row_width(fact, *width, errors);
-        }
+    }
+}
+
+/// `date_bin` and the range bounds read the view's time and nothing else.
+fn check_is_time(fact: &Fact, name: &Identifier, errors: &mut Vec<AskError>) {
+    if *name != fact.time.name {
+        errors.push(AskError::NotTime {
+            name: name.clone(),
+            time: fact.time.name.clone(),
+        });
     }
 }
 
@@ -195,7 +236,10 @@ fn check_keys(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
 /// as asking by those and adding them up.
 fn check_row_width(fact: &Fact, width: Width, errors: &mut Vec<AskError>) {
     if width == fact.time.width {
-        errors.push(AskError::DateBinOwnWidth(width));
+        errors.push(AskError::DateBinOwnWidth {
+            name: fact.time.name.clone(),
+            width,
+        });
         return;
     }
     if fact.time.wider.contains(&width) {
@@ -217,10 +261,9 @@ fn unknown_measure(fact: &Fact, name: &Identifier) -> AskError {
     }
 }
 
-/// The time bucket is a key an ask may name too.
+/// The view's time is a key an ask may name too.
 fn unknown_key(fact: &Fact, name: &Identifier) -> AskError {
-    let bucket = Identifier::new("bucket").expect("bucket is an identifier");
-    let mut keys = vec![&bucket];
+    let mut keys = vec![&fact.time.name];
     keys.extend(fact.keys());
     AskError::UnknownKey {
         name: name.clone(),
@@ -233,7 +276,7 @@ fn unknown_key(fact: &Fact, name: &Identifier) -> AskError {
 fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &mut Vec<AskError>) {
     let name = &condition.measure;
     let Some(measure) = fact.measure(name.as_str()) else {
-        if fact.resolve(name).is_some() {
+        if fact.resolve(name).is_some() || *name == fact.time.name {
             errors.push(AskError::KeyInHaving(name.clone()));
         } else {
             errors.push(unknown_measure(fact, name));
@@ -269,12 +312,13 @@ fn check_having(fact: &Fact, ask: &Ask, condition: &MeasureCondition, errors: &m
     errors.extend(wrong);
 }
 
-/// An answer's columns go by name, so two can't share one.
-fn check_names(ask: &Ask, errors: &mut Vec<AskError>) {
+/// An answer's columns go by name, so two can't share one. The time
+/// twice is [`AskError::TimeKeyTwice`].
+fn check_names(fact: &Fact, ask: &Ask, errors: &mut Vec<AskError>) {
     let mut asked: Vec<&str> = Vec::new();
     for key in &ask.keys {
-        if let AskKey::Key(name) = key {
-            asked.push(name.as_str());
+        if fact.time_width(key).is_none() {
+            asked.push(key.name().as_str());
         }
     }
     for measure in &ask.measures {
@@ -370,8 +414,19 @@ pub enum AskError {
     KeyNotGrouped(Identifier),
     NoMeasures,
     TimeKeyTwice,
-    /// `date_bin` at the view's own width, which plain `bucket` says.
-    DateBinOwnWidth(Width),
+    /// `date_bin` at the view's own width, which the time's name alone
+    /// says.
+    DateBinOwnWidth {
+        name: Identifier,
+        width: Width,
+    },
+    /// `date_bin` or a range bound on a name that is not the view's time.
+    NotTime {
+        name: Identifier,
+        time: Identifier,
+    },
+    /// The view's time in WHERE, which bounds it with `>=` and `<`.
+    TimeInWhere(Identifier),
     /// A `date_bin` width the view doesn't keep, beside the ones it does.
     WidthNotKept {
         width: Width,
@@ -443,9 +498,17 @@ impl fmt::Display for AskError {
             AskError::KeyNotGrouped(name) => write!(f, "{name} is a key; add it to GROUP BY"),
             AskError::NoMeasures => write!(f, "no measures asked"),
             AskError::TimeKeyTwice => write!(f, "more than one time key"),
-            AskError::DateBinOwnWidth(width) => write!(
+            AskError::DateBinOwnWidth { name, width } => write!(
                 f,
-                "date_bin('{width}', bucket) is the view's own width; write bucket"
+                "date_bin('{width}', {name}) is the view's own width; write {name}"
+            ),
+            AskError::NotTime { name, time } => write!(
+                f,
+                "{name} is not the view's time; date_bin and the range read {time}"
+            ),
+            AskError::TimeInWhere(name) => write!(
+                f,
+                "{name} is the view's time; bound it with {name} >= and {name} <"
             ),
             AskError::WidthNotKept { width, kept } => write_not_kept(f, *width, kept),
             AskError::AskedTwice(name) => write!(f, "{name} asked twice"),
@@ -457,18 +520,10 @@ impl fmt::Display for AskError {
                 write!(f, "HAVING compares {name}, which the ask doesn't select")
             }
             AskError::NotANumber { measure, value } => {
-                let value = described(value);
-                write!(
-                    f,
-                    "{measure} is a number, so it can't be compared with {value}"
-                )
+                write_incomparable(f, measure, "number", value)
             }
             AskError::NotABoolean { measure, value } => {
-                let value = described(value);
-                write!(
-                    f,
-                    "{measure} is a boolean, so it can't be compared with {value}"
-                )
+                write_incomparable(f, measure, "boolean", value)
             }
             AskError::BooleanOrder {
                 measure,
@@ -500,6 +555,20 @@ impl fmt::Display for AskError {
 }
 
 impl std::error::Error for AskError {}
+
+/// A HAVING value of another kind than its measure's.
+fn write_incomparable(
+    formatter: &mut fmt::Formatter<'_>,
+    measure: &Identifier,
+    kind: &str,
+    value: &Literal,
+) -> fmt::Result {
+    let value = described(value);
+    write!(
+        formatter,
+        "{measure} is a {kind}, so it can't be compared with {value}"
+    )
+}
 
 /// [`AskError::WidthNotKept`], naming every width the view keeps.
 fn write_not_kept(formatter: &mut fmt::Formatter<'_>, width: Width, kept: &[Width]) -> fmt::Result {
@@ -540,8 +609,7 @@ fn described(value: &Literal) -> String {
 impl fmt::Display for AskKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AskKey::Key(name) => write!(f, "{name}"),
-            AskKey::Bucket | AskKey::WiderBucket(_) => f.write_str("bucket"),
+            AskKey::Key(_) | AskKey::WiderBucket { .. } => write!(f, "{}", self.name()),
         }
     }
 }

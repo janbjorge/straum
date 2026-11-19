@@ -6,8 +6,8 @@ dsn:
 rootCert:
   existingSecret: "straum-ca"
 spec: |
-  CREATE VIEW trips WITH (buckets = '1 hour') AS
-  SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+  CREATE VIEW trips AS
+  SELECT buckets(t.at, '1 hour') AS bucket,
          t.kind AS kind,
          count(*) AS trips
   FROM public.trips AS t

@@ -317,8 +317,8 @@ mod tests {
     /// A view `name` counting `table`'s rows by the hour and by `key`.
     fn view(name: &str, table: &str, key: &str) -> String {
         format!(
-            "CREATE VIEW {name} WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+            "CREATE VIEW {name} AS
+             SELECT buckets(f.at, '1 hour') AS bucket,
                     f.{key} AS {key}, count(*) AS n
              FROM {table} AS f GROUP BY 1, 2;"
         )

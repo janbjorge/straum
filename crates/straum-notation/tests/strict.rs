@@ -10,8 +10,8 @@ use straum_notation::parse;
 
 /// The canon: every schema, alias, column owner, output name and join
 /// kind written; GROUP BY by position; FILTER on columns.
-const CANON: &str = "CREATE VIEW orders WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket,
+const CANON: &str = "CREATE VIEW orders AS
+SELECT buckets(orders.placed_at, '1 hour', '1 day') AS bucket,
        orders.status AS status,
        orders.customer_id AS customer_id,
        (orders.shipped_at IS NOT NULL) AS shipped,
@@ -199,8 +199,8 @@ fn every_column_is_alias_column() {
             "column, write alias.column, `status`",
         ),
         (
-            "date_bin('1 hour', orders.placed_at, timestamptz 'epoch')",
-            "date_bin('1 hour', placed_at, timestamptz 'epoch')",
+            "buckets(orders.placed_at,",
+            "buckets(placed_at,",
             "column, write alias.column, `placed_at`",
         ),
         (
@@ -236,7 +236,7 @@ fn every_column_is_alias_column() {
     ]);
 }
 
-/// Every SELECT item is named, the bucket `bucket`, and nothing twice.
+/// Every SELECT item is named, the time too, and nothing twice.
 #[test]
 fn every_select_item_is_named() {
     check(&[
@@ -255,16 +255,8 @@ fn every_select_item_is_named() {
             "count(*)",
             "name every SELECT item: count(*) AS <name>",
         ),
-        (
-            "date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket",
-            "date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS hour",
-            "the date_bin bucket is named AS bucket, not AS hour",
-        ),
-        (
-            "date_bin('1 hour', orders.placed_at, timestamptz 'epoch') AS bucket",
-            "date_bin('1 hour', orders.placed_at, timestamptz 'epoch')",
-            "name every SELECT item",
-        ),
+        ("'1 day') AS bucket", "'1 day')", "name every SELECT item"),
+        ("AS bucket", "AS status", "orders: status declared twice"),
         (
             "orders.customer_id AS customer_id",
             "orders.customer_id AS status",
@@ -283,19 +275,14 @@ fn every_select_item_is_named() {
     ]);
 }
 
-/// The bucket widths are separated by a comma and one space: any other
-/// spacing is refused, naming the list to write.
+/// Each width is its own argument: a list in one string is refused.
 #[test]
-fn bucket_widths_are_separated_by_a_comma_and_a_space() {
-    for written in ["1 hour,1 day", "1 hour,   1 day", " 1 hour, 1 day"] {
-        let spaced = canon("'1 hour, 1 day'", &format!("'{written}'"));
-        assert_eq!(
-            error_lines(&spaced),
-            [format!(
-                "line 1: buckets '{written}': write '1 hour, 1 day'"
-            )],
-        );
-    }
+fn each_bucket_width_is_its_own_argument() {
+    let listed = canon("'1 hour', '1 day'", "'1 hour, 1 day'");
+    assert_eq!(
+        error_lines(&listed),
+        ["line 2: bucket width '1 hour, 1 day': use '<n> seconds|minutes|hours|days'"],
+    );
     let spec = parse(CANON).unwrap();
     assert_eq!(spec.fact("orders").unwrap().time.wider.len(), 1);
 }
@@ -332,8 +319,8 @@ fn group_by_lists_the_key_positions() {
         ),
         (
             keys,
-            "GROUP BY date_bin('1 hour', orders.placed_at, timestamptz 'epoch'), 2, 3, 4, 5",
-            "GROUP BY item, write the key's position in SELECT, `date_bin(",
+            "GROUP BY buckets(orders.placed_at, '1 hour', '1 day'), 2, 3, 4, 5",
+            "GROUP BY item, write the key's position in SELECT, `buckets(",
         ),
         (
             keys,
@@ -623,19 +610,19 @@ fn a_bucket_width_has_one_spelling() {
         (
             "'1 hour') AS",
             "'60 minutes') AS",
-            1,
+            2,
             "bucket width '60 minutes': write '1 hour'",
         ),
         (
             "'1 hour') AS",
             "'+1 hour') AS",
-            1,
+            2,
             "bucket width '+1 hour': use '<n>",
         ),
         (
             "'1 hour') AS",
             "'1 hours') AS",
-            1,
+            2,
             "bucket width '1 hours': write '1 hour'",
         ),
     ]);
@@ -666,9 +653,9 @@ fn a_cast_is_text_and_only_on_a_label() {
              FILTER column",
         ),
         (
-            "date_bin('1 hour', orders.placed_at,",
-            "date_bin('1 hour', orders.placed_at::text,",
-            "the date_bin column orders.placed_at::text can't be ::text",
+            "buckets(orders.placed_at,",
+            "buckets(orders.placed_at::text,",
+            "the buckets column orders.placed_at::text can't be ::text",
         ),
         (
             "orders.status AS status",

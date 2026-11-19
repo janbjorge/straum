@@ -16,7 +16,6 @@ use serde_json::Value;
 use crate::client::{has_open_quote, parameter_words};
 
 const COMMANDS: [&str; 4] = ["\\d", "\\rows ", "\\?", "\\q"];
-const BUCKET: &str = "bucket";
 /// What HAVING compares a measure with, as the ask writes it.
 const COMPARISONS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 
@@ -24,7 +23,9 @@ const COMPARISONS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct View {
     name: String,
-    /// `bucket` first.
+    /// The name of the view's time, which the range bounds.
+    time: String,
+    /// The time first.
     keys: Vec<Key>,
     measures: Vec<String>,
     /// The start of the first bucket held and the end of the last.
@@ -98,6 +99,7 @@ fn read_view(view: &Value) -> Option<View> {
     }
     Some(View {
         name: read_text(view.get("name")?)?,
+        time: read_text(view.get("time")?)?,
         keys,
         measures,
         from: view.get("from").and_then(read_text),
@@ -409,17 +411,17 @@ fn selected_keys(view: Option<&View>, all: &[String]) -> Vec<String> {
     selected
 }
 
-fn has_bound(all: &[String], operator: &str) -> bool {
+fn has_bound(time: &str, all: &[String], operator: &str) -> bool {
     for pair in all.windows(2) {
-        if pair[0] == BUCKET && pair[1] == operator {
+        if pair[0] == time && pair[1] == operator {
             return true;
         }
     }
     false
 }
 
-/// Which bounds of the range the query has written: `bucket >=` and
-/// `bucket <`.
+/// Which bounds of the range the query has written: `<time> >=` and
+/// `<time> <`.
 #[derive(Clone, Copy)]
 struct Bounds {
     has_from: bool,
@@ -434,14 +436,20 @@ fn condition_candidates(
     conditions: &[String],
     selected: &[String],
 ) -> Vec<String> {
-    let bounds = Bounds {
-        has_from: has_bound(all, ">="),
-        has_to: has_bound(all, "<"),
-    };
     match conditions.last() {
         Some(last) if last.starts_with('$') => after_a_condition(selected),
         Some(last) if !is(last, "AND") => Vec::new(),
-        _ => next_conditions(view, all, conditions, bounds),
+        _ => match view {
+            // Without the view, the time's name is unknown.
+            None => Vec::new(),
+            Some(view) => {
+                let bounds = Bounds {
+                    has_from: has_bound(&view.time, all, ">="),
+                    has_to: has_bound(&view.time, all, "<"),
+                };
+                next_conditions(view, all, conditions, bounds)
+            }
+        },
     }
 }
 
@@ -505,26 +513,24 @@ fn selected_measures(view: &View, all: &[String]) -> Vec<String> {
 /// The conditions that may start here: the bounds not yet written, then
 /// each key not yet conditioned.
 fn next_conditions(
-    view: Option<&View>,
+    view: &View,
     all: &[String],
     conditions: &[String],
     bounds: Bounds,
 ) -> Vec<String> {
     let number = next_parameter_number(all);
+    let time = &view.time;
     let mut next = match (bounds.has_from, bounds.has_to) {
         (false, false) => {
             let after = number.next();
-            vec![format!("{BUCKET} >= {number} AND {BUCKET} < {after}")]
+            vec![format!("{time} >= {number} AND {time} < {after}")]
         }
-        (false, true) => vec![format!("{BUCKET} >= {number}")],
-        (true, false) => vec![format!("{BUCKET} < {number}")],
+        (false, true) => vec![format!("{time} >= {number}")],
+        (true, false) => vec![format!("{time} < {number}")],
         (true, true) => Vec::new(),
     };
-    let Some(view) = view else {
-        return next;
-    };
     for key in &view.keys {
-        if key.name != BUCKET && !conditions.contains(&key.name) {
+        if key.name != *time && !conditions.contains(&key.name) {
             next.push(format!("{} = {number}", key.name));
         }
     }
@@ -561,9 +567,10 @@ impl Slot {
     /// The values Tab can give: the buckets held for a bound, both
     /// booleans for a boolean.
     fn values(&self) -> Vec<String> {
-        let bound = match (self.key.name.as_str(), self.operator.as_str()) {
-            (BUCKET, ">=") => self.view.from.clone(),
-            (BUCKET, "<") => self.view.to.clone(),
+        let is_time = self.key.name == self.view.time;
+        let bound = match (is_time, self.operator.as_str()) {
+            (true, ">=") => self.view.from.clone(),
+            (true, "<") => self.view.to.clone(),
             _ => None,
         };
         let values = match (bound, self.key.column_type.as_str()) {
@@ -627,7 +634,9 @@ pub(crate) fn hint(views: &[View], line: &str, cursor: usize) -> Option<String> 
     let Key { name, column_type } = &slot.key;
     let gap = if given.is_empty() { " " } else { "" };
     let tab = match slot.values().first() {
-        Some(value) if slot.key.name == BUCKET => format!(", Tab gives {}", value.trim_end()),
+        Some(value) if slot.key.name == slot.view.time => {
+            format!(", Tab gives {}", value.trim_end())
+        }
         _ => String::new(),
     };
     // In parentheses and worded as a sentence, so it can't be taken for

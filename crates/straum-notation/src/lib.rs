@@ -5,8 +5,8 @@
 //! against each other. `definitions` cuts the text into each view's
 //! statement as written, for a reader to see.
 //!
-//! PostgreSQL rejects view options, but Straum never sends a view to
-//! PostgreSQL, so `WITH (buckets = ...)` needn't be one it takes.
+//! A view's time is `buckets(column, widths...)`, a function PostgreSQL
+//! lacks: Straum never sends a view to PostgreSQL, so it needn't have it.
 
 #![forbid(unsafe_code)]
 

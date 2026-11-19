@@ -167,6 +167,7 @@ fn a_rewrite_during_the_load_waits_for_it() {
         having: Vec::new(),
         from: None,
         to: None,
+        bounded: None,
     };
     let counted = store.ask(&every_trip).unwrap().rows[0].values[0].clone();
     assert_eq!(counted, Value::Int(5), "the load read the table empty");

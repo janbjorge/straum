@@ -29,8 +29,8 @@ use compose::{Service, Stack};
 const STRAUM: &str = env!("CARGO_BIN_EXE_straum");
 
 const SPEC: &str = "
-CREATE VIEW trips WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(t.at, '1 hour') AS bucket,
        t.kind AS kind,
        t.zone_id AS zone_id,
        zone.borough AS borough,

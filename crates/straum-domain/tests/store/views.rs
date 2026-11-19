@@ -6,8 +6,8 @@
 use crate::common::{attribute, by_key, condition, id, lit, percentile, table};
 use crate::{DAY, DIM_TYPES, DIST, FARE, HOUR, ROW_COLUMNS, TIP, TRIP_SCALES, WEEK, WIDTH};
 use straum_domain::{
-    Aggregate, ByKey, ColumnType, Condition, Dim, Fact, Literal, Measure, Origin, Ref, RefKind,
-    Spec, Store, Time, Via, Width,
+    Aggregate, ByKey, ColumnType, Condition, Dim, Fact, Literal, Measure, Ref, RefKind, Spec,
+    Store, Time, Via, Width,
 };
 
 /// The trips view with every join a left one.
@@ -54,7 +54,7 @@ pub(crate) fn spec_joining(vend: RefKind) -> Spec {
                 Width { seconds: DAY },
                 Width { seconds: WEEK },
             ],
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: trip_refs(vend),
         by_keys: trip_by_keys(),
@@ -329,7 +329,7 @@ pub(crate) fn zones_spec(pickup: Option<RefKind>, widths: Widths) -> Spec {
                 Widths::Quarter => Vec::new(),
                 Widths::QuarterAndHour => vec![Width { seconds: HOUR }],
             },
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs,
         by_keys: vec![by_key("pay")],
@@ -353,7 +353,7 @@ pub(crate) fn percentile_spec() -> Spec {
             column: id("at"),
             width: Width { seconds: WIDTH },
             wider: Vec::new(),
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: Vec::new(),
         by_keys: vec![by_key("pay")],

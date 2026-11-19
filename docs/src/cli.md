@@ -182,8 +182,8 @@ dim public.taxi_zones
 Until every table is loaded it prints `not ready: ` and why, and exits
 with 3.
 
-`--json` prints each view's keys with their types, its measures and the
-range of buckets it holds, as JSON, the body `GET /views` sends with
+`--json` prints each view's keys with their types, the name of its
+time, its measures and the range of buckets it holds, as JSON, the body `GET /views` sends with
 `Accept: application/json`. It leaves out the cells and the dims.
 
 ## straum ask

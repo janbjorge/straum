@@ -35,8 +35,8 @@ CREATE PUBLICATION $S FOR TABLE $S.customers, $S.tiers, $S.promos, $S.blocked, $
 
 /// `c.id`, the key of an inner-joined dim, reads `o.customer_id`.
 const PAID_SPEC: &str = "
-CREATE VIEW paid WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW paid AS
+SELECT buckets(o.at, '1 hour', '1 day') AS bucket,
        o.status AS status,
        c.id AS customer,
        c.country AS country,
@@ -60,8 +60,8 @@ GROUP BY 1, 2, 3, 4, 5;
 ";
 
 const OFFERS_SPEC: &str = "
-CREATE VIEW offers WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', o.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW offers AS
+SELECT buckets(o.at, '1 hour', '1 day') AS bucket,
        c.country AS country,
        p.note AS note,
        count(*) AS orders,

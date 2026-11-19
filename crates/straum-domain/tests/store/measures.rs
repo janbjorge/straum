@@ -9,7 +9,7 @@ use crate::rows::base_trip_with;
 use crate::views::{new_measure, percentile_spec, spec, typed};
 use crate::{AT, END, FARE, HOUR, PU, RIDER, START, TIP, TOLLED, WIDTH};
 use straum_domain::{
-    Aggregate, Answer, Ask, AskKey, Datum, Fact, Origin, RowError, Spec, Store, Time, Value, Width,
+    Aggregate, Answer, Ask, AskKey, Datum, Fact, RowError, Spec, Store, Time, Value, Width,
 };
 
 /// The values of each row of an answer, the keys left out.
@@ -35,6 +35,7 @@ fn percentiles(store: &Store, measures: &[&str]) -> Vec<Vec<Value>> {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     values_of(store.ask(&ask).unwrap())
 }
@@ -137,6 +138,7 @@ fn removing_an_extreme_reveals_the_next() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     let mut row = trip(&mut Rng(11));
     row[AT] = Datum::Int(START);
@@ -179,6 +181,7 @@ fn trips_and_tipped(store: &Store, keys: Vec<AskKey>) -> Vec<Vec<Value>> {
         having: Vec::new(),
         from: Some(START),
         to: Some(START + i64::from(HOUR)),
+        bounded: None,
     };
     values_of(store.ask(&ask).unwrap())
 }
@@ -202,7 +205,7 @@ fn a_count_alone_notices_a_value_its_cell_lacks() {
             column: id("at"),
             width: Width { seconds: WIDTH },
             wider: vec![Width { seconds: HOUR }],
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: Vec::new(),
         by_keys: vec![by_key("pay")],

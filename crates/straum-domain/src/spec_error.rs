@@ -57,8 +57,6 @@ pub enum SpecError {
     },
     /// A view without measures.
     NoMeasures { fact: Identifier },
-    /// Asks call the time bucket `bucket`, so nothing else may be.
-    NamedBucket { fact: Identifier },
 }
 
 /// What is wrong with one join of a view.
@@ -148,11 +146,6 @@ impl fmt::Display for SpecError {
                 "view {fact}: WHERE filters on {key}, which names no key of the view"
             ),
             SpecError::NoMeasures { fact } => write!(f, "view {fact}: no measures"),
-            SpecError::NamedBucket { fact } => write!(
-                f,
-                "view {fact}: bucket is what asks call the time bucket; \
-                 name the column, join or measure otherwise"
-            ),
         }
     }
 }

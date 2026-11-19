@@ -47,7 +47,8 @@ pub(crate) fn json(held: &Held) -> Vec<u8> {
 }
 
 fn view_json(view: &HeldView) -> String {
-    let mut keys = vec![key_json("bucket", view.bucket)];
+    let time = &view.time;
+    let mut keys = vec![key_json(time.name.as_str(), time.column_type)];
     for key in &view.keys {
         keys.push(key_json(key.name.as_str(), key.column_type));
     }
@@ -60,8 +61,9 @@ fn view_json(view: &HeldView) -> String {
         None => ("null".to_owned(), "null".to_owned()),
     };
     format!(
-        "{{\"name\":{},\"from\":{from},\"to\":{to},\"keys\":[{}],\"measures\":[{}]}}",
+        "{{\"name\":{},\"time\":{},\"from\":{from},\"to\":{to},\"keys\":[{}],\"measures\":[{}]}}",
         quoted(view.name.as_str()),
+        quoted(time.name.as_str()),
         keys.join(","),
         measures.join(",")
     )
@@ -96,10 +98,11 @@ fn view_text(view: &HeldView) -> String {
     }
     if let Some(range) = &view.range {
         // The end is the first second past the last bucket, which is what
-        // an ask's `bucket < $n` takes.
+        // an ask's `<time> < $n` takes.
         let _ = write!(holds, ", {} to {}", time(range.start), time(range.end));
     }
-    let mut keys = vec![format!("bucket {}", column_type(view.bucket))];
+    let time = &view.time;
+    let mut keys = vec![format!("{} {}", time.name, column_type(time.column_type))];
     for key in &view.keys {
         keys.push(format!("{} {}", key.name, column_type(key.column_type)));
     }
@@ -191,7 +194,7 @@ mod tests {
         HeldView {
             name: identifier("trips"),
             widths: vec![Width { seconds: 900 }, Width { seconds: 86_400 }],
-            bucket: ColumnType::Time { zoned: true },
+            time: key("bucket", ColumnType::Time { zoned: true }),
             keys: vec![
                 key("kind", ColumnType::Int),
                 key("fare", ColumnType::Numeric { scale: 2 }),
@@ -227,7 +230,7 @@ mod tests {
                 HeldView {
                     name: identifier("logins"),
                     widths: vec![Width { seconds: 90 }],
-                    bucket: ColumnType::Time { zoned: false },
+                    time: key("bucket", ColumnType::Time { zoned: false }),
                     keys: Vec::new(),
                     measures: vec![identifier("logins")],
                     cells: 1,
@@ -306,7 +309,7 @@ dim public.zones
             r#"{"name":"fare","type":"numeric","scale":2},{"name":"shared","type":"boolean"},"#,
             r#"{"name":"borough","type":"text"}"#
         );
-        let start = r#"{"name":"trips","#;
+        let start = r#"{"name":"trips","time":"bucket","#;
         let measures = r#""measures":["trips","fare_sum"]}"#;
         let expected = [
             r#"{"views":["#,
@@ -349,7 +352,7 @@ dim public.zones
             panic!("a view is not an object");
         };
         let view = names(view);
-        assert_eq!(view, ["name", "from", "to", "keys", "measures"]);
+        assert_eq!(view, ["name", "time", "from", "to", "keys", "measures"]);
         for dropped in ["buckets", "cells", "bound_cells", "dims"] {
             assert!(!view.contains(&dropped.to_owned()), "{dropped}");
             assert!(!names(&top).contains(&dropped.to_owned()), "{dropped}");

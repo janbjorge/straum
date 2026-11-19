@@ -72,6 +72,7 @@ fn ask(keys: Vec<AskKey>, filter: Vec<Condition>, conditions: Vec<MeasureConditi
         having: conditions,
         from: Some(START),
         to: Some(END),
+        bounded: None,
     }
 }
 

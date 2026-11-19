@@ -11,8 +11,8 @@ use straum_domain::{ColumnType, Datum, Identifier, Spec, Store};
 
 /// One view over the trips and their zones, with every kind of measure.
 pub(crate) const SPEC: &str = "
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(t.at, '1 hour', '1 day') AS bucket,
        t.kind AS kind,
        t.zone_id AS zone_id,
        zone.borough AS borough,

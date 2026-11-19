@@ -3,8 +3,8 @@
 -- group and filter by.
 -- Straum SQL: a PostgreSQL subset made only for Straum specs.
 
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(trips.pickup_at, '1 hour', '1 day', '7 days') AS bucket,
        trips.payment_type AS payment_type,
        trips.pu_location_id AS pu_location_id,
        pickup.borough AS borough,
@@ -23,8 +23,8 @@ FROM public.yellow_trips AS trips
 LEFT OUTER JOIN public.taxi_zones AS pickup ON pickup.location_id = trips.pu_location_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW dropoffs WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', dropoffs.pickup_at, timestamptz 'epoch') AS bucket,
+CREATE VIEW dropoffs AS
+SELECT buckets(dropoffs.pickup_at, '1 hour', '1 day', '7 days') AS bucket,
        dropoffs.do_location_id AS do_location_id,
        dropoff.borough AS borough,
        count(*) AS trips,

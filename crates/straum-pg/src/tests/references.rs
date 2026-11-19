@@ -10,8 +10,8 @@ use super::support::*;
 
 /// The spec the taxi-shaped tests follow. `$S` is the test's schema.
 pub(super) const SPEC: &str = "
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(f.at, '1 hour', '1 day') AS bucket,
        f.kind AS kind,
        f.zone_id AS zone_id,
        pickup.borough AS borough,
@@ -38,8 +38,8 @@ FROM $S.trips AS f
 LEFT OUTER JOIN $S.zones AS pickup ON pickup.id = f.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (buckets = '1 day, 7 days') AS
-SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW logins AS
+SELECT buckets(l.at, '1 day', '7 days') AS bucket,
        l.zone_id AS zone_id,
        pickup.toll AS toll,
        count(*) AS logins
@@ -72,8 +72,8 @@ CREATE PUBLICATION $S FOR TABLE $S.zones, $S.trips, $S.logins;
 /// dim keyed by two columns, one of them grouped by too. `$S` is the
 /// test's schema.
 pub(super) const TASKS_SPEC: &str = "
-CREATE VIEW tasks WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+CREATE VIEW tasks AS
+SELECT buckets(f.created, '1 hour', '1 day') AS bucket,
        f.organization_id AS organization_id,
        f.taskgroup_id AS taskgroup_id,
        (f.completed IS NOT NULL) AS done,
@@ -94,8 +94,8 @@ GROUP BY 1, 2, 3, 4, 5, 6;
 /// The task tables keyed by the group's category alone: the group itself
 /// is not selected, so the cells are keyed by the category's few values.
 pub(super) const PICKS_SPEC: &str = "
-CREATE VIEW picks WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', f.created, timestamp 'epoch') AS bucket,
+CREATE VIEW picks AS
+SELECT buckets(f.created, '1 hour', '1 day') AS bucket,
        f.organization_id AS organization_id,
        g.category::text AS category,
        (f.completed IS NOT NULL) AS done,

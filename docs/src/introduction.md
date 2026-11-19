@@ -11,8 +11,8 @@ declare what to keep as a view, in a small subset of PostgreSQL's
 belongs to:
 
 ```sql
-CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour', '1 day', '7 days') AS bucket,
        e.kind AS kind,
        e.account_id AS account_id,
        a.region AS region,

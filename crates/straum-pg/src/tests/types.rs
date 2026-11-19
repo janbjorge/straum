@@ -29,8 +29,8 @@ CREATE PUBLICATION $S FOR TABLE $S.riders, $S.rides;
 ";
 
 const SPEC: &str = "
-CREATE VIEW rides WITH (buckets = '1 hour, 1 day') AS
-SELECT date_bin('1 hour', r.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW rides AS
+SELECT buckets(r.at, '1 hour', '1 day') AS bucket,
        r.day AS day,
        r.rider AS rider,
        p.joined AS joined,

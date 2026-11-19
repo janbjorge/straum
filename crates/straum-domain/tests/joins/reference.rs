@@ -117,14 +117,14 @@ fn group_key(ask: &Ask, row: &[Datum], joined: &JoinRow, at: i64) -> Vec<Datum> 
     let mut key = Vec::with_capacity(ask.keys.len());
     for ask_key in &ask.keys {
         key.push(match ask_key {
-            AskKey::Key(name) => value(row, joined, name),
-            AskKey::Bucket => Datum::Int(
+            AskKey::Key(name) if name.as_str() == "bucket" => Datum::Int(
                 Width {
                     seconds: u32::try_from(HOUR).unwrap(),
                 }
                 .bucket_start(at),
             ),
-            AskKey::WiderBucket(width) => Datum::Int(width.bucket_start(at)),
+            AskKey::Key(name) => value(row, joined, name),
+            AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(at)),
         });
     }
     key
@@ -181,7 +181,7 @@ fn answer_columns(ask: &Ask) -> Vec<AnswerColumn> {
         columns.push(AnswerColumn {
             name: key.to_string(),
             scale: 0,
-            is_time: key.is_time(),
+            is_time: key.name().as_str() == "bucket",
         });
     }
     for name in &ask.measures {

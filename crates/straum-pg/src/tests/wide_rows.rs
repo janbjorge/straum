@@ -17,7 +17,10 @@ const SPAN_HOURS: u64 = 24 * 37;
 
 /// `ask` with rows `width` apart, the time key first, from `from` to `to`.
 fn by_width(ask: Ask, width: Width, from: Option<i64>, to: Option<i64>) -> Ask {
-    let mut keys = vec![AskKey::WiderBucket(width)];
+    let mut keys = vec![AskKey::WiderBucket {
+        name: id("bucket"),
+        width,
+    }];
     keys.extend(ask.keys);
     Ask {
         keys,

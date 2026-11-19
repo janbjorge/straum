@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use straum_domain::{
     Aggregate, Ask, AskKey, Attribute, ByKey, ColumnType, Condition, Datum, Dim, Fact, Literal,
-    Measure, Origin, Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
+    Measure, Ref, RefKind, Spec, Start, Store, Time, Via, Width, Window,
 };
 
 mod common;
@@ -169,7 +169,7 @@ fn spec_measuring(buckets: &[u32], zones: Zones, measures: Vec<Measure>) -> Spec
             column: id("at"),
             width: Width { seconds: HOUR },
             wider,
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs,
         by_keys,
@@ -253,6 +253,7 @@ fn ask(by: &[&str], from: i64, to: i64) -> Ask {
         having: Vec::new(),
         from: Some(from * i64::from(HOUR)),
         to: Some(to * i64::from(HOUR)),
+        bounded: None,
     }
 }
 
@@ -383,7 +384,7 @@ fn wider_buckets_cut_the_cells_a_range_reads() {
         usize::try_from((19 + 6 + 3 + 1 + 4) * per_hour).unwrap()
     );
     let mut by_bucket = ask(&[], 5, 700);
-    by_bucket.keys = vec![AskKey::Bucket];
+    by_bucket.keys = vec![AskKey::Key(id("bucket"))];
     assert_eq!(
         store.cells_read(&by_bucket).unwrap(),
         usize::try_from(695 * per_hour).unwrap()
@@ -398,15 +399,21 @@ fn rows_at_a_wider_width_read_its_buckets() {
     let per_hour = 2 * ZONES;
     let store = store_with(720 * per_hour, &[24, 168]);
     let mut by_day = ask(&[], 24, 696);
-    by_day.keys = vec![AskKey::WiderBucket(Width { seconds: 24 * HOUR })];
+    by_day.keys = vec![AskKey::WiderBucket {
+        name: id("bucket"),
+        width: Width { seconds: 24 * HOUR },
+    }];
     assert_eq!(
         store.cells_read(&by_day).unwrap(),
         usize::try_from(28 * per_hour).unwrap()
     );
     let mut by_week = ask(&[], 168, 672);
-    by_week.keys = vec![AskKey::WiderBucket(Width {
-        seconds: 168 * HOUR,
-    })];
+    by_week.keys = vec![AskKey::WiderBucket {
+        name: id("bucket"),
+        width: Width {
+            seconds: 168 * HOUR,
+        },
+    }];
     assert_eq!(
         store.cells_read(&by_week).unwrap(),
         usize::try_from(3 * per_hour).unwrap()
@@ -651,7 +658,7 @@ fn checking_an_ask_s_types_keeps_no_memo_of_its_joins() {
 fn by_every_key_peak(store: &Store, window: Option<Window>) -> isize {
     let ask = ask(&["pay", "pu"], 0, 1000);
     let mut by_bucket = ask.clone();
-    by_bucket.keys.insert(0, AskKey::Bucket);
+    by_bucket.keys.insert(0, AskKey::Key(id("bucket")));
     let before = live();
     PEAK.set(before);
     match window {
@@ -688,7 +695,7 @@ fn tip_distinct() -> Measure {
 /// most, the answer dropped.
 fn by_bucket_peak(store: &Store, by: &[&str], measure: &str) -> isize {
     let mut ask = ask(by, 0, 1000);
-    ask.keys.insert(0, AskKey::Bucket);
+    ask.keys.insert(0, AskKey::Key(id("bucket")));
     ask.measures = vec![id(measure)];
     let before = live();
     PEAK.set(before);

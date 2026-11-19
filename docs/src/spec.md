@@ -1,10 +1,12 @@
 # Spec
 
 A spec is a file of `CREATE VIEW` statements, one per table you
-aggregate, in a small subset of PostgreSQL's syntax. PostgreSQL would
-give the same rows for each view. Straum never creates it, and nothing
-in the spec runs in PostgreSQL: to load a view, Straum copies only the
-columns it reads.
+aggregate, in a small subset of PostgreSQL's syntax. One item is
+Straum's own: `buckets(...)`, the view's time, which PostgreSQL writes
+as `date_bin` ([Time](#time)). With that item written so, PostgreSQL
+would give the same rows for each view. Straum never creates it, and
+nothing in the spec runs in PostgreSQL: to load a view, Straum copies
+only the columns it reads.
 
 Straum SQL has one spelling per meaning and infers nothing
 ([ADR-0004](https://github.com/janbjorge/straum/blob/main/docs/adr/0004-specs-are-a-strict-postgresql-create-view-subset.md)).
@@ -14,8 +16,9 @@ error that names the construct and says what to write.
 ## Synopsis
 
 ```text
-CREATE VIEW view WITH (buckets = 'width, ...') AS
-SELECT key AS name, ...
+CREATE VIEW view AS
+SELECT time AS name,
+       key AS name, ...
        measure AS name, ...
 FROM schema.table AS alias
 [ INNER JOIN | LEFT OUTER JOIN
@@ -23,8 +26,9 @@ FROM schema.table AS alias
 [ WHERE condition [AND ...] ]
 GROUP BY position, ...
 
-key        date_bin('width', alias.column, timestamptz 'epoch')
-           alias.column
+time       buckets(alias.column, 'width' [, 'width' ...])
+
+key        alias.column
            alias.column::text
            (alias.column IS [NOT] NULL)
 
@@ -52,15 +56,16 @@ fraction   0, 0.5, 0.99, 1: digits from 0 to 1, at most 19 past the point
 ```
 
 Brackets hold what may be left out, `|` separates a choice, and `...`
-repeats what is before it. Keys and measures come in any order.
+repeats what is before it. The time, keys and measures come in any
+order.
 `EXISTS` goes in the view's `WHERE` only, not in a `FILTER`. A
 parenthesis is written where the synopsis has one and nowhere else:
 around a null-ness key, never around a condition or a column. A spec is
 one or more views, with `;` between them, and never empty. Identifiers
 are unquoted and written in lowercase: letters, digits and `_`, at most
-63 bytes. `CREATE OR REPLACE VIEW` is refused, as is `GROUP BY 01` or
-the width `'60 minutes'`, written `'1 hour'`. A key or measure
-name is one an ask can say, so not a word SQL reserves, such as `user`,
+63 bytes. `CREATE OR REPLACE VIEW` is refused, as is `WITH (...)`, `GROUP BY 01`
+or the width `'60 minutes'`, written `'1 hour'`. The name of the time,
+a key or a measure is one an ask can say, so not a word SQL reserves, such as `user`,
 `all` or `from`:
 
 ```text
@@ -71,8 +76,8 @@ A view over an `events` table and the `accounts` it belongs to, with
 a null-ness key and two filtered measures:
 
 ```sql
-CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour', '1 day', '7 days') AS bucket,
        e.kind AS kind,
        e.account_id AS account_id,
        a.region AS region,
@@ -122,7 +127,7 @@ set `FULL`.
 Every `SELECT` item that is not a measure is a key, and each cell is
 one distinct combination of the keys. A key is a column of the fact
 table (`e.kind`), a column of a dim (`a.region`), a
-[null-ness key](#null-ness-keys) or the [time bucket](#time).
+[null-ness key](#null-ness-keys) or the [time](#time).
 
 The `AS name` is what asks use, and it is the only way an ask reaches
 the item: it says `region`, never `a.region`. Names are
@@ -142,21 +147,21 @@ or keys with fewer values, mean fewer cells, and memory follows cells
 
 ## Time
 
-Every view has exactly one bucket, named `bucket`:
+Every view has exactly one time, a `buckets` item:
 
 ```sql
-date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
+buckets(e.at, '1 hour', '1 day', '7 days') AS bucket
 ```
 
-- The column is a `timestamptz` or a `timestamp`. The origin is `'epoch'`
-  of the column's type, so buckets start on midnight. Straum refuses an
-  origin of the other type, since PostgreSQL would then cast the column
-  through the session zone and the view would not mean what Straum
-  computes.
-- The width is at most `1 day` and divides a day: `15 minutes` does,
-  `7 minutes` doesn't.
-- The name is `bucket`, which is what asks call it, so nothing else in
-  the view may be named `bucket`.
+- The column is a `timestamptz` or a `timestamp` of the fact table.
+- Then every bucket width Straum keeps, narrowest first, each its own
+  string. Each row goes in a bucket of the first. Each wider width is a
+  whole multiple of the one before.
+- The first width is at most `1 day` and divides a day: `15 minutes`
+  does, `7 minutes` doesn't.
+- The name is the view's own: `bucket` here, `pickup` or `hour` just as
+  well. Asks group and bound the time by it, and no key or measure of
+  the view may share it.
 - A `timestamp` has no zone, and Straum never gives it one. Its buckets
   and ask bounds are wall clock, and answers print them with a `Z` that
   means nothing.
@@ -164,16 +169,19 @@ date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
   answered. Any other value Straum can't read, such as a `NaN`, stops
   the load or the stream with the table and column named.
 
-`WITH (buckets = '1 hour, 1 day, 7 days')` lists every bucket width
-Straum keeps, narrowest first, a comma and one space between them, and
-the first must be the `date_bin` width. Each wider width is a whole
-multiple of the one before. An ask over a long range reads its middle
-from the widest buckets that fit and its ends from narrower ones, so it
-reads far fewer cells, as drawn under [How Straum
-works](how-it-works.md#answering-an-ask). Answers stay the same. A
-wider width also lets an ask answer [a row per day or
-week](asks.md#rows-a-day-or-a-week-apart), one stored bucket a row.
-Each width costs memory.
+In PostgreSQL the item is `date_bin` at the first width, from the
+epoch of the column's type:
+
+```sql
+date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
+```
+
+An ask over a long range reads its middle from the widest buckets that
+fit and its ends from narrower ones, so it reads far fewer cells, as
+drawn under [How Straum works](how-it-works.md#answering-an-ask).
+Answers stay the same. A wider width also lets an ask answer [a row per
+day or week](asks.md#rows-a-day-or-a-week-apart), one stored bucket a
+row. Each width costs memory.
 
 Every width is a fixed grid of buckets counted from the epoch,
 1970-01-01 00:00 UTC, whatever the data and whenever the ask. A width

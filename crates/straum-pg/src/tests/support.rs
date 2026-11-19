@@ -330,6 +330,7 @@ pub(super) fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         having: Vec::new(),
         from: Some(0),
         to: Some(END),
+        bounded: None,
     }
 }
 
@@ -373,7 +374,7 @@ pub(super) fn compared(measure: &str, comparison: Comparison, value: Literal) ->
 /// The key named `key`: `bucket` is the time key.
 fn ask_key(key: &str) -> AskKey {
     match key {
-        "bucket" => AskKey::Bucket,
+        "bucket" => AskKey::Key(id("bucket")),
         key => AskKey::Key(id(key)),
     }
 }
@@ -422,7 +423,26 @@ pub(super) fn body(spec: &str, view: &str) -> String {
     let rest = &spec[start..];
     let select = rest.find("SELECT").unwrap();
     let end = rest.find(';').unwrap();
-    rest[select..end].to_owned()
+    as_date_bin(&rest[select..end])
+}
+
+/// The view body as PostgreSQL runs it: `buckets(column, 'width', ...)`
+/// becomes `date_bin('width', column, 'epoch')` at the first width. The
+/// origin is untyped, so PostgreSQL gives it the column's type. Written
+/// over the text, not through Straum's parser, so the oracle shares no
+/// code with what it checks.
+fn as_date_bin(body: &str) -> String {
+    let call = body.find("buckets(").unwrap();
+    let arguments_start = call + "buckets(".len();
+    let arguments_end = arguments_start + body[arguments_start..].find(')').unwrap();
+    let arguments = &body[arguments_start..arguments_end];
+    let (column, widths) = arguments.split_once(", ").unwrap();
+    let width = widths.split(", ").next().unwrap();
+    format!(
+        "{}date_bin({width}, {column}, 'epoch'){}",
+        &body[..call],
+        &body[arguments_end + 1..]
+    )
 }
 
 /// Applies the next commit; panics on anything else.

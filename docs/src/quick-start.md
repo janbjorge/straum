@@ -55,16 +55,16 @@ The file is not saved. Later commands name the project `straum`.
 
 ## 2. The spec
 
-The compose file holds this view. You do not save it. PostgreSQL
-would give the same rows. Straum never creates the view; it keeps one
-cell per hour, payment type, pickup zone and borough in memory.
-`WITH (buckets = ...)` lists every bucket width it keeps: the hour of
-the `date_bin`, then days and weeks for long ranges.
+The compose file holds this view. You do not save it. Straum never
+creates the view; it keeps one cell per hour, payment type, pickup zone
+and borough in memory. `buckets(...)` is the view's time: the column,
+then every bucket width Straum keeps, the hour each trip goes in first,
+then days and weeks for long ranges.
 [Spec](spec.md) explains each line.
 
 ```sql
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(trips.pickup_at, '1 hour', '1 day', '7 days') AS bucket,
        trips.payment_type AS payment_type,
        trips.pu_location_id AS pu_location_id,
        pickup.borough AS borough,

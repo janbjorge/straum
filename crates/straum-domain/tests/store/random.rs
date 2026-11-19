@@ -218,9 +218,12 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
             seconds: *rng.pick(&ROW_WIDTHS),
         };
         let key = if row_width.seconds == WIDTH {
-            AskKey::Bucket
+            AskKey::Key(id("bucket"))
         } else {
-            AskKey::WiderBucket(row_width)
+            AskKey::WiderBucket {
+                name: id("bucket"),
+                width: row_width,
+            }
         };
         by.insert(at, key);
     }
@@ -259,6 +262,7 @@ pub(crate) fn random_ask(rng: &mut Rng, spec: &Spec) -> Ask {
         having,
         from: maybe_open(rng, from),
         to: maybe_open(rng, to),
+        bounded: None,
     }
 }
 

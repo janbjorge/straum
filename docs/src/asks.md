@@ -32,17 +32,17 @@ FROM view
 [HAVING comparison [AND ...]]
 
 key         name
-            bucket
-            date_bin('width', bucket)
+            date_bin('width', time)
 condition   key = $n
             key IN ($n, $n, ...)
-            bucket >= $n
-            bucket < $n
+            time >= $n
+            time < $n
 comparison  measure { = | <> | < | <= | > | >= } $n
 ```
 
 The notation is that of the [spec's synopsis](spec.md#synopsis), and
-this is the whole language: anything it does not show is an error that
+`time` is the name the view gives its [time](spec.md#time): `bucket` in
+`usage`. This is the whole language: anything it does not show is an error that
 names the construct and says what to write. The shortest ask reads
 every bucket Straum holds:
 
@@ -52,15 +52,16 @@ SELECT events, amount FROM usage
 
 A key or a measure goes by the name the view gives it with `AS`:
 `region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
-ask can use; neither is `a`, the join, nor a table name. `bucket` is
-the view's time bucket, and a key like any other in `SELECT` and
-`GROUP BY`.
+ask can use; neither is `a`, the join, nor a table name. The time goes
+by its name too, `bucket` in `usage`, and is a key like any other in
+`SELECT` and `GROUP BY`.
 
 Each name is selected at most once, since the names become the fields
 of each answer row. `GROUP BY` names exactly the selected keys. Each
 lists at most 256 names.
 
-`bucket >= $n` and `bucket < $n` bound the range, each at most once.
+`bucket >= $n` and `bucket < $n` bound the range, each at most once,
+and only the time takes `>=` or `<`.
 Leave one out and that end is open: the ask reads from the first bucket
 held, or to the end of the last. With no `WHERE` it reads every bucket
 held; `WHERE true` is refused. The bounds and the conditions come in
@@ -78,8 +79,8 @@ level of the tree Straum reads it into.
 
 ## Rows a day or a week apart
 
-`GROUP BY bucket` answers a row per `date_bin` bucket, an hour in
-`usage`. `date_bin('1 day', bucket)` answers a row per day instead,
+`GROUP BY bucket` answers a row per bucket of the view's narrowest
+width, an hour in `usage`. `date_bin('1 day', bucket)` answers a row per day instead,
 read from the day buckets the view keeps. Each row is one stored
 bucket, so a month of days reads 31 buckets, not 744 hours:
 
@@ -87,20 +88,20 @@ bucket, so a month of days reads 31 buckets, not 744 hours:
 SELECT date_bin('1 day', bucket), region, events FROM usage WHERE bucket >= $1 AND bucket < $2 GROUP BY date_bin('1 day', bucket), region
 ```
 
-- The width is one the view lists in `WITH (buckets = ...)`, wider than
-  its `date_bin` width, and written as the spec writes widths: `'1 day'`,
-  never `'24 hours'`. Any other width is refused, naming the widths the
-  view keeps. A width built from narrower buckets would cost as much as
-  asking by those. At the `date_bin` width itself, write `bucket`.
+- The width is one the view's `buckets` item lists after its first,
+  written as the spec writes widths: `'1 day'`, never `'24 hours'`. Any
+  other width is refused, naming the widths the view keeps. A width
+  built from narrower buckets would cost as much as asking by those. At
+  the narrowest width itself, write `bucket`.
 - The width is part of the query, not a parameter: it sets the
   answer's shape, as the view's own width does.
-- `SELECT` and `GROUP BY` write the same `date_bin`. The answer calls
-  the column `bucket`, and each row's value is the start of its day or
+- `SELECT` and `GROUP BY` write the same `date_bin`. The answer names
+  the column by the time, `bucket`, and each row's value is the start of its day or
   week.
 - Each bound written falls on an edge of that width, so no row covers
   part of a day. An open end reaches the buckets held, so the first or
   last row may cover part of its day: nothing lies beyond it.
-- There is no third argument: the origin is the view's. Days are UTC
+- There is no third argument: buckets start at the epoch. Days are UTC
   days and `7 days` runs Thursday to Thursday, since every width is a
   grid from the epoch ([Time](spec.md#time)).
 
@@ -154,12 +155,12 @@ uuid is an error that says how to write it. `account_id = $1` with
 scale above 0 can't be filtered on: at scale 2, `1` could mean 1 or
 0.01. A [HAVING](#having) comparison takes a number of any scale.
 
-The `bucket` bounds are RFC 3339 times, such as
+The time's bounds are RFC 3339 times, such as
 `"2026-11-13T00:00:00-05:00"`, or Unix seconds. A time is written
 `YYYY-MM-DDTHH:MM:SS`, then `Z` or an offset `+HH:MM`, with no fraction
 and no leap second: `2026-11-13T09Z` and `2026-11-13T09:00:00.000Z` are
 refused. A zero offset is `Z`, never `+00:00` or `-00:00`. Each bound
-written must fall on an edge of the ask's rows: the view's `date_bin`
+written must fall on an edge of the ask's rows: the view's narrowest
 buckets, or the wider ones a [`date_bin` key](#rows-a-day-or-a-week-apart)
 names. Straum never answers for part of a bucket, and the error names
 the edges on either side.
@@ -286,6 +287,6 @@ sees the connection close.
 | `GET /readyz` | 200 `ready`, or 503 `not ready: ` and why ([States](deploy.md#states)). |
 | `GET /livez` | 200 while the process serves. Lag never fails it. |
 | `GET /status` | What [`straum status`](cli.md#straum-status) prints, in plain text. With `Accept: application/json`, the same facts as one JSON object: `ready`, `why_not`, `applied`, `committed`, `as_of`, `lag_ms`, `max_lag_ms`, `wal_written`, `wal_retained_bytes` and `max_retained_wal_bytes`. What is unknown until every table is loaded is null. |
-| `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names and range of buckets as JSON, which `straum shell` completes from. |
+| `GET /views` | What [`straum views`](cli.md#straum-views) prints, in plain text; 503 `not ready: ` and why until every table is loaded. With `Accept: application/json`, each view's names, the name of its time and range of buckets as JSON, which `straum shell` completes from. |
 | `GET /views/NAME/spec` | The view's `CREATE VIEW` statement as the spec wrote it, with the comments right above it, in plain text; what `\d NAME` in [`straum shell`](cli.md#straum-shell) prints. It answers while the tables load. 404 for a name no view has. |
 | `GET /views/NAME` | The rows PostgreSQL would give for the view, as a table in plain text: `count` of them from row `start`, as in `?start=-20&count=10`. `start` counts from 0, a negative one back from the end, and is 0 when not given; `count` is 0 to 1000, 1000 when not given. A start past either end is held at it. The last line says how many rows there are and, past the first, from which. Its headers are those of [an answer as a table](#as-a-table). 400 for any other parameter or value, 404 for a name no view has, 503 while Straum is [loading](deploy.md#states). |

@@ -9,8 +9,8 @@ use crate::ranges::first_value;
 use crate::views::{new_measure, spec, typed};
 use crate::{AT, DRO, END, FARE, PU, SHARED, START, VENDOR, WIDTH};
 use straum_domain::{
-    Aggregate, Ask, AskKey, ColumnType, Datum, Dim, Fact, Origin, Ref, RefKind, RowError, Spec,
-    Store, Time, Value, Via, Width,
+    Aggregate, Ask, AskKey, ColumnType, Datum, Dim, Fact, Ref, RefKind, RowError, Spec, Store,
+    Time, Value, Via, Width,
 };
 
 fn trip_key_type(store: &Store, name: &str) -> Option<ColumnType> {
@@ -106,6 +106,7 @@ fn a_dim_change_moves_the_answer_at_once() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     assert_eq!(first_keys(&store, &by_label), [text("v1")]);
     let cells = store.cells("trips");
@@ -197,6 +198,7 @@ fn a_short_dim_update_leaves_every_answer_as_it_was() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     let before = store.ask(&by_label).unwrap();
     // Same key, one column short, then one column long. Each must fail
@@ -257,6 +259,7 @@ fn by_combo_label() -> Ask {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     }
 }
 
@@ -331,6 +334,7 @@ fn a_filter_on_an_attribute_reads_the_dim() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     assert_eq!(first_value(&store, &mq_fare), Value::Int(100));
     store
@@ -414,7 +418,7 @@ fn combos_on_by_keys_spec() -> Spec {
             column: id("at"),
             width: Width { seconds: WIDTH },
             wider: Vec::new(),
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: vec![Ref {
             alias: id("combo"),
@@ -469,6 +473,7 @@ fn a_key_of_two_columns_read_through_the_projection_matches_on_both() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     let mut counted = Vec::new();
     for row in store.ask(&ask).unwrap().rows {

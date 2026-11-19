@@ -10,9 +10,7 @@ use common::{
     BASE, ask_view_t, attribute, base, by_key, condition, edit, id, key_text, spec_errors,
     sql_errors,
 };
-use straum_domain::{
-    Aggregate, ByKey, Fraction, Literal, Origin, RefKind, Spec, SpecError, Via, Width,
-};
+use straum_domain::{Aggregate, ByKey, Fraction, Literal, RefKind, Spec, SpecError, Via, Width};
 use straum_notation::{SqlError, parse};
 
 const TAXI: &str = include_str!("taxi.sql");
@@ -71,8 +69,9 @@ fn base_parses() {
     assert_eq!(fact.refs[0].alias, id("z"));
     assert_eq!(fact.refs[0].via, [Via::Fact(id("z_id"))]);
     assert_eq!(fact.refs[0].reads, [attribute("name", "name")]);
+    assert_eq!(fact.time.name, id("bucket"));
+    assert_eq!(fact.time.column, id("at"));
     assert_eq!(fact.time.wider, []);
-    assert_eq!(fact.time.origin, Origin::Timestamptz);
     let z = spec.dim("z").unwrap();
     assert_eq!(
         (&z.key[..], &z.attributes[..]),
@@ -138,17 +137,14 @@ fn keys_go_by_their_select_name() {
 
 #[test]
 fn buckets_parse() {
-    let text = base("buckets = '1 hour'", "buckets = '1 hour, 1 day, 7 days'");
+    let text = base("'1 hour')", "'1 hour', '1 day', '7 days')");
     let spec = parse(&text).unwrap();
     assert_eq!(
         spec.fact("t").unwrap().time.wider,
         [Width { seconds: 86_400 }, Width { seconds: 604_800 }]
     );
 
-    let text = base(
-        "buckets = '1 hour'",
-        "buckets = '1 hour, 90 minutes, 1 day'",
-    );
+    let text = base("'1 hour')", "'1 hour', '90 minutes', '1 day')");
     assert_eq!(
         spec_errors(&text),
         [SpecError::BadBucket {
@@ -159,44 +155,47 @@ fn buckets_parse() {
     );
 }
 
-/// Every width is said in the view's `WITH`, the `date_bin` width first:
-/// a view without it, or one whose list starts elsewhere, is refused.
+/// The view names its time: the name is the view's own, and asks use it.
 #[test]
-fn buckets_are_required_and_start_at_the_grain() {
-    let errors = sql_errors(&base("VIEW t WITH (buckets = '1 hour') AS", "VIEW t AS"));
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(
-        errors[0].message,
-        "view t needs WITH (buckets = '<n> <unit>, ...'): every width Straum keeps, \
-         the date_bin width first"
-    );
-
-    for wrong in ["1 day", "30 minutes, 1 hour", "1 day, 1 hour"] {
-        let errors = sql_errors(&base("buckets = '1 hour'", &format!("buckets = '{wrong}'")));
-        assert_eq!(errors.len(), 1, "{wrong}: {errors:?}");
-        assert!(
-            errors[0]
-                .message
-                .ends_with("but date_bin is 1 hour: list every width, the date_bin width first"),
-            "{wrong}: {errors:?}"
-        );
-    }
-    assert!(
-        sql_errors(&base("buckets = '1 hour'", "buckets = '1 day, 1 hour'"))[0]
-            .message
-            .starts_with("view t: buckets starts with 1 day but")
-    );
+fn the_time_takes_any_name() {
+    let spec = parse(&base("AS bucket,", "AS pickup,")).unwrap();
+    let time = &spec.fact("t").unwrap().time;
+    assert_eq!(time.name, id("pickup"));
+    assert_eq!(time.column, id("at"));
 }
 
-/// A column without a zone takes `timestamp 'epoch'`; which one the column
-/// is, the catalog checks.
+/// Every width is said once, in the `buckets` item: a view without one,
+/// with two, with no width, or with `WITH` options is refused.
 #[test]
-fn naive_origin_parses() {
-    let spec = parse(&base("timestamptz 'epoch'", "timestamp 'epoch'")).unwrap();
-    let time = &spec.fact("t").unwrap().time;
-    assert_eq!(time.origin, Origin::Timestamp);
-    assert_eq!(time.origin.to_string(), "timestamp 'epoch'");
-    assert_eq!(Origin::Timestamptz.to_string(), "timestamptz 'epoch'");
+fn buckets_are_required_once_with_a_width() {
+    let without = base("buckets(f.at, '1 hour') AS bucket,", "").replace("1, 2, 3, 4", "1, 2, 3");
+    assert_eq!(
+        sql_errors(&without)[0].message,
+        "SELECT needs its buckets: buckets(<column>, '<n> <unit>', ...) AS <name>, \
+         every width kept, narrowest first"
+    );
+    let twice = base("AS bucket,", "AS bucket, buckets(f.at, '1 day') AS day,")
+        .replace("1, 2, 3, 4", "1, 2, 3, 4, 5");
+    assert_eq!(
+        sql_errors(&twice)[0].message,
+        "SELECT has more than one buckets item"
+    );
+    let no_width = base("buckets(f.at, '1 hour')", "buckets(f.at)");
+    assert_eq!(
+        sql_errors(&no_width)[0].message,
+        "buckets needs a width after the column: buckets(<column>, '<n> <unit>', ...)"
+    );
+    let options = base("VIEW t AS", "VIEW t WITH (buckets = '1 hour') AS");
+    assert!(
+        sql_errors(&options)[0].message.contains("view options"),
+        "{:?}",
+        sql_errors(&options)
+    );
+    let bad_width = base("'1 hour')", "'1 hour', '60 minutes')");
+    assert_eq!(
+        sql_errors(&bad_width)[0].message,
+        "bucket width '60 minutes': write '1 hour'"
+    );
 }
 
 /// A spec may hold comments; one with no view is refused, as no spec
@@ -262,8 +261,8 @@ fn a_column_measure_takes_a_filter() {
 
 #[test]
 fn every_agg_grain_unit_and_key_form() {
-    let text = "CREATE VIEW t WITH (buckets = '30 seconds') AS
-SELECT date_bin('30 seconds', f.at, timestamptz 'epoch') AS bucket,
+    let text = "CREATE VIEW t AS
+SELECT buckets(f.at, '30 seconds') AS bucket,
        f.a AS a, z.id AS z_id, z.name AS name,
        count(*) AS n, sum(f.x) AS s, min(f.x) AS lo, max(f.x) AS hi,
        avg(f.x) AS mean, count(DISTINCT f.x) AS uniq, sum(f.z_id) AS ids,
@@ -377,8 +376,8 @@ fn through_z(column: &str) -> Via {
 fn joins_of_every_kind_parse() {
     // Inner and left outer joins, a join through a dim, and both EXISTS
     // forms, in one view.
-    let text = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+    let text = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.a AS a, z.name AS name, w.label AS label, count(*) AS n
 FROM public.t AS f
 INNER JOIN public.z AS z ON z.id = f.z_id
@@ -492,14 +491,10 @@ fn parser_errors_and_deep_nesting_are_errors() {
 
 #[test]
 fn error_display() {
-    let text = base(
-        "buckets = '1 hour'",
-        "buckets = '1 hour', buckets = '2 days'",
-    )
-    .replace("f.a AS a,", "q.a AS a,");
+    let text = base("'1 hour'", "'60 minutes'").replace("f.a AS a,", "q.a AS a,");
     assert_eq!(
         parse(&text).unwrap_err().to_string(),
-        "line 1: view option buckets given twice\n\
+        "line 2: bucket width '60 minutes': write '1 hour'\n\
          line 3: unknown table alias q"
     );
     let text = base("count(*) AS n", "count(*) AS n, count(*) AS n");

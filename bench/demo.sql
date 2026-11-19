@@ -2,8 +2,8 @@
 -- hour, payment type and pickup zone. Counts, sums and averages.
 -- Straum SQL: a PostgreSQL subset made only for Straum specs.
 
-CREATE VIEW trips WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', trips.pickup_at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(trips.pickup_at, '1 hour', '1 day', '7 days') AS bucket,
        trips.payment_type AS payment_type,
        trips.pu_location_id AS pu_location_id,
        pickup.borough AS borough,

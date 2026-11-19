@@ -47,7 +47,7 @@ IMAGE = "ghcr.io/janbjorge/straum:0.10.1"
 STRAUM = "straum"
 STRAUM_PORT = 8080
 SPEC_IN_IMAGE = "/spec/trips.sql"
-# Hour edges of the view's date_bin, New York wall time. The January
+# Hour edges of the view's buckets, New York wall time. The January
 # file holds a few trips outside the month; both sides use this range.
 NEW_YORK_TZ = ZoneInfo("America/New_York")
 MONTH = (

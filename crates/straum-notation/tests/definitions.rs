@@ -19,8 +19,8 @@ fn cut(text: &str) -> Vec<(String, String)> {
 
 fn view(name: &str, body: &str) -> String {
     format!(
-        "CREATE VIEW {name} WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket, {body}
+        "CREATE VIEW {name} AS
+SELECT buckets(f.at, '1 hour') AS bucket, {body}
 FROM public.t AS f
 GROUP BY 1"
     )
@@ -28,8 +28,8 @@ GROUP BY 1"
 
 /// A view whose string and comment each hold a semicolon, and which ends
 /// the text without one.
-const LABELLED: &str = "CREATE VIEW b WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+const LABELLED: &str = "CREATE VIEW b AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.label AS label,
        count(*) FILTER (WHERE f.label = 'x;y') AS n -- no end;
 FROM public.t AS f

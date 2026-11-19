@@ -1,10 +1,10 @@
 //! Walks a spec, a list of `CREATE VIEW` statements, into dims and facts.
-//! Each view's `WITH` gives its bucket widths; its `SELECT` reads one fact
-//! table and the dims it joins. The walk reads FROM first, so it knows the
+//! Each view's `SELECT` reads one fact table and the dims it joins, and
+//! names its time with `buckets(column, widths...)`. The walk reads FROM first, so it knows the
 //! tables, then the keys, so a FILTER can reach them, then the measures.
 //! This file holds the view and its `SELECT`; `joins` reads FROM and the
 //! joins, `columns` the keys and the columns they name, `measures` the
-//! aggregates and the bucket, and `dims` merges each view's joins into
+//! aggregates and the `buckets` item, and `dims` merges each view's joins into
 //! the dims of the spec.
 
 use std::fmt;
@@ -17,7 +17,7 @@ use straum_domain::{
 use super::{
     Clause, Names, NullTest, Reported, SqlError, Walker, line, statements, without_leading_zeros,
 };
-pub(super) use measures::{Call, date_bin_width, is_date_bin};
+pub(super) use measures::{Call, is_call, width_literal};
 
 mod columns;
 mod dims;
@@ -136,11 +136,12 @@ struct NamedItem<'tree> {
 }
 
 /// What a view's SELECT list names before its measures: the key items'
-/// places, the `date_bin` buckets, the fact keys, and per ref the dim
+/// places, the `buckets` items, the fact keys, and per ref the dim
 /// columns it reads.
 struct SelectedKeys {
     positions: Vec<usize>,
-    buckets: Vec<Time>,
+    /// Each `buckets` item, an `Err` one already reported.
+    buckets: Vec<Result<Time, Reported>>,
     by_keys: Vec<ByKey>,
     attributes: Vec<Vec<Attribute>>,
 }
@@ -150,52 +151,21 @@ impl Walker {
         let before = self.met();
         let at = self.view_clauses(view);
         let fact_name = self.bare_name(&view.name, "view");
-        let buckets = self.options(at, &view.options);
-        if buckets.is_none()
-            && let Ok(name) = &fact_name
-        {
-            self.error(
-                at,
-                format!(
-                    "view {name} needs WITH (buckets = '<n> <unit>, ...'): every width \
-                     Straum keeps, the date_bin width first"
-                ),
-            );
-        }
         let body = self.view_body(&view.query);
         let name = fact_name?;
         let body = body?;
-        // An empty bucket list is always an error already reported.
-        let Some([first, wider @ ..]) = buckets.as_deref() else {
-            return Err(Reported);
-        };
         if self.met() > before {
             return Err(Reported);
         }
         let Body {
             table,
-            mut time,
+            time,
             refs,
             by_keys,
             measures,
             filter,
             as_text,
         } = body;
-        // Every width is said once, in the view's `WITH`; the body's `date_bin`
-        // must agree with the first, so a reader finds the whole list in one
-        // place and the body still runs in PostgreSQL.
-        if *first != time.width {
-            self.error(
-                at,
-                format!(
-                    "view {name}: buckets starts with {first} but date_bin is {}: list \
-                     every width, the date_bin width first",
-                    time.width
-                ),
-            );
-            return Err(Reported);
-        }
-        time.wider = wider.to_vec();
         let refs = self.add_dims(at, dims, refs);
         Ok(Fact {
             name,
@@ -225,7 +195,7 @@ impl Walker {
             name_before_not_exists: _,
             columns,
             query: _,
-            options: _,
+            options,
             cluster_by,
             comment,
             with_no_schema_binding,
@@ -238,6 +208,10 @@ impl Walker {
         let at = line(name);
         self.reject_if_present(at, *or_alter, "OR ALTER");
         self.reject_if_present(at, *or_replace, "OR REPLACE");
+        // The widths a view keeps are in its `buckets` item.
+        if *options != sql::CreateTableOptions::None {
+            self.refuse(at, "view options", options);
+        }
         self.reject_if_present(at, *materialized, "MATERIALIZED");
         self.reject_if_present(at, *secure, "SECURE");
         self.reject_if_present(at, !columns.is_empty(), "a view column list");
@@ -250,74 +224,6 @@ impl Walker {
         self.reject_if_present(at, to.is_some(), "TO");
         self.reject_if_present(at, params.is_some(), "ALGORITHM, DEFINER or SQL SECURITY");
         at
-    }
-
-    /// `WITH (buckets = '1 hour, 1 day, 7 days')`; `None` when the view
-    /// gives no buckets, which the caller reports in its own words.
-    fn options(&mut self, at: u64, options: &sql::CreateTableOptions) -> Option<Vec<Width>> {
-        let list = match options {
-            sql::CreateTableOptions::With(list) => list.as_slice(),
-            sql::CreateTableOptions::None => &[],
-            other => {
-                self.refuse(at, "view options", other);
-                &[]
-            }
-        };
-        let mut buckets = None;
-        for option in list {
-            let sql::SqlOption::KeyValue { key: name, value } = option else {
-                self.refuse(line(option), "view option", option);
-                continue;
-            };
-            let at = line(option);
-            let Ok(name) = self.read_identifier(name) else {
-                continue;
-            };
-            if name.as_str() != "buckets" {
-                self.refuse(at, "view option", option);
-                continue;
-            }
-            if buckets.is_some() {
-                self.error(at, format!("view option {name} given twice"));
-                continue;
-            }
-            buckets = Some(value);
-        }
-        Some(self.bucket_widths(buckets?))
-    }
-
-    /// The widths a `buckets` option lists; a bad one is reported and
-    /// left out.
-    fn bucket_widths(&mut self, value: &sql::Expr) -> Vec<Width> {
-        let sql::Expr::Value(sql::ValueWithSpan {
-            value: sql::Value::SingleQuotedString(text),
-            span: _,
-        }) = value
-        else {
-            self.refuse(line(value), "buckets, use '<n> <unit>, ...',", value);
-            return Vec::new();
-        };
-        let mut widths = Vec::new();
-        let mut written = Vec::new();
-        let mut every_width_read = true;
-        for width in text.split(',') {
-            let width = width.trim();
-            written.push(width);
-            let parsed = match parse_width(width) {
-                Ok(parsed) => parsed,
-                Err(fix) => {
-                    self.error(line(value), format!("bucket width '{width}': {fix}"));
-                    every_width_read = false;
-                    continue;
-                }
-            };
-            widths.push(parsed);
-        }
-        let list = written.join(", ");
-        if every_width_read && list != *text {
-            self.error(line(value), format!("buckets '{text}': write '{list}'"));
-        }
-        widths
     }
 
     fn select(&mut self, select: &sql::Select) -> Result<Body, Reported> {
@@ -347,7 +253,7 @@ impl Walker {
         let mut buckets = buckets.into_iter();
         let time = buckets.next();
         for _ in buckets {
-            self.error(at, "SELECT has more than one date_bin bucket".into());
+            self.error(at, "SELECT has more than one buckets item".into());
         }
         // A ref reads the dim columns the view selects; `Spec::new` checks
         // that a join's kind fits what it reads.
@@ -366,12 +272,13 @@ impl Walker {
         let Some(time) = time else {
             self.error(
                 at,
-                "SELECT needs a bucket: date_bin('<n> <unit>', <column>, timestamptz 'epoch'), \
-                 or timestamp 'epoch' for a column without a zone"
+                "SELECT needs its buckets: buckets(<column>, '<n> <unit>', ...) AS <name>, \
+                 every width kept, narrowest first"
                     .into(),
             );
             return Err(Reported);
         };
+        let time = time?;
         Ok(Body {
             table,
             time,
@@ -396,11 +303,10 @@ impl Walker {
         for (index, item) in named.iter().enumerate() {
             let position = index + 1;
             match item.expression {
-                sql::Expr::Function(function) if is_date_bin(function) => {
+                sql::Expr::Function(function) if is_call(function, BUCKETS) => {
                     selected.positions.push(position);
-                    if let Ok(time) = self.bucket(scope, function, item.alias) {
-                        selected.buckets.push(time);
-                    }
+                    let time = self.bucket(scope, function, item.alias);
+                    selected.buckets.push(time);
                 }
                 sql::Expr::Function(_) => {}
                 expression => {
@@ -442,7 +348,7 @@ impl Walker {
             let sql::Expr::Function(function) = item.expression else {
                 continue;
             };
-            if is_date_bin(function) {
+            if is_call(function, BUCKETS) {
                 continue;
             }
             if let Ok(measure) = self.measure(scope, function, item.alias) {
@@ -536,6 +442,9 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
 }
 
 /// What to write for a width that can't be read.
+/// The function a view's time is written with.
+const BUCKETS: &str = "buckets";
+
 pub(super) const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
 
 /// A width `'<n> <unit>'`, written one way: `n` plain digits, the

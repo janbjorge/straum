@@ -42,10 +42,9 @@ the end are open.
   with an alias; PostgreSQL's word is relation (`Relation`).
 - **Alias** (`Ref::alias`): the `AS name` after a table; asks never see
   one.
-- **Name** (`Identifier`): the `AS name` of a key or measure, the only
-  way an ask reaches it. Also "output name", "select name".
-- **View option**: `WITH (buckets = '...')`, the bucket widths a view
-  keeps ([Time](spec.md#time)).
+- **Name** (`Identifier`): the `AS name` of the time, a key or a
+  measure, the only way an ask reaches it. Also "output name", "select
+  name".
 - **Flag**: a command-line option ([Command line](cli.md)); the chart
   calls one a value (`maxLag`).
 
@@ -74,22 +73,25 @@ the end are open.
 
 ## Time
 
+- **Time** (`Time`): a view's `buckets(column, widths...) AS name`
+  item ([Time](spec.md#time)); its **name** (`Time::name`) is what asks
+  group and bound it by, `bucket` in the guide's views.
 - **Time column** (`Time::column`): the `timestamptz` or `timestamp`
-  inside `date_bin` ([Time](spec.md#time)).
-- **Bucket**: one span of the time column at one width, and `bucket`,
-  the time key's name ([Cells](how-it-works.md#cells)).
-- **Bucket width** (`Width`): a span, the `date_bin` one dividing a
-  day, each wider one a multiple of the one before; each a grid from
-  the epoch, written in its largest unit (`1 hour`, `7 days`). Also
+  the `buckets` item reads.
+- **Bucket**: one span of the time column at one width
+  ([Cells](how-it-works.md#cells)).
+- **Bucket width** (`Width`): a span, the first one dividing a day,
+  each wider one a multiple of the one before; each a grid from the
+  epoch, written in its largest unit (`1 hour`, `7 days`). Also
   "grain".
-- **Narrowest width** (`Time::width`): the `date_bin` width; the rest
-  are the **wider widths** (`Time::wider`). Also "finest".
+- **Narrowest width** (`Time::width`): the first width `buckets`
+  lists, the one each row goes in; the rest are the **wider widths**
+  (`Time::wider`). Also "finest", "the `date_bin` width": PostgreSQL
+  writes the item as `date_bin` at it.
 - **Level** (`Level`): the cells of one width
   ([The store](design.md#the-store)).
-- **Origin** (`Origin`): `date_bin`'s third argument, the `'epoch'` of
-  the column's type.
 - **Row width** (`Ask::row_width`, `AskKey::WiderBucket`): the width
-  of the buckets an ask answers by: the `date_bin` width for `bucket`,
+  of the buckets an ask answers by: the narrowest for the time's name,
   or the wider one `date_bin('1 day', bucket)` names ([Rows a day or a
   week apart](asks.md#rows-a-day-or-a-week-apart)).
 - **Bucket edge**: a multiple of a bucket width; each bound an ask
@@ -147,7 +149,8 @@ the end are open.
 - **Comparison** (`MeasureCondition`): `measure op $n` in `HAVING`
   ([HAVING](asks.md#having)).
 - **Range** (`Ask::from`, `Ask::to`): the `[from, to)` an ask reads; its
-  **bounds** are the two `bucket` conditions. Tests say "window".
+  **bounds** are the two conditions on the time (`Ask::bounded`). Tests
+  say "window".
 - **Cover** (`Rollup::cover`): the buckets an ask reads, widest in the
   middle ([Answering an ask](how-it-works.md#answering-an-ask)).
 - **Limit** (`Limits`): what a `--max-*` flag caps

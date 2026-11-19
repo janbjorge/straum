@@ -14,8 +14,8 @@ fn tables(columns: &str) -> String {
 
 /// Counts the fact by the hour and by `kind`.
 const SPEC: &str = "
-CREATE VIEW f WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, t.kind AS kind, count(*) AS n
+CREATE VIEW f AS
+SELECT buckets(t.at, '1 hour') AS bucket, t.kind AS kind, count(*) AS n
 FROM $S.f AS t GROUP BY 1, 2;";
 
 /// What the check for `--wal physical` finds wrong with the catalog `db`

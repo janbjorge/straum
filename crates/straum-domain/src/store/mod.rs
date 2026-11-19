@@ -219,6 +219,12 @@ impl Store {
         }
     }
 
+    /// The type of the view's time column, as the load found it.
+    pub fn time_type(&self, fact: &str) -> Option<ColumnType> {
+        let index = self.fact_index(fact)?;
+        Some(self.keyed(index).time_type())
+    }
+
     fn fact_index(&self, name: &str) -> Option<FactIndex> {
         for (position, fact) in self.spec.facts().iter().enumerate() {
             if fact.name.as_str() == name {

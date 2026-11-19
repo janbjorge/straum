@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use crate::aggregate::Partials;
-use crate::ask::{Ask, AskError, AskKey, Comparison};
+use crate::ask::{Ask, AskError, Comparison};
 use crate::hash::FastMap;
 use crate::identifier::Identifier;
 use crate::projection::AttributeIndex;
@@ -90,7 +90,10 @@ impl Store {
                 // The bound cells hold only what the joins keep.
                 let mut joins = match read {
                     Read::Bound(_) => Vec::new(),
-                    Read::Keyed(_) => self.join_checks(fact, rollup, cells_in(rollup, ask)),
+                    Read::Keyed(_) => {
+                        let cells = cells_in(rollup, ask, cell_loop.cover);
+                        self.join_checks(fact, rollup, cells)
+                    }
                 };
                 cell_loop.ask_once(&mut joins, ask);
             }
@@ -106,8 +109,8 @@ impl Store {
 
     /// Cells the ask reads.
     pub fn cells_read(&self, ask: &Ask) -> Result<usize, Vec<AskError>> {
-        let reading = self.reading(ask)?;
-        Ok(cells_in(reading.read.rollup(), ask))
+        let Reading { fact, read } = self.reading(ask)?;
+        Ok(cells_in(read.rollup(), ask, cover_of(fact, ask)))
     }
 
     /// The ask's fact and the cells that answer it: the bound cells when
@@ -132,14 +135,14 @@ impl Store {
         asked: &[&Measure],
     ) -> CellLoop<'s> {
         let rollup = read.rollup();
-        let buckets = buckets(rollup, ask).count();
-        let cells = cells_in(rollup, ask);
+        let cover = cover_of(fact, ask);
+        let buckets = buckets(rollup, ask, cover).count();
+        let cells = cells_in(rollup, ask, cover);
         let mut by = Vec::with_capacity(ask.keys.len());
         for key in &ask.keys {
-            by.push(match key {
-                AskKey::Key(name) => Grouping::lookup(self.lookup(fact, read, name, cells), rollup),
-                AskKey::Bucket => Grouping::time(fact.time.width, buckets),
-                AskKey::WiderBucket(width) => Grouping::time(*width, buckets),
+            by.push(match fact.time_width(key) {
+                Some(width) => Grouping::time(width, buckets),
+                None => Grouping::lookup(self.lookup(fact, read, key.name(), cells), rollup),
             });
         }
         let mut groups = Groups::new(&by);
@@ -160,6 +163,7 @@ impl Store {
         }
         CellLoop {
             rollup,
+            cover,
             by,
             groups,
             filter,
@@ -373,23 +377,27 @@ fn ref_position(fact: &Fact, reference: &Ref) -> usize {
 pub(super) fn buckets<'r>(
     rollup: &'r Rollup,
     ask: &Ask,
+    cover: Cover,
 ) -> impl Iterator<Item = CoveredBucket<'r>> {
-    let mut cover = Cover::WidestFit;
-    for key in &ask.keys {
-        match key {
-            AskKey::Key(_) => {}
-            AskKey::Bucket => cover = Cover::NoWiderThan(rollup.date_bin_width()),
-            AskKey::WiderBucket(width) => cover = Cover::NoWiderThan(*width),
-        }
-    }
     let range = read_range(rollup, ask);
     rollup.cover(range.start, range.end, cover)
 }
 
+/// Which buckets an ask reads: none wider than its row width when it
+/// groups by the view's time.
+fn cover_of(fact: &Fact, ask: &Ask) -> Cover {
+    for key in &ask.keys {
+        if let Some(width) = fact.time_width(key) {
+            return Cover::NoWiderThan(width);
+        }
+    }
+    Cover::WidestFit
+}
+
 /// The cells an ask reads.
-fn cells_in(rollup: &Rollup, ask: &Ask) -> usize {
+fn cells_in(rollup: &Rollup, ask: &Ask, cover: Cover) -> usize {
     let mut cells = 0;
-    for covered in buckets(rollup, ask) {
+    for covered in buckets(rollup, ask, cover) {
         cells += covered.cells.len();
     }
     cells
@@ -455,7 +463,7 @@ fn answer_columns(
         columns.push(AnswerColumn {
             name: key.to_string(),
             scale: grouping.column_type(rollup).scale(),
-            is_time: key.is_time(),
+            is_time: matches!(grouping, Grouping::Time { .. }),
         });
     }
     for (name, measure) in ask.measures.iter().zip(measures) {

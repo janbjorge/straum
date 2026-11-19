@@ -149,7 +149,7 @@ fn an_open_end_reads_to_the_buckets_held() {
     let by_bucket = Ask {
         from: None,
         to: None,
-        ..trips_over(START, END, vec![AskKey::Bucket])
+        ..trips_over(START, END, vec![AskKey::Key(id("bucket"))])
     };
     assert_eq!(store.ask(&by_bucket).unwrap().rows.len(), 4);
 }
@@ -193,6 +193,7 @@ fn trips_over(from: i64, to: i64, keys: Vec<AskKey>) -> Ask {
         having: Vec::new(),
         from: Some(from),
         to: Some(to),
+        bounded: None,
     }
 }
 
@@ -205,7 +206,7 @@ fn a_time_before_the_epoch_floors_to_its_bucket() {
     let mut row = trip(&mut Rng(2));
     row[AT] = Datum::Int(-1);
     store.add_row("trips", &row).unwrap();
-    let by_bucket = vec![AskKey::Bucket];
+    let by_bucket = vec![AskKey::Key(id("bucket"))];
     let below = trips_over(-width, 0, by_bucket.clone());
     assert_eq!(
         store.ask(&below).unwrap().rows,
@@ -241,7 +242,14 @@ fn rows_a_week_apart_floor_before_1970() {
     let by_week = Ask {
         from: None,
         to: None,
-        ..trips_over(0, 0, vec![AskKey::WiderBucket(Width { seconds: WEEK })])
+        ..trips_over(
+            0,
+            0,
+            vec![AskKey::WiderBucket {
+                name: id("bucket"),
+                width: Width { seconds: WEEK },
+            }],
+        )
     };
     let mut weeks = Vec::new();
     for AnswerRow { keys, values } in store.ask(&by_week).unwrap().rows {
@@ -277,7 +285,7 @@ fn a_row_without_a_time_is_kept_and_never_answered() {
     let to = i64::MAX / width * width;
     let all = store.ask(&trips_over(from, to, Vec::new())).unwrap();
     assert_eq!(all.rows[0].values, [Value::Int(1)]);
-    let by_bucket = trips_over(from, to, vec![AskKey::Bucket]);
+    let by_bucket = trips_over(from, to, vec![AskKey::Key(id("bucket"))]);
     assert_eq!(
         store.ask(&by_bucket).unwrap().rows,
         [AnswerRow {

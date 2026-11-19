@@ -299,6 +299,7 @@ fn every_key_at_once_uses_the_sparse_index() {
         having: Vec::new(),
         from: Some(START),
         to: Some(END),
+        bounded: None,
     };
     assert_eq!(
         store.ask(&ask).unwrap(),

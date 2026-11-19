@@ -48,89 +48,47 @@ fn view_shapes_outside_the_subset_are_rejected() {
             "SECURE is not in Straum SQL",
         ),
         (
-            "WITH (buckets = '1 hour') AS",
+            "AS",
             "COPY GRANTS AS",
             1,
             "COPY GRANTS is not in Straum SQL",
         ),
         (
-            "VIEW t WITH",
-            "VIEW t (a, b) WITH",
+            "VIEW t AS",
+            "VIEW t (a, b) AS",
             1,
             "a view column list is not in Straum SQL",
         ),
         (
-            "VIEW t WITH",
-            "VIEW s.t WITH",
+            "VIEW t AS",
+            "VIEW s.t AS",
             1,
             "view s.t must be a bare name",
         ),
         (
-            "VIEW t WITH",
-            "VIEW \"t\" WITH",
+            "VIEW t AS",
+            "VIEW \"t\" AS",
             1,
             "quoted identifier `\"t\"` is not in Straum SQL",
         ),
     ]);
 }
 
-/// Every view option but buckets.
+/// A view takes no options: its widths are in its `buckets` item.
 #[test]
-fn view_options_other_than_buckets_are_rejected() {
+fn view_options_are_rejected() {
     rejects(&[
         (
-            "WITH (buckets = '1 hour')",
-            "WITH (key = id)",
+            "VIEW t AS",
+            "VIEW t WITH (key = id) AS",
             1,
-            "view option `key = id` is not in Straum SQL",
+            "view options `WITH (key = id)` is not in Straum SQL",
         ),
         (
-            "WITH (buckets = '1 hour')",
-            "WITH (colour = 1)",
+            "VIEW t AS",
+            "VIEW t WITH (buckets = '1 hour') AS",
             1,
-            "view option `colour = 1` is not in Straum SQL",
-        ),
-        (
-            "WITH (buckets = '1 hour')",
-            "WITH (append = true)",
-            1,
-            "view option `append = true` is not in Straum SQL",
-        ),
-        (
-            "WITH (buckets = '1 hour')",
-            "WITH (buckets = 1)",
-            1,
-            "buckets, use '<n> <unit>, ...', `1`",
-        ),
-        (
-            "buckets = '1 hour'",
-            "buckets = '1 hour, 2 weeks'",
-            1,
-            "bucket width '2 weeks': use '<n> seconds|minutes|hours|days'",
-        ),
-        (
-            "buckets = '1 hour'",
-            "buckets = ''",
-            1,
-            "bucket width '': use",
-        ),
-        (
-            "buckets = '1 hour'",
-            "buckets = '1 hour', buckets = '2 days'",
-            1,
-            "view option buckets given twice",
-        ),
-        (
-            "WITH (buckets = '1 hour')",
-            "WITH (\"buckets\" = '1 hour')",
-            1,
-            "quoted identifier `\"buckets\"`",
-        ),
-        (
-            "WITH (buckets = '1 hour')",
-            &format!("WITH ({} = 1)", "k".repeat(64)),
-            1,
-            "bad identifier kkkk",
+            "view options `WITH (buckets = '1 hour')` is not in Straum SQL",
         ),
     ]);
 }
@@ -202,18 +160,18 @@ fn query_clauses_outside_the_subset_are_rejected() {
 fn other_dialects_select_clauses_are_rejected() {
     rejects(&[
         (
-            "SELECT date_bin",
-            "SELECT /*+ x */ date_bin",
+            "SELECT buckets",
+            "SELECT /*+ x */ buckets",
             2,
             "an optimizer hint is not",
         ),
         (
-            "SELECT date_bin",
-            "SELECT ALL date_bin",
+            "SELECT buckets",
+            "SELECT ALL buckets",
             2,
             "SELECT ALL is not",
         ),
-        ("SELECT date_bin", "SELECT TOP 1 date_bin", 2, "TOP is not"),
+        ("SELECT buckets", "SELECT TOP 1 buckets", 2, "TOP is not"),
         (
             "count(*) AS n",
             "count(*) AS n INTO x",
@@ -306,8 +264,8 @@ fn table_and_call_options_are_rejected() {
 fn select_clauses_outside_the_subset_are_rejected() {
     rejects(&[
         (
-            "SELECT date_bin",
-            "SELECT DISTINCT date_bin",
+            "SELECT buckets",
+            "SELECT DISTINCT buckets",
             2,
             "SELECT DISTINCT is not",
         ),
@@ -724,101 +682,84 @@ fn measure_filters_take_one_condition_form() {
     ]);
 }
 
-/// The bucket.
+/// The view's time: one `buckets` item, a fact column and its widths.
 #[test]
-fn the_bucket_is_one_date_bin() {
+fn the_time_is_one_buckets_item() {
     rejects(&[
         (
-            "f.at, timestamptz 'epoch')",
-            "f.at)",
+            "buckets(f.at",
+            "buckets(z.at",
             2,
-            "date_bin arguments",
+            "the buckets column must be a f column",
         ),
         (
-            "date_bin('1 hour', f.at",
-            "date_bin('1 hour', z.at",
+            "'1 hour') AS bucket",
+            "'1 hour') FILTER (WHERE f.a = 1) AS bucket",
             2,
-            "the date_bin column must be a f column",
+            "FILTER on buckets",
         ),
         (
-            "timestamptz 'epoch')",
-            "timestamptz 'epoch') FILTER (WHERE f.a = 1)",
+            "buckets(f.at",
+            "buckets(DISTINCT f.at",
             2,
-            "FILTER on date_bin",
+            "DISTINCT on buckets",
+        ),
+        ("buckets(", "date_trunc(", 2, "aggregate `date_trunc"),
+        (
+            "buckets(f.at, '1 hour')",
+            "date_bin('1 hour', f.at, timestamptz 'epoch')",
+            2,
+            "aggregate `date_bin",
         ),
         (
-            "date_bin('1 hour',",
-            "date_bin(DISTINCT '1 hour',",
+            "buckets(f.at, '1 hour')",
+            "buckets(f.at)",
             2,
-            "DISTINCT on date_bin",
+            "buckets needs a width after the column",
         ),
-        ("date_bin(", "date_trunc(", 2, "aggregate `date_trunc"),
         (
-            "SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,",
+            "SELECT buckets(f.at, '1 hour') AS bucket,",
             "SELECT",
             2,
-            "SELECT needs a bucket",
+            "SELECT needs its buckets",
         ),
         (
             "AS bucket,",
-            "AS bucket, date_bin('1 day', f.at, timestamptz 'epoch') AS bucket,",
+            "AS bucket, buckets(f.at, '1 day') AS day,",
             2,
-            "more than one date_bin bucket",
+            "more than one buckets item",
         ),
+        ("AS bucket,", "AS user,", 2, "user is a word SQL reserves"),
     ]);
 }
 
 #[test]
-fn the_date_bin_width_and_origin_are_spelled_one_way() {
+fn bucket_widths_are_spelled_one_way() {
     rejects(&[
         (
-            "date_bin('1 hour'",
-            "date_bin('15x'",
+            "'1 hour')",
+            "'15x')",
             2,
-            "date_bin width '15x': use '<n> seconds|minutes|hours|days'",
+            "bucket width '15x': use '<n> seconds|minutes|hours|days'",
         ),
+        ("'1 hour')", "'1 week')", 2, "bucket width '1 week'"),
+        ("'1 hour')", "'99999999 days')", 2, "bucket width"),
+        ("'1 hour')", "interval '1 hour')", 2, "bucket width"),
         (
-            "date_bin('1 hour'",
-            "date_bin('1 week'",
+            "'1 hour')",
+            "'1 hour', '2 weeks')",
             2,
-            "date_bin width",
+            "bucket width '2 weeks'",
         ),
+        ("'1 hour')", "'')", 2, "bucket width '': use"),
+        ("'1 hour')", "1)", 2, "bucket width 1: use"),
         (
-            "date_bin('1 hour'",
-            "date_bin('99999999 days'",
+            "'1 hour')",
+            "'60 minutes')",
             2,
-            "date_bin width",
+            "bucket width '60 minutes': write '1 hour'",
         ),
-        (
-            "date_bin('1 hour'",
-            "date_bin(interval '1 hour'",
-            2,
-            "date_bin width",
-        ),
-        (
-            "timestamptz 'epoch'",
-            "'epoch'",
-            2,
-            "date_bin origin 'epoch': use timestamptz 'epoch' or timestamp 'epoch'",
-        ),
-        (
-            "timestamptz 'epoch'",
-            "timestamp with time zone 'epoch'",
-            2,
-            "date_bin origin",
-        ),
-        (
-            "timestamptz 'epoch'",
-            "timestamp 'origin'",
-            2,
-            "date_bin origin",
-        ),
-        (
-            "timestamptz 'epoch'",
-            "timestamptz '2000-01-01'",
-            2,
-            "date_bin origin",
-        ),
+        ("'1 hour')", "'1 hour', f.a)", 2, "bucket width f.a: use"),
     ]);
 }
 
@@ -849,8 +790,8 @@ fn group_by_takes_the_key_positions() {
 
 #[test]
 fn joins_of_every_kind_rejected() {
-    let base = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+    let base = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.a AS a, z.name AS name, count(*) AS n
 FROM public.t AS f
 INNER JOIN public.z AS z ON z.id = f.z_id
@@ -928,8 +869,8 @@ fn rare_clauses_are_rejected_by_name() {
             "cast `TRY_CAST(f.a AS TEXT)` is not in Straum SQL",
         ),
         (
-            "date_bin('1 hour', f.at, timestamptz 'epoch')",
-            "date_bin('1 hour', f.at, timestamptz 'epoch') WITHIN GROUP (ORDER BY f.a)",
+            "buckets(f.at, '1 hour')",
+            "buckets(f.at, '1 hour') WITHIN GROUP (ORDER BY f.a)",
             2,
             "WITHIN GROUP is not in Straum SQL",
         ),

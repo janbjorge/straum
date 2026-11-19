@@ -32,11 +32,12 @@ Aurora and Cloud SQL do not hand out that stream
 
 A spec is a view in a small subset of PostgreSQL's `CREATE VIEW`, here
 over an `events` table and the `accounts` it belongs to. Straum never
-creates it; PostgreSQL would give the same rows.
+creates it. `buckets(...)` is the view's time: the column, then every
+bucket width Straum keeps.
 
 ```sql
-CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour', '1 day', '7 days') AS bucket,
        e.kind AS kind,
        e.account_id AS account_id,
        a.region AS region,

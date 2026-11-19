@@ -12,8 +12,8 @@ the spec reads.
 In an empty directory, save this as `usage.sql`:
 
 ```sql
-CREATE VIEW usage WITH (buckets = '1 hour, 1 day, 7 days') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour', '1 day', '7 days') AS bucket,
        e.kind::text AS kind,
        e.account_id AS account_id,
        a.region AS region,

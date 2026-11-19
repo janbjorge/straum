@@ -5,7 +5,7 @@
 
 use straum_domain::{
     Aggregate, Ask, AskError, AskKey, ByKey, Condition, Dim, Fact, Fraction, Instead, JoinError,
-    Key, Literal, Measure, Origin, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
+    Key, Literal, Measure, Reads, Ref, RefKind, Spec, SpecError, Time, Via, Width,
 };
 
 mod common;
@@ -37,7 +37,7 @@ fn fact() -> Fact {
             column: id("at"),
             width: Width { seconds: 3_600 },
             wider: vec![],
-            origin: Origin::Timestamptz,
+            name: id("bucket"),
         },
         refs: vec![Ref {
             alias: id("r"),
@@ -513,7 +513,7 @@ fn ask() -> Ask {
             AskKey::Key(id("a")),
             AskKey::Key(id("z_id")),
             AskKey::Key(id("name")),
-            AskKey::Bucket,
+            AskKey::Key(id("bucket")),
         ],
         filter: vec![Condition {
             key: id("name"),
@@ -522,6 +522,7 @@ fn ask() -> Ask {
         having: Vec::new(),
         from: Some(0),
         to: Some(86_400),
+        bounded: None,
     }
 }
 
@@ -542,7 +543,10 @@ fn days_and_weeks() -> Spec {
 fn rows_of(width: u32, from: i64, to: i64) -> Ask {
     let mut keys = ask().keys;
     keys.pop();
-    keys.push(AskKey::WiderBucket(Width { seconds: width }));
+    keys.push(AskKey::WiderBucket {
+        name: id("bucket"),
+        width: Width { seconds: width },
+    });
     Ask {
         keys,
         from: Some(from),
@@ -587,7 +591,10 @@ fn rows_at_a_width_not_kept_or_the_date_bin_width_are_refused() {
     let hours = rows_of(3_600, 0, DAY_START);
     assert_eq!(
         spec.check_ask(&hours).unwrap_err(),
-        [AskError::DateBinOwnWidth(Width { seconds: 3_600 })]
+        [AskError::DateBinOwnWidth {
+            name: id("bucket"),
+            width: Width { seconds: 3_600 }
+        }]
     );
     // A view that keeps no wider width keeps none to ask by.
     let only_hours = Spec::new(vec![dim()], vec![fact()]).unwrap();
@@ -601,7 +608,13 @@ fn rows_at_a_width_not_kept_or_the_date_bin_width_are_refused() {
         }]
     );
     let twice = Ask {
-        keys: vec![AskKey::Bucket, AskKey::WiderBucket(Width { seconds: DAY })],
+        keys: vec![
+            AskKey::Key(id("bucket")),
+            AskKey::WiderBucket {
+                name: id("bucket"),
+                width: Width { seconds: DAY },
+            },
+        ],
         ..rows_of(DAY, 0, DAY_START)
     };
     assert_eq!(
@@ -651,8 +664,8 @@ fn an_ask_of_what_the_rollup_does_not_hold_is_rejected() {
             AskKey::Key(id("colour")),
             AskKey::Key(id("name")),
             AskKey::Key(id("name")),
-            AskKey::Bucket,
-            AskKey::Bucket,
+            AskKey::Key(id("bucket")),
+            AskKey::Key(id("bucket")),
         ],
         from: Some(60),
         ..ask()
@@ -873,18 +886,24 @@ fn ask_errors_display() {
     for (error, shown) in cases {
         assert_eq!(error.to_string(), shown);
     }
-    assert_eq!(AskKey::Bucket.to_string(), "bucket");
-    let days = AskKey::WiderBucket(Width { seconds: DAY });
+    assert_eq!(AskKey::Key(id("bucket")).to_string(), "bucket");
+    let days = AskKey::WiderBucket {
+        name: id("bucket"),
+        width: Width { seconds: DAY },
+    };
     assert_eq!(days.to_string(), "bucket");
-    assert!(days.is_time() && AskKey::Bucket.is_time());
-    assert!(!AskKey::Key(id("a")).is_time());
+    assert_eq!(days.name(), &id("bucket"));
+    assert_eq!(AskKey::Key(id("a")).name(), &id("a"));
 }
 
 #[test]
 fn width_and_range_errors_display() {
     let cases = [
         (
-            AskError::DateBinOwnWidth(Width { seconds: 3_600 }),
+            AskError::DateBinOwnWidth {
+                name: id("bucket"),
+                width: Width { seconds: 3_600 },
+            },
             "date_bin('1 hour', bucket) is the view's own width; write bucket",
         ),
         (

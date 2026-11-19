@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn rustyline_is_given_the_candidates_and_the_hint() {
-        let logins = r#"{"views":[{"name":"logins","measures":["logins"],
+        let logins = r#"{"views":[{"name":"logins","time":"bucket","measures":["logins"],
             "keys":[{"name":"bucket","type":"timestamp"}]}]}"#;
         let names = Names {
             views: read_views(logins).unwrap(),
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn a_line_entered_before_is_suggested_and_the_arrow_takes_it() {
-        let logins = r#"{"views":[{"name":"logins","measures":["logins"],
+        let logins = r#"{"views":[{"name":"logins","time":"bucket","measures":["logins"],
             "keys":[{"name":"bucket","type":"timestamp"}]}]}"#;
         let names = Names {
             views: read_views(logins).unwrap(),
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn completion_reads_the_lines_before_the_cursor() {
-        let logins = r#"{"views":[{"name":"logins","measures":["logins"],
+        let logins = r#"{"views":[{"name":"logins","time":"bucket","measures":["logins"],
             "keys":[{"name":"bucket","type":"timestamp"}]}]}"#;
         let names = Names {
             views: read_views(logins).unwrap(),

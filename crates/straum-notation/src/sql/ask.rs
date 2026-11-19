@@ -1,22 +1,23 @@
 //! Walks an ask, one `SELECT` over a view, into an `Ask`: the view, the
-//! keys it groups by, the measures, the filter and the bucket range. The
+//! keys it groups by, the measures, the filter and the time range. The
 //! values come from the `$n` parameters passed beside the text.
 //!
 //! ```sql
-//! SELECT bucket, borough, trips, fare
+//! SELECT hour, borough, trips, fare
 //! FROM trips
-//! WHERE payment_type IN ($1, $2) AND bucket >= $3 AND bucket < $4
-//! GROUP BY bucket, borough
+//! WHERE payment_type IN ($1, $2) AND hour >= $3 AND hour < $4
+//! GROUP BY hour, borough
 //! ```
 //!
 //! Every value is a `$n` parameter, so no value is ever spliced into the
-//! query text. Keys and measures go by the names the view gives them.
-//! `bucket` is the view's time bucket; a spec can't name a key or measure
-//! `bucket`, so it never clashes. `date_bin('1 day', bucket)` in `SELECT`
-//! and `GROUP BY` asks for rows a wider width apart; the width is part of
-//! the query, not a parameter, since it sets the answer's shape. Each bound may be left out: an ask
-//! without `bucket >= $n` reads from the first bucket held, one without
-//! `bucket < $n` to the last, and one with no `WHERE` reads them all.
+//! query text. Keys, measures and the view's time go by the names the view
+//! gives them; the walk doesn't know the view, so the spec's check says
+//! which name is the time. `date_bin('1 day', hour)` in `SELECT` and
+//! `GROUP BY` asks for rows a wider width apart; the width is part of the
+//! query, not a parameter, since it sets the answer's shape. Each bound
+//! may be left out: an ask without `hour >= $n` reads from the first
+//! bucket held, one without `hour < $n` to the last, and one with no
+//! `WHERE` reads them all.
 
 use std::fmt;
 
@@ -29,7 +30,7 @@ use straum_domain::{
     Ask, AskKey, Comparison, Condition, Identifier, Literal, MeasureCondition, decimal,
 };
 
-use super::view::{Call, date_bin_width, is_date_bin};
+use super::view::{Call, is_call, width_literal};
 use super::{
     NOT_IN_STRAUM_SQL, Names, PARENTHESES, Reported, SqlError, Walker, and_parts, line, statements,
     without_leading_zeros,
@@ -105,11 +106,13 @@ impl End {
     }
 }
 
-/// What an ask's WHERE holds: the filter and the bounds written.
+/// What an ask's WHERE holds: the filter, the bounds written and the
+/// name they compare.
 struct Where {
     filter: Vec<Condition>,
     from: Bound,
     to: Bound,
+    bounded: Option<Identifier>,
 }
 
 /// A bucket bound as the ask writes it; `Bad` is one already reported.
@@ -131,7 +134,7 @@ impl Bound {
     }
 }
 
-/// `bucket >= value` or `bucket < value`, as written.
+/// `name >= value` or `name < value`, as written.
 // Borrows the name and value from the tree, which outlives the walk.
 struct BucketBound<'tree> {
     name: &'tree sql::Ident,
@@ -214,7 +217,12 @@ impl Walker {
                 self.error(at, format!("GROUP BY {key} is not selected"));
             }
         }
-        let Where { filter, from, to } = self.ask_where(select.selection.as_ref(), parameters);
+        let Where {
+            filter,
+            from,
+            to,
+            bounded,
+        } = self.ask_where(select.selection.as_ref(), parameters);
         let having = self.ask_having(select.having.as_ref(), text, parameters);
         Ok(Ask {
             view: view?,
@@ -224,6 +232,7 @@ impl Walker {
             having,
             from: from.seconds()?,
             to: to.seconds()?,
+            bounded,
         })
     }
 
@@ -249,7 +258,7 @@ impl Walker {
             }
             match key {
                 AskKey::Key(name) => measures.push(name),
-                AskKey::Bucket | AskKey::WiderBucket(_) => self.error(
+                AskKey::WiderBucket { .. } => self.error(
                     line(expression),
                     format!("{expression} is selected but not in GROUP BY"),
                 ),
@@ -291,11 +300,11 @@ impl Walker {
         keys
     }
 
-    /// A key or measure by the name the view gives it, `bucket`, or
-    /// `date_bin('<width>', bucket)`.
+    /// A key or measure by the name the view gives it, or
+    /// `date_bin('<width>', name)` for the view's time at a wider width.
     fn ask_key(&mut self, expression: &sql::Expr) -> Result<AskKey, Reported> {
         if let sql::Expr::Function(function) = expression
-            && is_date_bin(function)
+            && is_call(function, "date_bin")
         {
             return self.wider_bucket(function);
         }
@@ -307,16 +316,13 @@ impl Walker {
             );
             return Err(Reported);
         };
-        let name = self.read_identifier(identifier)?;
-        if name.as_str() == "bucket" {
-            return Ok(AskKey::Bucket);
-        }
-        Ok(AskKey::Key(name))
+        Ok(AskKey::Key(self.read_identifier(identifier)?))
     }
 
-    /// `date_bin('<width>', bucket)`: the bucket at a width the spec must
-    /// keep. PostgreSQL's third argument, the origin, is left out: an ask
-    /// takes the view's.
+    /// `date_bin('<width>', name)`: the view's time at a width the spec
+    /// must keep. PostgreSQL's third argument, the origin, is left out:
+    /// buckets start at the epoch. The spec says whether `name` is the
+    /// view's time.
     fn wider_bucket(&mut self, function: &sql::Function) -> Result<AskKey, Reported> {
         let at = line(function);
         self.reject_if_present(at, function.filter.is_some(), "FILTER on date_bin");
@@ -333,34 +339,31 @@ impl Walker {
         else {
             self.refuse(
                 at,
-                "date_bin arguments in an ask, write date_bin('<width>', bucket),",
+                "date_bin arguments in an ask, write date_bin('<width>', <time>),",
                 function,
             );
             return Err(Reported);
         };
-        let parsed = date_bin_width(width);
+        let parsed = width_literal(width);
         if let Err(fix) = &parsed {
             self.error(line(width), format!("date_bin width {width}: {fix}"));
         }
-        let reads_bucket = match column {
-            sql::Expr::Identifier(identifier) => {
-                self.read_identifier(identifier)?.as_str() == "bucket"
-            }
-            _ => false,
-        };
-        if !reads_bucket {
-            let message = format!("date_bin in an ask reads bucket, not {column}");
+        let sql::Expr::Identifier(identifier) = column else {
+            let message = format!("date_bin in an ask reads the view's time by name, not {column}");
             self.error(line(column), message);
             return Err(Reported);
-        }
+        };
+        let name = self.read_identifier(identifier)?;
         let Ok(width) = parsed else {
             return Err(Reported);
         };
-        Ok(AskKey::WiderBucket(width))
+        Ok(AskKey::WiderBucket { name, width })
     }
 
-    /// The conditions, and the range from `bucket >= $n AND bucket < $m`,
-    /// a bound not written leaving its end open.
+    /// The conditions, and the range from `time >= $n AND time < $m`, a
+    /// bound not written leaving its end open. Conditions take `=`, `IN`
+    /// and `IS NULL`, so `>=` and `<` always bound the range; the spec
+    /// says whether the name is the view's time.
     fn ask_where(&mut self, selection: Option<&sql::Expr>, parameters: &mut Parameters) -> Where {
         let mut parts = Vec::new();
         if let Some(expression) = selection {
@@ -369,13 +372,23 @@ impl Walker {
         let mut filter = Vec::new();
         let mut from = Bound::Open;
         let mut to = Bound::Open;
+        let mut bounded: Option<Identifier> = None;
         for part in parts {
             let Some(BucketBound { name, end, value }) = bucket_bound(part) else {
                 self.read_conditions(part, &mut filter, &mut Names::Ask(parameters));
                 continue;
             };
-            if self.read_identifier(name).is_err() {
+            let Ok(name) = self.read_identifier(name) else {
                 continue;
+            };
+            match &bounded {
+                Some(first) if *first != name => {
+                    let message = format!("the range bounds one time, not {first} and {name}");
+                    self.error(line(part), message);
+                    continue;
+                }
+                Some(_) => {}
+                None => bounded = Some(name.clone()),
             }
             let bound = match end {
                 End::From => &mut from,
@@ -383,7 +396,7 @@ impl Walker {
             };
             if !matches!(bound, Bound::Open) {
                 let operator = end.spelling();
-                self.error(line(part), format!("bucket {operator} given twice"));
+                self.error(line(part), format!("{name} {operator} given twice"));
                 continue;
             }
             *bound = match self.instant(value, parameters) {
@@ -391,7 +404,12 @@ impl Walker {
                 Err(Reported) => Bound::Bad,
             };
         }
-        Where { filter, from, to }
+        Where {
+            filter,
+            from,
+            to,
+            bounded,
+        }
     }
 
     /// `measure op $n` joined by AND, `op` one of `= <> < <= > >=`.
@@ -444,14 +462,15 @@ impl Walker {
         conditions
     }
 
-    /// A key by the name the view gives it; `bucket` takes only the range.
+    /// A key or measure by the name the view gives it; `date_bin` goes
+    /// only in SELECT and GROUP BY.
     pub(super) fn ask_name(&mut self, expression: &sql::Expr) -> Result<Identifier, Reported> {
         match self.ask_key(expression)? {
             AskKey::Key(name) => Ok(name),
-            AskKey::Bucket | AskKey::WiderBucket(_) => {
+            AskKey::WiderBucket { .. } => {
                 self.error(
                     line(expression),
-                    "bucket takes only bucket >= $n AND bucket < $m".into(),
+                    "date_bin goes only in SELECT and GROUP BY".into(),
                 );
                 Err(Reported)
             }
@@ -530,7 +549,7 @@ impl Walker {
             Err(why) => {
                 self.error(
                     line(expression),
-                    format!("bucket bound {expression} must be RFC 3339 or Unix seconds: {why}"),
+                    format!("range bound {expression} must be RFC 3339 or Unix seconds: {why}"),
                 );
                 Err(Reported)
             }
@@ -717,7 +736,7 @@ pub(super) fn askable(name: &Identifier) -> bool {
         && parsed.having[0].measure == name
 }
 
-/// `bucket >= value` or `bucket < value`; `None` for any other condition.
+/// `name >= value` or `name < value`; `None` for any other condition.
 fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
     let sql::Expr::BinaryOp { left, op, right } = expression else {
         return None;
@@ -725,10 +744,6 @@ fn bucket_bound(expression: &sql::Expr) -> Option<BucketBound<'_>> {
     let sql::Expr::Identifier(identifier) = left.as_ref() else {
         return None;
     };
-    // Any case matches, so `read_identifier` names the one to write.
-    if identifier.quote_style.is_some() || !identifier.value.eq_ignore_ascii_case("bucket") {
-        return None;
-    }
     let end = match op {
         sql::BinaryOperator::GtEq => End::From,
         sql::BinaryOperator::Lt => End::To,

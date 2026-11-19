@@ -780,6 +780,7 @@ bucket | shared | fare
             having: Vec::new(),
             from,
             to,
+            bounded: None,
         }
     }
 

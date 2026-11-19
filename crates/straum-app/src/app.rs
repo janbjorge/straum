@@ -186,9 +186,9 @@ pub struct HeldView {
     pub name: Identifier,
     /// The `date_bin` width, then the wider ones.
     pub widths: Vec<Width>,
-    /// The type of `bucket`.
-    pub bucket: ColumnType,
-    /// Every name an ask may group or filter by, `bucket` aside.
+    /// The view's time, by the name asks group and bound it by.
+    pub time: HeldKey,
+    /// Every name an ask may group or filter by, the time aside.
     pub keys: Vec<HeldKey>,
     pub measures: Vec<Identifier>,
     /// Keyed cells at the `date_bin` width.
@@ -312,12 +312,12 @@ impl App {
         Some(Held { views, dims })
     }
 
-    /// The ask for every row PostgreSQL would give for the view: each
-    /// measure by the bucket and every key, both ends of the range open.
+    /// The ask for every row the view holds: each measure by the time and
+    /// every key, both ends of the range open.
     /// `None` for a name no view has.
     pub fn rows_ask(&self, view: &str) -> Option<Ask> {
         let fact = self.spec.fact(view)?;
-        let mut keys = vec![AskKey::Bucket];
+        let mut keys = vec![AskKey::Key(fact.time.name.clone())];
         for key in fact.keys() {
             keys.push(AskKey::Key(key.clone()));
         }
@@ -329,6 +329,7 @@ impl App {
             having: Vec::new(),
             from: None,
             to: None,
+            bounded: None,
         })
     }
 
@@ -378,7 +379,10 @@ fn held_view(store: &Store, fact: &Fact) -> HeldView {
     HeldView {
         name: fact.name.clone(),
         widths,
-        bucket: fact.time.origin.column_type(),
+        time: HeldKey {
+            name: fact.time.name.clone(),
+            column_type: store.time_type(name).expect(IN_SPEC),
+        },
         keys,
         measures: measure_names(fact),
         cells: store.cells(name).expect(IN_SPEC),
@@ -716,8 +720,8 @@ mod tests {
 
     fn spec() -> straum_domain::Spec {
         straum_notation::parse(
-            "CREATE VIEW trips WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+            "CREATE VIEW trips AS
+             SELECT buckets(t.at, '1 hour') AS bucket,
                     count(*) AS trips
              FROM public.trips AS t
              GROUP BY 1;",
@@ -759,6 +763,7 @@ mod tests {
             having: Vec::new(),
             from: Some(0),
             to: Some(3_600),
+            bounded: None,
         }
     }
 

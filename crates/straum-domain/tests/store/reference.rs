@@ -203,9 +203,11 @@ fn groups<'r>(fact: &Fact, ask: &Ask, rows: &'r [Vec<Datum>], dims: &Dims) -> Gr
         let mut key = Vec::with_capacity(ask.keys.len());
         for asked in &ask.keys {
             key.push(match asked {
+                AskKey::Key(name) if name.as_str() == "bucket" => {
+                    Datum::Int(Width { seconds: WIDTH }.bucket_start(time))
+                }
                 AskKey::Key(name) => value(row, name, dims),
-                AskKey::Bucket => Datum::Int(Width { seconds: WIDTH }.bucket_start(time)),
-                AskKey::WiderBucket(width) => Datum::Int(width.bucket_start(time)),
+                AskKey::WiderBucket { width, .. } => Datum::Int(width.bucket_start(time)),
             });
         }
         groups.entry(key).or_default().push(row);
@@ -234,12 +236,12 @@ fn reference_columns(fact: &Fact, ask: &Ask) -> Vec<AnswerColumn> {
     let mut columns = Vec::with_capacity(ask.keys.len() + ask.measures.len());
     for asked in &ask.keys {
         columns.push(match asked {
-            AskKey::Key(name) => AnswerColumn {
+            AskKey::Key(name) if name.as_str() != "bucket" => AnswerColumn {
                 name: name.to_string(),
                 scale: scale(name),
                 is_time: false,
             },
-            AskKey::Bucket | AskKey::WiderBucket(_) => AnswerColumn {
+            AskKey::Key(_) | AskKey::WiderBucket { .. } => AnswerColumn {
                 name: asked.to_string(),
                 scale: 0,
                 is_time: true,

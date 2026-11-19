@@ -13,8 +13,8 @@ use straum_domain::{Ask, AskError, AskKey, ByKey, Instead, Literal, Spec, SpecEr
 use straum_notation::{Error, SqlError, parse};
 
 /// One dim keyed by two columns, joined by two views in either order.
-const GROUPED: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+const GROUPED: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.org AS org, f.grp AS grp, g.label AS label, count(*) AS n
 FROM public.t AS f
 LEFT OUTER JOIN public.g AS g ON g.org_id = f.org AND g.grp_id = f.grp
@@ -127,8 +127,8 @@ fn a_ref_on_two_columns_rejected() {
 
 /// A ref whose via column is not selected: the via column still keys the
 /// cells, and the attribute is read through it.
-const ATTR_ONLY: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+const ATTR_ONLY: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.a AS a, z.name AS name, count(*) AS n,
        count(*) FILTER (WHERE z.name = 'x') AS named
 FROM public.t AS f
@@ -185,8 +185,8 @@ fn a_ref_reads_what_the_view_selects() {
 
 /// Null-ness keys: whether a column is null, grouped like a column, and
 /// what a FILTER's `IS NULL` counts through.
-const NULLS: &str = "CREATE VIEW t WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', f.at, timestamptz 'epoch') AS bucket,
+const NULLS: &str = "CREATE VIEW t AS
+SELECT buckets(f.at, '1 hour') AS bucket,
        f.a AS a,
        (f.done_at IS NOT NULL) AS done,
        (f.gone_at IS NULL) AS open,
@@ -270,6 +270,7 @@ fn null_ness_keys() {
         having: Vec::new(),
         from: Some(JAN),
         to: Some(FEB),
+        bounded: None,
     };
     assert!(spec.check_ask(&ask).is_ok());
 }
@@ -387,6 +388,7 @@ fn spec_errors_pass_through() {
         }]
     );
 
+    // The time shares the view's one namespace with keys and measures.
     for text in [
         base("f.a AS a,", "f.a AS bucket,"),
         base("count(*) AS n", "count(*) AS bucket"),
@@ -394,15 +396,16 @@ fn spec_errors_pass_through() {
     ] {
         assert_eq!(
             spec_errors(&text),
-            [SpecError::NamedBucket { fact: id("t") }],
+            [SpecError::Duplicate {
+                scope: Some(id("t")),
+                name: id("bucket")
+            }],
             "{text}"
         );
     }
-    assert_eq!(
-        SpecError::NamedBucket { fact: id("t") }.to_string(),
-        "view t: bucket is what asks call the time bucket; \
-         name the column, join or measure otherwise"
-    );
+    // With the time named otherwise, `bucket` is a name like any other.
+    let renamed = base("AS bucket,", "AS at,").replace("f.a AS a,", "f.a AS bucket,");
+    assert!(parse(&renamed).is_ok(), "{renamed}");
 }
 
 /// A join's near side may be the key column of an inner-joined dim: it
@@ -607,8 +610,8 @@ fn exists_groups_by_nothing_and_joins_nothing() {
 }
 
 /// The guide's chain: `regions` joined through `accounts`.
-const CHAIN: &str = "CREATE VIEW usage WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+const CHAIN: &str = "CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour') AS bucket,
        a.region AS region, r.code AS code, count(*) AS n
 FROM public.events AS e
 INNER JOIN public.accounts AS a ON a.id = e.account_id
@@ -710,8 +713,8 @@ fn a_dim_column_may_be_selected_twice() {
 /// dim, and the error says why.
 #[test]
 fn a_join_selecting_only_its_key_says_why_it_reads_nothing() {
-    let only_key = "CREATE VIEW usage WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket,
+    let only_key = "CREATE VIEW usage AS
+SELECT buckets(e.at, '1 hour') AS bucket,
        a.id AS account, count(*) AS n
 FROM public.events AS e
 INNER JOIN public.accounts AS a ON a.id = e.account_id
@@ -740,4 +743,78 @@ fn two_dims_of_one_table_name_clash_and_say_why() {
         error.contains("accounts declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema"),
         "{error}"
     );
+}
+
+/// The view names its time, and an ask uses that name: to group by it,
+/// at a wider width with `date_bin`, and to bound the range. Nothing else
+/// takes the time's place, and the time takes no key's.
+#[test]
+fn an_ask_names_the_time_as_the_view_does() {
+    let spec = parse(&base(
+        "'1 hour') AS bucket,",
+        "'1 hour', '1 day') AS pickup,",
+    ))
+    .unwrap();
+    let range = [Literal::Int(JAN), Literal::Int(FEB)];
+    let fine = [
+        "SELECT pickup, a, n FROM t WHERE pickup >= $1 AND pickup < $2 GROUP BY pickup, a",
+        "SELECT date_bin('1 day', pickup), n FROM t WHERE pickup >= $1 AND pickup < $2 \
+         GROUP BY date_bin('1 day', pickup)",
+    ];
+    for query in fine {
+        assert_eq!(checked(&spec, query, &range), Ok(()), "{query}");
+    }
+    let refused = [
+        (
+            "SELECT bucket, n FROM t GROUP BY bucket",
+            &[][..],
+            "bucket is not a key of the view; the view's keys are pickup, a, z_id, name",
+        ),
+        (
+            "SELECT n FROM t WHERE pickup = $1",
+            &range[..1],
+            "pickup is the view's time; bound it with pickup >= and pickup <",
+        ),
+        (
+            "SELECT n FROM t WHERE a >= $1 AND a < $2",
+            &range[..],
+            "a is not the view's time; date_bin and the range read pickup",
+        ),
+        (
+            "SELECT date_bin('1 day', a), n FROM t GROUP BY date_bin('1 day', a)",
+            &[][..],
+            "a is not the view's time; date_bin and the range read pickup",
+        ),
+        (
+            "SELECT date_bin('1 hour', pickup), n FROM t GROUP BY date_bin('1 hour', pickup)",
+            &[][..],
+            "date_bin('1 hour', pickup) is the view's own width; write pickup",
+        ),
+        (
+            "SELECT pickup, n FROM t",
+            &[][..],
+            "pickup is a key; add it to GROUP BY",
+        ),
+        (
+            "SELECT n FROM t HAVING pickup > $1",
+            &range[..1],
+            "pickup is a key; filter it in WHERE",
+        ),
+    ];
+    for (query, parameters, error) in refused {
+        assert_eq!(
+            checked(&spec, query, parameters),
+            Err(vec![error.to_owned()]),
+            "{query}"
+        );
+    }
+}
+
+/// The ask `query` checked against `spec`, its errors as printed.
+fn checked(spec: &Spec, query: &str, parameters: &[Literal]) -> Result<(), Vec<String>> {
+    let ask = straum_notation::parse_ask(query, parameters).unwrap();
+    match spec.check_ask(&ask) {
+        Ok(_) => Ok(()),
+        Err(errors) => Err(strings(&errors)),
+    }
 }

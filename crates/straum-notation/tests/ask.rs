@@ -49,7 +49,7 @@ fn reads_every_part() {
             view: id("trips"),
             measures: vec![id("trips"), id("fare")],
             keys: vec![
-                AskKey::Bucket,
+                AskKey::Key(id("bucket")),
                 key("payment_type"),
                 key("pu_location_id"),
                 key("borough"),
@@ -63,6 +63,7 @@ fn reads_every_part() {
             having: Vec::new(),
             from: Some(JAN),
             to: Some(FEB),
+            bounded: Some(id("bucket")),
         }
     );
 }
@@ -209,24 +210,25 @@ fn bucket_bounds_come_once_each() {
             "bucket < given twice",
         ),
         (
-            "SELECT trips FROM t WHERE bucket = $1 AND bucket >= $1 AND bucket < $2",
+            "SELECT trips FROM t WHERE bucket >= $1 AND day < $2",
             &range(),
-            "bucket takes only bucket >= $n AND bucket < $m",
+            "the range bounds one time, not bucket and day",
         ),
         (
             "SELECT trips FROM t WHERE bucket > $1 AND bucket < $2",
             &range(),
-            "filter condition, write = or IN joined by AND, `bucket > $1`",
+            "comparison, WHERE takes = or IN on a key, >= and < on the time; \
+             compare a measure in HAVING, `bucket > $1`",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &[Literal::Bool(true), Literal::Int(FEB)],
-            "bucket bound $1 must be RFC 3339 or Unix seconds: is a boolean",
+            "range bound $1 must be RFC 3339 or Unix seconds: is a boolean",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
             &[text("2024-01-01"), Literal::Int(FEB)],
-            "bucket bound $1 must be RFC 3339 or Unix seconds: \"2024-01-01\":",
+            "range bound $1 must be RFC 3339 or Unix seconds: \"2024-01-01\":",
         ),
         (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2",
@@ -237,7 +239,7 @@ fn bucket_bounds_come_once_each() {
                 },
                 Literal::Int(FEB),
             ],
-            "bucket bound $1 must be RFC 3339 or Unix seconds: 1704067200.5 is not a whole second",
+            "range bound $1 must be RFC 3339 or Unix seconds: 1704067200.5 is not a whole second",
         ),
     ]);
 }
@@ -286,7 +288,7 @@ fn a_bound_has_no_fraction_and_writes_z_for_a_zero_offset() {
         assert_eq!(
             errors(ask, &[text(bound)]),
             [format!(
-                "line 1: bucket bound $1 must be RFC 3339 or Unix seconds: {bound:?}: {error}"
+                "line 1: range bound $1 must be RFC 3339 or Unix seconds: {bound:?}: {error}"
             )],
         );
     }
@@ -338,7 +340,8 @@ fn conditions_are_equalities_joined_by_and() {
         (
             "SELECT trips FROM t WHERE kind <> $1 AND bucket >= $1 AND bucket < $2",
             &range(),
-            "comparison, WHERE takes = or IN on a key; compare a measure in HAVING, `kind <> $1`",
+            "comparison, WHERE takes = or IN on a key, >= and < on the time; \
+             compare a measure in HAVING, `kind <> $1`",
         ),
         (
             "SELECT trips FROM t WHERE NOT kind = $1 AND bucket >= $1 AND bucket < $2",
@@ -466,11 +469,6 @@ fn select_items_go_by_name() {
 fn group_by_names_the_selected_keys() {
     assert_each_names_what_is_wrong(&[
         (
-            "SELECT bucket, trips FROM t WHERE bucket >= $1 AND bucket < $2",
-            &range(),
-            "bucket is selected but not in GROUP BY",
-        ),
-        (
             "SELECT trips FROM t WHERE bucket >= $1 AND bucket < $2 GROUP BY kind",
             &range(),
             "GROUP BY kind is not selected",
@@ -512,7 +510,10 @@ fn date_bin_asks_rows_at_a_wider_width() {
         &range(),
     )
     .unwrap();
-    let day = AskKey::WiderBucket(Width { seconds: 86_400 });
+    let day = AskKey::WiderBucket {
+        name: id("bucket"),
+        width: Width { seconds: 86_400 },
+    };
     assert_eq!(ask.keys, [day, key("borough")]);
     // The spec decides which widths a view keeps; the parse reads any.
     let weeks = parse_ask(
@@ -522,7 +523,10 @@ fn date_bin_asks_rows_at_a_wider_width() {
     .unwrap();
     assert_eq!(
         weeks.keys,
-        [AskKey::WiderBucket(Width { seconds: 604_800 })]
+        [AskKey::WiderBucket {
+            name: id("bucket"),
+            width: Width { seconds: 604_800 }
+        }]
     );
 }
 
@@ -548,14 +552,9 @@ fn date_bin_is_written_one_way() {
             "date_bin width $1: use '<n> seconds|minutes|hours|days'",
         ),
         (
-            &grouped("date_bin('1 day', kind)", "date_bin('1 day', kind)"),
-            &[],
-            "date_bin in an ask reads bucket, not kind",
-        ),
-        (
             &grouped("date_bin('1 day', bucket + 1)", "kind"),
             &[],
-            "date_bin in an ask reads bucket, not bucket + 1",
+            "date_bin in an ask reads the view's time by name, not bucket + 1",
         ),
         (
             &grouped(
@@ -563,7 +562,7 @@ fn date_bin_is_written_one_way() {
                 "date_bin('1 day', bucket, timestamptz 'epoch')",
             ),
             &[],
-            "date_bin arguments in an ask, write date_bin('<width>', bucket),",
+            "date_bin arguments in an ask, write date_bin('<width>', <time>),",
         ),
         (
             &grouped("date_bin(DISTINCT '1 day', bucket)", "kind"),
@@ -583,12 +582,12 @@ fn date_bin_is_written_one_way() {
         (
             "SELECT trips FROM t WHERE date_bin('1 day', bucket) = $1",
             &[Literal::Int(0)],
-            "bucket takes only bucket >= $n AND bucket < $m",
+            "date_bin goes only in SELECT and GROUP BY",
         ),
         (
             "SELECT trips FROM t HAVING date_bin('1 day', bucket) > $1",
             &[Literal::Int(0)],
-            "bucket takes only bucket >= $n AND bucket < $m",
+            "date_bin goes only in SELECT and GROUP BY",
         ),
         (
             &grouped("lower(bucket)", "lower(bucket)"),
@@ -674,10 +673,6 @@ fn having_takes_one_spelling() {
         (
             "trips > 7 AND trips > $3",
             "value, use a parameter such as $1, `7`",
-        ),
-        (
-            "bucket > $3",
-            "bucket takes only bucket >= $n AND bucket < $m",
         ),
         ("trips > $4", "$4 is not a parameter: there are 3, $1 on"),
     ];

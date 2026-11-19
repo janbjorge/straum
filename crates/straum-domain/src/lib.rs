@@ -44,8 +44,8 @@ pub use hash::{FastMap, FastSet, Seeded};
 pub use identifier::Identifier;
 pub use rollup::RowError;
 pub use spec::{
-    Attribute, ByKey, Condition, Definition, Dim, Fact, Key, KeyPart, Literal, Measure, Origin,
-    Ref, RefKind, Spec, Table, Time, Via,
+    Attribute, ByKey, Condition, Definition, Dim, Fact, Key, KeyPart, Literal, Measure, Ref,
+    RefKind, Spec, Table, Time, Via,
 };
 pub use spec_error::{JoinError, SpecError};
 pub use store::{Answer, AnswerColumn, AnswerRow, Cut, Start, Store, Window, WindowAnswer};

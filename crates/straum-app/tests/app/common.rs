@@ -27,8 +27,8 @@ pub const LIMITS: Limits = Limits {
 };
 
 const SPEC: &str = "
-CREATE VIEW trips WITH (buckets = '1 hour') AS
-SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW trips AS
+SELECT buckets(t.at, '1 hour') AS bucket,
        t.kind AS kind,
        t.zone_id AS zone_id,
        zone.borough AS borough,
@@ -40,8 +40,8 @@ FROM public.trips AS t
 LEFT OUTER JOIN public.zones AS zone ON zone.id = t.zone_id
 GROUP BY 1, 2, 3, 4;
 
-CREATE VIEW logins WITH (buckets = '1 day') AS
-SELECT date_bin('1 day', l.at, timestamptz 'epoch') AS bucket,
+CREATE VIEW logins AS
+SELECT buckets(l.at, '1 day') AS bucket,
        zone.borough AS borough,
        count(*) AS logins
 FROM public.logins AS l
@@ -176,13 +176,14 @@ pub fn ask(fact: &str, measures: &[&str], by: &[&str]) -> Ask {
         having: Vec::new(),
         from: Some(0),
         to: Some(RANGE),
+        bounded: None,
     }
 }
 
 /// `bucket`, or a key by its name.
 pub fn ask_key(name: &str) -> AskKey {
     match name {
-        "bucket" => AskKey::Bucket,
+        "bucket" => AskKey::Key(id("bucket")),
         _ => AskKey::Key(id(name)),
     }
 }

@@ -160,8 +160,8 @@ fn fact(columns: &str, view: &str) -> Fact {
              ALTER TABLE $S.f REPLICA IDENTITY FULL;"
         ),
         spec: format!(
-            "CREATE VIEW f WITH (buckets = '1 hour') AS
-             SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket, {view}
+            "CREATE VIEW f AS
+             SELECT buckets(t.at, '1 hour') AS bucket, {view}
              FROM $S.f AS t GROUP BY 1;"
         ),
     }
@@ -330,34 +330,21 @@ fn column_type_problems(pg: &PostgresContainer) {
              as its sums can't equal PostgreSQL's exactly: make it numeric(p, s) with p at most 18",
             ),
         ),
+        // Either time type reads: a `timestamp` as wall clock in UTC.
         case(
             "naive",
-            format!("CREATE TABLE $S.f (id int PRIMARY KEY, at timestamp, x int); {PUBLISH}"),
+            format!(
+                "{} {PUBLISH}",
+                table.replace("at timestamptz", "at timestamp")
+            ),
             &spec,
-            Some(
-                "f: column at of naive.f is timestamp without time zone; the date_bin origin \
-             timestamptz 'epoch' needs a timestamptz there; for a timestamp column, \
-             write timestamp 'epoch'",
-            ),
-        ),
-        case(
-            "zoned",
-            format!("{table} {PUBLISH}"),
-            &spec.replace("timestamptz 'epoch'", "timestamp 'epoch'"),
-            Some(
-                "f: column at of zoned.f is timestamp with time zone; the date_bin origin \
-             timestamp 'epoch' needs a timestamp there; for a timestamptz column, \
-             write timestamptz 'epoch'",
-            ),
+            None,
         ),
         case(
             "notime",
             published("x int, k timestamptz"),
             &spec.replace("t.at", "t.x"),
-            Some(
-                "f: column x of notime.f is integer; the date_bin origin timestamptz 'epoch' \
-             needs a timestamptz there; for a timestamp column, write timestamp 'epoch'",
-            ),
+            Some("f: column x of notime.f is integer; Straum needs timestamptz or timestamp there"),
         ),
         case(
             "timekey",
@@ -594,8 +581,8 @@ fn enum_problems(pg: &PostgresContainer) {
 
 /// A view joining the fact to dim `d` on its key `k`.
 const DIM_SPEC: &str = "
-        CREATE VIEW f WITH (buckets = '1 hour') AS
-        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+        CREATE VIEW f AS
+        SELECT buckets(t.at, '1 hour') AS bucket,
                t.d_id AS d_id, d.name AS name, count(*) AS n
         FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id GROUP BY 1, 2, 3;";
 
@@ -762,8 +749,8 @@ fn logical_source(dsn: &str, name: &str) -> Postgres {
 
 /// A dim keyed by two columns, with or without a key of its own.
 const PAIR_SPEC: &str = "
-        CREATE VIEW f WITH (buckets = '1 hour') AS
-        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+        CREATE VIEW f AS
+        SELECT buckets(t.at, '1 hour') AS bucket,
                t.a AS a, t.b AS b, d.name AS name, count(*) AS n
         FROM $S.f AS t LEFT OUTER JOIN $S.d AS d ON d.x = t.a AND d.y = t.b
         GROUP BY 1, 2, 3, 4;";
@@ -846,8 +833,8 @@ fn pair_problems(pg: &PostgresContainer) {
 /// A chain joins a dim's column to the next dim's key, and a semi join's
 /// dim is published like any other.
 const CHAIN_SPEC: &str = "
-        CREATE VIEW f WITH (buckets = '1 hour') AS
-        SELECT date_bin('1 hour', t.at, timestamptz 'epoch') AS bucket,
+        CREATE VIEW f AS
+        SELECT buckets(t.at, '1 hour') AS bucket,
                d.name AS name, e.label AS label, count(*) AS n
         FROM $S.f AS t
         LEFT OUTER JOIN $S.d AS d ON d.k = t.d_id

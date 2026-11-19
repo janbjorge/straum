@@ -23,8 +23,8 @@ is written to disk. The slot is temporary, so every start loads again.
 
 A cell is one distinct combination of a view's keys and its bucket. In the
 `usage` view of the [introduction](introduction.md), that is one cell per
-hour, kind and account. Each width in `WITH (buckets = ...)` keeps its own
-cells.
+hour, kind and account. Each width the view's `buckets(...)` lists keeps
+its own cells.
 
 ![Where a row's time puts it](diagrams/buckets.svg)
 

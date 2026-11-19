@@ -50,7 +50,7 @@ pub(crate) enum Message<'a> {
     Truncate {
         relations: Vec<Oid>,
     },
-    /// Origin, Type and logical decoding messages, which Straum doesn't use.
+    /// Type and logical decoding messages, which Straum doesn't use.
     Other,
 }
 

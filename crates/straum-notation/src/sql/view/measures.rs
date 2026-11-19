@@ -1,10 +1,10 @@
-//! The function calls a view's SELECT holds: the one `date_bin` bucket,
-//! and the aggregates that become its measures, each with its own
+//! The function calls a view's SELECT holds: the one `buckets` item,
+//! the view's time, and the aggregates that become its measures, each with its own
 //! FILTER. A call is checked for every option Straum SQL has no use for
 //! before its arguments are read.
 
 use sqlparser::ast as sql;
-use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Origin, Time, Width};
+use straum_domain::{Aggregate, Condition, Fraction, Identifier, Measure, Time, Width};
 
 use super::{Scope, WIDTH_FORM, parse_width};
 use crate::sql::{Clause, Reported, Walker, line};
@@ -58,65 +58,65 @@ impl Walker {
         })
     }
 
-    /// `date_bin('15 minutes', f.column, timestamptz 'epoch')`, or
-    /// `timestamp 'epoch'` for a column without a zone. The origin is fixed
-    /// so buckets start on midnight, as Straum's do; which type it has, the
-    /// catalog checks against the column.
+    /// `buckets(f.column, '1 hour', '1 day')`: the column the view's
+    /// time reads, then every width kept, narrowest first. Rows go in
+    /// buckets of the first; `Spec::new` checks each is a whole multiple
+    /// of the one before.
     pub(super) fn bucket(
         &mut self,
         scope: &Scope,
         function: &sql::Function,
         alias: &sql::Ident,
     ) -> Result<Time, Reported> {
-        // Walked for its errors: the name is fixed.
-        let _ = self.read_identifier(alias);
-        if alias.value != "bucket" {
-            self.error(
-                alias.span.start.line,
-                format!("the date_bin bucket is named AS bucket, not AS {alias}"),
-            );
-        }
+        let name = self.read_output_name(alias);
         let at = line(function);
-        self.reject_if_present(at, function.filter.is_some(), "FILTER on date_bin");
+        self.reject_if_present(at, function.filter.is_some(), "FILTER on buckets");
         let Call {
             arguments,
             distinct,
             ..
         } = self.call(function)?;
-        self.reject_if_present(at, distinct, "DISTINCT on date_bin");
+        self.reject_if_present(at, distinct, "DISTINCT on buckets");
         let [
-            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)),
             sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(column)),
-            sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(origin)),
+            widths @ ..,
         ] = arguments
         else {
-            self.refuse(at, "date_bin arguments", function);
+            self.refuse(at, "buckets arguments", function);
             return Err(Reported);
         };
-        let parsed = date_bin_width(width);
-        if let Err(fix) = &parsed {
-            self.error(line(width), format!("date_bin width {width}: {fix}"));
+        let column = self.uncast_fact_column(scope, column, "the buckets column");
+        let mut kept = Vec::with_capacity(widths.len());
+        for width in widths {
+            let sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(width)) = width else {
+                self.refuse(at, "buckets arguments", function);
+                return Err(Reported);
+            };
+            match width_literal(width) {
+                Ok(parsed) => kept.push(parsed),
+                Err(fix) => self.error(line(width), format!("bucket width {width}: {fix}")),
+            }
         }
-        let parsed = parsed.ok();
-        let epoch = date_bin_origin(origin);
-        if epoch.is_none() {
+        if widths.is_empty() {
             self.error(
-                line(origin),
-                format!("date_bin origin {origin}: use timestamptz 'epoch' or timestamp 'epoch'"),
+                at,
+                "buckets needs a width after the column: buckets(<column>, '<n> <unit>', ...)"
+                    .into(),
             );
         }
-        let column = self.uncast_fact_column(scope, column, "the date_bin column")?;
-        let Some(width) = parsed else {
+        let column = column?;
+        let name = name?;
+        let [width, wider @ ..] = kept.as_slice() else {
             return Err(Reported);
         };
-        let Some(origin) = epoch else {
+        if kept.len() < widths.len() {
             return Err(Reported);
-        };
+        }
         Ok(Time {
+            name,
             column,
-            width,
-            wider: Vec::new(),
-            origin,
+            width: *width,
+            wider: wider.to_vec(),
         })
     }
 
@@ -414,8 +414,8 @@ impl Walker {
     }
 }
 
-/// `'<n> <unit>'` as `date_bin`'s first argument.
-pub(in crate::sql) fn date_bin_width(width: &sql::Expr) -> Result<Width, String> {
+/// `'<n> <unit>'`, a width as `buckets` and an ask's `date_bin` write it.
+pub(in crate::sql) fn width_literal(width: &sql::Expr) -> Result<Width, String> {
     let sql::Expr::Value(sql::ValueWithSpan {
         value: sql::Value::SingleQuotedString(text),
         span: _,
@@ -424,30 +424,6 @@ pub(in crate::sql) fn date_bin_width(width: &sql::Expr) -> Result<Width, String>
         return Err(WIDTH_FORM.into());
     };
     parse_width(text)
-}
-
-/// `timestamptz 'epoch'` or `timestamp 'epoch'`, `date_bin`'s origin.
-fn date_bin_origin(origin: &sql::Expr) -> Option<Origin> {
-    let sql::Expr::TypedString(sql::TypedString {
-        data_type: sql::DataType::Timestamp(None, zone),
-        value:
-            sql::ValueWithSpan {
-                value: sql::Value::SingleQuotedString(text),
-                span: _,
-            },
-        uses_odbc_syntax: false,
-    }) = origin
-    else {
-        return None;
-    };
-    if text != "epoch" {
-        return None;
-    }
-    match zone {
-        sql::TimezoneInfo::Tz => Some(Origin::Timestamptz),
-        sql::TimezoneInfo::None => Some(Origin::Timestamp),
-        sql::TimezoneInfo::WithTimeZone | sql::TimezoneInfo::WithoutTimeZone => None,
-    }
 }
 
 fn split_decimal(text: &str) -> Decimal<'_> {
@@ -475,10 +451,10 @@ fn fraction_of(whole: &str, places: &str) -> Option<Fraction> {
     Fraction::new(units, places)
 }
 
-/// Whether the call is `date_bin`, the bucket.
-pub(in crate::sql) fn is_date_bin(function: &sql::Function) -> bool {
+/// Whether the call is to the function `name`, in any case.
+pub(in crate::sql) fn is_call(function: &sql::Function, name: &str) -> bool {
     match function_name(function) {
-        Some(name) => name.eq_ignore_ascii_case("date_bin"),
+        Some(written) => written.eq_ignore_ascii_case(name),
         None => false,
     }
 }
