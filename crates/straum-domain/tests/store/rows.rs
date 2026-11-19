@@ -147,6 +147,19 @@ fn row_errors() {
             column: id("tolled")
         })
     );
+    // No bucket of a kept width starts at or before the earliest second,
+    // so that time is refused; one a bucket can hold is kept.
+    assert_eq!(
+        store.add_row("trips", &base_trip_with(AT, Datum::Int(i64::MIN))),
+        Err(RowError::TimeOutOfRange { column: id("at") })
+    );
+    assert_eq!(
+        store.remove_row("trips", &base_trip_with(AT, Datum::Int(i64::MIN))),
+        Err(RowError::TimeOutOfRange { column: id("at") })
+    );
+    let early = base_trip_with(AT, Datum::Int(-(1 << 62)));
+    store.add_row("trips", &early).unwrap();
+    store.remove_row("trips", &early).unwrap();
     // Count distinct takes any value.
     store
         .add_row("trips", &base_trip_with(RIDER, Datum::Bool(true)))

@@ -83,8 +83,8 @@ impl<'s> Grouping<'s> {
             ..
         } = self
         {
-            // PostgreSQL's times end far short of a bucket that starts
-            // before any `i64`; should one come, it joins the earliest.
+            // `Rollup::check_time` turns away a row whose bucket at a kept
+            // width would start before any `i64`, so this never falls back.
             let start = width.bucket_start(bucket).unwrap_or(i64::MIN);
             if bucket_starts.last() != Some(&start) {
                 bucket_starts.push(start);

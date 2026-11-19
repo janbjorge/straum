@@ -26,6 +26,11 @@ pub enum RowError {
     NotBool {
         column: Identifier,
     },
+    /// The time is so early that no bucket of a kept width can start at
+    /// or before it within 64 bits.
+    TimeOutOfRange {
+        column: Identifier,
+    },
     /// A removed row was never added.
     Missing,
 }
@@ -41,6 +46,12 @@ impl fmt::Display for RowError {
             }
             RowError::NotBool { column } => {
                 write!(formatter, "column {column} is not a boolean")
+            }
+            RowError::TimeOutOfRange { column } => {
+                write!(
+                    formatter,
+                    "column {column} is earlier than any bucket starts"
+                )
             }
             RowError::Missing => formatter.write_str("removed row was never added"),
         }

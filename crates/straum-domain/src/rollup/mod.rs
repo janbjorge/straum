@@ -574,6 +574,23 @@ impl Rollup {
         self.codes[part.0].value(code)
     }
 
+    /// Rejects a time so early that some level's bucket for it would
+    /// start before the earliest second `i64` holds.
+    fn check_time(&self, seconds: i64) -> Result<(), RowError> {
+        for level in &self.levels {
+            if seconds
+                .div_euclid(level.width)
+                .checked_mul(level.width)
+                .is_none()
+            {
+                return Err(RowError::TimeOutOfRange {
+                    column: self.columns[TIME].clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Rejects rows that would leave the rollup half updated.
     fn check(&self, row: &[Datum]) -> Result<(), RowError> {
         arity(self.column_count(), row.len())?;
@@ -581,6 +598,9 @@ impl Rollup {
             return Err(RowError::NotInt {
                 column: self.columns[TIME].clone(),
             });
+        }
+        if let Datum::Int(seconds) = row[TIME] {
+            self.check_time(seconds)?;
         }
         // Numbers before booleans, so a row wrong in both names a number.
         for read in &self.column_reads {
