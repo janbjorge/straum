@@ -210,6 +210,20 @@ class LayerCheck(unittest.TestCase):
         self.workspace.depend("straum-domain", "serde", resolved=False)
         self.assert_refused("straum-domain: depends on outside crate serde")
 
+    def test_the_use_cases_take_no_outside_crate_and_do_no_io(self):
+        self.workspace.depend("straum-app", "reqwest")
+        self.assert_refused("straum-app: depends on outside crate reqwest")
+        self.setUp()
+        self.write("crates/straum-app/src/lib.rs", "use std::net::TcpStream;\n")
+        self.assert_refused("crates/straum-app/src/lib.rs:1: I/O in a pure crate")
+
+    def test_the_use_cases_may_read_the_clock_and_use_threads(self):
+        self.write(
+            "crates/straum-app/src/lib.rs",
+            "use std::time::{Duration, Instant, SystemTime};\nuse std::thread;\n",
+        )
+        self.assert_passes()
+
     def test_the_domain_takes_outside_crates_in_its_tests(self):
         self.workspace.depend("straum-domain", "proptest", kind="dev")
         self.assert_passes()

@@ -19,9 +19,9 @@ dependencies and no I/O; `straum-app`, with the use cases and the
 ports; the adapters `straum-notation`, `straum-pg` and `straum-http`;
 and the `straum` binary as composition root. Crates depend inward only,
 enforced by `scripts/check-layers.py` over Cargo's whole resolved graph
-and the files a crate pulls in by path: the domain reaches no outside
-crate and names no `std` I/O, and only `straum-http` reaches an async
-runtime. The domain holds what a spec and
+and the files a crate pulls in by path: the domain and the use cases
+reach no outside crate and name no `std` I/O, and only `straum-http`
+reaches an async runtime. The domain holds what a spec and
 an ask mean, never Straum SQL's syntax: no keyword, function or
 operator of it in a domain string, enforced by
 `scripts/check-domain-syntax.py`. An `AskError` is data; straum-notation

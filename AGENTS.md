@@ -105,10 +105,11 @@ change.
   over Cargo's metadata with every feature on and the lexed source:
   normal and build dependencies as its `ALLOWED` table lists,
   dev-dependencies never outward, each target built from its own
-  crate, no outside crate and no `std` I/O in `straum-domain`, an async
-  runtime only through `straum-http`, no package from a path outside
-  the workspace, no link out of a crate, and no `#[path]` or `include`
-  of another crate's file that the same rules would refuse. Ask before
+  crate, no outside crate and no `std` I/O in `straum-domain` and
+  `straum-app`, an async runtime only through `straum-http`, no
+  package from a path outside the workspace, no link out of a crate,
+  and no `#[path]` or `include` of another crate's file that the same
+  rules would refuse. Ask before
   changing `ALLOWED`, `PURE` or `RUNTIMES`.
 - `straum-domain` holds what a spec and an ask mean, never how Straum
   SQL writes them: no keyword, function or operator of it in a domain

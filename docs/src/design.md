@@ -35,7 +35,8 @@ Six crates, dependencies inward only, enforced by
 - `straum-domain` has no dependencies and no I/O. Everything an ask
   or a change needs is a plain struct, enum or function.
 - `straum-app` holds the use cases and the one port, `Source`, the
-  trait PostgreSQL sits behind.
+  trait PostgreSQL sits behind. Like the domain it takes no outside
+  crate and does no I/O; it reads only the clock.
 - The adapters never meet: `straum-http` is handed the ask syntax by
   the binary (`AskSyntax` in `straum-http`: a reader and the words for
   `AskError`, both from `straum-notation`), so HTTP never knows Straum

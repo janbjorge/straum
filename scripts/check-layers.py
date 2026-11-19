@@ -55,8 +55,9 @@ ALLOWED = {
         "straum-pg",
     },
 }
-# Crates with no outside dependency and no I/O: the domain.
-PURE = {"straum-domain"}
+# Crates with no outside dependency and no I/O: the domain and the use
+# cases. The world reaches them through a port.
+PURE = {"straum-domain", "straum-app"}
 # The `std` modules that reach outside the process.
 IO_MODULES = "fs|net|process|env|io|os"
 # Only straum-http runs an async runtime; every other crate reaches one
