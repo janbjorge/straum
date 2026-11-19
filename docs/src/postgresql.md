@@ -70,10 +70,12 @@ Straum stops.
 
 Straum also stops when:
 
-- A value stored out of line, in the table's TOAST table. The page
-  holds a pointer. PostgreSQL moves the largest values of a row over
-  about 2 KB there, one by one, until the row fits, so a short value
-  can go too. Each change to such a row stops Straum.
+- A value stored out of line, in the table's TOAST table, in a column
+  the spec reads. The page holds a pointer. PostgreSQL moves the
+  largest values of a row over about 2 KB there, one by one, until the
+  row fits, so a short value can go too. An insert, update or delete
+  of a row with such a value stops Straum. Out of line in a column no
+  view reads, it is passed over.
 - A rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`, `CLUSTER`, or
   an `ALTER TABLE` that moves the rows to a new file. `ADD COLUMN`,
   `DROP COLUMN` and other DDL that keeps the file are followed.
