@@ -590,13 +590,13 @@ fn check_ref<'a>(
 
 fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecError>) {
     let join = &fact.refs[position];
-    let mut via = HashSet::new();
-    for column in &join.via {
-        if !via.insert(column) {
-            let column = via_name(column, &fact.refs);
+    let mut seen = HashSet::new();
+    for via in &join.via {
+        if !seen.insert(via) {
+            let column = via_name(via, &fact.refs);
             errors.push(join_error(fact, join, JoinError::ViaReused { column }));
         }
-        let Via::Attribute { through, column } = column else {
+        let Via::Attribute { through, column } = via else {
             continue;
         };
         if let Some(parent) = fact.refs.get(*through)
@@ -610,8 +610,7 @@ fn check_vias(fact: &Fact, position: usize, dims: &[Dim], errors: &mut Vec<SpecE
             errors.push(join_error(fact, join, error));
         } else if !carried_before(fact, position, dims, *through, column) {
             let error = JoinError::ChainColumn {
-                through: *through,
-                column: column.clone(),
+                column: via_name(via, &fact.refs),
             };
             errors.push(join_error(fact, join, error));
         }

@@ -446,16 +446,16 @@ fn joins_and_filters_straum_sql_cannot_write_are_refused() {
         ["view t: join through is an anti join and reads columns, which it has none of"]
     );
     // A column the dim before it doesn't carry, then the join itself
-    // and one that isn't there.
+    // and one that isn't there, named by its alias or a question mark.
     assert_eq!(
         refused(chained_through(0, "id")),
-        ["view t: join through joins through column id of join 0, which no join before it carries"]
+        ["view t: join through joins through column r.id, which no join before it carries"]
     );
-    for not_before in [1, 7] {
+    for (not_before, alias) in [(1, "through"), (7, "?")] {
         assert_eq!(
             refused(chained_through(not_before, "name")),
             [format!(
-                "view t: join through joins through column name of join {not_before}, \
+                "view t: join through joins through column {alias}.name, \
                  which no join before it carries"
             )]
         );

@@ -76,8 +76,9 @@ pub enum JoinError {
     ReadsNothing,
     /// A semi or anti join that reads columns, which it has none of.
     ReadsColumns { kind: RefKind },
-    /// The join goes through a dim column that no join before it carries.
-    ChainColumn { through: usize, column: Identifier },
+    /// The join goes through a dim column that no join before it carries,
+    /// named `ref.column` as a via column is.
+    ChainColumn { column: String },
     /// The join reads a column its dim has not.
     UnknownAttribute {
         attribute: Identifier,
@@ -167,10 +168,9 @@ impl fmt::Display for JoinError {
             JoinError::ReadsColumns { kind } => {
                 write!(f, "is {kind} and reads columns, which it has none of")
             }
-            JoinError::ChainColumn { through, column } => write!(
+            JoinError::ChainColumn { column } => write!(
                 f,
-                "joins through column {column} of join {through}, \
-                 which no join before it carries"
+                "joins through column {column}, which no join before it carries"
             ),
             JoinError::UnknownAttribute { attribute, dim } => {
                 write!(f, "reads {attribute}, which dim {dim} has no column of")
