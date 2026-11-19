@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = ["pyarrow"]
+# dependencies = ["asyncpg", "pyarrow"]
 #
 # [tool.uv]
 # exclude-newer = "2026-11-01T00:00:00Z"
