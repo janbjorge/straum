@@ -6,13 +6,16 @@
 """Tests of the check scripts: each rule they hold catches a planted
 break and lets the honest form through.
 
-The domain syntax check reads a folder of Rust files; these tests write
-one. Many cases here are ways past a check that a red team found; each
-stays so the way stays shut.
+The layer check reads Cargo's metadata; these tests hand it metadata
+built here, over a workspace of files in a temporary folder, so they
+need no cargo and no network. The domain syntax check reads a folder of
+Rust files; these tests write one. Many cases here are ways past a
+check that a red team found; each stays so the way stays shut.
 """
 
 import collections.abc
 import importlib.util
+import os
 import pathlib
 import sys
 import tempfile
@@ -34,7 +37,356 @@ def load(name: str):
     return module
 
 
+layers = load("check-layers")
 syntax = load("check-domain-syntax")
+REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
+
+
+class Workspace:
+    """Straum's six crates as Cargo's metadata would show them, with
+    their honest dependencies, in a temporary folder; a test adds the
+    break it plants."""
+
+    def __init__(self, root: pathlib.Path):
+        self.root = root
+        self.packages: dict[str, dict] = {}
+        self.edges: dict[str, list] = {}
+        for name in layers.ALLOWED:
+            self.write(f"crates/{name}/src/lib.rs", "")
+            self.packages[name] = {
+                "id": name,
+                "name": name,
+                "source": None,
+                "manifest_path": str(root / "crates" / name / "Cargo.toml"),
+                "dependencies": [],
+                "targets": [self.target(name, "lib", "src/lib.rs")],
+            }
+            self.edges[name] = []
+        for name, allowed in layers.ALLOWED.items():
+            for dependency in sorted(allowed):
+                self.depend(name, dependency)
+        self.depend("straum-http", "tokio")
+        self.depend("tokio", "mio")
+
+    def target(self, crate: str, kind: str, relative: str) -> dict:
+        path = self.root / "crates" / crate / relative
+        return {"name": crate, "kind": [kind], "src_path": str(path)}
+
+    def outside(self, name: str, source: str | None = REGISTRY):
+        """An outside crate, from the registry unless `source` says."""
+        if name not in self.packages:
+            self.packages[name] = {
+                "id": name,
+                "name": name,
+                "source": source,
+                "manifest_path": str(self.root / "registry" / name / "Cargo.toml"),
+                "dependencies": [],
+                "targets": [],
+            }
+            self.edges[name] = []
+
+    def depend(self, name, dependency, kind=None, resolved=True):
+        """`name` takes `dependency`; an optional one with features off
+        is listed but not `resolved`."""
+        if dependency not in layers.ALLOWED:
+            self.outside(dependency)
+        entry = {"name": dependency, "kind": kind}
+        self.packages[name]["dependencies"].append(entry)
+        if resolved:
+            self.edges[name].append((dependency, kind))
+
+    def write(self, relative: str, text: str | bytes):
+        """A file of the workspace, its folders made."""
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            path.write_bytes(text)
+        else:
+            path.write_text(text)
+
+    def metadata(self) -> dict:
+        """What `cargo metadata` would print for this workspace."""
+        nodes = []
+        for name, edges in self.edges.items():
+            deps = []
+            for dependency, kind in edges:
+                deps.append({"pkg": dependency, "dep_kinds": [{"kind": kind}]})
+            nodes.append({"id": name, "deps": deps})
+        return {
+            "packages": list(self.packages.values()),
+            "workspace_members": list(layers.ALLOWED),
+            "workspace_root": str(self.root),
+            "resolve": {"nodes": nodes},
+        }
+
+    def errors(self) -> list[str]:
+        return layers.check(self.metadata())
+
+
+class LayerCheck(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.workspace = Workspace(pathlib.Path(folder.name))
+
+    def assert_refused(self, words: str):
+        errors = self.workspace.errors()
+        self.assertTrue(
+            any(words in error for error in errors),
+            f"no error says {words!r}: {errors}",
+        )
+
+    def assert_passes(self):
+        self.assertEqual(self.workspace.errors(), [])
+
+    def write(self, relative: str, text: str | bytes):
+        self.workspace.write(relative, text)
+
+    def test_the_honest_workspace_passes(self):
+        self.assert_passes()
+
+    def test_a_crate_not_in_the_table_fails(self):
+        metadata = self.workspace.metadata()
+        metadata["packages"].append(
+            {
+                "id": "x",
+                "name": "straum-extra",
+                "source": None,
+                "manifest_path": str(self.workspace.root / "crates/x/Cargo.toml"),
+                "dependencies": [],
+                "targets": [],
+            }
+        )
+        metadata["workspace_members"].append("x")
+        errors = layers.check(metadata)
+        self.assertTrue(any("straum-extra: not in ALLOWED" in e for e in errors))
+
+    # Workspace edges.
+
+    def test_a_normal_dependency_outward_fails(self):
+        self.workspace.depend("straum-domain", "straum-pg")
+        self.assert_refused("straum-domain: expected [], found ['straum-pg']")
+
+    def test_a_dependency_dropped_fails(self):
+        self.workspace.packages["straum-app"]["dependencies"] = []
+        self.assert_refused("straum-app: expected ['straum-domain'], found []")
+
+    def test_a_build_dependency_counts_as_normal(self):
+        self.workspace.depend("straum-notation", "straum-app", kind="build")
+        self.assert_refused("straum-notation: expected ['straum-domain'], found")
+
+    def test_a_dev_dependency_outward_fails(self):
+        self.workspace.depend("straum-domain", "straum-pg", kind="dev")
+        self.assert_refused("dev-dependency straum-pg depends on straum-domain")
+
+    def test_a_dev_dependency_sideways_passes(self):
+        self.workspace.depend("straum-app", "straum-notation", kind="dev")
+        self.assert_passes()
+
+    # Targets.
+
+    def test_a_target_from_another_crate_fails(self):
+        target = self.workspace.target("straum-pg", "lib", "src/lib.rs")
+        self.workspace.packages["straum-domain"]["targets"] = [target]
+        self.assert_refused("straum-domain: target straum-pg builds from crates/straum-pg")
+
+    def test_a_library_in_a_test_folder_fails(self):
+        target = self.workspace.target("straum-app", "lib", "tests/lib.rs")
+        self.workspace.packages["straum-app"]["targets"] = [target]
+        self.assert_refused("straum-app: lib straum-app builds from a test folder")
+
+    def test_a_test_target_in_a_test_folder_passes(self):
+        target = self.workspace.target("straum-app", "test", "tests/app.rs")
+        self.workspace.packages["straum-app"]["targets"].append(target)
+        self.assert_passes()
+
+    # The pure domain.
+
+    def test_the_domain_takes_no_outside_crate(self):
+        self.workspace.depend("straum-domain", "jiff")
+        self.assert_refused("straum-domain: reaches outside crate straum-domain -> jiff")
+
+    def test_the_domain_takes_no_optional_outside_crate(self):
+        self.workspace.depend("straum-domain", "serde", resolved=False)
+        self.assert_refused("straum-domain: depends on outside crate serde")
+
+    def test_the_domain_takes_outside_crates_in_its_tests(self):
+        self.workspace.depend("straum-domain", "proptest", kind="dev")
+        self.assert_passes()
+
+    def test_the_domain_does_no_io(self):
+        for text in [
+            "use std::fs;",
+            "use std::{mem, net::TcpStream};",
+            'fn f() { std::process::Command::new("sh"); }',
+            'fn f() { let _ = std :: env :: var("X"); }',
+            "extern crate std as s;",
+        ]:
+            with self.subTest(text=text):
+                self.write("crates/straum-domain/src/lib.rs", text)
+                self.assert_refused("I/O in a pure crate")
+
+    def test_the_domain_may_use_threads_and_other_crates_io(self):
+        self.write(
+            "crates/straum-domain/src/lib.rs",
+            "use std::{mem, panic, thread};\n// std::fs\n",
+        )
+        self.write("crates/straum-pg/src/lib.rs", "use std::net::TcpStream;\n")
+        self.assert_passes()
+
+    # Runtimes.
+
+    def test_tokio_directly_outside_straum_http_fails(self):
+        self.workspace.depend("straum-pg", "tokio")
+        self.assert_refused(
+            "straum-pg: reaches a runtime not through straum-http: straum-pg -> tokio"
+        )
+
+    def test_tokio_through_another_crate_fails(self):
+        self.workspace.depend("straum-app", "reqwest")
+        self.workspace.depend("reqwest", "tokio")
+        self.assert_refused("straum-app -> reqwest -> tokio")
+
+    def test_tokio_in_tests_outside_straum_http_fails(self):
+        self.workspace.depend("straum-pg", "tokio", kind="dev")
+        self.assert_refused("straum-pg: reaches a runtime")
+
+    def test_another_runtime_fails(self):
+        for runtime in ["mio", "async-std", "smol"]:
+            with self.subTest(runtime=runtime):
+                self.setUp()
+                self.workspace.depend("straum-pg", runtime)
+                self.assert_refused(f"straum-pg -> {runtime}")
+
+    def test_tokio_through_straum_http_passes(self):
+        self.workspace.depend("straum-http", "tokio", kind="dev")
+        self.assert_passes()
+
+    # Paths outside the workspace.
+
+    def test_a_package_from_a_path_outside_the_workspace_fails(self):
+        self.workspace.outside("vendored", source=None)
+        self.workspace.depend("straum-app", "vendored", kind="dev")
+        self.assert_refused("vendored: resolved from a path outside the workspace")
+
+    # Links.
+
+    def test_a_link_out_of_the_crate_fails(self):
+        link = self.workspace.root / "crates/straum-domain/src/evil.rs"
+        os.symlink(self.workspace.root / "crates/straum-pg/src/lib.rs", link)
+        self.assert_refused("crates/straum-domain/src/evil.rs: links to")
+
+    def test_a_link_inside_the_crate_passes(self):
+        link = self.workspace.root / "crates/straum-domain/src/same.rs"
+        os.symlink(self.workspace.root / "crates/straum-domain/src/lib.rs", link)
+        self.assert_passes()
+
+    # `#[path]` and the include macros.
+
+    def test_a_path_attribute_into_another_crate_fails(self):
+        for attribute in [
+            '#[path = "../../straum-pg/src/lib.rs"]',
+            '#[ path = "../../straum-pg/src/lib.rs" ]',
+            '#[cfg_attr(all(), path = "../../straum-pg/src/lib.rs")]',
+            '#[path = r"../../straum-pg/src/lib.rs"]',
+            '#[path = "../../straum-pg/src/\\x6cib.rs"]',
+        ]:
+            with self.subTest(attribute=attribute):
+                self.write("crates/straum-domain/src/lib.rs", f"{attribute}\nmod pulled;\n")
+                self.assert_refused("pulls in straum-pg's crates/straum-pg/src/lib.rs")
+
+    def test_a_path_attribute_inside_an_inline_module_resolves_as_rustc_does(self):
+        self.write(
+            "crates/straum-domain/src/lib.rs",
+            'mod a {\n    #[path = "../../../straum-pg/src/lib.rs"]\n    mod pulled;\n}\n',
+        )
+        self.assert_refused("crates/straum-domain/src/lib.rs:2: pulls in straum-pg's")
+
+    def test_a_path_attribute_in_a_named_file_inline_module(self):
+        self.write(
+            "crates/straum-domain/src/store.rs",
+            'mod a {\n    #[path = "../../../../straum-pg/src/lib.rs"]\n    mod pulled;\n}\n',
+        )
+        self.assert_refused("crates/straum-domain/src/store.rs:2: pulls in straum-pg's")
+
+    def test_code_from_outside_every_crate_fails(self):
+        self.write("shared/m.rs", '#[path = "../crates/straum-pg/src/lib.rs"]\nmod evil;\n')
+        self.write(
+            "crates/straum-domain/src/lib.rs", '#[path = "../../../shared/m.rs"]\nmod m;\n'
+        )
+        self.assert_refused("pulls in code from shared/m.rs")
+        self.write("crates/straum-domain/src/lib.rs", 'include!("../../../shared/m.rs");\n')
+        self.assert_refused("pulls in code from shared/m.rs")
+
+    def test_an_include_into_another_crate_fails(self):
+        for call in [
+            'include_str!("../../straum-pg/src/lib.rs")',
+            'include_str!["../../straum-pg/src/lib.rs"]',
+            'include_str!{"../../straum-pg/src/lib.rs"}',
+            'include_bytes! (\n    "../../straum-pg/src/lib.rs",\n)',
+            '::core::include_str!("../../straum-pg/src/lib.rs")',
+        ]:
+            with self.subTest(call=call):
+                self.write(
+                    "crates/straum-domain/tests/spec.rs", f"const S: &str = {call};\n"
+                )
+                self.assert_refused("pulls in straum-pg's")
+
+    def test_an_include_follows_the_dev_rule_only_from_tests(self):
+        include = 'const S: &str = include_str!("../../straum-notation/src/lib.rs");\n'
+        self.write("crates/straum-app/tests/spec.rs", include)
+        self.assert_passes()
+        self.write("crates/straum-app/src/lib.rs", include)
+        self.assert_refused("crates/straum-app/src/lib.rs:1: pulls in straum-notation's")
+
+    def test_an_include_a_dependency_allows_passes(self):
+        self.write(
+            "crates/straum/tests/straum.rs",
+            '#[path = "../../straum-pg/src/lib.rs"]\nmod compose;\n',
+        )
+        self.write(
+            "crates/straum-notation/tests/docs.rs",
+            'const R: &str = include_str!("../../../README.md");\n',
+        )
+        self.write(
+            "crates/straum-app/src/lib.rs", 'const S: &str = include_str!(r"lib.rs");\n'
+        )
+        self.assert_passes()
+
+    def test_a_computed_include_fails(self):
+        for call in ['include_str!(concat!(env!("OUT_DIR"), "/x"))', "include!(PATH)"]:
+            with self.subTest(call=call):
+                self.write("crates/straum-app/src/lib.rs", f"const S: &str = {call};\n")
+                self.assert_refused("a path the macro computes")
+
+    def test_a_comment_or_string_naming_an_include_passes(self):
+        self.write(
+            "crates/straum-domain/src/lib.rs",
+            '// #[path = "../../straum-pg/src/lib.rs"]\n'
+            '/* include_str!(concat!("a")) */\n'
+            'const S: &str = "include!(x) #[path = \\"../../straum-pg\\"]";\n',
+        )
+        self.assert_passes()
+
+    def test_a_folder_named_target_below_the_top_is_read(self):
+        self.write(
+            "crates/straum-domain/src/target/mod.rs",
+            'include!("../../../straum-pg/src/lib.rs");\n',
+        )
+        self.assert_refused("pulls in straum-pg's")
+
+    def test_the_build_output_is_not_read(self):
+        self.write(
+            "crates/straum-domain/target/debug/x.rs",
+            'include!("../../../straum-pg/src/lib.rs");\n',
+        )
+        self.assert_passes()
+
+    def test_a_file_that_is_no_rust_fails(self):
+        for text in [b"\xff\xfe", b"/* never closed", b'const S: &str = "never closed;']:
+            with self.subTest(text=text):
+                self.write("crates/straum-app/src/lib.rs", text)
+                self.assert_refused("so not read")
 
 
 def domain_errors(files: collections.abc.Mapping[str, str | bytes]) -> list[str]:

@@ -101,8 +101,15 @@ change.
   `docker run`, `exec`, `build`, `network` or the like, and no
   testcontainers. The one exception is `docker login`, which Compose
   lacks.
-- Crates depend inward only; `scripts/check-layers.py` enforces it. Ask
-  before changing its `ALLOWED` table.
+- Crates depend inward only; `scripts/check-layers.py` enforces it,
+  over Cargo's metadata with every feature on and the lexed source:
+  normal and build dependencies as its `ALLOWED` table lists,
+  dev-dependencies never outward, each target built from its own
+  crate, no outside crate and no `std` I/O in `straum-domain`, an async
+  runtime only through `straum-http`, no package from a path outside
+  the workspace, no link out of a crate, and no `#[path]` or `include`
+  of another crate's file that the same rules would refuse. Ask before
+  changing `ALLOWED`, `PURE` or `RUNTIMES`.
 - `straum-domain` holds what a spec and an ask mean, never how Straum
   SQL writes them: no keyword, function or operator of it in a domain
   string, error text included. Its errors are data; `straum-notation`
