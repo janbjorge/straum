@@ -108,7 +108,7 @@
   <text x="420" y="179" class="s ink2">Dim; the Attributes it reads</text>
   <rect class="box" x="406" y="214" width="290" height="60" rx="8"/>
   <text x="420" y="239" class="h">Time</text>
-  <text x="420" y="260" class="s ink2">one: column, origin, widths</text>
+  <text x="420" y="260" class="s ink2">one: name, column, widths</text>
   <rect class="box" x="406" y="294" width="290" height="60" rx="8"/>
   <text x="420" y="319" class="h">ByKey</text>
   <text x="420" y="340" class="s ink2">0 or more: column, or IS NULL</text>
