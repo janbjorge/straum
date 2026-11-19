@@ -66,10 +66,38 @@ second signal exits at once.
 
 ```text
 straum plan FILE [flags]
+straum plan FILE... --copy DIR
+straum plan FILE... --tables
 ```
 
 Prints the [setup SQL](postgresql.md#1-run-the-setup-sql) for the spec
-in `FILE`, or what is wrong with the spec and exits with 1.
+in `FILE`, or what is wrong with the spec and exits with 1. `--copy`
+and `--tables` take several specs. A table two of them read comes once,
+with the columns both read.
+
+`--copy DIR` writes two psql scripts into `DIR`, made if missing.
+Straum reads no database; psql connects, with any sign-in libpq takes.
+
+```sh
+straum plan usage.sql --copy copy
+psql "$SOURCE" -f copy/export.sql
+psql "$DESTINATION" -f copy/load.sql
+```
+
+`export.sql` runs in one read-only repeatable-read transaction, so
+every table is from the same moment, and writes nothing on the source.
+It needs `SELECT` on the columns the specs read, and nothing on their
+sequences. First it checks every column and stops, naming each one it
+can't copy: a table or column the source lacks, one the role can't
+read, or a type that is neither built in nor an enum. Then it writes
+`schema.sql` (the schemas, the enums and the tables, with only those
+columns; a domain becomes its base type) and one CSV per table,
+`schema.table.csv`, with a header. A table locked for more than 5 s
+stops it. `load.sql` creates the tables and loads the CSVs in one
+transaction, then runs `ANALYZE`. The first error stops either script
+and exits with 3. Indexes, keys and defaults are left behind. Both
+print each table as they reach it, and `-v dir=PATH` points them at
+another directory.
 
 | Flag | Meaning |
 | --- | --- |
@@ -77,7 +105,8 @@ in `FILE`, or what is wrong with the spec and exits with 1.
 | `--publication NAME` | The publication to make; give `straum run` the same name. |
 | `--role NAME` | The role `straum run` connects as; without it, the DSN's user, else `straum`. |
 | `--dsn-file FILE` | As for `straum run`. With a DSN the role gets its password, as a SCRAM-SHA-256 verifier. |
-| `--tables` | Print the tables the spec names, one per line, quoted, in the order the setup lists them, instead of the SQL. For `pg_dump -t`. No DSN is read. |
+| `--copy DIR` | Write `export.sql` and `load.sql` into `DIR` instead of the SQL. No DSN is read. |
+| `--tables` | Print the tables the specs name, one per line, quoted, in the order the setup lists them, instead of the SQL. For `pg_dump -t`. No DSN is read. |
 | `--out FILE` | Write the SQL (or the tables) to this file instead of stdout. |
 
 ## straum copy

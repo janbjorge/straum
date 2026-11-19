@@ -53,12 +53,20 @@ Guide: https://janbjorge.github.io/straum/cli.html#straum-run
 /// What `straum plan --help` prints.
 pub(crate) const PLAN_HELP: &str = "\
 usage: straum plan FILE [flags]
+       straum plan FILE... --copy DIR
+       straum plan FILE... --tables
 
 Prints the SQL that sets PostgreSQL up for FILE, the spec: logical
 decoding, the role, its grants and the publication. With --wal physical
 only the role and its grants. With a DSN the role is its user and gets
 its password, as a SCRAM-SHA-256 verifier. --out writes the SQL to a
 file instead of stdout.
+
+--copy writes two psql scripts into DIR that copy the tables of one or
+more specs: export.sql runs on the source and writes their schema and
+one CSV per table, with only the columns the specs read, in one
+read-only snapshot; load.sql runs on the destination and loads them.
+psql connects, so Straum reads no database.
 
   --wal logical|physical
                       the WAL straum run reads (logical)
@@ -67,7 +75,8 @@ file instead of stdout.
                       else straum)
   --dsn-file FILE     a file holding the DSN; else STRAUM_DSN, else
                       PGHOST and the other libpq variables
-  --tables            print the spec's tables instead, one per line, as
+  --copy DIR          write export.sql and load.sql into DIR instead
+  --tables            print the specs' tables instead, one per line, as
                       `pg_dump -t` takes them
   --out FILE          write the SQL (or the tables) to FILE
 

@@ -106,7 +106,7 @@ fn reads_plan() {
     assert_eq!(
         command_of(&args("plan s")),
         Ok(Command::Plan(Plan {
-            spec: "s".into(),
+            specs: vec!["s".into()],
             replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
@@ -118,7 +118,7 @@ fn reads_plan() {
     assert_eq!(
         command_of(&args("plan --role r s --dsn-file d --wal physical")),
         Ok(Command::Plan(Plan {
-            spec: "s".into(),
+            specs: vec!["s".into()],
             replication: Replication::Physical {
                 max_page_memory: MAX_PAGE_MEMORY,
             },
@@ -132,7 +132,7 @@ fn reads_plan() {
     assert_eq!(
         command_of(&args("plan s --out setup.sql")),
         Ok(Command::Plan(Plan {
-            spec: "s".into(),
+            specs: vec!["s".into()],
             replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
@@ -144,7 +144,7 @@ fn reads_plan() {
     assert_eq!(
         command_of(&args("plan s --tables --out t.txt")),
         Ok(Command::Plan(Plan {
-            spec: "s".into(),
+            specs: vec!["s".into()],
             replication: Replication::Logical,
             publication: PUBLICATION.into(),
             role: None,
@@ -163,6 +163,37 @@ fn reads_plan() {
             })
         ),
         "{refused:?}"
+    );
+}
+
+/// `--copy` and `--tables` take several specs.
+#[test]
+fn reads_plan_with_several_specs() {
+    assert_eq!(
+        command_of(&args("plan a.sql b.sql --copy out")),
+        Ok(Command::Plan(Plan {
+            specs: vec!["a.sql".into(), "b.sql".into()],
+            replication: Replication::Logical,
+            publication: PUBLICATION.into(),
+            role: None,
+            dsn_file: None,
+            out: None,
+            printed: Printed::Copy {
+                directory: "out".into(),
+            },
+        }))
+    );
+    assert_eq!(
+        command_of(&args("plan a b --tables")),
+        Ok(Command::Plan(Plan {
+            specs: vec!["a".into(), "b".into()],
+            replication: Replication::Logical,
+            publication: PUBLICATION.into(),
+            role: None,
+            dsn_file: None,
+            out: None,
+            printed: Printed::Tables,
+        }))
     );
 }
 
@@ -282,7 +313,7 @@ fn a_double_dash_ends_the_flags() {
     let Ok(Command::Plan(plan)) = command_of(&args("plan -- -h")) else {
         panic!("plan -- -h asks for no help");
     };
-    assert_eq!(plan.spec, "-h");
+    assert_eq!(plan.specs, ["-h"]);
     let ask = command_of(&args("ask --json -- -x $1 -y"));
     let Ok(Command::Ask {
         query, parameters, ..
@@ -487,7 +518,19 @@ fn command_errors() {
         ("run --spec", "straum run takes no \"--spec\""),
         ("run --spec a --spec b", "straum run takes no \"--spec\""),
         ("run a b", "straum run takes one spec"),
-        ("plan a b", "straum plan takes one spec"),
+        (
+            "plan a b",
+            "straum plan takes one spec; --copy and --tables take several",
+        ),
+        (
+            "plan s --copy d --tables",
+            "--copy and --tables don't go together",
+        ),
+        (
+            "plan s --copy d --out f",
+            "--copy and --out don't go together",
+        ),
+        ("plan s --copy", "--copy needs a value"),
         ("plan s --listen x", "straum plan takes no \"--listen\""),
         ("plan --out", "--out needs a value"),
         ("run s --out setup.sql", "straum run takes no \"--out\""),

@@ -29,7 +29,7 @@ use straum_app::{App, Step, Writer};
 use straum_domain::{Ask, Definition, Literal, Spec};
 use straum_http::QueryError;
 use straum_notation::SqlError;
-use straum_pg::{CopyError, Dsn, DsnError, PgEnv, Postgres};
+use straum_pg::{CopyError, Dsn, DsnError, PgEnv, Postgres, Replication};
 
 use crate::client::ClientError;
 use crate::command_line::{
@@ -273,10 +273,11 @@ fn read_spec(path: &str) -> Result<SpecFile, Failure> {
 
 /// The role and its password come from the DSN when there is one, so the
 /// setup and `straum run` agree on them without being told twice.
-/// `--out` writes the SQL there. Otherwise it is printed.
+/// `--out` writes the SQL there. Otherwise it is printed. `--tables` and
+/// `--copy` take several specs and need no DSN.
 fn plan(
     Plan {
-        spec,
+        specs,
         replication,
         publication,
         role,
@@ -285,14 +286,43 @@ fn plan(
         printed,
     }: Plan,
 ) -> Result<(), Failure> {
-    let spec = read_spec(&spec)?.spec;
-    if printed == Printed::Tables {
-        let mut names = straum_pg::table_names(&spec).join("\n");
-        names.push('\n');
-        return write_or_print(out.as_deref(), &names);
+    let mut read = Vec::new();
+    for path in &specs {
+        read.push(read_spec(path)?.spec);
     }
-    let dsn = read_dsn("STRAUM_DSN", dsn_file.as_deref(), true)?;
-    let role = match (&role, &dsn) {
+    let directory = match printed {
+        Printed::Tables => return write_or_print(out.as_deref(), &table_lines(&read)),
+        Printed::Copy { directory } => directory,
+        Printed::Setup => {
+            let setup = Setup {
+                replication,
+                publication,
+                role,
+                dsn_file,
+                out,
+            };
+            return plan_setup(&read, &setup);
+        }
+    };
+    write_copy_scripts(&directory, &read)
+}
+
+/// What the setup SQL is made of, besides the spec.
+struct Setup {
+    replication: Replication,
+    publication: String,
+    role: Option<String>,
+    dsn_file: Option<String>,
+    out: Option<String>,
+}
+
+fn plan_setup(specs: &[Spec], setup: &Setup) -> Result<(), Failure> {
+    // plan_command lets only --copy and --tables have several specs.
+    let Some(spec) = specs.first() else {
+        return Ok(());
+    };
+    let dsn = read_dsn("STRAUM_DSN", setup.dsn_file.as_deref(), true)?;
+    let role = match (&setup.role, &dsn) {
         (Some(role), _) => role.as_str(),
         (None, Some(dsn)) => dsn.user(),
         (None, None) => ROLE,
@@ -304,8 +334,55 @@ fn plan(
         Some(dsn) => dsn.password(),
         None => None,
     };
-    let sql = straum_pg::plan(&spec, &publication, role, password, replication);
-    write_or_print(out.as_deref(), &sql)
+    let sql = straum_pg::plan(spec, &setup.publication, role, password, setup.replication);
+    write_or_print(setup.out.as_deref(), &sql)
+}
+
+/// Every spec's tables, each once, a line each.
+fn table_lines(specs: &[Spec]) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for spec in specs {
+        for name in straum_pg::table_names(spec) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    let mut lines = names.join("\n");
+    lines.push('\n');
+    lines
+}
+
+/// Writes `export.sql` and `load.sql` into `directory`, made if missing,
+/// and prints how to run them. The scripts name the directory by its
+/// full path, so psql finds the files from wherever it runs.
+fn write_copy_scripts(directory: &str, specs: &[Spec]) -> Result<(), Failure> {
+    if let Err(error) = fs::create_dir_all(directory) {
+        return Err(writing(directory, error));
+    }
+    let full = match fs::canonicalize(directory) {
+        Ok(full) => full,
+        Err(error) => return Err(writing(directory, error)),
+    };
+    let Some(full) = full.to_str() else {
+        let error = io::Error::new(io::ErrorKind::InvalidData, "the path is not UTF-8");
+        return Err(writing(directory, error));
+    };
+    let scripts = straum_pg::copy_scripts(specs, full);
+    let export = format!("{full}/export.sql");
+    let load = format!("{full}/load.sql");
+    write_or_print(Some(&export), &scripts.export)?;
+    write_or_print(Some(&load), &scripts.load)?;
+    print(&format!(
+        "wrote {export} and {load}\n\
+         export: psql \"$SOURCE\" -f {export}\n\
+         load:   psql \"$DESTINATION\" -f {load}\n"
+    ))
+}
+
+fn writing(path: &str, error: io::Error) -> Failure {
+    let path = path.to_owned();
+    Failure::WritingFile { path, error }
 }
 
 /// Writes `text` to `path`, or prints it when there is no path.

@@ -704,6 +704,62 @@ fn answers_not_ready_until_a_silent_server_ends_it() {
     assert!(log.contains(&named), "{log}");
 }
 
+/// `plan --copy` writes both scripts for every spec into the directory,
+/// made if missing, and needs no database.
+#[test]
+fn plan_copy_writes_the_scripts() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let other = scratch.file("other.sql", SPEC);
+    let directory = scratch.path.join("copy/out");
+    let directory = directory.to_str().unwrap();
+    let mut plan = straum(&["plan", &spec, &other, "--copy", directory]);
+    let (code, stdout, stderr) = output(&mut plan);
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let full = fs::canonicalize(directory).unwrap();
+    let full = full.to_str().unwrap();
+    let parsed = straum_notation::parse(SPEC).unwrap();
+    let scripts = straum_pg::copy_scripts(&[parsed.clone(), parsed], full);
+    assert_eq!(
+        fs::read_to_string(format!("{full}/export.sql")).unwrap(),
+        scripts.export
+    );
+    assert_eq!(
+        fs::read_to_string(format!("{full}/load.sql")).unwrap(),
+        scripts.load
+    );
+    assert!(
+        stdout.contains(&format!("psql \"$SOURCE\" -f {full}/export.sql\n")),
+        "{stdout}"
+    );
+
+    // A spec that doesn't parse writes nothing and names its file.
+    let broken = scratch.file("broken.sql", "CREATE VIEW");
+    let elsewhere = scratch.path.join("never");
+    let elsewhere = elsewhere.to_str().unwrap();
+    let mut refused = straum(&["plan", &spec, &broken, "--copy", elsewhere]);
+    let (code, _, stderr) = output(&mut refused);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("broken.sql"), "{stderr}");
+    assert!(!std::path::Path::new(elsewhere).exists());
+}
+
+/// `plan --tables` names each table of several specs once.
+#[test]
+fn plan_tables_names_each_table_once() {
+    let scratch = Scratch::new();
+    let spec = scratch.file("spec.sql", SPEC);
+    let other = scratch.file("other.sql", SPEC);
+    let parsed = straum_notation::parse(SPEC).unwrap();
+    let mut expected = straum_pg::table_names(&parsed).join("\n");
+    expected.push('\n');
+    let (code, stdout, stderr) = output(&mut straum(&["plan", &spec, &other, "--tables"]));
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert_eq!(stdout, expected);
+    let (code, _, stderr) = output(&mut straum(&["plan", &spec, &other]));
+    assert_eq!(code, Some(2), "{stderr}");
+}
+
 #[test]
 fn plan_prints_the_setup_sql() {
     let scratch = Scratch::new();

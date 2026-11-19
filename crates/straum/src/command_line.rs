@@ -1,6 +1,7 @@
 //! Reading a command line into a `Command`. `command` takes the words
 //! after `straum`: the first names the command. `run`, `plan` and `copy`
-//! take the spec as the one word that is not a flag; `ask` takes its query
+//! take the spec as the word that is not a flag, `plan --copy` and `plan
+//! --tables` several; `ask` takes its query
 //! and parameters after the flags. `Flags::read` checks the flags
 //! against the ones that command takes, and each `*_command` function
 //! builds the command from them, filling in defaults. A line Straum
@@ -30,6 +31,10 @@ const URL: &str = "http://127.0.0.1:8080";
 const JSON: &str = "--json";
 /// The switch that makes `plan` print the spec's tables, not its SQL.
 const TABLES: &str = "--tables";
+/// The flag that makes `plan` write the copy scripts into a directory.
+const COPY: &str = "--copy";
+/// Where `plan` writes the SQL or the tables instead of stdout.
+const OUT: &str = "--out";
 /// The environment variable that names the URL when `--url` doesn't.
 pub(crate) const URL_VARIABLE: &str = "STRAUM_URL";
 const FOUR_GIBIBYTES: u64 = 4 << 30;
@@ -114,7 +119,7 @@ impl Name {
                 "--max-transaction-rows",
                 "--max-page-memory",
             ],
-            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", "--out"],
+            Name::Plan => &["--wal", "--publication", "--role", "--dsn-file", OUT, COPY],
             Name::Copy => &[],
             Name::Status | Name::Views | Name::Ask | Name::Shell => &["--url", "--timeout"],
         }
@@ -173,7 +178,8 @@ pub(crate) struct Run {
 /// What `straum plan` was told.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Plan {
-    pub(crate) spec: String,
+    /// One spec, or several with `--copy` or `--tables`.
+    pub(crate) specs: Vec<String>,
     pub(crate) replication: Replication,
     pub(crate) publication: String,
     pub(crate) role: Option<String>,
@@ -183,12 +189,13 @@ pub(crate) struct Plan {
     pub(crate) printed: Printed,
 }
 
-/// What `straum plan` prints: the setup SQL, or the spec's tables, one per
-/// line, for a dump to take.
+/// What `straum plan` makes: the setup SQL, the specs' tables, one per
+/// line, for a dump to take, or the copy scripts, in a directory.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Printed {
     Setup,
     Tables,
+    Copy { directory: String },
 }
 
 /// What `straum copy` was told.
@@ -244,6 +251,13 @@ pub(crate) enum UsageError {
     },
     NeedsSpec(Name),
     OneSpec(Name),
+    /// `plan` was given several specs without `--copy` or `--tables`.
+    SetupTakesOneSpec,
+    /// Two flags that ask for different things.
+    Together {
+        flag: &'static str,
+        other: &'static str,
+    },
     BadWal(String),
 }
 
@@ -281,6 +295,12 @@ impl Display for UsageError {
             }
             UsageError::OneSpec(command) => {
                 write!(formatter, "straum {} takes one spec", command.as_str())
+            }
+            UsageError::SetupTakesOneSpec => {
+                formatter.write_str("straum plan takes one spec; --copy and --tables take several")
+            }
+            UsageError::Together { flag, other } => {
+                write!(formatter, "{flag} and {other} don't go together")
             }
             UsageError::BadWal(value) => {
                 write!(formatter, "--wal takes logical or physical, not {value:?}")
@@ -449,26 +469,52 @@ fn ask_command(flags: &Flags, query: &[String], url: &str) -> Result<Command, Us
 }
 
 fn plan_command(flags: &Flags) -> Result<Command, UsageError> {
-    let Some(spec) = flags.spec.clone() else {
+    if flags.specs.is_empty() {
         return Err(UsageError::NeedsSpec(Name::Plan));
-    };
+    }
+    let printed = printed(flags)?;
+    if printed == Printed::Setup && flags.specs.len() > 1 {
+        return Err(UsageError::SetupTakesOneSpec);
+    }
     Ok(Command::Plan(Plan {
-        spec,
+        specs: flags.specs.clone(),
         replication: flags.replication()?,
         publication: flags.publication(),
         role: flags.text("--role"),
         dsn_file: flags.text("--dsn-file"),
-        out: flags.text("--out"),
-        printed: if flags.switch(TABLES) {
-            Printed::Tables
-        } else {
-            Printed::Setup
-        },
+        out: flags.text(OUT),
+        printed,
     }))
 }
 
+/// What `plan` makes, from `--copy` and `--tables`. The copy scripts go
+/// into their directory, so `--out` has nothing to write.
+fn printed(flags: &Flags) -> Result<Printed, UsageError> {
+    let tables = flags.switch(TABLES);
+    let Some(directory) = flags.text(COPY) else {
+        return Ok(if tables {
+            Printed::Tables
+        } else {
+            Printed::Setup
+        });
+    };
+    if tables {
+        return Err(UsageError::Together {
+            flag: COPY,
+            other: TABLES,
+        });
+    }
+    if flags.value(OUT).is_some() {
+        return Err(UsageError::Together {
+            flag: COPY,
+            other: OUT,
+        });
+    }
+    Ok(Printed::Copy { directory })
+}
+
 fn copy_command(flags: &Flags) -> Result<Command, UsageError> {
-    let Some(spec) = flags.spec.clone() else {
+    let Some(spec) = flags.specs.first().cloned() else {
         return Err(UsageError::NeedsSpec(Name::Copy));
     };
     Ok(Command::Copy(Copy { spec }))
@@ -480,7 +526,7 @@ fn run_command(flags: &Flags) -> Result<Command, UsageError> {
     if flags.value("--max-page-memory").is_some() && !is_physical {
         return Err(UsageError::PageMemoryNeedsPhysical);
     }
-    let Some(spec) = flags.spec.clone() else {
+    let Some(spec) = flags.specs.first().cloned() else {
         return Err(UsageError::NeedsSpec(Name::Run));
     };
     let max_lag = flags.parsed(
@@ -547,22 +593,23 @@ struct Given {
 }
 
 /// The flags on one command's line, each with its value, the switches,
-/// and the spec for the commands that take one.
+/// and the specs for the commands that take them.
 struct Flags {
     given: Vec<Given>,
     switches: Vec<String>,
-    spec: Option<String>,
+    specs: Vec<String>,
 }
 
 impl Flags {
     /// A flag takes the next word, so for `run`, `plan` and `copy` the
-    /// spec is whichever word is left.
+    /// spec is whichever word is left. Only `plan` takes several, and
+    /// `plan_command` says when.
     fn read(name: Name, rest: &[String]) -> Result<Flags, UsageError> {
         let takes_spec = matches!(name, Name::Run | Name::Plan | Name::Copy);
         let mut flags = Flags {
             given: Vec::new(),
             switches: Vec::new(),
-            spec: None,
+            specs: Vec::new(),
         };
         let mut rest = rest.iter();
         let mut flags_ended = false;
@@ -572,10 +619,10 @@ impl Flags {
                 continue;
             }
             if takes_spec && (flags_ended || !word.starts_with('-')) {
-                if flags.spec.is_some() {
+                if !flags.specs.is_empty() && name != Name::Plan {
                     return Err(UsageError::OneSpec(name));
                 }
-                flags.spec = Some(word.clone());
+                flags.specs.push(word.clone());
                 continue;
             }
             let Written { flag, attached } = Written::of(word);
