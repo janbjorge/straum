@@ -1,7 +1,7 @@
 # Performance
 
-How fast does Straum answer, and how much memory does it take? This page
-gives one benchmark's numbers and the commands to measure them yourself.
+How fast does Straum answer, and how much memory does it take? Below are
+one benchmark's numbers and the commands to measure them yourself.
 
 The benchmark sends Straum and PostgreSQL the same asks about six months
 of New York taxi trips. It checks that the answers are equal, then times
@@ -97,30 +97,24 @@ bench/taxi.py
 
 It needs Docker, a Rust toolchain and [uv](https://docs.astral.sh/uv/),
 which fetches the script's Python packages. The first run downloads the
-six months into `bench/data/`, which git ignores. Then it:
-
-1. builds Straum;
-2. starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
-   names;
-3. loads the months with `bench/load_taxi_trips.py`;
-4. runs the SQL `straum plan` prints and starts `straum run`;
-5. sends each ask to both sides, and stops at the first answer that
-   differs.
+six months into `bench/data/`, which git ignores. Then it builds Straum,
+starts a throwaway `postgres:18`, or the major `STRAUM_TEST_POSTGRES`
+names, and loads the months with `bench/load_taxi_trips.py`. It runs the
+SQL `straum plan` prints and starts `straum run`. Last, it sends each ask
+to both sides, and stops at the first answer that differs.
 
 Answers are equal when every decimal matches to the last digit, with
 PostgreSQL's `avg`, variance and standard deviation rounded half to even
 at the places Straum gives them. A run takes about 80 seconds once the
 data is there.
 
-The script has three modes:
-
-- `bench/taxi.py` or `bench/taxi.py asks`: the [Results](#results).
-- `bench/taxi.py transactions`: the same setup, then one transaction of
-  1,000 to 1,000,000 changed rows while a client asks Straum back to
-  back, under [Transactions](#transactions).
-- `bench/taxi.py shell`: the same setup, then
-  [`straum shell`](cli.md#straum-shell) at the trips in place of the
-  asks. Leaving the shell removes PostgreSQL.
+The script has three modes. `bench/taxi.py` or `bench/taxi.py asks` gives
+the [Results](#results). `bench/taxi.py transactions` does the same setup,
+then one transaction of 1,000 to 1,000,000 changed rows while a client
+asks Straum back to back, under [Transactions](#transactions).
+`bench/taxi.py shell` does the same setup, then opens
+[`straum shell`](cli.md#straum-shell) at the trips in place of the asks.
+Leaving the shell removes PostgreSQL.
 
 Each mode takes `--wal physical` to have Straum read the
 [physical WAL](postgresql.md#physical-wal) in place of logical decoding.
@@ -275,12 +269,9 @@ its write lock. Its rows wait in memory, and every ask waits for the
 apply. `bench/taxi.py transactions` updates the fare of the first N
 trips, which both views follow, in one transaction. Meanwhile a client
 asks for one day of hour buckets as fast as the answers come. The bench
-measures three things:
-
-- the time from the commit until Straum has applied it;
-- the longest ask meanwhile, which is the lock hold as a client feels
-  it;
-- how much Straum's resident set grew.
+measures the time from the commit until Straum has applied it, the
+longest ask meanwhile, which is the lock hold as a client feels it, and
+how much Straum's resident set grew.
 
 After each transaction it checks the fares by payment type against
 PostgreSQL. An answer that differs ends the run.
@@ -331,16 +322,14 @@ major.
 
 Straum then reads the captured WAL again, with no socket in the way,
 three times each way (`STRAUM_BENCH_RUNS`, or `just runs=6 wal-bench`).
-The fastest read counts. The three ways:
-
-- "Records read" splits pages into records only.
-- "Pipeline read" goes all the way to the commits for
-  `crates/straum-notation/tests/taxi.sql`. Every row changed must come
-  out, and nothing may be unfit.
-- "Pass-through read" goes through a pipeline that reads no table, as
-  the WAL of every other table and database does. The reader passes
-  those records by from their block headers, without copying or
-  checksumming them, so it outruns splitting every record.
+The fastest read counts. "Records read" splits pages into records only.
+"Pipeline read" goes all the way to the commits for
+`crates/straum-notation/tests/taxi.sql`. Every row changed must come
+out, and nothing may be unfit. "Pass-through read" goes through a
+pipeline that reads no table, as the WAL of every other table and
+database does. The reader passes those records by from their block
+headers, without copying or checksumming them, so it outruns splitting
+every record.
 
 One run on 2026-11-16, on the machine of the [Results](#results), one
 thread, PostgreSQL 18, six reads each way:
@@ -398,16 +387,11 @@ benchmark's: 15 minute buckets with day and week widths, keyed by
 payment type, vendor, pickup zone, dropoff zone and the pickup zone's
 borough, zone and service zone, with two filtered counts.
 
-The test compares asks with the view body in PostgreSQL six times:
-
-1. after the load;
-2. after 200 streamed commits;
-3. after an update;
-4. after a zone is renamed;
-5. after a zone moves to a new key;
-6. after a trip in the renamed zone changes.
-
-Nothing stops. Release build, Docker on the same laptop:
+The test compares asks with the view body in PostgreSQL six times: after
+the load, after 200 streamed commits, after an update, after a zone is
+renamed, after a zone moves to a new key, and after a trip in the
+renamed zone changes. Nothing stops. Release build, Docker on the same
+laptop:
 
 | Step or ask | Groups | Straum | PostgreSQL |
 | --- | ---: | ---: | ---: |
