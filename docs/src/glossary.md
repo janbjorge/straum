@@ -18,9 +18,12 @@ the end are open.
   Also "user guide", "the docs". `llms.txt` lists the pages.
 - **ADR**: the settled decisions on one subject in `docs/adr/`
   (ADR-0001).
-- **Port** and **adapter**: a trait at the edge of `straum-app`,
-  `Source`, and a crate that implements one, `straum-pg` or
-  `straum-http` ([Architecture](design.md#architecture)).
+- **Port**: a trait at the edge of `straum-app` that an outer crate
+  implements; there is one, `Source`
+  ([Architecture](design.md#architecture)).
+- **Adapter**: a crate between the use cases and the outside:
+  `straum-pg`, which implements `Source`, `straum-http` and
+  `straum-notation` ([Architecture](design.md#architecture)).
 
 ## Spec
 
@@ -107,11 +110,14 @@ the end are open.
   argument is the walker's "aggregated column".
 - **Input column** (`Aggregate::input`, `Input`, `Reads`): the column
   an aggregate reads; measures over one column share its state.
-- **Cell**: one combination of rollup key and bucket, with its row count
-  and a state per input column ([Cells](how-it-works.md#cells)).
+- **Cell**: one value of the rollup key, with its row count and a state
+  per input column ([Cells](how-it-works.md#cells)).
 - **Cell state** (`State`, `StateKind`): what a cell keeps for an input
-  column ([What a cell keeps](aggregates.md#what-a-cell-keeps)). Also
-  "extent" for a count per value.
+  column ([What a cell keeps](aggregates.md#what-a-cell-keeps)). The
+  kind `Extent` keeps a count per value.
+- **Code** (`Codes`): the integer a key's or a dim column's value is
+  held as, so a cell key is a few integers
+  ([The store](design.md#the-store)).
 - **Merge**: adding the states of the cells an ask reads into one answer
   per group ([Merging](aggregates.md#merging)).
 - **Cell loop** (`CellLoop`): an ask's pass over its cells, filtering
@@ -158,8 +164,9 @@ the end are open.
   say "window".
 - **Cover** (`Rollup::cover`): the buckets an ask reads, widest in the
   middle ([Answering an ask](how-it-works.md#answering-an-ask)).
-- **Limit** (`Limits`): what a `--max-*` flag caps
-  ([straum run](cli.md#straum-run)).
+- **Limit**: what a `--max-*` flag caps
+  ([straum run](cli.md#straum-run)). `Limits` holds two of them,
+  `--max-lag` and `--max-retained-wal`.
 - **Answer** (`Answer`, `Answered`): `as_of` and rows, as JSON or a
   table ([The answer](asks.md#the-answer)). Also "reply" for the HTTP
   message.
@@ -181,8 +188,8 @@ the end are open.
   ([Load once](how-it-works.md#load-once-follow-every-commit)).
 - **Fail hard**: a failure ends the process with exit 1, and whatever
   runs Straum starts it again from a new slot
-  ([States](deploy.md#states)). A **restart** is that, PostgreSQL's or
-  a pod's. Straum never retries in the process.
+  ([States](deploy.md#states)). A **restart** is that new start. Straum
+  never retries in the process.
 - **States**: Loading, Ready, Lagging, Exited, Stopping
   ([States](deploy.md#states)); no enum.
 - **Ready** (`Status::ready`): every table loaded and lag within
@@ -192,7 +199,7 @@ the end are open.
 - **Snapshot** (`Snapshot`, `TransactionSnapshot`): the database at the
   consistent point, which the load reads.
 - **Consistent point** (`Snapshot::at`, `Consistency`): where the
-  snapshot is taken and the stream starts. The guide says "LSN L".
+  snapshot is taken and the stream starts. The design page writes it L.
 - **Stream** (`Stream`): the commits after the consistent point;
   `Following` is where it stands.
 - **Applied** and **committed** (`State::applied`, `Following::applied`,
@@ -214,13 +221,16 @@ the end are open.
   write lock.
 - **Source** (`Source`, `Postgres`): the port to PostgreSQL. "Source of
   truth" means PostgreSQL itself.
-- **Plain connection** (`Postgres::plain`): the second connection, which
-  reads the WAL position each second.
+- **Plain connection** (`Postgres::plain`): a connection beside the
+  replication connection. `Postgres::plain` reads the WAL position each
+  second; the watchdog has its own, and the physical stream two more
+  ([What Straum costs the
+  server](postgresql.md#what-straum-costs-the-server)).
 - **WAL retained** (`Wal::retained`): bytes PostgreSQL keeps for the
   slot ([straum status](cli.md#straum-status)).
-- **Watchdog** (`SlotGuard`, `watchdog.rs`): the thread that ends the
-  stream when the slot holds more than `--max-retained-wal` or it can't
-  read the slot
+- **Watchdog** (`SlotGuard`, `watchdog.rs`): two threads that end the
+  stream when the slot holds more than `--max-retained-wal`, or when no
+  reading of the slot comes for too long
   ([What Straum costs the server](postgresql.md#what-straum-costs-the-server)).
 - **Status** (`Status`): what `GET /status` and `straum status` show;
   not the stream's status report (`StreamThread::report`).
