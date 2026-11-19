@@ -150,12 +150,8 @@ fn follows_the_task_tables() {
     // The key is a boolean, whatever its column is.
     assert!(writer.app().ask(&done_is(Literal::Bool(true))).is_ok());
     assert_eq!(
-        writer
-            .app()
-            .ask(&done_is(Literal::Int(1)))
-            .unwrap_err()
-            .to_string(),
-        "done is a boolean, so it can't be the integer 1"
+        refused(writer.app(), &done_is(Literal::Int(1))),
+        ["done is a boolean, so it can't be the integer 1"]
     );
 }
 
@@ -614,8 +610,8 @@ fn asks_take_values_of_the_types_the_load_read() {
     // A numeric of scale 1 takes no integer: 1 would read as 0.1.
     let toll = filtered("logins", "logins", "toll", Literal::Int(1));
     assert_eq!(
-        writer.app().ask(&toll).unwrap_err().to_string(),
-        "toll is a numeric of scale 1, so it can't be the integer 1"
+        refused(writer.app(), &toll),
+        ["toll is a numeric of scale 1, so it can't be the integer 1"]
     );
 }
 
@@ -649,6 +645,18 @@ fn takes_only_its_type(app: &App, case: TypeCase) {
         matches!(&errors[0], AskError::WrongType { column: got, value, .. } if *got == column && *value == wrong),
         "{key}: {errors:?}"
     );
+}
+
+/// Why `app` refuses `asked`, each error as a client reads it.
+fn refused(app: &App, asked: &Ask) -> Vec<String> {
+    let Err(AnswerError::Invalid(errors)) = app.ask(asked) else {
+        panic!("not refused as invalid: {asked:?}");
+    };
+    let mut lines = Vec::with_capacity(errors.len());
+    for error in &errors {
+        lines.push(straum_notation::describe_ask_error(error));
+    }
+    lines
 }
 
 /// `fact`'s `measure` where `key` is `value`.
