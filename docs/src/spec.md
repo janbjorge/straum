@@ -144,7 +144,7 @@ Every `SELECT` item that is not a measure is a key: a column of the
 fact table (`e.kind`), a column of a dim (`a.region`), a
 [null-ness key](#null-ness-keys) or the [time](#time). Each cell is
 one distinct combination of the keys read from the fact table, the
-[join columns](#joining-a-dim) and the bucket. A dim column is no part
+[join columns](#joining-a-dim) and the bucket. A dim column is not part
 of the cell: an ask reads it through the join
 ([Dims](how-it-works.md#dims)).
 
@@ -426,18 +426,18 @@ never a `sum`, `min` or `max`.
 
 `straum plan FILE` prints the setup SQL, or what is wrong and exits
 with status 1. Each line of the report names the file. Straum reads
-the spec in two passes and reports every problem of the first that
-finds any. The first reads each statement and names the line of each
-problem, such as syntax outside the subset or an unknown alias. It
-lists the first 50, then how many more:
+the spec in two passes and reports every problem from the first pass
+that finds any. The first pass reads each statement and names the line
+of each problem, such as syntax outside the subset or an unknown
+alias. It lists the first 50, then how many more:
 
 ```text
 straum: usage.sql: line 6: JOIN, write INNER JOIN, `JOIN public.accounts AS a ON a.id = e.account_id` is not in Straum SQL, the PostgreSQL subset made only for Straum
 straum: usage.sql: line 3: unknown table alias a
 ```
 
-The second checks the views against each other and against their own
-rules, such as names declared twice and widths:
+The second pass checks the views against each other and against their
+own rules, such as names declared twice and widths:
 
 ```text
 straum: usage.sql: usage declared twice: views and dims share one namespace, and a dim goes by its table's name without the schema
