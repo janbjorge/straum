@@ -50,31 +50,34 @@ ask reads every bucket Straum holds:
 SELECT events, amount FROM usage
 ```
 
-- A key or a measure goes by the name the view gives it with `AS`:
-  `region`, `kind`, `account_id`, `amount`. `a.region` is not a name
-  an ask can use; neither is `a`, the join, nor a table name. The time
-  goes by its name too, `bucket` in `usage`, and is a key like any
-  other in `SELECT` and `GROUP BY`.
-- `SELECT` lists the keys first, then one measure or more. Each name
-  is selected at most once, since the names become the fields of each
-  answer row. `GROUP BY` names exactly the selected keys. Each lists
-  at most 256 names.
-- `WHERE` takes `=` and `IN` on keys. `IN` lists two parameters or
-  more; for one, write `=`.
-- `bucket >= $n` and `bucket < $n` bound the range, each at most once,
-  and only the time takes `>=` or `<`. The start is before the end.
-  Leave one out and that end is open: the ask reads from the first
-  bucket held, or to the end of the last. With no `WHERE` it reads
-  every bucket held; `WHERE true` is refused.
-- The bounds and the conditions come in any order. No condition is put
-  in parentheses, and none, in `WHERE` or `HAVING`, is written twice:
-  `kind = $1 AND kind = $1` is refused, naming `kind = $1`.
-- Names are written in lowercase, `buckets` too; keywords such as
-  `SELECT` and `GROUP BY` take any case. An ask holds no comment and
-  no `;` after it.
-- An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`,
-  `IN`, `+`, `::` and the like), as does each statement of a spec:
-  each is a level of the tree Straum reads it into.
+A key or a measure goes by the name the view gives it with `AS`:
+`region`, `kind`, `account_id`, `amount`. `a.region` is not a name an
+ask can use; neither is `a`, the join, nor a table name. The time goes
+by its name too, `bucket` in `usage`, and is a key like any other in
+`SELECT` and `GROUP BY`.
+
+`SELECT` lists the keys first, then one measure or more. Each name is
+selected at most once, since the names become the fields of each
+answer row. `GROUP BY` names exactly the selected keys. `SELECT` and
+`GROUP BY` each list at most 256 names.
+
+`WHERE` takes `=` and `IN` on keys, and `IN` lists two parameters or
+more; for one, write `=`. `bucket >= $n` and `bucket < $n` bound the
+range, each at most once, and only the time takes `>=` or `<`. The
+start must be before the end. Leave one out and that end is open: the
+ask reads from the first bucket held, or to the end of the last. With
+no `WHERE` it reads every bucket held; `WHERE true` is refused. The
+bounds and the conditions come in any order. No condition is put in
+parentheses, and none, in `WHERE` or `HAVING`, is written twice:
+`kind = $1 AND kind = $1` is refused, naming `kind = $1`.
+
+Names are written in lowercase, `buckets` too; keywords such as
+`SELECT` and `GROUP BY` take any case. An ask holds no comment and no
+`;` after it.
+
+An ask holds at most 512 operators (`=`, `>`, `AND`, `OR`, `IS`, `IN`,
+`+`, `::` and the like), as does each statement of a spec: each is a
+level of the tree Straum reads it into.
 
 ## Rows a day or a week apart
 
@@ -147,9 +150,9 @@ most 1 MiB, what one ask's body holds.
 
 A number with a fraction or exponent is read exactly as written, never
 as a float: `44.27` is 4427 hundredths, and a whole one, `1.0` or
-`1e3`, is an integer. At most 38 digits may follow the point, and its
-digits, read as one integer, must fit a signed 128-bit integer; a
-longer number is an error.
+`1e3`, is an integer. At most 38 digits may follow the point, and the
+number's digits, read as one integer, must fit a signed 128-bit
+integer; a longer number is an error.
 
 A parameter must have its column's type, with no conversion: an integer
 for an integer column or a `numeric(p, 0)`, a string for text, a boolean
