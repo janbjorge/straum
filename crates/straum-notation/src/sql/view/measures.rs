@@ -397,7 +397,7 @@ impl Walker {
     }
 
     /// As [`Walker::call`], with what `WITHIN GROUP (ORDER BY ...)` lists,
-    /// for the one aggregate that takes it.
+    /// for the aggregates that take it, `percentile_disc` and `mode`.
     // Borrows the arguments from the tree, which outlives the walk.
     fn ordered_call<'tree>(
         &mut self,
@@ -448,7 +448,7 @@ impl Walker {
     }
 }
 
-/// `'<n> <unit>'`, a width as `buckets` and an ask's `date_bin` write it.
+/// `'<n> <unit>'`, a width as a view's and an ask's `buckets` write it.
 pub(in crate::sql) fn width_literal(width: &sql::Expr) -> Result<Width, String> {
     let sql::Expr::Value(sql::ValueWithSpan {
         value: sql::Value::SingleQuotedString(text),

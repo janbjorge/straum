@@ -463,13 +463,13 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// What to write for a width that can't be read.
 /// The function a view's time is written with.
 const BUCKETS: &str = "buckets";
 
 /// PostgreSQL's function for a bucket, refused for `buckets`.
 const DATE_BIN: &str = "date_bin";
 
+/// What to write for a width that can't be read.
 pub(super) const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
 
 /// A width `'<n> <unit>'`, written one way: `n` plain digits, the

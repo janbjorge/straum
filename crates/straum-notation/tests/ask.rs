@@ -571,6 +571,27 @@ fn grouped(select: &str, group_by: &str) -> String {
     format!("SELECT {select}, trips FROM t GROUP BY {group_by}")
 }
 
+/// `buckets` in an ask is a plain call: FILTER and WITHIN GROUP are
+/// refused by name, and the call without them is read.
+#[test]
+fn buckets_in_an_ask_takes_no_filter_or_within_group() {
+    for (call, refused) in [
+        (
+            "buckets(bucket, '1 day') FILTER (WHERE kind = $1)",
+            "FILTER on buckets is not in Straum SQL",
+        ),
+        (
+            "buckets(bucket, '1 day') WITHIN GROUP (ORDER BY kind)",
+            "WITHIN GROUP is not in Straum SQL",
+        ),
+    ] {
+        let found = errors(&grouped(call, "kind"), &[text("cab")]);
+        assert!(any_contains(&found, refused), "{call}: {found:?}");
+    }
+    let plain = grouped("buckets(bucket, '1 day')", "buckets(bucket, '1 day')");
+    assert!(parse_ask(&plain, &[]).is_ok());
+}
+
 #[test]
 fn buckets_in_an_ask_is_written_one_way() {
     assert_each_names_what_is_wrong(&[
@@ -738,7 +759,8 @@ fn having_takes_one_spelling() {
 }
 
 /// A refused ask names only what is wrong with it: a parameter it never
-/// reached is not reported unused, and `!=` in a comment is no `!=`.
+/// reached is not reported unused, and a comment is refused as itself,
+/// whatever it holds.
 #[test]
 fn a_refused_ask_names_only_its_fault() {
     let three = [Literal::Int(JAN), Literal::Int(FEB), Literal::Int(7)];

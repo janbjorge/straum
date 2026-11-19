@@ -369,9 +369,9 @@ impl Walker {
     }
 
     /// The conditions, and the range from `time >= $n AND time < $m`, a
-    /// bound not written leaving its end open. Conditions take `=`, `IN`
-    /// and `IS NULL`, so `>=` and `<` always bound the range; the spec
-    /// says whether the name is the view's time.
+    /// bound not written leaving its end open. Conditions take `=` and
+    /// `IN`, so `>=` and `<` always bound the range; the spec says whether
+    /// the name is the view's time.
     fn ask_where(&mut self, selection: Option<&sql::Expr>, parameters: &mut Parameters) -> Where {
         let mut parts = Vec::new();
         if let Some(expression) = selection {
@@ -717,8 +717,7 @@ fn refused_token(line: u64, what: &str) -> SqlError {
 }
 
 /// Whether the not-equal operator in `between`, the text between a
-/// comparison's sides, is written `!=`. A comment there may hold either
-/// spelling, so the tokens tell, not the text.
+/// comparison's sides, is written `!=`, which sqlparser reads as `<>`.
 fn spelled_with_bang(between: &str) -> bool {
     let tokenized = Tokenizer::new(&PostgreSqlDialect {}, between).tokenize_with_location();
     let Ok(tokens) = tokenized else {
