@@ -2,10 +2,12 @@
 
 How do you connect your own database? Two steps, done once. Straum
 needs PostgreSQL 17 or newer, self-hosted or managed. Its tests run on
-17, 18 and the 19 release candidate. No extension and no superuser.
+17, 18 and the 19 release candidate. It needs no extension, and it
+connects as a role that is not a superuser. A superuser runs a few
+lines of the setup once.
 
-Two streams. Logical decoding is the default. Physical WAL leaves
-`wal_level` alone.
+Pick a stream first. Logical decoding is the default. The physical WAL
+leaves `wal_level` alone.
 
 | | Physical WAL | Logical decoding |
 | --- | --- | --- |
@@ -13,27 +15,28 @@ Two streams. Logical decoding is the default. Physical WAL leaves
 | Server | `wal_level = replica` and `full_page_writes = on`, both defaults. No restart | PostgreSQL 17 and 18 need `wal_level = logical`, then a restart. From 19, `replica` is enough |
 | SQL | A role and `SELECT` | Also a publication and `REPLICA IDENTITY FULL` |
 
-The commits are the same. The tests check that on a server that runs
-both. RDS, Aurora and Cloud SQL do not hand out the physical stream.
-Use logical decoding there.
+Both streams give the same commits. The tests check that on a server
+that runs both. RDS, Aurora and Cloud SQL do not hand out the physical
+stream. Use logical decoding there.
 
 ## 1. Run the setup SQL
 
 `straum plan FILE --wal physical` prints the physical setup. `straum
-plan FILE` prints the logical one. With `STRAUM_DSN` or `--dsn-file`
-set, the role is the DSN's user and its password goes in as a
-SCRAM-SHA-256 verifier, so the password itself is in neither the SQL
-nor the server's log. Without a DSN the role is `straum` and the SQL
-says how to give it a password.
+plan FILE` prints the logical one. With a DSN set, from `--dsn-file`,
+`STRAUM_DSN` or libpq's variables ([Connect](#2-connect)), the role is
+the DSN's user and its password goes in as a SCRAM-SHA-256 verifier,
+so the password itself is in neither the SQL nor the server's log.
+Without a DSN the role is `straum` and the SQL says how to give it a
+password. `--role NAME` picks another role
+([flags](cli.md#straum-plan)).
 
 `REPLICATION` beside `LOGIN` is a privilege of that role, so it can
-follow commits. It is not another user. `--role NAME` picks another
-role ([flags](cli.md#straum-plan)).
+follow commits. It is not another user.
 
 Run the SQL as an owner of the tables. A superuser runs the lines the
-comments name: creating the role, and `BYPASSRLS` where a policy of
-row-level security hides rows. The setup lives in the catalog and
-survives restarts.
+comments name: creating the role, `wal_level` for logical decoding,
+and `BYPASSRLS` where a policy of row-level security hides rows. The
+setup lives in the catalog and survives restarts.
 
 ### Physical WAL
 
@@ -68,14 +71,14 @@ changed table's columns. That wait gives up after 10 seconds and
 Straum stops.
 [The physical stream](how-it-works.md#the-physical-stream) says why.
 
-Straum also stops when:
+Straum also stops on:
 
-- A value stored out of line, in the table's TOAST table, in a column
-  the spec reads. The page holds a pointer. PostgreSQL moves the
-  largest values of a row over about 2 KB there, one by one, until the
-  row fits, so a short value can go too. An insert, update or delete
-  of a row with such a value stops Straum. Out of line in a column no
-  view reads, it is passed over.
+- An insert, update or delete of a row whose value, in a column the
+  spec reads, is stored out of line in the table's TOAST table. The
+  page holds only a pointer. PostgreSQL moves the largest values of a
+  row over about 2 KB there, one by one, until the row fits, so a
+  short value can go too. A value out of line in a column no view
+  reads is passed over.
 - A rewrite of a spec table: `TRUNCATE`, `VACUUM FULL`, `CLUSTER`, or
   an `ALTER TABLE` that moves the rows to a new file. `ADD COLUMN`,
   `DROP COLUMN` and other DDL that keeps the file are followed.
@@ -116,9 +119,10 @@ ALTER TABLE "public"."accounts" REPLICA IDENTITY FULL;
 
 PostgreSQL 17 and 18 refuse a logical slot while `wal_level` is
 `replica`, and changing it takes a restart. On your own server the
-`ALTER SYSTEM` line does that. From 19, `replica` is enough: a logical
-slot turns decoding on while it exists. On a managed service, set the
-provider's parameter instead of `ALTER SYSTEM`, then restart there:
+`ALTER SYSTEM` line sets it; restart after. From 19, `replica` is
+enough: a logical slot turns decoding on while it exists. On a managed
+service, set the provider's parameter instead of `ALTER SYSTEM`, then
+restart there:
 
 | Service | Setting |
 | --- | --- |
@@ -135,22 +139,26 @@ on Amazon RDS. Grant it to Straum's role.
 
 ## 2. Connect
 
-Straum reads its DSN from `STRAUM_DSN` or from a file named by
-`--dsn-file`, never from the command line, where other users could see
-it. With neither set, it reads libpq's variables: `PGHOST` or
-`PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
-`PGSSLMODE` and `PGSSLROOTCERT`. `PGPORT` defaults to 5432, `PGUSER`
-to the OS user, and the database to the user. `PGHOST` names one host.
+Straum reads its DSN from a file named by `--dsn-file`, else from
+`STRAUM_DSN`, never from the command line, where other users could see
+it:
 
 ```text
 postgres://straum:PASSWORD@db.example.com:5432/app
 ```
 
-The port defaults to 5432 and the database to the user's name. An IPv6
-address goes in brackets, `postgres://straum:PASSWORD@[2001:db8::1]/app`.
-Percent-encode reserved characters in the password, such as `@`, `?`
-or `/` as `%40`, `%3F` and `%2F`. A raw one is refused. An error about
-a parameter never repeats its text, which could be a password's.
+The scheme is `postgres://` or `postgresql://`. The port defaults to
+5432 and the database to the user's name. An IPv6 address goes in
+brackets, `postgres://straum:PASSWORD@[2001:db8::1]/app`.
+Percent-encode `@`, `?` and `/` in the password as `%40`, `%3F` and
+`%2F`; a raw `?` or `/` is refused. The only parameters Straum takes
+are `sslmode` and `sslrootcert`, and it refuses any other. An error
+about a parameter never repeats its text, which could be a password's.
+
+With neither the file nor `STRAUM_DSN`, Straum reads libpq's
+variables: `PGHOST` or `PGHOSTADDR`, `PGPORT`, `PGUSER`, `PGPASSWORD`,
+`PGDATABASE`, `PGSSLMODE` and `PGSSLROOTCERT`. They default as the URL
+does, and `PGUSER` to the OS user. `PGHOST` names one host.
 
 Use the server's direct endpoint, not a pooler. The replication
 connection needs a session of its own.
@@ -189,19 +197,24 @@ Either stream:
 
 ```text
 the server is a standby in recovery; give Straum the primary's DSN
+PostgreSQL 16 is too old; Straum needs 17 or newer
 usage: Straum's role can't read public.events: GRANT SELECT ON public.events
 usage: tables inherit from public.events; Straum reads a table without children
 usage: row-level security filters what straum reads of public.events; Straum needs every row: ALTER ROLE straum BYPASSRLS, as a superuser
 usage: column amount of public.events is double precision; Straum reads no float type, as its sums can't equal PostgreSQL's exactly: make it numeric(p, s) with p at most 18
-usage: column region of public.accounts is text, not an enum; drop the ::text
+usage: column kind of public.events is event_kind, an enum; write kind::text
 view usage: join a joins account_id (an integer) to id (text); they must read alike
 ```
 
-Once the checks pass, the load holds each spec table in `ACCESS SHARE`
-mode until its last `COPY`, so a rewrite (`VACUUM FULL`, `CLUSTER`, an
-`ALTER TABLE` that rewrites) waits for the load. A rewrite that ended
-before Straum held the tables would read empty in the load's snapshot.
-Straum finds it and stops, and the next start loads it whole:
+A line starts with the view, or with the dim, such as `accounts:`, for
+a problem in a dim table.
+
+Once the checks pass, the load holds every spec table in `ACCESS
+SHARE` mode until the last table is loaded, so a rewrite (`VACUUM
+FULL`, `CLUSTER`, an `ALTER TABLE` that rewrites) waits for the load.
+A rewrite that ended before Straum held the tables would read empty in
+the load's snapshot. Straum finds it and stops, and the next start
+loads the table whole:
 
 ```text
 usage: public.events was rewritten as Straum started
@@ -219,9 +232,9 @@ the start waited 5 s for a lock on public.events; another session holds or waits
 
 Logical decoding also needs the publication and `REPLICA IDENTITY
 FULL`. PostgreSQL makes the logical slot once every writing
-transaction that was open when the slot began has ended, on any table
-of the database. A start waits a minute for that, then names them and
-stops:
+transaction that was open when the slot began has ended, in any
+database on the server. A start waits a minute for that, then names
+them and stops:
 
 ```text
 wal_level is replica; Straum needs logical, which takes a restart
@@ -232,8 +245,9 @@ dim accounts: Straum needs the whole old row of every update and delete: ALTER T
 the start waited 60 s for transactions open on the server to end before its slot could be made: xid 7512; a long or prepared one (pg_prepared_xacts) holds the start back
 ```
 
-Physical WAL. The three wait lines are the minute and the 10 second
-DDL wait under [Physical WAL](#physical-wal):
+Physical WAL. The last three lines are the waits under
+[Physical WAL](#physical-wal); the last says 10 s when it is the wait
+after DDL:
 
 ```text
 full_page_writes is off; --wal physical needs on
@@ -256,9 +270,9 @@ usage: column kind of public.events is virtual, so the WAL holds no value of it;
   `--max-retained-wal` (4 GiB by default) Straum stops, so one that
   cannot keep up cannot fill the disk.
 - A watchdog on a connection of its own checks that every second,
-  during loads too. Past the limit it has PostgreSQL end the slot's
-  session, even if the rest of Straum is stuck. A watchdog that cannot
-  read the slot for 10 seconds ends the stream too.
+  during loads too. Past the limit it ends the slot's session, even if
+  the rest of Straum is stuck. A watchdog that cannot read the slot for
+  10 seconds ends the stream too.
 - Many managed services fix `max_slot_wal_keep_size` at -1, so the flag
   above is the only limit there. A physical slot keeps WAL from the
   last checkpoint's redo point, which the server keeps until its next
