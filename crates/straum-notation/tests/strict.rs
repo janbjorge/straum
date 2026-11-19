@@ -392,6 +392,21 @@ fn a_function_name_is_lowercase() {
     assert!(parse(&keywords).is_ok());
 }
 
+/// The time is `buckets`, never PostgreSQL's `date_bin`: the error names
+/// it alone and says what to write.
+#[test]
+fn the_time_is_buckets_not_date_bin() {
+    let date_bin = canon(
+        "buckets(orders.placed_at, '1 hour', '1 day')",
+        "date_bin('1 hour', orders.placed_at, 'epoch')",
+    );
+    assert_eq!(
+        error_lines(&date_bin),
+        ["line 2: date_bin in a view: write buckets(<alias.column>, '<width>', ...) AS <name>"]
+    );
+    assert!(parse(CANON).is_ok());
+}
+
 /// GROUP BY lists the keys' positions in SELECT, in order, nothing else.
 #[test]
 fn group_by_lists_the_key_positions() {

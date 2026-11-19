@@ -308,6 +308,17 @@ impl Walker {
                     let time = self.bucket(scope, function, item.alias);
                     selected.buckets.push(time);
                 }
+                // PostgreSQL's spelling of the time, taken as the view's
+                // time so the error names it alone.
+                sql::Expr::Function(function) if is_call(function, DATE_BIN) => {
+                    selected.positions.push(position);
+                    self.error(
+                        line(function),
+                        "date_bin in a view: write buckets(<alias.column>, '<width>', ...) AS <name>"
+                            .into(),
+                    );
+                    selected.buckets.push(Err(Reported));
+                }
                 sql::Expr::Function(_) => {}
                 expression => {
                     selected.positions.push(position);
@@ -348,7 +359,7 @@ impl Walker {
             let sql::Expr::Function(function) = item.expression else {
                 continue;
             };
-            if is_call(function, BUCKETS) {
+            if is_call(function, BUCKETS) || is_call(function, DATE_BIN) {
                 continue;
             }
             if let Ok(measure) = self.measure(scope, function, item.alias) {
@@ -444,6 +455,9 @@ fn select_position(expression: &sql::Expr) -> Option<usize> {
 /// What to write for a width that can't be read.
 /// The function a view's time is written with.
 const BUCKETS: &str = "buckets";
+
+/// PostgreSQL's function for a bucket, refused for `buckets`.
+const DATE_BIN: &str = "date_bin";
 
 pub(super) const WIDTH_FORM: &str = "use '<n> seconds|minutes|hours|days'";
 

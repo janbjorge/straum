@@ -179,6 +179,9 @@ epoch of the column's type:
 date_bin('1 hour', e.at, timestamptz 'epoch') AS bucket
 ```
 
+A spec writes `buckets`; `date_bin` in it is refused, naming the
+`buckets` item to write.
+
 An ask over a long range reads its middle from the widest buckets that
 fit and its ends from narrower ones, so it reads far fewer cells, as
 drawn under [How Straum works](how-it-works.md#answering-an-ask).

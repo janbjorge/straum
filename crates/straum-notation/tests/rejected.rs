@@ -709,7 +709,7 @@ fn the_time_is_one_buckets_item() {
             "buckets(f.at, '1 hour')",
             "date_bin('1 hour', f.at, timestamptz 'epoch')",
             2,
-            "aggregate `date_bin",
+            "date_bin in a view: write buckets(<alias.column>, '<width>', ...) AS <name>",
         ),
         (
             "buckets(f.at, '1 hour')",
